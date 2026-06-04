@@ -314,20 +314,17 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
 # DevicePhysical) extracted to the package leaf; imported back so every type hint
 # and constructor call keeps working unchanged (behaviour byte-identical).
 from cisco_toolkit.model import InterfaceData, DevicePhysical
-# NEW-V3.23.20 (PHASE 2.7 step 10): the analyze layer's scoring foundation - the
-# ScoringConfig tunables (+ module-default SCORING) and the pure _health_band /
-# _host_role helpers; imported back so the compute_* functions still in this file
-# keep working unchanged. (This was the last dataclass user, so the top-level
-# 'from dataclasses import ...' moved into the package with it.)
-# NEW-V3.23.21/.22/.23 (PHASE 2.7 steps 11-13): analyze-layer functions imported back so
-# the Excel writers + the physical/L3/flow functions still in this file keep working.
-# (step 13 moved build_network_model, the last monolith user of _canon_host/_canon_host_map,
-# so those import-backs are gone.)
+# NEW-V3.23.20-.25 (PHASE 2.7 steps 10-15): analyze-layer symbols imported back so the
+# Excel writers + the physical/L3/flow functions + main() still in this file keep working.
+# ScoringConfig / SCORING / _host_role are NOT re-exported anymore (step 15 moved their last
+# monolith users, the scoring compute_*); _health_band stays (write_health_scores_sheet uses it).
 from cisco_toolkit.analyze import (
-    ScoringConfig, SCORING, _health_band, _host_role, compute_move_groups,
+    _health_band, compute_move_groups,
     compute_topology_links, compute_findings,
     build_network_model, _link_carries, _vlan_components,
     compute_causality_chains, compute_failure_impact,
+    compute_data_quality, compute_health_scores,
+    compute_score_sensitivity, compute_migration_readiness,
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue (_load_cmd_output
 # reads collected show output fail-soft; _safe_parse wraps section parsers). Homed
@@ -3565,211 +3562,10 @@ _STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
 # _health_band / _host_role moved to cisco_toolkit.analyze (PHASE 2.7 step 10);
 # imported back near the top of this file.
 
-_ESSENTIAL_CMD_VARIANTS = (
-    ("show interface status",),
-    ("show interface switchport", "show interfaces switchport"),
-    ("show version",),
-    ("show cdp neighbors detail", "show lldp neighbors detail"),
-)
-
-def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[str, float]:
-    """NEW-V3.23.7: per-switch collection completeness = fraction of the essential
-    command set that returned usable (non-empty, non-error) output, via the
-    existing _load_cmd_output. compute_health_scores uses it to flag under-observed
-    switches so a partial collection can't masquerade as a healthy device (C3)."""
-    out: Dict[str, float] = {}
-    for host, c2f in (all_cmd_to_files or {}).items():
-        present = sum(1 for variants in _ESSENTIAL_CMD_VARIANTS
-                      if _load_cmd_output(c2f, *variants).strip())
-        out[host] = present / len(_ESSENTIAL_CMD_VARIANTS)
-    return out
-
-def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                          physical_health: List[dict], l3_forwarding: List[dict],
-                          cross_layer: List[dict], protocol_health: List[dict],
-                          config: ScoringConfig = SCORING,
-                          data_quality: Optional[Dict[str, float]] = None) -> List[dict]:
-    """Per-switch 0-100 health score with weighted, category-capped deductions.
-    Weights/caps/bands come from `config` (ScoringConfig); the default instance
-    reproduces the prior hard-coded behaviour byte-for-byte."""
-    hosts = sorted(all_interfaces)
-    ded: Dict[str, Dict[str, List[Tuple[str, int]]]] = {
-        h: {"L1": [], "L3": [], "XL": [], "PROTO": []} for h in hosts}
-
-    L1W = config.l1_weights
-    for rec in (physical_health or []):
-        h = rec.get("switch")
-        if h not in ded:
-            continue
-        for flag, pts in L1W.items():
-            if flag in rec.get("risk", ""):
-                ded[h]["L1"].append((f"{flag} @ {rec.get('port','')}", pts))
-    L3W = config.l3_weights
-    for rec in (l3_forwarding or []):
-        h = rec.get("switch")
-        if h not in ded:
-            continue
-        for flag, pts in L3W.items():
-            if flag in rec.get("risk", ""):
-                ded[h]["L3"].append((f"{flag} (VLAN {rec.get('vlan','')})", pts))
-    XLW = config.xl_weights
-    for f in (cross_layer or []):
-        pts = XLW.get(f.get("severity"), 0)
-        for h in f.get("hosts", []):
-            if h in ded:
-                ded[h]["XL"].append((f"{f['id']} {f['severity']}", pts))
-    PW = config.proto_weights
-    for rec in (protocol_health or []):
-        h = rec.get("switch")
-        if h in ded and rec.get("severity") in PW:
-            ded[h]["PROTO"].append((f"{rec['protocol']} {rec['severity']}", PW[rec["severity"]]))
-
-    CAP = config.caps
-    records: List[dict] = []
-    for h in hosts:
-        # NEW-V3.23.5: scale this switch's deductions by its criticality role.
-        # round() keeps integer scores; the default factor 1.0 is a no-op.
-        factor = config.criticality_factors.get(_host_role(all_interfaces.get(h, {})), 1.0)
-        total = 0
-        reasons: List[str] = []
-        for cat, items in ded[h].items():
-            csum = min(round(sum(p for _r, p in items) * factor), CAP[cat])
-            total += csum
-            for r, p in sorted(items, key=lambda x: -x[1]):
-                reasons.append(f"{r} (-{p})")
-        score = max(0, 100 - total)
-        band, _fill = _health_band(score, config.bands)
-        rec = {"switch": h, "score": score, "band": band, "deductions": reasons[:8]}
-        if data_quality is not None:                          # NEW-V3.23.7 (audit C3)
-            dq = data_quality.get(h, 1.0)
-            rec["data_quality"] = round(dq, 2)
-            if dq < config.data_quality_threshold:
-                rec["band"] = "Insufficient Data"             # collection gap != healthy
-        records.append(rec)
-    records.sort(key=lambda r: (r["score"], r["switch"]))
-    return records
-
-def compute_score_sensitivity(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                              physical_health: List[dict], l3_forwarding: List[dict],
-                              cross_layer: List[dict], protocol_health: List[dict],
-                              config: ScoringConfig = SCORING,
-                              deltas: Tuple[float, ...] = (-0.5, -0.25, 0.25, 0.5)) -> List[dict]:
-    """NEW-V3.23.5: one-at-a-time (OAT) sensitivity sweep over the scoring weights.
-    For each weight group, re-score the fleet with that group scaled by each delta
-    and report how many switches change health band. Verdicts that flip under a
-    small (+/-25%) perturbation are weakly supported - this is the OECD/JRC
-    composite-indicator robustness check. Pure derivation; no new collection."""
-    import dataclasses
-
-    def _bands(cfg):
-        return {r["switch"]: r["band"] for r in compute_health_scores(
-            all_interfaces, physical_health, l3_forwarding, cross_layer, protocol_health, cfg)}
-
-    base = _bands(config)
-    out: List[dict] = []
-    for grp in ("l1_weights", "l3_weights", "xl_weights", "proto_weights"):
-        for delta in deltas:
-            scaled = {k: max(0, round(v * (1 + delta))) for k, v in getattr(config, grp).items()}
-            new = _bands(dataclasses.replace(config, **{grp: scaled}))
-            changed = sorted(h for h in base if base[h] != new.get(h))
-            out.append({
-                "perturbation": f"{grp.replace('_weights', '').upper()} "
-                                f"{'+' if delta > 0 else ''}{int(delta * 100)}%",
-                "group": grp, "delta_pct": int(delta * 100),
-                "switches_changed_band": len(changed),
-                "changed": changed,
-                "detail": "; ".join(f"{h}: {base[h]}->{new[h]}" for h in changed) or "no band changes",
-            })
-    out.sort(key=lambda r: (-r["switches_changed_band"], r["group"], r["delta_pct"]))
-    return out
-
-# 10 pre-migration checks; each returns (status, note). status in pass/warn/fail.
-def compute_migration_readiness(all_interfaces, move_groups, health_scores,
-                                physical_health, l3_forwarding, cross_layer,
-                                protocol_health, dep_map,
-                                config: ScoringConfig = SCORING) -> List[dict]:
-    """Per move-group READY/CAUTION/NOT READY from a 10-check pre-migration
-    checklist. The status each check emits when its risk fires comes from
-    `config.readiness`; the default instance reproduces the prior behaviour."""
-    R = config.readiness
-    # per-host indexes
-    sf_hosts = {h for (h, _p) in dep_map["single_fiber"]}
-    errdis_hosts = {h for (h, _p) in dep_map["errdis"]}
-    halfdup_hosts = {h for (h, _p) in dep_map["halfdup_up"]}
-    sole_gw_hosts = set(dep_map["sole_gw"].values())
-    band_by_host = {r["switch"]: r["band"] for r in health_scores}
-    proto_high: Dict = {}                            # host -> set(protocols at High)
-    for rec in (protocol_health or []):
-        if rec.get("severity") == "High":
-            proto_high.setdefault(rec["switch"], set()).add(rec["protocol"])
-    xl_crit_hosts = {h for f in (cross_layer or []) if f.get("severity") == "Critical" for h in f.get("hosts", [])}
-    # orphan VLAN -> its access switches
-    orphan_hosts = set()
-    for vid in dep_map["orphan"]:
-        orphan_hosts |= dep_map["access_by_vlan"].get(vid, set())
-
-    out: List[dict] = []
-    for gi, g in enumerate(move_groups, 1):
-        gset = set(g["switches"])
-
-        def any_in(s):
-            return sorted(gset & s)
-
-        checks = []
-        # 1 redundant uplinks
-        hit = any_in(sf_hosts)
-        checks.append(("Redundant uplinks", R["redundant_uplinks"] if hit else "pass",
-                       f"single-fiber uplink on {', '.join(hit)}" if hit else "no single-homed switch"))
-        # 2 gateway redundancy (FHRP)
-        hit = any_in(sole_gw_hosts)
-        checks.append(("Gateway redundancy", R["gateway_redundancy"] if hit else "pass",
-                       f"sole gateway on {', '.join(hit)} (no FHRP)" if hit else "gateways redundant / none in group"))
-        # 3 no cross-layer Critical
-        hit = any_in(xl_crit_hosts)
-        checks.append(("No cross-layer Critical", R["no_xl_critical"] if hit else "pass",
-                       f"Critical correlation on {', '.join(hit)}" if hit else "none"))
-        # 4 no err-disabled ports
-        hit = any_in(errdis_hosts)
-        checks.append(("No err-disabled ports", R["no_errdisabled"] if hit else "pass",
-                       f"err-disabled on {', '.join(hit)}" if hit else "none"))
-        # 5 STP consistency
-        hit = sorted({h for h in gset if "STP" in proto_high.get(h, set())})
-        checks.append(("STP consistency", R["stp_consistency"] if hit else "pass",
-                       f"inconsistent STP on {', '.join(hit)}" if hit else "no inconsistent ports"))
-        # 6 port-channels healthy
-        hit = sorted({h for h in gset if "EtherChannel" in proto_high.get(h, set())})
-        checks.append(("Port-channels healthy", R["portchannels_healthy"] if hit else "pass",
-                       f"unbundled member on {', '.join(hit)}" if hit else "all members bundled / none"))
-        # 7 routing adjacencies up
-        hit = sorted({h for h in gset if proto_high.get(h, set()) & {"OSPF", "BGP"}})
-        checks.append(("Routing adjacencies up", R["routing_adjacencies"] if hit else "pass",
-                       f"down OSPF/BGP neighbor on {', '.join(hit)}" if hit else "all neighbors up / none"))
-        # 8 no orphan VLANs
-        hit = any_in(orphan_hosts)
-        checks.append(("No orphan VLANs", R["no_orphan_vlans"] if hit else "pass",
-                       f"endpoints with off-scan gateway on {', '.join(hit)}" if hit else "none"))
-        # 9 no degraded / half-duplex uplinks
-        hit = any_in(halfdup_hosts)
-        checks.append(("Clean uplinks (no half-duplex)", R["clean_uplinks"] if hit else "pass",
-                       f"half-duplex uplink on {', '.join(hit)}" if hit else "none"))
-        # 10 device health floor
-        crit = sorted([h for h in gset if band_by_host.get(h) == "Critical"])
-        poor = sorted([h for h in gset if band_by_host.get(h) == "Poor"])
-        if crit:
-            st, note = R["health_floor_critical"], f"Critical-health switch: {', '.join(crit)}"
-        elif poor:
-            st, note = R["health_floor_poor"], f"Poor-health switch: {', '.join(poor)}"
-        else:
-            st, note = "pass", "all switches Fair or better"
-        checks.append(("Device health floor", st, note))
-
-        statuses = [c[1] for c in checks]
-        readiness = "NOT READY" if "fail" in statuses else ("CAUTION" if "warn" in statuses else "READY")
-        out.append({"group": f"Group {gi}", "switches": g["switches"],
-                    "endpoints": g.get("endpoints", 0), "readiness": readiness,
-                    "n_fail": statuses.count("fail"), "n_warn": statuses.count("warn"),
-                    "checks": [{"check": c[0], "status": c[1], "note": c[2]} for c in checks]})
-    return out
+# _ESSENTIAL_CMD_VARIANTS + compute_data_quality / compute_health_scores /
+# compute_score_sensitivity / compute_migration_readiness moved to cisco_toolkit.analyze
+# (PHASE 2.7 step 15); the four compute_* are imported back near the top of this file
+# (main() runs them via _run_phase). _ESSENTIAL_CMD_VARIANTS is package-internal now.
 
 def write_health_scores_sheet(wb, records: List[dict]) -> None:
     ws = wb.create_sheet(HEALTH_SCORES_SHEET_NAME)

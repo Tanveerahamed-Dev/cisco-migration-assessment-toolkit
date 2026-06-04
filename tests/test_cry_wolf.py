@@ -1,5 +1,6 @@
 """PHASE 2.2: cry-wolf fixes - findings dedup, asset-criticality weighting,
 and the score-sensitivity sweep."""
+from cisco_toolkit import analyze   # ScoringConfig / _host_role live here since PHASE 2.7 steps 10/15
 
 
 def _errdis(cp, port):
@@ -25,9 +26,9 @@ def test_findings_deduplicate_errdisabled_per_switch(cp):
 # --------------------------------------------------------------------------- #
 def test_host_role_inference(cp):
     svi = cp.InterfaceData(port="Vlan10"); svi.svi_ip = "10.0.10.1"
-    assert cp._host_role({"Vlan10": svi}) == "distribution"
-    assert cp._host_role({"Gi0/1": cp.InterfaceData(port="Gi0/1")}) == "access"
-    assert cp._host_role({}) == "access"
+    assert analyze._host_role({"Vlan10": svi}) == "distribution"
+    assert analyze._host_role({"Gi0/1": cp.InterfaceData(port="Gi0/1")}) == "access"
+    assert analyze._host_role({}) == "access"
 
 
 def test_default_criticality_is_byte_identical(cp):
@@ -44,7 +45,7 @@ def test_criticality_weights_distribution_more(cp):
     all_if = {"dist": {"Vlan10": svi}, "acc": {"Gi0/1": cp.InterfaceData(port="Gi0/1")}}
     ph = [{"switch": "dist", "port": "Gi0/1", "risk": "err-disabled"},
           {"switch": "acc", "port": "Gi0/1", "risk": "err-disabled"}]
-    cfg = cp.ScoringConfig(criticality_factors={"core": 2.0, "distribution": 2.0, "access": 1.0})
+    cfg = analyze.ScoringConfig(criticality_factors={"core": 2.0, "distribution": 2.0, "access": 1.0})
     recs = {r["switch"]: r["score"] for r in cp.compute_health_scores(all_if, ph, [], [], [], config=cfg)}
     assert recs["dist"] == 84            # 8 * 2.0 = 16 deduction
     assert recs["acc"] == 92             # 8 * 1.0 = 8 deduction
