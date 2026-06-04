@@ -52,3 +52,22 @@ def test_model_reexported_and_functional(cp):
     assert iface.vlan == "" and iface.neighbor_platform == ""
     dp = model.DevicePhysical(hostname="core1")
     assert dp.hostname == "core1" and dp.num_power_supplies == 0
+
+
+def test_analyze_reexported_and_functional(cp):
+    from cisco_toolkit import analyze
+    # identity, not equality: the compute_* functions still in the monolith must use
+    # the package's ScoringConfig/SCORING/helpers, not a re-defined copy.
+    assert cp.ScoringConfig is analyze.ScoringConfig
+    assert cp.SCORING is analyze.SCORING
+    assert cp._health_band is analyze._health_band
+    assert cp._host_role is analyze._host_role
+    # the default config reproduces the documented hard-coded tunables.
+    assert analyze.SCORING.caps == {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25}
+    assert analyze.SCORING.l1_weights["single-fiber-uplink"] == 10
+    # band thresholds + the gateway-SVI role heuristic, straight from the package.
+    assert analyze._health_band(95) == ("Excellent", "36E08A")
+    assert analyze._health_band(50) == ("Poor", "FF9F45")
+    gw = analyze.InterfaceData(port="Vlan10", svi_ip="10.0.0.1")
+    assert analyze._host_role({"Vlan10": gw}) == "distribution"
+    assert analyze._host_role({"Gi1/0/1": analyze.InterfaceData(port="Gi1/0/1")}) == "access"

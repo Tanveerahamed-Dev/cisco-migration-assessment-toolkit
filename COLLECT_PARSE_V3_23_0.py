@@ -280,7 +280,8 @@ Optional:
 import os, sys, json, re, logging, warnings, argparse, time  # CHANGED-V3.23.1: +time (connect backoff)
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var below (avoids F402 shadowing)
+# 'from dataclasses import dataclass, field' moved to cisco_toolkit.analyze with
+# ScoringConfig (PHASE 2.7 step 10) - the monolith's last dataclass user.
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -312,6 +313,12 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
 # DevicePhysical) extracted to the package leaf; imported back so every type hint
 # and constructor call keeps working unchanged (behaviour byte-identical).
 from cisco_toolkit.model import InterfaceData, DevicePhysical
+# NEW-V3.23.20 (PHASE 2.7 step 10): the analyze layer's scoring foundation - the
+# ScoringConfig tunables (+ module-default SCORING) and the pure _health_band /
+# _host_role helpers; imported back so the compute_* functions still in this file
+# keep working unchanged. (This was the last dataclass user, so the top-level
+# 'from dataclasses import ...' moved into the package with it.)
+from cisco_toolkit.analyze import ScoringConfig, SCORING, _health_band, _host_role
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -4083,73 +4090,14 @@ def write_protocol_health_sheet(wb, records: List[dict]) -> None:
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
 MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
 SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
-# score band -> (label, fill)
-_HEALTH_BANDS = [(90, "Excellent", "36E08A"), (75, "Good", "7ADB8F"),
-                 (60, "Fair", "FFE566"), (40, "Poor", "FF9F45"), (0, "Critical", "FF5775")]
-
-
-@dataclass(frozen=True)
-class ScoringConfig:
-    """NEW-V3.23.4: every health-score + migration-readiness tunable in one typed
-    place (these were hard-coded as function-local dicts). The defaults reproduce
-    the prior behaviour byte-for-byte; build a ScoringConfig(...) to recalibrate
-    and pass it to compute_health_scores / compute_migration_readiness. The .md
-    flags these as 'a defensible default, not calibrated - tune to taste.'"""
-    # Per-finding deduction weights, by layer/category.
-    l1_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
-        "err-disabled": 8, "single-fiber-uplink": 10, "error-rate-high": 5, "half-duplex": 8})
-    l3_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
-        "single-gateway": 10, "no-FHRP": 3, "tracked-object-down": 12})
-    xl_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
-        "Critical": 18, "High": 10, "Medium": 4, "Low": 2})
-    proto_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
-        "High": 10, "Medium": 4})
-    # Per-category cap (max total deduction a single category can contribute).
-    caps: Dict[str, int] = _dcfield(default_factory=lambda: {
-        "L1": 30, "L3": 30, "XL": 45, "PROTO": 25})
-    # Score -> (band label, fill); first row whose threshold the score meets wins.
-    bands: List[Tuple[int, str, str]] = _dcfield(default_factory=lambda: list(_HEALTH_BANDS))
-    # Status a readiness check emits when its risk condition fires ('fail' ->
-    # NOT READY for the group, 'warn' -> CAUTION).
-    readiness: Dict[str, str] = _dcfield(default_factory=lambda: {
-        "redundant_uplinks": "warn", "gateway_redundancy": "fail",
-        "no_xl_critical": "fail", "no_errdisabled": "warn",
-        "stp_consistency": "warn", "portchannels_healthy": "warn",
-        "routing_adjacencies": "fail", "no_orphan_vlans": "warn",
-        "clean_uplinks": "warn", "health_floor_critical": "fail",
-        "health_floor_poor": "warn"})
-    # NEW-V3.23.5: per-role multiplier on a switch's deductions (a fault on a
-    # core/distribution switch has wider blast radius than on an access closet).
-    # Defaults are 1.0 for every role, so scores stay byte-identical until tuned.
-    criticality_factors: Dict[str, float] = _dcfield(default_factory=lambda: {
-        "core": 1.0, "distribution": 1.0, "access": 1.0})
-    # NEW-V3.23.7: a switch whose collection covers less than this fraction of the
-    # essential command set is reported 'Insufficient Data' instead of a
-    # misleadingly-high band, so a partial collection can't look healthy (audit C3).
-    data_quality_threshold: float = 0.5
-
-
-# Module-default scoring configuration. Replace/extend by passing a custom
-# ScoringConfig to the compute_* functions; the defaults keep behaviour identical.
-SCORING = ScoringConfig()
+# _HEALTH_BANDS / ScoringConfig / SCORING moved to cisco_toolkit.analyze (PHASE 2.7
+# step 10); imported back near the top of this file. The Excel fill-colour maps
+# below stay - they belong to the excel layer, not the data analysis.
 _READY_FILL = {"READY": "36E08A", "CAUTION": "FFE566", "NOT READY": "FF5775"}
 _STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
 
-def _health_band(score: int, bands=None):
-    for thr, label, fill in (bands if bands is not None else SCORING.bands):
-        if score >= thr:
-            return label, fill
-    return "Critical", "FF5775"
-
-def _host_role(ifaces: Dict[str, "InterfaceData"]) -> str:
-    """Infer a switch's migration-criticality role from already-parsed data: a
-    switch that hosts an L3 gateway SVI carries wider blast radius -> 'distribution';
-    otherwise 'access'. ('core' is reserved for manual tuning via
-    ScoringConfig.criticality_factors.) Only affects scores when factors != 1.0."""
-    for port, d in (ifaces or {}).items():
-        if re.match(r"^Vlan\d+$", port, re.IGNORECASE) and (getattr(d, "svi_ip", "") or "").strip():
-            return "distribution"
-    return "access"
+# _health_band / _host_role moved to cisco_toolkit.analyze (PHASE 2.7 step 10);
+# imported back near the top of this file.
 
 _ESSENTIAL_CMD_VARIANTS = (
     ("show interface status",),
