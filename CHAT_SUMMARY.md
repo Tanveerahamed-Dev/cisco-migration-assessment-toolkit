@@ -5,6 +5,25 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 2: parse primitives + neighbor parsers
+
+On branch `phase2-split-parse`. Behaviour byte-identical.
+
+- Created `cisco_toolkit/parse.py`; moved the column primitives
+  (`extract_fixed_cols`, `slice_col`) and the pure routing-neighbor parsers
+  (`parse_ospf_neighbors`, `parse_eigrp_neighbors`, `parse_bgp_summary`) into it.
+  Depends only on `re` + `cisco_toolkit.textutils`; monolith imports them back.
+- Verified: golden byte-identical, `ruff` clean, mypy unchanged (101); +1
+  boundary/identity test in `tests/test_package.py`. **61 tests pass.**
+
+Split progress: step 1 textutils (leaf), step 2 parse primitives + neighbor
+parsers. **Remaining `parse_*` are entangled** with `build_interfaces` helpers
+(`_load_cmd_output`, `_compress_vlans`, `_STP_STS_NAME`, `infer_endpoint_type`,
+`_DESC_EP_PATTERNS`, …) so the next slices need care; then analyze / excel /
+html / `__main__`. `.md` Change Log V3.23.12.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 1: begin the package split
 
 On branch `phase2-split-textutils`. Behaviour byte-identical.
