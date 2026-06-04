@@ -329,6 +329,11 @@ from cisco_toolkit.analyze import (
     build_network_model, _link_carries, _vlan_components,
     compute_causality_chains, compute_failure_impact,
 )
+# NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue (_load_cmd_output
+# reads collected show output fail-soft; _safe_parse wraps section parsers). Homed
+# in the package leaf before the I/O-fed analyze functions follow; imported back so
+# every existing call site (and platform detection's _CISCO_ERRORS reuse) keeps working.
+from cisco_toolkit.cmdio import _CISCO_ERRORS, _load_cmd_output, _safe_parse
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -693,41 +698,10 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
 # =============================================================================
 # SAFE FILE LOADER
 # =============================================================================
-_CISCO_ERRORS = (
-    "% invalid", "% command not found",
-    "% incomplete command", "% unknown command",
-    "% ambiguous command", "% ip routing not enabled",
-    "% routing not enabled", "invalid input detected",
-    "error: invalid", "% requires vrf", "% vrf does not exist",
-)
-
-def _load_cmd_output(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
-    for cmd in cmd_variants:
-        p = cmd_to_file.get(cmd)
-        if p and os.path.isfile(p):
-            try:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                stripped = content.strip()
-                if not stripped: continue
-                first_chunk = stripped[:200].lower()
-                if any(pat in first_chunk for pat in _CISCO_ERRORS): continue
-                return content
-            except Exception as e:
-                logger.debug(f"_load_cmd_output: failed reading {p} for '{cmd}': {e}")  # NEW-V3.23.1
-    return ""
-
-def _safe_parse(fn, *args, _default=None):
-    """FIX-V3.23.6 (P1): run a section parser fail-soft. If it raises on a
-    malformed/unexpected block, log a breadcrumb and return _default ({} unless
-    given) so build_interfaces keeps the rest of the device's data instead of
-    losing the whole device to one bad section. Happy path is unchanged - the
-    parsers already return {} on empty input, so wrapping is value-preserving."""
-    try:
-        return fn(*args)
-    except Exception as e:
-        logger.warning(f"  [parse] {getattr(fn, '__name__', repr(fn))} failed: {e!r}; section skipped")
-        return {} if _default is None else _default
+# _CISCO_ERRORS / _load_cmd_output / _safe_parse moved to cisco_toolkit.cmdio
+# (PHASE 2.7 step 14); all three imported back near the top of this file (nearly
+# every build_*/compute_*/write_* reads collected output via _load_cmd_output, and
+# platform detection reuses _CISCO_ERRORS).
 
 # =============================================================================
 # PARSERS - interface commands
