@@ -5,6 +5,27 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 5: bulk interface-command parsers (bigger batch)
+
+On branch `phase2-split-parse4`. Byte-identical.
+
+- Moved 11 pure parsers + 2 constants into `cisco_toolkit/parse.py`: mac table,
+  STP (blockedports/detail/states + `_STP_STS_NAME`), vlan_brief, `_compress_vlans`,
+  vrf, power-inline, cdp/lldp, infer_endpoint_type (+`_DESC_EP_PATTERNS`).
+  Added `normalize_mac` + `IFACE_TOKEN_RE` to parse.py's textutils import.
+- `_STP_STS_NAME`/`_DESC_EP_PATTERNS` are package-internal (sole users moved), so
+  not re-imported. `normalize_mac`/`IFACE_TOKEN_RE` are still used elsewhere in
+  the monolith → kept (ruff clean, no F401).
+- Golden byte-identical, `ruff` clean, mypy unchanged (101). **61 tests pass.**
+  Monolith ~4,950 lines (from ~5,769); `parse.py` ~510. `.md` V3.23.15.
+
+Parser layer still in the monolith: run-config, etherchannel proto/members
+(+`_proto_from_token`), ip-arp, vtp, ip-int-brief/mgmt-ip, multicast, version,
+inventory (+`_inv_commit`), environment(+power/module), counters, security
+(port-sec/auth/dhcp), phy/media. Then analyze / excel / html / `__main__`.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 4: interface-table parsers
 
 On branch `phase2-split-parse3`. Byte-identical.
