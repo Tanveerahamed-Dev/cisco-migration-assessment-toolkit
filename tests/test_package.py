@@ -77,7 +77,10 @@ def test_analyze_reexported_and_functional(cp):
     assert analyze._host_role({"Gi1/0/1": analyze.InterfaceData(port="Gi1/0/1")}) == "access"
     # move-group computation joined the analyze layer (step 11).
     assert cp.compute_move_groups is analyze.compute_move_groups
-    assert cp.MOVEGROUP_EXCLUDED_VLANS is analyze.MOVEGROUP_EXCLUDED_VLANS
+    # MOVEGROUP_EXCLUDED_VLANS went package-internal in step 12: its last monolith user
+    # (compute_findings) moved out, so the monolith no longer re-exports it.
+    assert analyze.MOVEGROUP_EXCLUDED_VLANS == {1}
+    assert not hasattr(cp, "MOVEGROUP_EXCLUDED_VLANS")
     # two switches sharing VLAN 20 (via access ports) collapse into one move group.
     ID = analyze.InterfaceData
     ifaces = {
@@ -86,3 +89,18 @@ def test_analyze_reexported_and_functional(cp):
     }
     groups = analyze.compute_move_groups(ifaces)
     assert len(groups) == 1 and groups[0]["switches"] == ["sw1", "sw2"]
+    # topology-links + findings cluster joined the analyze layer (step 12).
+    for name in ("compute_topology_links", "compute_findings", "_canon_host", "_canon_host_map"):
+        assert getattr(cp, name) is getattr(analyze, name)
+    assert analyze._canon_host("Switch1.example.com (FOC123)") == "switch1"
+    # two switches that see each other over CDP -> one link confirmed from both ends.
+    tl = {
+        "sw1": {"Gi1/0/1": ID(port="Gi1/0/1", cdp_neighbor="sw2", neighbor_port="Gi1/0/1", endpoint_type="Switch")},
+        "sw2": {"Gi1/0/1": ID(port="Gi1/0/1", cdp_neighbor="sw1", neighbor_port="Gi1/0/1", endpoint_type="Switch")},
+    }
+    links = analyze.compute_topology_links(tl)
+    assert len(links) == 1 and links[0]["confirmation"] == "Both ends"
+    # two SVIs for VLAN 20 with no FHRP -> a High "Gateway redundancy" finding.
+    fi = {"sw1": {"Vlan20": ID(port="Vlan20")}, "sw2": {"Vlan20": ID(port="Vlan20")}}
+    assert any(sev == "High" and cat == "Gateway redundancy"
+               for (sev, cat, scope, detail) in analyze.compute_findings(fi))
