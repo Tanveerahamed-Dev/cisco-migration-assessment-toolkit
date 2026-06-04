@@ -4896,7 +4896,8 @@ def build_dependency_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             errdis.add(key)
 
     # L3 facts (from the l3-forwarding records)
-    sole_gw, nofhrp_vlans, tracked_down, fhrp_hosts, gw_switches = {}, {}, set(), set(), set()
+    nofhrp_vlans: Dict = {}   # NEW-V3.23.10 (mypy var-annotated): typed out of the tuple-unpack
+    sole_gw, tracked_down, fhrp_hosts, gw_switches = {}, set(), set(), set()
     fhrp_vlans = set()
     for rec in (l3_forwarding or []):
         vid, host, r = rec.get("vlan"), rec.get("switch"), rec.get("risk", "")
@@ -5466,7 +5467,7 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
     halfdup_hosts = {h for (h, _p) in dep_map["halfdup_up"]}
     sole_gw_hosts = set(dep_map["sole_gw"].values())
     band_by_host = {r["switch"]: r["band"] for r in health_scores}
-    proto_high = {}                                  # host -> set(protocols at High)
+    proto_high: Dict = {}                            # host -> set(protocols at High)
     for rec in (protocol_health or []):
         if rec.get("severity") == "High":
             proto_high.setdefault(rec["switch"], set()).add(rec["protocol"])
