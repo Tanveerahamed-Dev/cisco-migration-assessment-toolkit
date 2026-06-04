@@ -5,6 +5,41 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 12: topology-links + findings -> analyze
+
+On branch `phase2-split-analyze3`. Byte-identical. **Third analyze slice** — finishes
+the pure model-derived "structure & risk" cluster.
+
+- Moved `compute_topology_links` + `compute_findings` and their analyze-internal
+  helpers `_canon_host`, `_is_infra_neighbor`, `_canon_host_map` + the `_SEV_RANK`
+  constant into `cisco_toolkit/analyze.py`. `_canon_host` was verified analyze-internal
+  in step 11 (no excel writer calls it), so it went *into* analyze.py, not textutils.
+- Monolith import-backs now: `compute_topology_links` (write_topology_sheet /
+  write_topology_diagram), `compute_findings` (write_findings_sheet), `_canon_host` +
+  `_canon_host_map` (build_network_model, still in monolith). `TOPOLOGY_SHEET_NAME` /
+  `FINDINGS_SHEET_NAME` stay (excel).
+- **Dropped the temporary `MOVEGROUP_EXCLUDED_VLANS` import-back** (from step 11): its
+  last monolith user, `compute_findings`, moved out, so it's now package-internal.
+  ruff confirmed no F401. The step-11 identity test asserted the monolith re-exported
+  it — that assertion went stale and **the package-identity test caught it** (good);
+  updated it to assert `analyze.MOVEGROUP_EXCLUDED_VLANS == {1}` + `not hasattr(cp, ...)`,
+  mirroring the step-4 convention.
+- Extended the analyze test (no new fn, still **63 tests**): identity for the 4 moved
+  symbols + `_canon_host` normalization, a both-ends CDP link smoke, and a
+  no-FHRP-on-2-SVIs → High "Gateway redundancy" finding smoke. Golden byte-identical,
+  `ruff` clean, mypy 101. Monolith **~4,149 lines**. `.md` V3.23.22.
+
+**Structural/findings cluster done.** Next slice (step 13): the **network-model /
+blast-radius cluster** — `build_network_model` (+ `_vlan_in_ranges`, `_link_carries`,
+`_vlan_components`), `compute_causality_chains`, `compute_failure_impact`. Moving
+`build_network_model` drops the `_canon_host`/`_canon_host_map`/`_split_macs` monolith
+uses (it's their main remaining caller — re-check after). Then **home `_load_cmd_output`
+(+`_safe_parse`)** → the I/O-fed `compute_*` (health/readiness/physical/protocol +
+entangled phy/media & `_parse_*` parsers). Then excel (`write_*`), html, `__main__`.
+Sequential — `/batch` does NOT fit (confirmed with user).
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 11: move-group computation -> analyze
 
 On branch `phase2-split-analyze2`. Byte-identical. **Second analyze slice** — the
