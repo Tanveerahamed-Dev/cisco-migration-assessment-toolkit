@@ -5,6 +5,28 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.1: externalize scoring tunables
+
+On branch `phase2-externalize-scoring` (PR #2 already merged to main).
+
+- Added a frozen **`ScoringConfig`** dataclass + module default `SCORING`: the
+  health-score weights (L1/L3/cross-layer/protocol), per-category caps, the
+  score bands, and the 10 readiness pass/warn/fail rules — all formerly
+  function-local dicts. `compute_health_scores` and `compute_migration_readiness`
+  gained an optional `config=SCORING` param; existing call sites unchanged.
+- Defaults reproduce prior behaviour **byte-for-byte** (golden green). 5 new
+  tests in `tests/test_scoring_config.py` prove the wiring (a custom config
+  changes the output) and that defaults match the baseline.
+- The new tests caught a real gap: the band was derived from the module-default
+  `_HEALTH_BANDS`, not the passed `config.bands` — fixed.
+- **39 tests pass.** In-code version stays `3.23.0`; `.md` Change Log V3.23.4.
+
+This is the prerequisite for **PHASE 2.2** (cry-wolf dedup + asset-criticality
+weighting + a one-at-a-time sensitivity sweep) — the tunables are now
+addressable in one place.
+
+---
+
 ## 2026-06-04 — Protective fixes C1 + C2 (first production-code changes)
 
 On branch `harden-phase1-tests`, now under the golden net.

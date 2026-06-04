@@ -280,7 +280,7 @@ Optional:
 import os, sys, json, re, logging, warnings, argparse, time  # CHANGED-V3.23.1: +time (connect backoff)
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -5248,24 +5248,64 @@ MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
 # score band -> (label, fill)
 _HEALTH_BANDS = [(90, "Excellent", "36E08A"), (75, "Good", "7ADB8F"),
                  (60, "Fair", "FFE566"), (40, "Poor", "FF9F45"), (0, "Critical", "FF5775")]
+
+
+@dataclass(frozen=True)
+class ScoringConfig:
+    """NEW-V3.23.4: every health-score + migration-readiness tunable in one typed
+    place (these were hard-coded as function-local dicts). The defaults reproduce
+    the prior behaviour byte-for-byte; build a ScoringConfig(...) to recalibrate
+    and pass it to compute_health_scores / compute_migration_readiness. The .md
+    flags these as 'a defensible default, not calibrated - tune to taste.'"""
+    # Per-finding deduction weights, by layer/category.
+    l1_weights: Dict[str, int] = field(default_factory=lambda: {
+        "err-disabled": 8, "single-fiber-uplink": 10, "error-rate-high": 5, "half-duplex": 8})
+    l3_weights: Dict[str, int] = field(default_factory=lambda: {
+        "single-gateway": 10, "no-FHRP": 3, "tracked-object-down": 12})
+    xl_weights: Dict[str, int] = field(default_factory=lambda: {
+        "Critical": 18, "High": 10, "Medium": 4, "Low": 2})
+    proto_weights: Dict[str, int] = field(default_factory=lambda: {
+        "High": 10, "Medium": 4})
+    # Per-category cap (max total deduction a single category can contribute).
+    caps: Dict[str, int] = field(default_factory=lambda: {
+        "L1": 30, "L3": 30, "XL": 45, "PROTO": 25})
+    # Score -> (band label, fill); first row whose threshold the score meets wins.
+    bands: List[Tuple[int, str, str]] = field(default_factory=lambda: list(_HEALTH_BANDS))
+    # Status a readiness check emits when its risk condition fires ('fail' ->
+    # NOT READY for the group, 'warn' -> CAUTION).
+    readiness: Dict[str, str] = field(default_factory=lambda: {
+        "redundant_uplinks": "warn", "gateway_redundancy": "fail",
+        "no_xl_critical": "fail", "no_errdisabled": "warn",
+        "stp_consistency": "warn", "portchannels_healthy": "warn",
+        "routing_adjacencies": "fail", "no_orphan_vlans": "warn",
+        "clean_uplinks": "warn", "health_floor_critical": "fail",
+        "health_floor_poor": "warn"})
+
+
+# Module-default scoring configuration. Replace/extend by passing a custom
+# ScoringConfig to the compute_* functions; the defaults keep behaviour identical.
+SCORING = ScoringConfig()
 _READY_FILL = {"READY": "36E08A", "CAUTION": "FFE566", "NOT READY": "FF5775"}
 _STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
 
-def _health_band(score: int):
-    for thr, label, fill in _HEALTH_BANDS:
+def _health_band(score: int, bands=None):
+    for thr, label, fill in (bands if bands is not None else SCORING.bands):
         if score >= thr:
             return label, fill
     return "Critical", "FF5775"
 
 def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                           physical_health: List[dict], l3_forwarding: List[dict],
-                          cross_layer: List[dict], protocol_health: List[dict]) -> List[dict]:
-    """Per-switch 0-100 health score with weighted, category-capped deductions."""
+                          cross_layer: List[dict], protocol_health: List[dict],
+                          config: ScoringConfig = SCORING) -> List[dict]:
+    """Per-switch 0-100 health score with weighted, category-capped deductions.
+    Weights/caps/bands come from `config` (ScoringConfig); the default instance
+    reproduces the prior hard-coded behaviour byte-for-byte."""
     hosts = sorted(all_interfaces)
     ded: Dict[str, Dict[str, List[Tuple[str, int]]]] = {
         h: {"L1": [], "L3": [], "XL": [], "PROTO": []} for h in hosts}
 
-    L1W = {"err-disabled": 8, "single-fiber-uplink": 10, "error-rate-high": 5, "half-duplex": 8}
+    L1W = config.l1_weights
     for rec in (physical_health or []):
         h = rec.get("switch")
         if h not in ded:
@@ -5273,7 +5313,7 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         for flag, pts in L1W.items():
             if flag in rec.get("risk", ""):
                 ded[h]["L1"].append((f"{flag} @ {rec.get('port','')}", pts))
-    L3W = {"single-gateway": 10, "no-FHRP": 3, "tracked-object-down": 12}
+    L3W = config.l3_weights
     for rec in (l3_forwarding or []):
         h = rec.get("switch")
         if h not in ded:
@@ -5281,19 +5321,19 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         for flag, pts in L3W.items():
             if flag in rec.get("risk", ""):
                 ded[h]["L3"].append((f"{flag} (VLAN {rec.get('vlan','')})", pts))
-    XLW = {"Critical": 18, "High": 10, "Medium": 4, "Low": 2}
+    XLW = config.xl_weights
     for f in (cross_layer or []):
         pts = XLW.get(f.get("severity"), 0)
         for h in f.get("hosts", []):
             if h in ded:
                 ded[h]["XL"].append((f"{f['id']} {f['severity']}", pts))
-    PW = {"High": 10, "Medium": 4}
+    PW = config.proto_weights
     for rec in (protocol_health or []):
         h = rec.get("switch")
         if h in ded and rec.get("severity") in PW:
             ded[h]["PROTO"].append((f"{rec['protocol']} {rec['severity']}", PW[rec["severity"]]))
 
-    CAP = {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25}
+    CAP = config.caps
     records: List[dict] = []
     for h in hosts:
         total = 0
@@ -5304,7 +5344,7 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             for r, p in sorted(items, key=lambda x: -x[1]):
                 reasons.append(f"{r} (-{p})")
         score = max(0, 100 - total)
-        band, _fill = _health_band(score)
+        band, _fill = _health_band(score, config.bands)
         records.append({"switch": h, "score": score, "band": band,
                         "deductions": reasons[:8]})
     records.sort(key=lambda r: (r["score"], r["switch"]))
@@ -5313,8 +5353,12 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 # 10 pre-migration checks; each returns (status, note). status in pass/warn/fail.
 def compute_migration_readiness(all_interfaces, move_groups, health_scores,
                                 physical_health, l3_forwarding, cross_layer,
-                                protocol_health, dep_map) -> List[dict]:
-    """Per move-group READY/CAUTION/NOT READY from a 10-check pre-migration checklist."""
+                                protocol_health, dep_map,
+                                config: ScoringConfig = SCORING) -> List[dict]:
+    """Per move-group READY/CAUTION/NOT READY from a 10-check pre-migration
+    checklist. The status each check emits when its risk fires comes from
+    `config.readiness`; the default instance reproduces the prior behaviour."""
+    R = config.readiness
     # per-host indexes
     sf_hosts = {h for (h, _p) in dep_map["single_fiber"]}
     errdis_hosts = {h for (h, _p) in dep_map["errdis"]}
@@ -5341,47 +5385,47 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         checks = []
         # 1 redundant uplinks
         hit = any_in(sf_hosts)
-        checks.append(("Redundant uplinks", "warn" if hit else "pass",
+        checks.append(("Redundant uplinks", R["redundant_uplinks"] if hit else "pass",
                        f"single-fiber uplink on {', '.join(hit)}" if hit else "no single-homed switch"))
         # 2 gateway redundancy (FHRP)
         hit = any_in(sole_gw_hosts)
-        checks.append(("Gateway redundancy", "fail" if hit else "pass",
+        checks.append(("Gateway redundancy", R["gateway_redundancy"] if hit else "pass",
                        f"sole gateway on {', '.join(hit)} (no FHRP)" if hit else "gateways redundant / none in group"))
         # 3 no cross-layer Critical
         hit = any_in(xl_crit_hosts)
-        checks.append(("No cross-layer Critical", "fail" if hit else "pass",
+        checks.append(("No cross-layer Critical", R["no_xl_critical"] if hit else "pass",
                        f"Critical correlation on {', '.join(hit)}" if hit else "none"))
         # 4 no err-disabled ports
         hit = any_in(errdis_hosts)
-        checks.append(("No err-disabled ports", "warn" if hit else "pass",
+        checks.append(("No err-disabled ports", R["no_errdisabled"] if hit else "pass",
                        f"err-disabled on {', '.join(hit)}" if hit else "none"))
         # 5 STP consistency
         hit = sorted({h for h in gset if "STP" in proto_high.get(h, set())})
-        checks.append(("STP consistency", "warn" if hit else "pass",
+        checks.append(("STP consistency", R["stp_consistency"] if hit else "pass",
                        f"inconsistent STP on {', '.join(hit)}" if hit else "no inconsistent ports"))
         # 6 port-channels healthy
         hit = sorted({h for h in gset if "EtherChannel" in proto_high.get(h, set())})
-        checks.append(("Port-channels healthy", "warn" if hit else "pass",
+        checks.append(("Port-channels healthy", R["portchannels_healthy"] if hit else "pass",
                        f"unbundled member on {', '.join(hit)}" if hit else "all members bundled / none"))
         # 7 routing adjacencies up
         hit = sorted({h for h in gset if proto_high.get(h, set()) & {"OSPF", "BGP"}})
-        checks.append(("Routing adjacencies up", "fail" if hit else "pass",
+        checks.append(("Routing adjacencies up", R["routing_adjacencies"] if hit else "pass",
                        f"down OSPF/BGP neighbor on {', '.join(hit)}" if hit else "all neighbors up / none"))
         # 8 no orphan VLANs
         hit = any_in(orphan_hosts)
-        checks.append(("No orphan VLANs", "warn" if hit else "pass",
+        checks.append(("No orphan VLANs", R["no_orphan_vlans"] if hit else "pass",
                        f"endpoints with off-scan gateway on {', '.join(hit)}" if hit else "none"))
         # 9 no degraded / half-duplex uplinks
         hit = any_in(halfdup_hosts)
-        checks.append(("Clean uplinks (no half-duplex)", "warn" if hit else "pass",
+        checks.append(("Clean uplinks (no half-duplex)", R["clean_uplinks"] if hit else "pass",
                        f"half-duplex uplink on {', '.join(hit)}" if hit else "none"))
         # 10 device health floor
         crit = sorted([h for h in gset if band_by_host.get(h) == "Critical"])
         poor = sorted([h for h in gset if band_by_host.get(h) == "Poor"])
         if crit:
-            st, note = "fail", f"Critical-health switch: {', '.join(crit)}"
+            st, note = R["health_floor_critical"], f"Critical-health switch: {', '.join(crit)}"
         elif poor:
-            st, note = "warn", f"Poor-health switch: {', '.join(poor)}"
+            st, note = R["health_floor_poor"], f"Poor-health switch: {', '.join(poor)}"
         else:
             st, note = "pass", "all switches Fair or better"
         checks.append(("Device health floor", st, note))
