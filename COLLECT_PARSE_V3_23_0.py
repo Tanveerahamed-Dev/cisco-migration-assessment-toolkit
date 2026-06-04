@@ -285,7 +285,10 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl.cell.cell import MergedCell
-warnings.filterwarnings("ignore")
+# FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
+# paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
+# EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 try:
     from netmiko import ConnectHandler
@@ -309,7 +312,8 @@ except ImportError:
 # =============================================================================
 # CONFIG
 # =============================================================================
-LOG_FILE              = "cisco_migration_autofill_v3_14_6.log"
+__version__           = "3.23.0"   # NEW-V3.23.8 (M2): single source of truth for the version
+LOG_FILE              = f"cisco_migration_autofill_v{__version__.replace('.', '_')}.log"
 COLLECTION_DIR        = "migration_collection_{}"
 DEFAULT_TEMPLATE_FILE = "Migration_Assessment_Template_Updated.xlsx"
 DEFAULT_OUTPUT_FILE   = "Migration_Assessment_AUTOFILLED_{}.xlsx"
@@ -3338,7 +3342,7 @@ def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     import dataclasses
     return {
         "schema": "collect_parse_snapshot/1",
-        "script_version": "V3.23.0",
+        "script_version": f"V{__version__}",   # NEW-V3.23.8 (M2): was hard-coded "V3.23.0"
         "generated_at": datetime.now().isoformat(),
         "devices": {dp.hostname: dataclasses.asdict(dp) for dp in all_device_physical},
         "interfaces": {host: {port: dataclasses.asdict(d) for port, d in ifaces.items()}
@@ -5642,7 +5646,7 @@ def _run_phase(label, fn, *args, _default=None, **kwargs):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Cisco Migration Extractor V3.23.0")
+    ap = argparse.ArgumentParser(description=f"Cisco Migration Extractor V{__version__}")
     ap.add_argument("--devices-file",   default=None,
                     help="Devices JSON (required unless --compare is used)")
     ap.add_argument("--template",        default=DEFAULT_TEMPLATE_FILE)
