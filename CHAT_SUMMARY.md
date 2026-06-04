@@ -5,6 +5,28 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 6: run-config / etherchannel / arp / vtp / mgmt / multicast
+
+On branch `phase2-split-parse5`. Byte-identical.
+
+- Moved 10 pure functions to `cisco_toolkit/parse.py`: run-config, `_proto_from_token`
+  + 3 etherchannel parsers, ip-arp, vtp, `_parse_ip_int_brief` + mgmt-ip, multicast.
+  `_proto_from_token`/`_parse_ip_int_brief` package-internal; other 8 imported back.
+- `is_valid_iface` now package-internal (monolith import dropped, ruff F401-fix);
+  updated the identity test accordingly.
+- Golden byte-identical, `ruff` clean, mypy unchanged (101). **61 tests pass.**
+  Monolith ~4,740 lines (from ~5,769). `.md` V3.23.16.
+
+**Parser layer is essentially done.** Still in monolith (physical/security section):
+parse_show_version, parse_show_inventory(+`_inv_commit`), parse_show_environment(+power),
+parse_show_module_count, parse_show_interface_counters, parse_port_security,
+parse_auth_sessions, parse_dhcp_snooping_binding, parse_interface_phy(+`_classify_media`
+/`_is_physical_port`), `_parse_fhrp`/`_parse_track`/`_parse_stp_*`/`_parse_vtp_full`.
+Then the big layers: model (InterfaceData/DevicePhysical), analyze (`compute_*`), excel
+(`write_*`), html, `__main__`.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 5: bulk interface-command parsers (bigger batch)
 
 On branch `phase2-split-parse4`. Byte-identical.
