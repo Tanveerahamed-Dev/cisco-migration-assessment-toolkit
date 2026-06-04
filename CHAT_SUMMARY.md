@@ -5,6 +5,27 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 7: version/inventory/environment parsers
+
+On branch `phase2-split-parse6`. Byte-identical.
+
+- Moved `parse_show_version`, `_inv_commit`+`parse_show_inventory`,
+  `parse_show_environment_power`, `parse_show_environment`,
+  `parse_show_module_count` to `cisco_toolkit/parse.py`. Added a module `logger`
+  to parse.py (power-calc debug breadcrumb). `_inv_commit` package-internal;
+  5 parsers import back. `normalize_mac` now package-internal (monolith import
+  dropped, ruff F401).
+- Golden byte-identical, `ruff` clean, mypy unchanged (101). **61 tests pass.**
+  Monolith ~4,540 lines (from ~5,769). `.md` V3.23.17.
+
+Parsers still in monolith: counters, port-security/auth/dhcp, interface-phy
+(+`_classify_media`/`_is_physical_port`), and the protocol-health helpers
+`_parse_fhrp`/`_parse_track`/`_parse_stp_mode`/`_parse_stp_tcn`/
+`_parse_etherchannel_member_states`/`_parse_vtp_full`. Then model (InterfaceData/
+DevicePhysical), analyze (`compute_*`), excel (`write_*`), html, `__main__`.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 6: run-config / etherchannel / arp / vtp / mgmt / multicast
 
 On branch `phase2-split-parse5`. Byte-identical.

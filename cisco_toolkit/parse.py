@@ -1,6 +1,7 @@
 """Pure show-command parsers + column primitives. Depends only on `re`, stdlib
 typing, and cisco_toolkit.textutils (the leaf layer). Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 2 (behaviour byte-identical)."""
+import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -8,6 +9,8 @@ from cisco_toolkit.textutils import (
     normalize_ifname, is_valid_iface, normalize_status, normalize_duplex, normalize_speed,
     normalize_mac, IFACE_TOKEN_RE,
 )
+
+logger = logging.getLogger(__name__)   # NEW-V3.23.17: parse_show_environment_power emits a debug breadcrumb
 
 
 def extract_fixed_cols(header_line: str, keys: List[Tuple[str,str]]) -> Dict[str, Tuple[int, Optional[int]]]:
@@ -787,3 +790,220 @@ def parse_multicast_info(mroute_out: str, pim_out: str) -> Dict[str, str]:
                 res.setdefault(normalize_ifname(tok), []).append(tag)
 
     return {k: " / ".join(dict.fromkeys(v)) for k, v in res.items()}
+
+
+def parse_show_version(output: str) -> Dict[str, str]:
+    """Parse 'show version' for IOS/IOS-XE and NX-OS."""
+    r: Dict[str, str] = {"model": "", "serial_number": "", "sw_version": "",
+                          "uptime": "", "system_mac": "", "hostname_reported": ""}
+    if not output:
+        return r
+    for line in output.splitlines():
+        low = line.strip().lower()
+        m = re.match(r"^cisco\s+(\S+)\s*(?:\(|processor|chassis|with)", line.strip(), re.IGNORECASE)
+        if m and not r["model"]:
+            cand = m.group(1).strip().rstrip(",")
+            if len(cand) > 3 and not cand.lower().startswith(("ios","xe","nx")):
+                r["model"] = cand
+        m2 = re.match(r"^\s*cisco\s+(Nexus\S*|N\d[Kk]-\S+|\S+)\s+(?:chassis|switch)", line, re.IGNORECASE)
+        if m2 and not r["model"]:
+            r["model"] = m2.group(1).strip()
+        m3 = re.search(r"(?:system serial number\s*[:=]|processor board id)\s*(\S+)", low)
+        if m3 and not r["serial_number"]:
+            r["serial_number"] = line.split()[-1].strip()
+        m3b = re.match(r"^\s*Processor Board ID\s+(\S+)", line, re.IGNORECASE)
+        if m3b and not r["serial_number"]:
+            r["serial_number"] = m3b.group(1).strip()
+        m4 = re.search(r"version\s+([\d\.()A-Za-z]+)", line, re.IGNORECASE)
+        if m4 and not r["sw_version"] and any(k in low for k in ("ios","nx-os","nxos","software")):
+            r["sw_version"] = m4.group(1).strip().rstrip(",")
+        m4b = re.match(r"^\s*system:\s+version\s+(\S+)", line, re.IGNORECASE)
+        if m4b:
+            r["sw_version"] = m4b.group(1).strip()
+        m5 = re.search(r"uptime is\s+(.+)", line, re.IGNORECASE)
+        if m5 and not r["uptime"]:
+            r["uptime"] = m5.group(1).strip().rstrip(".")
+        m5b = re.search(r"kernel uptime is\s+(.+)", line, re.IGNORECASE)
+        if m5b:
+            r["uptime"] = m5b.group(1).strip()
+        m6 = re.search(
+            r"(?:base ethernet mac address|system mac address|mac address)\s*[:\-]?\s*"
+            r"([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}|(?:[0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2})",
+            line, re.IGNORECASE)
+        if m6 and not r["system_mac"]:
+            r["system_mac"] = normalize_mac(m6.group(1))
+        m7 = re.match(r"^(\S+)\s+uptime is", line)
+        if m7 and not r["hostname_reported"]:
+            r["hostname_reported"] = m7.group(1).strip()
+    return r
+
+
+def _inv_commit(entry: Dict[str, str], result: Dict) -> None:
+    """Classify one inventory entry and accumulate into result dict."""
+    name  = (entry.get("name")  or "").lower().strip()
+    descr = (entry.get("descr") or "").lower()
+    pid   = (entry.get("pid")   or "")
+    sn    = (entry.get("sn")    or "")
+    pid_l = pid.lower()
+
+    # Power supply: highest priority
+    is_ps = (
+        any(k in name  for k in ("power supply","psu","ps ","power-supply","power module")) or
+        any(k in descr for k in ("power supply","psu","power-supply","power module"))       or
+        bool(re.match(r"^(pwr-|n[0-9][kk]-pac|c[0-9]+-pwr|pwrs-|pwr[0-9])", pid_l))
+    )
+
+    # Module / linecard: check before chassis to avoid C9300-NM-* matching chassis
+    _module_pid = bool(re.match(
+        r"^(n[0-9][kk]-[mx]|n[0-9][kk]-lc|n[0-9][kk]-sup|"
+        r"c[0-9]+-nm-|c[0-9]+-uadp|nm-|spa-|sm-)", pid_l))
+    is_module = (
+        not is_ps and (
+            any(k in name  for k in ("module","linecard","line card","supervisor","sup","fabric")) or
+            any(k in descr for k in ("linecard","supervisor","fabric",
+                                     "uplink module","switching module","ethernet module",
+                                     "network module")) or
+            _module_pid
+        )
+    )
+
+    # Chassis: the main switch body
+    _chassis_pid = (
+        bool(re.match(r"^(ws-c|n[0-9][kk]-c[0-9])", pid_l)) or
+        bool(re.match(r"^c[0-9]{4}-[0-9]+[pg]", pid_l)) or
+        bool(re.match(r"^n[0-9]{4}-[0-9]", pid_l)) or
+        bool(re.match(r"^(n9k-c|n7k-c|n6k-c|n5k-c)", pid_l))
+    )
+    is_chassis = (
+        not is_ps and not is_module and (
+            name in ("1","switch","switch 1","chassis") or
+            ("chassis" in name and "module" not in name) or
+            ("chassis" in descr and "module" not in descr) or
+            _chassis_pid
+        )
+    )
+
+    if is_chassis and not result["chassis_model"]:
+        result["chassis_model"]  = pid
+        result["chassis_serial"] = sn
+    if is_ps:
+        result["num_power_supplies"] += 1
+        if pid: result["ps_pids"].append(pid)
+        if sn:  result["ps_serials"].append(sn)
+    if is_module:
+        result["num_modules"] += 1
+        if pid: result["module_pids"].append(pid)
+
+
+def parse_show_inventory(output: str) -> Dict[str, object]:
+    """Parse 'show inventory' NAME/DESCR/PID/SN blocks (IOS + NX-OS)."""
+    result = {"chassis_model":"","chassis_serial":"",
+              "num_power_supplies":0,"ps_pids":[],"ps_serials":[],
+              "num_modules":0,"module_pids":[]}
+    if not output:
+        return result
+    current: Dict[str, str] = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            if current: _inv_commit(current, result)
+            current = {}
+            continue
+        m_name = re.match(r'NAME:\s*"([^"]*)"\s*,?\s*DESCR:\s*"([^"]*)"', line, re.IGNORECASE)
+        if m_name:
+            if current: _inv_commit(current, result)
+            current = {"name": m_name.group(1), "descr": m_name.group(2), "pid":"", "sn":""}
+            continue
+        m_pid = re.match(r'PID:\s*(\S*)\s*,\s*VID:\s*\S*\s*,\s*SN:\s*(\S*)', line, re.IGNORECASE)
+        if m_pid:
+            current["pid"] = m_pid.group(1).strip()
+            current["sn"]  = m_pid.group(2).strip()
+    if current: _inv_commit(current, result)
+    return result
+
+
+def parse_show_environment_power(output: str) -> Dict[str, object]:
+    """Parse power capacity, draw, remaining and PS status lines."""
+    r: Dict[str, object] = {"total_capacity_w":"","total_drawn_w":"",
+                             "total_remaining_w":"","num_ps":0,"ps_status_list":[]}
+    if not output:
+        return r
+    ps_list: List[str] = []
+    for line in output.splitlines():
+        low = line.strip().lower()
+        # IOS one-liner: "Available:1100.0(w)  Used:207.4(w)  Remaining:892.6(w)"
+        m = re.search(
+            r"available\s*:\s*([\d\.]+)\s*\(w\).*?used\s*:\s*([\d\.]+)\s*\(w\).*?remaining\s*:\s*([\d\.]+)\s*\(w\)",
+            low)
+        if m:
+            r["total_capacity_w"]  = m.group(1)
+            r["total_drawn_w"]     = m.group(2)
+            r["total_remaining_w"] = m.group(3)
+        mc = re.search(r"(?:total power capacity|capacity)[^:]*:\s*([\d\.]+)\s*[wW]", low)
+        if mc and not r["total_capacity_w"]: r["total_capacity_w"] = mc.group(1)
+        mc2 = re.search(r"\bcapacity\s*:\s*([\d\.]+)\s*[wW]", low)
+        if mc2 and not r["total_capacity_w"]: r["total_capacity_w"] = mc2.group(1)
+        md = re.search(r"(?:total power output|used)[^:]*:\s*([\d\.]+)\s*[wW]", low)
+        if md and not r["total_drawn_w"]: r["total_drawn_w"] = md.group(1)
+        me = re.search(r"(?:total power available|remaining)[^:]*:\s*([\d\.]+)\s*[wW]", low)
+        if me and not r["total_remaining_w"]: r["total_remaining_w"] = me.group(1)
+        # PS status rows: lines starting with slot number or PS label
+        if re.match(r"^\s*\d[AB]?\s+\S", line) or re.match(r"^\s*[Pp][Ss]\d?\s", line):
+            if "ok" in low:                               ps_list.append("OK")
+            elif "fail" in low:                           ps_list.append("FAIL")
+            elif "absent" in low or "not present" in low: ps_list.append("ABSENT")
+    if r["total_capacity_w"] and r["total_drawn_w"] and not r["total_remaining_w"]:
+        try:
+            r["total_remaining_w"] = str(round(
+                float(r["total_capacity_w"]) - float(r["total_drawn_w"]), 1))
+        except Exception as e:
+            logger.debug(f"remaining-power calc failed (cap={r['total_capacity_w']} drawn={r['total_drawn_w']}): {e}")  # NEW-V3.23.1
+    r["ps_status_list"] = ps_list
+    r["num_ps"] = len(set(ps_list))
+    return r
+
+
+def parse_show_environment(output: str) -> Dict[str, str]:
+    """Parse fan and temperature health from 'show environment' (IOS + NX-OS)."""
+    r = {"fan_status":"","temperature_status":""}
+    if not output:
+        return r
+    fan_states: List[str]  = []
+    temp_states: List[str] = []
+    for line in output.splitlines():
+        low = line.strip().lower()
+        if not low: continue
+        mt = re.search(r"temperature\s+is\s+(ok|normal|warning|critical|alert)", low)
+        if mt:
+            temp_states.append({"ok":"OK","normal":"OK","warning":"Warning",
+                                 "critical":"Critical","alert":"Warning"}.get(mt.group(1),""))
+        mf = re.search(r"fan\s+is\s+(ok|normal|warning|failed|fault)", low)
+        if mf:
+            fan_states.append({"ok":"OK","normal":"OK","warning":"Warning",
+                                "failed":"Failed","fault":"Failed"}.get(mf.group(1),""))
+        if re.match(r"^\s*fan\d*\s+\S", low):
+            if "ok" in low or "good" in low:       fan_states.append("OK")
+            elif "fail" in low or "fault" in low:  fan_states.append("Failed")
+            elif "warn" in low or "minor" in low:  fan_states.append("Warning")
+        if re.match(r"^\s*\d+\s+\S", low) and any(k in low for k in ("inlet","outlet","sensor")):
+            if "ok" in low or "normal" in low:        temp_states.append("OK")
+            elif "critical" in low or "major" in low: temp_states.append("Critical")
+            elif "warn" in low or "minor" in low:     temp_states.append("Warning")
+    def _worst(states: List[str]) -> str:
+        if "Critical" in states or "Failed" in states: return "Critical/Failed"
+        if "Warning"  in states: return "Warning"
+        if "OK"       in states: return "OK"
+        return ""
+    r["fan_status"]         = _worst(fan_states)
+    r["temperature_status"] = _worst(temp_states)
+    return r
+
+
+def parse_show_module_count(output: str) -> int:
+    """Count occupied module slots from 'show module' (NX-OS)."""
+    count = 0
+    for line in output.splitlines():
+        m = re.match(r"^\s*(\d+)\s+\d+\s+(\S+)", line)
+        if m and m.group(2).upper() not in ("N/A","--","NONE","EMPTY"):
+            count += 1
+    return count
