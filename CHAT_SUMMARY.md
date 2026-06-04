@@ -5,6 +5,40 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 18: dependency-map + cross-layer -> analyze
+
+On branch `phase2-split-analyze8`. Byte-identical. Monolith **~3,270 lines**.
+
+- Moved `build_dependency_map` + `compute_cross_layer_correlations` (CL-01..CL-10) +
+  `all_hosts` + the `_CL_RANK` constant into analyze.py. Unblocked by step 17:
+  build_dependency_map's deps (`build_network_model`/`_vlan_components`/`_physical_uplink_index`
+  [analyze] + `_is_physical_port` [parse]) are all in the package now. Added `_is_physical_port`
+  to analyze.py's parse import. build_dependency_map reads NO files — pure on its
+  (all_interfaces, physical_health, l3_forwarding) inputs + the package helpers.
+- Import-backs: `build_dependency_map` + `compute_cross_layer_correlations` (main() via
+  _run_phase). `all_hosts` + `_CL_RANK` package-internal. `_CL_FILL` + `CROSS_LAYER_SHEET_NAME`
+  stay (excel).
+- **F401 cascade (the now-expected pattern, both gates fired):** build_dependency_map was the
+  monolith's LAST `_vlan_components` user → ruff flagged the stale step-13 import-back (dropped
+  it) → proactively fixed the step-13 identity assertion `cp._vlan_components is …` to
+  `not hasattr(cp, ...)` (build_network_model/_link_carries stay re-exported, still used by the
+  L3/flow/physical writers). Grepped tests/ first: only `cp.compute_cross_layer_correlations`
+  (test_compute/test_resilience) refs externally, still re-exported → no breakage.
+- Extended test_package (identity for build_dependency_map/compute_cross_layer_correlations +
+  all_hosts/_CL_RANK package-internal + a sole-gateway-no-FHRP → CL-03 smoke). **64 tests**,
+  golden byte-identical, ruff clean, mypy 101. `.md` V3.23.28.
+
+**Analyze: ONE cluster left — L3-forwarding + flow-trace.** In the monolith: `_parse_track`/
+`_track_summary` (L3 helpers, → parse.py if shared else analyze), `write_l3_forwarding_sheet`
+(excel — computes inline, has the L3-forwarding records logic), and the flow-trace functions
+`trace_full_flow`/`_bfs_forwarding_path`/`_ip_in_prefix`/`_find_endpoint_by_ip`/`_find_gateways_for`
++ `write_flow_trace_sheet` (excel). **Next = step 19:** map this cluster (flow-trace is the
+compute part; the l3_forwarding *records* may be computed inside write_l3_forwarding_sheet — check
+whether there's a clean compute_* or if it's writer-inline like physical-health). Then **excel**
+(`write_*`, the biggest layer — ~20 sheet writers), html (snapshot/explorer), `__main__`. Sequential.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 17: physical-health helpers -> package
 
 On branch `phase2-split-analyze7`. Byte-identical. **Prereq for the dependency-map cluster**

@@ -323,11 +323,12 @@ from cisco_toolkit.model import InterfaceData, DevicePhysical
 from cisco_toolkit.analyze import (
     _health_band, compute_move_groups,
     compute_topology_links, compute_findings,
-    build_network_model, _link_carries, _vlan_components,
+    build_network_model, _link_carries,   # _vlan_components: last monolith user (build_dependency_map) moved (step 18)
     compute_causality_chains, compute_failure_impact,
     compute_data_quality, compute_health_scores,
     compute_score_sensitivity, compute_migration_readiness,
     compute_protocol_health, _poe_device_util, _physical_uplink_index,
+    build_dependency_map, compute_cross_layer_correlations,
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue (_load_cmd_output
 # reads collected show output fail-soft; _safe_parse wraps section parsers). Homed
@@ -3051,201 +3052,13 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
 # -----------------------------------------------------------------------------
 CROSS_LAYER_SHEET_NAME = "Cross-Layer Analysis"
 _CL_FILL = {"Critical": "FF5775", "High": "F4CCCC", "Medium": "FCE5CD", "Low": "FFF2CC", "Info": "EFEFEF"}
-_CL_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+# _CL_RANK + build_dependency_map moved to cisco_toolkit.analyze (PHASE 2.7 step 18);
+# build_dependency_map imported back near the top of this file (main() runs it via
+# _run_phase). _CL_RANK is package-internal. CROSS_LAYER_SHEET_NAME + _CL_FILL stay (excel).
 
-def build_dependency_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                         physical_health: List[dict], l3_forwarding: List[dict]) -> dict:
-    """Bundle the cross-layer facts the correlation rules need: L1 from physical_health,
-    L3 from l3_forwarding, topology from the shared model."""
-    model = build_network_model(all_interfaces)
-    uplink_ports, single_fiber = _physical_uplink_index(model)
-
-    # L1 facts (from the physical-health records)
-    errored_up, halfdup_up, errdis = set(), set(), set()
-    for rec in (physical_health or []):
-        key = (rec.get("switch"), rec.get("port"))
-        r = rec.get("risk", "")
-        if "error-rate-high" in r and key in uplink_ports:
-            errored_up.add(key)
-        if "half-duplex" in r:
-            halfdup_up.add(key)
-        if "err-disabled" in r:
-            errdis.add(key)
-
-    # L3 facts (from the l3-forwarding records)
-    nofhrp_vlans: Dict = {}   # NEW-V3.23.10 (mypy var-annotated): typed out of the tuple-unpack
-    sole_gw, tracked_down, fhrp_hosts, gw_switches = {}, set(), set(), set()
-    fhrp_vlans = set()
-    for rec in (l3_forwarding or []):
-        vid, host, r = rec.get("vlan"), rec.get("switch"), rec.get("risk", "")
-        gw_switches.add(host)
-        if "single-gateway" in r:
-            sole_gw[vid] = host
-        if "no-FHRP" in r:
-            nofhrp_vlans.setdefault(vid, []).append(host)
-        if "tracked-object-down" in r:
-            tracked_down.add(host)
-        if (rec.get("fhrp", "none") or "none") != "none":
-            fhrp_hosts.add(host)
-            fhrp_vlans.add(vid)
-
-    # topology facts (from the model)
-    access_by_vlan, orphan = {}, set()
-    for vid in model["vlans"]:
-        eps = set(model["access_presence"].get(vid, set())) | {h for (h, v) in model["endpoints"] if v == vid}
-        access_by_vlan[vid] = eps
-        gw_hosts = [g["host"] for g in model["gw"].get(vid, [])]
-        ep_count = sum(n for (h, v), n in model["endpoints"].items() if v == vid)
-        if ep_count > 0 and not gw_hosts:
-            orphan.add(vid)
-
-    articulation = set()                  # (host, vid): removing host strands vid endpoints from gateway
-    for vid in model["vlans"]:
-        gw_hosts = [g["host"] for g in model["gw"].get(vid, [])]
-        if not gw_hosts:
-            continue
-        for host in model["hosts"]:
-            if host in gw_hosts:
-                continue
-            surviving = [h for h in gw_hosts if h != host]
-            if not surviving:
-                continue
-            ep_hosts = access_by_vlan.get(vid, set()) - {host}
-            if not ep_hosts:
-                continue
-            stranded = set()
-            for comp in _vlan_components(model, vid, removed_host=host):
-                if not any(g in comp for g in surviving):
-                    stranded |= (comp & ep_hosts)
-            if stranded:
-                articulation.add((host, vid))
-
-    pc_members: Dict[Tuple[str, str], int] = {}
-    for host in all_interfaces:
-        for port, d in all_interfaces[host].items():
-            if _is_physical_port(port) and d.port_channel:
-                pc_members[(host, d.port_channel)] = pc_members.get((host, d.port_channel), 0) + 1
-    single_member_pc = {k for k, c in pc_members.items() if c == 1}
-
-    return {"model": model, "uplink_ports": uplink_ports, "single_fiber": single_fiber,
-            "errored_up": errored_up, "halfdup_up": halfdup_up, "errdis": errdis,
-            "sole_gw": sole_gw, "nofhrp_vlans": nofhrp_vlans, "tracked_down": tracked_down,
-            "fhrp_hosts": fhrp_hosts, "fhrp_vlans": fhrp_vlans, "gw_switches": gw_switches,
-            "access_by_vlan": access_by_vlan, "orphan": orphan,
-            "articulation": articulation, "single_member_pc": single_member_pc}
-
-def compute_cross_layer_correlations(dep: dict) -> List[dict]:
-    """Apply CL-01..CL-10 to the dependency map. Returns finding dicts sorted by severity."""
-    F: List[dict] = []
-    sf = dep["single_fiber"]
-    up = dep["uplink_ports"]
-
-    def add(cid, sev, layers, title, detail, rec, hosts=None):
-        F.append({"id": cid, "severity": sev, "layers": layers, "title": title,
-                  "detail": detail, "recommendation": rec, "hosts": sorted(set(hosts or []))})
-
-    # CL-01 (L1+L3): single-fiber uplink fronting a sole-gateway VLAN
-    for vid, gw in sorted(dep["sole_gw"].items()):
-        access = dep["access_by_vlan"].get(vid, set())
-        cset = [(h, p) for (h, p) in sf if h in access]
-        culprits = sorted([f"{h} {p}" for (h, p) in cset])
-        if culprits:
-            add("CL-01", "Critical", "L1+L3",
-                f"VLAN {vid}: single-fiber uplink to a sole gateway",
-                f"VLAN {vid}'s only L3 gateway is {gw} (no FHRP); {', '.join(culprits)} reach the "
-                f"fabric over a single non-redundant fiber.",
-                "A single fiber cut isolates the VLAN with no L1 path and no L3 backup - add a "
-                "redundant uplink AND an FHRP peer.", [gw] + [h for (h, _p) in cset])
-
-    # CL-02 (L2+L3): transit articulation between endpoints and their gateway
-    for (h, vid) in sorted(dep["articulation"]):
-        add("CL-02", "High", "L2+L3",
-            f"{h}: only L2 transit to the VLAN {vid} gateway",
-            f"Removing {h} partitions VLAN {vid} endpoints from their L3 gateway over forwarding links.",
-            "Add a redundant path, or migrate this switch in the same wave as its dependents.", [h])
-
-    # CL-03 (L2+L3): sole gateway, no FHRP (structural L3 SPOF)
-    for vid, gw in sorted(dep["sole_gw"].items()):
-        add("CL-03", "High", "L2+L3",
-            f"VLAN {vid}: sole gateway {gw} with no FHRP",
-            f"{gw} is the only in-scan L3 gateway for VLAN {vid}; loss drops the default gateway "
-            f"for every VLAN {vid} host.",
-            "Add an FHRP peer (HSRP/VRRP/GLBP) or confirm a redundant off-scan gateway.", [gw])
-
-    # CL-04 (L3): FHRP gateway with a down tracked object
-    for vid in sorted(dep["fhrp_vlans"]):
-        down_hosts = sorted(dep["tracked_down"])
-        if down_hosts:
-            add("CL-04", "High", "L3",
-                f"VLAN {vid}: FHRP failover with a down tracked object",
-                f"VLAN {vid} runs FHRP, but a tracked object is DOWN on {', '.join(down_hosts)} - "
-                f"the object that drives failover/decrement is in a failed state.",
-                "Verify the tracked IP-SLA / interface and the standby track/decrement config.", down_hosts)
-
-    # CL-05 (L1+L2): single-fiber uplink that is also errored or half-duplex
-    for (h, p) in sorted(sf):
-        if (h, p) in dep["errored_up"] or (h, p) in dep["halfdup_up"]:
-            why = "high error counters" if (h, p) in dep["errored_up"] else "half-duplex"
-            add("CL-05", "High", "L1+L2",
-                f"{h} {p}: degraded sole uplink",
-                f"{h} {p} is the switch's only forwarding uplink AND is unhealthy ({why}).",
-                "The single path is also failing - replace optic/cable and add a second uplink.", [h])
-
-    # CL-06 (L1+L2): single-member port-channel on an uplink
-    for (h, po) in sorted(dep["single_member_pc"]):
-        if any(uh == h for (uh, _p) in up):
-            add("CL-06", "Medium", "L1+L2",
-                f"{h} {po}: single-member port-channel",
-                f"{po} on {h} bundles only one physical link - the aggregation provides no L1 redundancy.",
-                "Add a second member, or do not rely on the port-channel for resilience.", [h])
-
-    # CL-07 (L1+L3): err-disabled / high-error port on a switch that hosts an L3 gateway
-    gw_hosts = dep["gw_switches"]
-    bad_on_gw = sorted({h for (h, _p) in (dep["errdis"] | dep["errored_up"]) if h in gw_hosts})
-    for h in bad_on_gw:
-        add("CL-07", "Medium", "L1+L3",
-            f"{h}: L1 fault on an L3 gateway switch",
-            f"{h} hosts L3 gateway SVIs and has an err-disabled or high-error port - physical "
-            f"instability at a routing aggregation point.",
-            "Investigate the affected port; instability here affects every VLAN gatewayed by this switch.", [h])
-
-    # CL-08 (L1+L2): half-duplex on an inter-switch trunk/uplink
-    for (h, p) in sorted(dep["halfdup_up"]):
-        if (h, p) in up:
-            add("CL-08", "Medium", "L1+L2",
-                f"{h} {p}: half-duplex inter-switch link",
-                f"{h} {p} is a trunk/uplink negotiated to half-duplex - collisions and throughput "
-                f"collapse on a transit path.",
-                "Hard-set speed/duplex on both ends or replace the media.", [h])
-
-    # CL-09 (L1+L2+L3): stacked - one switch implicated across multiple layers
-    l1_hosts = {h for (h, _p) in (sf | dep["errored_up"] | dep["halfdup_up"] | dep["errdis"])}
-    l2_hosts = {h for (h, _v) in dep["articulation"]}
-    l3_hosts = set(dep["sole_gw"].values()) | dep["tracked_down"]
-    for h in sorted(set(all_hosts(dep))):
-        hits = [lyr for lyr, s in (("L1", l1_hosts), ("L2", l2_hosts), ("L3", l3_hosts)) if h in s]
-        if len(hits) >= 2 and ("L3" in hits or "L1" in hits):
-            sev = "Critical" if "L3" in hits and "L1" in hits else "High"
-            add("CL-09", sev, "+".join(hits),
-                f"{h}: stacked single point of failure across {', '.join(hits)}",
-                f"{h} is implicated at multiple layers at once ({', '.join(hits)}) - "
-                f"its loss compounds physical, switching, and/or routing failure.",
-                "Treat as a top migration risk: stage redundancy at every implicated layer before cutover.", [h])
-
-    # CL-10 (L2+L3): orphan VLAN - endpoints present but no in-scan gateway
-    for vid in sorted(dep["orphan"]):
-        add("CL-10", "Medium", "L2+L3",
-            f"VLAN {vid}: endpoints with no in-scan gateway",
-            f"VLAN {vid} has active endpoints but no L3 gateway in the scanned set - its default "
-            f"gateway is off-scan/undiscovered.",
-            f"Confirm where VLAN {vid} is gatewayed; ensure that device is in scope before migration.",
-            sorted(dep["access_by_vlan"].get(vid, set())))
-
-    F.sort(key=lambda x: (_CL_RANK.get(x["severity"], 9), x["id"]))
-    return F
-
-def all_hosts(dep: dict) -> set:
-    return set(dep["model"]["hosts"])
+# compute_cross_layer_correlations + all_hosts moved to cisco_toolkit.analyze (PHASE 2.7
+# step 18); compute_cross_layer_correlations imported back near the top of this file
+# (main() runs it via _run_phase). all_hosts is package-internal.
 
 def write_cross_layer_sheet(wb, findings: List[dict]) -> None:
     """Write the 'Cross-Layer Analysis' sheet from compute_cross_layer_correlations()."""
