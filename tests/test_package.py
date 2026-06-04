@@ -19,8 +19,9 @@ def test_monolith_reexports_the_package_objects(cp):
     # identity, not equality: the monolith must use the package's functions/regex,
     # not a re-defined copy.
     assert cp.normalize_ifname is textutils.normalize_ifname
-    assert cp.is_valid_iface is textutils.is_valid_iface
     assert cp.detect_link_type is textutils.detect_link_type
+    # is_valid_iface is now used only inside the package (its monolith callers moved out)
+    assert callable(textutils.is_valid_iface)
     assert cp.VALID_IFACE_RE is textutils.VALID_IFACE_RE
     assert cp.IFACE_TOKEN_RE is textutils.IFACE_TOKEN_RE
 
