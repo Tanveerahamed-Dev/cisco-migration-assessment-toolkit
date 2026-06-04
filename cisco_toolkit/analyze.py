@@ -10,7 +10,7 @@ fill-colour maps (`_READY_FILL`/`_STATUS_FILL`) and sheet-name constants stay
 behind too - they belong to the excel layer, not the data analysis."""
 import re
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from cisco_toolkit.model import InterfaceData
 from cisco_toolkit.textutils import _split_macs, normalize_ifname
@@ -320,3 +320,334 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
 
     findings.sort(key=lambda t: (_SEV_RANK.get(t[0], 9), t[1], t[2]))
     return findings
+
+
+# =============================================================================
+# Tier 1: network model + causality chains + failure-impact simulation. Pure
+# reachability analysis over the scanned switch graph (no traffic telemetry).
+# build_network_model is the shared graph; the two compute_* derive blast radius.
+# The Excel sheet-name + fill constants and the write_* sheets stay in the monolith.
+# =============================================================================
+def _vlan_in_ranges(vid: int, s: str) -> bool:
+    """True if integer VLAN id `vid` falls in a Cisco range string like '10,20-23,40'.
+    Membership-only (no enumeration), so a '1-4094' trunk-allowed list never explodes."""
+    s = (s or "").strip().lower()
+    if not s or s in ("none", "--", "n/a"):
+        return False
+    if s in ("all", "1-4094"):
+        return True
+    for tok in re.split(r"[,\s]+", s):
+        if not tok:
+            continue
+        if "-" in tok:
+            try:
+                lo, hi = (int(x) for x in tok.split("-", 1))
+            except ValueError:
+                continue
+            if lo <= vid <= hi:
+                return True
+        elif tok.isdigit() and int(tok) == vid:
+            return True
+    return False
+
+
+def build_network_model(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Dict[str, object]:
+    """Switch-level graph shared by the causality chains and the failure simulation.
+
+    Returns:
+      hosts            : sorted scanned hostnames
+      links            : list of {a, ap, b, bp, is_pc, da, db} undirected inter-switch
+                         links where BOTH ends are scanned (a/b are real hostname keys)
+      gw               : {vid: [{host, fhrp(bool), raw}]}      (SVIs = L3 gateways)
+      access_presence  : {vid: set(hosts with an access port in vid)}
+      endpoints        : {(host, vid): learned-MAC count}
+      vlans            : set of "interesting" VLAN ids (have a gateway and/or endpoints)
+    """
+    cmap = _canon_host_map(all_interfaces)
+    hosts = sorted(all_interfaces.keys())
+
+    gw: Dict[int, List[Dict[str, object]]] = {}
+    access_presence: Dict[int, set] = {}
+    endpoints: Dict[Tuple[str, int], int] = {}
+
+    for host, ifaces in all_interfaces.items():
+        for port, d in ifaces.items():
+            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
+            if m:
+                vid = int(m.group(1))
+                raw = (d.hsrp_behavior or "").strip()
+                gw.setdefault(vid, []).append({"host": host, "fhrp": bool(raw), "raw": raw})
+            if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
+                vid = int(d.vlan)
+                access_presence.setdefault(vid, set()).add(host)
+                n = len(_split_macs(d.end_host_mac))
+                if n:
+                    endpoints[(host, vid)] = endpoints.get((host, vid), 0) + n
+
+    # Inter-switch links from the shared CDP/LLDP builder; resolve both endpoints to real
+    # hostname keys so we can read each side's STP/trunk state. Both ends must be scanned.
+    links: List[Dict[str, object]] = []
+    for link in compute_topology_links(all_interfaces):
+        ah = cmap.get(_canon_host(str(link["a_host"])))
+        bh = cmap.get(_canon_host(str(link["b_host"])))
+        if not ah or not bh or ah == bh:
+            continue
+        ap = normalize_ifname(str(link["a_port"]))
+        bp = normalize_ifname(str(link.get("b_port", "")))
+        da = all_interfaces.get(ah, {}).get(ap)
+        db = all_interfaces.get(bh, {}).get(bp)
+        is_pc = bool((da and da.port_channel) or (db and db.port_channel))
+        links.append({"a": ah, "ap": ap, "b": bh, "bp": bp, "is_pc": is_pc, "da": da, "db": db})
+
+    vlans = set(gw) | set(access_presence) | {v for (_, v) in endpoints}
+    return {"hosts": hosts, "links": links, "gw": gw,
+            "access_presence": access_presence, "endpoints": endpoints, "vlans": vlans}
+
+
+def _link_carries(link: Dict[str, object], vid: int) -> str:
+    """How a link relates to VLAN `vid`: 'fwd' (forwarding), 'blk' (STP-blocked backup),
+    or '' (not carried). STP state wins; absent STP info falls back to the VLAN being
+    mutually trunk-allowed on both ends. An STP block on either end => backup."""
+    da, db = link.get("da"), link.get("db")
+    if (da and _vlan_in_ranges(vid, da.stp_blk_vlans)) or (db and _vlan_in_ranges(vid, db.stp_blk_vlans)):
+        return "blk"
+    if (da and _vlan_in_ranges(vid, da.stp_fwd_vlans)) and (db and _vlan_in_ranges(vid, db.stp_fwd_vlans)):
+        return "fwd"
+    a_allow = bool(da) and (_vlan_in_ranges(vid, da.trunk_allowed_vlans)
+                            or str(vid) == (da.trunk_native_vlan or "").strip())
+    b_allow = bool(db) and (_vlan_in_ranges(vid, db.trunk_allowed_vlans)
+                            or str(vid) == (db.trunk_native_vlan or "").strip())
+    return "fwd" if (a_allow and b_allow) else ""
+
+
+def _vlan_components(model: Dict[str, object], vid: int,
+                     removed_host: Optional[str] = None,
+                     include_backup: bool = False) -> List[set]:
+    """Connected components (list of host-sets) of switches reachable from each other for
+    VLAN `vid`, over forwarding links (plus STP-blocked backups if include_backup), with
+    `removed_host` deleted from the graph."""
+    nodes = set()
+    for g in model["gw"].get(vid, []):
+        nodes.add(g["host"])
+    nodes |= model["access_presence"].get(vid, set())
+    nodes |= {h for (h, v) in model["endpoints"] if v == vid}
+    adj: Dict[str, set] = {n: set() for n in nodes}
+    for link in model["links"]:
+        a, b = link["a"], link["b"]
+        if removed_host in (a, b):
+            continue
+        rel = _link_carries(link, vid)
+        if rel == "fwd" or (include_backup and rel == "blk"):
+            adj.setdefault(a, set()); adj.setdefault(b, set())
+            adj[a].add(b); adj[b].add(a)
+    adj.pop(removed_host, None)
+    seen: set = set()
+    comps: List[set] = []
+    for start in adj:
+        if start in seen:
+            continue
+        stack = [start]; comp: set = set()
+        while stack:
+            x = stack.pop()
+            if x in seen:
+                continue
+            seen.add(x); comp.add(x)
+            stack.extend(y for y in adj.get(x, ()) if y not in seen)
+        comps.append(comp)
+    return comps
+
+
+def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Tuple[str, str, str, str, str]]:
+    """Root-cause -> mechanism -> impact -> mitigation chains, derived from the network
+    model. Returns (severity, trigger, mechanism, impact, mitigation) tuples."""
+    model = build_network_model(all_interfaces)
+    chains: List[Tuple[str, str, str, str, str]] = []
+
+    def _eps(vid: int) -> set:
+        e = {h for (h, v), n in model["endpoints"].items() if v == vid and n > 0}
+        return e | model["access_presence"].get(vid, set())
+
+    def _ep_count(vid: int, hosts: Optional[set] = None) -> int:
+        return sum(n for (h, v), n in model["endpoints"].items()
+                   if v == vid and (hosts is None or h in hosts))
+
+    # Chain A: sole-gateway SPOF (one in-scan gateway, no FHRP) with remote endpoints.
+    for vid in sorted(model["vlans"]):
+        gws = model["gw"].get(vid, [])
+        if not gws:
+            continue
+        gw_hosts = sorted({g["host"] for g in gws})
+        if len(gw_hosts) == 1 and not any(g["fhrp"] for g in gws):
+            remote = sorted(_eps(vid) - set(gw_hosts))
+            if remote:
+                n_ep = _ep_count(vid)
+                chains.append((
+                    "High",
+                    f"Gateway {gw_hosts[0]}:Vlan{vid} goes down",
+                    f"It is the only in-scan L3 gateway for VLAN {vid}, with no FHRP peer",
+                    f"Every VLAN {vid} host loses its default gateway "
+                    f"({n_ep or 'unknown #'} endpoint(s); {len(remote)} other switch(es) affected)",
+                    "Add an FHRP (HSRP/VRRP/GLBP) peer, or confirm a redundant off-scan gateway",
+                ))
+
+    # Chain B: transit articulation - removing a switch partitions a VLAN's endpoints from
+    # its gateway. A reachable STP-blocked backup softens High -> Medium (transient only).
+    for host in model["hosts"]:
+        for vid in sorted(model["vlans"]):
+            gw_hosts = [g["host"] for g in model["gw"].get(vid, [])]
+            surviving_gw = [h for h in gw_hosts if h != host]
+            if not gw_hosts or host in gw_hosts or not surviving_gw:
+                continue  # gateway-loss is chain A's / the failure sheet's job
+            ep_hosts = _eps(vid); ep_hosts.discard(host)
+            if not ep_hosts:
+                continue
+            stranded = set()
+            for comp in _vlan_components(model, vid, removed_host=host):
+                if not any(g in comp for g in surviving_gw):
+                    stranded |= (comp & ep_hosts)
+            if not stranded:
+                continue
+            still = set()
+            for comp in _vlan_components(model, vid, removed_host=host, include_backup=True):
+                if not any(g in comp for g in surviving_gw):
+                    still |= (comp & stranded)
+            gwname = surviving_gw[0]
+            if still:
+                chains.append((
+                    "High",
+                    f"Transit switch {host} is removed / migrated",
+                    f"It is the only forwarding L2 path from {', '.join(sorted(stranded))} "
+                    f"to gateway {gwname} for VLAN {vid}",
+                    f"{len(still)} switch(es) / {_ep_count(vid, still)} endpoint(s) lose "
+                    f"reachability to the VLAN {vid} gateway, with no backup link",
+                    "Add a redundant uplink/path, or migrate this switch in the same wave",
+                ))
+            else:
+                chains.append((
+                    "Medium",
+                    f"Transit switch {host} is removed / migrated",
+                    f"It carries the active L2 path to gateway {gwname} for VLAN {vid}; a "
+                    f"redundant link exists but is STP-blocked",
+                    f"{_ep_count(vid, stranded)} endpoint(s) hit a transient outage while STP "
+                    f"reconverges onto the backup link",
+                    "Expected to self-heal; verify STP reconvergence time before cutover",
+                ))
+
+    # Chain C: a switch's only forwarding uplink for an endpoint VLAN is a single
+    # (non-port-channel) link -> link loss isolates that VLAN.
+    for host in model["hosts"]:
+        host_links = [l for l in model["links"] if host in (l["a"], l["b"])]
+        host_vlans = {v for (h, v), n in model["endpoints"].items() if h == host and n > 0}
+        host_vlans |= {v for v, hs in model["access_presence"].items() if host in hs}
+        for vid in sorted(host_vlans):
+            if host in [g["host"] for g in model["gw"].get(vid, [])]:
+                continue  # gateway is local; uplink loss doesn't strand it from L3
+            carrying = [l for l in host_links if _link_carries(l, vid) == "fwd"]
+            backups  = [l for l in host_links if _link_carries(l, vid) == "blk"]
+            if len(carrying) == 1 and not backups and not carrying[0]["is_pc"]:
+                l = carrying[0]
+                far = l["b"] if l["a"] == host else l["a"]
+                near_port = l["ap"] if l["a"] == host else l["bp"]
+                n_ep = model["endpoints"].get((host, vid), 0)
+                chains.append((
+                    "Medium",
+                    f"Uplink {host} {near_port} -> {far} fails",
+                    f"It is {host}'s only forwarding inter-switch link carrying VLAN {vid}, "
+                    f"and it is a single (non-port-channel) link",
+                    f"VLAN {vid} on {host} is isolated from the fabric"
+                    + (f" ({n_ep} endpoint(s))" if n_ep else ""),
+                    "Add a second uplink or bundle the link as a port-channel",
+                ))
+
+    sev_rank = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
+    chains.sort(key=lambda c: (sev_rank.get(c[0], 9), c[1], c[3]))
+    seen: set = set(); uniq: List[Tuple[str, str, str, str, str]] = []
+    for c in chains:
+        if c not in seen:
+            seen.add(c); uniq.append(c)
+    return uniq
+
+
+def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:
+    """Migration blast-radius simulation: remove each scanned switch and recompute per-VLAN
+    endpoint->gateway reachability. One roll-up record per switch. 'Stranded' counts
+    collateral endpoints on OTHER switches (the removed switch's own endpoints migrate with
+    it). Returns records sorted by severity then blast radius."""
+    model = build_network_model(all_interfaces)
+    results: List[Dict[str, object]] = []
+
+    def _ep_count(vid: int, hosts: set) -> int:
+        return sum(n for (h, v), n in model["endpoints"].items() if v == vid and h in hosts)
+
+    for host in model["hosts"]:
+        per_vlan: List[Tuple[int, str, int]] = []   # (vid, status, stranded)
+        worst = 99; total_stranded = 0; hard = backup = fhrp = 0
+
+        for vid in sorted(model["vlans"]):
+            gw_hosts = [g["host"] for g in model["gw"].get(vid, [])]
+            if not gw_hosts:
+                continue  # no in-scan gateway -> "stranded from gateway" is N/A (see Findings)
+            ep_hosts = {h for (h, v), n in model["endpoints"].items() if v == vid and n > 0}
+            ep_hosts |= model["access_presence"].get(vid, set())
+            if not ep_hosts:
+                continue
+            surviving_gw = [h for h in gw_hosts if h != host]
+            any_fhrp = any(g["fhrp"] for g in model["gw"].get(vid, []))
+            touches = (host in gw_hosts) or (host in ep_hosts) or any(
+                host in (l["a"], l["b"]) and _link_carries(l, vid) for l in model["links"])
+            if not touches:
+                continue
+
+            comps_active = _vlan_components(model, vid, removed_host=host)
+            stranded_active = set()
+            for comp in comps_active:
+                if not any(g in comp for g in surviving_gw):
+                    stranded_active |= (comp & ep_hosts)
+            stranded_active.discard(host)   # removed switch's own endpoints move with it
+
+            if (host in gw_hosts) and not surviving_gw and (ep_hosts - {host}):
+                status, rank = "Hard partition", 0
+                strand = _ep_count(vid, ep_hosts - {host})
+            elif stranded_active:
+                still = set()
+                for comp in _vlan_components(model, vid, removed_host=host, include_backup=True):
+                    if not any(g in comp for g in surviving_gw):
+                        still |= (comp & stranded_active)
+                if still:
+                    status, rank = "Hard partition", 0
+                    strand = _ep_count(vid, still)
+                else:
+                    status, rank = "Backup-covered", 1
+                    strand = 0
+            elif (host in gw_hosts) and surviving_gw and any_fhrp:
+                status, rank, strand = "FHRP-covered", 2, 0
+            else:
+                continue
+
+            per_vlan.append((vid, status, strand))
+            total_stranded += strand
+            worst = min(worst, rank)
+            hard += status == "Hard partition"
+            backup += status == "Backup-covered"
+            fhrp += status == "FHRP-covered"
+
+        if not per_vlan:
+            sev = "Info"
+            detail = "No reachability impact from removing this switch (within the scan)."
+        else:
+            sev = {0: "High", 1: "Medium", 2: "Low"}.get(worst, "Info")
+            order = {"Hard partition": 0, "Backup-covered": 1, "FHRP-covered": 2}
+            pv = sorted(per_vlan, key=lambda t: (order.get(t[1], 9), -t[2], t[0]))
+            parts = [f"VLAN {vid}: {st}" + (f" ({s} ep)" if s else "") for vid, st, s in pv[:8]]
+            if len(pv) > 8:
+                parts.append(f"... +{len(pv) - 8} more")
+            detail = "; ".join(parts)
+
+        results.append({"host": host, "severity": sev, "vlans_impacted": len(per_vlan),
+                        "stranded": total_stranded, "hard": hard, "backup": backup,
+                        "fhrp": fhrp, "detail": detail})
+
+    sev_rank = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
+    results.sort(key=lambda r: (sev_rank.get(r["severity"], 9), -r["stranded"],
+                                -r["vlans_impacted"], r["host"].lower()))
+    return results
