@@ -280,7 +280,7 @@ Optional:
 import os, sys, json, re, logging, warnings, argparse, time  # CHANGED-V3.23.1: +time (connect backoff)
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var below (avoids F402 shadowing)
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -943,20 +943,20 @@ def parse_show_interface_switchport(output: str) -> Dict[str, Dict[str, str]]:
 def parse_show_interface_trunk_table(output: str) -> Dict[str, Dict[str, str]]:
     res: Dict[str, Dict[str, str]] = {}
     section = None
-    ios_top = nxos_top = False
+    nxos_top = False   # FIX-V3.23.9 (F841): ios_top was write-only; IOS is the implicit else
     for raw in output.splitlines():
         line = raw.strip()
         if not line or set(line) == {"-"}: continue
         if line.startswith("%"): continue
         low = line.lower()
         if low.startswith("port") and "mode" in low and "encapsulation" in low:
-            section = "top"; ios_top = True;  nxos_top = False; continue
+            section = "top"; nxos_top = False; continue
         if low.startswith("port") and "native" in low and "status" in low and "channel" in low:
-            section = "top"; nxos_top = True; ios_top = False; continue
+            section = "top"; nxos_top = True; continue
         if low.startswith("port") and "native" in low and "status" in low:
-            section = "top"; ios_top = True;  nxos_top = False; continue
+            section = "top"; nxos_top = False; continue
         if low.startswith("port") and "vlans allowed on trunk" in low:
-            section = "allowed"; ios_top = nxos_top = False; continue
+            section = "allowed"; nxos_top = False; continue
         if low.startswith("port") and ("vlans allowed" in low or "vlans in spanning" in low):
             section = "other"; continue
         if section == "top":
@@ -5278,22 +5278,22 @@ class ScoringConfig:
     and pass it to compute_health_scores / compute_migration_readiness. The .md
     flags these as 'a defensible default, not calibrated - tune to taste.'"""
     # Per-finding deduction weights, by layer/category.
-    l1_weights: Dict[str, int] = field(default_factory=lambda: {
+    l1_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
         "err-disabled": 8, "single-fiber-uplink": 10, "error-rate-high": 5, "half-duplex": 8})
-    l3_weights: Dict[str, int] = field(default_factory=lambda: {
+    l3_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
         "single-gateway": 10, "no-FHRP": 3, "tracked-object-down": 12})
-    xl_weights: Dict[str, int] = field(default_factory=lambda: {
+    xl_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
         "Critical": 18, "High": 10, "Medium": 4, "Low": 2})
-    proto_weights: Dict[str, int] = field(default_factory=lambda: {
+    proto_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
         "High": 10, "Medium": 4})
     # Per-category cap (max total deduction a single category can contribute).
-    caps: Dict[str, int] = field(default_factory=lambda: {
+    caps: Dict[str, int] = _dcfield(default_factory=lambda: {
         "L1": 30, "L3": 30, "XL": 45, "PROTO": 25})
     # Score -> (band label, fill); first row whose threshold the score meets wins.
-    bands: List[Tuple[int, str, str]] = field(default_factory=lambda: list(_HEALTH_BANDS))
+    bands: List[Tuple[int, str, str]] = _dcfield(default_factory=lambda: list(_HEALTH_BANDS))
     # Status a readiness check emits when its risk condition fires ('fail' ->
     # NOT READY for the group, 'warn' -> CAUTION).
-    readiness: Dict[str, str] = field(default_factory=lambda: {
+    readiness: Dict[str, str] = _dcfield(default_factory=lambda: {
         "redundant_uplinks": "warn", "gateway_redundancy": "fail",
         "no_xl_critical": "fail", "no_errdisabled": "warn",
         "stp_consistency": "warn", "portchannels_healthy": "warn",
@@ -5303,7 +5303,7 @@ class ScoringConfig:
     # NEW-V3.23.5: per-role multiplier on a switch's deductions (a fault on a
     # core/distribution switch has wider blast radius than on an access closet).
     # Defaults are 1.0 for every role, so scores stay byte-identical until tuned.
-    criticality_factors: Dict[str, float] = field(default_factory=lambda: {
+    criticality_factors: Dict[str, float] = _dcfield(default_factory=lambda: {
         "core": 1.0, "distribution": 1.0, "access": 1.0})
     # NEW-V3.23.7: a switch whose collection covers less than this fraction of the
     # essential command set is reported 'Insufficient Data' instead of a

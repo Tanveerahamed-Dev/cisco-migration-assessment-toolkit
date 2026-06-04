@@ -5,6 +5,23 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — Lint easy-wins (ruff now clean)
+
+On branch `lint-easy-wins`. Fixed the 5 pyflakes findings from the V3.23.8 ruff
+baseline (behaviour byte-identical):
+
+- **4× F402** (`field` import shadowed by loop vars in the sheet writers): aliased
+  the import to `field as _dcfield` and updated ScoringConfig's 8 `field(...)`
+  calls — the readable `field` loop variables stay as-is.
+- **1× F841**: removed the write-only `ios_top` in `parse_show_interface_trunk_table`
+  (IOS is the implicit `else`; NX-OS/IOS trunk tests + golden confirm unchanged).
+- **1× E401** (multi-import line): intentional compact style → ignored in `ruff.toml`.
+
+`python -m ruff check .` → **All checks passed**. **58 tests pass**, golden
+byte-identical. `.md` Change Log V3.23.9.
+
+---
+
 ## 2026-06-04 — Loose ends: P4 + M2 + ruff baseline
 
 On branch `loose-ends`. Behaviour byte-identical (golden unchanged).
