@@ -4,3 +4,4 @@ pytest>=8,<10
 netmiko>=4.1,<5
 openpyxl>=3.1,<4
 ruff>=0.5        # report-only lint (config in ruff.toml); not needed to run the tool
+mypy>=1.8        # report-only type baseline (config in mypy.ini); not needed to run the tool

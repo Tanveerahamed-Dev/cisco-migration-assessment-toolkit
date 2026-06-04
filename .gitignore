@@ -18,6 +18,7 @@ Thumbs.db
 # Test caches / artifacts
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
 
 # Tool run outputs (never commit collected/generated network data)
