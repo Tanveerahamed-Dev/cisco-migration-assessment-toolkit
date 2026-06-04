@@ -1129,3 +1129,84 @@ def _parse_fhrp(behavior: str):
     if m:
         return (m.group(1).upper(), m.group(3).capitalize(), m.group(4) or "", m.group(2))
     return ("", "", "", "")
+
+
+# Physical-port / media parsers (PHASE 2.7 step 17). Logical (non-physical) interfaces
+# excluded from the per-physical-port sheet.
+_NON_PHYSICAL_RE = re.compile(
+    r"^(Vlan\d+|Lo\d+|Loopback\d+|Po\d+|Port-channel\d+|Tu\d+|Tunnel\d+|"
+    r"Null\d*|mgmt0|Bundle-Ether\d+|BE\d+)$", re.IGNORECASE)
+
+def _is_physical_port(port: str) -> bool:
+    p = (port or "").strip()
+    return bool(p) and not _NON_PHYSICAL_RE.match(p)
+
+def _classify_media(s: str) -> str:
+    """Map a 'media type is ...' / port-type string to copper / SFP-fiber / QSFP / unknown."""
+    low = (s or "").lower()
+    if not low:
+        return "unknown"
+    if "qsfp" in low:
+        return "QSFP"
+    if ("sfp" in low or "base-sx" in low or "base-lx" in low or "base-sr" in low
+            or "base-lr" in low or "base-er" in low or "1000basesx" in low or "fiber" in low):
+        return "SFP/fiber"
+    if ("basetx" in low or "baset" in low or "10/100" in low or "rj45" in low or "copper" in low):
+        return "copper"
+    return s.strip()[:24] or "unknown"
+
+def parse_interface_phy(output: str) -> Dict[str, Dict[str, str]]:
+    """Best-effort negotiated duplex/speed/media per interface from IOS 'show interfaces' /
+    NX-OS 'show interface' DETAIL. Returns {port: {'duplex','speed','media'}}; values stay
+    blank when the platform format omits the line (some NX-OS) -> caller marks unknown."""
+    res: Dict[str, Dict[str, str]] = {}
+    cur = None
+    buf: List[str] = []
+
+    def _flush(name, lines):
+        if not name or not lines:
+            return
+        text = "\n".join(lines)
+        rec = {"duplex": "", "speed": "", "media": ""}
+        m = re.search(r"\b(Full|Half|Auto)-duplex\b", text, re.IGNORECASE)
+        if m:
+            rec["duplex"] = m.group(1).capitalize()
+        m = re.search(r"-duplex,\s*([^,]+?)\s*,", text)        # token between duplex and next comma
+        if m:
+            rec["speed"] = m.group(1).strip()
+        m = re.search(r"media type is\s+(.+)", text, re.IGNORECASE)
+        if m:
+            rec["media"] = _classify_media(m.group(1).strip())
+        res[name] = rec
+
+    for line in output.splitlines():
+        mh = re.match(r"^(\S+)\s+is\s+(?:up|down|administratively down)\b", line)
+        if mh:
+            nm = normalize_ifname(mh.group(1))
+            if VALID_IFACE_RE.match(nm):
+                _flush(cur, buf)
+                cur, buf = nm, [line]
+                continue
+        if cur is not None:
+            buf.append(line)
+    _flush(cur, buf)
+    return res
+
+def _parse_poe_watts(output: str) -> Dict[str, float]:
+    """Best-effort per-port PoE watts (consumed) from 'show power inline'. {port: watts}.
+    Reads the first decimal on each interface line (the consumed-watts column)."""
+    res: Dict[str, float] = {}
+    for line in output.splitlines():
+        it = IFACE_TOKEN_RE.search(line)
+        if not it:
+            continue
+        intf = normalize_ifname(it.group(0))
+        if not _is_physical_port(intf):
+            continue
+        m = re.search(r"\b(\d+\.\d+)\b", line[it.end():])
+        if m:
+            try:
+                res[intf] = float(m.group(1))
+            except ValueError:
+                pass
+    return res

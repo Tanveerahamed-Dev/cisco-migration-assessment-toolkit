@@ -13,7 +13,7 @@ from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a c
 from typing import Dict, List, Optional, Tuple
 
 from cisco_toolkit.cmdio import _load_cmd_output
-from cisco_toolkit.model import InterfaceData
+from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _parse_fhrp, parse_spanning_tree_blockedports, parse_etherchannel_summary_members,
     parse_ospf_neighbors, parse_bgp_summary, parse_eigrp_neighbors,
@@ -1005,3 +1005,46 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 f"{len(groups)} group(s) [{', '.join(protos)}]; {actives} active/master")
 
     return records
+
+
+# =============================================================================
+# Physical-health compute helpers (PHASE 2.7 step 17). The pure parsers
+# (parse_interface_phy / _classify_media / _is_physical_port / _parse_poe_watts)
+# live in parse.py; these derive metrics from already-parsed records / the model.
+# =============================================================================
+def _poe_device_util(all_device_physical: List[DevicePhysical]) -> Dict[str, float]:
+    """hostname -> PoE utilisation %, from DevicePhysical capacity/drawn (mirrors Capacity sheet)."""
+    out: Dict[str, float] = {}
+    for dp in all_device_physical:
+        try:
+            cap = float(str(dp.power_capacity_w).split()[0]) if str(dp.power_capacity_w).strip() else 0.0
+            drawn = float(str(dp.power_drawn_w).split()[0]) if str(dp.power_drawn_w).strip() else None
+        except (ValueError, IndexError):
+            cap, drawn = 0.0, None
+        if cap > 0 and drawn is not None:
+            out[dp.hostname] = round(100.0 * drawn / cap, 1)
+    return out
+
+def _physical_uplink_index(model: Dict[str, object]):
+    """From the shared network model, return (uplink_ports, single_fiber_ports):
+       uplink_ports       : set of (host, local_port) facing another scanned switch
+       single_fiber_ports : set of (host, local_port) where that port is the host's ONLY
+                            inter-switch link and it is not a port-channel (no L1 redundancy)."""
+    by_host: Dict[str, List[Tuple[str, str, bool]]] = {}
+    for l in model["links"]:                                   # links: {a,ap,b,bp,is_pc,da,db}
+        if l.get("ap"):
+            by_host.setdefault(l["a"], []).append((l["b"], l["ap"], bool(l["is_pc"])))
+        if l.get("bp"):
+            by_host.setdefault(l["b"], []).append((l["a"], l["bp"], bool(l["is_pc"])))
+    uplink_ports = set()
+    single_fiber = set()
+    for host, ups in by_host.items():
+        for (_oh, lp, _pc) in ups:
+            uplink_ports.add((host, lp))
+        distinct = {(oh, lp) for (oh, lp, _pc) in ups}
+        if len(distinct) == 1:
+            oh, lp = next(iter(distinct))
+            pc = any(p for (o, l, p) in ups if (o, l) == (oh, lp))
+            if not pc:
+                single_fiber.add((host, lp))
+    return uplink_ports, single_fiber
