@@ -309,6 +309,7 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
     parse_show_environment, parse_show_module_count,
     parse_show_interface_counters, parse_port_security, parse_auth_sessions,
     parse_dhcp_snooping_binding,
+    _parse_fhrp,   # NEW-V3.23.26 (step 16): FHRP behaviour parser, used by write_l3_forwarding_sheet
 )
 # NEW-V3.23.19 (PHASE 2.7 step 9): the passed-around data model (InterfaceData /
 # DevicePhysical) extracted to the package leaf; imported back so every type hint
@@ -325,6 +326,7 @@ from cisco_toolkit.analyze import (
     compute_causality_chains, compute_failure_impact,
     compute_data_quality, compute_health_scores,
     compute_score_sensitivity, compute_migration_readiness,
+    compute_protocol_health,
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue (_load_cmd_output
 # reads collected show output fail-soft; _safe_parse wraps section parsers). Homed
@@ -3026,14 +3028,8 @@ def write_flow_trace_sheet(wb, flow: dict) -> None:
 # -----------------------------------------------------------------------------
 L3_FORWARDING_SHEET_NAME = "L3 Forwarding Map"
 
-def _parse_fhrp(behavior: str):
-    """('HSRP grp 1 Active VIP 10.0.10.1') -> (proto, role, vip, group). Blank tuple if none."""
-    if not behavior:
-        return ("", "", "", "")
-    m = re.match(r"(HSRP|VRRP|GLBP)\s+grp\s+(\d+)\s+(\w+)(?:\s+VIP\s+(\S+))?", behavior.strip(), re.IGNORECASE)
-    if m:
-        return (m.group(1).upper(), m.group(3).capitalize(), m.group(4) or "", m.group(2))
-    return ("", "", "", "")
+# _parse_fhrp moved to cisco_toolkit.parse (PHASE 2.7 step 16); imported back near the
+# top of this file (write_l3_forwarding_sheet below + compute_protocol_health use it).
 
 def _parse_track(output: str) -> dict:
     """Best-effort 'show track' (IOS + NX-OS) -> {objects:[{id,desc,state}], up, down}.
@@ -3389,134 +3385,10 @@ def write_cross_layer_sheet(wb, findings: List[dict]) -> None:
 # -----------------------------------------------------------------------------
 PROTOCOL_HEALTH_SHEET_NAME = "Protocol Health"
 
-def _parse_stp_mode(stp_output: str) -> str:
-    m = re.search(r"spanning[- ]tree enabled protocol\s+(\S+)", stp_output or "", re.IGNORECASE)
-    if not m:
-        return ""
-    p = m.group(1).lower()
-    return {"ieee": "pvst", "rstp": "rapid-pvst", "mstp": "mst", "mst": "mst"}.get(p, p)
-
-def _parse_stp_tcn(detail_output: str):
-    """Topology-change counts from 'show spanning-tree detail' -> (max, total) or (None, None)."""
-    counts = [int(m.group(1)) for m in
-              re.finditer(r"number of topology changes\s+(\d+)", detail_output or "", re.IGNORECASE)]
-    if not counts:
-        return (None, None)
-    return (max(counts), sum(counts))
-
-def _parse_etherchannel_member_states(output: str) -> Dict[str, str]:
-    """'show etherchannel/port-channel summary' -> {member_port: flag} (single-letter status:
-    P bundled, s suspended, D down, I stand-alone, w waiting, H hot-standby, R L3)."""
-    res: Dict[str, str] = {}
-    for line in (output or "").splitlines():
-        for m in re.finditer(r"\b([A-Za-z]{2,}[\d/]+)\(([A-Za-z]+)\)", line):
-            nm = normalize_ifname(m.group(1))
-            if not nm.startswith("Po"):
-                res[nm] = m.group(2)[0]
-    return res
-
-def _parse_vtp_full(output: str) -> dict:
-    mode = domain = ""
-    rev = 0
-    for raw in (output or "").splitlines():
-        s = raw.strip()
-        m = re.search(r"VTP Operating Mode\s*:?\s*(\w+)", s, re.IGNORECASE)
-        if m:
-            mode = m.group(1)
-        m = re.search(r"(?:VTP Domain Name|Domain Name)\s*:?\s*(\S+)", s, re.IGNORECASE)
-        if m and m.group(1).lower() not in ("not", "none", "null"):
-            domain = m.group(1)
-        m = re.search(r"Configuration Revision\s*:?\s*(\d+)", s, re.IGNORECASE)
-        if m:
-            rev = int(m.group(1))
-    return {"mode": mode, "domain": domain, "revision": rev}
-
-def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                            all_cmd_to_files: Dict[str, Dict[str, str]]) -> List[dict]:
-    """Per-(switch, protocol) health rows. Severity: High (down/inconsistent), Medium
-    (waiting / soft), Info (healthy / present). Returns records for sheet + snapshot."""
-    records: List[dict] = []
-
-    def add(host, proto, sev, summary, detail=""):
-        records.append({"switch": host, "protocol": proto, "severity": sev,
-                        "summary": summary, "detail": detail})
-
-    for host in sorted(all_interfaces):
-        c2f = all_cmd_to_files.get(host, {})
-
-        # ---- STP ----
-        stp_out = _load_cmd_output(c2f, "show spanning-tree")
-        if stp_out:
-            blocked = parse_spanning_tree_blockedports(_load_cmd_output(c2f, "show spanning-tree blockedports"))
-            incons = parse_spanning_tree_blockedports(_load_cmd_output(c2f, "show spanning-tree inconsistentports"))
-            mode = _parse_stp_mode(stp_out)
-            maxt, _tot = _parse_stp_tcn(_load_cmd_output(c2f, "show spanning-tree detail"))
-            nblk, ninc = len(blocked), len(incons)
-            sev = "High" if ninc else "Info"
-            summary = f"mode {mode or '?'}; {nblk} blocked, {ninc} inconsistent"
-            if maxt is not None:
-                summary += f"; max TCN {maxt}"
-            detail = ("inconsistent: " + ", ".join(sorted(incons))) if ninc else ""
-            add(host, "STP", sev, summary, detail)
-
-        # ---- EtherChannel ----
-        ec_out = _load_cmd_output(c2f, "show etherchannel summary", "show port-channel summary")
-        if ec_out:
-            states = _parse_etherchannel_member_states(ec_out)
-            if states:
-                bad = {m: f for m, f in states.items() if f in ("s", "D", "I", "w")}
-                npo = len({po for po in parse_etherchannel_summary_members(ec_out).values()})
-                hard = any(f in ("s", "D", "I") for f in bad.values())
-                sev = "High" if hard else ("Medium" if bad else "Info")
-                summary = f"{npo} bundle(s), {len(states)} member(s)" + (f"; {len(bad)} not bundled" if bad else "")
-                detail = ("; ".join(f"{m}({f})" for m, f in sorted(bad.items()))) if bad else ""
-                add(host, "EtherChannel", sev, summary, detail)
-
-        # ---- VTP ----
-        vtp_out = _load_cmd_output(c2f, "show vtp status")
-        if vtp_out:
-            v = _parse_vtp_full(vtp_out)
-            if v["mode"] or v["domain"]:
-                add(host, "VTP", "Info",
-                    f"mode {v['mode'] or '?'}; domain {v['domain'] or '-'}; rev {v['revision']}",
-                    "high revision can overwrite the VLAN DB" if v["revision"] >= 100 else "")
-
-        # ---- OSPF ----
-        ospf = parse_ospf_neighbors(_load_cmd_output(c2f, "show ip ospf neighbor"))
-        if ospf:
-            bad = [n for n in ospf if not (n["state"].upper().startswith("FULL")
-                                           or n["state"].upper().startswith("2WAY"))]
-            sev = "High" if bad else "Info"
-            add(host, "OSPF", sev, f"{len(ospf)} neighbor(s); {len(bad)} not Full/2Way",
-                ("; ".join(f"{n['neighbor']} {n['state']}" for n in bad)) if bad else "")
-
-        # ---- BGP ----
-        bgp = parse_bgp_summary(_load_cmd_output(c2f, "show ip bgp summary", "show bgp summary"))
-        if bgp:
-            bad = [p for p in bgp if not re.match(r"^\d+$", p["state"])]
-            sev = "High" if bad else "Info"
-            add(host, "BGP", sev, f"{len(bgp)} peer(s); {len(bad)} not Established",
-                ("; ".join(f"{p['neighbor']} {p['state']}" for p in bad)) if bad else "")
-
-        # ---- EIGRP ----
-        eigrp = parse_eigrp_neighbors(_load_cmd_output(c2f, "show ip eigrp neighbors"))
-        if eigrp:
-            add(host, "EIGRP", "Info", f"{len(eigrp)} neighbor(s) up")
-
-        # ---- FHRP ----
-        groups = []
-        for port, d in all_interfaces[host].items():
-            if re.match(r"^Vlan\d+$", port, re.IGNORECASE) and d.hsrp_behavior:
-                proto, role, _vip, grp = _parse_fhrp(d.hsrp_behavior)
-                if proto:
-                    groups.append((proto, role, grp, port))
-        if groups:
-            protos = sorted({g[0] for g in groups})
-            actives = sum(1 for g in groups if g[1].lower() in ("active", "master"))
-            add(host, "FHRP", "Info",
-                f"{len(groups)} group(s) [{', '.join(protos)}]; {actives} active/master")
-
-    return records
+# _parse_stp_mode / _parse_stp_tcn / _parse_etherchannel_member_states / _parse_vtp_full
+# + compute_protocol_health moved to cisco_toolkit.analyze (PHASE 2.7 step 16). The four
+# sub-parsers are analyze-internal; compute_protocol_health is imported back near the top
+# of this file (main() runs it via _run_phase). PROTOCOL_HEALTH_SHEET_NAME stays (excel).
 
 def write_protocol_health_sheet(wb, records: List[dict]) -> None:
     """Write the 'Protocol Health' sheet from compute_protocol_health()."""
