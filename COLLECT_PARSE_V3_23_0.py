@@ -293,6 +293,10 @@ from cisco_toolkit.textutils import (
     normalize_ifname, is_valid_iface, normalize_status, normalize_duplex,
     normalize_speed, normalize_mac, detect_link_type, safe_fs_name,
 )
+from cisco_toolkit.parse import (   # NEW-V3.23.12 (PHASE 2.7 step 2): column primitives + pure neighbor parsers
+    extract_fixed_cols, slice_col,
+    parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,
+)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -772,20 +776,8 @@ def _safe_parse(fn, *args, _default=None):
 # =============================================================================
 # PARSERS - interface commands
 # =============================================================================
-def extract_fixed_cols(header_line: str, keys: List[Tuple[str,str]]) -> Dict[str, Tuple[int, Optional[int]]]:
-    pos = {}
-    for needle, name in keys:
-        p = header_line.find(needle)
-        if p >= 0: pos[name] = p
-    items = sorted(pos.items(), key=lambda x: x[1])
-    ranges = {}
-    for i, (name, start) in enumerate(items):
-        end = items[i+1][1] if i < len(items)-1 else None
-        ranges[name] = (start, end)
-    return ranges
-
-def slice_col(line: str, start: int, end: Optional[int]) -> str:
-    return line[start:].strip() if end is None else line[start:end].strip()
+# extract_fixed_cols / slice_col moved to cisco_toolkit.parse (PHASE 2.7 step 2);
+# imported near the top of this file.
 
 def parse_show_interface_status(output: str) -> Dict[str, Dict[str, str]]:
     res: Dict[str, Dict[str, str]] = {}
@@ -3680,35 +3672,8 @@ def write_security_posture_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]
 # -----------------------------------------------------------------------------
 ROUTING_SHEET_NAME = "Routing Adjacencies"
 
-def parse_ospf_neighbors(output: str) -> List[Dict[str, str]]:
-    """'show ip ospf neighbor' -> [{neighbor, state, address, interface}]."""
-    rows = []
-    for line in output.splitlines():
-        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\S+)\s+\S+\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)", line)
-        if m:
-            rows.append({"neighbor": m.group(1), "state": m.group(2),
-                         "address": m.group(3), "interface": normalize_ifname(m.group(4))})
-    return rows
-
-def parse_eigrp_neighbors(output: str) -> List[Dict[str, str]]:
-    """'show ip eigrp neighbors' -> [{neighbor, interface, state}]."""
-    rows = []
-    for line in output.splitlines():
-        m = re.match(r"\s*\d+\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+\d+\s+(\S+)", line)
-        if m:
-            rows.append({"neighbor": m.group(1), "interface": normalize_ifname(m.group(2)),
-                         "state": f"up {m.group(3)}"})
-    return rows
-
-def parse_bgp_summary(output: str) -> List[Dict[str, str]]:
-    """'show ip bgp summary' / 'show bgp summary' -> [{neighbor, as, state}].
-    Last column (State/PfxRcd) is the established state or the prefix count."""
-    rows = []
-    for line in output.splitlines():
-        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]+:[0-9A-Fa-f:]+)\s+\d+\s+(\d+)\s+.*\s(\S+)\s*$", line)
-        if m:
-            rows.append({"neighbor": m.group(1), "as": m.group(2), "state": m.group(3)})
-    return rows
+# parse_ospf_neighbors / parse_eigrp_neighbors / parse_bgp_summary moved to
+# cisco_toolkit.parse (PHASE 2.7 step 2); imported near the top of this file.
 
 def write_routing_adjacency_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
     """One row per dynamic-routing adjacency (OSPF/EIGRP neighbor, BGP peer)."""

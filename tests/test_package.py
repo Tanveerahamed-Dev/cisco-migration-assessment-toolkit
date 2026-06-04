@@ -23,3 +23,15 @@ def test_monolith_reexports_the_package_objects(cp):
     assert cp.detect_link_type is textutils.detect_link_type
     assert cp.VALID_IFACE_RE is textutils.VALID_IFACE_RE
     assert cp.IFACE_TOKEN_RE is textutils.IFACE_TOKEN_RE
+
+
+def test_parse_module_reexported_and_functional(cp):
+    from cisco_toolkit import parse
+    # identity: the monolith uses the package's parsers/primitives
+    assert cp.extract_fixed_cols is parse.extract_fixed_cols
+    assert cp.slice_col is parse.slice_col
+    assert cp.parse_ospf_neighbors is parse.parse_ospf_neighbors
+    assert cp.parse_bgp_summary is parse.parse_bgp_summary
+    # functional smoke straight from the package
+    rows = parse.parse_ospf_neighbors("10.0.0.2  1  FULL/DR  00:00:35  10.0.0.2  Gi0/1")
+    assert rows and rows[0]["state"] == "FULL/DR" and rows[0]["interface"] == "Gi0/1"
