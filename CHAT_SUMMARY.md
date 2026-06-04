@@ -5,6 +5,26 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 3: routing/FHRP parsers
+
+On branch `phase2-split-parse2`. Byte-identical.
+
+- Moved the pure parsers `parse_ip_routes`, `parse_hsrp_summary`,
+  `parse_vrrp_summary`, `parse_glbp_summary` into `cisco_toolkit/parse.py`
+  (`re` + `textutils`; added `is_valid_iface` to parse.py's import). Monolith
+  imports them back.
+- Golden byte-identical, `ruff` clean, mypy unchanged (101). **61 tests pass.**
+  `.md` Change Log V3.23.13.
+
+Split so far: textutils (leaf) · parse primitives+neighbors · routing/FHRP
+parsers. Still remaining in parse: interface status/switchport/trunk, mac, STP
+(+`_STP_STS_NAME`), vlan_brief, vrf, power_inline, counters, cdp/lldp,
+multicast, inventory/version/env; then analyze / excel / html / `__main__`.
+A long mechanical tail — see the session note about doing the bulk in a
+dedicated session.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 2: parse primitives + neighbor parsers
 
 On branch `phase2-split-parse`. Behaviour byte-identical.
