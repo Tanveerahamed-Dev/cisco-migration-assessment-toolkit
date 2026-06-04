@@ -292,10 +292,14 @@ from cisco_toolkit.textutils import (
     IFACE_TOKEN_RE, VALID_IFACE_RE, PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS,
     normalize_ifname, is_valid_iface, normalize_speed, normalize_mac, detect_link_type, safe_fs_name,
 )
-from cisco_toolkit.parse import (   # NEW-V3.23.12/.13/.14 (PHASE 2.7 steps 2-4): primitives + pure parsers
+from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): primitives + pure parsers
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,
     parse_ip_routes, parse_hsrp_summary, parse_vrrp_summary, parse_glbp_summary,
     parse_show_interface_status, parse_show_interface_switchport, parse_show_interface_trunk_table,
+    parse_show_mac_address_table, parse_spanning_tree_blockedports, parse_vlan_brief,
+    parse_spanning_tree_detail, parse_spanning_tree_states, _compress_vlans,
+    parse_show_vrf_interface, parse_show_power_inline, parse_neighbors_cdp,
+    parse_neighbors_lldp, infer_endpoint_type,
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -782,224 +786,11 @@ def _safe_parse(fn, *args, _default=None):
 # parse_show_interface_status / _switchport / _trunk_table moved to
 # cisco_toolkit.parse (PHASE 2.7 step 4); imported at the top of this file.
 
-def parse_show_mac_address_table(output: str) -> Dict[str, List[str]]:
-    res: Dict[str, List[str]] = {}
-    seen: Dict[str, set] = {}
-    for line in output.splitlines():
-        line = line.strip()
-        if not line or line.startswith(("VLAN","Legend","----","Total","Note")): continue
-        parts = line.split()
-        if len(parts) < 4: continue
-        idx = 0
-        if not parts[0].isdigit(): idx = 1
-        if idx + 2 >= len(parts): continue
-        mac   = parts[idx + 1]
-        typ   = parts[idx + 2].lower()
-        iface = parts[-1]
-        if typ != "dynamic": continue
-        mac_n = normalize_mac(mac)
-        if_n  = normalize_ifname(iface)
-        if not mac_n or not if_n: continue
-        res.setdefault(if_n, []);  seen.setdefault(if_n, set())
-        if mac_n not in seen[if_n]:
-            res[if_n].append(mac_n); seen[if_n].add(mac_n)
-    return res
+# MAC / STP / vlan_brief / _compress_vlans moved to cisco_toolkit.parse
+# (PHASE 2.7 step 5); imported at the top of this file.
 
-def parse_spanning_tree_blockedports(output: str) -> Dict[str, bool]:
-    blocked: Dict[str, bool] = {}
-    for line in output.splitlines():
-        for t in IFACE_TOKEN_RE.findall(line):
-            blocked[normalize_ifname(t)] = True
-    return blocked
-
-def parse_vlan_brief(output: str) -> Dict[str, Dict[str, object]]:
-    """Parse 'show vlan brief' (IOS + NX-OS) -> {vlan_id: {'name': str, 'ports': [ifnames]}}.
-
-    Primary row: '<id> <name> <status> <ports...>'; port lists may wrap onto indented
-    continuation lines, which are appended to the last VLAN seen.
-    """
-    res: Dict[str, Dict[str, object]] = {}
-    cur: Optional[str] = None
-    for raw in output.splitlines():
-        line = raw.rstrip()
-        if not line.strip():
-            continue
-        m = re.match(r"^(\d+)\s+(\S+)\s+(active|suspended|act/lshut|act/unsup|sus/lshut|\S+)\s*(.*)$", line)
-        if m:
-            cur = m.group(1)
-            res[cur] = {"name": m.group(2), "ports": []}
-            for t in IFACE_TOKEN_RE.findall(m.group(4) or ""):
-                res[cur]["ports"].append(normalize_ifname(t))
-        elif cur and re.match(r"^\s+\S", raw) and not re.match(r"^\s*(VLAN|----)", line, re.IGNORECASE):
-            for t in IFACE_TOKEN_RE.findall(line):
-                res[cur]["ports"].append(normalize_ifname(t))
-    return res
-
-_STP_STS_NAME = {"FWD": "Forwarding", "BLK": "Blocked", "BKN": "Blocked",
-                 "LIS": "Listening", "LRN": "Learning", "DIS": "Disabled"}
-
-def parse_spanning_tree_detail(output: str) -> Dict[str, Dict[str, List[str]]]:
-    """Parse full 'show spanning-tree' -> {ifname: {state_name: [vlan/instance ids]}}.
-
-    The output is organized per VLAN (Rapid-PVST) or per instance (MST):
-        VLAN0010
-        Interface  Role Sts Cost  Prio.Nbr Type
-        Gi1/0/1    Root FWD 4     128.1    P2p
-        Gi1/0/24   Altn BLK 19    128.24   P2p
-    Each port row's status (FWD/BLK/...) is recorded under the current VLAN/instance.
-    Under MST the captured ids are MST instance numbers, not VLAN ids.
-    """
-    detail: Dict[str, Dict[str, List[str]]] = {}
-    if not output:
-        return detail
-    vhdr = re.compile(r"^(?:VLAN0*(\d+)|MST0*(\d+))\b", re.IGNORECASE)
-    row  = re.compile(
-        r"^(\S+)\s+(?:Root|Desg|Altn|Back|Boun|Mstr)\*?\s+(FWD|BLK|LIS|LRN|DIS|BKN)\b",
-        re.IGNORECASE)
-    cur: Optional[str] = None
-    for raw in output.splitlines():
-        s = raw.strip()
-        if not s:
-            continue
-        vm = vhdr.match(s)
-        if vm:
-            cur = vm.group(1) or vm.group(2)
-            continue
-        m = row.match(s)
-        if m and cur is not None and is_valid_iface(m.group(1)):
-            ifn = normalize_ifname(m.group(1))
-            st  = _STP_STS_NAME.get(m.group(2).upper())
-            if st:
-                lst = detail.setdefault(ifn, {}).setdefault(st, [])
-                if cur not in lst:
-                    lst.append(cur)
-    return detail
-
-def parse_spanning_tree_states(output: str) -> Dict[str, str]:
-    """{ifname: collapsed STP state}. Blocked-wins summary, derived from the per-VLAN
-    detail so the two views never disagree. NOT inferred from link-up."""
-    out: Dict[str, str] = {}
-    for ifn, st in parse_spanning_tree_detail(output).items():
-        if st.get("Blocked"):      out[ifn] = "Blocked"
-        elif st.get("Forwarding"): out[ifn] = "Forwarding"
-        elif st.get("Learning"):   out[ifn] = "Learning"
-        elif st.get("Listening"):  out[ifn] = "Listening"
-        elif st.get("Disabled"):   out[ifn] = "Disabled"
-    return out
-
-def _compress_vlans(vlans: List[str]) -> str:
-    """[10, 20, 21, 22, 23] -> '10,20-23'. Non-numeric ids are appended as-is."""
-    nums = sorted({int(v) for v in vlans if str(v).isdigit()})
-    extra = [str(v) for v in vlans if not str(v).isdigit()]
-    out: List[str] = []
-    if nums:
-        start = prev = nums[0]
-        for v in nums[1:]:
-            if v == prev + 1:
-                prev = v; continue
-            out.append(f"{start}-{prev}" if start != prev else f"{start}")
-            start = prev = v
-        out.append(f"{start}-{prev}" if start != prev else f"{start}")
-    return ",".join(out + extra)
-
-def parse_show_vrf_interface(output: str) -> Dict[str, str]:
-    m: Dict[str, str] = {}
-    for line in output.splitlines():
-        line = line.strip()
-        if not line or line.lower().startswith(("interface","vrf","----")): continue
-        parts = line.split()
-        if len(parts) >= 2 and is_valid_iface(parts[0]):
-            m[normalize_ifname(parts[0])] = parts[1]
-    return m
-
-def parse_show_power_inline(output: str) -> Dict[str, str]:
-    m: Dict[str, str] = {}
-    for line in output.splitlines():
-        if not line.strip(): continue
-        it = IFACE_TOKEN_RE.search(line)
-        if not it: continue
-        intf = normalize_ifname(it.group(0))
-        low  = line.lower()
-        if "not supported" in low:   m[intf] = "Not Supported"
-        elif "delivering" in low:    m[intf] = "Delivering"
-        elif re.search(r"\bon\b", low): m[intf] = "Delivering"
-        elif "searching" in low:     m[intf] = "Searching"
-        elif "fault" in low:         m[intf] = "Fault"
-        elif "deny" in low or "denied" in low: m[intf] = "Deny"
-        elif "disabled" in low:      m[intf] = "Disabled"
-        elif "off" in low:           m[intf] = "Off"
-    return m
-
-def parse_neighbors_cdp(output: str) -> Dict[str, Dict[str, str]]:
-    res: Dict[str, Dict[str, str]] = {}
-    for sec in re.split(r"-{5,}", output):
-        sec = sec.strip()
-        if not sec: continue
-        device_id = platform_s = mgmt_ip = local_intf = remote_port = ""
-        for line in sec.splitlines():
-            line = line.strip()
-            if line.lower().startswith("device id:"):
-                device_id  = line.split(":",1)[1].strip()
-            if line.lower().startswith("platform:"):
-                platform_s = line.split(":",1)[1].strip()
-                platform_s = re.split(r",\s*Capabilities", platform_s, 1)[0].strip()
-            ipm = re.search(r"\bip address:\s*(\d+\.\d+\.\d+\.\d+)\b", line, re.IGNORECASE)
-            if ipm: mgmt_ip = ipm.group(1)
-            if line.lower().startswith("interface:"):
-                mv = re.search(r"Interface:\s*([^,]+)", line, re.IGNORECASE)
-                if mv: local_intf = normalize_ifname(mv.group(1).strip())
-                pm = re.search(r"Port ID\s*\(outgoing port\):\s*(\S+)", line, re.IGNORECASE)
-                if pm: remote_port = normalize_ifname(pm.group(1).strip())
-        if local_intf:
-            res[local_intf] = {"device_id": device_id, "platform": platform_s,
-                               "mgmt_ip": mgmt_ip, "remote_port": remote_port}
-    return res
-
-def parse_neighbors_lldp(output: str) -> Dict[str, Dict[str, str]]:
-    res: Dict[str, Dict[str, str]] = {}
-    for ch in re.split(r"\n\s*Local Intf:\s*", "\n" + output):
-        ch = ch.strip()
-        if not ch: continue
-        local   = normalize_ifname(ch.splitlines()[0].strip().split()[0])
-        sysname = mgmt = remote_port = ""
-        for line in ch.splitlines():
-            ls = line.strip()
-            if ls.lower().startswith("system name:"):
-                sysname = ls.split(":",1)[1].strip()
-            if ls.lower().startswith("port id:"):
-                remote_port = normalize_ifname(ls.split(":",1)[1].strip())
-            if ls.lower().startswith("management address:"):
-                ipm = re.search(r"(\d+\.\d+\.\d+\.\d+)", ls)
-                if ipm: mgmt = ipm.group(1)
-        if local:
-            res[local] = {"device_id": sysname, "platform": "", "mgmt_ip": mgmt,
-                          "remote_port": remote_port}
-    return res
-
-_DESC_EP_PATTERNS = [
-    (re.compile(r"\b(ap|access.?point|wap|aironet|wifi)\b",          re.I), "Access Point"),
-    (re.compile(r"\b(ip.?phone|phone|voip|7[0-9]{3})\b",             re.I), "IP Phone"),
-    (re.compile(r"\b(server|srv|esxi|vmware|ucs|blade)\b",            re.I), "Server"),
-    (re.compile(r"\b(camera|cctv|ipcam|nvr)\b",                       re.I), "Camera"),
-    (re.compile(r"\b(printer|mfp|copier)\b",                          re.I), "Printer"),
-    (re.compile(r"\b(ups|pdu|apc|power.?supply)\b",                   re.I), "UPS/PDU"),
-    (re.compile(r"\b(router|rtr|gateway|gw)\b",                       re.I), "Router"),
-    (re.compile(r"\b(firewall|fw|asa|ftd|fortigate|palo)\b",          re.I), "Firewall"),
-    (re.compile(r"\b(switch|sw|catalyst|nexus)\b",                    re.I), "Switch"),
-    (re.compile(r"\b(storage|san|nas|emc|netapp|ds3|ds4)\b",          re.I), "Storage"),
-]
-
-def infer_endpoint_type(platform: str, device_id: str, description: str = "") -> str:
-    p = (platform or "").lower(); d = (device_id or "").lower()
-    if any(x in p for x in ["nexus","catalyst","cisco","ws-c"]): return "Switch"
-    if any(x in p for x in ["asr","isr","csr","ncs"]):           return "Router"
-    if any(x in p for x in ["asa","firepower","ftd"]):            return "Firewall"
-    if any(x in d for x in ["esx","ucs","vm","srv","server"]):   return "Server"
-    if platform or device_id: return "Neighbour"
-    desc = (description or "").lower()
-    for pat, label in _DESC_EP_PATTERNS:
-        if pat.search(desc): return label
-    return ""
+# VRF / PoE / CDP / LLDP / infer_endpoint_type moved to cisco_toolkit.parse
+# (PHASE 2.7 step 5); imported at the top of this file.
 
 def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
     res: Dict[str, Dict[str, str]] = {}
