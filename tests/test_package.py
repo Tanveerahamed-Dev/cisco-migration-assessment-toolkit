@@ -42,6 +42,9 @@ def test_parse_module_reexported_and_functional(cp):
     # functional smoke straight from the package
     rows = parse.parse_ospf_neighbors("10.0.0.2  1  FULL/DR  00:00:35  10.0.0.2  Gi0/1")
     assert rows and rows[0]["state"] == "FULL/DR" and rows[0]["interface"] == "Gi0/1"
+    # _parse_fhrp joined the parser layer in step 16 (shared by analyze + the L3-fwd sheet).
+    assert cp._parse_fhrp is parse._parse_fhrp
+    assert parse._parse_fhrp("HSRP grp 1 Active VIP 10.0.10.1") == ("HSRP", "Active", "10.0.10.1", "1")
 
 
 def test_model_reexported_and_functional(cp):
@@ -136,6 +139,14 @@ def test_analyze_reexported_and_functional(cp):
     # data-quality fraction: no collected files -> 0.0; no hosts -> empty.
     assert analyze.compute_data_quality({}) == {}
     assert analyze.compute_data_quality({"sw1": {}}) == {"sw1": 0.0}
+    # protocol-health joined the analyze layer (step 16); its STP/EC/VTP sub-parsers are
+    # package-internal, and _parse_fhrp moved to parse.py (shared with the L3-fwd sheet).
+    assert cp.compute_protocol_health is analyze.compute_protocol_health
+    for internal in ("_parse_stp_mode", "_parse_stp_tcn", "_parse_etherchannel_member_states", "_parse_vtp_full"):
+        assert callable(getattr(analyze, internal)) and not hasattr(cp, internal)
+    ph = analyze.compute_protocol_health(
+        {"sw1": {"Vlan10": ID(port="Vlan10", hsrp_behavior="HSRP grp 1 Active VIP 10.0.10.1")}}, {})
+    assert any(r["protocol"] == "FHRP" and r["severity"] == "Info" for r in ph)
 
 
 def test_cmdio_reexported_and_functional(cp, tmp_path):

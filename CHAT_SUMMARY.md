@@ -5,6 +5,44 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 16: protocol-health -> analyze
+
+On branch `phase2-split-analyze6`. Byte-identical. **First parser-entangled analyze
+slice.** Monolith **~3,536 lines**.
+
+- Moved `compute_protocol_health` + its analyze-internal sub-parsers `_parse_stp_mode`/
+  `_parse_stp_tcn`/`_parse_etherchannel_member_states`/`_parse_vtp_full` into analyze.py.
+  analyze.py now imports parser deps from parse.py (`parse_spanning_tree_blockedports`,
+  `parse_etherchannel_summary_members`, `parse_ospf_neighbors`/`_bgp_summary`/`_eigrp_neighbors`,
+  + `_parse_fhrp`) — analyze→parse is a clean one-way dep (parse imports only textutils).
+- **`_parse_fhrp` went to parse.py, not analyze.py:** it's a pure `re`-only FHRP
+  behaviour-string parser used by BOTH `compute_protocol_health` (analyze) and the monolith's
+  `write_l3_forwarding_sheet` (3104). Leaving it in the monolith would make analyze import
+  back from the monolith = circular; parse.py is its proper leaf home. Imported back for
+  the L3-fwd sheet. (`_parse_track`/`_track_summary` stay — they're L3-only, next cluster.)
+- Import-backs: `compute_protocol_health` (analyze, for main()), `_parse_fhrp` (parse, for
+  write_l3_forwarding_sheet). The 4 STP/EC/VTP sub-parsers are package-internal. The 5 parse
+  parsers compute_protocol_health used are all still used elsewhere in the monolith
+  (build_interfaces / write_routing_adjacency_sheet), so no F401.
+- Per the step-15 lesson, grepped tests/ for `cp.<symbol>` first: only `cp.compute_protocol_health`
+  (test_compute.py:164) refs externally and it's still re-exported, so no breakage. Extended
+  test_package (parse `_parse_fhrp` identity+smoke; analyze compute_protocol_health identity +
+  the 4 internals-not-reexported + an FHRP-only smoke). **64 tests**, golden byte-identical,
+  ruff clean, mypy 101. `.md` V3.23.26.
+
+**Remaining analyze (each reads files + drags parsers, one cluster/PR):** physical-health
+(the writer computes inline; helpers `parse_interface_phy`/`_classify_media`/`_is_physical_port`/
+`_parse_poe_watts`/`_poe_device_util`/`_physical_uplink_index` feed `write_physical_health_sheet`
+— NOTE: parse_interface_phy/_classify_media/_is_physical_port are pure PARSERS → parse.py;
+_poe_device_util/_physical_uplink_index are compute helpers → analyze.py; no clean compute_* to
+anchor, so this one is fuzzier); `build_dependency_map`+`compute_cross_layer_correlations`+`all_hosts`;
+L3-forwarding (`write_l3_forwarding_sheet`+`_parse_track`/`_track_summary`) + flow-trace
+(`trace_full_flow`/`_bfs_forwarding_path`/`_ip_in_prefix`/`_find_*`). **Next = step 17:**
+build_dependency_map + cross_layer (cleanest — has clear compute_* anchors). Then excel
+(`write_*`, the big layer), html, `__main__`. Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 15: scoring + readiness synthesis -> analyze
 
 On branch `phase2-split-analyze5`. Byte-identical. **First I/O-fed analyze slice** (now
