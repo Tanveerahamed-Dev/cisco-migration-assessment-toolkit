@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Migration Explorer</title>
+<style>
+  /* ============================================================
+     SEMANTIC DESIGN TOKENS  (Radix/Carbon-style: role-assigned,
+     light + dark, temperature severity ramp, never neon-on-black)
+     ============================================================ */
+  :root, [data-theme="dark"]{
+    --bg:#0e1116; --surface:#161b22; --surface-2:#1c2230; --surface-3:#222a39;
+    --border:#2a313c; --border-strong:#3b4452; --border-faint:#21272f;
+    --text:#e6edf3; --text-dim:#9aa7b4; --text-faint:#6b7785;
+    --accent:#5b9dff; --accent-dim:#3d6fc0; --accent-soft:#14233c;
+    --ok:#3fb950; --ok-soft:#11261a;
+    --watch:#d8a800; --watch-soft:#2a2410;
+    --risk:#f0883e; --risk-soft:#2a1c10;
+    --crit:#f85149; --crit-soft:#2c1517;
+    --shadow:0 6px 22px rgba(0,0,0,.45);
+    --grid:#1a212b;
+  }
+  [data-theme="light"]{
+    --bg:#eef1f5; --surface:#ffffff; --surface-2:#f3f6fa; --surface-3:#e9eef4;
+    --border:#d6dde6; --border-strong:#bcc6d2; --border-faint:#e6ebf1;
+    --text:#1b2530; --text-dim:#586675; --text-faint:#8a96a4;
+    --accent:#2563eb; --accent-dim:#5b86e0; --accent-soft:#e4eeff;
+    --ok:#1a7f37; --ok-soft:#e7f5ec;
+    --watch:#9a6700; --watch-soft:#fbf2d4;
+    --risk:#bc4c00; --risk-soft:#fcecdc;
+    --crit:#cf222e; --crit-soft:#ffeceb;
+    --shadow:0 6px 22px rgba(40,55,80,.14);
+    --grid:#e4e9f0;
+  }
+  :root{
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text); font-family:var(--sans);
+    font-size:13px; line-height:1.45; overflow:hidden; font-variant-numeric:tabular-nums;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{display:grid; grid-template-rows:auto 1fr; height:100vh}
+
+  /* ---- header ---- */
+  header{
+    display:flex; align-items:center; gap:16px; padding:0 16px; height:54px;
+    border-bottom:1px solid var(--border); background:var(--surface);
+  }
+  .brand{display:flex; align-items:baseline; gap:9px; flex-shrink:0}
+  .brand b{font-size:14.5px; font-weight:650; letter-spacing:-.2px; color:var(--text)}
+  .brand .mark{width:11px;height:11px;border-radius:3px;background:var(--accent);display:inline-block;
+    box-shadow:0 0 0 3px var(--accent-soft)}
+  .src{font-size:11px; padding:3px 9px; border-radius:999px; font-weight:600;
+    border:1px solid var(--border); color:var(--text-dim); background:var(--surface-2);
+    max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .src.live{color:var(--ok); border-color:var(--ok); background:var(--ok-soft)}
+  .grow{flex:1}
+
+  /* ---- segmented mode switcher ---- */
+  .modes{display:flex; gap:2px; background:var(--surface-2); padding:3px; border-radius:9px;
+    border:1px solid var(--border)}
+  .modes button{
+    font:inherit; font-size:12px; font-weight:550; cursor:pointer; color:var(--text-dim);
+    background:transparent; border:0; padding:6px 13px; border-radius:6px; display:flex; gap:6px;
+    align-items:center; transition:.12s; white-space:nowrap;
+  }
+  .modes button:hover{color:var(--text)}
+  .modes button.on{background:var(--surface); color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,.25)}
+  [data-theme="light"] .modes button.on{box-shadow:0 1px 2px rgba(40,55,80,.12)}
+  .modes button .gl{font-size:13px; opacity:.85}
+
+  .tools{display:flex; gap:6px; align-items:center; flex-shrink:0}
+  .btn{
+    font:inherit; font-size:12px; font-weight:550; cursor:pointer; color:var(--text-dim);
+    background:var(--surface-2); border:1px solid var(--border); padding:6px 11px;
+    border-radius:7px; transition:.12s; display:inline-flex; align-items:center; gap:6px;
+  }
+  .btn:hover{border-color:var(--border-strong); color:var(--text); background:var(--surface-3)}
+  .btn.primary{color:#fff; background:var(--accent); border-color:var(--accent)}
+  .btn.primary:hover{background:var(--accent-dim)}
+  .iconbtn{padding:6px 9px}
+
+  .main{display:grid; grid-template-columns:1fr 388px; min-height:0}
+
+  /* ---- stage / canvas ---- */
+  .stage{position:relative; min-height:0; overflow:hidden; background:var(--bg);
+    background-image:radial-gradient(var(--grid) 1px, transparent 1px); background-size:26px 26px}
+  svg{width:100%; height:100%; display:block; cursor:grab}
+  svg.grabbing{cursor:grabbing}
+
+  .overlay{position:absolute; display:flex; gap:8px; align-items:center; z-index:5}
+  .ov-top{top:12px; left:12px; right:12px; flex-wrap:wrap}
+  .ov-bottom{bottom:12px; left:12px; right:12px; justify-content:space-between; align-items:flex-end}
+  .panelbox{background:var(--surface); border:1px solid var(--border); border-radius:9px;
+    box-shadow:var(--shadow)}
+  .search{display:flex; align-items:center; gap:7px; padding:6px 10px}
+  .search input{font:inherit; font-size:12px; border:0; background:transparent; color:var(--text);
+    outline:none; width:170px}
+  .search input::placeholder{color:var(--text-faint)}
+  .search .ic{color:var(--text-faint); font-size:12px}
+
+  .chips{display:flex; gap:5px; align-items:center; flex-wrap:wrap; padding:6px 9px; max-width:64vw}
+  .chips .lbl{color:var(--text-faint); font-size:10px; letter-spacing:.8px; text-transform:uppercase;
+    font-weight:650; margin-right:3px}
+  .chip{
+    cursor:pointer; font-size:11.5px; font-weight:550; padding:3px 10px; border-radius:999px;
+    border:1px solid var(--border); color:var(--text-dim); background:var(--surface-2); transition:.1s;
+    user-select:none; line-height:1.5;
+  }
+  .chip:hover{color:var(--text); border-color:var(--border-strong)}
+  .chip.on{color:#fff; background:var(--accent); border-color:var(--accent)}
+
+  .legend{padding:9px 11px; font-size:11px; max-width:300px}
+  .legend h4{margin:0 0 7px; font-size:9.5px; letter-spacing:1px; text-transform:uppercase;
+    color:var(--text-faint); font-weight:650}
+  .legend .row{display:flex; align-items:center; gap:8px; margin:3px 0; color:var(--text-dim)}
+  .legend .sw{width:22px; height:0; flex-shrink:0}
+  .legend .swln{height:0; border-top-width:2.5px; border-top-style:solid}
+  .legend .swbox{width:13px;height:13px;border-radius:3px;border:1.5px solid; flex-shrink:0}
+  .modetag{padding:7px 11px; font-size:12px; color:var(--text-dim); max-width:46vw}
+  .modetag b{color:var(--text)}
+
+  .hint{padding:6px 11px; font-size:11.5px; color:var(--text-dim)}
+  .hint b{color:var(--accent); font-weight:600}
+  .kbd{font-family:var(--mono); font-size:10px; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:4px; padding:1px 5px; color:var(--text-dim)}
+
+  /* ---- SVG node/link classes ---- */
+  .lnk{fill:none; stroke:var(--border-strong); stroke-width:2; transition:stroke .2s, stroke-width .2s, stroke-opacity .2s}
+  .lnk.fwd{stroke:var(--text-faint); stroke-opacity:.9}
+  .lnk.blk{stroke:var(--watch); stroke-dasharray:3 5; stroke-opacity:.8}
+  .lnk.pc{stroke-width:3.4}
+  .lnk.dim{stroke-opacity:.16}
+  .lnk.sev{stroke:var(--crit); stroke-width:3.4}
+  .lnk.path{stroke:var(--accent); stroke-width:3.6; stroke-opacity:1}
+  .lnk.heal{stroke:var(--ok); stroke-dasharray:8 6; animation:dash 1s linear infinite}
+  .lnk.spof{stroke:var(--risk); stroke-width:3.8; stroke-dasharray:7 5; animation:dash 1.1s linear infinite}
+  .lnk.flowpath{stroke:var(--accent); stroke-width:3.6}
+  @keyframes dash{to{stroke-dashoffset:-28}}
+
+  .pcbadge{fill:var(--surface); stroke:var(--border-strong); stroke-width:1}
+  .pcbadge-t{fill:var(--text-dim); font:600 9px var(--mono); text-anchor:middle; pointer-events:none}
+
+  .node{cursor:pointer}
+  .node .body{fill:var(--surface-2); stroke:var(--border-strong); stroke-width:1.5; transition:.15s}
+  .node:hover .body{stroke:var(--accent)}
+  .node .stripe{fill:var(--accent)}
+  .node.sel .body{stroke:var(--accent); stroke-width:3}
+  .node.sel .halo{stroke:var(--accent); stroke-opacity:.3; stroke-width:7; fill:none}
+  .node.dim{opacity:.32}
+  .node.dead .body{fill:url(#hatch); stroke:var(--crit); stroke-width:2; stroke-dasharray:5 3}
+  .node.match .body{stroke:var(--accent); stroke-width:2.5}
+  .nname{fill:var(--text); font:650 12px var(--sans); text-anchor:middle; pointer-events:none}
+  .nsub{fill:var(--text-dim); font:500 9.5px var(--mono); text-anchor:middle; pointer-events:none}
+  .nrole{fill:var(--text-faint); font:650 8px var(--sans); letter-spacing:1px; text-anchor:middle; pointer-events:none; text-transform:uppercase}
+  .epbadge{fill:var(--surface-3); stroke:var(--border); stroke-width:1}
+  .epbadge-t{fill:var(--text-dim); font:600 9.5px var(--sans); text-anchor:middle; pointer-events:none}
+  .ntag{font:700 8.5px var(--sans); letter-spacing:.6px; text-anchor:middle; pointer-events:none}
+  .scorebadge{font:800 12px var(--sans); text-anchor:middle; pointer-events:none}
+
+  /* ---- drawer ---- */
+  aside{border-left:1px solid var(--border); background:var(--surface); overflow-y:auto}
+  aside::-webkit-scrollbar{width:10px} aside::-webkit-scrollbar-thumb{background:var(--surface-3); border-radius:10px}
+  aside::-webkit-scrollbar-track{background:transparent}
+  .sec{padding:15px 17px; border-bottom:1px solid var(--border-faint)}
+  .sec h3{margin:0 0 11px; font-size:10px; letter-spacing:1.3px; text-transform:uppercase;
+    color:var(--text-faint); font-weight:700; display:flex; align-items:center; gap:7px}
+  .sec h3 .ct{color:var(--text-dim); background:var(--surface-2); border:1px solid var(--border);
+    border-radius:999px; padding:1px 8px; font-size:10px; letter-spacing:0}
+  .drawer-head{padding:16px 17px 4px}
+  .drawer-head .eyebrow{font-size:10px; letter-spacing:1.2px; text-transform:uppercase; color:var(--text-faint); font-weight:700}
+  .drawer-head .title{font-size:17px; font-weight:650; color:var(--text); margin-top:3px; letter-spacing:-.2px;
+    word-break:break-word; display:flex; align-items:center; gap:9px}
+  .drawer-head .title .mono{font-family:var(--mono); font-size:14px}
+  .sub{color:var(--text-dim)} .faint{color:var(--text-faint)}
+  .mono{font-family:var(--mono)}
+
+  .empty{padding:46px 24px; text-align:center; color:var(--text-faint)}
+  .empty .big{font-size:30px; margin-bottom:12px; opacity:.5}
+  .empty p{margin:6px 0; font-size:12.5px; line-height:1.6}
+  .empty b{color:var(--text-dim)}
+
+  .headline{display:flex; gap:9px}
+  .stat{flex:1; text-align:center; padding:11px 7px; border:1px solid var(--border); border-radius:9px;
+    background:var(--surface-2)}
+  .stat .v{font-size:26px; font-weight:750; line-height:1; color:var(--text)}
+  .stat .k{font-size:9.5px; letter-spacing:.4px; text-transform:uppercase; color:var(--text-faint); margin-top:6px; font-weight:600}
+  .stat.crit{border-color:var(--crit); background:var(--crit-soft)} .stat.crit .v{color:var(--crit)}
+  .stat.risk{border-color:var(--risk); background:var(--risk-soft)} .stat.risk .v{color:var(--risk)}
+  .stat.ok .v{color:var(--ok)}
+  .stat.accent{border-color:var(--accent); background:var(--accent-soft)} .stat.accent .v{color:var(--accent)}
+
+  .badge{display:inline-flex; align-items:center; gap:6px; font-weight:650; font-size:11px;
+    padding:4px 11px; border-radius:999px; border:1px solid}
+  .b-crit{color:var(--crit); background:var(--crit-soft); border-color:var(--crit)}
+  .b-risk{color:var(--risk); background:var(--risk-soft); border-color:var(--risk)}
+  .b-watch{color:var(--watch); background:var(--watch-soft); border-color:var(--watch)}
+  .b-ok{color:var(--ok); background:var(--ok-soft); border-color:var(--ok)}
+  .b-neutral{color:var(--text-dim); background:var(--surface-2); border-color:var(--border)}
+
+  table{width:100%; border-collapse:collapse; font-size:12px}
+  th{text-align:left; color:var(--text-faint); font-weight:650; font-size:9.5px; letter-spacing:.6px;
+    text-transform:uppercase; padding:0 7px 7px}
+  td{padding:6px 7px; border-top:1px solid var(--border-faint); vertical-align:middle}
+  tr.click{cursor:pointer} tr.click:hover td{background:var(--surface-2)}
+  .vid{font-weight:700; color:var(--accent); font-family:var(--mono)}
+  .pill{display:inline-block; padding:2px 8px; border-radius:6px; font-size:10px; font-weight:650; white-space:nowrap}
+  .pl-crit{color:var(--crit); background:var(--crit-soft)} .pl-risk{color:var(--risk); background:var(--risk-soft)}
+  .pl-watch{color:var(--watch); background:var(--watch-soft)} .pl-ok{color:var(--ok); background:var(--ok-soft)}
+  .pl-neutral{color:var(--text-dim); background:var(--surface-2)}
+
+  .card{border:1px solid var(--border); border-left-width:3px; border-radius:9px; padding:11px 13px; margin-bottom:9px;
+    background:var(--surface-2)}
+  .card.crit{border-left-color:var(--crit)} .card.risk{border-left-color:var(--risk)}
+  .card.watch{border-left-color:var(--watch)} .card.ok{border-left-color:var(--ok)}
+  .card.accent{border-left-color:var(--accent)}
+  .card .ct{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px}
+  .card .nm{font-weight:650; font-size:12.5px; color:var(--text)}
+  .card .ln{font-size:11.5px; color:var(--text-dim); margin:3px 0; line-height:1.5}
+  .card .ln b{color:var(--text)}
+  .card .fix{font-size:11.5px; color:var(--text-dim); margin-top:6px; padding-top:6px; border-top:1px dashed var(--border)}
+  .card .fix b{color:var(--ok)}
+
+  .bar{height:7px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin:4px 0}
+  .bar i{display:block; height:100%; border-radius:999px}
+
+  .kv{display:flex; justify-content:space-between; gap:10px; padding:5px 0; font-size:12px; border-top:1px solid var(--border-faint)}
+  .kv:first-child{border-top:0}
+  .kv .k{color:var(--text-dim)} .kv .v{color:var(--text); font-weight:550; text-align:right; word-break:break-word}
+
+  .checkrow{display:flex; gap:9px; align-items:flex-start; padding:7px 0; border-top:1px solid var(--border-faint); font-size:12px}
+  .checkrow .dot{width:8px;height:8px;border-radius:50%;margin-top:4px;flex-shrink:0}
+  .checkrow .nm{font-weight:600; color:var(--text)} .checkrow .nt{color:var(--text-dim); font-size:11.5px; margin-top:1px}
+
+  .hopline{position:relative; padding-left:22px}
+  .hop{position:relative; padding:7px 0; font-size:12px}
+  .hop::before{content:""; position:absolute; left:-16px; top:11px; width:9px; height:9px; border-radius:50%;
+    background:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .hop.spof::before{background:var(--risk); box-shadow:0 0 0 3px var(--risk-soft)}
+  .hopline::after{content:""; position:absolute; left:-12px; top:6px; bottom:6px; width:2px; background:var(--border)}
+  .hop .l1{font-weight:600; color:var(--text)} .hop .l2{color:var(--text-dim); font-size:11px; margin-top:1px}
+  .lp{font-family:var(--mono); font-size:11px; color:var(--text-dim)}
+
+  .foot{padding:13px 17px; color:var(--text-faint); font-size:10.5px; line-height:1.6}
+  .foot b{color:var(--text-dim)}
+
+  /* drop + help overlays */
+  .drop{position:fixed; inset:0; background:rgba(10,14,20,.86); display:none; align-items:center; justify-content:center;
+    z-index:50; backdrop-filter:blur(3px)}
+  .drop.on{display:flex}
+  .drop > div{border:2px dashed var(--accent); border-radius:16px; padding:48px 64px; font-size:17px; color:var(--text);
+    background:var(--surface)}
+  .drop b{color:var(--accent)}
+  .modal{position:fixed; inset:0; background:rgba(10,14,20,.6); display:none; align-items:center; justify-content:center; z-index:60}
+  .modal.on{display:flex}
+  .modal .box{background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:22px 26px;
+    max-width:440px; box-shadow:var(--shadow)}
+  .modal h2{margin:0 0 14px; font-size:15px} .modal .close{float:right; cursor:pointer; color:var(--text-faint); font-size:18px}
+  .modal .krow{display:flex; justify-content:space-between; padding:6px 0; font-size:12.5px; border-top:1px solid var(--border-faint)}
+  .modal .krow span:first-child{color:var(--text-dim)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><span class="mark"></span><b>Network Migration Explorer</b></div>
+    <span class="src" id="src">DEMO</span>
+    <div class="grow"></div>
+    <div class="modes" id="modes">
+      <button data-mode="blast" class="on"><span class="gl">◎</span>Blast radius</button>
+      <button data-mode="trace"><span class="gl">↝</span>Path trace</button>
+      <button data-mode="compare"><span class="gl">⇄</span>Compare</button>
+      <button data-mode="flow"><span class="gl">⚡</span>Flow</button>
+      <button data-mode="health"><span class="gl">✚</span>Health</button>
+    </div>
+    <div class="grow"></div>
+    <div class="tools">
+      <button class="btn" id="loadBtn">↥ Load</button>
+      <button class="btn iconbtn" id="layoutBtn" title="Toggle layered / radial layout">⊞</button>
+      <button class="btn iconbtn" id="fitBtn" title="Fit to screen (F)">⤢</button>
+      <button class="btn iconbtn" id="themeBtn" title="Toggle light / dark">◐</button>
+      <button class="btn iconbtn" id="helpBtn" title="Keyboard shortcuts (?)">?</button>
+    </div>
+    <input type="file" id="file" accept=".json,application/json" hidden>
+    <input type="file" id="fileB" accept=".json,application/json" hidden>
+  </header>
+
+  <div class="main">
+    <div class="stage" id="stage">
+      <div class="overlay ov-top">
+        <div class="panelbox search"><span class="ic">⌕</span>
+          <input id="search" placeholder="Search switch, IP, MAC…" autocomplete="off"></div>
+        <div class="panelbox chips" id="chips"></div>
+        <div class="panelbox modetag" id="modetag"></div>
+      </div>
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="overlay ov-bottom">
+        <div class="panelbox hint" id="hint"></div>
+        <div class="panelbox legend" id="legend"></div>
+      </div>
+    </div>
+    <aside id="panel"></aside>
+  </div>
+</div>
+
+<div class="drop" id="drop"><div>Drop your <b>snapshot.json</b> to load</div></div>
+<div class="modal" id="help"><div class="box">
+  <span class="close" id="helpClose">✕</span>
+  <h2>Keyboard shortcuts</h2>
+  <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">5</span></div>
+  <div class="krow"><span>Focus search</span><span class="kbd">/</span></div>
+  <div class="krow"><span>Fit to screen</span><span class="kbd">F</span></div>
+  <div class="krow"><span>Clear selection</span><span class="kbd">Esc</span></div>
+  <div class="krow"><span>Toggle theme</span><span class="kbd">T</span></div>
+  <div class="krow"><span>Pan / zoom</span><span>drag · scroll wheel</span></div>
+  <div class="krow"><span>Move a switch</span><span>drag the node</span></div>
+</div></div>
+
+<script>
+/* =====================================================================
+   REASONING CORE — verified JS port of COLLECT_PARSE V3.16.0
+   (build_network_model / _link_carries / _vlan_components /
+    compute_failure_impact / compute_causality_chains / tracePath /
+    compareModels)  —  PRESERVED VERBATIM, 368-check equivalence.
+   ===================================================================== */
+function parseVlanList(str){const out=new Set();if(!str)return out;
+  for(const tok of String(str).split(/[,\s;]+/)){if(!tok)continue;
+    const m=tok.match(/^(\d+)-(\d+)$/);
+    if(m){for(let v=+m[1];v<=+m[2];v++)out.add(v);}else if(/^\d+$/.test(tok))out.add(+tok);}return out;}
+function trunkAllowedSet(str){const s=(str||"").trim().toLowerCase();
+  if(!s||s==="all")return null;if(s==="none")return new Set();return parseVlanList(str);}
+function sviVid(i){const m=(i.port||"").match(/^Vlan(\d+)$/i);if(m)return +m[1];
+  if(i.vlan&&/^\d+$/.test(i.vlan))return +i.vlan;return null;}
+function isSvi(i){return /^Vlan\d+$/i.test(i.port||"")||!!(i.svi_ip&&i.svi_ip.trim());}
+function fhrpRole(i){const h=(i.hsrp_behavior||"").toLowerCase();if(!h)return null;
+  if(!/(hsrp|vrrp|glbp)/.test(h))return null;
+  if(/\bstandby\b/.test(h))return "standby";if(/\bactive\b/.test(h))return "active";return "member";}
+function isAccessEndpoint(i){const mode=(i.switchport_mode||"").toLowerCase();
+  const mac=(i.end_host_mac||"").trim();if(!mac)return false;
+  return mode.includes("access")||(!mode.includes("trunk")&&!isSvi(i));}
+
+/* Faithful port of COLLECT_PARSE _canon_host(): strip trailing '(serial)' + FQDN domain,
+   lowercase. Restores the neighbor→scanned-host resolution the verified Python core uses
+   (cmap = _canon_host_map). Without it the suffixed CDP device-ids (…broadcast.[HISTORY-REDACTED]) match
+   no host key and the whole topology builds with ZERO links. */
+function canonHost(name){let n=(name||"").trim();n=n.replace(/\(.*?\)\s*$/,"").trim();n=n.split(".")[0];return n.toLowerCase();}
+
+function buildModel(snap){
+  const ifaces=snap.interfaces||{};const hosts=Object.keys(ifaces);const hostSet=new Set(hosts);
+  const canonMap=new Map(hosts.map(h=>[canonHost(h),h]));
+  const links=[],linkKey=new Map(),offscan=[];
+  const gateways=new Map(),fhrp=new Map(),endpoints=new Map();const vlans=new Set();let endpointTotal=0;
+  const addGw=(v,h)=>{if(!gateways.has(v))gateways.set(v,new Set());gateways.get(v).add(h);};
+  const addEp=(h,v,n=1)=>{if(!endpoints.has(h))endpoints.set(h,new Map());const m=endpoints.get(h);
+    m.set(v,(m.get(v)||0)+n);endpointTotal+=n;vlans.add(v);};
+  for(const host of hosts)for(const port of Object.keys(ifaces[host])){const d=ifaces[host][port];
+    if(isSvi(d)){const vid=sviVid(d);
+      if(vid!=null&&(d.svi_ip||d.hsrp_behavior||/^Vlan\d+$/i.test(port))){addGw(vid,host);vlans.add(vid);
+        const role=fhrpRole(d);if(role){if(!fhrp.has(vid))fhrp.set(vid,{active:new Set(),standby:new Set(),members:new Set()});
+          const f=fhrp.get(vid);f.members.add(host);if(role==="active")f.active.add(host);if(role==="standby")f.standby.add(host);}}
+      continue;}
+    const rawNbr=(d.cdp_neighbor||"").trim();
+    if(rawNbr){const nbr=canonMap.get(canonHost(rawNbr));
+      if(!nbr||nbr===host){offscan.push({host,port,neighbor:rawNbr});continue;}
+      const np=(d.neighbor_port||"").trim();
+      const key=[host+"|"+port,nbr+"|"+np].sort().join("::");
+      const fwd=parseVlanList(d.stp_fwd_vlans),blk=parseVlanList(d.stp_blk_vlans),allowed=trunkAllowedSet(d.trunk_allowed_vlans);
+      const pc=!!(d.port_channel&&d.port_channel.trim());
+      for(const x of fwd)vlans.add(x);for(const x of blk)vlans.add(x);
+      if(linkKey.has(key)){const L=links[linkKey.get(key)];
+        for(const x of fwd)L.fwd.add(x);for(const x of blk)L.blk.add(x);
+        if(L.allowed!==null&&allowed===null)L.allowed=null;else if(L.allowed!==null&&allowed)for(const x of allowed)L.allowed.add(x);
+        L.portChannel=L.portChannel||pc;}
+      else{linkKey.set(key,links.length);links.push({a:host,aPort:port,b:nbr,bPort:np,portChannel:pc,fwd,blk,allowed});}
+      continue;}
+    if(isAccessEndpoint(d)){const vid=(d.vlan&&/^\d+$/.test(d.vlan))?+d.vlan:null;if(vid!=null)addEp(host,vid,1);}}
+  const adj=new Map(hosts.map(h=>[h,[]]));
+  links.forEach((L,i)=>{adj.get(L.a).push(i);adj.get(L.b).push(i);});
+  return {hosts,links,adj,gateways,fhrp,endpoints,endpointTotal,vlans,offscan};
+}
+function linkCarries(L,vid){if(L.fwd.has(vid))return "fwd";if(L.blk.has(vid))return "blk";
+  if(L.allowed===null||L.allowed.has(vid))return "fwd";return "";}
+function vlanComponents(model,vid,removed=null,backup=false){
+  const part=new Set();
+  for(const h of model.hosts){if(h===removed)continue;
+    if(model.endpoints.get(h)?.get(vid)||model.gateways.get(vid)?.has(h))part.add(h);}
+  model.links.forEach(L=>{if(L.a===removed||L.b===removed)return;const c=linkCarries(L,vid);
+    if(c==="fwd"||(backup&&c==="blk")){part.add(L.a);part.add(L.b);}});
+  const seen=new Set(),comps=[];
+  for(const s of part){if(seen.has(s))continue;const comp=new Set([s]);seen.add(s);const st=[s];
+    while(st.length){const cur=st.pop();for(const li of model.adj.get(cur)){const L=model.links[li];
+      if(L.a===removed||L.b===removed)continue;const c=linkCarries(L,vid);
+      if(c!=="fwd"&&!(backup&&c==="blk"))continue;const nx=L.a===cur?L.b:L.a;
+      if(!part.has(nx)||seen.has(nx))continue;seen.add(nx);comp.add(nx);st.push(nx);}}comps.push(comp);}
+  return comps;
+}
+const compIndexOf=(comps,h)=>{for(let i=0;i<comps.length;i++)if(comps[i].has(h))return i;return -1;};
+function failureImpact(model,host){
+  const perVlan=[];let hardStranded=0,healable=0;
+  for(const vid of [...model.vlans].sort((a,b)=>a-b)){
+    let collateralEps=0;const ch=[];
+    for(const [h,m] of model.endpoints){if(h===host)continue;const n=m.get(vid);if(n){collateralEps+=n;ch.push(h);}}
+    if(collateralEps===0)continue;
+    const gws=model.gateways.get(vid)||new Set();const gwOther=[...gws].filter(g=>g!==host);
+    const hostWasGw=gws.has(host);const f=model.fhrp.get(vid);
+    const cA=vlanComponents(model,vid,host,false),cB=vlanComponents(model,vid,host,true);
+    const reaches=(comps,h)=>{const ci=compIndexOf(comps,h);if(ci<0)return false;return gwOther.some(g=>comps[ci].has(g));};
+    let strandedActive=0,strandedHard=0;
+    for(const h of ch){const n=model.endpoints.get(h).get(vid);
+      const okA=gwOther.length>0&&reaches(cA,h);if(okA)continue;
+      strandedActive+=n;const okB=gwOther.length>0&&reaches(cB,h);if(!okB)strandedHard+=n;}
+    let cls,sev;
+    if(strandedActive===0){
+      if(hostWasGw&&f&&f.active.has(host)&&gwOther.some(g=>f.standby.has(g)||f.members.has(g))){cls="FHRP-covered";sev="Low";}
+      else{cls="No impact";sev="Info";}}
+    else if(gwOther.length===0){cls="Hard partition";sev="High";}
+    else if(strandedHard===0){cls="Backup-covered";sev="Medium";}
+    else{cls="Hard partition";sev="High";}
+    hardStranded+=strandedHard;healable+=(strandedActive-strandedHard);
+    perVlan.push({vid,cls,sev,collateralEps,strandedActive,strandedHard,healable:strandedActive-strandedHard,gwOther:gwOther.length,hostWasGw});}
+  const ord={High:3,Medium:2,Low:1,Info:0};let worst="Info";
+  for(const r of perVlan)if(ord[r.sev]>ord[worst])worst=r.sev;
+  perVlan.sort((a,b)=>ord[b.sev]-ord[a.sev]||a.vid-b.vid);
+  return {host,perVlan,hardStranded,healable,worst};
+}
+function causalityChains(model){
+  const chains=[];
+  for(const [vid,gws] of model.gateways){if(gws.size!==1)continue;const gw=[...gws][0];
+    const f=model.fhrp.get(vid);if(f&&f.standby.size>0)continue;
+    let elsewhere=0;for(const [h,m] of model.endpoints)if(h!==gw)elsewhere+=(m.get(vid)||0);
+    if(elsewhere>0)chains.push({type:"A",sev:"High",switch:gw,vid,endpoints:elsewhere,
+      title:`Sole-gateway SPOF · VLAN ${vid}`,
+      root:`${gw} is the only in-scan gateway for VLAN ${vid} and has no FHRP standby.`,
+      mech:`If ${gw} drops, every VLAN-${vid} endpoint loses its default gateway — no failover exists.`,
+      blast:`${elsewhere} endpoint(s) on other switches go gateway-less.`,
+      fix:`Add an FHRP peer (HSRP/VRRP) for VLAN ${vid} on a second distribution switch.`});}
+  const soleGw=new Set();for(const [vid,gws] of model.gateways)if(gws.size===1)soleGw.add([...gws][0]+"|"+vid);
+  for(const host of model.hosts){const fi=failureImpact(model,host);
+    for(const r of fi.perVlan){
+      if(r.cls==="Hard partition"||r.cls==="Backup-covered"){
+        if(soleGw.has(host+"|"+r.vid)&&r.gwOther===0)continue;
+        const healed=r.cls==="Backup-covered";
+        chains.push({type:"B",sev:healed?"Medium":"High",switch:host,vid:r.vid,endpoints:r.strandedActive,
+          title:`Transit articulation · VLAN ${r.vid}`,
+          root:`${host} sits on the only forwarding path between some VLAN-${r.vid} endpoints and their gateway.`,
+          mech:healed?`Removing ${host} drops the active path; an STP-blocked link re-converges to heal it (transient outage).`
+                     :`Removing ${host} splits ${r.strandedActive} endpoint(s) from the gateway with no surviving path.`,
+          blast:`${r.strandedActive} collateral endpoint(s)${healed?" (recover after STP re-converges)":" stranded"}.`,
+          fix:healed?`Confirm STP re-convergence time is acceptable; consider a port-channel for sub-second failover.`
+                    :`Add a redundant uplink so these endpoints have a second path to the gateway.`});}}
+    const byVlan=new Map();
+    for(const li of model.adj.get(host)){const L=model.links[li];for(const vid of model.vlans)
+      if(linkCarries(L,vid)==="fwd"){if(!byVlan.has(vid))byVlan.set(vid,[]);byVlan.get(vid).push(L);}}
+    const hostEps=model.endpoints.get(host);
+    for(const [vid,ls] of byVlan){const nonPC=ls.filter(L=>!L.portChannel);
+      if(ls.length===1&&nonPC.length===1&&hostEps&&hostEps.get(vid))
+        chains.push({type:"C",sev:"Medium",switch:host,vid,endpoints:hostEps.get(vid),
+          title:`Single uplink · VLAN ${vid}`,
+          root:`${host} reaches VLAN ${vid} through a single non-port-channel uplink.`,
+          mech:`One fiber/optic fault or far-end port failure isolates ${host} for VLAN ${vid}.`,
+          blast:`${hostEps.get(vid)} local endpoint(s) ride a single point of failure.`,
+          fix:`Dual-home ${host} or bundle the uplink into a port-channel.`});}}
+  const ord={High:3,Medium:2,Low:1,Info:0};
+  chains.sort((a,b)=>ord[b.sev]-ord[a.sev]||a.type.localeCompare(b.type)||a.vid-b.vid);
+  return chains;
+}
+function _bfsPath(model,vid,src,dst,bk,exL=-1,exH=null){if(src===dst)return [src];
+  const prev=new Map([[src,null]]);const q=[src];
+  while(q.length){const cur=q.shift();if(cur===dst)break;
+    for(const li of model.adj.get(cur)){if(li===exL)continue;const L=model.links[li];
+      const c=linkCarries(L,vid);if(c!=="fwd"&&!(bk&&c==="blk"))continue;
+      const nx=L.a===cur?L.b:L.a;if(nx===exH||prev.has(nx))continue;
+      prev.set(nx,cur);if(nx===dst){q.length=0;break;}q.push(nx);}}
+  if(!prev.has(dst))return null;const p=[];let n=dst;while(n!=null){p.unshift(n);n=prev.get(n);}return p;}
+function _edgeBetween(model,vid,a,b,bk){let best=-1;
+  for(const li of model.adj.get(a)){const L=model.links[li];
+    if(!((L.a===a&&L.b===b)||(L.a===b&&L.b===a)))continue;
+    const c=linkCarries(L,vid);if(c==="fwd"||(bk&&c==="blk")){if(best<0)best=li;if(L.portChannel)return li;}}return best;}
+function tracePath(model,vid,src,dst,bk=false){
+  if(src===dst)return {reachable:true,trivial:true,path:[src],linkIdxs:[],hops:0,bridges:[],artic:[],backupPath:null};
+  const path=_bfsPath(model,vid,src,dst,bk);
+  if(!path){const bp=bk?null:_bfsPath(model,vid,src,dst,true);
+    return {reachable:false,path:null,linkIdxs:[],hops:0,bridges:[],artic:[],backupPath:bp};}
+  const linkIdxs=[];for(let i=0;i<path.length-1;i++)linkIdxs.push(_edgeBetween(model,vid,path[i],path[i+1],bk));
+  const bridges=[];for(const li of linkIdxs)if(li>=0&&!_bfsPath(model,vid,src,dst,bk,li,null))bridges.push(li);
+  const artic=[];for(let i=1;i<path.length-1;i++)if(!_bfsPath(model,vid,src,dst,bk,-1,path[i]))artic.push(path[i]);
+  const backupPath=bk?null:_bfsPath(model,vid,src,dst,true);
+  return {reachable:true,trivial:false,path,linkIdxs,hops:path.length-1,bridges,artic,backupPath};}
+function _linkSig(L){return [L.a,L.b].sort().join("::");}
+function compareModels(A,B){
+  const hA=new Set(A.hosts),hB=new Set(B.hosts);
+  const switchesAdded=B.hosts.filter(h=>!hA.has(h));const switchesRemoved=A.hosts.filter(h=>!hB.has(h));
+  const sA=new Map(A.links.map(L=>[_linkSig(L),L])),sB=new Map(B.links.map(L=>[_linkSig(L),L]));
+  const linksAdded=[...sB.keys()].filter(k=>!sA.has(k));const linksRemoved=[...sA.keys()].filter(k=>!sB.has(k));
+  const stpChanges=[];for(const [k,LA] of sA){const LB=sB.get(k);if(!LB)continue;
+    const vs=new Set([...LA.fwd,...LA.blk,...LB.fwd,...LB.blk]);
+    for(const v of vs){const ra=LA.fwd.has(v)?"fwd":LA.blk.has(v)?"blk":"";const rb=LB.fwd.has(v)?"fwd":LB.blk.has(v)?"blk":"";
+      if(ra&&rb&&ra!==rb)stpChanges.push({link:k,vid:v,from:ra,to:rb});}}
+  const chA=causalityChains(A),chB=causalityChains(B);const idOf=c=>`${c.type}|${c.switch}|${c.vid}`;
+  const mA=new Map(chA.map(c=>[idOf(c),c])),mB=new Map(chB.map(c=>[idOf(c),c]));
+  const newChains=chB.filter(c=>!mA.has(idOf(c)));const resolvedChains=chA.filter(c=>!mB.has(idOf(c)));
+  const persistChains=chB.filter(c=>mA.has(idOf(c)));
+  const ord={High:3,Medium:2,Low:1,Info:0};const both=B.hosts.filter(h=>hA.has(h));const switchDeltas=[];
+  for(const h of both){const fa=failureImpact(A,h),fb=failureImpact(B,h);
+    const dHard=fb.hardStranded-fa.hardStranded;const dWorst=ord[fb.worst]-ord[fa.worst];
+    if(dHard===0&&dWorst===0)continue;
+    const direction=dWorst>0?"worse":dWorst<0?"better":dHard>0?"worse":"better";
+    switchDeltas.push({host:h,fromWorst:fa.worst,toWorst:fb.worst,fromHard:fa.hardStranded,toHard:fb.hardStranded,dHard,dWorst,direction});}
+  switchDeltas.sort((a,b)=>(b.dWorst-a.dWorst)||(b.dHard-a.dHard)||a.host.localeCompare(b.host));
+  return {switchesAdded,switchesRemoved,linksAdded,linksRemoved,stpChanges,newChains,resolvedChains,persistChains,switchDeltas,
+    epA:A.endpointTotal,epB:B.endpointTotal,
+    regressions:newChains.length+switchDeltas.filter(d=>d.direction==="worse").length,
+    improvements:resolvedChains.length+switchDeltas.filter(d=>d.direction==="better").length};}
+
+/* =====================================================================
+   DEMO SNAPSHOT  (collect_parse_snapshot/1 shape — identical to fixture)
+   ===================================================================== */
+function demoSnapshot(){
+  const ALL="1,10,20,30,99";
+  const gw=(vid,ip,h)=>({port:"Vlan"+vid,svi_ip:ip,vlan:String(vid),hsrp_behavior:h||"",switchport_mode:"",end_host_mac:""});
+  const link=(nbr,np,o={})=>({port:o.port,cdp_neighbor:nbr,neighbor_port:np,stp_fwd_vlans:o.fwd||"",stp_blk_vlans:o.blk||"",
+    trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:""});
+  const eps=(vid,n,base)=>{const o={};for(let i=0;i<n;i++){const p=`Gi1/0/${base+i}`;
+    o[p]={port:p,switchport_mode:"access",vlan:String(vid),status:"connected",
+      end_host_mac:`aa:bb:${vid.toString(16).padStart(2,"0")}:00:00:${(base+i).toString(16).padStart(2,"0")}`,
+      end_host_ip:`10.0.${vid}.${base+i}`};}return o;};
+  return {schema:"collect_parse_snapshot/1",devices:{},interfaces:{
+    "DIST-1":Object.assign({},
+      {"Vlan10":gw(10,"10.0.10.2","HSRP grp10 active vIP 10.0.10.1"),
+       "Vlan20":gw(20,"10.0.20.2","HSRP grp20 active vIP 10.0.20.1"),
+       "Vlan99":gw(99,"10.0.99.2","HSRP grp99 active vIP 10.0.99.1"),
+       "Vlan30":gw(30,"10.0.30.1","")},
+      {"Po1":link("DIST-2","Po1",{port:"Po1",fwd:ALL,pc:"Po1"}),
+       "Gi1/0/1":link("ACC-1","Gi1/0/24",{port:"Gi1/0/1",fwd:ALL}),
+       "Gi1/0/2":link("ACC-2","Gi1/0/24",{port:"Gi1/0/2",fwd:ALL}),
+       "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL})}),
+    "DIST-2":Object.assign({},
+      {"Vlan10":gw(10,"10.0.10.3","HSRP grp10 standby vIP 10.0.10.1"),
+       "Vlan20":gw(20,"10.0.20.3","HSRP grp20 standby vIP 10.0.20.1"),
+       "Vlan99":gw(99,"10.0.99.3","HSRP grp99 standby vIP 10.0.99.1")},
+      {"Po1":link("DIST-1","Po1",{port:"Po1",fwd:ALL,pc:"Po1"}),
+       "Gi1/0/1":link("ACC-1","Gi1/0/23",{port:"Gi1/0/1",blk:ALL}),
+       "Gi1/0/4":link("ACC-4","Gi1/0/23",{port:"Gi1/0/4",fwd:ALL})}),
+    "ACC-1":Object.assign({},eps(10,6,1),eps(20,4,7),
+      {"Gi1/0/24":link("DIST-1","Gi1/0/1",{port:"Gi1/0/24",fwd:ALL}),
+       "Gi1/0/23":link("DIST-2","Gi1/0/1",{port:"Gi1/0/23",blk:ALL})}),
+    "ACC-2":Object.assign({},eps(10,8,1),eps(30,3,9),
+      {"Gi1/0/24":link("DIST-1","Gi1/0/2",{port:"Gi1/0/24",fwd:ALL}),
+       "Gi1/0/12":link("ACC-3","Gi1/0/24",{port:"Gi1/0/12",fwd:ALL})}),
+    "ACC-3":Object.assign({},eps(10,5,1),
+      {"Gi1/0/24":link("ACC-2","Gi1/0/12",{port:"Gi1/0/24",fwd:ALL})}),
+    "ACC-4":Object.assign({},eps(10,7,1),eps(20,5,8),
+      {"Gi1/0/24":link("DIST-1","Gi1/0/4",{port:"Gi1/0/24",fwd:ALL}),
+       "Gi1/0/23":link("DIST-2","Gi1/0/4",{port:"Gi1/0/23",fwd:ALL})}),
+  }};
+}
+
+/* =====================================================================
+   LAYOUT ENGINE — role-tiered layered (Sugiyama-style) + radial.
+   Replaces the old force-directed "wheel". Ranks are derived from
+   device role (gateways/degree) + BFS, with barycenter crossing
+   reduction within tiers. (Gansner et al.; van der Maaten/Sugiyama)
+   ===================================================================== */
+function distinctDeg(model,h){const s=new Set();for(const li of model.adj.get(h)){const L=model.links[li];s.add(L.a===h?L.b:L.a);}return s.size;}
+function deviceRole(model,h){
+  // Core/distribution = a topological hub (high distinct-neighbor degree). A management SVI
+  // alone must NOT promote an access switch, so role is degree-driven, not gateway-driven.
+  const deg=distinctDeg(model,h);
+  const maxDeg=Math.max(1,...model.hosts.map(x=>distinctDeg(model,x)));
+  return deg>=Math.max(3,maxDeg*0.5)?"core":"access";
+}
+function roleTiers(model){
+  const core=model.hosts.filter(h=>deviceRole(model,h)==="core");
+  const seed = core.length? core : [model.hosts.slice().sort((a,b)=>model.adj.get(b).length-model.adj.get(a).length)[0]].filter(Boolean);
+  const tier=new Map(); seed.forEach(h=>tier.set(h,0));
+  let q=seed.slice();
+  while(q.length){const nx=[]; for(const cur of q){const t=tier.get(cur);
+    for(const li of model.adj.get(cur)){const L=model.links[li]; const o=L.a===cur?L.b:L.a;
+      if(!tier.has(o)){tier.set(o,t+1);nx.push(o);}}}
+    q=nx;}
+  let maxT=0; tier.forEach(v=>maxT=Math.max(maxT,v));
+  model.hosts.forEach(h=>{if(!tier.has(h))tier.set(h,maxT+1);}); // isolated → bottom
+  maxT=0; tier.forEach(v=>maxT=Math.max(maxT,v));
+  const tiers=Array.from({length:maxT+1},()=>[]);
+  model.hosts.forEach(h=>tiers[tier.get(h)].push(h));
+  // barycenter ordering vs the tier above (a few sweeps) to cut crossings
+  tiers.forEach(t=>t.sort((a,b)=>a.localeCompare(b)));
+  for(let sweep=0; sweep<4; sweep++){
+    for(let k=1;k<tiers.length;k++){const above=tiers[k-1]; const idx=new Map(above.map((h,i)=>[h,i]));
+      const bc=h=>{const ns=[]; for(const li of model.adj.get(h)){const L=model.links[li]; const o=L.a===h?L.b:L.a;
+        if(idx.has(o))ns.push(idx.get(o));} return ns.length? ns.reduce((s,x)=>s+x,0)/ns.length : 1e9;};
+      tiers[k]=tiers[k].map(h=>[h,bc(h)]).sort((a,b)=>a[1]-b[1]||a[0].localeCompare(b[0])).map(x=>x[0]);}
+  }
+  return {tier,tiers};
+}
+const COLW=210, ROWH=180, PADX=120, PADY=110;
+function layeredLayout(model){
+  const {tiers}=roleTiers(model);
+  const widest=Math.max(1,...tiers.map(t=>t.length));
+  const logicalW=PADX*2+(widest-1)*COLW;
+  const pos={};
+  tiers.forEach((t,k)=>{const n=t.length; const rowW=(n-1)*COLW; const x0=(logicalW-rowW)/2;
+    t.forEach((h,i)=>pos[h]={x:x0+i*COLW, y:PADY+k*ROWH});});
+  const logicalH=PADY*2+(tiers.length-1)*ROWH;
+  return {pos,logicalW,logicalH};
+}
+function radialLayout(model){
+  const {tiers}=roleTiers(model);
+  const ring=190, cx=0, cy=0; const pos={};
+  tiers.forEach((t,k)=>{const n=t.length;
+    if(k===0&&n===1){pos[t[0]]={x:cx,y:cy};return;}
+    const r=(k===0? ring*0.6 : ring*k); const off=(k%2)*0.25;
+    t.forEach((h,i)=>{const ang=(i/n)*2*Math.PI - Math.PI/2 + off;
+      pos[h]={x:cx+Math.cos(ang)*r, y:cy+Math.sin(ang)*r};});});
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  for(const h in pos){minx=Math.min(minx,pos[h].x);miny=Math.min(miny,pos[h].y);
+    maxx=Math.max(maxx,pos[h].x);maxy=Math.max(maxy,pos[h].y);}
+  for(const h in pos){pos[h].x+=(-minx+PADX);pos[h].y+=(-miny+PADY);}
+  return {pos,logicalW:(maxx-minx)+PADX*2,logicalH:(maxy-miny)+PADY*2};
+}
+
+/* =====================================================================
+   APP STATE + RENDER
+   ===================================================================== */
+const SVGNS="http://www.w3.org/2000/svg";
+let SNAP=null, MODEL=null, CHAINS=[], POS={}, LOGICAL={w:1000,h:600};
+let SEL=null, VLAN="all", MODE="blast", LAYOUT="layered";
+let TRACE_SRC=null, TRACE_DST=null, TRACE=null;
+let MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
+let SEARCHQ="";
+let view={tx:0,ty:0,k:1};
+let nodeEls={}, edgeEls=[], visEdges=[];
+
+function epTotalOf(h){let t=0;const m=MODEL.endpoints.get(h);if(m)for(const n of m.values())t+=n;return t;}
+function gwVlansOf(h){const out=[];for(const [v,s] of MODEL.gateways)if(s.has(h))out.push(v);return out.sort((a,b)=>a-b);}
+function isGateway(h){for(const s of MODEL.gateways.values())if(s.has(h))return true;return false;}
+function modelOf(h){const ifs=SNAP&&SNAP.interfaces&&SNAP.interfaces[h];return ""; }
+function deviceModel(h){const d=SNAP&&SNAP.devices&&SNAP.devices[h]; return d&&d.model?d.model:""; }
+function endpointsOf(h){const out=[];const ifs=SNAP&&SNAP.interfaces&&SNAP.interfaces[h];if(!ifs)return out;
+  for(const p of Object.keys(ifs)){const d=ifs[p];if(isAccessEndpoint(d)){
+    const macs=(d.end_host_mac||"").split(/[,\s]+/).filter(Boolean);
+    out.push({port:p,vlan:d.vlan||"",ip:(d.end_host_ip||"").trim(),mac:macs[0]||"",macs});}}
+  return out;}
+
+/* ---- entry point (signature preserved for Python embed) ---- */
+function load(snap,label,live){
+  SNAP=snap; SNAP_LABEL=label;
+  MODEL=buildModel(snap); CHAINS=causalityChains(MODEL);
+  SEL=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
+  const src=document.getElementById("src");
+  src.textContent=label; src.classList.toggle("live",!!live);
+  computeLayout(); buildChips(); fitView(); repaint(); renderDrawer();
+}
+function computeLayout(){
+  const r = LAYOUT==="radial"? radialLayout(MODEL) : layeredLayout(MODEL);
+  POS=r.pos; LOGICAL={w:r.logicalW,h:r.logicalH}; buildSvg();
+}
+
+/* ---- VLAN filter chips ---- */
+function firstEpVlan(){const vs=[...MODEL.vlans].sort((a,b)=>a-b);
+  for(const v of vs)for(const m of MODEL.endpoints.values())if(m.get(v))return v;return vs[0];}
+function traceVid(){return VLAN==="all"?firstEpVlan():+VLAN;}
+function buildChips(){
+  const wrap=document.getElementById("chips");
+  const vids=[...MODEL.vlans].sort((a,b)=>a-b);
+  let h=`<span class="lbl">VLAN</span><span class="chip ${VLAN==="all"?"on":""}" data-v="all">ALL</span>`;
+  for(const v of vids){const ep=[...MODEL.endpoints.values()].reduce((s,m)=>s+(m.get(v)||0),0);
+    h+=`<span class="chip ${String(VLAN)===String(v)?"on":""}" data-v="${v}" title="${ep} endpoints">${v}</span>`;}
+  wrap.innerHTML=h;
+  wrap.querySelectorAll(".chip").forEach(c=>c.onclick=()=>setVlan(c.dataset.v));
+}
+function setVlan(v){VLAN=v;buildChips();if(MODE==="trace")computeTrace();repaint();renderDrawer();}
+
+/* ---- build SVG scene graph (nodes + aggregated edges) ---- */
+function aggregateEdges(){
+  const map=new Map();
+  MODEL.links.forEach((L,i)=>{const key=[L.a,L.b].sort().join("::");
+    if(!map.has(key))map.set(key,{a:L.a,b:L.b,members:[],idxs:[],pc:false});
+    const e=map.get(key); e.members.push(L); e.idxs.push(i); e.pc=e.pc||L.portChannel;});
+  return [...map.values()];
+}
+function svg(){return document.getElementById("svg");}
+function el(tag,attrs){const e=document.createElementNS(SVGNS,tag);
+  for(const k in attrs)e.setAttribute(k,attrs[k]);return e;}
+
+function buildSvg(){
+  const s=svg(); s.innerHTML="";
+  const defs=el("defs",{});
+  defs.innerHTML=`<pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+    <rect width="7" height="7" fill="var(--crit-soft)"/><line x1="0" y1="0" x2="0" y2="7" stroke="var(--crit)" stroke-width="2" stroke-opacity=".5"/></pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>`;
+  s.appendChild(defs);
+  const vp=el("g",{id:"vp"}); s.appendChild(vp);
+  const glinks=el("g",{id:"glinks"}); const gnodes=el("g",{id:"gnodes"});
+  vp.appendChild(glinks); vp.appendChild(gnodes);
+
+  visEdges=aggregateEdges(); edgeEls=[];
+  visEdges.forEach(e=>{const path=el("path",{class:"lnk"});
+    const grp=el("g",{}); grp.appendChild(path);
+    let badge=null,btext=null;
+    if(e.members.length>1||e.pc){badge=el("rect",{class:"pcbadge",rx:4,width:26,height:14});
+      btext=el("text",{class:"pcbadge-t"}); btext.textContent="×"+e.members.length;
+      grp.appendChild(badge); grp.appendChild(btext);}
+    glinks.appendChild(grp);
+    edgeEls.push({e,path,badge,btext});});
+
+  nodeEls={};
+  MODEL.hosts.forEach(h=>{
+    const role=deviceRole(MODEL,h); const core=role==="core";
+    const w=core?164:138, ht=core?58:46;
+    const g=el("g",{class:"node",transform:`translate(${POS[h].x},${POS[h].y})`});
+    const halo=el("rect",{class:"halo",x:-w/2-4,y:-ht/2-4,rx:13,width:w+8,height:ht+8,fill:"none"});
+    const body=el("rect",{class:"body",x:-w/2,y:-ht/2,rx:10,width:w,height:ht});
+    g.appendChild(halo); g.appendChild(body);
+    if(core){const stripe=el("rect",{class:"stripe",x:-w/2,y:-ht/2,rx:4,width:w,height:5});g.appendChild(stripe);}
+    const nm=el("text",{class:"nname",x:0,y:core?-2:0}); nm.textContent=shortName(h); g.appendChild(nm);
+    const sub=el("text",{class:"nsub",x:0,y:core?13:13}); sub.textContent=deviceModel(h)||(core?"core / dist":"access"); g.appendChild(sub);
+    const roleTag=el("text",{class:"nrole",x:0,y:-ht/2-7}); roleTag.textContent=core?"core / dist":"access"; g.appendChild(roleTag);
+    // endpoint badge
+    const ep=epTotalOf(h);
+    let epb=null,ept=null;
+    if(ep>0){epb=el("rect",{class:"epbadge",rx:8,x:w/2-46,y:ht/2-2,width:54,height:18});
+      ept=el("text",{class:"epbadge-t",x:w/2-19,y:ht/2+11}); ept.textContent=ep+" host"+(ep>1?"s":"");
+      g.appendChild(epb); g.appendChild(ept);}
+    // mode overlay tag + score badge holders
+    const tag=el("text",{class:"ntag",x:0,y:ht/2+22}); g.appendChild(tag);
+    const score=el("text",{class:"scorebadge",x:-w/2+2,y:-ht/2-7}); g.appendChild(score);
+    g.addEventListener("mousedown",ev=>onNodeDown(ev,h));
+    g.addEventListener("click",ev=>{ev.stopPropagation(); if(!dragMoved)onNodeClick(h);});
+    gnodes.appendChild(g);
+    nodeEls[h]={g,body,halo,nm,sub,tag,score,w,ht,core,roleTag};});
+
+  applyTransform(); positionAll();
+}
+function shortName(h){return h.length>20?h.slice(0,19)+"…":h;}
+function positionNode(h){nodeEls[h].g.setAttribute("transform",`translate(${POS[h].x},${POS[h].y})`);}
+function positionAll(){MODEL.hosts.forEach(positionNode); updateEdges();}
+function updateEdges(){
+  edgeEls.forEach(({e,path,badge,btext})=>{const a=POS[e.a],b=POS[e.b];if(!a||!b)return;
+    if(LAYOUT==="radial"){const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+      path.setAttribute("d",`M${a.x},${a.y} Q${mx},${my} ${b.x},${b.y}`);}
+    else path.setAttribute("d",`M${a.x},${a.y} L${b.x},${b.y}`);
+    if(badge){const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+      badge.setAttribute("x",mx-13);badge.setAttribute("y",my-7);
+      btext.setAttribute("x",mx);btext.setAttribute("y",my+3);}});
+}
+
+/* ---- pan / zoom (viewBox-free: transform the viewport group) ---- */
+function applyTransform(){const vp=document.getElementById("vp");
+  if(vp)vp.setAttribute("transform",`translate(${view.tx},${view.ty}) scale(${view.k})`);}
+function fitView(){const st=document.getElementById("stage");const W=st.clientWidth,H=st.clientHeight;
+  const k=Math.min(W/LOGICAL.w,H/LOGICAL.h)*0.92; view.k=Math.max(0.25,Math.min(k,1.6));
+  view.tx=(W-LOGICAL.w*view.k)/2; view.ty=(H-LOGICAL.h*view.k)/2; applyTransform();}
+function screenToLogical(px,py){const r=svg().getBoundingClientRect();
+  return {x:(px-r.left-view.tx)/view.k, y:(py-r.top-view.ty)/view.k};}
+
+let panning=false,panStart=null,dragNode=null,dragMoved=false,dragStart=null;
+function onNodeDown(ev,h){ev.stopPropagation();dragNode=h;dragMoved=false;
+  const p=screenToLogical(ev.clientX,ev.clientY);dragStart={dx:POS[h].x-p.x,dy:POS[h].y-p.y};}
+function onSvgDown(ev){if(dragNode)return;panning=true;panStart={x:ev.clientX-view.tx,y:ev.clientY-view.ty};
+  svg().classList.add("grabbing");}
+window.addEventListener("mousemove",ev=>{
+  if(dragNode){const p=screenToLogical(ev.clientX,ev.clientY);
+    POS[dragNode]={x:p.x+dragStart.dx,y:p.y+dragStart.dy};dragMoved=true;positionNode(dragNode);updateEdges();return;}
+  if(panning){view.tx=ev.clientX-panStart.x;view.ty=ev.clientY-panStart.y;applyTransform();}});
+window.addEventListener("mouseup",()=>{dragNode=null;panning=false;svg().classList.remove("grabbing");});
+
+/* =====================================================================
+   REPAINT — per-mode node/link styling on the shared canvas
+   ===================================================================== */
+function clearFx(){
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match");
+    n.g.style.removeProperty("--ov"); n.body.style.removeProperty("fill"); n.body.style.removeProperty("stroke");
+    n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");});
+  edgeEls.forEach(({path})=>{path.className.baseVal="lnk";});
+}
+function baseEdge(){
+  const vid = VLAN==="all"? null : +VLAN;
+  edgeEls.forEach(({e,path})=>{let cls="lnk";
+    let anyFwd=false,anyBlk=false,pc=e.pc;
+    if(vid!=null){for(const L of e.members){const c=linkCarries(L,vid);if(c==="fwd")anyFwd=true;else if(c==="blk")anyBlk=true;}}
+    else{for(const L of e.members)for(const v of MODEL.vlans){const c=linkCarries(L,v);if(c==="fwd"){anyFwd=true;break;}}
+      for(const L of e.members)for(const v of MODEL.vlans){if(linkCarries(L,v)==="blk"){anyBlk=true;break;}}}
+    if(anyFwd)cls+=" fwd"; else if(anyBlk)cls+=" blk"; else cls+=" dim";
+    if(pc)cls+=" pc";
+    path.className.baseVal=cls;});
+}
+function applySearch(){
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("match");});
+  if(!SEARCHQ)return; const q=SEARCHQ.toLowerCase();
+  MODEL.hosts.forEach(h=>{let hit=h.toLowerCase().includes(q);
+    if(!hit){for(const e of endpointsOf(h)){if((e.ip&&e.ip.toLowerCase().includes(q))||(e.mac&&e.mac.toLowerCase().includes(q))){hit=true;break;}}}
+    if(hit)nodeEls[h].g.classList.add("match");});
+}
+function repaint(){
+  if(!MODEL)return; clearFx(); baseEdge();
+  if(MODE==="blast")paintBlast();
+  else if(MODE==="trace")paintTrace();
+  else if(MODE==="compare")paintCompare();
+  else if(MODE==="flow")paintFlow();
+  else if(MODE==="health")paintHealth();
+  applySearch(); setHint(); setModeTag(); setLegend();
+}
+
+function sevToken(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";}
+function paintBlast(){
+  if(!SEL)return; const n=nodeEls[SEL]; n.g.classList.add("sel","dead"); n.tag.textContent="REMOVED"; n.tag.setAttribute("fill","var(--crit)");
+  const vid=VLAN==="all"?null:+VLAN;
+  // mark collateral switches by worst severity for affected VLANs
+  const fi=failureImpact(MODEL,SEL);
+  const affected=new Map(); // host -> token rank
+  const rank={crit:3,risk:2,watch:1,neutral:0};
+  const consider = vid!=null? fi.perVlan.filter(r=>r.vid===vid) : fi.perVlan;
+  consider.forEach(r=>{if(r.cls==="No impact")return; const tok=sevToken(r.sev);
+    for(const [h,m] of MODEL.endpoints){if(h===SEL)continue;if(m.get(r.vid)){
+      if(!affected.has(h)||rank[tok]>rank[affected.get(h)])affected.set(h,tok);}}});
+  affected.forEach((tok,h)=>{const nn=nodeEls[h]; nn.body.style.stroke=`var(--${tok})`;
+    nn.body.style.fill=`var(--${tok}-soft)`;});
+  // edges touching SEL → severity
+  edgeEls.forEach(({e,path})=>{if(e.a===SEL||e.b===SEL){path.className.baseVal="lnk sev"+(e.pc?" pc":"");}});
+}
+function visEdgeHasIdx(e,idxSet){return e.idxs.some(i=>idxSet.has(i));}
+function paintTrace(){
+  if(TRACE_SRC){nodeEls[TRACE_SRC].g.classList.add("sel");nodeEls[TRACE_SRC].tag.textContent="SOURCE";nodeEls[TRACE_SRC].tag.setAttribute("fill","var(--accent)");}
+  if(TRACE_DST){nodeEls[TRACE_DST].g.classList.add("sel");nodeEls[TRACE_DST].tag.textContent="DEST";nodeEls[TRACE_DST].tag.setAttribute("fill","var(--accent)");}
+  if(!TRACE||!TRACE.reachable||TRACE.trivial)return;
+  const pathSet=new Set(TRACE.path); const bridgeSet=new Set(TRACE.bridges); const articSet=new Set(TRACE.artic);
+  // path edges
+  const pathPairs=new Set(); for(let i=0;i<TRACE.path.length-1;i++)pathPairs.add([TRACE.path[i],TRACE.path[i+1]].sort().join("::"));
+  edgeEls.forEach(({e,path})=>{const key=[e.a,e.b].sort().join("::");
+    if(pathPairs.has(key)){const spof=visEdgeHasIdx(e,bridgeSet);
+      path.className.baseVal="lnk "+(spof?"spof":"path")+(e.pc?" pc":"");}});
+  TRACE.path.forEach(h=>{if(h!==TRACE_SRC&&h!==TRACE_DST){nodeEls[h].body.style.stroke="var(--accent)";}});
+  articSet.forEach(h=>{nodeEls[h].body.style.stroke="var(--risk)";nodeEls[h].body.style.fill="var(--risk-soft)";
+    nodeEls[h].tag.textContent="SPOF";nodeEls[h].tag.setAttribute("fill","var(--risk)");});
+}
+function paintCompare(){
+  if(!CMP)return; const worse=new Set(CMP.switchDeltas.filter(d=>d.direction==="worse").map(d=>d.host));
+  const better=new Set(CMP.switchDeltas.filter(d=>d.direction==="better").map(d=>d.host));
+  const removed=new Set(CMP.switchesRemoved);
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h];
+    if(removed.has(h)){n.g.classList.add("dead");n.tag.textContent="REMOVED";n.tag.setAttribute("fill","var(--crit)");}
+    else if(worse.has(h)){n.body.style.stroke="var(--crit)";n.body.style.fill="var(--crit-soft)";n.tag.textContent="REGRESSED";n.tag.setAttribute("fill","var(--crit)");}
+    else if(better.has(h)){n.body.style.stroke="var(--ok)";n.body.style.fill="var(--ok-soft)";n.tag.textContent="IMPROVED";n.tag.setAttribute("fill","var(--ok)");}});
+}
+function flowObj(){return SNAP&&SNAP.flow_trace?SNAP.flow_trace:null;}
+function paintFlow(){
+  const f=flowObj(); if(!f||!f.hops)return;
+  const onPath=new Set(); f.hops.forEach(h=>{if(h.from)onPath.add(h.from);if(h.to)onPath.add(h.to);});
+  const spof=new Set((f.summary&&f.summary.spofs||[]).map(String));
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h];
+    if(!onPath.has(h)){n.g.classList.add("dim");return;}
+    if(spof.has(h)){n.body.style.stroke="var(--risk)";n.body.style.fill="var(--risk-soft)";
+      n.tag.textContent="SPOF";n.tag.setAttribute("fill","var(--risk)");}
+    else{n.body.style.stroke="var(--accent)";}});
+  const pairs=new Set(); f.hops.forEach(h=>{if(h.from&&h.to)pairs.add([h.from,h.to].sort().join("::"));});
+  edgeEls.forEach(({e,path})=>{const key=[e.a,e.b].sort().join("::");
+    if(pairs.has(key))path.className.baseVal="lnk flowpath"+(e.pc?" pc":"");
+    else path.className.baseVal="lnk dim"+(e.pc?" pc":"");});
+}
+function healthList(){return SNAP&&SNAP.health_scores?SNAP.health_scores:[];}
+function healthBandToken(band){const b=(band||"").toLowerCase();
+  if(b.includes("excellent"))return "ok"; if(b.includes("good"))return "ok";
+  if(b.includes("fair"))return "watch"; if(b.includes("poor"))return "risk";
+  if(b.includes("critical"))return "crit"; return "neutral";}
+function scoreToken(s){return s>=75?"ok":s>=60?"watch":s>=40?"risk":"crit";}
+function paintHealth(){
+  const hs=healthList(); if(!hs.length)return; const by={}; hs.forEach(r=>by[r.switch]=r);
+  MODEL.hosts.forEach(h=>{const r=by[h];const n=nodeEls[h];
+    if(!r){n.g.classList.add("dim");return;}
+    const tok=r.band?healthBandToken(r.band):scoreToken(r.score);
+    n.body.style.stroke=`var(--${tok})`; n.body.style.fill=`var(--${tok}-soft)`;
+    n.score.textContent=r.score; n.score.setAttribute("fill",`var(--${tok})`);});
+  if(SEL&&nodeEls[SEL])nodeEls[SEL].g.classList.add("sel");
+}
+
+/* ---- click handling ---- */
+function onNodeClick(h){if(MODE==="trace")pickTrace(h);
+  else if(MODE==="blast"||MODE==="health"){SEL=(SEL===h)?null:h;repaint();renderDrawer();}}
+function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
+  else if(SEL){SEL=null;repaint();renderDrawer();}}
+function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
+function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
+  else{TRACE_SRC=h;TRACE_DST=null;TRACE=null;} computeTrace();repaint();renderDrawer();}
+function clearTrace(){TRACE_SRC=TRACE_DST=TRACE=null;repaint();renderDrawer();}
+
+/* ---- mode switch ---- */
+function setMode(m){MODE=m; document.querySelectorAll("#modes button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
+  if(m!=="blast"&&m!=="health")SEL=null;
+  if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
+  if(m==="trace")computeTrace();
+  repaint(); renderDrawer();}
+
+/* =====================================================================
+   HINTS / MODE TAG / LEGEND
+   ===================================================================== */
+function setHint(){const h=document.getElementById("hint");const m={
+  blast:`Click a switch to <b>simulate its removal</b>`,
+  trace:TRACE_SRC?(TRACE_DST?`Path traced — click a new <b>source</b> to restart`:`Now click a <b>destination</b>`):`Click a <b>source</b> switch, then a <b>destination</b>`,
+  compare:MODEL_B?`Diff loaded — <b>red</b> regressed, <b>green</b> improved`:`Load a second snapshot to <b>compare</b>`,
+  flow:flowObj()?`Rendering the collector's <b>L1→L3 flow trace</b>`:`No flow trace embedded`,
+  health:`Click a switch for its <b>health breakdown</b>`}[MODE];
+  h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
+function setModeTag(){const el=document.getElementById("modetag");
+  const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
+    trace:"Trace the east-west L2 path for a VLAN and flag every single point of failure on it.",
+    compare:"Diff two snapshots: which SPOFs were resolved, which were introduced.",
+    flow:"The collector's full-stack endpoint→gateway path with per-hop risk.",
+    health:"Per-switch 0–100 health and per-group migration readiness."}[MODE];
+  el.textContent=t;}
+function ln(cls,label){return `<div class="row"><span class="sw swln" style="border-top-color:${cls}"></span>${label}</div>`;}
+function bx(color,label){return `<div class="row"><span class="swbox" style="border-color:${color};background:color-mix(in srgb,${color} 18%,transparent)"></span>${label}</div>`;}
+function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend — ${MODE}</h4>`;
+  if(MODE==="blast")h+=ln("var(--text-faint)","forwarding link")+ln("var(--watch)","STP-blocked")+ln("var(--crit)","impacted link")+bx("var(--crit)","removed / stranded");
+  else if(MODE==="trace")h+=ln("var(--accent)","active path")+ln("var(--risk)","SPOF link")+ln("var(--ok)","backup exists")+bx("var(--risk)","SPOF switch");
+  else if(MODE==="compare")h+=bx("var(--crit)","regressed")+bx("var(--ok)","improved")+bx("var(--crit)","removed");
+  else if(MODE==="flow")h+=ln("var(--accent)","flow path")+bx("var(--risk)","SPOF hop");
+  else if(MODE==="health")h+=bx("var(--ok)","good (75–100)")+bx("var(--watch)","fair (60–74)")+bx("var(--risk)","poor (40–59)")+bx("var(--crit)","critical (<40)");
+  h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
+  L.innerHTML=h;}
+
+/* =====================================================================
+   DRAWER — single right panel, re-skinned per mode
+   ===================================================================== */
+function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function renderDrawer(){
+  if(!MODEL)return; const p=document.getElementById("panel");
+  if(MODE==="blast")p.innerHTML=drawBlast();
+  else if(MODE==="trace")p.innerHTML=drawTrace();
+  else if(MODE==="compare")p.innerHTML=drawCompare();
+  else if(MODE==="flow")p.innerHTML=drawFlow();
+  else if(MODE==="health")p.innerHTML=drawHealth();
+  // wire row clicks (jump-to-switch)
+  p.querySelectorAll("[data-jump]").forEach(r=>r.onclick=()=>{const h=r.dataset.jump;
+    if(MODE==="trace")pickTrace(h); else{SEL=h;repaint();renderDrawer();centerOn(h);}});
+}
+function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
+  view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
+
+function censusSec(){
+  const sw=MODEL.hosts.length, ep=MODEL.endpointTotal, vl=MODEL.vlans.size, gw=MODEL.hosts.filter(isGateway).length;
+  const off=MODEL.offscan.length;
+  return `<div class="sec"><h3>Topology census</h3>
+    <div class="headline">
+      <div class="stat"><div class="v">${sw}</div><div class="k">switches</div></div>
+      <div class="stat"><div class="v">${ep}</div><div class="k">endpoints</div></div>
+      <div class="stat"><div class="v">${vl}</div><div class="k">vlans</div></div>
+    </div>
+    <div class="kv" style="margin-top:11px"><span class="k">L3 gateways</span><span class="v">${gw}</span></div>
+    <div class="kv"><span class="k">Structural SPOFs (chains)</span><span class="v">${CHAINS.length}</span></div>
+    ${off?`<div class="kv"><span class="k faint">Off-scan uplinks</span><span class="v faint">${off} (impact is a floor)</span></div>`:""}
+    </div>`;
+}
+function chainCards(list,limit){let h="";list.slice(0,limit||list.length).forEach(c=>{const tok=sevToken(c.sev);
+  h+=`<div class="card ${tok}" data-jump="${esc(c.switch)}" style="cursor:pointer">
+    <div class="ct"><span class="nm">${esc(c.title)}</span><span class="pill pl-${tok}">${c.sev}</span></div>
+    <div class="ln mono faint">${esc(c.switch)}</div>
+    <div class="ln">${esc(c.blast)}</div>
+    <div class="fix"><b>Fix:</b> ${esc(c.fix)}</div></div>`;});
+  return h;}
+
+/* ---- BLAST ---- */
+function drawBlast(){
+  if(!SEL){
+    return `<div class="drawer-head"><div class="eyebrow">Blast radius</div><div class="title">Fix-this-first</div></div>
+      <div class="sec"><p class="sub" style="margin:0 0 11px">The ${CHAINS.length} structural single-points-of-failure in this fabric, ranked by severity. Click one to jump to the switch.</p>
+      ${CHAINS.length?chainCards(CHAINS,8):'<p class="faint">No structural SPOFs detected.</p>'}</div>
+      ${censusSec()}
+      <div class="empty"><div class="big">◎</div><p>Click any switch on the map to <b>simulate pulling it</b> from the fabric.</p></div>`;
+  }
+  const fi=failureImpact(MODEL,SEL); const own=epTotalOf(SEL); const gwv=gwVlansOf(SEL);
+  const tok=sevToken(fi.worst);
+  let rows=fi.perVlan.map(r=>{const t=sevToken(r.sev);
+    return `<tr><td class="vid">${r.vid}</td><td><span class="pill pl-${t}">${r.cls}</span></td>
+      <td style="text-align:right">${r.strandedHard||"·"}</td><td style="text-align:right" class="faint">${r.healable||"·"}</td></tr>`;}).join("");
+  const myChains=CHAINS.filter(c=>c.switch===SEL);
+  return `<div class="drawer-head"><div class="eyebrow">Simulated removal</div>
+      <div class="title"><span class="mono">${esc(shortName(SEL))}</span> ${isGateway(SEL)?'<span class="badge b-neutral">gateway</span>':""}</div></div>
+    <div class="sec"><div class="headline">
+      <div class="stat ${fi.hardStranded?"crit":"ok"}"><div class="v">${fi.hardStranded}</div><div class="k">hard-stranded</div></div>
+      <div class="stat ${fi.healable?"risk":""}"><div class="v">${fi.healable}</div><div class="k">heal via backup</div></div>
+      <div class="stat"><div class="v">${own}</div><div class="k">migrate with it</div></div>
+    </div>
+    <div style="margin-top:11px" class="sub">Worst-case severity if this switch is removed: <span class="badge b-${tok}">${fi.worst}</span></div>
+    ${gwv.length?`<div class="kv" style="margin-top:9px"><span class="k">Gateway for VLANs</span><span class="v mono">${gwv.join(", ")}</span></div>`:""}
+    </div>
+    <div class="sec"><h3>Per-VLAN impact</h3>
+      <table><thead><tr><th>VLAN</th><th>Outcome</th><th style="text-align:right">Hard</th><th style="text-align:right">Heal</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="4" class="faint">No collateral VLANs.</td></tr>'}</tbody></table></div>
+    ${myChains.length?`<div class="sec"><h3>Causality chains <span class="ct">${myChains.length}</span></h3>${chainCards(myChains)}</div>`:""}
+    ${endpointsSec(SEL)}`;
+}
+function endpointsSec(h){const eps=endpointsOf(h);if(!eps.length)return "";
+  const byV={};eps.forEach(e=>{(byV[e.vlan]=byV[e.vlan]||[]).push(e);});
+  let rows="";eps.slice(0,40).forEach(e=>{rows+=`<tr><td class="mono faint">${esc(e.port)}</td><td class="vid">${esc(e.vlan)}</td>
+    <td class="mono">${esc(e.ip||"—")}</td><td class="mono faint">${esc(e.mac||"")}</td></tr>`;});
+  return `<div class="sec"><h3>Endpoints on this switch <span class="ct">${eps.length}</span></h3>
+    <table><thead><tr><th>Port</th><th>VLAN</th><th>IP</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table>
+    ${eps.length>40?`<p class="faint" style="margin:8px 0 0">+${eps.length-40} more…</p>`:""}</div>`;}
+
+/* ---- TRACE ---- */
+function drawTrace(){
+  if(!TRACE_SRC||!TRACE_DST){
+    return `<div class="drawer-head"><div class="eyebrow">Path trace</div><div class="title">East-west reachability</div></div>
+      <div class="empty"><div class="big">↝</div>
+      <p>Click a <b>source</b> switch${TRACE_SRC?` — <span class="mono">${esc(shortName(TRACE_SRC))}</span> selected`:""}, then a <b>destination</b>.</p>
+      <p class="faint">Trace runs on VLAN <b>${traceVid()}</b>${VLAN==="all"?" (auto-selected lowest endpoint VLAN)":""}.</p></div>`;
+  }
+  if(!TRACE)return "";
+  if(!TRACE.reachable){
+    return `<div class="drawer-head"><div class="eyebrow">Path trace · VLAN ${traceVid()}</div>
+      <div class="title"><span class="mono">${esc(shortName(TRACE_SRC))}</span> → <span class="mono">${esc(shortName(TRACE_DST))}</span></div></div>
+      <div class="sec"><div class="badge b-crit">Unreachable</div>
+      <p class="sub" style="margin-top:10px">No forwarding path carries VLAN ${traceVid()} between these switches.
+      ${TRACE.backupPath?"An STP-blocked backup path exists but is not forwarding.":""}</p></div>`;
+  }
+  const hops=TRACE.path.length-1;
+  const spofL=TRACE.bridges.length, spofS=TRACE.artic.length;
+  let chain="<div class='sec'><h3>Hop chain</h3><div class='hopline'>";
+  TRACE.path.forEach((h,i)=>{const isSpof=TRACE.artic.includes(h);
+    chain+=`<div class="hop ${isSpof?"spof":""}"><div class="l1 mono">${esc(shortName(h))} ${isSpof?'<span class="pill pl-risk">SPOF</span>':""}</div></div>`;});
+  chain+="</div></div>";
+  return `<div class="drawer-head"><div class="eyebrow">Path trace · VLAN ${traceVid()}</div>
+      <div class="title"><span class="mono">${esc(shortName(TRACE_SRC))}</span> → <span class="mono">${esc(shortName(TRACE_DST))}</span></div></div>
+    <div class="sec"><div class="headline">
+      <div class="stat"><div class="v">${hops}</div><div class="k">hops</div></div>
+      <div class="stat ${spofL?"crit":"ok"}"><div class="v">${spofL}</div><div class="k">SPOF links</div></div>
+      <div class="stat ${spofS?"crit":"ok"}"><div class="v">${spofS}</div><div class="k">SPOF switches</div></div>
+    </div>
+    <div style="margin-top:11px" class="sub">${spofL||spofS?
+      `This path has single points of failure. ${TRACE.backupPath?'A backup path would re-converge after STP (transient outage).':'No backup path — loss is a permanent partition.'}`
+      :"Fully resilient — alternate path at every hop."}</div></div>
+    ${chain}`;
+}
+
+/* ---- COMPARE ---- */
+function drawCompare(){
+  if(!MODEL_B){
+    return `<div class="drawer-head"><div class="eyebrow">Compare</div><div class="title">Resilience diff</div></div>
+      <div class="empty"><div class="big">⇄</div>
+      <p>Load a <b>second snapshot</b> to diff resilience against the current baseline.</p>
+      <p><button class="btn primary" onclick="document.getElementById('fileB').click()">↥ Load comparison snapshot</button></p>
+      ${SNAP_LABEL==="DEMO TOPOLOGY"||SNAP_LABEL==="DEMO"?'<p style="margin-top:14px"><button class="btn" id="demoRemed">▶ Try a demo remediation</button></p>':""}
+      </div>`;
+  }
+  const c=CMP; const net=c.improvements-c.regressions;
+  let deltas=c.switchDeltas.slice(0,10).map(d=>{const tok=d.direction==="worse"?"crit":"ok";
+    return `<tr class="click" data-jump="${esc(d.host)}"><td class="mono">${esc(shortName(d.host))}</td>
+      <td><span class="pill pl-${tok}">${d.direction}</span></td>
+      <td style="text-align:right" class="faint">${d.fromWorst}→${d.toWorst}</td>
+      <td style="text-align:right">${d.dHard>0?"+":""}${d.dHard}</td></tr>`;}).join("");
+  const topo=[];
+  if(c.switchesAdded.length)topo.push(`<b>+${c.switchesAdded.length}</b> switch added`);
+  if(c.switchesRemoved.length)topo.push(`<b>−${c.switchesRemoved.length}</b> switch removed`);
+  if(c.linksAdded.length)topo.push(`<b>+${c.linksAdded.length}</b> link added`);
+  if(c.linksRemoved.length)topo.push(`<b>−${c.linksRemoved.length}</b> link removed`);
+  if(c.stpChanges.length)topo.push(`<b>${c.stpChanges.length}</b> STP flip(s)`);
+  return `<div class="drawer-head"><div class="eyebrow">Resilience diff</div><div class="title">Baseline → comparison</div></div>
+    <div class="sec"><div class="headline">
+      <div class="stat ok"><div class="v">${c.improvements}</div><div class="k">improvements</div></div>
+      <div class="stat ${c.regressions?"crit":""}"><div class="v">${c.regressions}</div><div class="k">regressions</div></div>
+      <div class="stat ${net>=0?"ok":"crit"}"><div class="v">${c.epB-c.epA>=0?"+":""}${c.epB-c.epA}</div><div class="k">Δ endpoints</div></div>
+    </div>${topo.length?`<div class="sub" style="margin-top:11px">${topo.join(" · ")}</div>`:""}</div>
+    ${c.resolvedChains.length?`<div class="sec"><h3>Resolved SPOFs <span class="ct">${c.resolvedChains.length}</span></h3>${chainCards(c.resolvedChains,5)}</div>`:""}
+    ${c.newChains.length?`<div class="sec"><h3>New SPOFs <span class="ct">${c.newChains.length}</span></h3>${chainCards(c.newChains,5)}</div>`:""}
+    ${deltas?`<div class="sec"><h3>Per-switch deltas</h3><table><thead><tr><th>Switch</th><th>Dir</th><th style="text-align:right">Worst</th><th style="text-align:right">ΔHard</th></tr></thead><tbody>${deltas}</tbody></table></div>`:""}`;
+}
+
+/* ---- FLOW ---- */
+function flowRiskTok(r){const m={LOW:"ok",MEDIUM:"watch",HIGH:"risk",CRITICAL:"crit"};return m[(r||"").toUpperCase()]||"neutral";}
+function drawFlow(){
+  const f=flowObj();
+  if(!f){return `<div class="drawer-head"><div class="eyebrow">Flow</div><div class="title">Full-stack flow trace</div></div>
+    <div class="empty"><div class="big">⚡</div>
+    <p>No <b>flow_trace</b> embedded in this snapshot.</p>
+    <p class="faint">Re-run the collector with <span class="mono">--flow-src &lt;IP&gt; --flow-dst &lt;IP&gt;</span> to derive an endpoint→gateway path.</p></div>`;}
+  const s=f.summary||{}; const tok=flowRiskTok(s.risk);
+  let hops="";(f.hops||[]).forEach(h=>{const sp=h.spof;
+    hops+=`<div class="hop ${sp?"spof":""}"><div class="l1">${esc(h.from||"")} → ${esc(h.to||"")} ${sp?'<span class="pill pl-risk">SPOF</span>':""}</div>
+      <div class="l2"><span class="pill pl-neutral">${esc(h.layer||"")}</span> <span class="mono">${esc(h.iface||"")}</span> ${esc(h.detail||"")}</div></div>`;});
+  return `<div class="drawer-head"><div class="eyebrow">Flow trace</div>
+      <div class="title mono" style="font-size:14px">${esc(s.src_ip||"?")} → ${esc(s.dst_ip||"?")}</div></div>
+    <div class="sec"><div class="headline">
+      <div class="stat ${tok}"><div class="v" style="font-size:15px;padding:6px 0">${esc((s.risk||"—").toUpperCase())}</div><div class="k">risk</div></div>
+      <div class="stat ${s.spof_count?"crit":"ok"}"><div class="v">${s.spof_count||0}</div><div class="k">SPOFs</div></div>
+      <div class="stat"><div class="v">${(f.hops||[]).length}</div><div class="k">hops</div></div>
+    </div>
+    <div class="kv" style="margin-top:11px"><span class="k">Flow type</span><span class="v">${esc(s.flow_type||"—")}</span></div>
+    <div class="kv"><span class="k">Source</span><span class="v mono">${esc(s.src_location||"—")}</span></div>
+    <div class="kv"><span class="k">Destination</span><span class="v mono">${esc(s.dst_location||"—")}</span></div></div>
+    <div class="sec"><h3>Hop-by-hop</h3><div class="hopline">${hops||'<p class="faint">No hops.</p>'}</div></div>
+    ${(s.notes&&s.notes.length)?`<div class="sec"><h3>Notes</h3>${s.notes.map(n=>`<div class="ln sub">• ${esc(n)}</div>`).join("")}</div>`:""}
+    <div class="foot"><b>L4 note:</b> the collector gathers L1–L3 only; transport filtering (ACLs/service-policies) is not simulated.</div>`;
+}
+
+/* ---- HEALTH (with honest de-duplication of the scoring) ---- */
+function dedupeDeductions(deds){
+  // collapse repeated identical finding families; surface the dominant driver.
+  const fam=new Map();
+  (deds||[]).forEach(d=>{const m=String(d).match(/^(.*?)\s*\(([-+]?\d+)\)\s*$/);
+    let label=m?m[1].trim():String(d).trim(); let pts=m?+m[2]:0;
+    // normalize "@ GiX/Y" specifics into one family
+    label=label.replace(/@\s*\S+/,"@ <port>");
+    if(!fam.has(label))fam.set(label,{count:0,total:0});
+    const f=fam.get(label); f.count++; f.total+=pts;});
+  return [...fam.entries()].map(([label,v])=>({label,count:v.count,total:v.total}))
+    .sort((a,b)=>a.total-b.total);
+}
+function drawHealth(){
+  const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
+  if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
+    <div class="empty"><div class="big">✚</div><p>No <b>health_scores</b> in this snapshot (pre-V3.23).</p></div>`;}
+  // selected switch detail
+  if(SEL){const r=hs.find(x=>x.switch===SEL);
+    if(r){const tok=r.band?healthBandToken(r.band):scoreToken(r.score);
+      const fams=dedupeDeductions(r.deductions);
+      const driver=fams[0];
+      let famRows=fams.map(f=>`<div class="kv"><span class="k">${esc(f.label)}${f.count>1?` <span class="pill pl-neutral">×${f.count}</span>`:""}</span><span class="v" style="color:var(--crit)">${f.total}</span></div>`).join("");
+      const myChains=CHAINS.filter(c=>c.switch===SEL);
+      return `<div class="drawer-head"><div class="eyebrow">Switch health</div>
+        <div class="title"><span class="mono">${esc(shortName(SEL))}</span></div></div>
+        <div class="sec"><div class="headline">
+          <div class="stat ${tok}"><div class="v">${r.score}</div><div class="k">${esc(r.band||"score")}</div></div>
+          <div class="stat"><div class="v" style="font-size:15px;padding:6px 0">${fams.length}</div><div class="k">issue types</div></div>
+          <div class="stat"><div class="v" style="font-size:15px;padding:6px 0">${(r.deductions||[]).length}</div><div class="k">raw findings</div></div>
+        </div>
+        ${driver&&driver.count>1?`<div class="card crit" style="margin-top:11px"><div class="ln"><b>Dominant driver:</b> “${esc(driver.label)}” is counted <b>×${driver.count}</b> (${driver.total} pts). One repeated finding is doing most of the damage to this score — worth confirming it isn't double-counting.</div></div>`:""}
+        </div>
+        <div class="sec"><h3>Deductions, de-duplicated</h3>${famRows}</div>
+        ${myChains.length?`<div class="sec"><h3>Real SPOFs on this switch <span class="ct">${myChains.length}</span></h3>${chainCards(myChains)}</div>`:`<div class="sec"><p class="faint">No structural SPOFs traced to this switch — its low score is driven by the deductions above, not by topology fragility.</p></div>`}`;
+    }}
+  // overview
+  const n=hs.length, avg=Math.round(hs.reduce((s,r)=>s+r.score,0)/Math.max(1,n));
+  const bands={ok:0,watch:0,risk:0,crit:0};
+  hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);if(bands[t]!=null)bands[t]++;});
+  const sorted=hs.slice().sort((a,b)=>a.score-b.score);
+  let rows=sorted.map(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);
+    return `<tr class="click" data-jump="${esc(r.switch)}"><td class="mono">${esc(shortName(r.switch))}</td>
+      <td style="width:90px"><div class="bar"><i style="width:${r.score}%;background:var(--${t})"></i></div></td>
+      <td style="text-align:right;font-weight:700;color:var(--${t})">${r.score}</td></tr>`;}).join("");
+  let mrCards="";mr.forEach(g=>{const tok=g.readiness==="READY"?"ok":g.readiness==="CAUTION"?"watch":"crit";
+    const fails=(g.checks||[]).filter(c=>c.status==="fail"), warns=(g.checks||[]).filter(c=>c.status==="warn"), pass=(g.checks||[]).filter(c=>c.status==="pass");
+    let checks=[...fails,...warns,...pass].map(c=>{const ct=c.status==="fail"?"crit":c.status==="warn"?"watch":"ok";
+      return `<div class="checkrow"><span class="dot" style="background:var(--${ct})"></span>
+        <div><div class="nm">${esc(c.check)}</div><div class="nt">${esc(c.note||"")}</div></div></div>`;}).join("");
+    mrCards+=`<div class="sec"><h3>${esc(g.group)} <span class="badge b-${tok}">${esc(g.readiness)}</span></h3>
+      <div class="sub" style="margin-bottom:8px">${g.switches.length} switches · ${g.endpoints} endpoints · <b style="color:var(--crit)">${g.n_fail} fail</b> · <b style="color:var(--watch)">${g.n_warn} warn</b></div>
+      ${checks}</div>`;});
+  // is the scoring crying wolf?
+  const allBad=(bands.crit+bands.risk)===n && n>2;
+  return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title">${avg}<span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span></div></div>
+    <div class="sec"><div class="headline">
+      <div class="stat ok"><div class="v">${bands.ok}</div><div class="k">good</div></div>
+      <div class="stat risk"><div class="v">${bands.watch+bands.risk}</div><div class="k">fair/poor</div></div>
+      <div class="stat crit"><div class="v">${bands.crit}</div><div class="k">critical</div></div>
+    </div>
+    ${allBad?`<div class="card crit" style="margin-top:11px"><div class="ln"><b>Heads-up:</b> every switch lands in poor/critical. When the whole fleet is red, the scoring is usually mis-calibrated (one finding counted many times) rather than the network being uniformly broken. Click a switch to see its <b>dominant driver</b> — then trust the <b>real SPOF list</b> below for what to actually fix first.</div></div>`:""}
+    </div>
+    <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
+      <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${mrCards}
+    ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
+      <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
+      ${chainCards(CHAINS,6)}</div>`:""}`;
+}
+
+/* =====================================================================
+   WIRING
+   ===================================================================== */
+function setTheme(t){document.documentElement.setAttribute("data-theme",t);
+  try{localStorage.setItem("nme-theme",t);}catch(e){}}
+document.getElementById("modes").addEventListener("click",e=>{const b=e.target.closest("button");if(b)setMode(b.dataset.mode);});
+document.getElementById("svg").addEventListener("mousedown",onSvgDown);
+document.getElementById("svg").addEventListener("click",e=>{if(!dragMoved&&!dragNode)onBgClick();});
+document.getElementById("stage").addEventListener("wheel",e=>{e.preventDefault();
+  const f=e.deltaY<0?1.12:1/1.12; const r=svg().getBoundingClientRect();
+  const mx=e.clientX-r.left,my=e.clientY-r.top;
+  const nk=Math.max(0.2,Math.min(view.k*f,3));
+  view.tx=mx-(mx-view.tx)*(nk/view.k); view.ty=my-(my-view.ty)*(nk/view.k); view.k=nk; applyTransform();},{passive:false});
+document.getElementById("search").addEventListener("input",e=>{SEARCHQ=e.target.value.trim();applySearch();});
+document.getElementById("fitBtn").onclick=fitView;
+document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
+document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();};
+document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("on");
+document.getElementById("helpClose").onclick=()=>document.getElementById("help").classList.remove("on");
+document.getElementById("help").addEventListener("click",e=>{if(e.target.id==="help")e.currentTarget.classList.remove("on");});
+document.getElementById("loadBtn").onclick=()=>document.getElementById("file").click();
+
+document.getElementById("file").addEventListener("change",e=>{const f=e.target.files[0];if(!f)return;
+  const rd=new FileReader();rd.onload=()=>{try{const snap=JSON.parse(rd.result);load(snap,f.name.replace(/\.json$/i,""),true);}
+    catch(err){alert("Could not parse JSON: "+err.message);}};rd.readAsText(f);});
+document.getElementById("fileB").addEventListener("change",e=>{const f=e.target.files[0];if(!f)return;
+  const rd=new FileReader();rd.onload=()=>{try{const snapB=JSON.parse(rd.result);MODEL_B=buildModel(snapB);CMP=compareModels(MODEL,MODEL_B);repaint();renderDrawer();}
+    catch(err){alert("Could not parse JSON: "+err.message);}};rd.readAsText(f);});
+
+// drag-drop
+const drop=document.getElementById("drop");
+window.addEventListener("dragover",e=>{e.preventDefault();drop.classList.add("on");});
+drop.addEventListener("dragleave",e=>{if(e.target===drop)drop.classList.remove("on");});
+window.addEventListener("drop",e=>{e.preventDefault();drop.classList.remove("on");
+  const f=e.dataTransfer.files[0];if(!f)return;const rd=new FileReader();
+  rd.onload=()=>{try{const snap=JSON.parse(rd.result);load(snap,f.name.replace(/\.json$/i,""),true);}
+    catch(err){alert("Could not parse JSON: "+err.message);}};rd.readAsText(f);});
+
+// keyboard
+window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
+  const k=e.key.toLowerCase();
+  if(k==="1")setMode("blast");else if(k==="2")setMode("trace");else if(k==="3")setMode("compare");
+  else if(k==="4")setMode("flow");else if(k==="5")setMode("health");
+  else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
+  else if(k==="/"){e.preventDefault();document.getElementById("search").focus();}
+  else if(k==="escape"){onBgClick();document.getElementById("help").classList.remove("on");}});
+
+// demo remediation (compare mode helper) — delegated since the button is re-rendered
+document.getElementById("panel").addEventListener("click",e=>{if(e.target.id==="demoRemed"){
+  const snapB=demoSnapshot();
+  // add an HSRP standby gateway + a second uplink for ACC-3 to resolve chains
+  snapB.interfaces["DIST-2"]["Vlan30"]={port:"Vlan30",svi_ip:"10.0.30.3",vlan:"30",hsrp_behavior:"HSRP grp30 standby vIP 10.0.30.1",switchport_mode:"",end_host_mac:""};
+  snapB.interfaces["DIST-1"]["Vlan30"]={port:"Vlan30",svi_ip:"10.0.30.2",vlan:"30",hsrp_behavior:"HSRP grp30 active vIP 10.0.30.1",switchport_mode:"",end_host_mac:""};
+  snapB.interfaces["ACC-3"]["Gi1/0/23"]={port:"Gi1/0/23",cdp_neighbor:"DIST-1",neighbor_port:"Gi1/0/5",stp_fwd_vlans:"1,10,20,30,99",trunk_allowed_vlans:"all",switchport_mode:"trunk",end_host_mac:""};
+  snapB.interfaces["DIST-1"]["Gi1/0/5"]={port:"Gi1/0/5",cdp_neighbor:"ACC-3",neighbor_port:"Gi1/0/23",stp_fwd_vlans:"1,10,20,30,99",trunk_allowed_vlans:"all",switchport_mode:"trunk",end_host_mac:""};
+  MODEL_B=buildModel(snapB);CMP=compareModels(MODEL,MODEL_B);repaint();renderDrawer();}});
+
+// theme from storage
+try{const t=localStorage.getItem("nme-theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}
+window.addEventListener("resize",()=>{if(MODEL)fitView();});
+
+/* ---- boot (demo button onclick + final bootstrap; Python replaces the LAST) ---- */
+load(demoSnapshot(),"DEMO TOPOLOGY",false);
+</script>
+</body>
+</html>
