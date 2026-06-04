@@ -5,6 +5,41 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 14: home the command-output I/O glue
+
+On branch `phase2-split-cmdio`. Byte-identical. **The gate step** for the I/O-fed
+analyze functions — no `compute_*` moved here, just the helper they all need.
+
+- New leaf `cisco_toolkit/cmdio.py` (stdlib only: os/logging/typing; own module
+  `logger`) holds `_CISCO_ERRORS`, `_load_cmd_output` (fail-soft loader: tries each
+  command variant, skips empty / Cisco-error captures), and `_safe_parse` (runs a
+  section parser fail-soft, returns `{}`/`_default` on exception).
+- All three imported back into the monolith: `_load_cmd_output`/`_safe_parse` have
+  ~50 call sites across build_*/compute_*/write_*; `_CISCO_ERRORS` is also reused by
+  the platform-detection-from-files function (line ~529, stays).
+- **Byte-identical note:** the two diagnostic breadcrumbs (`_load_cmd_output: failed
+  reading…` debug, `[parse] … failed` warning) now log under the `cisco_toolkit.cmdio`
+  logger instead of the monolith logger — log *name* only, on failure paths; doesn't
+  touch the snapshot.json / Excel contract. Same pattern as parse.py's step-7 logger.
+  Golden confirms byte-identical.
+- New test `test_cmdio_reexported_and_functional` (identity + `_safe_parse` happy/raise
+  paths + `_load_cmd_output` content / error-skip / absent / variant-fallthrough), so
+  **64 tests** now (was 63). `ruff` clean, mypy 101. Monolith **~3,842 lines**. `.md` V3.23.24.
+
+**Now unblocked: the I/O-fed `compute_*` batch (step 15+).** With `_load_cmd_output`/
+`_safe_parse` in the package, analyze.py can import them (cmdio is a lower leaf, no
+cycle). Candidate next slice: `compute_data_quality` (small, uses only `_load_cmd_output`
++ `_ESSENTIAL_CMD_VARIANTS`) as the first I/O-fed move, then the bigger ones —
+`compute_health_scores`/`_score_sensitivity`/`_migration_readiness` (note these take
+already-computed lists, so they're nearly pure; the real I/O is in physical-health /
+protocol-health / build_dependency_map / L3 / flow, which read files and drag the
+entangled `parse_interface_phy`/`_classify_media`/`_is_physical_port` +
+`_parse_fhrp`/`_parse_track`/`_parse_stp_*`/`_parse_etherchannel_member_states`/
+`_parse_vtp_full` parsers). Then excel (`write_*`), html, `__main__`. Sequential — `/batch`
+does NOT fit (confirmed with user).
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 13: network-model / blast-radius -> analyze
 
 On branch `phase2-split-analyze4`. Byte-identical. **Fourth analyze slice** — the

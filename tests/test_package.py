@@ -123,3 +123,26 @@ def test_analyze_reexported_and_functional(cp):
     # removing the sole gateway (sw1) hard-partitions VLAN 20's endpoints -> High severity.
     impact = {r["host"]: r for r in analyze.compute_failure_impact(nm)}
     assert impact["sw1"]["severity"] == "High"
+
+
+def test_cmdio_reexported_and_functional(cp, tmp_path):
+    from cisco_toolkit import cmdio
+    # identity: the ~50 monolith call sites must use the package's helpers.
+    assert cp._load_cmd_output is cmdio._load_cmd_output
+    assert cp._safe_parse is cmdio._safe_parse
+    assert cp._CISCO_ERRORS is cmdio._CISCO_ERRORS
+    # _safe_parse: happy path returns the value; a raising parser falls back to _default.
+    assert cmdio._safe_parse(lambda x: {"k": x}, 1) == {"k": 1}
+    def _boom(_):
+        raise ValueError("bad section")
+    assert cmdio._safe_parse(_boom, "x") == {}
+    assert cmdio._safe_parse(_boom, "x", _default=[]) == []
+    # _load_cmd_output: returns file content; skips an empty/Cisco-error capture + absent cmds.
+    good = tmp_path / "good.txt"; good.write_text("Gi1/0/1 connected\n", encoding="utf-8")
+    bad = tmp_path / "bad.txt"; bad.write_text("% Invalid input detected at '^' marker.\n", encoding="utf-8")
+    c2f = {"show a": str(good), "show b": str(bad)}
+    assert cmdio._load_cmd_output(c2f, "show a").strip() == "Gi1/0/1 connected"
+    assert cmdio._load_cmd_output(c2f, "show b") == ""        # captured Cisco error skipped
+    assert cmdio._load_cmd_output(c2f, "show missing") == ""  # absent command
+    # variant fallthrough: first variant errored, second is good.
+    assert cmdio._load_cmd_output(c2f, "show b", "show a").strip() == "Gi1/0/1 connected"
