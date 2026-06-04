@@ -62,10 +62,13 @@ def test_analyze_reexported_and_functional(cp):
     from cisco_toolkit import analyze
     # identity, not equality: the compute_* functions still in the monolith must use
     # the package's ScoringConfig/SCORING/helpers, not a re-defined copy.
-    assert cp.ScoringConfig is analyze.ScoringConfig
-    assert cp.SCORING is analyze.SCORING
+    # _health_band stays re-exported (write_health_scores_sheet uses it); ScoringConfig /
+    # SCORING / _host_role went package-internal in step 15 (their last monolith users, the
+    # scoring compute_*, moved out).
     assert cp._health_band is analyze._health_band
-    assert cp._host_role is analyze._host_role
+    assert callable(analyze.ScoringConfig) and analyze.SCORING is not None and callable(analyze._host_role)
+    for gone in ("ScoringConfig", "SCORING", "_host_role"):
+        assert not hasattr(cp, gone)
     # the default config reproduces the documented hard-coded tunables.
     assert analyze.SCORING.caps == {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25}
     assert analyze.SCORING.l1_weights["single-fiber-uplink"] == 10
@@ -123,6 +126,16 @@ def test_analyze_reexported_and_functional(cp):
     # removing the sole gateway (sw1) hard-partitions VLAN 20's endpoints -> High severity.
     impact = {r["host"]: r for r in analyze.compute_failure_impact(nm)}
     assert impact["sw1"]["severity"] == "High"
+    # scoring + readiness synthesis joined the analyze layer (step 15).
+    for name in ("compute_data_quality", "compute_health_scores",
+                 "compute_score_sensitivity", "compute_migration_readiness"):
+        assert getattr(cp, name) is getattr(analyze, name)
+    # empty inputs -> a perfect, deduction-free score.
+    hs = analyze.compute_health_scores({"sw1": {}}, [], [], [], [])
+    assert hs == [{"switch": "sw1", "score": 100, "band": "Excellent", "deductions": []}]
+    # data-quality fraction: no collected files -> 0.0; no hosts -> empty.
+    assert analyze.compute_data_quality({}) == {}
+    assert analyze.compute_data_quality({"sw1": {}}) == {"sw1": 0.0}
 
 
 def test_cmdio_reexported_and_functional(cp, tmp_path):
