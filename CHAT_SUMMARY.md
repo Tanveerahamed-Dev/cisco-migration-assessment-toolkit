@@ -5,6 +5,44 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 11: move-group computation -> analyze
+
+On branch `phase2-split-analyze2`. Byte-identical. **Second analyze slice** — the
+first `compute_*` function to move into the package.
+
+- Moved `compute_move_groups` + its private union-find helpers `_uf_find`/`_uf_union`
+  + the `MOVEGROUP_EXCLUDED_VLANS` constant into `cisco_toolkit/analyze.py`.
+- **Key untangle:** `compute_move_groups` calls `_split_macs`, a pure one-line MAC
+  splitter that the monolith *also* uses in `write_vlan_census_sheet` (excel) and
+  `build_network_model` (analyze, still in monolith). Leaving it in the monolith would
+  force `analyze.py` to import *back* from the monolith = circular. Fix: relocate
+  `_split_macs` down to `cisco_toolkit/textutils.py` (the leaf everyone imports). Both
+  layers now get it from textutils.
+- Monolith import-backs: `compute_move_groups` (for `write_move_group_sheet`),
+  `MOVEGROUP_EXCLUDED_VLANS` (for `compute_findings`, still here — temporary until
+  findings moves), `_split_macs` (from textutils). `MOVEGROUP_SHEET_NAME` stays (excel).
+- mypy still 101 but now spread over 3 files — `compute_move_groups`'s dynamic-dict
+  findings simply moved *with* it into analyze.py (net count unchanged = baseline intact).
+- Extended `test_package.py` (no new test fn, so still **63 tests**): `_split_macs`
+  identity+smoke, `compute_move_groups`/`MOVEGROUP_EXCLUDED_VLANS` identity + a
+  two-switches-share-VLAN-20 → one-group functional smoke. Golden byte-identical,
+  `ruff` clean. Monolith **~4,259 lines**. `.md` V3.23.21.
+
+**Dependency map for the rest of the structural/findings cluster (next slice, step 12):**
+`compute_topology_links` (uses `_canon_host`, `_is_infra_neighbor`) + `compute_findings`
+(uses `_canon_host_map`, `_canon_host`, `_SEV_RANK`, `compute_topology_links`,
+`normalize_ifname`, `MOVEGROUP_EXCLUDED_VLANS`). **`_canon_host` is analyze-internal**
+(only compute_*/build_network_model/`_is_infra_neighbor`/`_canon_host_map` call it — no
+excel writer does), so it moves *into* analyze.py, not textutils. Moving topology+findings
+together drops the temporary `MOVEGROUP_EXCLUDED_VLANS` import-back; `_canon_host` +
+`_canon_host_map` then get imported back only for `build_network_model` until the
+network-model/blast-radius cluster (`build_network_model`, `_vlan_in_ranges`,
+`compute_causality_chains`, `compute_failure_impact`) moves after that. Then the I/O-fed
+`compute_*` (needs `_load_cmd_output` homed first), excel, html, `__main__`. Sequential —
+`/batch` does NOT fit (confirmed with user).
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 10: the analyze layer's scoring foundation
 
 On branch `phase2-split-analyze1`. Byte-identical. **First slice of the analyze

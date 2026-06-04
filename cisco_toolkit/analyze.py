@@ -13,6 +13,7 @@ from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a c
 from typing import Dict, List, Tuple
 
 from cisco_toolkit.model import InterfaceData
+from cisco_toolkit.textutils import _split_macs
 
 
 # score band -> (label, fill)
@@ -82,3 +83,100 @@ def _host_role(ifaces: Dict[str, InterfaceData]) -> str:
         if re.match(r"^Vlan\d+$", port, re.IGNORECASE) and (getattr(d, "svi_ip", "") or "").strip():
             return "distribution"
     return "access"
+
+
+# =============================================================================
+# NEW-V14.9: Move-group planning. Switches that share an L2 broadcast domain must
+# migrate together; connected components over "shared-VLAN" edges = migration waves.
+# Captures transitive coupling (A-VLAN10-B, B-VLAN20-C => A,B,C are one group) that
+# is easy to miss by eye. Coupling uses ACTUAL VLAN presence (access port or SVI),
+# consistent with the VLAN Census; trunk-allowed-only transit is NOT modeled, and
+# VLAN 1 (default, present everywhere) is excluded from grouping by design.
+# =============================================================================
+MOVEGROUP_EXCLUDED_VLANS = {1}   # default VLAN; would collapse all switches into one group
+
+def _uf_find(parent: Dict[str, str], x: str) -> str:
+    root = x
+    while parent[root] != root:
+        root = parent[root]
+    while parent[x] != root:        # path compression
+        parent[x], x = root, parent[x]
+    return root
+
+def _uf_union(parent: Dict[str, str], a: str, b: str) -> None:
+    ra, rb = _uf_find(parent, a), _uf_find(parent, b)
+    if ra != rb:
+        parent[rb] = ra
+
+def compute_move_groups(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:
+    """Return migration move-groups (connected components of the shared-VLAN graph).
+
+    Each group dict: switches(list), spanning_vlans(list[(vid,name,nswitches)]),
+    endpoints(int), gateways(list[str]), blocked_paths(list[str]), vlan1_spans(bool).
+    """
+    # VLAN -> presence set, plus metadata, mirroring the VLAN Census definition.
+    vlan_switches: Dict[int, set] = {}
+    vlan_name: Dict[int, str] = {}
+    group_endpoints: Dict[str, set] = {h: set() for h in all_interfaces}
+    gateways: Dict[int, set] = {}
+    blocked: List[Tuple[str, str, str]] = []   # (host, port, blocked_vlans)
+
+    for host, ifaces in all_interfaces.items():
+        for port, d in ifaces.items():
+            if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
+                vid = int(d.vlan)
+                vlan_switches.setdefault(vid, set()).add(host)
+                if d.vlan_name and vid not in vlan_name: vlan_name[vid] = d.vlan_name
+                for mac in _split_macs(d.end_host_mac):
+                    group_endpoints[host].add(mac)
+            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
+            if m:
+                vid = int(m.group(1))
+                vlan_switches.setdefault(vid, set()).add(host)
+                gateways.setdefault(vid, set()).add(host)
+                if d.vlan_name and vid not in vlan_name: vlan_name[vid] = d.vlan_name
+            if d.stp_blk_vlans:
+                blocked.append((host, port, d.stp_blk_vlans))
+
+    # Union-find over ALL switches (every switch is at least its own group).
+    parent = {h: h for h in all_interfaces}
+    for vid, sws in vlan_switches.items():
+        if vid in MOVEGROUP_EXCLUDED_VLANS or len(sws) < 2:
+            continue
+        sws_l = sorted(sws)
+        for other in sws_l[1:]:
+            _uf_union(parent, sws_l[0], other)
+
+    # Collect components.
+    comps: Dict[str, List[str]] = {}
+    for h in all_interfaces:
+        comps.setdefault(_uf_find(parent, h), []).append(h)
+
+    groups: List[Dict[str, object]] = []
+    for root, members in comps.items():
+        mset = set(members)
+        spanning = []
+        vlan1_spans = False
+        for vid, sws in vlan_switches.items():
+            in_grp = sws & mset
+            if len(in_grp) >= 2:
+                if vid in MOVEGROUP_EXCLUDED_VLANS:
+                    vlan1_spans = True
+                else:
+                    spanning.append((vid, vlan_name.get(vid, ""), len(in_grp)))
+        spanning.sort(key=lambda t: (-t[2], t[0]))
+        gw = sorted({f"{h}:Vlan{vid}" for vid, sws in gateways.items()
+                     for h in (sws & mset)})
+        blk = sorted({f"{h}/{p} blocks {v}" for (h, p, v) in blocked if h in mset})
+        groups.append({
+            "switches": sorted(members),
+            "spanning_vlans": spanning,
+            "endpoints": sum(len(group_endpoints[h]) for h in members),
+            "gateways": gw,
+            "blocked_paths": blk,
+            "vlan1_spans": vlan1_spans,
+        })
+    # Biggest blast radius first.
+    groups.sort(key=lambda g: (-len(g["switches"]), -len(g["spanning_vlans"]),
+                               g["switches"][0] if g["switches"] else ""))
+    return groups

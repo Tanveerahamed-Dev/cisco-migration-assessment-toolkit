@@ -2,6 +2,7 @@
 constants. Leaf layer: depends only on `re`. Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 1 (behaviour byte-identical)."""
 import re
+from typing import List
 
 IFACE_TOKEN_RE = re.compile(
     r"\b(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
@@ -84,3 +85,8 @@ def safe_fs_name(s: str) -> str:
     s = (s or "").strip()
     s = re.sub(r'[<>:"/\\|?*]', "_", s)
     return s.rstrip(". ") or "UNKNOWN_DEVICE"
+
+def _split_macs(s: str) -> List[str]:
+    # NEW-V3.23.21 (PHASE 2.7 step 11): pure MAC-list splitter, shared by the VLAN
+    # census (excel) + compute_move_groups / build_network_model (analyze).
+    return [t for t in re.split(r"[,\s;]+", s or "") if t]
