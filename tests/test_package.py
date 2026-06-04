@@ -125,9 +125,12 @@ def test_analyze_reexported_and_functional(cp):
     assert any(sev == "High" and cat == "Gateway redundancy"
                for (sev, cat, scope, detail) in analyze.compute_findings(fi))
     # network-model / blast-radius cluster joined the analyze layer (step 13).
-    for name in ("build_network_model", "_link_carries", "_vlan_components",
+    for name in ("build_network_model", "_link_carries",
                  "compute_causality_chains", "compute_failure_impact"):
         assert getattr(cp, name) is getattr(analyze, name)
+    # _vlan_components went package-internal in step 18 (build_dependency_map, its last
+    # monolith user, moved out, so the monolith no longer re-exports it).
+    assert hasattr(analyze, "_vlan_components") and not hasattr(cp, "_vlan_components")
     nm = {
         "sw1": {"Vlan20": ID(port="Vlan20")},   # sole gateway for VLAN 20, no FHRP
         "sw2": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="20",
@@ -166,6 +169,17 @@ def test_analyze_reexported_and_functional(cp):
     up, sf = analyze._physical_uplink_index(
         {"links": [{"a": "sw1", "ap": "Gi1/0/1", "b": "sw2", "bp": "Gi1/0/1", "is_pc": False}]})
     assert ("sw1", "Gi1/0/1") in sf and ("sw2", "Gi1/0/1") in sf
+    # dependency-map + cross-layer correlations joined the analyze layer (step 18).
+    assert cp.build_dependency_map is analyze.build_dependency_map
+    assert cp.compute_cross_layer_correlations is analyze.compute_cross_layer_correlations
+    for internal in ("all_hosts", "_CL_RANK"):  # package-internal, not re-exported
+        assert hasattr(analyze, internal) and not hasattr(cp, internal)
+    cl_ai = {"sw1": {"Vlan20": ID(port="Vlan20")},
+             "sw2": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="20")}}
+    dep = analyze.build_dependency_map(
+        cl_ai, [], [{"vlan": 20, "switch": "sw1", "risk": "single-gateway", "fhrp": "none"}])
+    assert dep["sole_gw"] == {20: "sw1"}   # sole-gateway VLAN, no FHRP
+    assert any(f["id"] == "CL-03" for f in analyze.compute_cross_layer_correlations(dep))
 
 
 def test_cmdio_reexported_and_functional(cp, tmp_path):
