@@ -5,6 +5,44 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 15: scoring + readiness synthesis -> analyze
+
+On branch `phase2-split-analyze5`. Byte-identical. **First I/O-fed analyze slice** (now
+that cmdio is homed). Monolith **~3,650 lines**.
+
+- Moved the contiguous scoring/readiness cluster into `cisco_toolkit/analyze.py`:
+  `_ESSENTIAL_CMD_VARIANTS` + `compute_data_quality` (the only one that reads files - via
+  `cmdio._load_cmd_output`, which analyze.py now imports), `compute_health_scores`,
+  `compute_score_sensitivity`, `compute_migration_readiness`. The four `compute_*` import
+  back for `main()` (it runs them via `_run_phase`).
+- **`ScoringConfig` / `SCORING` / `_host_role` no longer re-exported by the monolith** -
+  their last in-monolith users (these compute_*) moved out. `_health_band` STAYS
+  re-exported (write_health_scores_sheet still calls it). Excel sheet-name + `_READY_FILL`/
+  `_STATUS_FILL` constants stay.
+- **Wider blast radius than usual:** dropping the `ScoringConfig`/`SCORING`/`_host_role`
+  re-exports broke 8 PRE-EXISTING behavioral unit tests (test_scoring_config / test_cry_wolf
+  / test_data_quality from PHASE 2.1/2.2/2.4) that referenced them via `cp.` (the monolith).
+  Fixed by pointing those tests at `cisco_toolkit.analyze` (added `from cisco_toolkit import
+  analyze`, `cp.ScoringConfig`->`analyze.ScoringConfig`, etc.). Their `cp.compute_*` /
+  `cp._empty_dep_map` refs are unchanged (still monolith-side). **Lesson for future drops:
+  grep ALL of tests/ for `cp.<symbol>` before dropping a re-export, not just test_package.py.**
+- Extended the test_package analyze test (identity for the 4 + a clean compute_health_scores
+  smoke + a compute_data_quality fraction smoke). **64 tests** (unchanged count - extended,
+  not added). Golden byte-identical, `ruff` clean, mypy 101. `.md` V3.23.25.
+
+**Analyze nearly done.** Still in the monolith (the genuinely I/O-heavy + parser-entangled
+analyze functions): physical-health (`compute_*` + `parse_interface_phy`/`_classify_media`/
+`_is_physical_port`/`_NON_PHYSICAL_RE`), protocol-health (`compute_protocol_health` +
+`_parse_fhrp`/`_parse_track`/`_track_summary`/`_parse_stp_mode`/`_parse_stp_tcn`/
+`_parse_etherchannel_member_states`/`_parse_vtp_full`), `build_dependency_map` +
+`compute_cross_layer_correlations` + `all_hosts`, and the L3-forwarding / flow-trace
+functions (`trace_full_flow`, `_bfs_forwarding_path`, `_ip_in_prefix`, etc.). These read
+files AND drag their parsers, so each is a chunkier slice. **Next = step 16:** likely the
+physical-health cluster OR protocol-health cluster (pick one, move it + its parsers). Then
+build the rest, then excel (`write_*`), html, `__main__`. Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 14: home the command-output I/O glue
 
 On branch `phase2-split-cmdio`. Byte-identical. **The gate step** for the I/O-fed

@@ -7,6 +7,7 @@ the band to 'Insufficient Data' below the (configurable) threshold.
 import os
 
 import synthetic_fixtures as fx
+from cisco_toolkit import analyze   # ScoringConfig lives here since PHASE 2.7 step 15
 
 
 def test_data_quality_full_vs_partial(cp, tmp_path):
@@ -47,6 +48,6 @@ def test_no_data_quality_arg_is_byte_identical(cp):
 
 
 def test_threshold_is_configurable(cp):
-    cfg = cp.ScoringConfig(data_quality_threshold=0.2)   # 0.25 now clears the bar
+    cfg = analyze.ScoringConfig(data_quality_threshold=0.2)   # 0.25 now clears the bar
     recs = cp.compute_health_scores({"sw": {}}, [], [], [], [], config=cfg, data_quality={"sw": 0.25})
     assert recs[0]["band"] == "Excellent"
