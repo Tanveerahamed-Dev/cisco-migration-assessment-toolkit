@@ -4,7 +4,9 @@ COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 2 (behaviour byte-identical)."""
 import re
 from typing import Dict, List, Optional, Tuple
 
-from cisco_toolkit.textutils import normalize_ifname, is_valid_iface
+from cisco_toolkit.textutils import (
+    normalize_ifname, is_valid_iface, normalize_status, normalize_duplex, normalize_speed,
+)
 
 
 def extract_fixed_cols(header_line: str, keys: List[Tuple[str,str]]) -> Dict[str, Tuple[int, Optional[int]]]:
@@ -191,4 +193,137 @@ def parse_glbp_summary(output: str) -> Dict[str, str]:
             continue
         ifn = normalize_ifname(m.group(1))
         res[ifn] = f'GLBP grp {m.group(2)} {m.group(3).capitalize()} VIP {m.group(4)}'
+    return res
+
+
+def parse_show_interface_status(output: str) -> Dict[str, Dict[str, str]]:
+    res: Dict[str, Dict[str, str]] = {}
+    col = None
+    for line in output.splitlines():
+        if ("Port" in line and "Name" in line and "Status" in line and
+                "Vlan" in line and "Duplex" in line and "Speed" in line and "Type" in line):
+            col = extract_fixed_cols(line, [
+                ("Port","port"),("Name","name"),("Status","status"),("Vlan","vlan"),
+                ("Duplex","duplex"),("Speed","speed"),("Type","type")])
+            continue
+        if not col or not line.strip() or "----" in line: continue
+        port = normalize_ifname(slice_col(line, *col["port"]))
+        if not port or not is_valid_iface(port): continue
+        raw_duplex = slice_col(line, *col["duplex"])
+        raw_speed  = slice_col(line, *col["speed"])
+        if raw_speed.startswith("-") and raw_duplex.endswith(" a"):
+            raw_speed  = "a" + raw_speed
+            raw_duplex = raw_duplex[:-2].strip()
+        res[port] = {
+            "name":   slice_col(line, *col["name"]),
+            "status": normalize_status(slice_col(line, *col["status"])),
+            "vlan_raw": slice_col(line, *col["vlan"]),
+            "duplex": normalize_duplex(raw_duplex),
+            "speed":  normalize_speed(raw_speed),
+            "type":   slice_col(line, *col["type"]),
+        }
+    return res
+
+def parse_show_interface_switchport(output: str) -> Dict[str, Dict[str, str]]:
+    res: Dict[str, Dict[str, str]] = {}
+    current = None
+    block: List[str] = []
+
+    def commit(intf, lines):
+        if not intf: return
+        intf_n = normalize_ifname(intf)
+        if not is_valid_iface(intf_n): return
+        d = {"mode":"","access_vlan":"","access_vlan_name":"",
+             "native_vlan":"","native_vlan_name":"","allowed_vlans":""}
+        admin_mode = oper_mode = ""
+        allowed_capture = False
+        for ln in lines:
+            low = ln.strip().lower()
+            if low.startswith("administrative mode:"):
+                admin_mode = ln.split(":",1)[1].strip()
+            if low.startswith("operational mode:"):
+                oper_mode = ln.split(":",1)[1].strip()
+            if "access mode vlan:" in low:
+                m = re.search(r"access mode vlan:\s*([0-9]+)\s*(?:\(([^)]+)\))?", ln, re.IGNORECASE)
+                if m:
+                    d["access_vlan"]      = m.group(1)
+                    d["access_vlan_name"] = (m.group(2) or "").strip()
+            if "trunking native" in low and "vlan" in low:
+                m = re.search(r"vlan:\s*([0-9]+)\s*(?:\(([^)]+)\))?", ln, re.IGNORECASE)
+                if m:
+                    d["native_vlan"]      = m.group(1)
+                    d["native_vlan_name"] = (m.group(2) or "").strip()
+            if "trunking vlans allowed" in low:
+                tail = ln.split(":",1)[1].strip() if ":" in ln else ""
+                if tail: d["allowed_vlans"] = tail
+                allowed_capture = True; continue
+            if allowed_capture:
+                if ":" in ln: allowed_capture = False
+                else:
+                    cont = ln.strip()
+                    if cont: d["allowed_vlans"] = (d["allowed_vlans"]+","+cont).strip(",")
+        mode = ""
+        if "trunk" in (oper_mode or "").lower() or "trunk" in (admin_mode or "").lower():
+            mode = "Trunk"
+        elif "access" in (oper_mode or "").lower() or "access" in (admin_mode or "").lower():
+            mode = "Access"
+        d["mode"] = mode
+        res[intf_n] = d
+
+    for line in output.splitlines():
+        m = re.match(r"^\s*Name:\s*(\S+)", line)
+        if m:
+            if current is not None: commit(current, block)
+            current = m.group(1); block = []; continue
+        if current is not None: block.append(line)
+    if current is not None: commit(current, block)
+    return res
+
+def parse_show_interface_trunk_table(output: str) -> Dict[str, Dict[str, str]]:
+    res: Dict[str, Dict[str, str]] = {}
+    section = None
+    nxos_top = False   # FIX-V3.23.9 (F841): ios_top was write-only; IOS is the implicit else
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line or set(line) == {"-"}: continue
+        if line.startswith("%"): continue
+        low = line.lower()
+        if low.startswith("port") and "mode" in low and "encapsulation" in low:
+            section = "top"; nxos_top = False; continue
+        if low.startswith("port") and "native" in low and "status" in low and "channel" in low:
+            section = "top"; nxos_top = True; continue
+        if low.startswith("port") and "native" in low and "status" in low:
+            section = "top"; nxos_top = False; continue
+        if low.startswith("port") and "vlans allowed on trunk" in low:
+            section = "allowed"; nxos_top = False; continue
+        if low.startswith("port") and ("vlans allowed" in low or "vlans in spanning" in low):
+            section = "other"; continue
+        if section == "top":
+            parts = line.split()
+            if len(parts) < 3: continue
+            intf = normalize_ifname(parts[0])
+            if not is_valid_iface(intf): continue
+            res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":""})
+            if nxos_top:
+                res[intf]["native_vlan"] = parts[1] if parts[1].isdigit() else ""
+                res[intf]["status"]      = parts[2] if len(parts) > 2 else ""
+                po = parts[3] if len(parts) > 3 else "--"
+                res[intf]["port_channel"] = "" if po in ("--","") else normalize_ifname(po)
+            else:
+                if len(parts) >= 5:
+                    res[intf]["status"]      = parts[3]
+                    res[intf]["native_vlan"] = parts[4] if parts[4].isdigit() else ""
+                elif len(parts) == 4:
+                    res[intf]["status"]      = parts[2]
+                    res[intf]["native_vlan"] = parts[3] if parts[3].isdigit() else ""
+                res[intf]["port_channel"] = ""
+        if section == "allowed":
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                intf  = normalize_ifname(parts[0])
+                if not is_valid_iface(intf): continue
+                vlans = parts[1].strip()
+                if "feature vtp is not enabled" in vlans.lower(): vlans = ""
+                res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":""})
+                res[intf]["allowed_vlans"] = "" if vlans.lower() == "none" else vlans
     return res

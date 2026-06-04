@@ -5,6 +5,27 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 4: interface-table parsers
+
+On branch `phase2-split-parse3`. Byte-identical.
+
+- Moved `parse_show_interface_status`, `parse_show_interface_switchport`,
+  `parse_show_interface_trunk_table` into `cisco_toolkit/parse.py` (added
+  normalize_status/duplex/speed to parse.py's textutils import).
+- The monolith stopped needing `extract_fixed_cols`/`slice_col`/`normalize_status`/
+  `normalize_duplex` (now package-internal) → dropped those import-backs (ruff F401
+  auto-fix). The package-identity test caught the stale re-export assertion; updated
+  it to assert the package has the primitives + the monolith re-exports what it uses.
+- Golden byte-identical, `ruff` clean, mypy unchanged (101). **61 tests pass.**
+  `.md` V3.23.14.
+
+Parser layer still remaining in the monolith: mac, STP (+`_STP_STS_NAME`),
+vlan_brief, vrf, power_inline, counters, cdp/lldp, run-config, vtp, version,
+inventory, environment, security (port-sec/auth/dhcp), phy/media, multicast,
+ip-arp, ip-int-brief. Then analyze / excel / html / `__main__`.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 3: routing/FHRP parsers
 
 On branch `phase2-split-parse2`. Byte-identical.

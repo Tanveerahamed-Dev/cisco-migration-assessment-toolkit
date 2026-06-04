@@ -290,13 +290,12 @@ from openpyxl.cell.cell import MergedCell
 # existing reference keeps working unchanged (behaviour byte-identical).
 from cisco_toolkit.textutils import (
     IFACE_TOKEN_RE, VALID_IFACE_RE, PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS,
-    normalize_ifname, is_valid_iface, normalize_status, normalize_duplex,
-    normalize_speed, normalize_mac, detect_link_type, safe_fs_name,
+    normalize_ifname, is_valid_iface, normalize_speed, normalize_mac, detect_link_type, safe_fs_name,
 )
-from cisco_toolkit.parse import (   # NEW-V3.23.12/.13 (PHASE 2.7 step 2-3): primitives + pure parsers
-    extract_fixed_cols, slice_col,
+from cisco_toolkit.parse import (   # NEW-V3.23.12/.13/.14 (PHASE 2.7 steps 2-4): primitives + pure parsers
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,
     parse_ip_routes, parse_hsrp_summary, parse_vrrp_summary, parse_glbp_summary,
+    parse_show_interface_status, parse_show_interface_switchport, parse_show_interface_trunk_table,
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -780,137 +779,8 @@ def _safe_parse(fn, *args, _default=None):
 # extract_fixed_cols / slice_col moved to cisco_toolkit.parse (PHASE 2.7 step 2);
 # imported near the top of this file.
 
-def parse_show_interface_status(output: str) -> Dict[str, Dict[str, str]]:
-    res: Dict[str, Dict[str, str]] = {}
-    col = None
-    for line in output.splitlines():
-        if ("Port" in line and "Name" in line and "Status" in line and
-                "Vlan" in line and "Duplex" in line and "Speed" in line and "Type" in line):
-            col = extract_fixed_cols(line, [
-                ("Port","port"),("Name","name"),("Status","status"),("Vlan","vlan"),
-                ("Duplex","duplex"),("Speed","speed"),("Type","type")])
-            continue
-        if not col or not line.strip() or "----" in line: continue
-        port = normalize_ifname(slice_col(line, *col["port"]))
-        if not port or not is_valid_iface(port): continue
-        raw_duplex = slice_col(line, *col["duplex"])
-        raw_speed  = slice_col(line, *col["speed"])
-        if raw_speed.startswith("-") and raw_duplex.endswith(" a"):
-            raw_speed  = "a" + raw_speed
-            raw_duplex = raw_duplex[:-2].strip()
-        res[port] = {
-            "name":   slice_col(line, *col["name"]),
-            "status": normalize_status(slice_col(line, *col["status"])),
-            "vlan_raw": slice_col(line, *col["vlan"]),
-            "duplex": normalize_duplex(raw_duplex),
-            "speed":  normalize_speed(raw_speed),
-            "type":   slice_col(line, *col["type"]),
-        }
-    return res
-
-def parse_show_interface_switchport(output: str) -> Dict[str, Dict[str, str]]:
-    res: Dict[str, Dict[str, str]] = {}
-    current = None
-    block: List[str] = []
-
-    def commit(intf, lines):
-        if not intf: return
-        intf_n = normalize_ifname(intf)
-        if not is_valid_iface(intf_n): return
-        d = {"mode":"","access_vlan":"","access_vlan_name":"",
-             "native_vlan":"","native_vlan_name":"","allowed_vlans":""}
-        admin_mode = oper_mode = ""
-        allowed_capture = False
-        for ln in lines:
-            low = ln.strip().lower()
-            if low.startswith("administrative mode:"):
-                admin_mode = ln.split(":",1)[1].strip()
-            if low.startswith("operational mode:"):
-                oper_mode = ln.split(":",1)[1].strip()
-            if "access mode vlan:" in low:
-                m = re.search(r"access mode vlan:\s*([0-9]+)\s*(?:\(([^)]+)\))?", ln, re.IGNORECASE)
-                if m:
-                    d["access_vlan"]      = m.group(1)
-                    d["access_vlan_name"] = (m.group(2) or "").strip()
-            if "trunking native" in low and "vlan" in low:
-                m = re.search(r"vlan:\s*([0-9]+)\s*(?:\(([^)]+)\))?", ln, re.IGNORECASE)
-                if m:
-                    d["native_vlan"]      = m.group(1)
-                    d["native_vlan_name"] = (m.group(2) or "").strip()
-            if "trunking vlans allowed" in low:
-                tail = ln.split(":",1)[1].strip() if ":" in ln else ""
-                if tail: d["allowed_vlans"] = tail
-                allowed_capture = True; continue
-            if allowed_capture:
-                if ":" in ln: allowed_capture = False
-                else:
-                    cont = ln.strip()
-                    if cont: d["allowed_vlans"] = (d["allowed_vlans"]+","+cont).strip(",")
-        mode = ""
-        if "trunk" in (oper_mode or "").lower() or "trunk" in (admin_mode or "").lower():
-            mode = "Trunk"
-        elif "access" in (oper_mode or "").lower() or "access" in (admin_mode or "").lower():
-            mode = "Access"
-        d["mode"] = mode
-        res[intf_n] = d
-
-    for line in output.splitlines():
-        m = re.match(r"^\s*Name:\s*(\S+)", line)
-        if m:
-            if current is not None: commit(current, block)
-            current = m.group(1); block = []; continue
-        if current is not None: block.append(line)
-    if current is not None: commit(current, block)
-    return res
-
-def parse_show_interface_trunk_table(output: str) -> Dict[str, Dict[str, str]]:
-    res: Dict[str, Dict[str, str]] = {}
-    section = None
-    nxos_top = False   # FIX-V3.23.9 (F841): ios_top was write-only; IOS is the implicit else
-    for raw in output.splitlines():
-        line = raw.strip()
-        if not line or set(line) == {"-"}: continue
-        if line.startswith("%"): continue
-        low = line.lower()
-        if low.startswith("port") and "mode" in low and "encapsulation" in low:
-            section = "top"; nxos_top = False; continue
-        if low.startswith("port") and "native" in low and "status" in low and "channel" in low:
-            section = "top"; nxos_top = True; continue
-        if low.startswith("port") and "native" in low and "status" in low:
-            section = "top"; nxos_top = False; continue
-        if low.startswith("port") and "vlans allowed on trunk" in low:
-            section = "allowed"; nxos_top = False; continue
-        if low.startswith("port") and ("vlans allowed" in low or "vlans in spanning" in low):
-            section = "other"; continue
-        if section == "top":
-            parts = line.split()
-            if len(parts) < 3: continue
-            intf = normalize_ifname(parts[0])
-            if not is_valid_iface(intf): continue
-            res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":""})
-            if nxos_top:
-                res[intf]["native_vlan"] = parts[1] if parts[1].isdigit() else ""
-                res[intf]["status"]      = parts[2] if len(parts) > 2 else ""
-                po = parts[3] if len(parts) > 3 else "--"
-                res[intf]["port_channel"] = "" if po in ("--","") else normalize_ifname(po)
-            else:
-                if len(parts) >= 5:
-                    res[intf]["status"]      = parts[3]
-                    res[intf]["native_vlan"] = parts[4] if parts[4].isdigit() else ""
-                elif len(parts) == 4:
-                    res[intf]["status"]      = parts[2]
-                    res[intf]["native_vlan"] = parts[3] if parts[3].isdigit() else ""
-                res[intf]["port_channel"] = ""
-        if section == "allowed":
-            parts = line.split(None, 1)
-            if len(parts) == 2:
-                intf  = normalize_ifname(parts[0])
-                if not is_valid_iface(intf): continue
-                vlans = parts[1].strip()
-                if "feature vtp is not enabled" in vlans.lower(): vlans = ""
-                res.setdefault(intf, {"native_vlan":"","status":"","port_channel":"","allowed_vlans":""})
-                res[intf]["allowed_vlans"] = "" if vlans.lower() == "none" else vlans
-    return res
+# parse_show_interface_status / _switchport / _trunk_table moved to
+# cisco_toolkit.parse (PHASE 2.7 step 4); imported at the top of this file.
 
 def parse_show_mac_address_table(output: str) -> Dict[str, List[str]]:
     res: Dict[str, List[str]] = {}
