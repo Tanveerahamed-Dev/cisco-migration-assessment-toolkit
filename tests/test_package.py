@@ -90,8 +90,12 @@ def test_analyze_reexported_and_functional(cp):
     groups = analyze.compute_move_groups(ifaces)
     assert len(groups) == 1 and groups[0]["switches"] == ["sw1", "sw2"]
     # topology-links + findings cluster joined the analyze layer (step 12).
-    for name in ("compute_topology_links", "compute_findings", "_canon_host", "_canon_host_map"):
+    for name in ("compute_topology_links", "compute_findings"):
         assert getattr(cp, name) is getattr(analyze, name)
+    # _canon_host / _canon_host_map went package-internal in step 13 (build_network_model,
+    # their last monolith user, moved out, so the monolith no longer re-exports them).
+    assert callable(analyze._canon_host) and callable(analyze._canon_host_map)
+    assert not hasattr(cp, "_canon_host") and not hasattr(cp, "_canon_host_map")
     assert analyze._canon_host("Switch1.example.com (FOC123)") == "switch1"
     # two switches that see each other over CDP -> one link confirmed from both ends.
     tl = {
@@ -104,3 +108,18 @@ def test_analyze_reexported_and_functional(cp):
     fi = {"sw1": {"Vlan20": ID(port="Vlan20")}, "sw2": {"Vlan20": ID(port="Vlan20")}}
     assert any(sev == "High" and cat == "Gateway redundancy"
                for (sev, cat, scope, detail) in analyze.compute_findings(fi))
+    # network-model / blast-radius cluster joined the analyze layer (step 13).
+    for name in ("build_network_model", "_link_carries", "_vlan_components",
+                 "compute_causality_chains", "compute_failure_impact"):
+        assert getattr(cp, name) is getattr(analyze, name)
+    nm = {
+        "sw1": {"Vlan20": ID(port="Vlan20")},   # sole gateway for VLAN 20, no FHRP
+        "sw2": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="20",
+                              end_host_mac="aaaa.bbbb.cccc")},
+    }
+    model = analyze.build_network_model(nm)
+    assert model["hosts"] == ["sw1", "sw2"] and 20 in model["vlans"]
+    assert model["access_presence"].get(20) == {"sw2"}
+    # removing the sole gateway (sw1) hard-partitions VLAN 20's endpoints -> High severity.
+    impact = {r["host"]: r for r in analyze.compute_failure_impact(nm)}
+    assert impact["sw1"]["severity"] == "High"

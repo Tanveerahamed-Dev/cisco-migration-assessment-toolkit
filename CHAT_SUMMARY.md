@@ -5,6 +5,45 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 13: network-model / blast-radius -> analyze
+
+On branch `phase2-split-analyze4`. Byte-identical. **Fourth analyze slice** — the
+blast-radius cluster. Monolith now **under 4,000 lines** (3,866, from ~5,769).
+
+- Moved the **contiguous** pure cluster (monolith lines 2469-2791) into
+  `cisco_toolkit/analyze.py`: `_vlan_in_ranges`, `build_network_model`, `_link_carries`,
+  `_vlan_components`, `compute_causality_chains`, `compute_failure_impact`. Added
+  `Optional` to analyze.py's typing import (`_vlan_components`/causality use it). All pure
+  on the model — no `_load_cmd_output`.
+- These are still used by monolith functions *outside* the cluster (physical/L3/flow at
+  lines ~2976/3138/3171/3510/3567), so import back `build_network_model`, `_link_carries`,
+  `_vlan_components` + the two compute fns (for their write_* sheets). The Causality/Failure
+  `*_SHEET_NAME` + `_SEV_FILL` constants stay (excel).
+- **`build_network_model` was the last monolith user of `_canon_host`/`_canon_host_map`**
+  (moved step 12), so dropped those import-backs (ruff F401-confirmed). The step-12
+  identity assertions went stale → updated them to package-internal asserts (same pattern
+  as step 12 did for `MOVEGROUP_EXCLUDED_VLANS`; this is now a recurring move — the
+  identity test reliably catches it).
+- Extended the analyze test (still **63 tests**): identity for the 5 moved symbols + a
+  build_network_model structure smoke and a sole-gateway-removed → "Hard partition" /
+  High `compute_failure_impact` smoke. Golden byte-identical, `ruff` clean, mypy 101.
+  `.md` V3.23.23.
+
+**Analyze layer status:** the pure, model-only `compute_*` are now all in the package
+(move-groups, topology-links, findings, network-model, causality, failure-impact). **What
+remains in the monolith for analyze:** the **I/O-fed** functions — they need
+`_load_cmd_output` (+`_safe_parse`), the ~50-call-site helper at line ~687, homed in the
+package first. **Next slice (step 14): home `_load_cmd_output` + `_safe_parse`** (probably
+a tiny `cisco_toolkit/cmdio.py` leaf, or fold into parse.py — but it does file I/O so a
+dedicated module is cleaner). Then the I/O-fed `compute_*` batch: `compute_data_quality`,
+`compute_health_scores`/`_score_sensitivity`/`_migration_readiness`, physical-health
+(`compute_*` + `parse_interface_phy`/`_classify_media`/`_is_physical_port`), protocol-health
+(+ `_parse_fhrp`/`_parse_track`/`_parse_stp_*`/`_parse_etherchannel_member_states`/
+`_parse_vtp_full`), `build_dependency_map`/`compute_cross_layer_correlations`, the L3/flow
+functions. Then excel (`write_*`), html, `__main__`. Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 12: topology-links + findings -> analyze
 
 On branch `phase2-split-analyze3`. Byte-identical. **Third analyze slice** — finishes
