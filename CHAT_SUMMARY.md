@@ -5,6 +5,29 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — Loose ends: P4 + M2 + ruff baseline
+
+On branch `loose-ends`. Behaviour byte-identical (golden unchanged).
+
+- **P4:** narrowed the global `warnings.filterwarnings("ignore")` to
+  `category=DeprecationWarning` — real UserWarning/RuntimeWarning signals now
+  surface. (Confirmed netmiko imports clean here, so low risk.)
+- **M2:** single `__version__ = "3.23.0"` feeds the argparse description, snapshot
+  `script_version` (still `"V3.23.0"` → golden-safe), and the log filename (fixed
+  the stale `v3_14_6`).
+- **ruff (report-only):** added `ruff.toml` (keep F + E4/E7/E9; ignore the
+  intentional E701/E702/E741 one-liner/semicolon/ambiguous-name style). Baseline
+  dropped **310 → 6** real findings: 4× F402 (import `field` shadowed by a loop
+  var — a side-effect of the 2.1 `field` import; benign), 1× F841 (unused var),
+  1× E401. Catalogued for a future targeted lint-fix PR; not fixed here. `ruff`
+  added to `requirements-dev.txt`.
+
+**58 tests pass** (+1 `tests/test_version.py`). This ties off the deferred audit
+items. Remaining big-ticket (own sessions): 2.5 perf, 2.6 type-hints/mypy,
+2.7 (gated) package split, PHASE 3 explorer redesign.
+
+---
+
 ## 2026-06-04 — PHASE 2.4: "missing data != healthy" (audit C3)
 
 On branch `phase2-data-quality`.
