@@ -15,5 +15,17 @@ Thumbs.db
 .idea/
 *.swp
 
+# Test caches / artifacts
+.pytest_cache/
+.coverage
+
+# Tool run outputs (never commit collected/generated network data)
+*.log
+migration_collection_*/
+Migration_Assessment_AUTOFILLED_*
+Migration_Diff_*.xlsx
+topology.mmd
+topology.dot
+
 # Claude Code local settings
 .claude/settings.local.json
