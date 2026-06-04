@@ -1297,7 +1297,8 @@
     "CL-03 High (-10)",
     "CL-07 Medium (-4)",
     "OSPF High (-10)"
-   ]
+   ],
+   "data_quality": 1.0
   },
   {
    "switch": "access1",
@@ -1306,13 +1307,15 @@
    "deductions": [
     "single-fiber-uplink @ Gi0/1 (-10)",
     "CL-01 Critical (-18)"
-   ]
+   ],
+   "data_quality": 1.0
   },
   {
    "switch": "core2",
    "score": 100,
    "band": "Excellent",
-   "deductions": []
+   "deductions": [],
+   "data_quality": 1.0
   }
  ],
  "migration_readiness": [

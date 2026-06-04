@@ -5301,6 +5301,10 @@ class ScoringConfig:
     # Defaults are 1.0 for every role, so scores stay byte-identical until tuned.
     criticality_factors: Dict[str, float] = field(default_factory=lambda: {
         "core": 1.0, "distribution": 1.0, "access": 1.0})
+    # NEW-V3.23.7: a switch whose collection covers less than this fraction of the
+    # essential command set is reported 'Insufficient Data' instead of a
+    # misleadingly-high band, so a partial collection can't look healthy (audit C3).
+    data_quality_threshold: float = 0.5
 
 
 # Module-default scoring configuration. Replace/extend by passing a custom
@@ -5325,10 +5329,30 @@ def _host_role(ifaces: Dict[str, "InterfaceData"]) -> str:
             return "distribution"
     return "access"
 
+_ESSENTIAL_CMD_VARIANTS = (
+    ("show interface status",),
+    ("show interface switchport", "show interfaces switchport"),
+    ("show version",),
+    ("show cdp neighbors detail", "show lldp neighbors detail"),
+)
+
+def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[str, float]:
+    """NEW-V3.23.7: per-switch collection completeness = fraction of the essential
+    command set that returned usable (non-empty, non-error) output, via the
+    existing _load_cmd_output. compute_health_scores uses it to flag under-observed
+    switches so a partial collection can't masquerade as a healthy device (C3)."""
+    out: Dict[str, float] = {}
+    for host, c2f in (all_cmd_to_files or {}).items():
+        present = sum(1 for variants in _ESSENTIAL_CMD_VARIANTS
+                      if _load_cmd_output(c2f, *variants).strip())
+        out[host] = present / len(_ESSENTIAL_CMD_VARIANTS)
+    return out
+
 def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                           physical_health: List[dict], l3_forwarding: List[dict],
                           cross_layer: List[dict], protocol_health: List[dict],
-                          config: ScoringConfig = SCORING) -> List[dict]:
+                          config: ScoringConfig = SCORING,
+                          data_quality: Optional[Dict[str, float]] = None) -> List[dict]:
     """Per-switch 0-100 health score with weighted, category-capped deductions.
     Weights/caps/bands come from `config` (ScoringConfig); the default instance
     reproduces the prior hard-coded behaviour byte-for-byte."""
@@ -5379,8 +5403,13 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 reasons.append(f"{r} (-{p})")
         score = max(0, 100 - total)
         band, _fill = _health_band(score, config.bands)
-        records.append({"switch": h, "score": score, "band": band,
-                        "deductions": reasons[:8]})
+        rec = {"switch": h, "score": score, "band": band, "deductions": reasons[:8]}
+        if data_quality is not None:                          # NEW-V3.23.7 (audit C3)
+            dq = data_quality.get(h, 1.0)
+            rec["data_quality"] = round(dq, 2)
+            if dq < config.data_quality_threshold:
+                rec["band"] = "Insufficient Data"             # collection gap != healthy
+        records.append(rec)
     records.sort(key=lambda r: (r["score"], r["switch"]))
     return records
 
@@ -5508,7 +5537,7 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
 
 def write_health_scores_sheet(wb, records: List[dict]) -> None:
     ws = wb.create_sheet(HEALTH_SCORES_SHEET_NAME)
-    headers = ["Switch", "Score", "Band", "Top Deductions"]
+    headers = ["Switch", "Score", "Band", "Data Quality", "Top Deductions"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
         c.font = Font(bold=True, color="FFFFFF")
@@ -5516,11 +5545,15 @@ def write_health_scores_sheet(wb, records: List[dict]) -> None:
         c.alignment = Alignment(horizontal="center")
     for r, rec in enumerate(records, 2):
         _lbl, fill = _health_band(rec["score"])
+        if rec.get("band") == "Insufficient Data":            # NEW-V3.23.7: neutral grey, not green
+            fill = "B0B0B0"
         ws.cell(r, 1, rec["switch"])
         c = ws.cell(r, 2, rec["score"]); c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
         c2 = ws.cell(r, 3, rec["band"]); c2.fill = PatternFill("solid", fgColor=fill)
-        ws.cell(r, 4, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
-    for i, w in enumerate([16, 8, 11, 80], 1):
+        dq = rec.get("data_quality")
+        ws.cell(r, 4, "" if dq is None else f"{int(round(dq * 100))}%")
+        ws.cell(r, 5, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
+    for i, w in enumerate([16, 8, 11, 13, 80], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     avg = round(sum(r["score"] for r in records) / len(records)) if records else 0
@@ -5942,9 +5975,11 @@ def main():
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
+    data_quality = _run_phase("data quality", compute_data_quality, all_cmd_to_files, _default={}) or {}
     health_scores = _run_phase("Health Scores", compute_health_scores,
                                all_interfaces, physical_health, l3_forwarding,
-                               cross_layer, protocol_health, _default=[])
+                               cross_layer, protocol_health, _default=[],
+                               data_quality=data_quality)
     _run_phase("Health Scores sheet", write_health_scores_sheet, wb, health_scores)
 
     # Phase 29: Migration Readiness - NEW-V3.23 (per move-group 10-check verdict)
