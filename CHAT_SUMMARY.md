@@ -5,6 +5,27 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.6: mypy baseline (report-only)
+
+On branch `phase2-mypy`. Code-health hygiene; behaviour byte-identical.
+
+- Added `mypy.ini` (lenient: `ignore_missing_imports`, py3.10 target, not gated)
+  + `mypy` to `requirements-dev.txt`.
+- `python -m mypy COLLECT_PARSE_V3_23_0.py` → **101 findings**. Inspected the
+  categories (operator/var-annotated/attr-defined): they're dynamic-typing
+  strictness — e.g. `float|str` values guarded at runtime by `!= ""` that mypy
+  can't narrow, `dict[str, object]` access, untyped openpyxl — **not bugs**.
+  Tracked as a report-only baseline for incremental typing, not rewritten
+  wholesale (per "don't rewrite working code for style").
+- Fixed the 2 clean `var-annotated` easy wins (`proto_high`, `nofhrp_vlans`).
+  `compute_*` already have hints + docstrings, so nothing to add there.
+
+`ruff check .` stays clean; **58 tests pass**, golden byte-identical. `.md`
+Change Log V3.23.10. This effectively completes 2.6 (full strict typing of a
+5.9k-line dynamic monolith is deliberately out of scope).
+
+---
+
 ## 2026-06-04 — Lint easy-wins (ruff now clean)
 
 On branch `lint-easy-wins`. Fixed the 5 pyflakes findings from the V3.23.8 ruff
