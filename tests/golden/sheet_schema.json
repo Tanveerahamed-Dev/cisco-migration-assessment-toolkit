@@ -1,0 +1,232 @@
+{
+ "Interface Data": [
+  "Hostname",
+  "Port",
+  "Status",
+  "TRUNK Native VLAN",
+  "TRUNK Allowed VLANs",
+  "TRUNK Status",
+  "ARP Source Switch",
+  "CDP/LLDP Neighbor",
+  "Current Switch Serial",
+  "Current Switch Mgmt IP",
+  "Current Switch VTP Domain",
+  "Neighbor Switch Serial",
+  "Neighbor Switch Mgmt IP",
+  "Neighbor Switch VTP Domain",
+  "Subnet Primary Route",
+  "Subnet Secondary Routes",
+  "Route Next Hop",
+  "Routing Source",
+  "FHRP Behavior",
+  "Multicast Info"
+ ],
+ "Switch Inventory": [
+  "Hostname",
+  "Platform",
+  "Model / PID",
+  "Serial Number",
+  "Chassis Serial",
+  "SW Version",
+  "Uptime",
+  "System MAC",
+  "# Power Supplies",
+  "PS Status",
+  "Power Capacity (W)",
+  "Power Drawn (W)",
+  "Power Remaining (W)",
+  "# Modules",
+  "Total Ports",
+  "Active Ports",
+  "Fan Status",
+  "Temperature Status"
+ ],
+ "SVI Gateway": [
+  "Hostname",
+  "SVI",
+  "Description",
+  "VLAN",
+  "VRF",
+  "Gateway IP (configured)",
+  "Subnet / Primary Route",
+  "Routing Source",
+  "Route Next Hop",
+  "Secondary Routes",
+  "FHRP Behavior",
+  "Multicast Info",
+  "Switch Serial",
+  "Switch Mgmt IP",
+  "VTP Domain"
+ ],
+ "STP Detail": [
+  "Hostname",
+  "Port",
+  "STP Summary",
+  "Forwarding VLANs",
+  "Blocked VLANs",
+  "Other (Lis/Lrn/Dis)"
+ ],
+ "VLAN Census": [
+  "VLAN ID",
+  "Name",
+  "# Switches",
+  "Switches",
+  "# Access Ports",
+  "# Endpoints",
+  "Gateway Switch(es)",
+  "Gateway IP",
+  "Subnet",
+  "FHRP"
+ ],
+ "Endpoint Census": [
+  "Hostname",
+  "Port",
+  "VLAN",
+  "VLAN Name",
+  "MAC Address",
+  "IP Address",
+  "Endpoint Type",
+  "Location",
+  "CDP/LLDP Neighbor"
+ ],
+ "Move Groups": [
+  "Group",
+  "# Switches",
+  "Switches",
+  "# Spanning VLANs",
+  "Spanning VLANs",
+  "# Endpoints",
+  "Gateways",
+  "Redundant (STP-blocked) Paths",
+  "Notes"
+ ],
+ "Topology Links": [
+  "Switch A",
+  "Port A",
+  "Switch B",
+  "Port B",
+  "Neighbor Platform",
+  "Link Speed",
+  "Confirmation"
+ ],
+ "Findings": [
+  "Severity",
+  "Category",
+  "Scope",
+  "Finding"
+ ],
+ "Capacity": [
+  "Hostname",
+  "Model",
+  "Total Ports",
+  "Active Ports",
+  "Free Ports",
+  "Port Util %",
+  "PoE Capacity (W)",
+  "PoE Drawn (W)",
+  "PoE Remaining (W)",
+  "PoE Util %",
+  "Flag"
+ ],
+ "Interface Health": [
+  "Hostname",
+  "Port",
+  "Oper",
+  "Input Errors",
+  "CRC",
+  "Output Drops",
+  "Last Input",
+  "Last Output",
+  "Flag"
+ ],
+ "Security Posture": [
+  "Hostname",
+  "Port",
+  "Port-Security Max",
+  "PS Current",
+  "PS Violations",
+  "PS Action",
+  "802.1X Method",
+  "802.1X Status",
+  "Auth MAC",
+  "DHCP-Snoop Bindings"
+ ],
+ "Routing Adjacencies": [
+  "Hostname",
+  "Protocol",
+  "Neighbor",
+  "State / PfxRcd",
+  "Interface / AS"
+ ],
+ "Causality Chains": [
+  "Severity",
+  "Trigger (root cause)",
+  "Mechanism (why it propagates)",
+  "Impact (blast radius)",
+  "Mitigation"
+ ],
+ "Failure Impact": [
+  "Severity",
+  "Switch (remove / migrate)",
+  "VLANs Impacted",
+  "Stranded Endpoints",
+  "Hard Partitions",
+  "Backup-Covered",
+  "FHRP-Covered",
+  "Per-VLAN Detail"
+ ],
+ "Physical Health": [
+  "Switch",
+  "Port",
+  "Status",
+  "Negotiated Speed",
+  "Duplex",
+  "Media Type",
+  "Input Errors",
+  "CRC Errors",
+  "Output Drops",
+  "Port-Channel",
+  "PoE Allocated (W)",
+  "Physical Risk"
+ ],
+ "L3 Forwarding Map": [
+  "Switch",
+  "VLAN",
+  "SVI IP",
+  "FHRP",
+  "Role",
+  "Virtual IP",
+  "Routing Source",
+  "Next Hop",
+  "Primary Subnet",
+  "Backup / Secondary",
+  "Tracking",
+  "L3 Risk"
+ ],
+ "Cross-Layer Analysis": [
+  "CL",
+  "Severity",
+  "Layers",
+  "Finding",
+  "Detail",
+  "Recommendation"
+ ],
+ "Protocol Health": [
+  "Switch",
+  "Protocol",
+  "Summary",
+  "Detail",
+  "Health"
+ ],
+ "Health Scores": [
+  "Switch",
+  "Score",
+  "Band",
+  "Top Deductions"
+ ],
+ "Migration Readiness": [
+  "Group / Check",
+  "Status",
+  "Detail"
+ ]
+}

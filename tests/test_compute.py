@@ -1,0 +1,168 @@
+"""Unit tests for the intelligence-layer pure functions:
+compute_move_groups, compute_cross_layer_correlations, compute_health_scores,
+compute_migration_readiness, and compute_protocol_health.
+
+Inputs are constructed directly (not fixture-derived) so each rule/cap/verdict
+is exercised in isolation and the assertions are unambiguous.
+"""
+
+
+def _dep(**over):
+    """Full dependency-map skeleton with empty defaults; override per test."""
+    d = {
+        "single_fiber": set(), "uplink_ports": set(), "sole_gw": {},
+        "access_by_vlan": {}, "articulation": set(), "fhrp_vlans": set(),
+        "tracked_down": set(), "errored_up": set(), "halfdup_up": set(),
+        "single_member_pc": set(), "errdis": set(), "gw_switches": set(),
+        "orphan": set(), "model": {"hosts": set()},
+    }
+    d.update(over)
+    return d
+
+
+# --------------------------------------------------------------------------- #
+# compute_move_groups
+# --------------------------------------------------------------------------- #
+def test_move_groups_shared_vlan_couples_switches(cp):
+    def access(port, vlan):
+        d = cp.InterfaceData(port=port)
+        d.switchport_mode = "Access"; d.vlan = vlan
+        return d
+
+    all_interfaces = {
+        "swA": {"Gi0/1": access("Gi0/1", "10"), "Vlan10": cp.InterfaceData(port="Vlan10")},
+        "swB": {"Gi0/1": access("Gi0/1", "10")},
+        "swC": {"Gi0/1": access("Gi0/1", "99")},  # isolated VLAN -> own group
+    }
+    groups = cp.compute_move_groups(all_interfaces)
+    sets = [set(g["switches"]) for g in groups]
+    assert {"swA", "swB"} in sets
+    assert {"swC"} in sets
+
+
+def test_move_groups_excludes_vlan1(cp):
+    def access(port, vlan):
+        d = cp.InterfaceData(port=port)
+        d.switchport_mode = "Access"; d.vlan = vlan
+        return d
+    # VLAN 1 must NOT couple switches (it would collapse everything into one group)
+    all_interfaces = {
+        "swA": {"Gi0/1": access("Gi0/1", "1")},
+        "swB": {"Gi0/1": access("Gi0/1", "1")},
+    }
+    groups = cp.compute_move_groups(all_interfaces)
+    assert sorted(set(g["switches"][0] for g in groups)) == ["swA", "swB"]
+    assert len(groups) == 2
+
+
+# --------------------------------------------------------------------------- #
+# compute_cross_layer_correlations
+# --------------------------------------------------------------------------- #
+def test_cross_layer_single_fiber_to_sole_gateway(cp):
+    dep = _dep(
+        sole_gw={30: "core1"},
+        access_by_vlan={30: {"access1"}},
+        single_fiber={("access1", "Gi0/1")},
+        gw_switches={"core1"},
+        model={"hosts": {"core1", "access1"}},
+    )
+    out = cp.compute_cross_layer_correlations(dep)
+    by_id = {f["id"]: f for f in out}
+    # CL-01: single-fiber uplink fronting a sole gateway = Critical
+    assert "CL-01" in by_id and by_id["CL-01"]["severity"] == "Critical"
+    assert set(by_id["CL-01"]["hosts"]) >= {"core1", "access1"}
+    # CL-03: sole gateway, no FHRP = High
+    assert "CL-03" in by_id and by_id["CL-03"]["severity"] == "High"
+
+
+def test_cross_layer_orphan_vlan(cp):
+    dep = _dep(orphan={40}, access_by_vlan={40: {"acc"}}, model={"hosts": {"acc"}})
+    out = cp.compute_cross_layer_correlations(dep)
+    by_id = {f["id"]: f for f in out}
+    assert "CL-10" in by_id and by_id["CL-10"]["severity"] == "Medium"
+
+
+def test_cross_layer_clean_dep_yields_nothing(cp):
+    assert cp.compute_cross_layer_correlations(_dep()) == []
+
+
+# --------------------------------------------------------------------------- #
+# compute_health_scores
+# --------------------------------------------------------------------------- #
+def test_health_clean_host_is_perfect(cp):
+    recs = cp.compute_health_scores({"clean": {}}, [], [], [], [])
+    assert recs == [{"switch": "clean", "score": 100, "band": "Excellent", "deductions": []}]
+
+
+def test_health_l1_category_is_capped(cp):
+    # 5 err-disabled ports * 8 = 40, but L1 cap is 30 -> score 70 (Fair), not 60.
+    ph = [{"switch": "h", "port": f"Gi0/{i}", "risk": "err-disabled"} for i in range(5)]
+    recs = cp.compute_health_scores({"h": {}}, ph, [], [], [])
+    assert recs[0]["score"] == 70
+    assert recs[0]["band"] == "Fair"
+
+
+def test_health_cross_layer_critical_weight(cp):
+    xl = [{"id": "CL-01", "severity": "Critical", "hosts": ["h"]}]
+    recs = cp.compute_health_scores({"h": {}}, [], [], xl, [])
+    assert recs[0]["score"] == 82          # 100 - 18
+    assert recs[0]["band"] == "Good"
+
+
+def test_health_scores_spread_across_bands(cp):
+    all_if = {"good": {}, "mid": {}, "bad": {}}
+    ph = [{"switch": "mid", "port": "Gi0/1", "risk": "single-fiber-uplink"}]   # -10
+    l3 = [{"switch": "bad", "vlan": 30, "risk": "single-gateway"}]             # -10
+    xl = [{"id": "CL-09", "severity": "Critical", "hosts": ["bad"]},           # -18
+          {"id": "CL-01", "severity": "Critical", "hosts": ["bad"]}]           # -18 (XL cap 45)
+    pr = [{"switch": "mid", "protocol": "VTP", "severity": "Medium"},          # -4  -> mid 86 (Good)
+          {"switch": "bad", "protocol": "OSPF", "severity": "High"}]           # -10
+    recs = {r["switch"]: r for r in cp.compute_health_scores(all_if, ph, l3, xl, pr)}
+    assert recs["good"]["band"] == "Excellent"      # 100
+    assert recs["mid"]["band"] == "Good"            # 100-14 = 86
+    assert recs["bad"]["band"] == "Poor"            # 100-(10+36+10) = 44
+    bands = {r["band"] for r in recs.values()}
+    assert len(bands) == 3                           # genuine spread, not all-Critical
+
+
+# --------------------------------------------------------------------------- #
+# compute_migration_readiness
+# --------------------------------------------------------------------------- #
+def test_readiness_not_ready_on_hard_fails(cp):
+    move_groups = [{"switches": ["a", "b"], "endpoints": 3}]
+    health = [{"switch": "a", "band": "Critical"}, {"switch": "b", "band": "Excellent"}]
+    dep = _dep(sole_gw={30: "a"}, model={"hosts": {"a", "b"}})
+    xl = [{"id": "CL-01", "severity": "Critical", "hosts": ["a"]}]
+    pr = [{"switch": "a", "protocol": "OSPF", "severity": "High"}]
+    out = cp.compute_migration_readiness({}, move_groups, health, [], [], xl, pr, dep)
+    assert out[0]["readiness"] == "NOT READY"
+    assert out[0]["n_fail"] >= 1
+
+
+def test_readiness_ready_when_clean(cp):
+    move_groups = [{"switches": ["c"], "endpoints": 0}]
+    health = [{"switch": "c", "band": "Excellent"}]
+    out = cp.compute_migration_readiness({}, move_groups, health, [], [], [], [], _dep())
+    assert out[0]["readiness"] == "READY"
+    assert out[0]["n_fail"] == 0 and out[0]["n_warn"] == 0
+
+
+def test_readiness_caution_on_warn_only(cp):
+    # single-fiber uplink is a WARN (not a fail) -> CAUTION
+    move_groups = [{"switches": ["a"], "endpoints": 1}]
+    health = [{"switch": "a", "band": "Good"}]
+    dep = _dep(single_fiber={("a", "Gi0/1")}, model={"hosts": {"a"}})
+    out = cp.compute_migration_readiness({}, move_groups, health, [], [], [], [], dep)
+    assert out[0]["readiness"] == "CAUTION"
+
+
+# --------------------------------------------------------------------------- #
+# compute_protocol_health (integration on the synthetic fixtures)
+# --------------------------------------------------------------------------- #
+def test_protocol_health_flags_down_ospf(cp, built):
+    all_interfaces, all_cmd_to_files = built
+    recs = cp.compute_protocol_health(all_interfaces, all_cmd_to_files)
+    ospf = [r for r in recs if r["switch"] == "core1" and r["protocol"] == "OSPF"]
+    assert ospf and ospf[0]["severity"] == "High"
+    # core2 has no OSPF neighbors collected -> no OSPF row
+    assert not [r for r in recs if r["switch"] == "core2" and r["protocol"] == "OSPF"]

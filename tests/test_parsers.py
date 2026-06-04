@@ -1,0 +1,174 @@
+"""Unit tests for the highest-risk pure show-command parsers.
+
+Inputs are small, format-correct snippets (IOS + NX-OS). These lock in current
+parser behavior so later robustness work can't silently regress it.
+"""
+import textwrap
+
+
+# ---- interface status ------------------------------------------------------ #
+def test_parse_show_interface_status_ios(cp):
+    out = textwrap.dedent("""\
+        Port      Name               Status       Vlan       Duplex  Speed Type
+        Gi1/0/5   srv-app01          connected    10           full  1000  10/100/1000BaseTX
+        Gi1/0/9   quarantine         err-disabled 10           auto  auto  10/100/1000BaseTX
+    """)
+    res = cp.parse_show_interface_status(out)
+    assert set(res) == {"Gi1/0/5", "Gi1/0/9"}
+    assert res["Gi1/0/5"]["status"].lower() == "connected"
+    assert "err" in res["Gi1/0/9"]["status"].lower()
+    assert res["Gi1/0/5"]["vlan_raw"] == "10"
+
+
+# ---- switchport ------------------------------------------------------------ #
+def test_parse_switchport_modes(cp):
+    out = textwrap.dedent("""\
+        Name: Gi1/0/24
+        Administrative Mode: trunk
+        Operational Mode: trunk
+        Trunking Native Mode VLAN: 1 (default)
+        Trunking VLANs Enabled: 10,20,30
+
+        Name: Gi1/0/5
+        Administrative Mode: static access
+        Operational Mode: static access
+        Access Mode VLAN: 10 (data)
+    """)
+    res = cp.parse_show_interface_switchport(out)
+    assert res["Gi1/0/24"]["mode"] == "Trunk"
+    assert res["Gi1/0/5"]["mode"] == "Access"
+    assert res["Gi1/0/5"]["access_vlan"] == "10"
+
+
+# ---- trunk table (IOS) ----------------------------------------------------- #
+def test_parse_trunk_table_ios(cp):
+    out = textwrap.dedent("""\
+        Port        Mode             Encapsulation  Status        Native vlan
+        Gi0/1       on               802.1q         trunking      1
+
+        Port        Vlans allowed on trunk
+        Gi0/1       10,20,30
+    """)
+    res = cp.parse_show_interface_trunk_table(out)
+    assert res["Gi0/1"]["status"] == "trunking"
+    assert res["Gi0/1"]["native_vlan"] == "1"
+    assert res["Gi0/1"]["allowed_vlans"] == "10,20,30"
+
+
+# ---- vlan brief ------------------------------------------------------------ #
+def test_parse_vlan_brief(cp):
+    out = textwrap.dedent("""\
+        VLAN Name                             Status    Ports
+        ---- -------------------------------- --------- ------------------------
+        10   USERS                            active    Gi0/2, Gi0/3
+        30   SERVERS                          active    Gi0/10
+    """)
+    res = cp.parse_vlan_brief(out)
+    assert res["10"]["name"] == "USERS"
+    assert "Gi0/2" in res["10"]["ports"]
+    assert res["30"]["name"] == "SERVERS"
+
+
+# ---- HSRP (down/active states + VIP) --------------------------------------- #
+def test_parse_hsrp_summary(cp):
+    out = textwrap.dedent("""\
+        Interface   Grp  Pri P State    Active          Standby         Virtual IP
+        Vl10        10   110 P Active   local           10.0.10.3       10.0.10.1
+        Vl20        20   100   Standby  10.0.20.3       local           10.0.20.1
+    """)
+    res = cp.parse_hsrp_summary(out)
+    assert res["Vlan10"] == "HSRP grp 10 Active VIP 10.0.10.1"
+    assert res["Vlan20"] == "HSRP grp 20 Standby VIP 10.0.20.1"
+
+
+# ---- OSPF neighbors (a down neighbor must be visible) ---------------------- #
+def test_parse_ospf_neighbors_detects_down(cp):
+    out = textwrap.dedent("""\
+        Neighbor ID     Pri   State           Dead Time   Address         Interface
+        10.0.99.2         1   FULL/DR         00:00:35    10.0.99.2       Port-channel1
+        10.0.99.9         1   EXSTART/DROTHER 00:00:31    10.0.40.9       Vlan40
+    """)
+    rows = cp.parse_ospf_neighbors(out)
+    states = {r["neighbor"]: r["state"] for r in rows}
+    assert states["10.0.99.2"].startswith("FULL")
+    assert states["10.0.99.9"].startswith("EXSTART")
+
+
+# ---- BGP summary (Established = numeric PfxRcd vs a stuck peer) ------------- #
+def test_parse_bgp_summary_states(cp):
+    out = textwrap.dedent("""\
+        Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+        10.0.0.2        4 65001    1200    1199        5    0    0 01:02:03        12
+        10.0.0.3        4 65002       0       0        0    0    0 never           Idle
+    """)
+    rows = cp.parse_bgp_summary(out)
+    states = {r["neighbor"]: r["state"] for r in rows}
+    assert states["10.0.0.2"] == "12"      # established -> prefix count
+    assert states["10.0.0.3"] == "Idle"    # not established
+
+
+# ---- CDP neighbors detail -------------------------------------------------- #
+def test_parse_cdp_detail(cp):
+    out = textwrap.dedent("""\
+        -------------------------
+        Device ID: access1.lab
+        Entry address(es):
+          IP address: 10.0.99.3
+        Platform: cisco WS-C2960X-48,  Capabilities: Switch
+        Interface: GigabitEthernet1/0/24,  Port ID (outgoing port): GigabitEthernet0/1
+    """)
+    res = cp.parse_neighbors_cdp(out)
+    assert res["Gi1/0/24"]["device_id"] == "access1.lab"
+    assert res["Gi1/0/24"]["remote_port"] == "Gi0/1"
+    assert res["Gi1/0/24"]["mgmt_ip"] == "10.0.99.3"
+
+
+# ---- EtherChannel members -------------------------------------------------- #
+def test_parse_etherchannel_members(cp):
+    out = textwrap.dedent("""\
+        Group  Port-channel  Protocol    Ports
+        ------+-------------+-----------+--------------------------------------
+        1      Po1(SU)         LACP      Gi1/0/1(P)    Gi1/0/2(P)
+    """)
+    members = cp.parse_etherchannel_summary_members(out)
+    assert members.get("Gi1/0/1") == "Po1"
+    assert members.get("Gi1/0/2") == "Po1"
+
+
+# ---- IP routes (connected subnet for an SVI) ------------------------------- #
+def test_parse_ip_routes_connected(cp):
+    out = textwrap.dedent("""\
+        Codes: C - connected, L - local
+        C        10.0.30.0/24 is directly connected, Vlan30
+        L        10.0.30.1/32 is directly connected, Vlan30
+    """)
+    routes = cp.parse_ip_routes(out)
+    assert "10.0.30.0/24" in routes
+    entry = routes["10.0.30.0/24"]["entries"][0]
+    assert entry["source"] == "connected"
+    assert entry["out_intf"] == "Vlan30"
+
+
+# ---- interface counters (errors) ------------------------------------------- #
+def test_parse_interface_counters(cp):
+    out = textwrap.dedent("""\
+        GigabitEthernet1/0/9 is down, line protocol is down (err-disabled)
+          MTU 1500 bytes, BW 1000000 Kbit/sec, DLY 10 usec
+             142 input errors, 17 CRC, 0 frame, 0 overrun, 0 ignored
+             Total output drops: 0
+    """)
+    res = cp.parse_show_interface_counters(out)
+    assert res["Gi1/0/9"]["input_errors"] == 142
+    assert res["Gi1/0/9"]["crc"] == 17
+
+
+# ---- tolerance: empty / garbage input never raises ------------------------- #
+def test_parsers_tolerate_empty_and_garbage(cp):
+    for fn in (cp.parse_show_interface_status, cp.parse_show_interface_switchport,
+               cp.parse_show_interface_trunk_table, cp.parse_vlan_brief,
+               cp.parse_hsrp_summary, cp.parse_ospf_neighbors, cp.parse_bgp_summary,
+               cp.parse_neighbors_cdp, cp.parse_ip_routes,
+               cp.parse_show_interface_counters):
+        assert fn("") in ({}, [])
+        # random non-matching text must not raise and must yield nothing useful
+        assert fn("garbage line\n%% nonsense ????\n") in ({}, [])
