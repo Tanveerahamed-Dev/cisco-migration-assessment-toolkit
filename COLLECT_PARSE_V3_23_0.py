@@ -290,7 +290,7 @@ from openpyxl.cell.cell import MergedCell
 # existing reference keeps working unchanged (behaviour byte-identical).
 from cisco_toolkit.textutils import (
     IFACE_TOKEN_RE, VALID_IFACE_RE, PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS,
-    normalize_ifname, is_valid_iface, normalize_speed, normalize_mac, detect_link_type, safe_fs_name,
+    normalize_ifname, normalize_speed, normalize_mac, detect_link_type, safe_fs_name,
 )
 from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): primitives + pure parsers
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,
@@ -300,6 +300,9 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
     parse_spanning_tree_detail, parse_spanning_tree_states, _compress_vlans,
     parse_show_vrf_interface, parse_show_power_inline, parse_neighbors_cdp,
     parse_neighbors_lldp, infer_endpoint_type,
+    parse_run_config_interfaces, parse_portchannel_protocol_from_summary,
+    parse_etherchannel_protocol_ios, parse_etherchannel_summary_members,
+    parse_show_ip_arp, parse_vtp_status, parse_switch_mgmt_ip, parse_multicast_info,
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -792,248 +795,19 @@ def _safe_parse(fn, *args, _default=None):
 # VRF / PoE / CDP / LLDP / infer_endpoint_type moved to cisco_toolkit.parse
 # (PHASE 2.7 step 5); imported at the top of this file.
 
-def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
-    res: Dict[str, Dict[str, str]] = {}
-    current = None
-    global_bpduguard = False
-    for line in output.splitlines():
-        if re.search(r"spanning-tree portfast bpduguard default", line, re.IGNORECASE):
-            global_bpduguard = True; continue
-        m = re.match(r"^\s*interface\s+(\S+)", line, re.IGNORECASE)
-        if m:
-            current = normalize_ifname(m.group(1))
-            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":""})
-            if global_bpduguard:
-                res[current]["bpduguard"] = "Enable"
-            continue
-        if not current: continue
-        low = line.strip().lower()
-        if low.startswith("description "):
-            res[current]["desc"] = line.strip()[len("description "):].strip()
-        # SVI / L3 interface IP. IOS: 'ip address 10.10.10.1 255.255.255.0'
-        # NX-OS: 'ip address 10.10.10.1/24'. Skip secondary/dhcp/negotiated.
-        if low.startswith("ip address ") and "secondary" not in low and "dhcp" not in low and "negotiated" not in low:
-            mip = re.search(r"ip address\s+(\d+\.\d+\.\d+\.\d+)(?:\s+(\d+\.\d+\.\d+\.\d+)|/(\d+))",
-                            line.strip(), re.IGNORECASE)
-            if mip and not res[current].get("ip_addr"):
-                ip = mip.group(1)
-                if mip.group(3):                       # NX-OS prefix form
-                    res[current]["ip_addr"] = f"{ip}/{mip.group(3)}"
-                elif mip.group(2):                     # IOS dotted-mask form
-                    res[current]["ip_addr"] = f"{ip} {mip.group(2)}"
-                else:
-                    res[current]["ip_addr"] = ip
-        if "spanning-tree bpduguard" in low:
-            if "enable" in low:                         res[current]["bpduguard"] = "Enable"
-            elif "disable" in low or low.endswith("no"): res[current]["bpduguard"] = "Disable"
-        if "spanning-tree guard root" in low:
-            res[current]["rootguard"] = "Disable" if low.startswith("no ") else "Enable"
-        if "spanning-tree portfast" in low and "disable" not in low:
-            res[current]["portfast"] = "Enable"
-        if "channel-group" in low and "mode" in low:
-            cm = re.search(r"channel-group\s+(\d+)\s+mode\s+(\S+)", low)
-            if cm:
-                res[current]["pc_id"]   = f"Po{cm.group(1)}"
-                res[current]["pc_mode"] = cm.group(2)
-        if low.startswith("vrf member "):    res[current]["vrf"] = line.strip().split()[-1]
-        if low.startswith("vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]
-    return res
+# run-config / etherchannel proto+members / ip-arp parsers moved to
+# cisco_toolkit.parse (PHASE 2.7 step 6); imported at the top of this file.
 
-def _proto_from_token(tok: str) -> str:
-    t = (tok or "").strip().upper()
-    if t == "LACP": return "Active"
-    if t == "PAGP": return "Active"
-    if t in ("NONE","-","ON"): return "On"
-    return ""
-
-def parse_portchannel_protocol_from_summary(output: str) -> Dict[str, str]:
-    proto: Dict[str, str] = {}
-    for line in output.splitlines():
-        m = re.search(r"\b(Po\d+)\b\s*(?:\(\w+\))?\s+(?:\w+\s+)*(LACP|PAgP|NONE|-)\b",
-                      line, re.IGNORECASE)
-        if m:
-            po = normalize_ifname(m.group(1))
-            p  = _proto_from_token(m.group(2))
-            if p: proto[po] = p
-    return proto
-
-def parse_etherchannel_protocol_ios(output: str) -> Dict[str, str]:
-    proto: Dict[str, str] = {}
-    for line in output.splitlines():
-        m = re.search(r"\b(Po\d+)\b.*?\b(LACP|PAgP|NONE|-)\b", line, re.IGNORECASE)
-        if m:
-            po = normalize_ifname(m.group(1))
-            p  = _proto_from_token(m.group(2))
-            if p: proto[po] = p
-    return proto
-
-def parse_etherchannel_summary_members(output: str) -> Dict[str, str]:
-    members: Dict[str, str] = {}
-    current_po = ""
-    for line in output.splitlines():
-        pm = re.search(r"\b(Po\d+)\b", line, re.IGNORECASE)
-        if pm: current_po = normalize_ifname(pm.group(1))
-        if not current_po: continue
-        for tok in IFACE_TOKEN_RE.findall(line):
-            n = normalize_ifname(tok)
-            if not n.startswith("Po"): members[n] = current_po
-    return members
-
-def parse_show_ip_arp(output: str) -> Dict[str, str]:
-    """FIX-R2+FIX-R8: token-scan based, tolerates any column order, skips VRF banners."""
-    result: Dict[str, str] = {}
-    _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
-    _SKP   = re.compile(
-        r"^(protocol|address|ip address|ip arp|arp|total|vrf|context|flags|"
-        r"hardware addr|incomplete|age|interface|#|--|===)", re.IGNORECASE)
-    for line in output.splitlines():
-        line = line.strip()
-        if not line: continue
-        if _SKP.match(line): continue
-        if "incomplete" in line.lower(): continue
-        parts = line.split()
-        if len(parts) < 3: continue
-        ip_addr = mac_addr = ""
-        for tok in parts:
-            if not ip_addr and _IP_RE.match(tok):
-                ip_addr = tok
-            if not mac_addr:
-                mn = normalize_mac(tok)
-                if mn: mac_addr = mn
-        if ip_addr and mac_addr:
-            result.setdefault(mac_addr, ip_addr)
-    return result
-
-def parse_vtp_status(output: str) -> str:
-    if not output:
-        return ""
-    for line in output.splitlines():
-        m = re.search(r"(?:vtp\s+domain\s+name|domain name)\s*:?\s*(.+)$", line.strip(), re.IGNORECASE)
-        if m:
-            val = m.group(1).strip()
-            if val and val.lower() not in ("not configured", "none", "null"):
-                return val
-    return ""
-
-def _parse_ip_int_brief(blob: str) -> Dict[str, Tuple[str, bool]]:
-    """Parse 'show ip interface brief' (IOS + NX-OS) -> {ifname: (ip, is_up)}.
-
-    IOS line:   GigabitEthernet0/0  10.99.0.5  YES NVRAM  up  up
-    NX-OS line: mgmt0               10.99.0.5  protocol-up/link-up/admin-up
-    'unassigned' / no-IP lines are skipped.
-    """
-    res: Dict[str, Tuple[str, bool]] = {}
-    if not blob:
-        return res
-    for raw in blob.splitlines():
-        s = raw.strip()
-        if not s or s.lower().startswith(("interface", "ip interface status")):
-            continue
-        m = re.match(r"^(\S+)\s+(\d+\.\d+\.\d+\.\d+)\b(.*)$", s)
-        if not m:
-            continue
-        ifn = normalize_ifname(m.group(1))
-        ip  = m.group(2)
-        rest = m.group(3).lower()
-        # up if NX-OS 'protocol-up' & 'link-up', or IOS trailing 'up   up' (proto up)
-        if "protocol-up" in rest or "link-up" in rest:
-            is_up = ("protocol-up" in rest) and ("admin-up" in rest or "link-up" in rest)
-        else:
-            toks = rest.split()
-            is_up = len(toks) >= 2 and toks[-1] == "up"   # IOS: last col = protocol
-        if ifn not in res or (is_up and not res[ifn][1]):
-            res[ifn] = (ip, is_up)
-    return res
-
-def parse_switch_mgmt_ip(ipbrief_blob: str, run_iface: Optional[Dict[str, Dict[str, str]]] = None) -> str:
-    """Best-effort 'this switch's own management IP', NOT a neighbor's.
-
-    Priority: OOB mgmt port (mgmt0 / Management* / Gi0/0 / Fa0/0) > lowest Loopback >
-    a sole management SVI > lowest-numbered up SVI. Prefers up interfaces within a tier.
-    Falls back to run-config 'ip address' lines if ip-int-brief is unavailable.
-    Returns a bare address (no mask/prefix), or '' if nothing qualifies.
-    """
-    ifs = _parse_ip_int_brief(ipbrief_blob)
-
-    # Fallback: derive {ifname: (ip, up?)} from run-config-captured ip_addr (up unknown -> True)
-    if not ifs and run_iface:
-        for ifn, v in run_iface.items():
-            raw_ip = (v.get("ip_addr") or "").strip()
-            if not raw_ip:
-                continue
-            ipv = raw_ip.split()[0].split("/")[0]
-            if ipv:
-                ifs[normalize_ifname(ifn)] = (ipv, True)
-    if not ifs:
-        return ""
-
-    def bare(ip: str) -> str:
-        return ip.split()[0].split("/")[0]
-    def num(ifn: str) -> int:
-        m = re.search(r"(\d+)", ifn);  return int(m.group(1)) if m else 0
-    def pick(cands: List[str]) -> str:
-        if not cands:
-            return ""
-        cands.sort(key=lambda i: (not ifs[i][1], num(i)))  # up first, then lowest index
-        return bare(ifs[cands[0]][0])
-
-    oob  = [i for i in ifs if re.match(r"^(mgmt|management|gigabitethernet0/0|fastethernet0/0|gi0/0|fa0/0)", i, re.IGNORECASE)]
-    if oob:  return pick(oob)
-    loop = [i for i in ifs if i.lower().startswith(("lo", "loop"))]
-    if loop: return pick(loop)
-    svis = [i for i in ifs if re.match(r"^Vlan\d+$", i, re.IGNORECASE)]
-    if len(svis) == 1:        # sole SVI with an IP == the management SVI
-        return bare(ifs[svis[0]][0])
-    if svis:                  # L3 switch with many gateway SVIs: best-effort, lowest up SVI
-        return pick(svis)
-    return pick(list(ifs.keys()))
+# vtp_status / _parse_ip_int_brief / parse_switch_mgmt_ip moved to
+# cisco_toolkit.parse (PHASE 2.7 step 6); imported at the top of this file.
 
 # parse_ip_routes moved to cisco_toolkit.parse (PHASE 2.7 step 3); imported at top.
 
 # parse_hsrp_summary / parse_vrrp_summary / parse_glbp_summary moved to
 # cisco_toolkit.parse (PHASE 2.7 step 3); imported at the top of this file.
 
-def parse_multicast_info(mroute_out: str, pim_out: str) -> Dict[str, str]:
-    """Per-interface multicast state from 'show ip pim interface' + 'show ip mroute'.
-
-    V14.11: parse the real PIM table (Address / Interface / Ver/Mode / ...) instead of the
-    incorrect 'X is up' assumption, and capture VlanN interfaces in mroute IIF/OIL (the global
-    IFACE_TOKEN_RE deliberately excludes Vlan, so a local Vlan-aware token regex is used here).
-    """
-    # Vlan-aware token regex, scoped to this function only. Matches both abbreviated
-    # (Gi1/0/1) and full (GigabitEthernet1/0/1) names, plus Vlan/Port-channel.
-    tok_re = re.compile(
-        r"\b(?:Vlan\d+|(?:Port-?channel|Po)\d+|[A-Za-z]{2,}\d+/\d+(?:/\d+)?)\b",
-        re.IGNORECASE)
-    res: Dict[str, List[str]] = {}
-
-    if pim_out:
-        _MODE = {"s": "Sparse", "d": "Dense", "sd": "Sparse-Dense", "ss": "Sparse"}
-        for line in pim_out.splitlines():
-            s = line.strip()
-            if not s or s.lower().startswith(("address", "interface")):
-                continue
-            # Table row: '<ip> <interface> <ver/mode> ...'  (interface may be VlanN)
-            mt = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+v?\d?\s*/?\s*([A-Za-z]+)?", s)
-            if mt and is_valid_iface(mt.group(2)):
-                intf = normalize_ifname(mt.group(2))
-                mode = _MODE.get((mt.group(3) or "").lower(), "")
-                res.setdefault(intf, []).append("PIM" + (f" {mode}" if mode else ""))
-                continue
-            # Some platforms: '<interface> is up, ... PIM ...'
-            mi = re.match(r"^(Vlan\d+|\S+)\s+is\s+(?:up|down)", s, re.IGNORECASE)
-            if mi and is_valid_iface(mi.group(1)):
-                res.setdefault(normalize_ifname(mi.group(1)), []).append("PIM enabled")
-
-    if mroute_out:
-        for line in mroute_out.splitlines():
-            low = line.lower()
-            tag = "Mroute IIF" if "incoming interface" in low else (
-                  "Mroute OIL" if ("outgoing" in low or line.startswith((" ", "\t"))) else "Mroute")
-            for tok in tok_re.findall(line):
-                res.setdefault(normalize_ifname(tok), []).append(tag)
-
-    return {k: " / ".join(dict.fromkeys(v)) for k, v in res.items()}
+# parse_multicast_info moved to cisco_toolkit.parse (PHASE 2.7 step 6);
+# imported at the top of this file.
 
 # =============================================================================
 # PHYSICAL PARSERS (NEW-V12)
