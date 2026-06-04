@@ -290,8 +290,8 @@ from openpyxl.cell.cell import MergedCell
 # constants extracted to the cisco_toolkit package; imported back so every
 # existing reference keeps working unchanged (behaviour byte-identical).
 from cisco_toolkit.textutils import (
-    IFACE_TOKEN_RE, VALID_IFACE_RE, PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS,
-    normalize_ifname, normalize_speed, detect_link_type, safe_fs_name,
+    PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS,   # IFACE_TOKEN_RE/VALID_IFACE_RE: last monolith
+    normalize_ifname, normalize_speed, detect_link_type, safe_fs_name,   # users moved to parse (step 17)
     _split_macs,   # NEW-V3.23.21 (step 11): shared by VLAN census + compute_move_groups
 )
 from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): primitives + pure parsers
@@ -310,6 +310,7 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
     parse_show_interface_counters, parse_port_security, parse_auth_sessions,
     parse_dhcp_snooping_binding,
     _parse_fhrp,   # NEW-V3.23.26 (step 16): FHRP behaviour parser, used by write_l3_forwarding_sheet
+    _is_physical_port, _classify_media, parse_interface_phy, _parse_poe_watts,  # NEW-V3.23.27 (step 17)
 )
 # NEW-V3.23.19 (PHASE 2.7 step 9): the passed-around data model (InterfaceData /
 # DevicePhysical) extracted to the package leaf; imported back so every type hint
@@ -326,7 +327,7 @@ from cisco_toolkit.analyze import (
     compute_causality_chains, compute_failure_impact,
     compute_data_quality, compute_health_scores,
     compute_score_sensitivity, compute_migration_readiness,
-    compute_protocol_health,
+    compute_protocol_health, _poe_device_util, _physical_uplink_index,
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue (_load_cmd_output
 # reads collected show output fail-soft; _safe_parse wraps section parsers). Homed
@@ -2513,121 +2514,14 @@ def write_failure_impact_sheet(wb, all_interfaces: Dict[str, Dict[str, Interface
 # -----------------------------------------------------------------------------
 PHYSICAL_HEALTH_SHEET_NAME = "Physical Health"
 
-# Logical (non-physical) interfaces excluded from the per-physical-port sheet.
-_NON_PHYSICAL_RE = re.compile(
-    r"^(Vlan\d+|Lo\d+|Loopback\d+|Po\d+|Port-channel\d+|Tu\d+|Tunnel\d+|"
-    r"Null\d*|mgmt0|Bundle-Ether\d+|BE\d+)$", re.IGNORECASE)
+# Physical-port / media parsers (_NON_PHYSICAL_RE / _is_physical_port / _classify_media /
+# parse_interface_phy / _parse_poe_watts) moved to cisco_toolkit.parse (PHASE 2.7 step 17);
+# _is_physical_port / _classify_media / parse_interface_phy / _parse_poe_watts are imported
+# back near the top of this file. The PoE/uplink compute helpers below move to analyze.
 
-def _is_physical_port(port: str) -> bool:
-    p = (port or "").strip()
-    return bool(p) and not _NON_PHYSICAL_RE.match(p)
-
-def _classify_media(s: str) -> str:
-    """Map a 'media type is ...' / port-type string to copper / SFP-fiber / QSFP / unknown."""
-    low = (s or "").lower()
-    if not low:
-        return "unknown"
-    if "qsfp" in low:
-        return "QSFP"
-    if ("sfp" in low or "base-sx" in low or "base-lx" in low or "base-sr" in low
-            or "base-lr" in low or "base-er" in low or "1000basesx" in low or "fiber" in low):
-        return "SFP/fiber"
-    if ("basetx" in low or "baset" in low or "10/100" in low or "rj45" in low or "copper" in low):
-        return "copper"
-    return s.strip()[:24] or "unknown"
-
-def parse_interface_phy(output: str) -> Dict[str, Dict[str, str]]:
-    """Best-effort negotiated duplex/speed/media per interface from IOS 'show interfaces' /
-    NX-OS 'show interface' DETAIL. Returns {port: {'duplex','speed','media'}}; values stay
-    blank when the platform format omits the line (some NX-OS) -> caller marks unknown."""
-    res: Dict[str, Dict[str, str]] = {}
-    cur = None
-    buf: List[str] = []
-
-    def _flush(name, lines):
-        if not name or not lines:
-            return
-        text = "\n".join(lines)
-        rec = {"duplex": "", "speed": "", "media": ""}
-        m = re.search(r"\b(Full|Half|Auto)-duplex\b", text, re.IGNORECASE)
-        if m:
-            rec["duplex"] = m.group(1).capitalize()
-        m = re.search(r"-duplex,\s*([^,]+?)\s*,", text)        # token between duplex and next comma
-        if m:
-            rec["speed"] = m.group(1).strip()
-        m = re.search(r"media type is\s+(.+)", text, re.IGNORECASE)
-        if m:
-            rec["media"] = _classify_media(m.group(1).strip())
-        res[name] = rec
-
-    for line in output.splitlines():
-        mh = re.match(r"^(\S+)\s+is\s+(?:up|down|administratively down)\b", line)
-        if mh:
-            nm = normalize_ifname(mh.group(1))
-            if VALID_IFACE_RE.match(nm):
-                _flush(cur, buf)
-                cur, buf = nm, [line]
-                continue
-        if cur is not None:
-            buf.append(line)
-    _flush(cur, buf)
-    return res
-
-def _parse_poe_watts(output: str) -> Dict[str, float]:
-    """Best-effort per-port PoE watts (consumed) from 'show power inline'. {port: watts}.
-    Reads the first decimal on each interface line (the consumed-watts column)."""
-    res: Dict[str, float] = {}
-    for line in output.splitlines():
-        it = IFACE_TOKEN_RE.search(line)
-        if not it:
-            continue
-        intf = normalize_ifname(it.group(0))
-        if not _is_physical_port(intf):
-            continue
-        m = re.search(r"\b(\d+\.\d+)\b", line[it.end():])
-        if m:
-            try:
-                res[intf] = float(m.group(1))
-            except ValueError:
-                pass
-    return res
-
-def _poe_device_util(all_device_physical: List[DevicePhysical]) -> Dict[str, float]:
-    """hostname -> PoE utilisation %, from DevicePhysical capacity/drawn (mirrors Capacity sheet)."""
-    out: Dict[str, float] = {}
-    for dp in all_device_physical:
-        try:
-            cap = float(str(dp.power_capacity_w).split()[0]) if str(dp.power_capacity_w).strip() else 0.0
-            drawn = float(str(dp.power_drawn_w).split()[0]) if str(dp.power_drawn_w).strip() else None
-        except (ValueError, IndexError):
-            cap, drawn = 0.0, None
-        if cap > 0 and drawn is not None:
-            out[dp.hostname] = round(100.0 * drawn / cap, 1)
-    return out
-
-def _physical_uplink_index(model: Dict[str, object]):
-    """From the shared network model, return (uplink_ports, single_fiber_ports):
-       uplink_ports       : set of (host, local_port) facing another scanned switch
-       single_fiber_ports : set of (host, local_port) where that port is the host's ONLY
-                            inter-switch link and it is not a port-channel (no L1 redundancy)."""
-    by_host: Dict[str, List[Tuple[str, str, bool]]] = {}
-    for l in model["links"]:                                   # links: {a,ap,b,bp,is_pc,da,db}
-        if l.get("ap"):
-            by_host.setdefault(l["a"], []).append((l["b"], l["ap"], bool(l["is_pc"])))
-        if l.get("bp"):
-            by_host.setdefault(l["b"], []).append((l["a"], l["bp"], bool(l["is_pc"])))
-    uplink_ports = set()
-    single_fiber = set()
-    for host, ups in by_host.items():
-        for (_oh, lp, _pc) in ups:
-            uplink_ports.add((host, lp))
-        distinct = {(oh, lp) for (oh, lp, _pc) in ups}
-        if len(distinct) == 1:
-            oh, lp = next(iter(distinct))
-            pc = any(p for (o, l, p) in ups if (o, l) == (oh, lp))
-            if not pc:
-                single_fiber.add((host, lp))
-    return uplink_ports, single_fiber
+# _poe_device_util / _physical_uplink_index moved to cisco_toolkit.analyze (PHASE 2.7
+# step 17); imported back near the top of this file (write_physical_health_sheet +
+# build_dependency_map use them).
 
 def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]],
                                 all_cmd_to_files: Dict[str, Dict[str, str]],

@@ -25,8 +25,10 @@ def test_monolith_reexports_the_package_objects(cp):
     assert cp.detect_link_type is textutils.detect_link_type
     # is_valid_iface is now used only inside the package (its monolith callers moved out)
     assert callable(textutils.is_valid_iface)
-    assert cp.VALID_IFACE_RE is textutils.VALID_IFACE_RE
-    assert cp.IFACE_TOKEN_RE is textutils.IFACE_TOKEN_RE
+    # PHYSICAL_IFACE_RE is still re-exported (monolith uses it); IFACE_TOKEN_RE / VALID_IFACE_RE
+    # went package-internal in step 17 (their last monolith users, the phy parsers, moved to parse).
+    assert cp.PHYSICAL_IFACE_RE is textutils.PHYSICAL_IFACE_RE
+    assert not hasattr(cp, "VALID_IFACE_RE") and not hasattr(cp, "IFACE_TOKEN_RE")
     assert cp._split_macs is textutils._split_macs
 
 
@@ -45,6 +47,14 @@ def test_parse_module_reexported_and_functional(cp):
     # _parse_fhrp joined the parser layer in step 16 (shared by analyze + the L3-fwd sheet).
     assert cp._parse_fhrp is parse._parse_fhrp
     assert parse._parse_fhrp("HSRP grp 1 Active VIP 10.0.10.1") == ("HSRP", "Active", "10.0.10.1", "1")
+    # physical-port parsers joined the parser layer in step 17.
+    for name in ("_is_physical_port", "_classify_media", "parse_interface_phy", "_parse_poe_watts"):
+        assert getattr(cp, name) is getattr(parse, name)
+    assert parse._is_physical_port("Gi1/0/1") is True and parse._is_physical_port("Vlan10") is False
+    assert parse._classify_media("media type is 10/100/1000BaseTX") == "copper"
+    phy = parse.parse_interface_phy(
+        "GigabitEthernet1/0/1 is up\n  Full-duplex, 1000Mb/s, media type is 10/100/1000BaseTX\n")
+    assert phy["Gi1/0/1"]["duplex"] == "Full" and phy["Gi1/0/1"]["media"] == "copper"
 
 
 def test_model_reexported_and_functional(cp):
@@ -147,6 +157,15 @@ def test_analyze_reexported_and_functional(cp):
     ph = analyze.compute_protocol_health(
         {"sw1": {"Vlan10": ID(port="Vlan10", hsrp_behavior="HSRP grp 1 Active VIP 10.0.10.1")}}, {})
     assert any(r["protocol"] == "FHRP" and r["severity"] == "Info" for r in ph)
+    # physical-health compute helpers joined the analyze layer (step 17).
+    assert cp._poe_device_util is analyze._poe_device_util
+    assert cp._physical_uplink_index is analyze._physical_uplink_index
+    DP = analyze.DevicePhysical
+    assert analyze._poe_device_util([DP(hostname="sw1", power_capacity_w="1000", power_drawn_w="250")]) == {"sw1": 25.0}
+    # a single non-port-channel inter-switch link -> a single-fiber uplink on both ends.
+    up, sf = analyze._physical_uplink_index(
+        {"links": [{"a": "sw1", "ap": "Gi1/0/1", "b": "sw2", "bp": "Gi1/0/1", "is_pc": False}]})
+    assert ("sw1", "Gi1/0/1") in sf and ("sw2", "Gi1/0/1") in sf
 
 
 def test_cmdio_reexported_and_functional(cp, tmp_path):

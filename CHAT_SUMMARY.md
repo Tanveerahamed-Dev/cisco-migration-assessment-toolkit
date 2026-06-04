@@ -5,6 +5,39 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 17: physical-health helpers -> package
+
+On branch `phase2-split-analyze7`. Byte-identical. **Prereq for the dependency-map cluster**
+(which uses `_is_physical_port`/`_physical_uplink_index`). Monolith **~3,437 lines**.
+
+- Started toward step 17 = `build_dependency_map`+`compute_cross_layer_correlations`, but
+  found `build_dependency_map` uses `_physical_uplink_index` + `_is_physical_port` (physical-
+  health helpers still in the monolith) → would be a circular import. So **did the physical
+  helpers first** (this PR), dependency-map next.
+- Split by kind: pure parsers `_NON_PHYSICAL_RE`(internal)/`_is_physical_port`/`_classify_media`/
+  `parse_interface_phy`/`_parse_poe_watts` → **parse.py**; compute helpers `_poe_device_util`
+  (needs `DevicePhysical` — analyze.py now imports it)/`_physical_uplink_index` → **analyze.py**.
+- Import-backs: parse → `_is_physical_port`/`_classify_media`/`parse_interface_phy`/`_parse_poe_watts`;
+  analyze → `_poe_device_util`/`_physical_uplink_index` (all used by write_physical_health_sheet +
+  build_dependency_map, both still monolith).
+- **Two F401 cascades (both caught + fixed):** (1) `IFACE_TOKEN_RE`/`VALID_IFACE_RE` were the
+  phy parsers' last monolith users → dropped from the monolith's textutils import; (2) that
+  drop then broke the step-1 identity assertion `cp.VALID_IFACE_RE is textutils.VALID_IFACE_RE`
+  → updated to `not hasattr(cp, ...)` (PHYSICAL_IFACE_RE stays re-exported, used at monolith
+  800/1744). **Lesson refinement: an F401 drop of a re-export ALSO needs its test_package.py
+  identity assertion updated — ruff catches the import, pytest catches the assertion.**
+- Extended test_package (parse: 4 phy-parser identities + is_physical/classify_media/
+  parse_interface_phy smokes; analyze: `_poe_device_util` 25% + `_physical_uplink_index`
+  single-fiber smokes). **64 tests**, golden byte-identical, ruff clean, mypy 101. `.md` V3.23.27.
+
+**Next = step 18: `build_dependency_map` + `compute_cross_layer_correlations` + `all_hosts`**
+(now unblocked — its phy-helper deps are in the package; it also uses `build_network_model`/
+`_vlan_components` already in analyze, and `_CL_RANK` moves with cross-layer; `_CL_FILL` +
+`CROSS_LAYER_SHEET_NAME` stay excel). Then the L3-forwarding + flow-trace cluster finishes
+analyze. Then excel (`write_*`, the big layer), html, `__main__`. Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 16: protocol-health -> analyze
 
 On branch `phase2-split-analyze6`. Byte-identical. **First parser-entangled analyze
