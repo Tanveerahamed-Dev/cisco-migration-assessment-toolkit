@@ -285,6 +285,14 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl.cell.cell import MergedCell
+# NEW-V3.23.11 (PHASE 2.7 step 1): pure text/interface-name helpers + regex
+# constants extracted to the cisco_toolkit package; imported back so every
+# existing reference keeps working unchanged (behaviour byte-identical).
+from cisco_toolkit.textutils import (
+    IFACE_TOKEN_RE, VALID_IFACE_RE, PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS,
+    normalize_ifname, is_valid_iface, normalize_status, normalize_duplex,
+    normalize_speed, normalize_mac, detect_link_type, safe_fs_name,
+)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -410,24 +418,8 @@ COMMANDS_IOS = [
 
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 
-IFACE_TOKEN_RE = re.compile(
-    r"\b(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
-    r"Tw\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?)\b",
-    re.IGNORECASE)
-
-VALID_IFACE_RE = re.compile(
-    r"^(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
-    r"Tw\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?|"
-    r"Vlan\d+|Lo\d+|mgmt0)$",
-    re.IGNORECASE)
-
-PHYSICAL_IFACE_RE = re.compile(
-    r"^(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
-    r"Tw\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?)$",
-    re.IGNORECASE)
-
-_JUNK_IFACE_TOKENS  = {"port","ports","capability","status","native","vlan","name","duplex","speed","type"}
-_TRUNK_STATUS_WORDS = {"trunking","trnk-bndl","notconnect","connected","disabled","suspended"}
+# Interface regex constants moved to cisco_toolkit.textutils (PHASE 2.7 step 1);
+# imported near the top of this file.
 
 # =============================================================================
 # LOGGING
@@ -529,70 +521,8 @@ class DevicePhysical:
     fan_status: str = ""
     temperature_status: str = ""
 
-# =============================================================================
-# NORMALIZATION HELPERS
-# =============================================================================
-def normalize_ifname(s: str) -> str:
-    if not s: return ""
-    x = s.strip()
-    x = re.sub(r"^Ethernet",          "Eth", x, flags=re.IGNORECASE)
-    x = re.sub(r"^FastEthernet",      "Fa",  x, flags=re.IGNORECASE)
-    x = re.sub(r"^GigabitEthernet",   "Gi",  x, flags=re.IGNORECASE)
-    x = re.sub(r"^TenGigabitEthernet","Te",  x, flags=re.IGNORECASE)
-    x = re.sub(r"^FortyGigabitEthernet","Fo",x, flags=re.IGNORECASE)
-    x = re.sub(r"^TwentyFiveGigE",    "Tw",  x, flags=re.IGNORECASE)
-    x = re.sub(r"^HundredGigE",       "Hu",  x, flags=re.IGNORECASE)
-    x = re.sub(r"^[Pp]ort-[Cc]hannel","Po",  x)
-    return x
-
-def is_valid_iface(name: str) -> bool:
-    n = normalize_ifname((name or "").strip())
-    if not n: return False
-    if n.lower() in _JUNK_IFACE_TOKENS: return False
-    return bool(VALID_IFACE_RE.match(n))
-
-def normalize_status(s: str) -> str:
-    if not s: return ""
-    t = s.strip().lower()
-    return {"up": "connected", "down": "notconnect"}.get(t, t)
-
-def normalize_duplex(s: str) -> str:
-    if not s: return ""
-    t = s.strip().lower()
-    return {"a-full":"Auto","a-half":"Auto","full":"Full","half":"Half","auto":"Auto"}.get(t, s.strip())
-
-def normalize_speed(s: str) -> str:
-    if not s: return ""
-    t = s.strip().lower().replace("a-","auto-")
-    t = re.sub(r"\([ad]\)", "", t)
-    mp = {
-        "auto":"Auto","auto-1000":"1000","auto-10g":"10G","auto-25g":"25G",
-        "auto-40g":"40G","auto-100g":"100G","10g":"10G","25g":"25G","40g":"40G",
-        "100g":"100G","1g":"1000","1000":"1000","100":"100","10":"10",
-    }
-    return mp.get(t, s.strip())
-
-def normalize_mac(mac_str: str) -> str:
-    if not mac_str: return ""
-    mac = re.sub(r"[\s\-:.]", "", mac_str.strip().lower())
-    if len(mac) != 12 or not re.match(r"^[0-9a-f]{12}$", mac): return ""
-    return f"{mac[0:4]}.{mac[4:8]}.{mac[8:12]}"
-
-def detect_link_type(transceiver_or_type: str, speed: str) -> str:
-    t = (transceiver_or_type or "").lower()
-    if any(k in t for k in ["sr","lr","lrm","er","zr","qsfp","sfp","xfp","cfp","glc","-sx","-lx","-lr"]):
-        return "Fiber"
-    if any(k in t for k in ["copper","cr","dac","twinax","base-t","rj45","-t"]):
-        return "Copper"
-    s = normalize_speed(speed)
-    if any(x in s for x in ["10G","25G","40G","100G"]): return "Fiber"
-    if s in ["1000","100","10"]: return "Copper"
-    return ""
-
-def safe_fs_name(s: str) -> str:
-    s = (s or "").strip()
-    s = re.sub(r'[<>:"/\\|?*]', "_", s)
-    return s.rstrip(". ") or "UNKNOWN_DEVICE"
+# Normalization helpers moved to cisco_toolkit.textutils (PHASE 2.7 step 1);
+# imported near the top of this file.
 
 # =============================================================================
 # EXCEL HEADER DEBUG

@@ -5,6 +5,31 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 1: begin the package split
+
+On branch `phase2-split-textutils`. Behaviour byte-identical.
+
+- Created the `cisco_toolkit/` package; extracted the pure leaf-level text /
+  interface-name helpers + interface regex constants into
+  `cisco_toolkit/textutils.py` (depends only on `re`). The monolith imports them
+  back, so all references + the `import COLLECT_PARSE_V3_23_0` entrypoint/tests
+  keep working unchanged.
+- Dropped the unused `_JUNK_IFACE_TOKENS` import-back (F401); placed the import
+  in the import block (E402). `ruff` stays clean.
+
+Verified: golden **byte-identical**, mypy baseline unchanged (101), **60 tests
+pass** (+2 in `tests/test_package.py`, incl. an `is`-identity check that the
+monolith uses the package objects — guards against a future re-definition).
+`.md` Change Log V3.23.11.
+
+**Split strategy (safe, incremental):** one self-contained layer per PR, lowest
+dependency first, golden verifying each step, monolith stays the entrypoint via
+import-back. Done: textutils (leaf). Next layers: parse (the ~40 `parse_*` — but
+they depend on more constants/helpers), then analyze / excel / html. Each is its
+own PR; the bulk is best continued in a dedicated session.
+
+---
+
 ## 2026-06-04 — PHASE 2.6: mypy baseline (report-only)
 
 On branch `phase2-mypy`. Code-health hygiene; behaviour byte-identical.
