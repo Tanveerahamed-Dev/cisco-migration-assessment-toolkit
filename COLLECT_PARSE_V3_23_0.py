@@ -823,6 +823,18 @@ def _load_cmd_output(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
                 logger.debug(f"_load_cmd_output: failed reading {p} for '{cmd}': {e}")  # NEW-V3.23.1
     return ""
 
+def _safe_parse(fn, *args, _default=None):
+    """FIX-V3.23.6 (P1): run a section parser fail-soft. If it raises on a
+    malformed/unexpected block, log a breadcrumb and return _default ({} unless
+    given) so build_interfaces keeps the rest of the device's data instead of
+    losing the whole device to one bad section. Happy path is unchanged - the
+    parsers already return {} on empty input, so wrapping is value-preserving."""
+    try:
+        return fn(*args)
+    except Exception as e:
+        logger.warning(f"  [parse] {getattr(fn, '__name__', repr(fn))} failed: {e!r}; section skipped")
+        return {} if _default is None else _default
+
 # =============================================================================
 # PARSERS - interface commands
 # =============================================================================
@@ -2397,7 +2409,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
 
     # 1) show interface status
     st_out = _load_cmd_output(cmd_to_file, "show interface status")
-    for p, v in (parse_show_interface_status(st_out) if st_out else {}).items():
+    for p, v in _safe_parse(parse_show_interface_status, st_out).items():
         interfaces.setdefault(p, InterfaceData(port=p))
         interfaces[p].status    = v.get("status","")
         interfaces[p].duplex    = v.get("duplex","")
@@ -2409,7 +2421,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
 
     # 2) switchport
     sw_out = _load_cmd_output(cmd_to_file, "show interface switchport", "show interfaces switchport")
-    for p, v in (parse_show_interface_switchport(sw_out) if sw_out else {}).items():
+    for p, v in _safe_parse(parse_show_interface_switchport, sw_out).items():
         interfaces.setdefault(p, InterfaceData(port=p))
         interfaces[p].switchport_mode = v.get("mode","") or interfaces[p].switchport_mode
         if interfaces[p].switchport_mode == "Access":
@@ -2418,7 +2430,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
 
     # 3) trunk table
     tr_out = _load_cmd_output(cmd_to_file, "show interface trunk", "show interfaces trunk")
-    for p, v in (parse_show_interface_trunk_table(tr_out) if tr_out else {}).items():
+    for p, v in _safe_parse(parse_show_interface_trunk_table, tr_out).items():
         interfaces.setdefault(p, InterfaceData(port=p))
         tstat = (v.get("status") or "")
         if tstat: interfaces[p].trunk_status = tstat
@@ -2432,7 +2444,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
     run_out = _load_cmd_output(cmd_to_file,
                                "show running-config interface",
                                "show running-config | section ^interface")
-    run_iface  = parse_run_config_interfaces(run_out) if run_out else {}
+    run_iface  = _safe_parse(parse_run_config_interfaces, run_out)
     global_run = _load_cmd_output(cmd_to_file, "show running-config")
     global_bdg = bool(re.search(r"spanning-tree portfast bpduguard default", global_run, re.IGNORECASE))
     if global_bdg:
@@ -2457,7 +2469,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
     # 5) VRF
     vrf_out = _load_cmd_output(cmd_to_file, "show vrf interface", "show ip vrf interface",
                                "show ip vrf interfaces")
-    for p, vrf in (parse_show_vrf_interface(vrf_out) if vrf_out else {}).items():
+    for p, vrf in _safe_parse(parse_show_vrf_interface, vrf_out).items():
         interfaces.setdefault(p, InterfaceData(port=p))
         if vrf and not interfaces[p].vrf: interfaces[p].vrf = vrf
 
@@ -2466,9 +2478,9 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
     pc_proto: Dict[str, str] = {}
     po_members: Dict[str, str] = {}
     if pc_out:
-        pc_proto   = parse_portchannel_protocol_from_summary(pc_out)
-        if not pc_proto: pc_proto = parse_etherchannel_protocol_ios(pc_out)
-        po_members = parse_etherchannel_summary_members(pc_out)
+        pc_proto   = _safe_parse(parse_portchannel_protocol_from_summary, pc_out)
+        if not pc_proto: pc_proto = _safe_parse(parse_etherchannel_protocol_ios, pc_out)
+        po_members = _safe_parse(parse_etherchannel_summary_members, pc_out)
 
     for po, proto in pc_proto.items():
         interfaces.setdefault(po, InterfaceData(port=po))
@@ -2507,7 +2519,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
 
     # 7) MAC table + Po member propagation
     mac_out = _load_cmd_output(cmd_to_file, "show mac address-table")
-    mac_map = parse_show_mac_address_table(mac_out) if mac_out else {}
+    mac_map = _safe_parse(parse_show_mac_address_table, mac_out)
     for intf, macs in mac_map.items():
         if not macs: continue
         interfaces.setdefault(intf, InterfaceData(port=intf))
@@ -2525,12 +2537,12 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
 
     # 8) STP state (V3.14.5: read from STP data only — never inferred from link-up).
     stp_out = _load_cmd_output(cmd_to_file, "show spanning-tree")
-    blocked = parse_spanning_tree_blockedports(
+    blocked = _safe_parse(parse_spanning_tree_blockedports,
         _load_cmd_output(cmd_to_file, "show spanning-tree blockedports"))
-    incons  = parse_spanning_tree_blockedports(
+    incons  = _safe_parse(parse_spanning_tree_blockedports,
         _load_cmd_output(cmd_to_file, "show spanning-tree inconsistentports"))
-    stp_states = parse_spanning_tree_states(stp_out)
-    stp_detail = parse_spanning_tree_detail(stp_out)   # NEW-V14.7 per-VLAN breakdown
+    stp_states = _safe_parse(parse_spanning_tree_states, stp_out)
+    stp_detail = _safe_parse(parse_spanning_tree_detail, stp_out)   # NEW-V14.7 per-VLAN breakdown
     for p, d in interfaces.items():
         if blocked.get(p):
             interfaces[p].stp_blocked = "Blocked"
@@ -2552,24 +2564,24 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
 
     # 9) PoE
     poe_out = _load_cmd_output(cmd_to_file, "show power inline")
-    for p, s in (parse_show_power_inline(poe_out) if poe_out else {}).items():
+    for p, s in _safe_parse(parse_show_power_inline, poe_out).items():
         interfaces.setdefault(p, InterfaceData(port=p))
         interfaces[p].poe_status = s
 
     # 10) CDP + LLDP
-    route_db = parse_ip_routes(_load_cmd_output(cmd_to_file, 'show ip route'))
+    route_db = _safe_parse(parse_ip_routes, _load_cmd_output(cmd_to_file, 'show ip route'))
     vlan_names = {vid: (info.get("name") or "")                                     # NEW-V14.8
-                  for vid, info in parse_vlan_brief(_load_cmd_output(cmd_to_file, "show vlan brief")).items()}
-    hsrp_db = parse_hsrp_summary(_load_cmd_output(cmd_to_file, 'show standby brief', 'show standby all', 'show hsrp brief', 'show hsrp all'))
-    vrrp_db = parse_vrrp_summary(_load_cmd_output(cmd_to_file, 'show vrrp brief'))   # NEW-V14.6
-    glbp_db = parse_glbp_summary(_load_cmd_output(cmd_to_file, 'show glbp brief'))   # NEW-V14.6
-    mcast_db = parse_multicast_info(_load_cmd_output(cmd_to_file, 'show ip mroute'), _load_cmd_output(cmd_to_file, 'show ip pim interface'))
+                  for vid, info in _safe_parse(parse_vlan_brief, _load_cmd_output(cmd_to_file, "show vlan brief")).items()}
+    hsrp_db = _safe_parse(parse_hsrp_summary, _load_cmd_output(cmd_to_file, 'show standby brief', 'show standby all', 'show hsrp brief', 'show hsrp all'))
+    vrrp_db = _safe_parse(parse_vrrp_summary, _load_cmd_output(cmd_to_file, 'show vrrp brief'))   # NEW-V14.6
+    glbp_db = _safe_parse(parse_glbp_summary, _load_cmd_output(cmd_to_file, 'show glbp brief'))   # NEW-V14.6
+    mcast_db = _safe_parse(parse_multicast_info, _load_cmd_output(cmd_to_file, 'show ip mroute'), _load_cmd_output(cmd_to_file, 'show ip pim interface'))
     cdp_out  = _load_cmd_output(cmd_to_file, "show cdp neighbors detail")
     lldp_out = _load_cmd_output(cmd_to_file, "show lldp neighbors detail")
     neigh: Dict[str, Dict[str, str]] = {}
-    if cdp_out:  neigh.update(parse_neighbors_cdp(cdp_out))
+    if cdp_out:  neigh.update(_safe_parse(parse_neighbors_cdp, cdp_out))
     if lldp_out:
-        for k, v in parse_neighbors_lldp(lldp_out).items():
+        for k, v in _safe_parse(parse_neighbors_lldp, lldp_out).items():
             neigh.setdefault(k, v)
 
     dev_to_ports: Dict[str, List[str]] = {}

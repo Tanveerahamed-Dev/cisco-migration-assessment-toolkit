@@ -5,6 +5,30 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.3: parser robustness (P1)
+
+On branch `phase2-parser-robustness`.
+
+- Added `_safe_parse(fn, *args)` and routed **every** section parser call in
+  `build_interfaces` through it. A parser that *raises* on a malformed block now
+  logs a breadcrumb and that section is skipped — the rest of the device still
+  parses. Extends FIX-V14-1 from device-level to section-level; resolves the
+  deferred audit item **P1**.
+- Happy path unchanged (parsers return `{}` on empty input) → **golden
+  byte-identical**.
+- New tests: `tests/test_parser_robustness.py` (a raising parser, and several at
+  once, no longer drop the device) and `tests/test_platform_variants.py` (NX-OS
+  interface-status / port-channel / MAC / trunk forms). **52 tests pass.**
+
+Documented a known gap: the NX-OS `show interface trunk` native-VLAN column under
+its 2-line header still parses via the IOS branch (status + mode correct). That's
+a cross-platform *correctness* gap (not a crash) — next parser target.
+
+Remaining PHASE 2: 2.4 partial-collection / "missing≠healthy", 2.5 perf,
+2.6 mypy/ruff + type hints, 2.7 (gated) package split; PHASE 3 explorer redesign.
+
+---
+
 ## 2026-06-04 — PHASE 2.2: cry-wolf calibration & transparency
 
 On branch `phase2-cry-wolf`. Three pieces, all under the golden net:
