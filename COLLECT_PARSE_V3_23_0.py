@@ -710,12 +710,21 @@ _SLOW_CMDS = {"show running-config", "show cdp neighbors detail",
               "show interfaces", "show interface"}  # NEW-V15 (full counter dumps)
 
 def send_cmd(dev, cmd: str) -> str:
+    # FIX (C2): prefer pattern-based send_command() (waits for the device prompt)
+    # over send_command_timing(), which can return early/truncated output that is
+    # then parsed as if complete. read_timeout is sized up for slow/large dumps.
+    # Fall back to the timing-based read only if the prompt pattern isn't matched,
+    # so behaviour is no worse than before on edge cases.
+    timeout = 300 if any(s in cmd for s in _SLOW_CMDS) else 120
     try:
-        timeout = 300 if any(s in cmd for s in _SLOW_CMDS) else 120
-        return dev.send_command_timing(cmd, read_timeout=timeout) or ""
+        return dev.send_command(cmd, read_timeout=timeout) or ""
     except Exception as e:
-        logger.warning(f"Command failed '{cmd}': {e}")
-        return ""
+        logger.warning(f"Command '{cmd}' pattern-read failed ({e}); retrying timing-based")
+        try:
+            return dev.send_command_timing(cmd, read_timeout=timeout) or ""
+        except Exception as e2:
+            logger.warning(f"Command failed '{cmd}': {e2}")
+            return ""
 
 def collect(hostname: str, platform: str, dev, out_dir: str,
             archive_all_output: bool = False,
@@ -5441,6 +5450,30 @@ def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
 # =============================================================================
 # MAIN
 # =============================================================================
+def _empty_dep_map() -> dict:
+    """Empty dependency-map skeleton with every key the cross-layer and
+    migration-readiness consumers read. Used as the resilient fallback if
+    build_dependency_map() raises, so one analysis failure can't sink the run."""
+    return {"single_fiber": set(), "uplink_ports": set(), "sole_gw": {},
+            "access_by_vlan": {}, "articulation": set(), "fhrp_vlans": set(),
+            "tracked_down": set(), "errored_up": set(), "halfdup_up": set(),
+            "single_member_pc": set(), "errdis": set(), "gw_switches": set(),
+            "orphan": set(), "model": {"hosts": set()}}
+
+
+def _run_phase(label, fn, *args, _default=None, **kwargs):
+    """FIX (resilience): run a pre-save phase so a failure LOGS AND CONTINUES
+    instead of aborting the whole run before wb.save() (extends the FIX-V14-1
+    'guard and continue' idea from Phase 6 to every phase). Returns the phase's
+    result, or _default if it raised. Happy-path behaviour is unchanged."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        logger.error(f"  [SKIP] Phase '{label}' failed: {e!r}; "
+                     f"continuing so the workbook still saves.")
+        return _default
+
+
 def main():
     ap = argparse.ArgumentParser(description="Cisco Migration Extractor V3.23.0")
     ap.add_argument("--devices-file",   default=None,
@@ -5661,77 +5694,83 @@ def main():
                     f"PSU={dp.num_power_supplies}  "
                     f"cap={dp.power_capacity_w}  draw={dp.power_drawn_w}")
 
-    # Phase 6: Write interface rows to template sheet
+    # Phase 6: Write interface rows to template sheet (each host guarded so one
+    # host's write failure can't abort the run before wb.save()).
     logger.info("\n[Phase 6] Writing interface rows ...")
     for hostname, platform, cmd_to_file in all_devices_meta:
         iface_rows = all_interfaces.get(hostname, {})
         if not iface_rows:
             logger.warning(f"  [SKIP] No parsed interfaces for {hostname}")
             continue
-        append_interface_rows(ws, header_row, col_map, hostname, iface_rows)
+        _run_phase(f"interface rows ({hostname})", append_interface_rows,
+                   ws, header_row, col_map, hostname, iface_rows)
         logger.info(f"  [OK] {len(iface_rows)} rows for {hostname}")
 
+    # Phases 7-20 are pure sheet writers; each is guarded so a single sheet's
+    # failure logs and is skipped rather than sinking the whole workbook.
     # Phase 7: Write Switch Inventory sheet (NEW-V12)
     logger.info("\n[Phase 7] Writing Switch Inventory sheet ...")
-    write_device_inventory_sheet(wb, all_device_physical)
+    _run_phase("Switch Inventory sheet", write_device_inventory_sheet, wb, all_device_physical)
 
     # Phase 8: Write SVI / Gateway sheet (NEW-V14.3)
     logger.info("\n[Phase 8] Writing SVI / Gateway sheet ...")
-    write_svi_gateway_sheet(wb, all_interfaces)
+    _run_phase("SVI / Gateway sheet", write_svi_gateway_sheet, wb, all_interfaces)
 
     # Phase 9: Write STP Detail sheet (NEW-V14.7)
     logger.info("\n[Phase 9] Writing STP Detail sheet ...")
-    write_stp_detail_sheet(wb, all_interfaces)
+    _run_phase("STP Detail sheet", write_stp_detail_sheet, wb, all_interfaces)
 
     # Phase 10: Write VLAN Census sheet (NEW-V14.8)
     logger.info("\n[Phase 10] Writing VLAN Census sheet ...")
-    write_vlan_census_sheet(wb, all_interfaces)
+    _run_phase("VLAN Census sheet", write_vlan_census_sheet, wb, all_interfaces)
 
     # Phase 11: Write Endpoint Census sheet (NEW-V14.8)
     logger.info("\n[Phase 11] Writing Endpoint Census sheet ...")
-    write_endpoint_census_sheet(wb, all_interfaces)
+    _run_phase("Endpoint Census sheet", write_endpoint_census_sheet, wb, all_interfaces)
 
     # Phase 12: Write Move Groups sheet (NEW-V14.9)
     logger.info("\n[Phase 12] Writing Move Groups sheet ...")
-    write_move_group_sheet(wb, all_interfaces)
+    _run_phase("Move Groups sheet", write_move_group_sheet, wb, all_interfaces)
 
     # Phase 13: Write Topology Links sheet (NEW-V14.10)
     logger.info("\n[Phase 13] Writing Topology Links sheet ...")
-    write_topology_sheet(wb, all_interfaces)
+    _run_phase("Topology Links sheet", write_topology_sheet, wb, all_interfaces)
 
     # Phase 14: Findings / Risk Register (NEW-V15)
     logger.info("\n[Phase 14] Writing Findings sheet ...")
-    write_findings_sheet(wb, all_interfaces)
+    _run_phase("Findings sheet", write_findings_sheet, wb, all_interfaces)
 
     # Phase 15: Capacity / Consolidation (NEW-V15)
     logger.info("\n[Phase 15] Writing Capacity sheet ...")
-    write_capacity_sheet(wb, all_device_physical)
+    _run_phase("Capacity sheet", write_capacity_sheet, wb, all_device_physical)
 
     # Phase 16: Interface Health counters (NEW-V15)
     logger.info("\n[Phase 16] Writing Interface Health sheet ...")
-    write_interface_health_sheet(wb, all_cmd_to_files)
+    _run_phase("Interface Health sheet", write_interface_health_sheet, wb, all_cmd_to_files)
 
     # Phase 17: Security Posture (NEW-V15)
     logger.info("\n[Phase 17] Writing Security Posture sheet ...")
-    write_security_posture_sheet(wb, all_cmd_to_files)
+    _run_phase("Security Posture sheet", write_security_posture_sheet, wb, all_cmd_to_files)
 
     # Phase 18: Routing Adjacencies (NEW-V15)
     logger.info("\n[Phase 18] Writing Routing Adjacencies sheet ...")
-    write_routing_adjacency_sheet(wb, all_cmd_to_files)
+    _run_phase("Routing Adjacencies sheet", write_routing_adjacency_sheet, wb, all_cmd_to_files)
 
     # Phase 19: Causality Chains (NEW-V3.16 intelligence layer)
     logger.info("\n[Phase 19] Writing Causality Chains sheet ...")
-    write_causality_chains_sheet(wb, all_interfaces)
+    _run_phase("Causality Chains sheet", write_causality_chains_sheet, wb, all_interfaces)
 
     # Phase 20: Failure Impact simulation (NEW-V3.16 intelligence layer)
     logger.info("\n[Phase 20] Writing Failure Impact sheet ...")
-    write_failure_impact_sheet(wb, all_interfaces)
+    _run_phase("Failure Impact sheet", write_failure_impact_sheet, wb, all_interfaces)
 
     # Phase 23: Physical Health (L1) - NEW-V3.18. Sheet writers must precede wb.save(); the
     # phase number is a logical label (21/22 are post-save: snapshot/diagram + HTML). The
     # returned records are injected into snap_dict below so they reach both JSON and HTML.
     logger.info("\n[Phase 23] Writing Physical Health sheet ...")
-    physical_health = write_physical_health_sheet(wb, all_interfaces, all_cmd_to_files, all_device_physical)
+    physical_health = _run_phase("Physical Health", write_physical_health_sheet,
+                                 wb, all_interfaces, all_cmd_to_files, all_device_physical,
+                                 _default=[])
 
     # Phase 24: Flow Trace (L1->L3) - NEW-V3.19. Optional; only when BOTH endpoint IPs given.
     flow_trace = None
@@ -5748,32 +5787,40 @@ def main():
 
     # Phase 25: L3 Forwarding Map - NEW-V3.20 (pre-save; records reused in snapshot)
     logger.info("\n[Phase 25] Writing L3 Forwarding Map sheet ...")
-    l3_forwarding = write_l3_forwarding_sheet(wb, all_interfaces, all_cmd_to_files)
+    l3_forwarding = _run_phase("L3 Forwarding Map", write_l3_forwarding_sheet,
+                               wb, all_interfaces, all_cmd_to_files, _default=[])
 
-    # Phase 26: Cross-Layer Analysis - NEW-V3.21 (consumes physical_health + l3_forwarding)
+    # Phase 26: Cross-Layer Analysis - NEW-V3.21 (consumes physical_health + l3_forwarding).
+    # A failed dependency map falls back to an empty skeleton so Phases 28-29 still run.
     logger.info("\n[Phase 26] Writing Cross-Layer Analysis sheet ...")
-    dep_map = build_dependency_map(all_interfaces, physical_health, l3_forwarding)
-    cross_layer = compute_cross_layer_correlations(dep_map)
-    write_cross_layer_sheet(wb, cross_layer)
+    dep_map = _run_phase("dependency map", build_dependency_map,
+                         all_interfaces, physical_health, l3_forwarding,
+                         _default=_empty_dep_map()) or _empty_dep_map()
+    cross_layer = _run_phase("Cross-Layer correlations", compute_cross_layer_correlations,
+                             dep_map, _default=[])
+    _run_phase("Cross-Layer Analysis sheet", write_cross_layer_sheet, wb, cross_layer)
 
     # Phase 27: Protocol Health - NEW-V3.22 (re-parses collected protocol output)
     logger.info("\n[Phase 27] Writing Protocol Health sheet ...")
-    protocol_health = compute_protocol_health(all_interfaces, all_cmd_to_files)
-    write_protocol_health_sheet(wb, protocol_health)
+    protocol_health = _run_phase("Protocol Health", compute_protocol_health,
+                                 all_interfaces, all_cmd_to_files, _default=[])
+    _run_phase("Protocol Health sheet", write_protocol_health_sheet, wb, protocol_health)
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
-    health_scores = compute_health_scores(all_interfaces, physical_health, l3_forwarding,
-                                          cross_layer, protocol_health)
-    write_health_scores_sheet(wb, health_scores)
+    health_scores = _run_phase("Health Scores", compute_health_scores,
+                               all_interfaces, physical_health, l3_forwarding,
+                               cross_layer, protocol_health, _default=[])
+    _run_phase("Health Scores sheet", write_health_scores_sheet, wb, health_scores)
 
     # Phase 29: Migration Readiness - NEW-V3.23 (per move-group 10-check verdict)
     logger.info("\n[Phase 29] Writing Migration Readiness sheet ...")
-    move_groups = compute_move_groups(all_interfaces)
-    migration_readiness = compute_migration_readiness(all_interfaces, move_groups, health_scores,
-                                                      physical_health, l3_forwarding, cross_layer,
-                                                      protocol_health, dep_map)
-    write_migration_readiness_sheet(wb, migration_readiness)
+    move_groups = _run_phase("move groups", compute_move_groups, all_interfaces, _default=[])
+    migration_readiness = _run_phase(
+        "Migration Readiness", compute_migration_readiness,
+        all_interfaces, move_groups, health_scores, physical_health, l3_forwarding,
+        cross_layer, protocol_health, dep_map, _default=[])
+    _run_phase("Migration Readiness sheet", write_migration_readiness_sheet, wb, migration_readiness)
 
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")

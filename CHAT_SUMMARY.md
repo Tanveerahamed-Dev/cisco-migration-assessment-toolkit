@@ -5,6 +5,32 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — Protective fixes C1 + C2 (first production-code changes)
+
+On branch `harden-phase1-tests`, now under the golden net.
+
+- **C1 (High, resilience):** added `_run_phase()` + `_empty_dep_map()` and routed
+  every pre-save phase (interface rows + the ~20 analysis/sheet writers, Phases
+  6–29) through the guard. A single writer/compute failure now logs and the run
+  continues to `wb.save()` instead of losing the entire run's output. A failed
+  dependency map falls back to an empty skeleton so Phases 28–29 still produce.
+- **C2 (High, collection):** `send_cmd` prefers pattern-based `send_command`
+  (waits for the prompt) over `send_command_timing` (silent-truncation risk),
+  with timing-based fallback then `""`.
+- Added runtime `requirements.txt`; 7 new tests in `tests/test_resilience.py`.
+
+Verified: **34 tests pass**; the golden snapshot + Excel schema are byte-identical
+(C1 is happy-path-neutral; C2 is exercised by fake-device unit tests since the
+offline pipeline doesn't hit the SSH path).
+
+Deferred (next): **P1** folded into PHASE 2.3 (per-section parser guards land
+with the parser-robustness work + IOS/NX-OS fixture variants — C1 already
+prevents total run loss, and `parse_one` already isolates a bad device).
+**P4** (scope the global `warnings` filter) deferred until I can observe what
+netmiko/paramiko actually emit. **M2** (single `__version__`) is cosmetic, later.
+
+---
+
 ## 2026-06-04 — PHASE 0 audit + PHASE 1 test safety net
 
 **PHASE 0 (audit, no code changes).** Produced a prioritized findings report
