@@ -5,6 +5,31 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.4: "missing data != healthy" (audit C3)
+
+On branch `phase2-data-quality`.
+
+- Added `compute_data_quality(all_cmd_to_files)` — per-switch fraction of an
+  essential command set (status / switchport / version / neighbors) that
+  returned usable output (via `_load_cmd_output`).
+- `compute_health_scores` gained an optional `data_quality=` arg + a
+  `ScoringConfig.data_quality_threshold` (default 0.5): below it, the band is
+  overridden to **`Insufficient Data`** and a `data_quality` % is recorded +
+  shown in a new Health Scores column. So a partial/failed collection can't
+  score a misleading Excellent.
+- **Opt-in by construction:** the field/override appear only when `data_quality`
+  is passed (main always does; direct callers without it stay byte-identical).
+
+Verified: golden diff **additive-only** (data_quality key per record + sheet
+column; fully-collected fixtures stay 1.0, bands unchanged). **57 tests pass**
+(+5 in `tests/test_data_quality.py`). `.md` Change Log V3.23.7; in-code version
+stays 3.23.0.
+
+Remaining: 2.5 perf · 2.6 mypy/ruff + type hints · 2.7 (gated) package split ·
+PHASE 3 explorer redesign.
+
+---
+
 ## 2026-06-04 — PHASE 2.3: parser robustness (P1)
 
 On branch `phase2-parser-robustness`.

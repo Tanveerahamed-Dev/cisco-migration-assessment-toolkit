@@ -1,0 +1,52 @@
+"""PHASE 2.4: 'missing data != healthy' (audit C3).
+
+A switch whose collection is incomplete must not score a misleading high band -
+compute_data_quality measures completeness and compute_health_scores overrides
+the band to 'Insufficient Data' below the (configurable) threshold.
+"""
+import os
+
+import synthetic_fixtures as fx
+
+
+def test_data_quality_full_vs_partial(cp, tmp_path):
+    root = fx.write_collection(str(tmp_path / "c"))
+    cmds = list(dict.fromkeys(cp.COMMANDS_NXOS + cp.COMMANDS_IOS))
+    full = {c: os.path.join(root, "core1", fx.cmd_filename(c))
+            for c in cmds if os.path.isfile(os.path.join(root, "core1", fx.cmd_filename(c)))}
+    assert cp.compute_data_quality({"core1": full})["core1"] == 1.0     # all 4 essentials present
+
+    # a switch with only 'show version' collected -> 1 of 4 essentials
+    pdir = tmp_path / "partial" / "sw"
+    pdir.mkdir(parents=True)
+    vfile = pdir / fx.cmd_filename("show version")
+    vfile.write_text("Cisco IOS Software, Version 15.2(7)E3\n", encoding="utf-8")
+    partial = {"show version": str(vfile)}
+    assert cp.compute_data_quality({"sw": partial})["sw"] == 0.25
+
+
+def test_insufficient_data_overrides_band(cp):
+    # score would be a perfect 100, but the collection gap must show as Insufficient Data
+    recs = cp.compute_health_scores({"sw": {}}, [], [], [], [], data_quality={"sw": 0.25})
+    assert recs[0]["score"] == 100
+    assert recs[0]["band"] == "Insufficient Data"
+    assert recs[0]["data_quality"] == 0.25
+
+
+def test_sufficient_data_keeps_normal_band(cp):
+    recs = cp.compute_health_scores({"sw": {}}, [], [], [], [], data_quality={"sw": 1.0})
+    assert recs[0]["band"] == "Excellent"
+    assert recs[0]["data_quality"] == 1.0
+
+
+def test_no_data_quality_arg_is_byte_identical(cp):
+    # default (None) -> no data_quality key and no override (back-compat / golden-safe)
+    recs = cp.compute_health_scores({"sw": {}}, [], [], [], [])
+    assert "data_quality" not in recs[0]
+    assert recs[0]["band"] == "Excellent"
+
+
+def test_threshold_is_configurable(cp):
+    cfg = cp.ScoringConfig(data_quality_threshold=0.2)   # 0.25 now clears the bar
+    recs = cp.compute_health_scores({"sw": {}}, [], [], [], [], config=cfg, data_quality={"sw": 0.25})
+    assert recs[0]["band"] == "Excellent"
