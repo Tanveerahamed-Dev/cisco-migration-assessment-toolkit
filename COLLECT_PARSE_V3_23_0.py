@@ -319,12 +319,13 @@ from cisco_toolkit.model import InterfaceData, DevicePhysical
 # _host_role helpers; imported back so the compute_* functions still in this file
 # keep working unchanged. (This was the last dataclass user, so the top-level
 # 'from dataclasses import ...' moved into the package with it.)
-# NEW-V3.23.21 (PHASE 2.7 step 11): the move-group computation joins the analyze
-# layer. compute_move_groups is imported back for write_move_group_sheet;
-# MOVEGROUP_EXCLUDED_VLANS for compute_findings (which still lives here for now).
+# NEW-V3.23.21/.22 (PHASE 2.7 steps 11-12): analyze-layer functions imported back so
+# the Excel writers + build_network_model still in this file keep working. (step 12
+# moved compute_findings, the last monolith user of MOVEGROUP_EXCLUDED_VLANS, so that
+# import-back is gone.)
 from cisco_toolkit.analyze import (
-    ScoringConfig, SCORING, _health_band, _host_role,
-    compute_move_groups, MOVEGROUP_EXCLUDED_VLANS,
+    ScoringConfig, SCORING, _health_band, _host_role, compute_move_groups,
+    compute_topology_links, compute_findings, _canon_host, _canon_host_map,
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -1215,20 +1216,8 @@ def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
 # =============================================================================
 TOPOLOGY_SHEET_NAME = "Topology Links"
 
-def _is_infra_neighbor(d: InterfaceData, scanned_hosts: set) -> bool:
-    """A link endpoint is infrastructure (switch/router) if its endpoint_type says so
-    or the neighbor name matches a scanned device. Excludes host endpoints (phones, APs...)."""
-    if (d.endpoint_type or "") in ("Switch", "Router"):
-        return True
-    nb = _canon_host(d.cdp_neighbor)
-    return bool(nb and nb in scanned_hosts)
-
-def _canon_host(name: str) -> str:
-    """Normalize a neighbor device-id for matching: strip FQDN domain + serial suffix '(FOC...)'."""
-    n = (name or "").strip()
-    n = re.sub(r"\(.*?\)\s*$", "", n).strip()   # drop trailing '(serial)'
-    n = n.split(".")[0]                          # drop FQDN domain
-    return n.lower()
+# _is_infra_neighbor / _canon_host moved to cisco_toolkit.analyze (PHASE 2.7 step 12);
+# _canon_host is imported back near the top of this file (build_network_model uses it).
 
 def write_topology_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
     """Write (or replace) 'Topology Links': one row per physical inter-switch link,
@@ -1965,128 +1954,19 @@ def build_run_manifest(rootdir: str, script_version: str, devices_meta: List[dic
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Shared: de-duplicated CDP/LLDP inter-switch link map. compute_topology_links()
-# is also used by the existing 'Topology Links' sheet (write_topology_sheet),
-# the Findings sheet, and the topology diagram - one source of truth.
+# compute_topology_links moved to cisco_toolkit.analyze (PHASE 2.7 step 12); imported
+# back near the top of this file (write_topology_sheet / write_topology_diagram use it).
 # -----------------------------------------------------------------------------
-def compute_topology_links(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:
-    """De-duplicated inter-switch links from CDP/LLDP, one record per physical link.
-    Each record: a_host, a_port, b_host, b_port, platform, speed, confirmation."""
-    scanned = {_canon_host(h) for h in all_interfaces}
-    links: Dict[Tuple[str, str], Dict[str, object]] = {}
-    for host, ifaces in all_interfaces.items():
-        for port, d in ifaces.items():
-            if not d.cdp_neighbor or not _is_infra_neighbor(d, scanned):
-                continue
-            nbr = d.cdp_neighbor.strip()
-            key = tuple(sorted([f"{_canon_host(host)}|{port.lower()}",
-                                f"{_canon_host(nbr)}|{(d.neighbor_port or '?').lower()}"]))
-            rec = links.get(key)
-            if rec is None:
-                links[key] = {"a_host": host, "a_port": port, "b_host": nbr,
-                              "b_port": d.neighbor_port or "", "platform": d.neighbor_platform or "",
-                              "speed": d.speed or "", "seen_from": {_canon_host(host)}}
-            else:
-                rec["seen_from"].add(_canon_host(host))
-                if not rec["platform"] and d.neighbor_platform: rec["platform"] = d.neighbor_platform
-                if not rec["b_port"] and d.neighbor_port: rec["b_port"] = d.neighbor_port
-    ordered = sorted(links.values(),
-                     key=lambda r: (str(r["a_host"]).lower(), str(r["a_port"]).lower()))
-    for rec in ordered:
-        rec["confirmation"] = ("Both ends" if len(rec["seen_from"]) >= 2
-                               else f"One end ({rec['a_host']})")
-    return ordered
 
 
 # -----------------------------------------------------------------------------
 # Tier 1 #1: Findings / Risk Register  (pure cross-reference of InterfaceData)
 # -----------------------------------------------------------------------------
 FINDINGS_SHEET_NAME = "Findings"
-_SEV_RANK = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
-
-def _canon_host_map(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Dict[str, str]:
-    """canonical-name -> real hostname key, to resolve CDP/LLDP neighbor names."""
-    return {_canon_host(h): h for h in all_interfaces}
-
-def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Tuple[str, str, str, str]]:
-    """Return (severity, category, scope, detail) findings derived entirely from
-    already-parsed InterfaceData + the topology link map. High-signal only."""
-    findings: List[Tuple[str, str, str, str]] = []
-
-    access_vlans: Dict[int, set] = {}
-    svi_hosts: Dict[int, set] = {}
-    svi_fhrp: Dict[int, List[str]] = {}
-    for host, ifaces in all_interfaces.items():
-        for port, d in ifaces.items():
-            if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
-                access_vlans.setdefault(int(d.vlan), set()).add(host)
-            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
-            if m:
-                vid = int(m.group(1))
-                svi_hosts.setdefault(vid, set()).add(host)
-                svi_fhrp.setdefault(vid, []).append(d.hsrp_behavior or "")
-
-    # (1) Access VLAN with no SVI anywhere in scan = no L3 gateway found.
-    for vid, hosts in sorted(access_vlans.items()):
-        if vid in MOVEGROUP_EXCLUDED_VLANS:
-            continue
-        if vid not in svi_hosts:
-            findings.append(("Medium", "No gateway", f"VLAN {vid}",
-                f"Access ports on {len(hosts)} switch(es) but no SVI in scan "
-                f"(L2-only, or its gateway is off-scan)."))
-
-    # (2) VLAN with SVIs on >=2 switches but no FHRP = gateway redundancy gap.
-    for vid, hosts in sorted(svi_hosts.items()):
-        if len(hosts) >= 2 and not any((f or "").strip() for f in svi_fhrp.get(vid, [])):
-            findings.append(("High", "Gateway redundancy", f"VLAN {vid}",
-                f"SVIs on {len(hosts)} switches but no FHRP (HSRP/VRRP/GLBP) detected "
-                f"- duplicate-IP / split-gateway risk."))
-
-    # (3) err-disabled ports - DEDUPLICATED per switch (one weighted row with a
-    #     count + the port list, not one row per port, to avoid a 'sea of red').
-    for host, ifaces in all_interfaces.items():
-        bad = sorted([port for port, d in ifaces.items()
-                      if "err" in (d.status or "").lower() and "disab" in (d.status or "").lower()])
-        if bad:
-            findings.append(("High", "Err-disabled", f"{host} ({len(bad)})",
-                f"{len(bad)} err-disabled port(s): {', '.join(bad)}."))
-
-    # (4) STP inconsistent ports - DEDUPLICATED per switch.
-    for host, ifaces in all_interfaces.items():
-        bad = sorted([port for port, d in ifaces.items()
-                      if (d.stp_blocked or "") == "Inconsistent"])
-        if bad:
-            findings.append(("High", "STP inconsistent", f"{host} ({len(bad)})",
-                f"{len(bad)} STP-inconsistent port(s): {', '.join(bad)} "
-                f"(root-guard / loop-guard / type mismatch)."))
-
-    # (5)/(6) Link-level mismatches need both ends - use the topology link map.
-    cmap = _canon_host_map(all_interfaces)
-    for link in compute_topology_links(all_interfaces):
-        if str(link.get("confirmation", "")).startswith("One end"):
-            findings.append(("Info", "Topology", f"{link['a_host']} {link['a_port']}",
-                f"Link to {link['b_host']} {link.get('b_port', '')} seen from one end only "
-                f"(check reverse CDP/LLDP or cabling docs)."))
-            continue
-        ah = cmap.get(_canon_host(str(link["a_host"]))); ap = str(link["a_port"])
-        bh = cmap.get(_canon_host(str(link["b_host"]))); bp = str(link.get("b_port", ""))
-        da = all_interfaces.get(ah, {}).get(normalize_ifname(ap)) if ah else None
-        db = all_interfaces.get(bh, {}).get(normalize_ifname(bp)) if bh else None
-        if not da or not db:
-            continue
-        na, nb = (da.trunk_native_vlan or "").strip(), (db.trunk_native_vlan or "").strip()
-        if na and nb and na != nb:
-            findings.append(("High", "Native VLAN mismatch",
-                f"{link['a_host']} {ap} <-> {link['b_host']} {bp}",
-                f"Native VLAN {na} vs {nb}."))
-        dxa, dxb = (da.duplex or "").lower(), (db.duplex or "").lower()
-        if dxa in ("half", "full") and dxb in ("half", "full") and dxa != dxb:
-            findings.append(("High", "Duplex mismatch",
-                f"{link['a_host']} {ap} <-> {link['b_host']} {bp}",
-                f"Duplex {da.duplex} vs {db.duplex}."))
-
-    findings.sort(key=lambda t: (_SEV_RANK.get(t[0], 9), t[1], t[2]))
-    return findings
+# _SEV_RANK / _canon_host_map / compute_findings moved to cisco_toolkit.analyze
+# (PHASE 2.7 step 12); compute_findings is imported back near the top of this file
+# (write_findings_sheet below calls it). _canon_host_map is also imported back for
+# build_network_model.
 
 def write_findings_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
     """Write (or replace) 'Findings': a risk register cross-referenced from the

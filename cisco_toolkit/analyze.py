@@ -13,7 +13,7 @@ from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a c
 from typing import Dict, List, Tuple
 
 from cisco_toolkit.model import InterfaceData
-from cisco_toolkit.textutils import _split_macs
+from cisco_toolkit.textutils import _split_macs, normalize_ifname
 
 
 # score band -> (label, fill)
@@ -180,3 +180,143 @@ def compute_move_groups(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> 
     groups.sort(key=lambda g: (-len(g["switches"]), -len(g["spanning_vlans"]),
                                g["switches"][0] if g["switches"] else ""))
     return groups
+
+
+# =============================================================================
+# NEW-V14.10: de-duplicated CDP/LLDP inter-switch link map. compute_topology_links()
+# is the single source of truth used by the 'Topology Links' sheet, the Findings
+# sheet, and the topology diagram. _canon_host / _is_infra_neighbor are analyze-
+# internal (no excel writer calls them directly).
+# =============================================================================
+def _is_infra_neighbor(d: InterfaceData, scanned_hosts: set) -> bool:
+    """A link endpoint is infrastructure (switch/router) if its endpoint_type says so
+    or the neighbor name matches a scanned device. Excludes host endpoints (phones, APs...)."""
+    if (d.endpoint_type or "") in ("Switch", "Router"):
+        return True
+    nb = _canon_host(d.cdp_neighbor)
+    return bool(nb and nb in scanned_hosts)
+
+def _canon_host(name: str) -> str:
+    """Normalize a neighbor device-id for matching: strip FQDN domain + serial suffix '(FOC...)'."""
+    n = (name or "").strip()
+    n = re.sub(r"\(.*?\)\s*$", "", n).strip()   # drop trailing '(serial)'
+    n = n.split(".")[0]                          # drop FQDN domain
+    return n.lower()
+
+def compute_topology_links(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:
+    """De-duplicated inter-switch links from CDP/LLDP, one record per physical link.
+    Each record: a_host, a_port, b_host, b_port, platform, speed, confirmation."""
+    scanned = {_canon_host(h) for h in all_interfaces}
+    links: Dict[Tuple[str, str], Dict[str, object]] = {}
+    for host, ifaces in all_interfaces.items():
+        for port, d in ifaces.items():
+            if not d.cdp_neighbor or not _is_infra_neighbor(d, scanned):
+                continue
+            nbr = d.cdp_neighbor.strip()
+            key = tuple(sorted([f"{_canon_host(host)}|{port.lower()}",
+                                f"{_canon_host(nbr)}|{(d.neighbor_port or '?').lower()}"]))
+            rec = links.get(key)
+            if rec is None:
+                links[key] = {"a_host": host, "a_port": port, "b_host": nbr,
+                              "b_port": d.neighbor_port or "", "platform": d.neighbor_platform or "",
+                              "speed": d.speed or "", "seen_from": {_canon_host(host)}}
+            else:
+                rec["seen_from"].add(_canon_host(host))
+                if not rec["platform"] and d.neighbor_platform: rec["platform"] = d.neighbor_platform
+                if not rec["b_port"] and d.neighbor_port: rec["b_port"] = d.neighbor_port
+    ordered = sorted(links.values(),
+                     key=lambda r: (str(r["a_host"]).lower(), str(r["a_port"]).lower()))
+    for rec in ordered:
+        rec["confirmation"] = ("Both ends" if len(rec["seen_from"]) >= 2
+                               else f"One end ({rec['a_host']})")
+    return ordered
+
+
+# -----------------------------------------------------------------------------
+# Tier 1 #1: Findings / Risk Register  (pure cross-reference of InterfaceData)
+# -----------------------------------------------------------------------------
+_SEV_RANK = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
+
+def _canon_host_map(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Dict[str, str]:
+    """canonical-name -> real hostname key, to resolve CDP/LLDP neighbor names."""
+    return {_canon_host(h): h for h in all_interfaces}
+
+def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Tuple[str, str, str, str]]:
+    """Return (severity, category, scope, detail) findings derived entirely from
+    already-parsed InterfaceData + the topology link map. High-signal only."""
+    findings: List[Tuple[str, str, str, str]] = []
+
+    access_vlans: Dict[int, set] = {}
+    svi_hosts: Dict[int, set] = {}
+    svi_fhrp: Dict[int, List[str]] = {}
+    for host, ifaces in all_interfaces.items():
+        for port, d in ifaces.items():
+            if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
+                access_vlans.setdefault(int(d.vlan), set()).add(host)
+            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
+            if m:
+                vid = int(m.group(1))
+                svi_hosts.setdefault(vid, set()).add(host)
+                svi_fhrp.setdefault(vid, []).append(d.hsrp_behavior or "")
+
+    # (1) Access VLAN with no SVI anywhere in scan = no L3 gateway found.
+    for vid, hosts in sorted(access_vlans.items()):
+        if vid in MOVEGROUP_EXCLUDED_VLANS:
+            continue
+        if vid not in svi_hosts:
+            findings.append(("Medium", "No gateway", f"VLAN {vid}",
+                f"Access ports on {len(hosts)} switch(es) but no SVI in scan "
+                f"(L2-only, or its gateway is off-scan)."))
+
+    # (2) VLAN with SVIs on >=2 switches but no FHRP = gateway redundancy gap.
+    for vid, hosts in sorted(svi_hosts.items()):
+        if len(hosts) >= 2 and not any((f or "").strip() for f in svi_fhrp.get(vid, [])):
+            findings.append(("High", "Gateway redundancy", f"VLAN {vid}",
+                f"SVIs on {len(hosts)} switches but no FHRP (HSRP/VRRP/GLBP) detected "
+                f"- duplicate-IP / split-gateway risk."))
+
+    # (3) err-disabled ports - DEDUPLICATED per switch (one weighted row with a
+    #     count + the port list, not one row per port, to avoid a 'sea of red').
+    for host, ifaces in all_interfaces.items():
+        bad = sorted([port for port, d in ifaces.items()
+                      if "err" in (d.status or "").lower() and "disab" in (d.status or "").lower()])
+        if bad:
+            findings.append(("High", "Err-disabled", f"{host} ({len(bad)})",
+                f"{len(bad)} err-disabled port(s): {', '.join(bad)}."))
+
+    # (4) STP inconsistent ports - DEDUPLICATED per switch.
+    for host, ifaces in all_interfaces.items():
+        bad = sorted([port for port, d in ifaces.items()
+                      if (d.stp_blocked or "") == "Inconsistent"])
+        if bad:
+            findings.append(("High", "STP inconsistent", f"{host} ({len(bad)})",
+                f"{len(bad)} STP-inconsistent port(s): {', '.join(bad)} "
+                f"(root-guard / loop-guard / type mismatch)."))
+
+    # (5)/(6) Link-level mismatches need both ends - use the topology link map.
+    cmap = _canon_host_map(all_interfaces)
+    for link in compute_topology_links(all_interfaces):
+        if str(link.get("confirmation", "")).startswith("One end"):
+            findings.append(("Info", "Topology", f"{link['a_host']} {link['a_port']}",
+                f"Link to {link['b_host']} {link.get('b_port', '')} seen from one end only "
+                f"(check reverse CDP/LLDP or cabling docs)."))
+            continue
+        ah = cmap.get(_canon_host(str(link["a_host"]))); ap = str(link["a_port"])
+        bh = cmap.get(_canon_host(str(link["b_host"]))); bp = str(link.get("b_port", ""))
+        da = all_interfaces.get(ah, {}).get(normalize_ifname(ap)) if ah else None
+        db = all_interfaces.get(bh, {}).get(normalize_ifname(bp)) if bh else None
+        if not da or not db:
+            continue
+        na, nb = (da.trunk_native_vlan or "").strip(), (db.trunk_native_vlan or "").strip()
+        if na and nb and na != nb:
+            findings.append(("High", "Native VLAN mismatch",
+                f"{link['a_host']} {ap} <-> {link['b_host']} {bp}",
+                f"Native VLAN {na} vs {nb}."))
+        dxa, dxb = (da.duplex or "").lower(), (db.duplex or "").lower()
+        if dxa in ("half", "full") and dxb in ("half", "full") and dxa != dxb:
+            findings.append(("High", "Duplex mismatch",
+                f"{link['a_host']} {ap} <-> {link['b_host']} {bp}",
+                f"Duplex {da.duplex} vs {db.duplex}."))
+
+    findings.sort(key=lambda t: (_SEV_RANK.get(t[0], 9), t[1], t[2]))
+    return findings
