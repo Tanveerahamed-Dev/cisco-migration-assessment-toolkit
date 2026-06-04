@@ -1117,3 +1117,15 @@ def parse_dhcp_snooping_binding(output: str) -> Dict[str, int]:
             continue
         res[port] = res.get(port, 0) + 1
     return res
+
+
+def _parse_fhrp(behavior: str):
+    """('HSRP grp 1 Active VIP 10.0.10.1') -> (proto, role, vip, group). Blank tuple if none.
+    NEW-V3.23.26 (PHASE 2.7 step 16): the FHRP behaviour-string parser, shared by the
+    protocol-health analyzer and the monolith's L3-forwarding sheet."""
+    if not behavior:
+        return ("", "", "", "")
+    m = re.match(r"(HSRP|VRRP|GLBP)\s+grp\s+(\d+)\s+(\w+)(?:\s+VIP\s+(\S+))?", behavior.strip(), re.IGNORECASE)
+    if m:
+        return (m.group(1).upper(), m.group(3).capitalize(), m.group(4) or "", m.group(2))
+    return ("", "", "", "")
