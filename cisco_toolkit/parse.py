@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 from cisco_toolkit.textutils import (
     normalize_ifname, is_valid_iface, normalize_status, normalize_duplex, normalize_speed,
-    normalize_mac, IFACE_TOKEN_RE,
+    normalize_mac, IFACE_TOKEN_RE, VALID_IFACE_RE, PHYSICAL_IFACE_RE,
 )
 
 logger = logging.getLogger(__name__)   # NEW-V3.23.17: parse_show_environment_power emits a debug breadcrumb
@@ -1007,3 +1007,113 @@ def parse_show_module_count(output: str) -> int:
         if m and m.group(2).upper() not in ("N/A","--","NONE","EMPTY"):
             count += 1
     return count
+
+
+def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
+    """Per-interface error/health counters from IOS 'show interfaces' or NX-OS
+    'show interface'. Tolerant across both; unknown values stay blank. Returns
+    {port: {oper, input_errors, crc, output_drops, last_input, last_output}}."""
+    res: Dict[str, Dict[str, object]] = {}
+    cur = None
+    buf: List[str] = []
+
+    def _flush(name, lines):
+        if not name or not lines:
+            return
+        text = "\n".join(lines)
+        rec: Dict[str, object] = {"oper": "", "input_errors": "", "crc": "",
+                                  "output_drops": "", "last_input": "", "last_output": ""}
+        mhdr = re.match(r"^\S+\s+is\s+([A-Za-z ]+?)(?:,|$)", lines[0])
+        if mhdr: rec["oper"] = mhdr.group(1).strip()
+        m = re.search(r"(\d+)\s+input error", text)
+        if m: rec["input_errors"] = int(m.group(1))
+        m = re.search(r"(\d+)\s+CRC", text)
+        if m: rec["crc"] = int(m.group(1))
+        m = re.search(r"Total output drops:\s*(\d+)", text)
+        if m:
+            rec["output_drops"] = int(m.group(1))
+        else:
+            m = re.search(r"(\d+)\s+output discard", text)   # NX-OS
+            if m: rec["output_drops"] = int(m.group(1))
+        m = re.search(r"Last input\s+(\S+?),\s*output\s+(\S+?)[,\s]", text)
+        if m:
+            rec["last_input"] = m.group(1).rstrip(",")
+            rec["last_output"] = m.group(2).rstrip(",")
+        res[name] = rec
+
+    for line in output.splitlines():
+        mh = re.match(r"^(\S+)\s+is\s+(up|down|administratively down)\b", line)
+        if mh:
+            nm = normalize_ifname(mh.group(1))
+            if VALID_IFACE_RE.match(nm):
+                _flush(cur, buf)
+                cur, buf = nm, [line]
+                continue
+        if cur is not None:
+            buf.append(line)
+    _flush(cur, buf)
+    return res
+
+def parse_port_security(output: str) -> Dict[str, Dict[str, str]]:
+    """IOS 'show port-security' summary: per-port max/current/violations/action.
+    Handles both short (Gi1/0/5) and full (GigabitEthernet1/0/5) names."""
+    res: Dict[str, Dict[str, str]] = {}
+    for line in output.splitlines():
+        toks = line.split()
+        if not toks:
+            continue
+        p = normalize_ifname(toks[0])
+        if not PHYSICAL_IFACE_RE.match(p):
+            continue
+        nums = re.findall(r"\b\d+\b", " ".join(toks[1:]))
+        act = ""
+        ma = re.search(r"\b(Shutdown|Restrict|Protect)\b", line, re.IGNORECASE)
+        if ma: act = ma.group(1).capitalize()
+        if len(nums) >= 3:
+            res[p] = {"max": nums[0], "current": nums[1], "violations": nums[2], "action": act}
+    return res
+
+def parse_auth_sessions(output: str) -> Dict[str, Dict[str, str]]:
+    """IOS 'show authentication sessions': per-port 802.1X/MAB method+status+MAC.
+    Handles both short and full interface names."""
+    res: Dict[str, Dict[str, str]] = {}
+    for line in output.splitlines():
+        port = ""
+        for t in line.split():
+            n = normalize_ifname(t)
+            if PHYSICAL_IFACE_RE.match(n):
+                port = n
+                break
+        if not port:
+            continue
+        mac = ""
+        mm = re.search(r"\b([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})\b", line)
+        if mm: mac = mm.group(1)
+        method = ""
+        mt = re.search(r"\b(dot1x|mab|webauth)\b", line, re.IGNORECASE)
+        if mt: method = mt.group(1).lower()
+        status = ""
+        ms = re.search(r"\b(Authz?|Authc|Authorized|Authenticated|Unauth\w*|Running|Idle|No[- ]?resp\w*)\b",
+                       line, re.IGNORECASE)
+        if ms: status = ms.group(1)
+        if method or mac or status:
+            res[port] = {"method": method, "status": status, "mac": mac}
+    return res
+
+def parse_dhcp_snooping_binding(output: str) -> Dict[str, int]:
+    """'show ip dhcp snooping binding': count of bindings per interface (full or short names)."""
+    res: Dict[str, int] = {}
+    for line in output.splitlines():
+        if not re.search(r"[0-9a-fA-F]{2}[:.\-][0-9a-fA-F]{2}", line):
+            continue
+        if not re.search(r"\d+\.\d+\.\d+\.\d+", line):
+            continue
+        port = ""
+        for t in line.split():
+            n = normalize_ifname(t)
+            if PHYSICAL_IFACE_RE.match(n):
+                port = n
+        if not port:
+            continue
+        res[port] = res.get(port, 0) + 1
+    return res
