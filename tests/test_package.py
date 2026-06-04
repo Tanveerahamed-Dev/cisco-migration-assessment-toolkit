@@ -12,6 +12,9 @@ def test_textutils_importable_standalone():
     assert is_valid_iface("Gi1/0/1") is True
     assert is_valid_iface("garbage") is False
     assert normalize_mac("00:11:22:33:44:55") == "0011.2233.4455"
+    from cisco_toolkit.textutils import _split_macs
+    assert _split_macs("aaaa.bbbb.cccc, dddd.eeee.ffff") == ["aaaa.bbbb.cccc", "dddd.eeee.ffff"]
+    assert _split_macs("") == []
 
 
 def test_monolith_reexports_the_package_objects(cp):
@@ -24,6 +27,7 @@ def test_monolith_reexports_the_package_objects(cp):
     assert callable(textutils.is_valid_iface)
     assert cp.VALID_IFACE_RE is textutils.VALID_IFACE_RE
     assert cp.IFACE_TOKEN_RE is textutils.IFACE_TOKEN_RE
+    assert cp._split_macs is textutils._split_macs
 
 
 def test_parse_module_reexported_and_functional(cp):
@@ -71,3 +75,14 @@ def test_analyze_reexported_and_functional(cp):
     gw = analyze.InterfaceData(port="Vlan10", svi_ip="10.0.0.1")
     assert analyze._host_role({"Vlan10": gw}) == "distribution"
     assert analyze._host_role({"Gi1/0/1": analyze.InterfaceData(port="Gi1/0/1")}) == "access"
+    # move-group computation joined the analyze layer (step 11).
+    assert cp.compute_move_groups is analyze.compute_move_groups
+    assert cp.MOVEGROUP_EXCLUDED_VLANS is analyze.MOVEGROUP_EXCLUDED_VLANS
+    # two switches sharing VLAN 20 (via access ports) collapse into one move group.
+    ID = analyze.InterfaceData
+    ifaces = {
+        "sw1": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="20")},
+        "sw2": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="20")},
+    }
+    groups = analyze.compute_move_groups(ifaces)
+    assert len(groups) == 1 and groups[0]["switches"] == ["sw1", "sw2"]
