@@ -1380,5 +1380,142 @@
     }
    ]
   }
+ ],
+ "score_sensitivity": [
+  {
+   "perturbation": "XL -50%",
+   "group": "xl_weights",
+   "delta_pct": -50,
+   "switches_changed_band": 2,
+   "changed": [
+    "access1",
+    "core1"
+   ],
+   "detail": "access1: Fair->Good; core1: Critical->Poor"
+  },
+  {
+   "perturbation": "L1 -50%",
+   "group": "l1_weights",
+   "delta_pct": -50,
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Good"
+  },
+  {
+   "perturbation": "XL -25%",
+   "group": "xl_weights",
+   "delta_pct": -25,
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Good"
+  },
+  {
+   "perturbation": "L1 -25%",
+   "group": "l1_weights",
+   "delta_pct": -25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "L1 +25%",
+   "group": "l1_weights",
+   "delta_pct": 25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "L1 +50%",
+   "group": "l1_weights",
+   "delta_pct": 50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "L3 -50%",
+   "group": "l3_weights",
+   "delta_pct": -50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "L3 -25%",
+   "group": "l3_weights",
+   "delta_pct": -25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "L3 +25%",
+   "group": "l3_weights",
+   "delta_pct": 25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "L3 +50%",
+   "group": "l3_weights",
+   "delta_pct": 50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "PROTO -50%",
+   "group": "proto_weights",
+   "delta_pct": -50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "PROTO -25%",
+   "group": "proto_weights",
+   "delta_pct": -25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "PROTO +25%",
+   "group": "proto_weights",
+   "delta_pct": 25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "PROTO +50%",
+   "group": "proto_weights",
+   "delta_pct": 50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "XL +25%",
+   "group": "xl_weights",
+   "delta_pct": 25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "XL +50%",
+   "group": "xl_weights",
+   "delta_pct": 50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  }
  ]
 }
