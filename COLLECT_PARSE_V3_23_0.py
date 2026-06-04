@@ -308,6 +308,10 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
     parse_show_interface_counters, parse_port_security, parse_auth_sessions,
     parse_dhcp_snooping_binding,
 )
+# NEW-V3.23.19 (PHASE 2.7 step 9): the passed-around data model (InterfaceData /
+# DevicePhysical) extracted to the package leaf; imported back so every type hint
+# and constructor call keeps working unchanged (behaviour byte-identical).
+from cisco_toolkit.model import InterfaceData, DevicePhysical
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -456,85 +460,9 @@ def setup_logging(level=logging.INFO):
 
 logger = setup_logging()
 
-# =============================================================================
-# DATA MODEL - InterfaceData
-# =============================================================================
-@dataclass
-class InterfaceData:
-    port: str = ""
-    status: str = ""
-    switchport_mode: str = ""
-    vlan: str = ""
-    vlan_name: str = ""
-    vrf: str = ""
-    duplex: str = ""
-    speed: str = ""
-    port_type: str = ""
-    link_type: str = ""
-    description: str = ""
-    end_host_mac: str = ""
-    end_host_ip: str = ""
-    port_channel: str = ""
-    port_channel_protocol: str = ""
-    stp_blocked: str = ""
-    stp_bpduguard: str = ""
-    stp_rootguard: str = ""
-    poe_status: str = ""
-    system_owner: str = ""
-    endpoint_type: str = ""
-    endpoint_location: str = ""
-    dual_connection: str = ""
-    trunk_native_vlan: str = ""
-    trunk_allowed_vlans: str = ""
-    trunk_status: str = ""
-    arp_source_switch: str = ""  # NEW-V11
-    cdp_neighbor: str = ""       # NEW-V11
-    # NEW-V14 (defined in V3.14.2; previously read/written but missing from the model)
-    current_switch_serial: str = ""
-    current_switch_ip: str = ""
-    current_switch_vtp_domain: str = ""
-    neighbor_switch_serial: str = ""
-    neighbor_switch_ip: str = ""
-    neighbor_switch_vtp_domain: str = ""
-    subnet_primary_route: str = ""
-    subnet_secondary_routes: str = ""
-    route_next_hop: str = ""
-    routing_source: str = ""
-    hsrp_behavior: str = ""
-    multicast_info: str = ""
-    svi_ip: str = ""  # NEW-V14.3 (the SVI's own 'ip address' = gateway IP; for SVI/Gateway sheet)
-    # NEW-V14.7 per-VLAN STP detail (compressed VLAN/instance ranges) for the STP Detail sheet
-    stp_fwd_vlans: str = ""
-    stp_blk_vlans: str = ""
-    stp_other_vlans: str = ""
-    # NEW-V14.10 neighbor remote port + platform (for the Topology / Links sheet)
-    neighbor_port: str = ""
-    neighbor_platform: str = ""
-
-# =============================================================================
-# DATA MODEL - DevicePhysical (NEW-V12)
-# =============================================================================
-@dataclass
-class DevicePhysical:
-    """Switch-level physical inventory for site survey sheet."""
-    hostname: str = ""
-    platform: str = ""
-    model: str = ""
-    serial_number: str = ""
-    chassis_serial: str = ""
-    sw_version: str = ""
-    uptime: str = ""
-    system_mac: str = ""
-    num_power_supplies: int = 0
-    ps_status: str = ""
-    power_capacity_w: str = ""
-    power_drawn_w: str = ""
-    power_remaining_w: str = ""
-    num_modules: int = 0
-    total_ports: int = 0
-    active_ports: int = 0
-    fan_status: str = ""
-    temperature_status: str = ""
+# DATA MODEL - InterfaceData / DevicePhysical moved to cisco_toolkit.model
+# (PHASE 2.7 step 9); imported back near the top of this file. ScoringConfig
+# stays here - it travels with the analyze layer, not the data model.
 
 # Normalization helpers moved to cisco_toolkit.textutils (PHASE 2.7 step 1);
 # imported near the top of this file.

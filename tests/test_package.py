@@ -38,3 +38,17 @@ def test_parse_module_reexported_and_functional(cp):
     # functional smoke straight from the package
     rows = parse.parse_ospf_neighbors("10.0.0.2  1  FULL/DR  00:00:35  10.0.0.2  Gi0/1")
     assert rows and rows[0]["state"] == "FULL/DR" and rows[0]["interface"] == "Gi0/1"
+
+
+def test_model_reexported_and_functional(cp):
+    from cisco_toolkit import model
+    # identity, not equality: the monolith must construct the package's classes,
+    # not a re-defined copy (every layer passes these records around).
+    assert cp.InterfaceData is model.InterfaceData
+    assert cp.DevicePhysical is model.DevicePhysical
+    # functional smoke straight from the package: fields + defaults intact.
+    iface = model.InterfaceData(port="Gi1/0/1", status="connected")
+    assert iface.port == "Gi1/0/1" and iface.status == "connected"
+    assert iface.vlan == "" and iface.neighbor_platform == ""
+    dp = model.DevicePhysical(hostname="core1")
+    assert dp.hostname == "core1" and dp.num_power_supplies == 0

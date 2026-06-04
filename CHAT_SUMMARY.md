@@ -5,6 +5,34 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 9: the data model
+
+On branch `phase2-split-model`. Byte-identical.
+
+- Moved the two passed-around record dataclasses `InterfaceData` and
+  `DevicePhysical` into a new `cisco_toolkit/model.py` leaf (depends only on
+  `dataclasses`; no project imports, no I/O). The monolith imports both back, so
+  every `Dict[str, Dict[str, InterfaceData]]` hint and every constructor call is
+  unchanged. `parse.py` never referenced them (parsers return plain dicts), so the
+  model is a clean independent leaf — it sits beside `textutils`, not under `parse`.
+- **`ScoringConfig` deliberately stays in the monolith.** It is `@dataclass(frozen=True)`
+  + `_dcfield` but it is *scoring tunables*, not a record the layers pass around —
+  it belongs with the analyze layer (next step). Because it still uses `dataclass`/
+  `_dcfield`, the `from dataclasses import ...` import stays put (no ruff F401).
+- Added `test_model_reexported_and_functional` (identity `cp.X is model.X` + a
+  field/defaults smoke). Golden byte-identical, `ruff` clean, mypy unchanged (101).
+  **62 tests pass** (was 61). Monolith **~4,375 lines**. `.md` V3.23.19.
+
+**Model layer done.** Remaining, in dependency order: analyze (`compute_*` +
+`ScoringConfig` + the entangled phy/media + protocol-health parsers `parse_interface_phy`
+/`_classify_media`/`_is_physical_port`/`_parse_fhrp`/`_parse_track`/`_parse_stp_*`/
+`_parse_etherchannel_member_states`/`_parse_vtp_full`), then excel (`write_*`, the
+openpyxl-coupled layer), html (snapshot/explorer), `__main__`. analyze is the next
+PR and the meatiest — many `compute_*` functions, all keyed on the model that now lives
+in the package.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 8: counters + security parsers
 
 On branch `phase2-split-parse7`. Byte-identical.
