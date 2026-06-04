@@ -3149,20 +3149,23 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
                 f"SVIs on {len(hosts)} switches but no FHRP (HSRP/VRRP/GLBP) detected "
                 f"- duplicate-IP / split-gateway risk."))
 
-    # (3) err-disabled ports.
+    # (3) err-disabled ports - DEDUPLICATED per switch (one weighted row with a
+    #     count + the port list, not one row per port, to avoid a 'sea of red').
     for host, ifaces in all_interfaces.items():
-        for port, d in ifaces.items():
-            s = (d.status or "").lower()
-            if "err" in s and "disab" in s:
-                findings.append(("High", "Err-disabled", f"{host} {port}",
-                    f"Port status '{d.status}'."))
+        bad = sorted([port for port, d in ifaces.items()
+                      if "err" in (d.status or "").lower() and "disab" in (d.status or "").lower()])
+        if bad:
+            findings.append(("High", "Err-disabled", f"{host} ({len(bad)})",
+                f"{len(bad)} err-disabled port(s): {', '.join(bad)}."))
 
-    # (4) STP inconsistent ports.
+    # (4) STP inconsistent ports - DEDUPLICATED per switch.
     for host, ifaces in all_interfaces.items():
-        for port, d in ifaces.items():
-            if (d.stp_blocked or "") == "Inconsistent":
-                findings.append(("High", "STP inconsistent", f"{host} {port}",
-                    "Port is STP-inconsistent (root-guard / loop-guard / type mismatch)."))
+        bad = sorted([port for port, d in ifaces.items()
+                      if (d.stp_blocked or "") == "Inconsistent"])
+        if bad:
+            findings.append(("High", "STP inconsistent", f"{host} ({len(bad)})",
+                f"{len(bad)} STP-inconsistent port(s): {', '.join(bad)} "
+                f"(root-guard / loop-guard / type mismatch)."))
 
     # (5)/(6) Link-level mismatches need both ends - use the topology link map.
     cmap = _canon_host_map(all_interfaces)
@@ -5245,6 +5248,7 @@ def write_protocol_health_sheet(wb, records: List[dict]) -> None:
 # -----------------------------------------------------------------------------
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
 MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
+SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
 # score band -> (label, fill)
 _HEALTH_BANDS = [(90, "Excellent", "36E08A"), (75, "Good", "7ADB8F"),
                  (60, "Fair", "FFE566"), (40, "Poor", "FF9F45"), (0, "Critical", "FF5775")]
@@ -5280,6 +5284,11 @@ class ScoringConfig:
         "routing_adjacencies": "fail", "no_orphan_vlans": "warn",
         "clean_uplinks": "warn", "health_floor_critical": "fail",
         "health_floor_poor": "warn"})
+    # NEW-V3.23.5: per-role multiplier on a switch's deductions (a fault on a
+    # core/distribution switch has wider blast radius than on an access closet).
+    # Defaults are 1.0 for every role, so scores stay byte-identical until tuned.
+    criticality_factors: Dict[str, float] = field(default_factory=lambda: {
+        "core": 1.0, "distribution": 1.0, "access": 1.0})
 
 
 # Module-default scoring configuration. Replace/extend by passing a custom
@@ -5293,6 +5302,16 @@ def _health_band(score: int, bands=None):
         if score >= thr:
             return label, fill
     return "Critical", "FF5775"
+
+def _host_role(ifaces: Dict[str, "InterfaceData"]) -> str:
+    """Infer a switch's migration-criticality role from already-parsed data: a
+    switch that hosts an L3 gateway SVI carries wider blast radius -> 'distribution';
+    otherwise 'access'. ('core' is reserved for manual tuning via
+    ScoringConfig.criticality_factors.) Only affects scores when factors != 1.0."""
+    for port, d in (ifaces or {}).items():
+        if re.match(r"^Vlan\d+$", port, re.IGNORECASE) and (getattr(d, "svi_ip", "") or "").strip():
+            return "distribution"
+    return "access"
 
 def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                           physical_health: List[dict], l3_forwarding: List[dict],
@@ -5336,10 +5355,13 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     CAP = config.caps
     records: List[dict] = []
     for h in hosts:
+        # NEW-V3.23.5: scale this switch's deductions by its criticality role.
+        # round() keeps integer scores; the default factor 1.0 is a no-op.
+        factor = config.criticality_factors.get(_host_role(all_interfaces.get(h, {})), 1.0)
         total = 0
         reasons: List[str] = []
         for cat, items in ded[h].items():
-            csum = min(sum(p for _r, p in items), CAP[cat])
+            csum = min(round(sum(p for _r, p in items) * factor), CAP[cat])
             total += csum
             for r, p in sorted(items, key=lambda x: -x[1]):
                 reasons.append(f"{r} (-{p})")
@@ -5349,6 +5371,40 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                         "deductions": reasons[:8]})
     records.sort(key=lambda r: (r["score"], r["switch"]))
     return records
+
+def compute_score_sensitivity(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                              physical_health: List[dict], l3_forwarding: List[dict],
+                              cross_layer: List[dict], protocol_health: List[dict],
+                              config: ScoringConfig = SCORING,
+                              deltas: Tuple[float, ...] = (-0.5, -0.25, 0.25, 0.5)) -> List[dict]:
+    """NEW-V3.23.5: one-at-a-time (OAT) sensitivity sweep over the scoring weights.
+    For each weight group, re-score the fleet with that group scaled by each delta
+    and report how many switches change health band. Verdicts that flip under a
+    small (+/-25%) perturbation are weakly supported - this is the OECD/JRC
+    composite-indicator robustness check. Pure derivation; no new collection."""
+    import dataclasses
+
+    def _bands(cfg):
+        return {r["switch"]: r["band"] for r in compute_health_scores(
+            all_interfaces, physical_health, l3_forwarding, cross_layer, protocol_health, cfg)}
+
+    base = _bands(config)
+    out: List[dict] = []
+    for grp in ("l1_weights", "l3_weights", "xl_weights", "proto_weights"):
+        for delta in deltas:
+            scaled = {k: max(0, round(v * (1 + delta))) for k, v in getattr(config, grp).items()}
+            new = _bands(dataclasses.replace(config, **{grp: scaled}))
+            changed = sorted(h for h in base if base[h] != new.get(h))
+            out.append({
+                "perturbation": f"{grp.replace('_weights', '').upper()} "
+                                f"{'+' if delta > 0 else ''}{int(delta * 100)}%",
+                "group": grp, "delta_pct": int(delta * 100),
+                "switches_changed_band": len(changed),
+                "changed": changed,
+                "detail": "; ".join(f"{h}: {base[h]}->{new[h]}" for h in changed) or "no band changes",
+            })
+    out.sort(key=lambda r: (-r["switches_changed_band"], r["group"], r["delta_pct"]))
+    return out
 
 # 10 pre-migration checks; each returns (status, note). status in pass/warn/fail.
 def compute_migration_readiness(all_interfaces, move_groups, health_scores,
@@ -5457,6 +5513,28 @@ def write_health_scores_sheet(wb, records: List[dict]) -> None:
     ws.freeze_panes = "A2"
     avg = round(sum(r["score"] for r in records) / len(records)) if records else 0
     logger.info(f"  [OK] '{HEALTH_SCORES_SHEET_NAME}' sheet: {len(records)} switch(es), avg score {avg}")
+
+def write_score_sensitivity_sheet(wb, records: List[dict]) -> None:
+    """Write the 'Score Sensitivity' sheet from compute_score_sensitivity()."""
+    ws = wb.create_sheet(SCORE_SENSITIVITY_SHEET_NAME)
+    headers = ["Perturbation", "Switches Changing Band", "Detail"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    for r, rec in enumerate(records, 2):
+        ws.cell(r, 1, rec["perturbation"])
+        c = ws.cell(r, 2, rec["switches_changed_band"])
+        if rec["switches_changed_band"]:
+            c.font = Font(bold=True)
+        ws.cell(r, 3, rec["detail"])
+    for i, w in enumerate([20, 24, 80], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    flips = sum(1 for r in records if r["switches_changed_band"])
+    logger.info(f"  [OK] '{SCORE_SENSITIVITY_SHEET_NAME}' sheet: {len(records)} perturbation(s), {flips} with band changes")
+
 
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
@@ -5866,6 +5944,13 @@ def main():
         cross_layer, protocol_health, dep_map, _default=[])
     _run_phase("Migration Readiness sheet", write_migration_readiness_sheet, wb, migration_readiness)
 
+    # Phase 30: Score Sensitivity - NEW-V3.23.5 (OAT robustness sweep over scoring weights)
+    logger.info("\n[Phase 30] Writing Score Sensitivity sheet ...")
+    score_sensitivity = _run_phase("Score Sensitivity", compute_score_sensitivity,
+                                   all_interfaces, physical_health, l3_forwarding,
+                                   cross_layer, protocol_health, _default=[])
+    _run_phase("Score Sensitivity sheet", write_score_sensitivity_sheet, wb, score_sensitivity)
+
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")
     logger.info(f"[OK] Log:   {LOG_FILE}")
@@ -5885,6 +5970,7 @@ def main():
     snap_dict["protocol_health"] = protocol_health                   # NEW-V3.22
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
+    snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     try:

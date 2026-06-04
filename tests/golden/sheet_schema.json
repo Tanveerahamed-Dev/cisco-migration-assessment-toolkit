@@ -228,5 +228,10 @@
   "Group / Check",
   "Status",
   "Detail"
+ ],
+ "Score Sensitivity": [
+  "Perturbation",
+  "Switches Changing Band",
+  "Detail"
  ]
 }
