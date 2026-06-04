@@ -1,8 +1,8 @@
 # Ruff config for COLLECT_PARSE_V3_23_0.py - a deliberately compact single-file
 # script. Keep the correctness checks (F + E4/E7/E9) but ignore the one-liner /
 # semicolon / ambiguous-name STYLE rules the code uses on purpose, so `ruff check`
-# surfaces real issues instead of ~296 stylistic nits. Report-only for now; see
-# the V3.23.8 baseline in CHAT_SUMMARY.md. Run: python -m ruff check .
+# surfaces real issues instead of ~296 stylistic nits. The 5 real findings in the
+# V3.23.8 baseline were fixed in V3.23.9, so this should stay clean. Run: python -m ruff check .
 line-length = 120
 
 [lint]
@@ -11,4 +11,5 @@ ignore = [
     "E701",  # multiple statements on one line (colon)    - intentional compact style
     "E702",  # multiple statements on one line (semicolon) - intentional
     "E741",  # ambiguous variable name (l / I / O)         - pre-existing, low value
+    "E401",  # multiple imports on one line                - intentional compact style
 ]
