@@ -305,6 +305,8 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
     parse_show_ip_arp, parse_vtp_status, parse_switch_mgmt_ip, parse_multicast_info,
     parse_show_version, parse_show_inventory, parse_show_environment_power,
     parse_show_environment, parse_show_module_count,
+    parse_show_interface_counters, parse_port_security, parse_auth_sessions,
+    parse_dhcp_snooping_binding,
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -2559,50 +2561,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
 # -----------------------------------------------------------------------------
 INTERFACE_HEALTH_SHEET_NAME = "Interface Health"
 
-def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
-    """Per-interface error/health counters from IOS 'show interfaces' or NX-OS
-    'show interface'. Tolerant across both; unknown values stay blank. Returns
-    {port: {oper, input_errors, crc, output_drops, last_input, last_output}}."""
-    res: Dict[str, Dict[str, object]] = {}
-    cur = None
-    buf: List[str] = []
-
-    def _flush(name, lines):
-        if not name or not lines:
-            return
-        text = "\n".join(lines)
-        rec: Dict[str, object] = {"oper": "", "input_errors": "", "crc": "",
-                                  "output_drops": "", "last_input": "", "last_output": ""}
-        mhdr = re.match(r"^\S+\s+is\s+([A-Za-z ]+?)(?:,|$)", lines[0])
-        if mhdr: rec["oper"] = mhdr.group(1).strip()
-        m = re.search(r"(\d+)\s+input error", text)
-        if m: rec["input_errors"] = int(m.group(1))
-        m = re.search(r"(\d+)\s+CRC", text)
-        if m: rec["crc"] = int(m.group(1))
-        m = re.search(r"Total output drops:\s*(\d+)", text)
-        if m:
-            rec["output_drops"] = int(m.group(1))
-        else:
-            m = re.search(r"(\d+)\s+output discard", text)   # NX-OS
-            if m: rec["output_drops"] = int(m.group(1))
-        m = re.search(r"Last input\s+(\S+?),\s*output\s+(\S+?)[,\s]", text)
-        if m:
-            rec["last_input"] = m.group(1).rstrip(",")
-            rec["last_output"] = m.group(2).rstrip(",")
-        res[name] = rec
-
-    for line in output.splitlines():
-        mh = re.match(r"^(\S+)\s+is\s+(up|down|administratively down)\b", line)
-        if mh:
-            nm = normalize_ifname(mh.group(1))
-            if VALID_IFACE_RE.match(nm):
-                _flush(cur, buf)
-                cur, buf = nm, [line]
-                continue
-        if cur is not None:
-            buf.append(line)
-    _flush(cur, buf)
-    return res
+# parse_show_interface_counters moved to cisco_toolkit.parse (PHASE 2.7 step 8);
+# imported at the top of this file.
 
 def write_interface_health_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
     """One row per interface with a health signal worth seeing: any errors/CRC/drops,
@@ -2662,69 +2622,8 @@ def write_interface_health_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]
 # -----------------------------------------------------------------------------
 SECURITY_SHEET_NAME = "Security Posture"
 
-def parse_port_security(output: str) -> Dict[str, Dict[str, str]]:
-    """IOS 'show port-security' summary: per-port max/current/violations/action.
-    Handles both short (Gi1/0/5) and full (GigabitEthernet1/0/5) names."""
-    res: Dict[str, Dict[str, str]] = {}
-    for line in output.splitlines():
-        toks = line.split()
-        if not toks:
-            continue
-        p = normalize_ifname(toks[0])
-        if not PHYSICAL_IFACE_RE.match(p):
-            continue
-        nums = re.findall(r"\b\d+\b", " ".join(toks[1:]))
-        act = ""
-        ma = re.search(r"\b(Shutdown|Restrict|Protect)\b", line, re.IGNORECASE)
-        if ma: act = ma.group(1).capitalize()
-        if len(nums) >= 3:
-            res[p] = {"max": nums[0], "current": nums[1], "violations": nums[2], "action": act}
-    return res
-
-def parse_auth_sessions(output: str) -> Dict[str, Dict[str, str]]:
-    """IOS 'show authentication sessions': per-port 802.1X/MAB method+status+MAC.
-    Handles both short and full interface names."""
-    res: Dict[str, Dict[str, str]] = {}
-    for line in output.splitlines():
-        port = ""
-        for t in line.split():
-            n = normalize_ifname(t)
-            if PHYSICAL_IFACE_RE.match(n):
-                port = n
-                break
-        if not port:
-            continue
-        mac = ""
-        mm = re.search(r"\b([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})\b", line)
-        if mm: mac = mm.group(1)
-        method = ""
-        mt = re.search(r"\b(dot1x|mab|webauth)\b", line, re.IGNORECASE)
-        if mt: method = mt.group(1).lower()
-        status = ""
-        ms = re.search(r"\b(Authz?|Authc|Authorized|Authenticated|Unauth\w*|Running|Idle|No[- ]?resp\w*)\b",
-                       line, re.IGNORECASE)
-        if ms: status = ms.group(1)
-        if method or mac or status:
-            res[port] = {"method": method, "status": status, "mac": mac}
-    return res
-
-def parse_dhcp_snooping_binding(output: str) -> Dict[str, int]:
-    """'show ip dhcp snooping binding': count of bindings per interface (full or short names)."""
-    res: Dict[str, int] = {}
-    for line in output.splitlines():
-        if not re.search(r"[0-9a-fA-F]{2}[:.\-][0-9a-fA-F]{2}", line):
-            continue
-        if not re.search(r"\d+\.\d+\.\d+\.\d+", line):
-            continue
-        port = ""
-        for t in line.split():
-            n = normalize_ifname(t)
-            if PHYSICAL_IFACE_RE.match(n):
-                port = n
-        if not port:
-            continue
-        res[port] = res.get(port, 0) + 1
-    return res
+# parse_port_security / parse_auth_sessions / parse_dhcp_snooping_binding moved to
+# cisco_toolkit.parse (PHASE 2.7 step 8); imported at the top of this file.
 
 def write_security_posture_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
     """One row per port with port-security, an 802.1X session, or DHCP-snoop bindings."""

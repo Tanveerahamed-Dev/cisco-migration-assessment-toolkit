@@ -5,6 +5,27 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 8: counters + security parsers
+
+On branch `phase2-split-parse7`. Byte-identical.
+
+- Moved `parse_show_interface_counters`, `parse_port_security`,
+  `parse_auth_sessions`, `parse_dhcp_snooping_binding` to `cisco_toolkit/parse.py`
+  (added `VALID_IFACE_RE`/`PHYSICAL_IFACE_RE` to parse.py's import). All 4 back.
+- Golden byte-identical, `ruff` clean, mypy unchanged (101). **61 tests pass.**
+  Monolith ~4,450 lines. `.md` V3.23.18.
+
+`parse.py` now holds the whole parser layer **except** the physical/media group
+(`parse_interface_phy`/`_classify_media`/`_is_physical_port`+`_NON_PHYSICAL_RE`)
+and the protocol-health helpers (`_parse_fhrp`/`_parse_track`/`_parse_stp_*`/
+`_parse_etherchannel_member_states`/`_parse_vtp_full`) — those are entangled with
+the analyze layer, so they come with it. **Next, the hard part:** model
+(InterfaceData/DevicePhysical), then analyze (`compute_*`), excel (`write_*`),
+html, `__main__`. These are coupled (model is referenced everywhere; write_* tie
+to openpyxl) — the clean import-back pattern won't lift them as smoothly.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 7: version/inventory/environment parsers
 
 On branch `phase2-split-parse6`. Byte-identical.
