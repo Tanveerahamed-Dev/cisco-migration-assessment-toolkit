@@ -5,6 +5,45 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.7 step 10: the analyze layer's scoring foundation
+
+On branch `phase2-split-analyze1`. Byte-identical. **First slice of the analyze
+layer** (it's too big + entangled for one PR, like the parser layer was steps 2-8).
+
+- Moved the *leaf* of the analyze layer into a new `cisco_toolkit/analyze.py`:
+  `_HEALTH_BANDS`, the `ScoringConfig` frozen dataclass (+ module-default `SCORING`),
+  and the two pure helpers `_health_band` / `_host_role`. Depends only on
+  `dataclasses` + stdlib + `cisco_toolkit.model`. The `compute_*` functions still in
+  the monolith import the four public symbols back.
+- **Last dataclass user**: with `ScoringConfig` gone, the monolith's top-level
+  `from dataclasses import dataclass, field as _dcfield` was now unused → moved it
+  into `analyze.py` (ruff F401-fix, mirrors step-4/7 drops). The local
+  `import dataclasses` inside `compute_score_sensitivity` is separate and stayed.
+- **Deliberately left behind** (not part of this leaf): the Excel fill maps
+  `_READY_FILL`/`_STATUS_FILL` + the `*_SHEET_NAME` constants (excel layer), and all
+  `compute_*` (incl. `compute_data_quality`, which needs `_load_cmd_output` — the
+  ~50-call-site I/O helper at monolith line ~687 that the whole analyze layer leans
+  on; that helper has to find a package home before the bulk of `compute_*` can move).
+- `_host_role`'s annotation went from the string `"InterfaceData"` to the real
+  imported type (so ruff sees the import used and mypy resolves it) — annotations
+  don't affect runtime, so still byte-identical.
+- Added `test_analyze_reexported_and_functional` (identity + caps/weights/band/role
+  smoke). Golden byte-identical, `ruff` clean, mypy unchanged (101). **63 tests pass**
+  (was 62). Monolith **~4,328 lines**. `.md` V3.23.20.
+
+**Next analyze slices (in dependency order):** find a package home for `_load_cmd_output`
+(+ `_safe_parse`) — probably a small `cisco_toolkit/io.py` or fold into `parse.py` — then
+the `compute_*` graph can move in batches: the model-only ones first (`compute_move_groups`,
+`compute_topology_links`, `compute_findings`, `build_network_model`, causality/failure-impact),
+then the I/O-fed ones (`compute_data_quality`, `compute_health_scores`, `compute_score_sensitivity`,
+`compute_migration_readiness`, physical/protocol-health + their entangled phy/media &
+`_parse_fhrp`/`_parse_track`/`_parse_stp_*`/`_parse_vtp_full` parsers). Then excel (`write_*`),
+html, `__main__`. **Note:** `/batch` parallel orchestration does NOT fit this work — it's
+sequential (shared monolith file + import-back dependency chain + per-step golden); confirmed
+with the user, who chose the sequential path.
+
+---
+
 ## 2026-06-04 — PHASE 2.7 step 9: the data model
 
 On branch `phase2-split-model`. Byte-identical.
