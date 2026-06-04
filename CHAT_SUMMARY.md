@@ -5,6 +5,27 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-04 — PHASE 2.2: cry-wolf calibration & transparency
+
+On branch `phase2-cry-wolf`. Three pieces, all under the golden net:
+
+- **Findings dedup:** `compute_findings` now emits one weighted row per switch
+  (count + port list) for err-disabled / STP-inconsistent, not one row per port.
+  Findings-sheet rows only — snapshot + headers unchanged.
+- **Asset-criticality weighting:** new `ScoringConfig.criticality_factors` +
+  `_host_role` (SVI-hosting switch -> distribution, else access). Deductions are
+  scaled via `round()`. Ships at **factor 1.0 for every role** (opt-in), so
+  health scores are byte-identical until tuned — the sign-off choice.
+- **Sensitivity sweep:** new `compute_score_sensitivity` + **Score Sensitivity**
+  sheet + `snap_dict["score_sensitivity"]`. OAT ±25/±50% over each weight group,
+  reporting how many switches change band (on the fixtures, "XL -50%" flips 2).
+
+Verified: golden diff is **additive-only** (142 insertions, 0 deletions — new
+sheet + key; existing `health_scores`/`migration_readiness` byte-identical).
+**45 tests pass** (+6 in `tests/test_cry_wolf.py`). In-code version stays
+`3.23.0`; `.md` Change Log V3.23.5. Next: PHASE 2.3 (parser robustness + the
+deferred P1 + IOS/NX-OS fixture variants).
+
 ## 2026-06-04 — PHASE 2.1: externalize scoring tunables
 
 On branch `phase2-externalize-scoring` (PR #2 already merged to main).
