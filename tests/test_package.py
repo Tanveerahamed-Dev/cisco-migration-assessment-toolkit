@@ -48,12 +48,12 @@ def test_parse_module_reexported_and_functional(cp):
     # functional smoke straight from the package
     rows = parse.parse_ospf_neighbors("10.0.0.2  1  FULL/DR  00:00:35  10.0.0.2  Gi0/1")
     assert rows and rows[0]["state"] == "FULL/DR" and rows[0]["interface"] == "Gi0/1"
-    # _parse_fhrp joined the parser layer in step 16 (shared by analyze + the L3-fwd sheet).
-    assert cp._parse_fhrp is parse._parse_fhrp
+    # _parse_fhrp (step 16), the physical-port parsers (step 17), and parse_show_interface_counters
+    # are no longer re-exported by the monolith (step 24/25: their writers moved to excel); still in parse.
+    for name in ("_parse_fhrp", "_is_physical_port", "_classify_media", "parse_interface_phy",
+                 "_parse_poe_watts", "parse_show_interface_counters"):
+        assert hasattr(parse, name) and not hasattr(cp, name)
     assert parse._parse_fhrp("HSRP grp 1 Active VIP 10.0.10.1") == ("HSRP", "Active", "10.0.10.1", "1")
-    # physical-port parsers joined the parser layer in step 17.
-    for name in ("_is_physical_port", "_classify_media", "parse_interface_phy", "_parse_poe_watts"):
-        assert getattr(cp, name) is getattr(parse, name)
     assert parse._is_physical_port("Gi1/0/1") is True and parse._is_physical_port("Vlan10") is False
     assert parse._classify_media("media type is 10/100/1000BaseTX") == "copper"
     phy = parse.parse_interface_phy(
@@ -128,11 +128,10 @@ def test_analyze_reexported_and_functional(cp):
     fi = {"sw1": {"Vlan20": ID(port="Vlan20")}, "sw2": {"Vlan20": ID(port="Vlan20")}}
     assert any(sev == "High" and cat == "Gateway redundancy"
                for (sev, cat, scope, detail) in analyze.compute_findings(fi))
-    # network-model / blast-radius cluster joined the analyze layer (step 13).
-    assert cp.build_network_model is analyze.build_network_model
-    # compute_causality_chains / compute_failure_impact went package-internal in step 24 (their
-    # writers moved to excel); they still live in analyze.
-    for name in ("compute_causality_chains", "compute_failure_impact"):
+    # network-model / blast-radius cluster joined the analyze layer (step 13); their monolith
+    # re-exports were dropped as the writers moved to excel (build_network_model step 25;
+    # compute_causality_chains / compute_failure_impact step 24). They still live in analyze.
+    for name in ("build_network_model", "compute_causality_chains", "compute_failure_impact"):
         assert hasattr(analyze, name) and not hasattr(cp, name)
     # _vlan_components (step 18) + _link_carries (step 19) went package-internal as their
     # last monolith users (build_dependency_map / _bfs_forwarding_path) moved out.
@@ -167,9 +166,10 @@ def test_analyze_reexported_and_functional(cp):
     ph = analyze.compute_protocol_health(
         {"sw1": {"Vlan10": ID(port="Vlan10", hsrp_behavior="HSRP grp 1 Active VIP 10.0.10.1")}}, {})
     assert any(r["protocol"] == "FHRP" and r["severity"] == "Info" for r in ph)
-    # physical-health compute helpers joined the analyze layer (step 17).
-    assert cp._poe_device_util is analyze._poe_device_util
-    assert cp._physical_uplink_index is analyze._physical_uplink_index
+    # physical-health compute helpers joined the analyze layer (step 17); their monolith re-exports
+    # were dropped in step 25 when write_physical_health_sheet moved to excel. They still live in analyze.
+    for name in ("_poe_device_util", "_physical_uplink_index"):
+        assert hasattr(analyze, name) and not hasattr(cp, name)
     DP = analyze.DevicePhysical
     assert analyze._poe_device_util([DP(hostname="sw1", power_capacity_w="1000", power_drawn_w="250")]) == {"sw1": 25.0}
     # a single non-port-channel inter-switch link -> a single-fiber uplink on both ends.
@@ -259,12 +259,17 @@ def test_excel_reexported_and_functional(cp):
     for name in ("write_cross_layer_sheet", "write_protocol_health_sheet", "write_health_scores_sheet",
                  "write_score_sensitivity_sheet", "write_migration_readiness_sheet"):
         assert getattr(cp, name) is getattr(excel, name)
-    # _SEV_FILL moved to excel (shared fill map) + re-exported for writers still in the monolith.
-    assert cp._SEV_FILL is excel._SEV_FILL and excel._SEV_FILL["High"] == "F4CCCC"
-    # _CL_FILL / _READY_FILL / _STATUS_FILL are package-internal.
+    # _SEV_FILL was re-exported for monolith writers in step 23; step 25 moved the last of those
+    # (physical/l3) to excel, so it's package-internal now. _CL_FILL/_READY_FILL/_STATUS_FILL too.
+    assert excel._SEV_FILL["High"] == "F4CCCC" and not hasattr(cp, "_SEV_FILL")
     assert not hasattr(cp, "_CL_FILL") and not hasattr(cp, "_READY_FILL")
     # Tier-2 (file-reading) + intelligence sheet writers joined the excel layer (step 24).
     for name in ("write_interface_health_sheet", "write_security_posture_sheet",
                  "write_routing_adjacency_sheet", "write_causality_chains_sheet",
                  "write_failure_impact_sheet"):
         assert getattr(cp, name) is getattr(excel, name)
+    # fused compute-in-writer sheets joined the excel layer (step 25).
+    for name in ("write_physical_health_sheet", "write_flow_trace_sheet", "write_l3_forwarding_sheet"):
+        assert getattr(cp, name) is getattr(excel, name)
+    # _parse_track / _track_summary moved with write_l3_forwarding_sheet (package-internal).
+    assert callable(excel._parse_track) and not hasattr(cp, "_parse_track")
