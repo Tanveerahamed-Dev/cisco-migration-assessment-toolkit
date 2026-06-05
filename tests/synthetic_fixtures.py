@@ -110,6 +110,8 @@ interface Port-channel1
 interface Vlan10
  description USERS
  ip address 10.0.10.2 255.255.255.0
+ ip helper-address 10.0.40.10
+ ip helper-address 10.0.40.11
  standby 10 ip 10.0.10.1
  standby 10 priority 110
 interface Vlan20
