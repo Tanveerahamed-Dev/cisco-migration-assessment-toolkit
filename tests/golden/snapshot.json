@@ -1575,6 +1575,46 @@
    "detail": "no band changes"
   }
  ],
+ "nat": {
+  "core1": {
+   "static": [
+    {
+     "direction": "inside",
+     "proto": "",
+     "local": "10.0.30.9",
+     "global": "203.0.113.9"
+    },
+    {
+     "direction": "inside",
+     "proto": "tcp",
+     "local": "10.0.30.9",
+     "global": "203.0.113.9",
+     "local_port": "443",
+     "global_port": "8443"
+    }
+   ],
+   "dynamic": [
+    {
+     "acl": "7",
+     "kind": "pool",
+     "via": "MIGRATE_POOL",
+     "overload": true
+    }
+   ],
+   "pools": {
+    "MIGRATE_POOL": {
+     "start": "203.0.113.10",
+     "end": "203.0.113.20"
+    }
+   },
+   "inside": [
+    "Vlan10"
+   ],
+   "outside": [
+    "Gi1/0/24"
+   ]
+  }
+ },
  "calibration": {
   "n": 3,
   "score_stats": {

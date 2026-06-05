@@ -141,6 +141,15 @@ ip access-list extended MGMT_IN
  permit tcp object-group MGMT_HOSTS any eq 22
  deny   ip any any
 !
+interface Vlan10
+ ip nat inside
+interface GigabitEthernet1/0/24
+ ip nat outside
+ip nat pool MIGRATE_POOL 203.0.113.10 203.0.113.20 netmask 255.255.255.0
+ip nat inside source static 10.0.30.9 203.0.113.9
+ip nat inside source static tcp 10.0.30.9 443 203.0.113.9 8443
+ip nat inside source list 7 pool MIGRATE_POOL overload
+!
 """,
     "show etherchannel summary": """\
 Flags:  D - down        P - bundled in port-channel

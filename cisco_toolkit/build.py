@@ -22,7 +22,7 @@ from cisco_toolkit.parse import (
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
-    parse_acls, parse_object_groups,
+    parse_acls, parse_object_groups, parse_nat,
 )
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
 
@@ -41,6 +41,14 @@ def build_object_groups(cmd_to_file: Dict[str, str]) -> Dict[str, dict]:
     'show running-config' -> {name: {kind, members}}; {} when none. Fail-soft via _safe_parse."""
     run = _load_cmd_output(cmd_to_file, "show running-config")
     return _safe_parse(parse_object_groups, run) or {}
+
+
+def build_nat(cmd_to_file: Dict[str, str]) -> dict:
+    """Parse the NAT inventory (static / dynamic / pools / inside-outside ifaces) from this device's
+    already-collected 'show running-config' -> {static,dynamic,pools,inside,outside}; {} when none.
+    Fail-soft via _safe_parse."""
+    run = _load_cmd_output(cmd_to_file, "show running-config")
+    return _safe_parse(parse_nat, run) or {}
 
 
 # -----------------------------------------------------------------------------
