@@ -133,6 +133,7 @@ ip access-list extended VOICE_FILTER
 ip access-list extended PROTECT_SERVERS
  permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443
  permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 22
+ permit icmp any 10.0.30.0 0.0.0.255 echo-reply
  deny   ip any any
 ip access-list extended MGMT_IN
  permit tcp object-group MGMT_HOSTS any eq 22
