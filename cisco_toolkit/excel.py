@@ -1028,6 +1028,54 @@ def write_fhrp_consistency_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfa
     logger.info(f"  [OK] '{FHRP_CONSISTENCY_SHEET_NAME}' sheet: {len(rows)} VLAN(s) with FHRP issues")
 
 
+def compute_trunk_native_mismatches(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
+    """Native-VLAN mismatches on inter-switch trunks (mirrors the explorer's trunkConsistency native check):
+    the two ends of a CDP/LLDP link disagree on the native (untagged) VLAN -> a silent L2 leak between those
+    VLANs and a VLAN-hopping exposure. The default native VLAN is 1, so an explicit native on only one end is
+    still a mismatch. Reuses analyze.compute_topology_links. Returns [{a_host,a_port,a_native,b_host,b_port,b_native}]."""
+    from cisco_toolkit.analyze import compute_topology_links, _canon_host, _canon_host_map
+    cmap = _canon_host_map(all_interfaces)
+    out: List[dict] = []
+    for L in compute_topology_links(all_interfaces):
+        a = all_interfaces.get(str(L["a_host"]), {}).get(str(L["a_port"]))
+        bh = cmap.get(_canon_host(str(L["b_host"])))
+        b = all_interfaces.get(bh, {}).get(str(L["b_port"])) if bh else None
+        if a is None or b is None:
+            continue
+        an = (getattr(a, "trunk_native_vlan", "") or "").strip() or "1"
+        bn = (getattr(b, "trunk_native_vlan", "") or "").strip() or "1"
+        if an != bn:
+            out.append({"a_host": str(L["a_host"]), "a_port": str(L["a_port"]), "a_native": an,
+                        "b_host": bh, "b_port": str(L["b_port"]), "b_native": bn})
+    return out
+
+
+TRUNK_NATIVE_SHEET_NAME = "Trunk Native-VLAN"
+
+def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write the 'Trunk Native-VLAN' sheet: inter-switch trunks whose two ends disagree on the native
+    (untagged) VLAN -- a silent L2 leak / VLAN-hopping exposure. Surfaces the explorer's trunk-consistency
+    native-VLAN finding (allowed-VLAN asymmetry stays explorer-only for now)."""
+    rows = compute_trunk_native_mismatches(all_interfaces)
+    ws = wb.create_sheet(TRUNK_NATIVE_SHEET_NAME)
+    for col, h in enumerate(["End A", "Native A", "End B", "Native B"], 1):
+        cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
+    r = 2
+    for d in rows:
+        ws.cell(r, 1, f"{d['a_host']} {d['a_port']}")
+        ca = ws.cell(r, 2, d["a_native"]); ca.font = Font(bold=True, color="C00000")
+        ws.cell(r, 3, f"{d['b_host']} {d['b_port']}")
+        cb = ws.cell(r, 4, d["b_native"]); cb.font = Font(bold=True, color="C00000")
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No native-VLAN mismatches on inter-switch trunks")
+    for i, w in enumerate([34, 12, 34, 12], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{TRUNK_NATIVE_SHEET_NAME}' sheet: {len(rows)} mismatch(es)")
+
+
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Detail"]

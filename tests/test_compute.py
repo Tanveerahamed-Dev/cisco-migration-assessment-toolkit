@@ -269,6 +269,21 @@ def test_compute_fhrp_consistency():
     assert any("different FHRP groups" in i for i in v20["issues"])
 
 
+def test_compute_trunk_native_mismatches():
+    # workbook surfacing of the trunk native-VLAN finding: a CDP link whose two ends disagree on native VLAN.
+    from cisco_toolkit.excel import compute_trunk_native_mismatches
+    from cisco_toolkit.model import InterfaceData
+    ifaces = {
+        "core1": {"Po1": InterfaceData(port="Po1", cdp_neighbor="core2", neighbor_port="Po1",
+                                       switchport_mode="Trunk", trunk_native_vlan="99")},   # native 99…
+        "core2": {"Po1": InterfaceData(port="Po1", cdp_neighbor="core1", neighbor_port="Po1",
+                                       switchport_mode="Trunk")},                            # …vs default 1
+    }
+    rows = compute_trunk_native_mismatches(ifaces)
+    assert len(rows) == 1
+    assert {rows[0]["a_native"], rows[0]["b_native"]} == {"99", "1"}   # explicit-on-one-end still a mismatch
+
+
 def test_build_routing_neighbors(tmp_path):
     # protocol-to-protocol analysis: OSPF/EIGRP/BGP adjacencies parsed from already-collected output,
     # keeping the full state token so the explorer can tell a healthy (FULL) from a stuck (EXSTART) peer.
