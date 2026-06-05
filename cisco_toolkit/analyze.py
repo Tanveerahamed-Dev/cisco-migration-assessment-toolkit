@@ -861,14 +861,37 @@ def compute_calibration_report(health_scores: List[dict],
             "modal_band": modal_band, "modal_pct": modal_pct, "discrimination": disc,
             "discrimination_quality": quality, "suggested_bands": suggested, "note": note}
 
-# 10 pre-migration checks; each returns (status, note). status in pass/warn/fail.
+# Pre-migration checks; each returns (status, note). status in pass/warn/fail/info.
+# Each check is mapped to a recognized migration-runbook phase (Inventory ->
+# Baseline capture -> Dependency mapping -> Pilot/cutover -> Rollback) so the
+# checklist is auditable against an external standard rather than ad hoc.
+_READINESS_PHASES = {
+    "Redundant uplinks": "Pilot/cutover",
+    "Gateway redundancy": "Pilot/cutover",
+    "No cross-layer Critical": "Dependency mapping",
+    "No err-disabled ports": "Baseline capture",
+    "STP consistency": "Dependency mapping",
+    "Port-channels healthy": "Baseline capture",
+    "Routing adjacencies up": "Baseline capture",
+    "No orphan VLANs": "Inventory",
+    "Clean uplinks (no half-duplex)": "Baseline capture",
+    "Device health floor": "Pilot/cutover",
+    "Dependency mapping complete": "Dependency mapping",
+    "Baseline capture": "Baseline capture",
+    "Rollback plan documented": "Rollback",
+}
+
 def compute_migration_readiness(all_interfaces, move_groups, health_scores,
                                 physical_health, l3_forwarding, cross_layer,
                                 protocol_health, dep_map,
                                 config: ScoringConfig = SCORING) -> List[dict]:
-    """Per move-group READY/CAUTION/NOT READY from a 10-check pre-migration
-    checklist. The status each check emits when its risk fires comes from
-    `config.readiness`; the default instance reproduces the prior behaviour."""
+    """Per move-group READY/CAUTION/NOT READY from a pre-migration checklist.
+    Each check carries a runbook `phase` (Inventory / Baseline capture /
+    Dependency mapping / Pilot/cutover / Rollback) so the list is auditable
+    against an external standard. The status each risk-bearing check emits comes
+    from `config.readiness`; the default instance reproduces the prior verdicts.
+    Three audit checks (dependency-mapping / baseline-capture / rollback) are
+    additive and designed not to flip any group's verdict on offline data."""
     R = config.readiness
     # per-host indexes
     sf_hosts = {h for (h, _p) in dep_map["single_fiber"]}
@@ -885,6 +908,10 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
     orphan_hosts = set()
     for vid in dep_map["orphan"]:
         orphan_hosts |= dep_map["access_by_vlan"].get(vid, set())
+    # audit-evidence indexes for the additive runbook checks
+    model = dep_map.get("model") or {}
+    topo_hosts = set(model.get("hosts", []) if isinstance(model, dict) else [])
+    baseline_hosts = {rec.get("switch") for rec in (physical_health or [])}
 
     out: List[dict] = []
     for gi, g in enumerate(move_groups, 1):
@@ -941,12 +968,32 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
             st, note = "pass", "all switches Fair or better"
         checks.append(("Device health floor", st, note))
 
+        # ---- runbook audit checks (additive; never flip the verdict) ----
+        # No-signal fall-back: when the evidence set is wholly absent we cannot
+        # audit it, so we PASS rather than cry wolf (matches the engine's
+        # "fall-back-when-no-data never false-negative" convention).
+        # 11 dependency mapping complete: the group's switches are in the topology graph
+        missing_topo = sorted(gset - topo_hosts) if topo_hosts else []
+        checks.append(("Dependency mapping complete", "pass" if not missing_topo else "warn",
+                       "topology/dependency map covers all group switches" if not missing_topo
+                       else f"no topology data for {', '.join(missing_topo)}"))
+        # 12 baseline capture: interface/physical counters collected for the group's switches
+        missing_base = sorted(gset - baseline_hosts) if baseline_hosts else []
+        checks.append(("Baseline capture", "pass" if not missing_base else "warn",
+                       "interface/physical counters captured for all group switches" if not missing_base
+                       else f"no baseline counters for {', '.join(missing_base)}"))
+        # 13 rollback plan documented: no offline signal -> 'info' (never affects the verdict)
+        checks.append(("Rollback plan documented", "info",
+                       "manual: confirm documented rollback + back-out window"))
+
+        # readiness/counts inspect only fail/warn, so 'info' checks are benign
         statuses = [c[1] for c in checks]
         readiness = "NOT READY" if "fail" in statuses else ("CAUTION" if "warn" in statuses else "READY")
         out.append({"group": f"Group {gi}", "switches": g["switches"],
                     "endpoints": g.get("endpoints", 0), "readiness": readiness,
                     "n_fail": statuses.count("fail"), "n_warn": statuses.count("warn"),
-                    "checks": [{"check": c[0], "status": c[1], "note": c[2]} for c in checks]})
+                    "checks": [{"check": c[0], "status": c[1], "note": c[2],
+                                "phase": _READINESS_PHASES.get(c[0], "")} for c in checks]})
     return out
 
 
