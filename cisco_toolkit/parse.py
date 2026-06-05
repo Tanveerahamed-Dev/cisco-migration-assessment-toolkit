@@ -802,6 +802,75 @@ def parse_object_groups(output: str) -> Dict[str, dict]:
         if mem: groups[cur]["members"].append(mem)
     return groups
 
+# ----------------------------------------------------------------------------- #
+# NAT inventory (NEW-V3.23.50) - parse IOS NAT configuration from the already-collected
+# 'show running-config'. A migration must recreate every NAT rule on the new platform, so
+# this is an inventory first; the explorer's flow-flagging consumes it next. Tolerant: any
+# unrecognized line is skipped, never raises. Handles per-interface 'ip nat inside|outside',
+# static 1:1 + static PAT (port forward), dynamic NAT/PAT (list -> pool|interface [overload]),
+# and 'ip nat pool' definitions. Inside-source statics map LOCAL->GLOBAL; outside-source swap.
+# ----------------------------------------------------------------------------- #
+def parse_nat(output: str) -> dict:
+    """Parse NAT config -> {static:[{direction,proto,local,global[,local_port,global_port]}],
+    dynamic:[{acl,kind,via,overload}], pools:{name:{start,end}}, inside:[iface], outside:[iface]};
+    {} when no NAT is configured. Tolerant; never raises."""
+    if not output:
+        return {}
+    static: List[dict] = []
+    dynamic: List[dict] = []
+    pools: Dict[str, dict] = {}
+    inside: List[str] = []
+    outside: List[str] = []
+    cur: Optional[str] = None
+    STATIC = re.compile(
+        r"^\s*ip\s+nat\s+(inside|outside)\s+source\s+static\s+(?:(tcp|udp)\s+)?"
+        r"(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d+))?\s+(\d{1,3}(?:\.\d{1,3}){3})(?:\s+(\d+))?", re.IGNORECASE)
+    DYN = re.compile(
+        r"^\s*ip\s+nat\s+inside\s+source\s+list\s+(\S+)\s+(?:pool\s+(\S+)|interface\s+(\S+))(\s+overload)?",
+        re.IGNORECASE)
+    POOL = re.compile(
+        r"^\s*ip\s+nat\s+pool\s+(\S+)\s+(\d{1,3}(?:\.\d{1,3}){3})\s+(\d{1,3}(?:\.\d{1,3}){3})", re.IGNORECASE)
+    for raw in output.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        indented = raw[:1].isspace()
+        mi = re.match(r"^\s*interface\s+(\S+)", line, re.IGNORECASE)
+        if mi and not indented:
+            cur = normalize_ifname(mi.group(1)); continue
+        if indented:
+            if cur is not None:
+                low = line.strip().lower()
+                if low == "ip nat inside":  inside.append(cur)
+                elif low == "ip nat outside": outside.append(cur)
+            continue                                                    # indented line stays within the interface block
+        cur = None                                                      # any col-0 line ends the interface block
+        ms = STATIC.match(line)
+        if ms:
+            direction, proto, a, ap, b, bp = ms.groups()
+            rule: dict = {"direction": direction.lower(), "proto": (proto or "").lower()}
+            # inside-source: LOCAL GLOBAL ; outside-source: GLOBAL LOCAL (swap)
+            if direction.lower() == "inside":
+                rule["local"], rule["global"] = a, b
+                if proto: rule["local_port"], rule["global_port"] = (ap or ""), (bp or "")
+            else:
+                rule["global"], rule["local"] = a, b
+                if proto: rule["global_port"], rule["local_port"] = (ap or ""), (bp or "")
+            static.append(rule); continue
+        md = DYN.match(line)
+        if md:
+            dynamic.append({"acl": md.group(1),
+                            "kind": "pool" if md.group(2) else "interface",
+                            "via": md.group(2) or normalize_ifname(md.group(3) or ""),
+                            "overload": bool(md.group(4))}); continue
+        mp = POOL.match(line)
+        if mp:
+            pools[mp.group(1)] = {"start": mp.group(2), "end": mp.group(3)}; continue
+    if not (static or dynamic or pools or inside or outside):
+        return {}
+    return {"static": static, "dynamic": dynamic, "pools": pools,
+            "inside": sorted(set(inside)), "outside": sorted(set(outside))}
+
 def _proto_from_token(tok: str) -> str:
     t = (tok or "").strip().upper()
     if t == "LACP": return "Active"

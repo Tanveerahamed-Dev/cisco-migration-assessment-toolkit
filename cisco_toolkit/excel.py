@@ -798,6 +798,41 @@ def write_calibration_sheet(wb, report: dict) -> None:
                 f"discrimination {report.get('discrimination_quality', '?')}")
 
 
+NAT_INVENTORY_SHEET_NAME = "NAT Inventory"   # NEW-V3.23.50
+
+def write_nat_sheet(wb, all_nat: dict) -> None:
+    """Write the 'NAT Inventory' sheet from {host: parse_nat()} -- every static / dynamic NAT rule,
+    pool, and inside/outside interface role, so the migration can recreate them on the new platform."""
+    ws = wb.create_sheet(NAT_INVENTORY_SHEET_NAME)
+    for col, h in enumerate(["Switch", "Type", "Detail"], 1):
+        c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    r = 2; total = 0
+    for host in sorted(all_nat):
+        nat = all_nat[host] or {}
+        for s in nat.get("static", []):
+            pp = f" {s['proto']}" if s.get("proto") else ""
+            lp = f":{s['local_port']}" if s.get("local_port") else ""
+            gp = f":{s['global_port']}" if s.get("global_port") else ""
+            ws.cell(r, 1, host); ws.cell(r, 2, f"static{pp}")
+            ws.cell(r, 3, f"local {s.get('local', '')}{lp}  <->  global {s.get('global', '')}{gp}"); r += 1; total += 1
+        for d in nat.get("dynamic", []):
+            ws.cell(r, 1, host); ws.cell(r, 2, "dynamic" + (" (PAT)" if d.get("overload") else ""))
+            ws.cell(r, 3, f"list {d.get('acl', '')} via {d.get('kind', '')} {d.get('via', '')}"); r += 1; total += 1
+        for name, p in (nat.get("pools") or {}).items():
+            ws.cell(r, 1, host); ws.cell(r, 2, "pool")
+            ws.cell(r, 3, f"{name}: {p.get('start', '')} - {p.get('end', '')}"); r += 1; total += 1
+        if nat.get("inside") or nat.get("outside"):
+            ws.cell(r, 1, host); ws.cell(r, 2, "interfaces")
+            ws.cell(r, 3, f"inside: {', '.join(nat.get('inside', [])) or '-'}  |  "
+                          f"outside: {', '.join(nat.get('outside', [])) or '-'}"); r += 1
+    for i, w in enumerate([16, 16, 90], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    nhosts = len([h for h in all_nat if all_nat[h]])
+    logger.info(f"  [OK] '{NAT_INVENTORY_SHEET_NAME}' sheet: {total} NAT rule(s) across {nhosts} switch(es)")
+
+
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Detail"]

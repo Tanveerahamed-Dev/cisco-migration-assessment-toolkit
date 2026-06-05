@@ -88,6 +88,36 @@ def test_parse_run_config_interface_mtu(cp):
     assert res["Gi1/0/2"]["mtu"] == ""          # default -> blank, never absent
 
 
+def test_parse_nat(cp):
+    # NAT inventory: inside/outside roles, pool, static 1:1, static PAT, outside-source, dynamic PAT
+    out = textwrap.dedent("""\
+        interface Vlan10
+         ip nat inside
+        interface GigabitEthernet0/1
+         ip nat outside
+        ip nat pool MIGRATE 203.0.113.10 203.0.113.20 netmask 255.255.255.0
+        ip nat inside source static 10.0.30.9 203.0.113.9
+        ip nat inside source static tcp 10.0.30.9 443 203.0.113.9 8443
+        ip nat inside source list 7 pool MIGRATE overload
+        ip nat outside source static 198.51.100.5 10.0.50.5
+    """)
+    nat = parse.parse_nat(out)
+    assert nat["inside"] == ["Vlan10"] and nat["outside"] == ["Gi0/1"]
+    assert nat["pools"]["MIGRATE"] == {"start": "203.0.113.10", "end": "203.0.113.20"}
+    s1 = [s for s in nat["static"] if s["direction"] == "inside" and not s["proto"]][0]
+    assert s1["local"] == "10.0.30.9" and s1["global"] == "203.0.113.9"          # static 1:1
+    s2 = [s for s in nat["static"] if s["proto"] == "tcp"][0]
+    assert s2["local"] == "10.0.30.9" and s2["local_port"] == "443" \
+        and s2["global"] == "203.0.113.9" and s2["global_port"] == "8443"        # static PAT (port forward)
+    so = [s for s in nat["static"] if s["direction"] == "outside"][0]
+    assert so["global"] == "198.51.100.5" and so["local"] == "10.0.50.5"         # outside-source swaps local/global
+    assert nat["dynamic"][0] == {"acl": "7", "kind": "pool", "via": "MIGRATE", "overload": True}
+
+
+def test_parse_nat_absent(cp):
+    assert parse.parse_nat("hostname r1\n!\n") == {}
+
+
 # ---- ACL definitions (L4 allow/deny sim) ----------------------------------- #
 def test_parse_acls_forms(cp):
     out = textwrap.dedent("""\

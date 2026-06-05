@@ -238,5 +238,10 @@
  "Score Calibration": [
   "Metric",
   "Value"
+ ],
+ "NAT Inventory": [
+  "Switch",
+  "Type",
+  "Detail"
  ]
 }
