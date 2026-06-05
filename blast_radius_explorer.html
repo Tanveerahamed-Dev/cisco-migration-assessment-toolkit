@@ -605,6 +605,16 @@ function demoSnapshot(){
   }},
   // L4 depth (H2): object-group bodies referenced by the ACLs above (DIST-1 PROTECT_SERVERS uses TRUSTED_SUBNETS).
   object_groups:{"DIST-1":{"TRUSTED_SUBNETS":{kind:"network",members:[{ip:"10.0.10.0",wild:"0.0.0.255"}]}}},
+  // PHASE L: scoped routing tables (route-aware reachability) — the L3 gateways' connected subnets, so the
+  // Flow L3 hop cites the matched route (and a destination with no covering route would read NOT REACHABLE).
+  routes:{
+    "DIST-1":[{prefix:"10.0.10.0/24",source:"connected",next_hop:"",out_intf:"Vlan10"},
+              {prefix:"10.0.20.0/24",source:"connected",next_hop:"",out_intf:"Vlan20"},
+              {prefix:"10.0.30.0/24",source:"connected",next_hop:"",out_intf:"Vlan30"},
+              {prefix:"10.0.99.0/24",source:"connected",next_hop:"",out_intf:"Vlan99"}],
+    "DIST-2":[{prefix:"10.0.10.0/24",source:"connected",next_hop:"",out_intf:"Vlan10"},
+              {prefix:"10.0.20.0/24",source:"connected",next_hop:"",out_intf:"Vlan20"},
+              {prefix:"10.0.99.0/24",source:"connected",next_hop:"",out_intf:"Vlan99"}]},
   // health_scores / migration_readiness mirror what the Python pipeline embeds (main() augments the
   // snapshot via compute_health_scores / compute_migration_readiness) so the bundled demo exercises
   // the Health mode just like a real export does.
@@ -1212,6 +1222,25 @@ function drawEndpoint(){const e=EPSEL;
 function gwAcl(host,vid){return (MODEL&&MODEL.svuAcl)?(MODEL.svuAcl.get(host+"|"+vid)||null):null;}
 function gwVrf(host,vid){return (MODEL&&MODEL.svuVrf)?(MODEL.svuVrf.get(host+"|"+vid)||""):"";}   // K: VRF of a gateway SVI ('' = global)
 function _normVrf(v){v=(v||"").trim().toLowerCase();return (v===""||v==="default"||v==="global")?"":v;}   // K: collapse global-table aliases so 'default'/'global'/blank all compare equal
+/* L2: route-aware reachability — does HOST's (scoped) routing table have a route covering IP?
+   Returns the longest-prefix-matching route row, null when a table is present but NOTHING covers IP,
+   or undefined when no route data was collected for HOST (caller then falls back — never a false-negative). */
+function _routeCovers(host,ip){
+  const rt=(SNAP&&SNAP.routes&&SNAP.routes[host])?SNAP.routes[host]:null;
+  if(!rt||!rt.length)return undefined;                                  // no route data -> assume routed (back-compat)
+  const a=_ip2int(ip); if(a==null)return undefined;                     // unparseable dst -> don't block
+  let best=null,bestLen=-1;
+  for(const r of rt){const parts=String(r.prefix||"").split("/"); if(parts.length!==2)continue;
+    const base=_ip2int(parts[0]),len=+parts[1];
+    if(base==null||!(len>=0&&len<=32))continue;
+    const mask=len===0?0:((0xFFFFFFFF<<(32-len))>>>0);                  // /0 default matches everything
+    if(((a&mask)>>>0)===((base&mask)>>>0)&&len>bestLen){best=r;bestLen=len;}}
+  return best;                                                          // null = table present but no covering route
+}
+/* route-aware (endpoint): a representative host IP inside VLAN vid's subnet — that gateway SVI's own
+   address — so _routeCovers can test whether a source gateway has a route toward that whole subnet. */
+function gwIp(host,vid){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host]["Vlan"+vid]:null;
+  return d?String(d.svi_ip||"").trim().split(/\s+/)[0]:"";}
 /* PHASE F: render the "L4 filtering" card from a list of {host,vid,dir,name}; "" when empty. */
 function aclFlagCard(flags,lead){
   if(!flags||!flags.length)return "";
@@ -1254,9 +1283,16 @@ function endpointReach(ep){
       else if(_normVrf(gwVrf(dgw[0],v))!==srcVrf){ unreach=arr.reduce((s,[,c])=>s+c,0); for(const [h] of arr)unreachList.push(...epsOn(h,v));   // K: separate VRF — no inter-VRF routing
         R.groups.push({vlan:v, kind:"different VRF", reach:0, unreach,
           reasons:[`VLAN ${vid} (VRF ${srcVrf||"global"}) and VLAN ${v} (VRF ${gwVrf(dgw[0],v)||"global"}) are separate routing domains — no inter-VRF path modeled`], reachList, unreachList}); }
-      else { for(const [h,c] of arr){ if(dgw.some(g=>h===g||_bfsPath(MODEL,v,h,g)!==null)){reach+=c; R.reachHosts.add(h); reachList.push(...epsOn(h,v));}
-          else {unreach+=c; reasons.add(`VLAN ${v} is partitioned at ${h}`); unreachList.push(...epsOn(h,v));} }
-        R.groups.push({vlan:v, kind:"via L3 gateway", reach, unreach, reasons:[...reasons], reachList, unreachList}); }
+      else {
+        const egw=gws.find(g=>R.reachHosts.has(g))||gws[0];   // route-aware: a reachable source-VLAN gateway
+        const dip=gwIp(dgw[0],v);                              // a representative IP in VLAN v's subnet
+        const rt=dip?_routeCovers(egw,dip):undefined;          // undefined (no route data) -> fall back, never false-negative
+        if(rt===null){ unreach=arr.reduce((s,[,c])=>s+c,0); for(const [h] of arr)unreachList.push(...epsOn(h,v));
+          R.groups.push({vlan:v, kind:"no route", reach:0, unreach,
+            reasons:[`${egw} has no route to VLAN ${v} (${dip}) — the destination subnet isn't in its routing table`], reachList, unreachList}); }
+        else { for(const [h,c] of arr){ if(dgw.some(g=>h===g||_bfsPath(MODEL,v,h,g)!==null)){reach+=c; R.reachHosts.add(h); reachList.push(...epsOn(h,v));}
+            else {unreach+=c; reasons.add(`VLAN ${v} is partitioned at ${h}`); unreachList.push(...epsOn(h,v));} }
+          R.groups.push({vlan:v, kind:"via L3 gateway", reach, unreach, reasons:[...reasons], reachList, unreachList}); } }
     }
     R.reachEps+=reach; R.unreachEps+=unreach;
   }
@@ -1294,7 +1330,7 @@ function reachSection(R){
     </div>
     ${aclFlagCard(R.aclFlags,"the gateway path")}
     <div style="margin-top:10px">${rows||'<p class="faint">No other endpoints in scope.</p>'}</div>
-    <p class="faint" style="margin-top:9px"><b>L1–L3.</b> Computed from VLAN membership, STP forwarding, gateways and <b>VRF membership</b> (different-VRF subnets are shown unreachable) — <b>ACLs are collected from run-config but not evaluated here</b>, so a path shown reachable may still be blocked at L4.</p></div>`;
+    <p class="faint" style="margin-top:9px"><b>L1–L3.</b> Computed from VLAN membership, STP forwarding, gateways, <b>VRF membership</b> and <b>routing tables</b> (different-VRF subnets, and subnets with no covering route on the gateway, are shown unreachable) — <b>ACLs are collected from run-config but not evaluated here</b>, so a path shown reachable may still be blocked at L4.</p></div>`;
 }
 function paintEndpointReach(){
   if(!EPSEL||!REACH)return; const R=REACH; const gw=new Set(R.gateways);
@@ -1399,7 +1435,7 @@ function drawFlow(){
       (F.spofs.length?`<div class="ln faint" style="margin:0 0 8px">⚠ SPOFs on path: ${esc(F.spofs.join("; "))}</div>`:"")+
       (F.aclVerdicts&&F.aclVerdicts.length?aclVerdictCard(F.aclVerdicts,FLOW_PROTO,FLOW_DPORT):aclFlagCard(F.aclFlags,"this path"))+
       `<div>${steps}</div>`+
-      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware (different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled). The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate).</p></div>`;
+      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
     result=`<div class="sec"><p class="faint">Enter both a source and a destination endpoint to trace the flow.</p></div>`;
   }
@@ -1506,9 +1542,14 @@ function flowBetween(s,d){
   if(_normVrf(_svrf)!==_normVrf(_dvrf)){F.verdict="NOT REACHABLE";
     F.reason=`VLAN ${sv} is in VRF ${_svrf||"global"} but VLAN ${dv} is in VRF ${_dvrf||"global"} — separate routing domains; no inter-VRF path (route leak / VRF fusion isn't modeled).`;
     hop("L3",F.reason,true); return F;}
+  const _rt=d.ip?_routeCovers(sgw,d.ip):undefined;                     // L2: the source gateway must actually have a route to the destination
+  if(_rt===null){F.verdict="NOT REACHABLE";
+    F.reason=`${sgw} has no route to ${d.ip} — the destination is not in its routing table (no covering route, static, or default).`;
+    hop("L3",F.reason,true); return F;}
   seg(sv,s.host,sgw);
   const single=sgwAll.size<2;
-  hop("L3",`${sgw} routes VLAN ${sv} → VLAN ${dv} (inter-subnet gateway)${single?"  — single gateway, no FHRP peer (SPOF)":""}`,single);
+  const _via=_rt?`  — via ${_rt.source||"route"} ${_rt.prefix}${_rt.next_hop?(" → "+_rt.next_hop):""}`:"";   // L2: cite the matched route when route data is present
+  hop("L3",`${sgw} routes VLAN ${sv} → VLAN ${dv} (inter-subnet gateway)${single?"  — single gateway, no FHRP peer (SPOF)":""}${_via}`,single);
   if(single)F.spofs.push(`single gateway VLAN ${sv} (${sgw})`);
   F.gateways=[sgw,dgw]; F.pathHosts.add(sgw); F.pathHosts.add(dgw);
   {const ai=gwAcl(sgw,sv); if(ai&&ai.in)F.aclFlags.push({host:sgw,vid:sv,dir:"in",name:ai.in});    // egress SVI of the source subnet

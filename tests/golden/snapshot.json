@@ -1735,5 +1735,53 @@
     ]
    }
   }
+ },
+ "routes": {
+  "core1": [
+   {
+    "prefix": "0.0.0.0/0",
+    "source": "s*",
+    "next_hop": "10.0.10.254",
+    "out_intf": ""
+   },
+   {
+    "prefix": "10.0.0.0/16",
+    "source": "static",
+    "next_hop": "10.0.30.254",
+    "out_intf": ""
+   },
+   {
+    "prefix": "10.0.10.0/24",
+    "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan10"
+   },
+   {
+    "prefix": "10.0.20.0/24",
+    "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan20"
+   },
+   {
+    "prefix": "10.0.30.0/24",
+    "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan30"
+   }
+  ],
+  "core2": [
+   {
+    "prefix": "10.0.10.0/24",
+    "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan10"
+   },
+   {
+    "prefix": "10.0.20.0/24",
+    "source": "connected",
+    "next_hop": "",
+    "out_intf": "Vlan20"
+   }
+  ]
  }
 }

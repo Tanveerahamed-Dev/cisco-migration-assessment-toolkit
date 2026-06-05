@@ -205,16 +205,19 @@ Vl10        10   110 P Active   local           10.0.10.3       10.0.10.1
 Vl20        20   100   Standby  10.0.20.3       local           10.0.20.1
 """,
     "show ip route": """\
-Codes: C - connected, L - local, O - OSPF, B - BGP
-Gateway of last resort is not set
+Codes: C - connected, L - local, O - OSPF, B - BGP, S - static
+Gateway of last resort is 10.0.10.254 to network 0.0.0.0
 
-      10.0.0.0/8 is variably subnetted, 6 subnets, 2 masks
+S*       0.0.0.0/0 [1/0] via 10.0.10.254
+      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks
+S        10.0.0.0/16 [1/0] via 10.0.30.254
 C        10.0.10.0/24 is directly connected, Vlan10
 L        10.0.10.2/32 is directly connected, Vlan10
 C        10.0.20.0/24 is directly connected, Vlan20
 L        10.0.20.2/32 is directly connected, Vlan20
 C        10.0.30.0/24 is directly connected, Vlan30
 L        10.0.30.1/32 is directly connected, Vlan30
+S      192.168.99.0/24 [1/0] via 10.0.10.254
 """,
     "show ip ospf neighbor": """\
 Neighbor ID     Pri   State           Dead Time   Address         Interface

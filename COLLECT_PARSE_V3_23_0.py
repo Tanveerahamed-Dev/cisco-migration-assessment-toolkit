@@ -351,6 +351,7 @@ from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
+    build_routes, inscope_subnets, scope_routes,
 )
 # NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
@@ -1296,6 +1297,16 @@ def main():
             all_object_groups[hostname] = og
             logger.info(f"  [ACL] {hostname}: {len(og)} object-group(s) parsed")
 
+    # Phase 5.7: routing tables (route-aware reachability) - parsed from the already-collected
+    # 'show ip route', scoped to the in-scope gateway subnets so the embedded snapshot stays small.
+    all_routes: Dict[str, list] = {}
+    _inscope = inscope_subnets(all_interfaces)
+    for hostname, platform, cmd_to_file in all_devices_meta:
+        scoped = scope_routes(build_routes(cmd_to_file), _inscope)
+        if scoped:
+            all_routes[hostname] = scoped
+            logger.info(f"  [ROUTE] {hostname}: {len(scoped)} in-scope route(s) embedded")
+
     # Phase 6: Write interface rows to template sheet (each host guarded so one
     # host's write failure can't abort the run before wb.save()).
     logger.info("\n[Phase 6] Writing interface rows ...")
@@ -1455,6 +1466,7 @@ def main():
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}
+    snap_dict["routes"] = all_routes                                # NEW (route-aware reachability): {host:[{prefix,source,next_hop,out_intf}]}
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
