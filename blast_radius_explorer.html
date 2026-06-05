@@ -197,6 +197,15 @@
   .node.dead .body{fill:url(#hatch); stroke:var(--crit); stroke-width:2; stroke-dasharray:5 3}
   .node.match .body{stroke:var(--accent); stroke-width:2.5}
   .node.pinned .halo{stroke:var(--accent); stroke-opacity:.25; stroke-width:2; stroke-dasharray:3 3; fill:none}
+  /* Blast-radius ripple wave (anim): pulse on the removed node + a hop-staggered flash on collateral switches.
+     Final coloring is unchanged — these only govern HOW the highlight appears. Auto-disabled under reduced-motion. */
+  .node.blastpulse .halo{stroke:var(--crit); fill:none; transform-box:fill-box; transform-origin:center;
+    animation:blastPulse 1.1s ease-out 3 both}
+  @keyframes blastPulse{0%{stroke-width:2; stroke-opacity:.7; transform:scale(1)}
+    70%{stroke-width:9; stroke-opacity:0; transform:scale(1.28)}
+    100%{stroke-width:9; stroke-opacity:0; transform:scale(1.28)}}
+  .node.ripple .body{transform-box:fill-box; transform-origin:center; animation:rippleIn .5s ease-out both}
+  @keyframes rippleIn{0%{transform:scale(1)} 30%{transform:scale(1.13)} 100%{transform:scale(1)}}
   .nname{fill:var(--text); font:650 12px var(--sans); text-anchor:middle; pointer-events:none}
   .nsub{fill:var(--text-dim); font:500 9.5px var(--mono); text-anchor:middle; pointer-events:none}
   .nrole{fill:var(--text-faint); font:650 8px var(--sans); letter-spacing:1px; text-anchor:middle; pointer-events:none; text-transform:uppercase}
@@ -822,6 +831,7 @@ let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpo
 let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // L4 tuple for the ACL allow/deny eval (G2; sport=I, icmptype=J)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
+let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on a NEW selection; cancel pending stagger timers
 
 /* ---- pinned (hand-dragged) node positions ---------------------------------
    PINNED maps host->{x,y} for nodes the user has dragged. These survive layout
@@ -1061,7 +1071,10 @@ window.addEventListener("mouseup",()=>{
 /* =====================================================================
    REPAINT — per-mode node/link styling on the shared canvas
    ===================================================================== */
+function cancelBlastWave(){_blastTimers.forEach(clearTimeout); _blastTimers=[];
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.remove("blastpulse","ripple");});}
 function clearFx(){
+  cancelBlastWave();
   MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match");
     n.g.style.removeProperty("--ov"); n.body.style.removeProperty("fill"); n.body.style.removeProperty("stroke");
     n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");});
@@ -1098,7 +1111,8 @@ function repaint(){
 
 function sevToken(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";}
 function paintBlast(){
-  if(!SEL)return; const n=nodeEls[SEL]; n.g.classList.add("sel","dead"); n.tag.textContent="REMOVED"; n.tag.setAttribute("fill","var(--crit)");
+  if(!SEL){_lastBlastSel=null;return;}   // deselect resets the wave-guard so re-selecting the same node replays
+  const n=nodeEls[SEL]; n.g.classList.add("sel","dead"); n.tag.textContent="REMOVED"; n.tag.setAttribute("fill","var(--crit)");
   const vid=VLAN==="all"?null:+VLAN;
   // mark collateral switches by worst severity for affected VLANs
   const fi=failureImpact(MODEL,SEL);
@@ -1112,6 +1126,25 @@ function paintBlast(){
     nn.body.style.fill=`var(--${tok}-soft)`;});
   // edges touching SEL → severity
   edgeEls.forEach(({e,path})=>{if(e.a===SEL||e.b===SEL){path.className.baseVal="lnk sev"+(e.pc?" pc":"");}});
+  // ---- ripple wave: animate the impact only when SEL is a NEW selection (not on every repaint, e.g. VLAN filter).
+  // The final severity coloring above is already in place; the wave only governs HOW it appears.
+  const isNew = SEL!==_lastBlastSel; _lastBlastSel=SEL;
+  if(!isNew) return;   // VLAN/search re-paint of the same selection → keep final state, no replay
+  // (clearFx() at the top of repaint already cancelled any in-flight wave, so we start from a clean slate)
+  const reduce = window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if(reduce) return;   // reduced-motion → instant final state, no pulse/wave
+  // (a) soft pulse ring on the removed node (CSS @keyframes blastPulse loops a few times then settles)
+  n.g.classList.add("blastpulse");
+  // (b) hop-ordered flash: BFS hop distance from SEL over MODEL.adj; nearer switches light first
+  const hop=new Map([[SEL,0]]); const q=[SEL];
+  while(q.length){const cur=q.shift(); const d=hop.get(cur);
+    for(const li of (MODEL.adj.get(cur)||[])){const L=MODEL.links[li]; const nb=L.a===cur?L.b:L.a;
+      if(!hop.has(nb)){hop.set(nb,d+1); q.push(nb);}}}
+  affected.forEach((tok,h)=>{const nn=nodeEls[h]; if(!nn)return;
+    const dist=hop.has(h)?hop.get(h):1; const delay=Math.min(dist,8)*90;   // distance×~90ms, capped
+    _blastTimers.push(setTimeout(()=>{nn.g.classList.add("ripple");
+      // self-clean so a later repaint/selection has no stale class (animation is 'both'; remove after it ends)
+      _blastTimers.push(setTimeout(()=>nn.g.classList.remove("ripple"),520));},delay));});
 }
 function visEdgeHasIdx(e,idxSet){return e.idxs.some(i=>idxSet.has(i));}
 function paintTrace(){
@@ -1327,7 +1360,8 @@ function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRA
 function clearTrace(){TRACE_SRC=TRACE_DST=TRACE=null;repaint();renderDrawer();}
 
 /* ---- mode switch ---- */
-function setMode(m){MODE=m; document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
+function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
+  document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
