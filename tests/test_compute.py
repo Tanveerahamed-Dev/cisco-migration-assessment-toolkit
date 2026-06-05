@@ -200,6 +200,27 @@ def test_inscope_subnets_from_svis():
     assert inscope_subnets(ifaces) == {"10.0.10.0/24", "10.0.20.0/24"}
 
 
+def test_protocol_boundaries_sheet():
+    # workbook surfacing of the protocol-to-protocol analysis: per device protocols + redistribution edges,
+    # with a MUTUAL-redistribution risk flag (ospf<->bgp both ways).
+    from openpyxl import Workbook
+    from cisco_toolkit.excel import write_protocol_boundaries_sheet, PROTOCOL_BOUNDARIES_SHEET_NAME
+    wb = Workbook()
+    rn = {"core1": {"ospf": [{"neighbor": "1.1.1.1", "state": "FULL"}], "eigrp": [], "bgp": []}}
+    rd = {"core1": [
+        {"into_proto": "ospf", "into_id": "1", "from_proto": "bgp", "from_id": "65001", "route_map": "", "raw": ""},
+        {"into_proto": "bgp", "into_id": "65001", "from_proto": "ospf", "from_id": "1", "route_map": "RM", "raw": ""},
+    ]}
+    write_protocol_boundaries_sheet(wb, rn, rd)
+    ws = wb[PROTOCOL_BOUNDARIES_SHEET_NAME]
+    assert [c.value for c in ws[1]] == ["Switch", "Protocols", "Redistribution (from -> into)", "Route-map(s)", "Mutual"]
+    row = [c.value for c in ws[2]]
+    assert row[0] == "core1"
+    assert "OSPF" in row[1] and "BGP" in row[1]
+    assert row[3] == "RM"
+    assert row[4] == "BGP/OSPF"   # two-way ospf<->bgp -> mutual-redistribution risk flagged
+
+
 def test_build_routing_neighbors(tmp_path):
     # protocol-to-protocol analysis: OSPF/EIGRP/BGP adjacencies parsed from already-collected output,
     # keeping the full state token so the explorer can tell a healthy (FULL) from a stuck (EXSTART) peer.

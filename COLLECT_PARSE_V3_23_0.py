@@ -340,6 +340,7 @@ from cisco_toolkit.excel import (
     write_cross_layer_sheet, write_protocol_health_sheet,   # _SEV_FILL dropped step 25 (last writers moved)
     write_health_scores_sheet, write_score_sensitivity_sheet, write_calibration_sheet,  # step 23 (+calibration V3.23.47)
     write_nat_sheet,   # NAT inventory V3.23.50
+    write_protocol_boundaries_sheet,   # protocol-to-protocol analysis (workbook surfacing)
     write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet,                                   # step 24
@@ -1470,6 +1471,7 @@ def main():
 
     # Phase 30c: NAT Inventory - NEW-V3.23.50 (every static/dynamic NAT rule the migration must recreate)
     _run_phase("NAT Inventory sheet", write_nat_sheet, wb, all_nat)
+    _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
 
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")

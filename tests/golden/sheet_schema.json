@@ -243,5 +243,12 @@
   "Switch",
   "Type",
   "Detail"
+ ],
+ "Protocol Boundaries": [
+  "Switch",
+  "Protocols",
+  "Redistribution (from -> into)",
+  "Route-map(s)",
+  "Mutual"
  ]
 }
