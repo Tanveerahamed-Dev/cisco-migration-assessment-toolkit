@@ -318,6 +318,17 @@ def test_html_reexported_and_functional(cp, tmp_path):
     # write_diff_workbook (the --compare diff workbook) joined the snapshot-reporting layer in
     # step 29; re-exported for main()'s --compare path. _macset / _DIFF_FIELDS are package-internal.
     assert cp.write_diff_workbook is html.write_diff_workbook
+    # snapshot_state (the JSON contract) + write_html_explorer joined the layer in step 30; both
+    # re-exported (main() builds the snapshot + emits the HTML; test_version calls cp.snapshot_state).
+    assert cp.snapshot_state is html.snapshot_state
+    assert cp.write_html_explorer is html.write_html_explorer
+    # __version__ moved into cisco_toolkit/__init__.py (step 30); the monolith re-imports it.
+    import cisco_toolkit
+    assert cp.__version__ == cisco_toolkit.__version__ == "3.23.0"
+    # snapshot_state stamps script_version from the package __version__; empty inputs -> empty maps.
+    snap = html.snapshot_state({}, [])
+    assert snap["schema"] == "collect_parse_snapshot/1" and snap["script_version"] == "V3.23.0"
+    assert snap["devices"] == {} and snap["interfaces"] == {}
     assert callable(html._macset) and not hasattr(cp, "_macset")
     assert isinstance(html._DIFF_FIELDS, list) and not hasattr(cp, "_DIFF_FIELDS")
     # _macset splits on commas / whitespace / semicolons, dropping blanks.
