@@ -758,6 +758,46 @@ def write_score_sensitivity_sheet(wb, records: List[dict]) -> None:
     logger.info(f"  [OK] '{SCORE_SENSITIVITY_SHEET_NAME}' sheet: {len(records)} perturbation(s), {flips} with band changes")
 
 
+SCORE_CALIBRATION_SHEET_NAME = "Score Calibration"   # NEW-V3.23.47
+
+def write_calibration_sheet(wb, report: dict) -> None:
+    """Write the 'Score Calibration' sheet from compute_calibration_report() -- a
+    fleet-level key/value diagnostic (band distribution, score spread, discrimination,
+    and a quantile re-banding suggestion when the bands don't discriminate)."""
+    ws = wb.create_sheet(SCORE_CALIBRATION_SHEET_NAME)
+    for col, h in enumerate(["Metric", "Value"], 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    n = report.get("n", 0)
+    rows: List[Tuple[str, object]] = [("Switches scored", n)]
+    if n:
+        st = report.get("score_stats", {})
+        rows += [
+            ("Score range", f"{st.get('min', '')}-{st.get('max', '')}"),
+            ("Median / Mean", f"{st.get('median', '')} / {st.get('mean', '')}"),
+            ("Std dev", st.get("stdev", "")),
+            ("p25 / p75", f"{st.get('p25', '')} / {st.get('p75', '')}"),
+            ("Band distribution", "  ".join(f"{d['band']}:{d['count']} ({d['pct']}%)"
+                                            for d in report.get("band_distribution", []))),
+            ("Modal band", f"{report.get('modal_band', '')} ({report.get('modal_pct', 0)}%)"),
+            ("Discrimination", f"{report.get('discrimination', '')} ({report.get('discrimination_quality', '')})"),
+        ]
+        if report.get("suggested_bands"):
+            rows.append(("Suggested re-banding (relative)",
+                         "  ".join(f"{s['band']}>={s['threshold']}" for s in report["suggested_bands"])))
+    rows.append(("Summary", report.get("note", "")))
+    for r, (k, v) in enumerate(rows, 2):
+        ws.cell(r, 1, k).font = Font(bold=True)
+        ws.cell(r, 2, v)
+    for i, w in enumerate([32, 80], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{SCORE_CALIBRATION_SHEET_NAME}' sheet: {n} switch(es), "
+                f"discrimination {report.get('discrimination_quality', '?')}")
+
+
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Detail"]

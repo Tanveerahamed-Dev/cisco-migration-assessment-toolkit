@@ -1557,6 +1557,51 @@
    "detail": "no band changes"
   }
  ],
+ "calibration": {
+  "n": 3,
+  "score_stats": {
+   "min": 27,
+   "max": 100,
+   "mean": 66.3,
+   "median": 72.0,
+   "p25": 49.5,
+   "p75": 86.0,
+   "stdev": 30.1
+  },
+  "band_distribution": [
+   {
+    "band": "Excellent",
+    "count": 1,
+    "pct": 33
+   },
+   {
+    "band": "Good",
+    "count": 0,
+    "pct": 0
+   },
+   {
+    "band": "Fair",
+    "count": 1,
+    "pct": 33
+   },
+   {
+    "band": "Poor",
+    "count": 0,
+    "pct": 0
+   },
+   {
+    "band": "Critical",
+    "count": 1,
+    "pct": 33
+   }
+  ],
+  "modal_band": "Excellent",
+  "modal_pct": 33,
+  "discrimination": 0.68,
+  "discrimination_quality": "n/a (too few switches)",
+  "suggested_bands": null,
+  "note": "3 switch(es); scores 27-100 (median 72.0). 33% in 'Excellent'. Band discrimination: n/a (too few switches)."
+ },
  "acls": {
   "core1": {
    "VOICE_FILTER": [

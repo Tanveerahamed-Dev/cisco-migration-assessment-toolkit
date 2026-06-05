@@ -320,7 +320,7 @@ from cisco_toolkit.analyze import (
     # _link_carries (step 19) / _vlan_components (step 18) / compute_causality_chains / compute_failure_impact
     # (step 24) were dropped earlier for the same reason.
     compute_data_quality, compute_health_scores,
-    compute_score_sensitivity, compute_migration_readiness,
+    compute_score_sensitivity, compute_calibration_report, compute_migration_readiness,
     compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
 )
@@ -338,7 +338,8 @@ from cisco_toolkit.excel import (
     write_move_group_sheet, write_topology_sheet, write_findings_sheet,             # step 22
     write_capacity_sheet, write_topology_diagram,                                   # step 22
     write_cross_layer_sheet, write_protocol_health_sheet,   # _SEV_FILL dropped step 25 (last writers moved)
-    write_health_scores_sheet, write_score_sensitivity_sheet, write_migration_readiness_sheet,  # step 23
+    write_health_scores_sheet, write_score_sensitivity_sheet, write_calibration_sheet,  # step 23 (+calibration V3.23.47)
+    write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet,                                   # step 24
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
@@ -1444,6 +1445,10 @@ def main():
                                    cross_layer, protocol_health, _default=[])
     _run_phase("Score Sensitivity sheet", write_score_sensitivity_sheet, wb, score_sensitivity)
 
+    # Phase 30b: Score Calibration - NEW-V3.23.47 (fleet band-discrimination diagnostic + re-banding suggestion)
+    calibration = _run_phase("Score Calibration", compute_calibration_report, health_scores, _default={})
+    _run_phase("Score Calibration sheet", write_calibration_sheet, wb, calibration)
+
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")
     logger.info(f"[OK] Log:   {LOG_FILE}")
@@ -1464,6 +1469,7 @@ def main():
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
+    snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}
     snap_dict["routes"] = all_routes                                # NEW (route-aware reachability): {host:[{prefix,source,next_hop,out_intf}]}
