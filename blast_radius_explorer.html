@@ -46,6 +46,7 @@
   /* screen-reader-only: visually hidden but available to assistive tech (PHASE 3 P1 increment 3) */
   .sr-only{position:absolute !important; width:1px; height:1px; padding:0; margin:-1px;
     overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0}
+  .schema-warn{color:var(--watch); border-color:var(--watch); background:var(--watch-soft); max-width:420px}
   @media (prefers-reduced-motion: reduce){
     *, *::before, *::after{
       transition-duration:.001ms !important; animation-duration:.001ms !important;
@@ -285,6 +286,7 @@
   <header role="banner">
     <div class="brand"><span class="mark" aria-hidden="true"></span><b>Network Migration Explorer</b></div>
     <span class="src" id="src">DEMO</span>
+    <span class="src schema-warn" id="schemaWarn" role="alert" hidden></span>
     <div class="grow"></div>
     <div class="modes" id="modes" role="group" aria-label="View mode">
       <button data-mode="blast" class="on" aria-pressed="true"><span class="gl" aria-hidden="true">◎</span>Blast radius</button>
@@ -666,10 +668,26 @@ function endpointsOf(h){const out=[];const ifs=SNAP&&SNAP.interfaces&&SNAP.inter
     out.push({port:p,vlan:d.vlan||"",ip:(d.end_host_ip||"").trim(),mac:macs[0]||"",macs});}}
   return out;}
 
+/* ---- snapshot schema guard (PHASE 3 P2): warn + render best-effort, never white-screen ---- */
+const SCHEMA_OK="collect_parse_snapshot/1";
+function schemaNotice(snap){const s=snap&&snap.schema;
+  if(!s||s===SCHEMA_OK)return "";                       // current, or pre-schema (old) -> render quietly
+  return /^collect_parse_snapshot\//.test(s)
+    ? `Snapshot schema ${s} differs from ${SCHEMA_OK} — rendering best-effort.`
+    : `Unrecognized snapshot schema "${s}" — rendering best-effort.`;}
+function showSchemaWarn(msg){const el=document.getElementById("schemaWarn"); if(!el)return;
+  if(msg){el.textContent="⚠ "+msg; el.hidden=false;} else{el.textContent=""; el.hidden=true;}}
 /* ---- entry point (signature preserved for Python embed) ---- */
 function load(snap,label,live){
   SNAP=snap; SNAP_LABEL=label;
-  MODEL=buildModel(snap); CHAINS=causalityChains(MODEL);
+  const warn=schemaNotice(snap); showSchemaWarn(warn); if(warn)srAnnounce(warn);
+  try{
+    MODEL=buildModel(snap); CHAINS=causalityChains(MODEL);
+  }catch(err){
+    console.error("snapshot render failed:",err);
+    showSchemaWarn(`This snapshot could not be rendered${snap&&snap.schema?` (schema ${snap.schema})`:""}: ${err.message}`);
+    srAnnounce("This snapshot could not be rendered."); return;
+  }
   document.getElementById("svg").setAttribute("aria-label",
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use arrow keys to move between switches and Enter to select. `+
