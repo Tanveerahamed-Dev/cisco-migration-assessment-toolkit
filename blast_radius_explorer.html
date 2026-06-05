@@ -1480,7 +1480,7 @@ function drawFlow(){
       (F.mtu&&F.mtu.mismatch?`<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ Path MTU mismatch</span><span class="pill pl-watch">${F.mtu.pathMtu} eff.</span></div><div class="ln faint" style="margin-top:2px">${esc(F.mtu.note)} The flow still reaches — only large / jumbo frames are affected.</div></div>`:"")+
       natCard(natStaticsFor([F.src&&F.src.ip, F.dst&&F.dst.ip]))+
       `<div>${steps}</div>`+
-      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate). <b>Path MTU</b> consistency is checked — jumbo-frame black-holes are flagged (the flow still reaches; only oversized frames drop). Known <b>static NAT</b> mappings touching either endpoint are surfaced (the L4 verdict is against the untranslated address).</p></div>`;
+      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. <b>Stateful</b>: an <span class="mono">established</span> rule is treated as TCP return-only (it never permits a new/forward flow); a <span class="mono">time-range</span> rule is reported indeterminate (its active window can't be known offline). <b>Path MTU</b> consistency is checked — jumbo-frame black-holes are flagged (the flow still reaches; only oversized frames drop). Known <b>static NAT</b> mappings touching either endpoint are surfaced (the L4 verdict is against the untranslated address).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
     result=`<div class="sec"><p class="faint">Enter both a source and a destination endpoint to trace the flow.</p></div>`;
   }
@@ -1532,6 +1532,7 @@ function _addrMatch(ip,spec,host){                                     // {ip,wi
 function evalAcl(rules,flow,host){                                      // flow={src,dst,proto,dport} -> {action,rule,idx}
   for(let i=0;i<(rules||[]).length;i++){const r=rules[i];
     if(_protoMatch(r.proto,flow.proto)===false)continue;                // proto definitively differs -> skip
+    if(r.established)continue;                                          // stateful: 'established' is TCP return-only -> never matches a new/forward flow
     const sm=_addrMatch(flow.src,r.src,host), dm=_addrMatch(flow.dst,r.dst,host),
           pm=_portMatch(r.dport,flow.dport), spm=_portMatch(r.sport,flow.sport),  // I: source-port match
           im=(r.proto==="icmp"&&r.icmp_type)?_icmpMatch(r.icmp_type,flow.icmptype):true;  // J: ICMP type match
@@ -1540,6 +1541,8 @@ function evalAcl(rules,flow,host){                                      // flow=
     const otherUneval=r.unevaluable&&!groupRef;                         // unevaluable for a reason H2 can't resolve (unknown port / unparseable addr)
     if(otherUneval||sm===null||dm===null||pm===null||spm===null||im===null)  // might match but can't be sure -> stop here
       return {action:"indeterminate",rule:r,idx:i};
+    if(r.time_range)                                                    // stateful: time-conditional rule -> can't know if it's active offline
+      return {action:"indeterminate",rule:r,idx:i,timeRange:r.time_range};
     return {action:r.action,rule:r,idx:i};                              // proto + src + dst + port all matched
   }
   return {action:"deny",rule:null,idx:-1,implicit:true};                // fell off the end -> implicit deny

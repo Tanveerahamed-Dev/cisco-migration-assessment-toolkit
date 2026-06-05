@@ -1819,6 +1819,58 @@
      "sport": null,
      "dport": null
     }
+   ],
+   "INET_RETURN": [
+    {
+     "action": "permit",
+     "raw": "permit tcp any any established",
+     "proto": "tcp",
+     "src": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": null,
+     "established": true
+    },
+    {
+     "action": "permit",
+     "raw": "permit tcp 10.0.10.0 0.0.0.255 any eq 443 time-range BUSINESS_HOURS",
+     "proto": "tcp",
+     "src": {
+      "ip": "10.0.10.0",
+      "wild": "0.0.0.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": {
+      "op": "eq",
+      "val": 443
+     },
+     "time_range": "BUSINESS_HOURS"
+    },
+    {
+     "action": "deny",
+     "raw": "deny ip any any",
+     "proto": "ip",
+     "src": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": null
+    }
    ]
   }
  },
