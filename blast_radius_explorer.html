@@ -241,6 +241,13 @@
   .card .ln b{color:var(--text)}
   .card .fix{font-size:11.5px; color:var(--text-dim); margin-top:6px; padding-top:6px; border-top:1px dashed var(--border)}
   .card .fix b{color:var(--ok)}
+  .epdrill{margin-top:7px}
+  .epdrill>summary{cursor:pointer; font-size:11px; color:var(--text-dim); user-select:none; padding:3px 0}
+  .epdrill>summary:hover{color:var(--text)}
+  .epdrill>summary:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+  .epdrill .eplh{font-size:10px; font-weight:650; text-transform:uppercase; letter-spacing:.05em; margin:7px 0 3px}
+  .epdrill .eplh.ok{color:var(--ok)} .epdrill .eplh.crit{color:var(--crit)}
+  .epdrill .eprow{display:flex; justify-content:space-between; align-items:baseline; gap:10px; font-size:12px; padding:3px 0; border-top:1px solid var(--border-faint)}
 
   .bar{height:7px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin:4px 0}
   .bar i{display:block; height:100%; border-radius:999px}
@@ -1164,6 +1171,8 @@ function drawEndpoint(){const e=EPSEL;
     </div>${reachSection(REACH)}`;
 }
 /* ---- per-endpoint reachability (PHASE B): pure, offline, L1-L3 from the embedded snapshot ---- */
+/* PHASE D drill-down: named endpoints on host h in VLAN v (count matches MODEL.endpoints — one per access port) */
+function epsOn(h,v){return endpointsOf(h).filter(e=>/^\d+$/.test(e.vlan)&&+e.vlan===v);}
 function endpointReach(ep){
   const vid=/^\d+$/.test(ep.vlan)?+ep.vlan:null;
   const R={vid, host:ep.host, gateways:[], groups:[], reachHosts:new Set([ep.host]), unreachHosts:new Set(),
@@ -1179,35 +1188,47 @@ function endpointReach(ep){
   const hostsWithEps=new Set(); for(const arr of vmap.values())for(const [h] of arr)hostsWithEps.add(h);
   for(const [v,arr] of [...vmap.entries()].sort((a,b)=>a[0]-b[0])){
     let reach=0, unreach=0; const reasons=new Set();
+    const reachList=[], unreachList=[];                    // PHASE D: the named endpoints behind the counts
     if(v===vid){
-      for(const [h,c] of arr){ if(pathTo(h,vid)!==null){reach+=c; R.reachHosts.add(h);}
-        else {unreach+=c; reasons.add(`VLAN ${v} is partitioned — no STP-forwarding path to ${h}`);} }
-      R.groups.push({vlan:v, kind:"same subnet (L2)", reach, unreach, reasons:[...reasons]});
+      for(const [h,c] of arr){ if(pathTo(h,vid)!==null){reach+=c; R.reachHosts.add(h); reachList.push(...epsOn(h,v));}
+        else {unreach+=c; reasons.add(`VLAN ${v} is partitioned — no STP-forwarding path to ${h}`); unreachList.push(...epsOn(h,v));} }
+      R.groups.push({vlan:v, kind:"same subnet (L2)", reach, unreach, reasons:[...reasons], reachList, unreachList});
     } else {
       const dgw=[...(MODEL.gateways.get(v)||new Set())];
-      if(!egress){ unreach=arr.reduce((s,[,c])=>s+c,0);
+      if(!egress){ unreach=arr.reduce((s,[,c])=>s+c,0); for(const [h] of arr)unreachList.push(...epsOn(h,v));
         R.groups.push({vlan:v, kind:"different subnet", reach:0, unreach,
           reasons:[gws.length?`no STP-forwarding path from ${ep.host} to a VLAN ${vid} gateway`
-                             :`VLAN ${vid} has no gateway (SVI) — endpoints can't leave the subnet`]}); }
-      else if(dgw.length===0){ unreach=arr.reduce((s,[,c])=>s+c,0);
+                             :`VLAN ${vid} has no gateway (SVI) — endpoints can't leave the subnet`], reachList, unreachList}); }
+      else if(dgw.length===0){ unreach=arr.reduce((s,[,c])=>s+c,0); for(const [h] of arr)unreachList.push(...epsOn(h,v));
         R.groups.push({vlan:v, kind:"different subnet", reach:0, unreach,
-          reasons:[`VLAN ${v} has no gateway — no inter-subnet routing target`]}); }
-      else { for(const [h,c] of arr){ if(dgw.some(g=>h===g||_bfsPath(MODEL,v,h,g)!==null)){reach+=c; R.reachHosts.add(h);}
-          else {unreach+=c; reasons.add(`VLAN ${v} is partitioned at ${h}`);} }
-        R.groups.push({vlan:v, kind:"via L3 gateway", reach, unreach, reasons:[...reasons]}); }
+          reasons:[`VLAN ${v} has no gateway — no inter-subnet routing target`], reachList, unreachList}); }
+      else { for(const [h,c] of arr){ if(dgw.some(g=>h===g||_bfsPath(MODEL,v,h,g)!==null)){reach+=c; R.reachHosts.add(h); reachList.push(...epsOn(h,v));}
+          else {unreach+=c; reasons.add(`VLAN ${v} is partitioned at ${h}`); unreachList.push(...epsOn(h,v));} }
+        R.groups.push({vlan:v, kind:"via L3 gateway", reach, unreach, reasons:[...reasons], reachList, unreachList}); }
     }
     R.reachEps+=reach; R.unreachEps+=unreach;
   }
   for(const h of hostsWithEps)if(!R.reachHosts.has(h))R.unreachHosts.add(h);
   return R;
 }
+/* PHASE D drill-down: collapsible list of the named endpoints behind each VLAN's reach/unreach counts */
+function epListRows(list){return list.map(e=>{
+  const id=esc(e.ip||e.mac||e.port);
+  const self=(EPSEL&&e.host===EPSEL.host&&e.port===EPSEL.port)?' <span class="pill pl-ok">this endpoint</span>':"";
+  return `<div class="eprow"><span class="mono">${id}${self}</span><span class="faint mono">${esc(shortName(e.host))} ${esc(e.port)}</span></div>`;}).join("");}
+function epDrill(g){const total=g.reachList.length+g.unreachList.length; if(!total)return "";
+  return `<details class="epdrill"><summary>Show ${total} endpoint${total===1?"":"s"}</summary>`+
+    (g.reachList.length?`<div class="eplh ok">✓ Can reach (${g.reachList.length})</div>${epListRows(g.reachList)}`:"")+
+    (g.unreachList.length?`<div class="eplh crit">✗ Cannot reach (${g.unreachList.length})</div>${epListRows(g.unreachList)}`:"")+
+    `</details>`;}
 function reachSection(R){
   if(!R)return "";
   if(R.note)return `<div class="sec"><p class="faint">${esc(R.note)}</p></div>`;
   const rows=R.groups.map(g=>{const tok=g.reach===0?"crit":g.unreach>0?"watch":"ok";
     return `<div class="card ${tok}" style="margin-bottom:7px"><div class="ct"><span class="nm">VLAN ${g.vlan} <span class="faint">· ${esc(g.kind)}</span></span>`+
       `<span class="pill pl-${tok}">${g.reach} ✓ / ${g.unreach} ✗</span></div>`+
-      (g.unreach>0&&g.reasons.length?`<div class="ln faint">${esc(g.reasons[0])}</div>`:"")+`</div>`;}).join("");
+      (g.unreach>0&&g.reasons.length?`<div class="ln faint">${esc(g.reasons[0])}</div>`:"")+
+      epDrill(g)+`</div>`;}).join("");
   return `<div class="sec"><h3>Reachability <span class="ct">L1–L3</span></h3>
     <div class="headline">
       <div class="stat ok"><div class="v">${R.reachEps}</div><div class="k">can reach</div></div>
