@@ -19,10 +19,10 @@ def test_textutils_importable_standalone():
 
 def test_monolith_reexports_the_package_objects(cp):
     from cisco_toolkit import textutils
-    # identity, not equality: the monolith must use the package's functions/regex,
-    # not a re-defined copy.
-    assert cp.normalize_ifname is textutils.normalize_ifname
-    assert cp.detect_link_type is textutils.detect_link_type
+    # normalize_ifname / detect_link_type went package-internal in step 28 (build_interfaces,
+    # their last monolith user, moved to cisco_toolkit.build); both still live in textutils.
+    assert callable(textutils.normalize_ifname) and not hasattr(cp, "normalize_ifname")
+    assert callable(textutils.detect_link_type) and not hasattr(cp, "detect_link_type")
     # is_valid_iface is now used only inside the package (its monolith callers moved out)
     assert callable(textutils.is_valid_iface)
     # PHYSICAL_IFACE_RE went package-internal in step 27 (its last monolith user,
@@ -40,12 +40,11 @@ def test_parse_module_reexported_and_functional(cp):
     # primitives live in the package; the monolith no longer references them
     # directly now that the table parsers moved out (so it doesn't import them).
     assert callable(parse.extract_fixed_cols) and callable(parse.slice_col)
-    # parsers the monolith still calls are re-exported as the SAME object.
-    # parse_ospf_neighbors / parse_bgp_summary no longer re-exported by the monolith (step 24:
-    # write_routing_adjacency_sheet moved to excel); they still live in parse.
-    for name in ("parse_ospf_neighbors", "parse_bgp_summary"):
+    # the monolith no longer re-exports ANY parser (step 28: build_interfaces, the last parser
+    # consumer, moved to cisco_toolkit.build). parse_ospf_neighbors / parse_bgp_summary were
+    # already gone (step 24); parse_show_interface_status went with build_interfaces (step 28).
+    for name in ("parse_ospf_neighbors", "parse_bgp_summary", "parse_show_interface_status"):
         assert hasattr(parse, name) and not hasattr(cp, name)
-    assert cp.parse_show_interface_status is parse.parse_show_interface_status  # still re-exported
     # functional smoke straight from the package
     rows = parse.parse_ospf_neighbors("10.0.0.2  1  FULL/DR  00:00:35  10.0.0.2  Gi0/1")
     assert rows and rows[0]["state"] == "FULL/DR" and rows[0]["interface"] == "Gi0/1"
@@ -203,9 +202,10 @@ def test_analyze_reexported_and_functional(cp):
 
 def test_cmdio_reexported_and_functional(cp, tmp_path):
     from cisco_toolkit import cmdio
-    # identity: the ~50 monolith call sites must use the package's helpers.
-    assert cp._load_cmd_output is cmdio._load_cmd_output
-    assert cp._safe_parse is cmdio._safe_parse
+    # _load_cmd_output / _safe_parse went package-internal in step 28 (build_interfaces, their
+    # last monolith user, moved to cisco_toolkit.build); _CISCO_ERRORS stays (platform detection
+    # reuses it in detect_platform_from_files).
+    assert not hasattr(cp, "_load_cmd_output") and not hasattr(cp, "_safe_parse")
     assert cp._CISCO_ERRORS is cmdio._CISCO_ERRORS
     # _safe_parse: happy path returns the value; a raising parser falls back to _default.
     assert cmdio._safe_parse(lambda x: {"k": x}, 1) == {"k": 1}
@@ -282,20 +282,20 @@ def test_excel_reexported_and_functional(cp):
 def test_build_reexported_and_functional(cp):
     from cisco_toolkit import build, parse
     # identity, not equality: main() must call the package's builders/enrichers, not a
-    # re-defined copy. All five moved to cisco_toolkit.build in step 27.
+    # re-defined copy. Five moved to cisco_toolkit.build in step 27; build_interfaces joined in
+    # step 28 (asserted just below).
     for name in ("build_device_physical", "build_switch_identity", "collect_global_arp",
                  "apply_global_arp", "detect_cross_device_dual_connections"):
         assert getattr(cp, name) is getattr(build, name)
-    # build_interfaces (the big per-device InterfaceData builder) is deliberately left in the
-    # monolith for now (a later step), so it is NOT in the build module yet.
-    assert not hasattr(build, "build_interfaces") and callable(cp.build_interfaces)
-    # the 8 parsers used only by the moved builders went package-internal (the monolith no
-    # longer re-imports them); parse_run_config_interfaces stays - build_interfaces still uses it.
+    # build_interfaces (the big per-device InterfaceData builder) joined the build layer in step 28;
+    # re-exported for main() + conftest's `built` fixture.
+    assert cp.build_interfaces is build.build_interfaces
+    # step 27 took these 8 parsers package-internal; step 28 took parse_run_config_interfaces too
+    # (build_interfaces, its last monolith user, moved). The monolith now re-exports NO parser.
     for gone in ("parse_show_version", "parse_show_inventory", "parse_show_environment_power",
                  "parse_show_environment", "parse_show_module_count", "parse_vtp_status",
-                 "parse_switch_mgmt_ip", "parse_show_ip_arp"):
+                 "parse_switch_mgmt_ip", "parse_show_ip_arp", "parse_run_config_interfaces"):
         assert hasattr(parse, gone) and not hasattr(cp, gone)
-    assert cp.parse_run_config_interfaces is parse.parse_run_config_interfaces
     # functional smokes straight from the package (pure, no file I/O).
     ID = build.InterfaceData
     # apply_global_arp fills end_host_ip + arp_source_switch from the global ARP table.
