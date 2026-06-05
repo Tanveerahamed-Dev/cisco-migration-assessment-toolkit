@@ -635,7 +635,10 @@ function demoSnapshot(){
       {check:"Endpoint coverage",status:"pass",note:"40 endpoints mapped to access ports"},
       {check:"Management reachability",status:"pass",note:"all switches reachable for cutover"},
     ]},
-  ]};
+  ],
+  // V3.23.47: the fleet score-calibration diagnostic the Python pipeline embeds (compute_calibration_report);
+  // matches the 6 demo health_scores above so the Health view's calibration card renders out-of-the-box.
+  calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."}};
 }
 
 /* =====================================================================
@@ -1586,6 +1589,26 @@ function dedupeDeductions(deds){
   return [...fam.entries()].map(([label,v])=>({label,count:v.count,total:v.total}))
     .sort((a,b)=>a.total-b.total);
 }
+/* V3.23.47: fleet score-calibration card — does the scoring actually DISCRIMINATE this fleet?
+   Renders SNAP.calibration (band distribution, score spread, the entropy-based discrimination
+   metric, and the relative re-banding suggestion when discrimination is poor). "" when absent. */
+function calibrationCard(){
+  const c=SNAP&&SNAP.calibration; if(!c||!c.n)return "";
+  const q=c.discrimination_quality||"";
+  const tok=q==="good"?"ok":q==="fair"?"watch":q.indexOf("poor")===0?"crit":"neutral";
+  const st=c.score_stats||{};
+  const dist=(c.band_distribution||[]).filter(d=>d.count>0)
+    .map(d=>`${esc(d.band)} <b>${d.count}</b> <span class="faint">(${d.pct}%)</span>`).join(" · ");
+  const sugg=c.suggested_bands?
+    `<div class="ln faint" style="margin-top:6px"><b>Suggested re-banding (relative):</b> `+
+      c.suggested_bands.map(s=>`${esc(s.band)}≥${s.threshold}`).join(" · ")+
+      ` — curve-grades the fleet to surface the relative worst, unlike the absolute default.</div>`:"";
+  return `<div class="sec"><h3>Score calibration <span class="badge b-${tok}">${esc(q)}</span></h3>
+    <div class="sub" style="margin-bottom:6px">Do the bands actually separate this fleet? Discrimination <b>${c.discrimination==null?"—":c.discrimination}</b> <span class="faint">(0 = all one band, 1 = evenly spread)</span>.</div>
+    <div class="ln">Scores <b>${st.min}–${st.max}</b> · median <b>${st.median}</b> · stdev ${st.stdev} · ${c.modal_pct}% in “${esc(c.modal_band)}”.</div>
+    ${dist?`<div class="ln" style="margin-top:4px">${dist}</div>`:""}
+    ${sugg}</div>`;
+}
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
   if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
@@ -1638,6 +1661,7 @@ function drawHealth(){
     </div>
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${calibrationCard()}
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
