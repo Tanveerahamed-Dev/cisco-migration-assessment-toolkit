@@ -322,7 +322,7 @@ from cisco_toolkit.model import InterfaceData, DevicePhysical
 # ScoringConfig / SCORING / _host_role are NOT re-exported anymore (step 15 moved their last
 # monolith users, the scoring compute_*); _health_band stays (write_health_scores_sheet uses it).
 from cisco_toolkit.analyze import (
-    _health_band, compute_move_groups,
+    compute_move_groups,   # _health_band dropped (step 23): write_health_scores_sheet moved to excel
     # compute_topology_links / compute_findings dropped (step 22): their last monolith users
     # (write_topology_sheet / write_findings_sheet) moved to excel.
     build_network_model,   # _link_carries (step 19) + _vlan_components (step 18): last monolith users moved
@@ -345,6 +345,8 @@ from cisco_toolkit.excel import (
     write_vlan_census_sheet, write_endpoint_census_sheet,                            # step 21
     write_move_group_sheet, write_topology_sheet, write_findings_sheet,             # step 22
     write_capacity_sheet, write_topology_diagram,                                   # step 22
+    _SEV_FILL, write_cross_layer_sheet, write_protocol_health_sheet,                # step 23
+    write_health_scores_sheet, write_score_sensitivity_sheet, write_migration_readiness_sheet,  # step 23
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -1853,7 +1855,9 @@ def write_routing_adjacency_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]
 # =============================================================================
 CAUSALITY_SHEET_NAME = "Causality Chains"
 FAILURE_SHEET_NAME   = "Failure Impact"
-_SEV_FILL = {"High": "F4CCCC", "Medium": "FCE5CD", "Low": "FFF2CC", "Info": "EFEFEF"}
+# _SEV_FILL moved to cisco_toolkit.excel (PHASE 2.7 step 23, with write_protocol_health_sheet);
+# imported back near the top of this file (the causality/failure/interface/physical writers still
+# here use it).
 
 
 # Network model + graph helpers (_vlan_in_ranges / build_network_model / _link_carries
@@ -2243,179 +2247,10 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
 # VLANs) to surface compounded-risk findings CL-01..CL-10 that no single-layer
 # view shows. Pure derivation; no new collection.
 # -----------------------------------------------------------------------------
-CROSS_LAYER_SHEET_NAME = "Cross-Layer Analysis"
-_CL_FILL = {"Critical": "FF5775", "High": "F4CCCC", "Medium": "FCE5CD", "Low": "FFF2CC", "Info": "EFEFEF"}
-# _CL_RANK + build_dependency_map moved to cisco_toolkit.analyze (PHASE 2.7 step 18);
-# build_dependency_map imported back near the top of this file (main() runs it via
-# _run_phase). _CL_RANK is package-internal. CROSS_LAYER_SHEET_NAME + _CL_FILL stay (excel).
-
-# compute_cross_layer_correlations + all_hosts moved to cisco_toolkit.analyze (PHASE 2.7
-# step 18); compute_cross_layer_correlations imported back near the top of this file
-# (main() runs it via _run_phase). all_hosts is package-internal.
-
-def write_cross_layer_sheet(wb, findings: List[dict]) -> None:
-    """Write the 'Cross-Layer Analysis' sheet from compute_cross_layer_correlations()."""
-
-    ws = wb.create_sheet(CROSS_LAYER_SHEET_NAME)
-    headers = ["CL", "Severity", "Layers", "Finding", "Detail", "Recommendation"]
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(1, col, h)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="434343")
-        c.alignment = Alignment(horizontal="center")
-    for r, f in enumerate(findings, 2):
-        vals = [f["id"], f["severity"], f["layers"], f["title"], f["detail"], f["recommendation"]]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(r, col, v)
-            if col == 2 and f["severity"] in _CL_FILL:
-                c.fill = PatternFill("solid", fgColor=_CL_FILL[f["severity"]])
-                c.font = Font(bold=True)
-    for i, w in enumerate([7, 9, 8, 42, 60, 52], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-    ws.freeze_panes = "A2"
-    if not findings:
-        ws.cell(2, 1, "No cross-layer correlations found (no compounded L1/L2/L3 risks detected).")
-    logger.info(f"  [OK] '{CROSS_LAYER_SHEET_NAME}' sheet: {len(findings)} cross-layer finding(s)")
-
-
-# -----------------------------------------------------------------------------
-# NEW-V3.22: Protocol behavior analysis. One row per (switch, protocol) for
-# STP / EtherChannel / VTP / OSPF / BGP / EIGRP / FHRP with a derived health
-# severity. Re-parses already-collected raw output (+ the new STP-detail TCN).
-# -----------------------------------------------------------------------------
-PROTOCOL_HEALTH_SHEET_NAME = "Protocol Health"
-
-# _parse_stp_mode / _parse_stp_tcn / _parse_etherchannel_member_states / _parse_vtp_full
-# + compute_protocol_health moved to cisco_toolkit.analyze (PHASE 2.7 step 16). The four
-# sub-parsers are analyze-internal; compute_protocol_health is imported back near the top
-# of this file (main() runs it via _run_phase). PROTOCOL_HEALTH_SHEET_NAME stays (excel).
-
-def write_protocol_health_sheet(wb, records: List[dict]) -> None:
-    """Write the 'Protocol Health' sheet from compute_protocol_health()."""
-
-    ws = wb.create_sheet(PROTOCOL_HEALTH_SHEET_NAME)
-    headers = ["Switch", "Protocol", "Summary", "Detail", "Health"]
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(1, col, h)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="434343")
-        c.alignment = Alignment(horizontal="center")
-    word = {"High": "DEGRADED", "Medium": "WARNING", "Low": "MINOR", "Info": "OK"}
-    for r, rec in enumerate(records, 2):
-        vals = [rec["switch"], rec["protocol"], rec["summary"], rec["detail"],
-                word.get(rec["severity"], rec["severity"])]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(r, col, v)
-            if col == 5 and rec["severity"] in _SEV_FILL:
-                c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
-                c.font = Font(bold=True)
-    for i, w in enumerate([16, 13, 46, 50, 11], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-    ws.freeze_panes = "A2"
-    n_bad = sum(1 for x in records if x["severity"] in ("High", "Medium"))
-    logger.info(f"  [OK] '{PROTOCOL_HEALTH_SHEET_NAME}' sheet: {len(records)} row(s), {n_bad} flagged")
-
-
-# -----------------------------------------------------------------------------
-# NEW-V3.23: Health scoring + migration readiness (final intelligence layer).
-# Per-switch 0-100 score (weighted deductions from L1/L3/cross-layer/protocol
-# findings) and per-move-group READY/CAUTION/NOT READY from a 10-check checklist.
-# Pure derivation over the records already computed this run; no new collection.
-# -----------------------------------------------------------------------------
-HEALTH_SCORES_SHEET_NAME = "Health Scores"
-MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
-SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
-# _HEALTH_BANDS / ScoringConfig / SCORING moved to cisco_toolkit.analyze (PHASE 2.7
-# step 10); imported back near the top of this file. The Excel fill-colour maps
-# below stay - they belong to the excel layer, not the data analysis.
-_READY_FILL = {"READY": "36E08A", "CAUTION": "FFE566", "NOT READY": "FF5775"}
-_STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
-
-# _health_band / _host_role moved to cisco_toolkit.analyze (PHASE 2.7 step 10);
-# imported back near the top of this file.
-
-# _ESSENTIAL_CMD_VARIANTS + compute_data_quality / compute_health_scores /
-# compute_score_sensitivity / compute_migration_readiness moved to cisco_toolkit.analyze
-# (PHASE 2.7 step 15); the four compute_* are imported back near the top of this file
-# (main() runs them via _run_phase). _ESSENTIAL_CMD_VARIANTS is package-internal now.
-
-def write_health_scores_sheet(wb, records: List[dict]) -> None:
-    ws = wb.create_sheet(HEALTH_SCORES_SHEET_NAME)
-    headers = ["Switch", "Score", "Band", "Data Quality", "Top Deductions"]
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(1, col, h)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="434343")
-        c.alignment = Alignment(horizontal="center")
-    for r, rec in enumerate(records, 2):
-        _lbl, fill = _health_band(rec["score"])
-        if rec.get("band") == "Insufficient Data":            # NEW-V3.23.7: neutral grey, not green
-            fill = "B0B0B0"
-        ws.cell(r, 1, rec["switch"])
-        c = ws.cell(r, 2, rec["score"]); c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
-        c2 = ws.cell(r, 3, rec["band"]); c2.fill = PatternFill("solid", fgColor=fill)
-        dq = rec.get("data_quality")
-        ws.cell(r, 4, "" if dq is None else f"{int(round(dq * 100))}%")
-        ws.cell(r, 5, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
-    for i, w in enumerate([16, 8, 11, 13, 80], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-    ws.freeze_panes = "A2"
-    avg = round(sum(r["score"] for r in records) / len(records)) if records else 0
-    logger.info(f"  [OK] '{HEALTH_SCORES_SHEET_NAME}' sheet: {len(records)} switch(es), avg score {avg}")
-
-def write_score_sensitivity_sheet(wb, records: List[dict]) -> None:
-    """Write the 'Score Sensitivity' sheet from compute_score_sensitivity()."""
-    ws = wb.create_sheet(SCORE_SENSITIVITY_SHEET_NAME)
-    headers = ["Perturbation", "Switches Changing Band", "Detail"]
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(1, col, h)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="434343")
-        c.alignment = Alignment(horizontal="center")
-    for r, rec in enumerate(records, 2):
-        ws.cell(r, 1, rec["perturbation"])
-        c = ws.cell(r, 2, rec["switches_changed_band"])
-        if rec["switches_changed_band"]:
-            c.font = Font(bold=True)
-        ws.cell(r, 3, rec["detail"])
-    for i, w in enumerate([20, 24, 80], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-    ws.freeze_panes = "A2"
-    flips = sum(1 for r in records if r["switches_changed_band"])
-    logger.info(f"  [OK] '{SCORE_SENSITIVITY_SHEET_NAME}' sheet: {len(records)} perturbation(s), {flips} with band changes")
-
-
-def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
-    ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
-    headers = ["Group / Check", "Status", "Detail"]
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(1, col, h)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="434343")
-        c.alignment = Alignment(horizontal="center")
-    r = 2
-    for g in readiness:
-        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint(s))")
-        c.font = Font(bold=True)
-        cs = ws.cell(r, 2, g["readiness"])
-        cs.font = Font(bold=True)
-        if g["readiness"] in _READY_FILL:
-            cs.fill = PatternFill("solid", fgColor=_READY_FILL[g["readiness"]])
-        ws.cell(r, 3, ", ".join(g["switches"]))
-        r += 1
-        for chk in g["checks"]:
-            ws.cell(r, 1, "    " + chk["check"])
-            sc = ws.cell(r, 2, chk["status"].upper())
-            if chk["status"] in _STATUS_FILL:
-                sc.fill = PatternFill("solid", fgColor=_STATUS_FILL[chk["status"]])
-            ws.cell(r, 3, chk["note"])
-            r += 1
-        r += 1   # blank row between groups
-    for i, w in enumerate([40, 9, 70], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-    ws.freeze_panes = "A2"
-    nready = sum(1 for g in readiness if g["readiness"] == "READY")
-    logger.info(f"  [OK] '{MIGRATION_READINESS_SHEET_NAME}' sheet: {len(readiness)} group(s), {nready} READY")
+# Health / analysis sheet writers (write_cross_layer_sheet / write_protocol_health_sheet /
+# write_health_scores_sheet / write_score_sensitivity_sheet / write_migration_readiness_sheet)
+# moved to cisco_toolkit.excel (PHASE 2.7 step 23); imported back near the top of this file
+# (main() runs them via _run_phase). Their fill maps + sheet-name constants + _SEV_FILL moved too.
 
 
 # =============================================================================

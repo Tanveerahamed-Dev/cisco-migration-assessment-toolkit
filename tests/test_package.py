@@ -77,12 +77,10 @@ def test_analyze_reexported_and_functional(cp):
     from cisco_toolkit import analyze
     # identity, not equality: the compute_* functions still in the monolith must use
     # the package's ScoringConfig/SCORING/helpers, not a re-defined copy.
-    # _health_band stays re-exported (write_health_scores_sheet uses it); ScoringConfig /
-    # SCORING / _host_role went package-internal in step 15 (their last monolith users, the
-    # scoring compute_*, moved out).
-    assert cp._health_band is analyze._health_band
+    # ScoringConfig / SCORING / _host_role went package-internal in step 15; _health_band in step 23
+    # (its last monolith user, write_health_scores_sheet, moved to excel). All still live in analyze.
     assert callable(analyze.ScoringConfig) and analyze.SCORING is not None and callable(analyze._host_role)
-    for gone in ("ScoringConfig", "SCORING", "_host_role"):
+    for gone in ("ScoringConfig", "SCORING", "_host_role", "_health_band"):
         assert not hasattr(cp, gone)
     # the default config reproduces the documented hard-coded tunables.
     assert analyze.SCORING.caps == {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25}
@@ -248,3 +246,11 @@ def test_excel_reexported_and_functional(cp):
     # _to_float / _mermaid_id are package-internal helpers.
     assert excel._to_float("250.5 W") == 250.5 and excel._to_float("n/a") is None
     assert not hasattr(cp, "_to_float") and not hasattr(cp, "_mermaid_id")
+    # health/analysis sheet writers joined the excel layer (step 23) - they render computed records.
+    for name in ("write_cross_layer_sheet", "write_protocol_health_sheet", "write_health_scores_sheet",
+                 "write_score_sensitivity_sheet", "write_migration_readiness_sheet"):
+        assert getattr(cp, name) is getattr(excel, name)
+    # _SEV_FILL moved to excel (shared fill map) + re-exported for writers still in the monolith.
+    assert cp._SEV_FILL is excel._SEV_FILL and excel._SEV_FILL["High"] == "F4CCCC"
+    # _CL_FILL / _READY_FILL / _STATUS_FILL are package-internal.
+    assert not hasattr(cp, "_CL_FILL") and not hasattr(cp, "_READY_FILL")

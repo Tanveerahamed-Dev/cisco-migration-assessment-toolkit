@@ -5,6 +5,36 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 23: health/analysis writers -> excel
+
+On branch `phase2-split-excel4`. Byte-identical. Monolith **~2,395 lines**; excel.py ~728.
+
+- Moved Region C (5 records-rendering writers) → excel.py: `write_cross_layer_sheet`/
+  `write_protocol_health_sheet`/`write_health_scores_sheet`/`write_score_sensitivity_sheet`/
+  `write_migration_readiness_sheet` (+ `_CL_FILL`/`_READY_FILL`/`_STATUS_FILL` + their `*_SHEET_NAME`).
+  They render already-computed records (main() computes via analyze, passes in), so the only
+  analyze dep is `_health_band` (added to excel.py's analyze import).
+- **`_SEV_FILL` relocation:** it's a severity fill-map shared by ~6 writers across regions
+  (causality/failure [B], the fused physical/l3 writers @2036/2227 [D], protocol_health [C]).
+  Since protocol_health moved, `_SEV_FILL` had to move to excel.py (excel can't import back from
+  monolith). Imported it back for the ~4 monolith writers that still use it.
+- F401: `_health_band` was write_health_scores_sheet's last monolith user → dropped from monolith
+  analyze import + updated the step-15 `cp._health_band` assertion to not-hasattr. The compute_*
+  (cross_layer/protocol_health/health_scores/score_sensitivity/migration_readiness) STAY re-exported —
+  main() calls them to produce the records. **65 tests**, golden byte-identical, ruff clean, mypy 101.
+
+**Excel remaining:** (d) **step 24 = fused compute-in-writer + file-reading writers:** causality/
+failure (compute_causality_chains/compute_failure_impact — region B, use `_SEV_FILL`), the physical-
+health writer (@~2030, computes inline, returns physical_health records to main()), the l3-forwarding
+writer (computes l3_forwarding records inline + uses `_parse_track`/`_track_summary`/`_parse_fhrp`),
+write_flow_trace_sheet, and the file-reading writers interface_health/security_posture/routing_adjacency
+(read `_load_cmd_output` + call parse_port_security/auth/dhcp/ospf/bgp/eigrp/counters → excel.py imports
+cmdio + those parsers). (e) **step 25 = `append_interface_rows` + build_* (build_device_physical/
+build_interfaces/build_switch_identity) + global_arp/dual-connection + `debug_scan_headers`.** Then
+**html** (snapshot_state/write_html_explorer/write_diff_workbook/`_macset`), then **`__main__`**. Sequential.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 22: analysis writers -> excel (first to call analyze)
 
 On branch `phase2-split-excel3`. Byte-identical. Monolith **~2,544 lines**; excel.py ~576.

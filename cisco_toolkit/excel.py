@@ -13,7 +13,9 @@ from typing import Dict, List, Optional, Tuple
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from cisco_toolkit.analyze import compute_findings, compute_move_groups, compute_topology_links
+from cisco_toolkit.analyze import (
+    _health_band, compute_findings, compute_move_groups, compute_topology_links,
+)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.textutils import _split_macs, normalize_ifname
 
@@ -626,3 +628,152 @@ def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     logger.info(f"  [OK] Topology diagram: {mm_path} , {dot_path} "
                 f"({len(links)} link(s), {len(nodes)} node(s))")
     return [mm_path, dot_path]
+
+
+# =============================================================================
+# Health / analysis sheet writers (PHASE 2.7 step 23): render already-computed
+# records (main() computes via the analyze layer and passes them in). _SEV_FILL is
+# the shared severity fill-colour map (also used by the causality/failure/physical
+# writers still in the monolith, which import it back).
+# =============================================================================
+_SEV_FILL = {"High": "F4CCCC", "Medium": "FCE5CD", "Low": "FFF2CC", "Info": "EFEFEF"}
+
+CROSS_LAYER_SHEET_NAME = "Cross-Layer Analysis"
+_CL_FILL = {"Critical": "FF5775", "High": "F4CCCC", "Medium": "FCE5CD", "Low": "FFF2CC", "Info": "EFEFEF"}
+
+def write_cross_layer_sheet(wb, findings: List[dict]) -> None:
+    """Write the 'Cross-Layer Analysis' sheet from compute_cross_layer_correlations()."""
+
+    ws = wb.create_sheet(CROSS_LAYER_SHEET_NAME)
+    headers = ["CL", "Severity", "Layers", "Finding", "Detail", "Recommendation"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    for r, f in enumerate(findings, 2):
+        vals = [f["id"], f["severity"], f["layers"], f["title"], f["detail"], f["recommendation"]]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v)
+            if col == 2 and f["severity"] in _CL_FILL:
+                c.fill = PatternFill("solid", fgColor=_CL_FILL[f["severity"]])
+                c.font = Font(bold=True)
+    for i, w in enumerate([7, 9, 8, 42, 60, 52], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    if not findings:
+        ws.cell(2, 1, "No cross-layer correlations found (no compounded L1/L2/L3 risks detected).")
+    logger.info(f"  [OK] '{CROSS_LAYER_SHEET_NAME}' sheet: {len(findings)} cross-layer finding(s)")
+
+
+PROTOCOL_HEALTH_SHEET_NAME = "Protocol Health"
+
+def write_protocol_health_sheet(wb, records: List[dict]) -> None:
+    """Write the 'Protocol Health' sheet from compute_protocol_health()."""
+
+    ws = wb.create_sheet(PROTOCOL_HEALTH_SHEET_NAME)
+    headers = ["Switch", "Protocol", "Summary", "Detail", "Health"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    word = {"High": "DEGRADED", "Medium": "WARNING", "Low": "MINOR", "Info": "OK"}
+    for r, rec in enumerate(records, 2):
+        vals = [rec["switch"], rec["protocol"], rec["summary"], rec["detail"],
+                word.get(rec["severity"], rec["severity"])]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v)
+            if col == 5 and rec["severity"] in _SEV_FILL:
+                c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
+                c.font = Font(bold=True)
+    for i, w in enumerate([16, 13, 46, 50, 11], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    n_bad = sum(1 for x in records if x["severity"] in ("High", "Medium"))
+    logger.info(f"  [OK] '{PROTOCOL_HEALTH_SHEET_NAME}' sheet: {len(records)} row(s), {n_bad} flagged")
+
+
+HEALTH_SCORES_SHEET_NAME = "Health Scores"
+MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
+SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
+_READY_FILL = {"READY": "36E08A", "CAUTION": "FFE566", "NOT READY": "FF5775"}
+_STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
+
+def write_health_scores_sheet(wb, records: List[dict]) -> None:
+    ws = wb.create_sheet(HEALTH_SCORES_SHEET_NAME)
+    headers = ["Switch", "Score", "Band", "Data Quality", "Top Deductions"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    for r, rec in enumerate(records, 2):
+        _lbl, fill = _health_band(rec["score"])
+        if rec.get("band") == "Insufficient Data":            # NEW-V3.23.7: neutral grey, not green
+            fill = "B0B0B0"
+        ws.cell(r, 1, rec["switch"])
+        c = ws.cell(r, 2, rec["score"]); c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
+        c2 = ws.cell(r, 3, rec["band"]); c2.fill = PatternFill("solid", fgColor=fill)
+        dq = rec.get("data_quality")
+        ws.cell(r, 4, "" if dq is None else f"{int(round(dq * 100))}%")
+        ws.cell(r, 5, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
+    for i, w in enumerate([16, 8, 11, 13, 80], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    avg = round(sum(r["score"] for r in records) / len(records)) if records else 0
+    logger.info(f"  [OK] '{HEALTH_SCORES_SHEET_NAME}' sheet: {len(records)} switch(es), avg score {avg}")
+
+def write_score_sensitivity_sheet(wb, records: List[dict]) -> None:
+    """Write the 'Score Sensitivity' sheet from compute_score_sensitivity()."""
+    ws = wb.create_sheet(SCORE_SENSITIVITY_SHEET_NAME)
+    headers = ["Perturbation", "Switches Changing Band", "Detail"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    for r, rec in enumerate(records, 2):
+        ws.cell(r, 1, rec["perturbation"])
+        c = ws.cell(r, 2, rec["switches_changed_band"])
+        if rec["switches_changed_band"]:
+            c.font = Font(bold=True)
+        ws.cell(r, 3, rec["detail"])
+    for i, w in enumerate([20, 24, 80], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    flips = sum(1 for r in records if r["switches_changed_band"])
+    logger.info(f"  [OK] '{SCORE_SENSITIVITY_SHEET_NAME}' sheet: {len(records)} perturbation(s), {flips} with band changes")
+
+
+def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
+    ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
+    headers = ["Group / Check", "Status", "Detail"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    r = 2
+    for g in readiness:
+        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint(s))")
+        c.font = Font(bold=True)
+        cs = ws.cell(r, 2, g["readiness"])
+        cs.font = Font(bold=True)
+        if g["readiness"] in _READY_FILL:
+            cs.fill = PatternFill("solid", fgColor=_READY_FILL[g["readiness"]])
+        ws.cell(r, 3, ", ".join(g["switches"]))
+        r += 1
+        for chk in g["checks"]:
+            ws.cell(r, 1, "    " + chk["check"])
+            sc = ws.cell(r, 2, chk["status"].upper())
+            if chk["status"] in _STATUS_FILL:
+                sc.fill = PatternFill("solid", fgColor=_STATUS_FILL[chk["status"]])
+            ws.cell(r, 3, chk["note"])
+            r += 1
+        r += 1   # blank row between groups
+    for i, w in enumerate([40, 9, 70], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    nready = sum(1 for g in readiness if g["readiness"] == "READY")
+    logger.info(f"  [OK] '{MIGRATION_READINESS_SHEET_NAME}' sheet: {len(readiness)} group(s), {nready} READY")
