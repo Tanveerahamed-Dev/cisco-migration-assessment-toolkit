@@ -952,6 +952,82 @@ def write_addressing_conflicts_sheet(wb, all_interfaces: Dict[str, Dict[str, Int
                 f"{len(c['dup_ip'])} dup-IP, {len(c['dup_subnet'])} overlap")
 
 
+def compute_fhrp_consistency(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
+    """Fabric-wide first-hop-redundancy (FHRP) consistency (mirrors the explorer's fhrpConsistency): for each
+    VLAN with >=2 gateways (SVIs), flag FAKE redundancy -- a gateway running no FHRP, different FHRP groups,
+    different virtual IPs, mixed protocols, or two actives (split-brain). Reuses parse._parse_fhrp. Returns
+    [{vid, issues:[str], members:[{host,proto,group,vip,role,fhrp}]}] for VLANs with an issue (empty when clean)."""
+    from cisco_toolkit.parse import _parse_fhrp
+    by_vid: Dict[int, list] = {}
+    for host in sorted(all_interfaces):
+        for port, d in all_interfaces[host].items():
+            m = re.match(r"^Vlan(\d+)$", port or "", re.IGNORECASE)
+            if not m:
+                continue
+            if not ((getattr(d, "svi_ip", "") or "").strip() or (getattr(d, "hsrp_behavior", "") or "").strip()):
+                continue                                                 # only real gateways (SVI with an IP or FHRP)
+            by_vid.setdefault(int(m.group(1)), []).append((host, d))
+    out: List[dict] = []
+    for vid in sorted(by_vid):
+        gws = by_vid[vid]
+        if len(gws) < 2:                                                 # single gateway -> SPOF, handled elsewhere
+            continue
+        det = []
+        for host, d in gws:
+            proto, role, vip, group = _parse_fhrp(getattr(d, "hsrp_behavior", "") or "")
+            det.append({"host": host, "proto": (proto or "").upper(), "group": group or "",
+                        "vip": vip or "", "role": (role or "").lower(), "fhrp": bool(proto)})
+        withf = [x for x in det if x["fhrp"]]
+        without = [x for x in det if not x["fhrp"]]
+        issues: List[str] = []
+        if not withf:
+            issues.append(f"{len(gws)} gateways but no FHRP — no first-hop redundancy")
+            out.append({"vid": vid, "issues": issues, "members": det}); continue
+        protos = {x["proto"] for x in withf}
+        groups = {x["group"] for x in withf if x["group"]}
+        vips = {x["vip"] for x in withf if x["vip"]}
+        actives = [x for x in withf if x["role"] == "active"]
+        if without:
+            issues.append(f"{', '.join(x['host'] for x in without)} runs no FHRP — unprotected, independent gateway")
+        if len(protos) > 1:
+            issues.append(f"mixed FHRP protocols ({' vs '.join(sorted(protos))})")
+        if len(groups) > 1:
+            issues.append(f"different FHRP groups (grp {' vs '.join(sorted(groups))}) — not one redundancy group")
+        elif len(vips) > 1:
+            issues.append(f"same group but different virtual IPs ({' vs '.join(sorted(vips))})")
+        if len(groups) == 1 and len(actives) > 1:
+            issues.append(f"two active routers ({', '.join(x['host'] for x in actives)}) — split-brain")
+        if issues:
+            out.append({"vid": vid, "issues": issues, "members": det})
+    return out
+
+
+FHRP_CONSISTENCY_SHEET_NAME = "FHRP Consistency"
+
+def write_fhrp_consistency_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write the 'FHRP Consistency' sheet: VLANs whose >=2 gateways have MISconfigured first-hop redundancy
+    (fake redundancy that fails silently at failover). Surfaces the explorer's FHRP-consistency finding."""
+    rows = compute_fhrp_consistency(all_interfaces)
+    ws = wb.create_sheet(FHRP_CONSISTENCY_SHEET_NAME)
+    for col, h in enumerate(["VLAN", "Issue", "Gateways"], 1):
+        cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
+    r = 2
+    for row in rows:
+        mem = "; ".join(
+            f"{x['host']} " + (f"{x['proto']} grp {x['group']} {x['role']}".strip() if x["fhrp"] else "no FHRP")
+            for x in row["members"])
+        ic = ws.cell(r, 1, f"VLAN {row['vid']}"); ic.font = Font(bold=True, color="C00000")
+        ws.cell(r, 2, "; ".join(row["issues"])); ws.cell(r, 3, mem)
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No FHRP misconfigurations on multi-gateway VLANs")
+    for i, w in enumerate([12, 70, 50], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{FHRP_CONSISTENCY_SHEET_NAME}' sheet: {len(rows)} VLAN(s) with FHRP issues")
+
+
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Detail"]

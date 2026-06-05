@@ -256,5 +256,10 @@
   "Address / Subnet",
   "VRF",
   "Configured on"
+ ],
+ "FHRP Consistency": [
+  "VLAN",
+  "Issue",
+  "Gateways"
  ]
 }
