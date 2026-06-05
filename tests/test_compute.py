@@ -200,6 +200,23 @@ def test_inscope_subnets_from_svis():
     assert inscope_subnets(ifaces) == {"10.0.10.0/24", "10.0.20.0/24"}
 
 
+def test_build_routing_neighbors(tmp_path):
+    # protocol-to-protocol analysis: OSPF/EIGRP/BGP adjacencies parsed from already-collected output,
+    # keeping the full state token so the explorer can tell a healthy (FULL) from a stuck (EXSTART) peer.
+    from cisco_toolkit.build import build_routing_neighbors
+    ospf = tmp_path / "ospf.txt"
+    ospf.write_text(
+        "Neighbor ID     Pri   State           Dead Time   Address         Interface\n"
+        "10.0.99.2         1   FULL/DR         00:00:35    10.0.99.2       Port-channel1\n"
+        "10.0.99.9         1   EXSTART/DROTHER 00:00:31    10.0.40.9       Vlan40\n",
+        encoding="utf-8")
+    rn = build_routing_neighbors({"show ip ospf neighbor": str(ospf)})
+    assert len(rn["ospf"]) == 2
+    states = {n["state"] for n in rn["ospf"]}
+    assert "FULL/DR" in states and "EXSTART/DROTHER" in states   # healthy + stuck adjacency both captured
+    assert rn["eigrp"] == [] and rn["bgp"] == []                 # protocols not running -> empty list, never absent
+
+
 # --------------------------------------------------------------------------- #
 # Scoring calibration: compute_calibration_report (fleet band-discrimination)
 # --------------------------------------------------------------------------- #
