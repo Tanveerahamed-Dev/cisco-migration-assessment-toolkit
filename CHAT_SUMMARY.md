@@ -5,6 +5,38 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 29: stand up html.py with the diff workbook
+
+On branch `phase2-split-html1`. Byte-identical. Monolith **~1,344 lines**; new `cisco_toolkit/html.py` **~122 lines**.
+
+- New layer `cisco_toolkit/html.py` (the "snapshot-reporting" layer — renders outputs from the pre/post-cutover
+  snapshots). Step 29 seeds it with the PURE slice: `write_diff_workbook` (the `--compare OLD NEW` diff workbook
+  — Summary / Interface / Endpoint / SVI changes) + `_macset` + `_DIFF_FIELDS`. Depends only on openpyxl + stdlib
+  `re`; no cisco_toolkit imports (leaf-ish). Moved via the verbatim CRLF-preserving script. `write_diff_workbook`
+  imported back for main()'s --compare path; `_macset` / `_DIFF_FIELDS` package-internal.
+- F401: dropped `Font` / `PatternFill` / `Alignment` (openpyxl.styles) + `get_column_letter` (openpyxl.utils) from
+  the monolith's hoisted openpyxl import — write_diff_workbook was their last user. `load_workbook` STAYS (main()
+  opens the template workbook). No other cascade; `re` still used widely.
+- Added `test_html_reexported_and_functional` (identity + a real smoke: write a 2-snapshot diff xlsx to tmp_path,
+  reopen, assert the 4 sheets + a "status: connected -> notconnect" Modified row). **67 tests.**
+- **DELIBERATELY DEFERRED `snapshot_state` + `write_html_explorer` to step 30** — they carry two entrypoint
+  couplings that deserve a focused byte-identical PR: (a) `snapshot_state` embeds `f"V{__version__}"` (a monolith
+  global, tested by `test_version` via `cp.snapshot_state` + `cp.__version__`) → plan: move `__version__` into
+  `cisco_toolkit/__init__.py`, import it back (keeps `cp.__version__` == "3.23.0"); (b) `write_html_explorer` finds
+  `blast_radius_explorer.html` via `os.path.dirname(os.path.abspath(__file__))` (the monolith's dir = repo root) →
+  once in html.py, `__file__` is `cisco_toolkit/html.py`, so use `dirname(dirname(__file__))` (html.py's grandparent
+  = repo root) for the same template. Golden does NOT check the .html, but the regression is real.
+- Golden **byte-identical**, ruff clean, mypy 101. `.md` V3.23.39.
+
+**Remaining PHASE 2.7 (~2 PRs): (1) next = step 30 = `snapshot_state` + `write_html_explorer` → html.py** (the
+`__version__` package-ization + the `__file__`→`dirname(dirname())` template fix; `test_version` calls
+`cp.snapshot_state` so re-export it + keep `cp.__version__`). **(2) then `__main__`** = what's left (setup_logging /
+debug_scan_headers / autodetect_platform / detect_platform_from_files / connect_device / send_cmd / collect /
+load_devices / write_json_file / file_sha256 / build_run_manifest / main / argparse / `_run_phase` /
+`_empty_dep_map` + the COMMANDS_* lists) — keep as the thin entrypoint or thin into the package. Sequential.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 28: build_interfaces -> build.py (BUILD LAYER COMPLETE)
 
 On branch `phase2-split-build2`. Byte-identical. Monolith **~1,451 lines**; `cisco_toolkit/build.py` **~444 = the whole build layer**.

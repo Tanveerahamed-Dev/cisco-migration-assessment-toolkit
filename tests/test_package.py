@@ -309,3 +309,27 @@ def test_build_reexported_and_functional(cp):
     build.detect_cross_device_dual_connections(dc)
     assert dc["sw1"]["Gi1/0/1"].dual_connection == "Yes"
     assert dc["sw2"]["Gi1/0/2"].dual_connection == "Yes"
+
+
+def test_html_reexported_and_functional(cp, tmp_path):
+    from openpyxl import load_workbook
+
+    from cisco_toolkit import html
+    # write_diff_workbook (the --compare diff workbook) joined the snapshot-reporting layer in
+    # step 29; re-exported for main()'s --compare path. _macset / _DIFF_FIELDS are package-internal.
+    assert cp.write_diff_workbook is html.write_diff_workbook
+    assert callable(html._macset) and not hasattr(cp, "_macset")
+    assert isinstance(html._DIFF_FIELDS, list) and not hasattr(cp, "_DIFF_FIELDS")
+    # _macset splits on commas / whitespace / semicolons, dropping blanks.
+    assert html._macset("aaaa.bbbb.cccc, dddd.eeee.ffff") == {"aaaa.bbbb.cccc", "dddd.eeee.ffff"}
+    assert html._macset("") == set()
+    # functional smoke: a status change on one port -> a Modified row in 'Interface Changes'.
+    old = {"devices": {"sw1": {}}, "interfaces": {"sw1": {"Gi1/0/1": {"status": "connected"}}}}
+    new = {"devices": {"sw1": {}}, "interfaces": {"sw1": {"Gi1/0/1": {"status": "notconnect"}}}}
+    out = tmp_path / "diff.xlsx"
+    html.write_diff_workbook(old, new, str(out))
+    wb = load_workbook(str(out))
+    assert {"Summary", "Interface Changes", "Endpoint Changes", "SVI Changes"} <= set(wb.sheetnames)
+    rows = list(wb["Interface Changes"].iter_rows(min_row=2, values_only=True))
+    assert any(r[0] == "sw1" and r[1] == "Gi1/0/1" and r[2] == "Modified"
+               and "status: connected -> notconnect" in (r[3] or "") for r in rows)
