@@ -5,6 +5,43 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 21: census/inventory writers -> excel
+
+On branch `phase2-split-excel2`. Byte-identical. **First writer batch into excel.py.**
+Monolith **~2,719 lines**; `cisco_toolkit/excel.py` ~381.
+
+- Moved 5 pure-render writers + their constants/helper into excel.py:
+  `write_device_inventory_sheet`(+`INVENTORY_SHEET_NAME`/`INVENTORY_COLUMNS`),
+  `write_svi_gateway_sheet`(+`SVI_SHEET_NAME`/`SVI_COLUMNS`/`_is_svi`),
+  `write_stp_detail_sheet`(+`STP_SHEET_NAME`/`STP_COLUMNS`),
+  `write_vlan_census_sheet`/`write_endpoint_census_sheet`(+`VLAN_CENSUS_SHEET_NAME`/
+  `ENDPOINT_CENSUS_SHEET_NAME`). No analyze compute calls — they just iterate the model.
+- excel.py gained: a module `logger = logging.getLogger(__name__)`, `from cisco_toolkit.model
+  import DevicePhysical, InterfaceData`, `_split_macs` (textutils), `List` (typing). The census
+  writers use excel.py's own `_census_header`/`_census_autofit` (same module now).
+- Import-backs: the 5 writers (main() calls them). Constants + `_is_svi` package-internal.
+- **F401 cascade:** `_split_macs` was `write_vlan_census_sheet`'s last monolith user → dropped its
+  textutils re-import + updated the step-11 identity assertion to `not hasattr(cp, ...)`
+  (analyze.py + excel.py import `_split_macs` from textutils directly). `_census_header`/
+  `_census_autofit` STAY re-exported — the *remaining* monolith writers (move-group/topology/
+  health/etc.) still use them.
+- Mechanics: big contiguous block (monolith 816-1122). Did the removal in 2 monolith edits
+  (inventory; then SVI+STP+census as one) + the excel.py append as one. mypy now "4 files" (census
+  dynamic-dict findings relocated with the writers; net 101). **65 tests** (extended the excel test:
+  5 writer identities + `_is_svi` smoke + constants-package-internal). Golden byte-identical, ruff
+  clean, mypy 101. `.md` V3.23.31.
+
+**Excel writers remaining (next batches):** (b) **step 22 = move-group/topology/findings/capacity**
+(`write_move_group_sheet`/`write_topology_sheet`/`write_findings_sheet`/`write_capacity_sheet`/
+`write_topology_diagram`+`_mermaid_id`+`_canon_host`-callers — these DO call analyze computes
+[compute_move_groups/topology_links/findings], so excel.py will import analyze → fine, excel is
+above analyze); (c) health/analysis writers; (d) FUSED compute-in-writer (physical-health/
+l3-forwarding+`_parse_track`/`_track_summary`/flow-trace); (e) `append_interface_rows` + build_*
+(build_device_physical/build_interfaces/build_switch_identity) + global_arp + `debug_scan_headers`.
+Then html (snapshot/explorer/diff/topology_diagram), then `__main__`. Sequential.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 20: stand up the Excel layer (shared helpers)
 
 On branch `phase2-split-excel1`. Byte-identical. **First excel slice — establishes
