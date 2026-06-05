@@ -606,6 +606,129 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
         if low.startswith("vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]
     return res
 
+# ----------------------------------------------------------------------------- #
+# ACL DEFINITIONS (L4 allow/deny sim) - parse 'ip access-list' / 'access-list'
+# rule bodies out of the already-collected 'show running-config'. Normalizes each
+# address to {ip, wild} (IOS wildcard form; NX-OS prefixes converted) so the JS
+# evaluator in the explorer can match a 5-tuple. Rules it can't fully model
+# (object-groups, unknown port names) carry 'unevaluable': True so the evaluator
+# stays honest (INDETERMINATE, never a false PERMIT/DENY).
+# ----------------------------------------------------------------------------- #
+_ACL_PORT_NAMES = {
+    "ftp-data":20,"ftp":21,"ssh":22,"telnet":23,"smtp":25,"domain":53,"tftp":69,"www":80,"http":80,
+    "https":443,"pop3":110,"ntp":123,"snmp":161,"snmptrap":162,"bgp":179,"ldap":389,"ldaps":636,
+    "isakmp":500,"syslog":514,"rip":520,"sip":5060,"bootps":67,"bootpc":68,"finger":79,"kerberos":88,
+    "netbios-ns":137,"netbios-dgm":138,"netbios-ss":139,"msrpc":135,"rdp":3389,"sqlnet":1521,"mysql":3306,
+}
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+def _acl_portnum(tok: Optional[str]) -> Optional[int]:
+    """Service name or numeric string -> int port; None if unknown (-> rule unevaluable)."""
+    if tok is None: return None
+    t = tok.strip().lower()
+    if t.isdigit(): return int(t)
+    return _ACL_PORT_NAMES.get(t)
+
+def _acl_prefix_to_wild(plen: int) -> str:
+    """CIDR length -> IOS wildcard dotted string. 24 -> '0.0.0.255'."""
+    plen = max(0, min(32, plen))
+    mask = (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF if plen else 0
+    wild = (~mask) & 0xFFFFFFFF
+    return ".".join(str((wild >> s) & 0xFF) for s in (24, 16, 8, 0))
+
+def _acl_addr(toks: List[str], i: int):
+    """Consume one src/dst address spec at toks[i]. -> (addr|None, next_i, unevaluable)."""
+    if i >= len(toks): return None, i, True
+    t = toks[i]; tl = t.lower()
+    if tl == "any":  return {"ip":"0.0.0.0","wild":"255.255.255.255"}, i+1, False
+    if tl == "host":
+        if i+1 < len(toks) and _IPV4_RE.match(toks[i+1]): return {"ip":toks[i+1],"wild":"0.0.0.0"}, i+2, False
+        return None, i+2, True
+    if tl in ("object-group","addrgroup","addr-group"):
+        return {"group": toks[i+1] if i+1 < len(toks) else ""}, i+2, True
+    m = re.match(r"^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$", t)        # NX-OS prefix form
+    if m: return {"ip":m.group(1),"wild":_acl_prefix_to_wild(int(m.group(2)))}, i+1, False
+    if _IPV4_RE.match(t):
+        if i+1 < len(toks) and _IPV4_RE.match(toks[i+1]): return {"ip":t,"wild":toks[i+1]}, i+2, False  # IOS addr+wildcard
+        return {"ip":t,"wild":"0.0.0.0"}, i+1, False                  # bare host (standard ACL)
+    return None, i+1, True
+
+def _acl_port(toks: List[str], i: int):
+    """Consume an optional port operator at toks[i]. -> (port|None, next_i)."""
+    if i >= len(toks): return None, i
+    op = toks[i].lower()
+    if op in ("eq","neq","gt","lt"):
+        return {"op":op,"val":_acl_portnum(toks[i+1] if i+1 < len(toks) else None)}, i+2
+    if op == "range":
+        return {"op":"range","val":_acl_portnum(toks[i+1] if i+1 < len(toks) else None),
+                "val2":_acl_portnum(toks[i+2] if i+2 < len(toks) else None)}, i+3
+    return None, i
+
+_ANY_ADDR = {"ip":"0.0.0.0","wild":"255.255.255.255"}
+
+def _acl_rule(action: str, rest: str, extended: bool) -> dict:
+    """Parse one rule body (text after permit|deny) into a normalized rule dict."""
+    toks = rest.split()
+    rule: dict = {"action": action, "raw": (action + " " + rest).strip()}
+    uneval = False
+    if not extended:                                                  # standard: src only, proto=ip, dst=any
+        src, _, u = _acl_addr(toks, 0)
+        rule.update(proto="ip", src=src or dict(_ANY_ADDR), dst=dict(_ANY_ADDR), sport=None, dport=None)
+        uneval = u or src is None
+    elif not toks:
+        rule.update(proto="ip", src=dict(_ANY_ADDR), dst=dict(_ANY_ADDR), sport=None, dport=None)
+        uneval = True
+    else:
+        rule["proto"] = toks[0].lower(); i = 1
+        src, i, u1 = _acl_addr(toks, i)
+        sport, i = _acl_port(toks, i)
+        dst, i, u2 = _acl_addr(toks, i)
+        dport, i = _acl_port(toks, i)
+        rule.update(src=src or dict(_ANY_ADDR), dst=dst or dict(_ANY_ADDR), sport=sport, dport=dport)
+        uneval = u1 or u2 or src is None or dst is None
+    for p in (rule.get("sport"), rule.get("dport")):                  # unknown port name -> can't evaluate
+        if p is not None and (p.get("val") is None or (p.get("op") == "range" and p.get("val2") is None)):
+            uneval = True
+    if uneval: rule["unevaluable"] = True
+    return rule
+
+def parse_acls(output: str) -> Dict[str, List[dict]]:
+    """Parse ACL definitions from 'show running-config' -> {acl_name: [rule,...]}.
+
+    Handles IOS numbered standard/extended one-liners, IOS named
+    'ip access-list {standard|extended} NAME' blocks, and NX-OS
+    'ip access-list NAME' blocks. Tolerant: unrecognized lines are skipped,
+    never raises. The 'ip access-group' APPLICATION lines are NOT touched here
+    (parse_run_config_interfaces handles those)."""
+    acls: Dict[str, List[dict]] = {}
+    if not output: return acls
+    cur: Optional[str] = None       # current named ACL
+    cur_ext = True
+    STD_EXT_RE = re.compile(r"^\s*ip\s+access-list\s+(standard|extended)\s+(\S+)", re.IGNORECASE)
+    NXOS_RE    = re.compile(r"^\s*ip\s+access-list\s+(\S+)\s*$", re.IGNORECASE)
+    NUM_RE     = re.compile(r"^\s*access-list\s+(\d+)\s+(permit|deny)\s+(.*)$", re.IGNORECASE)
+    CHILD_RE   = re.compile(r"^\s*(?:\d+\s+)?(permit|deny)\s+(.*)$", re.IGNORECASE)
+    for raw in output.splitlines():
+        line = raw.rstrip()
+        if not line.strip(): continue
+        mnum = NUM_RE.match(line)                                     # numbered one-liner (col 0)
+        if mnum:
+            num, action, rest = mnum.group(1), mnum.group(2).lower(), mnum.group(3)
+            n = int(num); ext = (100 <= n <= 199) or (2000 <= n <= 2699)
+            acls.setdefault(num, []).append(_acl_rule(action, rest, ext)); cur = None; continue
+        msx = STD_EXT_RE.match(line)                                  # IOS named header
+        if msx:
+            cur_ext = msx.group(1).lower() == "extended"; cur = msx.group(2); acls.setdefault(cur, []); continue
+        mnx = NXOS_RE.match(line)                                     # NX-OS header (no standard/extended kw)
+        if mnx:
+            cur = mnx.group(1); cur_ext = True; acls.setdefault(cur, []); continue
+        if cur is not None and raw[:1].isspace():                     # indented child rule
+            mc = CHILD_RE.match(line)
+            if mc: acls[cur].append(_acl_rule(mc.group(1).lower(), mc.group(2), cur_ext)); continue
+            continue                                                  # remark / other indented line -> skip
+        cur = None                                                    # any col-0 non-ACL line ends the block
+    return acls
+
 def _proto_from_token(tok: str) -> str:
     t = (tok or "").strip().upper()
     if t == "LACP": return "Active"
