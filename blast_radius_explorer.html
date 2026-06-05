@@ -675,6 +675,7 @@ let SEL=null, VLAN="all", MODE="blast", LAYOUT="layered";
 let TRACE_SRC=null, TRACE_DST=null, TRACE=null;
 let MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
 let SEARCHQ="";
+let EPSEL=null, EPALL=[];   // PHASE A: selected endpoint + the flat endpoint index
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 
@@ -686,8 +687,17 @@ function deviceModel(h){const d=SNAP&&SNAP.devices&&SNAP.devices[h]; return d&&d
 function endpointsOf(h){const out=[];const ifs=SNAP&&SNAP.interfaces&&SNAP.interfaces[h];if(!ifs)return out;
   for(const p of Object.keys(ifs)){const d=ifs[p];if(isAccessEndpoint(d)){
     const macs=(d.end_host_mac||"").split(/[,\s]+/).filter(Boolean);
-    out.push({port:p,vlan:d.vlan||"",ip:(d.end_host_ip||"").trim(),mac:macs[0]||"",macs});}}
+    out.push({host:h,port:p,vlan:d.vlan||"",type:d.switchport_mode||"",ip:(d.end_host_ip||"").trim(),mac:macs[0]||"",macs});}}
   return out;}
+/* ---- endpoint index + selection (PHASE A: endpoint intelligence) ---- */
+function buildEndpointIndex(){EPALL=[]; if(!SNAP||!SNAP.interfaces)return;
+  for(const h of Object.keys(SNAP.interfaces))for(const e of endpointsOf(h))EPALL.push(e);}
+function findEndpointByIpMac(q){q=(q||"").trim().toLowerCase(); if(!q)return null;
+  for(const e of EPALL){if((e.ip||"").toLowerCase()===q)return e;
+    for(const m of e.macs)if((m||"").toLowerCase()===q)return e;}
+  return null;}
+function selectEndpoint(e){if(!e)return; EPSEL=e; SEL=null; repaint(); renderDrawer();
+  if(e.host&&POS[e.host])centerOn(e.host);}
 
 /* ---- snapshot schema guard (PHASE 3 P2): warn + render best-effort, never white-screen ---- */
 const SCHEMA_OK="collect_parse_snapshot/1";
@@ -713,7 +723,8 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use arrow keys to move between switches and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
+  SEL=null; EPSEL=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
+  buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
   computeLayout(); buildChips(); renderSrTable(); fitView(); repaint(); renderDrawer();
@@ -874,7 +885,7 @@ function repaint(){
   else if(MODE==="compare")paintCompare();
   else if(MODE==="flow")paintFlow();
   else if(MODE==="health")paintHealth();
-  applySearch(); setHint(); setModeTag(); setLegend();
+  applySearch(); if(EPSEL&&nodeEls[EPSEL.host])nodeEls[EPSEL.host].g.classList.add("match"); setHint(); setModeTag(); setLegend();
 }
 
 function sevToken(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";}
@@ -990,13 +1001,13 @@ function renderSrTable(){
     `(text equivalent of the graph)</caption><thead><tr><th scope="col">Switch</th><th scope="col">Role</th>`+
     `<th scope="col">Hosts</th><th scope="col">Connects to</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
-function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();}
+function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} EPSEL=null;
   if(MODE==="trace"){pickTrace(h);
     srAnnounce(TRACE_SRC&&TRACE_DST?`Path traced from ${TRACE_SRC} to ${TRACE_DST}.`:(TRACE_SRC?`Source ${TRACE_SRC} selected; choose a destination.`:"Selection cleared."));}
   else if(MODE==="blast"||MODE==="health"){SEL=(SEL===h)?null:h;repaint();renderDrawer();
     srAnnounce(SEL?`${h} selected. ${deviceRole(MODEL,h)==="core"?"Core / distribution":"Access"} switch, ${epTotalOf(h)} hosts.`:`${h} deselected.`);}}
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
-  else if(SEL){SEL=null;repaint();renderDrawer();}}
+  else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
   else{TRACE_SRC=h;TRACE_DST=null;TRACE=null;} computeTrace();repaint();renderDrawer();}
@@ -1044,14 +1055,18 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
 function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 function renderDrawer(){
   if(!MODEL)return; const p=document.getElementById("panel");
-  if(MODE==="blast")p.innerHTML=drawBlast();
+  if(EPSEL)p.innerHTML=drawEndpoint();
+  else if(MODE==="blast")p.innerHTML=drawBlast();
   else if(MODE==="trace")p.innerHTML=drawTrace();
   else if(MODE==="compare")p.innerHTML=drawCompare();
   else if(MODE==="flow")p.innerHTML=drawFlow();
   else if(MODE==="health")p.innerHTML=drawHealth();
-  // wire row clicks (jump-to-switch)
+  // wire row clicks (jump-to-switch); clears any endpoint drill-down
   p.querySelectorAll("[data-jump]").forEach(r=>r.onclick=()=>{const h=r.dataset.jump;
-    if(MODE==="trace")pickTrace(h); else{SEL=h;repaint();renderDrawer();centerOn(h);}});
+    if(MODE==="trace"){EPSEL=null;pickTrace(h);} else{SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);}});
+  // wire endpoint-row clicks (drill into a single endpoint)
+  p.querySelectorAll("[data-ephost]").forEach(r=>r.onclick=()=>{
+    const e=EPALL.find(x=>x.host===r.dataset.ephost&&x.port===r.dataset.epport); if(e)selectEndpoint(e);});
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -1110,12 +1125,27 @@ function drawBlast(){
     ${endpointsSec(SEL)}`;
 }
 function endpointsSec(h){const eps=endpointsOf(h);if(!eps.length)return "";
-  const byV={};eps.forEach(e=>{(byV[e.vlan]=byV[e.vlan]||[]).push(e);});
-  let rows="";eps.slice(0,40).forEach(e=>{rows+=`<tr><td class="mono faint">${esc(e.port)}</td><td class="vid">${esc(e.vlan)}</td>
+  let rows="";eps.forEach(e=>{rows+=`<tr class="click" data-ephost="${esc(e.host)}" data-epport="${esc(e.port)}"><td class="mono faint">${esc(e.port)}</td><td class="vid">${esc(e.vlan)}</td>
     <td class="mono">${esc(e.ip||"—")}</td><td class="mono faint">${esc(e.mac||"")}</td></tr>`;});
   return `<div class="sec"><h3>Endpoints on this switch <span class="ct">${eps.length}</span></h3>
-    <table><thead><tr><th>Port</th><th>VLAN</th><th>IP</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table>
-    ${eps.length>40?`<p class="faint" style="margin:8px 0 0">+${eps.length-40} more…</p>`:""}</div>`;}
+    <p class="faint" style="margin:0 0 8px">Click an endpoint for its port / VLAN / IP details.</p>
+    <table><thead><tr><th>Port</th><th>VLAN</th><th>IP</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+function drawEndpoint(){const e=EPSEL;
+  const vid=/^\d+$/.test(e.vlan)?+e.vlan:null;
+  const gws=vid!=null?(MODEL.gateways.get(vid)||new Set()):new Set();
+  return `<div class="drawer-head"><div class="eyebrow">Endpoint</div>
+      <div class="title"><span class="mono">${esc(e.ip||e.mac||e.port)}</span></div>
+      <div class="card" data-jump="${esc(e.host)}" style="cursor:pointer;margin-top:9px"><div class="ln">← Back to <b>${esc(shortName(e.host))}</b> and its endpoints</div></div></div>
+    <div class="sec"><h3>Connection</h3>
+      <div class="kv"><span class="k">Switch</span><span class="v mono">${esc(e.host)}</span></div>
+      <div class="kv"><span class="k">Port</span><span class="v mono">${esc(e.port)}</span></div>
+      <div class="kv"><span class="k">Port type</span><span class="v">${esc(e.type||"access")}</span></div>
+      <div class="kv"><span class="k">VLAN</span><span class="v mono">${esc(e.vlan||"—")}</span></div>
+      <div class="kv"><span class="k">IP address</span><span class="v mono">${esc(e.ip||"—")}</span></div>
+      <div class="kv"><span class="k">MAC</span><span class="v mono">${esc(e.macs.join(", ")||"—")}</span></div>
+      <div class="kv"><span class="k">Gateway(s) · VLAN ${esc(e.vlan||"?")}</span><span class="v mono">${gws.size?[...gws].sort().join(", "):"none (no SVI scanned)"}</span></div>
+    </div>`;
+}
 
 /* ---- TRACE ---- */
 function drawTrace(){
@@ -1297,6 +1327,7 @@ document.getElementById("stage").addEventListener("wheel",e=>{e.preventDefault()
   const nk=Math.max(0.2,Math.min(view.k*f,3));
   view.tx=mx-(mx-view.tx)*(nk/view.k); view.ty=my-(my-view.ty)*(nk/view.k); view.k=nk; applyTransform();},{passive:false});
 document.getElementById("search").addEventListener("input",e=>{SEARCHQ=e.target.value.trim();applySearch();});
+document.getElementById("search").addEventListener("keydown",e=>{if(e.key==="Enter"){const ep=findEndpointByIpMac(SEARCHQ); if(ep)selectEndpoint(ep);}});
 document.getElementById("fitBtn").onclick=fitView;
 document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
 document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();};
