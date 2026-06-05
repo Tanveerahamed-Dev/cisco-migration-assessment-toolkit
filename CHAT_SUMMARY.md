@@ -5,6 +5,40 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 19: flow-trace -> analyze (ANALYZE LAYER COMPLETE)
+
+On branch `phase2-split-analyze9`. Byte-identical. **Last analyze cluster.** Monolith
+**~3,064 lines**; `cisco_toolkit/analyze.py` now **~1,344 lines** = the whole analyze layer.
+
+- Moved `trace_full_flow` + helpers `_ip_in_prefix`/`_find_endpoint_by_ip`/`_find_gateways_for`/
+  `_bfs_forwarding_path` → analyze.py. Pure (no `_load_cmd_output`); all deps already in the
+  package (`_is_physical_port`, `_link_carries`, `build_network_model`, `_physical_uplink_index`),
+  so NO new analyze imports. `trace_full_flow` imports back (main() under `--flow-src`/`--flow-dst`,
+  line 3558); the 4 helpers are package-internal. `_RISK_FILL`/`_RISK_RANK`/`FLOW_TRACE_SHEET_NAME`
+  + `write_flow_trace_sheet` stay (excel).
+- **L3-forwarding stayed:** `write_l3_forwarding_sheet` is compute+write FUSED (main() gets the
+  `l3_forwarding` records *from* it — `l3_forwarding = _run_phase("L3 Forwarding Map", write_l3_forwarding_sheet, ...)`),
+  like physical-health's writer. It + `_parse_track`/`_track_summary` move with the excel layer.
+- F401 cascade (routine now): `_link_carries` was `_bfs_forwarding_path`'s last monolith user →
+  dropped the import-back + updated the step-13 identity assertion. `build_network_model` /
+  `_physical_uplink_index` survive (write_l3_forwarding_sheet / write_physical_health_sheet use them).
+- **Harness gotcha:** a fresh `git checkout -b` from main reset the Edit tool's read-tracking for
+  `analyze.py` → first Edit failed "File has not been read." Fix: `Read` the file (even a slice)
+  after branching before Editing. Monolith was fine (I'd Read a region this turn).
+- Extended test_package (trace_full_flow identity + 4 helpers package-internal + `_ip_in_prefix`
+  + a same-subnet L2 flow smoke). **64 tests**, golden byte-identical, ruff clean, mypy 101. `.md` V3.23.29.
+
+**ANALYZE LAYER DONE (steps 10-19).** Remaining PHASE 2.7: **excel** (`write_*` — the biggest
+layer, ~20 sheet writers + their fused-compute like write_l3_forwarding_sheet/write_physical_health_sheet,
++ the openpyxl header helpers `norm_header`/`find_header_row`/`append_interface_rows` etc.; these
+import the analyze/parse computes back, so mostly mechanical but bulky — likely several PRs by sheet
+group), then **html** (snapshot_state/write_html_explorer/write_diff_workbook), then **`__main__`**
+(collect/connect/main + arg parsing — what's left IS the entrypoint). **Next = step 20: start excel**
+(pick a sheet-group: census/topology/move-group writers first, or the build_* helpers
+build_device_physical/build_interfaces/build_switch_identity). Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 18: dependency-map + cross-layer -> analyze
 
 On branch `phase2-split-analyze8`. Byte-identical. Monolith **~3,270 lines**.

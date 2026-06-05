@@ -1251,3 +1251,235 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
 
 def all_hosts(dep: dict) -> set:
     return set(dep["model"]["hosts"])
+
+
+# =============================================================================
+# Flow trace: derive an L1->L3 path between two endpoint IPs and score its
+# resilience. Pure derivation over already-parsed InterfaceData + the shared model
+# (no new collection, no L4). The _RISK_FILL/_RISK_RANK maps + sheet-name constant
+# + write_flow_trace_sheet stay in the monolith (excel).
+# =============================================================================
+def _ip_in_prefix(ip: str, prefix: str) -> bool:
+    if not ip or not prefix:
+        return False
+    try:
+        import ipaddress
+        return ipaddress.ip_address(ip.strip()) in ipaddress.ip_network(prefix.strip(), strict=False)
+    except Exception:
+        return False
+
+def _find_endpoint_by_ip(all_interfaces: Dict[str, Dict[str, InterfaceData]], ip: str):
+    """Locate the access switch/port/VLAN that learned `ip`. Returns (host, port, vid, mac) or None."""
+    ip = (ip or "").strip()
+    for host in sorted(all_interfaces):
+        for port, d in sorted(all_interfaces[host].items()):
+            if not _is_physical_port(port):
+                continue
+            if (d.end_host_ip or "").strip() == ip:
+                vid = int(d.vlan) if (d.vlan or "").isdigit() else None
+                return (host, port, vid, d.end_host_mac or "")
+    return None
+
+def _find_gateways_for(all_interfaces: Dict[str, Dict[str, InterfaceData]], ip: str, vid):
+    """All scanned SVIs that serve `ip` (by VLAN id or by subnet containment) = candidate
+    gateways. >1 entry => FHRP/redundant gateway; 1 => single gateway (L3 SPOF candidate)."""
+    res = []
+    for host in sorted(all_interfaces):
+        for port, d in all_interfaces[host].items():
+            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
+            if not m:
+                continue
+            svid = int(m.group(1))
+            match = (vid is not None and svid == vid) or _ip_in_prefix(ip, d.subnet_primary_route)
+            if match:
+                res.append({"host": host, "vid": svid, "svi_ip": d.svi_ip,
+                            "fhrp": d.hsrp_behavior, "source": d.routing_source,
+                            "next_hop": d.route_next_hop, "prefix": d.subnet_primary_route})
+    return res
+
+def _bfs_forwarding_path(model: Dict[str, object], vid, src_host: str, dst_host: str):
+    """Shortest path of inter-switch hops from src_host to dst_host over STP-forwarding links
+    for VLAN `vid`. Returns [] if same host, a list of hop dicts, or None if no forwarding path."""
+    if not vid or src_host == dst_host:
+        return [] if src_host == dst_host else None
+    from collections import deque
+    adj: Dict[str, set] = {}
+    portmap: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    for link in model["links"]:
+        if _link_carries(link, vid) != "fwd":
+            continue
+        a, b, ap, bp = link["a"], link["b"], link["ap"], link["bp"]
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+        portmap[(a, b)] = (ap, bp)
+        portmap[(b, a)] = (bp, ap)
+    prev: Dict[str, Optional[str]] = {src_host: None}
+    q = deque([src_host])
+    while q:
+        cur = q.popleft()
+        if cur == dst_host:
+            break
+        for nb in sorted(adj.get(cur, ())):
+            if nb not in prev:
+                prev[nb] = cur
+                q.append(nb)
+    if dst_host not in prev:
+        return None
+    chain = []
+    node = dst_host
+    while prev[node] is not None:
+        p = prev[node]
+        ap, bp = portmap[(p, node)]
+        chain.append({"from": p, "out_port": ap, "in_port": bp, "to": node})
+        node = p
+    chain.reverse()
+    return chain
+
+def trace_full_flow(src_ip: str, dst_ip: str,
+                    all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> dict:
+    """Derive an L1->L3 path between two endpoint IPs and score its resilience.
+    Returns {summary{...}, hops[...]}. Path is a lower bound (scan-bound topology)."""
+    model = build_network_model(all_interfaces)
+    uplink_ports, single_fiber = _physical_uplink_index(model)
+
+    src = _find_endpoint_by_ip(all_interfaces, src_ip)
+    dst = _find_endpoint_by_ip(all_interfaces, dst_ip)
+    src_vid = src[2] if src else None
+    dst_vid = dst[2] if dst else None
+    src_gws = _find_gateways_for(all_interfaces, src_ip, src_vid)
+    dst_gws = _find_gateways_for(all_interfaces, dst_ip, dst_vid)
+    same_subnet = bool(src_vid and dst_vid and src_vid == dst_vid)
+
+    hops: List[dict] = []
+    spofs: List[str] = []
+    notes: List[str] = []
+    partitioned = False
+
+    def _add(layer, frm, to, iface, detail, spof=False):
+        hops.append({"n": len(hops) + 1, "layer": layer, "from": frm, "to": to,
+                     "iface": iface, "detail": detail, "spof": bool(spof)})
+
+    def _walk(vid, a_host, a_port_in, b_host, segment_label):
+        """Append fabric hops a_host->b_host for vid; flag single-fiber uplinks; detect partition."""
+        nonlocal partitioned
+        path = _bfs_forwarding_path(model, vid, a_host, b_host)
+        if path is None:
+            partitioned = True
+            _add("L2", a_host, b_host, "", f"{segment_label}: NO forwarding path in VLAN {vid} "
+                                           f"(partitioned / off-scan)", spof=True)
+            spofs.append(f"partition:{a_host}->{b_host}:vlan{vid}")
+            return
+        for h in path:
+            sf_from = (h["from"], h["out_port"]) in single_fiber
+            sf_to = (h["to"], h["in_port"]) in single_fiber
+            sf = sf_from or sf_to
+            det = f"trunk {h['out_port']} -> {h['in_port']} (VLAN {vid})"
+            if sf:
+                det += "  [single-fiber uplink]"
+                if sf_from:
+                    spofs.append(f"uplink:{h['from']}:{h['out_port']}")
+                if sf_to:
+                    spofs.append(f"uplink:{h['to']}:{h['in_port']}")
+            _add("L1/L2", h["from"], h["to"], h["out_port"], det, spof=sf)
+
+    # ---- source endpoint ----
+    if src:
+        _add("L1/L2", src_ip, src[0], src[1], f"endpoint on access port (VLAN {src_vid})")
+    else:
+        notes.append(f"source {src_ip} not located on any scanned access port (off-scan)")
+        _add("L1/L2", src_ip, "?", "", "source endpoint NOT located (off-scan)")
+
+    if same_subnet:
+        # ---- L2 flow: src access switch -> dst access switch within the VLAN ----
+        if src and dst:
+            _walk(src_vid, src[0], src[1], dst[0], "L2 switching")
+        notes.append(f"same-subnet L2 flow (VLAN {src_vid}); no gateway traversal")
+    else:
+        # ---- L3 flow: src -> src gateway -> (route) -> dst gateway -> dst ----
+        reachable_src_gw = None
+        if src and src_gws:
+            for g in src_gws:
+                if _bfs_forwarding_path(model, src_vid, src[0], g["host"]) is not None:
+                    reachable_src_gw = g
+                    break
+            reachable_src_gw = reachable_src_gw or src_gws[0]
+        if src and reachable_src_gw:
+            _walk(src_vid, src[0], src[1], reachable_src_gw["host"], "to src gateway")
+            gw_spof = len(src_gws) <= 1
+            fhrp = (reachable_src_gw.get("fhrp") or "").strip()
+            det = f"gateway SVI {reachable_src_gw.get('svi_ip','?')} on {reachable_src_gw['host']} " \
+                  f"(VLAN {src_vid}); {'FHRP: ' + fhrp if fhrp else 'no FHRP'}"
+            if gw_spof:
+                det += "  [single gateway]" + ("" if not fhrp else " - only one peer in scan")
+                spofs.append(f"gateway:vlan{src_vid}:{reachable_src_gw['host']}")
+            _add("L3", reachable_src_gw["host"], reachable_src_gw["host"],
+                 f"Vlan{src_vid}", det, spof=gw_spof)
+            # routing decision toward dst subnet
+            same_router = bool(dst_gws and any(g["host"] == reachable_src_gw["host"] for g in dst_gws))
+            if same_router:
+                _add("L3", reachable_src_gw["host"], reachable_src_gw["host"], "",
+                     f"inter-VLAN routed locally to VLAN {dst_vid} "
+                     f"(source: {reachable_src_gw.get('source','?')})")
+            else:
+                nh = reachable_src_gw.get("next_hop") or reachable_src_gw.get("source") or "unknown"
+                _add("L3", reachable_src_gw["host"], dst_gws[0]["host"] if dst_gws else "?", "",
+                     f"routed to dst subnet via {nh} "
+                     f"(redundancy of routed segment not verified - scan bound)")
+                notes.append("routed inter-router segment is a lower bound (off-scan paths not modeled)")
+        # dst gateway -> dst
+        reachable_dst_gw = None
+        if dst and dst_gws:
+            for g in dst_gws:
+                if _bfs_forwarding_path(model, dst_vid, g["host"], dst[0]) is not None:
+                    reachable_dst_gw = g
+                    break
+            reachable_dst_gw = reachable_dst_gw or dst_gws[0]
+        if dst and reachable_dst_gw:
+            dgw_spof = len(dst_gws) <= 1
+            if dgw_spof and f"gateway:vlan{dst_vid}:{reachable_dst_gw['host']}" not in spofs:
+                spofs.append(f"gateway:vlan{dst_vid}:{reachable_dst_gw['host']}")
+            _add("L3", reachable_dst_gw["host"], reachable_dst_gw["host"], f"Vlan{dst_vid}",
+                 f"dst gateway SVI {reachable_dst_gw.get('svi_ip','?')} on {reachable_dst_gw['host']}"
+                 + ("  [single gateway]" if dgw_spof else ""), spof=dgw_spof)
+            _walk(dst_vid, reachable_dst_gw["host"], "", dst[0], "from dst gateway")
+        if not src_gws:
+            notes.append(f"no scanned gateway found for source {src_ip}")
+        if not dst_gws:
+            notes.append(f"no scanned gateway found for destination {dst_ip}")
+
+    # ---- destination endpoint ----
+    if dst:
+        _add("L1/L2", dst[0], dst_ip, dst[1], f"endpoint on access port (VLAN {dst_vid})")
+    else:
+        notes.append(f"destination {dst_ip} not located on any scanned access port (off-scan)")
+        _add("L1/L2", "?", dst_ip, "", "destination endpoint NOT located (off-scan)")
+
+    notes.append("L4 transport filtering not evaluated (no ACL/service-policy collected); "
+                 "path reflects L1-L3 reachability only")
+
+    # ---- risk scoring ----
+    spofs = list(dict.fromkeys(spofs))      # de-dup, preserve order
+    n_spof = len(spofs)
+    incomplete = (src is None or dst is None)
+    if partitioned:
+        risk = "CRITICAL"
+    elif incomplete:
+        risk = "MEDIUM"     # cannot assert end-to-end resilience on an off-scan path
+    elif n_spof == 0:
+        risk = "LOW"
+    elif n_spof == 1:
+        risk = "MEDIUM"
+    elif n_spof == 2:
+        risk = "HIGH"
+    else:
+        risk = "CRITICAL"
+
+    summary = {
+        "src_ip": src_ip, "dst_ip": dst_ip,
+        "flow_type": "L2 (same subnet)" if same_subnet else "L3 (routed)",
+        "src_location": (f"{src[0]} {src[1]} (VLAN {src_vid})" if src else "not located"),
+        "dst_location": (f"{dst[0]} {dst[1]} (VLAN {dst_vid})" if dst else "not located"),
+        "risk": risk, "spof_count": n_spof, "spofs": spofs,
+        "incomplete": incomplete, "partitioned": partitioned, "notes": notes,
+    }
+    return {"summary": summary, "hops": hops}
