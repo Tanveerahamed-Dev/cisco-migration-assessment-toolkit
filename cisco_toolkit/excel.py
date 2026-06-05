@@ -10,6 +10,7 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -26,7 +27,9 @@ from cisco_toolkit.parse import (
     parse_eigrp_neighbors, parse_interface_phy, parse_ospf_neighbors,
     parse_port_security, parse_show_interface_counters,
 )
-from cisco_toolkit.textutils import _split_macs, normalize_ifname, normalize_speed
+from cisco_toolkit.textutils import (
+    PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS, _split_macs, normalize_ifname, normalize_speed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1248,3 +1251,108 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
     logger.info(f"  [OK] '{L3_FORWARDING_SHEET_NAME}' sheet: {len(records)} gateway SVI(s), "
                 f"{n_flagged} flagged")
     return records
+
+
+# =============================================================================
+# The main interface template filler (PHASE 2.7 step 26). Writes one row per
+# physical port into the 'Migration Assessment' template sheet, matching existing
+# host/port rows or appending. This produces the golden's interface sheet, so the
+# logic is byte-exact. Uses find_header_row/ensure_headers/sortkey (above) + the
+# template header map.
+# =============================================================================
+def append_interface_rows(ws, header_row: int, col_map: Dict[str,int],
+                          hostname: str, interfaces: Dict[str, InterfaceData]):
+    required_cols = [col_map["hostname"], col_map["port"], col_map["status"]]
+
+    def row_is_writable(r):
+        return not any(isinstance(ws.cell(row=r, column=c), MergedCell) for c in required_cols)
+
+    existing_rows: Dict[Tuple[str,str],int] = {}
+    for r in range(header_row+1, ws.max_row+1):
+        if not row_is_writable(r): continue
+        hv = ws.cell(row=r, column=col_map["hostname"]).value
+        pv = ws.cell(row=r, column=col_map["port"]).value
+        if hv and pv:
+            existing_rows[(str(hv).strip(), normalize_ifname(str(pv).strip()))] = r
+
+    def next_empty_row(start):
+        r = start
+        while True:
+            if not row_is_writable(r): r += 1; continue
+            if ws.cell(row=r, column=col_map["hostname"]).value not in (None,""): r += 1; continue
+            return r
+
+    append_row = next_empty_row(header_row+1)
+
+    for port in sorted(interfaces.keys(), key=sortkey):
+        d      = interfaces[port]
+        norm_p = normalize_ifname(port)
+        if norm_p.lower().startswith(("vlan","lo","loop","null","tunnel","mgmt0")): continue
+        if port.strip().startswith("%"): continue
+        if not PHYSICAL_IFACE_RE.match(norm_p):
+            if not re.match(r"^(Fa|mgmt)\d", norm_p, re.IGNORECASE): continue
+
+        key = (hostname, normalize_ifname(port))
+        if key in existing_rows:
+            row = existing_rows[key]
+        else:
+            row = next_empty_row(append_row)
+            append_row = row + 1
+
+        ws.cell(row=row, column=col_map["hostname"], value=hostname)
+        ws.cell(row=row, column=col_map["port"],     value=d.port)
+        ws.cell(row=row, column=col_map["status"],   value=d.status)
+
+        def w(field, val):
+            if field not in col_map: return
+            cell = ws.cell(row=row, column=col_map[field])
+            if isinstance(cell, MergedCell): return
+            cell.value = val if val else (cell.value or None)
+
+        def w_po(field, val):
+            if field not in col_map: return
+            cell = ws.cell(row=row, column=col_map[field])
+            if isinstance(cell, MergedCell): return
+            existing = str(cell.value or "").strip().lower()
+            if existing in _TRUNK_STATUS_WORDS: cell.value = val if val else None
+            else: cell.value = val if val else (cell.value or None)
+
+        w("switchport_mode",      d.switchport_mode)
+        w("vlan",                 d.vlan)
+        w("vlan_name",            d.vlan_name)
+        w("vrf",                  d.vrf)
+        w("duplex",               d.duplex)
+        w("speed",                d.speed)
+        w("port_type",            d.port_type)
+        w("link_type",            d.link_type)
+        w("description",          d.description)
+        w("end_host_mac",         d.end_host_mac)
+        w("end_host_ip",          d.end_host_ip)
+        w_po("port_channel",      d.port_channel)
+        w("port_channel_protocol",d.port_channel_protocol)
+        w("stp_blocked",          d.stp_blocked)
+        w("stp_bpduguard",        d.stp_bpduguard)
+        w("stp_rootguard",        d.stp_rootguard)
+        w("poe_status",           d.poe_status)
+        w("system_owner",         d.system_owner)
+        w("endpoint_type",        d.endpoint_type)
+        w("endpoint_location",    d.endpoint_location)
+        w("dual_connection",      d.dual_connection)
+        w("trunk_native_vlan",    d.trunk_native_vlan)
+        w("trunk_allowed_vlans",  d.trunk_allowed_vlans)
+        w("trunk_status",         d.trunk_status)
+        w("arp_source_switch",    d.arp_source_switch)   # NEW-V11
+        w("cdp_neighbor",         d.cdp_neighbor)        # NEW-V11
+        # NEW-V14.2
+        w("current_switch_serial",      d.current_switch_serial)
+        w("current_switch_ip",          d.current_switch_ip)
+        w("current_switch_vtp_domain",  d.current_switch_vtp_domain)
+        w("neighbor_switch_serial",     d.neighbor_switch_serial)
+        w("neighbor_switch_ip",         d.neighbor_switch_ip)
+        w("neighbor_switch_vtp_domain", d.neighbor_switch_vtp_domain)
+        w("subnet_primary_route",       d.subnet_primary_route)
+        w("subnet_secondary_routes",    d.subnet_secondary_routes)
+        w("route_next_hop",             d.route_next_hop)
+        w("routing_source",             d.routing_source)
+        w("hsrp_behavior",              d.hsrp_behavior)
+        w("multicast_info",             d.multicast_info)
