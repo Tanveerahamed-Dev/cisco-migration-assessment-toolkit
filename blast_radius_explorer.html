@@ -575,7 +575,7 @@ function demoSnapshot(){
     "DIST-2":Object.assign({},
       {"Vlan10":gw(10,"10.0.10.3","HSRP grp10 standby vIP 10.0.10.1"),
        "Vlan20":gw(20,"10.0.20.3","HSRP grp20 standby vIP 10.0.20.1"),
-       "Vlan99":gw(99,"10.0.99.3","HSRP grp99 standby vIP 10.0.99.1")},
+       "Vlan99":gw(99,"10.0.99.2","HSRP grp99 standby vIP 10.0.99.1")},   // addressing integrity: DUPLICATE physical IP (also DIST-1 Vlan99) -> L3 clash
       {"Po1":link("DIST-1","Po1",{port:"Po1",fwd:ALL,pc:"Po1"}),
        "Gi1/0/1":link("ACC-1","Gi1/0/23",{port:"Gi1/0/1",blk:ALL}),
        "Gi1/0/4":link("ACC-4","Gi1/0/23",{port:"Gi1/0/4",fwd:ALL})}),
@@ -1650,6 +1650,47 @@ function calibrationCard(){
     ${dist?`<div class="ln" style="margin-top:4px">${dist}</div>`:""}
     ${sugg}</div>`;
 }
+/* Addressing integrity (migration consolidation): scan every L3 interface's physical IP across the WHOLE
+   fabric for two silent, offline-detectable killers that surface when domains merge or a move-group cuts
+   over -- (1) the same physical IP on two interfaces (duplicate L3 address; the FHRP virtual IP lives in
+   hsrp_behavior, NOT svi_ip, so a shared svi_ip is always a real clash, never the VIP), and (2) the same
+   subnet behind two different VLANs in the same VRF (overlapping addressing -> ambiguous routing). */
+function _int2ip(n){return [24,16,8,0].map(s=>(n>>>s)&255).join(".");}
+function _parseSviIp(svi_ip){          // "10.0.10.2 255.255.255.0" | "10.0.10.2/24" -> {ip,netStr}|null
+  const parts=String(svi_ip||"").trim().split(/\s+/); if(!parts[0])return null;
+  let ip=parts[0], plen=null;
+  if(ip.indexOf("/")>=0){const seg=ip.split("/"); ip=seg[0]; plen=+seg[1];}
+  else if(parts[1]){const mi=_ip2int(parts[1]); if(mi!=null){plen=0;let m=mi;for(let i=0;i<32;i++){if((m&0x80000000)>>>0){plen++;m=(m<<1)>>>0;}else break;}}}
+  const a=_ip2int(ip); if(a==null)return null;
+  if(plen==null||plen<0||plen>32)return {ip, netStr:null};
+  const mask=plen===0?0:((0xFFFFFFFF<<(32-plen))>>>0);
+  return {ip, netStr:_int2ip((a&mask)>>>0)+"/"+plen};
+}
+function addressingConflicts(){
+  const ifs=(SNAP&&SNAP.interfaces)||{}; const byIp=new Map(), bySub=new Map();
+  for(const host in ifs)for(const port in ifs[host]){const d=ifs[host][port];
+    if(!isSvi(d)||!d.svi_ip)continue; const p=_parseSviIp(d.svi_ip); if(!p)continue;
+    const vid=sviVid(d), vrf=_normVrf(d.vrf||""); const rec={host,vid,port};
+    if(!byIp.has(p.ip))byIp.set(p.ip,[]); byIp.get(p.ip).push(rec);
+    if(p.netStr&&vid!=null){const k=vrf+"|"+p.netStr; if(!bySub.has(k))bySub.set(k,[]); bySub.get(k).push({host,vid,port,vrf,netStr:p.netStr});}}
+  const dupIp=[], dupSubnet=[];
+  for(const [ip,arr] of byIp){if(new Set(arr.map(a=>a.host+"|"+a.port)).size>1)dupIp.push({ip,where:arr});}   // same IP on >=2 distinct interfaces
+  for(const [,arr] of bySub){if(new Set(arr.map(a=>a.vid)).size>1)dupSubnet.push({netStr:arr[0].netStr,vrf:arr[0].vrf,where:arr});}   // one subnet behind >=2 VLANs (same VRF)
+  return {dupIp, dupSubnet, total:dupIp.length+dupSubnet.length};
+}
+function addressingCard(){
+  if(!SNAP||!SNAP.interfaces)return "";
+  const c=addressingConflicts();
+  const loc=w=>w.map(x=>esc(shortName(x.host))+" "+(x.vid!=null?("VLAN "+x.vid):esc(x.port))).join(", ");
+  if(!c.total)
+    return `<div class="sec"><h3>Addressing integrity <span class="badge b-ok">clean</span></h3>`+
+      `<div class="ln faint">✓ No duplicate L3 interface IPs or overlapping subnets across the fabric — no addressing clashes to resolve before a merge / cutover.</div></div>`;
+  const ipRows=c.dupIp.map(d=>`<div class="ln"><span class="pill pl-crit">✗ duplicate IP</span> <span class="mono">${esc(d.ip)}</span> is configured on <b>${loc(d.where)}</b> — two interfaces claiming one L3 address.</div>`).join("");
+  const subRows=c.dupSubnet.map(d=>`<div class="ln"><span class="pill pl-crit">✗ overlapping subnet</span> <span class="mono">${esc(d.netStr)}</span>${d.vrf?` <span class="faint">(VRF ${esc(d.vrf)})</span>`:""} serves <b>${loc(d.where)}</b> — one subnet behind multiple VLANs (ambiguous routing).</div>`).join("");
+  return `<div class="sec"><h3>Addressing integrity <span class="badge b-crit">${c.total} conflict${c.total===1?"":"s"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">L3 addressing clashes — the classic silent outage when two domains merge or a move-group cuts over.</div>`+
+    ipRows+subRows+`</div>`;
+}
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
   if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
@@ -1703,6 +1744,7 @@ function drawHealth(){
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${calibrationCard()}
+    ${addressingCard()}
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
