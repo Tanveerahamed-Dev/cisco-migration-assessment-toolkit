@@ -5,6 +5,42 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 28: build_interfaces -> build.py (BUILD LAYER COMPLETE)
+
+On branch `phase2-split-build2`. Byte-identical. Monolith **~1,451 lines**; `cisco_toolkit/build.py` **~444 = the whole build layer**.
+
+- Moved the ~300-line per-device `InterfaceData` builder `build_interfaces` (deferred from step 27) → build.py
+  via a verbatim move script (CRLF-preserving, boundary-asserted — too big to hand-transcribe safely). build.py
+  gained `import re` + `_safe_parse` (cmdio) + ~22 parsers (parse) + `detect_link_type` (textutils). Imported
+  back for main() (calls it @ ~1740) + conftest's `built` fixture (`cp.build_interfaces`).
+- **MILESTONE: the monolith no longer imports cisco_toolkit.parse at ALL** — build_interfaces was the last
+  parser consumer. Removed the whole `from cisco_toolkit.parse import (…)` (23 parsers). The F401 cascade also
+  emptied cmdio down to `_CISCO_ERRORS` (dropped `_load_cmd_output` / `_safe_parse`), textutils down to
+  `safe_fs_name` (dropped `normalize_ifname` / `detect_link_type` — build_interfaces was their last monolith
+  user too), and `Optional` (typing). ruff caught all of it across two passes.
+- **Biggest test cascade of the split:**
+  - `test_parsers` (already imported `parse`): `cp.parse_*` → `parse.parse_*` (replace_all).
+  - `test_platform_variants`: added `from cisco_toolkit import parse`, same repoint.
+  - `test_parser_robustness`: the robustness tests monkeypatch a *failing* parser then call build_interfaces.
+    Since build_interfaces now resolves parser names in **build.py's** namespace (and `cp` no longer has them),
+    the patch target moved `cp` → `cisco_toolkit.build` (else `monkeypatch.setattr` raises AttributeError);
+    `_safe_parse` now from cmdio. **LESSON: `from X import name` binds into the importer's namespace — to patch
+    a function a moved consumer calls, patch it on the CONSUMER's module (build), not the monolith and not parse.**
+  - `test_package`: updated 5 stale identity assertions (normalize_ifname / detect_link_type /
+    parse_show_interface_status / _load_cmd_output+_safe_parse / parse_run_config_interfaces → all
+    package-internal) and flipped step-27's `not hasattr(build, "build_interfaces")` guard to
+    `cp.build_interfaces is build.build_interfaces`.
+- **66 tests**, golden **byte-identical**, ruff clean, mypy 101. `.md` V3.23.38.
+
+**Remaining PHASE 2.7 (~2 PRs): (1) next = html** (`snapshot_state` [the golden's JSON contract — care],
+`write_html_explorer`, `write_diff_workbook`, `write_topology_diagram`, `_mermaid_id`, `_macset`, maybe
+`write_json_file` / `file_sha256` / `build_run_manifest`) → `cisco_toolkit/html.py`. **(2) then `__main__`** =
+what's left (setup_logging / debug_scan_headers / autodetect_platform / detect_platform_from_files /
+connect_device / send_cmd / collect / load_devices / main / argparse / `_run_phase` / `_empty_dep_map` + the
+COMMANDS_* lists) — keep as the thin entrypoint or thin into the package. Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 27: model-construction layer -> build.py
 
 On branch `phase2-split-build1`. Byte-identical. Monolith **~1,745 lines**; new `cisco_toolkit/build.py` **~155 lines**.
