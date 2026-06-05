@@ -23,6 +23,7 @@ from cisco_toolkit.parse import (
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat,
+    parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
 )
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
 
@@ -49,6 +50,20 @@ def build_nat(cmd_to_file: Dict[str, str]) -> dict:
     Fail-soft via _safe_parse."""
     run = _load_cmd_output(cmd_to_file, "show running-config")
     return _safe_parse(parse_nat, run) or {}
+
+
+def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:
+    """Protocol-to-protocol analysis: this device's dynamic-routing adjacencies, parsed from the
+    already-collected 'show ip ospf neighbor' / 'show ip eigrp neighbors' / 'show [ip] bgp summary'
+    (NO new collected command). Returns {ospf:[{neighbor,state,address,interface}],
+    eigrp:[{neighbor,interface,state}], bgp:[{neighbor,as,state}]}; each list empty when that protocol
+    isn't running. Lets the explorer surface protocol boundaries (devices running >=2 protocols),
+    adjacency health (FULL/Established vs stuck), and the BGP AS map. Fail-soft via _safe_parse."""
+    return {
+        "ospf":  _safe_parse(parse_ospf_neighbors,  _load_cmd_output(cmd_to_file, "show ip ospf neighbor")) or [],
+        "eigrp": _safe_parse(parse_eigrp_neighbors, _load_cmd_output(cmd_to_file, "show ip eigrp neighbors")) or [],
+        "bgp":   _safe_parse(parse_bgp_summary,     _load_cmd_output(cmd_to_file, "show ip bgp summary", "show bgp summary")) or [],
+    }
 
 
 # -----------------------------------------------------------------------------

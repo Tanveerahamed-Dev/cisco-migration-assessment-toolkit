@@ -1956,5 +1956,25 @@
     "out_intf": "Vlan20"
    }
   ]
+ },
+ "routing_neighbors": {
+  "core1": {
+   "ospf": [
+    {
+     "neighbor": "10.0.99.2",
+     "state": "FULL/DR",
+     "address": "10.0.99.2",
+     "interface": "Po1"
+    },
+    {
+     "neighbor": "10.0.99.9",
+     "state": "EXSTART/DROTHER",
+     "address": "10.0.40.9",
+     "interface": "Vlan40"
+    }
+   ],
+   "eigrp": [],
+   "bgp": []
+  }
  }
 }

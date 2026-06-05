@@ -353,7 +353,7 @@ from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
-    build_routes, inscope_subnets, scope_routes, build_nat,
+    build_routes, inscope_subnets, scope_routes, build_nat, build_routing_neighbors,
 )
 # NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
@@ -1290,6 +1290,7 @@ def main():
     all_acls: Dict[str, dict] = {}
     all_object_groups: Dict[str, dict] = {}
     all_nat: Dict[str, dict] = {}                                    # NEW-V3.23.50 (NAT inventory)
+    all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     for hostname, platform, cmd_to_file in all_devices_meta:
         acls = build_acls(cmd_to_file)
         if acls:
@@ -1304,6 +1305,11 @@ def main():
             all_nat[hostname] = nat
             logger.info(f"  [NAT] {hostname}: {len(nat.get('static', []))} static, "
                         f"{len(nat.get('dynamic', []))} dynamic rule(s)")
+        rn = build_routing_neighbors(cmd_to_file)
+        if any(rn.values()):
+            all_routing_neighbors[hostname] = rn
+            logger.info(f"  [PROTO] {hostname}: {len(rn['ospf'])} OSPF, "
+                        f"{len(rn['eigrp'])} EIGRP, {len(rn['bgp'])} BGP adjacency(ies)")
 
     # Phase 5.7: routing tables (route-aware reachability) - parsed from the already-collected
     # 'show ip route', scoped to the in-scope gateway subnets so the embedded snapshot stays small.
@@ -1484,6 +1490,7 @@ def main():
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}
     snap_dict["routes"] = all_routes                                # NEW (route-aware reachability): {host:[{prefix,source,next_hop,out_intf}]}
+    snap_dict["routing_neighbors"] = all_routing_neighbors          # NEW (protocol-to-protocol analysis): {host:{ospf:[...],eigrp:[...],bgp:[...]}}
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
