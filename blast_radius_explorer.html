@@ -132,6 +132,20 @@
   #tableView .mono{font-family:var(--mono); font-size:12px}
   #tableView .num{text-align:right; font-variant-numeric:tabular-nums}
 
+  /* hover/focus tooltip — follows the cursor over nodes & links, clamped to the stage */
+  #tip{position:absolute; z-index:40; pointer-events:none; max-width:240px;
+    background:var(--surface); border:1px solid var(--border-strong); border-radius:8px;
+    box-shadow:var(--shadow); padding:7px 9px; font-family:var(--sans); font-size:12px;
+    color:var(--text); line-height:1.45; opacity:0; transition:opacity .12s ease}
+  #tip[hidden]{display:none}
+  #tip.on{opacity:1}
+  #tip .tt-title{font-weight:650; font-size:12px; margin-bottom:2px; color:var(--text)}
+  #tip .tt-row{color:var(--text-dim); font-size:11px}
+  #tip .tt-row b{color:var(--text); font-weight:600}
+  #tip .tt-row.mono{font-family:var(--mono)}
+  #tip .tt-dot{display:inline-block; width:7px; height:7px; border-radius:2px; margin-right:5px;
+    vertical-align:baseline}
+
   .overlay{position:absolute; display:flex; gap:8px; align-items:center; z-index:5}
   .ov-top{top:12px; left:12px; right:12px; flex-wrap:wrap}
   .ov-bottom{bottom:12px; left:12px; right:12px; justify-content:space-between; align-items:flex-end}
@@ -444,6 +458,7 @@
         <div class="panelbox modetag" id="modetag"></div>
       </div>
       <svg id="svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Network topology graph"></svg>
+      <div id="tip" role="tooltip" hidden></div>
       <div id="tableView" tabindex="-1" hidden></div>
       <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
       <div id="srTable" class="sr-only" role="region" aria-label="Topology as a table"></div>
@@ -2745,6 +2760,98 @@ function exportPng(){
     img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(str);
   }).catch(err=>{srAnnounce("Could not export topology as PNG"); throw err;});
 }
+
+/* =====================================================================
+   HOVER / FOCUS TOOLTIPS — node, link & endpoint facts on the canvas.
+   Wired by event delegation on #svg so buildSvg stays untouched; the
+   tip is a .stage child (pointer-events:none) that follows the cursor
+   and is clamped to the stage so it never overflows the viewport edges.
+   ===================================================================== */
+function tipEl(){return document.getElementById("tip");}
+// resolve a hovered/focused .node <g> back to its host (linear scan — graphs are small)
+function hostOfNodeG(g){for(const h in nodeEls)if(nodeEls[h]&&nodeEls[h].g===g)return h;return null;}
+// resolve a hovered .lnk <path> back to its aggregated edge entry {e,path,...}
+function edgeOfPath(p){for(const en of edgeEls)if(en.path===p)return en;return null;}
+function healthOf(h){for(const r of healthList())if(r.switch===h)return r;return null;}
+function tipNodeHTML(h){
+  if(!MODEL||!MODEL.hosts.includes(h))return "";
+  const core=deviceRole(MODEL,h)==="core";
+  const ep=epTotalOf(h), deg=distinctDeg(MODEL,h), r=healthOf(h);
+  let rows=`<div class="tt-row"><b>${core?"Core / distribution":"Access"}</b> switch${deviceModel(h)?" · "+esc(deviceModel(h)):""}</div>`;
+  if(r){const tok=r.band?healthBandToken(r.band):scoreToken(r.score);
+    rows+=`<div class="tt-row"><span class="tt-dot" style="background:var(--${tok})"></span>Health <b>${esc(r.score)}</b>${r.band?" · "+esc(r.band):""}</div>`;}
+  rows+=`<div class="tt-row"><b>${ep}</b> endpoint${ep===1?"":"s"} · <b>${deg}</b> uplink${deg===1?"":"s"}</div>`;
+  return `<div class="tt-title mono">${esc(shortName(h))}</div>${rows}`;
+}
+function tipLinkHTML(en){
+  const e=en.e; const n=e.members.length;
+  const a=shortName(e.a), b=shortName(e.b);
+  let rows=`<div class="tt-row"><b>${n}</b> member link${n===1?"":"s"}${e.pc?` · <b>port-channel</b>`:""}</div>`;
+  rows+=`<div class="tt-row mono">${esc(a)} ↔ ${esc(b)}</div>`;
+  // VLANs carried (forwarding on this aggregated link), capped
+  const carried=[];
+  if(MODEL&&MODEL.vlans){for(const v of [...MODEL.vlans].sort((x,y)=>x-y)){
+    if(e.members.some(L=>linkCarries(L,v)==="fwd")){carried.push(v);}}}
+  if(carried.length){const cap=carried.slice(0,8).join(", ")+(carried.length>8?` +${carried.length-8} more`:"");
+    rows+=`<div class="tt-row">VLANs <b>${esc(cap)}</b></div>`;}
+  return `<div class="tt-title">Inter-switch link</div>${rows}`;
+}
+function showTip(html){const t=tipEl(); if(!html){hideTip();return;} t.innerHTML=html; t.hidden=false;
+  // force reflow before adding .on so the fade plays (no-op under reduced-motion)
+  void t.offsetWidth; t.classList.add("on");}
+function hideTip(){const t=tipEl(); t.classList.remove("on"); t.hidden=true;}
+// place the tip at (cx,cy) stage-relative with offset, clamped inside the stage
+function placeTip(cx,cy){const t=tipEl(); if(t.hidden)return;
+  const stage=document.getElementById("stage"); const sr=stage.getBoundingClientRect();
+  const tw=t.offsetWidth, th=t.offsetHeight, pad=8, off=14;
+  let x=cx+off, y=cy+off;
+  if(x+tw+pad>sr.width)x=cx-tw-off;            // flip left near the right edge
+  if(x<pad)x=pad;
+  if(y+th+pad>sr.height)y=cy-th-off;           // flip up near the bottom edge
+  if(y<pad)y=pad;
+  t.style.left=x+"px"; t.style.top=y+"px";}
+function tipForTarget(target){
+  const ng=target.closest&&target.closest(".node");
+  if(ng){const h=hostOfNodeG(ng); return h?tipNodeHTML(h):"";}
+  const lp=target.closest&&target.closest(".lnk");
+  if(lp){const en=edgeOfPath(lp); return en?tipLinkHTML(en):"";}
+  return "";
+}
+(function wireTips(){
+  const s=document.getElementById("svg"); if(!s)return;
+  const stage=document.getElementById("stage");
+  const rel=ev=>{const sr=stage.getBoundingClientRect();return {x:ev.clientX-sr.left,y:ev.clientY-sr.top};};
+  s.addEventListener("mouseover",ev=>{
+    if(dragNode||panning)return;            // don't fight an in-progress drag/pan
+    const html=tipForTarget(ev.target);
+    if(html){showTip(html); const p=rel(ev); placeTip(p.x,p.y);} else hideTip();
+  });
+  s.addEventListener("mousemove",ev=>{
+    if(dragNode||panning){hideTip();return;}
+    if(tipEl().hidden)return;
+    const p=rel(ev); placeTip(p.x,p.y);
+  });
+  s.addEventListener("mouseout",ev=>{
+    // only hide when actually leaving the resolved target (not on child→child moves)
+    const to=ev.relatedTarget;
+    if(to&&to.closest&&(to.closest(".node")||to.closest(".lnk")))return;
+    hideTip();
+  });
+  // keyboard focus (roving tabindex moves focus through .node <g>s)
+  s.addEventListener("focusin",ev=>{
+    const ng=ev.target.closest&&ev.target.closest(".node"); if(!ng)return;
+    const h=hostOfNodeG(ng); if(!h)return;
+    showTip(tipNodeHTML(h));
+    const sr=stage.getBoundingClientRect(), nr=ng.getBoundingClientRect();
+    placeTip(nr.left-sr.left+nr.width/2, nr.top-sr.top+nr.height);
+  });
+  s.addEventListener("focusout",hideTip);
+  // hide whenever the view shifts under the tip
+  stage.addEventListener("wheel",hideTip,{passive:true});
+  window.addEventListener("scroll",hideTip,true);
+})();
+// hide the tip on any mode/vlan/selection change that repaints the scene
+const _repaintTip=repaint; repaint=function(){hideTip();return _repaintTip.apply(this,arguments);};
 
 /* =====================================================================
    WIRING
