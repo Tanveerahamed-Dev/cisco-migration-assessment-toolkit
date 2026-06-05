@@ -700,6 +700,14 @@ def _acl_rule(action: str, rest: str, extended: bool) -> dict:
     for p in (rule.get("sport"), rule.get("dport")):                  # unknown port name -> can't evaluate
         if p is not None and (p.get("val") is None or (p.get("op") == "range" and p.get("val2") is None)):
             uneval = True
+    # NEW-V3.23.52 (stateful-ACL): trailing keywords. 'established' = TCP return-only (won't match a
+    # NEW/forward connection); reflexive 'reflect' permits forward + auto-permits the return; a
+    # 'time-range' makes the rule time-conditional (its match is indeterminate offline).
+    low = rest.lower()
+    if re.search(r"\bestablished\b", low): rule["established"] = True
+    if re.search(r"\breflect\b", low):     rule["reflexive"] = True
+    mt = re.search(r"\btime-range\s+(\S+)", rest, re.IGNORECASE)
+    if mt: rule["time_range"] = mt.group(1)
     if uneval: rule["unevaluable"] = True
     return rule
 
