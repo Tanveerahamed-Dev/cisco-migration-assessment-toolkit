@@ -1076,6 +1076,70 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
     logger.info(f"  [OK] '{TRUNK_NATIVE_SHEET_NAME}' sheet: {len(rows)} mismatch(es)")
 
 
+def _norm_duplex(s: str) -> str:
+    s = (s or "").lower()
+    return "half" if "half" in s else "full" if "full" in s else ""
+
+def _norm_speed_mbps(s: str) -> int:
+    m = re.search(r"(\d+)\s*(g|m)?", (s or "").lower())
+    return int(m.group(1)) * (1000 if m and m.group(2) == "g" else 1) if m else 0
+
+def compute_duplex_speed_mismatches(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
+    """Duplex / speed mismatches on inter-switch links (mirrors the explorer's linkPhyConsistency): the two
+    ends report a different OPERATIONAL duplex (one full, the other half -- the classic 'up but slow/flaky')
+    or speed. 'auto-...' that hasn't resolved is skipped. Reuses analyze.compute_topology_links. Returns
+    [{a_host,a_port,b_host,b_port, duplex:(ad,bd)|None, speed:(asp,bsp)|None}] (speeds in Mbps)."""
+    from cisco_toolkit.analyze import compute_topology_links, _canon_host, _canon_host_map
+    cmap = _canon_host_map(all_interfaces)
+    out: List[dict] = []
+    for L in compute_topology_links(all_interfaces):
+        a = all_interfaces.get(str(L["a_host"]), {}).get(str(L["a_port"]))
+        bh = cmap.get(_canon_host(str(L["b_host"])))
+        b = all_interfaces.get(bh, {}).get(str(L["b_port"])) if bh else None
+        if a is None or b is None:
+            continue
+        ad, bd = _norm_duplex(getattr(a, "duplex", "")), _norm_duplex(getattr(b, "duplex", ""))
+        asp, bsp = _norm_speed_mbps(getattr(a, "speed", "")), _norm_speed_mbps(getattr(b, "speed", ""))
+        dup = (ad, bd) if (ad and bd and ad != bd) else None
+        spd = (asp, bsp) if (asp and bsp and asp != bsp) else None
+        if dup or spd:
+            out.append({"a_host": str(L["a_host"]), "a_port": str(L["a_port"]),
+                        "b_host": bh, "b_port": str(L["b_port"]), "duplex": dup, "speed": spd})
+    return out
+
+
+LINK_PHY_SHEET_NAME = "Link Duplex-Speed"
+
+def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write the 'Link Duplex-Speed' sheet: inter-switch links whose two ends disagree on operational duplex
+    or speed -- the classic 'link is up but slow/flaky' (late collisions, CRC errors). Surfaces the explorer's
+    link L1 finding."""
+    rows = compute_duplex_speed_mismatches(all_interfaces)
+    ws = wb.create_sheet(LINK_PHY_SHEET_NAME)
+    for col, h in enumerate(["Link", "Issue", "End A", "End B"], 1):
+        cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
+
+    def _spd(mb):
+        return (f"{mb // 1000}G" if mb >= 1000 else f"{mb}M") if mb else "?"
+    r = 2
+    for d in rows:
+        kind = "duplex" if d["duplex"] else "speed"
+        ws.cell(r, 1, f"{d['a_host']} {d['a_port']} <-> {d['b_host']} {d['b_port']}")
+        ws.cell(r, 2, kind).font = Font(bold=True, color="C00000")
+        if d["duplex"]:
+            ws.cell(r, 3, f"duplex {d['duplex'][0]}"); ws.cell(r, 4, f"duplex {d['duplex'][1]}")
+        else:
+            ws.cell(r, 3, f"speed {_spd(d['speed'][0])}"); ws.cell(r, 4, f"speed {_spd(d['speed'][1])}")
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No duplex/speed mismatches on inter-switch links")
+    for i, w in enumerate([46, 12, 18, 18], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{LINK_PHY_SHEET_NAME}' sheet: {len(rows)} mismatch(es)")
+
+
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Detail"]

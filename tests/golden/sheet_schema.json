@@ -267,5 +267,11 @@
   "Native A",
   "End B",
   "Native B"
+ ],
+ "Link Duplex-Speed": [
+  "Link",
+  "Issue",
+  "End A",
+  "End B"
  ]
 }

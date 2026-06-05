@@ -344,6 +344,7 @@ from cisco_toolkit.excel import (
     write_addressing_conflicts_sheet,  # reachability findings -> workbook surfacing
     write_fhrp_consistency_sheet,      # reachability findings -> workbook surfacing
     write_trunk_native_sheet,          # reachability findings -> workbook surfacing
+    write_link_phy_sheet,              # reachability findings -> workbook surfacing
     write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet,                                   # step 24
@@ -1478,6 +1479,7 @@ def main():
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
     _run_phase("Trunk Native-VLAN sheet", write_trunk_native_sheet, wb, all_interfaces)
+    _run_phase("Link Duplex-Speed sheet", write_link_phy_sheet, wb, all_interfaces)
 
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")
