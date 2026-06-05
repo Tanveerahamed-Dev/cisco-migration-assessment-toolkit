@@ -386,12 +386,14 @@ function buildModel(snap){
   const addGw=(v,h)=>{if(!gateways.has(v))gateways.set(v,new Set());gateways.get(v).add(h);};
   const svuAcl=new Map();   // PHASE F: "host|vid" -> {in,out} ACL names applied on that gateway SVI (from run-config)
   const svuVrf=new Map();   // PHASE K: "host|vid" -> VRF name of that gateway SVI ('' = global routing table)
+  const svuFhrp=new Map();  // FHRP consistency: "host|vid" -> the normalized hsrp_behavior string for that gateway SVI
   const addEp=(h,v,n=1)=>{if(!endpoints.has(h))endpoints.set(h,new Map());const m=endpoints.get(h);
     m.set(v,(m.get(v)||0)+n);endpointTotal+=n;vlans.add(v);};
   for(const host of hosts)for(const port of Object.keys(ifaces[host])){const d=ifaces[host][port];
     if(isSvi(d)){const vid=sviVid(d);
       if(vid!=null&&(d.svi_ip||d.hsrp_behavior||/^Vlan\d+$/i.test(port))){addGw(vid,host);vlans.add(vid);
         svuVrf.set(host+"|"+vid,(d.vrf||"").trim());   // PHASE K: record the gateway's VRF (every SVI, '' = global)
+        if(d.hsrp_behavior)svuFhrp.set(host+"|"+vid,d.hsrp_behavior);   // FHRP consistency: keep the per-gateway FHRP string
         if(d.acl_in||d.acl_out)svuAcl.set(host+"|"+vid,{in:d.acl_in||"",out:d.acl_out||""});
         const role=fhrpRole(d);if(role){if(!fhrp.has(vid))fhrp.set(vid,{active:new Set(),standby:new Set(),members:new Set()});
           const f=fhrp.get(vid);f.members.add(host);if(role==="active")f.active.add(host);if(role==="standby")f.standby.add(host);}}
@@ -413,7 +415,7 @@ function buildModel(snap){
     if(isAccessEndpoint(d)){const vid=(d.vlan&&/^\d+$/.test(d.vlan))?+d.vlan:null;if(vid!=null)addEp(host,vid,1);}}
   const adj=new Map(hosts.map(h=>[h,[]]));
   links.forEach((L,i)=>{adj.get(L.a).push(i);adj.get(L.b).push(i);});
-  return {hosts,links,adj,gateways,fhrp,endpoints,endpointTotal,vlans,offscan,svuAcl,svuVrf};
+  return {hosts,links,adj,gateways,fhrp,endpoints,endpointTotal,vlans,offscan,svuAcl,svuVrf,svuFhrp};
 }
 function linkCarries(L,vid){if(L.fwd.has(vid))return "fwd";if(L.blk.has(vid))return "blk";
   if(L.allowed===null||L.allowed.has(vid))return "fwd";return "";}
@@ -574,7 +576,7 @@ function demoSnapshot(){
        "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL})}),
     "DIST-2":Object.assign({},
       {"Vlan10":gw(10,"10.0.10.3","HSRP grp10 standby vIP 10.0.10.1"),
-       "Vlan20":gw(20,"10.0.20.3","HSRP grp20 standby vIP 10.0.20.1"),
+       "Vlan20":gw(20,"10.0.20.3","HSRP grp21 standby vIP 10.0.20.1"),   // FHRP consistency: WRONG group (21 vs DIST-1's 20) -> fake redundancy
        "Vlan99":gw(99,"10.0.99.2","HSRP grp99 standby vIP 10.0.99.1")},   // addressing integrity: DUPLICATE physical IP (also DIST-1 Vlan99) -> L3 clash
       {"Po1":link("DIST-1","Po1",{port:"Po1",fwd:ALL,pc:"Po1"}),
        "Gi1/0/1":link("ACC-1","Gi1/0/23",{port:"Gi1/0/1",blk:ALL}),
@@ -1268,6 +1270,37 @@ function dhcpReach(vid,gws){
   out.state=anyFail?"fail":anyUnknown?"unknown":"ok";
   return out;
 }
+/* FHRP / first-hop-redundancy consistency. The resilience view already flags a SINGLE gateway as a SPOF;
+   this checks the harder case -- a VLAN with >=2 gateways whose FHRP is MISconfigured, so the redundancy is
+   fake: different groups (not one redundancy domain), different virtual IPs (no failover), mixed protocols
+   (no interop), a gateway running no FHRP at all, or two actives (split-brain). The data is the normalized
+   hsrp_behavior string ("HSRP|VRRP|GLBP grp N Role VIP x") already in the snapshot -- the same shape Python's
+   _parse_fhrp reads -- tolerant of the demo's "grp10"/"vIP" spacing too. */
+function parseFhrp(behavior){const m=/(HSRP|VRRP|GLBP)\s*grp\s*(\d+)\s+(\w+)(?:\s+v?ip\s+(\S+))?/i.exec(behavior||"");
+  return m?{proto:m[1].toUpperCase(),group:m[2],role:m[3].toLowerCase(),vip:m[4]||""}:null;}
+function fhrpFor(host,vid){return parseFhrp((MODEL&&MODEL.svuFhrp)?MODEL.svuFhrp.get(host+"|"+vid):"");}
+function fhrpConsistency(vid){
+  const gws=[...(MODEL.gateways.get(vid)||new Set())].sort();
+  const F={vid, gateways:gws, members:[], issues:[], state:"na", summary:""};
+  if(gws.length<2)return F;                                          // single/zero gateway -> SPOF handled elsewhere
+  const det=gws.map(g=>({host:g, f:fhrpFor(g,vid)}));
+  F.members=det.map(d=>d.f?{host:d.host,proto:d.f.proto,group:d.f.group,role:d.f.role,vip:d.f.vip}:{host:d.host,none:true});
+  const withF=det.filter(d=>d.f), without=det.filter(d=>!d.f);
+  const issue=(sev,t)=>F.issues.push({sev,t});
+  if(!withF.length){issue("crit",`VLAN ${vid} has ${gws.length} gateways but no FHRP (HSRP/VRRP/GLBP) — no first-hop redundancy; clients hard-code a single gateway.`); F.state="crit"; return F;}
+  const protos=[...new Set(withF.map(d=>d.f.proto))], groups=[...new Set(withF.map(d=>d.f.group))],
+        vips=[...new Set(withF.map(d=>d.f.vip).filter(Boolean))], actives=withF.filter(d=>d.f.role==="active");
+  if(without.length) issue("crit",`${without.map(d=>shortName(d.host)).join(", ")} ${without.length>1?"are":"is a"} gateway for VLAN ${vid} but run${without.length>1?"":"s"} no FHRP — an unprotected, independent gateway alongside the FHRP pair.`);
+  if(protos.length>1) issue("crit",`mixed FHRP protocols (${protos.join(" vs ")}) — they don't interoperate, so there is no shared virtual gateway.`);
+  if(groups.length>1) issue("crit",`gateways are in different FHRP groups (grp ${groups.join(" vs ")}) — not one redundancy group, so failover won't happen (and a shared VIP would be duplicated).`);
+  else if(vips.length>1) issue("crit",`same group but different virtual IPs (${vips.join(" vs ")}) — clients using one VIP won't fail over to the peer.`);
+  if(groups.length===1&&actives.length>1) issue("crit",`two active routers in group ${groups[0]} (${actives.map(d=>shortName(d.host)).join(", ")}) — split-brain / duplicate gateway IP.`);
+  if(!actives.length) issue("watch",`no active router elected for VLAN ${vid} (all standby/listen) — the virtual gateway may be down, or this reflects collection timing.`);
+  if(F.issues.length){F.state=F.issues.some(i=>i.sev==="crit")?"crit":"watch";}
+  else{F.state="ok"; const a=actives[0]||withF[0];
+    F.summary=`${a.f.proto} group ${a.f.group}, VIP ${a.f.vip||"?"} — ${actives.length} active + ${withF.length-actives.length} standby across ${withF.length} gateways.`;}
+  return F;
+}
 /* path-MTU mismatch: collect the MTUs of the physical interfaces a flow traverses (access ports +
    each trunk link's two ends + the routed egress). >=2 distinct explicit MTUs, or jumbo set on only
    some hops, means frames above the smallest MTU are silently dropped -- a classic post-cutover black-hole. */
@@ -1317,6 +1350,19 @@ function dhcpCard(D){
     return `<div class="ln"><span class="pill pl-${ht}">${mark}</span> helper <span class="mono">${esc(h.ip)}</span><div class="faint" style="margin-top:2px">${esc(h.detail)}</div></div>`;}).join("");
   return `<div class="card ${tok}" style="margin:0 0 8px"><div class="ct"><span class="nm">${head} · VLAN ${D.vid}</span></div>${rows}`+
     `<div class="ln faint" style="margin-top:3px">Relay routability is route-aware (does the gateway have a route to the server). The DHCP server's own pool/scope and any ACL on the relay path aren't evaluated here.</div></div>`;
+}
+/* FHRP redundancy card: surfaced in the endpoint reachability view for the endpoint's OWN gateway/subnet. */
+function fhrpCard(F){
+  if(!F||F.state==="na")return "";                                   // <2 gateways -> single-gateway SPOF shown elsewhere
+  const mem=F.members.map(m=>m.none?`<span class="mono">${esc(shortName(m.host))}</span> no FHRP`
+      :`<span class="mono">${esc(shortName(m.host))}</span> ${esc(m.proto)} grp ${esc(m.group)} ${esc(m.role)}${m.vip?(" VIP "+esc(m.vip)):""}`).join(" · ");
+  if(F.state==="ok")
+    return `<div class="card ok" style="margin:0 0 8px"><div class="ct"><span class="nm">✓ FHRP redundancy healthy · VLAN ${F.vid}</span></div>`+
+      `<div class="ln faint">${esc(F.summary)}</div></div>`;
+  const tok=F.state==="crit"?"crit":"watch", head=F.state==="crit"?"✗ FHRP misconfigured":"⚠ FHRP redundancy warning";
+  const rows=F.issues.map(i=>`<div class="ln"><span class="pill pl-${i.sev==="crit"?"crit":"watch"}">${i.sev==="crit"?"✗":"⚠"}</span> ${esc(i.t)}</div>`).join("");
+  return `<div class="card ${tok}" style="margin:0 0 8px"><div class="ct"><span class="nm">${head} · VLAN ${F.vid}</span></div>${rows}`+
+    `<div class="ln faint" style="margin-top:3px">First-hop redundancy is read from the FHRP state (HSRP/VRRP/GLBP) on each gateway SVI · ${mem}</div></div>`;
 }
 /* M: where an ACL flag is applied — a gateway SVI ("VLAN n") or a routed transit interface (its name). */
 function aclLoc(a){return a.intf?esc(a.intf):("VLAN "+a.vid);}
@@ -1383,6 +1429,7 @@ function endpointReach(ep){
    for(const grp of R.groups){if(grp.vlan===vid||grp.reach<=0)continue;
      for(const g of (MODEL.gateways.get(grp.vlan)||new Set()))if(R.reachHosts.has(g))add(g,grp.vlan,"out");}}  // ingress: entering a reachable dst subnet (acl_out)
   R.dhcp=dhcpReach(vid,gws);   // DHCP-relay reachability for this endpoint's own subnet
+  R.fhrp=fhrpConsistency(vid);  // first-hop-redundancy (FHRP) consistency for this endpoint's own gateway
   return R;
 }
 /* PHASE D drill-down: collapsible list of the named endpoints behind each VLAN's reach/unreach counts */
@@ -1409,6 +1456,7 @@ function reachSection(R){
       <div class="stat ${R.unreachEps?"crit":""}"><div class="v">${R.unreachEps}</div><div class="k">cannot reach</div></div>
     </div>
     ${aclFlagCard(R.aclFlags,"the gateway path")}
+    ${fhrpCard(R.fhrp)}
     ${dhcpCard(R.dhcp)}
     <div style="margin-top:10px">${rows||'<p class="faint">No other endpoints in scope.</p>'}</div>
     <p class="faint" style="margin-top:9px"><b>L1–L3.</b> Computed from VLAN membership, STP forwarding, gateways, <b>VRF membership</b> and <b>routing tables</b> (different-VRF subnets, and subnets with no covering route on the gateway, are shown unreachable) — <b>ACLs are collected from run-config but not evaluated here</b>, so a path shown reachable may still be blocked at L4. <b>DHCP relay</b> (ip helper-address) reachability is flagged separately above.</p></div>`;
