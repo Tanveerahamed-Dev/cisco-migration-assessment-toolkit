@@ -25,9 +25,10 @@ def test_monolith_reexports_the_package_objects(cp):
     assert cp.detect_link_type is textutils.detect_link_type
     # is_valid_iface is now used only inside the package (its monolith callers moved out)
     assert callable(textutils.is_valid_iface)
-    # PHYSICAL_IFACE_RE is still re-exported (monolith uses it); IFACE_TOKEN_RE / VALID_IFACE_RE
+    # PHYSICAL_IFACE_RE went package-internal in step 27 (its last monolith user,
+    # build_device_physical, moved to cisco_toolkit.build); IFACE_TOKEN_RE / VALID_IFACE_RE
     # went package-internal in step 17 (their last monolith users, the phy parsers, moved to parse).
-    assert cp.PHYSICAL_IFACE_RE is textutils.PHYSICAL_IFACE_RE
+    assert textutils.PHYSICAL_IFACE_RE.match("Gi1/0/1") and not hasattr(cp, "PHYSICAL_IFACE_RE")
     assert not hasattr(cp, "VALID_IFACE_RE") and not hasattr(cp, "IFACE_TOKEN_RE")
     # _split_macs went package-internal in step 21 (its last monolith user, write_vlan_census_sheet,
     # moved to excel; analyze.py + excel.py import it from textutils directly).
@@ -276,3 +277,35 @@ def test_excel_reexported_and_functional(cp):
     assert callable(excel._parse_track) and not hasattr(cp, "_parse_track")
     # the main interface-template filler joined the excel layer (step 26) - the LAST sheet writer.
     assert cp.append_interface_rows is excel.append_interface_rows
+
+
+def test_build_reexported_and_functional(cp):
+    from cisco_toolkit import build, parse
+    # identity, not equality: main() must call the package's builders/enrichers, not a
+    # re-defined copy. All five moved to cisco_toolkit.build in step 27.
+    for name in ("build_device_physical", "build_switch_identity", "collect_global_arp",
+                 "apply_global_arp", "detect_cross_device_dual_connections"):
+        assert getattr(cp, name) is getattr(build, name)
+    # build_interfaces (the big per-device InterfaceData builder) is deliberately left in the
+    # monolith for now (a later step), so it is NOT in the build module yet.
+    assert not hasattr(build, "build_interfaces") and callable(cp.build_interfaces)
+    # the 8 parsers used only by the moved builders went package-internal (the monolith no
+    # longer re-imports them); parse_run_config_interfaces stays - build_interfaces still uses it.
+    for gone in ("parse_show_version", "parse_show_inventory", "parse_show_environment_power",
+                 "parse_show_environment", "parse_show_module_count", "parse_vtp_status",
+                 "parse_switch_mgmt_ip", "parse_show_ip_arp"):
+        assert hasattr(parse, gone) and not hasattr(cp, gone)
+    assert cp.parse_run_config_interfaces is parse.parse_run_config_interfaces
+    # functional smokes straight from the package (pure, no file I/O).
+    ID = build.InterfaceData
+    # apply_global_arp fills end_host_ip + arp_source_switch from the global ARP table.
+    ai = {"sw1": {"Gi1/0/1": ID(port="Gi1/0/1", end_host_mac="aaaa.bbbb.cccc")}}
+    build.apply_global_arp(ai, {"aaaa.bbbb.cccc": "10.0.10.5"}, {"aaaa.bbbb.cccc": "core1"})
+    assert ai["sw1"]["Gi1/0/1"].end_host_ip == "10.0.10.5"
+    assert ai["sw1"]["Gi1/0/1"].arp_source_switch == "core1"
+    # detect_cross_device_dual_connections flags a MAC seen on two different switches.
+    dc = {"sw1": {"Gi1/0/1": ID(port="Gi1/0/1", end_host_mac="dead.beef.0001")},
+          "sw2": {"Gi1/0/2": ID(port="Gi1/0/2", end_host_mac="dead.beef.0001")}}
+    build.detect_cross_device_dual_connections(dc)
+    assert dc["sw1"]["Gi1/0/1"].dual_connection == "Yes"
+    assert dc["sw2"]["Gi1/0/2"].dual_connection == "Yes"

@@ -5,6 +5,40 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 27: model-construction layer -> build.py
+
+On branch `phase2-split-build1`. Byte-identical. Monolith **~1,745 lines**; new `cisco_toolkit/build.py` **~155 lines**.
+
+- New layer `cisco_toolkit/build.py` (depends on cmdio + parse + model + textutils; sits above those,
+  independent of analyze/excel). Moved the 5 model-construction / enrichment functions:
+  `build_device_physical`, `build_switch_identity` (build `DevicePhysical` / switch-identity records from
+  collected `show` output) + `collect_global_arp`, `apply_global_arp`, `detect_cross_device_dual_connections`
+  (network-wide ARP enrichment + dual-homing pass). All 5 imported back for `main()`.
+- **Deferred `build_interfaces`** (the ~300-line per-device `InterfaceData` builder — the monolith's biggest
+  function, pulls MANY parsers) to its OWN next step. Keeps this PR reviewable + golden byte-exact, same
+  discipline as the parser/analyze layers split across many PRs. It stays in the monolith; `test_package`
+  asserts `not hasattr(build, "build_interfaces")` as a guard (flips next step).
+- F401 cascade (smaller than a full step-27 would be, because build_interfaces stayed): dropped 8 parsers only
+  the moved builders used (`parse_show_version` / `_inventory` / `_environment_power` / `_environment` /
+  `_module_count` / `parse_vtp_status` / `parse_switch_mgmt_ip` / `parse_show_ip_arp`) + `Tuple` (typing) +
+  `PHYSICAL_IFACE_RE` (textutils) from the monolith re-imports. `parse_run_config_interfaces` STAYS
+  (build_interfaces uses it @926).
+- Two-part cascade as usual: ruff caught the unused imports → fixed; the `PHYSICAL_IFACE_RE` drop made the
+  step-17 identity assertion stale → repointed to `not hasattr(cp, "PHYSICAL_IFACE_RE")`. **No other-file test
+  repoints** — grepped `tests/` for all 13 symbols, none referenced via `cp.` (the 5 funcs are orchestration,
+  covered by the golden pipeline only).
+- **66 tests** (added `test_build_reexported_and_functional`), golden **byte-identical**, ruff clean, mypy 101. `.md` V3.23.37.
+
+**Remaining PHASE 2.7 (~3 PRs): (1) next = `build_interfaces` -> build.py** (the big one; pulls a large parser
+set → bigger F401 cascade + `test_parsers` / `test_parser_robustness` / `test_platform_variants` repoints).
+**(2) then html** (`snapshot_state` [the golden's JSON contract — care], `write_html_explorer`,
+`write_diff_workbook`, `_macset`...) → `cisco_toolkit/html.py`. **(3) then `__main__`** = what's left
+(autodetect_platform / connect_device / send_cmd / collect / load_devices / main / argparse / `_run_phase` /
+`_empty_dep_map` / debug_scan_headers) — keep as the thin entrypoint or thin into the package. Sequential —
+`/batch` does NOT fit.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 26: append_interface_rows -> excel (EXCEL LAYER COMPLETE)
 
 On branch `phase2-split-excel7`. Byte-identical. Monolith **~1,865 lines**; excel.py **~1,203 = the whole excel layer**.
