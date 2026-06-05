@@ -248,6 +248,27 @@ def test_compute_addressing_conflicts():
     assert "10.0.88.0/24" not in overlaps           # same subnet but different VRFs -> intentional, not flagged
 
 
+def test_compute_fhrp_consistency():
+    # workbook surfacing of the FHRP finding: a different-group VLAN flagged; a consistent VLAN not flagged.
+    from cisco_toolkit.excel import compute_fhrp_consistency
+    from cisco_toolkit.model import InterfaceData
+    ifaces = {
+        "core1": {
+            "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.2 255.255.255.0", hsrp_behavior="HSRP grp 10 Active VIP 10.0.10.1"),
+            "Vlan20": InterfaceData(port="Vlan20", svi_ip="10.0.20.2 255.255.255.0", hsrp_behavior="HSRP grp 20 Active VIP 10.0.20.1"),
+        },
+        "core2": {
+            "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.3 255.255.255.0", hsrp_behavior="HSRP grp 10 Standby VIP 10.0.10.1"),
+            "Vlan20": InterfaceData(port="Vlan20", svi_ip="10.0.20.3 255.255.255.0", hsrp_behavior="HSRP grp 21 Standby VIP 10.0.20.1"),  # wrong group
+        },
+    }
+    rows = compute_fhrp_consistency(ifaces)
+    flagged = {r["vid"] for r in rows}
+    assert 20 in flagged and 10 not in flagged          # VLAN 20 grp 20 vs 21 -> flagged; VLAN 10 consistent
+    v20 = [r for r in rows if r["vid"] == 20][0]
+    assert any("different FHRP groups" in i for i in v20["issues"])
+
+
 def test_build_routing_neighbors(tmp_path):
     # protocol-to-protocol analysis: OSPF/EIGRP/BGP adjacencies parsed from already-collected output,
     # keeping the full state token so the explorer can tell a healthy (FULL) from a stuck (EXSTART) peer.
