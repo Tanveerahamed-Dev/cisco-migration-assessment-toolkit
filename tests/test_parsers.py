@@ -79,6 +79,39 @@ def test_parse_acls_forms(cp):
     assert g["dport"] == {"op": "range", "val": 16384, "val2": 32767}
 
 
+# ---- object-groups (L4 depth) ---------------------------------------------- #
+def test_parse_object_groups_forms(cp):
+    out = textwrap.dedent("""\
+        object-group network MGMT_NETS
+         host 10.0.99.10
+         10.0.40.0 255.255.255.0
+         range 10.0.50.1 10.0.50.9
+         group-object CORE_NETS
+        object-group ip address NX_NETS
+         10 host 10.0.60.1
+         20 10.0.61.0/24
+        object-group service WEB_SVC
+         tcp eq 443
+         tcp range 8080 8090
+        interface Vlan10
+         ip access-group X in
+    """)
+    g = parse.parse_object_groups(out)
+    assert set(g) == {"MGMT_NETS", "NX_NETS", "WEB_SVC"}
+    mn = g["MGMT_NETS"]
+    assert mn["kind"] == "network"
+    assert mn["members"][0] == {"ip": "10.0.99.10", "wild": "0.0.0.0"}            # host
+    assert mn["members"][1] == {"ip": "10.0.40.0", "wild": "0.0.0.255"}           # IOS subnet+mask -> wildcard
+    assert mn["members"][2] == {"rangeStart": "10.0.50.1", "rangeEnd": "10.0.50.9"}
+    assert mn["members"][3] == {"group": "CORE_NETS"}                             # nested group-object
+    nx = g["NX_NETS"]["members"]                                                  # NX-OS: seq stripped, prefix -> wildcard
+    assert nx[0] == {"ip": "10.0.60.1", "wild": "0.0.0.0"} and nx[1] == {"ip": "10.0.61.0", "wild": "0.0.0.255"}
+    ws = g["WEB_SVC"]
+    assert ws["kind"] == "service"
+    assert ws["members"][0] == {"proto": "tcp", "op": "eq", "val": 443}
+    assert ws["members"][1] == {"proto": "tcp", "op": "range", "val": 8080, "val2": 8090}
+
+
 # ---- switchport ------------------------------------------------------------ #
 def test_parse_switchport_modes(cp):
     out = textwrap.dedent("""\
