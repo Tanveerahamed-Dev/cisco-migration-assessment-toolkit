@@ -1241,10 +1241,12 @@ function _routeCovers(host,ip){
    address — so _routeCovers can test whether a source gateway has a route toward that whole subnet. */
 function gwIp(host,vid){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host]["Vlan"+vid]:null;
   return d?String(d.svi_ip||"").trim().split(/\s+/)[0]:"";}
-/* PHASE F: render the "L4 filtering" card from a list of {host,vid,dir,name}; "" when empty. */
+/* M: where an ACL flag is applied — a gateway SVI ("VLAN n") or a routed transit interface (its name). */
+function aclLoc(a){return a.intf?esc(a.intf):("VLAN "+a.vid);}
+/* PHASE F: render the "L4 filtering" card from a list of {host,vid|intf,dir,name}; "" when empty. */
 function aclFlagCard(flags,lead){
   if(!flags||!flags.length)return "";
-  const items=flags.map(a=>`ACL <span class="mono">${esc(a.name)}</span> on ${esc(shortName(a.host))} VLAN ${a.vid} (${esc(a.dir)})`).join("; ");
+  const items=flags.map(a=>`ACL <span class="mono">${esc(a.name)}</span> on ${esc(shortName(a.host))} ${aclLoc(a)} (${esc(a.dir)})`).join("; ");
   return `<div class="card watch" style="margin:0 0 8px"><div class="ln"><b>⚠ L4 filtering on ${esc(lead)}.</b> ${items}. ACLs are collected from run-config but not evaluated here, so this path may still be permitted or denied at L4.</div></div>`;
 }
 /* ---- per-endpoint reachability (PHASE B): pure, offline, L1-L3 from the embedded snapshot ---- */
@@ -1435,7 +1437,7 @@ function drawFlow(){
       (F.spofs.length?`<div class="ln faint" style="margin:0 0 8px">⚠ SPOFs on path: ${esc(F.spofs.join("; "))}</div>`:"")+
       (F.aclVerdicts&&F.aclVerdicts.length?aclVerdictCard(F.aclVerdicts,FLOW_PROTO,FLOW_DPORT):aclFlagCard(F.aclFlags,"this path"))+
       `<div>${steps}</div>`+
-      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate).</p></div>`;
+      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
     result=`<div class="sec"><p class="faint">Enter both a source and a destination endpoint to trace the flow.</p></div>`;
   }
@@ -1510,7 +1512,7 @@ function aclVerdictCard(verdicts,proto,dport){
     const why=v.verdict==="indeterminate"
         ?(v.nobody?"ACL body not in snapshot — can't evaluate":(v.rule?`rule ${v.idx+1} can't be modeled: ${esc(v.rule.raw)}`:"no rule conclusively matched"))
         :(v.implicit?"implicit deny — no rule matched":(v.rule?`rule ${v.idx+1}: ${esc(v.rule.raw)}`:""));
-    return `<div class="ln"><span class="pill pl-${vt}">${mark} ${v.verdict.toUpperCase()}</span> ACL <span class="mono">${esc(v.name)}</span> on ${esc(shortName(v.host))} VLAN ${v.vid} (${esc(v.dir)})<div class="faint" style="margin-top:2px">${why}</div></div>`;}).join("");
+    return `<div class="ln"><span class="pill pl-${vt}">${mark} ${v.verdict.toUpperCase()}</span> ACL <span class="mono">${esc(v.name)}</span> on ${esc(shortName(v.host))} ${aclLoc(v)} (${esc(v.dir)})<div class="faint" style="margin-top:2px">${why}</div></div>`;}).join("");
   return `<div class="card ${tok}" style="margin:0 0 8px"><div class="ct"><span class="nm">${head}</span></div>${rows}</div>`;
 }
 /* ---- interactive endpoint->endpoint flow (PHASE C): offline L1-L3 port of trace_full_flow ---- */
@@ -1553,7 +1555,11 @@ function flowBetween(s,d){
   if(single)F.spofs.push(`single gateway VLAN ${sv} (${sgw})`);
   F.gateways=[sgw,dgw]; F.pathHosts.add(sgw); F.pathHosts.add(dgw);
   {const ai=gwAcl(sgw,sv); if(ai&&ai.in)F.aclFlags.push({host:sgw,vid:sv,dir:"in",name:ai.in});    // egress SVI of the source subnet
-   const ao=gwAcl(dgw,dv); if(ao&&ao.out)F.aclFlags.push({host:dgw,vid:dv,dir:"out",name:ao.out});}  // ingress SVI of the dest subnet
+   const ao=gwAcl(dgw,dv); if(ao&&ao.out)F.aclFlags.push({host:dgw,vid:dv,dir:"out",name:ao.out});   // ingress SVI of the dest subnet
+   // M: an ACL on the ROUTED egress interface the source gateway uses toward the destination (a transit uplink, not an SVI)
+   if(_rt&&_rt.out_intf&&!/^Vlan\d+$/i.test(_rt.out_intf)){
+     const ei=(SNAP&&SNAP.interfaces&&SNAP.interfaces[sgw])?SNAP.interfaces[sgw][_rt.out_intf]:null;
+     if(ei&&ei.acl_out)F.aclFlags.push({host:sgw,intf:_rt.out_intf,dir:"out",name:ei.acl_out});}}
   if(s.ip&&d.ip&&F.aclFlags.length){                                  // G2: evaluate those ACLs against the chosen 5-tuple
     const l4=(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp");
     const flow={src:s.ip,dst:d.ip,proto:FLOW_PROTO,dport:l4?FLOW_DPORT:null,sport:l4?FLOW_SPORT:null,icmptype:FLOW_PROTO==="icmp"?FLOW_ICMPTYPE:null};
