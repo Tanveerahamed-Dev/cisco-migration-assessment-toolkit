@@ -228,6 +228,7 @@
  "Migration Readiness": [
   "Group / Check",
   "Status",
+  "Phase",
   "Detail"
  ],
  "Score Sensitivity": [

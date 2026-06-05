@@ -1142,7 +1142,7 @@ def write_link_phy_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]
 
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
-    headers = ["Group / Check", "Status", "Detail"]
+    headers = ["Group / Check", "Status", "Phase", "Detail"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
         c.font = Font(bold=True, color="FFFFFF")
@@ -1156,17 +1156,18 @@ def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
         cs.font = Font(bold=True)
         if g["readiness"] in _READY_FILL:
             cs.fill = PatternFill("solid", fgColor=_READY_FILL[g["readiness"]])
-        ws.cell(r, 3, ", ".join(g["switches"]))
+        ws.cell(r, 4, ", ".join(g["switches"]))
         r += 1
         for chk in g["checks"]:
             ws.cell(r, 1, "    " + chk["check"])
             sc = ws.cell(r, 2, chk["status"].upper())
             if chk["status"] in _STATUS_FILL:
                 sc.fill = PatternFill("solid", fgColor=_STATUS_FILL[chk["status"]])
-            ws.cell(r, 3, chk["note"])
+            ws.cell(r, 3, chk.get("phase", ""))
+            ws.cell(r, 4, chk["note"])
             r += 1
         r += 1   # blank row between groups
-    for i, w in enumerate([40, 9, 70], 1):
+    for i, w in enumerate([40, 9, 18, 70], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     nready = sum(1 for g in readiness if g["readiness"] == "READY")
