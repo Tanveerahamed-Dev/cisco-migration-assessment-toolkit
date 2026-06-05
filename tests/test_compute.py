@@ -166,3 +166,35 @@ def test_protocol_health_flags_down_ospf(cp, built):
     assert ospf and ospf[0]["severity"] == "High"
     # core2 has no OSPF neighbors collected -> no OSPF row
     assert not [r for r in recs if r["switch"] == "core2" and r["protocol"] == "OSPF"]
+
+
+# --------------------------------------------------------------------------- #
+# Route-aware reachability: scope_routes / inscope_subnets (build-layer helpers)
+# --------------------------------------------------------------------------- #
+def test_scope_routes_keeps_relevant_drops_noise():
+    from cisco_toolkit.build import scope_routes
+    inscope = {"10.0.10.0/24", "10.0.20.0/24"}
+    route_db = {
+        "0.0.0.0/0":       {"entries": [{"prefix": "0.0.0.0/0",       "source": "static",    "next_hop": "10.0.0.254",  "out_intf": ""}]},
+        "10.0.0.0/16":     {"entries": [{"prefix": "10.0.0.0/16",     "source": "static",    "next_hop": "10.0.30.254", "out_intf": ""}]},
+        "10.0.10.0/24":    {"entries": [{"prefix": "10.0.10.0/24",    "source": "connected", "next_hop": "",            "out_intf": "Vlan10"}]},
+        "10.0.10.2/32":    {"entries": [{"prefix": "10.0.10.2/32",    "source": "local",     "next_hop": "",            "out_intf": "Vlan10"}]},
+        "192.168.99.0/24": {"entries": [{"prefix": "192.168.99.0/24", "source": "static",    "next_hop": "10.0.10.254", "out_intf": ""}]},
+    }
+    got = {r["prefix"] for r in scope_routes(route_db, inscope)}
+    assert "0.0.0.0/0" in got           # default route is always relevant
+    assert "10.0.0.0/16" in got         # supernet that covers an in-scope subnet
+    assert "10.0.10.0/24" in got        # connected in-scope subnet (covers itself)
+    assert "10.0.10.2/32" not in got    # host (/32 local) noise dropped
+    assert "192.168.99.0/24" not in got # out-of-scope prefix dropped
+
+
+def test_inscope_subnets_from_svis():
+    from cisco_toolkit.build import inscope_subnets
+    from cisco_toolkit.model import InterfaceData
+    ifaces = {"sw1": {
+        "Vlan10":  InterfaceData(port="Vlan10",  svi_ip="10.0.10.1 255.255.255.0"),
+        "Vlan20":  InterfaceData(port="Vlan20",  svi_ip="10.0.20.1 255.255.255.0"),
+        "Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="10"),   # access port, not an SVI -> ignored
+    }}
+    assert inscope_subnets(ifaces) == {"10.0.10.0/24", "10.0.20.0/24"}
