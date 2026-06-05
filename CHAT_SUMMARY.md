@@ -5,6 +5,43 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 24: Tier-2 + intelligence writers -> excel
+
+On branch `phase2-split-excel5`. Byte-identical. Monolith **~2,197 lines**; excel.py ~915.
+
+- Moved 5 contiguous writers (monolith 1697-1921) → excel.py: file-reading trio
+  `write_interface_health_sheet`/`write_security_posture_sheet`/`write_routing_adjacency_sheet`
+  (read `_load_cmd_output` + call parse parsers) + `write_causality_chains_sheet`/
+  `write_failure_impact_sheet` (call compute_causality_chains/compute_failure_impact). excel.py
+  now imports `from cisco_toolkit.cmdio import _load_cmd_output`, 7 parsers from parse, and
+  +compute_causality_chains/compute_failure_impact from analyze.
+- **Largest F401 cascade yet (10 drops):** routing/security parsers (parse_ospf/eigrp/bgp/
+  port_security/auth/dhcp) + compute_causality_chains/compute_failure_impact + **`_census_header`/
+  `_census_autofit`** (no remaining monolith writer uses the census header helpers — the rest use
+  inline headers) all became unused in the monolith → dropped. `parse_show_interface_counters`
+  SURVIVED (still used elsewhere). Fixed: test_parsers (`cp.parse_ospf/bgp`→`parse.parse_ospf/bgp`,
+  added `from cisco_toolkit import parse`), test_package identity assertions (parse ospf/bgp,
+  analyze causality/failure, excel _census_*) → not-hasattr. **65 tests**, golden byte-identical,
+  ruff clean, mypy 101.
+- **Lesson reinforced:** big writer batches that pull cmdio/parse/analyze imports into excel
+  trigger proportionally big F401 cascades + multi-file test repoints. Grep tests/ for EVERY
+  dropped symbol (test_parsers is the one that bites — it tests parsers via `cp.`). Consider
+  splitting future batches that touch many parsers.
+
+**Excel writers remaining:** (d-cont) **step 25 = the FUSED compute-in-writer ones:**
+`write_physical_health_sheet` (@~1944 in monolith now — computes physical_health records inline,
+returns to main(); uses `_SEV_FILL`/`build_network_model`/`_physical_uplink_index`/`_poe_device_util`/
+`parse_interface_phy`/`_classify_media`/`_is_physical_port`/`parse_show_interface_counters`),
+`write_l3_forwarding_sheet` (computes l3_forwarding records inline + `_parse_track`/`_track_summary`/
+`_parse_fhrp`/`build_network_model`), `write_flow_trace_sheet` (+ `_RISK_FILL`/`_RISK_RANK`, renders a
+trace_full_flow dict). main() does `physical_health = _run_phase(..., write_physical_health_sheet, ...)`
+— the writer RETURNS records, so import-back keeps it identical. (e) **step 26 = `append_interface_rows`
++ build_* (build_device_physical/build_interfaces/build_switch_identity — these pull MANY parsers →
+huge F401 + test_parsers repoint) + global_arp/dual-connection + `debug_scan_headers`.** Then html
+(snapshot_state/write_html_explorer/write_diff_workbook/`_macset`), then `__main__`. Sequential.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 23: health/analysis writers -> excel
 
 On branch `phase2-split-excel4`. Byte-identical. Monolith **~2,395 lines**; excel.py ~728.

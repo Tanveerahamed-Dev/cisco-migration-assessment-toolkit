@@ -40,9 +40,11 @@ def test_parse_module_reexported_and_functional(cp):
     # directly now that the table parsers moved out (so it doesn't import them).
     assert callable(parse.extract_fixed_cols) and callable(parse.slice_col)
     # parsers the monolith still calls are re-exported as the SAME object.
-    assert cp.parse_ospf_neighbors is parse.parse_ospf_neighbors
-    assert cp.parse_bgp_summary is parse.parse_bgp_summary
-    assert cp.parse_show_interface_status is parse.parse_show_interface_status
+    # parse_ospf_neighbors / parse_bgp_summary no longer re-exported by the monolith (step 24:
+    # write_routing_adjacency_sheet moved to excel); they still live in parse.
+    for name in ("parse_ospf_neighbors", "parse_bgp_summary"):
+        assert hasattr(parse, name) and not hasattr(cp, name)
+    assert cp.parse_show_interface_status is parse.parse_show_interface_status  # still re-exported
     # functional smoke straight from the package
     rows = parse.parse_ospf_neighbors("10.0.0.2  1  FULL/DR  00:00:35  10.0.0.2  Gi0/1")
     assert rows and rows[0]["state"] == "FULL/DR" and rows[0]["interface"] == "Gi0/1"
@@ -127,8 +129,11 @@ def test_analyze_reexported_and_functional(cp):
     assert any(sev == "High" and cat == "Gateway redundancy"
                for (sev, cat, scope, detail) in analyze.compute_findings(fi))
     # network-model / blast-radius cluster joined the analyze layer (step 13).
-    for name in ("build_network_model", "compute_causality_chains", "compute_failure_impact"):
-        assert getattr(cp, name) is getattr(analyze, name)
+    assert cp.build_network_model is analyze.build_network_model
+    # compute_causality_chains / compute_failure_impact went package-internal in step 24 (their
+    # writers moved to excel); they still live in analyze.
+    for name in ("compute_causality_chains", "compute_failure_impact"):
+        assert hasattr(analyze, name) and not hasattr(cp, name)
     # _vlan_components (step 18) + _link_carries (step 19) went package-internal as their
     # last monolith users (build_dependency_map / _bfs_forwarding_path) moved out.
     for gone in ("_vlan_components", "_link_carries"):
@@ -221,8 +226,12 @@ def test_cmdio_reexported_and_functional(cp, tmp_path):
 def test_excel_reexported_and_functional(cp):
     from cisco_toolkit import excel
     # the sheet/header helpers main() + the write_* builders use are re-exported as-is.
-    for name in ("_census_header", "_census_autofit", "find_header_row", "ensure_headers", "sortkey"):
+    for name in ("find_header_row", "ensure_headers", "sortkey"):
         assert getattr(cp, name) is getattr(excel, name)
+    # _census_header / _census_autofit went package-internal in step 24 (their last monolith
+    # writers moved to excel); they still live in excel.
+    assert callable(excel._census_header) and not hasattr(cp, "_census_header")
+    assert callable(excel._census_autofit) and not hasattr(cp, "_census_autofit")
     # norm_header / HEADER_TO_FIELD are package-internal (only find_header_row uses them).
     assert callable(excel.norm_header) and not hasattr(cp, "norm_header")
     assert isinstance(excel.HEADER_TO_FIELD, dict) and not hasattr(cp, "HEADER_TO_FIELD")
@@ -254,3 +263,8 @@ def test_excel_reexported_and_functional(cp):
     assert cp._SEV_FILL is excel._SEV_FILL and excel._SEV_FILL["High"] == "F4CCCC"
     # _CL_FILL / _READY_FILL / _STATUS_FILL are package-internal.
     assert not hasattr(cp, "_CL_FILL") and not hasattr(cp, "_READY_FILL")
+    # Tier-2 (file-reading) + intelligence sheet writers joined the excel layer (step 24).
+    for name in ("write_interface_health_sheet", "write_security_posture_sheet",
+                 "write_routing_adjacency_sheet", "write_causality_chains_sheet",
+                 "write_failure_impact_sheet"):
+        assert getattr(cp, name) is getattr(excel, name)

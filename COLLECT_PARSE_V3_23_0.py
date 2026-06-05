@@ -296,7 +296,8 @@ from cisco_toolkit.textutils import (
 # _split_macs re-import dropped in step 21 (its last monolith user, write_vlan_census_sheet,
 # moved to excel; analyze.py + excel.py now import it from textutils directly).
 from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): primitives + pure parsers
-    parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,
+    # parse_ospf_neighbors / parse_eigrp_neighbors / parse_bgp_summary dropped (step 24):
+    # write_routing_adjacency_sheet (their last monolith user) moved to excel.
     parse_ip_routes, parse_hsrp_summary, parse_vrrp_summary, parse_glbp_summary,
     parse_show_interface_status, parse_show_interface_switchport, parse_show_interface_trunk_table,
     parse_show_mac_address_table, parse_spanning_tree_blockedports, parse_vlan_brief,
@@ -308,8 +309,8 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
     parse_show_ip_arp, parse_vtp_status, parse_switch_mgmt_ip, parse_multicast_info,
     parse_show_version, parse_show_inventory, parse_show_environment_power,
     parse_show_environment, parse_show_module_count,
-    parse_show_interface_counters, parse_port_security, parse_auth_sessions,
-    parse_dhcp_snooping_binding,
+    parse_show_interface_counters,   # parse_port_security/auth/dhcp dropped (step 24): their
+    # writer (write_security_posture_sheet) moved to excel.
     _parse_fhrp,   # NEW-V3.23.26 (step 16): FHRP behaviour parser, used by write_l3_forwarding_sheet
     _is_physical_port, _classify_media, parse_interface_phy, _parse_poe_watts,  # NEW-V3.23.27 (step 17)
 )
@@ -326,7 +327,7 @@ from cisco_toolkit.analyze import (
     # compute_topology_links / compute_findings dropped (step 22): their last monolith users
     # (write_topology_sheet / write_findings_sheet) moved to excel.
     build_network_model,   # _link_carries (step 19) + _vlan_components (step 18): last monolith users moved
-    compute_causality_chains, compute_failure_impact,
+    # compute_causality_chains / compute_failure_impact dropped (step 24): their writers moved to excel.
     compute_data_quality, compute_health_scores,
     compute_score_sensitivity, compute_migration_readiness,
     compute_protocol_health, _poe_device_util, _physical_uplink_index,
@@ -340,13 +341,16 @@ from cisco_toolkit.cmdio import _CISCO_ERRORS, _load_cmd_output, _safe_parse
 # NEW-V3.23.30 (PHASE 2.7 step 20): the Excel layer's shared sheet/header helpers; imported
 # back so the write_* sheet builders + main()'s template-fill keep working unchanged.
 from cisco_toolkit.excel import (
-    _census_header, _census_autofit, find_header_row, ensure_headers, sortkey,
+    find_header_row, ensure_headers, sortkey,   # _census_header/_census_autofit: their last
+    # monolith writers moved to excel (step 24), so those re-imports were dropped.
     write_device_inventory_sheet, write_svi_gateway_sheet, write_stp_detail_sheet,  # step 21
     write_vlan_census_sheet, write_endpoint_census_sheet,                            # step 21
     write_move_group_sheet, write_topology_sheet, write_findings_sheet,             # step 22
     write_capacity_sheet, write_topology_diagram,                                   # step 22
     _SEV_FILL, write_cross_layer_sheet, write_protocol_health_sheet,                # step 23
     write_health_scores_sheet, write_score_sensitivity_sheet, write_migration_readiness_sheet,  # step 23
+    write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
+    write_causality_chains_sheet, write_failure_impact_sheet,                                   # step 24
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -1689,236 +1693,16 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
 # -----------------------------------------------------------------------------
 # Tier 2 #1: Interface health counters  ('show interfaces' / 'show interface')
 # -----------------------------------------------------------------------------
-INTERFACE_HEALTH_SHEET_NAME = "Interface Health"
-
-# parse_show_interface_counters moved to cisco_toolkit.parse (PHASE 2.7 step 8);
-# imported at the top of this file.
-
-def write_interface_health_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
-    """One row per interface with a health signal worth seeing: any errors/CRC/drops,
-    or oper-up with 'Last input never' (connected-but-idle, a retire candidate)."""
-    cols = ["Hostname", "Port", "Oper", "Input Errors", "CRC", "Output Drops",
-            "Last Input", "Last Output", "Flag"]
-    if INTERFACE_HEALTH_SHEET_NAME in wb.sheetnames:
-        del wb[INTERFACE_HEALTH_SHEET_NAME]
-    ws = wb.create_sheet(INTERFACE_HEALTH_SHEET_NAME)
-    _census_header(ws, cols)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="center")
-    DAT_C = Alignment(horizontal="center", vertical="center")
-    warn = PatternFill("solid", fgColor="F4CCCC")
-    idle = PatternFill("solid", fgColor="FFF2CC")
-    rows = []
-    for host in sorted(all_cmd_to_files):
-        out = _load_cmd_output(all_cmd_to_files[host], "show interfaces", "show interface")
-        if not out:
-            continue
-        for port, rec in parse_show_interface_counters(out).items():
-            ie = rec["input_errors"] if isinstance(rec["input_errors"], int) else 0
-            cr = rec["crc"] if isinstance(rec["crc"], int) else 0
-            od = rec["output_drops"] if isinstance(rec["output_drops"], int) else 0
-            has_err = bool(ie or cr or od)
-            is_idle = (str(rec["oper"]).lower().startswith("up")
-                       and str(rec["last_input"]).lower() == "never")
-            if not (has_err or is_idle):
-                continue
-            flag = []
-            if has_err: flag.append("Errors")
-            if is_idle: flag.append("Up but idle (no input)")
-            rows.append((host, port, rec, "; ".join(flag), has_err, is_idle))
-    def _key(t):
-        host, port = t[0], t[1]
-        nums = [int(x) for x in re.findall(r"\d+", port)]
-        return (host.lower(), port[:2].lower(), nums)
-    rows.sort(key=_key)
-    r = 2
-    for host, port, rec, flag, has_err, is_idle in rows:
-        vals = [host, port, rec["oper"], rec["input_errors"], rec["crc"],
-                rec["output_drops"], rec["last_input"], rec["last_output"], flag]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
-            c.alignment = DAT_C if 4 <= col <= 6 else DAT_L
-        if has_err:
-            ws.cell(row=r, column=9).fill = warn
-        elif is_idle:
-            ws.cell(row=r, column=9).fill = idle
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    logger.info(f"  [OK] '{INTERFACE_HEALTH_SHEET_NAME}' sheet: {len(rows)} port(s) flagged")
+# Tier-2 (file-reading) + intelligence sheet writers moved to cisco_toolkit.excel
+# (PHASE 2.7 step 24): write_interface_health_sheet / write_security_posture_sheet /
+# write_routing_adjacency_sheet / write_causality_chains_sheet / write_failure_impact_sheet.
+# All five imported back near the top of this file (main() calls them). excel.py now imports
+# _load_cmd_output + the parse parsers + compute_causality_chains/compute_failure_impact itself.
 
 
-# -----------------------------------------------------------------------------
-# Tier 2 #2: Security posture  (port-security / 802.1X / DHCP snooping)
-# -----------------------------------------------------------------------------
-SECURITY_SHEET_NAME = "Security Posture"
-
-# parse_port_security / parse_auth_sessions / parse_dhcp_snooping_binding moved to
-# cisco_toolkit.parse (PHASE 2.7 step 8); imported at the top of this file.
-
-def write_security_posture_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
-    """One row per port with port-security, an 802.1X session, or DHCP-snoop bindings."""
-    cols = ["Hostname", "Port", "Port-Security Max", "PS Current", "PS Violations",
-            "PS Action", "802.1X Method", "802.1X Status", "Auth MAC", "DHCP-Snoop Bindings"]
-    if SECURITY_SHEET_NAME in wb.sheetnames:
-        del wb[SECURITY_SHEET_NAME]
-    ws = wb.create_sheet(SECURITY_SHEET_NAME)
-    _census_header(ws, cols)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="center")
-    rows = []
-    for host in sorted(all_cmd_to_files):
-        c2f = all_cmd_to_files[host]
-        ps = parse_port_security(_load_cmd_output(c2f, "show port-security"))
-        au = parse_auth_sessions(_load_cmd_output(c2f, "show authentication sessions"))
-        ds = parse_dhcp_snooping_binding(_load_cmd_output(c2f, "show ip dhcp snooping binding"))
-        for p in (set(ps) | set(au) | set(ds)):
-            pv = ps.get(p, {}); av = au.get(p, {})
-            rows.append((host, p, pv.get("max", ""), pv.get("current", ""),
-                         pv.get("violations", ""), pv.get("action", ""),
-                         av.get("method", ""), av.get("status", ""), av.get("mac", ""),
-                         ds.get(p, "")))
-    def _key(t):
-        host, port = t[0], t[1]
-        nums = [int(x) for x in re.findall(r"\d+", port)]
-        return (host.lower(), port[:2].lower(), nums)
-    rows.sort(key=_key)
-    r = 2
-    for row in rows:
-        for col, v in enumerate(row, 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    logger.info(f"  [OK] '{SECURITY_SHEET_NAME}' sheet: {len(rows)} port(s)")
-
-
-# -----------------------------------------------------------------------------
-# Tier 2 #3: Routing adjacencies  (OSPF / EIGRP neighbors, BGP peers)
-# -----------------------------------------------------------------------------
-ROUTING_SHEET_NAME = "Routing Adjacencies"
-
-# parse_ospf_neighbors / parse_eigrp_neighbors / parse_bgp_summary moved to
-# cisco_toolkit.parse (PHASE 2.7 step 2); imported near the top of this file.
-
-def write_routing_adjacency_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
-    """One row per dynamic-routing adjacency (OSPF/EIGRP neighbor, BGP peer)."""
-    cols = ["Hostname", "Protocol", "Neighbor", "State / PfxRcd", "Interface / AS"]
-    if ROUTING_SHEET_NAME in wb.sheetnames:
-        del wb[ROUTING_SHEET_NAME]
-    ws = wb.create_sheet(ROUTING_SHEET_NAME)
-    _census_header(ws, cols)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="center")
-    rows = []
-    for host in sorted(all_cmd_to_files):
-        c2f = all_cmd_to_files[host]
-        for n in parse_ospf_neighbors(_load_cmd_output(c2f, "show ip ospf neighbor")):
-            rows.append((host, "OSPF", n["neighbor"], n["state"], n["interface"]))
-        for n in parse_eigrp_neighbors(_load_cmd_output(c2f, "show ip eigrp neighbors")):
-            rows.append((host, "EIGRP", n["neighbor"], n["state"], n["interface"]))
-        for n in parse_bgp_summary(_load_cmd_output(c2f, "show ip bgp summary", "show bgp summary")):
-            rows.append((host, "BGP", n["neighbor"], n["state"], f"AS {n['as']}"))
-    r = 2
-    for row in sorted(rows, key=lambda t: (t[0].lower(), t[1], t[2])):
-        for col, v in enumerate(row, 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    logger.info(f"  [OK] '{ROUTING_SHEET_NAME}' sheet: {len(rows)} adjacency(ies)")
-
-
-# =============================================================================
-# NEW-V3.16: INTELLIGENCE LAYER - causality chains + traffic-flow (failure) simulation
-#
-# A deterministic graph-reasoning pass over the already-parsed InterfaceData (no new
-# collection, no external calls - same philosophy as compute_findings()). It builds a
-# switch-level graph from CDP/LLDP links, annotates each link with the VLANs it FORWARDS
-# vs BLOCKS using real 'show spanning-tree' state, then answers two migration questions:
-#
-#   * Causality chains  - root condition -> propagation mechanism -> blast radius
-#     (sole-gateway SPOFs, transit switches that are the only L2 path to a gateway,
-#      single non-bundled uplinks that isolate a switch's endpoints).
-#   * Failure Impact    - pull each switch out of the graph and recompute per-VLAN
-#     reachability: hard partition / backup-covered (STP reconverges via a named blocked
-#     link) / FHRP-covered (standby gateway) / no impact. This is the migration
-#     blast-radius simulation.
-#
-# HONEST LIMITS (also surfaced on the sheets):
-#   - The graph is only as complete as CDP/LLDP discovery; links to non-Cisco/off-scan
-#     gear are invisible, so impact is a LOWER BOUND. Only scanned<->scanned links are
-#     modelled - a switch's single uplink to an off-scan core is not analysed.
-#   - This is REACHABILITY simulation, not bandwidth/congestion - there is no traffic
-#     volume telemetry. Connectivity-under-failure is exact; the precise post-failure
-#     active path is approximate (a backup link is proven to exist and named, but STP's
-#     resulting tree is not recomputed without bridge priorities/costs).
-#   - Scope is L2 reachability of endpoints to their VLAN's SVI gateway (the migration-
-#     critical question). L3 core path recomputation between gateways is out of scope.
-# =============================================================================
-CAUSALITY_SHEET_NAME = "Causality Chains"
-FAILURE_SHEET_NAME   = "Failure Impact"
-# _SEV_FILL moved to cisco_toolkit.excel (PHASE 2.7 step 23, with write_protocol_health_sheet);
-# imported back near the top of this file (the causality/failure/interface/physical writers still
-# here use it).
-
-
-# Network model + graph helpers (_vlan_in_ranges / build_network_model / _link_carries
-# / _vlan_components) moved to cisco_toolkit.analyze (PHASE 2.7 step 13). build_network_model
-# / _link_carries / _vlan_components are imported back near the top of this file (the physical
-# / L3 / flow functions still here use them). _canon_host / _canon_host_map are no longer
-# referenced here, so their step-12 import-backs were dropped.
-
-
-# compute_causality_chains / compute_failure_impact moved to cisco_toolkit.analyze
-# (PHASE 2.7 step 13); imported back near the top of this file (write_causality_chains_sheet
-# / write_failure_impact_sheet below call them).
-
-
-def write_causality_chains_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write (or replace) 'Causality Chains': cause -> mechanism -> blast radius reasoning."""
-    cols = ["Severity", "Trigger (root cause)", "Mechanism (why it propagates)",
-            "Impact (blast radius)", "Mitigation"]
-    if CAUSALITY_SHEET_NAME in wb.sheetnames:
-        del wb[CAUSALITY_SHEET_NAME]
-    ws = wb.create_sheet(CAUSALITY_SHEET_NAME)
-    _census_header(ws, cols)
-    chains = compute_causality_chains(all_interfaces)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
-    r = 2
-    for sev, trig, mech, impact, mit in chains:
-        for col, v in enumerate([sev, trig, mech, impact, mit], 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-            if col == 1 and sev in _SEV_FILL:
-                c.fill = PatternFill("solid", fgColor=_SEV_FILL[sev])
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    for colL, w in (("B", 34), ("C", 46), ("D", 46), ("E", 40)):
-        ws.column_dimensions[colL].width = w
-    logger.info(f"  [OK] '{CAUSALITY_SHEET_NAME}' sheet: {len(chains)} chain(s)")
-
-
-def write_failure_impact_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write (or replace) 'Failure Impact': per-switch migration blast-radius simulation."""
-    cols = ["Severity", "Switch (remove / migrate)", "VLANs Impacted", "Stranded Endpoints",
-            "Hard Partitions", "Backup-Covered", "FHRP-Covered", "Per-VLAN Detail"]
-    if FAILURE_SHEET_NAME in wb.sheetnames:
-        del wb[FAILURE_SHEET_NAME]
-    ws = wb.create_sheet(FAILURE_SHEET_NAME)
-    _census_header(ws, cols)
-    rows = compute_failure_impact(all_interfaces)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
-    r = 2
-    for rec in rows:
-        vals = [rec["severity"], rec["host"], rec["vlans_impacted"], rec["stranded"],
-                rec["hard"], rec["backup"], rec["fhrp"], rec["detail"]]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-            if col == 1 and rec["severity"] in _SEV_FILL:
-                c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    ws.column_dimensions["H"].width = 70
-    logger.info(f"  [OK] '{FAILURE_SHEET_NAME}' sheet: {len(rows)} switch(es) analyzed")
+# (Causality Chains + Failure Impact writers also moved to cisco_toolkit.excel in step 24 -
+# see the note above. The intelligence-layer design doc lives with compute_causality_chains /
+# compute_failure_impact in cisco_toolkit/analyze.py + the .md.)
 
 
 # -----------------------------------------------------------------------------
