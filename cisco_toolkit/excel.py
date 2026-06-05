@@ -5,6 +5,7 @@ header-matching primitives (`norm_header` / `HEADER_TO_FIELD` / `find_header_row
 and cisco_toolkit.textutils (a clean layer above analyze). Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 20 (behaviour byte-identical). The sheet
 writers themselves follow in later steps; the monolith imports these back meanwhile."""
+import ipaddress
 import logging
 import os
 import re
@@ -869,6 +870,86 @@ def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistr
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     logger.info(f"  [OK] '{PROTOCOL_BOUNDARIES_SHEET_NAME}' sheet: {nrows} routing device(s)")
+
+
+def _svi_ip_net(svi: str) -> Tuple[str, str]:
+    """('10.0.10.2 255.255.255.0' | '10.0.10.2/24' | '10.0.10.2') -> (ip, 'net/plen' or '')."""
+    parts = (svi or "").split()
+    if not parts:
+        return ("", "")
+    first = parts[0]
+    try:
+        if "/" in first:
+            iface = ipaddress.ip_interface(first)
+        elif len(parts) >= 2:
+            iface = ipaddress.ip_interface(f"{first}/{parts[1]}")
+        else:
+            ipaddress.ip_address(first); return (first, "")   # bare IP, no subnet
+        return (str(iface.ip), str(iface.network))
+    except ValueError:
+        return ("", "")
+
+
+def compute_addressing_conflicts(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> dict:
+    """Fabric-wide L3 addressing conflicts (mirrors the explorer's addressingConflicts): the same physical IP
+    on >=2 interfaces (duplicate L3 address -- the FHRP virtual IP lives in hsrp_behavior, not svi_ip, so a
+    shared svi_ip is always a real clash), and the same subnet behind >=2 VLANs in the SAME VRF (overlapping
+    addressing; different VRFs may intentionally overlap, so they're excluded). Returns
+    {"dup_ip":[{ip,where:[(host,port,vid)]}], "dup_subnet":[{net,vrf,where:[...]}]}."""
+    by_ip: Dict[str, list] = {}
+    by_sub: Dict[tuple, list] = {}
+    for host in sorted(all_interfaces):
+        for port, d in all_interfaces[host].items():
+            svi = (getattr(d, "svi_ip", "") or "").strip()
+            if not svi:
+                continue
+            ip, net = _svi_ip_net(svi)
+            if not ip:
+                continue
+            m = re.match(r"^Vlan(\d+)$", port or "", re.IGNORECASE)
+            vid = int(m.group(1)) if m else None
+            vrf = (getattr(d, "vrf", "") or "").strip().lower()
+            vrf = "" if vrf in ("", "default", "global") else vrf
+            by_ip.setdefault(ip, []).append((host, port, vid))
+            if net and vid is not None:
+                by_sub.setdefault((vrf, net), []).append((host, port, vid))
+    dup_ip = [{"ip": ip, "where": w} for ip, w in sorted(by_ip.items())
+              if len({(h, p) for (h, p, v) in w}) > 1]
+    dup_subnet = [{"net": net, "vrf": vrf, "where": w} for (vrf, net), w in sorted(by_sub.items())
+                  if len({v for (h, p, v) in w}) > 1]
+    return {"dup_ip": dup_ip, "dup_subnet": dup_subnet}
+
+
+ADDRESSING_CONFLICTS_SHEET_NAME = "Addressing Conflicts"
+
+def write_addressing_conflicts_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write the 'Addressing Conflicts' sheet: duplicate L3 IPs and overlapping subnets across the fabric --
+    the classic silent outage when two domains merge or a move-group cuts over. Surfaces the reachability
+    explorer's addressing-integrity finding in the workbook."""
+    c = compute_addressing_conflicts(all_interfaces)
+    ws = wb.create_sheet(ADDRESSING_CONFLICTS_SHEET_NAME)
+    for col, h in enumerate(["Type", "Address / Subnet", "VRF", "Configured on"], 1):
+        cell = ws.cell(1, col, h); cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
+
+    def _loc(where):
+        return ", ".join(f"{h} {('VLAN ' + str(v)) if v is not None else p}" for (h, p, v) in where)
+    r = 2
+    for d in c["dup_ip"]:
+        ws.cell(r, 1, "duplicate IP"); ws.cell(r, 2, d["ip"]); ws.cell(r, 3, "-"); ws.cell(r, 4, _loc(d["where"]))
+        for col in (1, 2): ws.cell(r, col).font = Font(bold=True, color="C00000")
+        r += 1
+    for d in c["dup_subnet"]:
+        ws.cell(r, 1, "overlapping subnet"); ws.cell(r, 2, d["net"]); ws.cell(r, 3, d["vrf"] or "global"); ws.cell(r, 4, _loc(d["where"]))
+        for col in (1, 2): ws.cell(r, col).font = Font(bold=True, color="C00000")
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No duplicate IPs or overlapping subnets detected")
+    for i, w in enumerate([18, 26, 14, 60], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{ADDRESSING_CONFLICTS_SHEET_NAME}' sheet: "
+                f"{len(c['dup_ip'])} dup-IP, {len(c['dup_subnet'])} overlap")
 
 
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
