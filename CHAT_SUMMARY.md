@@ -5,6 +5,31 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — Redaction feature: opt-in `--redact` (sanitized shareable deliverable)
+
+On branch `redact-snapshot`. Opt-in Python feature; default OFF so the golden + normal runs are byte-unchanged.
+
+- New `cisco_toolkit.html.redact_snapshot(snap)` — recursive walk of the snapshot dict; regex-replaces every
+  IPv4 (subnet-preserving: remap the /24, keep the host octet) + every MAC (consistent fake `02:..`) in all
+  string values, and maps the serial fields (serial_number / chassis_serial / current|neighbor_switch_serial)
+  to `SN####`. CONSISTENT (same input → same output) so ARP / dual-homing / subnet+flow-trace survive; hostnames
+  kept. Pure (stdlib `re`), input not mutated. Lives in the html/reporting layer.
+- `main()`: new `--redact` argparse flag; when set, `snap_dict = redact_snapshot(snap_dict)` AFTER all the
+  augmentations (health_scores etc.) and BEFORE write_json_file + write_html_explorer, so BOTH the `.json` and
+  the embedded HTML are redacted. Imported back via the existing `from cisco_toolkit.html import …` line.
+- **Why regex-over-everything + field-based serials:** IPs/MACs appear both in dedicated fields AND embedded in
+  free text (e.g. `hsrp_behavior` "… vIP 10.0.10.1"), so a recursive regex pass is more robust than
+  field-by-field; serials have no regex, so they're mapped by key. The 4-octet IP regex won't false-match
+  3-part version strings.
+- **Verified end-to-end** (golden harness + `--redact`): rc 0; real `10.0.10.x` → `10.0.0.x` (subnet remapped,
+  host kept); **no golden IP leaked**; device serials → SN0001/0002/0003; `[redact]` logged. Unit test covers
+  consistency + subnet-preservation + embedded-IP + no-mutation. `ruff` clean, mypy 101, **68 tests**. `.md` V3.23.41.
+
+This was the last optional item the user picked after PHASE 2.7 (package split) + PHASE 3 (explorer
+a11y / robustness / Health) were complete.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 30: snapshot_state + write_html_explorer -> html.py (HTML LAYER COMPLETE)
 
 On branch `phase2-split-html2`. Byte-identical. Monolith **~1,290 lines**; `cisco_toolkit/html.py` **~191 = the whole html layer**.

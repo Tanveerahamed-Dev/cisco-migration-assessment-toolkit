@@ -344,3 +344,36 @@ def test_html_reexported_and_functional(cp, tmp_path):
     rows = list(wb["Interface Changes"].iter_rows(min_row=2, values_only=True))
     assert any(r[0] == "sw1" and r[1] == "Gi1/0/1" and r[2] == "Modified"
                and "status: connected -> notconnect" in (r[3] or "") for r in rows)
+
+
+def test_redact_snapshot_pseudonymizes_consistently():
+    from cisco_toolkit import html
+    snap = {
+        "devices": {"core1": {"serial_number": "FOC1234X", "chassis_serial": "FOC1234X",
+                              "system_mac": "00:11:22:33:44:55"}},
+        "interfaces": {"core1": {
+            "Vlan10":  {"port": "Vlan10", "svi_ip": "10.0.10.2",
+                        "hsrp_behavior": "HSRP grp10 active vIP 10.0.10.1"},
+            "Gi1/0/1": {"port": "Gi1/0/1", "end_host_ip": "10.0.10.5", "end_host_mac": "aa:bb:cc:dd:ee:01"},
+            "Gi1/0/2": {"port": "Gi1/0/2", "end_host_ip": "10.0.10.6", "end_host_mac": "aa:bb:cc:dd:ee:01"},
+        }},
+    }
+    r = html.redact_snapshot(snap)
+    ifs = r["interfaces"]["core1"]
+    blob = str(r)
+    # the real identifiers are gone
+    assert "10.0.10" not in blob and "aa:bb:cc:dd:ee:01" not in blob and "FOC1234X" not in blob
+    assert "00:11:22:33:44:55" not in blob
+    # consistent: the same MAC on two ports maps to the same pseudonym
+    assert ifs["Gi1/0/1"]["end_host_mac"] == ifs["Gi1/0/2"]["end_host_mac"]
+    # subnet preserved: two hosts in one /24 keep the same redacted /24, distinct host octets
+    a, b = ifs["Gi1/0/1"]["end_host_ip"], ifs["Gi1/0/2"]["end_host_ip"]
+    assert a.rsplit(".", 1)[0] == b.rsplit(".", 1)[0] and a != b
+    # an IP embedded in free text is redacted too, but the surrounding words survive
+    hb = ifs["Vlan10"]["hsrp_behavior"]
+    assert "10.0.10.1" not in hb and hb.startswith("HSRP grp10 active vIP ")
+    # the same serial in two fields maps consistently; hostnames are kept; input not mutated
+    dev = r["devices"]["core1"]
+    assert dev["serial_number"] == dev["chassis_serial"] and dev["serial_number"].startswith("SN")
+    assert "core1" in r["interfaces"]
+    assert snap["interfaces"]["core1"]["Gi1/0/1"]["end_host_ip"] == "10.0.10.5"
