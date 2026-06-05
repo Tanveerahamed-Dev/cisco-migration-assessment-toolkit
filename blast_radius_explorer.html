@@ -288,6 +288,53 @@
   .modal h2{margin:0 0 14px; font-size:15px} .modal .close{float:right; cursor:pointer; color:var(--text-faint); font-size:18px}
   .modal .krow{display:flex; justify-content:space-between; padding:6px 0; font-size:12.5px; border-top:1px solid var(--border-faint)}
   .modal .krow span:first-child{color:var(--text-dim)}
+
+  /* ============================================================
+     PRINT STYLESHEET — ink-economical light hardcopy for clients.
+     Forces a light palette regardless of on-screen theme, lets the
+     dashboard flow onto paper, hides interactive chrome, and surfaces
+     the screen-reader data table (#srTable) as a printable data table.
+     ============================================================ */
+  @media print{
+    /* 1. Light palette regardless of current theme (reuse light token values) */
+    :root, [data-theme="dark"]{
+      --bg:#fff; --surface:#fff; --surface-2:#f3f6fa; --surface-3:#e9eef4;
+      --border:#d6dde6; --border-strong:#bcc6d2; --border-faint:#e6ebf1;
+      --text:#1b2530; --text-dim:#586675; --text-faint:#8a96a4;
+      --accent:#2563eb; --accent-dim:#5b86e0; --accent-soft:#e4eeff;
+      --ok:#1a7f37; --ok-soft:#e7f5ec;
+      --watch:#9a6700; --watch-soft:#fbf2d4;
+      --risk:#bc4c00; --risk-soft:#fcecdc;
+      --crit:#cf222e; --crit-soft:#ffeceb;
+      --grid:#fff; --shadow:none;
+    }
+    body{background:#fff; color:var(--text)}
+    /* 2. Let content flow onto paper instead of a fixed 100vh viewport */
+    html,body{height:auto !important; overflow:visible !important}
+    .app{height:auto !important; display:block !important}
+    .main{display:block !important}
+    .stage{overflow:visible !important; height:auto}
+    aside#panel, #panel{overflow:visible !important; height:auto}
+    /* 3. Hide interactive chrome. NOTE: .ov-bottom is NOT blanket-hidden here —
+       it is the legend's parent, and an ancestor display:none cannot be undone
+       by a descendant rule. Instead we un-absolute it and hide its hint child. */
+    header, .ov-top, .modal, .drop, .btn, .modes, .tools{display:none !important}
+    ::-webkit-scrollbar{display:none !important}
+    /* ...but keep the legend as a printed key: flow its overlay statically */
+    .ov-bottom{position:static !important; display:block !important}
+    .ov-bottom .hint, #hint{display:none !important}
+    .legend, #legend{display:block !important; position:static !important; margin:12px 0 !important;
+      box-shadow:none; max-width:none}
+    /* 4. Surface the screen-reader data table as a real printed table */
+    #srTable{position:static !important; width:auto !important; height:auto !important;
+      clip:auto !important; clip-path:none !important; margin:12px 0 !important;
+      overflow:visible !important; white-space:normal !important; border:0}
+    #srTable table{width:100%; border-collapse:collapse; font-size:11px}
+    #srTable th, #srTable td{border:1px solid var(--border-strong); padding:4px 7px; text-align:left}
+    #srTable caption, #srTable h2, #srTable h3{text-align:left; font-size:13px; margin:0 0 6px}
+    /* 5. Avoid awkward page breaks through cards / rows */
+    .sec, .card, table, tr{break-inside:avoid}
+  }
 </style>
 </head>
 <body>
