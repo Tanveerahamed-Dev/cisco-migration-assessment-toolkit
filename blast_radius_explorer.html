@@ -110,6 +110,28 @@
   svg{width:100%; height:100%; display:block; cursor:grab}
   svg.grabbing{cursor:grabbing}
 
+  /* ---- table view (alternate data-equivalent of the graph) ---- */
+  #tableView{position:absolute; inset:0; z-index:6; overflow:auto; background:var(--surface);
+    padding:14px 16px 18px}
+  #tableView:focus{outline:none}
+  #tableView table{width:100%; border-collapse:collapse; font-size:12.5px}
+  #tableView caption{text-align:left; color:var(--text-dim); font-size:11px; padding:0 0 10px;
+    letter-spacing:.2px}
+  #tableView thead th{position:sticky; top:0; z-index:1; background:var(--surface-2);
+    color:var(--text-dim); text-align:left; font-weight:600; font-size:11px; letter-spacing:.4px;
+    text-transform:uppercase; padding:8px 10px; border-bottom:1px solid var(--border-strong);
+    cursor:pointer; user-select:none; white-space:nowrap}
+  #tableView thead th:hover{color:var(--text)}
+  #tableView thead th[aria-sort] .sortgl{color:var(--accent)}
+  #tableView thead th .sortgl{font-size:9px; margin-left:4px; color:var(--text-faint)}
+  #tableView tbody th, #tableView tbody td{padding:7px 10px; border-bottom:1px solid var(--border-faint);
+    color:var(--text); text-align:left; vertical-align:middle}
+  #tableView tbody th{font-weight:600}
+  #tableView tbody tr:nth-child(even){background:var(--surface-2)}
+  #tableView tbody tr:hover{background:var(--surface-3)}
+  #tableView .mono{font-family:var(--mono); font-size:12px}
+  #tableView .num{text-align:right; font-variant-numeric:tabular-nums}
+
   .overlay{position:absolute; display:flex; gap:8px; align-items:center; z-index:5}
   .ov-top{top:12px; left:12px; right:12px; flex-wrap:wrap}
   .ov-bottom{bottom:12px; left:12px; right:12px; justify-content:space-between; align-items:flex-end}
@@ -356,6 +378,7 @@
     <div class="grow"></div>
     <div class="tools">
       <button class="btn" id="loadBtn" aria-label="Load a snapshot file"><span aria-hidden="true">↥</span> Load</button>
+      <button class="btn iconbtn" id="tableBtn" title="Toggle table view (G)" aria-label="Show topology as a table" aria-pressed="false"><span aria-hidden="true">▤</span> Table</button>
       <button class="btn iconbtn" id="layoutBtn" title="Toggle layered / radial layout" aria-label="Toggle layered or radial layout">⊞</button>
       <button class="btn iconbtn" id="fitBtn" title="Fit to screen (F)" aria-label="Fit graph to screen">⤢</button>
       <button class="btn iconbtn" id="exportSvgBtn" title="Export topology as SVG" aria-label="Export topology as SVG">⤓</button>
@@ -376,6 +399,7 @@
         <div class="panelbox modetag" id="modetag"></div>
       </div>
       <svg id="svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Network topology graph"></svg>
+      <div id="tableView" tabindex="-1" hidden></div>
       <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
       <div id="srTable" class="sr-only" role="region" aria-label="Topology as a table"></div>
       <div class="overlay ov-bottom">
@@ -396,6 +420,7 @@
   <div class="krow"><span>Fit to screen</span><span class="kbd">F</span></div>
   <div class="krow"><span>Clear selection</span><span class="kbd">Esc</span></div>
   <div class="krow"><span>Toggle theme</span><span class="kbd">T</span></div>
+  <div class="krow"><span>Toggle table view</span><span class="kbd">G</span></div>
   <div class="krow"><span>Pan / zoom</span><span>drag · scroll wheel</span></div>
   <div class="krow"><span>Move a switch</span><span>drag the node</span></div>
   <div class="krow"><span>Navigate switches</span><span><span class="kbd">Tab</span> then <span class="kbd">←</span><span class="kbd">→</span><span class="kbd">↑</span><span class="kbd">↓</span></span></div>
@@ -844,6 +869,7 @@ function load(snap,label,live){
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
   computeLayout(); buildChips(); renderSrTable(); fitView(); repaint(); renderDrawer();
+  if(tableShown())renderTable();
 }
 function computeLayout(){
   const r = LAYOUT==="radial"? radialLayout(MODEL) : layeredLayout(MODEL);
@@ -1139,6 +1165,89 @@ function renderSrTable(){
   host.innerHTML=`<table><caption>Network topology — ${MODEL.hosts.length} switches, ${MODEL.links.length} links `+
     `(text equivalent of the graph)</caption><thead><tr><th scope="col">Switch</th><th scope="col">Role</th>`+
     `<th scope="col">Hosts</th><th scope="col">Connects to</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/* ---- visible Table view: a sortable, data-equivalent grid of the topology ----
+   (Grafana node-graph "grid vs graph" idiom; the graph stays the default view.) */
+let TABLE_SORT={col:0,dir:1};   // col index into TABLE_COLS, dir 1=asc / -1=desc
+const TABLE_COLS=[
+  {key:"switch",label:"Switch",  num:false},
+  {key:"role",  label:"Role",    num:false},
+  {key:"score", label:"Health",  num:true },
+  {key:"eps",   label:"Endpoints",num:true},
+  {key:"note",  label:"Findings",num:false},
+];
+function tableRowData(){
+  if(!MODEL)return [];
+  const by={}; healthList().forEach(r=>by[r.switch]=r);
+  const sevPill={High:"crit",Medium:"watch",Low:"ok",Info:"neutral"};
+  const sevLabel={High:"Hard partition risk",Medium:"Backup-covered",Low:"Redundant",Info:"No impact"};
+  return MODEL.hosts.map(h=>{
+    const hr=by[h];
+    const score=hr&&typeof hr.score==="number"?hr.score:null;
+    let worst="Info"; try{worst=failureImpact(MODEL,h).worst;}catch(e){}
+    return {switch:h,
+      role:deviceRole(MODEL,h)==="core"?"Core / distribution":"Access",
+      score, eps:epTotalOf(h),
+      note:worst, notePill:sevPill[worst]||"neutral", noteLabel:sevLabel[worst]||worst};
+  });
+}
+function sortTableRows(rows){
+  const c=TABLE_COLS[TABLE_SORT.col], d=TABLE_SORT.dir;
+  const val=r=>{ if(c.key==="score")return r.score==null?-1:r.score;
+    if(c.key==="eps")return r.eps;
+    if(c.key==="note"){const ord={High:3,Medium:2,Low:1,Info:0};return ord[r.note]==null?-1:ord[r.note];}
+    return String(r[c.key]).toLowerCase(); };
+  return rows.slice().sort((a,b)=>{const va=val(a),vb=val(b);
+    if(va<vb)return -1*d; if(va>vb)return 1*d; return a.switch.localeCompare(b.switch);});
+}
+function renderTable(){
+  const host=document.getElementById("tableView"); if(!host)return;
+  if(!MODEL){host.innerHTML=""; return;}
+  const sortGl=i=>{ if(i!==TABLE_SORT.col)return ""; return `<span class="sortgl" aria-hidden="true">${TABLE_SORT.dir>0?"▲":"▼"}</span>`; };
+  const ariaSort=i=> i===TABLE_SORT.col?` aria-sort="${TABLE_SORT.dir>0?"ascending":"descending"}"`:"";
+  const head=TABLE_COLS.map((c,i)=>
+    `<th scope="col" role="columnheader" data-col="${i}" tabindex="0"${ariaSort(i)}>${esc(c.label)}${sortGl(i)}</th>`).join("");
+  const rows=sortTableRows(tableRowData()).map(r=>{
+    const score=r.score==null?'<span class="faint">—</span>':esc(r.score);
+    const note=r.note==="Info"?"":`<span class="pill pl-${r.notePill}">${esc(r.noteLabel)}</span>`;
+    return `<tr><th scope="row" class="mono">${esc(r.switch)}</th>`+
+      `<td>${esc(r.role)}</td>`+
+      `<td class="num">${score}</td>`+
+      `<td class="num">${esc(r.eps)}</td>`+
+      `<td>${note}</td></tr>`;
+  }).join("");
+  host.innerHTML=`<table><caption>Topology as a table — ${MODEL.hosts.length} switches `+
+    `(an equivalent of the graph; click a column heading to sort)</caption>`+
+    `<thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+  host.querySelectorAll("thead th").forEach(th=>{
+    const i=+th.dataset.col;
+    const go=()=>{ if(TABLE_SORT.col===i)TABLE_SORT.dir*=-1; else {TABLE_SORT.col=i;TABLE_SORT.dir=1;}
+      renderTable(); srAnnounce(`Sorted by ${TABLE_COLS[i].label}, ${TABLE_SORT.dir>0?"ascending":"descending"}.`);};
+    th.onclick=go;
+    th.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go();}};
+  });
+}
+function tableShown(){const t=document.getElementById("tableView"); return !!t&&!t.hidden;}
+function toggleTableView(force){
+  const tv=document.getElementById("tableView"), btn=document.getElementById("tableBtn");
+  if(!tv)return;
+  const show = force===undefined ? tv.hidden : !!force;
+  if(show){
+    renderTable();
+    tv.hidden=false; svg().setAttribute("aria-hidden","true");
+    document.querySelectorAll("#stage .overlay").forEach(o=>o.setAttribute("aria-hidden","true"));
+    if(btn){btn.setAttribute("aria-pressed","true"); btn.lastChild&&(btn.lastChild.textContent=" Graph");
+      btn.setAttribute("aria-label","Show topology as a graph"); btn.title="Toggle graph view (G)";}
+    tv.focus(); srAnnounce("Table view");
+  }else{
+    tv.hidden=true; svg().removeAttribute("aria-hidden");
+    document.querySelectorAll("#stage .overlay").forEach(o=>o.removeAttribute("aria-hidden"));
+    if(btn){btn.setAttribute("aria-pressed","false"); btn.lastChild&&(btn.lastChild.textContent=" Table");
+      btn.setAttribute("aria-label","Show topology as a table"); btn.title="Toggle table view (G)";
+      btn.focus();}
+    srAnnounce("Graph view");
+  }
 }
 function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} EPSEL=null;
   if(MODE==="trace"){pickTrace(h);
@@ -2291,6 +2400,7 @@ document.getElementById("exportSvgBtn").onclick=exportSvg;
 document.getElementById("exportPngBtn").onclick=()=>{exportPng().catch(()=>{});};
 document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
 document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();};
+document.getElementById("tableBtn").onclick=()=>toggleTableView();
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("on");
 document.getElementById("helpClose").onclick=()=>document.getElementById("help").classList.remove("on");
 document.getElementById("helpClose").addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();document.getElementById("help").classList.remove("on");}});
@@ -2319,6 +2429,7 @@ window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   if(k==="1")setMode("blast");else if(k==="2")setMode("trace");else if(k==="3")setMode("compare");
   else if(k==="4")setMode("flow");else if(k==="5")setMode("health");else if(k==="6")setMode("protocols");
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
+  else if(k==="g")toggleTableView();
   else if(k==="/"){e.preventDefault();document.getElementById("search").focus();}
   else if(k==="escape"){onBgClick();document.getElementById("help").classList.remove("on");}});
 
