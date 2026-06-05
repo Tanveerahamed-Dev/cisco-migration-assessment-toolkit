@@ -69,6 +69,25 @@ def test_parse_run_config_interface_vrf(cp):
     assert res["Vlan10"]["vrf"] == ""               # global table — never absent
 
 
+def test_parse_run_config_interface_mtu(cp):
+    # PHASE path-MTU: capture interface MTU (L2 'mtu' preferred, 'ip mtu' fallback); default stays blank
+    out = textwrap.dedent("""\
+        interface Port-channel1
+         description core-uplink
+         mtu 9216
+        interface GigabitEthernet1/0/1
+         description routed-l3
+         ip mtu 1400
+        interface GigabitEthernet1/0/2
+         description access
+         switchport mode access
+    """)
+    res = parse.parse_run_config_interfaces(out)
+    assert res["Po1"]["mtu"] == "9216"          # L2 jumbo
+    assert res["Gi1/0/1"]["mtu"] == "1400"      # 'ip mtu' fallback when no plain 'mtu'
+    assert res["Gi1/0/2"]["mtu"] == ""          # default -> blank, never absent
+
+
 # ---- ACL definitions (L4 allow/deny sim) ----------------------------------- #
 def test_parse_acls_forms(cp):
     out = textwrap.dedent("""\
