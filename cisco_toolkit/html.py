@@ -232,6 +232,45 @@ _REDACT_MAC_RE = re.compile(
 _REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
                        "current_switch_serial", "neighbor_switch_serial"}
 
+# Credential deny-list: conservatively match KNOWN secret-bearing config/output forms
+# (IOS / IOS-XE / NX-OS, case-insensitive) and replace ONLY the secret token with a
+# placeholder, keeping the surrounding keywords as context. Each pattern captures the
+# prefix in group 1 and the secret in group 2; the secret is swapped for "<redacted>".
+# Idempotent: re-running over an already-scrubbed string re-captures "<redacted>" and
+# substitutes it for itself. We are deliberately narrow (no blanket token redaction) so
+# non-secret structured fields are never corrupted.
+_REDACT_PLACEHOLDER = "<redacted>"
+_REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
+    # SNMP community strings: 'snmp-server community <VALUE>' and the bare
+    # 'community <VALUE>' form (host/group/trap lines).
+    r"(snmp-server\s+community\s+)(\S+)",
+    r"(\bcommunity\s+)(\S+)",
+    # Cisco password/secret forms: type-7/type-5 and cleartext, 'enable secret',
+    # and 'username <u> password|secret <VALUE>'. The username token is preserved.
+    r"(\bpassword\s+(?:\d+\s+)?)(\S+)",
+    r"(\bsecret\s+(?:\d+\s+)?)(\S+)",
+    r"((?:username|user)\s+\S+\s+(?:password|secret)\s+(?:\d+\s+)?)(\S+)",
+    # Shared keys. Specific forms FIRST so the generic bare 'key' below cannot consume
+    # their qualifier (e.g. 'pre-shared-key local <V>' must not let 'key local' match).
+    # TACACS+/RADIUS server keys, 'key-string <VALUE>' (SNMPv3 / EIGRP / OSPF keychains),
+    # IKE pre-shared keys, and 'crypto isakmp key <VALUE> address ...'.
+    r"((?:tacacs-server|radius-server)\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)(\S+)",
+    r"(key-string\s+(?:\d+\s+)?)(\S+)",
+    r"(pre-shared-key\s+(?:(?:local|remote)\s+)?(?:\d+\s+)?)(\S+)",
+    r"(crypto\s+isakmp\s+key\s+(?:\d+\s+)?)(\S+)",
+    # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication).
+    r"(\bkey\s+(?:\d+\s+)?)(\S+)",
+)]
+
+
+def _scrub_secrets(s: str) -> str:
+    """Replace known credential / community / key material in a config-or-output string
+    with a placeholder, preserving surrounding context. Conservative (deny-list of
+    compiled regexes, secret-token capture only) and idempotent."""
+    for rx in _REDACT_SECRET_RES:
+        s = rx.sub(r"\g<1>" + _REDACT_PLACEHOLDER, s)
+    return s
+
 
 def redact_snapshot(snap: dict) -> dict:
     """Return a copy of the snapshot with IPs, MACs, and serial numbers consistently
@@ -264,7 +303,9 @@ def redact_snapshot(snap: dict) -> dict:
         return serial_map[v]
 
     def _scrub(s):
-        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP_RE.sub(_ip, s))
+        # Strip credentials / community / key material first so a secret token is
+        # replaced wholesale, THEN pseudonymize any remaining IPs / MACs in context.
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s)))
 
     def _walk(o, key=None):
         if isinstance(o, dict):
