@@ -5,6 +5,36 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 26: append_interface_rows -> excel (EXCEL LAYER COMPLETE)
+
+On branch `phase2-split-excel7`. Byte-identical. Monolith **~1,865 lines**; excel.py **~1,203 = the whole excel layer**.
+
+- Moved `append_interface_rows` (the main 'Migration Assessment' interface-sheet filler — the
+  LAST sheet writer) → excel.py. excel.py gained `MergedCell` (openpyxl.cell.cell) +
+  `PHYSICAL_IFACE_RE`/`_TRUNK_STATUS_WORDS` (textutils). Imported back for main() (it calls it per device).
+- This is the GOLDEN's interface sheet, so byte-exactness mattered most — golden stayed byte-identical.
+- F401: dropped the monolith's `MergedCell` import + `_TRUNK_STATUS_WORDS` (textutils) + `sortkey` (excel)
+  re-imports (append_interface_rows was their last monolith user; `PHYSICAL_IFACE_RE` survives — still used
+  at ~800/global_arp). Updated the step-20 sortkey identity assertion + added append_interface_rows identity.
+  **65 tests**, golden byte-identical, ruff clean, mypy 101. `.md` V3.23.36.
+
+**WORKFLOW NOTE:** this turn the user said "continue" while PR #34 (step 25) was still OPEN — I caught that
+main was at #33 (step-24) and PAUSED rather than branch step 26 off stale main (would conflict with #34 on
+merge). Asked them to merge #34; they did, then said continue, and I proceeded off the now-merged step-25 main.
+**Always verify `gh pr view <prev> --json state` == MERGED + `git log origin/main` before branching the next step.**
+
+**Remaining PHASE 2.7 (~3 PRs): (1) step 27 = the build_* model layer** (`build_device_physical`/
+`build_interfaces`[~300 lines]/`build_switch_identity` + `collect_global_arp`/`apply_global_arp`/
+`detect_cross_device_dual_connections`) — construct InterfaceData/DevicePhysical from parsed output; pull MANY
+parsers → **big F401 cascade + test_parsers/test_parser_robustness/test_platform_variants repoints**. These
+aren't excel → **new `cisco_toolkit/build.py`**. **(2) step 28 = html** (`snapshot_state` [the golden's JSON
+contract — care], `write_html_explorer`, `write_diff_workbook`, `_macset`, `write_json_file`/`file_sha256`/
+`build_run_manifest`?) → `cisco_toolkit/html.py`. **(3) Then `__main__`** = what's left (autodetect_platform/
+connect_device/send_cmd/collect/load_devices/main/argparse/_run_phase/_empty_dep_map/debug_scan_headers) —
+keep as the thin entrypoint or thin into the package. Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 25: fused compute-in-writer sheets -> excel
 
 On branch `phase2-split-excel6`. Byte-identical. Monolith **~1,945 lines (under 2k!)**; excel.py ~1,107.
