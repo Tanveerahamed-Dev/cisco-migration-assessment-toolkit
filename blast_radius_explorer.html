@@ -766,7 +766,9 @@ function buildSvg(){
   visEdges.forEach(e=>{const path=el("path",{class:"lnk"});
     const grp=el("g",{}); grp.appendChild(path);
     let badge=null,btext=null;
-    if(e.members.length>1||e.pc){badge=el("rect",{class:"pcbadge",rx:4,width:26,height:14});
+    // ×N member-count badge only when 2+ links are actually aggregated; a 1-member port-channel
+    // is already shown by the thick (.lnk.pc) edge, so "×1" would just be noise.
+    if(e.members.length>1){badge=el("rect",{class:"pcbadge",rx:4,width:26,height:14});
       btext=el("text",{class:"pcbadge-t"}); btext.textContent="×"+e.members.length;
       grp.appendChild(badge); grp.appendChild(btext);}
     glinks.appendChild(grp);
@@ -1306,10 +1308,10 @@ document.getElementById("loadBtn").onclick=()=>document.getElementById("file").c
 
 document.getElementById("file").addEventListener("change",e=>{const f=e.target.files[0];if(!f)return;
   const rd=new FileReader();rd.onload=()=>{try{const snap=JSON.parse(rd.result);load(snap,f.name.replace(/\.json$/i,""),true);}
-    catch(err){alert("Could not parse JSON: "+err.message);}};rd.readAsText(f);});
+    catch(err){showSchemaWarn("Could not parse "+f.name+": "+err.message); srAnnounce("Could not load that snapshot file.");}};rd.readAsText(f);});
 document.getElementById("fileB").addEventListener("change",e=>{const f=e.target.files[0];if(!f)return;
   const rd=new FileReader();rd.onload=()=>{try{const snapB=JSON.parse(rd.result);MODEL_B=buildModel(snapB);CMP=compareModels(MODEL,MODEL_B);repaint();renderDrawer();}
-    catch(err){alert("Could not parse JSON: "+err.message);}};rd.readAsText(f);});
+    catch(err){showSchemaWarn("Could not parse "+f.name+": "+err.message); srAnnounce("Could not load that snapshot file.");}};rd.readAsText(f);});
 
 // drag-drop
 const drop=document.getElementById("drop");
@@ -1318,7 +1320,7 @@ drop.addEventListener("dragleave",e=>{if(e.target===drop)drop.classList.remove("
 window.addEventListener("drop",e=>{e.preventDefault();drop.classList.remove("on");
   const f=e.dataTransfer.files[0];if(!f)return;const rd=new FileReader();
   rd.onload=()=>{try{const snap=JSON.parse(rd.result);load(snap,f.name.replace(/\.json$/i,""),true);}
-    catch(err){alert("Could not parse JSON: "+err.message);}};rd.readAsText(f);});
+    catch(err){showSchemaWarn("Could not parse "+f.name+": "+err.message); srAnnounce("Could not load that snapshot file.");}};rd.readAsText(f);});
 
 // keyboard
 window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
