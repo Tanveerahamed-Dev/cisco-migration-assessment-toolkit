@@ -241,6 +241,8 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         if v.get("rootguard"): interfaces[p].stp_rootguard = v["rootguard"]
         if v.get("vrf"):       interfaces[p].vrf            = v["vrf"]
         if v.get("ip_addr"):   interfaces[p].svi_ip         = v["ip_addr"]  # NEW-V14.3
+        if v.get("acl_in"):    interfaces[p].acl_in         = v["acl_in"]
+        if v.get("acl_out"):   interfaces[p].acl_out        = v["acl_out"]
         if v.get("pc_id") and not interfaces[p].port_channel:
             interfaces[p].port_channel = v["pc_id"]
         if v.get("pc_mode") and not interfaces[p].port_channel_protocol:

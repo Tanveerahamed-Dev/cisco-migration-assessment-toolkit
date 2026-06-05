@@ -22,6 +22,28 @@ def test_parse_show_interface_status_ios(cp):
     assert res["Gi1/0/5"]["vlan_raw"] == "10"
 
 
+# ---- run-config: ACL application (L4/ACL flagging) ------------------------- #
+def test_parse_run_config_interface_acl(cp):
+    out = textwrap.dedent("""\
+        interface Vlan10
+         description USERS
+         ip address 10.0.10.2 255.255.255.0
+        interface Vlan20
+         description VOICE
+         ip address 10.0.20.2 255.255.255.0
+         ip access-group VOICE_FILTER in
+        interface Vlan30
+         description SERVERS
+         ip address 10.0.30.1 255.255.255.0
+         ip access-group PROTECT_SERVERS out
+    """)
+    res = parse.parse_run_config_interfaces(out)
+    assert res["Vlan20"]["acl_in"] == "VOICE_FILTER" and res["Vlan20"]["acl_out"] == ""
+    assert res["Vlan30"]["acl_out"] == "PROTECT_SERVERS" and res["Vlan30"]["acl_in"] == ""
+    # SVI without an access-group keeps empty strings (additive, never absent)
+    assert res["Vlan10"]["acl_in"] == "" and res["Vlan10"]["acl_out"] == ""
+
+
 # ---- switchport ------------------------------------------------------------ #
 def test_parse_switchport_modes(cp):
     out = textwrap.dedent("""\
