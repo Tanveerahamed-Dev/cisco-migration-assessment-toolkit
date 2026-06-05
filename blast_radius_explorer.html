@@ -729,7 +729,7 @@ function load(snap,label,live){
   }
   document.getElementById("svg").setAttribute("aria-label",
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
-    `Tab into the graph, then use arrow keys to move between switches and Enter to select. `+
+    `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
   SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
   buildEndpointIndex();
@@ -989,17 +989,29 @@ function buildNavOrder(){
 function setRoving(){NAV.forEach((h,i)=>{const n=nodeEls[h]; if(n)n.g.setAttribute("tabindex",i===NAVI?"0":"-1");});}
 function focusNodeAt(i){if(!NAV.length)return; NAVI=(i%NAV.length+NAV.length)%NAV.length; setRoving();
   const n=nodeEls[NAV[NAVI]]; if(n)n.g.focus();}
+/* PHASE E: 2D spatial arrow-nav — the nearest node in the pressed direction (dir = a unit axis vector).
+   cost = distance ALONG the direction + 2x the perpendicular offset, so an aligned node wins over a skewed one;
+   nodes not in the pressed direction are excluded, so at an edge the key is a no-op (no wrap). */
+function spatialNeighbor(h,dx0,dy0){
+  if(!POS[h])return null;
+  const cx=POS[h].x, cy=POS[h].y; let best=null, bestCost=Infinity;
+  for(const o of NAV){ if(o===h||!POS[o])continue;
+    const dx=POS[o].x-cx, dy=POS[o].y-cy;
+    const along=dx*dx0+dy*dy0; if(along<=1e-6)continue;
+    const cost=along+2*Math.abs(dx*dy0-dy*dx0);
+    if(cost<bestCost){bestCost=cost; best=o;} }
+  return best;
+}
 function onNodeKey(ev,h){
   const k=ev.key;
   if(k==="Enter"||k===" "){ev.preventDefault(); onNodeClick(h); return;}
   if(k==="Home"){ev.preventDefault(); focusNodeAt(0); return;}
   if(k==="End"){ev.preventDefault(); focusNodeAt(NAV.length-1); return;}
-  let d=0;
-  if(k==="ArrowRight"||k==="ArrowDown")d=1;
-  else if(k==="ArrowLeft"||k==="ArrowUp")d=-1;
-  else return;
+  const dir={ArrowRight:[1,0],ArrowLeft:[-1,0],ArrowDown:[0,1],ArrowUp:[0,-1]}[k];
+  if(!dir)return;
   ev.preventDefault();
-  const cur=NAV.indexOf(h); focusNodeAt((cur<0?NAVI:cur)+d);
+  const t=spatialNeighbor(h,dir[0],dir[1]);   // 2D directional move; stay put at the edge
+  if(t!==null)focusNodeAt(NAV.indexOf(t));
 }
 function srAnnounce(msg){const el=document.getElementById("srStatus"); if(el)el.textContent=msg;}
 function neighborsOf(h){if(!MODEL||!MODEL.adj.get(h))return [];
