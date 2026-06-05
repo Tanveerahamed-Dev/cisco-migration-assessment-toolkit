@@ -183,6 +183,18 @@
   .kbd{font-family:var(--mono); font-size:10px; background:var(--surface-2); border:1px solid var(--border);
     border-radius:4px; padding:1px 5px; color:var(--text-dim)}
 
+  /* ---- mini-map overview navigator (bottom-right corner of the stage) ---- */
+  #minimap{position:absolute; right:12px; bottom:12px; z-index:6;
+    width:164px; height:124px; padding:4px; border-radius:9px;
+    background:var(--surface); border:1px solid var(--border); box-shadow:var(--shadow);
+    cursor:crosshair; user-select:none; opacity:.94; transition:opacity .12s}
+  #minimap:hover{opacity:1}
+  #minimap.hidden{display:none}
+  #minimap svg{width:100%; height:100%; display:block; cursor:crosshair}
+  #minimap .mm-edge{stroke:var(--border-strong); stroke-width:.6; opacity:.45}
+  #minimap .mm-dot{fill:var(--text-dim)}
+  #minimap .mm-vp{fill:var(--accent); fill-opacity:.12; stroke:var(--accent); stroke-width:1.2}
+
   /* ---- SVG node/link classes ---- */
   .lnk{fill:none; stroke:var(--border-strong); stroke-width:2; transition:stroke .2s, stroke-width .2s, stroke-opacity .2s}
   .lnk.fwd{stroke:var(--text-faint); stroke-opacity:.9}
@@ -399,7 +411,7 @@
     /* 3. Hide interactive chrome. NOTE: .ov-bottom is NOT blanket-hidden here —
        it is the legend's parent, and an ancestor display:none cannot be undone
        by a descendant rule. Instead we un-absolute it and hide its hint child. */
-    header, .ov-top, .modal, .drop, .btn, .modes, .tools{display:none !important}
+    header, .ov-top, .modal, .drop, .btn, .modes, .tools, #minimap{display:none !important}
     ::-webkit-scrollbar{display:none !important}
     /* ...but keep the legend as a printed key: flow its overlay statically */
     .ov-bottom{position:static !important; display:block !important}
@@ -439,6 +451,7 @@
       <button class="btn iconbtn" id="tableBtn" title="Toggle table view (G)" aria-label="Show topology as a table" aria-pressed="false"><span aria-hidden="true">▤</span> Table</button>
       <button class="btn iconbtn" id="layoutBtn" title="Toggle layered / radial layout" aria-label="Toggle layered or radial layout">⊞</button>
       <button class="btn iconbtn" id="fitBtn" title="Fit to screen (F)" aria-label="Fit graph to screen">⤢</button>
+      <button class="btn iconbtn" id="minimapBtn" title="Toggle mini-map (M)" aria-label="Toggle mini-map" aria-pressed="true">◳</button>
       <button class="btn iconbtn" id="exportSvgBtn" title="Export topology as SVG" aria-label="Export topology as SVG">⤓</button>
       <button class="btn iconbtn" id="exportPngBtn" title="Export topology as PNG" aria-label="Export topology as PNG">▦</button>
       <button class="btn iconbtn" id="resetBtn" title="Reset layout — clear pinned positions (R)" aria-label="Reset layout, clear pinned node positions">⟲</button>
@@ -466,6 +479,9 @@
         <div class="panelbox hint" id="hint"></div>
         <div class="panelbox legend" id="legend"></div>
       </div>
+      <div id="minimap" role="img" aria-label="Mini-map: overview of the whole topology with the current viewport">
+        <svg id="minimapSvg" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
+      </div>
     </div>
     <aside id="panel" aria-label="Details panel"></aside>
   </div>
@@ -482,6 +498,7 @@
   <div class="krow"><span>Clear selection</span><span class="kbd">Esc</span></div>
   <div class="krow"><span>Toggle theme</span><span class="kbd">T</span></div>
   <div class="krow"><span>Toggle table view</span><span class="kbd">G</span></div>
+  <div class="krow"><span>Toggle mini-map</span><span class="kbd">M</span></div>
   <div class="krow"><span>Pan / zoom</span><span>drag · scroll wheel</span></div>
   <div class="krow"><span>Move a switch</span><span>drag the node (pin persists)</span></div>
   <div class="krow"><span>Navigate switches</span><span><span class="kbd">Tab</span> then <span class="kbd">←</span><span class="kbd">→</span><span class="kbd">↑</span><span class="kbd">↓</span></span></div>
@@ -965,6 +982,7 @@ function computeLayout(){
   }
   if(pruned)savePins();
   buildSvg();
+  if(typeof renderMinimap==="function")renderMinimap();
 }
 
 /* ---- VLAN filter chips ---- */
@@ -1113,12 +1131,68 @@ function updateEdges(){
 
 /* ---- pan / zoom (viewBox-free: transform the viewport group) ---- */
 function applyTransform(){const vp=document.getElementById("vp");
-  if(vp)vp.setAttribute("transform",`translate(${view.tx},${view.ty}) scale(${view.k})`);}
+  if(vp)vp.setAttribute("transform",`translate(${view.tx},${view.ty}) scale(${view.k})`);
+  if(typeof updateMinimapRect==="function")updateMinimapRect();}
 function fitView(){const st=document.getElementById("stage");const W=st.clientWidth,H=st.clientHeight;
   const k=Math.min(W/LOGICAL.w,H/LOGICAL.h)*0.92; view.k=Math.max(0.25,Math.min(k,1.6));
   view.tx=(W-LOGICAL.w*view.k)/2; view.ty=(H-LOGICAL.h*view.k)/2; applyTransform();}
 function screenToLogical(px,py){const r=svg().getBoundingClientRect();
   return {x:(px-r.left-view.tx)/view.k, y:(py-r.top-view.ty)/view.k};}
+
+/* ---- mini-map overview navigator ----
+   Scales the whole LOGICAL canvas into a small fixed box (aspect-preserved,
+   letterboxed), draws faint edges + a dot per node, and a rectangle marking the
+   region currently visible in the main stage. Clicking/dragging recenters. */
+const MM={pad:6};                 // inner padding (px) inside the minimap svg box
+function minimapBox(){            // {bw,bh} usable px inside the svg, after padding
+  const svgEl=document.getElementById("minimapSvg"); if(!svgEl)return null;
+  const r=svgEl.getBoundingClientRect();
+  const bw=Math.max(1,r.width-MM.pad*2), bh=Math.max(1,r.height-MM.pad*2);
+  return {svgEl,r,bw,bh};
+}
+function minimapScale(box){       // logical->box scale + centering offset (letterbox)
+  const s=Math.min(box.bw/LOGICAL.w, box.bh/LOGICAL.h);
+  const ox=MM.pad+(box.bw-LOGICAL.w*s)/2, oy=MM.pad+(box.bh-LOGICAL.h*s)/2;
+  return {s,ox,oy};
+}
+function renderMinimap(){
+  const mm=document.getElementById("minimap"); if(!mm||mm.classList.contains("hidden"))return;
+  if(!MODEL||!LOGICAL.w||!LOGICAL.h)return;            // no-op before the graph exists
+  const box=minimapBox(); if(!box)return;
+  const {svgEl}=box, {s,ox,oy}=minimapScale(box);
+  svgEl.setAttribute("viewBox",`0 0 ${box.r.width} ${box.r.height}`);
+  let svgs="";
+  for(const L of MODEL.links){const a=POS[L.a],b=POS[L.b]; if(!a||!b)continue;
+    svgs+=`<line class="mm-edge" x1="${(ox+a.x*s).toFixed(1)}" y1="${(oy+a.y*s).toFixed(1)}" x2="${(ox+b.x*s).toFixed(1)}" y2="${(oy+b.y*s).toFixed(1)}"/>`;}
+  for(const h of MODEL.hosts){const p=POS[h]; if(!p)continue;
+    svgs+=`<circle class="mm-dot" cx="${(ox+p.x*s).toFixed(1)}" cy="${(oy+p.y*s).toFixed(1)}" r="2.1"/>`;}
+  svgs+=`<rect class="mm-vp" id="mmVp" rx="1.5"/>`;
+  svgEl.innerHTML=svgs;
+  updateMinimapRect();
+}
+function updateMinimapRect(){
+  const mm=document.getElementById("minimap"); if(!mm||mm.classList.contains("hidden"))return;
+  if(!MODEL||!LOGICAL.w||!LOGICAL.h)return;
+  const rect=document.getElementById("mmVp"); if(!rect)return;
+  const box=minimapBox(); if(!box)return;
+  const {s,ox,oy}=minimapScale(box);
+  const st=document.getElementById("stage");
+  // visible logical rect derived from the current pan/zoom transform
+  const vx=-view.tx/view.k, vy=-view.ty/view.k;
+  const vw=st.clientWidth/view.k, vh=st.clientHeight/view.k;
+  rect.setAttribute("x",(ox+vx*s).toFixed(1));
+  rect.setAttribute("y",(oy+vy*s).toFixed(1));
+  rect.setAttribute("width",Math.max(1,vw*s).toFixed(1));
+  rect.setAttribute("height",Math.max(1,vh*s).toFixed(1));
+}
+function minimapPanTo(ev){         // recenter the main view on the clicked minimap point
+  if(!MODEL||!LOGICAL.w||!LOGICAL.h)return;
+  const box=minimapBox(); if(!box)return;
+  const {s,ox,oy}=minimapScale(box);
+  const lx=((ev.clientX-box.r.left)-ox)/s, ly=((ev.clientY-box.r.top)-oy)/s;  // box->logical
+  const st=document.getElementById("stage");
+  view.tx=st.clientWidth/2-lx*view.k; view.ty=st.clientHeight/2-ly*view.k; applyTransform();
+}
 
 let panning=false,panStart=null,dragNode=null,dragMoved=false,dragStart=null;
 function onNodeDown(ev,h){ev.stopPropagation();dragNode=h;dragMoved=false;
@@ -2869,6 +2943,21 @@ document.getElementById("stage").addEventListener("wheel",e=>{e.preventDefault()
 document.getElementById("search").addEventListener("input",e=>{SEARCHQ=e.target.value.trim();applySearch();});
 document.getElementById("search").addEventListener("keydown",e=>{if(e.key==="Enter"){const ep=findEndpointByIpMac(SEARCHQ); if(ep)selectEndpoint(ep);}});
 document.getElementById("fitBtn").onclick=fitView;
+
+/* ---- mini-map: toggle + click/drag-to-pan ---- */
+function toggleMinimap(force){
+  const mm=document.getElementById("minimap"); if(!mm)return;
+  const show = force!==undefined ? force : mm.classList.contains("hidden");
+  mm.classList.toggle("hidden",!show);
+  document.getElementById("minimapBtn").setAttribute("aria-pressed",String(show));
+  if(show)renderMinimap();   // redraw (box size now known again)
+}
+document.getElementById("minimapBtn").onclick=()=>toggleMinimap();
+(function(){const mm=document.getElementById("minimap"); let mmDrag=false;
+  mm.addEventListener("mousedown",e=>{e.preventDefault();e.stopPropagation();mmDrag=true;minimapPanTo(e);});
+  window.addEventListener("mousemove",e=>{if(mmDrag)minimapPanTo(e);});
+  window.addEventListener("mouseup",()=>{mmDrag=false;});
+})();
 document.getElementById("exportSvgBtn").onclick=exportSvg;
 document.getElementById("exportPngBtn").onclick=()=>{exportPng().catch(()=>{});};
 document.getElementById("resetBtn").onclick=resetLayout;
@@ -2904,6 +2993,7 @@ window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   else if(k==="4")setMode("flow");else if(k==="5")setMode("health");else if(k==="6")setMode("protocols");
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
   else if(k==="g")toggleTableView();
+  else if(k==="m")toggleMinimap();
   else if(k==="r")resetLayout();
   else if(k==="/"){e.preventDefault();document.getElementById("search").focus();}
   else if(k==="escape"){onBgClick();document.getElementById("help").classList.remove("on");}});
