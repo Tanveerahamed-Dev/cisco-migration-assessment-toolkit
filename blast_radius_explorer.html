@@ -595,10 +595,12 @@ function demoSnapshot(){
       {action:"permit",proto:"udp",src:{ip:"10.0.20.0",wild:"0.0.0.255"},dst:{ip:"0.0.0.0",wild:"255.255.255.255"},sport:null,dport:{op:"eq",val:53},raw:"permit udp 10.0.20.0 0.0.0.255 any eq 53"},
       {action:"deny",proto:"ip",src:{ip:"0.0.0.0",wild:"255.255.255.255"},dst:{ip:"0.0.0.0",wild:"255.255.255.255"},sport:null,dport:null,raw:"deny ip any any"}],
     "PROTECT_SERVERS":[
-      {action:"permit",proto:"tcp",src:{ip:"10.0.10.0",wild:"0.0.0.255"},dst:{ip:"10.0.30.0",wild:"0.0.0.255"},sport:null,dport:{op:"eq",val:443},raw:"permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443"},
-      {action:"permit",proto:"tcp",src:{ip:"10.0.10.0",wild:"0.0.0.255"},dst:{ip:"10.0.30.0",wild:"0.0.0.255"},sport:null,dport:{op:"eq",val:22},raw:"permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 22"},
+      {action:"permit",proto:"tcp",src:{group:"TRUSTED_SUBNETS"},dst:{ip:"10.0.30.0",wild:"0.0.0.255"},sport:null,dport:{op:"eq",val:443},unevaluable:true,raw:"permit tcp object-group TRUSTED_SUBNETS 10.0.30.0 0.0.0.255 eq 443"},
+      {action:"permit",proto:"tcp",src:{group:"TRUSTED_SUBNETS"},dst:{ip:"10.0.30.0",wild:"0.0.0.255"},sport:null,dport:{op:"eq",val:22},unevaluable:true,raw:"permit tcp object-group TRUSTED_SUBNETS 10.0.30.0 0.0.0.255 eq 22"},
       {action:"deny",proto:"ip",src:{ip:"0.0.0.0",wild:"255.255.255.255"},dst:{ip:"0.0.0.0",wild:"255.255.255.255"},sport:null,dport:null,raw:"deny ip any any"}]
   }},
+  // L4 depth (H2): object-group bodies referenced by the ACLs above (DIST-1 PROTECT_SERVERS uses TRUSTED_SUBNETS).
+  object_groups:{"DIST-1":{"TRUSTED_SUBNETS":{kind:"network",members:[{ip:"10.0.10.0",wild:"0.0.0.255"}]}}},
   // health_scores / migration_readiness mirror what the Python pipeline embeds (main() augments the
   // snapshot via compute_health_scores / compute_migration_readiness) so the bundled demo exercises
   // the Health mode just like a real export does.
@@ -1408,12 +1410,33 @@ function _portMatch(p,port){ if(!p)return true;                          // rule
     case"range":return p.val2==null?null:(port>=v&&port<=p.val2); default:return null;}}
 function _protoMatch(rp,fp){rp=(rp||"ip").toLowerCase(); fp=(fp||"ip").toLowerCase();
   return rp==="ip"?true:rp===fp;}                                       // an 'ip' rule matches any protocol
-function evalAcl(rules,flow){                                           // flow={src,dst,proto,dport} -> {action,rule,idx}
+/* H2: resolve object-group references so group-based rules evaluate definitively (not INDETERMINATE) */
+function _specMatch(ip,spec){                                          // one concrete member -> true/false/null
+  if(spec.rangeStart&&spec.rangeEnd){const a=_ip2int(ip),s=_ip2int(spec.rangeStart),e=_ip2int(spec.rangeEnd);
+    return (a==null||s==null||e==null)?null:(a>=s&&a<=e);}
+  return _ipInSpec(ip,spec);}
+function _resolveGroup(name,host,seen){                                // object-group members -> flat concrete specs; null if the group is absent
+  const tbl=(SNAP&&SNAP.object_groups&&SNAP.object_groups[host])?SNAP.object_groups[host]:null;
+  const og=tbl?tbl[name]:null; if(!og)return null;
+  seen=seen||new Set(); if(seen.has(name))return []; seen.add(name);   // guard cyclic group-object nesting
+  const out=[]; for(const m of (og.members||[])){
+    if(m&&m.group!=null){const sub=_resolveGroup(m.group,host,seen); if(sub===null)return null; for(const x of sub)out.push(x);}
+    else if(m)out.push(m);}
+  return out;}
+function _addrMatch(ip,spec,host){                                     // {ip,wild} | {group} | {rangeStart,rangeEnd} -> true/false/null
+  if(!spec)return null;
+  if(spec.group!=null){const specs=_resolveGroup(spec.group,host); if(specs===null)return null;
+    let sawNull=false; for(const s of specs){const r=_specMatch(ip,s); if(r===true)return true; if(r===null)sawNull=true;}
+    return sawNull?null:false;}                                        // matches ANY member; null only if a member is itself unresolvable
+  return _specMatch(ip,spec);}
+function evalAcl(rules,flow,host){                                      // flow={src,dst,proto,dport} -> {action,rule,idx}
   for(let i=0;i<(rules||[]).length;i++){const r=rules[i];
     if(_protoMatch(r.proto,flow.proto)===false)continue;                // proto definitively differs -> skip
-    const sm=_ipInSpec(flow.src,r.src), dm=_ipInSpec(flow.dst,r.dst), pm=_portMatch(r.dport,flow.dport);
+    const sm=_addrMatch(flow.src,r.src,host), dm=_addrMatch(flow.dst,r.dst,host), pm=_portMatch(r.dport,flow.dport);
     if(sm===false||dm===false||pm===false)continue;                     // a component definitively rules it out
-    if(r.unevaluable||sm===null||dm===null||pm===null)                  // might match but can't be sure -> stop here
+    const groupRef=(r.src&&r.src.group!=null)||(r.dst&&r.dst.group!=null);
+    const otherUneval=r.unevaluable&&!groupRef;                         // unevaluable for a reason H2 can't resolve (unknown port / unparseable addr)
+    if(otherUneval||sm===null||dm===null||pm===null)                    // might match but can't be sure -> stop here
       return {action:"indeterminate",rule:r,idx:i};
     return {action:r.action,rule:r,idx:i};                              // proto + src + dst + port all matched
   }
@@ -1468,7 +1491,7 @@ function flowBetween(s,d){
   if(s.ip&&d.ip&&F.aclFlags.length){                                  // G2: evaluate those ACLs against the chosen 5-tuple
     const flow={src:s.ip,dst:d.ip,proto:FLOW_PROTO,dport:(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?FLOW_DPORT:null};
     F.aclVerdicts=F.aclFlags.map(a=>{const rules=aclRules(a.host,a.name);
-      const v=rules?evalAcl(rules,flow):{action:"indeterminate",rule:null,idx:-1,nobody:true};
+      const v=rules?evalAcl(rules,flow,a.host):{action:"indeterminate",rule:null,idx:-1,nobody:true};
       return Object.assign({},a,{verdict:v.action,rule:v.rule,idx:v.idx,implicit:v.implicit,nobody:v.nobody});});}
   seg(dv,dgw,d.host);
   hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
