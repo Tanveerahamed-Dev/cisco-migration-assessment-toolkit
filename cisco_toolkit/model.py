@@ -66,6 +66,10 @@ class InterfaceData:
     acl_out: str = ""
     # NEW-V3.23.49 (path-MTU mismatch): interface MTU from run-config (blank = default ~1500); jumbo-frame detection
     mtu: str = ""
+    # NEW (DHCP-relay reachability): 'ip helper-address' / 'ip dhcp relay address' targets on this SVI/L3
+    # interface (comma-joined; blank = no relay). Lets the explorer flag client subnets whose gateway has no
+    # relay, or whose relay server isn't routable from the gateway (a classic silent post-cutover black-hole).
+    dhcp_helpers: str = ""
 
 
 # =============================================================================

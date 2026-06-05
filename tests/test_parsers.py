@@ -88,6 +88,28 @@ def test_parse_run_config_interface_mtu(cp):
     assert res["Gi1/0/2"]["mtu"] == ""          # default -> blank, never absent
 
 
+def test_parse_run_config_interface_dhcp_helpers(cp):
+    # DHCP-relay reachability: capture 'ip helper-address' (IOS) and 'ip dhcp relay address' (NX-OS),
+    # accumulating multiple servers; an SVI with no relay stays blank (never absent).
+    out = textwrap.dedent("""\
+        interface Vlan10
+         description USERS
+         ip address 10.0.10.2 255.255.255.0
+         ip helper-address 10.0.40.10
+         ip helper-address vrf MGMT 10.0.40.11
+        interface Vlan20
+         description VOICE-NXOS
+         ip dhcp relay address 10.0.50.5
+        interface Vlan30
+         description SERVERS
+         ip address 10.0.30.1 255.255.255.0
+    """)
+    res = parse.parse_run_config_interfaces(out)
+    assert res["Vlan10"]["helpers"] == "10.0.40.10,10.0.40.11"   # accumulate; 'vrf NAME' form too
+    assert res["Vlan20"]["helpers"] == "10.0.50.5"               # NX-OS relay-address form
+    assert res["Vlan30"]["helpers"] == ""                        # no relay -> blank, never absent
+
+
 def test_parse_nat(cp):
     # NAT inventory: inside/outside roles, pool, static 1:1, static PAT, outside-source, dynamic PAT
     out = textwrap.dedent("""\
