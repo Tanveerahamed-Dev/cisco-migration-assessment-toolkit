@@ -358,6 +358,8 @@
       <button class="btn" id="loadBtn" aria-label="Load a snapshot file"><span aria-hidden="true">↥</span> Load</button>
       <button class="btn iconbtn" id="layoutBtn" title="Toggle layered / radial layout" aria-label="Toggle layered or radial layout">⊞</button>
       <button class="btn iconbtn" id="fitBtn" title="Fit to screen (F)" aria-label="Fit graph to screen">⤢</button>
+      <button class="btn iconbtn" id="exportSvgBtn" title="Export topology as SVG" aria-label="Export topology as SVG">⤓</button>
+      <button class="btn iconbtn" id="exportPngBtn" title="Export topology as PNG" aria-label="Export topology as PNG">▦</button>
       <button class="btn iconbtn" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
       <button class="btn iconbtn" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">?</button>
     </div>
@@ -2127,6 +2129,149 @@ function drawHealth(){
 }
 
 /* =====================================================================
+   EXPORT — self-contained SVG / PNG of the topology graph (offline, no libs)
+   ===================================================================== */
+// CSS custom-property tokens actually consumed by the SVG node/edge/text classes.
+const EXPORT_CSS_TOKENS=["bg","surface","surface-2","surface-3","border","border-strong",
+  "text","text-dim","text-faint","accent","accent-dim","accent-soft",
+  "ok","watch","risk","crit","crit-soft","sans","mono"];
+// The SVG-relevant style rules, copied verbatim from the page <style> so the standalone
+// file self-styles with no external stylesheet. Animations are flattened to a static look.
+const EXPORT_SVG_CSS=`
+  .lnk{fill:none; stroke:var(--border-strong); stroke-width:2}
+  .lnk.fwd{stroke:var(--text-faint); stroke-opacity:.9}
+  .lnk.blk{stroke:var(--watch); stroke-dasharray:3 5; stroke-opacity:.8}
+  .lnk.pc{stroke-width:3.4}
+  .lnk.dim{stroke-opacity:.16}
+  .lnk.sev{stroke:var(--crit); stroke-width:3.4}
+  .lnk.path{stroke:var(--accent); stroke-width:3.6; stroke-opacity:1}
+  .lnk.heal{stroke:var(--ok); stroke-dasharray:8 6}
+  .lnk.spof{stroke:var(--risk); stroke-width:3.8; stroke-dasharray:7 5}
+  .lnk.flowpath{stroke:var(--accent); stroke-width:3.6}
+  .lnk.adj-ospf{stroke:var(--ok); stroke-width:3.4; stroke-opacity:1}
+  .lnk.adj-eigrp{stroke:var(--accent); stroke-width:3.4; stroke-opacity:1}
+  .pcbadge{fill:var(--surface); stroke:var(--border-strong); stroke-width:1}
+  .pcbadge-t{fill:var(--text-dim); font:600 9px var(--mono); text-anchor:middle}
+  .node .body{fill:var(--surface-2); stroke:var(--border-strong); stroke-width:1.5}
+  .node .stripe{fill:var(--accent)}
+  .node.sel .body{stroke:var(--accent); stroke-width:3}
+  .node.sel .halo{stroke:var(--accent); stroke-opacity:.3; stroke-width:7; fill:none}
+  .node.dim{opacity:.32}
+  .node.dead .body{fill:url(#hatch); stroke:var(--crit); stroke-width:2; stroke-dasharray:5 3}
+  .node.match .body{stroke:var(--accent); stroke-width:2.5}
+  .nname{fill:var(--text); font:650 12px var(--sans); text-anchor:middle}
+  .nsub{fill:var(--text-dim); font:500 9.5px var(--mono); text-anchor:middle}
+  .nrole{fill:var(--text-faint); font:650 8px var(--sans); letter-spacing:1px; text-anchor:middle; text-transform:uppercase}
+  .epbadge{fill:var(--surface-3); stroke:var(--border); stroke-width:1}
+  .epbadge-t{fill:var(--text-dim); font:600 9.5px var(--sans); text-anchor:middle}
+  .ntag{font:700 8.5px var(--sans); letter-spacing:.6px; text-anchor:middle}
+  .scorebadge{font:800 12px var(--sans); text-anchor:middle}`;
+
+// Resolve the current theme's custom properties to a literal :root{…} block so var(--x)
+// references inside EXPORT_SVG_CSS resolve with no dependency on the page stylesheet.
+function exportTokenBlock(){
+  const cs=getComputedStyle(document.documentElement);
+  const decls=EXPORT_CSS_TOKENS.map(t=>`    --${t}:${cs.getPropertyValue("--"+t).trim()};`).join("\n");
+  return `  :root{\n${decls}\n  }`;
+}
+
+// Compute the export viewBox in logical (pre-pan/zoom) coordinates. Prefer the live
+// content bounding box so dragged nodes that sit outside the nominal LOGICAL canvas are
+// still captured; pad it, and fall back to LOGICAL when getBBox is unavailable/empty.
+function exportViewBox(){
+  const PAD=24;
+  let x=0, y=0, w=LOGICAL.w, h=LOGICAL.h;
+  try{
+    const vp=document.getElementById("vp");
+    const bb=vp&&vp.getBBox();
+    if(bb&&bb.width>0&&bb.height>0){
+      x=bb.x-PAD; y=bb.y-PAD; w=bb.width+PAD*2; h=bb.height+PAD*2;
+    }
+  }catch(e){/* getBBox throws if #vp not rendered — keep the LOGICAL fallback */}
+  return {x:Math.round(x), y:Math.round(y), w:Math.max(1,Math.round(w)), h:Math.max(1,Math.round(h))};
+}
+
+// Build a self-contained, self-styling SVG string of the current topology graph.
+function buildStandaloneSvg(){
+  const src=svg();
+  const clone=src.cloneNode(true);
+  // Strip live-only / interactive cruft that has no meaning in a static file.
+  clone.removeAttribute("style");
+  clone.removeAttribute("class");
+  clone.removeAttribute("role");
+  clone.removeAttribute("aria-label");
+  // Render with the pan/zoom transform reset to identity so the whole graph is captured
+  // in logical coordinates regardless of the current on-screen view.
+  const vp=clone.querySelector("#vp");
+  if(vp)vp.removeAttribute("transform");
+  const vb=exportViewBox();
+  clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
+  clone.setAttribute("xmlns:xlink","http://www.w3.org/1999/xlink");
+  clone.setAttribute("viewBox",`${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+  clone.setAttribute("width",vb.w);
+  clone.setAttribute("height",vb.h);
+  // Inject resolved-token + rule stylesheet as the first child.
+  const styleEl=document.createElementNS(SVGNS,"style");
+  styleEl.textContent=`${exportTokenBlock()}\n${EXPORT_SVG_CSS}`;
+  clone.insertBefore(styleEl,clone.firstChild);
+  // Opaque background so the export isn't transparent (resolved --bg). Cover the full
+  // viewBox, including any negative origin from dragged-out content.
+  const bg=getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()||"#0e1116";
+  const bgRect=document.createElementNS(SVGNS,"rect");
+  bgRect.setAttribute("x",vb.x); bgRect.setAttribute("y",vb.y);
+  bgRect.setAttribute("width",vb.w); bgRect.setAttribute("height",vb.h);
+  bgRect.setAttribute("fill",bg);
+  clone.insertBefore(bgRect,styleEl.nextSibling);
+  return '<?xml version="1.0" encoding="UTF-8"?>\n'+new XMLSerializer().serializeToString(clone);
+}
+
+function downloadBlob(blob,filename){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  // Revoke after the click has been dispatched.
+  setTimeout(()=>URL.revokeObjectURL(url),0);
+}
+
+function exportSvg(){
+  const str=buildStandaloneSvg();
+  const blob=new Blob([str],{type:"image/svg+xml;charset=utf-8"});
+  downloadBlob(blob,"topology.svg");
+  srAnnounce("Exported topology as SVG");
+}
+
+// Rasterize the standalone SVG to PNG via an offscreen <canvas>. Returns a Promise so the
+// async path is testable; resolves with the PNG Blob (or rejects on image-load failure).
+function exportPng(){
+  const str=buildStandaloneSvg();
+  const vb=exportViewBox();          // same bounds the SVG was built with
+  const W=vb.w, H=vb.h;
+  const scale=2; // ×2 for crisp raster output
+  const bg=getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()||"#0e1116";
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const canvas=document.createElement("canvas");
+        canvas.width=W*scale; canvas.height=H*scale;
+        const ctx=canvas.getContext("2d");
+        ctx.fillStyle=bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        canvas.toBlob(b=>{
+          if(!b){reject(new Error("canvas.toBlob produced no data")); return;}
+          downloadBlob(b,"topology.png");
+          srAnnounce("Exported topology as PNG");
+          resolve(b);
+        },"image/png");
+      }catch(err){reject(err);}
+    };
+    img.onerror=()=>reject(new Error("Could not rasterize topology SVG"));
+    img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(str);
+  }).catch(err=>{srAnnounce("Could not export topology as PNG"); throw err;});
+}
+
+/* =====================================================================
    WIRING
    ===================================================================== */
 function setTheme(t){document.documentElement.setAttribute("data-theme",t);
@@ -2142,6 +2287,8 @@ document.getElementById("stage").addEventListener("wheel",e=>{e.preventDefault()
 document.getElementById("search").addEventListener("input",e=>{SEARCHQ=e.target.value.trim();applySearch();});
 document.getElementById("search").addEventListener("keydown",e=>{if(e.key==="Enter"){const ep=findEndpointByIpMac(SEARCHQ); if(ep)selectEndpoint(ep);}});
 document.getElementById("fitBtn").onclick=fitView;
+document.getElementById("exportSvgBtn").onclick=exportSvg;
+document.getElementById("exportPngBtn").onclick=()=>{exportPng().catch(()=>{});};
 document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
 document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();};
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("on");
