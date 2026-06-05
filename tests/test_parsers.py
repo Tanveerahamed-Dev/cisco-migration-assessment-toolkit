@@ -159,7 +159,7 @@ def test_parse_interface_counters(cp):
              142 input errors, 17 CRC, 0 frame, 0 overrun, 0 ignored
              Total output drops: 0
     """)
-    res = cp.parse_show_interface_counters(out)
+    res = parse.parse_show_interface_counters(out)
     assert res["Gi1/0/9"]["input_errors"] == 142
     assert res["Gi1/0/9"]["crc"] == 17
 
@@ -170,7 +170,7 @@ def test_parsers_tolerate_empty_and_garbage(cp):
                cp.parse_show_interface_trunk_table, cp.parse_vlan_brief,
                cp.parse_hsrp_summary, parse.parse_ospf_neighbors, parse.parse_bgp_summary,
                cp.parse_neighbors_cdp, cp.parse_ip_routes,
-               cp.parse_show_interface_counters):
+               parse.parse_show_interface_counters):
         assert fn("") in ({}, [])
         # random non-matching text must not raise and must yield nothing useful
         assert fn("garbage line\n%% nonsense ????\n") in ({}, [])

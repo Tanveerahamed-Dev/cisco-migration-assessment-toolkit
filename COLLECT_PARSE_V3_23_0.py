@@ -291,7 +291,7 @@ from openpyxl.cell.cell import MergedCell
 # existing reference keeps working unchanged (behaviour byte-identical).
 from cisco_toolkit.textutils import (
     PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS,   # IFACE_TOKEN_RE/VALID_IFACE_RE: last monolith
-    normalize_ifname, normalize_speed, detect_link_type, safe_fs_name,   # users moved to parse (step 17)
+    normalize_ifname, detect_link_type, safe_fs_name,   # normalize_speed dropped step 25 (phy writer moved)
 )
 # _split_macs re-import dropped in step 21 (its last monolith user, write_vlan_census_sheet,
 # moved to excel; analyze.py + excel.py now import it from textutils directly).
@@ -309,10 +309,9 @@ from cisco_toolkit.parse import (   # NEW-V3.23.12-.15 (PHASE 2.7 steps 2-5): pr
     parse_show_ip_arp, parse_vtp_status, parse_switch_mgmt_ip, parse_multicast_info,
     parse_show_version, parse_show_inventory, parse_show_environment_power,
     parse_show_environment, parse_show_module_count,
-    parse_show_interface_counters,   # parse_port_security/auth/dhcp dropped (step 24): their
-    # writer (write_security_posture_sheet) moved to excel.
-    _parse_fhrp,   # NEW-V3.23.26 (step 16): FHRP behaviour parser, used by write_l3_forwarding_sheet
-    _is_physical_port, _classify_media, parse_interface_phy, _parse_poe_watts,  # NEW-V3.23.27 (step 17)
+    # step 25 dropped parse_show_interface_counters / _parse_fhrp / _is_physical_port /
+    # _classify_media / parse_interface_phy / _parse_poe_watts: their last monolith users
+    # (write_physical_health_sheet / write_l3_forwarding_sheet) moved to excel.
 )
 # NEW-V3.23.19 (PHASE 2.7 step 9): the passed-around data model (InterfaceData /
 # DevicePhysical) extracted to the package leaf; imported back so every type hint
@@ -326,11 +325,12 @@ from cisco_toolkit.analyze import (
     compute_move_groups,   # _health_band dropped (step 23): write_health_scores_sheet moved to excel
     # compute_topology_links / compute_findings dropped (step 22): their last monolith users
     # (write_topology_sheet / write_findings_sheet) moved to excel.
-    build_network_model,   # _link_carries (step 19) + _vlan_components (step 18): last monolith users moved
-    # compute_causality_chains / compute_failure_impact dropped (step 24): their writers moved to excel.
+    # build_network_model dropped (step 25): write_physical_health_sheet (its last monolith user) moved.
+    # _link_carries (step 19) / _vlan_components (step 18) / compute_causality_chains / compute_failure_impact
+    # (step 24) were dropped earlier for the same reason.
     compute_data_quality, compute_health_scores,
     compute_score_sensitivity, compute_migration_readiness,
-    compute_protocol_health, _poe_device_util, _physical_uplink_index,
+    compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue (_load_cmd_output
@@ -347,10 +347,11 @@ from cisco_toolkit.excel import (
     write_vlan_census_sheet, write_endpoint_census_sheet,                            # step 21
     write_move_group_sheet, write_topology_sheet, write_findings_sheet,             # step 22
     write_capacity_sheet, write_topology_diagram,                                   # step 22
-    _SEV_FILL, write_cross_layer_sheet, write_protocol_health_sheet,                # step 23
+    write_cross_layer_sheet, write_protocol_health_sheet,   # _SEV_FILL dropped step 25 (last writers moved)
     write_health_scores_sheet, write_score_sensitivity_sheet, write_migration_readiness_sheet,  # step 23
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet,                                   # step 24
+    write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -1714,123 +1715,10 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
 # DETAIL block because InterfaceData.duplex is normalized and loses half-duplex.
 # No new collection, no new InterfaceData fields, no new imports.
 # -----------------------------------------------------------------------------
-PHYSICAL_HEALTH_SHEET_NAME = "Physical Health"
-
-# Physical-port / media parsers (_NON_PHYSICAL_RE / _is_physical_port / _classify_media /
-# parse_interface_phy / _parse_poe_watts) moved to cisco_toolkit.parse (PHASE 2.7 step 17);
-# _is_physical_port / _classify_media / parse_interface_phy / _parse_poe_watts are imported
-# back near the top of this file. The PoE/uplink compute helpers below move to analyze.
-
-# _poe_device_util / _physical_uplink_index moved to cisco_toolkit.analyze (PHASE 2.7
-# step 17); imported back near the top of this file (write_physical_health_sheet +
-# build_dependency_map use them).
-
-def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                                all_cmd_to_files: Dict[str, Dict[str, str]],
-                                all_device_physical: List[DevicePhysical]) -> List[dict]:
-    """Write the 'Physical Health' (L1) sheet and return its records for the snapshot.
-    One row per physical port; risk flag derived purely from already-parsed data."""
-
-    model = build_network_model(all_interfaces)
-    uplink_ports, single_fiber = _physical_uplink_index(model)
-    poe_util = _poe_device_util(all_device_physical)
-
-    headers = ["Switch", "Port", "Status", "Negotiated Speed", "Duplex", "Media Type",
-               "Input Errors", "CRC Errors", "Output Drops", "Port-Channel",
-               "PoE Allocated (W)", "Physical Risk"]
-
-    def _intpos(v):
-        return isinstance(v, int) and v > 0
-
-    records: List[dict] = []
-    for host in sorted(all_interfaces):
-        c2f = all_cmd_to_files.get(host, {})
-        out = _load_cmd_output(c2f, "show interfaces", "show interface")
-        counters = parse_show_interface_counters(out) if out else {}
-        phy = parse_interface_phy(out) if out else {}
-        poe_out = _load_cmd_output(c2f, "show power inline")
-        poe_watts = _parse_poe_watts(poe_out) if poe_out else {}
-
-        for port, d in sorted(all_interfaces[host].items()):
-            if not _is_physical_port(port):
-                continue
-            cnt = counters.get(port, {})
-            ph = phy.get(port, {})
-
-            status = d.status or cnt.get("oper", "")
-            oper_up = bool(re.search(r"up|connected", (cnt.get("oper", "") or status or ""), re.IGNORECASE))
-
-            speed = ph.get("speed") or normalize_speed(d.speed) or d.speed or ""
-            duplex = ph.get("duplex") or ""                    # DETAIL is authoritative for half
-            media = ph.get("media") or (_classify_media(d.port_type) if d.port_type else "")
-
-            ie = cnt.get("input_errors", "")
-            crc = cnt.get("crc", "")
-            od = cnt.get("output_drops", "")
-            pc = d.port_channel or ""
-
-            # PoE cell: per-port watts if parseable, else the status word; mark over-budget devices.
-            watts = poe_watts.get(port)
-            if watts is not None:
-                poe_cell = f"{watts:g} W"
-            elif d.poe_status:
-                poe_cell = d.poe_status
-            else:
-                poe_cell = ""
-            util = poe_util.get(host)
-            if util is not None and util > 90 and (watts is not None or d.poe_status):
-                poe_cell = (poe_cell + f"  (dev PoE {util:g}%)").strip()
-
-            # ---- risk derivation (highest severity wins for the cell fill) ----
-            flags: List[str] = []
-            sev = "Info"
-            is_uplink = (host, port) in uplink_ports
-            is_trunk = (d.switchport_mode or "").strip().lower() == "trunk"
-
-            if re.search(r"err[- ]?disab", (status or ""), re.IGNORECASE):
-                flags.append("err-disabled"); sev = "High"
-            if duplex == "Half" and (is_trunk or is_uplink):
-                flags.append("half-duplex"); sev = "High"
-            if (host, port) in single_fiber:
-                flags.append("single-fiber-uplink")
-                if sev != "High": sev = "Medium"
-            if oper_up and (_intpos(ie) or _intpos(crc) or _intpos(od)):
-                flags.append("error-rate-high")
-                if sev != "High": sev = "Medium"
-            if not flags:
-                flags = ["ok"]
-
-            records.append({"switch": host, "port": port, "status": status or "",
-                            "speed": speed or "unknown", "duplex": duplex or "unknown",
-                            "media": media or "unknown", "input_errors": ie, "crc_errors": crc,
-                            "output_drops": od, "port_channel": pc, "poe": poe_cell,
-                            "risk": "; ".join(flags), "severity": sev})
-
-    # ---- write the sheet ----
-    ws = wb.create_sheet(PHYSICAL_HEALTH_SHEET_NAME)
-    hdr_font = Font(bold=True, color="FFFFFF")
-    hdr_fill = PatternFill("solid", fgColor="434343")
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(1, col, h)
-        c.font = hdr_font
-        c.fill = hdr_fill
-        c.alignment = Alignment(horizontal="center")
-    for r, rec in enumerate(records, 2):
-        vals = [rec["switch"], rec["port"], rec["status"], rec["speed"], rec["duplex"],
-                rec["media"], rec["input_errors"], rec["crc_errors"], rec["output_drops"],
-                rec["port_channel"], rec["poe"], rec["risk"]]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(r, col, v)
-            if col == len(headers) and rec["severity"] in _SEV_FILL:     # fill Physical Risk cell
-                c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
-    for i, w in enumerate([16, 16, 14, 16, 9, 14, 12, 11, 13, 13, 18, 28], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-    ws.freeze_panes = "A2"
-
-    n_flagged = sum(1 for x in records if x["risk"] != "ok")
-    logger.info(f"  [OK] '{PHYSICAL_HEALTH_SHEET_NAME}' sheet: {len(records)} physical port(s), "
-                f"{n_flagged} flagged")
-    return records
+# Fused compute-in-writer sheets (write_physical_health_sheet / write_l3_forwarding_sheet /
+# write_flow_trace_sheet) moved to cisco_toolkit.excel (PHASE 2.7 step 25). The physical-health
+# + l3-forwarding writers compute their L1/L3 records inline and RETURN them; main() captures
+# those via _run_phase. All three imported back near the top of this file.
 
 
 # -----------------------------------------------------------------------------
@@ -1842,186 +1730,8 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
 # Pure derivation - routing comes from InterfaceData (no routing_data dict exists).
 # L4 is NOT simulated (no ACL/service-policy is collected). No new imports.
 # -----------------------------------------------------------------------------
-FLOW_TRACE_SHEET_NAME = "Flow Trace"
-_RISK_FILL = {"LOW": "36E08A", "MEDIUM": "FFE566", "HIGH": "FF9F45", "CRITICAL": "FF5775"}
-_RISK_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
-
-# _ip_in_prefix / _find_endpoint_by_ip / _find_gateways_for / _bfs_forwarding_path +
-# trace_full_flow moved to cisco_toolkit.analyze (PHASE 2.7 step 19); the four helpers are
-# analyze-internal, trace_full_flow is imported back near the top of this file (main() calls
-# it under --flow-src/--flow-dst). _RISK_FILL/_RISK_RANK + FLOW_TRACE_SHEET_NAME stay (excel).
-
-def write_flow_trace_sheet(wb, flow: dict) -> None:
-    """Write the 'Flow Trace' sheet from a trace_full_flow() result."""
-
-    s = flow["summary"]
-    ws = wb.create_sheet(FLOW_TRACE_SHEET_NAME)
-    bold = Font(bold=True)
-
-    ws.cell(1, 1, f"Flow Trace  {s['src_ip']}  ->  {s['dst_ip']}").font = Font(bold=True, size=13)
-    meta = [("Source", s["src_location"]), ("Destination", s["dst_location"]),
-            ("Flow type", s["flow_type"]),
-            ("SPOFs on path", f"{s['spof_count']}" + (f"  ({', '.join(s['spofs'])})" if s["spofs"] else "")),
-            ("Risk level", s["risk"])]
-    r = 2
-    for label, val in meta:
-        ws.cell(r, 1, label).font = bold
-        c = ws.cell(r, 2, val)
-        if label == "Risk level" and s["risk"] in _RISK_FILL:
-            c.fill = PatternFill("solid", fgColor=_RISK_FILL[s["risk"]])
-            c.font = bold
-        r += 1
-    r += 1
-
-    headers = ["#", "Layer", "From", "To", "Interface", "Detail", "SPOF"]
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(r, col, h)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = PatternFill("solid", fgColor="434343")
-        c.alignment = Alignment(horizontal="center")
-    r += 1
-    for hop in flow["hops"]:
-        vals = [hop["n"], hop["layer"], hop["from"], hop["to"], hop["iface"], hop["detail"],
-                "YES" if hop["spof"] else ""]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(r, col, v)
-            if hop["spof"]:
-                c.fill = PatternFill("solid", fgColor="F4CCCC")
-        r += 1
-
-    for i, w in enumerate([5, 8, 16, 16, 16, 60, 7], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-
-    logger.info(f"  [OK] '{FLOW_TRACE_SHEET_NAME}' sheet: {len(flow['hops'])} hop(s), "
-                f"risk {s['risk']}, {s['spof_count']} SPOF(s)")
-
-
-# -----------------------------------------------------------------------------
-# NEW-V3.20: L3 Forwarding Map. One row per gateway SVI - VLAN, SVI IP, FHRP
-# protocol/role/VIP (parsed from the existing hsrp_behavior string), routing
-# source/next-hop/subnets, device object-tracking summary, and a derived L3 Risk
-# flag. Pure derivation; 'show track' is the only added collection (tolerant).
-# -----------------------------------------------------------------------------
-L3_FORWARDING_SHEET_NAME = "L3 Forwarding Map"
-
-# _parse_fhrp moved to cisco_toolkit.parse (PHASE 2.7 step 16); imported back near the
-# top of this file (write_l3_forwarding_sheet below + compute_protocol_health use it).
-
-def _parse_track(output: str) -> dict:
-    """Best-effort 'show track' (IOS + NX-OS) -> {objects:[{id,desc,state}], up, down}.
-    State is Up/Down/'' (unknown). Device-level; not bound to a specific SVI."""
-    objs: List[dict] = []
-    cur = None
-    for line in output.splitlines():
-        m = re.match(r"^Track\s+(\d+)\b", line.strip())
-        if m:
-            cur = {"id": m.group(1), "desc": "", "state": ""}
-            objs.append(cur)
-            continue
-        if cur is None:
-            continue
-        sm = (re.search(r"\b(?:reachability|line[- ]protocol|list|threshold|state)\s+is\s+(up|down)\b", line, re.IGNORECASE)
-              or re.search(r"\bis\s+(up|down)\b", line, re.IGNORECASE))
-        if sm and not cur["state"]:
-            cur["state"] = sm.group(1).capitalize()
-        elif not cur["desc"] and line.strip() and not re.search(r"\b(up|down)\b", line, re.IGNORECASE):
-            cur["desc"] = line.strip()[:40]
-    down = sum(1 for o in objs if o["state"].lower() == "down")
-    up = sum(1 for o in objs if o["state"].lower() == "up")
-    return {"objects": objs, "up": up, "down": down}
-
-def _track_summary(tr: dict) -> str:
-    if not tr or not tr["objects"]:
-        return ""
-    head = f"{len(tr['objects'])} obj"
-    if tr["down"]:
-        head += f" ({tr['down']} DOWN)"
-    detail = "; ".join(f"T{o['id']}:{o['state'] or '?'}" for o in tr["objects"][:6])
-    return f"{head} - {detail}" if detail else head
-
-def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                              all_cmd_to_files: Dict[str, Dict[str, str]]) -> List[dict]:
-    """Write the 'L3 Forwarding Map' sheet and return its records for the snapshot."""
-
-    # gateways per VLAN across all scanned switches (for the redundancy signal)
-    vlan_gw: Dict[int, set] = {}
-    for host in all_interfaces:
-        for port, d in all_interfaces[host].items():
-            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
-            if m and (d.svi_ip or d.hsrp_behavior or d.subnet_primary_route):
-                vlan_gw.setdefault(int(m.group(1)), set()).add(host)
-
-    # per-device object tracking (best effort)
-    track_by_host: Dict[str, dict] = {}
-    for host in all_interfaces:
-        out = _load_cmd_output(all_cmd_to_files.get(host, {}), "show track")
-        track_by_host[host] = _parse_track(out) if out else {"objects": [], "up": 0, "down": 0}
-
-    headers = ["Switch", "VLAN", "SVI IP", "FHRP", "Role", "Virtual IP", "Routing Source",
-               "Next Hop", "Primary Subnet", "Backup / Secondary", "Tracking", "L3 Risk"]
-
-    records: List[dict] = []
-    for host in sorted(all_interfaces):
-        tr = track_by_host.get(host, {"objects": [], "up": 0, "down": 0})
-        tsum = _track_summary(tr)
-        for port, d in sorted(all_interfaces[host].items(),
-                              key=lambda kv: int(re.match(r"^Vlan(\d+)$", kv[0], re.IGNORECASE).group(1))
-                              if re.match(r"^Vlan(\d+)$", kv[0], re.IGNORECASE) else 1 << 30):
-            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
-            if not m:
-                continue
-            if not (d.svi_ip or d.hsrp_behavior or d.subnet_primary_route):
-                continue
-            vid = int(m.group(1))
-            proto, role, vip, _grp = _parse_fhrp(d.hsrp_behavior)
-            gw_count = len(vlan_gw.get(vid, set()))
-
-            flags: List[str] = []
-            sev = "Info"
-            if tr["down"] > 0:
-                flags.append("tracked-object-down"); sev = "High"
-            if gw_count <= 1:
-                flags.append("single-gateway")
-                if sev != "High":
-                    sev = "Medium"
-            elif not proto:
-                flags.append("no-FHRP")
-                if sev == "Info":
-                    sev = "Low"
-            if not flags:
-                flags = ["ok"]
-
-            records.append({"switch": host, "vlan": vid, "svi_ip": d.svi_ip or "",
-                            "fhrp": proto or "none", "role": role or "", "vip": vip or "",
-                            "routing_source": d.routing_source or "", "next_hop": d.route_next_hop or "",
-                            "primary_subnet": d.subnet_primary_route or "",
-                            "secondary": d.subnet_secondary_routes or "",
-                            "tracking": tsum, "risk": "; ".join(flags), "severity": sev})
-
-    ws = wb.create_sheet(L3_FORWARDING_SHEET_NAME)
-    hdr_font = Font(bold=True, color="FFFFFF")
-    hdr_fill = PatternFill("solid", fgColor="434343")
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(1, col, h)
-        c.font = hdr_font
-        c.fill = hdr_fill
-        c.alignment = Alignment(horizontal="center")
-    for r, rec in enumerate(records, 2):
-        vals = [rec["switch"], rec["vlan"], rec["svi_ip"], rec["fhrp"], rec["role"], rec["vip"],
-                rec["routing_source"], rec["next_hop"], rec["primary_subnet"], rec["secondary"],
-                rec["tracking"], rec["risk"]]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(r, col, v)
-            if col == len(headers) and rec["severity"] in _SEV_FILL:
-                c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
-    for i, w in enumerate([16, 7, 15, 7, 9, 15, 16, 16, 18, 22, 30, 26], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
-    ws.freeze_panes = "A2"
-
-    n_flagged = sum(1 for x in records if x["risk"] != "ok")
-    logger.info(f"  [OK] '{L3_FORWARDING_SHEET_NAME}' sheet: {len(records)} gateway SVI(s), "
-                f"{n_flagged} flagged")
-    return records
+# (Flow Trace + L3 Forwarding writers also moved to cisco_toolkit.excel in step 25 - see the
+# note above. _parse_track / _track_summary moved with write_l3_forwarding_sheet (package-internal).)
 
 
 # -----------------------------------------------------------------------------

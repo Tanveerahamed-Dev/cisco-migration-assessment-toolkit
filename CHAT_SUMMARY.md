@@ -5,6 +5,39 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 25: fused compute-in-writer sheets -> excel
+
+On branch `phase2-split-excel6`. Byte-identical. Monolith **~1,945 lines (under 2k!)**; excel.py ~1,107.
+
+- Moved the 3 "fused" writers → excel.py: `write_physical_health_sheet` (big) + `write_l3_forwarding_sheet`
+  (each computes L1/L3 records inline + RETURNS them; main() captures via `_run_phase`) +
+  `write_flow_trace_sheet` (renders a trace_full_flow dict). `_parse_track`/`_track_summary` moved with
+  the L3 writer (package-internal). excel.py now imports build_network_model/_physical_uplink_index/
+  _poe_device_util (analyze) + the physical/FHRP parsers (parse) + normalize_speed (textutils).
+- **11-symbol F401 cascade** (the biggest): normalize_speed, 6 parse parsers (parse_show_interface_counters/
+  _parse_fhrp/_is_physical_port/_classify_media/parse_interface_phy/_parse_poe_watts), 3 analyze
+  (build_network_model/_poe_device_util/_physical_uplink_index), and **`_SEV_FILL`** (its last monolith
+  writers — physical/l3 — moved) all dropped from the monolith re-imports. Repointed test_parsers
+  (parse_show_interface_counters) + 5 test_package identity assertions to not-hasattr.
+- **ALL sheet writers now live in cisco_toolkit/excel.py except `append_interface_rows`.** 65 tests,
+  golden byte-identical, ruff clean, mypy 101. `.md` V3.23.35.
+
+**Remaining: (e) step 26 = `append_interface_rows` + the build_* layer + collection glue.** In the
+monolith now: `append_interface_rows` (fills the main interface template sheet — uses find_header_row/
+ensure_headers/sortkey [excel] + InterfaceData; the GOLDEN's interface sheet comes from this — extra care),
+`build_device_physical`/`build_interfaces`/`build_switch_identity` (construct the model from parsed
+output — pull MANY parsers → expect another big F401 cascade + test_parsers repoint; build_interfaces is
+huge ~300 lines), `collect_global_arp`/`apply_global_arp`/`detect_cross_device_dual_connections`,
+`debug_scan_headers`, `_empty_dep_map`/`_run_phase`, `load_devices`/`write_json_file`/`file_sha256`/
+`build_run_manifest`. PLUS html (snapshot_state/write_html_explorer/write_diff_workbook/`_macset`) and
+`__main__` (autodetect_platform/connect_device/send_cmd/collect/main/argparse). **Decide next: does
+append_interface_rows + build_* go to excel.py, or a new `build`/`collect` module?** build_* construct the
+model (not excel) — maybe a `cisco_toolkit/build.py`. append_interface_rows is excel (writes the sheet).
+Likely: step 26 = append_interface_rows → excel; step 27 = build_* → new build.py; then html → html.py;
+then __main__ stays as the thin entrypoint. Sequential — `/batch` does NOT fit.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 24: Tier-2 + intelligence writers -> excel
 
 On branch `phase2-split-excel5`. Byte-identical. Monolith **~2,197 lines**; excel.py ~915.
