@@ -37,6 +37,16 @@
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
     --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
   }
+  /* ---- accessibility: visible focus rings + reduced motion (PHASE 3 P1) ---- */
+  a:focus-visible, button:focus-visible, input:focus-visible, [tabindex]:focus-visible{
+    outline:2px solid var(--accent); outline-offset:2px; border-radius:4px;
+  }
+  @media (prefers-reduced-motion: reduce){
+    *, *::before, *::after{
+      transition-duration:.001ms !important; animation-duration:.001ms !important;
+      animation-iteration-count:1 !important; scroll-behavior:auto !important;
+    }
+  }
   *{box-sizing:border-box}
   html,body{height:100%}
   body{
@@ -267,24 +277,24 @@
 </head>
 <body>
 <div class="app">
-  <header>
-    <div class="brand"><span class="mark"></span><b>Network Migration Explorer</b></div>
+  <header role="banner">
+    <div class="brand"><span class="mark" aria-hidden="true"></span><b>Network Migration Explorer</b></div>
     <span class="src" id="src">DEMO</span>
     <div class="grow"></div>
-    <div class="modes" id="modes">
-      <button data-mode="blast" class="on"><span class="gl">◎</span>Blast radius</button>
-      <button data-mode="trace"><span class="gl">↝</span>Path trace</button>
-      <button data-mode="compare"><span class="gl">⇄</span>Compare</button>
-      <button data-mode="flow"><span class="gl">⚡</span>Flow</button>
-      <button data-mode="health"><span class="gl">✚</span>Health</button>
+    <div class="modes" id="modes" role="group" aria-label="View mode">
+      <button data-mode="blast" class="on" aria-pressed="true"><span class="gl" aria-hidden="true">◎</span>Blast radius</button>
+      <button data-mode="trace" aria-pressed="false"><span class="gl" aria-hidden="true">↝</span>Path trace</button>
+      <button data-mode="compare" aria-pressed="false"><span class="gl" aria-hidden="true">⇄</span>Compare</button>
+      <button data-mode="flow" aria-pressed="false"><span class="gl" aria-hidden="true">⚡</span>Flow</button>
+      <button data-mode="health" aria-pressed="false"><span class="gl" aria-hidden="true">✚</span>Health</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
-      <button class="btn" id="loadBtn">↥ Load</button>
-      <button class="btn iconbtn" id="layoutBtn" title="Toggle layered / radial layout">⊞</button>
-      <button class="btn iconbtn" id="fitBtn" title="Fit to screen (F)">⤢</button>
-      <button class="btn iconbtn" id="themeBtn" title="Toggle light / dark">◐</button>
-      <button class="btn iconbtn" id="helpBtn" title="Keyboard shortcuts (?)">?</button>
+      <button class="btn" id="loadBtn" aria-label="Load a snapshot file"><span aria-hidden="true">↥</span> Load</button>
+      <button class="btn iconbtn" id="layoutBtn" title="Toggle layered / radial layout" aria-label="Toggle layered or radial layout">⊞</button>
+      <button class="btn iconbtn" id="fitBtn" title="Fit to screen (F)" aria-label="Fit graph to screen">⤢</button>
+      <button class="btn iconbtn" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
+      <button class="btn iconbtn" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">?</button>
     </div>
     <input type="file" id="file" accept=".json,application/json" hidden>
     <input type="file" id="fileB" accept=".json,application/json" hidden>
@@ -293,24 +303,24 @@
   <div class="main">
     <div class="stage" id="stage">
       <div class="overlay ov-top">
-        <div class="panelbox search"><span class="ic">⌕</span>
-          <input id="search" placeholder="Search switch, IP, MAC…" autocomplete="off"></div>
+        <div class="panelbox search"><span class="ic" aria-hidden="true">⌕</span>
+          <input id="search" placeholder="Search switch, IP, MAC…" autocomplete="off" aria-label="Search switches, IPs, or MACs"></div>
         <div class="panelbox chips" id="chips"></div>
         <div class="panelbox modetag" id="modetag"></div>
       </div>
-      <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Network topology graph"></svg>
       <div class="overlay ov-bottom">
         <div class="panelbox hint" id="hint"></div>
         <div class="panelbox legend" id="legend"></div>
       </div>
     </div>
-    <aside id="panel"></aside>
+    <aside id="panel" aria-label="Details panel"></aside>
   </div>
 </div>
 
 <div class="drop" id="drop"><div>Drop your <b>snapshot.json</b> to load</div></div>
-<div class="modal" id="help"><div class="box">
-  <span class="close" id="helpClose">✕</span>
+<div class="modal" id="help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><div class="box">
+  <span class="close" id="helpClose" role="button" tabindex="0" aria-label="Close">✕</span>
   <h2>Keyboard shortcuts</h2>
   <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">5</span></div>
   <div class="krow"><span>Focus search</span><span class="kbd">/</span></div>
@@ -651,6 +661,9 @@ function endpointsOf(h){const out=[];const ifs=SNAP&&SNAP.interfaces&&SNAP.inter
 function load(snap,label,live){
   SNAP=snap; SNAP_LABEL=label;
   MODEL=buildModel(snap); CHAINS=causalityChains(MODEL);
+  document.getElementById("svg").setAttribute("aria-label",
+    `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
+    `Visual view — the side panel lists the same switches and findings as text.`);
   SEL=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -891,7 +904,7 @@ function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRA
 function clearTrace(){TRACE_SRC=TRACE_DST=TRACE=null;repaint();renderDrawer();}
 
 /* ---- mode switch ---- */
-function setMode(m){MODE=m; document.querySelectorAll("#modes button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
+function setMode(m){MODE=m; document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
   if(m!=="blast"&&m!=="health")SEL=null;
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
@@ -1189,6 +1202,7 @@ document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElemen
 document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();};
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("on");
 document.getElementById("helpClose").onclick=()=>document.getElementById("help").classList.remove("on");
+document.getElementById("helpClose").addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();document.getElementById("help").classList.remove("on");}});
 document.getElementById("help").addEventListener("click",e=>{if(e.target.id==="help")e.currentTarget.classList.remove("on");});
 document.getElementById("loadBtn").onclick=()=>document.getElementById("file").click();
 
@@ -1228,7 +1242,10 @@ document.getElementById("panel").addEventListener("click",e=>{if(e.target.id==="
   MODEL_B=buildModel(snapB);CMP=compareModels(MODEL,MODEL_B);repaint();renderDrawer();}});
 
 // theme from storage
-try{const t=localStorage.getItem("nme-theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}
+try{const t=localStorage.getItem("nme-theme");
+  if(t)document.documentElement.setAttribute("data-theme",t);
+  else if(window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches)
+    document.documentElement.setAttribute("data-theme","light");}catch(e){}
 window.addEventListener("resize",()=>{if(MODEL)fitView();});
 
 /* ---- boot (demo button onclick + final bootstrap; Python replaces the LAST) ---- */
