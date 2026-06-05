@@ -602,8 +602,9 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
             if cm:
                 res[current]["pc_id"]   = f"Po{cm.group(1)}"
                 res[current]["pc_mode"] = cm.group(2)
-        if low.startswith("vrf member "):    res[current]["vrf"] = line.strip().split()[-1]
-        if low.startswith("vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]
+        if low.startswith("vrf member "):    res[current]["vrf"] = line.strip().split()[-1]   # NX-OS
+        if low.startswith("vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]   # IOS-XE
+        if low.startswith("ip vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]   # legacy IOS
     return res
 
 # ----------------------------------------------------------------------------- #
