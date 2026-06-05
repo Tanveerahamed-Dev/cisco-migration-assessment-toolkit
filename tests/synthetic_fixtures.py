@@ -118,6 +118,7 @@ interface Vlan20
  standby 20 ip 10.0.20.1
 interface Vlan30
  description SERVERS
+ vrf forwarding TENANT_RED
  ip address 10.0.30.1 255.255.255.0
  ip access-group PROTECT_SERVERS out
 """,
