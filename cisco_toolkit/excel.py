@@ -833,6 +833,44 @@ def write_nat_sheet(wb, all_nat: dict) -> None:
     logger.info(f"  [OK] '{NAT_INVENTORY_SHEET_NAME}' sheet: {total} NAT rule(s) across {nhosts} switch(es)")
 
 
+PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
+
+def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:
+    """Write the 'Protocol Boundaries' sheet: per device, the routing protocols it runs, its redistribution
+    edges (from -> into, + route-map), and a MUTUAL-redistribution risk flag -- so a migration can recreate
+    every protocol-to-protocol boundary. One row per device that runs a dynamic protocol or redistributes."""
+    ws = wb.create_sheet(PROTOCOL_BOUNDARIES_SHEET_NAME)
+    for col, h in enumerate(["Switch", "Protocols", "Redistribution (from -> into)", "Route-map(s)", "Mutual"], 1):
+        c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    dyn = ("ospf", "eigrp", "bgp", "rip", "isis")
+    r = 2; nrows = 0
+    for host in sorted(set(all_routing_neighbors) | set(all_redistribution)):
+        rn = all_routing_neighbors.get(host) or {}
+        edges = all_redistribution.get(host) or []
+        protos = {p for p in ("ospf", "eigrp", "bgp") if rn.get(p)}
+        for e in edges:
+            for p in (e.get("into_proto"), e.get("from_proto")):
+                if p in dyn: protos.add(p)
+        if not protos and not edges:
+            continue
+        pairs = {(e.get("into_proto"), e.get("from_proto")) for e in edges}
+        mutual = sorted({"/".join(sorted([a, b])) for (a, b) in pairs if a != b and (b, a) in pairs})
+        rmaps = sorted({e["route_map"] for e in edges if e.get("route_map")})
+        ws.cell(r, 1, host)
+        ws.cell(r, 2, ", ".join(sorted(protos)).upper() or "-")
+        ws.cell(r, 3, "; ".join(f"{e.get('from_proto', '')} -> {e.get('into_proto', '')}" for e in edges) or "-")
+        ws.cell(r, 4, ", ".join(rmaps) or "-")
+        mc = ws.cell(r, 5, ", ".join(m.upper() for m in mutual) or "-")
+        if mutual:
+            mc.font = Font(bold=True, color="C00000")
+        r += 1; nrows += 1
+    for i, w in enumerate([16, 22, 46, 22, 16], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{PROTOCOL_BOUNDARIES_SHEET_NAME}' sheet: {nrows} routing device(s)")
+
+
 def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws = wb.create_sheet(MIGRATION_READINESS_SHEET_NAME)
     headers = ["Group / Check", "Status", "Detail"]
