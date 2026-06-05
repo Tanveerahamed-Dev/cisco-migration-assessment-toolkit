@@ -686,6 +686,8 @@ def _acl_rule(action: str, rest: str, extended: bool) -> dict:
         dport, i = _acl_port(toks, i)
         rule.update(src=src or dict(_ANY_ADDR), dst=dst or dict(_ANY_ADDR), sport=sport, dport=dport)
         uneval = u1 or u2 or src is None or dst is None
+        if rule["proto"] == "icmp" and i < len(toks):                 # J: trailing icmp type/message token (echo, echo-reply, numeric, ...)
+            rule["icmp_type"] = toks[i].lower()
     for p in (rule.get("sport"), rule.get("dport")):                  # unknown port name -> can't evaluate
         if p is not None and (p.get("val") is None or (p.get("op") == "range" and p.get("val2") is None)):
             uneval = True
