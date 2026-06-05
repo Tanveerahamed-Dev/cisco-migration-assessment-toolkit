@@ -125,12 +125,12 @@ def test_analyze_reexported_and_functional(cp):
     assert any(sev == "High" and cat == "Gateway redundancy"
                for (sev, cat, scope, detail) in analyze.compute_findings(fi))
     # network-model / blast-radius cluster joined the analyze layer (step 13).
-    for name in ("build_network_model", "_link_carries",
-                 "compute_causality_chains", "compute_failure_impact"):
+    for name in ("build_network_model", "compute_causality_chains", "compute_failure_impact"):
         assert getattr(cp, name) is getattr(analyze, name)
-    # _vlan_components went package-internal in step 18 (build_dependency_map, its last
-    # monolith user, moved out, so the monolith no longer re-exports it).
-    assert hasattr(analyze, "_vlan_components") and not hasattr(cp, "_vlan_components")
+    # _vlan_components (step 18) + _link_carries (step 19) went package-internal as their
+    # last monolith users (build_dependency_map / _bfs_forwarding_path) moved out.
+    for gone in ("_vlan_components", "_link_carries"):
+        assert hasattr(analyze, gone) and not hasattr(cp, gone)
     nm = {
         "sw1": {"Vlan20": ID(port="Vlan20")},   # sole gateway for VLAN 20, no FHRP
         "sw2": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="20",
@@ -180,6 +180,17 @@ def test_analyze_reexported_and_functional(cp):
         cl_ai, [], [{"vlan": 20, "switch": "sw1", "risk": "single-gateway", "fhrp": "none"}])
     assert dep["sole_gw"] == {20: "sw1"}   # sole-gateway VLAN, no FHRP
     assert any(f["id"] == "CL-03" for f in analyze.compute_cross_layer_correlations(dep))
+    # flow-trace joined the analyze layer (step 19); its helpers are package-internal.
+    assert cp.trace_full_flow is analyze.trace_full_flow
+    for internal in ("_ip_in_prefix", "_find_endpoint_by_ip", "_find_gateways_for", "_bfs_forwarding_path"):
+        assert hasattr(analyze, internal) and not hasattr(cp, internal)
+    assert analyze._ip_in_prefix("10.0.10.5", "10.0.10.0/24") is True
+    assert analyze._ip_in_prefix("10.0.99.5", "10.0.10.0/24") is False
+    # same-subnet flow between two located endpoints in VLAN 10 -> an L2 (same subnet) path.
+    flow = analyze.trace_full_flow("10.0.10.5", "10.0.10.6", {
+        "sw1": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="10", end_host_ip="10.0.10.5"),
+                "Gi1/0/2": ID(port="Gi1/0/2", switchport_mode="Access", vlan="10", end_host_ip="10.0.10.6")}})
+    assert flow["summary"]["flow_type"] == "L2 (same subnet)" and flow["summary"]["src_ip"] == "10.0.10.5"
 
 
 def test_cmdio_reexported_and_functional(cp, tmp_path):
