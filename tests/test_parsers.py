@@ -112,6 +112,20 @@ def test_parse_object_groups_forms(cp):
     assert ws["members"][1] == {"proto": "tcp", "op": "range", "val": 8080, "val2": 8090}
 
 
+# ---- ICMP-type awareness (L4 depth) ---------------------------------------- #
+def test_parse_acl_icmp_type(cp):
+    out = textwrap.dedent("""\
+        ip access-list extended PING_POLICY
+         permit icmp any 10.0.30.0 0.0.0.255 echo-reply
+         permit icmp any any
+         deny ip any any
+    """)
+    p = parse.parse_acls(out)["PING_POLICY"]
+    assert p[0]["proto"] == "icmp" and p[0]["icmp_type"] == "echo-reply"
+    assert p[0]["dst"] == {"ip": "10.0.30.0", "wild": "0.0.0.255"}
+    assert "icmp_type" not in p[1]   # 'permit icmp any any' = any icmp type
+
+
 # ---- switchport ------------------------------------------------------------ #
 def test_parse_switchport_modes(cp):
     out = textwrap.dedent("""\

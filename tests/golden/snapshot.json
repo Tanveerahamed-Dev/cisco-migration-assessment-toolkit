@@ -1651,6 +1651,22 @@
      }
     },
     {
+     "action": "permit",
+     "raw": "permit icmp any 10.0.30.0 0.0.0.255 echo-reply",
+     "proto": "icmp",
+     "src": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "dst": {
+      "ip": "10.0.30.0",
+      "wild": "0.0.0.255"
+     },
+     "sport": null,
+     "dport": null,
+     "icmp_type": "echo-reply"
+    },
+    {
      "action": "deny",
      "raw": "deny ip any any",
      "proto": "ip",
