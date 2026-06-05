@@ -729,6 +729,68 @@ def parse_acls(output: str) -> Dict[str, List[dict]]:
         cur = None                                                    # any col-0 non-ACL line ends the block
     return acls
 
+# ----------------------------------------------------------------------------- #
+# OBJECT-GROUPS (L4 depth) - parse 'object-group network|service' (IOS) and
+# 'object-group ip address|ip port' (NX-OS) definitions so the explorer can
+# resolve ACL rules that reference them (addrgroup/object-group), turning what
+# was INDETERMINATE into a definite allow/deny. Network members normalize to the
+# same {ip,wild} form ACL addresses use (IOS subnet mask -> wildcard).
+# ----------------------------------------------------------------------------- #
+def _mask_to_wild(mask: str) -> str:
+    """IOS subnet mask (255.255.255.0) -> wildcard (0.0.0.255), per-octet inverse."""
+    try: return ".".join(str(255 - int(o)) for o in mask.split("."))
+    except (ValueError, TypeError): return mask
+
+def _objgrp_net_member(toks: List[str]):
+    """One 'object-group network' member -> {ip,wild} | {rangeStart,rangeEnd} | {group} | None."""
+    t0 = toks[0].lower()
+    if t0 == "host" and len(toks) >= 2 and _IPV4_RE.match(toks[1]): return {"ip": toks[1], "wild": "0.0.0.0"}
+    if t0 == "group-object" and len(toks) >= 2: return {"group": toks[1]}
+    if t0 == "range" and len(toks) >= 3 and _IPV4_RE.match(toks[1]) and _IPV4_RE.match(toks[2]):
+        return {"rangeStart": toks[1], "rangeEnd": toks[2]}
+    m = re.match(r"^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})$", toks[0])     # NX-OS prefix
+    if m: return {"ip": m.group(1), "wild": _acl_prefix_to_wild(int(m.group(2)))}
+    if _IPV4_RE.match(toks[0]):
+        if len(toks) >= 2 and _IPV4_RE.match(toks[1]): return {"ip": toks[0], "wild": _mask_to_wild(toks[1])}  # IOS subnet+mask
+        return {"ip": toks[0], "wild": "0.0.0.0"}                       # bare host
+    return None
+
+def _objgrp_svc_member(toks: List[str]):
+    """One 'object-group service|ip port' member -> {proto?, op?, val?, val2?} | None."""
+    proto = None; i = 0
+    if toks[0].lower() in ("tcp", "udp", "ip", "icmp", "tcp-udp"): proto = toks[0].lower(); i = 1
+    mem: dict = {"proto": proto} if proto else {}
+    p, _ = _acl_port(toks, i)
+    if p:
+        mem["op"] = p["op"]; mem["val"] = p.get("val")
+        if "val2" in p: mem["val2"] = p["val2"]
+    return mem or None
+
+def parse_object_groups(output: str) -> Dict[str, dict]:
+    """Parse object-group definitions from 'show running-config'
+    -> {name: {kind:'network'|'service', members:[...]}}. Tolerant; never raises."""
+    groups: Dict[str, dict] = {}
+    if not output: return groups
+    cur: Optional[str] = None; kind = "network"
+    HDR = re.compile(r"^\s*object-group\s+(network|service|ip\s+address|ip\s+port)\s+(\S+)", re.IGNORECASE)
+    for raw in output.splitlines():
+        line = raw.rstrip()
+        if not line.strip(): continue
+        m = HDR.match(line)
+        if m:
+            t = m.group(1).lower().replace(" ", "")
+            kind = "service" if t in ("service", "ipport") else "network"
+            cur = m.group(2); groups.setdefault(cur, {"kind": kind, "members": []}); continue
+        if cur is None: continue
+        if not raw[:1].isspace(): cur = None; continue                  # col-0 line ends the group
+        toks = line.strip().split()
+        if not toks: continue
+        if toks[0].isdigit() and len(toks) > 1: toks = toks[1:]         # strip NX-OS sequence number
+        if toks[0].lower() in ("description", "remark"): continue
+        mem = _objgrp_net_member(toks) if kind == "network" else _objgrp_svc_member(toks)
+        if mem: groups[cur]["members"].append(mem)
+    return groups
+
 def _proto_from_token(tok: str) -> str:
     t = (tok or "").strip().upper()
     if t == "LACP": return "Active"
