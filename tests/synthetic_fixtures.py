@@ -106,6 +106,7 @@ interface GigabitEthernet1/0/9
 interface Port-channel1
  description to-core2
  switchport mode trunk
+ mtu 9216
 interface Vlan10
  description USERS
  ip address 10.0.10.2 255.255.255.0
