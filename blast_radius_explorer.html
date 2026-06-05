@@ -676,6 +676,7 @@ let TRACE_SRC=null, TRACE_DST=null, TRACE=null;
 let MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
 let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
+let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 
@@ -723,7 +724,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use arrow keys to move between switches and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -931,6 +932,16 @@ function paintCompare(){
 }
 function flowObj(){return SNAP&&SNAP.flow_trace?SNAP.flow_trace:null;}
 function paintFlow(){
+  if(FLOWRES){const F=FLOWRES;
+    if(F.src&&nodeEls[F.src.host]){nodeEls[F.src.host].g.classList.add("sel");nodeEls[F.src.host].tag.textContent="SOURCE";nodeEls[F.src.host].tag.setAttribute("fill","var(--accent)");}
+    if(F.dst&&nodeEls[F.dst.host]){nodeEls[F.dst.host].g.classList.add("sel");nodeEls[F.dst.host].tag.textContent="DEST";nodeEls[F.dst.host].tag.setAttribute("fill","var(--accent)");}
+    MODEL.hosts.forEach(h=>{const n=nodeEls[h];
+      if(!F.pathHosts.has(h)){n.g.classList.add("dim");}
+      else if(h!==F.src.host&&h!==F.dst.host){n.body.style.stroke="var(--accent)";}});
+    (F.gateways||[]).forEach(g=>{if(nodeEls[g]){nodeEls[g].tag.textContent="GATEWAY";nodeEls[g].tag.setAttribute("fill","var(--accent)");}});
+    edgeEls.forEach(({e,path})=>{path.className.baseVal=(visEdgeHasIdx(e,F.linkIdxs)?"lnk flowpath":"lnk dim")+(e.pc?" pc":"");});
+    return;
+  }
   const f=flowObj(); if(!f||!f.hops)return;
   const onPath=new Set(); f.hops.forEach(h=>{if(h.from)onPath.add(h.from);if(h.to)onPath.add(h.to);});
   const spof=new Set((f.summary&&f.summary.spofs||[]).map(String));
@@ -1067,6 +1078,12 @@ function renderDrawer(){
   // wire endpoint-row clicks (drill into a single endpoint)
   p.querySelectorAll("[data-ephost]").forEach(r=>r.onclick=()=>{
     const e=EPALL.find(x=>x.host===r.dataset.ephost&&x.port===r.dataset.epport); if(e)selectEndpoint(e);});
+  // wire flow-mode endpoint pickers (change = on blur / datalist pick)
+  p.querySelectorAll(".epin").forEach(inp=>inp.addEventListener("change",()=>{
+    const ep=findEndpointByIpMac(inp.value);
+    if(inp.id==="flowSrc")FLOW_SRC=ep||null; else FLOW_DST=ep||null;
+    FLOWRES=(FLOW_SRC&&FLOW_DST)?flowBetween(FLOW_SRC,FLOW_DST):null;
+    repaint(); renderDrawer();}));
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -1279,29 +1296,65 @@ function drawCompare(){
 /* ---- FLOW ---- */
 function flowRiskTok(r){const m={LOW:"ok",MEDIUM:"watch",HIGH:"risk",CRITICAL:"crit"};return m[(r||"").toUpperCase()]||"neutral";}
 function drawFlow(){
+  const opts=[...new Set(EPALL.filter(e=>e.ip).map(e=>e.ip))].sort().map(ip=>`<option value="${esc(ip)}">`).join("");
+  const inStyle="background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 8px;font:inherit;font-size:12px;width:160px";
+  const slot=(label,ep,id)=>`<div class="kv"><span class="k">${label}</span><input class="epin mono" id="${id}" list="eplist" autocomplete="off" placeholder="IP or MAC" style="${inStyle}" value="${esc(ep?(ep.ip||ep.mac):"")}"></div>`;
+  let result="";
+  if(FLOWRES){const F=FLOWRES; const tok=F.reachable?"ok":"crit";
+    const steps=F.hops.map(h=>{const dot=h.spof?"risk":h.layer==="L3"?"accent":h.layer==="L1"?"ok":"text-faint";
+      return `<div class="checkrow"><span class="dot" style="background:var(--${dot})"></span><div><div class="nm">${esc(h.text)}</div><div class="nt faint">${esc(h.layer)}${h.spof?" · SPOF":""}</div></div></div>`;}).join("");
+    result=`<div class="sec"><h3>Verdict <span class="badge b-${tok}">${esc(F.verdict)}</span></h3>`+
+      (F.reason?`<div class="card ${tok}" style="margin-bottom:8px"><div class="ln">${esc(F.reason)}</div></div>`:"")+
+      (F.spofs.length?`<div class="ln faint" style="margin:0 0 8px">⚠ SPOFs on path: ${esc(F.spofs.join("; "))}</div>`:"")+
+      `<div>${steps}</div>`+
+      `<p class="faint" style="margin-top:9px"><b>L1–L3 only.</b> Path from VLAN membership, STP forwarding and gateways — ACLs / service-policies are not collected.</p></div>`;
+  } else if(FLOW_SRC||FLOW_DST){
+    result=`<div class="sec"><p class="faint">Enter both a source and a destination endpoint to trace the flow.</p></div>`;
+  }
   const f=flowObj();
-  if(!f){return `<div class="drawer-head"><div class="eyebrow">Flow</div><div class="title">Full-stack flow trace</div></div>
-    <div class="empty"><div class="big">⚡</div>
-    <p>No <b>flow_trace</b> embedded in this snapshot.</p>
-    <p class="faint">Re-run the collector with <span class="mono">--flow-src &lt;IP&gt; --flow-dst &lt;IP&gt;</span> to derive an endpoint→gateway path.</p></div>`;}
-  const s=f.summary||{}; const tok=flowRiskTok(s.risk);
-  let hops="";(f.hops||[]).forEach(h=>{const sp=h.spof;
-    hops+=`<div class="hop ${sp?"spof":""}"><div class="l1">${esc(h.from||"")} → ${esc(h.to||"")} ${sp?'<span class="pill pl-risk">SPOF</span>':""}</div>
-      <div class="l2"><span class="pill pl-neutral">${esc(h.layer||"")}</span> <span class="mono">${esc(h.iface||"")}</span> ${esc(h.detail||"")}</div></div>`;});
-  return `<div class="drawer-head"><div class="eyebrow">Flow trace</div>
-      <div class="title mono" style="font-size:14px">${esc(s.src_ip||"?")} → ${esc(s.dst_ip||"?")}</div></div>
-    <div class="sec"><div class="headline">
-      <div class="stat ${tok}"><div class="v" style="font-size:15px;padding:6px 0">${esc((s.risk||"—").toUpperCase())}</div><div class="k">risk</div></div>
-      <div class="stat ${s.spof_count?"crit":"ok"}"><div class="v">${s.spof_count||0}</div><div class="k">SPOFs</div></div>
-      <div class="stat"><div class="v">${(f.hops||[]).length}</div><div class="k">hops</div></div>
-    </div>
-    <div class="kv" style="margin-top:11px"><span class="k">Flow type</span><span class="v">${esc(s.flow_type||"—")}</span></div>
-    <div class="kv"><span class="k">Source</span><span class="v mono">${esc(s.src_location||"—")}</span></div>
-    <div class="kv"><span class="k">Destination</span><span class="v mono">${esc(s.dst_location||"—")}</span></div></div>
-    <div class="sec"><h3>Hop-by-hop</h3><div class="hopline">${hops||'<p class="faint">No hops.</p>'}</div></div>
-    ${(s.notes&&s.notes.length)?`<div class="sec"><h3>Notes</h3>${s.notes.map(n=>`<div class="ln sub">• ${esc(n)}</div>`).join("")}</div>`:""}
-    <div class="foot"><b>L4 note:</b> the collector gathers L1–L3 only; transport filtering (ACLs/service-policies) is not simulated.</div>`;
+  const embedded=f?`<div class="sec"><h3 class="faint">Collector-embedded flow</h3><p class="faint" style="margin:0">${esc((f.summary&&f.summary.src_ip)||"?")} → ${esc((f.summary&&f.summary.dst_ip)||"?")} (from <span class="mono">--flow-src/--flow-dst</span>). Pick endpoints above to trace any other flow.</p></div>`:"";
+  return `<datalist id="eplist">${opts}</datalist>`+
+    `<div class="drawer-head"><div class="eyebrow">Flow</div><div class="title">Endpoint → endpoint</div></div>`+
+    `<div class="sec"><p class="sub" style="margin:0 0 9px">Trace the offline L1–L3 path between any two endpoints — by IP or MAC.</p>`+
+    slot("Source",FLOW_SRC,"flowSrc")+slot("Destination",FLOW_DST,"flowDst")+`</div>`+
+    result+embedded;
 }
+/* ---- interactive endpoint->endpoint flow (PHASE C): offline L1-L3 port of trace_full_flow ---- */
+function flowBetween(s,d){
+  const sv=/^\d+$/.test(s.vlan)?+s.vlan:null, dv=/^\d+$/.test(d.vlan)?+d.vlan:null;
+  const F={src:s,dst:d,reachable:false,verdict:"",reason:"",hops:[],pathHosts:new Set([s.host,d.host]),linkIdxs:new Set(),spofs:[],gateways:[]};
+  const hop=(layer,text,spof)=>F.hops.push({layer,text,spof:!!spof});
+  if(sv==null||dv==null){F.verdict="UNKNOWN"; F.reason="Source or destination VLAN is unknown — cannot trace."; hop("—",F.reason,false); return F;}
+  hop("L1",`Endpoint ${s.ip||s.mac} on ${s.host} · ${s.port} (access, VLAN ${sv})`,false);
+  const seg=(vid,a2,b2)=>{ if(a2===b2)return true; const p=_bfsPath(MODEL,vid,a2,b2); if(p===null)return null;
+    for(const h of p)F.pathHosts.add(h);
+    for(let i=0;i+1<p.length;i++){const li=_edgeBetween(MODEL,vid,p[i],p[i+1],false); const L=li>=0?MODEL.links[li]:null; if(li>=0)F.linkIdxs.add(li);
+      const sf=!!(L&&!L.portChannel);
+      hop("L2",`${p[i]} → ${p[i+1]} · trunk (VLAN ${vid})${sf?"  — single-fiber uplink (SPOF)":""}`,sf);
+      if(sf)F.spofs.push(`uplink ${p[i]}↔${p[i+1]}`);} return true; };
+  if(sv===dv){
+    if(seg(sv,s.host,d.host)===null){F.verdict="NOT REACHABLE"; F.reason=`VLAN ${sv} is partitioned between ${s.host} and ${d.host} — no STP-forwarding path.`; hop("L2",F.reason,true); return F;}
+    hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
+    F.reachable=true; F.verdict="REACHABLE — L2 (same subnet)"; return F;
+  }
+  const sgwAll=MODEL.gateways.get(sv)||new Set(), dgwAll=MODEL.gateways.get(dv)||new Set();
+  if(!sgwAll.size){F.verdict="NOT REACHABLE"; F.reason=`VLAN ${sv} has no gateway (SVI) — the source can't leave its subnet.`; hop("L3",F.reason,true); return F;}
+  if(!dgwAll.size){F.verdict="NOT REACHABLE"; F.reason=`VLAN ${dv} has no gateway (SVI) — no inter-subnet routing target.`; hop("L3",F.reason,true); return F;}
+  const sgw=[...sgwAll].find(g=>g===s.host||_bfsPath(MODEL,sv,s.host,g)!==null);
+  if(!sgw){F.verdict="NOT REACHABLE"; F.reason=`No STP-forwarding path from ${s.host} to a VLAN ${sv} gateway.`; hop("L2",F.reason,true); return F;}
+  const dgw=[...dgwAll].find(g=>g===d.host||_bfsPath(MODEL,dv,g,d.host)!==null);
+  if(!dgw){F.verdict="NOT REACHABLE"; F.reason=`No STP-forwarding path from a VLAN ${dv} gateway to ${d.host}.`; hop("L2",F.reason,true); return F;}
+  seg(sv,s.host,sgw);
+  const single=sgwAll.size<2;
+  hop("L3",`${sgw} routes VLAN ${sv} → VLAN ${dv} (inter-subnet gateway)${single?"  — single gateway, no FHRP peer (SPOF)":""}`,single);
+  if(single)F.spofs.push(`single gateway VLAN ${sv} (${sgw})`);
+  F.gateways=[sgw,dgw]; F.pathHosts.add(sgw); F.pathHosts.add(dgw);
+  seg(dv,dgw,d.host);
+  hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
+  F.reachable=true; F.verdict="REACHABLE — L3 (routed via gateway)";
+  return F;
+}
+
 
 /* ---- HEALTH (with honest de-duplication of the scoring) ---- */
 function dedupeDeductions(deds){
