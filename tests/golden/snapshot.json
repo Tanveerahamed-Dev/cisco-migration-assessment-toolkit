@@ -114,7 +114,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Gi1/0/2": {
     "port": "Gi1/0/2",
@@ -165,7 +166,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Gi1/0/24": {
     "port": "Gi1/0/24",
@@ -216,7 +218,8 @@
     "neighbor_platform": "cisco WS-C2960X-48",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Gi1/0/5": {
     "port": "Gi1/0/5",
@@ -267,7 +270,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Gi1/0/9": {
     "port": "Gi1/0/9",
@@ -318,7 +322,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Po1": {
     "port": "Po1",
@@ -369,7 +374,8 @@
     "neighbor_platform": "cisco N9K-C93180YC-EX",
     "acl_in": "",
     "acl_out": "",
-    "mtu": "9216"
+    "mtu": "9216",
+    "dhcp_helpers": ""
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -420,7 +426,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": "10.0.40.10,10.0.40.11"
    },
    "Vlan20": {
     "port": "Vlan20",
@@ -471,7 +478,8 @@
     "neighbor_platform": "",
     "acl_in": "VOICE_FILTER",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Vlan30": {
     "port": "Vlan30",
@@ -522,7 +530,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "PROTECT_SERVERS",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    }
   },
   "core2": {
@@ -575,7 +584,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Eth1/2": {
     "port": "Eth1/2",
@@ -626,7 +636,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Po1": {
     "port": "Po1",
@@ -677,7 +688,8 @@
     "neighbor_platform": "cisco WS-C3850-24T",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -728,7 +740,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Vlan20": {
     "port": "Vlan20",
@@ -779,7 +792,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    }
   },
   "access1": {
@@ -832,7 +846,8 @@
     "neighbor_platform": "cisco WS-C3850-24T",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Gi0/2": {
     "port": "Gi0/2",
@@ -883,7 +898,8 @@
     "neighbor_platform": "cisco AIR-AP2802I",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Gi0/3": {
     "port": "Gi0/3",
@@ -934,7 +950,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    },
    "Gi0/10": {
     "port": "Gi0/10",
@@ -985,7 +1002,8 @@
     "neighbor_platform": "",
     "acl_in": "",
     "acl_out": "",
-    "mtu": ""
+    "mtu": "",
+    "dhcp_helpers": ""
    }
   }
  },

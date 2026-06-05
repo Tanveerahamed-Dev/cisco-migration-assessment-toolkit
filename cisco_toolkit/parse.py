@@ -563,7 +563,7 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
         m = re.match(r"^\s*interface\s+(\S+)", line, re.IGNORECASE)
         if m:
             current = normalize_ifname(m.group(1))
-            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":"","acl_in":"","acl_out":"","mtu":""})
+            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":"","acl_in":"","acl_out":"","mtu":"","helpers":""})
             if global_bpduguard:
                 res[current]["bpduguard"] = "Enable"
             continue
@@ -613,6 +613,14 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
         elif low.startswith("ip mtu ") and not res[current].get("mtu"):
             mm = re.match(r"ip mtu\s+(\d+)", low)
             if mm: res[current]["mtu"] = mm.group(1)
+        # DHCP relay: 'ip helper-address [vrf NAME|global] X' (IOS/IOS-XE) or 'ip dhcp relay address X'
+        # (NX-OS). Multiple servers are allowed per interface, so accumulate them (de-duped, order-kept).
+        mh = (re.match(r"ip helper-address\s+(?:vrf\s+\S+\s+|global\s+)?(\d+\.\d+\.\d+\.\d+)", low)
+              or re.match(r"ip dhcp relay address\s+(\d+\.\d+\.\d+\.\d+)", low))
+        if mh:
+            cur = [h for h in res[current].get("helpers","").split(",") if h]
+            if mh.group(1) not in cur: cur.append(mh.group(1))
+            res[current]["helpers"] = ",".join(cur)
     return res
 
 # ----------------------------------------------------------------------------- #

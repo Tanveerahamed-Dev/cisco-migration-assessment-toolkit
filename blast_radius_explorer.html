@@ -554,7 +554,7 @@ function compareModels(A,B){
    ===================================================================== */
 function demoSnapshot(){
   const ALL="1,10,20,30,40,99";
-  const gw=(vid,ip,h,acl,vrf)=>({port:"Vlan"+vid,svi_ip:ip,vlan:String(vid),hsrp_behavior:h||"",switchport_mode:"",end_host_mac:"",acl_in:(acl&&acl.in)||"",acl_out:(acl&&acl.out)||"",vrf:vrf||""});
+  const gw=(vid,ip,h,acl,vrf,helpers)=>({port:"Vlan"+vid,svi_ip:ip,vlan:String(vid),hsrp_behavior:h||"",switchport_mode:"",end_host_mac:"",acl_in:(acl&&acl.in)||"",acl_out:(acl&&acl.out)||"",vrf:vrf||"",dhcp_helpers:helpers||""});
   const link=(nbr,np,o={})=>({port:o.port,cdp_neighbor:nbr,neighbor_port:np,stp_fwd_vlans:o.fwd||"",stp_blk_vlans:o.blk||"",
     trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:"",mtu:o.mtu||""});
   const eps=(vid,n,base)=>{const o={};for(let i=0;i<n;i++){const p=`Gi1/0/${base+i}`;
@@ -563,10 +563,10 @@ function demoSnapshot(){
       end_host_ip:`10.0.${vid}.${base+i}`};}return o;};
   return {schema:"collect_parse_snapshot/1",devices:{},interfaces:{
     "DIST-1":Object.assign({},
-      {"Vlan10":gw(10,"10.0.10.2","HSRP grp10 active vIP 10.0.10.1"),
-       "Vlan20":gw(20,"10.0.20.2","HSRP grp20 active vIP 10.0.20.1",{in:"GUEST_FILTER"}),
+      {"Vlan10":gw(10,"10.0.10.2","HSRP grp10 active vIP 10.0.10.1",null,null,"10.0.99.50"),   // DHCP relay -> server on the routable mgmt subnet (✓)
+       "Vlan20":gw(20,"10.0.20.2","HSRP grp20 active vIP 10.0.20.1",{in:"GUEST_FILTER"}),       // no helper-address -> DHCP-relay gap (⚠)
        "Vlan99":gw(99,"10.0.99.2","HSRP grp99 active vIP 10.0.99.1"),
-       "Vlan30":gw(30,"10.0.30.1","",{out:"PROTECT_SERVERS"}),
+       "Vlan30":gw(30,"10.0.30.1","",{out:"PROTECT_SERVERS"},null,"10.10.10.10"),   // DHCP relay -> server with NO covering route on DIST-1 (✗)
        "Vlan40":gw(40,"10.0.40.1","",null,"TENANT_RED")},   // PHASE K: a VRF-isolated tenant subnet — flows from the global VLANs are unreachable
       {"Po1":link("DIST-2","Po1",{port:"Po1",fwd:ALL,pc:"Po1"}),
        "Gi1/0/1":link("ACC-1","Gi1/0/24",{port:"Gi1/0/1",fwd:ALL}),
@@ -1246,6 +1246,28 @@ function _routeCovers(host,ip){
    address — so _routeCovers can test whether a source gateway has a route toward that whole subnet. */
 function gwIp(host,vid){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host]["Vlan"+vid]:null;
   return d?String(d.svi_ip||"").trim().split(/\s+/)[0]:"";}
+/* DHCP-relay reachability: the 'ip helper-address' targets configured on a gateway SVI (host, vid). */
+function dhcpHelpersFor(host,vid){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host]["Vlan"+vid]:null;
+  const s=d?String(d.dhcp_helpers||"").trim():""; return s?s.split(/[\s,]+/).filter(Boolean):[];}
+/* A client VLAN whose endpoints use DHCP needs its gateway SVI to relay (ip helper-address) to a server the
+   gateway can actually route to. Two silent post-cutover black-holes: no relay at all, or a relay target that
+   isn't in the gateway's routing table. We reuse _routeCovers (route-aware, never a false-negative when no
+   route data was collected) and stay honest about the on-subnet-server / static-addressing caveat. */
+function dhcpReach(vid,gws){
+  const out={vid, helpers:[], state:"nogw"};
+  if(!gws||!gws.length)return out;                                  // no SVI -> 'can't leave subnet' is reported elsewhere
+  const seen=new Map();                                             // helperIp -> a gateway that declares it
+  for(const g of gws)for(const ip of dhcpHelpersFor(g,vid))if(!seen.has(ip))seen.set(ip,g);
+  if(!seen.size){out.state="none"; return out;}                     // gateway(s) present but no relay configured
+  let anyFail=false, anyUnknown=false;
+  for(const [ip,g] of seen){const rt=_routeCovers(g,ip); let st,detail;
+    if(rt===null){st="fail"; anyFail=true; detail=`${g} has no route to ${ip} — relay-forwarded DHCP can't reach this server`;}
+    else if(rt===undefined){st="unknown"; anyUnknown=true; detail=`routability unknown — no routing table collected for ${g}`;}
+    else{st="ok"; detail=`routable from ${g}`+(rt.prefix?` via ${rt.source||"route"} ${rt.prefix}${rt.next_hop?(" → "+rt.next_hop):""}`:"");}
+    out.helpers.push({ip,gw:g,state:st,detail});}
+  out.state=anyFail?"fail":anyUnknown?"unknown":"ok";
+  return out;
+}
 /* path-MTU mismatch: collect the MTUs of the physical interfaces a flow traverses (access ports +
    each trunk link's two ends + the routed egress). >=2 distinct explicit MTUs, or jumbo set on only
    some hops, means frames above the smallest MTU are silently dropped -- a classic post-cutover black-hole. */
@@ -1281,6 +1303,20 @@ function natCard(statics){
     return `<div class="ln"><span class="pill pl-watch">NAT</span> <span class="mono">${esc(st.local)}${lp}</span> ↔ <span class="mono">${esc(st.global)}${gp}</span>${pp} <span class="faint">· static on ${esc(shortName(st.host))}</span></div>`;}).join("");
   return `<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ NAT on this flow</span></div>${rows}`+
     `<div class="ln faint" style="margin-top:3px">An endpoint here is statically translated — past the NAT boundary an ACL sees the <b>global</b> address, so the L4 verdict above (evaluated against the untranslated address) may not reflect it.</div></div>`;
+}
+/* DHCP-relay reachability card: surfaced in the endpoint reachability view for the endpoint's OWN subnet. */
+function dhcpCard(D){
+  if(!D||D.state==="nogw")return "";                                  // no gateway -> 'can't leave subnet' already shown
+  if(D.state==="none")
+    return `<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ No DHCP relay on VLAN ${D.vid}'s gateway</span></div>`+
+      `<div class="ln faint">The gateway SVI has no <span class="mono">ip helper-address</span>. Endpoints that use DHCP won't get an address after cutover unless a DHCP server is <b>on this subnet</b> or addresses are static. Add <span class="mono">ip helper-address &lt;server&gt;</span> to the SVI.</div></div>`;
+  const tok=D.state==="fail"?"crit":D.state==="unknown"?"watch":"ok";
+  const head=D.state==="fail"?`✗ DHCP relay server unreachable`:D.state==="unknown"?`? DHCP relay routability unknown`:`✓ DHCP relay reachable`;
+  const rows=D.helpers.map(h=>{const ht=h.state==="fail"?"crit":h.state==="unknown"?"watch":"ok";
+    const mark=h.state==="fail"?"✗":h.state==="unknown"?"?":"✓";
+    return `<div class="ln"><span class="pill pl-${ht}">${mark}</span> helper <span class="mono">${esc(h.ip)}</span><div class="faint" style="margin-top:2px">${esc(h.detail)}</div></div>`;}).join("");
+  return `<div class="card ${tok}" style="margin:0 0 8px"><div class="ct"><span class="nm">${head} · VLAN ${D.vid}</span></div>${rows}`+
+    `<div class="ln faint" style="margin-top:3px">Relay routability is route-aware (does the gateway have a route to the server). The DHCP server's own pool/scope and any ACL on the relay path aren't evaluated here.</div></div>`;
 }
 /* M: where an ACL flag is applied — a gateway SVI ("VLAN n") or a routed transit interface (its name). */
 function aclLoc(a){return a.intf?esc(a.intf):("VLAN "+a.vid);}
@@ -1346,6 +1382,7 @@ function endpointReach(ep){
    gws.forEach(g=>{if(R.reachHosts.has(g))add(g,vid,"in");});                                  // egress: leaving this subnet (acl_in on own SVI)
    for(const grp of R.groups){if(grp.vlan===vid||grp.reach<=0)continue;
      for(const g of (MODEL.gateways.get(grp.vlan)||new Set()))if(R.reachHosts.has(g))add(g,grp.vlan,"out");}}  // ingress: entering a reachable dst subnet (acl_out)
+  R.dhcp=dhcpReach(vid,gws);   // DHCP-relay reachability for this endpoint's own subnet
   return R;
 }
 /* PHASE D drill-down: collapsible list of the named endpoints behind each VLAN's reach/unreach counts */
@@ -1372,8 +1409,9 @@ function reachSection(R){
       <div class="stat ${R.unreachEps?"crit":""}"><div class="v">${R.unreachEps}</div><div class="k">cannot reach</div></div>
     </div>
     ${aclFlagCard(R.aclFlags,"the gateway path")}
+    ${dhcpCard(R.dhcp)}
     <div style="margin-top:10px">${rows||'<p class="faint">No other endpoints in scope.</p>'}</div>
-    <p class="faint" style="margin-top:9px"><b>L1–L3.</b> Computed from VLAN membership, STP forwarding, gateways, <b>VRF membership</b> and <b>routing tables</b> (different-VRF subnets, and subnets with no covering route on the gateway, are shown unreachable) — <b>ACLs are collected from run-config but not evaluated here</b>, so a path shown reachable may still be blocked at L4.</p></div>`;
+    <p class="faint" style="margin-top:9px"><b>L1–L3.</b> Computed from VLAN membership, STP forwarding, gateways, <b>VRF membership</b> and <b>routing tables</b> (different-VRF subnets, and subnets with no covering route on the gateway, are shown unreachable) — <b>ACLs are collected from run-config but not evaluated here</b>, so a path shown reachable may still be blocked at L4. <b>DHCP relay</b> (ip helper-address) reachability is flagged separately above.</p></div>`;
 }
 function paintEndpointReach(){
   if(!EPSEL||!REACH)return; const R=REACH; const gw=new Set(R.gateways);
