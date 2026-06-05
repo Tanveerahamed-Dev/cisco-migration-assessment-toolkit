@@ -24,6 +24,7 @@ from cisco_toolkit.parse import (
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat,
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
+    parse_redistribution,                                            # protocol-to-protocol analysis (slice 2)
 )
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
 
@@ -64,6 +65,14 @@ def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:
         "eigrp": _safe_parse(parse_eigrp_neighbors, _load_cmd_output(cmd_to_file, "show ip eigrp neighbors")) or [],
         "bgp":   _safe_parse(parse_bgp_summary,     _load_cmd_output(cmd_to_file, "show ip bgp summary", "show bgp summary")) or [],
     }
+
+
+def build_redistribution(cmd_to_file: Dict[str, str]) -> List[dict]:
+    """Protocol-to-protocol analysis (slice 2): this device's route-redistribution edges, parsed from the
+    already-collected 'show running-config' -> [{into_proto,into_id,from_proto,from_id,route_map,raw}];
+    [] when none. Each row is a protocol-to-protocol boundary the explorer flags. Fail-soft via _safe_parse."""
+    run = _load_cmd_output(cmd_to_file, "show running-config")
+    return _safe_parse(parse_redistribution, run, _default=[]) or []
 
 
 # -----------------------------------------------------------------------------
