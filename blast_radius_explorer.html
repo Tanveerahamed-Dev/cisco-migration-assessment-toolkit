@@ -699,7 +699,7 @@ let MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
 let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
-let FLOW_PROTO="tcp", FLOW_DPORT=443;             // L4 tuple for the ACL allow/deny eval (G2)
+let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null;   // L4 tuple for the ACL allow/deny eval (G2; FLOW_SPORT optional, I)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 
@@ -1123,6 +1123,7 @@ function renderDrawer(){
   const _reflow=()=>{FLOWRES=(FLOW_SRC&&FLOW_DST)?flowBetween(FLOW_SRC,FLOW_DST):null; repaint(); renderDrawer();};
   {const ps=document.getElementById("flowProto"); if(ps)ps.addEventListener("change",()=>{FLOW_PROTO=ps.value; _reflow();});}
   {const pd=document.getElementById("flowDport"); if(pd)pd.addEventListener("change",()=>{const n=parseInt(pd.value,10); if(n>=1&&n<=65535)FLOW_DPORT=n; _reflow();});}
+  {const ps=document.getElementById("flowSport"); if(ps)ps.addEventListener("change",()=>{const v=ps.value.trim(); const n=parseInt(v,10); FLOW_SPORT=(v===""||!(n>=1&&n<=65535))?null:n; _reflow();});}
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -1372,8 +1373,10 @@ function drawFlow(){
     `<select id="flowProto" style="${inStyle};width:86px;margin-right:6px">`+
       ["tcp","udp","icmp","ip"].map(pr=>`<option value="${pr}"${FLOW_PROTO===pr?" selected":""}>${pr.toUpperCase()}</option>`).join("")+
     `</select>`+
-    `<input id="flowDport" type="number" min="1" max="65535" placeholder="port" style="${inStyle};width:72px" value="${l4on?FLOW_DPORT:""}"${l4on?"":" disabled"}>`+
-    `</span></div>`;
+    `<input id="flowDport" type="number" min="1" max="65535" placeholder="dst port" style="${inStyle};width:78px" value="${l4on?FLOW_DPORT:""}"${l4on?"":" disabled"}>`+
+    `</span></div>`+
+    `<div class="kv"><span class="k">Source port <span class="faint">(optional)</span></span>`+
+    `<input id="flowSport" type="number" min="1" max="65535" placeholder="any" style="${inStyle};width:78px" value="${(l4on&&FLOW_SPORT!=null)?FLOW_SPORT:""}"${l4on?"":" disabled"}></div>`;
   let result="";
   if(FLOWRES){const F=FLOWRES; const tok=F.reachable?"ok":"crit";
     const steps=F.hops.map(h=>{const dot=h.spof?"risk":h.layer==="L3"?"accent":h.layer==="L1"?"ok":"text-faint";
@@ -1432,11 +1435,12 @@ function _addrMatch(ip,spec,host){                                     // {ip,wi
 function evalAcl(rules,flow,host){                                      // flow={src,dst,proto,dport} -> {action,rule,idx}
   for(let i=0;i<(rules||[]).length;i++){const r=rules[i];
     if(_protoMatch(r.proto,flow.proto)===false)continue;                // proto definitively differs -> skip
-    const sm=_addrMatch(flow.src,r.src,host), dm=_addrMatch(flow.dst,r.dst,host), pm=_portMatch(r.dport,flow.dport);
-    if(sm===false||dm===false||pm===false)continue;                     // a component definitively rules it out
+    const sm=_addrMatch(flow.src,r.src,host), dm=_addrMatch(flow.dst,r.dst,host),
+          pm=_portMatch(r.dport,flow.dport), spm=_portMatch(r.sport,flow.sport);  // I: source-port match
+    if(sm===false||dm===false||pm===false||spm===false)continue;        // a component definitively rules it out
     const groupRef=(r.src&&r.src.group!=null)||(r.dst&&r.dst.group!=null);
     const otherUneval=r.unevaluable&&!groupRef;                         // unevaluable for a reason H2 can't resolve (unknown port / unparseable addr)
-    if(otherUneval||sm===null||dm===null||pm===null)                    // might match but can't be sure -> stop here
+    if(otherUneval||sm===null||dm===null||pm===null||spm===null)        // might match but can't be sure -> stop here
       return {action:"indeterminate",rule:r,idx:i};
     return {action:r.action,rule:r,idx:i};                              // proto + src + dst + port all matched
   }
@@ -1489,7 +1493,8 @@ function flowBetween(s,d){
   {const ai=gwAcl(sgw,sv); if(ai&&ai.in)F.aclFlags.push({host:sgw,vid:sv,dir:"in",name:ai.in});    // egress SVI of the source subnet
    const ao=gwAcl(dgw,dv); if(ao&&ao.out)F.aclFlags.push({host:dgw,vid:dv,dir:"out",name:ao.out});}  // ingress SVI of the dest subnet
   if(s.ip&&d.ip&&F.aclFlags.length){                                  // G2: evaluate those ACLs against the chosen 5-tuple
-    const flow={src:s.ip,dst:d.ip,proto:FLOW_PROTO,dport:(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?FLOW_DPORT:null};
+    const l4=(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp");
+    const flow={src:s.ip,dst:d.ip,proto:FLOW_PROTO,dport:l4?FLOW_DPORT:null,sport:l4?FLOW_SPORT:null};
     F.aclVerdicts=F.aclFlags.map(a=>{const rules=aclRules(a.host,a.name);
       const v=rules?evalAcl(rules,flow,a.host):{action:"indeterminate",rule:null,idx:-1,nobody:true};
       return Object.assign({},a,{verdict:v.action,rule:v.rule,idx:v.idx,implicit:v.implicit,nobody:v.nobody});});}
