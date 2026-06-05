@@ -231,6 +231,19 @@
   .ntag{font:700 8.5px var(--sans); letter-spacing:.6px; text-anchor:middle; pointer-events:none}
   .scorebadge{font:800 12px var(--sans); text-anchor:middle; pointer-events:none}
 
+  /* ---- graph entrance (replays on buildSvg: initial load + layout toggle) ----
+     SAFE: animate opacity on the node <g> (NOT transform — that attr carries translate()).
+     Resting state is opacity:1 so reduced-motion (which neuters animation) stays VISIBLE.
+     A subtle scale flourish rides on a CHILD (.body) via transform-box:fill-box so it
+     never disturbs the node's translate() transform. */
+  @keyframes nodeIn{from{opacity:0}to{opacity:1}}
+  @keyframes nodePop{from{transform:scale(.82)}to{transform:scale(1)}}
+  @keyframes edgeIn{from{opacity:0}to{opacity:1}}
+  .node.enter{opacity:1; animation:nodeIn .30s ease both; animation-delay:var(--d,0ms)}
+  .node.enter .body{transform-box:fill-box; transform-origin:center;
+    animation:nodePop .30s cubic-bezier(.2,.9,.3,1.2) both; animation-delay:var(--d,0ms)}
+  .edge.enter{opacity:1; animation:edgeIn .26s ease both; animation-delay:var(--d,0ms)}
+
   /* ---- drawer ---- */
   aside{border-left:1px solid var(--border); background:var(--surface); overflow-y:auto}
   aside::-webkit-scrollbar{width:10px} aside::-webkit-scrollbar-thumb{background:var(--surface-3); border-radius:10px}
@@ -1016,8 +1029,12 @@ function buildSvg(){
   vp.appendChild(glinks); vp.appendChild(gnodes);
 
   visEdges=aggregateEdges(); edgeEls=[];
-  visEdges.forEach(e=>{const path=el("path",{class:"lnk"});
-    const grp=el("g",{}); grp.appendChild(path);
+  // staggered entrance: cap total stagger so big fabrics don't crawl in (≤350ms)
+  const edStep=Math.min(18, 350/Math.max(1,visEdges.length));
+  const ndStep=Math.min(18, 350/Math.max(1,MODEL.hosts.length));
+  visEdges.forEach((e,i)=>{const path=el("path",{class:"lnk"});
+    const grp=el("g",{class:"edge enter"}); grp.style.setProperty("--d",Math.round(i*edStep)+"ms");
+    grp.appendChild(path);
     let badge=null,btext=null;
     // ×N member-count badge only when 2+ links are actually aggregated; a 1-member port-channel
     // is already shown by the thick (.lnk.pc) edge, so "×1" would just be noise.
@@ -1028,10 +1045,11 @@ function buildSvg(){
     edgeEls.push({e,path,badge,btext});});
 
   nodeEls={};
-  MODEL.hosts.forEach(h=>{
+  MODEL.hosts.forEach((h,i)=>{
     const role=deviceRole(MODEL,h); const core=role==="core";
     const w=core?164:138, ht=core?58:46;
-    const g=el("g",{class:"node"+(PINNED[h]?" pinned":""),transform:`translate(${POS[h].x},${POS[h].y})`});
+    const g=el("g",{class:"node enter"+(PINNED[h]?" pinned":""),transform:`translate(${POS[h].x},${POS[h].y})`});
+    g.style.setProperty("--d",Math.round(i*ndStep)+"ms");
     const halo=el("rect",{class:"halo",x:-w/2-4,y:-ht/2-4,rx:13,width:w+8,height:ht+8,fill:"none"});
     const body=el("rect",{class:"body",x:-w/2,y:-ht/2,rx:10,width:w,height:ht});
     g.appendChild(halo); g.appendChild(body);
@@ -1054,6 +1072,10 @@ function buildSvg(){
     g.setAttribute("aria-label",
       `${h}, ${core?"core / distribution":"access"} switch${deviceModel(h)?", "+deviceModel(h):""}, ${ep} host${ep===1?"":"s"}`);
     g.addEventListener("keydown",ev=>onNodeKey(ev,h));
+    // drop the one-shot entrance class once it finishes so resting CSS (e.g. .node.dim
+    // opacity) isn't pinned by the animation's `both` fill state. (both g+body anims end
+    // together; {once} fires on the first to bubble — opacity is already 1 by then.)
+    g.addEventListener("animationend",()=>g.classList.remove("enter"),{once:true});
     gnodes.appendChild(g);
     nodeEls[h]={g,body,halo,nm,sub,tag,score,w,ht,core,roleTag};});
 
