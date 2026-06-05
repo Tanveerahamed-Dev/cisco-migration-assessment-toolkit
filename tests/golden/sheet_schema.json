@@ -261,5 +261,11 @@
   "VLAN",
   "Issue",
   "Gateways"
+ ],
+ "Trunk Native-VLAN": [
+  "End A",
+  "Native A",
+  "End B",
+  "Native B"
  ]
 }
