@@ -1406,52 +1406,80 @@
     {
      "check": "Redundant uplinks",
      "status": "warn",
-     "note": "single-fiber uplink on access1"
+     "note": "single-fiber uplink on access1",
+     "phase": "Pilot/cutover"
     },
     {
      "check": "Gateway redundancy",
      "status": "fail",
-     "note": "sole gateway on core1 (no FHRP)"
+     "note": "sole gateway on core1 (no FHRP)",
+     "phase": "Pilot/cutover"
     },
     {
      "check": "No cross-layer Critical",
      "status": "fail",
-     "note": "Critical correlation on access1, core1"
+     "note": "Critical correlation on access1, core1",
+     "phase": "Dependency mapping"
     },
     {
      "check": "No err-disabled ports",
      "status": "warn",
-     "note": "err-disabled on core1"
+     "note": "err-disabled on core1",
+     "phase": "Baseline capture"
     },
     {
      "check": "STP consistency",
      "status": "pass",
-     "note": "no inconsistent ports"
+     "note": "no inconsistent ports",
+     "phase": "Dependency mapping"
     },
     {
      "check": "Port-channels healthy",
      "status": "pass",
-     "note": "all members bundled / none"
+     "note": "all members bundled / none",
+     "phase": "Baseline capture"
     },
     {
      "check": "Routing adjacencies up",
      "status": "fail",
-     "note": "down OSPF/BGP neighbor on core1"
+     "note": "down OSPF/BGP neighbor on core1",
+     "phase": "Baseline capture"
     },
     {
      "check": "No orphan VLANs",
      "status": "pass",
-     "note": "none"
+     "note": "none",
+     "phase": "Inventory"
     },
     {
      "check": "Clean uplinks (no half-duplex)",
      "status": "pass",
-     "note": "none"
+     "note": "none",
+     "phase": "Baseline capture"
     },
     {
      "check": "Device health floor",
      "status": "fail",
-     "note": "Critical-health switch: core1"
+     "note": "Critical-health switch: core1",
+     "phase": "Pilot/cutover"
+    },
+    {
+     "check": "Dependency mapping complete",
+     "status": "pass",
+     "note": "topology/dependency map covers all group switches",
+     "phase": "Dependency mapping"
+    },
+    {
+     "check": "Baseline capture",
+     "status": "pass",
+     "note": "interface/physical counters captured for all group switches",
+     "phase": "Baseline capture"
+    },
+    {
+     "check": "Rollback plan documented",
+     "status": "info",
+     "note": "manual: confirm documented rollback + back-out window",
+     "phase": "Rollback"
     }
    ]
   }
