@@ -323,7 +323,8 @@ from cisco_toolkit.model import InterfaceData, DevicePhysical
 # monolith users, the scoring compute_*); _health_band stays (write_health_scores_sheet uses it).
 from cisco_toolkit.analyze import (
     _health_band, compute_move_groups,
-    compute_topology_links, compute_findings,
+    # compute_topology_links / compute_findings dropped (step 22): their last monolith users
+    # (write_topology_sheet / write_findings_sheet) moved to excel.
     build_network_model,   # _link_carries (step 19) + _vlan_components (step 18): last monolith users moved
     compute_causality_chains, compute_failure_impact,
     compute_data_quality, compute_health_scores,
@@ -342,6 +343,8 @@ from cisco_toolkit.excel import (
     _census_header, _census_autofit, find_header_row, ensure_headers, sortkey,
     write_device_inventory_sheet, write_svi_gateway_sheet, write_stp_detail_sheet,  # step 21
     write_vlan_census_sheet, write_endpoint_census_sheet,                            # step 21
+    write_move_group_sheet, write_topology_sheet, write_findings_sheet,             # step 22
+    write_capacity_sheet, write_topology_diagram,                                   # step 22
 )
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
@@ -834,83 +837,10 @@ def build_device_physical(hostname: str, platform: str,
 # consistent with the VLAN Census; trunk-allowed-only transit is NOT modeled, and
 # VLAN 1 (default, present everywhere) is excluded from grouping by design.
 # =============================================================================
-MOVEGROUP_SHEET_NAME = "Move Groups"
-# MOVEGROUP_EXCLUDED_VLANS / _uf_find / _uf_union / compute_move_groups moved to
-# cisco_toolkit.analyze (PHASE 2.7 step 11); compute_move_groups is imported back
-# near the top of this file (write_move_group_sheet below still calls it).
-
-def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write (or replace) 'Move Groups': one row per migration wave (connected component
-    of the shared-VLAN graph), ordered largest-coupling first."""
-    cols = ["Group", "# Switches", "Switches", "# Spanning VLANs", "Spanning VLANs",
-            "# Endpoints", "Gateways", "Redundant (STP-blocked) Paths", "Notes"]
-    if MOVEGROUP_SHEET_NAME in wb.sheetnames:
-        del wb[MOVEGROUP_SHEET_NAME]
-    ws = wb.create_sheet(MOVEGROUP_SHEET_NAME)
-    _census_header(ws, cols)
-
-    groups = compute_move_groups(all_interfaces)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
-
-    r = 2
-    for i, g in enumerate(groups, 1):
-        span_txt = ", ".join(f"{vid}{'('+name+')' if name else ''}[x{n}]"
-                             for vid, name, n in g["spanning_vlans"])
-        notes = []
-        if len(g["switches"]) == 1:
-            notes.append("Standalone — migrate independently, any order")
-        else:
-            notes.append("Migrate together — shared L2 broadcast domain(s)")
-        if g["vlan1_spans"]:
-            notes.append("VLAN 1 also spans group (default, excluded from grouping)")
-        if g["blocked_paths"]:
-            notes.append("Has redundant blocked path(s) — verify before cutover")
-        vals = [f"Group {i}", len(g["switches"]), ", ".join(g["switches"]),
-                len(g["spanning_vlans"]), span_txt, g["endpoints"],
-                ", ".join(g["gateways"]), "; ".join(g["blocked_paths"]), " | ".join(notes)]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    # widen the two free-text columns
-    ws.column_dimensions["E"].width = 40
-    ws.column_dimensions["I"].width = 48
-    logger.info(f"  [OK] '{MOVEGROUP_SHEET_NAME}' sheet: {len(groups)} group(s)")
-
-
-# =============================================================================
-# NEW-V14.10: Physical topology / inter-switch link map from CDP/LLDP. Deduplicates
-# the two directed views of each physical link (A sees B, B sees A) into one
-# canonical undirected row, and flags links confirmed from both ends vs one end.
-# =============================================================================
-TOPOLOGY_SHEET_NAME = "Topology Links"
-
-# _is_infra_neighbor / _canon_host moved to cisco_toolkit.analyze (PHASE 2.7 step 12);
-# _canon_host is imported back near the top of this file (build_network_model uses it).
-
-def write_topology_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write (or replace) 'Topology Links': one row per physical inter-switch link,
-    discovered from CDP/LLDP and de-duplicated across both endpoints' views."""
-    cols = ["Switch A", "Port A", "Switch B", "Port B", "Neighbor Platform",
-            "Link Speed", "Confirmation"]
-    if TOPOLOGY_SHEET_NAME in wb.sheetnames:
-        del wb[TOPOLOGY_SHEET_NAME]
-    ws = wb.create_sheet(TOPOLOGY_SHEET_NAME)
-    _census_header(ws, cols)
-
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="center")
-    ordered = compute_topology_links(all_interfaces)   # V3.15.0: shared link builder
-    r = 2
-    for rec in ordered:
-        vals = [rec["a_host"], rec["a_port"], rec["b_host"], rec["b_port"],
-                rec["platform"], rec["speed"], rec["confirmation"]]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    logger.info(f"  [OK] '{TOPOLOGY_SHEET_NAME}' sheet: {len(ordered)} link(s)")
+# Analysis sheet writers (move-group / topology / findings / capacity / topology-diagram)
+# moved to cisco_toolkit.excel (PHASE 2.7 step 22); the five writers are imported back near
+# the top of this file (main() calls them). They call the analyze compute_* internally now,
+# so compute_move_groups / compute_topology_links / compute_findings are no longer used here.
 
 
 def build_switch_identity(hostname: str, platform: str, cmd_to_file: Dict[str, str]) -> Dict[str, str]:
@@ -1546,132 +1476,8 @@ def build_run_manifest(rootdir: str, script_version: str, devices_meta: List[dic
 # -----------------------------------------------------------------------------
 # Tier 1 #1: Findings / Risk Register  (pure cross-reference of InterfaceData)
 # -----------------------------------------------------------------------------
-FINDINGS_SHEET_NAME = "Findings"
-# _SEV_RANK / _canon_host_map / compute_findings moved to cisco_toolkit.analyze
-# (PHASE 2.7 step 12); compute_findings is imported back near the top of this file
-# (write_findings_sheet below calls it). _canon_host_map is also imported back for
-# build_network_model.
-
-def write_findings_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write (or replace) 'Findings': a risk register cross-referenced from the
-    interface DB. Empty when nothing notable is found."""
-    cols = ["Severity", "Category", "Scope", "Finding"]
-    if FINDINGS_SHEET_NAME in wb.sheetnames:
-        del wb[FINDINGS_SHEET_NAME]
-    ws = wb.create_sheet(FINDINGS_SHEET_NAME)
-    _census_header(ws, cols)
-    findings = compute_findings(all_interfaces)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
-    sev_fill = {"High": PatternFill("solid", fgColor="F4CCCC"),
-                "Medium": PatternFill("solid", fgColor="FCE5CD"),
-                "Low": PatternFill("solid", fgColor="FFF2CC"),
-                "Info": PatternFill("solid", fgColor="EFEFEF")}
-    r = 2
-    for sev, cat, scope, detail in findings:
-        for col, v in enumerate([sev, cat, scope, detail], 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
-            if col == 1 and sev in sev_fill: c.fill = sev_fill[sev]
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    ws.column_dimensions["D"].width = 70
-    logger.info(f"  [OK] '{FINDINGS_SHEET_NAME}' sheet: {len(findings)} finding(s)")
-
-
-# -----------------------------------------------------------------------------
-# Tier 1 #4: Capacity / Consolidation  (from the already-built DevicePhysical)
-# -----------------------------------------------------------------------------
-CAPACITY_SHEET_NAME = "Capacity"
-
-def _to_float(s) -> Optional[float]:
-    m = re.search(r"-?\d+(?:\.\d+)?", str(s or ""))
-    return float(m.group(0)) if m else None
-
-def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
-    """Write (or replace) 'Capacity': per-switch port and PoE headroom for
-    consolidation decisions. Flags switches that are port- or PoE-bound."""
-    cols = ["Hostname", "Model", "Total Ports", "Active Ports", "Free Ports",
-            "Port Util %", "PoE Capacity (W)", "PoE Drawn (W)", "PoE Remaining (W)",
-            "PoE Util %", "Flag"]
-    if CAPACITY_SHEET_NAME in wb.sheetnames:
-        del wb[CAPACITY_SHEET_NAME]
-    ws = wb.create_sheet(CAPACITY_SHEET_NAME)
-    _census_header(ws, cols)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="center")
-    DAT_C = Alignment(horizontal="center", vertical="center")
-    warn_fill = PatternFill("solid", fgColor="FCE5CD")
-    r = 2
-    for dp in sorted(all_device_physical, key=lambda d: d.hostname.lower()):
-        total, active = dp.total_ports or 0, dp.active_ports or 0
-        free = max(total - active, 0) if total else ""
-        putil = round(100.0 * active / total, 1) if total else ""
-        cap, drawn = _to_float(dp.power_capacity_w), _to_float(dp.power_drawn_w)
-        if dp.power_remaining_w:
-            rem = dp.power_remaining_w
-        elif cap is not None and drawn is not None:
-            rem = round(cap - drawn, 1)
-        else:
-            rem = ""
-        poe_util = round(100.0 * drawn / cap, 1) if (cap and drawn is not None and cap > 0) else ""
-        flags = []
-        if putil != "" and putil >= 90: flags.append("Port-bound (>=90%)")
-        if poe_util != "" and poe_util >= 80: flags.append("PoE-bound (>=80%)")
-        vals = [dp.hostname, dp.model, total or "", active or "", free, putil,
-                dp.power_capacity_w, dp.power_drawn_w, rem, poe_util, "; ".join(flags)]
-        for col, v in enumerate(vals, 1):
-            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
-            c.alignment = DAT_C if 3 <= col <= 10 else DAT_L
-            if flags and col in (6, 10): c.fill = warn_fill
-        r += 1
-    _census_autofit(ws, len(cols), r - 1)
-    logger.info(f"  [OK] '{CAPACITY_SHEET_NAME}' sheet: {len(all_device_physical)} device(s)")
-
-
-# -----------------------------------------------------------------------------
-# Tier 1 #3: Topology diagram (Mermaid + Graphviz) from the CDP/LLDP link map.
-# -----------------------------------------------------------------------------
-def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
-    if name not in idmap:
-        idmap[name] = f"n{len(idmap)}"
-    return idmap[name]
-
-def write_topology_diagram(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                           out_dir: str, basename: str = "topology") -> List[str]:
-    """Emit the inter-switch link map as Mermaid (.mmd) and Graphviz (.dot) files.
-    One-end-only links are drawn dashed. Returns the two file paths."""
-    links = compute_topology_links(all_interfaces)
-    os.makedirs(out_dir, exist_ok=True)
-    nodes = set()
-    for L in links:
-        nodes.add(str(L["a_host"])); nodes.add(str(L["b_host"]))
-
-    idmap: Dict[str, str] = {}
-    mm = ["graph LR"]
-    for n in sorted(nodes):
-        mm.append(f'    {_mermaid_id(n, idmap)}["{n}"]')
-    for L in links:
-        a, b = _mermaid_id(str(L["a_host"]), idmap), _mermaid_id(str(L["b_host"]), idmap)
-        lbl = f'{L["a_port"]} - {L.get("b_port") or "?"}'
-        edge = "-.-" if str(L["confirmation"]).startswith("One end") else "---"
-        mm.append(f'    {a} {edge}|"{lbl}"| {b}')
-    mm_path = os.path.join(out_dir, basename + ".mmd")
-    with open(mm_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(mm) + "\n")
-
-    dot = ["graph topology {", "    rankdir=LR;", "    node [shape=box, fontsize=10];"]
-    for L in links:
-        style = ' style="dashed"' if str(L["confirmation"]).startswith("One end") else ""
-        lbl = f'{L["a_port"]}\\n{L.get("b_port") or "?"}'
-        dot.append(f'    "{L["a_host"]}" -- "{L["b_host"]}" [label="{lbl}"{style}];')
-    dot.append("}")
-    dot_path = os.path.join(out_dir, basename + ".dot")
-    with open(dot_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(dot) + "\n")
-
-    logger.info(f"  [OK] Topology diagram: {mm_path} , {dot_path} "
-                f"({len(links)} link(s), {len(nodes)} node(s))")
-    return [mm_path, dot_path]
+# (Findings / Capacity / Topology-diagram writers also moved to cisco_toolkit.excel in
+# step 22 - see the note above. _to_float / _mermaid_id moved with them as package-internal.)
 
 
 # -----------------------------------------------------------------------------
