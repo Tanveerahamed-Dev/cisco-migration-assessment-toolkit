@@ -236,6 +236,10 @@
   aside::-webkit-scrollbar{width:10px} aside::-webkit-scrollbar-thumb{background:var(--surface-3); border-radius:10px}
   aside::-webkit-scrollbar-track{background:transparent}
   .sec{padding:15px 17px; border-bottom:1px solid var(--border-faint)}
+  /* staggered card/section reveal on each drawer (re)render; resting state is fully visible
+     so the global reduced-motion rule (which kills the animation) leaves content in place */
+  .reveal{animation:cardIn .34s cubic-bezier(.2,.7,.3,1) both}
+  @keyframes cardIn{from{opacity:0; transform:translateY(7px)} to{opacity:1; transform:none}}
   .sec h3{margin:0 0 11px; font-size:10px; letter-spacing:1.3px; text-transform:uppercase;
     color:var(--text-faint); font-weight:700; display:flex; align-items:center; gap:7px}
   .sec h3 .ct{color:var(--text-dim); background:var(--surface-2); border:1px solid var(--border);
@@ -1618,6 +1622,31 @@ function wireLegendHover(){
    DRAWER — single right panel, re-skinned per mode
    ===================================================================== */
 function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+/* rAF-tween el.textContent 0→target over ~500ms ease-out. Cancels any prior tween on the
+   same element, clamps to target, and snaps instantly under prefers-reduced-motion. */
+const _REDUCE_MOTION=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)");
+function countUp(el,target,opts){
+  if(!el)return; opts=opts||{};
+  const dec=opts.decimals!=null?opts.decimals:(Number.isInteger(target)?0:1);
+  const fmt=v=>v.toFixed(dec);
+  if(el._cuRAF){cancelAnimationFrame(el._cuRAF); el._cuRAF=0;}
+  if(!isFinite(target)){el.textContent=String(target);return;}
+  if(_REDUCE_MOTION&&_REDUCE_MOTION.matches){el.textContent=fmt(target);return;}
+  const from=opts.from!=null?opts.from:0, dur=opts.dur||500, t0=performance.now();
+  const tick=now=>{
+    const p=Math.min(1,(now-t0)/dur), e=1-Math.pow(1-p,3); // ease-out cubic
+    el.textContent=fmt(from+(target-from)*e);
+    if(p<1){el._cuRAF=requestAnimationFrame(tick);} else {el.textContent=fmt(target); el._cuRAF=0;}
+  };
+  el._cuRAF=requestAnimationFrame(tick);
+}
+/* post-render pass: count up every wrapped number, and stagger-reveal sections/cards */
+function animateDrawer(p){
+  p.querySelectorAll(".num[data-to]").forEach(el=>countUp(el,parseFloat(el.dataset.to)));
+  let i=0; p.querySelectorAll(".sec,.card").forEach(el=>{
+    el.style.animationDelay=Math.min(300,i*45)+"ms"; el.classList.add("reveal"); i++;});
+}
 function renderDrawer(){
   if(!MODEL)return; const p=document.getElementById("panel");
   if(EPSEL)p.innerHTML=drawEndpoint();
@@ -1645,6 +1674,7 @@ function renderDrawer(){
   {const pd=document.getElementById("flowDport"); if(pd)pd.addEventListener("change",()=>{const n=parseInt(pd.value,10); if(n>=1&&n<=65535)FLOW_DPORT=n; _reflow();});}
   {const ps=document.getElementById("flowSport"); if(ps)ps.addEventListener("change",()=>{const v=ps.value.trim(); const n=parseInt(v,10); FLOW_SPORT=(v===""||!(n>=1&&n<=65535))?null:n; _reflow();});}
   {const pi=document.getElementById("flowIcmp"); if(pi)pi.addEventListener("change",()=>{const v=pi.value.trim(); FLOW_ICMPTYPE=v||null; _reflow();});}
+  animateDrawer(p);
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -1654,9 +1684,9 @@ function censusSec(){
   const off=MODEL.offscan.length;
   return `<div class="sec"><h3>Topology census</h3>
     <div class="headline">
-      <div class="stat"><div class="v">${sw}</div><div class="k">switches</div></div>
-      <div class="stat"><div class="v">${ep}</div><div class="k">endpoints</div></div>
-      <div class="stat"><div class="v">${vl}</div><div class="k">vlans</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${sw}">0</span></div><div class="k">switches</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${ep}">0</span></div><div class="k">endpoints</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${vl}">0</span></div><div class="k">vlans</div></div>
     </div>
     <div class="kv" style="margin-top:11px"><span class="k">L3 gateways</span><span class="v">${gw}</span></div>
     <div class="kv"><span class="k">Structural SPOFs (chains)</span><span class="v">${CHAINS.length}</span></div>
@@ -1689,9 +1719,9 @@ function drawBlast(){
   return `<div class="drawer-head"><div class="eyebrow">Simulated removal</div>
       <div class="title"><span class="mono">${esc(shortName(SEL))}</span> ${isGateway(SEL)?'<span class="badge b-neutral">gateway</span>':""}</div></div>
     <div class="sec"><div class="headline">
-      <div class="stat ${fi.hardStranded?"crit":"ok"}"><div class="v">${fi.hardStranded}</div><div class="k">hard-stranded</div></div>
-      <div class="stat ${fi.healable?"risk":""}"><div class="v">${fi.healable}</div><div class="k">heal via backup</div></div>
-      <div class="stat"><div class="v">${own}</div><div class="k">migrate with it</div></div>
+      <div class="stat ${fi.hardStranded?"crit":"ok"}"><div class="v"><span class="num" data-to="${fi.hardStranded}">0</span></div><div class="k">hard-stranded</div></div>
+      <div class="stat ${fi.healable?"risk":""}"><div class="v"><span class="num" data-to="${fi.healable}">0</span></div><div class="k">heal via backup</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${own}">0</span></div><div class="k">migrate with it</div></div>
     </div>
     <div style="margin-top:11px" class="sub">Worst-case severity if this switch is removed: <span class="badge b-${tok}">${fi.worst}</span></div>
     ${gwv.length?`<div class="kv" style="margin-top:9px"><span class="k">Gateway for VLANs</span><span class="v mono">${gwv.join(", ")}</span></div>`:""}
@@ -2503,9 +2533,9 @@ function drawHealth(){
       return `<div class="drawer-head"><div class="eyebrow">Switch health</div>
         <div class="title"><span class="mono">${esc(shortName(SEL))}</span></div></div>
         <div class="sec"><div class="headline">
-          <div class="stat ${tok}"><div class="v">${r.score}</div><div class="k">${esc(r.band||"score")}</div></div>
-          <div class="stat"><div class="v" style="font-size:15px;padding:6px 0">${fams.length}</div><div class="k">issue types</div></div>
-          <div class="stat"><div class="v" style="font-size:15px;padding:6px 0">${(r.deductions||[]).length}</div><div class="k">raw findings</div></div>
+          <div class="stat ${tok}"><div class="v"><span class="num" data-to="${r.score}">0</span></div><div class="k">${esc(r.band||"score")}</div></div>
+          <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${fams.length}">0</span></div><div class="k">issue types</div></div>
+          <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${(r.deductions||[]).length}">0</span></div><div class="k">raw findings</div></div>
         </div>
         ${driver&&driver.count>1?`<div class="card crit" style="margin-top:11px"><div class="ln"><b>Dominant driver:</b> “${esc(driver.label)}” is counted <b>×${driver.count}</b> (${driver.total} pts). One repeated finding is doing most of the damage to this score — worth confirming it isn't double-counting.</div></div>`:""}
         </div>
@@ -2531,11 +2561,11 @@ function drawHealth(){
       ${checks}</div>`;});
   // is the scoring crying wolf?
   const allBad=(bands.crit+bands.risk)===n && n>2;
-  return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title">${avg}<span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span></div></div>
+  return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title"><span class="num" data-to="${avg}">0</span><span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span></div></div>
     <div class="sec"><div class="headline">
-      <div class="stat ok"><div class="v">${bands.ok}</div><div class="k">good</div></div>
-      <div class="stat risk"><div class="v">${bands.watch+bands.risk}</div><div class="k">fair/poor</div></div>
-      <div class="stat crit"><div class="v">${bands.crit}</div><div class="k">critical</div></div>
+      <div class="stat ok"><div class="v"><span class="num" data-to="${bands.ok}">0</span></div><div class="k">good</div></div>
+      <div class="stat risk"><div class="v"><span class="num" data-to="${bands.watch+bands.risk}">0</span></div><div class="k">fair/poor</div></div>
+      <div class="stat crit"><div class="v"><span class="num" data-to="${bands.crit}">0</span></div><div class="k">critical</div></div>
     </div>
     ${allBad?`<div class="card crit" style="margin-top:11px"><div class="ln"><b>Heads-up:</b> every switch lands in poor/critical. When the whole fleet is red, the scoring is usually mis-calibrated (one finding counted many times) rather than the network being uniformly broken. Click a switch to see its <b>dominant driver</b> — then trust the <b>real SPOF list</b> below for what to actually fix first.</div></div>`:""}
     </div>
