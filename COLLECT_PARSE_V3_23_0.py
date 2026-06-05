@@ -356,7 +356,7 @@ from cisco_toolkit.build import (
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
-from cisco_toolkit.html import snapshot_state, write_html_explorer, write_diff_workbook
+from cisco_toolkit.html import snapshot_state, write_html_explorer, write_diff_workbook, redact_snapshot
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -1083,6 +1083,11 @@ def main():
     ap.add_argument("--flow-dst",        default=None, metavar="IP",
                     help="NEW-V3.19: destination endpoint IP for the optional Flow Trace sheet "
                          "(requires --flow-src).")
+    ap.add_argument("--redact",          action="store_true",
+                    help="NEW-V3.23.41: pseudonymize IPs / MACs / serial numbers in the snapshot "
+                         "JSON + embedded HTML explorer (consistent, subnet-preserving; hostnames "
+                         "kept) so the single-file deliverable can be shared without leaking real "
+                         "addressing. Default off.")
     args = ap.parse_args()
 
     if args.debug_arp:
@@ -1436,6 +1441,9 @@ def main():
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
+    if args.redact:                                                  # NEW-V3.23.41
+        snap_dict = redact_snapshot(snap_dict)
+        logger.info("  [redact] snapshot IPs / MACs / serials pseudonymized (--redact)")
     try:
         write_json_file(snap_path, snap_dict)
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")

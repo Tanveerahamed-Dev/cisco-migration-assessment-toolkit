@@ -217,3 +217,62 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(patched)
     logger.info(f"[Phase 22] HTML Explorer written: {output_path}")
+
+
+# -----------------------------------------------------------------------------
+# Snapshot redaction (opt-in --redact): pseudonymize IPs / MACs / serial numbers
+# so a single-file HTML/JSON deliverable can be shared without leaking the real
+# addressing. Mappings are CONSISTENT (same input -> same output) and IPs keep
+# their /24 grouping, so ARP (MAC->IP), dual-homing, and subnet/flow-trace
+# relationships the explorer relies on survive. Hostnames are intentionally kept.
+# -----------------------------------------------------------------------------
+_REDACT_IP_RE = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
+_REDACT_MAC_RE = re.compile(
+    r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b")
+_REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
+                       "current_switch_serial", "neighbor_switch_serial"}
+
+
+def redact_snapshot(snap: dict) -> dict:
+    """Return a copy of the snapshot with IPs, MACs, and serial numbers consistently
+    pseudonymized for sharing the single-file deliverable. Same input maps to the same
+    output and IPs keep their /24 grouping, so topology / ARP / subnet relationships
+    survive; hostnames are kept. Pure (stdlib only); the input is not mutated."""
+    ip_map: Dict[str, str] = {}
+    mac_map: Dict[str, str] = {}
+    serial_map: Dict[str, str] = {}
+
+    def _ip(m):
+        net = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+        if net not in ip_map:
+            i = len(ip_map); ip_map[net] = f"10.{i // 256}.{i % 256}"   # remap /24, keep host octet
+        return f"{ip_map[net]}.{m.group(4)}"
+
+    def _mac(m):
+        key = re.sub(r"[^0-9a-f]", "", m.group(0).lower())
+        if key not in mac_map:
+            i = len(mac_map) + 1
+            mac_map[key] = "02:%02x:%02x:%02x:%02x:%02x" % (
+                (i >> 32) & 255, (i >> 24) & 255, (i >> 16) & 255, (i >> 8) & 255, i & 255)
+        return mac_map[key]
+
+    def _serial(v):
+        if not v:
+            return v
+        if v not in serial_map:
+            serial_map[v] = f"SN{len(serial_map) + 1:04d}"
+        return serial_map[v]
+
+    def _scrub(s):
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP_RE.sub(_ip, s))
+
+    def _walk(o, key=None):
+        if isinstance(o, dict):
+            return {k: _walk(v, k) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_walk(v, key) for v in o]
+        if isinstance(o, str):
+            return _serial(o) if key in _REDACT_SERIAL_KEYS else _scrub(o)
+        return o
+
+    return _walk(snap)
