@@ -656,7 +656,8 @@ function demoSnapshot(){
   // protocol-to-protocol analysis: DIST-1 is the OSPF/BGP redistribution boundary (mutual = risk) with one stuck OSPF adjacency; DIST-2 runs OSPF only.
   routing_neighbors:{
     "DIST-1":{ospf:[{neighbor:"10.0.99.3",state:"FULL/DR",address:"10.0.99.3",interface:"Po1"},
-                    {neighbor:"10.0.40.9",state:"EXSTART/DROTHER",address:"10.0.40.9",interface:"Vlan40"}],
+                    {neighbor:"10.0.40.9",state:"EXSTART/DROTHER",address:"10.0.40.9",interface:"Vlan40"},
+                    {neighbor:"10.0.20.5",state:"INIT",address:"10.0.20.5",interface:"Gi1/0/2"}],   // C2: one-sided -> ACC-2 (link Gi1/0/2) runs no OSPF
               eigrp:[], bgp:[{neighbor:"203.0.113.1",as:"65010",state:"4"}]},
     "DIST-2":{ospf:[{neighbor:"10.0.99.2",state:"FULL/BDR",address:"10.0.99.2",interface:"Po1"}],eigrp:[],bgp:[]}},
   redistribution:{
@@ -1926,6 +1927,24 @@ function bgpAsMapSection(){const m=bgpAsMap(); if(!m.length)return "";
   const cards=m.map(d=>`<div class="card" style="margin-bottom:6px"><div class="ct"><span class="nm">${esc(shortName(d.host))}</span><span class="pill pl-watch">${d.local?("local AS "+esc(d.local)):"local AS ?"}</span></div>`+
     d.peers.map(p=>`<div class="ln"><span class="pill pl-${p.up?"ok":"crit"}">${p.up?"✓":"✗"} ${p.kind||"BGP"}</span> peer <span class="mono">${esc(p.peer)}</span> <span class="faint">AS ${esc(p.as)} · ${esc(p.state)}</span></div>`).join("")+`</div>`).join("");
   return `<div class="sec"><h3>BGP AS map <span class="ct">${m.length}</span></h3>${cards}<p class="faint">eBGP/iBGP is classified when the local AS is known (read from the BGP redistribution config).</p></div>`;}
+/* C2 one-sided adjacency: an OSPF/EIGRP neighbor whose LOCAL interface maps to a topology link, but the far
+   end has no matching adjacency back -- the adjacency formed one-way (area/auth/MTU mismatch) or routing is
+   enabled toward a device that doesn't run it. BGP carries no local interface, so it's excluded. */
+function _peerOf(host,iface){for(const L of (MODEL?MODEL.links:[])){
+    if(L.a===host&&L.aPort===iface)return {host:L.b,port:L.bPort};
+    if(L.b===host&&L.bPort===iface)return {host:L.a,port:L.aPort};}
+  return null;}
+function oneSidedAdjacencies(){const out=[];
+  for(const h in (SNAP.routing_neighbors||{})){const rn=rnFor(h);
+    for(const proto of ["ospf","eigrp"])for(const nb of (rn[proto]||[])){
+      const peer=_peerOf(h,nb.interface); if(!peer)continue;             // SVI / off-fabric adjacency -> can't correlate
+      const back=((rnFor(peer.host)[proto])||[]).some(x=>x.interface===peer.port);
+      if(!back)out.push({host:h, proto, localIf:nb.interface, state:nb.state, peer:peer.host, peerRuns:protoSet(peer.host).size>0});}}
+  return out;}
+function oneSidedSection(){const m=oneSidedAdjacencies(); if(!m.length)return "";
+  const rows=m.map(x=>`<div class="ln"><span class="pill pl-crit">✗ one-sided ${_protoLabel(x.proto)}</span> <span class="mono">${esc(shortName(x.host))} ${esc(x.localIf)}</span> → <span class="mono">${esc(shortName(x.peer))}</span> <span class="faint">(${esc(x.state)}; ${x.peerRuns?"no matching adjacency back":"peer runs no routing protocol"})</span> — adjacency won't form bidirectionally.</div>`).join("");
+  return `<div class="sec"><h3>One-sided adjacencies <span class="ct">${m.length}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">A neighbor seen on one end of a link with no adjacency back — area/auth/MTU mismatch, or routing enabled toward a non-routing device.</div>${rows}</div>`;}
 function drawProtocols(){
   const hosts=(MODEL?MODEL.hosts:[]).slice();
   const withProto=hosts.filter(h=>protoSet(h).size>0).sort();
@@ -1954,6 +1973,7 @@ function drawProtocols(){
       <p class="faint" style="margin-top:6px">Click a switch for its full routing-protocol profile.</p></div>
     <div class="sec"><h3>Protocol boundaries &amp; redistribution <span class="ct">${redistPts.length}</span></h3>${redRows}</div>
     <div class="sec"><h3>Adjacency health <span class="ct">${adj.length}</span></h3>${adjRows}</div>
+    ${oneSidedSection()}
     ${bgpAsMapSection()}
     <div class="sec"><h3>Route-source distribution</h3>${distBars(routeSourceDist(null))}
       <p class="faint" style="margin-top:9px"><b>Offline.</b> Built from collected OSPF/EIGRP/BGP neighbors, run-config redistribution, and route source codes — last-collected state, not live convergence.</p></div>`;
