@@ -140,6 +140,28 @@ def test_parse_nat_absent(cp):
     assert parse.parse_nat("hostname r1\n!\n") == {}
 
 
+def test_parse_redistribution(cp):
+    # protocol-to-protocol edges: each 'redistribute' under a 'router X' block; a col-0 line ends the block
+    out = textwrap.dedent("""\
+        router ospf 1
+         redistribute bgp 65001 subnets
+         redistribute connected
+        router bgp 65001
+         redistribute ospf 1 route-map OSPF_TO_BGP
+        interface Vlan10
+         redistribute should-be-ignored
+    """)
+    rows = parse.parse_redistribution(out)
+    edges = {(r["into_proto"], r["from_proto"]) for r in rows}
+    assert edges == {("ospf", "bgp"), ("ospf", "connected"), ("bgp", "ospf")}   # interface block's line ignored
+    bgp_row = [r for r in rows if r["into_proto"] == "bgp"][0]
+    assert bgp_row["from_id"] == "1" and bgp_row["route_map"] == "OSPF_TO_BGP"
+
+
+def test_parse_redistribution_absent(cp):
+    assert parse.parse_redistribution("hostname r1\ninterface Vlan1\n!\n") == []
+
+
 def test_parse_acl_stateful(cp):
     # stateful-ACL: capture 'established' (TCP return-only) and 'time-range' (time-conditional)
     out = textwrap.dedent("""\

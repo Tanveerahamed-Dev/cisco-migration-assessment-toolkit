@@ -887,6 +887,39 @@ def parse_nat(output: str) -> dict:
     return {"static": static, "dynamic": dynamic, "pools": pools,
             "inside": sorted(set(inside)), "outside": sorted(set(outside))}
 
+
+# ----------------------------------------------------------------------------- #
+# REDISTRIBUTION (protocol-to-protocol analysis) - parse the 'router <proto>' /
+# 'redistribute' stanzas out of the already-collected 'show running-config'. Each
+# 'redistribute' under a 'router X' block is one protocol-to-protocol edge
+# (from_proto -> into_proto on this device), which lets the explorer flag
+# redistribution points and mutual (two-way) redistribution risk. IOS-flat form;
+# NX-OS address-family nesting keeps the same indented 'redistribute' lines.
+# ----------------------------------------------------------------------------- #
+def parse_redistribution(output: str) -> List[dict]:
+    """'show running-config' -> [{into_proto, into_id, from_proto, from_id, route_map, raw}], one row per
+    'redistribute' statement found under a 'router <ospf|bgp|eigrp|rip|isis>' block. [] when none. Tolerant."""
+    out: List[dict] = []
+    into: Optional[tuple] = None                                     # (proto, id) of the current 'router' block
+    ROUTER = re.compile(r"^router\s+(ospf|bgp|eigrp|rip|isis)\b\s*(\S+)?", re.IGNORECASE)
+    REDIST = re.compile(
+        r"^\s+redistribute\s+(connected|static|ospf|bgp|eigrp|rip|isis)\b\s*(\d+)?(.*)$", re.IGNORECASE)
+    for raw in output.splitlines():
+        m = ROUTER.match(raw)
+        if m:
+            into = (m.group(1).lower(), (m.group(2) or "").strip()); continue
+        if raw[:1] and not raw[:1].isspace():                       # any col-0 line ends the router block
+            into = None; continue
+        if into is None:
+            continue
+        rd = REDIST.match(raw)
+        if rd:
+            rmap = re.search(r"route-map\s+(\S+)", rd.group(3) or "", re.IGNORECASE)
+            out.append({"into_proto": into[0], "into_id": into[1],
+                        "from_proto": rd.group(1).lower(), "from_id": (rd.group(2) or "").strip(),
+                        "route_map": rmap.group(1) if rmap else "", "raw": raw.strip()})
+    return out
+
 def _proto_from_token(tok: str) -> str:
     t = (tok or "").strip().upper()
     if t == "LACP": return "Active"
