@@ -107,9 +107,11 @@ def test_analyze_reexported_and_functional(cp):
     }
     groups = analyze.compute_move_groups(ifaces)
     assert len(groups) == 1 and groups[0]["switches"] == ["sw1", "sw2"]
-    # topology-links + findings cluster joined the analyze layer (step 12).
+    # topology-links + findings joined analyze (step 12); their monolith re-exports were dropped
+    # in step 22 when write_topology_sheet / write_findings_sheet moved to excel (excel imports the
+    # computes directly). They still live in analyze.
     for name in ("compute_topology_links", "compute_findings"):
-        assert getattr(cp, name) is getattr(analyze, name)
+        assert hasattr(analyze, name) and not hasattr(cp, name)
     # _canon_host / _canon_host_map went package-internal in step 13 (build_network_model,
     # their last monolith user, moved out, so the monolith no longer re-exports them).
     assert callable(analyze._canon_host) and callable(analyze._canon_host_map)
@@ -239,3 +241,10 @@ def test_excel_reexported_and_functional(cp):
     # _is_svi + the *_COLUMNS / *_SHEET_NAME constants are package-internal.
     assert excel._is_svi("Vlan10") is True and excel._is_svi("Gi1/0/1") is False
     assert not hasattr(cp, "_is_svi") and not hasattr(cp, "INVENTORY_SHEET_NAME")
+    # analysis sheet writers joined the excel layer (step 22) - these call analyze compute_*.
+    for name in ("write_move_group_sheet", "write_topology_sheet", "write_findings_sheet",
+                 "write_capacity_sheet", "write_topology_diagram"):
+        assert getattr(cp, name) is getattr(excel, name)
+    # _to_float / _mermaid_id are package-internal helpers.
+    assert excel._to_float("250.5 W") == 250.5 and excel._to_float("n/a") is None
+    assert not hasattr(cp, "_to_float") and not hasattr(cp, "_mermaid_id")

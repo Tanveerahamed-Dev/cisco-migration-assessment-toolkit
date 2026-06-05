@@ -14,7 +14,7 @@ def _errdis(cp, port):
 # --------------------------------------------------------------------------- #
 def test_findings_deduplicate_errdisabled_per_switch(cp):
     ifaces = {f"Gi0/{i}": _errdis(cp, f"Gi0/{i}") for i in range(1, 7)}   # 6 err-disabled
-    findings = cp.compute_findings({"sw1": ifaces})
+    findings = analyze.compute_findings({"sw1": ifaces})
     errdis = [f for f in findings if f[1] == "Err-disabled"]
     assert len(errdis) == 1                       # ONE row, not six
     assert "(6)" in errdis[0][2]                  # scope shows the count
