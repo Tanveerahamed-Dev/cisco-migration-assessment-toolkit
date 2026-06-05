@@ -156,6 +156,12 @@ ip nat inside source static 10.0.30.9 203.0.113.9
 ip nat inside source static tcp 10.0.30.9 443 203.0.113.9 8443
 ip nat inside source list 7 pool MIGRATE_POOL overload
 !
+router ospf 1
+ redistribute bgp 65001 subnets
+ redistribute connected
+router bgp 65001
+ redistribute ospf 1 route-map OSPF_TO_BGP
+!
 """,
     "show etherchannel summary": """\
 Flags:  D - down        P - bundled in port-channel

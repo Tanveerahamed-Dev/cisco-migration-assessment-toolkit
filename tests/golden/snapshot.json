@@ -1976,5 +1976,33 @@
    "eigrp": [],
    "bgp": []
   }
+ },
+ "redistribution": {
+  "core1": [
+   {
+    "into_proto": "ospf",
+    "into_id": "1",
+    "from_proto": "bgp",
+    "from_id": "65001",
+    "route_map": "",
+    "raw": "redistribute bgp 65001 subnets"
+   },
+   {
+    "into_proto": "ospf",
+    "into_id": "1",
+    "from_proto": "connected",
+    "from_id": "",
+    "route_map": "",
+    "raw": "redistribute connected"
+   },
+   {
+    "into_proto": "bgp",
+    "into_id": "65001",
+    "from_proto": "ospf",
+    "from_id": "1",
+    "route_map": "OSPF_TO_BGP",
+    "raw": "redistribute ospf 1 route-map OSPF_TO_BGP"
+   }
+  ]
  }
 }
