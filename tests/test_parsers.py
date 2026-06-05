@@ -44,6 +44,41 @@ def test_parse_run_config_interface_acl(cp):
     assert res["Vlan10"]["acl_in"] == "" and res["Vlan10"]["acl_out"] == ""
 
 
+# ---- ACL definitions (L4 allow/deny sim) ----------------------------------- #
+def test_parse_acls_forms(cp):
+    out = textwrap.dedent("""\
+        access-list 10 permit 10.0.0.0 0.0.0.255
+        access-list 101 deny tcp host 10.0.0.5 any eq 23
+        ip access-list extended PROTECT_SERVERS
+         permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443
+         deny ip any any
+        ip access-list GUEST_NX
+         10 permit udp 10.0.20.0/24 any range 16384 32767
+         20 deny ip any any
+        interface Vlan10
+         ip access-group PROTECT_SERVERS out
+    """)
+    acls = parse.parse_acls(out)
+    assert set(acls) == {"10", "101", "PROTECT_SERVERS", "GUEST_NX"}   # application line is NOT a definition
+    # numbered standard: src only, proto ip, dst any, fully evaluable (no 'unevaluable' key)
+    assert acls["10"][0] == {"action": "permit", "raw": "permit 10.0.0.0 0.0.0.255", "proto": "ip",
+                             "src": {"ip": "10.0.0.0", "wild": "0.0.0.255"},
+                             "dst": {"ip": "0.0.0.0", "wild": "255.255.255.255"}, "sport": None, "dport": None}
+    # numbered extended: host src + eq port
+    r = acls["101"][0]
+    assert r["action"] == "deny" and r["proto"] == "tcp"
+    assert r["src"] == {"ip": "10.0.0.5", "wild": "0.0.0.0"} and r["dport"] == {"op": "eq", "val": 23}
+    # named extended: permit then explicit deny
+    ps = acls["PROTECT_SERVERS"]
+    assert ps[0]["proto"] == "tcp" and ps[0]["dport"] == {"op": "eq", "val": 443}
+    assert ps[0]["dst"] == {"ip": "10.0.30.0", "wild": "0.0.0.255"}
+    assert ps[1]["action"] == "deny" and ps[1]["proto"] == "ip"
+    # NX-OS prefix form + range port, sequence numbers stripped
+    g = acls["GUEST_NX"][0]
+    assert g["proto"] == "udp" and g["src"] == {"ip": "10.0.20.0", "wild": "0.0.0.255"}
+    assert g["dport"] == {"op": "range", "val": 16384, "val2": 32767}
+
+
 # ---- switchport ------------------------------------------------------------ #
 def test_parse_switchport_modes(cp):
     out = textwrap.dedent("""\

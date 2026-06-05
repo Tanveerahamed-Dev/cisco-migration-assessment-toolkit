@@ -272,7 +272,9 @@ def redact_snapshot(snap: dict) -> dict:
         if isinstance(o, list):
             return [_walk(v, key) for v in o]
         if isinstance(o, str):
-            return _serial(o) if key in _REDACT_SERIAL_KEYS else _scrub(o)
+            if key in _REDACT_SERIAL_KEYS: return _serial(o)
+            if key == "wild": return o   # ACL wildcard mask is not an address; preserve so post-redact L4 eval stays correct
+            return _scrub(o)
         return o
 
     return _walk(snap)

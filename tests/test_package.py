@@ -357,6 +357,10 @@ def test_redact_snapshot_pseudonymizes_consistently():
             "Gi1/0/1": {"port": "Gi1/0/1", "end_host_ip": "10.0.10.5", "end_host_mac": "aa:bb:cc:dd:ee:01"},
             "Gi1/0/2": {"port": "Gi1/0/2", "end_host_ip": "10.0.10.6", "end_host_mac": "aa:bb:cc:dd:ee:01"},
         }},
+        "acls": {"core1": {"PROTECT_SERVERS": [
+            {"action": "permit", "proto": "tcp", "sport": None, "dport": {"op": "eq", "val": 443},
+             "src": {"ip": "10.0.10.0", "wild": "0.0.0.255"}, "dst": {"ip": "10.0.30.0", "wild": "0.0.0.255"},
+             "raw": "permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443"}]}},
     }
     r = html.redact_snapshot(snap)
     ifs = r["interfaces"]["core1"]
@@ -364,6 +368,11 @@ def test_redact_snapshot_pseudonymizes_consistently():
     # the real identifiers are gone
     assert "10.0.10" not in blob and "aa:bb:cc:dd:ee:01" not in blob and "FOC1234X" not in blob
     assert "00:11:22:33:44:55" not in blob
+    # ACL rule IPs are redacted (no leak) but wildcard masks are preserved (post-redact L4 eval stays valid)
+    assert "10.0.30" not in blob
+    acl = r["acls"]["core1"]["PROTECT_SERVERS"][0]
+    assert acl["src"]["ip"] != "10.0.10.0" and acl["dst"]["ip"] != "10.0.30.0"
+    assert acl["src"]["wild"] == "0.0.0.255" and acl["dst"]["wild"] == "0.0.0.255"
     # consistent: the same MAC on two ports maps to the same pseudonym
     assert ifs["Gi1/0/1"]["end_host_mac"] == ifs["Gi1/0/2"]["end_host_mac"]
     # subnet preserved: two hosts in one /24 keep the same redacted /24, distinct host octets
