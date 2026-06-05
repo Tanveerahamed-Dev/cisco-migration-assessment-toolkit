@@ -15,7 +15,7 @@ def test_parse_show_interface_status_ios(cp):
         Gi1/0/5   srv-app01          connected    10           full  1000  10/100/1000BaseTX
         Gi1/0/9   quarantine         err-disabled 10           auto  auto  10/100/1000BaseTX
     """)
-    res = cp.parse_show_interface_status(out)
+    res = parse.parse_show_interface_status(out)
     assert set(res) == {"Gi1/0/5", "Gi1/0/9"}
     assert res["Gi1/0/5"]["status"].lower() == "connected"
     assert "err" in res["Gi1/0/9"]["status"].lower()
@@ -36,7 +36,7 @@ def test_parse_switchport_modes(cp):
         Operational Mode: static access
         Access Mode VLAN: 10 (data)
     """)
-    res = cp.parse_show_interface_switchport(out)
+    res = parse.parse_show_interface_switchport(out)
     assert res["Gi1/0/24"]["mode"] == "Trunk"
     assert res["Gi1/0/5"]["mode"] == "Access"
     assert res["Gi1/0/5"]["access_vlan"] == "10"
@@ -51,7 +51,7 @@ def test_parse_trunk_table_ios(cp):
         Port        Vlans allowed on trunk
         Gi0/1       10,20,30
     """)
-    res = cp.parse_show_interface_trunk_table(out)
+    res = parse.parse_show_interface_trunk_table(out)
     assert res["Gi0/1"]["status"] == "trunking"
     assert res["Gi0/1"]["native_vlan"] == "1"
     assert res["Gi0/1"]["allowed_vlans"] == "10,20,30"
@@ -65,7 +65,7 @@ def test_parse_vlan_brief(cp):
         10   USERS                            active    Gi0/2, Gi0/3
         30   SERVERS                          active    Gi0/10
     """)
-    res = cp.parse_vlan_brief(out)
+    res = parse.parse_vlan_brief(out)
     assert res["10"]["name"] == "USERS"
     assert "Gi0/2" in res["10"]["ports"]
     assert res["30"]["name"] == "SERVERS"
@@ -78,7 +78,7 @@ def test_parse_hsrp_summary(cp):
         Vl10        10   110 P Active   local           10.0.10.3       10.0.10.1
         Vl20        20   100   Standby  10.0.20.3       local           10.0.20.1
     """)
-    res = cp.parse_hsrp_summary(out)
+    res = parse.parse_hsrp_summary(out)
     assert res["Vlan10"] == "HSRP grp 10 Active VIP 10.0.10.1"
     assert res["Vlan20"] == "HSRP grp 20 Standby VIP 10.0.20.1"
 
@@ -119,7 +119,7 @@ def test_parse_cdp_detail(cp):
         Platform: cisco WS-C2960X-48,  Capabilities: Switch
         Interface: GigabitEthernet1/0/24,  Port ID (outgoing port): GigabitEthernet0/1
     """)
-    res = cp.parse_neighbors_cdp(out)
+    res = parse.parse_neighbors_cdp(out)
     assert res["Gi1/0/24"]["device_id"] == "access1.lab"
     assert res["Gi1/0/24"]["remote_port"] == "Gi0/1"
     assert res["Gi1/0/24"]["mgmt_ip"] == "10.0.99.3"
@@ -132,7 +132,7 @@ def test_parse_etherchannel_members(cp):
         ------+-------------+-----------+--------------------------------------
         1      Po1(SU)         LACP      Gi1/0/1(P)    Gi1/0/2(P)
     """)
-    members = cp.parse_etherchannel_summary_members(out)
+    members = parse.parse_etherchannel_summary_members(out)
     assert members.get("Gi1/0/1") == "Po1"
     assert members.get("Gi1/0/2") == "Po1"
 
@@ -144,7 +144,7 @@ def test_parse_ip_routes_connected(cp):
         C        10.0.30.0/24 is directly connected, Vlan30
         L        10.0.30.1/32 is directly connected, Vlan30
     """)
-    routes = cp.parse_ip_routes(out)
+    routes = parse.parse_ip_routes(out)
     assert "10.0.30.0/24" in routes
     entry = routes["10.0.30.0/24"]["entries"][0]
     assert entry["source"] == "connected"
@@ -166,10 +166,10 @@ def test_parse_interface_counters(cp):
 
 # ---- tolerance: empty / garbage input never raises ------------------------- #
 def test_parsers_tolerate_empty_and_garbage(cp):
-    for fn in (cp.parse_show_interface_status, cp.parse_show_interface_switchport,
-               cp.parse_show_interface_trunk_table, cp.parse_vlan_brief,
-               cp.parse_hsrp_summary, parse.parse_ospf_neighbors, parse.parse_bgp_summary,
-               cp.parse_neighbors_cdp, cp.parse_ip_routes,
+    for fn in (parse.parse_show_interface_status, parse.parse_show_interface_switchport,
+               parse.parse_show_interface_trunk_table, parse.parse_vlan_brief,
+               parse.parse_hsrp_summary, parse.parse_ospf_neighbors, parse.parse_bgp_summary,
+               parse.parse_neighbors_cdp, parse.parse_ip_routes,
                parse.parse_show_interface_counters):
         assert fn("") in ({}, [])
         # random non-matching text must not raise and must yield nothing useful

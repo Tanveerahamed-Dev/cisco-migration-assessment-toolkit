@@ -1,20 +1,28 @@
-"""The model-construction layer: build the DevicePhysical / switch-identity records
-and the global-ARP enrichment from already-collected show output. Depends on cmdio
-(loading), parse (parsers), model, and textutils - a layer above those, independent of
-analyze/excel. Extracted verbatim from COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 27
-(behaviour byte-identical). The big per-device InterfaceData builder, build_interfaces,
-follows in step 28."""
+"""The model-construction layer: build the per-device InterfaceData table, the
+DevicePhysical / switch-identity records, and the global-ARP enrichment from
+already-collected show output. Depends on cmdio (loading), parse (parsers), model, and
+textutils - a layer above those, independent of analyze/excel. Extracted verbatim from
+COLLECT_PARSE_V3_23_0.py across PHASE 2.7 steps 27-28 (behaviour byte-identical):
+step 27 = the switch-level builders + ARP enrichment, step 28 = build_interfaces."""
 import logging
+import re
 from typing import Dict, List, Optional, Tuple
 
-from cisco_toolkit.cmdio import _load_cmd_output
+from cisco_toolkit.cmdio import _load_cmd_output, _safe_parse
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
-    parse_run_config_interfaces, parse_show_environment, parse_show_environment_power,
-    parse_show_inventory, parse_show_ip_arp, parse_show_module_count, parse_show_version,
-    parse_switch_mgmt_ip, parse_vtp_status,
+    _compress_vlans, infer_endpoint_type, parse_etherchannel_protocol_ios,
+    parse_etherchannel_summary_members, parse_glbp_summary, parse_hsrp_summary,
+    parse_ip_routes, parse_multicast_info, parse_neighbors_cdp, parse_neighbors_lldp,
+    parse_portchannel_protocol_from_summary, parse_run_config_interfaces,
+    parse_show_environment, parse_show_environment_power, parse_show_interface_status,
+    parse_show_interface_switchport, parse_show_interface_trunk_table, parse_show_inventory,
+    parse_show_ip_arp, parse_show_mac_address_table, parse_show_module_count,
+    parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
+    parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
+    parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
 )
-from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, normalize_ifname
+from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
 
 logger = logging.getLogger(__name__)
 
@@ -170,3 +178,308 @@ def detect_cross_device_dual_connections(all_interfaces: Dict[str, Dict[str, Int
             for hostname, p in unique:
                 if p in all_interfaces.get(hostname, {}):
                     all_interfaces[hostname][p].dual_connection = "Yes"
+
+
+# =============================================================================
+# BUILD INTERFACE DB (per device) - PHASE 2.7 step 28
+# =============================================================================
+def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
+                     switch_identity: Optional[Dict[str, str]] = None) -> Dict[str, InterfaceData]:
+    interfaces: Dict[str, InterfaceData] = {}
+    switch_identity = switch_identity or {}
+
+    # 1) show interface status
+    st_out = _load_cmd_output(cmd_to_file, "show interface status")
+    for p, v in _safe_parse(parse_show_interface_status, st_out).items():
+        interfaces.setdefault(p, InterfaceData(port=p))
+        interfaces[p].status    = v.get("status","")
+        interfaces[p].duplex    = v.get("duplex","")
+        interfaces[p].speed     = v.get("speed","")
+        interfaces[p].port_type = v.get("type","")
+        name = (v.get("name") or "").strip()
+        if name and name != "--":
+            interfaces[p].description = interfaces[p].description or name
+
+    # 2) switchport
+    sw_out = _load_cmd_output(cmd_to_file, "show interface switchport", "show interfaces switchport")
+    for p, v in _safe_parse(parse_show_interface_switchport, sw_out).items():
+        interfaces.setdefault(p, InterfaceData(port=p))
+        interfaces[p].switchport_mode = v.get("mode","") or interfaces[p].switchport_mode
+        if interfaces[p].switchport_mode == "Access":
+            interfaces[p].vlan      = v.get("access_vlan","")      or interfaces[p].vlan
+            interfaces[p].vlan_name = v.get("access_vlan_name","") or interfaces[p].vlan_name
+
+    # 3) trunk table
+    tr_out = _load_cmd_output(cmd_to_file, "show interface trunk", "show interfaces trunk")
+    for p, v in _safe_parse(parse_show_interface_trunk_table, tr_out).items():
+        interfaces.setdefault(p, InterfaceData(port=p))
+        tstat = (v.get("status") or "")
+        if tstat: interfaces[p].trunk_status = tstat
+        if tstat.lower() in ("trunking","trnk-bndl"): interfaces[p].switchport_mode = "Trunk"
+        if v.get("native_vlan"):   interfaces[p].trunk_native_vlan  = v["native_vlan"]
+        if v.get("allowed_vlans"): interfaces[p].trunk_allowed_vlans = v["allowed_vlans"]
+        if v.get("port_channel") and not interfaces[p].port_channel:
+            interfaces[p].port_channel = v["port_channel"]
+
+    # 4) running-config
+    run_out = _load_cmd_output(cmd_to_file,
+                               "show running-config interface",
+                               "show running-config | section ^interface")
+    run_iface  = _safe_parse(parse_run_config_interfaces, run_out)
+    global_run = _load_cmd_output(cmd_to_file, "show running-config")
+    global_bdg = bool(re.search(r"spanning-tree portfast bpduguard default", global_run, re.IGNORECASE))
+    if global_bdg:
+        logger.info(f"  [STP] Global portfast bpduguard default enabled on {hostname}")
+    for p, v in run_iface.items():
+        interfaces.setdefault(p, InterfaceData(port=p))
+        if v.get("desc") and not interfaces[p].description:
+            interfaces[p].description = v["desc"]
+        if v.get("bpduguard"):
+            interfaces[p].stp_bpduguard = v["bpduguard"]
+        elif global_bdg and interfaces[p].switchport_mode in ("Access",""):
+            interfaces[p].stp_bpduguard = "Enable"
+        if v.get("rootguard"): interfaces[p].stp_rootguard = v["rootguard"]
+        if v.get("vrf"):       interfaces[p].vrf            = v["vrf"]
+        if v.get("ip_addr"):   interfaces[p].svi_ip         = v["ip_addr"]  # NEW-V14.3
+        if v.get("pc_id") and not interfaces[p].port_channel:
+            interfaces[p].port_channel = v["pc_id"]
+        if v.get("pc_mode") and not interfaces[p].port_channel_protocol:
+            mode = v["pc_mode"].lower()
+            interfaces[p].port_channel_protocol = "Active" if mode == "active" else "On"
+
+    # 5) VRF
+    vrf_out = _load_cmd_output(cmd_to_file, "show vrf interface", "show ip vrf interface",
+                               "show ip vrf interfaces")
+    for p, vrf in _safe_parse(parse_show_vrf_interface, vrf_out).items():
+        interfaces.setdefault(p, InterfaceData(port=p))
+        if vrf and not interfaces[p].vrf: interfaces[p].vrf = vrf
+
+    # 6) etherchannel / port-channel
+    pc_out = _load_cmd_output(cmd_to_file, "show port-channel summary", "show etherchannel summary")
+    pc_proto: Dict[str, str] = {}
+    po_members: Dict[str, str] = {}
+    if pc_out:
+        pc_proto   = _safe_parse(parse_portchannel_protocol_from_summary, pc_out)
+        if not pc_proto: pc_proto = _safe_parse(parse_etherchannel_protocol_ios, pc_out)
+        po_members = _safe_parse(parse_etherchannel_summary_members, pc_out)
+
+    for po, proto in pc_proto.items():
+        interfaces.setdefault(po, InterfaceData(port=po))
+        interfaces[po].port_channel          = po
+        interfaces[po].port_channel_protocol = proto
+
+    for phys, po_name in po_members.items():
+        interfaces.setdefault(phys, InterfaceData(port=phys))
+        if not interfaces[phys].port_channel:
+            interfaces[phys].port_channel          = po_name
+        if not interfaces[phys].port_channel_protocol:
+            interfaces[phys].port_channel_protocol = pc_proto.get(po_name, "")
+        interfaces.setdefault(po_name, InterfaceData(port=po_name))
+        if not interfaces[po_name].port_channel:
+            interfaces[po_name].port_channel          = po_name
+        if not interfaces[po_name].port_channel_protocol:
+            interfaces[po_name].port_channel_protocol = pc_proto.get(po_name, "")
+
+    for p, v in run_iface.items():
+        if v.get("pc_id"):
+            po_name_rc = v["pc_id"]
+            interfaces.setdefault(p, InterfaceData(port=p))
+            if not interfaces[p].port_channel:
+                interfaces[p].port_channel          = po_name_rc
+            if not interfaces[p].port_channel_protocol:
+                interfaces[p].port_channel_protocol = pc_proto.get(po_name_rc, "")
+            interfaces.setdefault(po_name_rc, InterfaceData(port=po_name_rc))
+            if not interfaces[po_name_rc].port_channel:
+                interfaces[po_name_rc].port_channel          = po_name_rc
+            if not interfaces[po_name_rc].port_channel_protocol:
+                interfaces[po_name_rc].port_channel_protocol = pc_proto.get(po_name_rc, "")
+
+    for p in list(interfaces.keys()):
+        if p.startswith("Po") and not interfaces[p].port_channel:
+            interfaces[p].port_channel = p
+
+    # 7) MAC table + Po member propagation
+    mac_out = _load_cmd_output(cmd_to_file, "show mac address-table")
+    mac_map = _safe_parse(parse_show_mac_address_table, mac_out)
+    for intf, macs in mac_map.items():
+        if not macs: continue
+        interfaces.setdefault(intf, InterfaceData(port=intf))
+        if not interfaces[intf].end_host_mac:
+            interfaces[intf].end_host_mac = ", ".join(macs[:5])
+    for phys, po_name in po_members.items():
+        if po_name in interfaces and interfaces[po_name].end_host_mac:
+            interfaces.setdefault(phys, InterfaceData(port=phys))
+            if not interfaces[phys].end_host_mac:
+                interfaces[phys].end_host_mac = interfaces[po_name].end_host_mac
+        if phys in interfaces and interfaces[phys].end_host_mac:
+            interfaces.setdefault(po_name, InterfaceData(port=po_name))
+            if not interfaces[po_name].end_host_mac:
+                interfaces[po_name].end_host_mac = interfaces[phys].end_host_mac
+
+    # 8) STP state (V3.14.5: read from STP data only — never inferred from link-up).
+    stp_out = _load_cmd_output(cmd_to_file, "show spanning-tree")
+    blocked = _safe_parse(parse_spanning_tree_blockedports,
+        _load_cmd_output(cmd_to_file, "show spanning-tree blockedports"))
+    incons  = _safe_parse(parse_spanning_tree_blockedports,
+        _load_cmd_output(cmd_to_file, "show spanning-tree inconsistentports"))
+    stp_states = _safe_parse(parse_spanning_tree_states, stp_out)
+    stp_detail = _safe_parse(parse_spanning_tree_detail, stp_out)   # NEW-V14.7 per-VLAN breakdown
+    for p, d in interfaces.items():
+        if blocked.get(p):
+            interfaces[p].stp_blocked = "Blocked"
+        elif incons.get(p):
+            interfaces[p].stp_blocked = "Inconsistent"
+        elif p in stp_states:
+            interfaces[p].stp_blocked = stp_states[p]   # FWD/BLK/etc, confirmed by show spanning-tree
+        # else: leave blank — STP state unknown, NOT asserted "Forwarding" from a link-up signal
+        det = stp_detail.get(p)
+        if det:
+            interfaces[p].stp_fwd_vlans = _compress_vlans(det.get("Forwarding", []))
+            interfaces[p].stp_blk_vlans = _compress_vlans(det.get("Blocked", []))
+            other = []
+            for label, key in (("LIS", "Listening"), ("LRN", "Learning"), ("DIS", "Disabled")):
+                rng = _compress_vlans(det.get(key, []))
+                if rng:
+                    other.append(f"{label}:{rng}")
+            interfaces[p].stp_other_vlans = " ".join(other)
+
+    # 9) PoE
+    poe_out = _load_cmd_output(cmd_to_file, "show power inline")
+    for p, s in _safe_parse(parse_show_power_inline, poe_out).items():
+        interfaces.setdefault(p, InterfaceData(port=p))
+        interfaces[p].poe_status = s
+
+    # 10) CDP + LLDP
+    route_db = _safe_parse(parse_ip_routes, _load_cmd_output(cmd_to_file, 'show ip route'))
+    vlan_names = {vid: (info.get("name") or "")                                     # NEW-V14.8
+                  for vid, info in _safe_parse(parse_vlan_brief, _load_cmd_output(cmd_to_file, "show vlan brief")).items()}
+    hsrp_db = _safe_parse(parse_hsrp_summary, _load_cmd_output(cmd_to_file, 'show standby brief', 'show standby all', 'show hsrp brief', 'show hsrp all'))
+    vrrp_db = _safe_parse(parse_vrrp_summary, _load_cmd_output(cmd_to_file, 'show vrrp brief'))   # NEW-V14.6
+    glbp_db = _safe_parse(parse_glbp_summary, _load_cmd_output(cmd_to_file, 'show glbp brief'))   # NEW-V14.6
+    mcast_db = _safe_parse(parse_multicast_info, _load_cmd_output(cmd_to_file, 'show ip mroute'), _load_cmd_output(cmd_to_file, 'show ip pim interface'))
+    cdp_out  = _load_cmd_output(cmd_to_file, "show cdp neighbors detail")
+    lldp_out = _load_cmd_output(cmd_to_file, "show lldp neighbors detail")
+    neigh: Dict[str, Dict[str, str]] = {}
+    if cdp_out:  neigh.update(_safe_parse(parse_neighbors_cdp, cdp_out))
+    if lldp_out:
+        for k, v in _safe_parse(parse_neighbors_lldp, lldp_out).items():
+            neigh.setdefault(k, v)
+
+    dev_to_ports: Dict[str, List[str]] = {}
+    for local, v in neigh.items():
+        did = (v.get("device_id") or "").strip()
+        if did: dev_to_ports.setdefault(did, []).append(local)
+    dual_ports = {p for ports in dev_to_ports.values() if len(set(ports)) > 1 for p in ports}
+
+    for local, v in neigh.items():
+        local = normalize_ifname(local)
+        interfaces.setdefault(local, InterfaceData(port=local))
+        device_id  = v.get("device_id","")
+        platform_s = v.get("platform","")
+        mgmt_ip    = v.get("mgmt_ip","")
+        interfaces[local].endpoint_type = infer_endpoint_type(
+            platform_s, device_id, interfaces[local].description)
+        # NEW-V11: CDP/LLDP neighbor name
+        if device_id and not interfaces[local].cdp_neighbor:
+            interfaces[local].cdp_neighbor = device_id
+        # NEW-V14.10: remote port + platform for the topology map
+        if v.get("remote_port") and not interfaces[local].neighbor_port:
+            interfaces[local].neighbor_port = v.get("remote_port","")
+        if platform_s and not interfaces[local].neighbor_platform:
+            interfaces[local].neighbor_platform = platform_s
+        if mgmt_ip:
+            if not interfaces[local].end_host_ip:
+                interfaces[local].end_host_ip = mgmt_ip
+            interfaces[local].neighbor_switch_ip = mgmt_ip
+        if interfaces[local].endpoint_type == 'Switch' or (device_id and re.search(r'(sw|switch|n9k|n7k|c9k|catalyst|nexus)', device_id, re.IGNORECASE)):
+            interfaces[local].neighbor_switch_vtp_domain = switch_identity.get('vtp_domain', '')
+        mloc = re.search(r"(rack\s*\d+|r\d+)\s*[-_ ]*\s*(u\d+)?", device_id, re.IGNORECASE)
+        if mloc: interfaces[local].endpoint_location = mloc.group(0).strip()
+        if local in dual_ports: interfaces[local].dual_connection = "Yes"
+
+    # 11) Description-based endpoint type fallback
+    for p, d in interfaces.items():
+        if not d.endpoint_type and d.description:
+            ep = infer_endpoint_type("", "", d.description)
+            if ep: interfaces[p].endpoint_type = ep
+
+    # 12) Final enrichment
+    for p, d in interfaces.items():
+        if not d.link_type:
+            d.link_type = detect_link_type(d.port_type, d.speed)
+        if (d.switchport_mode or "").lower() == "trunk" and not d.vlan and d.trunk_allowed_vlans:
+            d.vlan = d.trunk_allowed_vlans
+        if p.startswith("Po") and not d.port_channel_protocol:
+            d.port_channel_protocol = pc_proto.get(p, "") or ""
+        if not d.stp_rootguard and d.switchport_mode == "Access":
+            d.stp_rootguard = "Disable"
+        d.current_switch_serial = switch_identity.get('serial_number', '')
+        d.current_switch_ip = switch_identity.get('mgmt_ip', '')
+        d.current_switch_vtp_domain = switch_identity.get('vtp_domain', '')
+        if d.endpoint_type == 'Switch' and not d.neighbor_switch_serial:
+            d.neighbor_switch_serial = d.cdp_neighbor
+        # Per-SVI subnet enrichment: among the routes whose outgoing interface is THIS SVI,
+        # choose the SVI's CONNECTED subnet as primary -- preferring the prefix that actually
+        # contains the SVI's own configured IP -- so a coexisting /32 host route or a
+        # redistributed loopback can't be picked ahead of the real connected /24. (V14.13)
+        if re.match(r'^Vlan\d+$', p, re.IGNORECASE):
+            svi_routes = []
+            for rk, rv in route_db.items():
+                for e in rv.get('entries', []):
+                    if normalize_ifname(e.get('out_intf', '')) == p:
+                        svi_routes.append(e)
+
+            def _contains_svi_ip(prefix: str) -> bool:
+                ipv = (d.svi_ip or '').split()[0].split('/')[0]
+                if not ipv or not prefix:
+                    return False
+                try:
+                    import ipaddress
+                    return ipaddress.ip_address(ipv) in ipaddress.ip_network(prefix, strict=False)
+                except Exception:
+                    return False
+
+            def _rank(e):
+                # lower sorts first = higher priority
+                src = (e.get('source', '') or '').lower()
+                pfx = e.get('prefix', '')
+                contains = _contains_svi_ip(pfx)
+                is_conn  = src.startswith('connected') or src in ('c', 'l', 'local')
+                try:
+                    masklen = int(pfx.split('/')[1]) if '/' in pfx else 32
+                except Exception:
+                    masklen = 32
+                # prefer: contains-SVI-IP, then connected, then the less-specific (smaller masklen) prefix
+                return (0 if contains else 1, 0 if is_conn else 1, masklen)
+
+            svi_routes.sort(key=_rank)
+            if svi_routes:
+                primary = svi_routes[0]
+                d.subnet_primary_route = primary.get('prefix', '')
+                d.routing_source       = primary.get('source', '') or 'connected'
+                d.route_next_hop       = primary.get('next_hop', '') or normalize_ifname(primary.get('out_intf', ''))
+                extras = []
+                for e in svi_routes[1:]:
+                    nh = e.get('next_hop', '') or e.get('prefix', '')
+                    if nh:
+                        extras.append(nh)
+                if extras:
+                    d.subnet_secondary_routes = '; '.join(dict.fromkeys(extras))
+        if p in hsrp_db:
+            d.hsrp_behavior = hsrp_db[p]
+        elif p in vrrp_db:                 # NEW-V14.6: VRRP gateway
+            d.hsrp_behavior = vrrp_db[p]
+        elif p in glbp_db:                 # NEW-V14.6: GLBP gateway
+            d.hsrp_behavior = glbp_db[p]
+        if p in mcast_db:
+            d.multicast_info = mcast_db[p]
+        # NEW-V14.8: authoritative VLAN name from 'show vlan brief' where still missing.
+        if vlan_names and not d.vlan_name:
+            vid = d.vlan if d.vlan.isdigit() else ""
+            if not vid:
+                mm = re.match(r"^Vlan(\d+)$", p, re.IGNORECASE)   # SVI -> its VLAN id
+                vid = mm.group(1) if mm else ""
+            if vid and vlan_names.get(vid):
+                d.vlan_name = vlan_names[vid]
+
+    return interfaces
