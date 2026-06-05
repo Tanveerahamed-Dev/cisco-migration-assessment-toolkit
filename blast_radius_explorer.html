@@ -182,6 +182,15 @@
   .lnk.flowpath{stroke:var(--accent); stroke-width:3.6}
   .lnk.adj-ospf{stroke:var(--ok); stroke-width:3.4; stroke-opacity:1}
   .lnk.adj-eigrp{stroke:var(--accent); stroke-width:3.4; stroke-opacity:1}
+  /* legend hover-highlight: emphasize matching graph elements, dim the rest */
+  .lnk.hl{stroke-width:5 !important; stroke-opacity:1 !important; filter:drop-shadow(0 0 3px currentColor); animation:legendPulse 1.1s ease-in-out infinite}
+  .lnk.dimmed{stroke-opacity:.1 !important}
+  .node.hl .body{stroke-width:3.5 !important; filter:drop-shadow(0 0 4px currentColor); animation:legendPulse 1.1s ease-in-out infinite}
+  .node.dimmed{opacity:.22}
+  .legend .row[data-hl]{cursor:pointer; border-radius:5px; padding:2px 4px; margin-left:-4px;
+    transition:background .12s}
+  .legend .row[data-hl]:hover, .legend .row[data-hl]:focus-visible{background:var(--surface-2); outline:none}
+  .legend .row[data-hl]:focus-visible{box-shadow:0 0 0 1px var(--accent)}
   @keyframes dash{to{stroke-dashoffset:-28}}
   /* draw-on reveal: per-edge dasharray/offset are set inline in JS (= segment length);
      the path appears to "draw" from source toward dest. Resting state is fully solid. */
@@ -190,6 +199,7 @@
   /* traveling packet — accent dot with a soft glow; tracks pan/zoom (lives under #vp) */
   .packet{fill:var(--accent); stroke:var(--bg); stroke-width:1.5; pointer-events:none;
     filter:drop-shadow(0 0 4px var(--accent))}
+  @keyframes legendPulse{0%,100%{filter:drop-shadow(0 0 2px currentColor)}50%{filter:drop-shadow(0 0 6px currentColor)}}
 
   .pcbadge{fill:var(--surface); stroke:var(--border-strong); stroke-width:1}
   .pcbadge-t{fill:var(--text-dim); font:600 9px var(--mono); text-anchor:middle; pointer-events:none}
@@ -1524,17 +1534,85 @@ function setModeTag(){const el=document.getElementById("modetag");
     health:"Per-switch 0–100 health and per-group migration readiness.",
     protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health."}[MODE];
   el.textContent=t;}
-function ln(cls,label){return `<div class="row"><span class="sw swln" style="border-top-color:${cls}"></span>${label}</div>`;}
-function bx(color,label){return `<div class="row"><span class="swbox" style="border-color:${color};background:color-mix(in srgb,${color} 18%,transparent)"></span>${label}</div>`;}
+/* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
+function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
+function ln(cls,label,hl){return `<div class="row"${hlAttr(hl)}><span class="sw swln" style="border-top-color:${cls}"></span>${label}</div>`;}
+function bx(color,label,hl){return `<div class="row"${hlAttr(hl)}><span class="swbox" style="border-color:${color};background:color-mix(in srgb,${color} 18%,transparent)"></span>${label}</div>`;}
 function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend — ${MODE}</h4>`;
-  if(MODE==="blast")h+=ln("var(--text-faint)","forwarding link")+ln("var(--watch)","STP-blocked")+ln("var(--crit)","impacted link")+bx("var(--crit)","removed / stranded");
-  else if(MODE==="trace")h+=ln("var(--accent)","active path")+ln("var(--risk)","SPOF link")+ln("var(--ok)","backup exists")+bx("var(--risk)","SPOF switch");
-  else if(MODE==="compare")h+=bx("var(--crit)","regressed")+bx("var(--ok)","improved")+bx("var(--crit)","removed");
-  else if(MODE==="flow")h+=ln("var(--accent)","flow path")+bx("var(--risk)","SPOF hop");
-  else if(MODE==="health")h+=bx("var(--ok)","good (75–100)")+bx("var(--watch)","fair (60–74)")+bx("var(--risk)","poor (40–59)")+bx("var(--crit)","critical (<40)");
-  else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point")+bx("var(--ok)","runs a routing protocol")+bx("var(--crit)","stuck adjacency")+ln("var(--ok)","OSPF adjacency")+ln("var(--accent)","EIGRP adjacency");
+  if(MODE==="blast")h+=ln("var(--text-faint)","forwarding link","fwd")+ln("var(--watch)","STP-blocked","blocked")+ln("var(--crit)","impacted link","sev")+bx("var(--crit)","removed / stranded","removed");
+  else if(MODE==="trace")h+=ln("var(--accent)","active path","path")+ln("var(--risk)","SPOF link","spof")+ln("var(--ok)","backup exists","blocked")+bx("var(--risk)","SPOF switch","spof");
+  else if(MODE==="compare")h+=bx("var(--crit)","regressed","regressed")+bx("var(--ok)","improved","improved")+bx("var(--crit)","removed","removed");
+  else if(MODE==="flow")h+=ln("var(--accent)","flow path","flowpath")+bx("var(--risk)","SPOF hop","spof");
+  else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit");
+  else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
-  L.innerHTML=h;}
+  L.innerHTML=h;
+  clearLegendHighlight(); wireLegendHover();}
+
+/* =====================================================================
+   INTERACTIVE LEGEND — hover/focus a row to emphasize the matching graph
+   elements (and dim the rest). Reads the already-painted DOM state so it
+   stays correct for whatever the current painter produced. Additive: a
+   transient `hl`/`dimmed` class, cleared on mouseout/blur and any rebuild.
+   ===================================================================== */
+// does this edge's painted path match the legend kind?
+function _edgeMatchesHl(path,kind){const cl=path.classList;
+  switch(kind){
+    case"fwd":return cl.contains("fwd");
+    case"blocked":return cl.contains("blk");
+    case"sev":return cl.contains("sev");
+    case"path":return cl.contains("path");
+    case"spof":return cl.contains("spof");
+    case"flowpath":return cl.contains("flowpath");
+    case"adj-ospf":return cl.contains("adj-ospf");
+    case"adj-eigrp":return cl.contains("adj-eigrp");
+    default:return false;}}
+// does this painted node match the legend kind? (tag text + body stroke token)
+function _nodeMatchesHl(n,kind){const tag=(n.tag.textContent||"").toUpperCase();
+  const stroke=n.body.style.stroke||"";
+  const isTok=t=>stroke.includes("--"+t+")")||stroke.includes("--"+t+"-soft)");
+  switch(kind){
+    case"spof":return tag==="SPOF";
+    case"removed":return tag==="REMOVED";
+    case"regressed":return tag==="REGRESSED";
+    case"improved":return tag==="IMPROVED";
+    case"redist":return tag==="REDIST";
+    case"runs":return !!tag&&tag!=="REDIST"&&isTok("ok");   // protocols: green nodes labelled with a protocol
+    case"stuck":return isTok("crit")&&MODE==="protocols";
+    case"band-ok":return isTok("ok");
+    case"band-watch":return isTok("watch");
+    case"band-risk":return isTok("risk");
+    case"band-crit":return isTok("crit");
+    default:return false;}}
+function highlightLegend(kind){
+  if(!MODEL||!kind)return; clearLegendHighlight();
+  // edge-only kinds vs node-only kinds; `spof` matches both (link + switch)
+  const edgeKinds={fwd:1,blocked:1,sev:1,path:1,spof:1,flowpath:1,"adj-ospf":1,"adj-eigrp":1};
+  const nodeKinds={spof:1,removed:1,regressed:1,improved:1,redist:1,runs:1,stuck:1,"band-ok":1,"band-watch":1,"band-risk":1,"band-crit":1};
+  if(edgeKinds[kind]){
+    edgeEls.forEach(({path})=>{if(_edgeMatchesHl(path,kind))path.classList.add("hl");});
+  }
+  if(nodeKinds[kind]){
+    MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n&&_nodeMatchesHl(n,kind))n.g.classList.add("hl");});
+  }
+  // dim the non-matching elements so the highlight reads clearly
+  edgeEls.forEach(({path})=>{if(!path.classList.contains("hl"))path.classList.add("dimmed");});
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n&&!n.g.classList.contains("hl"))n.g.classList.add("dimmed");});
+}
+function clearLegendHighlight(){
+  if(!MODEL)return;
+  edgeEls.forEach(({path})=>{path.classList.remove("hl","dimmed");});
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.remove("hl","dimmed");});
+}
+// delegate hover/focus on the legend container (rebuilt every repaint)
+let _legendWired=false;
+function wireLegendHover(){
+  const L=document.getElementById("legend"); if(!L||_legendWired)return; _legendWired=true;
+  const enter=ev=>{const r=ev.target.closest&&ev.target.closest("[data-hl]"); if(r)highlightLegend(r.dataset.hl);};
+  const leave=ev=>{const r=ev.target.closest&&ev.target.closest("[data-hl]"); if(r)clearLegendHighlight();};
+  L.addEventListener("mouseover",enter); L.addEventListener("mouseout",leave);
+  L.addEventListener("focusin",enter);   L.addEventListener("focusout",leave);
+}
 
 /* =====================================================================
    DRAWER — single right panel, re-skinned per mode
