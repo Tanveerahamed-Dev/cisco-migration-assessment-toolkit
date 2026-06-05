@@ -183,6 +183,13 @@
   .lnk.adj-ospf{stroke:var(--ok); stroke-width:3.4; stroke-opacity:1}
   .lnk.adj-eigrp{stroke:var(--accent); stroke-width:3.4; stroke-opacity:1}
   @keyframes dash{to{stroke-dashoffset:-28}}
+  /* draw-on reveal: per-edge dasharray/offset are set inline in JS (= segment length);
+     the path appears to "draw" from source toward dest. Resting state is fully solid. */
+  .lnk.drawon{animation:drawOn .5s ease-out forwards}
+  @keyframes drawOn{to{stroke-dashoffset:0}}
+  /* traveling packet — accent dot with a soft glow; tracks pan/zoom (lives under #vp) */
+  .packet{fill:var(--accent); stroke:var(--bg); stroke-width:1.5; pointer-events:none;
+    filter:drop-shadow(0 0 4px var(--accent))}
 
   .pcbadge{fill:var(--surface); stroke:var(--border-strong); stroke-width:1}
   .pcbadge-t{fill:var(--text-dim); font:600 9px var(--mono); text-anchor:middle; pointer-events:none}
@@ -833,6 +840,13 @@ let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on a NEW selection; cancel pending stagger timers
 
+/* ---- path/flow draw-on + traveling packet (animation) ----------------------
+   PATH_ANIM_KEY = ordered-host key of the currently-animated path, so the draw-on
+   + packet only (re)start when the path actually CHANGES, not on every repaint().
+   PACKET_EL is the <circle> under #vp; PACKET_RAF the rAF id (cancelled on clear). */
+let PATH_ANIM_KEY=null, PACKET_EL=null, PACKET_RAF=null;
+function reducedMotion(){return window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;}
+
 /* ---- pinned (hand-dragged) node positions ---------------------------------
    PINNED maps host->{x,y} for nodes the user has dragged. These survive layout
    toggles, mode changes, and reloads (overlaid in computeLayout, persisted to
@@ -975,6 +989,7 @@ function el(tag,attrs){const e=document.createElementNS(SVGNS,tag);
   for(const k in attrs)e.setAttribute(k,attrs[k]);return e;}
 
 function buildSvg(){
+  clearPathAnim();           // the SVG (and any packet/rAF) is about to be rebuilt — no leaked loop
   const s=svg(); s.innerHTML="";
   const defs=el("defs",{});
   defs.innerHTML=`<pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -1078,7 +1093,12 @@ function clearFx(){
   MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match");
     n.g.style.removeProperty("--ov"); n.body.style.removeProperty("fill"); n.body.style.removeProperty("stroke");
     n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");});
-  edgeEls.forEach(({path})=>{path.className.baseVal="lnk";});
+  edgeEls.forEach(({path})=>{path.className.baseVal="lnk";
+    // drop any draw-on residue so non-path edges rest fully solid (also reduced-motion)
+    path.style.removeProperty("stroke-dasharray"); path.style.removeProperty("stroke-dashoffset");
+    path.style.removeProperty("animation-delay");
+    // shed a dangling draw-on handler from an edge leaving the path (re-added if still on it)
+    if(path._drawOnDone){path.removeEventListener("animationend",path._drawOnDone); path._drawOnDone=null;}});
 }
 function baseEdge(){
   const vid = VLAN==="all"? null : +VLAN;
@@ -1107,6 +1127,7 @@ function repaint(){
   else if(MODE==="health")paintHealth();
   else if(MODE==="protocols")paintProtocols();
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
+  runPathAnim();   // draw-on + traveling packet for Path/Flow; teardown otherwise (keyed on path change)
 }
 
 function sevToken(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";}
@@ -1195,6 +1216,121 @@ function paintFlow(){
     if(pairs.has(key))path.className.baseVal="lnk flowpath"+(e.pc?" pc":"");
     else path.className.baseVal="lnk dim"+(e.pc?" pc":"");});
 }
+/* =====================================================================
+   PATH / FLOW DRAW-ON + TRAVELING PACKET
+   The painters above tag the on-path edges (.path / .spof / .flowpath). This
+   layer (a) draws those edges on progressively and (b) runs a small accent dot
+   from source to dest along the node centers. Both fire ONLY when the path
+   changes (keyed on the ordered host list) and are torn down on clear / mode
+   change. Reduced-motion → static solid path, no draw-on, no packet.
+   ===================================================================== */
+/* Ordered host list of the active path for the current mode, or null. TRACE.path
+   is already ordered; for Flow we walk the painted (on-path) edges from src→dst. */
+function activePathHosts(){
+  if(MODE==="trace"){
+    if(TRACE&&TRACE.reachable&&!TRACE.trivial&&TRACE.path&&TRACE.path.length>1)return TRACE.path.slice();
+    return null;
+  }
+  if(MODE==="flow"&&FLOWRES&&FLOWRES.reachable&&FLOWRES.src&&FLOWRES.dst){
+    return walkPathHosts(FLOWRES.src.host,FLOWRES.dst.host,"flowpath");
+  }
+  return null;
+}
+/* Reconstruct an ordered src→dst host chain by walking the on-path edges (those
+   carrying `cls`). Returns null if no simple chain links the two endpoints. */
+function walkPathHosts(src,dst,cls){
+  if(src===dst)return null;
+  const adj=new Map();
+  edgeEls.forEach(({e,path})=>{const c=" "+path.className.baseVal+" ";
+    if(c.indexOf(" "+cls+" ")<0)return;
+    if(!adj.has(e.a))adj.set(e.a,[]); if(!adj.has(e.b))adj.set(e.b,[]);
+    adj.get(e.a).push(e.b); adj.get(e.b).push(e.a);});
+  if(!adj.has(src)||!adj.has(dst))return null;
+  const prev=new Map([[src,null]]), q=[src];   // BFS over on-path edges only
+  while(q.length){const cur=q.shift(); if(cur===dst)break;
+    for(const nx of adj.get(cur)||[])if(!prev.has(nx)){prev.set(nx,cur);q.push(nx);}}
+  if(!prev.has(dst))return null;
+  const out=[]; for(let h=dst;h!=null;h=prev.get(h))out.push(h); out.reverse();
+  return out.length>1?out:null;
+}
+/* Remove the packet element + cancel its rAF; reset the path key. Idempotent. */
+function clearPathAnim(){
+  if(PACKET_RAF!=null){cancelAnimationFrame(PACKET_RAF); PACKET_RAF=null;}
+  if(PACKET_EL&&PACKET_EL.parentNode)PACKET_EL.parentNode.removeChild(PACKET_EL);
+  PACKET_EL=null; PATH_ANIM_KEY=null;
+}
+/* Drive the draw-on + packet for the current mode. Called from repaint() AFTER
+   the painter has tagged the edges. No-op (beyond teardown) when no path. */
+function runPathAnim(){
+  const hosts=activePathHosts();
+  const key=hosts?(MODE+"|"+hosts.join("")):null;
+  if(key===PATH_ANIM_KEY)return;          // same path still showing → don't restart
+  // path changed / cleared / mode switched: tear down the old animation first
+  if(PACKET_RAF!=null){cancelAnimationFrame(PACKET_RAF); PACKET_RAF=null;}
+  if(PACKET_EL&&PACKET_EL.parentNode)PACKET_EL.parentNode.removeChild(PACKET_EL);
+  PACKET_EL=null; PATH_ANIM_KEY=key;
+  if(!hosts)return;                        // nothing to animate
+  if(reducedMotion())return;              // static solid path only (CSS resting state is visible)
+  drawOnPath(hosts); animatePacket(hosts.map(h=>POS[h]).filter(Boolean));
+}
+/* (a) Draw-on: set each on-path segment's dasharray to its own length and start
+   its dashoffset at that length, then animate offset→0 (via .drawon / @keyframes
+   drawOn) so the stroke wipes in. Staggered by hop so it sweeps src→dest. Applies
+   to EVERY on-path edge (path / flowpath / spof). When the one-shot wipe ends we
+   strip the inline dash + class so a SPOF edge's CSS marching-ants resumes. */
+function drawOnPath(hosts){
+  const seg=new Map();   // "a::b" -> hop index along the path (for the stagger)
+  for(let i=0;i+1<hosts.length;i++)seg.set([hosts[i],hosts[i+1]].sort().join("::"),i);
+  edgeEls.forEach(({e,path})=>{const i=seg.get([e.a,e.b].sort().join("::"));
+    if(i==null)return;
+    const c=" "+path.className.baseVal+" ";   // only edges the painter put ON the path
+    if(c.indexOf(" path ")<0&&c.indexOf(" flowpath ")<0&&c.indexOf(" spof ")<0)return;
+    let len=0; try{len=path.getTotalLength();}catch(err){len=0;}
+    if(!len)return;
+    path.style.strokeDasharray=len; path.style.strokeDashoffset=len;
+    path.style.animationDelay=(i*0.12)+"s";
+    // drop a prior handler first (a path that changes mid-wipe never fires animationend),
+    // so listeners can't accumulate across path changes.
+    if(path._drawOnDone)path.removeEventListener("animationend",path._drawOnDone);
+    const done=ev=>{if(ev.animationName!=="drawOn")return;   // wipe finished → hand styling back to CSS
+      path.removeEventListener("animationend",done); path._drawOnDone=null;
+      path.classList.remove("drawon");
+      path.style.removeProperty("stroke-dasharray"); path.style.removeProperty("stroke-dashoffset");
+      path.style.removeProperty("animation-delay");};
+    path._drawOnDone=done; path.addEventListener("animationend",done);
+    path.classList.remove("drawon"); void path.getBBox();   // reflow so re-adding the class restarts the keyframe
+    path.classList.add("drawon");});
+}
+/* (b) Traveling packet: rAF-lerp a circle through consecutive node centers at a
+   near-constant speed, looping gently with a brief pause at the destination. */
+function animatePacket(pts){
+  if(pts.length<2)return;
+  const vp=document.getElementById("vp"); if(!vp)return;
+  PACKET_EL=el("circle",{class:"packet",r:5,cx:pts[0].x,cy:pts[0].y});
+  vp.appendChild(PACKET_EL);                          // under #vp → tracks pan/zoom
+  const SPEED=0.26;                                   // px per ms (near-constant)
+  const segLen=[]; let total=0;
+  for(let i=0;i+1<pts.length;i++){const dx=pts[i+1].x-pts[i].x,dy=pts[i+1].y-pts[i].y;
+    const l=Math.hypot(dx,dy); segLen.push(l); total+=l;}
+  if(total<=0)return;
+  const dur=total/SPEED, PAUSE=600, period=dur+PAUSE;
+  let t0=null;
+  const frame=ts=>{
+    if(t0==null)t0=ts;
+    let p=((ts-t0)%period);                            // gentle loop with pause
+    let d=Math.min(p,dur);                             // distance traveled this cycle
+    let acc=0,x=pts[pts.length-1].x,y=pts[pts.length-1].y;
+    for(let i=0;i<segLen.length;i++){
+      if(d<=acc+segLen[i]||i===segLen.length-1){
+        const f=segLen[i]?Math.min(1,(d-acc)/segLen[i]):1;
+        x=pts[i].x+(pts[i+1].x-pts[i].x)*f; y=pts[i].y+(pts[i+1].y-pts[i].y)*f; break;}
+      acc+=segLen[i];}
+    if(PACKET_EL){PACKET_EL.setAttribute("cx",x); PACKET_EL.setAttribute("cy",y);}
+    PACKET_RAF=requestAnimationFrame(frame);
+  };
+  PACKET_RAF=requestAnimationFrame(frame);
+}
+
 function healthList(){return SNAP&&SNAP.health_scores?SNAP.health_scores:[];}
 function healthBandToken(band){const b=(band||"").toLowerCase();
   if(b.includes("excellent"))return "ok"; if(b.includes("good"))return "ok";
