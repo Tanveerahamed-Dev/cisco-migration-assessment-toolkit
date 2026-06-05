@@ -558,7 +558,7 @@ function demoSnapshot(){
   const ALL="1,10,20,30,40,99";
   const gw=(vid,ip,h,acl,vrf,helpers)=>({port:"Vlan"+vid,svi_ip:ip,vlan:String(vid),hsrp_behavior:h||"",switchport_mode:"",end_host_mac:"",acl_in:(acl&&acl.in)||"",acl_out:(acl&&acl.out)||"",vrf:vrf||"",dhcp_helpers:helpers||""});
   const link=(nbr,np,o={})=>({port:o.port,cdp_neighbor:nbr,neighbor_port:np,stp_fwd_vlans:o.fwd||"",stp_blk_vlans:o.blk||"",
-    trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:"",mtu:o.mtu||""});
+    trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:"",mtu:o.mtu||"",trunk_native_vlan:o.native||""});
   const eps=(vid,n,base)=>{const o={};for(let i=0;i<n;i++){const p=`Gi1/0/${base+i}`;
     o[p]={port:p,switchport_mode:"access",vlan:String(vid),status:"connected",
       end_host_mac:`aa:bb:${vid.toString(16).padStart(2,"0")}:00:00:${(base+i).toString(16).padStart(2,"0")}`,
@@ -571,7 +571,8 @@ function demoSnapshot(){
        "Vlan30":gw(30,"10.0.30.1","",{out:"PROTECT_SERVERS"},null,"10.10.10.10"),   // DHCP relay -> server with NO covering route on DIST-1 (✗)
        "Vlan40":gw(40,"10.0.40.1","",null,"TENANT_RED")},   // PHASE K: a VRF-isolated tenant subnet — flows from the global VLANs are unreachable
       {"Po1":link("DIST-2","Po1",{port:"Po1",fwd:ALL,pc:"Po1"}),
-       "Gi1/0/1":link("ACC-1","Gi1/0/24",{port:"Gi1/0/1",fwd:ALL}),
+       "Gi1/0/1":link("ACC-1","Gi1/0/24",{port:"Gi1/0/1",fwd:ALL,native:"99"}),   // trunk consistency: native VLAN 99 here vs ACC-1's default 1 -> mismatch
+
        "Gi1/0/2":link("ACC-2","Gi1/0/24",{port:"Gi1/0/2",fwd:ALL}),
        "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL})}),
     "DIST-2":Object.assign({},
@@ -1780,6 +1781,31 @@ function addressingCard(){
     `<div class="sub" style="margin-bottom:6px">L3 addressing clashes — the classic silent outage when two domains merge or a move-group cuts over.</div>`+
     ipRows+subRows+`</div>`;
 }
+/* Trunk consistency: native-VLAN mismatch on an inter-switch trunk. When the two ends disagree on the
+   native (untagged) VLAN, frames sent untagged on one side pop out in a DIFFERENT VLAN on the other --
+   a silent L2 leak between those VLANs, an STP inconsistency, and a classic VLAN-hopping exposure. The
+   default native VLAN is 1, so an explicit native on only one end is still a mismatch. */
+function _nativeVlan(host,port){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host][port]:null;
+  const n=d&&d.trunk_native_vlan?String(d.trunk_native_vlan).trim():""; return n||"1";}
+function trunkConsistency(){
+  const out=[], seen=new Set();
+  for(const L of (MODEL&&MODEL.links)||[]){
+    const an=_nativeVlan(L.a,L.aPort), bn=_nativeVlan(L.b,L.bPort); if(an===bn)continue;
+    const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
+    out.push({a:L.a,aPort:L.aPort,an, b:L.b,bPort:L.bPort,bn});}
+  return out;
+}
+function trunkConsistencyCard(){
+  if(!MODEL||!MODEL.links)return "";
+  const m=trunkConsistency();
+  if(!m.length)
+    return `<div class="sec"><h3>Trunk consistency <span class="badge b-ok">clean</span></h3>`+
+      `<div class="ln faint">✓ No native-VLAN mismatches on inter-switch trunks — untagged traffic lands in the same VLAN on both ends of every link.</div></div>`;
+  const rows=m.map(x=>`<div class="ln"><span class="pill pl-crit">✗ native VLAN</span> <span class="mono">${esc(shortName(x.a))} ${esc(x.aPort)}</span> (native ${esc(x.an)}) ↔ <span class="mono">${esc(shortName(x.b))} ${esc(x.bPort)}</span> (native ${esc(x.bn)}) — untagged traffic crosses VLANs ${esc(x.an)}↔${esc(x.bn)} (VLAN leak / STP inconsistency).</div>`).join("");
+  return `<div class="sec"><h3>Trunk consistency <span class="badge b-crit">${m.length} mismatch${m.length===1?"":"es"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Native-VLAN mismatches on inter-switch trunks — a silent L2 leak and a VLAN-hopping exposure.</div>`+
+    rows+`</div>`;
+}
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
   if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
@@ -1834,6 +1860,7 @@ function drawHealth(){
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${calibrationCard()}
     ${addressingCard()}
+    ${trunkConsistencyCard()}
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
