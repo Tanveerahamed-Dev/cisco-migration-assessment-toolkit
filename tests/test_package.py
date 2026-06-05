@@ -29,7 +29,9 @@ def test_monolith_reexports_the_package_objects(cp):
     # went package-internal in step 17 (their last monolith users, the phy parsers, moved to parse).
     assert cp.PHYSICAL_IFACE_RE is textutils.PHYSICAL_IFACE_RE
     assert not hasattr(cp, "VALID_IFACE_RE") and not hasattr(cp, "IFACE_TOKEN_RE")
-    assert cp._split_macs is textutils._split_macs
+    # _split_macs went package-internal in step 21 (its last monolith user, write_vlan_census_sheet,
+    # moved to excel; analyze.py + excel.py import it from textutils directly).
+    assert callable(textutils._split_macs) and not hasattr(cp, "_split_macs")
 
 
 def test_parse_module_reexported_and_functional(cp):
@@ -230,3 +232,10 @@ def test_excel_reexported_and_functional(cp):
     # port-row sort: port-channels first, then Eth/Fa/Gi... by number (not lexical).
     ports = ["Gi1/0/2", "Po1", "Gi1/0/10", "Gi1/0/1"]
     assert sorted(ports, key=excel.sortkey) == ["Po1", "Gi1/0/1", "Gi1/0/2", "Gi1/0/10"]
+    # census/inventory sheet writers joined the excel layer (step 21); re-exported for main().
+    for name in ("write_device_inventory_sheet", "write_svi_gateway_sheet", "write_stp_detail_sheet",
+                 "write_vlan_census_sheet", "write_endpoint_census_sheet"):
+        assert getattr(cp, name) is getattr(excel, name)
+    # _is_svi + the *_COLUMNS / *_SHEET_NAME constants are package-internal.
+    assert excel._is_svi("Vlan10") is True and excel._is_svi("Gi1/0/1") is False
+    assert not hasattr(cp, "_is_svi") and not hasattr(cp, "INVENTORY_SHEET_NAME")
