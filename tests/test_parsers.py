@@ -5,6 +5,8 @@ parser behavior so later robustness work can't silently regress it.
 """
 import textwrap
 
+from cisco_toolkit import parse   # ospf/bgp parsers no longer re-exported by the monolith (step 24)
+
 
 # ---- interface status ------------------------------------------------------ #
 def test_parse_show_interface_status_ios(cp):
@@ -88,7 +90,7 @@ def test_parse_ospf_neighbors_detects_down(cp):
         10.0.99.2         1   FULL/DR         00:00:35    10.0.99.2       Port-channel1
         10.0.99.9         1   EXSTART/DROTHER 00:00:31    10.0.40.9       Vlan40
     """)
-    rows = cp.parse_ospf_neighbors(out)
+    rows = parse.parse_ospf_neighbors(out)
     states = {r["neighbor"]: r["state"] for r in rows}
     assert states["10.0.99.2"].startswith("FULL")
     assert states["10.0.99.9"].startswith("EXSTART")
@@ -101,7 +103,7 @@ def test_parse_bgp_summary_states(cp):
         10.0.0.2        4 65001    1200    1199        5    0    0 01:02:03        12
         10.0.0.3        4 65002       0       0        0    0    0 never           Idle
     """)
-    rows = cp.parse_bgp_summary(out)
+    rows = parse.parse_bgp_summary(out)
     states = {r["neighbor"]: r["state"] for r in rows}
     assert states["10.0.0.2"] == "12"      # established -> prefix count
     assert states["10.0.0.3"] == "Idle"    # not established
@@ -166,7 +168,7 @@ def test_parse_interface_counters(cp):
 def test_parsers_tolerate_empty_and_garbage(cp):
     for fn in (cp.parse_show_interface_status, cp.parse_show_interface_switchport,
                cp.parse_show_interface_trunk_table, cp.parse_vlan_brief,
-               cp.parse_hsrp_summary, cp.parse_ospf_neighbors, cp.parse_bgp_summary,
+               cp.parse_hsrp_summary, parse.parse_ospf_neighbors, parse.parse_bgp_summary,
                cp.parse_neighbors_cdp, cp.parse_ip_routes,
                cp.parse_show_interface_counters):
         assert fn("") in ({}, [])
