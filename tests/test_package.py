@@ -214,3 +214,19 @@ def test_cmdio_reexported_and_functional(cp, tmp_path):
     assert cmdio._load_cmd_output(c2f, "show missing") == ""  # absent command
     # variant fallthrough: first variant errored, second is good.
     assert cmdio._load_cmd_output(c2f, "show b", "show a").strip() == "Gi1/0/1 connected"
+
+
+def test_excel_reexported_and_functional(cp):
+    from cisco_toolkit import excel
+    # the sheet/header helpers main() + the write_* builders use are re-exported as-is.
+    for name in ("_census_header", "_census_autofit", "find_header_row", "ensure_headers", "sortkey"):
+        assert getattr(cp, name) is getattr(excel, name)
+    # norm_header / HEADER_TO_FIELD are package-internal (only find_header_row uses them).
+    assert callable(excel.norm_header) and not hasattr(cp, "norm_header")
+    assert isinstance(excel.HEADER_TO_FIELD, dict) and not hasattr(cp, "HEADER_TO_FIELD")
+    # functional smokes straight from the package.
+    assert excel.norm_header("  Switchport  Mode ") == "switchport mode"
+    assert excel.HEADER_TO_FIELD["fhrp behavior"] == "hsrp_behavior"
+    # port-row sort: port-channels first, then Eth/Fa/Gi... by number (not lexical).
+    ports = ["Gi1/0/2", "Po1", "Gi1/0/10", "Gi1/0/1"]
+    assert sorted(ports, key=excel.sortkey) == ["Po1", "Gi1/0/1", "Gi1/0/2", "Gi1/0/10"]

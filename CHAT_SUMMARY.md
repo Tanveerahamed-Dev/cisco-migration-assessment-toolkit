@@ -5,6 +5,44 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 20: stand up the Excel layer (shared helpers)
+
+On branch `phase2-split-excel1`. Byte-identical. **First excel slice — establishes
+`cisco_toolkit/excel.py`** (the foundation; writers follow). Monolith **~2,973 lines** (<3k).
+
+- New `cisco_toolkit/excel.py` (imports `openpyxl.styles`/`utils` + textutils.normalize_ifname;
+  a clean layer ABOVE analyze — excel→textutils only for now, no cycle). Holds: `_CENSUS_HDR_FILL`/
+  `_census_header`/`_census_autofit` (openpyxl sheet formatting), `norm_header`/`HEADER_TO_FIELD`/
+  `find_header_row`/`ensure_headers` (template header matching), `sortkey` (port-row order).
+- Import-backs: `_census_header`/`_census_autofit` (~12 sheet writers), `find_header_row`/
+  `ensure_headers` (main() template-fill at ~3102), `sortkey` (append_interface_rows). Package-
+  internal: `norm_header`/`HEADER_TO_FIELD`/`_CENSUS_HDR_FILL`. NO F401 cascade this time (the
+  openpyxl Font/Alignment/etc. imports stay — many other monolith writers still use them).
+- Mind the cmdio test (test_cmdio) which now has the excel test after it; grepped tests/ first
+  (no `cp.norm_header`/`cp.HEADER_TO_FIELD` refs; golden exercises find_header_row via the real
+  pipeline subprocess, not cp.). New `test_excel_reexported_and_functional` (identity + norm_header/
+  sortkey/HEADER_TO_FIELD smokes). **65 tests** (was 64), golden byte-identical, ruff clean, mypy 101.
+  `.md` V3.23.30.
+
+**Excel layer plan (this is the BIG remaining layer, several PRs):** now that the helper
+foundation is in excel.py, move the `write_*` sheet writers in sheet-group batches, each importing
+the analyze/parse computes back (mostly mechanical). Groups: (a) census/inventory
+(write_vlan_census/endpoint_census/device_inventory/svi_gateway/stp_detail + `_is_svi`);
+(b) move-group/topology/findings/capacity (+ `write_topology_diagram`/`_mermaid_id`);
+(c) health/analysis writers (health_scores/score_sensitivity/migration_readiness/cross_layer/
+causality/failure_impact/protocol_health/interface_health/security_posture/routing_adjacency);
+(d) the FUSED compute-in-writer ones (write_physical_health_sheet, write_l3_forwarding_sheet +
+`_parse_track`/`_track_summary`, write_flow_trace_sheet) — these return records to main();
+(e) `append_interface_rows` + the build_* helpers (build_device_physical/build_interfaces/
+build_switch_identity) + global_arp/dual-connection + `debug_scan_headers`. **Next = step 21:
+census/inventory writer group.** Then html (snapshot/explorer/diff/topology_diagram), then `__main__`.
+Sequential — `/batch` does NOT fit.
+
+**NOTE (harness):** after `git checkout -b`, Read a file (any slice) before Editing it — the
+checkout resets the Edit tool's read-tracking (hit this on analyze.py in step 19).
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 19: flow-trace -> analyze (ANALYZE LAYER COMPLETE)
 
 On branch `phase2-split-analyze9`. Byte-identical. **Last analyze cluster.** Monolith
