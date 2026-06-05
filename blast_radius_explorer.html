@@ -43,6 +43,9 @@
   }
   #gnodes g.node:focus{outline:none}
   #gnodes g.node:focus-visible{outline:2.5px solid var(--accent); outline-offset:5px}
+  /* screen-reader-only: visually hidden but available to assistive tech (PHASE 3 P1 increment 3) */
+  .sr-only{position:absolute !important; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0}
   @media (prefers-reduced-motion: reduce){
     *, *::before, *::after{
       transition-duration:.001ms !important; animation-duration:.001ms !important;
@@ -311,6 +314,8 @@
         <div class="panelbox modetag" id="modetag"></div>
       </div>
       <svg id="svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Network topology graph"></svg>
+      <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="srTable" class="sr-only" role="region" aria-label="Topology as a table"></div>
       <div class="overlay ov-bottom">
         <div class="panelbox hint" id="hint"></div>
         <div class="panelbox legend" id="legend"></div>
@@ -672,7 +677,7 @@ function load(snap,label,live){
   SEL=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
-  computeLayout(); buildChips(); fitView(); repaint(); renderDrawer();
+  computeLayout(); buildChips(); renderSrTable(); fitView(); repaint(); renderDrawer();
 }
 function computeLayout(){
   const r = LAYOUT==="radial"? radialLayout(MODEL) : layeredLayout(MODEL);
@@ -926,9 +931,29 @@ function onNodeKey(ev,h){
   ev.preventDefault();
   const cur=NAV.indexOf(h); focusNodeAt((cur<0?NAVI:cur)+d);
 }
+function srAnnounce(msg){const el=document.getElementById("srStatus"); if(el)el.textContent=msg;}
+function neighborsOf(h){if(!MODEL||!MODEL.adj.get(h))return [];
+  return [...new Set(MODEL.adj.get(h).map(li=>{const L=MODEL.links[li];return L.a===h?L.b:L.a;}))].sort();}
+function renderSrTable(){
+  const host=document.getElementById("srTable"); if(!host)return;
+  if(!MODEL){host.innerHTML=""; return;}
+  const esc=s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  const order=NAV.length?NAV:MODEL.hosts;
+  const rows=order.map(h=>{
+    const role=deviceRole(MODEL,h)==="core"?"Core / distribution":"Access";
+    const nbrs=neighborsOf(h);
+    return `<tr><th scope="row">${esc(h)}</th><td>${role}</td><td>${epTotalOf(h)}</td>`+
+           `<td>${nbrs.length?esc(nbrs.join(", ")):"—"}</td></tr>`;
+  }).join("");
+  host.innerHTML=`<table><caption>Network topology — ${MODEL.hosts.length} switches, ${MODEL.links.length} links `+
+    `(text equivalent of the graph)</caption><thead><tr><th scope="col">Switch</th><th scope="col">Role</th>`+
+    `<th scope="col">Hosts</th><th scope="col">Connects to</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
 function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();}
-  if(MODE==="trace")pickTrace(h);
-  else if(MODE==="blast"||MODE==="health"){SEL=(SEL===h)?null:h;repaint();renderDrawer();}}
+  if(MODE==="trace"){pickTrace(h);
+    srAnnounce(TRACE_SRC&&TRACE_DST?`Path traced from ${TRACE_SRC} to ${TRACE_DST}.`:(TRACE_SRC?`Source ${TRACE_SRC} selected; choose a destination.`:"Selection cleared."));}
+  else if(MODE==="blast"||MODE==="health"){SEL=(SEL===h)?null:h;repaint();renderDrawer();
+    srAnnounce(SEL?`${h} selected. ${deviceRole(MODEL,h)==="core"?"Core / distribution":"Access"} switch, ${epTotalOf(h)} hosts.`:`${h} deselected.`);}}
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(SEL){SEL=null;repaint();renderDrawer();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
@@ -941,7 +966,8 @@ function setMode(m){MODE=m; document.querySelectorAll("#modes button").forEach(b
   if(m!=="blast"&&m!=="health")SEL=null;
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
-  repaint(); renderDrawer();}
+  repaint(); renderDrawer();
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health"}[m]||m)+" mode.");}
 
 /* =====================================================================
    HINTS / MODE TAG / LEGEND
