@@ -1665,7 +1665,59 @@
      "sport": null,
      "dport": null
     }
+   ],
+   "MGMT_IN": [
+    {
+     "action": "permit",
+     "raw": "permit tcp object-group MGMT_HOSTS any eq 22",
+     "proto": "tcp",
+     "src": {
+      "group": "MGMT_HOSTS"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": {
+      "op": "eq",
+      "val": 22
+     },
+     "unevaluable": true
+    },
+    {
+     "action": "deny",
+     "raw": "deny ip any any",
+     "proto": "ip",
+     "src": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": null
+    }
    ]
+  }
+ },
+ "object_groups": {
+  "core1": {
+   "MGMT_HOSTS": {
+    "kind": "network",
+    "members": [
+     {
+      "ip": "10.0.99.10",
+      "wild": "0.0.0.0"
+     },
+     {
+      "ip": "10.0.40.0",
+      "wild": "0.0.0.255"
+     }
+    ]
+   }
   }
  }
 }

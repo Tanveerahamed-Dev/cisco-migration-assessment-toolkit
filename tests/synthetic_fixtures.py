@@ -123,6 +123,9 @@ interface Vlan30
 """,
     "show running-config": """\
 !
+object-group network MGMT_HOSTS
+ host 10.0.99.10
+ 10.0.40.0 255.255.255.0
 ip access-list extended VOICE_FILTER
  permit udp 10.0.20.0 0.0.0.255 any range 16384 32767
  permit udp 10.0.20.0 0.0.0.255 any eq 5060
@@ -130,6 +133,9 @@ ip access-list extended VOICE_FILTER
 ip access-list extended PROTECT_SERVERS
  permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443
  permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 22
+ deny   ip any any
+ip access-list extended MGMT_IN
+ permit tcp object-group MGMT_HOSTS any eq 22
  deny   ip any any
 !
 """,
