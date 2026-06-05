@@ -111,7 +111,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Gi1/0/2": {
     "port": "Gi1/0/2",
@@ -159,7 +161,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Gi1/0/24": {
     "port": "Gi1/0/24",
@@ -207,7 +211,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "Gi0/1",
-    "neighbor_platform": "cisco WS-C2960X-48"
+    "neighbor_platform": "cisco WS-C2960X-48",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Gi1/0/5": {
     "port": "Gi1/0/5",
@@ -255,7 +261,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Gi1/0/9": {
     "port": "Gi1/0/9",
@@ -303,7 +311,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Po1": {
     "port": "Po1",
@@ -351,7 +361,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "Po1",
-    "neighbor_platform": "cisco N9K-C93180YC-EX"
+    "neighbor_platform": "cisco N9K-C93180YC-EX",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -399,7 +411,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Vlan20": {
     "port": "Vlan20",
@@ -447,7 +461,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "VOICE_FILTER",
+    "acl_out": ""
    },
    "Vlan30": {
     "port": "Vlan30",
@@ -495,7 +511,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": "PROTECT_SERVERS"
    }
   },
   "core2": {
@@ -545,7 +563,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Eth1/2": {
     "port": "Eth1/2",
@@ -593,7 +613,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Po1": {
     "port": "Po1",
@@ -641,7 +663,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "Po1",
-    "neighbor_platform": "cisco WS-C3850-24T"
+    "neighbor_platform": "cisco WS-C3850-24T",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -689,7 +713,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Vlan20": {
     "port": "Vlan20",
@@ -737,7 +763,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    }
   },
   "access1": {
@@ -787,7 +815,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "Gi1/0/24",
-    "neighbor_platform": "cisco WS-C3850-24T"
+    "neighbor_platform": "cisco WS-C3850-24T",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Gi0/2": {
     "port": "Gi0/2",
@@ -835,7 +865,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "Gi0",
-    "neighbor_platform": "cisco AIR-AP2802I"
+    "neighbor_platform": "cisco AIR-AP2802I",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Gi0/3": {
     "port": "Gi0/3",
@@ -883,7 +915,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    },
    "Gi0/10": {
     "port": "Gi0/10",
@@ -931,7 +965,9 @@
     "stp_blk_vlans": "",
     "stp_other_vlans": "",
     "neighbor_port": "",
-    "neighbor_platform": ""
+    "neighbor_platform": "",
+    "acl_in": "",
+    "acl_out": ""
    }
   }
  },

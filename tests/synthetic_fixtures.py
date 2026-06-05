@@ -114,10 +114,12 @@ interface Vlan10
 interface Vlan20
  description VOICE
  ip address 10.0.20.2 255.255.255.0
+ ip access-group VOICE_FILTER in
  standby 20 ip 10.0.20.1
 interface Vlan30
  description SERVERS
  ip address 10.0.30.1 255.255.255.0
+ ip access-group PROTECT_SERVERS out
 """,
     "show etherchannel summary": """\
 Flags:  D - down        P - bundled in port-channel
