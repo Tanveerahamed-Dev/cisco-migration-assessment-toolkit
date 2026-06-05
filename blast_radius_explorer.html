@@ -196,6 +196,7 @@
   .node.dim{opacity:.32}
   .node.dead .body{fill:url(#hatch); stroke:var(--crit); stroke-width:2; stroke-dasharray:5 3}
   .node.match .body{stroke:var(--accent); stroke-width:2.5}
+  .node.pinned .halo{stroke:var(--accent); stroke-opacity:.25; stroke-width:2; stroke-dasharray:3 3; fill:none}
   .nname{fill:var(--text); font:650 12px var(--sans); text-anchor:middle; pointer-events:none}
   .nsub{fill:var(--text-dim); font:500 9.5px var(--mono); text-anchor:middle; pointer-events:none}
   .nrole{fill:var(--text-faint); font:650 8px var(--sans); letter-spacing:1px; text-anchor:middle; pointer-events:none; text-transform:uppercase}
@@ -383,6 +384,7 @@
       <button class="btn iconbtn" id="fitBtn" title="Fit to screen (F)" aria-label="Fit graph to screen">⤢</button>
       <button class="btn iconbtn" id="exportSvgBtn" title="Export topology as SVG" aria-label="Export topology as SVG">⤓</button>
       <button class="btn iconbtn" id="exportPngBtn" title="Export topology as PNG" aria-label="Export topology as PNG">▦</button>
+      <button class="btn iconbtn" id="resetBtn" title="Reset layout — clear pinned positions (R)" aria-label="Reset layout, clear pinned node positions">⟲</button>
       <button class="btn iconbtn" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
       <button class="btn iconbtn" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">?</button>
     </div>
@@ -418,11 +420,12 @@
   <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">5</span></div>
   <div class="krow"><span>Focus search</span><span class="kbd">/</span></div>
   <div class="krow"><span>Fit to screen</span><span class="kbd">F</span></div>
+  <div class="krow"><span>Reset layout (clear pins)</span><span class="kbd">R</span></div>
   <div class="krow"><span>Clear selection</span><span class="kbd">Esc</span></div>
   <div class="krow"><span>Toggle theme</span><span class="kbd">T</span></div>
   <div class="krow"><span>Toggle table view</span><span class="kbd">G</span></div>
   <div class="krow"><span>Pan / zoom</span><span>drag · scroll wheel</span></div>
-  <div class="krow"><span>Move a switch</span><span>drag the node</span></div>
+  <div class="krow"><span>Move a switch</span><span>drag the node (pin persists)</span></div>
   <div class="krow"><span>Navigate switches</span><span><span class="kbd">Tab</span> then <span class="kbd">←</span><span class="kbd">→</span><span class="kbd">↑</span><span class="kbd">↓</span></span></div>
   <div class="krow"><span>Select / remove switch</span><span class="kbd">Enter</span></div>
 </div></div>
@@ -820,6 +823,18 @@ let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // 
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 
+/* ---- pinned (hand-dragged) node positions ---------------------------------
+   PINNED maps host->{x,y} for nodes the user has dragged. These survive layout
+   toggles, mode changes, and reloads (overlaid in computeLayout, persisted to
+   localStorage). All storage is feature-detected (file:// opaque origins throw)
+   so the tool still works fully offline with an in-memory fallback. */
+let PINNED={};
+function pinsKey(){const s=(SNAP&&SNAP.source)||SNAP_LABEL||"demo";return "nme-pins:"+s;}
+function savePins(){try{localStorage.setItem(pinsKey(),JSON.stringify(PINNED));}catch(e){}}
+function loadPins(){try{PINNED=JSON.parse(localStorage.getItem(pinsKey()))||{};}catch(e){PINNED={};}}
+function clearPins(){PINNED={};try{localStorage.removeItem(pinsKey());}catch(e){}}
+function resetLayout(){clearPins();computeLayout();fitView();repaint();}
+
 function epTotalOf(h){let t=0;const m=MODEL.endpoints.get(h);if(m)for(const n of m.values())t+=n;return t;}
 function gwVlansOf(h){const out=[];for(const [v,s] of MODEL.gateways)if(s.has(h))out.push(v);return out.sort((a,b)=>a-b);}
 function isGateway(h){for(const s of MODEL.gateways.values())if(s.has(h))return true;return false;}
@@ -868,12 +883,22 @@ function load(snap,label,live){
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
+  loadPins();
   computeLayout(); buildChips(); renderSrTable(); fitView(); repaint(); renderDrawer();
   if(tableShown())renderTable();
 }
 function computeLayout(){
   const r = LAYOUT==="radial"? radialLayout(MODEL) : layeredLayout(MODEL);
-  POS=r.pos; LOGICAL={w:r.logicalW,h:r.logicalH}; buildSvg();
+  POS=r.pos; LOGICAL={w:r.logicalW,h:r.logicalH};
+  // Overlay hand-pinned positions so a dragged node survives layout/mode/reload.
+  // Drop pins for hosts no longer in this MODEL so stale entries don't linger.
+  const live=new Set(MODEL.hosts); let pruned=false;
+  for(const h in PINNED){
+    if(live.has(h)&&POS[h])POS[h]={x:PINNED[h].x,y:PINNED[h].y};
+    else{delete PINNED[h];pruned=true;}
+  }
+  if(pruned)savePins();
+  buildSvg();
 }
 
 /* ---- VLAN filter chips ---- */
@@ -967,7 +992,7 @@ function buildSvg(){
   MODEL.hosts.forEach(h=>{
     const role=deviceRole(MODEL,h); const core=role==="core";
     const w=core?164:138, ht=core?58:46;
-    const g=el("g",{class:"node",transform:`translate(${POS[h].x},${POS[h].y})`});
+    const g=el("g",{class:"node"+(PINNED[h]?" pinned":""),transform:`translate(${POS[h].x},${POS[h].y})`});
     const halo=el("rect",{class:"halo",x:-w/2-4,y:-ht/2-4,rx:13,width:w+8,height:ht+8,fill:"none"});
     const body=el("rect",{class:"body",x:-w/2,y:-ht/2,rx:10,width:w,height:ht});
     g.appendChild(halo); g.appendChild(body);
@@ -998,6 +1023,7 @@ function buildSvg(){
 }
 function shortName(h){return h.length>20?h.slice(0,19)+"…":h;}
 function positionNode(h){nodeEls[h].g.setAttribute("transform",`translate(${POS[h].x},${POS[h].y})`);}
+function markPinned(h){const n=nodeEls[h];if(n&&n.g)n.g.classList.add("pinned");}
 function positionAll(){MODEL.hosts.forEach(positionNode); updateEdges();}
 function updateEdges(){
   edgeEls.forEach(({e,path,badge,btext})=>{const a=POS[e.a],b=POS[e.b];if(!a||!b)return;
@@ -1027,7 +1053,10 @@ window.addEventListener("mousemove",ev=>{
   if(dragNode){const p=screenToLogical(ev.clientX,ev.clientY);
     POS[dragNode]={x:p.x+dragStart.dx,y:p.y+dragStart.dy};dragMoved=true;positionNode(dragNode);updateEdges();return;}
   if(panning){view.tx=ev.clientX-panStart.x;view.ty=ev.clientY-panStart.y;applyTransform();}});
-window.addEventListener("mouseup",()=>{dragNode=null;panning=false;svg().classList.remove("grabbing");});
+window.addEventListener("mouseup",()=>{
+  // A drag that actually moved a node becomes a persistent pin.
+  if(dragNode&&dragMoved&&POS[dragNode]){PINNED[dragNode]={x:POS[dragNode].x,y:POS[dragNode].y};savePins();markPinned(dragNode);}
+  dragNode=null;panning=false;svg().classList.remove("grabbing");});
 
 /* =====================================================================
    REPAINT — per-mode node/link styling on the shared canvas
@@ -2435,6 +2464,7 @@ document.getElementById("search").addEventListener("keydown",e=>{if(e.key==="Ent
 document.getElementById("fitBtn").onclick=fitView;
 document.getElementById("exportSvgBtn").onclick=exportSvg;
 document.getElementById("exportPngBtn").onclick=()=>{exportPng().catch(()=>{});};
+document.getElementById("resetBtn").onclick=resetLayout;
 document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
 document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();writeHash();};
 document.getElementById("tableBtn").onclick=()=>toggleTableView();
@@ -2467,6 +2497,7 @@ window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   else if(k==="4")setMode("flow");else if(k==="5")setMode("health");else if(k==="6")setMode("protocols");
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
   else if(k==="g")toggleTableView();
+  else if(k==="r")resetLayout();
   else if(k==="/"){e.preventDefault();document.getElementById("search").focus();}
   else if(k==="escape"){onBgClick();document.getElementById("help").classList.remove("on");}});
 
