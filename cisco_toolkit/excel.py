@@ -14,9 +14,16 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from cisco_toolkit.analyze import (
-    _health_band, compute_findings, compute_move_groups, compute_topology_links,
+    _health_band, compute_causality_chains, compute_failure_impact, compute_findings,
+    compute_move_groups, compute_topology_links,
 )
+from cisco_toolkit.cmdio import _load_cmd_output
 from cisco_toolkit.model import DevicePhysical, InterfaceData
+from cisco_toolkit.parse import (
+    parse_auth_sessions, parse_bgp_summary, parse_dhcp_snooping_binding,
+    parse_eigrp_neighbors, parse_ospf_neighbors, parse_port_security,
+    parse_show_interface_counters,
+)
 from cisco_toolkit.textutils import _split_macs, normalize_ifname
 
 logger = logging.getLogger(__name__)
@@ -777,3 +784,182 @@ def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
     ws.freeze_panes = "A2"
     nready = sum(1 for g in readiness if g["readiness"] == "READY")
     logger.info(f"  [OK] '{MIGRATION_READINESS_SHEET_NAME}' sheet: {len(readiness)} group(s), {nready} READY")
+
+
+# =============================================================================
+# Tier-2 (file-reading) + intelligence sheet writers (PHASE 2.7 step 24).
+# interface-health / security / routing read collected output (cmdio._load_cmd_output)
+# and call parse.py parsers; causality / failure call the analyze blast-radius computes.
+# =============================================================================
+INTERFACE_HEALTH_SHEET_NAME = "Interface Health"
+
+def write_interface_health_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
+    """One row per interface with a health signal worth seeing: any errors/CRC/drops,
+    or oper-up with 'Last input never' (connected-but-idle, a retire candidate)."""
+    cols = ["Hostname", "Port", "Oper", "Input Errors", "CRC", "Output Drops",
+            "Last Input", "Last Output", "Flag"]
+    if INTERFACE_HEALTH_SHEET_NAME in wb.sheetnames:
+        del wb[INTERFACE_HEALTH_SHEET_NAME]
+    ws = wb.create_sheet(INTERFACE_HEALTH_SHEET_NAME)
+    _census_header(ws, cols)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="center")
+    DAT_C = Alignment(horizontal="center", vertical="center")
+    warn = PatternFill("solid", fgColor="F4CCCC")
+    idle = PatternFill("solid", fgColor="FFF2CC")
+    rows = []
+    for host in sorted(all_cmd_to_files):
+        out = _load_cmd_output(all_cmd_to_files[host], "show interfaces", "show interface")
+        if not out:
+            continue
+        for port, rec in parse_show_interface_counters(out).items():
+            ie = rec["input_errors"] if isinstance(rec["input_errors"], int) else 0
+            cr = rec["crc"] if isinstance(rec["crc"], int) else 0
+            od = rec["output_drops"] if isinstance(rec["output_drops"], int) else 0
+            has_err = bool(ie or cr or od)
+            is_idle = (str(rec["oper"]).lower().startswith("up")
+                       and str(rec["last_input"]).lower() == "never")
+            if not (has_err or is_idle):
+                continue
+            flag = []
+            if has_err: flag.append("Errors")
+            if is_idle: flag.append("Up but idle (no input)")
+            rows.append((host, port, rec, "; ".join(flag), has_err, is_idle))
+    def _key(t):
+        host, port = t[0], t[1]
+        nums = [int(x) for x in re.findall(r"\d+", port)]
+        return (host.lower(), port[:2].lower(), nums)
+    rows.sort(key=_key)
+    r = 2
+    for host, port, rec, flag, has_err, is_idle in rows:
+        vals = [host, port, rec["oper"], rec["input_errors"], rec["crc"],
+                rec["output_drops"], rec["last_input"], rec["last_output"], flag]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
+            c.alignment = DAT_C if 4 <= col <= 6 else DAT_L
+        if has_err:
+            ws.cell(row=r, column=9).fill = warn
+        elif is_idle:
+            ws.cell(row=r, column=9).fill = idle
+        r += 1
+    _census_autofit(ws, len(cols), r - 1)
+    logger.info(f"  [OK] '{INTERFACE_HEALTH_SHEET_NAME}' sheet: {len(rows)} port(s) flagged")
+
+
+SECURITY_SHEET_NAME = "Security Posture"
+
+def write_security_posture_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
+    """One row per port with port-security, an 802.1X session, or DHCP-snoop bindings."""
+    cols = ["Hostname", "Port", "Port-Security Max", "PS Current", "PS Violations",
+            "PS Action", "802.1X Method", "802.1X Status", "Auth MAC", "DHCP-Snoop Bindings"]
+    if SECURITY_SHEET_NAME in wb.sheetnames:
+        del wb[SECURITY_SHEET_NAME]
+    ws = wb.create_sheet(SECURITY_SHEET_NAME)
+    _census_header(ws, cols)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="center")
+    rows = []
+    for host in sorted(all_cmd_to_files):
+        c2f = all_cmd_to_files[host]
+        ps = parse_port_security(_load_cmd_output(c2f, "show port-security"))
+        au = parse_auth_sessions(_load_cmd_output(c2f, "show authentication sessions"))
+        ds = parse_dhcp_snooping_binding(_load_cmd_output(c2f, "show ip dhcp snooping binding"))
+        for p in (set(ps) | set(au) | set(ds)):
+            pv = ps.get(p, {}); av = au.get(p, {})
+            rows.append((host, p, pv.get("max", ""), pv.get("current", ""),
+                         pv.get("violations", ""), pv.get("action", ""),
+                         av.get("method", ""), av.get("status", ""), av.get("mac", ""),
+                         ds.get(p, "")))
+    def _key(t):
+        host, port = t[0], t[1]
+        nums = [int(x) for x in re.findall(r"\d+", port)]
+        return (host.lower(), port[:2].lower(), nums)
+    rows.sort(key=_key)
+    r = 2
+    for row in rows:
+        for col, v in enumerate(row, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
+        r += 1
+    _census_autofit(ws, len(cols), r - 1)
+    logger.info(f"  [OK] '{SECURITY_SHEET_NAME}' sheet: {len(rows)} port(s)")
+
+
+ROUTING_SHEET_NAME = "Routing Adjacencies"
+
+def write_routing_adjacency_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]]) -> None:
+    """One row per dynamic-routing adjacency (OSPF/EIGRP neighbor, BGP peer)."""
+    cols = ["Hostname", "Protocol", "Neighbor", "State / PfxRcd", "Interface / AS"]
+    if ROUTING_SHEET_NAME in wb.sheetnames:
+        del wb[ROUTING_SHEET_NAME]
+    ws = wb.create_sheet(ROUTING_SHEET_NAME)
+    _census_header(ws, cols)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="center")
+    rows = []
+    for host in sorted(all_cmd_to_files):
+        c2f = all_cmd_to_files[host]
+        for n in parse_ospf_neighbors(_load_cmd_output(c2f, "show ip ospf neighbor")):
+            rows.append((host, "OSPF", n["neighbor"], n["state"], n["interface"]))
+        for n in parse_eigrp_neighbors(_load_cmd_output(c2f, "show ip eigrp neighbors")):
+            rows.append((host, "EIGRP", n["neighbor"], n["state"], n["interface"]))
+        for n in parse_bgp_summary(_load_cmd_output(c2f, "show ip bgp summary", "show bgp summary")):
+            rows.append((host, "BGP", n["neighbor"], n["state"], f"AS {n['as']}"))
+    r = 2
+    for row in sorted(rows, key=lambda t: (t[0].lower(), t[1], t[2])):
+        for col, v in enumerate(row, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
+        r += 1
+    _census_autofit(ws, len(cols), r - 1)
+    logger.info(f"  [OK] '{ROUTING_SHEET_NAME}' sheet: {len(rows)} adjacency(ies)")
+
+
+CAUSALITY_SHEET_NAME = "Causality Chains"
+FAILURE_SHEET_NAME   = "Failure Impact"
+
+def write_causality_chains_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write (or replace) 'Causality Chains': cause -> mechanism -> blast radius reasoning."""
+    cols = ["Severity", "Trigger (root cause)", "Mechanism (why it propagates)",
+            "Impact (blast radius)", "Mitigation"]
+    if CAUSALITY_SHEET_NAME in wb.sheetnames:
+        del wb[CAUSALITY_SHEET_NAME]
+    ws = wb.create_sheet(CAUSALITY_SHEET_NAME)
+    _census_header(ws, cols)
+    chains = compute_causality_chains(all_interfaces)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    r = 2
+    for sev, trig, mech, impact, mit in chains:
+        for col, v in enumerate([sev, trig, mech, impact, mit], 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
+            if col == 1 and sev in _SEV_FILL:
+                c.fill = PatternFill("solid", fgColor=_SEV_FILL[sev])
+        r += 1
+    _census_autofit(ws, len(cols), r - 1)
+    for colL, w in (("B", 34), ("C", 46), ("D", 46), ("E", 40)):
+        ws.column_dimensions[colL].width = w
+    logger.info(f"  [OK] '{CAUSALITY_SHEET_NAME}' sheet: {len(chains)} chain(s)")
+
+
+def write_failure_impact_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write (or replace) 'Failure Impact': per-switch migration blast-radius simulation."""
+    cols = ["Severity", "Switch (remove / migrate)", "VLANs Impacted", "Stranded Endpoints",
+            "Hard Partitions", "Backup-Covered", "FHRP-Covered", "Per-VLAN Detail"]
+    if FAILURE_SHEET_NAME in wb.sheetnames:
+        del wb[FAILURE_SHEET_NAME]
+    ws = wb.create_sheet(FAILURE_SHEET_NAME)
+    _census_header(ws, cols)
+    rows = compute_failure_impact(all_interfaces)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    r = 2
+    for rec in rows:
+        vals = [rec["severity"], rec["host"], rec["vlans_impacted"], rec["stranded"],
+                rec["hard"], rec["backup"], rec["fhrp"], rec["detail"]]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
+            if col == 1 and rec["severity"] in _SEV_FILL:
+                c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
+        r += 1
+    _census_autofit(ws, len(cols), r - 1)
+    ws.column_dimensions["H"].width = 70
+    logger.info(f"  [OK] '{FAILURE_SHEET_NAME}' sheet: {len(rows)} switch(es) analyzed")
