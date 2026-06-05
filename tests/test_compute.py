@@ -221,6 +221,33 @@ def test_protocol_boundaries_sheet():
     assert row[4] == "BGP/OSPF"   # two-way ospf<->bgp -> mutual-redistribution risk flagged
 
 
+def test_compute_addressing_conflicts():
+    # workbook surfacing of the addressing-integrity finding: duplicate IP + overlapping subnet (same VRF),
+    # while a cross-VRF overlap and a normal FHRP pair (same VLAN, different IPs) are NOT flagged.
+    from cisco_toolkit.excel import compute_addressing_conflicts
+    from cisco_toolkit.model import InterfaceData
+    ifaces = {
+        "sw1": {
+            "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.2 255.255.255.0"),
+            "Vlan99": InterfaceData(port="Vlan99", svi_ip="10.0.99.2 255.255.255.0"),   # dup IP with sw2 Vlan99
+            "Vlan50": InterfaceData(port="Vlan50", svi_ip="10.0.77.1 255.255.255.0"),   # overlap w/ Vlan51 (same VRF)
+            "Vlan51": InterfaceData(port="Vlan51", svi_ip="10.0.77.2 255.255.255.0"),
+            "Vlan60": InterfaceData(port="Vlan60", svi_ip="10.0.88.1 255.255.255.0", vrf="RED"),   # cross-VRF overlap -> NOT flagged
+            "Vlan61": InterfaceData(port="Vlan61", svi_ip="10.0.88.2 255.255.255.0", vrf="BLUE"),
+        },
+        "sw2": {
+            "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.3 255.255.255.0"),   # FHRP pair (same VLAN, diff IP) -> NOT flagged
+            "Vlan99": InterfaceData(port="Vlan99", svi_ip="10.0.99.2 255.255.255.0"),
+        },
+    }
+    c = compute_addressing_conflicts(ifaces)
+    dup_ips = {d["ip"] for d in c["dup_ip"]}
+    overlaps = {d["net"] for d in c["dup_subnet"]}
+    assert dup_ips == {"10.0.99.2"}                 # same physical IP on sw1+sw2 Vlan99
+    assert overlaps == {"10.0.77.0/24"}             # two VLANs share a subnet in the same VRF
+    assert "10.0.88.0/24" not in overlaps           # same subnet but different VRFs -> intentional, not flagged
+
+
 def test_build_routing_neighbors(tmp_path):
     # protocol-to-protocol analysis: OSPF/EIGRP/BGP adjacencies parsed from already-collected output,
     # keeping the full state token so the explorer can tell a healthy (FULL) from a stuck (EXSTART) peer.

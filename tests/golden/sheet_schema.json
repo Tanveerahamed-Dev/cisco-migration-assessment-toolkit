@@ -250,5 +250,11 @@
   "Redistribution (from -> into)",
   "Route-map(s)",
   "Mutual"
+ ],
+ "Addressing Conflicts": [
+  "Type",
+  "Address / Subnet",
+  "VRF",
+  "Configured on"
  ]
 }
