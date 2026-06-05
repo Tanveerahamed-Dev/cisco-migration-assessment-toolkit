@@ -1,12 +1,22 @@
-"""The snapshot-reporting layer: render outputs from the pre/post-cutover snapshots that
-snapshot_state() produces. Currently the '--compare OLD NEW' diff workbook (Summary /
-Interface / Endpoint / SVI changes); snapshot_state + the HTML explorer follow in step 30.
-Extracted verbatim from COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 29 (behaviour
-byte-identical). Depends on openpyxl + stdlib re; independent of the rest of the package."""
+"""The snapshot-reporting layer: build the pre/post-cutover snapshot (snapshot_state - the JSON
+contract embedded in the HTML and written beside every workbook) and render outputs from it - the
+Blast-Radius Explorer HTML (write_html_explorer) and the '--compare OLD NEW' diff workbook
+(write_diff_workbook). Extracted verbatim from COLLECT_PARSE_V3_23_0.py across PHASE 2.7 steps
+29-30 (behaviour byte-identical). Depends on openpyxl + stdlib + the package's model/__version__."""
+import json
+import logging
+import os
 import re
+from datetime import datetime
+from typing import Dict, List
 
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+
+from cisco_toolkit import __version__
+from cisco_toolkit.model import DevicePhysical, InterfaceData
+
+logger = logging.getLogger(__name__)
 
 
 _DIFF_FIELDS = ["status", "switchport_mode", "vlan", "trunk_native_vlan",
@@ -134,3 +144,76 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     autofit(ws, 4); ws.column_dimensions["D"].width = 60
 
     wb.save(out_path)
+
+
+def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                   all_device_physical: List[DevicePhysical]) -> dict:
+    import dataclasses
+    return {
+        "schema": "collect_parse_snapshot/1",
+        "script_version": f"V{__version__}",   # NEW-V3.23.8 (M2): was hard-coded "V3.23.0"
+        "generated_at": datetime.now().isoformat(),
+        "devices": {dp.hostname: dataclasses.asdict(dp) for dp in all_device_physical},
+        "interfaces": {host: {port: dataclasses.asdict(d) for port, d in ifaces.items()}
+                       for host, ifaces in all_interfaces.items()},
+    }
+
+
+# -----------------------------------------------------------------------------
+# NEW-V3.17: HTML consolidation. Bake the live snapshot into a copy of the
+# read-only Blast-Radius Explorer template so one run yields both the workbook
+# and a ready-to-open, air-gapped topology explorer (no second tool, no manual
+# snapshot load). Pure stdlib (os + json); no new imports.
+# -----------------------------------------------------------------------------
+def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
+    """
+    Emit a self-contained Blast-Radius Explorer with the live topology embedded.
+
+    Reads 'blast_radius_explorer.html' from the repo root (one directory above this package module),
+    replaces its demo bootstrap with the embedded snapshot, and writes the patched
+    single-file HTML to output_path.
+
+    The template boots on a demo via the LAST statement in its <script>:
+        load(demoSnapshot(),"DEMO TOPOLOGY",false);
+    That exact text also appears earlier as the demo button's onclick handler, so a
+    naive str.replace() (which replaces every occurrence) would corrupt the button -
+    it would inject a `const` declaration into an arrow-function body and break all
+    JS on the page. We therefore replace ONLY the final occurrence (the real
+    bootstrap) via rpartition(), leaving the demo button intact as a one-click way
+    back to the sample topology.
+
+    Safety / robustness:
+      * Missing template -> warn and skip (never crash a run whose workbook already saved).
+      * Bootstrap line absent (template changed) -> warn and skip.
+      * Snapshot is minified (separators=(',',':')) to keep the embedded payload small.
+      * Any literal '</' inside the data is escaped to '<\\/' so the JSON can never
+        break out of the <script> block (valid JSON escape; parses back to '</').
+      * label is emitted via json.dumps() -> a properly quoted/escaped JS string literal.
+    """
+    template = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "blast_radius_explorer.html")
+    if not os.path.isfile(template):
+        logger.warning(f"  HTML Explorer skipped: template not found at {template}")
+        return
+
+    with open(template, encoding="utf-8") as f:
+        html = f.read()
+
+    bootstrap = 'load(demoSnapshot(),"DEMO TOPOLOGY",false);'
+    if bootstrap not in html:
+        logger.warning("  HTML Explorer skipped: demo bootstrap line not found in template "
+                       "(template may have changed).")
+        return
+
+    embedded = json.dumps(snap_dict, separators=(",", ":"), ensure_ascii=False)
+    embedded = embedded.replace("</", "<\\/")          # cannot break out of <script>
+    replacement = (f"const EMBEDDED_SNAPSHOT={embedded};\n"
+                   f"load(EMBEDDED_SNAPSHOT,{json.dumps(label)},true);")
+
+    # Replace ONLY the last occurrence (the bootstrap), not the button's onclick.
+    head, _sep, tail = html.rpartition(bootstrap)
+    patched = head + replacement + tail
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(patched)
+    logger.info(f"[Phase 22] HTML Explorer written: {output_path}")

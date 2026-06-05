@@ -304,6 +304,10 @@ from cisco_toolkit.textutils import safe_fs_name
 # DevicePhysical) extracted to the package leaf; imported back so every type hint
 # and constructor call keeps working unchanged (behaviour byte-identical).
 from cisco_toolkit.model import InterfaceData, DevicePhysical
+# NEW-V3.23.40 (PHASE 2.7 step 30): the version string, hoisted into cisco_toolkit/__init__.py
+# (single source of truth); imported back here so LOG_FILE / argparse keep working + snapshot_state
+# (now in cisco_toolkit.html) reads the same value.
+from cisco_toolkit import __version__
 # NEW-V3.23.20-.25 (PHASE 2.7 steps 10-15): analyze-layer symbols imported back so the
 # Excel writers + the physical/L3/flow functions + main() still in this file keep working.
 # ScoringConfig / SCORING / _host_role are NOT re-exported anymore (step 15 moved their last
@@ -348,10 +352,11 @@ from cisco_toolkit.build import (
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections,
 )
-# NEW-V3.23.39 (PHASE 2.7 step 29): the snapshot-reporting layer - the '--compare OLD NEW'
-# diff workbook. Homed in cisco_toolkit/html.py; imported back so main()'s --compare path keeps
-# working. (snapshot_state + the HTML explorer follow in step 30.)
-from cisco_toolkit.html import write_diff_workbook
+# NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
+# contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
+# '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
+# building/serializing the snapshot + emitting the HTML + diff outputs.
+from cisco_toolkit.html import snapshot_state, write_html_explorer, write_diff_workbook
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -379,7 +384,7 @@ except ImportError:
 # =============================================================================
 # CONFIG
 # =============================================================================
-__version__           = "3.23.0"   # NEW-V3.23.8 (M2): single source of truth for the version
+# __version__ moved to cisco_toolkit/__init__.py (PHASE 2.7 step 30); imported back near the top of this file.
 LOG_FILE              = f"cisco_migration_autofill_v{__version__.replace('.', '_')}.log"
 COLLECTION_DIR        = "migration_collection_{}"
 DEFAULT_TEMPLATE_FILE = "Migration_Assessment_Template_Updated.xlsx"
@@ -960,77 +965,8 @@ def build_run_manifest(rootdir: str, script_version: str, devices_meta: List[dic
 # Tier 1 #2: Pre/post-cutover snapshot + diff. A snapshot JSON is written next
 # to every output workbook; '--compare OLD NEW' produces a diff workbook.
 # -----------------------------------------------------------------------------
-def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                   all_device_physical: List[DevicePhysical]) -> dict:
-    import dataclasses
-    return {
-        "schema": "collect_parse_snapshot/1",
-        "script_version": f"V{__version__}",   # NEW-V3.23.8 (M2): was hard-coded "V3.23.0"
-        "generated_at": datetime.now().isoformat(),
-        "devices": {dp.hostname: dataclasses.asdict(dp) for dp in all_device_physical},
-        "interfaces": {host: {port: dataclasses.asdict(d) for port, d in ifaces.items()}
-                       for host, ifaces in all_interfaces.items()},
-    }
-
-
-# -----------------------------------------------------------------------------
-# NEW-V3.17: HTML consolidation. Bake the live snapshot into a copy of the
-# read-only Blast-Radius Explorer template so one run yields both the workbook
-# and a ready-to-open, air-gapped topology explorer (no second tool, no manual
-# snapshot load). Pure stdlib (os + json); no new imports.
-# -----------------------------------------------------------------------------
-def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
-    """
-    Emit a self-contained Blast-Radius Explorer with the live topology embedded.
-
-    Reads 'blast_radius_explorer.html' from the same directory as THIS script,
-    replaces its demo bootstrap with the embedded snapshot, and writes the patched
-    single-file HTML to output_path.
-
-    The template boots on a demo via the LAST statement in its <script>:
-        load(demoSnapshot(),"DEMO TOPOLOGY",false);
-    That exact text also appears earlier as the demo button's onclick handler, so a
-    naive str.replace() (which replaces every occurrence) would corrupt the button -
-    it would inject a `const` declaration into an arrow-function body and break all
-    JS on the page. We therefore replace ONLY the final occurrence (the real
-    bootstrap) via rpartition(), leaving the demo button intact as a one-click way
-    back to the sample topology.
-
-    Safety / robustness:
-      * Missing template -> warn and skip (never crash a run whose workbook already saved).
-      * Bootstrap line absent (template changed) -> warn and skip.
-      * Snapshot is minified (separators=(',',':')) to keep the embedded payload small.
-      * Any literal '</' inside the data is escaped to '<\\/' so the JSON can never
-        break out of the <script> block (valid JSON escape; parses back to '</').
-      * label is emitted via json.dumps() -> a properly quoted/escaped JS string literal.
-    """
-    template = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "blast_radius_explorer.html")
-    if not os.path.isfile(template):
-        logger.warning(f"  HTML Explorer skipped: template not found at {template}")
-        return
-
-    with open(template, encoding="utf-8") as f:
-        html = f.read()
-
-    bootstrap = 'load(demoSnapshot(),"DEMO TOPOLOGY",false);'
-    if bootstrap not in html:
-        logger.warning("  HTML Explorer skipped: demo bootstrap line not found in template "
-                       "(template may have changed).")
-        return
-
-    embedded = json.dumps(snap_dict, separators=(",", ":"), ensure_ascii=False)
-    embedded = embedded.replace("</", "<\\/")          # cannot break out of <script>
-    replacement = (f"const EMBEDDED_SNAPSHOT={embedded};\n"
-                   f"load(EMBEDDED_SNAPSHOT,{json.dumps(label)},true);")
-
-    # Replace ONLY the last occurrence (the bootstrap), not the button's onclick.
-    head, _sep, tail = html.rpartition(bootstrap)
-    patched = head + replacement + tail
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(patched)
-    logger.info(f"[Phase 22] HTML Explorer written: {output_path}")
+# snapshot_state + write_html_explorer moved to cisco_toolkit.html (PHASE 2.7 step 30);
+# both imported back near the top of this file (main() builds the snapshot + emits the HTML).
 
 
 # _DIFF_FIELDS / _macset / write_diff_workbook moved to cisco_toolkit.html (PHASE 2.7 step 29);

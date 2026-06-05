@@ -5,6 +5,44 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 30: snapshot_state + write_html_explorer -> html.py (HTML LAYER COMPLETE)
+
+On branch `phase2-split-html2`. Byte-identical. Monolith **~1,290 lines**; `cisco_toolkit/html.py` **~191 = the whole html layer**.
+
+- Moved `snapshot_state` (the JSON snapshot contract — embedded in the HTML, written beside every workbook, and the
+  golden's compared artifact) + `write_html_explorer` (bakes the snapshot into a copy of the Blast-Radius Explorer
+  template) → html.py (verbatim move script). Both imported back for main(). html.py gained
+  `json`/`logging`/`os`/`datetime`/`typing` + `__version__`/model imports + a module logger.
+- **Coupling (a) — `__version__`:** snapshot_state embeds `f"V{__version__}"`, and `test_version` checks BOTH
+  `cp.snapshot_state({},[])` AND `cp.__version__`. Hoisted `__version__="3.23.0"` from the monolith into
+  `cisco_toolkit/__init__.py` (package root, no submodule imports → no cycle), imported it back into the monolith
+  (`from cisco_toolkit import __version__`, placed in the top import block to avoid E402) so LOG_FILE / argparse /
+  `cp.__version__` survive; html.py imports it too. `cp.__version__` stays "3.23.0".
+- **Coupling (b) — template `__file__`:** write_html_explorer found `blast_radius_explorer.html` via
+  `dirname(abspath(__file__))` = the monolith's dir = repo root. In html.py `__file__` is `cisco_toolkit/html.py`,
+  so the move script rewrote it to `dirname(dirname(abspath(__file__)))` (html.py's grandparent = repo root) + fixed
+  the docstring. Same template, byte-identical. (Golden doesn't compare the .html, but the regression was real.)
+- **No monolith F401** — `datetime` / `json` / `os` are all used by collect / build_run_manifest / main /
+  load_devices, so they stay; the only import change was the `__version__` relocation.
+- Extended `test_html_reexported_and_functional` (added snapshot_state / write_html_explorer re-exports +
+  `cp.__version__ == cisco_toolkit.__version__ == "3.23.0"` + a snapshot_state smoke). **67 tests.** test_version
+  unchanged + green.
+- **GOTCHA:** snapshot_state's signature uses `Dict`/`List` (typing) — easy to miss when moving (the lowercase
+  `dict` hints on the other html fns don't need it). `py_compile` does NOT catch a missing annotation import (it
+  compiles, doesn't execute the `def`); `import cisco_toolkit.html` does (NameError). Always
+  `python -c "import <moved-module>"` after a move, not just py_compile.
+- Golden **byte-identical**, ruff clean, mypy 101. `.md` V3.23.40.
+
+**Remaining PHASE 2.7 (~1 PR): `__main__`** = what's left in the monolith (setup_logging / debug_scan_headers /
+autodetect_platform / detect_platform_from_files / _is_auth_error / connect_device / send_cmd / collect /
+load_devices / write_json_file / file_sha256 / build_run_manifest / main / argparse / `_run_phase` /
+`_empty_dep_map` + the COMMANDS_* lists + CONFIG constants). Decide: keep `COLLECT_PARSE_V3_23_0.py` AS the thin
+entrypoint (it already imports the whole package back), OR thin it into `cisco_toolkit/__main__.py` + a tiny shim.
+The monolith is now ~1,290 lines = essentially just the collection/SSH/orchestration entrypoint + import-backs.
+PHASE 3 explorer redesign — not started.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 29: stand up html.py with the diff workbook
 
 On branch `phase2-split-html1`. Byte-identical. Monolith **~1,344 lines**; new `cisco_toolkit/html.py` **~122 lines**.
