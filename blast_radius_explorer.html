@@ -889,7 +889,43 @@ function buildChips(){
   wrap.innerHTML=h;
   wrap.querySelectorAll(".chip").forEach(c=>c.onclick=()=>setVlan(c.dataset.v));
 }
-function setVlan(v){VLAN=v;buildChips();if(MODE==="trace")computeTrace();repaint();renderDrawer();}
+function setVlan(v){VLAN=v;buildChips();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
+
+/* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
+const HASH_MODES=["blast","trace","compare","flow","health","protocols"];
+let APPLYING_HASH=false;   // re-entrancy guard for readHash()
+function writeHash(){
+  try{
+    if(APPLYING_HASH)return;   // don't rewrite while applying an inbound hash
+    // URLSearchParams encodes each value, so a host name with reserved chars round-trips safely
+    const params=new URLSearchParams({mode:MODE,vlan:VLAN,layout:LAYOUT,sel:SEL||""}).toString();
+    history.replaceState(null,"","#"+params);   // replaceState does NOT fire hashchange -> no feedback loop
+  }catch(e){}
+}
+function readHash(){
+  try{
+    const raw=(location.hash||"").replace(/^#/,"");
+    if(!raw)return;                              // no-op on empty hash
+    APPLYING_HASH=true;
+    const p=new URLSearchParams(raw);
+    const m=p.get("mode");
+    if(m&&HASH_MODES.includes(m)&&m!==MODE)setMode(m);
+    if(p.has("vlan")){
+      const v=p.get("vlan");
+      if(v==="all"){if(VLAN!=="all")setVlan("all");}
+      else if(MODEL&&MODEL.vlans&&MODEL.vlans.has(+v)){if(String(VLAN)!==String(v))setVlan(v);}
+    }
+    const lay=p.get("layout");
+    if((lay==="layered"||lay==="radial")&&lay!==LAYOUT){LAYOUT=lay;computeLayout();fitView();repaint();}
+    if(p.has("sel")){
+      const s=p.get("sel");
+      if(s&&MODEL&&MODEL.hosts&&MODEL.hosts.includes(s)){
+        if(SEL!==s){SEL=s;EPSEL=null;repaint();renderDrawer();centerOn(s);}
+      }else if(!s&&SEL){SEL=null;repaint();renderDrawer();}
+    }
+  }catch(e){}
+  finally{APPLYING_HASH=false;writeHash();}   // normalize the hash to the applied state
+}
 
 /* ---- build SVG scene graph (nodes + aggregated edges) ---- */
 function aggregateEdges(){
@@ -1252,10 +1288,10 @@ function toggleTableView(force){
 function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} EPSEL=null;
   if(MODE==="trace"){pickTrace(h);
     srAnnounce(TRACE_SRC&&TRACE_DST?`Path traced from ${TRACE_SRC} to ${TRACE_DST}.`:(TRACE_SRC?`Source ${TRACE_SRC} selected; choose a destination.`:"Selection cleared."));}
-  else if(MODE==="blast"||MODE==="health"||MODE==="protocols"){SEL=(SEL===h)?null:h;repaint();renderDrawer();
+  else if(MODE==="blast"||MODE==="health"||MODE==="protocols"){SEL=(SEL===h)?null:h;repaint();renderDrawer();writeHash();
     srAnnounce(SEL?`${h} selected. ${deviceRole(MODEL,h)==="core"?"Core / distribution":"Access"} switch, ${epTotalOf(h)} hosts.`:`${h} deselected.`);}}
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
-  else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();}}
+  else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
   else{TRACE_SRC=h;TRACE_DST=null;TRACE=null;} computeTrace();repaint();renderDrawer();}
@@ -1267,7 +1303,8 @@ function setMode(m){MODE=m; document.querySelectorAll("#modes button").forEach(b
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols"}[m]||m)+" mode.");}
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols"}[m]||m)+" mode.");
+  writeHash();}
 
 /* =====================================================================
    HINTS / MODE TAG / LEGEND
@@ -1315,7 +1352,7 @@ function renderDrawer(){
   else if(MODE==="protocols")p.innerHTML=drawProtocols();
   // wire row clicks (jump-to-switch); clears any endpoint drill-down
   p.querySelectorAll("[data-jump]").forEach(r=>r.onclick=()=>{const h=r.dataset.jump;
-    if(MODE==="trace"){EPSEL=null;pickTrace(h);} else{SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);}});
+    if(MODE==="trace"){EPSEL=null;pickTrace(h);} else{SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);writeHash();}});
   // wire endpoint-row clicks (drill into a single endpoint)
   p.querySelectorAll("[data-ephost]").forEach(r=>r.onclick=()=>{
     const e=EPALL.find(x=>x.host===r.dataset.ephost&&x.port===r.dataset.epport); if(e)selectEndpoint(e);});
@@ -2399,7 +2436,7 @@ document.getElementById("fitBtn").onclick=fitView;
 document.getElementById("exportSvgBtn").onclick=exportSvg;
 document.getElementById("exportPngBtn").onclick=()=>{exportPng().catch(()=>{});};
 document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
-document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();};
+document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();writeHash();};
 document.getElementById("tableBtn").onclick=()=>toggleTableView();
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("on");
 document.getElementById("helpClose").onclick=()=>document.getElementById("help").classList.remove("on");
@@ -2450,8 +2487,12 @@ try{const t=localStorage.getItem("nme-theme");
     document.documentElement.setAttribute("data-theme","light");}catch(e){}
 window.addEventListener("resize",()=>{if(MODEL)fitView();});
 
+/* ---- URL-hash deep-linking: honor a shared/pasted hash on first paint + on back/forward ---- */
+window.addEventListener("hashchange",readHash);   // genuine user nav (replaceState writes never fire this)
+
 /* ---- boot (demo button onclick + final bootstrap; Python replaces the LAST) ---- */
 load(demoSnapshot(),"DEMO TOPOLOGY",false);
+readHash();   // apply any deep-link hash after the model exists
 </script>
 </body>
 </html>
