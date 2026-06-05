@@ -563,7 +563,7 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
         m = re.match(r"^\s*interface\s+(\S+)", line, re.IGNORECASE)
         if m:
             current = normalize_ifname(m.group(1))
-            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":""})
+            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":"","acl_in":"","acl_out":""})
             if global_bpduguard:
                 res[current]["bpduguard"] = "Enable"
             continue
@@ -584,6 +584,12 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
                     res[current]["ip_addr"] = f"{ip} {mip.group(2)}"
                 else:
                     res[current]["ip_addr"] = ip
+        # L4/ACL flagging: SVI / L3 'ip access-group <name> {in|out}' (NOT L2 'ip port access-group')
+        if low.startswith("ip access-group ") or low.startswith("ipv4 access-group "):
+            ma = re.search(r"(?:ipv4|ip)\s+access-group\s+(\S+)\s+(in|out)\b", line.strip(), re.IGNORECASE)
+            if ma:
+                if ma.group(2).lower() == "in":  res[current]["acl_in"]  = ma.group(1)
+                else:                            res[current]["acl_out"] = ma.group(1)
         if "spanning-tree bpduguard" in low:
             if "enable" in low:                         res[current]["bpduguard"] = "Enable"
             elif "disable" in low or low.endswith("no"): res[current]["bpduguard"] = "Disable"

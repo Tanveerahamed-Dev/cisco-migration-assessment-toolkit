@@ -61,6 +61,9 @@ class InterfaceData:
     # NEW-V14.10 neighbor remote port + platform (for the Topology / Links sheet)
     neighbor_port: str = ""
     neighbor_platform: str = ""
+    # NEW-V3.23.x (L4/ACL flagging): ACL name applied to this interface/SVI (from run-config 'ip access-group')
+    acl_in: str = ""
+    acl_out: str = ""
 
 
 # =============================================================================
