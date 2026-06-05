@@ -1913,6 +1913,19 @@ function routeSourceDist(host){const c={},rs=host?{[host]:routesFor(host)}:(SNAP
 function distBars(dist){const tot=Object.values(dist).reduce((a,b)=>a+b,0)||1;
   return Object.entries(dist).sort((a,b)=>b[1]-a[1]).map(([s,n])=>{const pct=Math.round(100*n/tot);
     return `<div class="ln"><span class="mono" style="display:inline-block;min-width:78px">${_protoLabel(s)}</span><span class="bar" style="display:inline-block;width:90px;vertical-align:middle"><i style="width:${pct}%;background:var(--accent)"></i></span> ${n} <span class="faint">(${pct}%)</span></div>`;}).join("");}
+/* C3 BGP AS map: local AS is read from the device's BGP redistribution config (into/from bgp <ASN>); when
+   known, each peer is iBGP (peer AS == local AS) vs eBGP. Unknown local AS -> peers shown unclassified. */
+function bgpLocalAs(host){for(const e of redistFor(host)){if(e.into_proto==="bgp"&&e.into_id)return e.into_id; if(e.from_proto==="bgp"&&e.from_id)return e.from_id;}return "";}
+function bgpAsMap(){const out=[];
+  for(const h in (SNAP.routing_neighbors||{})){const bgp=rnFor(h).bgp||[]; if(!bgp.length)continue;
+    const local=bgpLocalAs(h);
+    out.push({host:h, local, peers:bgp.map(p=>({peer:p.neighbor, as:p.as, state:p.state, up:adjHealthy("bgp",p.state),
+      kind:local?(String(p.as)===String(local)?"iBGP":"eBGP"):""}))});}
+  return out;}
+function bgpAsMapSection(){const m=bgpAsMap(); if(!m.length)return "";
+  const cards=m.map(d=>`<div class="card" style="margin-bottom:6px"><div class="ct"><span class="nm">${esc(shortName(d.host))}</span><span class="pill pl-watch">${d.local?("local AS "+esc(d.local)):"local AS ?"}</span></div>`+
+    d.peers.map(p=>`<div class="ln"><span class="pill pl-${p.up?"ok":"crit"}">${p.up?"✓":"✗"} ${p.kind||"BGP"}</span> peer <span class="mono">${esc(p.peer)}</span> <span class="faint">AS ${esc(p.as)} · ${esc(p.state)}</span></div>`).join("")+`</div>`).join("");
+  return `<div class="sec"><h3>BGP AS map <span class="ct">${m.length}</span></h3>${cards}<p class="faint">eBGP/iBGP is classified when the local AS is known (read from the BGP redistribution config).</p></div>`;}
 function drawProtocols(){
   const hosts=(MODEL?MODEL.hosts:[]).slice();
   const withProto=hosts.filter(h=>protoSet(h).size>0).sort();
@@ -1941,6 +1954,7 @@ function drawProtocols(){
       <p class="faint" style="margin-top:6px">Click a switch for its full routing-protocol profile.</p></div>
     <div class="sec"><h3>Protocol boundaries &amp; redistribution <span class="ct">${redistPts.length}</span></h3>${redRows}</div>
     <div class="sec"><h3>Adjacency health <span class="ct">${adj.length}</span></h3>${adjRows}</div>
+    ${bgpAsMapSection()}
     <div class="sec"><h3>Route-source distribution</h3>${distBars(routeSourceDist(null))}
       <p class="faint" style="margin-top:9px"><b>Offline.</b> Built from collected OSPF/EIGRP/BGP neighbors, run-config redistribution, and route source codes — last-collected state, not live convergence.</p></div>`;
 }
