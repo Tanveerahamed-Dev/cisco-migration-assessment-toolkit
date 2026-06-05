@@ -578,7 +578,28 @@ function demoSnapshot(){
     "ACC-4":Object.assign({},eps(10,7,1),eps(20,5,8),
       {"Gi1/0/24":link("DIST-1","Gi1/0/4",{port:"Gi1/0/24",fwd:ALL}),
        "Gi1/0/23":link("DIST-2","Gi1/0/4",{port:"Gi1/0/23",fwd:ALL})}),
-  }};
+  },
+  // health_scores / migration_readiness mirror what the Python pipeline embeds (main() augments the
+  // snapshot via compute_health_scores / compute_migration_readiness) so the bundled demo exercises
+  // the Health mode just like a real export does.
+  health_scores:[
+    {switch:"DIST-1",score:58,band:"Poor",deductions:["single-gateway (VLAN 30) (-10)","articulation point — VLAN 10 (-9)","articulation point — VLAN 20 (-6)","no FHRP peer @ Vlan30 (-6)"]},
+    {switch:"DIST-2",score:84,band:"Good",deductions:["STP-blocked uplink @ Gi1/0/1 (-4)"]},
+    {switch:"ACC-1",score:71,band:"Fair",deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","STP-blocked backup @ Gi1/0/23 (-3)"]},
+    {switch:"ACC-2",score:66,band:"Fair",deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","transit for ACC-3 @ Gi1/0/12 (-5)"]},
+    {switch:"ACC-3",score:61,band:"Fair",deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","access-behind-access (-7)"]},
+    {switch:"ACC-4",score:88,band:"Good",deductions:[]},
+  ],
+  migration_readiness:[
+    {group:"Group 1",switches:["DIST-1","DIST-2","ACC-1","ACC-2","ACC-3","ACC-4"],endpoints:38,readiness:"CAUTION",n_fail:0,n_warn:3,checks:[
+      {check:"Gateway redundancy (FHRP)",status:"warn",note:"VLAN 30 has a single gateway (DIST-1) with no HSRP/VRRP peer"},
+      {check:"Uplink redundancy",status:"warn",note:"ACC-1, ACC-2 and ACC-3 each ride a single uplink"},
+      {check:"Device health floor",status:"warn",note:"Poor-health switch: DIST-1"},
+      {check:"Spanning-tree convergence",status:"pass",note:"all access VLANs forwarding, or with a blocked backup"},
+      {check:"Endpoint coverage",status:"pass",note:"38 endpoints mapped to access ports"},
+      {check:"Management reachability",status:"pass",note:"all switches reachable for cutover"},
+    ]},
+  ]};
 }
 
 /* =====================================================================
