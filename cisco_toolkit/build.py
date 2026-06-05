@@ -4,9 +4,10 @@ already-collected show output. Depends on cmdio (loading), parse (parsers), mode
 textutils - a layer above those, independent of analyze/excel. Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py across PHASE 2.7 steps 27-28 (behaviour byte-identical):
 step 27 = the switch-level builders + ARP enrichment, step 28 = build_interfaces."""
+import ipaddress
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cisco_toolkit.cmdio import _load_cmd_output, _safe_parse
 from cisco_toolkit.model import DevicePhysical, InterfaceData
@@ -40,6 +41,83 @@ def build_object_groups(cmd_to_file: Dict[str, str]) -> Dict[str, dict]:
     'show running-config' -> {name: {kind, members}}; {} when none. Fail-soft via _safe_parse."""
     run = _load_cmd_output(cmd_to_file, "show running-config")
     return _safe_parse(parse_object_groups, run) or {}
+
+
+# -----------------------------------------------------------------------------
+# Route-aware reachability: embed each device's routing knowledge into the snapshot
+# so the explorer can verify a gateway actually has a route toward the destination
+# subnet, instead of assuming any gateway routes to any subnet. Parsed from the
+# already-collected 'show ip route' (NO new collected command), and SCOPED to the
+# in-scope gateway subnets + the default route so the single-file snapshot stays small.
+# -----------------------------------------------------------------------------
+def build_routes(cmd_to_file: Dict[str, str]) -> Dict[str, dict]:
+    """Parse this device's full routing table from the already-collected 'show ip route'
+    -> {prefix: {entries:[...]}}; {} when none. Fail-soft via _safe_parse. (Scoped down for
+    the snapshot by scope_routes; the full parse stays transient.)"""
+    out = _load_cmd_output(cmd_to_file, "show ip route", "show ip route vrf all")
+    return _safe_parse(parse_ip_routes, out) or {}
+
+
+def inscope_subnets(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Set[str]:
+    """The set of gateway (SVI) connected prefixes across all scanned switches, in CIDR form.
+    These are the destination subnets the explorer asks reachability about, so the embedded
+    routing table is scoped to the routes that could carry traffic toward one of them. Derived
+    from each SVI's own 'ip address' (svi_ip), falling back to its connected subnet_primary_route."""
+    nets: Set[str] = set()
+    for ifaces in all_interfaces.values():
+        for port, d in ifaces.items():
+            if not re.match(r"^Vlan\d+$", port, re.IGNORECASE):
+                continue
+            ipmask = (getattr(d, "svi_ip", "") or "").split()
+            if len(ipmask) >= 2:
+                try:
+                    nets.add(str(ipaddress.ip_network(f"{ipmask[0]}/{ipmask[1]}", strict=False)))
+                    continue
+                except ValueError:
+                    pass
+            pfx = (getattr(d, "subnet_primary_route", "") or "").strip()
+            if pfx:
+                try:
+                    nets.add(str(ipaddress.ip_network(pfx, strict=False)))
+                except ValueError:
+                    pass
+    return nets
+
+
+def scope_routes(route_db: Dict[str, dict], inscope: Set[str]) -> List[dict]:
+    """Flatten a parsed route table to the compact rows the explorer needs, keeping ONLY routes
+    that could carry traffic toward an in-scope subnet (the route's prefix covers one) plus the
+    default route. Drops host (/32 local) routes and out-of-scope prefixes, so the embedded
+    snapshot stays small. Each row: {prefix, source, next_hop, out_intf}; deduped, order preserved."""
+    nets: List[Any] = []   # IPv4Network | IPv6Network; Any keeps mypy at the package baseline
+    for s in inscope:
+        try:
+            nets.append(ipaddress.ip_network(s, strict=False))
+        except ValueError:
+            pass
+    out: List[dict] = []
+    seen: Set[tuple] = set()
+    for prefix, info in route_db.items():
+        try:
+            rnet = ipaddress.ip_network(prefix, strict=False)
+        except ValueError:
+            continue
+        keep = rnet.prefixlen == 0   # default route is always relevant
+        if not keep:
+            for s in nets:
+                if s.version == rnet.version and s.subnet_of(rnet):
+                    keep = True
+                    break
+        if not keep:
+            continue
+        for e in info.get("entries", []):
+            row = {"prefix": e.get("prefix", prefix), "source": e.get("source", "") or "",
+                   "next_hop": e.get("next_hop", "") or "", "out_intf": e.get("out_intf", "") or ""}
+            key = (row["prefix"], row["source"], row["next_hop"], row["out_intf"])
+            if key not in seen:
+                seen.add(key)
+                out.append(row)
+    return out
 
 
 def build_device_physical(hostname: str, platform: str,
