@@ -588,6 +588,17 @@ function demoSnapshot(){
       {"Gi1/0/24":link("DIST-1","Gi1/0/4",{port:"Gi1/0/24",fwd:ALL}),
        "Gi1/0/23":link("DIST-2","Gi1/0/4",{port:"Gi1/0/23",fwd:ALL})}),
   },
+  // L4 ACL definitions (G2 eval): bodies for the ACLs the demo SVIs apply on DIST-1 (Vlan20 in, Vlan30 out).
+  acls:{"DIST-1":{
+    "GUEST_FILTER":[
+      {action:"permit",proto:"tcp",src:{ip:"10.0.20.0",wild:"0.0.0.255"},dst:{ip:"0.0.0.0",wild:"255.255.255.255"},sport:null,dport:{op:"eq",val:443},raw:"permit tcp 10.0.20.0 0.0.0.255 any eq 443"},
+      {action:"permit",proto:"udp",src:{ip:"10.0.20.0",wild:"0.0.0.255"},dst:{ip:"0.0.0.0",wild:"255.255.255.255"},sport:null,dport:{op:"eq",val:53},raw:"permit udp 10.0.20.0 0.0.0.255 any eq 53"},
+      {action:"deny",proto:"ip",src:{ip:"0.0.0.0",wild:"255.255.255.255"},dst:{ip:"0.0.0.0",wild:"255.255.255.255"},sport:null,dport:null,raw:"deny ip any any"}],
+    "PROTECT_SERVERS":[
+      {action:"permit",proto:"tcp",src:{ip:"10.0.10.0",wild:"0.0.0.255"},dst:{ip:"10.0.30.0",wild:"0.0.0.255"},sport:null,dport:{op:"eq",val:443},raw:"permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443"},
+      {action:"permit",proto:"tcp",src:{ip:"10.0.10.0",wild:"0.0.0.255"},dst:{ip:"10.0.30.0",wild:"0.0.0.255"},sport:null,dport:{op:"eq",val:22},raw:"permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 22"},
+      {action:"deny",proto:"ip",src:{ip:"0.0.0.0",wild:"255.255.255.255"},dst:{ip:"0.0.0.0",wild:"255.255.255.255"},sport:null,dport:null,raw:"deny ip any any"}]
+  }},
   // health_scores / migration_readiness mirror what the Python pipeline embeds (main() augments the
   // snapshot via compute_health_scores / compute_migration_readiness) so the bundled demo exercises
   // the Health mode just like a real export does.
@@ -686,6 +697,7 @@ let MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
 let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
+let FLOW_PROTO="tcp", FLOW_DPORT=443;             // L4 tuple for the ACL allow/deny eval (G2)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 
@@ -1105,6 +1117,10 @@ function renderDrawer(){
     if(inp.id==="flowSrc")FLOW_SRC=ep||null; else FLOW_DST=ep||null;
     FLOWRES=(FLOW_SRC&&FLOW_DST)?flowBetween(FLOW_SRC,FLOW_DST):null;
     repaint(); renderDrawer();}));
+  // wire flow-mode L4 inputs (protocol + dest port) for the ACL allow/deny eval (G2)
+  const _reflow=()=>{FLOWRES=(FLOW_SRC&&FLOW_DST)?flowBetween(FLOW_SRC,FLOW_DST):null; repaint(); renderDrawer();};
+  {const ps=document.getElementById("flowProto"); if(ps)ps.addEventListener("change",()=>{FLOW_PROTO=ps.value; _reflow();});}
+  {const pd=document.getElementById("flowDport"); if(pd)pd.addEventListener("change",()=>{const n=parseInt(pd.value,10); if(n>=1&&n<=65535)FLOW_DPORT=n; _reflow();});}
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -1349,6 +1365,13 @@ function drawFlow(){
   const opts=[...new Set(EPALL.filter(e=>e.ip).map(e=>e.ip))].sort().map(ip=>`<option value="${esc(ip)}">`).join("");
   const inStyle="background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 8px;font:inherit;font-size:12px;width:160px";
   const slot=(label,ep,id)=>`<div class="kv"><span class="k">${label}</span><input class="epin mono" id="${id}" list="eplist" autocomplete="off" placeholder="IP or MAC" style="${inStyle}" value="${esc(ep?(ep.ip||ep.mac):"")}"></div>`;
+  const l4on=(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp");
+  const l4row=`<div class="kv"><span class="k">L4 (ACL eval)</span><span>`+
+    `<select id="flowProto" style="${inStyle};width:86px;margin-right:6px">`+
+      ["tcp","udp","icmp","ip"].map(pr=>`<option value="${pr}"${FLOW_PROTO===pr?" selected":""}>${pr.toUpperCase()}</option>`).join("")+
+    `</select>`+
+    `<input id="flowDport" type="number" min="1" max="65535" placeholder="port" style="${inStyle};width:72px" value="${l4on?FLOW_DPORT:""}"${l4on?"":" disabled"}>`+
+    `</span></div>`;
   let result="";
   if(FLOWRES){const F=FLOWRES; const tok=F.reachable?"ok":"crit";
     const steps=F.hops.map(h=>{const dot=h.spof?"risk":h.layer==="L3"?"accent":h.layer==="L1"?"ok":"text-faint";
@@ -1356,9 +1379,9 @@ function drawFlow(){
     result=`<div class="sec"><h3>Verdict <span class="badge b-${tok}">${esc(F.verdict)}</span></h3>`+
       (F.reason?`<div class="card ${tok}" style="margin-bottom:8px"><div class="ln">${esc(F.reason)}</div></div>`:"")+
       (F.spofs.length?`<div class="ln faint" style="margin:0 0 8px">⚠ SPOFs on path: ${esc(F.spofs.join("; "))}</div>`:"")+
-      aclFlagCard(F.aclFlags,"this path")+
+      (F.aclVerdicts&&F.aclVerdicts.length?aclVerdictCard(F.aclVerdicts,FLOW_PROTO,FLOW_DPORT):aclFlagCard(F.aclFlags,"this path"))+
       `<div>${steps}</div>`+
-      `<p class="faint" style="margin-top:9px"><b>L1–L3 only.</b> Path from VLAN membership, STP forwarding and gateways — ACLs are collected from run-config but not evaluated for allow/deny.</p></div>`;
+      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3.</b> The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based / object-group rules aren't modeled (reported as indeterminate).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
     result=`<div class="sec"><p class="faint">Enter both a source and a destination endpoint to trace the flow.</p></div>`;
   }
@@ -1367,13 +1390,53 @@ function drawFlow(){
   return `<datalist id="eplist">${opts}</datalist>`+
     `<div class="drawer-head"><div class="eyebrow">Flow</div><div class="title">Endpoint → endpoint</div></div>`+
     `<div class="sec"><p class="sub" style="margin:0 0 9px">Trace the offline L1–L3 path between any two endpoints — by IP or MAC.</p>`+
-    slot("Source",FLOW_SRC,"flowSrc")+slot("Destination",FLOW_DST,"flowDst")+`</div>`+
+    slot("Source",FLOW_SRC,"flowSrc")+slot("Destination",FLOW_DST,"flowDst")+l4row+`</div>`+
     result+embedded;
+}
+/* ---- L4 ACL evaluation (PHASE G2): walk an ACL vs a 5-tuple, first-match-wins, implicit deny ---- */
+function aclRules(host,name){return (SNAP&&SNAP.acls&&SNAP.acls[host])?(SNAP.acls[host][name]||null):null;}
+function _ip2int(ip){const p=String(ip).split("."); if(p.length!==4)return null;
+  let n=0; for(const o of p){const x=+o; if(!(x>=0&&x<=255)||o==="")return null; n=n*256+x;} return n>>>0;}
+function _ipInSpec(ip,spec){ if(!spec||spec.group!=null)return null;     // object-group -> can't tell
+  const a=_ip2int(ip), base=_ip2int(spec.ip), wild=_ip2int(spec.wild);
+  if(a==null||base==null||wild==null)return null;
+  const mask=(~wild)>>>0; return ((a&mask)>>>0)===((base&mask)>>>0);}
+function _portMatch(p,port){ if(!p)return true;                          // rule has no port condition
+  if(port==null)return null;                                            // flow port unknown but rule cares
+  const v=p.val; if(v==null)return null;
+  switch(p.op){case"eq":return port===v; case"neq":return port!==v; case"gt":return port>v; case"lt":return port<v;
+    case"range":return p.val2==null?null:(port>=v&&port<=p.val2); default:return null;}}
+function _protoMatch(rp,fp){rp=(rp||"ip").toLowerCase(); fp=(fp||"ip").toLowerCase();
+  return rp==="ip"?true:rp===fp;}                                       // an 'ip' rule matches any protocol
+function evalAcl(rules,flow){                                           // flow={src,dst,proto,dport} -> {action,rule,idx}
+  for(let i=0;i<(rules||[]).length;i++){const r=rules[i];
+    if(_protoMatch(r.proto,flow.proto)===false)continue;                // proto definitively differs -> skip
+    const sm=_ipInSpec(flow.src,r.src), dm=_ipInSpec(flow.dst,r.dst), pm=_portMatch(r.dport,flow.dport);
+    if(sm===false||dm===false||pm===false)continue;                     // a component definitively rules it out
+    if(r.unevaluable||sm===null||dm===null||pm===null)                  // might match but can't be sure -> stop here
+      return {action:"indeterminate",rule:r,idx:i};
+    return {action:r.action,rule:r,idx:i};                              // proto + src + dst + port all matched
+  }
+  return {action:"deny",rule:null,idx:-1,implicit:true};                // fell off the end -> implicit deny
+}
+function aclVerdictCard(verdicts,proto,dport){
+  if(!verdicts||!verdicts.length)return "";
+  const tuple=`${String(proto).toUpperCase()}${(proto==="tcp"||proto==="udp")?"/"+dport:""}`;
+  const worst=verdicts.some(v=>v.verdict==="deny")?"deny":verdicts.some(v=>v.verdict==="indeterminate")?"indeterminate":"permit";
+  const tok=worst==="deny"?"crit":worst==="indeterminate"?"watch":"ok";
+  const head=worst==="deny"?`✗ Blocked at L4 · ${esc(tuple)}`:worst==="indeterminate"?`? L4 indeterminate · ${esc(tuple)}`:`✓ Allowed at L4 · ${esc(tuple)}`;
+  const rows=verdicts.map(v=>{const vt=v.verdict==="deny"?"crit":v.verdict==="indeterminate"?"watch":"ok";
+    const mark=v.verdict==="deny"?"✗":v.verdict==="indeterminate"?"?":"✓";
+    const why=v.verdict==="indeterminate"
+        ?(v.nobody?"ACL body not in snapshot — can't evaluate":(v.rule?`rule ${v.idx+1} can't be modeled: ${esc(v.rule.raw)}`:"no rule conclusively matched"))
+        :(v.implicit?"implicit deny — no rule matched":(v.rule?`rule ${v.idx+1}: ${esc(v.rule.raw)}`:""));
+    return `<div class="ln"><span class="pill pl-${vt}">${mark} ${v.verdict.toUpperCase()}</span> ACL <span class="mono">${esc(v.name)}</span> on ${esc(shortName(v.host))} VLAN ${v.vid} (${esc(v.dir)})<div class="faint" style="margin-top:2px">${why}</div></div>`;}).join("");
+  return `<div class="card ${tok}" style="margin:0 0 8px"><div class="ct"><span class="nm">${head}</span></div>${rows}</div>`;
 }
 /* ---- interactive endpoint->endpoint flow (PHASE C): offline L1-L3 port of trace_full_flow ---- */
 function flowBetween(s,d){
   const sv=/^\d+$/.test(s.vlan)?+s.vlan:null, dv=/^\d+$/.test(d.vlan)?+d.vlan:null;
-  const F={src:s,dst:d,reachable:false,verdict:"",reason:"",hops:[],pathHosts:new Set([s.host,d.host]),linkIdxs:new Set(),spofs:[],gateways:[],aclFlags:[]};
+  const F={src:s,dst:d,reachable:false,verdict:"",reason:"",hops:[],pathHosts:new Set([s.host,d.host]),linkIdxs:new Set(),spofs:[],gateways:[],aclFlags:[],aclVerdicts:[]};
   const hop=(layer,text,spof)=>F.hops.push({layer,text,spof:!!spof});
   if(sv==null||dv==null){F.verdict="UNKNOWN"; F.reason="Source or destination VLAN is unknown — cannot trace."; hop("—",F.reason,false); return F;}
   hop("L1",`Endpoint ${s.ip||s.mac} on ${s.host} · ${s.port} (access, VLAN ${sv})`,false);
@@ -1402,6 +1465,11 @@ function flowBetween(s,d){
   F.gateways=[sgw,dgw]; F.pathHosts.add(sgw); F.pathHosts.add(dgw);
   {const ai=gwAcl(sgw,sv); if(ai&&ai.in)F.aclFlags.push({host:sgw,vid:sv,dir:"in",name:ai.in});    // egress SVI of the source subnet
    const ao=gwAcl(dgw,dv); if(ao&&ao.out)F.aclFlags.push({host:dgw,vid:dv,dir:"out",name:ao.out});}  // ingress SVI of the dest subnet
+  if(s.ip&&d.ip&&F.aclFlags.length){                                  // G2: evaluate those ACLs against the chosen 5-tuple
+    const flow={src:s.ip,dst:d.ip,proto:FLOW_PROTO,dport:(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?FLOW_DPORT:null};
+    F.aclVerdicts=F.aclFlags.map(a=>{const rules=aclRules(a.host,a.name);
+      const v=rules?evalAcl(rules,flow):{action:"indeterminate",rule:null,idx:-1,nobody:true};
+      return Object.assign({},a,{verdict:v.action,rule:v.rule,idx:v.idx,implicit:v.implicit,nobody:v.nobody});});}
   seg(dv,dgw,d.host);
   hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
   F.reachable=true; F.verdict="REACHABLE — L3 (routed via gateway)";
