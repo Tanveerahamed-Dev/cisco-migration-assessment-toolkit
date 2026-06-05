@@ -21,10 +21,18 @@ from cisco_toolkit.parse import (
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
+    parse_acls,
 )
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
 
 logger = logging.getLogger(__name__)
+
+
+def build_acls(cmd_to_file: Dict[str, str]) -> Dict[str, List[dict]]:
+    """Parse ACL definitions (L4 allow/deny sim) from this device's already-collected
+    'show running-config' -> {acl_name: [rule,...]}; {} when none. Fail-soft via _safe_parse."""
+    run = _load_cmd_output(cmd_to_file, "show running-config")
+    return _safe_parse(parse_acls, run) or {}
 
 
 def build_device_physical(hostname: str, platform: str,

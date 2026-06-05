@@ -350,7 +350,7 @@ from cisco_toolkit.excel import (
 from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
-    apply_global_arp, detect_cross_device_dual_connections,
+    apply_global_arp, detect_cross_device_dual_connections, build_acls,
 )
 # NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
@@ -1282,6 +1282,15 @@ def main():
                     f"PSU={dp.num_power_supplies}  "
                     f"cap={dp.power_capacity_w}  draw={dp.power_drawn_w}")
 
+    # Phase 5.6: ACL definitions (L4 allow/deny sim) - parsed from the already-collected
+    # run-config; emitted into the snapshot below so the explorer can evaluate flows offline.
+    all_acls: Dict[str, dict] = {}
+    for hostname, platform, cmd_to_file in all_devices_meta:
+        acls = build_acls(cmd_to_file)
+        if acls:
+            all_acls[hostname] = acls
+            logger.info(f"  [ACL] {hostname}: {len(acls)} access-list(s) parsed")
+
     # Phase 6: Write interface rows to template sheet (each host guarded so one
     # host's write failure can't abort the run before wb.save()).
     logger.info("\n[Phase 6] Writing interface rows ...")
@@ -1439,6 +1448,7 @@ def main():
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
+    snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41

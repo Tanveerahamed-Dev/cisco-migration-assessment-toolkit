@@ -1556,5 +1556,116 @@
    "changed": [],
    "detail": "no band changes"
   }
- ]
+ ],
+ "acls": {
+  "core1": {
+   "VOICE_FILTER": [
+    {
+     "action": "permit",
+     "raw": "permit udp 10.0.20.0 0.0.0.255 any range 16384 32767",
+     "proto": "udp",
+     "src": {
+      "ip": "10.0.20.0",
+      "wild": "0.0.0.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": {
+      "op": "range",
+      "val": 16384,
+      "val2": 32767
+     }
+    },
+    {
+     "action": "permit",
+     "raw": "permit udp 10.0.20.0 0.0.0.255 any eq 5060",
+     "proto": "udp",
+     "src": {
+      "ip": "10.0.20.0",
+      "wild": "0.0.0.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": {
+      "op": "eq",
+      "val": 5060
+     }
+    },
+    {
+     "action": "deny",
+     "raw": "deny ip any any",
+     "proto": "ip",
+     "src": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": null
+    }
+   ],
+   "PROTECT_SERVERS": [
+    {
+     "action": "permit",
+     "raw": "permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443",
+     "proto": "tcp",
+     "src": {
+      "ip": "10.0.10.0",
+      "wild": "0.0.0.255"
+     },
+     "dst": {
+      "ip": "10.0.30.0",
+      "wild": "0.0.0.255"
+     },
+     "sport": null,
+     "dport": {
+      "op": "eq",
+      "val": 443
+     }
+    },
+    {
+     "action": "permit",
+     "raw": "permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 22",
+     "proto": "tcp",
+     "src": {
+      "ip": "10.0.10.0",
+      "wild": "0.0.0.255"
+     },
+     "dst": {
+      "ip": "10.0.30.0",
+      "wild": "0.0.0.255"
+     },
+     "sport": null,
+     "dport": {
+      "op": "eq",
+      "val": 22
+     }
+    },
+    {
+     "action": "deny",
+     "raw": "deny ip any any",
+     "proto": "ip",
+     "src": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "dst": {
+      "ip": "0.0.0.0",
+      "wild": "255.255.255.255"
+     },
+     "sport": null,
+     "dport": null
+    }
+   ]
+  }
+ }
 }

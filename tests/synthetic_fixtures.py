@@ -121,6 +121,18 @@ interface Vlan30
  ip address 10.0.30.1 255.255.255.0
  ip access-group PROTECT_SERVERS out
 """,
+    "show running-config": """\
+!
+ip access-list extended VOICE_FILTER
+ permit udp 10.0.20.0 0.0.0.255 any range 16384 32767
+ permit udp 10.0.20.0 0.0.0.255 any eq 5060
+ deny   ip any any
+ip access-list extended PROTECT_SERVERS
+ permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443
+ permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 22
+ deny   ip any any
+!
+""",
     "show etherchannel summary": """\
 Flags:  D - down        P - bundled in port-channel
         I - stand-alone s - suspended
