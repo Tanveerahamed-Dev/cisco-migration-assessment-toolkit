@@ -284,6 +284,22 @@ def test_compute_trunk_native_mismatches():
     assert {rows[0]["a_native"], rows[0]["b_native"]} == {"99", "1"}   # explicit-on-one-end still a mismatch
 
 
+def test_compute_duplex_speed_mismatches():
+    # workbook surfacing of the link L1 finding: a CDP link whose two ends report a different duplex.
+    from cisco_toolkit.excel import compute_duplex_speed_mismatches
+    from cisco_toolkit.model import InterfaceData
+    ifaces = {
+        "core1": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", cdp_neighbor="acc1", neighbor_port="Gi0/1",
+                                           switchport_mode="Trunk", duplex="Full-duplex", speed="1000Mb/s")},
+        "acc1": {"Gi0/1": InterfaceData(port="Gi0/1", cdp_neighbor="core1", neighbor_port="Gi1/0/1",
+                                        switchport_mode="Trunk", duplex="Half-duplex", speed="1000Mb/s")},
+    }
+    rows = compute_duplex_speed_mismatches(ifaces)
+    assert len(rows) == 1
+    assert rows[0]["duplex"] is not None and set(rows[0]["duplex"]) == {"full", "half"}
+    assert rows[0]["speed"] is None        # same speed -> no false speed flag
+
+
 def test_build_routing_neighbors(tmp_path):
     # protocol-to-protocol analysis: OSPF/EIGRP/BGP adjacencies parsed from already-collected output,
     # keeping the full state token so the explorer can tell a healthy (FULL) from a stuck (EXSTART) peer.
