@@ -638,7 +638,9 @@ function demoSnapshot(){
   ],
   // V3.23.47: the fleet score-calibration diagnostic the Python pipeline embeds (compute_calibration_report);
   // matches the 6 demo health_scores above so the Health view's calibration card renders out-of-the-box.
-  calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."}};
+  calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."},
+  // NAT-B: a static NAT for the VLAN-30 server, so the VLAN10->VLAN30 flow surfaces the translation + the L4 caveat.
+  nat:{"DIST-1":{static:[{direction:"inside",proto:"",local:"10.0.30.9",global:"203.0.113.9"}],dynamic:[],pools:{},inside:["Vlan30"],outside:["Po1"]}}};
 }
 
 /* =====================================================================
@@ -1262,6 +1264,24 @@ function pathMtu(F,s,d){
     note:`Jumbo MTU (${distinct[0]}) is set on only some hops; the rest are default (~1500) — jumbo frames are dropped where MTU is unset.`};
   return {mismatch:false,pathMtu:(distinct[0]||null),distinct,note:""};
 }
+/* NAT (NAT-B): static NAT mappings (from the SNAP.nat inventory) that touch any of these IPs.
+   Honest scope: we SURFACE the translation + caveat the L4 verdict (evaluated against the
+   untranslated address); we don't re-simulate the ACL against the translated address. */
+function natStaticsFor(ips){
+  const set=new Set([].concat(ips).filter(Boolean)); if(!set.size)return [];
+  const out=[]; const tbl=(SNAP&&SNAP.nat)||{};
+  for(const host in tbl)for(const st of ((tbl[host]||{}).static||[]))
+    if(set.has(st.local)||set.has(st.global))out.push(Object.assign({host},st));
+  return out;
+}
+function natCard(statics){
+  if(!statics||!statics.length)return "";
+  const rows=statics.map(st=>{const pp=st.proto?" "+String(st.proto).toUpperCase():"";
+    const lp=st.local_port?":"+st.local_port:"", gp=st.global_port?":"+st.global_port:"";
+    return `<div class="ln"><span class="pill pl-watch">NAT</span> <span class="mono">${esc(st.local)}${lp}</span> ↔ <span class="mono">${esc(st.global)}${gp}</span>${pp} <span class="faint">· static on ${esc(shortName(st.host))}</span></div>`;}).join("");
+  return `<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ NAT on this flow</span></div>${rows}`+
+    `<div class="ln faint" style="margin-top:3px">An endpoint here is statically translated — past the NAT boundary an ACL sees the <b>global</b> address, so the L4 verdict above (evaluated against the untranslated address) may not reflect it.</div></div>`;
+}
 /* M: where an ACL flag is applied — a gateway SVI ("VLAN n") or a routed transit interface (its name). */
 function aclLoc(a){return a.intf?esc(a.intf):("VLAN "+a.vid);}
 /* PHASE F: render the "L4 filtering" card from a list of {host,vid|intf,dir,name}; "" when empty. */
@@ -1458,8 +1478,9 @@ function drawFlow(){
       (F.spofs.length?`<div class="ln faint" style="margin:0 0 8px">⚠ SPOFs on path: ${esc(F.spofs.join("; "))}</div>`:"")+
       (F.aclVerdicts&&F.aclVerdicts.length?aclVerdictCard(F.aclVerdicts,FLOW_PROTO,FLOW_DPORT):aclFlagCard(F.aclFlags,"this path"))+
       (F.mtu&&F.mtu.mismatch?`<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ Path MTU mismatch</span><span class="pill pl-watch">${F.mtu.pathMtu} eff.</span></div><div class="ln faint" style="margin-top:2px">${esc(F.mtu.note)} The flow still reaches — only large / jumbo frames are affected.</div></div>`:"")+
+      natCard(natStaticsFor([F.src&&F.src.ip, F.dst&&F.dst.ip]))+
       `<div>${steps}</div>`+
-      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate). <b>Path MTU</b> consistency is checked — jumbo-frame black-holes are flagged (the flow still reaches; only oversized frames drop).</p></div>`;
+      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate). <b>Path MTU</b> consistency is checked — jumbo-frame black-holes are flagged (the flow still reaches; only oversized frames drop). Known <b>static NAT</b> mappings touching either endpoint are surfaced (the L4 verdict is against the untranslated address).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
     result=`<div class="sec"><p class="faint">Enter both a source and a destination endpoint to trace the flow.</p></div>`;
   }
