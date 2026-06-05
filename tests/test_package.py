@@ -226,12 +226,13 @@ def test_cmdio_reexported_and_functional(cp, tmp_path):
 def test_excel_reexported_and_functional(cp):
     from cisco_toolkit import excel
     # the sheet/header helpers main() + the write_* builders use are re-exported as-is.
-    for name in ("find_header_row", "ensure_headers", "sortkey"):
+    for name in ("find_header_row", "ensure_headers"):
         assert getattr(cp, name) is getattr(excel, name)
-    # _census_header / _census_autofit went package-internal in step 24 (their last monolith
-    # writers moved to excel); they still live in excel.
+    # _census_header / _census_autofit (step 24) + sortkey (step 26) went package-internal as their
+    # last monolith users (the writers / append_interface_rows) moved to excel; still in excel.
     assert callable(excel._census_header) and not hasattr(cp, "_census_header")
     assert callable(excel._census_autofit) and not hasattr(cp, "_census_autofit")
+    assert callable(excel.sortkey) and not hasattr(cp, "sortkey")
     # norm_header / HEADER_TO_FIELD are package-internal (only find_header_row uses them).
     assert callable(excel.norm_header) and not hasattr(cp, "norm_header")
     assert isinstance(excel.HEADER_TO_FIELD, dict) and not hasattr(cp, "HEADER_TO_FIELD")
@@ -273,3 +274,5 @@ def test_excel_reexported_and_functional(cp):
         assert getattr(cp, name) is getattr(excel, name)
     # _parse_track / _track_summary moved with write_l3_forwarding_sheet (package-internal).
     assert callable(excel._parse_track) and not hasattr(cp, "_parse_track")
+    # the main interface-template filler joined the excel layer (step 26) - the LAST sheet writer.
+    assert cp.append_interface_rows is excel.append_interface_rows
