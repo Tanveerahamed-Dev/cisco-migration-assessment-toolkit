@@ -113,7 +113,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Gi1/0/2": {
     "port": "Gi1/0/2",
@@ -163,7 +164,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Gi1/0/24": {
     "port": "Gi1/0/24",
@@ -213,7 +215,8 @@
     "neighbor_port": "Gi0/1",
     "neighbor_platform": "cisco WS-C2960X-48",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Gi1/0/5": {
     "port": "Gi1/0/5",
@@ -263,7 +266,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Gi1/0/9": {
     "port": "Gi1/0/9",
@@ -313,7 +317,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Po1": {
     "port": "Po1",
@@ -363,7 +368,8 @@
     "neighbor_port": "Po1",
     "neighbor_platform": "cisco N9K-C93180YC-EX",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": "9216"
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -413,7 +419,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Vlan20": {
     "port": "Vlan20",
@@ -463,7 +470,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "VOICE_FILTER",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Vlan30": {
     "port": "Vlan30",
@@ -513,7 +521,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": "PROTECT_SERVERS"
+    "acl_out": "PROTECT_SERVERS",
+    "mtu": ""
    }
   },
   "core2": {
@@ -565,7 +574,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Eth1/2": {
     "port": "Eth1/2",
@@ -615,7 +625,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Po1": {
     "port": "Po1",
@@ -665,7 +676,8 @@
     "neighbor_port": "Po1",
     "neighbor_platform": "cisco WS-C3850-24T",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Vlan10": {
     "port": "Vlan10",
@@ -715,7 +727,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Vlan20": {
     "port": "Vlan20",
@@ -765,7 +778,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    }
   },
   "access1": {
@@ -817,7 +831,8 @@
     "neighbor_port": "Gi1/0/24",
     "neighbor_platform": "cisco WS-C3850-24T",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Gi0/2": {
     "port": "Gi0/2",
@@ -867,7 +882,8 @@
     "neighbor_port": "Gi0",
     "neighbor_platform": "cisco AIR-AP2802I",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Gi0/3": {
     "port": "Gi0/3",
@@ -917,7 +933,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    },
    "Gi0/10": {
     "port": "Gi0/10",
@@ -967,7 +984,8 @@
     "neighbor_port": "",
     "neighbor_platform": "",
     "acl_in": "",
-    "acl_out": ""
+    "acl_out": "",
+    "mtu": ""
    }
   }
  },

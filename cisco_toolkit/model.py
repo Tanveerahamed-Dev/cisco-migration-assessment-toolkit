@@ -64,6 +64,8 @@ class InterfaceData:
     # NEW-V3.23.x (L4/ACL flagging): ACL name applied to this interface/SVI (from run-config 'ip access-group')
     acl_in: str = ""
     acl_out: str = ""
+    # NEW-V3.23.49 (path-MTU mismatch): interface MTU from run-config (blank = default ~1500); jumbo-frame detection
+    mtu: str = ""
 
 
 # =============================================================================

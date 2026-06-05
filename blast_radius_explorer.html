@@ -556,7 +556,7 @@ function demoSnapshot(){
   const ALL="1,10,20,30,40,99";
   const gw=(vid,ip,h,acl,vrf)=>({port:"Vlan"+vid,svi_ip:ip,vlan:String(vid),hsrp_behavior:h||"",switchport_mode:"",end_host_mac:"",acl_in:(acl&&acl.in)||"",acl_out:(acl&&acl.out)||"",vrf:vrf||""});
   const link=(nbr,np,o={})=>({port:o.port,cdp_neighbor:nbr,neighbor_port:np,stp_fwd_vlans:o.fwd||"",stp_blk_vlans:o.blk||"",
-    trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:""});
+    trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:"",mtu:o.mtu||""});
   const eps=(vid,n,base)=>{const o={};for(let i=0;i<n;i++){const p=`Gi1/0/${base+i}`;
     o[p]={port:p,switchport_mode:"access",vlan:String(vid),status:"connected",
       end_host_mac:`aa:bb:${vid.toString(16).padStart(2,"0")}:00:00:${(base+i).toString(16).padStart(2,"0")}`,
@@ -586,7 +586,7 @@ function demoSnapshot(){
       {"Gi1/0/24":link("DIST-1","Gi1/0/2",{port:"Gi1/0/24",fwd:ALL}),
        "Gi1/0/12":link("ACC-3","Gi1/0/24",{port:"Gi1/0/12",fwd:ALL})}),
     "ACC-3":Object.assign({},eps(10,5,1),
-      {"Gi1/0/24":link("ACC-2","Gi1/0/12",{port:"Gi1/0/24",fwd:ALL})}),
+      {"Gi1/0/24":link("ACC-2","Gi1/0/12",{port:"Gi1/0/24",fwd:ALL,mtu:"9216"})}),   // path-MTU: jumbo on this uplink only (peer Gi1/0/12 default) -> mismatch on flows via ACC-3
     "ACC-4":Object.assign({},eps(10,7,1),eps(20,5,8),eps(40,2,13),   // PHASE K: 2 endpoints in the VRF-isolated VLAN 40
       {"Gi1/0/24":link("DIST-1","Gi1/0/4",{port:"Gi1/0/24",fwd:ALL}),
        "Gi1/0/23":link("DIST-2","Gi1/0/4",{port:"Gi1/0/23",fwd:ALL})}),
@@ -1244,6 +1244,24 @@ function _routeCovers(host,ip){
    address — so _routeCovers can test whether a source gateway has a route toward that whole subnet. */
 function gwIp(host,vid){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host]["Vlan"+vid]:null;
   return d?String(d.svi_ip||"").trim().split(/\s+/)[0]:"";}
+/* path-MTU mismatch: collect the MTUs of the physical interfaces a flow traverses (access ports +
+   each trunk link's two ends + the routed egress). >=2 distinct explicit MTUs, or jumbo set on only
+   some hops, means frames above the smallest MTU are silently dropped -- a classic post-cutover black-hole. */
+function _ifMtu(host,port){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host][port]:null;
+  const m=d&&d.mtu?parseInt(d.mtu,10):NaN; return (m>0)?m:null;}            // null = no explicit MTU (default ~1500)
+function pathMtu(F,s,d){
+  const mtus=[]; const add=(h,p)=>{if(h&&p)mtus.push(_ifMtu(h,p));};
+  add(s.host,s.port); add(d.host,d.port);
+  for(const li of F.linkIdxs){const L=MODEL.links[li]; if(!L)continue; add(L.a,L.aPort); add(L.b,L.bPort);}
+  if(F.routedEgress)add(F.routedEgress.host,F.routedEgress.port);
+  const explicit=mtus.filter(m=>m!=null); const distinct=[...new Set(explicit)].sort((a,b)=>a-b);
+  const anyDefault=mtus.some(m=>m==null);
+  if(distinct.length>=2)return {mismatch:true,pathMtu:distinct[0],distinct,
+    note:`MTU mismatch on the path: ${distinct.join(" / ")} bytes — frames larger than ${distinct[0]} are dropped at the smaller-MTU hop.`};
+  if(distinct.length===1&&distinct[0]>1500&&anyDefault)return {mismatch:true,pathMtu:1500,distinct,
+    note:`Jumbo MTU (${distinct[0]}) is set on only some hops; the rest are default (~1500) — jumbo frames are dropped where MTU is unset.`};
+  return {mismatch:false,pathMtu:(distinct[0]||null),distinct,note:""};
+}
 /* M: where an ACL flag is applied — a gateway SVI ("VLAN n") or a routed transit interface (its name). */
 function aclLoc(a){return a.intf?esc(a.intf):("VLAN "+a.vid);}
 /* PHASE F: render the "L4 filtering" card from a list of {host,vid|intf,dir,name}; "" when empty. */
@@ -1439,8 +1457,9 @@ function drawFlow(){
       (F.reason?`<div class="card ${tok}" style="margin-bottom:8px"><div class="ln">${esc(F.reason)}</div></div>`:"")+
       (F.spofs.length?`<div class="ln faint" style="margin:0 0 8px">⚠ SPOFs on path: ${esc(F.spofs.join("; "))}</div>`:"")+
       (F.aclVerdicts&&F.aclVerdicts.length?aclVerdictCard(F.aclVerdicts,FLOW_PROTO,FLOW_DPORT):aclFlagCard(F.aclFlags,"this path"))+
+      (F.mtu&&F.mtu.mismatch?`<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ Path MTU mismatch</span><span class="pill pl-watch">${F.mtu.pathMtu} eff.</span></div><div class="ln faint" style="margin-top:2px">${esc(F.mtu.note)} The flow still reaches — only large / jumbo frames are affected.</div></div>`:"")+
       `<div>${steps}</div>`+
-      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate).</p></div>`;
+      `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. Reflexive / time-based rules aren't modeled (reported as indeterminate). <b>Path MTU</b> consistency is checked — jumbo-frame black-holes are flagged (the flow still reaches; only oversized frames drop).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
     result=`<div class="sec"><p class="faint">Enter both a source and a destination endpoint to trace the flow.</p></div>`;
   }
@@ -1534,7 +1553,7 @@ function flowBetween(s,d){
   if(sv===dv){
     if(seg(sv,s.host,d.host)===null){F.verdict="NOT REACHABLE"; F.reason=`VLAN ${sv} is partitioned between ${s.host} and ${d.host} — no STP-forwarding path.`; hop("L2",F.reason,true); return F;}
     hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
-    F.reachable=true; F.verdict="REACHABLE — L2 (same subnet)"; return F;
+    F.mtu=pathMtu(F,s,d); F.reachable=true; F.verdict="REACHABLE — L2 (same subnet)"; return F;
   }
   const sgwAll=MODEL.gateways.get(sv)||new Set(), dgwAll=MODEL.gateways.get(dv)||new Set();
   if(!sgwAll.size){F.verdict="NOT REACHABLE"; F.reason=`VLAN ${sv} has no gateway (SVI) — the source can't leave its subnet.`; hop("L3",F.reason,true); return F;}
@@ -1561,6 +1580,7 @@ function flowBetween(s,d){
    const ao=gwAcl(dgw,dv); if(ao&&ao.out)F.aclFlags.push({host:dgw,vid:dv,dir:"out",name:ao.out});   // ingress SVI of the dest subnet
    // M: an ACL on the ROUTED egress interface the source gateway uses toward the destination (a transit uplink, not an SVI)
    if(_rt&&_rt.out_intf&&!/^Vlan\d+$/i.test(_rt.out_intf)){
+     F.routedEgress={host:sgw,port:_rt.out_intf};                     // path-MTU: include this transit interface
      const ei=(SNAP&&SNAP.interfaces&&SNAP.interfaces[sgw])?SNAP.interfaces[sgw][_rt.out_intf]:null;
      if(ei&&ei.acl_out)F.aclFlags.push({host:sgw,intf:_rt.out_intf,dir:"out",name:ei.acl_out});}}
   if(s.ip&&d.ip&&F.aclFlags.length){                                  // G2: evaluate those ACLs against the chosen 5-tuple
@@ -1571,7 +1591,7 @@ function flowBetween(s,d){
       return Object.assign({},a,{verdict:v.action,rule:v.rule,idx:v.idx,implicit:v.implicit,nobody:v.nobody});});}
   seg(dv,dgw,d.host);
   hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
-  F.reachable=true; F.verdict="REACHABLE — L3 (routed via gateway)";
+  F.mtu=pathMtu(F,s,d); F.reachable=true; F.verdict="REACHABLE — L3 (routed via gateway)";
   return F;
 }
 

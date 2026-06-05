@@ -563,7 +563,7 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
         m = re.match(r"^\s*interface\s+(\S+)", line, re.IGNORECASE)
         if m:
             current = normalize_ifname(m.group(1))
-            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":"","acl_in":"","acl_out":""})
+            res.setdefault(current, {"bpduguard":"","rootguard":"","pc_mode":"","pc_id":"","vrf":"","desc":"","portfast":"","ip_addr":"","acl_in":"","acl_out":"","mtu":""})
             if global_bpduguard:
                 res[current]["bpduguard"] = "Enable"
             continue
@@ -605,6 +605,14 @@ def parse_run_config_interfaces(output: str) -> Dict[str, Dict[str, str]]:
         if low.startswith("vrf member "):    res[current]["vrf"] = line.strip().split()[-1]   # NX-OS
         if low.startswith("vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]   # IOS-XE
         if low.startswith("ip vrf forwarding "): res[current]["vrf"] = line.strip().split()[-1]   # legacy IOS
+        # NEW-V3.23.49 (path-MTU mismatch): interface MTU (jumbo-frame detection). Prefer the L2/system
+        # 'mtu N'; fall back to 'ip mtu N' only when no plain mtu is set. Default (1500, unset) stays blank.
+        if low.startswith("mtu "):
+            mm = re.match(r"mtu\s+(\d+)", low)
+            if mm: res[current]["mtu"] = mm.group(1)
+        elif low.startswith("ip mtu ") and not res[current].get("mtu"):
+            mm = re.match(r"ip mtu\s+(\d+)", low)
+            if mm: res[current]["mtu"] = mm.group(1)
     return res
 
 # ----------------------------------------------------------------------------- #
