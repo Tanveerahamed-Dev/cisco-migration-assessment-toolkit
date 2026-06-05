@@ -5,6 +5,38 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-05 — PHASE 2.7 step 22: analysis writers -> excel (first to call analyze)
+
+On branch `phase2-split-excel3`. Byte-identical. Monolith **~2,544 lines**; excel.py ~576.
+
+- Moved 5 writers (in 2 monolith regions) → excel.py: `write_move_group_sheet`/`write_topology_sheet`/
+  `write_findings_sheet`/`write_capacity_sheet`(+`_to_float`)/`write_topology_diagram`(+`_mermaid_id`,
+  writes .mmd/.dot via `os`). These are the **first excel writers that call analyze computes**, so
+  excel.py now `from cisco_toolkit.analyze import compute_findings, compute_move_groups,
+  compute_topology_links` (excel→analyze is one-way, correct direction) + `import os` + `Optional`.
+- Import-backs: the 5 writers (main()). Constants + `_to_float`/`_mermaid_id` package-internal.
+- **F401 cascade:** `compute_topology_links`/`compute_findings` were their last monolith users →
+  dropped from the monolith's analyze import. **`compute_move_groups` STAYS re-exported** (main()
+  calls it directly to build move_groups for compute_migration_readiness — ruff confirmed). Updated
+  step-12 identity assertions to not-hasattr. **Caught an external test:** `test_cry_wolf.py` used
+  `cp.compute_findings` → repointed to `analyze.compute_findings` (it already imports analyze). The
+  tests/-grep-for-`cp.<symbol>` discipline caught it.
+- Extended excel test (5 writer identities + `_to_float` smoke + `_to_float`/`_mermaid_id` package-
+  internal). **65 tests**, golden byte-identical, ruff clean, mypy 101. `.md` V3.23.32.
+
+**Excel writers remaining:** (c) **step 23 = health/analysis writers** — `write_health_scores_sheet`/
+`write_score_sensitivity_sheet`/`write_migration_readiness_sheet`/`write_cross_layer_sheet`/
+`write_causality_chains_sheet`/`write_failure_impact_sheet`/`write_protocol_health_sheet`/
+`write_interface_health_sheet`/`write_security_posture_sheet`/`write_routing_adjacency_sheet`
+(+ their `_SEV_FILL`/`_READY_FILL`/`_STATUS_FILL`/`_CL_FILL` fill maps + `*_SHEET_NAME`). Several of
+these take already-computed `records` (main() computes, passes in) so they don't import analyze; a few
+call computes. Watch for parse-using ones (interface_health/security_posture/routing_adjacency read
+files via `_load_cmd_output` + call parsers). (d) FUSED compute-in-writer (physical-health/
+l3-forwarding+`_parse_track`/`_track_summary`/flow-trace). (e) `append_interface_rows` + build_* +
+global_arp + `debug_scan_headers`. Then html, then `__main__`. Sequential.
+
+---
+
 ## 2026-06-05 — PHASE 2.7 step 21: census/inventory writers -> excel
 
 On branch `phase2-split-excel2`. Byte-identical. **First writer batch into excel.py.**
