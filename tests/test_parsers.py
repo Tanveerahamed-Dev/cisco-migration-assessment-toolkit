@@ -44,6 +44,31 @@ def test_parse_run_config_interface_acl(cp):
     assert res["Vlan10"]["acl_in"] == "" and res["Vlan10"]["acl_out"] == ""
 
 
+def test_parse_run_config_interface_vrf(cp):
+    # PHASE K (VRF-aware reachability): capture VRF membership across all three syntaxes
+    # so the explorer can isolate different-VRF subnets. A bare SVI stays in the global table ('').
+    out = textwrap.dedent("""\
+        interface Vlan30
+         description SERVERS
+         vrf forwarding TENANT_RED
+         ip address 10.0.30.1 255.255.255.0
+        interface Vlan40
+         description NX-TENANT
+         vrf member TENANT_BLUE
+        interface Vlan50
+         description LEGACY-IOS
+         ip vrf forwarding TENANT_GREEN
+        interface Vlan10
+         description USERS
+         ip address 10.0.10.2 255.255.255.0
+    """)
+    res = parse.parse_run_config_interfaces(out)
+    assert res["Vlan30"]["vrf"] == "TENANT_RED"     # IOS-XE
+    assert res["Vlan40"]["vrf"] == "TENANT_BLUE"    # NX-OS
+    assert res["Vlan50"]["vrf"] == "TENANT_GREEN"   # legacy IOS
+    assert res["Vlan10"]["vrf"] == ""               # global table — never absent
+
+
 # ---- ACL definitions (L4 allow/deny sim) ----------------------------------- #
 def test_parse_acls_forms(cp):
     out = textwrap.dedent("""\
