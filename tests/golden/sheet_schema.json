@@ -234,5 +234,9 @@
   "Perturbation",
   "Switches Changing Band",
   "Detail"
+ ],
+ "Score Calibration": [
+  "Metric",
+  "Value"
  ]
 }

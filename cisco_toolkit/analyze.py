@@ -783,6 +783,84 @@ def compute_score_sensitivity(all_interfaces: Dict[str, Dict[str, InterfaceData]
     out.sort(key=lambda r: (-r["switches_changed_band"], r["group"], r["delta_pct"]))
     return out
 
+def compute_calibration_report(health_scores: List[dict],
+                               config: ScoringConfig = SCORING) -> dict:
+    """NEW-V3.23.47: fleet-level scoring-CALIBRATION diagnostic over the computed
+    health scores. Reports the band distribution + score spread, a discrimination
+    metric (how well the current bands actually separate THIS fleet), and -- when
+    discrimination is poor -- data-driven quantile band thresholds as a re-banding
+    suggestion.
+
+    This addresses the standing 'weights/bands are an uncalibrated default'
+    limitation from a different angle than `compute_score_sensitivity` (which tests
+    weight robustness): the *weights* can't be fit without a labelled dataset, but a
+    scoring system that lumps every switch into one band gives no decision value
+    regardless of the weights -- so we surface whether the BANDS discriminate at all,
+    and offer a relative (curve-graded) re-banding when they don't. Pure derivation;
+    no new collection. 'Insufficient Data' switches are excluded from the stats."""
+    import math
+    import statistics
+    scored = [r for r in (health_scores or [])
+              if isinstance(r.get("score"), (int, float)) and r.get("band") != "Insufficient Data"]
+    n = len(scored)
+    if n == 0:
+        return {"n": 0, "note": "no scored switches to calibrate against",
+                "score_stats": {}, "band_distribution": [], "modal_band": "",
+                "modal_pct": 0, "discrimination": None,
+                "discrimination_quality": "unknown", "suggested_bands": None}
+    scores = sorted(float(r["score"]) for r in scored)
+
+    def _pct(p: float) -> float:   # linear-interpolated percentile on the sorted scores
+        if n == 1:
+            return scores[0]
+        k = (n - 1) * p
+        lo, hi = int(math.floor(k)), int(math.ceil(k))
+        return scores[lo] if lo == hi else scores[lo] + (scores[hi] - scores[lo]) * (k - lo)
+
+    stats = {"min": round(scores[0]), "max": round(scores[-1]),
+             "mean": round(statistics.mean(scores), 1),
+             "median": round(statistics.median(scores), 1),
+             "p25": round(_pct(0.25), 1), "p75": round(_pct(0.75), 1),
+             "stdev": round(statistics.pstdev(scores), 1)}
+
+    order = list(dict.fromkeys(label for _thr, label, _fill in config.bands))   # band labels, highest-first
+    counts = {label: 0 for label in order}
+    for r in scored:
+        counts[r["band"]] = counts.get(r["band"], 0) + 1
+    band_distribution = [{"band": b, "count": counts[b], "pct": round(100 * counts[b] / n)}
+                         for b in order]
+    modal_band = max(order, key=lambda b: counts[b])
+    modal_pct = round(100 * counts[modal_band] / n)
+
+    # discrimination = normalized Shannon entropy of the band distribution (0 = all one band, 1 = uniform)
+    H = -sum((c / n) * math.log(c / n) for c in counts.values() if c > 0)
+    Hmax = math.log(len(order)) if len(order) > 1 else 1.0
+    disc = round(H / Hmax, 2) if Hmax > 0 else 0.0
+    if n < 4:
+        quality = "n/a (too few switches)"
+    elif disc < 0.4 or modal_pct >= 80:
+        quality = "poor"
+    elif disc < 0.7:
+        quality = "fair"
+    else:
+        quality = "good"
+
+    # Relative (curve-graded) re-banding: place thresholds at even quantiles so the fleet
+    # spreads across every band. Only offered when discrimination is poor -- it is
+    # norm-referenced (rank the fleet), NOT criterion-referenced like the absolute default.
+    suggested = None
+    if quality == "poor" and n >= len(order):
+        k = len(order)
+        suggested = [{"threshold": (0 if i == k - 1 else round(_pct((k - 1 - i) / k))), "band": label}
+                     for i, label in enumerate(order)]
+
+    note = (f"{n} switch(es); scores {stats['min']}-{stats['max']} (median {stats['median']}). "
+            f"{modal_pct}% in '{modal_band}'. Band discrimination: {quality}"
+            + (" -- consider the suggested quantile re-banding (relative grading)." if suggested else "."))
+    return {"n": n, "score_stats": stats, "band_distribution": band_distribution,
+            "modal_band": modal_band, "modal_pct": modal_pct, "discrimination": disc,
+            "discrimination_quality": quality, "suggested_bands": suggested, "note": note}
+
 # 10 pre-migration checks; each returns (status, note). status in pass/warn/fail.
 def compute_migration_readiness(all_interfaces, move_groups, health_scores,
                                 physical_health, l3_forwarding, cross_layer,

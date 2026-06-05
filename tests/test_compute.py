@@ -198,3 +198,42 @@ def test_inscope_subnets_from_svis():
         "Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="10"),   # access port, not an SVI -> ignored
     }}
     assert inscope_subnets(ifaces) == {"10.0.10.0/24", "10.0.20.0/24"}
+
+
+# --------------------------------------------------------------------------- #
+# Scoring calibration: compute_calibration_report (fleet band-discrimination)
+# --------------------------------------------------------------------------- #
+def test_calibration_report_flags_poor_discrimination():
+    from cisco_toolkit.analyze import compute_calibration_report
+    # 10 switches all banded 'Good' -> the bands don't discriminate -> poor + a re-banding suggestion
+    hs = [{"switch": f"sw{i}", "score": 76 + (i % 5), "band": "Good"} for i in range(10)]
+    rep = compute_calibration_report(hs)
+    assert rep["n"] == 10
+    assert rep["modal_band"] == "Good" and rep["modal_pct"] == 100
+    assert rep["discrimination"] == 0.0                 # all one band -> zero entropy
+    assert rep["discrimination_quality"] == "poor"
+    assert rep["suggested_bands"] is not None
+    assert rep["suggested_bands"][-1]["threshold"] == 0  # bottom band always floors at 0
+    assert all(0 <= s["threshold"] <= 100 for s in rep["suggested_bands"])
+
+
+def test_calibration_report_good_discrimination_excludes_insufficient_data():
+    from cisco_toolkit.analyze import compute_calibration_report
+    # one switch per band -> well spread; the 'Insufficient Data' switch must be excluded from stats
+    hs = [{"switch": "a", "score": 95, "band": "Excellent"},
+          {"switch": "b", "score": 80, "band": "Good"},
+          {"switch": "c", "score": 65, "band": "Fair"},
+          {"switch": "d", "score": 45, "band": "Poor"},
+          {"switch": "e", "score": 20, "band": "Critical"},
+          {"switch": "f", "score": 88, "band": "Insufficient Data", "data_quality": 0.3}]
+    rep = compute_calibration_report(hs)
+    assert rep["n"] == 5                                 # Insufficient-Data switch excluded
+    assert rep["discrimination"] == 1.0                  # uniform across all 5 bands -> max entropy
+    assert rep["discrimination_quality"] == "good"
+    assert rep["suggested_bands"] is None                # good discrimination -> no re-banding offered
+
+
+def test_calibration_report_empty():
+    from cisco_toolkit.analyze import compute_calibration_report
+    rep = compute_calibration_report([])
+    assert rep["n"] == 0 and rep["suggested_bands"] is None
