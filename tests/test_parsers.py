@@ -118,6 +118,21 @@ def test_parse_nat_absent(cp):
     assert parse.parse_nat("hostname r1\n!\n") == {}
 
 
+def test_parse_acl_stateful(cp):
+    # stateful-ACL: capture 'established' (TCP return-only) and 'time-range' (time-conditional)
+    out = textwrap.dedent("""\
+        ip access-list extended INET_RETURN
+         permit tcp any any established
+         permit tcp 10.0.10.0 0.0.0.255 any eq 443 time-range BUSINESS_HOURS
+         deny ip any any
+    """)
+    rules = parse.parse_acls(out)["INET_RETURN"]
+    assert rules[0].get("established") is True              # 'established' captured
+    assert "established" not in rules[1]                    # only the established rule carries it
+    assert rules[1].get("time_range") == "BUSINESS_HOURS"   # time-range captured
+    assert not rules[2].get("established") and not rules[2].get("time_range")   # plain deny: neither
+
+
 # ---- ACL definitions (L4 allow/deny sim) ----------------------------------- #
 def test_parse_acls_forms(cp):
     out = textwrap.dedent("""\
