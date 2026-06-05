@@ -563,7 +563,7 @@ function demoSnapshot(){
   const ALL="1,10,20,30,40,99";
   const gw=(vid,ip,h,acl,vrf,helpers)=>({port:"Vlan"+vid,svi_ip:ip,vlan:String(vid),hsrp_behavior:h||"",switchport_mode:"",end_host_mac:"",acl_in:(acl&&acl.in)||"",acl_out:(acl&&acl.out)||"",vrf:vrf||"",dhcp_helpers:helpers||""});
   const link=(nbr,np,o={})=>({port:o.port,cdp_neighbor:nbr,neighbor_port:np,stp_fwd_vlans:o.fwd||"",stp_blk_vlans:o.blk||"",
-    trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:"",mtu:o.mtu||"",trunk_native_vlan:o.native||""});
+    trunk_allowed_vlans:o.allowed||"all",port_channel:o.pc||"",switchport_mode:"trunk",end_host_mac:"",mtu:o.mtu||"",trunk_native_vlan:o.native||"",duplex:o.duplex||"",speed:o.speed||""});
   const eps=(vid,n,base)=>{const o={};for(let i=0;i<n;i++){const p=`Gi1/0/${base+i}`;
     o[p]={port:p,switchport_mode:"access",vlan:String(vid),status:"connected",
       end_host_mac:`aa:bb:${vid.toString(16).padStart(2,"0")}:00:00:${(base+i).toString(16).padStart(2,"0")}`,
@@ -578,7 +578,7 @@ function demoSnapshot(){
       {"Po1":link("DIST-2","Po1",{port:"Po1",fwd:ALL,pc:"Po1"}),
        "Gi1/0/1":link("ACC-1","Gi1/0/24",{port:"Gi1/0/1",fwd:ALL,native:"99"}),   // trunk consistency: native VLAN 99 here vs ACC-1's default 1 -> mismatch
 
-       "Gi1/0/2":link("ACC-2","Gi1/0/24",{port:"Gi1/0/2",fwd:ALL}),
+       "Gi1/0/2":link("ACC-2","Gi1/0/24",{port:"Gi1/0/2",fwd:ALL,duplex:"Full-duplex"}),   // L1 demo: this end full…
        "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL})}),
     "DIST-2":Object.assign({},
       {"Vlan10":gw(10,"10.0.10.3","HSRP grp10 standby vIP 10.0.10.1"),
@@ -591,7 +591,8 @@ function demoSnapshot(){
       {"Gi1/0/24":link("DIST-1","Gi1/0/1",{port:"Gi1/0/24",fwd:ALL}),
        "Gi1/0/23":link("DIST-2","Gi1/0/1",{port:"Gi1/0/23",blk:ALL})}),
     "ACC-2":Object.assign({},eps(10,8,1),eps(30,3,9),
-      {"Gi1/0/24":link("DIST-1","Gi1/0/2",{port:"Gi1/0/24",fwd:ALL}),
+      {"Gi1/0/24":link("DIST-1","Gi1/0/2",{port:"Gi1/0/24",fwd:ALL,duplex:"Half-duplex"}),   // …but ACC-2 end half -> duplex mismatch
+
        "Gi1/0/12":link("ACC-3","Gi1/0/24",{port:"Gi1/0/12",fwd:ALL})}),
     "ACC-3":Object.assign({},eps(10,5,1),
       {"Gi1/0/24":link("ACC-2","Gi1/0/12",{port:"Gi1/0/24",fwd:ALL,mtu:"9216"})}),   // path-MTU: jumbo on this uplink only (peer Gi1/0/12 default) -> mismatch on flows via ACC-3
@@ -1824,6 +1825,37 @@ function trunkConsistencyCard(){
     `<div class="sub" style="margin-bottom:6px">Native-VLAN mismatches and asymmetric VLAN pruning on inter-switch trunks — silent L2 leaks, black-holed VLANs, and lost failover.</div>`+
     rows+`</div>`;
 }
+/* Link L1 consistency: duplex / speed MISMATCH across an inter-switch link. A duplex mismatch (one end
+   full, the other half — typically forced-vs-autoneg) is the classic "link is up but slow/flaky": late
+   collisions and CRC errors, not an outage, so it survives a cutover unnoticed. Both ends' OPERATIONAL
+   duplex/speed are in the snapshot (from 'show interfaces'); 'auto-…' that hasn't resolved is skipped. */
+function _ifPhy(host,port){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host][port]:null;
+  if(!d)return {duplex:"",speed:0};
+  const dx=String(d.duplex||"").toLowerCase(), duplex=/half/.test(dx)?"half":/full/.test(dx)?"full":"";   // 'auto-duplex' (unresolved) -> ""
+  const sm=String(d.speed||"").toLowerCase().match(/(\d+)\s*(g|m)?/), speed=sm?(+sm[1])*(sm[2]==="g"?1000:1):0;   // normalize to Mbps; 0 = unknown/auto
+  return {duplex,speed};}
+function linkPhyConsistency(){
+  const out=[], seen=new Set();
+  for(const L of (MODEL&&MODEL.links)||[]){
+    const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
+    const a=_ifPhy(L.a,L.aPort), b=_ifPhy(L.b,L.bPort);
+    const duplex=(a.duplex&&b.duplex&&a.duplex!==b.duplex)?[a.duplex,b.duplex]:null;
+    const speed=(a.speed&&b.speed&&a.speed!==b.speed)?[a.speed,b.speed]:null;
+    if(duplex||speed)out.push({a:L.a,aPort:L.aPort,b:L.b,bPort:L.bPort,duplex,speed});}
+  return out;
+}
+function linkPhyCard(){
+  if(!MODEL||!MODEL.links)return "";
+  const m=linkPhyConsistency(); if(!m.length)return "";   // only surfaced when there's a real L1 mismatch
+  const spd=mb=>mb>=1000?`${mb/1000}G`:`${mb}M`;
+  const rows=m.map(x=>{const bits=[];
+    if(x.duplex)bits.push(`duplex ${x.duplex[0]} vs ${x.duplex[1]}`);
+    if(x.speed)bits.push(`speed ${spd(x.speed[0])} vs ${spd(x.speed[1])}`);
+    return `<div class="ln"><span class="pill pl-crit">✗ ${x.duplex?"duplex":"speed"}</span> <span class="mono">${esc(shortName(x.a))} ${esc(x.aPort)}</span> ↔ <span class="mono">${esc(shortName(x.b))} ${esc(x.bPort)}</span> — ${bits.join(", ")} (errors / degraded throughput, link still up).</div>`;}).join("");
+  return `<div class="sec"><h3>Link L1 consistency <span class="badge b-crit">${m.length} mismatch${m.length===1?"":"es"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Duplex / speed mismatches on inter-switch links — the silent "up but slow/flaky" failure (late collisions, CRC errors).</div>`+
+    rows+`</div>`;
+}
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
   if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
@@ -1879,6 +1911,7 @@ function drawHealth(){
     ${calibrationCard()}
     ${addressingCard()}
     ${trunkConsistencyCard()}
+    ${linkPhyCard()}
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
