@@ -220,6 +220,27 @@ def test_compute_migration_punchlist(cp):
     assert {"Addressing", "FHRP", "Trunk", "Link L1"} <= {i["category"] for i in pl2}
     assert len(pl2) == len(pl) + 4                                                    # exactly the 4 L2 items added
     assert all(i["wave"] == "Wave 1" for i in pl2 if i["category"] in ("Addressing", "FHRP", "Trunk", "Link L1"))
+    # V3.23.68: inventory-name vs configured-hostname mismatches fold in via hostname_mismatches
+    pl3 = analyze.compute_migration_punchlist(cross_layer, security, hygiene, physical, l3, proto,
+                                              stp, health, groups,
+                                              hostname_mismatches=[{"inventory": "a", "reported": "a-real"}])
+    inv = [i for i in pl3 if i["category"] == "Inventory"]
+    assert len(inv) == 1 and inv[0]["severity"] == "Medium"
+    assert "a-real" in inv[0]["title"] and inv[0]["wave"] == "Wave 1"   # device 'a' is in Wave 1
+
+
+def test_compute_hostname_mismatches(cp):
+    from cisco_toolkit import analyze
+    DP = analyze.DevicePhysical
+    devs = [
+        DP(hostname="AS01-BC", reported_hostname="AS01-BC"),                  # match -> no finding
+        DP(hostname="AS08--BC-CR03R13", reported_hostname="AS08-BC-CR03R13"), # double-dash typo -> finding
+        DP(hostname="CORE1", reported_hostname="core1.example.com"),          # FQDN/case -> canon-equal, no finding
+        DP(hostname="AS09", reported_hostname=""),                            # unknown reported -> skipped
+    ]
+    out = analyze.compute_hostname_mismatches(devs)
+    assert len(out) == 1
+    assert out[0] == {"inventory": "AS08--BC-CR03R13", "reported": "AS08-BC-CR03R13"}
 
 
 # --------------------------------------------------------------------------- #

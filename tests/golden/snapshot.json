@@ -20,7 +20,8 @@
    "total_ports": 5,
    "active_ports": 4,
    "fan_status": "",
-   "temperature_status": ""
+   "temperature_status": "",
+   "reported_hostname": ""
   },
   "core2": {
    "hostname": "core2",
@@ -40,7 +41,8 @@
    "total_ports": 2,
    "active_ports": 2,
    "fan_status": "",
-   "temperature_status": ""
+   "temperature_status": "",
+   "reported_hostname": ""
   },
   "access1": {
    "hostname": "access1",
@@ -60,7 +62,8 @@
    "total_ports": 4,
    "active_ports": 4,
    "fan_status": "",
-   "temperature_status": ""
+   "temperature_status": "",
+   "reported_hostname": ""
   }
  },
  "interfaces": {

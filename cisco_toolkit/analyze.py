@@ -10,7 +10,7 @@ fill-colour maps (`_READY_FILL`/`_STATUS_FILL`) and sheet-name constants stay
 behind too - they belong to the excel layer, not the data analysis."""
 import re
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from cisco_toolkit.cmdio import _load_cmd_output
 from cisco_toolkit.model import DevicePhysical, InterfaceData
@@ -260,6 +260,22 @@ _SEV_RANK = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
 def _canon_host_map(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Dict[str, str]:
     """canonical-name -> real hostname key, to resolve CDP/LLDP neighbor names."""
     return {_canon_host(h): h for h in all_interfaces}
+
+
+def compute_hostname_mismatches(all_device_physical: List[Any]) -> List[dict]:
+    """NEW-V3.23.68: flag devices whose OWN configured hostname (DevicePhysical.reported_hostname,
+    parsed from 'show version') differs from the inventory name it was collected under
+    (DevicePhysical.hostname). That mismatch is what makes a device surface as a phantom, split
+    node in the topology - its neighbors advertise it over CDP under its real name, which no
+    longer canon-matches the typo'd inventory key (e.g. inventory 'AS08--BC-...' vs real
+    'AS08-BC-...'). Returns [{inventory, reported}] (empty reported = unknown -> skipped)."""
+    out: List[dict] = []
+    for dp in (all_device_physical or []):
+        inv = (getattr(dp, "hostname", "") or "").strip()
+        rep = (getattr(dp, "reported_hostname", "") or "").strip()
+        if inv and rep and _canon_host(inv) != _canon_host(rep):
+            out.append({"inventory": inv, "reported": rep})
+    return out
 
 def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Tuple[str, str, str, str]]:
     """Return (severity, category, scope, detail) findings derived entirely from
@@ -1691,7 +1707,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 stp_findings: dict,
                                 health_scores: List[dict],
                                 move_groups: List[dict],
-                                l2: Optional[dict] = None) -> List[dict]:
+                                l2: Optional[dict] = None,
+                                hostname_mismatches: Optional[list] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -1812,6 +1829,16 @@ def compute_migration_punchlist(cross_layer: List[dict],
             f"{lp.get('a_host')} {lp.get('a_port')} <-> {lp.get('b_host')} {lp.get('b_port')} -- "
             f"{what} differs (late collisions / CRC errors, link up but degraded).",
             "Set matching duplex/speed (or autoneg) on both ends.")
+
+    # NEW-V3.23.68: inventory/identity data quality -- a device collected under a name that differs
+    # from its own configured hostname reconciles wrong in the topology (phantom split node) and
+    # breaks any hostname-keyed cutover scripting.
+    for hm in (hostname_mismatches or []):
+        add("Medium", "Inventory", [hm.get("inventory")],
+            f"Inventory name != device hostname ({hm.get('inventory')} vs {hm.get('reported')})",
+            f"Collected as '{hm.get('inventory')}' but the device reports its hostname as "
+            f"'{hm.get('reported')}' -- it reconciles as a duplicate/phantom node in the topology.",
+            "Correct the inventory/devices.json name to match the device's configured hostname.")
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
     for i, it in enumerate(items, 1):

@@ -324,6 +324,7 @@ from cisco_toolkit.analyze import (
     compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
     stp_root_findings, compute_migration_punchlist,   # NEW-V3.23.62 / .63 (STP root analysis + consolidated punch-list)
+    compute_hostname_mismatches,                       # NEW-V3.23.68 (inventory-name vs configured-hostname)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -1514,10 +1515,11 @@ def main():
            "fhrp": compute_fhrp_consistency(all_interfaces),
            "trunk_native": compute_trunk_native_mismatches(all_interfaces),
            "link_phy": compute_duplex_speed_mismatches(all_interfaces)}
+    _hostname_mismatches = compute_hostname_mismatches(all_device_physical)   # NEW-V3.23.68
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
-                           l2=_l2, _default=[])
+                           l2=_l2, hostname_mismatches=_hostname_mismatches, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
