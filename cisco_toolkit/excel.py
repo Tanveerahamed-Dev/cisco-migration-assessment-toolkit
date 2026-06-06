@@ -1519,6 +1519,51 @@ def write_failure_impact_sheet(wb, all_interfaces: Dict[str, Dict[str, Interface
     logger.info(f"  [OK] '{FAILURE_SHEET_NAME}' sheet: {len(rows)} switch(es) analyzed")
 
 
+LINK_CENTRALITY_SHEET_NAME = "Link Centrality"
+
+def write_link_centrality_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write (or replace) 'Link Centrality': structural chokepoint ranking of the inter-switch links --
+    edge betweenness (share of all-pairs shortest-path flow that crosses each link) + bridge detection
+    (links whose failure partitions the fabric). The LINK twin of the per-switch 'Failure Impact' sheet;
+    same compute_link_centrality the explorer's chokepoint card consumes (one source of truth)."""
+    from cisco_toolkit.analyze import compute_link_centrality
+    cols = ["Rank", "Link", "Betweenness", "Bridge / SPOF", "Switch-Pairs Severed", "Assessment"]
+    if LINK_CENTRALITY_SHEET_NAME in wb.sheetnames:
+        del wb[LINK_CENTRALITY_SHEET_NAME]
+    ws = wb.create_sheet(LINK_CENTRALITY_SHEET_NAME)
+    _census_header(ws, cols)
+    rows = compute_link_centrality(all_interfaces)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="center")
+    DAT_C = Alignment(horizontal="center", vertical="center")
+    warn_fill = PatternFill("solid", fgColor="F4CCCC")
+    r = 2
+    for rec in rows:
+        link = f"{rec['a_host']} {rec['a_port']} <-> {rec['b_host']} {rec['b_port']}".strip()
+        bridge = "YES" if rec["is_bridge"] else ""
+        cut = rec["pairs_cut"] if rec["is_bridge"] else ""
+        if rec["is_bridge"]:
+            note = "Bridge — its failure partitions the fabric (true single point of failure)"
+        elif int(rec["rank"]) <= 3:
+            note = "High betweenness — a large share of east-west paths funnel through this link"
+        else:
+            note = ""
+        vals = [rec["rank"], link, rec["betweenness"], bridge, cut, note]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
+            c.alignment = DAT_C if col in (1, 3, 4, 5) else DAT_L
+            if rec["is_bridge"] and col in (4, 5):
+                c.fill = warn_fill
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "-"); ws.cell(2, 2, "No inter-switch links detected")
+    _census_autofit(ws, len(cols), r - 1)
+    ws.column_dimensions["B"].width = 48
+    ws.column_dimensions["F"].width = 62
+    logger.info(f"  [OK] '{LINK_CENTRALITY_SHEET_NAME}' sheet: {len(rows)} link(s), "
+                f"{sum(1 for x in rows if x['is_bridge'])} bridge(s)")
+
+
 EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,

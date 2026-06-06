@@ -183,6 +183,14 @@
   "FHRP-Covered",
   "Per-VLAN Detail"
  ],
+ "Link Centrality": [
+  "Rank",
+  "Link",
+  "Betweenness",
+  "Bridge / SPOF",
+  "Switch-Pairs Severed",
+  "Assessment"
+ ],
  "Physical Health": [
   "Switch",
   "Port",

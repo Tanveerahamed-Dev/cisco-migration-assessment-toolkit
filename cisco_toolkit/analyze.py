@@ -702,6 +702,124 @@ _ESSENTIAL_CMD_VARIANTS = (
     ("show cdp neighbors detail", "show lldp neighbors detail"),
 )
 
+def _topology_adjacency(all_interfaces: Dict[str, Dict[str, InterfaceData]]):
+    """Undirected adjacency {host: set(neighbor_host)} over SCANNED switches only, plus a
+    {frozenset({a,b}): link-record} map — both from compute_topology_links (one source of truth
+    with the topology diagram / 'Topology Links' sheet). Off-scan neighbours and self-loops dropped."""
+    hosts = set(all_interfaces)
+    adj: Dict[str, set] = {h: set() for h in hosts}
+    edges: Dict[frozenset, dict] = {}
+    for L in compute_topology_links(all_interfaces):
+        a, b = str(L["a_host"]), str(L["b_host"])
+        if a not in hosts or b not in hosts or a == b:
+            continue
+        adj[a].add(b); adj[b].add(a)
+        k = frozenset((a, b))
+        if k not in edges:
+            edges[k] = {"a_host": a, "a_port": str(L["a_port"]),
+                        "b_host": b, "b_port": str(L.get("b_port") or "")}
+    return hosts, adj, edges
+
+
+def _find_bridges(adj: Dict[str, set]) -> set:
+    """Bridge edges (frozenset({a,b})) — links whose removal disconnects the graph (true SPOFs).
+    Classic DFS low-link. Recursion depth is bounded by the longest simple path (campus fleets are
+    tens of switches, well under the interpreter limit)."""
+    disc: Dict[str, int] = {}
+    low: Dict[str, int] = {}
+    bridges: set = set()
+    timer = [0]
+
+    def dfs(u: str, parent) -> None:
+        disc[u] = low[u] = timer[0]; timer[0] += 1
+        for v in sorted(adj[u]):
+            if v == parent:
+                continue
+            if v not in disc:
+                dfs(v, u)
+                low[u] = min(low[u], low[v])
+                if low[v] > disc[u]:
+                    bridges.add(frozenset((u, v)))
+            else:
+                low[u] = min(low[u], disc[v])
+
+    for r in sorted(adj):
+        if r not in disc:
+            dfs(r, None)
+    return bridges
+
+
+def _bridge_pairs_cut(adj: Dict[str, set], edge: frozenset) -> int:
+    """For a bridge, the number of switch-pairs that lose ALL connectivity if it fails = the product
+    of the two component sizes the edge separates."""
+    from collections import deque
+    a, b = tuple(edge)
+    seen = {a}
+    q = deque([a])
+    while q:
+        u = q.popleft()
+        for w in adj[u]:
+            if (u == a and w == b) or (u == b and w == a):
+                continue                       # don't cross the bridge under test
+            if w not in seen:
+                seen.add(w); q.append(w)
+    n = len(adj)
+    size_a = len(seen)
+    return size_a * (n - size_a)
+
+
+def compute_link_centrality(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:
+    """Structural CHOKEPOINT analysis of the inter-switch topology — edge betweenness centrality
+    (how much of the all-pairs shortest-path flow crosses each link) plus bridge detection (links
+    whose removal disconnects the fabric). This ranks the LINKS, and is deliberately distinct from
+    compute_failure_impact / the keystone ranking (which is per-SWITCH node removal): a link with
+    two redundant equal-cost paths is correctly NOT a chokepoint here even if both its switches are
+    busy. Built from compute_topology_links over the scanned switches. One record per link:
+    {a_host,a_port,b_host,b_port, betweenness (float), is_bridge (bool), pairs_cut (int; switch-pairs
+    severed if a bridge fails, else 0), rank (1 = highest betweenness)}, sorted by betweenness desc."""
+    from collections import deque
+    hosts, adj, edges = _topology_adjacency(all_interfaces)
+    if not edges:
+        return []
+    nodes = sorted(hosts)
+    bet: Dict[frozenset, float] = {k: 0.0 for k in edges}
+    # Brandes edge-betweenness (unweighted BFS per source; dependency accumulated back to predecessors).
+    for s in nodes:
+        S: List[str] = []
+        pred: Dict[str, List[str]] = {v: [] for v in nodes}
+        sigma: Dict[str, float] = {v: 0.0 for v in nodes}; sigma[s] = 1.0
+        dist: Dict[str, int] = {v: -1 for v in nodes}; dist[s] = 0
+        q = deque([s])
+        while q:
+            v = q.popleft(); S.append(v)
+            for w in sorted(adj[v]):
+                if dist[w] < 0:
+                    dist[w] = dist[v] + 1; q.append(w)
+                if dist[w] == dist[v] + 1:
+                    sigma[w] += sigma[v]; pred[w].append(v)
+        delta: Dict[str, float] = {v: 0.0 for v in nodes}
+        while S:
+            w = S.pop()
+            for v in pred[w]:
+                c = (sigma[v] / sigma[w]) * (1.0 + delta[w])
+                k = frozenset((v, w))
+                if k in bet:
+                    bet[k] += c
+                delta[v] += c                  # dependency flows back to the PREDECESSOR
+    bridges = _find_bridges(adj)
+    out: List[Dict[str, object]] = []
+    for k, rec in edges.items():
+        r = dict(rec)
+        r["betweenness"] = round(bet.get(k, 0.0) / 2.0, 3)   # undirected: each pair counted from both ends
+        r["is_bridge"] = k in bridges
+        r["pairs_cut"] = _bridge_pairs_cut(adj, k) if r["is_bridge"] else 0
+        out.append(r)
+    out.sort(key=lambda r: (-float(r["betweenness"]), not r["is_bridge"], str(r["a_host"]), str(r["b_host"])))
+    for i, r in enumerate(out, 1):
+        r["rank"] = i
+    return out
+
+
 def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[str, float]:
     """NEW-V3.23.7: per-switch collection completeness = fraction of the essential
     command set that returned usable (non-empty, non-error) output, via the
