@@ -3479,6 +3479,7 @@ function _xlMtuMismatchLinks(){
 }
 function crossLayerCorrelate(model){
   if(!model)return [];
+  return _memo(model,"xlcorr",()=>{
   const out=[]; const uniq=new Set();
   const push=(f)=>{const hosts=[...new Set((f.hosts||[]).filter(Boolean))].sort();
     const key=hosts.join(",")+"|"+(f.title||"").toLowerCase().replace(/\s+/g," ").trim();
@@ -3580,6 +3581,7 @@ function crossLayerCorrelate(model){
 
   out.sort((a,b)=>(_XL_SEV_RANK[b.severity]||0)-(_XL_SEV_RANK[a.severity]||0)||a.title.localeCompare(b.title));
   return out;
+  });
 }
 /* the 4 layer badges for a finding (colored L1=accent, L2=ok, L3=watch, L4=risk; deduped, in L1..L4 order) */
 const _XL_LAYER_ORDER=["L1","L2","L3","L4"];
@@ -3600,7 +3602,13 @@ function drawXLayer(){
   }
   const counts={High:0,Medium:0,Low:0,Info:0};
   findings.forEach(f=>{counts[f.severity]=(counts[f.severity]||0)+1;});
-  const cards=findings.map(f=>{const tok=_xlSevTok(f.severity);
+  // Cap the rendered cards (V3.23.74): a real fleet yields thousands of correlated findings (≈2,963 on the
+  // 60-switch AJ fleet), and dumping every one as a card built a 2.6 MB DOM that was janky to scroll and
+  // impossible to read. Show the most-severe top-N (the rest live in the workbook's Cross-Layer Analysis
+  // sheet; the cockpit distils all of them into fix-first priorities).
+  const XL_CARD_CAP=60;
+  const shown=findings.slice().sort((a,b)=>(_XL_SEV_RANK[b.severity]||0)-(_XL_SEV_RANK[a.severity]||0)).slice(0,XL_CARD_CAP);
+  const cards=shown.map(f=>{const tok=_xlSevTok(f.severity);
     const hostList=f.hosts.length?`<div class="ln faint" style="margin-top:4px">Spans: ${f.hosts.map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}</div>`:"";
     const src=f.source==="snapshot"?` <span class="pill pl-neutral" title="from the collector's cross_layer findings">${esc(f.id||"pipeline")}</span>`:"";
     const sel=(XLSEL&&XLSEL.length===f.hosts.length&&XLSEL.every((h,i)=>h===f.hosts[i]))?" xlactive":"";
@@ -3617,7 +3625,7 @@ function drawXLayer(){
       <div class="stat"><div class="v"><span class="num" data-to="${counts.Low+counts.Info}">0</span></div><div class="k">low / info</div></div>
     </div>
     <p class="sub" style="margin:10px 0 0">Each finding ties together two or more layers' detector outputs into one ranked risk. <b>Click a card</b> to spotlight the switches it spans on the canvas.</p></div>
-    <div class="sec"><h3>Findings <span class="ct">${findings.length}</span></h3>${cards}</div>`;
+    <div class="sec"><h3>Top findings <span class="ct">${shown.length} of ${findings.length}</span></h3>${cards}${findings.length>XL_CARD_CAP?`<div class="ln faint" style="margin-top:8px">…and <b>${findings.length-XL_CARD_CAP}</b> more correlated finding(s) — see the full <b>Cross-Layer Analysis</b> workbook sheet. The cockpit (Health mode) distils all ${findings.length} into fix-first priorities.</div>`:""}</div>`;
 }
 /* paint hook: spotlight the switches of the selected finding (XLSEL) with a distinct .xlhl class,
    dim the rest. No selection -> clean canvas. Mirrors the legend-highlight pattern but persistent. */
@@ -4109,7 +4117,12 @@ function drawCausality(){
   const sel=list[CAUSAL_SEL];
   const sevCount={crit:0,risk:0,watch:0,neutral:0};
   list.forEach(c=>{sevCount[c.tok]=(sevCount[c.tok]||0)+1;});
-  const cards=list.map((c,i)=>{const on=i===CAUSAL_SEL;
+  // Cap the rendered chain cards (V3.23.74): a real fleet has hundreds of SPOF chains (518 on the
+  // 60-switch AJ fleet) and rendering every card built a ~1.7 MB DOM. Show the most-severe top-N (the list
+  // is already severity-ranked); the selected chain's diagram above still works for any index, and the full
+  // set is in the Causality Chains workbook sheet.
+  const CAUSAL_CARD_CAP=40;
+  const cards=list.slice(0,CAUSAL_CARD_CAP).map((c,i)=>{const on=i===CAUSAL_SEL;
     return `<div class="card ${c.tok}${on?" czsel":""}" data-causal="${i}" tabindex="0" role="button"
         aria-pressed="${on?"true":"false"}" style="cursor:pointer">
       <div class="ct"><span class="nm">${esc(c.title)}</span><span class="pill pl-${c.tok}">${esc(c.sev||"")}</span></div>
@@ -4134,7 +4147,7 @@ function drawCausality(){
         <div class="ln"><b>Impact:</b> ${esc(sel.impact||"—")}</div>
         <div class="fix"><b>Mitigation:</b> ${esc(sel.mitigation||"—")}</div>
       </div></div>
-    <div class="sec"><h3>All causal chains <span class="ct">${list.length}</span></h3>${cards}</div>`;
+    <div class="sec"><h3>Top causal chains <span class="ct">${Math.min(CAUSAL_CARD_CAP,list.length)} of ${list.length}</span></h3>${cards}${list.length>CAUSAL_CARD_CAP?`<div class="ln faint" style="margin-top:8px">…and <b>${list.length-CAUSAL_CARD_CAP}</b> more — see the <b>Causality Chains</b> workbook sheet, or the cockpit's keystone ranking for the devices these chains converge on.</div>`:""}</div>`;
 }
 /* rAF spark traveling along the four-stage connectors, mirroring animatePacket's
    structure: lerp a dot through the connector endpoints at near-constant speed with
