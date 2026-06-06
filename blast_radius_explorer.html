@@ -4463,6 +4463,38 @@ function cockpitCatData(){
     if(c[i.severity]!=null)c[i.severity]++; c.total++;});
   return Object.values(cats).sort((a,b)=>b.total-a.total);
 }
+/* Keystone devices (V3.23.73): rank devices by how much the fleet ACTUALLY depends on them — primarily
+   the endpoints that get hard-stranded if the device fails (failureImpact, already memoized), then the
+   number of punch-list items / SPOF chains that implicate it. This is the prioritization the per-switch
+   health score CAN'T give when every switch saturates to Critical (collapsed core, no FHRP): the scores
+   are all 0, but the blast radius still discriminates sharply (e.g. the central core strands 800+ endpoints
+   vs ~100 for a distribution pair). "Fix these few boxes first." */
+function cockpitKeystones(){
+  const pl=(SNAP&&SNAP.punchlist)||[];
+  const implBy={}; pl.forEach(i=>{const seen=new Set();(i.devices||[]).forEach(d=>{if(seen.has(d))return;seen.add(d);implBy[d]=(implBy[d]||0)+1;});});
+  const chainsBy={}; (CHAINS||[]).forEach(c=>{chainsBy[c.switch]=(chainsBy[c.switch]||0)+1;});
+  const rows=(MODEL?MODEL.hosts:[]).map(h=>{let blast=0; try{blast=failureImpact(MODEL,h).hardStranded||0;}catch(e){}
+    return {host:h, blast, impl:implBy[h]||0, chains:chainsBy[h]||0, tier:_cockpitTier(h)};})
+    .filter(r=>r.blast>0||r.impl>0||r.chains>0);
+  rows.sort((a,b)=>b.blast-a.blast || b.chains-a.chains || b.impl-a.impl || a.host.localeCompare(b.host));
+  return rows;
+}
+function keystoneCard(){
+  const ks=cockpitKeystones(); if(!ks.length)return "";
+  const top=ks.slice(0,6); const max=Math.max(1,...top.map(r=>r.blast||0));
+  const rows=top.map(r=>{
+    const w=r.blast?Math.max(4,Math.round(r.blast/max*100)):2;
+    const bits=[]; if(r.impl)bits.push(`${r.impl} finding${r.impl===1?"":"s"}`); if(r.chains)bits.push(`${r.chains} SPOF chain${r.chains===1?"":"s"}`);
+    return `<div class="rc-row" data-jump="${esc(r.host)}" style="cursor:pointer" title="${esc(r.host)} — jump to its health detail">
+      <div class="rc-head"><span class="nm"><span class="mono">${esc(shortName(r.host))}</span> <span class="pill pl-neutral">${esc(r.tier)}</span></span>
+        <span class="sc"><span class="num" data-to="${r.blast}">0</span></span></div>
+      <div class="rc-bar"><i data-rcw="${w}" style="background:var(--crit)"></i></div>
+      <div class="rc-meta">endpoints stranded if it fails${bits.length?` · ${bits.join(" · ")}`:""}</div>
+    </div>`;}).join("");
+  return `<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 4px"><span class="k">Keystone devices — fix-first</span><span class="v faint">by blast radius</span></div>
+    <p class="sub" style="margin:0 0 7px">When every switch scores Critical the score can't prioritise — these are the devices the most endpoints actually depend on. Hardening them (FHRP / a redundant path) collapses the risk fastest. Click to drill in.</p>
+    ${rows}</div>`;
+}
 function cockpitCard(){
   if(!MODEL||!MODEL.hosts||!MODEL.hosts.length)return "";
   const pl=(SNAP&&SNAP.punchlist)||[];
@@ -4500,6 +4532,7 @@ function cockpitCard(){
   return `<div class="sec"><h3>Risk cockpit <span class="badge b-neutral">${MODEL.hosts.length} switches</span></h3>
     <div class="sub" style="margin-bottom:7px">Where the migration risk concentrates and what shape the work is — distilled from the per-switch health scores and the ${pl.length}-item punch-list.${tierRows?" Click a tier to highlight its switches on the map.":""}</div>
     ${tierRows?`<div class="ckp-grid">${tierRows}</div>${legend}`:""}
+    ${keystoneCard()}
     ${catRows?`<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 5px"><span class="k">Punch-list by category</span><span class="v faint">${pl.length} total</span></div><div class="ckp-cat">${catRows}</div></div>`:""}
   </div>`;
 }
