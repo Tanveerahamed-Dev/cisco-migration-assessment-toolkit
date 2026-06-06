@@ -2512,9 +2512,9 @@ function renderDrawer(){
     repaint(); renderDrawer();});
   // V3.23.82: cross-layer layer/severity filter chips (drawer-only; re-render the filtered list)
   p.querySelectorAll("[data-xlf-layer]").forEach(b=>b.onclick=()=>{const v=b.dataset.xlfLayer;
-    XL_LAYER_FILTER=(v===""||XL_LAYER_FILTER===v)?null:v; renderDrawer();});
+    XL_LAYER_FILTER=(v===""||XL_LAYER_FILTER===v)?null:v; renderDrawer(); repaint();});   // repaint: drop an orphaned highlight (V3.23.83)
   p.querySelectorAll("[data-xlf-sev]").forEach(b=>b.onclick=()=>{const v=b.dataset.xlfSev;
-    XL_SEV_FILTER=(v===""||XL_SEV_FILTER===v)?null:v; renderDrawer();});
+    XL_SEV_FILTER=(v===""||XL_SEV_FILTER===v)?null:v; renderDrawer(); repaint();});
   // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
   const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
     const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
@@ -3711,6 +3711,9 @@ function drawXLayer(){
   const filtered=findings.filter(f=>
     (!XL_LAYER_FILTER||_xlLayers(f).includes(XL_LAYER_FILTER)) &&
     (!XL_SEV_FILTER||f.severity===XL_SEV_FILTER));
+  // V3.23.83: if a filter just hid the spotlighted card, drop the now-orphaned canvas highlight so it can't
+  // get stuck on with no visible card to toggle it off (matches the card's `sel` test; caller repaints).
+  if(XLSEL&&XLSEL.length&&!filtered.some(f=>f.hosts.length===XLSEL.length&&f.hosts.every((h,i)=>h===XLSEL[i])))XLSEL=null;
   const layerChip=L=>`<button type="button" class="chip${XL_LAYER_FILTER===L?" on":""}" data-xlf-layer="${L}">${L}</button>`;
   const sevChip=s=>`<button type="button" class="chip${XL_SEV_FILTER===s?" on":""}" data-xlf-sev="${s}">${s}</button>`;
   const filterBar=`<div class="sec"><div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center">`+
