@@ -581,6 +581,39 @@ def test_parse_show_environment_flags_failed_ps(cp):
     assert res["num_ps"] == "2"
 
 
+def test_parse_show_environment_iosxe_show_environment_all(cp):
+    # IOS-XE 9300/3850 'show environment all' (the form those platforms accept - bare
+    # 'show environment' returns '% Incomplete command'). Format per Cisco docs; recover
+    # fan + temperature here (ps still comes from the dedicated 'show environment power').
+    out = textwrap.dedent("""\
+        Switch   FAN     Speed   State   Airflow direction
+        ------   ----    -----   -----   -----------------
+        1        1       8160    OK      front to back
+        1        2       8160    OK      front to back
+        1        3       8160    OK      front to back
+        FAN PS-1 is OK
+        FAN PS-2 is NOT PRESENT
+
+        Temperature State: GREEN
+        Temperature Value: 28 Degree Celsius
+        Yellow Threshold : 66 Degree Celsius
+        Red Threshold    : 76 Degree Celsius
+    """)
+    res = parse.parse_show_environment(out)
+    assert res["fan_status"] == "OK"
+    assert res["temperature_status"] == "OK"
+
+
+def test_parse_show_environment_iosxe_flags_red_temp(cp):
+    out = textwrap.dedent("""\
+        1        1       8160    OK      front to back
+        Temperature State: RED
+    """)
+    res = parse.parse_show_environment(out)
+    assert res["temperature_status"] == "Critical/Failed"   # RED -> Critical
+    assert res["fan_status"] == "OK"
+
+
 # ---- tolerance: empty / garbage input never raises ------------------------- #
 def test_parsers_tolerate_empty_and_garbage(cp):
     for fn in (parse.parse_show_interface_status, parse.parse_show_interface_switchport,
