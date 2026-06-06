@@ -710,11 +710,11 @@
     <span class="src schema-warn" id="schemaWarn" role="alert" hidden></span>
     <div class="grow"></div>
     <div class="modes" id="modes" role="group" aria-label="View mode">
-      <button data-mode="blast" class="on" aria-pressed="true"><span class="gl" aria-hidden="true">◎</span>Blast radius</button>
+      <button data-mode="blast" aria-pressed="false"><span class="gl" aria-hidden="true">◎</span>Blast radius</button>
       <button data-mode="trace" aria-pressed="false"><span class="gl" aria-hidden="true">↝</span>Path trace</button>
       <button data-mode="compare" aria-pressed="false"><span class="gl" aria-hidden="true">⇄</span>Compare</button>
       <button data-mode="flow" aria-pressed="false"><span class="gl" aria-hidden="true">⚡</span>Flow</button>
-      <button data-mode="health" aria-pressed="false"><span class="gl" aria-hidden="true">✚</span>Health</button>
+      <button data-mode="health" class="on" aria-pressed="true"><span class="gl" aria-hidden="true">✚</span>Health</button>
       <button data-mode="protocols" aria-pressed="false"><span class="gl" aria-hidden="true">⌥</span>Protocols</button>
       <button data-mode="xlayer" aria-pressed="false"><span class="gl" aria-hidden="true">⌗</span>Cross-Layer</button>
       <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causality</button>
@@ -1267,7 +1267,7 @@ function radialLayout(model){
    ===================================================================== */
 const SVGNS="http://www.w3.org/2000/svg";
 let SNAP=null, MODEL=null, CHAINS=[], POS={}, LOGICAL={w:1000,h:600};
-let SEL=null, VLAN="all", MODE="blast", LAYOUT="layered";
+let SEL=null, VLAN="all", MODE="health", LAYOUT="layered";   // V3.23.76: land on the Risk cockpit (Health) so the first view is the "where's the risk / fix-first" synthesis, not a raw 60-node hairball; a deep-link #mode=… still overrides via readHash()
 let TRACE_SRC=null, TRACE_DST=null, TRACE=null;
 let MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
 let SEARCHQ="";
