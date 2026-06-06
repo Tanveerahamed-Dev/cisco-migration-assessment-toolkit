@@ -194,6 +194,17 @@
   #minimap .mm-edge{stroke:var(--border-strong); stroke-width:.6; opacity:.45}
   #minimap .mm-dot{fill:var(--text-dim)}
   #minimap .mm-vp{fill:var(--accent); fill-opacity:.12; stroke:var(--accent); stroke-width:1.2}
+  /* U10: health-heat tint on overview dots (fill set inline per band) + ambient pulse
+     on Poor/Critical-band nodes so trouble spots draw the eye even in the mini-map. */
+  #minimap .mm-dot.mm-heat{r:2.4}
+  #minimap .mm-dot.mm-crit{transform-box:fill-box; transform-origin:center;
+    animation:mmPulse 1.9s ease-in-out infinite}
+  @keyframes mmPulse{0%,100%{opacity:.65; transform:scale(1)}
+    50%{opacity:1; transform:scale(1.45)}}
+  /* Reduced motion: static tint only — kill the pulse, keep the heat color. */
+  @media (prefers-reduced-motion: reduce){
+    #minimap .mm-dot.mm-crit{animation:none; opacity:1; transform:none}
+  }
 
   /* ---- SVG node/link classes ---- */
   .lnk{fill:none; stroke:var(--border-strong); stroke-width:2; transition:stroke .2s, stroke-width .2s, stroke-opacity .2s}
@@ -1201,10 +1212,32 @@ function renderMinimap(){
   for(const L of MODEL.links){const a=POS[L.a],b=POS[L.b]; if(!a||!b)continue;
     svgs+=`<line class="mm-edge" x1="${(ox+a.x*s).toFixed(1)}" y1="${(oy+a.y*s).toFixed(1)}" x2="${(ox+b.x*s).toFixed(1)}" y2="${(oy+b.y*s).toFixed(1)}"/>`;}
   for(const h of MODEL.hosts){const p=POS[h]; if(!p)continue;
-    svgs+=`<circle class="mm-dot" cx="${(ox+p.x*s).toFixed(1)}" cy="${(oy+p.y*s).toFixed(1)}" r="2.1"/>`;}
+    svgs+=`<circle class="mm-dot" data-h="${esc(h)}" cx="${(ox+p.x*s).toFixed(1)}" cy="${(oy+p.y*s).toFixed(1)}" r="2.1"/>`;}
   svgs+=`<rect class="mm-vp" id="mmVp" rx="1.5"/>`;
   svgEl.innerHTML=svgs;
   updateMinimapRect();
+  minimapHeat();                                       // U10: health-band tint + ambient pulse
+}
+/* U10 — turn the mini-map into a health heat-overview. Tints each overview dot by
+   its switch's health band (SNAP.health_scores) reusing healthBandToken → --ok/
+   --watch/--risk/--crit; Poor/Critical bands also get an ambient .mm-crit pulse.
+   Nodes with no score stay neutral. Purely visual: only sets fill + adds a class on
+   the existing .mm-dot circles, so the viewport rect (mmVp) and click-to-pan are
+   untouched. Re-run safely after every renderMinimap (dots are rebuilt each time). */
+function minimapHeat(){
+  const svgEl=document.getElementById("minimapSvg"); if(!svgEl)return;
+  const hs=(typeof healthList==="function")?healthList():(SNAP&&SNAP.health_scores||[]);
+  const by={}; hs.forEach(r=>{by[r.switch]=r;});
+  svgEl.querySelectorAll("circle.mm-dot").forEach(c=>{
+    const h=c.getAttribute("data-h"); const r=h?by[h]:null;
+    if(!r){c.classList.remove("mm-heat","mm-crit"); c.style.fill=""; return;}  // no score → neutral
+    const tok=r.band?healthBandToken(r.band):scoreToken(r.score);
+    if(tok==="neutral"){c.classList.remove("mm-heat","mm-crit"); c.style.fill=""; return;}
+    c.classList.add("mm-heat");
+    c.style.fill=`var(--${tok})`;
+    // Poor (risk) / Critical (crit) bands pulse to flag trouble spots.
+    if(tok==="risk"||tok==="crit")c.classList.add("mm-crit"); else c.classList.remove("mm-crit");
+  });
 }
 function updateMinimapRect(){
   const mm=document.getElementById("minimap"); if(!mm||mm.classList.contains("hidden"))return;
