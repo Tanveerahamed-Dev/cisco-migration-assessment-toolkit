@@ -502,3 +502,37 @@ def test_calibration_report_empty():
     from cisco_toolkit.analyze import compute_calibration_report
     rep = compute_calibration_report([])
     assert rep["n"] == 0 and rep["suggested_bands"] is None
+
+
+def test_link_centrality_bridge_and_betweenness():
+    """A hangs off B; B-C-D form a triangle (redundant). A-B is the only bridge; its betweenness
+    (serves A-B, A-C, A-D = 3 pairs) is highest, and removing it severs {A} from {B,C,D} = 3 pairs.
+    The triangle links are NOT bridges (each pair has an alternate equal path)."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_link_centrality
+
+    def sw(*links):
+        return {p: InterfaceData(port=p, cdp_neighbor=nb, neighbor_port=npt, endpoint_type="Switch")
+                for (p, nb, npt) in links}
+
+    ai = {
+        "A": sw(("Gi0/1", "B", "Gi0/1")),
+        "B": sw(("Gi0/1", "A", "Gi0/1"), ("Gi0/2", "C", "Gi0/1"), ("Gi0/3", "D", "Gi0/2")),
+        "C": sw(("Gi0/1", "B", "Gi0/2"), ("Gi0/2", "D", "Gi0/1")),
+        "D": sw(("Gi0/1", "C", "Gi0/2"), ("Gi0/2", "B", "Gi0/3")),
+    }
+    recs = compute_link_centrality(ai)
+    by = {frozenset((r["a_host"], r["b_host"])): r for r in recs}
+    ab = by[frozenset(("A", "B"))]
+    assert ab["is_bridge"] is True
+    assert ab["pairs_cut"] == 3            # {A} vs {B,C,D}
+    assert ab["betweenness"] == 3.0        # on the shortest path of A-B, A-C, A-D
+    assert ab["rank"] == 1                 # highest betweenness
+    assert by[frozenset(("C", "D"))]["is_bridge"] is False   # triangle edge is redundant
+    assert sum(1 for r in recs if r["is_bridge"]) == 1       # exactly one bridge
+
+
+def test_link_centrality_empty_when_no_links():
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_link_centrality
+    assert compute_link_centrality({"lonely": {"Gi0/1": InterfaceData(port="Gi0/1")}}) == []

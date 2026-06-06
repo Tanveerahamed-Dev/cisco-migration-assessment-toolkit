@@ -2548,6 +2548,28 @@
    "detail": "No reachability impact from removing this switch (within the scan)."
   }
  ],
+ "link_centrality": [
+  {
+   "a_host": "core1",
+   "a_port": "Gi1/0/24",
+   "b_host": "access1",
+   "b_port": "Gi0/1",
+   "betweenness": 2.0,
+   "is_bridge": true,
+   "pairs_cut": 2,
+   "rank": 1
+  },
+  {
+   "a_host": "core1",
+   "a_port": "Po1",
+   "b_host": "core2",
+   "b_port": "Po1",
+   "betweenness": 2.0,
+   "is_bridge": true,
+   "pairs_cut": 2,
+   "rank": 2
+  }
+ ],
  "addressing_conflicts": {
   "dup_ip": [],
   "dup_subnet": []

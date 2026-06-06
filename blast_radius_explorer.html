@@ -1156,6 +1156,15 @@ function demoSnapshot(){
     {hostname:"ACC-3",model:"C9300-24P",total_ports:24,active_ports:14,free_ports:10,port_util:58.3,poe_capacity_w:"435",poe_drawn_w:"190",poe_remaining_w:245,poe_util:43.7,flags:[]},
     {hostname:"ACC-4",model:"C9300-24P",total_ports:24,active_ports:9,free_ports:15,port_util:37.5,poe_capacity_w:"435",poe_drawn_w:"95",poe_remaining_w:340,poe_util:21.8,flags:[]},
   ],
+  // V3.23.88: link centrality / chokepoints (mirrors the Python compute_link_centrality). The core trunk
+  // carries the most paths (high betweenness, not a bridge — it's redundant); the single-homed access
+  // uplinks are bridges (their failure isolates that switch). Illustrative for the demo.
+  link_centrality:[
+    {a_host:"DIST-1",a_port:"Po1",b_host:"DIST-2",b_port:"Po1",betweenness:8.5,is_bridge:false,pairs_cut:0,rank:1},
+    {a_host:"ACC-2",a_port:"Gi1/0/24",b_host:"DIST-1",b_port:"Gi1/0/2",betweenness:6,is_bridge:true,pairs_cut:10,rank:2},
+    {a_host:"ACC-3",a_port:"Gi1/0/24",b_host:"ACC-2",b_port:"Gi1/0/12",betweenness:5,is_bridge:true,pairs_cut:6,rank:3},
+    {a_host:"ACC-1",a_port:"Gi1/0/24",b_host:"DIST-1",b_port:"Gi1/0/1",betweenness:3,is_bridge:true,pairs_cut:6,rank:4},
+  ],
   // V3.23.47: the fleet score-calibration diagnostic the Python pipeline embeds (compute_calibration_report);
   // matches the 6 demo health_scores above so the Health view's calibration card renders out-of-the-box.
   calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."},
@@ -3547,6 +3556,37 @@ function capacityCard(){
     `<div class="sub" style="margin-bottom:6px">Port &amp; PoE headroom for consolidation — a <b>port-bound</b> (≥90%) or <b>PoE-bound</b> (≥80%) switch can't absorb more endpoints on a migration. ${portBound} port-bound · ${poeBound} PoE-bound${haveFree?` · <b>${totalFree}</b> free ports fleet-wide`:""}.</div>`+
     rows+`</div>`;
 }
+/* Chokepoint links (graph-analytics): reads SNAP.link_centrality — the Python edge-betweenness + bridge
+   analysis of the inter-switch topology (one source of truth with the 'Link Centrality' sheet). Distinct
+   from the per-switch blast radius / keystones: this ranks the LINKS that carry the most east-west
+   shortest-path flow, and flags BRIDGES — links whose failure partitions the fabric (true single points
+   of failure). Bridges lead (sorted by switch-pairs severed), then the top betweenness links; rows
+   data-jump to an endpoint. Back-compat: missing/empty key → no card. */
+function chokepointCard(){
+  if(!SNAP||!Array.isArray(SNAP.link_centrality)||!SNAP.link_centrality.length)return "";
+  const recs=SNAP.link_centrality;
+  const bridges=recs.filter(r=>r.is_bridge).slice().sort((a,b)=>(+b.pairs_cut||0)-(+a.pairs_cut||0));
+  const nonBridge=recs.filter(r=>!r.is_bridge);   // already betweenness-sorted (rank)
+  const linkTxt=r=>`${esc(shortName(r.a_host))} ${esc(r.a_port)} ↔ ${esc(shortName(r.b_host))} ${esc(r.b_port)}`;
+  const N=6;
+  const ordered=[...bridges,...nonBridge].slice(0,N);
+  const rows=ordered.map(r=>{
+    const badge=r.is_bridge
+      ?`<span class="pill pl-crit">bridge · severs ${+r.pairs_cut||0} pair${(+r.pairs_cut===1)?"":"s"}</span>`
+      :`<span class="pill pl-neutral">betweenness ${esc(r.betweenness)}</span>`;
+    return `<div class="ln click" data-jump="${esc(r.a_host)}" style="cursor:pointer">`+
+      `<span class="mono">${linkTxt(r)}</span> ${badge}</div>`;}).join("");
+  const more=recs.length>N?`<div class="ln faint" style="margin-top:4px">…and ${recs.length-N} more link(s) — see the full <b>Link Centrality</b> workbook sheet.</div>`:"";
+  const badge=bridges.length
+    ?`<span class="badge b-crit"><span class="num" data-to="${bridges.length}">0</span> bridge${bridges.length===1?"":"s"}</span>`
+    :`<span class="badge b-ok">meshed</span>`;
+  const lead=bridges.length
+    ?`<b style="color:var(--crit)">${bridges.length}</b> bridge link${bridges.length===1?"":"s"} — a single failure there partitions the fabric; add a redundant path before cutover.`
+    :`No bridge links — every inter-switch link has an alternate path. The ranking shows where east-west traffic concentrates.`;
+  return `<div class="sec"><h3>Chokepoint links ${badge}</h3>`+
+    `<div class="sub" style="margin-bottom:6px">Structural betweenness of the fabric's links — which carry the most switch-to-switch paths, and which are <b>bridges</b> (true single points of failure). ${lead}</div>`+
+    rows+more+`</div>`;
+}
 function addressingCard(){
   if(!SNAP||!SNAP.interfaces)return "";
   const c=addressingConflicts();
@@ -5052,6 +5092,7 @@ function drawHealth(){
     ${trunkConsistencyCard()}
     ${linkPhyCard()}
     ${capacityCard()}
+    ${chokepointCard()}
     ${securityCard()}
     ${hygieneCard()}
     ${stpRootCard()}
