@@ -559,21 +559,13 @@ def _to_float(s) -> Optional[float]:
     m = re.search(r"-?\d+(?:\.\d+)?", str(s or ""))
     return float(m.group(0)) if m else None
 
-def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
-    """Write (or replace) 'Capacity': per-switch port and PoE headroom for
-    consolidation decisions. Flags switches that are port- or PoE-bound."""
-    cols = ["Hostname", "Model", "Total Ports", "Active Ports", "Free Ports",
-            "Port Util %", "PoE Capacity (W)", "PoE Drawn (W)", "PoE Remaining (W)",
-            "PoE Util %", "Flag"]
-    if CAPACITY_SHEET_NAME in wb.sheetnames:
-        del wb[CAPACITY_SHEET_NAME]
-    ws = wb.create_sheet(CAPACITY_SHEET_NAME)
-    _census_header(ws, cols)
-    DAT_FONT = Font(name="Calibri", size=10)
-    DAT_L = Alignment(horizontal="left", vertical="center")
-    DAT_C = Alignment(horizontal="center", vertical="center")
-    warn_fill = PatternFill("solid", fgColor="FCE5CD")
-    r = 2
+def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
+    """Per-switch port + PoE headroom for consolidation decisions (the single source of truth for the
+    'Capacity' sheet AND the explorer's capacity card). One record per device, sorted by hostname:
+    {hostname, model, total_ports, active_ports, free_ports, port_util, poe_capacity_w, poe_drawn_w,
+     poe_remaining_w, poe_util, flags}. Numeric fields are "" when unknown (so the sheet renders blanks
+     exactly as before); flags is a list of "Port-bound (>=90%)" / "PoE-bound (>=80%)"."""
+    out: List[dict] = []
     for dp in sorted(all_device_physical, key=lambda d: d.hostname.lower()):
         total, active = dp.total_ports or 0, dp.active_ports or 0
         free = max(total - active, 0) if total else ""
@@ -589,8 +581,35 @@ def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
         flags = []
         if putil != "" and putil >= 90: flags.append("Port-bound (>=90%)")
         if poe_util != "" and poe_util >= 80: flags.append("PoE-bound (>=80%)")
-        vals = [dp.hostname, dp.model, total or "", active or "", free, putil,
-                dp.power_capacity_w, dp.power_drawn_w, rem, poe_util, "; ".join(flags)]
+        out.append({"hostname": dp.hostname, "model": dp.model,
+                    "total_ports": total or "", "active_ports": active or "", "free_ports": free,
+                    "port_util": putil, "poe_capacity_w": dp.power_capacity_w,
+                    "poe_drawn_w": dp.power_drawn_w, "poe_remaining_w": rem,
+                    "poe_util": poe_util, "flags": flags})
+    return out
+
+
+def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
+    """Write (or replace) 'Capacity': per-switch port and PoE headroom for
+    consolidation decisions. Flags switches that are port- or PoE-bound.
+    Renders the records from compute_capacity (one source of truth with the explorer)."""
+    cols = ["Hostname", "Model", "Total Ports", "Active Ports", "Free Ports",
+            "Port Util %", "PoE Capacity (W)", "PoE Drawn (W)", "PoE Remaining (W)",
+            "PoE Util %", "Flag"]
+    if CAPACITY_SHEET_NAME in wb.sheetnames:
+        del wb[CAPACITY_SHEET_NAME]
+    ws = wb.create_sheet(CAPACITY_SHEET_NAME)
+    _census_header(ws, cols)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="center")
+    DAT_C = Alignment(horizontal="center", vertical="center")
+    warn_fill = PatternFill("solid", fgColor="FCE5CD")
+    r = 2
+    for rec in compute_capacity(all_device_physical):
+        flags = rec["flags"]
+        vals = [rec["hostname"], rec["model"], rec["total_ports"], rec["active_ports"], rec["free_ports"],
+                rec["port_util"], rec["poe_capacity_w"], rec["poe_drawn_w"], rec["poe_remaining_w"],
+                rec["poe_util"], "; ".join(flags)]
         for col, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
             c.alignment = DAT_C if 3 <= col <= 10 else DAT_L

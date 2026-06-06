@@ -1146,6 +1146,16 @@ function demoSnapshot(){
      blocked_paths:["ACC-1/Gi1/0/23 blocks 10,20"],
      vlan1_spans:false},
   ],
+  // V3.23.87: port + PoE capacity headroom (mirrors the Python compute_capacity / 'Capacity' sheet). ACC-1
+  // is port-bound (94%), ACC-2 PoE-bound (83%); the rest have headroom to absorb consolidated endpoints.
+  capacity:[
+    {hostname:"DIST-1",model:"C9500-24Q",total_ports:24,active_ports:18,free_ports:6,port_util:75,poe_capacity_w:"",poe_drawn_w:"",poe_remaining_w:"",poe_util:"",flags:[]},
+    {hostname:"DIST-2",model:"C9500-24Q",total_ports:24,active_ports:16,free_ports:8,port_util:66.7,poe_capacity_w:"",poe_drawn_w:"",poe_remaining_w:"",poe_util:"",flags:[]},
+    {hostname:"ACC-1",model:"C9300-48P",total_ports:48,active_ports:45,free_ports:3,port_util:93.8,poe_capacity_w:"857",poe_drawn_w:"610",poe_remaining_w:247,poe_util:71.2,flags:["Port-bound (>=90%)"]},
+    {hostname:"ACC-2",model:"C9300-48P",total_ports:48,active_ports:30,free_ports:18,port_util:62.5,poe_capacity_w:"857",poe_drawn_w:"712",poe_remaining_w:145,poe_util:83.1,flags:["PoE-bound (>=80%)"]},
+    {hostname:"ACC-3",model:"C9300-24P",total_ports:24,active_ports:14,free_ports:10,port_util:58.3,poe_capacity_w:"435",poe_drawn_w:"190",poe_remaining_w:245,poe_util:43.7,flags:[]},
+    {hostname:"ACC-4",model:"C9300-24P",total_ports:24,active_ports:9,free_ports:15,port_util:37.5,poe_capacity_w:"435",poe_drawn_w:"95",poe_remaining_w:340,poe_util:21.8,flags:[]},
+  ],
   // V3.23.47: the fleet score-calibration diagnostic the Python pipeline embeds (compute_calibration_report);
   // matches the 6 demo health_scores above so the Health view's calibration card renders out-of-the-box.
   calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."},
@@ -3509,6 +3519,34 @@ function addressingConflicts(){
   return {dupIp, dupSubnet, total:dupIp.length+dupSubnet.length};
  });
 }
+/* Capacity headroom (port + PoE): reads SNAP.capacity — the per-switch port/PoE utilization the Python
+   pipeline computes for the 'Capacity' sheet (one source of truth via excel.compute_capacity, so the
+   explorer and workbook agree). Migration-relevant: which switches can absorb consolidated endpoints
+   (free ports / PoE headroom) and which are port-bound (≥90%) or PoE-bound (≥80%) and can't take more.
+   Fleet-overview card in Health mode. Back-compat: missing/empty key → no card. */
+function capacityCard(){
+  if(!SNAP||!Array.isArray(SNAP.capacity)||!SNAP.capacity.length)return "";
+  const recs=SNAP.capacity;
+  const num=v=>(typeof v==="number")?v:(v===""||v==null?null:(+v));
+  const bound=recs.filter(r=>(r.flags||[]).length);
+  let totalFree=0, haveFree=false;
+  recs.forEach(r=>{const f=num(r.free_ports); if(f!=null){totalFree+=f; haveFree=true;}});
+  const portBound=bound.filter(r=>(r.flags||[]).some(f=>/Port-bound/.test(f))).length;
+  const poeBound=bound.filter(r=>(r.flags||[]).some(f=>/PoE-bound/.test(f))).length;
+  const flagPill=f=>`<span class="pill ${/PoE/.test(f)?"pl-watch":"pl-crit"}">${esc(f)}</span>`;
+  if(!bound.length)
+    return `<div class="sec"><h3>Capacity headroom <span class="badge b-ok">headroom</span></h3>`+
+      `<div class="ln faint">✓ No switch is port- or PoE-bound across ${recs.length} device(s)${haveFree?` — <b>${totalFree}</b> free access ports fleet-wide`:""}. Each can absorb consolidated endpoints on a cutover.</div></div>`;
+  const rows=bound.slice().sort((a,b)=>(num(b.port_util)||0)-(num(a.port_util)||0)).map(r=>{
+    const pu=num(r.port_util), eu=num(r.poe_util);
+    return `<div class="ln click" data-jump="${esc(r.hostname)}" style="cursor:pointer">`+
+      `<span class="mono">${esc(shortName(r.hostname))}</span>`+(r.model?` <span class="faint">${esc(r.model)}</span>`:"")+
+      `${pu!=null?` · ports <b>${pu}%</b> <span class="faint">(${esc(r.active_ports)}/${esc(r.total_ports)})</span>`:""}`+
+      `${eu!=null?` · PoE <b>${eu}%</b>`:""} ${(r.flags||[]).map(flagPill).join(" ")}</div>`;}).join("");
+  return `<div class="sec"><h3>Capacity headroom <span class="badge b-crit"><span class="num" data-to="${bound.length}">0</span> bound</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Port &amp; PoE headroom for consolidation — a <b>port-bound</b> (≥90%) or <b>PoE-bound</b> (≥80%) switch can't absorb more endpoints on a migration. ${portBound} port-bound · ${poeBound} PoE-bound${haveFree?` · <b>${totalFree}</b> free ports fleet-wide`:""}.</div>`+
+    rows+`</div>`;
+}
 function addressingCard(){
   if(!SNAP||!SNAP.interfaces)return "";
   const c=addressingConflicts();
@@ -5013,6 +5051,7 @@ function drawHealth(){
     ${addressingCard()}
     ${trunkConsistencyCard()}
     ${linkPhyCard()}
+    ${capacityCard()}
     ${securityCard()}
     ${hygieneCard()}
     ${stpRootCard()}

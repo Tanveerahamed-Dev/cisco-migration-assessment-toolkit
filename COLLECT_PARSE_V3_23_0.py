@@ -338,7 +338,7 @@ from cisco_toolkit.excel import (
     write_device_inventory_sheet, write_svi_gateway_sheet, write_stp_detail_sheet,  # step 21
     write_vlan_census_sheet, write_endpoint_census_sheet,                            # step 21
     write_move_group_sheet, write_topology_sheet, write_findings_sheet,             # step 22
-    write_capacity_sheet, write_topology_diagram,                                   # step 22
+    write_capacity_sheet, compute_capacity, write_topology_diagram,                 # step 22 (compute_capacity: V3.23.87 capacity embedded in snapshot)
     write_cross_layer_sheet, write_protocol_health_sheet,   # _SEV_FILL dropped step 25 (last writers moved)
     write_health_scores_sheet, write_score_sensitivity_sheet, write_calibration_sheet,  # step 23 (+calibration V3.23.47)
     write_nat_sheet,   # NAT inventory V3.23.50
@@ -1581,6 +1581,7 @@ def main():
     snap_dict["trunk_native"] = compute_trunk_native_mismatches(all_interfaces)
     snap_dict["link_phy"] = compute_duplex_speed_mismatches(all_interfaces)
     snap_dict["move_groups"] = move_groups                           # NEW-V3.23.86 (Migration Waves mode: the move-group / shared-VLAN-domain structure the readiness verdicts attach to; already computed above for migration_readiness)
+    snap_dict["capacity"] = compute_capacity(all_device_physical)    # NEW-V3.23.87 (port + PoE headroom: same fn that drives the 'Capacity' sheet -> explorer + workbook agree)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
