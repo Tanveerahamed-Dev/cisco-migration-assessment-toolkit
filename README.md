@@ -1,11 +1,26 @@
 # Cisco Migration-Assessment Toolkit
 
-A Python toolkit that connects to Cisco switches, parses their `show`-command
-output, and rolls the full **L1 → L4 + cross-layer + protocol** picture up into
-two decision-ready outputs: a per-switch **health score (0–100)** and a per
-move-group **migration-readiness verdict** (`READY` / `CAUTION` / `NOT READY`).
-Results are written to an Excel workbook and to a self-contained, interactive
-**Blast-Radius Explorer** HTML viewer.
+A Python toolkit that connects to Cisco switches (IOS / IOS-XE / NX-OS), parses
+their `show`-command output, and correlates the full **L1 → L4 + cross-layer +
+routing-protocol + security/config** picture into decision-ready outputs for a
+network migration. It answers the three questions an assessment must: **what's
+the current state, where is the migration risk, and what do I fix first.**
+
+Every run produces two self-contained, **offline / air-gapped** deliverables —
+no live network needed to read them:
+
+- a **multi-sheet Excel workbook** (30+ tabs) that opens on a one-page
+  **Executive Summary**: fleet posture, the punch-list breakdown, the
+  **keystone devices** the fleet most depends on (by migration blast radius),
+  and per-move-group readiness;
+- an interactive single-file **Network Migration Explorer** (the
+  `blast_radius_explorer.html` viewer) with eight analysis modes and a graphical
+  **Risk cockpit** that distils thousands of findings into "fix these first."
+
+Underneath sit a per-switch **health score (0–100)**, a per-move-group
+**migration-readiness verdict** (`READY` / `CAUTION` / `NOT READY`), a
+consolidated severity-ranked **migration punch-list**, and a blast-radius
+**failure-impact** simulation — all derived offline from one collection.
 
 > ℹ️ The topology embedded in the bundled `blast_radius_explorer.html` is
 > **demo/sample data** (private `10.0.x.x` addresses, generic `CORE` / `DIST`
@@ -17,7 +32,7 @@ Results are written to an Excel workbook and to a self-contained, interactive
 |------|------------|
 | [`COLLECT_PARSE_V3_23_0.py`](COLLECT_PARSE_V3_23_0.py) | The toolkit — collects over SSH (netmiko), parses, scores health, computes migration readiness, and writes the workbook + explorer. |
 | [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) | Documentation for the current version (health scoring, the 10-check readiness checklist, the HTML Health mode) plus the change log. |
-| [`blast_radius_explorer.html`](blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot (topology, findings, and the 🏥 Health view). |
+| [`blast_radius_explorer.html`](blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot — topology graph plus eight analysis modes (Blast radius, Path trace, Compare, Flow, **Health** w/ the Risk cockpit, Protocols, Cross-Layer, Causality). The live snapshot is baked into a copy of this template on every run. |
 | [`compass_artifact_..._markdown1.md`](compass_artifact_wf-4178d659-b124-4412-9854-fc7bea5b9094_text_markdown1.md) | Design playbook — best-practice layout, color, and interaction redesign for the Explorer. |
 | [`compass_artifact_..._markdown.md`](compass_artifact_wf-6d4cf577-c82e-4281-8744-55bdc473f75d_text_markdown.md) | Hardening playbook — parsing robustness, collection, scoring validation, and an accessible Explorer. |
 
@@ -41,9 +56,17 @@ pip install netmiko openpyxl
   included in this repo.*
 
 **Outputs** (written to the working directory)
-- `Migration_Assessment_AUTOFILLED_<timestamp>.xlsx` — the filled workbook,
-  including the `Health Scores` and `Migration Readiness` sheets.
-- A Blast-Radius Explorer HTML file beside the workbook (unless `--no-html`).
+- `Migration_Assessment_AUTOFILLED_<timestamp>.xlsx` — the filled workbook. It
+  opens on the **Executive Summary** tab and then carries 30+ detail sheets
+  (Switch Inventory, SVI/Gateway, VLAN & Endpoint census, Move Groups, Topology
+  Links, Capacity, Interface/Physical Health, Security Posture, Config
+  Compliance & Hygiene, STP & STP-Root, Routing Adjacencies, Cross-Layer
+  Analysis, Causality Chains, Failure Impact, Health Scores, Migration
+  Readiness, the Migration Punch-List, and more).
+- `..._explorer.html` — the Network Migration Explorer beside the workbook
+  (unless `--no-html`), with the snapshot embedded.
+- `..._snapshot.json` — the data contract shared by the workbook and explorer
+  (also re-loadable in the explorer and usable with `--compare`).
 
 ## Usage
 
@@ -91,6 +114,32 @@ omitted (`ios` / `nxos` / `auto`).
 
 Authentication failures are **never** retried (this avoids account lockout);
 transient connection/timeout failures are retried with backoff.
+
+## Reading the results
+
+**Excel — start on the Executive Summary.** The first tab is a one-page synthesis:
+fleet posture (health-band distribution), the migration punch-list breakdown, the
+**keystone devices** ranked by blast radius (the few switches the fleet most
+depends on — the prioritisation that still works when every per-switch score
+saturates to Critical), per-group readiness, and a plain-English *"where to
+start."* Each section points to a detail tab for the underlying evidence.
+
+**Explorer — eight modes over one topology.** Pan/zoom the graph; search by
+switch / IP / MAC; filter by VLAN. The modes:
+
+- **Blast radius** — click a switch to simulate its removal and see what it strands.
+- **Path trace** — the L2/L3 path between two switches, with the bridges / articulation points on it.
+- **Compare** — diff two snapshots (pre/post-cutover): what regressed, what improved.
+- **Flow** — an L1→L3 flow trace between two endpoints, with ACL / NAT / MTU / VRF awareness.
+- **Health** — the **Risk cockpit**: a risk-by-tier matrix, the keystone devices, and a
+  punch-list triage up top, then per-switch health, the root-cause SPOF list, and a
+  what-if remediation simulator.
+- **Protocols** — routing-protocol topology, redistribution boundaries, adjacency health.
+- **Cross-Layer** — findings that compound across layers into one real migration risk.
+- **Causality** — each structural SPOF as a trigger → mechanism → impact → mitigation chain.
+
+The explorer is a single self-contained file (no server, no external assets) and
+runs fully offline — safe to email or open from a USB stick.
 
 ## Health score & migration readiness
 
