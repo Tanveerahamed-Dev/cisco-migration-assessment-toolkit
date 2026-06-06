@@ -1458,7 +1458,7 @@ def main():
     health_scores = _run_phase("Health Scores", compute_health_scores,
                                all_interfaces, physical_health, l3_forwarding,
                                cross_layer, protocol_health, _default=[],
-                               data_quality=data_quality)
+                               data_quality=data_quality, security=all_security)
     _run_phase("Health Scores sheet", write_health_scores_sheet, wb, health_scores)
 
     # Phase 29: Migration Readiness - NEW-V3.23 (per move-group 10-check verdict)
@@ -1474,7 +1474,8 @@ def main():
     logger.info("\n[Phase 30] Writing Score Sensitivity sheet ...")
     score_sensitivity = _run_phase("Score Sensitivity", compute_score_sensitivity,
                                    all_interfaces, physical_health, l3_forwarding,
-                                   cross_layer, protocol_health, _default=[])
+                                   cross_layer, protocol_health, _default=[],
+                                   security=all_security)
     _run_phase("Score Sensitivity sheet", write_score_sensitivity_sheet, wb, score_sensitivity)
 
     # Phase 30b: Score Calibration - NEW-V3.23.47 (fleet band-discrimination diagnostic + re-banding suggestion)

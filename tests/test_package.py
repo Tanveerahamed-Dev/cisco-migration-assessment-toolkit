@@ -85,7 +85,7 @@ def test_analyze_reexported_and_functional(cp):
     for gone in ("ScoringConfig", "SCORING", "_host_role", "_health_band"):
         assert not hasattr(cp, gone)
     # the default config reproduces the documented hard-coded tunables.
-    assert analyze.SCORING.caps == {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25}
+    assert analyze.SCORING.caps == {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25, "SEC": 18}
     assert analyze.SCORING.l1_weights["single-fiber-uplink"] == 10
     # band thresholds + the gateway-SVI role heuristic, straight from the package.
     assert analyze._health_band(95) == ("Excellent", "36E08A")

@@ -15,7 +15,8 @@ def test_default_config_matches_baseline(cp):
     assert s.l3_weights == {"single-gateway": 10, "no-FHRP": 3, "tracked-object-down": 12}
     assert s.xl_weights == {"Critical": 18, "High": 10, "Medium": 4, "Low": 2}
     assert s.proto_weights == {"High": 10, "Medium": 4}
-    assert s.caps == {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25}
+    assert s.sec_weights == {"high": 8, "medium": 3, "low": 1}   # NEW-V3.23.60 (CIS config-hardening)
+    assert s.caps == {"L1": 30, "L3": 30, "XL": 45, "PROTO": 25, "SEC": 18}
     assert s.bands == [(90, "Excellent", "36E08A"), (75, "Good", "7ADB8F"),
                        (60, "Fair", "FFE566"), (40, "Poor", "FF9F45"), (0, "Critical", "FF5775")]
     assert s.readiness["gateway_redundancy"] == "fail"
