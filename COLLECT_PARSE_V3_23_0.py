@@ -477,6 +477,7 @@ COMMANDS_IOS = [
     "show inventory",            # NEW-V12
     "show environment power",    # NEW-V12
     "show environment",          # NEW-V12
+    "show environment all",      # NEW-V3.23.67 (IOS-XE 9300/3850: bare 'show environment' -> '% Incomplete command')
     "show ip route",             # NEW-V14.2 wiring (per-SVI routing enrichment)
     "show vtp status",           # NEW-V14.2 wiring (VTP domain identity)
     "show standby brief",        # NEW-V14.2 wiring (gateway / HSRP behavior)

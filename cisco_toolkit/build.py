@@ -221,7 +221,12 @@ def build_device_physical(hostname: str, platform: str,
     if mod_out and dp.num_modules == 0:
         dp.num_modules = parse_show_module_count(mod_out)
 
+    # 'show environment' is rejected as '% Incomplete command' on IOS-XE (9300/3850) - those need
+    # 'show environment all'. Feed whichever was collected (concatenated) to one parser; an error
+    # line in either output matches nothing, so combining is safe.
     env_out = _load_cmd_output(cmd_to_file, "show environment")
+    env_all_out = _load_cmd_output(cmd_to_file, "show environment all")
+    env_out = "\n".join(x for x in (env_out, env_all_out) if x)
     if env_out:
         env = parse_show_environment(env_out)
         dp.fan_status         = env.get("fan_status", "")
