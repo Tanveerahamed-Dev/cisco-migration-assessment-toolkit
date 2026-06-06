@@ -501,6 +501,21 @@
   .rc-meta{font-size:11px; color:var(--text-dim)}
   .rc-meta b{color:var(--text)}
   @media (prefers-reduced-motion: reduce){ .rc-bar i{transition:none !important} }
+  /* What-if remediation simulator: before/after stranded-endpoint bars. The fill grows from
+     0 to its target width with a transition; the global reduced-motion rule above neutralizes
+     the transition (it leaves the final width in place since width is set inline, not animated). */
+  .rem-grid{display:flex; gap:11px; margin:9px 0 4px}
+  .rem-col{flex:1; min-width:0}
+  .rem-col .lbl{font-size:9.5px; letter-spacing:.5px; text-transform:uppercase; color:var(--text-faint); font-weight:650; display:flex; justify-content:space-between; align-items:baseline; gap:6px}
+  .rem-col .lbl .n{font-size:20px; font-weight:750; line-height:1; font-variant-numeric:tabular-nums}
+  .rem-col.before .lbl .n{color:var(--crit)}
+  .rem-col.after .lbl .n{color:var(--ok)}
+  .rem-bar{height:12px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin-top:6px}
+  .rem-bar i{display:block; height:100%; border-radius:999px; width:0;
+    transition:width .65s cubic-bezier(.2,.7,.3,1)}
+  .rem-bar.before i{background:var(--crit)}
+  .rem-bar.after i{background:var(--ok)}
+  @media (prefers-reduced-motion: reduce){ .rem-bar i{transition:none} }
 
   .kv{display:flex; justify-content:space-between; gap:10px; padding:5px 0; font-size:12px; border-top:1px solid var(--border-faint)}
   .kv:first-child{border-top:0}
@@ -2172,6 +2187,14 @@ function animateDrawer(p){
   const _rcReduce=_REDUCE_MOTION&&_REDUCE_MOTION.matches;
   p.querySelectorAll(".rc-bar i[data-rcw]").forEach(el=>{const w=el.dataset.rcw+"%";
     if(_rcReduce){el.style.width=w;} else {requestAnimationFrame(()=>requestAnimationFrame(()=>{el.style.width=w;}));}});
+  // grow what-if remediation bars from 0 → their target width (CSS transition; reduced-motion kills it,
+  // leaving the final width in place). Defer one frame so the 0-width resting state paints first.
+  const bars=p.querySelectorAll(".rem-bar i[data-w]");
+  if(bars.length){
+    const apply=()=>bars.forEach(b=>{b.style.width=b.dataset.w+"%";});
+    if(_REDUCE_MOTION&&_REDUCE_MOTION.matches)apply();
+    else requestAnimationFrame(()=>requestAnimationFrame(apply));
+  }
 }
 function renderDrawer(){
   if(!MODEL)return; const p=document.getElementById("panel");
@@ -3237,6 +3260,171 @@ function layerHeatmapCard(){
     `</div>`;
 }
 /* =====================================================================
+   WHAT-IF REMEDIATION SIMULATOR (Health) — apply a top SPOF's suggested
+   fix to a DEEP-CLONE of the snapshot, re-derive the model, and diff. The
+   global MODEL/SNAP are NEVER mutated: every edit lands on the JSON clone,
+   buildModel() then produces an independent "after" model.
+   ===================================================================== */
+// Choose the remediation to showcase by MEASURED outcome, not just severity: simulate the fix for every
+// chain this simulator can heal (A/B/C) and keep the one with the biggest real improvement — chains
+// resolved first, then endpoints recovered, then severity as a tie-break. This guarantees the card shows
+// a genuine before→after delta rather than landing on a high-severity chain whose synthetic fix is a no-op
+// (e.g. a core articulation point a single bypass can't relieve). Returns the winning simulateFix() result.
+function _bestRemediation(chains){
+  const ord={High:3,Medium:2,Low:1,Info:0};
+  const fixable=(chains||[]).filter(c=>c.type==="A"||c.type==="B"||c.type==="C");
+  if(!fixable.length)return null;
+  let best=null;
+  for(const c of fixable){
+    const r=simulateFix(MODEL,c);
+    if(!r)continue;
+    if(!best)  {best=r;continue;}
+    const a=r,b=best;
+    const aResolved=a.thisResolved?1:0, bResolved=b.thisResolved?1:0;
+    const better =
+      (aResolved-bResolved) ||
+      (a.resolved.length-b.resolved.length) ||
+      (a.saved-b.saved) ||
+      (a.improvements-b.improvements) ||
+      (ord[a.chain.sev]-ord[b.chain.sev]) ||
+      (b.chain.vid-a.chain.vid);   // lower vid wins on a full tie (stable, deterministic)
+    if(better>0)best=r;
+  }
+  return best;
+}
+// Endpoints AT RISK from the specific SPOF this chain describes, measured on `model`. The same metric is
+// read before and after the synthetic fix, so a resolved SPOF drives the count to 0 (the whole point of
+// the before/after bars):
+//  - Type C (single uplink): the access switch's OWN local endpoints ride that one uplink — but ONLY while
+//    the single-uplink condition still holds. Once a redundant uplink is added the SPOF is gone, so those
+//    endpoints are no longer at risk → 0. We re-detect the live Type-C chain on `model` to decide.
+//  - Type A / B: collateral endpoints on OTHER switches that lose the gateway / get partitioned when the
+//    SPOF switch drops — failureImpact(host) hard-strands exactly these for that VLAN (0 once healed).
+function _chainStranded(model,chain){
+  if(!chain)return 0;
+  if(chain.type==="C"){
+    // the chain's risk exists only if THIS switch still has a single-uplink SPOF for this VLAN on `model`
+    const live=causalityChains(model).some(c=>c.type==="C"&&c.switch===chain.switch&&c.vid===chain.vid);
+    if(!live)return 0;
+    const m=model.endpoints.get(chain.switch);return (m&&m.get(chain.vid))||0;
+  }
+  const fi=failureImpact(model,chain.switch);
+  const r=fi.perVlan.find(x=>x.vid===chain.vid);
+  return r?r.strandedHard:0;
+}
+// Find a distribution / core switch to attach a redundant uplink to, distinct from `avoid`.
+// Falls back to any other host so the simulator always has a remediation target.
+function _pickRedundantPeer(model,avoid){
+  const cores=model.hosts.filter(h=>h!==avoid&&deviceRole(model,h)==="core");
+  if(cores.length){
+    // prefer a core NOT already directly linked to `avoid` (a genuinely new, diverse path)
+    const linked=new Set();
+    for(const li of model.adj.get(avoid)){const L=model.links[li];linked.add(L.a===avoid?L.b:L.a);}
+    const diverse=cores.filter(h=>!linked.has(h));
+    return (diverse[0]||cores[0]);
+  }
+  return model.hosts.find(h=>h!==avoid)||null;
+}
+// Inject a synthetic, forwarding trunk between `host` and `peer` into a cloned snapshot's `interfaces`.
+// Mirrors the demoSnapshot link() shape on BOTH ends (cdp_neighbor/neighbor_port/stp_fwd_vlans) so
+// buildModel() merges them into one bidirectional link carrying every VLAN forward.
+function _injectTrunk(ifaces,host,peer,fwdVlans){
+  const fwd=fwdVlans.join(",");
+  const mk=(nbr,np,port)=>({port,cdp_neighbor:nbr,neighbor_port:np,stp_fwd_vlans:fwd,stp_blk_vlans:"",
+    trunk_allowed_vlans:"all",port_channel:"",switchport_mode:"trunk",end_host_mac:""});
+  ifaces[host]=ifaces[host]||{}; ifaces[peer]=ifaces[peer]||{};
+  // a synthetic port name that is GUARANTEED not to clash with a real port on either end (so we never
+  // overwrite live interface data in the clone) — the same name on both ends so buildModel pairs them.
+  let port="SimLink0", i=0;
+  while(ifaces[host][port]||ifaces[peer][port])port="SimLink"+(++i);
+  ifaces[host][port]=mk(peer,port,port);
+  ifaces[peer][port]=mk(host,port,port);
+}
+// Build the "after" snapshot+model that applies `chain`'s recommended remediation, then diff vs before.
+// DEEP-CLONES SNAP (JSON round-trip) — never touches the live MODEL/SNAP.
+function simulateFix(model,chain){
+  if(!chain)return null;
+  const before=model;
+  const beforeStranded=_chainStranded(before,chain);
+  const clone=JSON.parse(JSON.stringify(SNAP));            // deep clone — isolation from the real snapshot
+  const ifaces=clone.interfaces=clone.interfaces||{};
+  const allVlans=[...before.vlans].sort((a,b)=>a-b);
+  let fixLabel="";
+  if(chain.type==="C"){
+    // redundant uplink from the single-homed access switch to a second distribution switch
+    const peer=_pickRedundantPeer(before,chain.switch);
+    if(peer){_injectTrunk(ifaces,chain.switch,peer,allVlans);
+      fixLabel=`Dual-home <b>${esc(shortName(chain.switch))}</b> with a redundant uplink to <b>${esc(shortName(peer))}</b>.`;}
+  } else if(chain.type==="B"){
+    // bypass link giving the partitioned endpoints a second path to the gateway, around the articulation switch
+    const peer=_pickRedundantPeer(before,chain.switch);
+    if(peer){_injectTrunk(ifaces,chain.switch,peer,allVlans);
+      fixLabel=`Add a bypass uplink from <b>${esc(shortName(chain.switch))}</b> to <b>${esc(shortName(peer))}</b> so partitioned endpoints keep a path to the gateway.`;}
+  } else if(chain.type==="A"){
+    // add a second gateway / FHRP standby for this VLAN on another distribution switch
+    const peer=_pickRedundantPeer(before,chain.switch);
+    if(peer){
+      // mirror the existing gateway's addressing, but as an HSRP standby peer (a real second gateway)
+      let baseIp="";
+      const ex=ifaces[chain.switch];
+      if(ex)for(const p in ex){const d=ex[p];if(isSvi(d)&&sviVid(d)===chain.vid&&d.svi_ip){baseIp=String(d.svi_ip).trim().split(/\s+/)[0];break;}}
+      const peerIp=baseIp?baseIp.replace(/\.(\d+)$/,(m,n)=>"."+(((+n)%254)+1)):"";   // a distinct host IP in the same subnet
+      ifaces[peer]=ifaces[peer]||{};
+      ifaces[peer]["Vlan"+chain.vid]={port:"Vlan"+chain.vid,svi_ip:peerIp,vlan:String(chain.vid),
+        hsrp_behavior:`HSRP grp${chain.vid} standby vIP ${baseIp||""}`,switchport_mode:"",end_host_mac:"",acl_in:"",acl_out:"",vrf:"",dhcp_helpers:""};
+      fixLabel=`Add an FHRP standby gateway for <b>VLAN ${chain.vid}</b> on <b>${esc(shortName(peer))}</b> (HSRP peer for ${esc(shortName(chain.switch))}).`;}
+  }
+  const after=buildModel(clone);
+  const afterStranded=_chainStranded(after,chain);
+  const cmp=compareModels(before,after);
+  // resolved chains that match THIS chain's identity (or, failing an exact id match, share its switch+vid)
+  const idOf=c=>`${c.type}|${c.switch}|${c.vid}`;
+  const resolved=cmp.resolvedChains;
+  const thisResolved=resolved.some(c=>idOf(c)===idOf(chain)||(c.switch===chain.switch&&c.vid===chain.vid));
+  const saved=Math.max(0,beforeStranded-afterStranded);
+  return {chain,fixLabel,beforeStranded,afterStranded,saved,resolved,thisResolved,
+    improvements:cmp.improvements,regressions:cmp.regressions,
+    summary:thisResolved?`Resolves the ${chain.title} SPOF; ${saved} endpoint(s) gain a surviving path.`
+                        :`Improves resilience for ${chain.title}${saved?` (${saved} endpoint(s) recovered)`:""}.`};
+}
+function remediationCard(){
+  if(!MODEL||!CHAINS||!CHAINS.length)return "";
+  const r=_bestRemediation(CHAINS);
+  if(!r)return "";
+  const chain=r.chain;
+  const tok=sevToken(chain.sev);
+  // bar widths: scale both bars against the BEFORE count so the shrink is visually honest (after near 0)
+  const max=Math.max(1,r.beforeStranded);
+  const wBefore=Math.round((r.beforeStranded/max)*100);
+  const wAfter=Math.round((r.afterStranded/max)*100);
+  const resolvedList=r.resolved.length?
+    `<div class="ln" style="margin-top:7px"><b>Chains resolved (${r.resolved.length}):</b></div>`+
+    r.resolved.slice(0,4).map(c=>`<div class="ln faint">✓ ${esc(c.title)} <span class="mono">(${esc(shortName(c.switch))})</span></div>`).join("")+
+    (r.resolved.length>4?`<div class="ln faint">…and ${r.resolved.length-4} more.</div>`:"")
+    :`<div class="ln faint" style="margin-top:7px">No full chain resolved by this single change — partial hardening only.</div>`;
+  const regWarn=r.regressions?`<div class="ln" style="color:var(--watch)">⚠ ${r.regressions} new concern(s) introduced — review before applying.</div>`:"";
+  return `<div class="sec"><h3>What-if: apply the fix <span class="badge b-${tok}">${chain.sev}</span></h3>
+    <div class="sub" style="margin-bottom:7px">Simulating the recommended remediation for the top SPOF on a sandbox copy of the topology — endpoints stranded by it, before vs after.</div>
+    <div class="card ${tok}">
+      <div class="ct"><span class="nm">${esc(chain.title)}</span><span class="pill pl-${tok}">${esc(shortName(chain.switch))}</span></div>
+      <div class="ln"><b>Fix:</b> ${r.fixLabel||esc(chain.fix)}</div>
+      <div class="rem-grid">
+        <div class="rem-col before">
+          <div class="lbl"><span>stranded now</span><span class="num n" data-to="${r.beforeStranded}">0</span></div>
+          <div class="rem-bar before"><i data-w="${wBefore}"></i></div>
+        </div>
+        <div class="rem-col after">
+          <div class="lbl"><span>after fix</span><span class="num n" data-to="${r.afterStranded}">0</span></div>
+          <div class="rem-bar after"><i data-w="${wAfter}"></i></div>
+        </div>
+      </div>
+      <div class="ln"><b>${r.saved}</b> endpoint(s) recovered.</div>
+      ${resolvedList}
+      ${regWarn}
+      <div class="fix"><b>Result:</b> ${esc(r.summary)}</div>
+    </div></div>`;
+}
+/* =====================================================================
    PROTOCOLS mode — routing-protocol topology, boundaries, redistribution,
    adjacency health. Reads SNAP.routing_neighbors / SNAP.redistribution /
    SNAP.routes[].source (all offline; absent keys -> empty, back-compat).
@@ -3793,7 +3981,8 @@ function drawHealth(){
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
-      ${chainCards(CHAINS,6)}</div>`:""}`;
+      ${chainCards(CHAINS,6)}</div>`:""}
+    ${CHAINS.length?remediationCard():""}`;
 }
 
 /* =====================================================================
