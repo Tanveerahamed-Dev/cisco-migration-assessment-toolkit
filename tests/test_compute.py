@@ -180,6 +180,35 @@ def test_stp_root_findings(cp):
     assert not any(m["vlan"] == "10" for m in f["misaligned"])                       # root core1 hosts the gateway
 
 
+def test_compute_migration_punchlist(cp):
+    # the consolidated roll-up pulls from every source, ranks Critical->Low, tags the wave, and
+    # excludes non-fail security findings.
+    from cisco_toolkit import analyze
+    cross_layer = [{"severity": "Critical", "hosts": ["a"], "id": "CL-01", "title": "stacked SPOF", "detail": "x"}]
+    security = {"a": {"findings": [
+        {"id": "telnet-enabled", "severity": "high", "status": "fail",
+         "title": "VTY telnet", "detail": "y", "remediation": "ssh"},
+        {"id": "no-ntp", "severity": "low", "status": "pass"}]}}
+    hygiene = {"a": {"undefined": [{"kind": "acl", "name": "7", "context": "nat list 7"}], "unused": []}}
+    physical = [{"switch": "a", "risk": "err-disabled"}]
+    l3 = [{"switch": "b", "risk": "single-gateway"}]
+    proto = [{"switch": "a", "protocol": "OSPF", "severity": "High", "detail": "stuck"}]
+    stp = {"accidental": [{"vlan": "30", "host": "b"}],
+           "misaligned": [{"vlan": "30", "root": "b", "gateways": ["a"]}]}
+    health = [{"switch": "b", "band": "Critical", "score": 20}]
+    groups = [{"group": "Wave 1", "switches": ["a", "b"]}]
+    pl = analyze.compute_migration_punchlist(cross_layer, security, hygiene, physical, l3,
+                                             proto, stp, health, groups)
+    cats = {i["category"] for i in pl}
+    assert {"Cross-layer", "Security", "Config hygiene", "L1", "L3", "Protocol", "STP", "Health"} <= cats
+    assert pl[0]["severity"] == "Critical" and pl[0]["priority"] == 1                 # ranked, 1-based
+    assert [i["rank"] for i in pl] == sorted((i["rank"] for i in pl), reverse=True)   # Critical -> Low
+    assert not any("no-ntp" in (i.get("title") or "") for i in pl)                    # pass findings excluded
+    assert all(i["wave"] == "Wave 1" for i in pl)                                     # tagged from the move-group
+    t = [i for i in pl if i["category"] == "Security" and "VTY" in i["title"]][0]
+    assert t["remediation"] == "ssh" and t["severity"] == "High"
+
+
 # --------------------------------------------------------------------------- #
 # compute_migration_readiness
 # --------------------------------------------------------------------------- #

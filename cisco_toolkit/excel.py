@@ -947,6 +947,40 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
                 f"{len(f['accidental'])} accidental, {len(f['misaligned'])} misaligned")
 
 
+PUNCHLIST_SHEET_NAME = "Migration Punch-List"   # consolidated severity-ranked roll-up (NEW-V3.23.63)
+
+def write_punchlist_sheet(wb, punchlist: list) -> None:
+    """Write the 'Migration Punch-List' sheet: the consolidated, severity-ranked, per-device,
+    per-wave roll-up of every actionable finding (cross-layer SPOFs, security, config hygiene,
+    L1/L3, protocol, STP, device health) with remediation -- the executive 'fix-this-first, in
+    this order' one-pager. Rows are colour-banded by severity (Critical -> Low)."""
+    ws = wb.create_sheet(PUNCHLIST_SHEET_NAME)
+    headers = ["#", "Severity", "Category", "Device(s)", "Wave", "Issue", "Detail", "Remediation"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    sev_fill = {"Critical": "F4CCCC", "High": "FCE5CD", "Medium": "FFF2CC", "Low": "EFEFEF"}
+    r = 2
+    for it in (punchlist or []):
+        ws.cell(r, 1, it.get("priority", r - 1))
+        ws.cell(r, 2, it.get("severity", ""))
+        ws.cell(r, 3, it.get("category", ""))
+        ws.cell(r, 4, ", ".join(it.get("devices", [])))
+        ws.cell(r, 5, it.get("wave", ""))
+        ws.cell(r, 6, it.get("title", ""))
+        ws.cell(r, 7, it.get("detail", ""))
+        ws.cell(r, 8, it.get("remediation", ""))
+        fill = PatternFill("solid", fgColor=sev_fill.get(it.get("severity"), "FFFFFF"))
+        for col in range(1, 9):
+            ws.cell(r, col).fill = fill
+        r += 1
+    for i, w in enumerate([5, 10, 14, 22, 16, 34, 60, 50], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    ncrit = sum(1 for it in (punchlist or []) if it.get("severity") == "Critical")
+    logger.info(f"  [OK] '{PUNCHLIST_SHEET_NAME}' sheet: {len(punchlist or [])} item(s), {ncrit} critical")
+
+
 PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
 
 def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:
