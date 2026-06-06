@@ -2492,5 +2492,60 @@
     "raw": "redistribute ospf 1 route-map OSPF_TO_BGP"
    }
   ]
- }
+ },
+ "causality": [
+  {
+   "severity": "High",
+   "trigger": "Gateway core1:Vlan30 goes down",
+   "mechanism": "It is the only in-scan L3 gateway for VLAN 30, with no FHRP peer",
+   "impact": "Every VLAN 30 host loses its default gateway (1 endpoint(s); 1 other switch(es) affected)",
+   "mitigation": "Add an FHRP (HSRP/VRRP/GLBP) peer, or confirm a redundant off-scan gateway"
+  },
+  {
+   "severity": "Medium",
+   "trigger": "Uplink access1 Gi0/1 -> core1 fails",
+   "mechanism": "It is access1's only forwarding inter-switch link carrying VLAN 10, and it is a single (non-port-channel) link",
+   "impact": "VLAN 10 on access1 is isolated from the fabric (2 endpoint(s))",
+   "mitigation": "Add a second uplink or bundle the link as a port-channel"
+  },
+  {
+   "severity": "Medium",
+   "trigger": "Uplink access1 Gi0/1 -> core1 fails",
+   "mechanism": "It is access1's only forwarding inter-switch link carrying VLAN 30, and it is a single (non-port-channel) link",
+   "impact": "VLAN 30 on access1 is isolated from the fabric (1 endpoint(s))",
+   "mitigation": "Add a second uplink or bundle the link as a port-channel"
+  }
+ ],
+ "failure_impact": [
+  {
+   "host": "core1",
+   "severity": "High",
+   "vlans_impacted": 2,
+   "stranded": 3,
+   "hard": 2,
+   "backup": 0,
+   "fhrp": 0,
+   "detail": "VLAN 10: Hard partition (2 ep); VLAN 30: Hard partition (1 ep)"
+  },
+  {
+   "host": "core2",
+   "severity": "Low",
+   "vlans_impacted": 1,
+   "stranded": 0,
+   "hard": 0,
+   "backup": 0,
+   "fhrp": 1,
+   "detail": "VLAN 10: FHRP-covered"
+  },
+  {
+   "host": "access1",
+   "severity": "Info",
+   "vlans_impacted": 0,
+   "stranded": 0,
+   "hard": 0,
+   "backup": 0,
+   "fhrp": 0,
+   "detail": "No reachability impact from removing this switch (within the scan)."
+  }
+ ]
 }

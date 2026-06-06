@@ -4353,12 +4353,26 @@ function causalSevToken(s){const t=(s||"").toLowerCase();
   if(t.includes("crit")||t==="high")return "crit";
   if(t==="medium"||t.includes("warn"))return "risk";
   if(t==="low")return "watch"; return "neutral";}
+// V3.23.81: prefer the Python-computed SNAP.causality (the same chains the workbook's 'Causality Chains'
+// sheet shows — one source of truth) for the structural entries; fall back to the JS causalityChains
+// engine (CHAINS) only when the snapshot carries no causality (older snapshots / the in-page demo). The
+// JS engine still drives the interactive Blast simulation; this aligns the Causality MODE's display with
+// the collector's analysis. Hosts are parsed from the trigger/impact text so the canvas can still highlight.
 function causalityList(){
   const out=[];
-  (CHAINS||[]).forEach((c,i)=>{out.push({
-    key:"struct-"+i, kind:"Structural SPOF", sev:c.sev, tok:sevToken(c.sev),
-    title:c.title, hosts:[c.switch],
-    trigger:c.root, mechanism:c.mech, impact:c.blast, mitigation:c.fix});});
+  const pyc=(SNAP&&Array.isArray(SNAP.causality))?SNAP.causality:null;
+  if(pyc&&pyc.length){
+    pyc.forEach((c,i)=>{const txt=(c.trigger||"")+" "+(c.impact||"")+" "+(c.mechanism||"");
+      const hosts=(MODEL?MODEL.hosts:[]).filter(h=>txt.indexOf(h)>=0).slice(0,6);
+      out.push({key:"struct-"+i, kind:"Structural SPOF", sev:c.severity, tok:causalSevToken(c.severity),
+        title:c.trigger||("Structural SPOF "+(i+1)), hosts,
+        trigger:c.trigger||"", mechanism:c.mechanism||"", impact:c.impact||"", mitigation:c.mitigation||""});});
+  } else {
+    (CHAINS||[]).forEach((c,i)=>{out.push({
+      key:"struct-"+i, kind:"Structural SPOF", sev:c.sev, tok:sevToken(c.sev),
+      title:c.title, hosts:[c.switch],
+      trigger:c.root, mechanism:c.mech, impact:c.blast, mitigation:c.fix});});
+  }
   const cl=(SNAP&&Array.isArray(SNAP.cross_layer))?SNAP.cross_layer:[];
   cl.forEach((x,i)=>{const hosts=Array.isArray(x.hosts)?x.hosts.filter(h=>MODEL&&MODEL.hosts.includes(h)):[];
     out.push({
@@ -4615,7 +4629,13 @@ function cockpitKeystones(){
   const pl=(SNAP&&SNAP.punchlist)||[];
   const implBy={}; pl.forEach(i=>{const seen=new Set();(i.devices||[]).forEach(d=>{if(seen.has(d))return;seen.add(d);implBy[d]=(implBy[d]||0)+1;});});
   const chainsBy={}; (CHAINS||[]).forEach(c=>{chainsBy[c.switch]=(chainsBy[c.switch]||0)+1;});
-  const rows=(MODEL?MODEL.hosts:[]).map(h=>{let blast=0; try{blast=failureImpact(MODEL,h).hardStranded||0;}catch(e){}
+  // V3.23.81: prefer the Python failure-impact rollup (SNAP.failure_impact[].stranded) so the explorer's
+  // keystone blast-radius numbers match the workbook's 'Failure Impact' sheet exactly (one source of truth);
+  // fall back to the JS failureImpact engine when the snapshot doesn't carry it (older snapshots / demo).
+  const fiMap={}; ((SNAP&&SNAP.failure_impact)||[]).forEach(r=>{if(r&&r.host)fiMap[r.host]=(+r.stranded)||0;});
+  const havePyFi=Object.keys(fiMap).length>0;
+  const blastOf=h=>{ if(havePyFi)return fiMap[h]||0; try{return failureImpact(MODEL,h).hardStranded||0;}catch(e){return 0;} };
+  const rows=(MODEL?MODEL.hosts:[]).map(h=>{const blast=blastOf(h);
     return {host:h, blast, impl:implBy[h]||0, chains:chainsBy[h]||0, tier:_cockpitTier(h)};})
     .filter(r=>r.blast>0||r.impl>0||r.chains>0);
   rows.sort((a,b)=>b.blast-a.blast || b.chains-a.chains || b.impl-a.impl || a.host.localeCompare(b.host));
