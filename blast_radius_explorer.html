@@ -1109,13 +1109,16 @@ function demoSnapshot(){
   // (compute_migration_punchlist) — every finding across all layers in one prioritized list.
   punchlist:[
     {priority:1,severity:"Critical",rank:4,category:"Cross-layer",devices:["DIST-1"],wave:"Group A",title:"Stuck OSPF adjacency on the redistribution boundary",detail:"Redistributed routes flap while the adjacency is down.",remediation:"Stabilize the OSPF/BGP boundary."},
-    {priority:2,severity:"High",rank:3,category:"L3",devices:["DIST-1"],wave:"Group A",title:"single gateway",detail:"VLAN 30 has a sole gateway with no FHRP peer.",remediation:"Add gateway / FHRP redundancy."},
-    {priority:3,severity:"High",rank:3,category:"Security",devices:["DIST-1"],wave:"Group A",title:"SNMP access",detail:"v1/v2c default community (cleartext).",remediation:"Use SNMPv3 with auth+priv."},
-    {priority:4,severity:"High",rank:3,category:"Security",devices:["DIST-1"],wave:"Group A",title:"VTY transport (telnet)",detail:"A VTY line permits telnet.",remediation:"Set 'transport input ssh'."},
-    {priority:5,severity:"High",rank:3,category:"Config hygiene",devices:["DIST-1"],wave:"Group A",title:"Undefined acl '7'",detail:"Referenced by NAT but never defined.",remediation:"Define or remove the reference."},
-    {priority:6,severity:"High",rank:3,category:"Health",devices:["DIST-1"],wave:"Group A",title:"Poor-health switch",detail:"Health score 58 (Poor band).",remediation:"Resolve the deductions before migrating."},
-    {priority:7,severity:"Medium",rank:2,category:"STP",devices:["ACC-3","DIST-1"],wave:"Group A",title:"STP root != gateway (VLAN 30)",detail:"Gateway traffic hairpins through the root.",remediation:"Align the STP root with the gateway."},
-    {priority:8,severity:"Low",rank:1,category:"STP",devices:["ACC-3"],wave:"Group A",title:"Accidental root (VLAN 30)",detail:"Rooted on the default priority.",remediation:"Set a deliberate root priority."},
+    {priority:2,severity:"High",rank:3,category:"FHRP",devices:["DIST-1","DIST-2"],wave:"Group A",title:"Fake FHRP redundancy (VLAN 20)",detail:"different FHRP groups (grp 20 vs 21) — not one redundancy group.",remediation:"Standardize the FHRP group / VIP across the gateways."},
+    {priority:3,severity:"High",rank:3,category:"Addressing",devices:["DIST-1","DIST-2"],wave:"Group A",title:"Duplicate L3 IP 10.0.99.2",detail:"The same physical IP is configured on two interfaces — an L3 clash.",remediation:"Re-IP one interface before cutover."},
+    {priority:4,severity:"High",rank:3,category:"L3",devices:["DIST-1"],wave:"Group A",title:"single gateway",detail:"VLAN 30 has a sole gateway with no FHRP peer.",remediation:"Add gateway / FHRP redundancy."},
+    {priority:5,severity:"High",rank:3,category:"Security",devices:["DIST-1"],wave:"Group A",title:"SNMP access",detail:"v1/v2c default community (cleartext).",remediation:"Use SNMPv3 with auth+priv."},
+    {priority:6,severity:"High",rank:3,category:"Security",devices:["DIST-1"],wave:"Group A",title:"VTY transport (telnet)",detail:"A VTY line permits telnet.",remediation:"Set 'transport input ssh'."},
+    {priority:7,severity:"High",rank:3,category:"Config hygiene",devices:["DIST-1"],wave:"Group A",title:"Undefined acl '7'",detail:"Referenced by NAT but never defined.",remediation:"Define or remove the reference."},
+    {priority:8,severity:"High",rank:3,category:"Health",devices:["DIST-1"],wave:"Group A",title:"Poor-health switch",detail:"Health score 58 (Poor band).",remediation:"Resolve the deductions before migrating."},
+    {priority:9,severity:"Medium",rank:2,category:"Trunk",devices:["ACC-1","DIST-1"],wave:"Group A",title:"Native-VLAN mismatch (99 vs 1)",detail:"DIST-1 Gi1/0/1 (native 99) <-> ACC-1 Gi1/0/24 (native 1) — untagged L2 leak.",remediation:"Set a consistent native VLAN on both ends."},
+    {priority:10,severity:"Medium",rank:2,category:"STP",devices:["ACC-3","DIST-1"],wave:"Group A",title:"STP root != gateway (VLAN 30)",detail:"Gateway traffic hairpins through the root.",remediation:"Align the STP root with the gateway."},
+    {priority:11,severity:"Low",rank:1,category:"STP",devices:["ACC-3"],wave:"Group A",title:"Accidental root (VLAN 30)",detail:"Rooted on the default priority.",remediation:"Set a deliberate root priority."},
   ],
   // U1 Cross-Layer: a small array of pre-computed findings the Python pipeline would embed (CL-01..),
   // ingested + merged with the client-computed correlations (de-duped by host-set + title). This one is

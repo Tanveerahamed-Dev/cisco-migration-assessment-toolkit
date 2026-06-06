@@ -1684,7 +1684,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 protocol_health: List[dict],
                                 stp_findings: dict,
                                 health_scores: List[dict],
-                                move_groups: List[dict]) -> List[dict]:
+                                move_groups: List[dict],
+                                l2: Optional[dict] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -1771,6 +1772,40 @@ def compute_migration_punchlist(cross_layer: List[dict],
             add("High" if r["band"] == "Critical" else "Medium", "Health", [r.get("switch")],
                 f"{r['band']}-health switch", f"Health score {r.get('score', '')} ({r['band']} band).",
                 "Resolve the deductions above before migrating this device.")
+
+    # NEW-V3.23.64: fold in the cross-switch L2 checks that previously lived only in the explorer
+    # (addressing conflicts, FHRP consistency, trunk native-VLAN, link duplex/speed) -- passed in as
+    # `l2` (computed by the excel layer in main()) so the punch-list is genuinely complete.
+    ll = l2 or {}
+    for d in (ll.get("addressing") or {}).get("dup_ip", []):
+        add("High", "Addressing", [w[0] for w in d.get("where", [])],
+            f"Duplicate L3 IP {d.get('ip', '')}",
+            "The same physical IP is configured on >=2 interfaces -- an L3 address clash.",
+            "Re-IP one of the interfaces before the merge / cutover.")
+    for d in (ll.get("addressing") or {}).get("dup_subnet", []):
+        vrf = f" (VRF {d['vrf']})" if d.get("vrf") else ""
+        add("Medium", "Addressing", [w[0] for w in d.get("where", [])],
+            f"Overlapping subnet {d.get('net', '')}",
+            f"One subnet sits behind multiple VLANs{vrf} -- ambiguous routing.",
+            "Consolidate or re-subnet before cutover.")
+    for fr in (ll.get("fhrp") or []):
+        add("High", "FHRP", [m.get("host") for m in fr.get("members", [])],
+            f"Fake FHRP redundancy (VLAN {fr.get('vid')})",
+            "; ".join(fr.get("issues", [])),
+            "Standardize the FHRP protocol / group / virtual IP across the VLAN's gateways.")
+    for t in (ll.get("trunk_native") or []):
+        add("Medium", "Trunk", [t.get("a_host"), t.get("b_host")],
+            f"Native-VLAN mismatch ({t.get('a_native')} vs {t.get('b_native')})",
+            f"{t.get('a_host')} {t.get('a_port')} (native {t.get('a_native')}) <-> "
+            f"{t.get('b_host')} {t.get('b_port')} (native {t.get('b_native')}) -- untagged L2 leak / VLAN-hopping exposure.",
+            "Set a consistent native VLAN on both trunk ends.")
+    for lp in (ll.get("link_phy") or []):
+        what = "duplex" if lp.get("duplex") else "speed"
+        add("Medium", "Link L1", [lp.get("a_host"), lp.get("b_host")],
+            f"{what.capitalize()} mismatch on inter-switch link",
+            f"{lp.get('a_host')} {lp.get('a_port')} <-> {lp.get('b_host')} {lp.get('b_port')} -- "
+            f"{what} differs (late collisions / CRC errors, link up but degraded).",
+            "Set matching duplex/speed (or autoneg) on both ends.")
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
     for i, it in enumerate(items, 1):
