@@ -2616,6 +2616,7 @@ function drawBlast(){
       <table><thead><tr><th>VLAN</th><th>Outcome</th><th style="text-align:right">Hard</th><th style="text-align:right">Heal</th></tr></thead>
       <tbody>${rows||'<tr><td colspan="4" class="faint">No collateral VLANs.</td></tr>'}</tbody></table></div>
     ${myChains.length?`<div class="sec"><h3>Causality chains <span class="ct">${myChains.length}</span></h3>${chainCards(myChains)}</div>`:""}
+    ${deviceIntelSection(SEL)}
     ${endpointsSec(SEL)}`;
 }
 function endpointsSec(h){const eps=endpointsOf(h);if(!eps.length)return "";
@@ -2624,6 +2625,45 @@ function endpointsSec(h){const eps=endpointsOf(h);if(!eps.length)return "";
   return `<div class="sec"><h3>Endpoints on this switch <span class="ct">${eps.length}</span></h3>
     <p class="faint" style="margin:0 0 8px">Click an endpoint for its port / VLAN / IP details.</p>
     <table><thead><tr><th>Port</th><th>VLAN</th><th>IP</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+/* Device-intelligence dossier (V3.23.79): on the selected switch, fold together every per-device finding
+   the collector already computed — health score (SNAP.health_scores), physical port errors
+   (SNAP.physical_health, previously NEVER surfaced in the explorer), protocol-health issues
+   (SNAP.protocol_health), CIS security gaps (SNAP.security), config-hygiene undefined refs
+   (SNAP.config_hygiene), and the punch-list items naming it (SNAP.punchlist). One source of truth: all
+   read straight from the snapshot, no client re-derivation. Empty -> the section is omitted. */
+function deviceIntelSection(host){
+  if(!host)return "";
+  const hs=(typeof healthList==="function"?healthList():[]).find(r=>r.switch===host);
+  const phy=((SNAP&&SNAP.physical_health)||[]).filter(r=>r.switch===host&&r.severity&&r.severity!=="Info"&&r.severity!=="OK");
+  const proto=protoHealthFor(host).filter(r=>_phRank(r.severity)>=2);
+  const sec=(SNAP&&SNAP.security&&SNAP.security[host])||{};
+  const secFail=((sec.findings)||[]).filter(f=>f.status==="fail");
+  const hgUndef=(((SNAP&&SNAP.config_hygiene&&SNAP.config_hygiene[host])||{}).undefined)||[];
+  const pl=((SNAP&&SNAP.punchlist)||[]).filter(i=>(i.devices||[]).includes(host));
+  if(!hs&&!phy.length&&!proto.length&&!secFail.length&&!hgUndef.length&&!pl.length)return "";
+  const pills=[];
+  if(hs){const t=hs.band?healthBandToken(hs.band):scoreToken(hs.score);
+    pills.push(`<span class="pill pl-${t}">health ${esc(hs.score)}/100${hs.band?" · "+esc(hs.band):""}</span>`);}
+  if(phy.length)pills.push(`<span class="pill pl-watch">${phy.length} port${phy.length===1?"":"s"} w/ errors</span>`);
+  if(proto.length)pills.push(`<span class="pill pl-crit">${proto.length} protocol issue${proto.length===1?"":"s"}</span>`);
+  if(secFail.length)pills.push(`<span class="pill pl-crit">${secFail.length} security gap${secFail.length===1?"":"s"}</span>`);
+  if(hgUndef.length)pills.push(`<span class="pill pl-watch">${hgUndef.length} undefined ref${hgUndef.length===1?"":"s"}</span>`);
+  if(pl.length)pills.push(`<span class="pill pl-neutral">${pl.length} punch-list item${pl.length===1?"":"s"}</span>`);
+  let phyDetail="";
+  if(phy.length){const byRisk={}; phy.forEach(r=>{const k=r.risk||"issue";(byRisk[k]=byRisk[k]||[]).push(r.port);});
+    phyDetail=Object.entries(byRisk).slice(0,4).map(([risk,ports])=>
+      `<div class="ln"><span class="pill pl-watch">${esc(risk)}</span> <span class="faint">${ports.length} port(s): ${esc(ports.slice(0,6).join(", "))}${ports.length>6?"…":""}</span></div>`).join("");}
+  const protoDetail=proto.slice(0,3).map(protoHealthRow).join("");
+  const plDetail=pl.slice(0,4).map(i=>`<div class="ln"><span class="pill pl-${i.severity==="Critical"||i.severity==="High"?"crit":i.severity==="Medium"?"watch":"neutral"}">${esc(i.severity)}</span> <span class="faint">${esc(i.category)}</span> ${esc(i.title)}</div>`).join("")
+    +(pl.length>4?`<div class="ln faint">…and ${pl.length-4} more — see the Health view / punch-list.</div>`:"");
+  return `<div class="sec"><h3>Device intelligence</h3>`+
+    `<div class="sub" style="margin-bottom:7px">Everything the collector knows about <span class="mono">${esc(shortName(host))}</span> — health, physical, protocol, security, and the punch-list items naming it.</div>`+
+    `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px">${pills.join("")}</div>`+
+    (phyDetail?`<div class="sub" style="margin:4px 0 3px">Physical (port errors / duplex)</div>${phyDetail}`:"")+
+    (protoDetail?`<div class="sub" style="margin:7px 0 3px">Protocol</div>${protoDetail}`:"")+
+    (plDetail?`<div class="sub" style="margin:7px 0 3px">Punch-list</div>${plDetail}`:"")+
+    `</div>`;
+}
 function drawEndpoint(){const e=EPSEL;
   const vid=/^\d+$/.test(e.vlan)?+e.vlan:null;
   const gws=vid!=null?(MODEL.gateways.get(vid)||new Set()):new Set();
