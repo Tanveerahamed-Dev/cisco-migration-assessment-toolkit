@@ -31,13 +31,17 @@ def test_host_role_inference(cp):
     assert analyze._host_role({}) == "access"
 
 
-def test_default_criticality_is_byte_identical(cp):
+def test_default_criticality_weights_distribution(cp):
+    # Activated 2026-06-06: the DEFAULT config now weights a gateway/distribution switch's
+    # deductions by 1.2 (asset criticality) — same finding, harder penalty than an access closet.
     svi = cp.InterfaceData(port="Vlan10"); svi.svi_ip = "10.0.10.1"
     all_if = {"dist": {"Vlan10": svi}, "acc": {"Gi0/1": cp.InterfaceData(port="Gi0/1")}}
     ph = [{"switch": "dist", "port": "Gi0/1", "risk": "err-disabled"},
           {"switch": "acc", "port": "Gi0/1", "risk": "err-disabled"}]
-    recs = {r["switch"]: r["score"] for r in cp.compute_health_scores(all_if, ph, [], [], [])}
-    assert recs["dist"] == 92 and recs["acc"] == 92          # both -8, factor 1.0
+    recs = {r["switch"]: r for r in cp.compute_health_scores(all_if, ph, [], [], [])}
+    assert recs["dist"]["score"] == 90 and recs["dist"]["role"] == "distribution"   # 8 * 1.2 -> 10
+    assert recs["acc"]["score"] == 92 and recs["acc"]["role"] == "access"           # 8 * 1.0 -> 8
+    assert recs["dist"]["criticality"] == 1.2 and recs["acc"]["criticality"] == 1.0
 
 
 def test_criticality_weights_distribution_more(cp):
