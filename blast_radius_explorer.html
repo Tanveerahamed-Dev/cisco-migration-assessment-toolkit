@@ -279,6 +279,26 @@
      so the global reduced-motion rule (which kills the animation) leaves content in place */
   .reveal{animation:cardIn .34s cubic-bezier(.2,.7,.3,1) both}
   @keyframes cardIn{from{opacity:0; transform:translateY(7px)} to{opacity:1; transform:none}}
+  /* U7 cross-layer "why" ladder: vertical L1->L4 rungs, each staggered top-to-bottom. Resting state is
+     fully visible (opacity:1, no transform) so the global reduced-motion rule leaves every rung in place. */
+  .why-rung{display:flex; gap:10px; align-items:flex-start; padding:7px 0; border-top:1px solid var(--border-faint);
+    animation:rungIn .32s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--d,0ms)}
+  .why-rung:first-child{border-top:0}
+  @keyframes rungIn{from{opacity:0; transform:translateX(-8px)} to{opacity:1; transform:none}}
+  .why-rung .wl{flex:0 0 auto; min-width:30px; text-align:center; font-family:var(--mono); font-size:10px;
+    font-weight:700; padding:2px 6px; border-radius:6px; color:var(--text-dim); background:var(--surface-3);
+    border:1px solid var(--border)}
+  .why-rung .wi{flex:0 0 auto; font-size:13px; line-height:1.4; width:15px; text-align:center}
+  .why-rung .wb{flex:1 1 auto; min-width:0}
+  .why-rung .wb .wt{font-size:11.5px; font-weight:650; color:var(--text)}
+  .why-rung .wb .wr{font-size:11px; color:var(--text-dim); margin-top:2px; line-height:1.5}
+  .why-rung.ok .wi{color:var(--ok)} .why-rung.ok .wl{color:var(--ok); border-color:var(--ok)}
+  .why-rung.watch .wi{color:var(--watch)} .why-rung.watch .wl{color:var(--watch); border-color:var(--watch)}
+  .why-rung.block .wi{color:var(--crit)} .why-rung.block .wl{color:var(--crit); border-color:var(--crit)}
+  .why-rung.na{opacity:.62}
+  .why-rung.decisive{background:var(--crit-soft); border-radius:7px; padding-left:7px; padding-right:7px;
+    margin:2px -7px; border-top:0}
+  .why-rung.decisive+.why-rung{border-top:0}
   .sec h3{margin:0 0 11px; font-size:10px; letter-spacing:1.3px; text-transform:uppercase;
     color:var(--text-faint); font-weight:700; display:flex; align-items:center; gap:7px}
   .sec h3 .ct{color:var(--text-dim); background:var(--surface-2); border:1px solid var(--border);
@@ -2241,6 +2261,7 @@ function drawFlow(){
       (F.aclVerdicts&&F.aclVerdicts.length?aclVerdictCard(F.aclVerdicts,FLOW_PROTO,FLOW_DPORT):aclFlagCard(F.aclFlags,"this path"))+
       (F.mtu&&F.mtu.mismatch?`<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ Path MTU mismatch</span><span class="pill pl-watch">${F.mtu.pathMtu} eff.</span></div><div class="ln faint" style="margin-top:2px">${esc(F.mtu.note)} The flow still reaches — only large / jumbo frames are affected.</div></div>`:"")+
       natCard(natStaticsFor([F.src&&F.src.ip, F.dst&&F.dst.ip]))+
+      flowWhyCard(F)+
       `<div>${steps}</div>`+
       `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. <b>Stateful</b>: an <span class="mono">established</span> rule is treated as TCP return-only (it never permits a new/forward flow); a <span class="mono">time-range</span> rule is reported indeterminate (its active window can't be known offline). <b>Path MTU</b> consistency is checked — jumbo-frame black-holes are flagged (the flow still reaches; only oversized frames drop). Known <b>static NAT</b> mappings touching either endpoint are surfaced (the L4 verdict is against the untranslated address).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
@@ -2379,6 +2400,114 @@ function flowBetween(s,d){
   hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
   F.mtu=pathMtu(F,s,d); F.reachable=true; F.verdict="REACHABLE — L3 (routed via gateway)";
   return F;
+}
+
+/* ---- U7: Cross-layer "why" ladder ----------------------------------------------------------------
+   Explain, layer by layer, WHY the current flow (the SAME F that flowBetween already computed) reaches
+   or is blocked — one coherent causal story L1->L4. Each rung is {layer,label,verdict,reason,decisive}
+   where verdict is ok | block | watch | na. We derive everything from F's own facts and verdict/reason
+   so the ladder never contradicts the headline verdict or re-runs reachability differently. flowBetween
+   returns EARLY on a block, so the decisive layer is read off the final (reason-carrying) hop. */
+function flowWhyLadder(F){
+  if(!F)return [];
+  // VLAN entirely unknown -> we can't reason about any layer.
+  if(F.verdict==="UNKNOWN")
+    return [{layer:"L1",label:"Physical",verdict:"na",reason:F.reason||"Endpoint VLAN unknown — path can't be traced."},
+            {layer:"L2",label:"Switching",verdict:"na",reason:"Not evaluated — VLAN unknown."},
+            {layer:"L3",label:"Routing",verdict:"na",reason:"Not evaluated — VLAN unknown."},
+            {layer:"L4",label:"Security",verdict:"na",reason:"Not evaluated — VLAN unknown."}];
+  // The decisive blocking layer (when blocked) is the layer of the last hop, which carries F.reason.
+  const lastHop=F.hops.length?F.hops[F.hops.length-1]:null;
+  const blockLayer=F.reachable?null:(lastHop?lastHop.layer:null);
+  const routed=(F.gateways&&F.gateways.length>0);     // an inter-subnet (L3) flow actually engaged a gateway
+  const rungs=[];
+
+  // L1 — Physical / MTU. The source endpoint's own access is intact whenever we got past VLAN lookup;
+  // a path-MTU mismatch is a 'watch' (the flow still reaches, only oversized frames drop).
+  if(F.mtu&&F.mtu.mismatch)
+    rungs.push({layer:"L1",label:"Physical",verdict:"watch",
+      reason:`${F.mtu.note} Path still forwards; only frames above ${F.mtu.pathMtu} bytes are dropped.`});
+  else if(blockLayer==="L1")
+    rungs.push({layer:"L1",label:"Physical",verdict:"block",reason:F.reason||"Physical-layer break on the path."});
+  else
+    rungs.push({layer:"L1",label:"Physical",verdict:"ok",
+      reason:"Access ports up and no path-MTU black-hole — frames pass at L1."});
+
+  // L2 — Switching / Trunk. Blocked when the decisive reason is an L2 partition / no STP-forwarding path /
+  // native-VLAN or asymmetric-prune break; otherwise the VLAN reached its target (or its gateway).
+  if(blockLayer==="L2")
+    rungs.push({layer:"L2",label:"Switching",verdict:"block",reason:F.reason||"No L2-forwarding path for this VLAN."});
+  else
+    rungs.push({layer:"L2",label:"Switching",verdict:"ok",
+      reason:routed?"All trunks on the path carry the VLAN to its gateway (no native mismatch / asymmetric prune)."
+                   :"Source and destination share the VLAN and a forwarding L2 path connects them."});
+
+  // L3 — Routing / VRF. 'na' for a same-subnet (pure L2) reachable flow that never needed routing.
+  if(blockLayer==="L3")
+    rungs.push({layer:"L3",label:"Routing",verdict:"block",reason:F.reason||"No L3 path between the subnets."});
+  else if(!routed)
+    rungs.push({layer:"L3",label:"Routing",verdict:"na",
+      reason:"Same subnet — no inter-VLAN routing needed; the flow stays at L2."});
+  else{
+    const gwTxt=F.gateways[0]?`${shortName(F.gateways[0])} has a covering route to the destination, same VRF`:"Routed via the gateway, same VRF";
+    rungs.push({layer:"L3",label:"Routing",verdict:"ok",reason:`${gwTxt} — the inter-subnet hop forwards.`});
+  }
+
+  // L4 — Security / NAT. Driven by the ACL verdicts flowBetween already evaluated on the crossed SVIs /
+  // routed egress; NAT-touch is surfaced as a caveat on the rung when present.
+  const natTouch=natStaticsFor([F.src&&F.src.ip, F.dst&&F.dst.ip]);
+  const natNote=natTouch.length?` Static NAT touches an endpoint, so the verdict is against the untranslated address.`:"";
+  if(F.aclVerdicts&&F.aclVerdicts.length){
+    const deny=F.aclVerdicts.find(v=>v.verdict==="deny");
+    const indet=F.aclVerdicts.find(v=>v.verdict==="indeterminate");
+    if(deny){
+      const why=deny.implicit?"implicit deny — no rule matched":(deny.rule?`rule ${deny.idx+1}: ${deny.rule.raw}`:"a deny rule matched");
+      rungs.push({layer:"L4",label:"Security",verdict:"block",
+        reason:`ACL ${deny.name} on ${shortName(deny.host)} denies this flow (${why}).${natNote}`});
+    } else if(indet){
+      const why=indet.nobody?"its body wasn't collected":(indet.rule?`rule ${indet.idx+1} can't be modeled offline`:"no rule conclusively matched");
+      rungs.push({layer:"L4",label:"Security",verdict:"watch",
+        reason:`ACL ${indet.name} on ${shortName(indet.host)} is indeterminate (${why}) — can't confirm permit/deny.${natNote}`});
+    } else {
+      rungs.push({layer:"L4",label:"Security",verdict:"ok",
+        reason:`Every crossed ACL permits this flow.${natNote}`});
+    }
+  } else if(blockLayer&&!F.reachable){
+    rungs.push({layer:"L4",label:"Security",verdict:"na",
+      reason:"Not reached — the flow is already blocked at a lower layer."});
+  } else if(natTouch.length){
+    rungs.push({layer:"L4",label:"Security",verdict:"watch",
+      reason:`No ACL on the path to evaluate, but static NAT touches an endpoint (verdict is against the untranslated address).`});
+  } else {
+    rungs.push({layer:"L4",label:"Security",verdict:"na",
+      reason:F.reachable?"No ACL applied on the crossed interfaces (or no L4 tuple to test) — nothing filtering this flow.":"Not evaluated."});
+  }
+
+  // Mark the FIRST blocking rung as the decisive cause. A flow can be L1–L3 'reachable' yet denied at L4
+  // (flowBetween's F.reachable only covers L1–L3), so any block rung — including an L4 ACL deny — is decisive.
+  {const dec=rungs.find(r=>r.verdict==="block"); if(dec)dec.decisive=true;}
+  return rungs;
+}
+function flowWhyCard(F){
+  const rungs=flowWhyLadder(F); if(!rungs.length)return "";
+  const icon={ok:"✓",watch:"⚠",block:"✗",na:"—"};
+  // 'blocked' if ANY rung blocks (an L4 ACL deny blocks the flow even when F.reachable is true at L1–L3).
+  const blocked=rungs.some(r=>r.verdict==="block"), watched=rungs.some(r=>r.verdict==="watch");
+  const tok=blocked?"crit":watched?"watch":"ok";
+  const headBadge=blocked?'<span class="badge b-crit">blocked</span>'
+    :watched?'<span class="badge b-watch">reaches · with caveats</span>'
+            :'<span class="badge b-ok">reaches</span>';
+  const rows=rungs.map((r,i)=>{
+    const dec=r.decisive?" decisive":"";
+    const tag=r.decisive?' <span class="pill pl-crit">decisive cause</span>':"";
+    return `<div class="why-rung ${esc(r.verdict)}${dec}" style="--d:${Math.min(280,i*70)}ms">`+
+      `<span class="wl">${esc(r.layer)}</span>`+
+      `<span class="wi">${icon[r.verdict]||"·"}</span>`+
+      `<span class="wb"><span class="wt">${esc(r.label)}${tag}</span><span class="wr">${esc(r.reason)}</span></span>`+
+    `</div>`;}).join("");
+  return `<div class="card ${tok}" style="margin:0 0 8px"><div class="ct"><span class="nm">Why — cross-layer ladder</span>${headBadge}</div>`+
+    `<div class="ln faint" style="margin:2px 0 6px">The single causal story, L1 → L4. ${blocked?"The decisive ✗ is the cause; layers below it carry no traffic.":"Each layer forwards, in order."}</div>`+
+    rows+`</div>`;
 }
 
 
