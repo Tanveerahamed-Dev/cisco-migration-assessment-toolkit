@@ -1087,6 +1087,17 @@ function demoSnapshot(){
       {id:"weak-user-pw",title:"Local user password storage",severity:"info",status:"pass",detail:"no Type-0/7 local user passwords.",cis_ref:"CIS 1.3",remediation:""},
     ],summary:{fail:0,pass:3,na:0,grade:"hardened"}},
   },
+  // V3.23.61: Batfish-style config hygiene. DIST-1 references an ACL ('7') and a route-map ('OSPF_TO_BGP')
+  // that are never defined (silently do nothing), and defines an ACL ('INET_RETURN') nothing references.
+  config_hygiene:{
+    "DIST-1":{
+      undefined:[
+        {kind:"acl",name:"7",context:"ip nat inside source list 7 pool MIGRATE_POOL overload"},
+        {kind:"route-map",name:"OSPF_TO_BGP",context:"router bgp 65001"},
+      ],
+      unused:[{kind:"acl",name:"INET_RETURN"}],
+      summary:{undefined:2,unused:1,structures:5}},
+  },
   // U1 Cross-Layer: a small array of pre-computed findings the Python pipeline would embed (CL-01..),
   // ingested + merged with the client-computed correlations (de-duped by host-set + title). This one is
   // a protocol-layer correlation the client engine doesn't compute, so it shows the SNAP-ingest path.
@@ -3166,6 +3177,28 @@ function securityCard(){
     `<div class="sub" style="margin-bottom:6px">CIS-aligned config hardening — technical debt to remediate or consciously carry before cutover (secrets redacted at the source).</div>`+
     rows+`</div>`;
 }
+/* Config hygiene (Batfish-style static cross-reference of the running-config): UNDEFINED references --
+   a named ACL / route-map / object-group / prefix-list that is referenced but never defined (silently
+   does nothing -> a real migration-breaker) -- and UNUSED structures (defined but never referenced ->
+   cruft to drop). Fleet-overview card in Health mode. Reads SNAP.config_hygiene
+   {host:{undefined:[{kind,name,context}],unused:[{kind,name}],summary}}. Back-compatible: no key -> no card. */
+function hygieneCard(){
+  const hg=SNAP&&SNAP.config_hygiene; if(!hg||!Object.keys(hg).length)return "";
+  const undef=[], unused=[]; let hosts=0;
+  for(const host in hg){const h=hg[host]||{}; const u=(h.undefined||[]), n=(h.unused||[]);
+    if(!u.length&&!n.length&&!(h.summary&&h.summary.structures))continue; hosts++;
+    u.forEach(x=>undef.push(Object.assign({host},x))); n.forEach(x=>unused.push(Object.assign({host},x)));}
+  if(!hosts)return "";
+  if(!undef.length&&!unused.length)
+    return `<div class="sec"><h3>Config hygiene <span class="badge b-ok">clean</span></h3>`+
+      `<div class="ln faint">✓ Across ${hosts} switch(es): every referenced ACL / route-map / object-group / prefix-list is defined, and every defined structure is referenced — no dangling references or cruft to clean up before cutover.</div></div>`;
+  const undefRows=undef.map(x=>`<div class="ln"><span class="pill pl-crit">✗ undefined ${esc(x.kind)}</span> <span class="mono">${esc(x.name)}</span> is referenced on <span class="mono">${esc(shortName(x.host))}</span>${x.context?` <span class="faint">(${esc(x.context)})</span>`:""} but never defined — it silently does nothing.</div>`).join("");
+  const unusedRows=unused.map(x=>`<div class="ln"><span class="pill pl-neutral">unused ${esc(x.kind)}</span> <span class="mono">${esc(x.name)}</span> on <span class="mono">${esc(shortName(x.host))}</span> is defined but never referenced — cruft to drop.</div>`).join("");
+  const badge=undef.length?`<span class="badge b-crit">${undef.length} undefined</span>`:`<span class="badge b-watch">${unused.length} unused</span>`;
+  return `<div class="sec"><h3>Config hygiene ${badge}</h3>`+
+    `<div class="sub" style="margin-bottom:6px">Dangling references break silently at cutover; unused structures are cruft. (Batfish-style static cross-reference of the running-config.)</div>`+
+    undefRows+unusedRows+`</div>`;
+}
 /* Trunk consistency: native-VLAN mismatch on an inter-switch trunk. When the two ends disagree on the
    native (untagged) VLAN, frames sent untagged on one side pop out in a DIFFERENT VLAN on the other --
    a silent L2 leak between those VLANs, an STP inconsistency, and a classic VLAN-hopping exposure. The
@@ -4255,6 +4288,7 @@ function drawHealth(){
     ${trunkConsistencyCard()}
     ${linkPhyCard()}
     ${securityCard()}
+    ${hygieneCard()}
     ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>

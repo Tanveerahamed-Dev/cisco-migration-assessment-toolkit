@@ -196,6 +196,54 @@ def test_parse_security_absent(cp):
     assert parse.parse_security("") == {}
 
 
+def test_parse_config_hygiene(cp):
+    # USED_ACL applied (access-group + route-map match) and SRV referenced inside it -> used;
+    # GHOST referenced via access-group but never defined; RM_MISSING referenced via redistribute
+    # but never defined; DEAD_ACL + RM_OK defined but never referenced.
+    out = textwrap.dedent("""\
+        object-group network SRV
+         host 10.0.0.5
+        ip access-list extended USED_ACL
+         permit ip object-group SRV any
+        ip access-list extended DEAD_ACL
+         permit ip any any
+        route-map RM_OK permit 10
+         match ip address USED_ACL
+        interface GigabitEthernet0/1
+         ip access-group USED_ACL in
+         ip access-group GHOST out
+        router bgp 65000
+         redistribute ospf 1 route-map RM_MISSING
+    """)
+    h = parse.parse_config_hygiene(out)
+    undef = {(u["kind"], u["name"]) for u in h["undefined"]}
+    unused = {(u["kind"], u["name"]) for u in h["unused"]}
+    assert ("acl", "GHOST") in undef                  # referenced via access-group, never defined
+    assert ("route-map", "RM_MISSING") in undef       # referenced via redistribute, never defined
+    assert undef == {("acl", "GHOST"), ("route-map", "RM_MISSING")}   # no false undefined
+    assert ("acl", "DEAD_ACL") in unused              # defined, never referenced
+    assert ("route-map", "RM_OK") in unused           # defined, never referenced
+    assert ("acl", "USED_ACL") not in unused          # applied + matched in a route-map -> used
+    assert ("object-group", "SRV") not in unused      # referenced inside USED_ACL's body -> used
+    assert h["summary"]["undefined"] == 2
+
+
+def test_parse_config_hygiene_clean(cp):
+    # every reference resolves and every structure is used -> nothing to report
+    out = textwrap.dedent("""\
+        ip access-list extended FILTER
+         permit ip any any
+        interface GigabitEthernet0/1
+         ip access-group FILTER in
+    """)
+    h = parse.parse_config_hygiene(out)
+    assert h["undefined"] == [] and h["unused"] == [] and h["summary"]["structures"] == 1
+
+
+def test_parse_config_hygiene_absent(cp):
+    assert parse.parse_config_hygiene("hostname r1\n!\n") == {}
+
+
 def test_parse_redistribution(cp):
     # protocol-to-protocol edges: each 'redistribute' under a 'router X' block; a col-0 line ends the block
     out = textwrap.dedent("""\
