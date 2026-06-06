@@ -239,6 +239,11 @@
   .node.dim{opacity:.32}
   .node.dead .body{fill:url(#hatch); stroke:var(--crit); stroke-width:2; stroke-dasharray:5 3}
   .node.match .body{stroke:var(--accent); stroke-width:2.5}
+  /* U1 — Cross-Layer spotlight: the switches a selected finding spans pulse; the rest dim back */
+  .node.xlhl .body{stroke:var(--accent); stroke-width:3; filter:drop-shadow(0 0 5px var(--accent))}
+  .node.xlhl .halo{stroke:var(--accent); stroke-opacity:.35; stroke-width:7; fill:none; transform-box:fill-box; transform-origin:center; animation:xlGlow 1.4s ease-in-out infinite}
+  .node.xldim{opacity:.3}
+  @keyframes xlGlow{0%,100%{stroke-opacity:.18; stroke-width:5}50%{stroke-opacity:.45; stroke-width:9}}
   .node.pinned .halo{stroke:var(--accent); stroke-opacity:.25; stroke-width:2; stroke-dasharray:3 3; fill:none}
   /* Blast-radius ripple wave (anim): pulse on the removed node + a hop-staggered flash on collateral switches.
      Final coloring is unchanged — these only govern HOW the highlight appears. Auto-disabled under reduced-motion. */
@@ -336,6 +341,19 @@
   .card .ln b{color:var(--text)}
   .card .fix{font-size:11.5px; color:var(--text-dim); margin-top:6px; padding-top:6px; border-top:1px dashed var(--border)}
   .card .fix b{color:var(--ok)}
+
+  /* U1 — Cross-Layer: L1–L4 layer badges + correlation card accent */
+  .xlchips{display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:0 0 7px}
+  .layer-chip{display:inline-block; padding:2px 7px; border-radius:5px; font-size:9.5px; font-weight:750;
+    letter-spacing:.4px; border:1px solid; font-family:var(--mono)}
+  .lc-l1{color:var(--accent); background:var(--accent-soft); border-color:var(--accent)}   /* L1 physical */
+  .lc-l2{color:var(--ok);     background:var(--ok-soft);     border-color:var(--ok)}        /* L2 data-link */
+  .lc-l3{color:var(--watch);  background:var(--watch-soft);  border-color:var(--watch)}     /* L3 network */
+  .lc-l4{color:var(--risk);   background:var(--risk-soft);   border-color:var(--risk)}      /* L4 transport */
+  .xlcard{transition:box-shadow .15s ease, transform .15s ease}
+  .xlcard:hover{box-shadow:var(--shadow)}
+  .xlcard:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .xlcard.xlactive{box-shadow:0 0 0 2px var(--accent); border-left-color:var(--accent)}
   .epdrill{margin-top:7px}
   .epdrill>summary{cursor:pointer; font-size:11px; color:var(--text-dim); user-select:none; padding:3px 0}
   .epdrill>summary:hover{color:var(--text)}
@@ -464,6 +482,7 @@
       <button data-mode="flow" aria-pressed="false"><span class="gl" aria-hidden="true">⚡</span>Flow</button>
       <button data-mode="health" aria-pressed="false"><span class="gl" aria-hidden="true">✚</span>Health</button>
       <button data-mode="protocols" aria-pressed="false"><span class="gl" aria-hidden="true">⌥</span>Protocols</button>
+      <button data-mode="xlayer" aria-pressed="false"><span class="gl" aria-hidden="true">⌗</span>Cross-Layer</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -771,7 +790,8 @@ function demoSnapshot(){
        "Gi1/0/1":link("ACC-1","Gi1/0/24",{port:"Gi1/0/1",fwd:ALL,native:"99"}),   // trunk consistency: native VLAN 99 here vs ACC-1's default 1 -> mismatch
 
        "Gi1/0/2":link("ACC-2","Gi1/0/24",{port:"Gi1/0/2",fwd:ALL,duplex:"Full-duplex"}),   // L1 demo: this end full…
-       "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL})}),
+       "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL}),
+       "Gi1/0/5":link("ACC-5","Gi1/0/24",{port:"Gi1/0/5",fwd:"1,10,50"})}),   // X-layer: single non-PC uplink for ACC-5's VLAN 50 (sole gateway lives there too)
     "DIST-2":Object.assign({},
       {"Vlan10":gw(10,"10.0.10.3","HSRP grp10 standby vIP 10.0.10.1"),
        "Vlan20":gw(20,"10.0.20.3","HSRP grp21 standby vIP 10.0.20.1"),   // FHRP consistency: WRONG group (21 vs DIST-1's 20) -> fake redundancy
@@ -788,9 +808,14 @@ function demoSnapshot(){
        "Gi1/0/12":link("ACC-3","Gi1/0/24",{port:"Gi1/0/12",fwd:ALL})}),
     "ACC-3":Object.assign({},eps(10,5,1),
       {"Gi1/0/24":link("ACC-2","Gi1/0/12",{port:"Gi1/0/24",fwd:ALL,mtu:"9216"})}),   // path-MTU: jumbo on this uplink only (peer Gi1/0/12 default) -> mismatch on flows via ACC-3
-    "ACC-4":Object.assign({},eps(10,7,1),eps(20,5,8),eps(40,2,13),   // PHASE K: 2 endpoints in the VRF-isolated VLAN 40
+    "ACC-4":Object.assign({},eps(10,7,1),eps(20,5,8),eps(40,2,13),eps(50,2,15),   // PHASE K: 2 endpoints in the VRF-isolated VLAN 40; X-layer: 2 endpoints in VLAN 50 (collateral behind ACC-5's sole gateway)
       {"Gi1/0/24":link("DIST-1","Gi1/0/4",{port:"Gi1/0/24",fwd:ALL}),
        "Gi1/0/23":link("DIST-2","Gi1/0/4",{port:"Gi1/0/23",fwd:ALL})}),
+    // X-layer demo (L1∧L3): ACC-5 is single-homed (one non-PC uplink) AND the only gateway for VLAN 50 with no FHRP standby.
+    // One fibre fault both isolates ACC-5 and removes VLAN 50's only default gateway -> correlated High finding.
+    "ACC-5":Object.assign({},eps(50,4,1),
+      {"Vlan50":gw(50,"10.0.50.1",""),   // sole, FHRP-less gateway for VLAN 50
+       "Gi1/0/24":link("DIST-1","Gi1/0/5",{port:"Gi1/0/24",fwd:"1,10,50"})}),   // single non-port-channel uplink
   },
   // L4 ACL definitions (G2 eval): bodies for the ACLs the demo SVIs apply on DIST-1 (Vlan20 in, Vlan30 out).
   acls:{"DIST-1":{
@@ -842,6 +867,15 @@ function demoSnapshot(){
   calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."},
   // NAT-B: a static NAT for the VLAN-30 server, so the VLAN10->VLAN30 flow surfaces the translation + the L4 caveat.
   nat:{"DIST-1":{static:[{direction:"inside",proto:"",local:"10.0.30.9",global:"203.0.113.9"}],dynamic:[],pools:{},inside:["Vlan30"],outside:["Po1"]}},
+  // U1 Cross-Layer: a small array of pre-computed findings the Python pipeline would embed (CL-01..),
+  // ingested + merged with the client-computed correlations (de-duped by host-set + title). This one is
+  // a protocol-layer correlation the client engine doesn't compute, so it shows the SNAP-ingest path.
+  cross_layer:[
+    {id:"CL-07",severity:"Medium",layers:["L3","L4"],hosts:["DIST-1"],
+     title:"Stuck OSPF adjacency on the redistribution boundary",
+     detail:"DIST-1 is the OSPF↔BGP mutual-redistribution boundary and also has an OSPF neighbor stuck in EXSTART/INIT. While that adjacency is down, redistributed routes flap — inter-domain reachability is intermittent exactly where the two routing protocols meet.",
+     recommendation:"Fix the stuck OSPF adjacency (MTU / network-type / authentication) before relying on redistribution; add a route-map and tags to prevent re-injection loops across the boundary."}
+  ],
   // protocol-to-protocol analysis: DIST-1 is the OSPF/BGP redistribution boundary (mutual = risk) with one stuck OSPF adjacency; DIST-2 runs OSPF only.
   routing_neighbors:{
     "DIST-1":{ospf:[{neighbor:"10.0.99.3",state:"FULL/DR",address:"10.0.99.3",interface:"Po1"},
@@ -931,6 +965,7 @@ let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
 let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // L4 tuple for the ACL allow/deny eval (G2; sport=I, icmptype=J)
+let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding card (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on a NEW selection; cancel pending stagger timers
@@ -1037,7 +1072,7 @@ function buildChips(){
 function setVlan(v){VLAN=v;buildChips();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -1251,7 +1286,7 @@ function cancelBlastWave(){_blastTimers.forEach(clearTimeout); _blastTimers=[];
   MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.remove("blastpulse","ripple");});}
 function clearFx(){
   cancelBlastWave();
-  MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match");
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match","xlhl","xldim");
     n.g.style.removeProperty("--ov"); n.body.style.removeProperty("fill"); n.body.style.removeProperty("stroke");
     n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");});
   edgeEls.forEach(({path})=>{path.className.baseVal="lnk";
@@ -1287,6 +1322,7 @@ function repaint(){
   else if(MODE==="flow")paintFlow();
   else if(MODE==="health")paintHealth();
   else if(MODE==="protocols")paintProtocols();
+  else if(MODE==="xlayer")paintXLayer();
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   runPathAnim();   // draw-on + traveling packet for Path/Flow; teardown otherwise (keyed on path change)
 }
@@ -1650,6 +1686,7 @@ function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} E
   else if(MODE==="blast"||MODE==="health"||MODE==="protocols"){SEL=(SEL===h)?null:h;repaint();renderDrawer();writeHash();
     srAnnounce(SEL?`${h} selected. ${deviceRole(MODEL,h)==="core"?"Core / distribution":"Access"} switch, ${epTotalOf(h)} hosts.`:`${h} deselected.`);}}
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
+  else if(MODE==="xlayer"&&XLSEL){XLSEL=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
@@ -1660,10 +1697,11 @@ function clearTrace(){TRACE_SRC=TRACE_DST=TRACE=null;repaint();renderDrawer();}
 function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
   document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
+  if(m!=="xlayer")XLSEL=null;   // U1: a cross-layer highlight only makes sense in its own mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols"}[m]||m)+" mode.");
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis"}[m]||m)+" mode.");
   writeHash();}
 
 /* =====================================================================
@@ -1675,7 +1713,8 @@ function setHint(){const h=document.getElementById("hint");const m={
   compare:MODEL_B?`Diff loaded — <b>red</b> regressed, <b>green</b> improved`:`Load a second snapshot to <b>compare</b>`,
   flow:flowObj()?`Rendering the collector's <b>L1→L3 flow trace</b>`:`No flow trace embedded`,
   health:`Click a switch for its <b>health breakdown</b>`,
-  protocols:`Click a switch for its <b>routing-protocol profile</b>`}[MODE];
+  protocols:`Click a switch for its <b>routing-protocol profile</b>`,
+  xlayer:`Click a finding to <b>highlight the switches it spans</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -1683,7 +1722,8 @@ function setModeTag(){const el=document.getElementById("modetag");
     compare:"Diff two snapshots: which SPOFs were resolved, which were introduced.",
     flow:"The collector's full-stack endpoint→gateway path with per-hop risk.",
     health:"Per-switch 0–100 health and per-group migration readiness.",
-    protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health."}[MODE];
+    protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
+    xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -1696,6 +1736,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="flow")h+=ln("var(--accent)","flow path","flowpath")+bx("var(--risk)","SPOF hop","spof");
   else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit");
   else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
+  else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -1734,12 +1775,13 @@ function _nodeMatchesHl(n,kind){const tag=(n.tag.textContent||"").toUpperCase();
     case"band-watch":return isTok("watch");
     case"band-risk":return isTok("risk");
     case"band-crit":return isTok("crit");
+    case"xlsel":return n.g.classList.contains("xlhl");   // U1: switches spotlit by paintXLayer for the selected finding
     default:return false;}}
 function highlightLegend(kind){
   if(!MODEL||!kind)return; clearLegendHighlight();
   // edge-only kinds vs node-only kinds; `spof` matches both (link + switch)
   const edgeKinds={fwd:1,blocked:1,sev:1,path:1,spof:1,flowpath:1,"adj-ospf":1,"adj-eigrp":1};
-  const nodeKinds={spof:1,removed:1,regressed:1,improved:1,redist:1,runs:1,stuck:1,"band-ok":1,"band-watch":1,"band-risk":1,"band-crit":1};
+  const nodeKinds={spof:1,removed:1,regressed:1,improved:1,redist:1,runs:1,stuck:1,"band-ok":1,"band-watch":1,"band-risk":1,"band-crit":1,xlsel:1};
   if(edgeKinds[kind]){
     edgeEls.forEach(({path})=>{if(_edgeMatchesHl(path,kind))path.classList.add("hl");});
   }
@@ -1803,6 +1845,13 @@ function renderDrawer(){
   else if(MODE==="flow")p.innerHTML=drawFlow();
   else if(MODE==="health")p.innerHTML=drawHealth();
   else if(MODE==="protocols")p.innerHTML=drawProtocols();
+  else if(MODE==="xlayer")p.innerHTML=drawXLayer();
+  // wire cross-layer finding cards (click highlights the involved hosts on the canvas)
+  p.querySelectorAll("[data-xlhosts]").forEach(c=>c.onclick=()=>{
+    const hosts=(c.dataset.xlhosts||"").split(",").filter(Boolean);
+    const same=XLSEL&&XLSEL.length===hosts.length&&XLSEL.every((h,i)=>h===hosts[i]);
+    XLSEL=same?null:hosts;   // clicking the active card again clears the highlight
+    repaint(); renderDrawer();});
   // wire row clicks (jump-to-switch); clears any endpoint drill-down
   p.querySelectorAll("[data-jump]").forEach(r=>r.onclick=()=>{const h=r.dataset.jump;
     if(MODE==="trace"){EPSEL=null;pickTrace(h);} else{SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);writeHash();}});
@@ -2525,6 +2574,193 @@ function linkPhyCard(){
     `<div class="sub" style="margin-bottom:6px">Duplex / speed mismatches on inter-switch links — the silent "up but slow/flaky" failure (late collisions, CRC errors).</div>`+
     rows+`</div>`;
 }
+/* =====================================================================
+   CROSS-LAYER ANALYSIS (U1) — correlate the per-layer detectors above into
+   ranked findings: where a weakness at one layer COMPOUNDS a weakness at
+   another into a single real migration risk no single-layer view surfaces.
+   Pure client-side (reuses the existing detectors — never re-implements them);
+   ALSO ingests an optional SNAP.cross_layer array (CL-01..CL-10 from the Python
+   pipeline) when present, normalizing to the same shape and de-duping by
+   host-set + title. Absent keys -> empty, back-compat.
+   ===================================================================== */
+const _XL_SEV_RANK={High:3,Medium:2,Low:1,Info:0};
+const _xlSevTok=s=>s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";
+/* the access/leaf switches that actually hold endpoints in VLAN vid (the population put at risk) */
+function _xlHostsInVlan(vid){const out=[]; for(const [h,m] of MODEL.endpoints)if(m.get(vid))out.push(h); return out;}
+function _xlEpsInVlan(vid){let n=0; for(const [,m] of MODEL.endpoints)n+=(m.get(vid)||0); return n;}
+/* does any STP-forwarding (active) inter-switch link in vid carry an explicit, MISMATCHED MTU?
+   Reuses _ifMtu (the pathMtu primitive) over the live forwarding topology — a jumbo set on one end of an
+   active uplink while the peer is default is the classic post-cutover black-hole. Reported once PER LINK
+   (not per VLAN — the mismatch is a link property), citing every endpoint-bearing VLAN the link carries. */
+function _xlMtuMismatchLinks(){
+  const out=[], seen=new Set();
+  for(const L of (MODEL&&MODEL.links)||[]){
+    const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
+    const ma=_ifMtu(L.a,L.aPort), mb=_ifMtu(L.b,L.bPort);
+    let mtus=null;
+    if(ma!=null&&mb!=null&&ma!==mb)mtus=[ma,mb].sort((x,y)=>x-y);
+    else if((ma!=null&&ma>1500&&mb==null)||(mb!=null&&mb>1500&&ma==null))mtus=[1500,Math.max(ma||0,mb||0)];   // jumbo on one end, default (unset) on the other
+    if(!mtus)continue;
+    // the VLANs this link actively forwards AND that have endpoints somewhere with a gateway to reach
+    const vids=[...MODEL.vlans].filter(v=>linkCarries(L,v)==="fwd"&&_xlEpsInVlan(v)>0&&(MODEL.gateways.get(v)||new Set()).size>0).sort((x,y)=>x-y);
+    if(!vids.length)continue;
+    out.push({a:L.a,aPort:L.aPort,b:L.b,bPort:L.bPort,mtus,vids});
+  }
+  return out;
+}
+function crossLayerCorrelate(model){
+  if(!model)return [];
+  const out=[]; const uniq=new Set();
+  const push=(f)=>{const hosts=[...new Set((f.hosts||[]).filter(Boolean))].sort();
+    const key=hosts.join(",")+"|"+(f.title||"").toLowerCase().replace(/\s+/g," ").trim();
+    if(uniq.has(key))return; uniq.add(key);
+    out.push({severity:f.severity||"Medium",title:f.title||"Cross-layer finding",
+      layers:[...new Set(f.layers||[])],detail:f.detail||"",recommendation:f.recommendation||"",hosts,
+      source:f.source||"client",id:f.id||null});};
+
+  const chains=(typeof CHAINS!=="undefined"&&CHAINS&&CHAINS.length)?CHAINS:causalityChains(model);
+  const soleGwVids=new Set(chains.filter(c=>c.type==="A").map(c=>c.vid));        // L3: VLANs with a no-FHRP sole gateway
+  const singleUplink=chains.filter(c=>c.type==="C");                            // L1/L2: a leaf on a single non-PC uplink
+
+  // (1) L1∧L3 — a switch that is BOTH single-homed (one fiber/uplink) AND the sole, FHRP-less gateway for a VLAN.
+  //     One optic fault then drops the whole VLAN's default gateway with no second path and no failover.
+  for(const c of singleUplink){
+    const gws=model.gateways.get(c.vid)||new Set();
+    if(gws.has(c.switch)&&soleGwVids.has(c.vid)){
+      push({severity:"High",layers:["L1","L3"],hosts:[c.switch],
+        title:`Single uplink under the sole gateway · VLAN ${c.vid}`,
+        detail:`${shortName(c.switch)} reaches VLAN ${c.vid} over a single non-port-channel uplink (L1) AND is the only gateway for VLAN ${c.vid} with no FHRP standby (L3). A single fibre/optic fault both isolates the switch and removes the VLAN's only default gateway — there is neither a second path nor a failover.`,
+        recommendation:`Bundle the uplink into a port-channel (or dual-home ${shortName(c.switch)}) and add an FHRP peer (HSRP/VRRP) for VLAN ${c.vid} on a second distribution switch.`});
+    }
+  }
+
+  // (2) L1∧L3 — an MTU black-hole on an ACTIVE uplink that endpoints must traverse to reach their gateway.
+  //     Frames above the smaller MTU are silently dropped end-to-end after cutover (jumbo / mismatched MTU).
+  //     Reported once per mismatched link, listing every endpoint-bearing VLAN it carries.
+  for(const mm of _xlMtuMismatchLinks()){
+    const vlist=mm.vids.join(", ");
+    push({severity:"Medium",layers:["L1","L3"],hosts:[mm.a,mm.b],
+      title:`MTU black-hole on an active uplink · ${shortName(mm.a)} ↔ ${shortName(mm.b)}`,
+      detail:`The forwarding uplink ${shortName(mm.a)} ${mm.aPort} ↔ ${shortName(mm.b)} ${mm.bPort} has mismatched MTU (${mm.mtus.join(" / ")} bytes) and carries VLAN ${vlist} traffic toward their L3 gateway. Frames larger than ${mm.mtus[0]} are dropped at the smaller-MTU hop — a silent, intermittent black-hole that survives a cutover (small packets pass, large ones vanish).`,
+      recommendation:`Align the MTU on both ends of this uplink (set jumbo end-to-end or revert both to ${mm.mtus[0]}). Verify with a large-payload, do-not-fragment ping across the path.`});
+  }
+
+  // (3) L3∧L4 — a VRF-isolated VLAN whose clients depend on DHCP relay (ip helper-address) to a server the
+  //     gateway can't route to. VRF isolation (L3) makes the relay target unreachable -> clients never get a lease.
+  for(const vid of [...model.vlans].sort((a,b)=>a-b)){
+    const gws=[...(model.gateways.get(vid)||new Set())].sort(); if(!gws.length)continue;
+    const D=dhcpReach(vid,gws); if(D.state!=="fail")continue;                   // only when relay can't reach its server
+    const isVrf=gws.some(g=>_normVrf(gwVrf(g,vid))!=="");
+    const sev=isVrf?"High":"Medium";
+    const bad=(D.helpers||[]).filter(h=>h.state==="fail").map(h=>h.ip);
+    push({severity:sev,layers:["L3","L4"],hosts:_xlHostsInVlan(vid).concat(gws),
+      title:`DHCP relay unreachable${isVrf?" across VRF":""} · VLAN ${vid}`,
+      detail:`VLAN ${vid}'s gateway forwards DHCP (ip helper-address ${bad.join(", ")||"set"}) to a server that is NOT in the gateway's routing table${isVrf?` — and VLAN ${vid} sits in VRF ${gwVrf(gws[0],vid)||"a tenant VRF"}, so the relayed request can't cross into the server's routing domain`:""}. Clients here boot, broadcast DHCP, and never receive a lease — they come up with no IP after the move.`,
+      recommendation:`Point ip helper-address at a server the VLAN-${vid} gateway can route to${isVrf?" within the same VRF (or leak a route to the DHCP server into the VRF)":""}, or stand up a relay/server inside this routing domain.`});
+  }
+
+  // (4) L2∧L3 — asymmetric trunk pruning (a VLAN allowed on one trunk end but pruned on the other) on a link
+  //     that is the BACKUP/forwarding path for a VLAN that has endpoints. The VLAN silently won't cross -> lost failover.
+  for(const t of trunkConsistency()){
+    if(t.kind!=="allowed")continue;
+    const pruned=[...new Set([...(t.prunedOnA||[]),...(t.prunedOnB||[])])];
+    const hit=pruned.filter(v=>_xlEpsInVlan(v)>0);                             // only VLANs with real endpoints at stake
+    if(!hit.length)continue;
+    push({severity:"Medium",layers:["L2","L3"],hosts:[t.a,t.b],
+      title:`Asymmetric trunk pruning on a redundancy path · VLAN ${hit.join(", ")}`,
+      detail:`The trunk ${shortName(t.a)} ${t.aPort} ↔ ${shortName(t.b)} ${t.bPort} allows VLAN ${hit.join(", ")} on one end but prunes it on the other, so that VLAN cannot cross this link. Because endpoints in VLAN ${hit.join(", ")} rely on this fabric path to reach their L3 gateway, this silently removes a redundancy / failover path — reachability looks fine until the primary path drops.`,
+      recommendation:`Make the trunk allowed-VLAN list symmetric on both ends (add VLAN ${hit.join(", ")} to the pruning end, or prune it on both), so the backup path genuinely carries the VLAN.`});
+  }
+
+  // (5) L3∧L3 — a duplicate L3 address / overlapping subnet that COINCIDES with a live gateway (an SVI that is a
+  //     default gateway for endpoints). Two interfaces claim one IP, or one subnet is behind two VLANs — ambiguous
+  //     routing exactly where clients send their default-route traffic. The classic silent outage on a domain merge.
+  {
+    const conf=addressingConflicts();
+    const gwHosts=new Set(); for(const s of model.gateways.values())for(const h of s)gwHosts.add(h);
+    for(const d of conf.dupIp){
+      const onGw=d.where.filter(w=>gwHosts.has(w.host)&&model.gateways.get(w.vid)&&model.gateways.get(w.vid).has(w.host));
+      if(onGw.length<1)continue;
+      const hosts=d.where.map(w=>w.host);
+      push({severity:"High",layers:["L3","L3"],hosts,
+        title:`Duplicate gateway IP · ${d.ip}`,
+        detail:`The L3 address ${d.ip} is configured on ${d.where.map(w=>shortName(w.host)+" "+(w.vid!=null?"VLAN "+w.vid:w.port)).join(" and ")} — and at least one of those is a live default gateway for endpoints. Two interfaces answering for one gateway IP cause ARP flaps and intermittent black-holing for every client pointed at it.`,
+        recommendation:`Resolve the duplicate L3 address before cutover — re-IP one SVI, or (if this is meant to be a redundant gateway) convert it to a shared FHRP virtual IP instead of an identical physical address.`});
+    }
+    for(const d of conf.dupSubnet){
+      const onGw=d.where.filter(w=>gwHosts.has(w.host));
+      if(onGw.length<2)continue;
+      const hosts=[...new Set(d.where.map(w=>w.host))];
+      const vids=[...new Set(d.where.map(w=>w.vid))];
+      push({severity:"Medium",layers:["L3","L3"],hosts,
+        title:`Overlapping gateway subnet · ${d.netStr}`,
+        detail:`The subnet ${d.netStr}${d.vrf?" (VRF "+d.vrf+")":""} is configured as the gateway subnet behind two VLANs (${vids.join(", ")}). Overlapping addressing on gateway SVIs makes inter-subnet routing ambiguous — return traffic can be sent out the wrong VLAN, which presents as partial / one-way reachability after a merge.`,
+        recommendation:`Re-address one of the overlapping VLANs so each gateway subnet is unique within its VRF before consolidating these domains.`});
+    }
+  }
+
+  // ---- ingest SNAP.cross_layer (CL-01..CL-10) from the Python pipeline, normalized to the same shape ----
+  const ext=(SNAP&&Array.isArray(SNAP.cross_layer))?SNAP.cross_layer:[];
+  for(const f of ext){if(!f||typeof f!=="object")continue;
+    const sevRaw=String(f.severity||"").trim();
+    const severity=/^high$/i.test(sevRaw)?"High":/^med/i.test(sevRaw)?"Medium":/^low$/i.test(sevRaw)?"Low":/^info$/i.test(sevRaw)?"Info":(_XL_SEV_RANK[sevRaw]!=null?sevRaw:"Medium");
+    const layers=Array.isArray(f.layers)?f.layers.map(l=>String(l).toUpperCase().replace(/^LAYER\s*/,"L").replace(/^(\d)/,"L$1")):[];
+    const hosts=Array.isArray(f.hosts)?f.hosts.filter(h=>typeof h==="string"):[];
+    push({severity,layers,hosts,title:f.title||f.id||"Cross-layer finding",
+      detail:f.detail||"",recommendation:f.recommendation||"",id:f.id||null,source:"snapshot"});}
+
+  out.sort((a,b)=>(_XL_SEV_RANK[b.severity]||0)-(_XL_SEV_RANK[a.severity]||0)||a.title.localeCompare(b.title));
+  return out;
+}
+/* the 4 layer badges for a finding (colored L1=accent, L2=ok, L3=watch, L4=risk; deduped, in L1..L4 order) */
+const _XL_LAYER_ORDER=["L1","L2","L3","L4"];
+function xlLayerChips(layers){
+  const set=new Set((layers||[]).map(l=>String(l).toUpperCase()));
+  return _XL_LAYER_ORDER.filter(l=>set.has(l))
+    .map(l=>`<span class="layer-chip lc-${l.toLowerCase()}">${l}</span>`).join("");
+}
+function drawXLayer(){
+  if(!MODEL)return "";
+  const findings=crossLayerCorrelate(MODEL);
+  const head=`<div class="drawer-head"><div class="eyebrow">Cross-layer analysis</div>
+    <div class="title">Correlated findings</div></div>`;
+  if(!findings.length){
+    return head+`<div class="sec"><div class="headline">
+      <div class="stat ok"><div class="v">0</div><div class="k">correlated risks</div></div></div>
+      <p class="faint" style="margin-top:10px">✓ No cross-layer correlations found. The per-layer detectors (Health mode) report no weaknesses that <b>compound</b> across L1–L4 — e.g. no single-homed sole gateway, no MTU black-hole on an active path, no relay stranded behind a VRF.</p></div>`;
+  }
+  const counts={High:0,Medium:0,Low:0,Info:0};
+  findings.forEach(f=>{counts[f.severity]=(counts[f.severity]||0)+1;});
+  const cards=findings.map(f=>{const tok=_xlSevTok(f.severity);
+    const hostList=f.hosts.length?`<div class="ln faint" style="margin-top:4px">Spans: ${f.hosts.map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}</div>`:"";
+    const src=f.source==="snapshot"?` <span class="pill pl-neutral" title="from the collector's cross_layer findings">${esc(f.id||"pipeline")}</span>`:"";
+    const sel=(XLSEL&&XLSEL.length===f.hosts.length&&XLSEL.every((h,i)=>h===f.hosts[i]))?" xlactive":"";
+    return `<div class="card ${tok} xlcard${sel}" data-xlhosts="${esc(f.hosts.join(","))}" tabindex="0" role="button" style="cursor:pointer" aria-label="${esc(f.title)} — click to highlight on the graph">
+      <div class="ct"><span class="nm">${esc(f.title)}</span><span class="pill pl-${tok}">${f.severity}</span></div>
+      <div class="xlchips">${xlLayerChips(f.layers)}${src}</div>
+      <div class="ln">${esc(f.detail)}</div>
+      <div class="fix"><b>Fix:</b> ${esc(f.recommendation)}</div>
+      ${hostList}</div>`;}).join("");
+  return head+
+    `<div class="sec"><div class="headline">
+      <div class="stat ${counts.High?"crit":""}"><div class="v"><span class="num" data-to="${counts.High}">0</span></div><div class="k">high</div></div>
+      <div class="stat ${counts.Medium?"risk":""}"><div class="v"><span class="num" data-to="${counts.Medium}">0</span></div><div class="k">medium</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${counts.Low+counts.Info}">0</span></div><div class="k">low / info</div></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0">Each finding ties together two or more layers' detector outputs into one ranked risk. <b>Click a card</b> to spotlight the switches it spans on the canvas.</p></div>
+    <div class="sec"><h3>Findings <span class="ct">${findings.length}</span></h3>${cards}</div>`;
+}
+/* paint hook: spotlight the switches of the selected finding (XLSEL) with a distinct .xlhl class,
+   dim the rest. No selection -> clean canvas. Mirrors the legend-highlight pattern but persistent. */
+function paintXLayer(){
+  if(!XLSEL||!XLSEL.length)return;                       // no card selected -> leave the base topology untouched
+  const set=new Set(XLSEL);
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+    if(set.has(h)){n.g.classList.add("xlhl");}
+    else{n.g.classList.add("xldim");}});
+  edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
+}
+
 /* =====================================================================
    PROTOCOLS mode — routing-protocol topology, boundaries, redistribution,
    adjacency health. Reads SNAP.routing_neighbors / SNAP.redistribution /
