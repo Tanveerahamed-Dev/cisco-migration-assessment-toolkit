@@ -437,6 +437,18 @@
   .bar{height:7px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin:4px 0}
   .bar i{display:block; height:100%; border-radius:999px}
 
+  /* root-cause ranking (Health) — animated impact bar; width set post-render so it grows from 0 */
+  .rc-row{padding:8px 0; border-top:1px solid var(--border-faint)}
+  .rc-row:first-child{border-top:0}
+  .rc-head{display:flex; justify-content:space-between; align-items:baseline; gap:10px; font-size:12px}
+  .rc-head .nm{font-weight:600; color:var(--text)}
+  .rc-head .sc{font-weight:700; color:var(--text); font-variant-numeric:tabular-nums}
+  .rc-bar{height:8px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin:5px 0 3px}
+  .rc-bar i{display:block; height:100%; width:0; border-radius:999px; transition:width .9s cubic-bezier(.2,.7,.2,1)}
+  .rc-meta{font-size:11px; color:var(--text-dim)}
+  .rc-meta b{color:var(--text)}
+  @media (prefers-reduced-motion: reduce){ .rc-bar i{transition:none !important} }
+
   .kv{display:flex; justify-content:space-between; gap:10px; padding:5px 0; font-size:12px; border-top:1px solid var(--border-faint)}
   .kv:first-child{border-top:0}
   .kv .k{color:var(--text-dim)} .kv .v{color:var(--text); font-weight:550; text-align:right; word-break:break-word}
@@ -2103,6 +2115,10 @@ function animateDrawer(p){
   p.querySelectorAll(".num[data-to]").forEach(el=>countUp(el,parseFloat(el.dataset.to)));
   let i=0; p.querySelectorAll(".sec,.card").forEach(el=>{
     el.style.animationDelay=Math.min(300,i*45)+"ms"; el.classList.add("reveal"); i++;});
+  // root-cause impact bars: width is held at 0 by CSS, then driven to target so it grows (snaps when reduced-motion).
+  const _rcReduce=_REDUCE_MOTION&&_REDUCE_MOTION.matches;
+  p.querySelectorAll(".rc-bar i[data-rcw]").forEach(el=>{const w=el.dataset.rcw+"%";
+    if(_rcReduce){el.style.width=w;} else {requestAnimationFrame(()=>requestAnimationFrame(()=>{el.style.width=w;}));}});
 }
 function renderDrawer(){
   if(!MODEL)return; const p=document.getElementById("panel");
@@ -3357,6 +3373,63 @@ function paintCausality(){
       n.tag.textContent="ROOT CAUSE"; n.tag.setAttribute("fill",`var(--${ctok})`);}
     else{n.g.classList.add("dim");}});
 }
+/* Root-cause ranking (Health): take the structural SPOF chains from causalityChains() and rank them by an
+   impact x confidence score so the single worst migration blocker floats to the top. Impact is the chain's
+   blast-radius endpoint count (cross-checked against failureImpact where the chain names a removable host);
+   confidence is a likelihood factor derived from chain TYPE + severity — a sole-gateway with no FHRP, or a
+   single non-port-channel uplink, is near-certain to bite on the very first fault, whereas an STP-healed
+   backup-covered partition is only a transient blip. Defensive: returns [] when there are no chains. */
+function rootCauseRank(model){
+  if(!model)return [];
+  let chains=[];
+  try{chains=causalityChains(model)||[];}catch(e){chains=[];}
+  if(!chains.length)return [];
+  // confidence/likelihood factor (0..1): how reliably this structural weakness turns into a real outage.
+  const conf=c=>{
+    if(c.type==="A")return 0.95;                                   // sole gateway, no FHRP standby -> no failover at all
+    if(c.type==="B")return c.sev==="High"?0.85:0.45;              // hard partition (certain) vs STP-healed (transient)
+    if(c.type==="C")return 0.7;                                    // single uplink -> one optic/port fault isolates it
+    return c.sev==="High"?0.8:c.sev==="Medium"?0.5:0.3;
+  };
+  // cross-check the stated blast against failureImpact's stranded-endpoint count for the named host (where it
+  // makes sense — type A/C name the affected switch itself, not a removable transit node). Take the larger so
+  // we never under-state impact, but fall back gracefully if the lookup throws.
+  const impactOf=c=>{
+    let ep=Number(c.endpoints)||0;
+    if(c.type==="B"&&c.switch){
+      try{const fi=failureImpact(model,c.switch);
+        if(fi){const row=(fi.perVlan||[]).find(r=>r.vid===c.vid);
+          if(row)ep=Math.max(ep,row.strandedActive||0);}}catch(e){}
+    }
+    return ep;
+  };
+  const rows=chains.map(c=>{const ep=impactOf(c), k=conf(c);
+    return {chain:c, title:c.title, hosts:c.switch, vid:c.vid, impactEndpoints:ep,
+            confidencePct:Math.round(k*100), _raw:ep*k, why:c.root};});
+  const maxRaw=Math.max(...rows.map(r=>r._raw), 1e-9);            // normalize so the worst cause is 100%
+  rows.forEach(r=>{r.scorePct=Math.max(1,Math.round(r._raw/maxRaw*100));});
+  rows.sort((a,b)=>b._raw-a._raw || b.impactEndpoints-a.impactEndpoints);
+  return rows;
+}
+function rootCauseCard(){
+  const ranked=rootCauseRank(MODEL); if(!ranked.length)return "";
+  const tot=ranked.reduce((s,r)=>s+r.impactEndpoints,0);
+  const tokOf=r=>sevToken(r.chain.sev);
+  const colOf=r=>{const t=tokOf(r); return t==="neutral"?"var(--accent)":"var(--"+t+")";};
+  const rows=ranked.slice(0,6).map(r=>{const col=colOf(r);
+    return `<div class="rc-row">
+      <div class="rc-head">
+        <span class="nm">${esc(r.title)} <span class="pill pl-${tokOf(r)}">${esc(r.chain.sev)}</span></span>
+        <span class="sc"><span class="num" data-to="${r.scorePct}">0</span>%</span>
+      </div>
+      <div class="rc-bar"><i data-rcw="${r.scorePct}" style="background:${col}"></i></div>
+      <div class="rc-meta"><span class="mono">${esc(shortName(r.hosts))}</span> · impact <b><span class="num" data-to="${r.impactEndpoints}">0</span></b> endpoint${r.impactEndpoints===1?"":"s"} · confidence <b><span class="num" data-to="${r.confidencePct}">0</span>%</b></div>
+      <div class="rc-meta" style="margin-top:2px">${esc(r.why)}</div>
+    </div>`;}).join("");
+  return `<div class="sec"><h3>Root-cause ranking <span class="ct">${ranked.length}</span></h3>
+    <p class="sub" style="margin:0 0 8px">Structural SPOFs ranked by <b>impact × confidence</b> — the blast-radius (endpoints that lose their gateway/path) weighted by how reliably the weakness fires on the first fault. Fix the top bar first. <span class="faint">${tot} endpoint${tot===1?"":"s"} exposed across ${ranked.length} cause${ranked.length===1?"":"s"}.</span></p>
+    ${rows}</div>`;
+}
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
   if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
@@ -3410,6 +3483,7 @@ function drawHealth(){
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${calibrationCard()}
+    ${rootCauseCard()}
     ${addressingCard()}
     ${trunkConsistencyCard()}
     ${linkPhyCard()}
