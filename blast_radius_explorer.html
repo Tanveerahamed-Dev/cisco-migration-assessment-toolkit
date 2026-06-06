@@ -731,6 +731,7 @@
       <button data-mode="protocols" aria-pressed="false"><span class="gl" aria-hidden="true">⌥</span>Protocols</button>
       <button data-mode="xlayer" aria-pressed="false"><span class="gl" aria-hidden="true">⌗</span>Cross-Layer</button>
       <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causality</button>
+      <button data-mode="waves" aria-pressed="false"><span class="gl" aria-hidden="true">⇉</span>Waves</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -1134,6 +1135,17 @@ function demoSnapshot(){
       {check:"Management reachability",status:"pass",note:"all switches reachable for cutover"},
     ]},
   ],
+  // V3.23.86: move groups (shared-VLAN dependency domains, mirrors the Python compute_move_groups). One
+  // group here — the whole demo fabric is one L2 domain bound by VLANs 10/20/99 — matching the single
+  // migration_readiness group above so the Waves mode renders out-of-the-box.
+  move_groups:[
+    {switches:["DIST-1","DIST-2","ACC-1","ACC-2","ACC-3","ACC-4"],
+     spanning_vlans:[[10,"USERS",6],[20,"VOICE",4],[99,"MGMT",2]],
+     endpoints:40,
+     gateways:["DIST-1:Vlan10","DIST-1:Vlan20","DIST-1:Vlan30","DIST-2:Vlan10","DIST-2:Vlan20"],
+     blocked_paths:["ACC-1/Gi1/0/23 blocks 10,20"],
+     vlan1_spans:false},
+  ],
   // V3.23.47: the fleet score-calibration diagnostic the Python pipeline embeds (compute_calibration_report);
   // matches the 6 demo health_scores above so the Health view's calibration card renders out-of-the-box.
   calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."},
@@ -1311,6 +1323,7 @@ let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpo
 let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // L4 tuple for the ACL allow/deny eval (G2; sport=I, icmptype=J)
 let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding card (null = none)
 let XL_LAYER_FILTER=null, XL_SEV_FILTER=null;   // V3.23.82: Cross-Layer mode filters (null = all)
+let WAVE_SEL=null;   // V3.23.86: selected migration move-group index (canvas highlight; null = none)
 let TIER_FOCUS=null;   // V3.23.72: {name, hosts:Set} — a Risk-cockpit tier highlighted on the topology (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
@@ -1384,7 +1397,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -1459,7 +1472,7 @@ function markActiveChip(){
 function setVlan(v){VLAN=v;markActiveChip();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -1817,6 +1830,7 @@ function repaint(){
   else if(MODE==="protocols")paintProtocols();
   else if(MODE==="xlayer")paintXLayer();
   else if(MODE==="causality")paintCausality();
+  else if(MODE==="waves")paintWaves();
   severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   applyVlanFocus();   // per-VLAN isolation: fade switches not on the selected VLAN (after all paints)
@@ -2327,6 +2341,7 @@ function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} E
     srAnnounce(SEL?`${h} selected. ${deviceRole(MODEL,h)==="core"?"Core / distribution":"Access"} switch, ${epTotalOf(h)} hosts.`:`${h} deselected.`);}}
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="xlayer"&&XLSEL){XLSEL=null;repaint();renderDrawer();}
+  else if(MODE==="waves"&&WAVE_SEL!=null){WAVE_SEL=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
@@ -2346,6 +2361,9 @@ function modeSummary(m){
       return ` ${hs.length} switches scored, average ${avg}${nc?`, ${nc} critical`:""}${np?`, ${np} poor`:""}.`;}
     if(m==="causality"){const ch=causalityChains(MODEL)||[];
       return ch.length?` ${ch.length} root-cause chain${ch.length>1?"s":""}.`:"";}
+    if(m==="waves"){const mg=(SNAP&&SNAP.move_groups)||[]; if(!mg.length)return "";
+      const mr=(SNAP&&SNAP.migration_readiness)||[]; const nr=mr.filter(x=>x.readiness==="NOT READY").length;
+      return ` ${mg.length} move group${mg.length>1?"s":""}${nr?`, ${nr} not ready`:""}.`;}
   }catch(e){}
   return "";
 }
@@ -2354,10 +2372,11 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
   if(m!=="xlayer"){XLSEL=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null;}   // U1: cross-layer highlight + filters only live in their mode
   if(m!=="health")TIER_FOCUS=null;   // V3.23.72: a cockpit tier highlight only lives in Health mode
+  if(m!=="waves")WAVE_SEL=null;   // V3.23.86: a move-group highlight only lives in Waves mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains"}[m]||m)+" mode."+modeSummary(m));
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains",waves:"Migration waves"}[m]||m)+" mode."+modeSummary(m));
   writeHash();}
 
 /* =====================================================================
@@ -2371,7 +2390,8 @@ function setHint(){const h=document.getElementById("hint");const m={
   health:`Click a switch for its <b>health breakdown</b>`,
   protocols:`Click a switch for its <b>routing-protocol profile</b>`,
   xlayer:`Click a finding to <b>highlight the switches it spans</b>`,
-  causality:`Select a chain to <b>animate its root-cause flow</b>`}[MODE];
+  causality:`Select a chain to <b>animate its root-cause flow</b>`,
+  waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -2381,7 +2401,8 @@ function setModeTag(){const el=document.getElementById("modetag");
     health:"Per-switch 0–100 health and per-group migration readiness.",
     protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
     xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
-    causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain."}[MODE];
+    causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain.",
+    waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -2396,6 +2417,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
   else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
   else if(MODE==="causality"){h+=bx("var(--crit)","root-cause host","")+`<div class="row faint" style="margin-top:3px">Select a chain in the panel — its host is ringed here and its trigger→mitigation flow animates.</div>`;}
+  else if(MODE==="waves"){h+=bx("var(--accent)","switches in the selected group","")+`<div class="row faint" style="margin-top:3px">Click a move-group card to spotlight its shared-VLAN L2 domain.</div>`;}
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -2518,6 +2540,7 @@ function renderDrawer(){
   else if(MODE==="protocols")p.innerHTML=drawProtocols();
   else if(MODE==="xlayer")p.innerHTML=drawXLayer();
   else if(MODE==="causality")p.innerHTML=drawCausality();
+  else if(MODE==="waves")p.innerHTML=drawWaves();
   // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
   // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
   p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
@@ -2537,6 +2560,11 @@ function renderDrawer(){
     XL_LAYER_FILTER=(v===""||XL_LAYER_FILTER===v)?null:v; renderDrawer(); repaint();});   // repaint: drop an orphaned highlight (V3.23.83)
   p.querySelectorAll("[data-xlf-sev]").forEach(b=>b.onclick=()=>{const v=b.dataset.xlfSev;
     XL_SEV_FILTER=(v===""||XL_SEV_FILTER===v)?null:v; renderDrawer(); repaint();});
+  // V3.23.86: Migration Waves — click a move-group card to spotlight its switches on the canvas (toggle)
+  p.querySelectorAll("[data-wave]").forEach(c=>c.onclick=()=>{const i=+c.dataset.wave;
+    WAVE_SEL=(WAVE_SEL===i)?null:i; repaint(); renderDrawer();
+    if(WAVE_SEL!=null){const g=((SNAP&&SNAP.move_groups)||[])[WAVE_SEL];
+      if(g&&g.switches&&g.switches.length&&POS[g.switches[0]])centerOn(g.switches[0]);}});
   // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
   const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
     const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
@@ -3877,6 +3905,85 @@ function paintXLayer(){
   MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
     if(set.has(h)){n.g.classList.add("xlhl");}
     else{n.g.classList.add("xldim");}});
+  edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
+}
+
+/* =====================================================================
+   V3.23.86: MIGRATION WAVES — the move-group dependency domains.
+   A move group is a connected component of the shared-VLAN graph (from
+   SNAP.move_groups, one source of truth with the workbook's 'Move Groups'
+   sheet): a set of switches bound by VLANs that span them, so they must cut
+   over together. Joined with the per-group READY / CAUTION / NOT-READY verdict
+   (SNAP.migration_readiness) and its pre-migration checklist. Sequencing
+   guidance: clear the NOT-READY blockers first, biggest blast radius first.
+   ===================================================================== */
+function wavesData(){
+  const mg=(SNAP&&Array.isArray(SNAP.move_groups))?SNAP.move_groups:[];
+  const mr=(SNAP&&Array.isArray(SNAP.migration_readiness))?SNAP.migration_readiness:[];
+  return mg.map((g,i)=>{
+    // Both lists derive from the same compute_move_groups order, so join by index; fall back to an
+    // exact switch-set match if the lengths ever disagree (defensive — keeps the verdict attached).
+    let r=mr[i];
+    if(!r||(r.switches&&g.switches&&r.switches.length!==g.switches.length)){
+      const gs=new Set(g.switches||[]);
+      r=mr.find(x=>x.switches&&x.switches.length===gs.size&&x.switches.every(h=>gs.has(h)))||r||null;
+    }
+    return {idx:i, g, r};
+  });
+}
+function drawWaves(){
+  if(!MODEL)return "";
+  const head=`<div class="drawer-head"><div class="eyebrow">Migration waves</div><div class="title">Move groups</div></div>`;
+  const data=wavesData();
+  if(!data.length){
+    return head+`<div class="sec"><div class="empty"><div class="big">⇉</div>
+      <p>No <b>move_groups</b> in this snapshot (pre-V3.23.86). A move group is a set of switches bound by shared VLANs — an L2 domain that must migrate together.</p></div></div>`;
+  }
+  const tally={READY:0,CAUTION:0,"NOT READY":0};
+  data.forEach(d=>{const v=d.r&&d.r.readiness; if(tally[v]!=null)tally[v]++;});
+  const verdTok=v=>v==="READY"?"ok":v==="CAUTION"?"watch":v==="NOT READY"?"crit":"neutral";
+  const cards=data.map(d=>{const g=d.g, r=d.r, i=d.idx;
+    const v=(r&&r.readiness)||"—"; const tok=verdTok(v);
+    const sel=WAVE_SEL===i?" xlactive":"";
+    const sw=g.switches||[];
+    const vlans=(g.spanning_vlans||[]).slice(0,6).map(t=>{const vid=t[0],nm=t[1],ns=t[2];
+      return `<span class="pill pl-neutral" title="spans ${ns} switches">VLAN ${esc(vid)}${nm?" "+esc(nm):""}</span>`;}).join(" ");
+    const moreV=(g.spanning_vlans||[]).length>6?` <span class="faint">+${(g.spanning_vlans||[]).length-6} more</span>`:"";
+    const gws=(g.gateways||[]).slice(0,8).map(x=>`<span class="mono">${esc(x)}</span>`).join(", ");
+    const checks=r?[...(r.checks||[])].filter(c=>c.status==="fail"||c.status==="warn"):[];
+    const checkRows=checks.map(c=>{const ct=c.status==="fail"?"crit":"watch";
+      return `<div class="checkrow"><span class="dot" style="background:var(--${ct})"></span>
+        <div><div class="nm">${esc(c.check)}</div><div class="nt">${esc(c.note||"")}</div></div></div>`;}).join("");
+    const dual=g.vlan1_spans?`<div class="ln faint" style="margin-top:4px">⚠ VLAN 1 spans this group — untagged management traffic crosses every member.</div>`:"";
+    return `<div class="card ${tok} xlcard${sel}" data-wave="${i}" tabindex="0" role="button" style="cursor:pointer"
+        aria-label="Move group ${i+1}: ${sw.length} switches, ${esc(v)} — click to highlight on the graph">
+      <div class="ct"><span class="nm">Group ${i+1}</span><span class="pill pl-${tok}">${esc(v)}</span></div>
+      <div class="ln faint" style="margin-top:2px"><b>${sw.length}</b> switch${sw.length===1?"":"es"} · <b>${(+g.endpoints||0)}</b> endpoints${r?` · <b style="color:var(--crit)">${r.n_fail||0} fail</b> · <b style="color:var(--watch)">${r.n_warn||0} warn</b>`:""}</div>
+      <div class="ln" style="margin-top:5px">${sw.slice(0,10).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${sw.length>10?` <span class="faint">+${sw.length-10}</span>`:""}</div>
+      ${vlans?`<div class="ln" style="margin-top:5px"><span class="faint">Bound by:</span> ${vlans}${moreV}</div>`:""}
+      ${gws?`<div class="ln faint" style="margin-top:4px">Gateways: ${gws}</div>`:""}
+      ${dual}
+      ${checkRows?`<div style="margin-top:6px">${checkRows}</div>`:(r?`<div class="ln faint" style="margin-top:4px">✓ All readiness checks pass — this group is clear to schedule.</div>`:"")}
+    </div>`;}).join("");
+  return head+
+    `<div class="sec"><div class="headline">
+      <div class="stat"><div class="v"><span class="num" data-to="${data.length}">0</span></div><div class="k">move groups</div></div>
+      <div class="stat ${tally["NOT READY"]?"crit":""}"><div class="v"><span class="num" data-to="${tally["NOT READY"]}">0</span></div><div class="k">not ready</div></div>
+      <div class="stat ${tally.CAUTION?"risk":""}"><div class="v"><span class="num" data-to="${tally.CAUTION}">0</span></div><div class="k">caution</div></div>
+      <div class="stat ok"><div class="v"><span class="num" data-to="${tally.READY}">0</span></div><div class="k">ready</div></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0">Each move group is an L2 domain bound by shared VLANs — it must cut over together. Sequence the <b>NOT&nbsp;READY</b> groups' blockers first, biggest blast radius first. <b>Click a group</b> to spotlight its switches on the canvas.</p></div>
+    <div class="sec"><h3>Groups by blast radius <span class="ct">${data.length}</span></h3>${cards}</div>`;
+}
+/* paint hook: spotlight the selected move-group's switches (WAVE_SEL) and the links inside it, dim the
+   rest. No selection -> clean canvas. Mirrors the Cross-Layer highlight pattern (reuses .xlhl/.xldim/.dim). */
+function paintWaves(){
+  if(WAVE_SEL==null)return;
+  const mg=(SNAP&&Array.isArray(SNAP.move_groups))?SNAP.move_groups:[];
+  const g=mg[WAVE_SEL]; if(!g)return;
+  const set=new Set(g.switches||[]);
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+    if(set.has(h))n.g.classList.add("xlhl"); else n.g.classList.add("xldim");});
   edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
 }
 

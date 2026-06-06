@@ -2554,5 +2554,41 @@
  },
  "fhrp": [],
  "trunk_native": [],
- "link_phy": []
+ "link_phy": [],
+ "move_groups": [
+  {
+   "switches": [
+    "access1",
+    "core1",
+    "core2"
+   ],
+   "spanning_vlans": [
+    [
+     10,
+     "data",
+     3
+    ],
+    [
+     20,
+     "VOICE",
+     2
+    ],
+    [
+     30,
+     "SERVERS",
+     2
+    ]
+   ],
+   "endpoints": 5,
+   "gateways": [
+    "core1:Vlan10",
+    "core1:Vlan20",
+    "core1:Vlan30",
+    "core2:Vlan10",
+    "core2:Vlan20"
+   ],
+   "blocked_paths": [],
+   "vlan1_spans": false
+  }
+ ]
 }

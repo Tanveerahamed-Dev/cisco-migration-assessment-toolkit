@@ -1580,6 +1580,7 @@ def main():
     snap_dict["fhrp"] = compute_fhrp_consistency(all_interfaces)
     snap_dict["trunk_native"] = compute_trunk_native_mismatches(all_interfaces)
     snap_dict["link_phy"] = compute_duplex_speed_mismatches(all_interfaces)
+    snap_dict["move_groups"] = move_groups                           # NEW-V3.23.86 (Migration Waves mode: the move-group / shared-VLAN-domain structure the readiness verdicts attach to; already computed above for migration_readiness)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
