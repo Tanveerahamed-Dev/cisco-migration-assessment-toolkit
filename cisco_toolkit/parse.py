@@ -1693,9 +1693,24 @@ def parse_show_environment(output: str) -> Dict[str, str]:
             elif any(t in low for t in ("absent", "not present", "none")):
                 n_ps += 1; ps_states.append("ABSENT")
         if re.match(r"^\s*\d+\s+\S", low) and any(k in low for k in ("inlet","outlet","sensor")):
-            if "ok" in low or "normal" in low:        temp_states.append("OK")
-            elif "critical" in low or "major" in low: temp_states.append("Critical")
-            elif "warn" in low or "minor" in low:     temp_states.append("Warning")
+            if "ok" in low or "normal" in low or "green" in low:        temp_states.append("OK")
+            elif "critical" in low or "major" in low or "red" in low:   temp_states.append("Critical")
+            elif "warn" in low or "minor" in low or "yellow" in low:    temp_states.append("Warning")
+        # IOS-XE 'show environment all' (Catalyst 9300/3850) markers - this command form is what
+        # those platforms accept ('show environment' alone returns '% Incomplete command'):
+        #   'Temperature State: GREEN'  +  fan table '1  1  8160  OK  front to back'  +  'FAN PS-1 is OK'
+        mts = re.search(r"temperature\s+state\s*:\s*(green|yellow|red)", low)
+        if mts:
+            temp_states.append({"green":"OK","yellow":"Warning","red":"Critical"}[mts.group(1)])
+        mfan = re.match(r"^\s*\d+\s+\d+\s+\d+\s+(ok|fail|faulty|fault|warn|warning|red)\b", low)
+        if mfan:
+            st = mfan.group(1)
+            if st == "ok":                                  fan_states.append("OK")
+            elif st in ("warn", "warning"):                 fan_states.append("Warning")
+            else:                                           fan_states.append("Failed")
+        mfps = re.search(r"fan\s+ps-?\d+\s+is\s+(ok|fail|faulty|fault)", low)
+        if mfps:
+            fan_states.append("OK" if mfps.group(1) == "ok" else "Failed")
     def _worst(states: List[str]) -> str:
         if "Critical" in states or "Failed" in states: return "Critical/Failed"
         if "Warning"  in states: return "Warning"
