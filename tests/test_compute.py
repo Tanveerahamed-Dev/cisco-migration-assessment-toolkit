@@ -207,6 +207,19 @@ def test_compute_migration_punchlist(cp):
     assert all(i["wave"] == "Wave 1" for i in pl)                                     # tagged from the move-group
     t = [i for i in pl if i["category"] == "Security" and "VTY" in i["title"]][0]
     assert t["remediation"] == "ssh" and t["severity"] == "High"
+    # V3.23.64: the cross-switch L2 checks fold in via the `l2` arg (addressing / FHRP / trunk / link)
+    l2 = {"addressing": {"dup_ip": [{"ip": "10.0.0.1", "where": [("a", "Vlan10", 10), ("b", "Vlan20", 20)]}],
+                         "dup_subnet": []},
+          "fhrp": [{"vid": 20, "issues": ["different FHRP groups"], "members": [{"host": "a"}, {"host": "b"}]}],
+          "trunk_native": [{"a_host": "a", "a_port": "Gi0/1", "a_native": "1",
+                            "b_host": "b", "b_port": "Gi0/2", "b_native": "99"}],
+          "link_phy": [{"a_host": "a", "a_port": "Gi0/3", "b_host": "b", "b_port": "Gi0/4",
+                        "duplex": ("full", "half"), "speed": None}]}
+    pl2 = analyze.compute_migration_punchlist(cross_layer, security, hygiene, physical, l3, proto,
+                                              stp, health, groups, l2=l2)
+    assert {"Addressing", "FHRP", "Trunk", "Link L1"} <= {i["category"] for i in pl2}
+    assert len(pl2) == len(pl) + 4                                                    # exactly the 4 L2 items added
+    assert all(i["wave"] == "Wave 1" for i in pl2 if i["category"] in ("Addressing", "FHRP", "Trunk", "Link L1"))
 
 
 # --------------------------------------------------------------------------- #

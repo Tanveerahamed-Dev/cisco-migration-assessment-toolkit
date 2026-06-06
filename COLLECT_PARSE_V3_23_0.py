@@ -350,6 +350,8 @@ from cisco_toolkit.excel import (
     write_fhrp_consistency_sheet,      # reachability findings -> workbook surfacing
     write_trunk_native_sheet,          # reachability findings -> workbook surfacing
     write_link_phy_sheet,              # reachability findings -> workbook surfacing
+    compute_addressing_conflicts, compute_fhrp_consistency,   # NEW-V3.23.64 (L2 checks -> punch-list)
+    compute_trunk_native_mismatches, compute_duplex_speed_mismatches,
     write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet,                                   # step 24
@@ -1504,12 +1506,17 @@ def main():
     _run_phase("Config Hygiene sheet", write_config_hygiene_sheet, wb, all_config_hygiene)
     _run_phase("STP Root Bridges sheet", write_stp_roots_sheet, wb, all_stp_roots, all_interfaces)
 
-    # Phase 30d: Migration Punch-List - NEW-V3.23.63 (consolidated, severity-ranked fix-this-first roll-up)
+    # Phase 30d: Migration Punch-List - NEW-V3.23.63 (consolidated, severity-ranked fix-this-first roll-up);
+    # V3.23.64 folds in the cross-switch L2 checks (addressing / FHRP / trunk-native / link duplex-speed).
     _stp_findings = stp_root_findings(all_stp_roots, all_interfaces)
+    _l2 = {"addressing": compute_addressing_conflicts(all_interfaces),
+           "fhrp": compute_fhrp_consistency(all_interfaces),
+           "trunk_native": compute_trunk_native_mismatches(all_interfaces),
+           "link_phy": compute_duplex_speed_mismatches(all_interfaces)}
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
-                           _default=[])
+                           l2=_l2, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
