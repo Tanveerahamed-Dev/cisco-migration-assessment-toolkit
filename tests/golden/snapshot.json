@@ -2590,5 +2590,50 @@
    "blocked_paths": [],
    "vlan1_spans": false
   }
+ ],
+ "capacity": [
+  {
+   "hostname": "access1",
+   "model": "WS-C2960X-48FPD-L",
+   "total_ports": 4,
+   "active_ports": 4,
+   "free_ports": 0,
+   "port_util": 100.0,
+   "poe_capacity_w": "",
+   "poe_drawn_w": "",
+   "poe_remaining_w": "",
+   "poe_util": "",
+   "flags": [
+    "Port-bound (>=90%)"
+   ]
+  },
+  {
+   "hostname": "core1",
+   "model": "WS-C3850-24T",
+   "total_ports": 5,
+   "active_ports": 4,
+   "free_ports": 1,
+   "port_util": 80.0,
+   "poe_capacity_w": "",
+   "poe_drawn_w": "",
+   "poe_remaining_w": "",
+   "poe_util": "",
+   "flags": []
+  },
+  {
+   "hostname": "core2",
+   "model": "",
+   "total_ports": 2,
+   "active_ports": 2,
+   "free_ports": 0,
+   "port_util": 100.0,
+   "poe_capacity_w": "",
+   "poe_drawn_w": "",
+   "poe_remaining_w": "",
+   "poe_util": "",
+   "flags": [
+    "Port-bound (>=90%)"
+   ]
+  }
  ]
 }
