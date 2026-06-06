@@ -715,7 +715,7 @@ _STATUS_FILL = {"pass": "36E08A", "warn": "FFE566", "fail": "FF5775"}
 
 def write_health_scores_sheet(wb, records: List[dict]) -> None:
     ws = wb.create_sheet(HEALTH_SCORES_SHEET_NAME)
-    headers = ["Switch", "Score", "Band", "Data Quality", "Top Deductions"]
+    headers = ["Switch", "Score", "Band", "Criticality", "Data Quality", "Top Deductions"]
     for col, h in enumerate(headers, 1):
         c = ws.cell(1, col, h)
         c.font = Font(bold=True, color="FFFFFF")
@@ -728,10 +728,12 @@ def write_health_scores_sheet(wb, records: List[dict]) -> None:
         ws.cell(r, 1, rec["switch"])
         c = ws.cell(r, 2, rec["score"]); c.fill = PatternFill("solid", fgColor=fill); c.font = Font(bold=True)
         c2 = ws.cell(r, 3, rec["band"]); c2.fill = PatternFill("solid", fgColor=fill)
+        role = rec.get("role"); crit = rec.get("criticality")   # asset-criticality weighting (transparency)
+        ws.cell(r, 4, f"{role} x{crit:g}" if role else "")
         dq = rec.get("data_quality")
-        ws.cell(r, 4, "" if dq is None else f"{int(round(dq * 100))}%")
-        ws.cell(r, 5, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
-    for i, w in enumerate([16, 8, 11, 13, 80], 1):
+        ws.cell(r, 5, "" if dq is None else f"{int(round(dq * 100))}%")
+        ws.cell(r, 6, "; ".join(rec["deductions"]) if rec["deductions"] else "healthy")
+    for i, w in enumerate([16, 8, 11, 15, 13, 80], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     avg = round(sum(r["score"] for r in records) / len(records)) if records else 0

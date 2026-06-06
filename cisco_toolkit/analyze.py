@@ -57,11 +57,13 @@ class ScoringConfig:
         "routing_adjacencies": "fail", "no_orphan_vlans": "warn",
         "clean_uplinks": "warn", "health_floor_critical": "fail",
         "health_floor_poor": "warn"})
-    # NEW-V3.23.5: per-role multiplier on a switch's deductions (a fault on a
-    # core/distribution switch has wider blast radius than on an access closet).
-    # Defaults are 1.0 for every role, so scores stay byte-identical until tuned.
+    # NEW-V3.23.5; activated 2026-06-06: per-role multiplier on a switch's deductions — a
+    # fault on a core/distribution switch has a wider blast radius than on an access closet
+    # (research: "weight deductions by asset criticality; core/distribution carry higher
+    # weight than access"). Conservative defaults — recalibrate via ScoringConfig. _host_role
+    # auto-infers 'distribution' (hosts an L3 gateway SVI) vs 'access'; 'core' is manual-tag only.
     criticality_factors: Dict[str, float] = _dcfield(default_factory=lambda: {
-        "core": 1.0, "distribution": 1.0, "access": 1.0})
+        "core": 1.5, "distribution": 1.2, "access": 1.0})
     # NEW-V3.23.7: a switch whose collection covers less than this fraction of the
     # essential command set is reported 'Insufficient Data' instead of a
     # misleadingly-high band, so a partial collection can't look healthy (audit C3).
@@ -727,9 +729,11 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     CAP = config.caps
     records: List[dict] = []
     for h in hosts:
-        # NEW-V3.23.5: scale this switch's deductions by its criticality role.
-        # round() keeps integer scores; the default factor 1.0 is a no-op.
-        factor = config.criticality_factors.get(_host_role(all_interfaces.get(h, {})), 1.0)
+        # NEW-V3.23.5: scale this switch's deductions by its criticality role (round() keeps
+        # integer scores). role + factor are surfaced on the record so the asset-criticality
+        # weighting is auditable (research: "every score shows its line-item contributions").
+        role = _host_role(all_interfaces.get(h, {}))
+        factor = config.criticality_factors.get(role, 1.0)
         total = 0
         reasons: List[str] = []
         for cat, items in ded[h].items():
@@ -739,7 +743,8 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 reasons.append(f"{r} (-{p})")
         score = max(0, 100 - total)
         band, _fill = _health_band(score, config.bands)
-        rec = {"switch": h, "score": score, "band": band, "deductions": reasons[:8]}
+        rec = {"switch": h, "score": score, "band": band,
+               "role": role, "criticality": factor, "deductions": reasons[:8]}
         if data_quality is not None:                          # NEW-V3.23.7 (audit C3)
             dq = data_quality.get(h, 1.0)
             rec["data_quality"] = round(dq, 2)

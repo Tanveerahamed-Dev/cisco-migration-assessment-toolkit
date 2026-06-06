@@ -20,6 +20,8 @@ def test_default_config_matches_baseline(cp):
                        (60, "Fair", "FFE566"), (40, "Poor", "FF9F45"), (0, "Critical", "FF5775")]
     assert s.readiness["gateway_redundancy"] == "fail"
     assert s.readiness["redundant_uplinks"] == "warn"
+    # asset-criticality weighting (activated 2026-06-06): core/distribution > access
+    assert s.criticality_factors == {"core": 1.5, "distribution": 1.2, "access": 1.0}
 
 
 def test_custom_weight_changes_score(cp):
@@ -44,6 +46,21 @@ def test_custom_bands_change_label(cp):
     ph = [{"switch": "h", "port": "p", "risk": "single-fiber-uplink"}]   # -10 -> 90
     rec = cp.compute_health_scores({"h": {}}, ph, [], [], [], config=cfg)[0]
     assert rec["score"] == 90 and rec["band"] == "Critical"
+
+
+def test_criticality_weighting_applies_and_is_surfaced(cp):
+    # Same finding (-10) on a distribution switch (hosts an SVI gateway) vs an access switch:
+    # the distribution switch's deduction is weighted up by 1.2, and role+factor are surfaced.
+    from cisco_toolkit.model import InterfaceData
+    ph = [{"switch": "d", "port": "Gi0/1", "risk": "single-fiber-uplink"},
+          {"switch": "a", "port": "Gi0/1", "risk": "single-fiber-uplink"}]
+    ifaces = {"d": {"Vlan10": InterfaceData(svi_ip="10.0.10.1")},   # distribution
+              "a": {}}                                              # access
+    recs = {r["switch"]: r for r in cp.compute_health_scores(ifaces, ph, [], [], [])}
+    assert recs["a"]["score"] == 90                                # -10 * 1.0
+    assert recs["a"]["role"] == "access" and recs["a"]["criticality"] == 1.0
+    assert recs["d"]["score"] == 88                                # -10 * 1.2 = -12
+    assert recs["d"]["role"] == "distribution" and recs["d"]["criticality"] == 1.2
 
 
 def test_readiness_rule_is_configurable(cp):

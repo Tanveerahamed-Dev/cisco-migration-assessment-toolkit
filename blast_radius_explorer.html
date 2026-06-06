@@ -344,6 +344,23 @@
   .epbadge-t{fill:var(--text-dim); font:600 9.5px var(--sans); text-anchor:middle; pointer-events:none}
   .ntag{font:700 8.5px var(--sans); letter-spacing:.6px; text-anchor:middle; pointer-events:none}
   .scorebadge{font:800 12px var(--sans); text-anchor:middle; pointer-events:none}
+  /* Health-score ring — the Grafana node-graph "arc on the node border" idiom from the
+     project's research playbook: a rounded-rect border that fills score% of its perimeter,
+     banded by health color, so a switch's 0–100 readiness reads at a glance on the node
+     itself (Health mode). Track + proportional arc; the arc "fills" on entry. */
+  .score-track{pointer-events:none}
+  .score-arc{pointer-events:none; animation:scoreFill .6s cubic-bezier(.2,.7,.3,1)}
+  /* implicit 'to' = the element's inline stroke-dashoffset (its resting fill), so the ring
+     grows from empty to its score; the resting value never depends on the animation running
+     (correct even in a background tab / under reduced motion, which the global rule snaps). */
+  @keyframes scoreFill{from{stroke-dashoffset:100}}
+  /* Level-of-detail (research playbook: "flexible LoD … a notable performance boost with low
+     implementation effort for SVG"): when zoomed far out, secondary labels & badges fade so the
+     topology reads as clean role-coded boxes. The node name, health ring, and link states stay —
+     the at-a-glance cues. They return on zoom-in. Toggled by #vp.lod-far from applyTransform(). */
+  .nsub,.nrole,.epbadge,.epbadge-t,.pcbadge,.pcbadge-t,.ntag,.scorebadge{transition:opacity .18s ease}
+  #vp.lod-far .nsub, #vp.lod-far .nrole, #vp.lod-far .epbadge, #vp.lod-far .epbadge-t,
+  #vp.lod-far .pcbadge, #vp.lod-far .pcbadge-t, #vp.lod-far .ntag, #vp.lod-far .scorebadge{opacity:0}
 
   /* ---- graph entrance (replays on buildSvg: initial load + layout toggle) ----
      SAFE: animate opacity on the node <g> (NOT transform — that attr carries translate()).
@@ -1031,12 +1048,12 @@ function demoSnapshot(){
   // snapshot via compute_health_scores / compute_migration_readiness) so the bundled demo exercises
   // the Health mode just like a real export does.
   health_scores:[
-    {switch:"DIST-1",score:58,band:"Poor",deductions:["single-gateway (VLAN 30) (-10)","articulation point — VLAN 10 (-9)","articulation point — VLAN 20 (-6)","no FHRP peer @ Vlan30 (-6)"]},
-    {switch:"DIST-2",score:84,band:"Good",deductions:["STP-blocked uplink @ Gi1/0/1 (-4)"]},
-    {switch:"ACC-1",score:71,band:"Fair",deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","STP-blocked backup @ Gi1/0/23 (-3)"]},
-    {switch:"ACC-2",score:66,band:"Fair",deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","transit for ACC-3 @ Gi1/0/12 (-5)"]},
-    {switch:"ACC-3",score:61,band:"Fair",deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","access-behind-access (-7)"]},
-    {switch:"ACC-4",score:88,band:"Good",deductions:[]},
+    {switch:"DIST-1",score:58,band:"Poor",role:"distribution",criticality:1.2,deductions:["single-gateway (VLAN 30) (-10)","articulation point — VLAN 10 (-9)","articulation point — VLAN 20 (-6)","no FHRP peer @ Vlan30 (-6)"]},
+    {switch:"DIST-2",score:84,band:"Good",role:"distribution",criticality:1.2,deductions:["STP-blocked uplink @ Gi1/0/1 (-4)"]},
+    {switch:"ACC-1",score:71,band:"Fair",role:"access",criticality:1.0,deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","STP-blocked backup @ Gi1/0/23 (-3)"]},
+    {switch:"ACC-2",score:66,band:"Fair",role:"access",criticality:1.0,deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","transit for ACC-3 @ Gi1/0/12 (-5)"]},
+    {switch:"ACC-3",score:61,band:"Fair",role:"access",criticality:1.0,deductions:["single-fiber-uplink @ Gi1/0/24 (-10)","access-behind-access (-7)"]},
+    {switch:"ACC-4",score:88,band:"Good",role:"access",criticality:1.0,deductions:[]},
   ],
   migration_readiness:[
     {group:"Group 1",switches:["DIST-1","DIST-2","ACC-1","ACC-2","ACC-3","ACC-4"],endpoints:40,readiness:"CAUTION",n_fail:0,n_warn:3,checks:[
@@ -1391,17 +1408,24 @@ function markPinned(h){const n=nodeEls[h];if(n&&n.g)n.g.classList.add("pinned");
 function positionAll(){MODEL.hosts.forEach(positionNode); updateEdges();}
 function updateEdges(){
   edgeEls.forEach(({e,path,badge,btext})=>{const a=POS[e.a],b=POS[e.b];if(!a||!b)return;
-    if(LAYOUT==="radial"){const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
-      path.setAttribute("d",`M${a.x},${a.y} Q${mx},${my} ${b.x},${b.y}`);}
-    else path.setAttribute("d",`M${a.x},${a.y} L${b.x},${b.y}`);
-    if(badge){const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
-      badge.setAttribute("x",mx-13);badge.setAttribute("y",my-7);
-      btext.setAttribute("x",mx);btext.setAttribute("y",my+3);}});
+    let bx2=(a.x+b.x)/2, by2=(a.y+b.y)/2;   // badge anchor (chord midpoint, straight layout)
+    if(LAYOUT==="radial"){
+      // curved hub-spoke edges (research playbook): offset the Bézier control point PERPENDICULAR
+      // to the chord so the edge actually bows — the old code put it on the chord midpoint, which
+      // renders dead straight. Bow scales with length, capped, so short links stay subtle.
+      const dx=b.x-a.x, dy=b.y-a.y, len=Math.hypot(dx,dy)||1, bow=Math.min(len*0.18,55);
+      const cx2=(a.x+b.x)/2+(-dy/len)*bow, cy2=(a.y+b.y)/2+(dx/len)*bow;
+      path.setAttribute("d",`M${a.x},${a.y} Q${cx2},${cy2} ${b.x},${b.y}`);
+      bx2=0.25*a.x+0.5*cx2+0.25*b.x; by2=0.25*a.y+0.5*cy2+0.25*b.y;   // badge on the curve's midpoint
+    } else path.setAttribute("d",`M${a.x},${a.y} L${b.x},${b.y}`);
+    if(badge){badge.setAttribute("x",bx2-13);badge.setAttribute("y",by2-7);
+      btext.setAttribute("x",bx2);btext.setAttribute("y",by2+3);}});
 }
 
 /* ---- pan / zoom (viewBox-free: transform the viewport group) ---- */
 function applyTransform(){const vp=document.getElementById("vp");
-  if(vp)vp.setAttribute("transform",`translate(${view.tx},${view.ty}) scale(${view.k})`);
+  if(vp){vp.setAttribute("transform",`translate(${view.tx},${view.ty}) scale(${view.k})`);
+    vp.classList.toggle("lod-far", view.k<0.55);}   // LoD: shed secondary labels when zoomed out
   if(typeof updateMinimapRect==="function")updateMinimapRect();}
 function fitView(){const st=document.getElementById("stage");const W=st.clientWidth,H=st.clientHeight;
   const k=Math.min(W/LOGICAL.w,H/LOGICAL.h)*0.92; view.k=Math.max(0.25,Math.min(k,1.6));
@@ -1515,7 +1539,8 @@ function clearFx(){
   cancelBlastWave(); clearCausalFlow();
   MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match","xlhl","xldim");
     n.g.style.removeProperty("--ov"); n.body.style.removeProperty("fill"); n.body.style.removeProperty("stroke");
-    n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");});
+    n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");
+    if(n.scoreTrack){n.scoreTrack.remove(); n.scoreTrack=null;} if(n.scoreArc){n.scoreArc.remove(); n.scoreArc=null;}});
   edgeEls.forEach(({path})=>{path.className.baseVal="lnk";
     // drop any draw-on residue so non-path edges rest fully solid (also reduced-motion)
     path.style.removeProperty("stroke-dasharray"); path.style.removeProperty("stroke-dashoffset");
@@ -1540,6 +1565,22 @@ function applySearch(){
   MODEL.hosts.forEach(h=>{let hit=h.toLowerCase().includes(q);
     if(!hit){for(const e of endpointsOf(h)){if((e.ip&&e.ip.toLowerCase().includes(q))||(e.mac&&e.mac.toLowerCase().includes(q))){hit=true;break;}}}
     if(hit)nodeEls[h].g.classList.add("match");});
+}
+/* Per-VLAN isolation (research playbook: "per-VLAN view that isolates one of the 23 VLANs").
+   baseEdge() already dims off-VLAN edges; this fades the switches that don't participate in
+   the selected VLAN so the fabric for that VLAN reads on its own. A switch participates if it
+   has endpoints in the VLAN, is a gateway for it, or sits on a link that carries it. */
+function hostsOnVlan(vid){
+  const set=new Set();
+  for(const [h,m] of MODEL.endpoints){if(m.get(vid))set.add(h);}
+  const gw=MODEL.gateways.get(vid); if(gw)MODEL.hosts.forEach(h=>{if(gw.has(h))set.add(h);});
+  edgeEls.forEach(({e})=>{for(const L of e.members){const c=linkCarries(L,vid);
+    if(c==="fwd"||c==="blk"){set.add(e.a);set.add(e.b);break;}}});
+  return set;
+}
+function applyVlanFocus(){
+  if(VLAN==="all")return; const on=hostsOnVlan(+VLAN);
+  MODEL.hosts.forEach(h=>{if(!on.has(h))nodeEls[h].g.classList.add("dim");});
 }
 /* ---------------------------------------------------------------------------
    U8: Severity halos & critical-node pulse.
@@ -1599,6 +1640,7 @@ function repaint(){
   else if(MODE==="causality")paintCausality();
   severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
+  applyVlanFocus();   // per-VLAN isolation: fade switches not on the selected VLAN (after all paints)
   runPathAnim();   // draw-on + traveling packet for Path/Flow; teardown otherwise (keyed on path change)
   // LAYER LENS (U9): baseEdge() above rewrote every edge's className (wiping lensL* edge tint),
   // so if the lens is active, re-stamp the layer currently in focus. The lens persists across modes.
@@ -1934,11 +1976,28 @@ function healthBandToken(band){const b=(band||"").toLowerCase();
 function scoreToken(s){return s>=75?"ok":s>=60?"watch":s>=40?"risk":"crit";}
 function paintHealth(){
   const hs=healthList(); if(!hs.length)return; const by={}; hs.forEach(r=>by[r.switch]=r);
+  const arcs=[];
   MODEL.hosts.forEach(h=>{const r=by[h];const n=nodeEls[h];
     if(!r){n.g.classList.add("dim");return;}
     const tok=r.band?healthBandToken(r.band):scoreToken(r.score);
     n.body.style.stroke=`var(--${tok})`; n.body.style.fill=`var(--${tok}-soft)`;
-    n.score.textContent=r.score; n.score.setAttribute("fill",`var(--${tok})`);});
+    n.score.textContent=r.score; n.score.setAttribute("fill",`var(--${tok})`);
+    // proportional readiness ring on the node border (skip when the score is unknown).
+    // pathLength=100 normalizes the perimeter so the fill is simply 100−score, set inline
+    // (the resting value, robust); a CSS keyframe just grows it from empty on entry.
+    if(typeof r.score==="number"){
+      const RW=n.w+6, RH=n.ht+6, RR=13;
+      const sc=Math.max(0,Math.min(100,r.score));
+      const geo={x:-RW/2,y:-RH/2,width:RW,height:RH,rx:RR,fill:"none","stroke-width":3,pathLength:100};
+      const track=el("rect",Object.assign({class:"score-track"},geo));
+      track.style.stroke="var(--border-strong)"; track.style.strokeOpacity=".4";
+      const arc=el("rect",Object.assign({class:"score-arc"},geo));
+      arc.style.stroke=`var(--${tok})`; arc.style.strokeDasharray="100 100"; arc.style.strokeDashoffset=100-sc;
+      arc.setAttribute("aria-hidden","true");
+      const after=n.body.nextSibling;                       // sit above the body, below text/badges
+      n.g.insertBefore(track,after); n.g.insertBefore(arc,after);
+      n.scoreTrack=track; n.scoreArc=arc;
+    }});
   if(SEL&&nodeEls[SEL])nodeEls[SEL].g.classList.add("sel");
 }
 
@@ -2092,6 +2151,21 @@ function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRA
 function clearTrace(){TRACE_SRC=TRACE_DST=TRACE=null;repaint();renderDrawer();}
 
 /* ---- mode switch ---- */
+/* Lead the screen-reader announcement with the mode's key number (research playbook:
+   "lead each mode with the single most important number"). Cheap, fleet-level signals only;
+   selection-driven modes (blast/trace) already announce their result on click. */
+function modeSummary(m){
+  try{
+    if(m==="health"){const hs=healthList(); if(!hs.length)return "";
+      const avg=Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/hs.length);
+      let nc=0,np=0; hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);
+        if(t==="crit")nc++; else if(t==="risk")np++;});
+      return ` ${hs.length} switches scored, average ${avg}${nc?`, ${nc} critical`:""}${np?`, ${np} poor`:""}.`;}
+    if(m==="causality"){const ch=causalityChains(MODEL)||[];
+      return ch.length?` ${ch.length} root-cause chain${ch.length>1?"s":""}.`:"";}
+  }catch(e){}
+  return "";
+}
 function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
   document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
@@ -2099,7 +2173,7 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains"}[m]||m)+" mode.");
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains"}[m]||m)+" mode."+modeSummary(m));
   writeHash();}
 
 /* =====================================================================
@@ -2134,7 +2208,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="trace")h+=ln("var(--accent)","active path","path")+ln("var(--risk)","SPOF link","spof")+ln("var(--ok)","backup exists","blocked")+bx("var(--risk)","SPOF switch","spof");
   else if(MODE==="compare")h+=bx("var(--crit)","regressed","regressed")+bx("var(--ok)","improved","improved")+bx("var(--crit)","removed","removed");
   else if(MODE==="flow")h+=ln("var(--accent)","flow path","flowpath")+bx("var(--risk)","SPOF hop","spof");
-  else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit");
+  else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit")+`<div class="row faint" style="margin-top:3px">◕ node ring fills with the 0–100 score</div>`;
   else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
   else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
   else if(MODE==="causality"){h+=bx("var(--crit)","root-cause host","")+`<div class="row faint" style="margin-top:3px">Select a chain in the panel — its host is ringed here and its trigger→mitigation flow animates.</div>`;}
@@ -4099,6 +4173,7 @@ function drawHealth(){
           <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${fams.length}">0</span></div><div class="k">issue types</div></div>
           <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${(r.deductions||[]).length}">0</span></div><div class="k">raw findings</div></div>
         </div>
+        ${typeof r.criticality==="number"?`<div class="card ${r.criticality>1?"watch":""}" style="margin-top:11px"><div class="ct"><span class="nm">Asset criticality</span><span class="badge ${r.criticality>1?"b-watch":"b-neutral"}">${esc(r.role||"")} ×${r.criticality}</span></div><div class="ln">${r.criticality>1?`A fault on a <b>${esc(r.role)}</b> switch has a wider blast radius, so its deductions are weighted <b>×${r.criticality}</b> — the same finding costs more here than on an access closet.`:`Access-tier weighting (<b>×1.0</b>) — deductions aren't amplified.`}</div></div>`:""}
         ${driver&&driver.count>1?`<div class="card crit" style="margin-top:11px"><div class="ln"><b>Dominant driver:</b> “${esc(driver.label)}” is counted <b>×${driver.count}</b> (${driver.total} pts). One repeated finding is doing most of the damage to this score — worth confirming it isn't double-counting.</div></div>`:""}
         </div>
         <div class="sec"><h3>Deductions, de-duplicated</h3>${famRows}</div>
