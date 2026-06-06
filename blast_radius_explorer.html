@@ -157,9 +157,21 @@
   .search input::placeholder{color:var(--text-faint)}
   .search .ic{color:var(--text-faint); font-size:12px}
 
-  .chips{display:flex; gap:5px; align-items:center; flex-wrap:wrap; padding:6px 9px; max-width:64vw}
+  /* VLAN chips: a pinned header (label · ALL · filter · count) over a height-capped, scrollable
+     chip list — so a large fleet's 150+ VLANs stay a compact 2-row strip instead of a viewport-eating
+     wall, while every VLAN is still one scroll or one filter-keystroke away. (V3.23.71) */
+  .chips{display:flex; flex-direction:column; align-items:stretch; gap:0; padding:6px 9px; min-width:min(64vw,460px); max-width:64vw}
+  .chips .chiphdr{display:flex; gap:5px; align-items:center}
   .chips .lbl{color:var(--text-faint); font-size:10px; letter-spacing:.8px; text-transform:uppercase;
     font-weight:650; margin-right:3px}
+  .chipfilter{width:62px; font:550 11.5px var(--sans); padding:2px 9px; border-radius:999px;
+    border:1px solid var(--border); background:var(--surface-2); color:var(--text); outline:none}
+  .chipfilter:focus{border-color:var(--accent)}
+  .chipfilter::placeholder{color:var(--text-faint); font-weight:500}
+  .chipcount{color:var(--text-faint); font-size:10px; margin-left:auto; white-space:nowrap; padding-left:6px}
+  .chiplist{display:flex; gap:5px; flex-wrap:wrap; align-items:center; margin-top:6px;
+    max-height:56px; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin}
+  .chiplist:empty::after,.chiplist.nomatch::after{content:"no VLAN matches"; color:var(--text-faint); font-size:11px}
   .chip{
     cursor:pointer; font-size:11.5px; font-weight:550; padding:3px 10px; border-radius:999px;
     border:1px solid var(--border); color:var(--text-dim); background:var(--surface-2); transition:.1s;
@@ -167,6 +179,8 @@
   }
   .chip:hover{color:var(--text); border-color:var(--border-strong)}
   .chip.on{color:#fff; background:var(--accent); border-color:var(--accent)}
+  .chip.empty{opacity:.5}
+  .chip.hidden{display:none}
 
   .legend{padding:9px 11px; font-size:11px; max-width:300px}
   .legend h4{margin:0 0 7px; font-size:9.5px; letter-spacing:1px; text-transform:uppercase;
@@ -1358,16 +1372,38 @@ function computeLayout(){
 function firstEpVlan(){const vs=[...MODEL.vlans].sort((a,b)=>a-b);
   for(const v of vs)for(const m of MODEL.endpoints.values())if(m.get(v))return v;return vs[0];}
 function traceVid(){return VLAN==="all"?firstEpVlan():+VLAN;}
+let CHIP_FILTER="";
 function buildChips(){
+  CHIP_FILTER="";                                  // fresh snapshot -> clear any prior filter
   const wrap=document.getElementById("chips");
   const vids=[...MODEL.vlans].sort((a,b)=>a-b);
-  let h=`<span class="lbl">VLAN</span><span class="chip ${VLAN==="all"?"on":""}" data-v="all">ALL</span>`;
+  let chips="";
   for(const v of vids){const ep=[...MODEL.endpoints.values()].reduce((s,m)=>s+(m.get(v)||0),0);
-    h+=`<span class="chip ${String(VLAN)===String(v)?"on":""}" data-v="${v}" title="${ep} endpoints">${v}</span>`;}
-  wrap.innerHTML=h;
+    chips+=`<span class="chip${String(VLAN)===String(v)?" on":""}${ep?"":" empty"}" data-v="${v}" title="VLAN ${v} — ${ep} endpoint${ep===1?"":"s"}">${v}</span>`;}
+  wrap.innerHTML=
+    `<div class="chiphdr"><span class="lbl">VLAN</span>`+
+    `<span class="chip${VLAN==="all"?" on":""}" data-v="all">ALL</span>`+
+    `<input class="chipfilter" id="chipFilter" inputmode="numeric" placeholder="filter #" aria-label="Filter VLANs by number">`+
+    `<span class="chipcount">${vids.length} VLAN${vids.length===1?"":"s"}</span></div>`+
+    `<div class="chiplist" id="chiplist">${chips}</div>`;
   wrap.querySelectorAll(".chip").forEach(c=>c.onclick=()=>setVlan(c.dataset.v));
+  const f=wrap.querySelector("#chipFilter");
+  if(f)f.oninput=()=>{CHIP_FILTER=f.value.replace(/\D/g,"");applyChipFilter();};
 }
-function setVlan(v){VLAN=v;buildChips();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
+// live-filter the (scrollable) numbered chips by VLAN-number prefix; the ALL chip is in the pinned header and never hides
+function applyChipFilter(){
+  const list=document.getElementById("chiplist"); if(!list)return;
+  const q=CHIP_FILTER; let shown=0;
+  list.querySelectorAll(".chip").forEach(c=>{const hit=q===""||c.dataset.v.indexOf(q)===0;
+    c.classList.toggle("hidden",!hit); if(hit)shown++;});
+  list.classList.toggle("nomatch",shown===0);
+}
+// update only the active-chip highlight (cheap) so setVlan doesn't rebuild the list and drop the filter/focus
+function markActiveChip(){
+  const wrap=document.getElementById("chips"); if(!wrap)return;
+  wrap.querySelectorAll(".chip").forEach(c=>c.classList.toggle("on",String(c.dataset.v)===String(VLAN)));
+}
+function setVlan(v){VLAN=v;markActiveChip();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
 const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality"];
