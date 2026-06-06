@@ -226,6 +226,14 @@ def build_device_physical(hostname: str, platform: str,
         env = parse_show_environment(env_out)
         dp.fan_status         = env.get("fan_status", "")
         dp.temperature_status = env.get("temperature_status", "")
+        # Catalyst 4948E / 4500-X recovery: 'show environment power' is unsupported there, so the
+        # PS health comes from the 'show environment' Power-Supply table. Fall back to it only when
+        # the (authoritative) env-power path above left these blank, so other platforms are unchanged.
+        if not dp.ps_status and env.get("ps_status"):
+            dp.ps_status = env["ps_status"]
+        env_nps = int(env.get("num_ps", "0") or 0)
+        if env_nps > dp.num_power_supplies:
+            dp.num_power_supplies = env_nps
 
     physical = [p for p in interfaces
                 if PHYSICAL_IFACE_RE.match(normalize_ifname(p))
