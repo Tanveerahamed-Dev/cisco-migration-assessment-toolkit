@@ -63,7 +63,7 @@ def test_sensitivity_sweep_shape_and_flip(cp):
     all_if = {"h": {}}
     xl = [{"id": "CL-01", "severity": "Critical", "hosts": ["h"]}]   # -18 -> 82 (Good)
     recs = cp.compute_score_sensitivity(all_if, [], [], xl, [])
-    assert len(recs) == 16                       # 4 weight groups x 4 deltas
+    assert len(recs) == 20                       # 5 weight groups (incl. sec_weights) x 4 deltas
     # Halving the cross-layer weight (-18 -> -9) lifts h from Good(82) to Excellent(91).
     xl_50 = [r for r in recs if r["perturbation"] == "XL -50%"][0]
     assert xl_50["switches_changed_band"] >= 1

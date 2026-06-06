@@ -1359,7 +1359,7 @@
  "health_scores": [
   {
    "switch": "core1",
-   "score": 21,
+   "score": 3,
    "band": "Critical",
    "role": "distribution",
    "criticality": 1.2,
@@ -1370,7 +1370,8 @@
     "CL-09 Critical (-18)",
     "CL-03 High (-10)",
     "CL-07 Medium (-4)",
-    "OSPF High (-10)"
+    "OSPF High (-10)",
+    "weak-user-pw high (-8)"
    ],
    "data_quality": 1.0
   },
@@ -1610,6 +1611,38 @@
    "detail": "no band changes"
   },
   {
+   "perturbation": "SEC -50%",
+   "group": "sec_weights",
+   "delta_pct": -50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "SEC -25%",
+   "group": "sec_weights",
+   "delta_pct": -25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "SEC +25%",
+   "group": "sec_weights",
+   "delta_pct": 25,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "SEC +50%",
+   "group": "sec_weights",
+   "delta_pct": 50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
    "perturbation": "XL +25%",
    "group": "xl_weights",
    "delta_pct": 25,
@@ -1780,13 +1813,13 @@
  "calibration": {
   "n": 3,
   "score_stats": {
-   "min": 21,
+   "min": 3,
    "max": 100,
-   "mean": 64.3,
+   "mean": 58.3,
    "median": 72.0,
-   "p25": 46.5,
+   "p25": 37.5,
    "p75": 86.0,
-   "stdev": 32.7
+   "stdev": 40.8
   },
   "band_distribution": [
    {
@@ -1820,7 +1853,7 @@
   "discrimination": 0.68,
   "discrimination_quality": "n/a (too few switches)",
   "suggested_bands": null,
-  "note": "3 switch(es); scores 21-100 (median 72.0). 33% in 'Excellent'. Band discrimination: n/a (too few switches)."
+  "note": "3 switch(es); scores 3-100 (median 72.0). 33% in 'Excellent'. Band discrimination: n/a (too few switches)."
  },
  "acls": {
   "core1": {
