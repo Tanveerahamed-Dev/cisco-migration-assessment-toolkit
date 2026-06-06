@@ -1666,6 +1666,117 @@
    ]
   }
  },
+ "security": {
+  "core1": {
+   "findings": [
+    {
+     "id": "password-encryption",
+     "title": "Password encryption service",
+     "severity": "info",
+     "status": "pass",
+     "detail": "'service password-encryption' is set.",
+     "cis_ref": "CIS 1.1.1",
+     "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9."
+    },
+    {
+     "id": "no-aaa",
+     "title": "AAA new-model",
+     "severity": "info",
+     "status": "pass",
+     "detail": "'aaa new-model' is enabled.",
+     "cis_ref": "CIS 1.4",
+     "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting."
+    },
+    {
+     "id": "no-ntp",
+     "title": "NTP time synchronization",
+     "severity": "info",
+     "status": "pass",
+     "detail": "NTP server configured.",
+     "cis_ref": "CIS 6.1",
+     "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy."
+    },
+    {
+     "id": "no-logging",
+     "title": "Logging / audit trail",
+     "severity": "info",
+     "status": "pass",
+     "detail": "syslog / buffered logging configured.",
+     "cis_ref": "CIS 6.2",
+     "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail."
+    },
+    {
+     "id": "no-banner",
+     "title": "Login banner",
+     "severity": "low",
+     "status": "fail",
+     "detail": "no login / MOTD legal-notice banner.",
+     "cis_ref": "CIS 1.6",
+     "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner."
+    },
+    {
+     "id": "weak-enable",
+     "title": "Privileged-EXEC secret",
+     "severity": "info",
+     "status": "pass",
+     "detail": "'enable secret' configured.",
+     "cis_ref": "CIS 1.2.1",
+     "remediation": "Use 'enable secret' (Type-8/9), not 'enable password' (Type-0/7)."
+    },
+    {
+     "id": "weak-user-pw",
+     "title": "Local user password storage",
+     "severity": "high",
+     "status": "fail",
+     "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
+     "cis_ref": "CIS 1.3",
+     "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries."
+    },
+    {
+     "id": "insecure-snmp",
+     "title": "SNMP access",
+     "severity": "high",
+     "status": "fail",
+     "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
+     "cis_ref": "CIS 3.1",
+     "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES)."
+    },
+    {
+     "id": "telnet-enabled",
+     "title": "VTY transport (telnet)",
+     "severity": "high",
+     "status": "fail",
+     "detail": "a VTY line permits telnet (cleartext management).",
+     "cis_ref": "CIS 2.1",
+     "remediation": "Set 'transport input ssh' on every VTY line; disable telnet."
+    },
+    {
+     "id": "vty-hardening",
+     "title": "VTY line hardening",
+     "severity": "medium",
+     "status": "fail",
+     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "cis_ref": "CIS 2.2",
+     "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
+    },
+    {
+     "id": "risky-services",
+     "title": "Unused / risky services",
+     "severity": "medium",
+     "status": "fail",
+     "detail": "enabled: HTTP server (cleartext).",
+     "cis_ref": "CIS 1.5",
+     "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'."
+    }
+   ],
+   "summary": {
+    "fail": 6,
+    "pass": 5,
+    "na": 0,
+    "grade": "weak"
+   }
+  }
+ },
  "calibration": {
   "n": 3,
   "score_stats": {

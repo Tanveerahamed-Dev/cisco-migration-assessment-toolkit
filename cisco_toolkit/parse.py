@@ -889,6 +889,196 @@ def parse_nat(output: str) -> dict:
 
 
 # ----------------------------------------------------------------------------- #
+# SECURITY / COMPLIANCE posture (NEW-V3.23.59) - CIS Cisco-benchmark-aligned config
+# hardening checks parsed from the already-collected 'show running-config'. A migration is
+# the moment to remediate (or consciously carry) config technical debt, and these gaps are
+# invisible to the connectivity engine. Tolerant: any unrecognized line is skipped, never
+# raises. CRITICAL: records the *presence/type* of a secret, NEVER its value -- SNMP
+# community strings, keys and password hashes are redacted before they reach the snapshot
+# (the single-file HTML must be safe to share). {} when no run-config; otherwise
+# {findings:[{id,title,severity,status,detail,cis_ref,remediation}], summary:{fail,pass,na,grade}}.
+# ----------------------------------------------------------------------------- #
+# id -> (title, severity-when-failing, cis_ref, remediation)
+_SEC_CHECKS: Dict[str, Tuple[str, str, str, str]] = {
+    "password-encryption": ("Password encryption service", "medium", "CIS 1.1.1",
+        "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9."),
+    "weak-enable": ("Privileged-EXEC secret", "high", "CIS 1.2.1",
+        "Use 'enable secret' (Type-8/9), not 'enable password' (Type-0/7)."),
+    "weak-user-pw": ("Local user password storage", "high", "CIS 1.3",
+        "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries."),
+    "no-aaa": ("AAA new-model", "medium", "CIS 1.4",
+        "Enable 'aaa new-model' for centralized authentication / authorization / accounting."),
+    "insecure-snmp": ("SNMP access", "high", "CIS 3.1",
+        "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES)."),
+    "telnet-enabled": ("VTY transport (telnet)", "high", "CIS 2.1",
+        "Set 'transport input ssh' on every VTY line; disable telnet."),
+    "risky-services": ("Unused / risky services", "medium", "CIS 1.5",
+        "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'."),
+    "no-ntp": ("NTP time synchronization", "low", "CIS 6.1",
+        "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy."),
+    "no-logging": ("Logging / audit trail", "low", "CIS 6.2",
+        "Configure 'logging host' / 'logging buffered' to retain an audit trail."),
+    "no-banner": ("Login banner", "low", "CIS 1.6",
+        "Configure a 'banner login' / 'banner motd' legal-notice banner."),
+    "vty-hardening": ("VTY line hardening", "medium", "CIS 2.2",
+        "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."),
+}
+
+
+def parse_security(output: str) -> dict:
+    """'show running-config' -> CIS-aligned security/compliance posture
+    {findings:[{id,title,severity,status,detail,cis_ref,remediation}], summary:{fail,pass,na,grade}};
+    {} when output is empty. Tolerant; never raises. Secret values (SNMP communities, password
+    hashes) are NEVER stored -- only their presence/type, with the value redacted to '<redacted>'."""
+    if not output:
+        return {}
+    low = [ln.strip().lower() for ln in output.splitlines()]
+
+    def has(pat: str) -> bool:
+        return any(re.search(pat, ln) for ln in low)
+
+    svc_pwenc = has(r"^service password-encryption\b")
+    enable_secret = has(r"^enable secret\b")
+    enable_pw = has(r"^enable password\b")
+    aaa = has(r"^aaa new-model\b")
+    ntp = has(r"^ntp (server|peer)\b")
+    logging_on = has(r"^logging (host|buffered|server)\b")
+    banner = has(r"^banner (motd|login|exec)\b")
+    snmpv3 = has(r"^snmp-server (group|user)\b")
+
+    weak_users: List[str] = []
+    for ln in low:
+        m = re.match(r"^username\s+(\S+)\s+.*\bpassword\b", ln)
+        if m and " secret " not in (" " + ln + " "):
+            weak_users.append(m.group(1))
+
+    snmp_comm: List[dict] = []
+    for ln in low:
+        m = re.match(r"^snmp-server community\s+(\S+)(?:\s+(ro|rw))?", ln)
+        if m:
+            snmp_comm.append({"access": m.group(2) or "ro",
+                              "default": m.group(1) in ("public", "private")})
+
+    risky: List[str] = []
+    if has(r"^ip http server\b") and not has(r"^no ip http server\b"):
+        risky.append("HTTP server (cleartext)")
+    if has(r"^vstack\b") and not has(r"^no vstack\b"):
+        risky.append("Smart Install (vstack)")
+    if has(r"^service config\b"):
+        risky.append("service config (network boot)")
+    if has(r"^ip source-route\b") and not has(r"^no ip source-route\b"):
+        risky.append("ip source-route")
+    if has(r"^ip bootp server\b") and not has(r"^no ip bootp server\b"):
+        risky.append("ip bootp server")
+    if has(r"^service finger\b"):
+        risky.append("service finger")
+
+    vty: List[dict] = []
+    cur: Optional[dict] = None
+    for raw in output.splitlines():
+        s = raw.strip().lower()
+        if re.match(r"^line vty\b", s):
+            cur = {"transport": "", "access_class": False, "timeout0": False}
+            vty.append(cur)
+            continue
+        if re.match(r"^line\b", s):                              # a different line block ends the vty block
+            cur = None
+            continue
+        if cur is not None and raw[:1].isspace():
+            if s.startswith("transport input"):
+                cur["transport"] = s.replace("transport input", "").strip()
+            elif s.startswith("access-class"):
+                cur["access_class"] = True
+            elif re.match(r"^exec-timeout\s+0\s+0\b", s):
+                cur["timeout0"] = True
+    telnet = any("telnet" in b["transport"] or b["transport"] == "all" for b in vty)
+    vty_weak = any((not b["access_class"]) or b["timeout0"] for b in vty)
+
+    findings: List[dict] = []
+
+    def add(cid: str, status: str, detail: str, severity: Optional[str] = None) -> None:
+        title, sev, ref, rem = _SEC_CHECKS[cid]
+        findings.append({"id": cid, "title": title,
+                         "severity": (severity or sev) if status == "fail" else "info",
+                         "status": status, "detail": detail, "cis_ref": ref, "remediation": rem})
+
+    # Absence-of-a-control -> fail (the hardening baseline is missing).
+    add("password-encryption", "pass" if svc_pwenc else "fail",
+        "'service password-encryption' is set." if svc_pwenc
+        else "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).")
+    add("no-aaa", "pass" if aaa else "fail",
+        "'aaa new-model' is enabled." if aaa
+        else "no 'aaa new-model' -- authentication is local-only / line-based.")
+    add("no-ntp", "pass" if ntp else "fail",
+        "NTP server configured." if ntp
+        else "no NTP server -- clock drift makes logs and certificate validity untrustworthy.")
+    add("no-logging", "pass" if logging_on else "fail",
+        "syslog / buffered logging configured." if logging_on
+        else "no syslog / buffered logging -- no audit trail across the migration.")
+    add("no-banner", "pass" if banner else "fail",
+        "login / MOTD banner present." if banner
+        else "no login / MOTD legal-notice banner.")
+
+    # Presence-of-a-bad-pattern -> fail.
+    if enable_pw:
+        add("weak-enable", "fail",
+            "'enable password' is reversible (Type-0/7) -- use 'enable secret'.")
+    elif enable_secret:
+        add("weak-enable", "pass", "'enable secret' configured.")
+    else:
+        add("weak-enable", "na", "no enable password / secret found in this config.")
+
+    if weak_users:
+        names = ", ".join(sorted(set(weak_users)))
+        add("weak-user-pw", "fail",
+            f"{len(set(weak_users))} local user(s) use a reversible / cleartext password: "
+            f"{names} (hashes redacted).")
+    else:
+        add("weak-user-pw", "pass", "no Type-0/7 local user passwords.")
+
+    if snmp_comm:
+        rw = any(c["access"] == "rw" for c in snmp_comm)
+        dflt = any(c["default"] for c in snmp_comm)
+        bits: List[str] = []
+        if dflt:
+            bits.append("a default community (public/private)")
+        if rw:
+            bits.append("a read-write community")
+        bits.append(f"{len(snmp_comm)} v1/v2c community string(s) '<redacted>'")
+        add("insecure-snmp", "fail",
+            "; ".join(bits) + " -- v1/v2c carry the community in cleartext.",
+            severity="high" if (rw or dflt) else "medium")
+    elif snmpv3:
+        add("insecure-snmp", "pass", "SNMPv3 (auth/priv) only -- no v1/v2c communities.")
+    else:
+        add("insecure-snmp", "na", "no SNMP configured.")
+
+    if not vty:
+        add("telnet-enabled", "na", "no VTY lines in this config.")
+        add("vty-hardening", "na", "no VTY lines in this config.")
+    else:
+        add("telnet-enabled", "fail" if telnet else "pass",
+            "a VTY line permits telnet (cleartext management)." if telnet
+            else "VTY transport restricted to SSH.")
+        add("vty-hardening", "fail" if vty_weak else "pass",
+            "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0)."
+            if vty_weak else "VTY lines carry an access-class and a non-zero exec-timeout.")
+
+    if risky:
+        add("risky-services", "fail", "enabled: " + ", ".join(risky) + ".")
+    else:
+        add("risky-services", "pass", "no risky / unused services enabled.")
+
+    nfail = sum(1 for f in findings if f["status"] == "fail")
+    npass = sum(1 for f in findings if f["status"] == "pass")
+    nna = sum(1 for f in findings if f["status"] == "na")
+    high = any(f["status"] == "fail" and f["severity"] == "high" for f in findings)
+    grade = "weak" if high else ("partial" if nfail else "hardened")
+    return {"findings": findings,
+            "summary": {"fail": nfail, "pass": npass, "na": nna, "grade": grade}}
+
+
+# ----------------------------------------------------------------------------- #
 # REDISTRIBUTION (protocol-to-protocol analysis) - parse the 'router <proto>' /
 # 'redistribute' stanzas out of the already-collected 'show running-config'. Each
 # 'redistribute' under a 'router X' block is one protocol-to-protocol edge

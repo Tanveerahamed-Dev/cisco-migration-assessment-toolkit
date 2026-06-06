@@ -246,6 +246,14 @@
   "Type",
   "Detail"
  ],
+ "Config Compliance": [
+  "Switch",
+  "Severity",
+  "Status",
+  "Check",
+  "Finding",
+  "CIS / Remediation"
+ ],
  "Protocol Boundaries": [
   "Switch",
   "Protocols",
