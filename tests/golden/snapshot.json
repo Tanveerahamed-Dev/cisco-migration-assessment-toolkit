@@ -1837,6 +1837,36 @@
    }
   }
  },
+ "stp_roots": {
+  "core1": {
+   "10": {
+    "root_priority": 24586,
+    "root_address": "aaaa.0001.0001",
+    "is_root": true,
+    "bridge_priority": 24586
+   },
+   "30": {
+    "root_priority": 32798,
+    "root_address": "cccc.0003.0003",
+    "is_root": false,
+    "bridge_priority": 32798
+   }
+  },
+  "access1": {
+   "10": {
+    "root_priority": 24586,
+    "root_address": "aaaa.0001.0001",
+    "is_root": false,
+    "bridge_priority": 32778
+   },
+   "30": {
+    "root_priority": 32798,
+    "root_address": "cccc.0003.0003",
+    "is_root": true,
+    "bridge_priority": 32798
+   }
+  }
+ },
  "calibration": {
   "n": 3,
   "score_stats": {
