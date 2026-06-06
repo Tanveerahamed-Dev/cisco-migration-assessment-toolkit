@@ -356,6 +356,7 @@ from cisco_toolkit.excel import (
     write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet,                                   # step 24
+    write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
 )
@@ -1521,6 +1522,11 @@ def main():
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
                            l2=_l2, hostname_mismatches=_hostname_mismatches, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
+
+    # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
+    logger.info("\n[Phase 30e] Writing Executive Summary sheet ...")
+    _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
+               health_scores, punchlist, migration_readiness, all_interfaces)
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
