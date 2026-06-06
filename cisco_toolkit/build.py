@@ -191,6 +191,7 @@ def build_device_physical(hostname: str, platform: str,
         dp.sw_version    = ver.get("sw_version", "")
         dp.uptime        = ver.get("uptime", "")
         dp.system_mac    = ver.get("system_mac", "")
+        dp.reported_hostname = ver.get("hostname_reported", "")
 
     inv_out = _load_cmd_output(cmd_to_file, "show inventory")
     if inv_out:
