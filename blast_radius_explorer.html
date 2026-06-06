@@ -336,6 +336,35 @@
   .card .ln b{color:var(--text)}
   .card .fix{font-size:11.5px; color:var(--text-dim); margin-top:6px; padding-top:6px; border-top:1px dashed var(--border)}
   .card .fix b{color:var(--ok)}
+
+  /* ---- U4: executive narrative card (top of Health view) ---- */
+  .narr{border-left-color:var(--accent); background:
+    linear-gradient(180deg,var(--accent-soft) 0%,transparent 70%),var(--surface-2);
+    padding:13px 15px}
+  .narr .ct{margin-bottom:9px}
+  .narr .nm{font-size:13px; letter-spacing:-.1px}
+  .narr .eyebrow{font-size:9.5px; letter-spacing:1.3px; text-transform:uppercase; color:var(--accent);
+    font-weight:700; display:block; margin-bottom:1px}
+  .narr ol{list-style:none; counter-reset:narr; margin:0; padding:0}
+  .narr li{counter-increment:narr; position:relative; padding:7px 0 7px 26px; font-size:12px; line-height:1.55;
+    color:var(--text-dim); border-top:1px solid var(--border-faint)}
+  .narr li:first-child{border-top:0}
+  .narr li b{color:var(--text)} .narr li .mono{font-family:var(--mono); font-size:11px; color:var(--text)}
+  .narr li::before{content:counter(narr); position:absolute; left:0; top:7px; width:17px; height:17px;
+    border-radius:50%; font-size:9.5px; font-weight:700; line-height:17px; text-align:center;
+    color:#fff; background:var(--text-faint)}
+  .narr li.crit::before{background:var(--crit)} .narr li.risk::before{background:var(--risk)}
+  .narr li.watch::before{background:var(--watch)} .narr li.ok::before{background:var(--ok)}
+  .narr li.crit{color:var(--text)} .narr li.risk{color:var(--text)}
+  /* per-line staggered fade/slide reveal. The reveal uses fill-mode 'both' + a per-line delay, so the
+     global reduced-motion rule (which zeroes only animation-DURATION, not the delay) would otherwise leave
+     delayed lines stuck at the backwards 'from' (opacity:0). The explicit reduced-motion block below drops
+     the animation entirely, so the lines rest at their natural fully-visible state. */
+  .narr li.nrev{animation:narrIn .42s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--nd,0ms)}
+  @keyframes narrIn{from{opacity:0; transform:translateX(-6px)} to{opacity:1; transform:none}}
+  @media (prefers-reduced-motion: reduce){
+    .narr li.nrev{animation:none !important; animation-delay:0ms !important; opacity:1 !important; transform:none !important}
+  }
   .epdrill{margin-top:7px}
   .epdrill>summary{cursor:pointer; font-size:11px; color:var(--text-dim); user-select:none; padding:3px 0}
   .epdrill>summary:hover{color:var(--text)}
@@ -2666,6 +2695,125 @@ function paintProtocols(){
   // A2: tint each edge by the routing protocol whose adjacency traverses it (class -> reset by baseEdge each repaint)
   edgeEls.forEach(({e,path})=>{const p=edgeProto(e); if(p)path.className.baseVal="lnk adj-"+p+(e.pc?" pc":"");});
 }
+
+/* =====================================================================
+   U4 — EXECUTIVE NARRATIVE (Health, top card)
+   Auto-generate a short, plain-English "what matters most" summary that
+   CORRELATES the existing per-layer findings into ranked sentences:
+     - structural SPOFs  (causalityChains -> CHAINS)   L1/L2/L3 topology
+     - FHRP / sole-gateway gaps (fhrpConsistency + MODEL.gateways)  L3
+     - L1 duplex/speed mismatch (linkPhyConsistency)
+     - addressing clashes (addressingConflicts)
+     - native-VLAN / pruning trunk issues (trunkConsistency)
+     - fleet posture (SNAP.health_scores: worst switch, average, bands)
+   Defensive throughout: missing data -> the slice is skipped; an empty
+   result yields one positive "no cross-layer risks" line.
+   Returns an array of {text, severity}.  severity in ok|watch|risk|crit.
+   ===================================================================== */
+const _NARR_RANK={crit:3,risk:2,watch:1,ok:0};
+function buildNarrative(model){
+  const m=model||MODEL; const out=[];
+  if(!m){return [{text:"Snapshot not loaded yet.",severity:"watch"}];}
+  const sn=h=>esc(shortName(h)), wrapHost=h=>`<span class="mono">${sn(h)}</span>`;
+
+  // ---- structural SPOFs: the single highest-impact correlation we can make ----
+  const chains=(typeof CHAINS!=="undefined"&&CHAINS.length)?CHAINS:[];
+  if(chains.length){
+    const top=chains[0];                                              // already severity-ranked
+    const sev=top.sev==="High"?"crit":top.sev==="Medium"?"risk":"watch";
+    const eps=top.endpoints||0;
+    out.push({text:`${wrapHost(top.switch)} is the top migration risk: ${esc(top.title.toLowerCase())} `+
+      `— ${esc(top.root)}${eps?` A failure here isolates <b>${eps}</b> endpoint(s).`:""}`,
+      severity:sev});
+    const more=chains.length-1;
+    if(more>0) out.push({text:`${more} more structural single-point-of-failure${more===1?"":"s"} `+
+      `(${esc(chains.filter(c=>c.sev==="High").length+" high")}-severity in total) — see the prioritised SPOF list below.`,
+      severity:chains.some(c=>c.sev==="High")?"risk":"watch"});
+  }
+
+  // ---- FHRP / first-hop redundancy gaps across every multi-gateway VLAN ----
+  const fhrpBad=[];
+  if(model_has(m,"gateways")&&typeof fhrpConsistency==="function"){
+    for(const [vid,gws] of m.gateways){ if(!gws||gws.size<2)continue;
+      let F; try{F=fhrpConsistency(vid);}catch(_){F=null;}
+      if(F&&F.state==="crit")fhrpBad.push(vid);}
+  }
+  if(fhrpBad.length){
+    const v=fhrpBad.slice(0,3).join(", ")+(fhrpBad.length>3?"…":"");
+    out.push({text:`First-hop redundancy is broken on VLAN ${esc(v)} — multiple gateways but mismatched or missing `+
+      `HSRP/VRRP, so clients won't actually fail over. Reconcile the FHRP groups/VIPs before any cutover.`,
+      severity:"crit"});
+  }
+
+  // ---- L1: duplex / speed mismatch (silent "up but slow") ----
+  let phy=[]; try{phy=(typeof linkPhyConsistency==="function")?linkPhyConsistency():[];}catch(_){phy=[];}
+  if(phy.length){const x=phy[0];
+    out.push({text:`An L1 mismatch on <span class="mono">${sn(x.a)} ${esc(x.aPort)}</span> ↔ `+
+      `<span class="mono">${sn(x.b)} ${esc(x.bPort)}</span> (${x.duplex?"duplex":"speed"}) degrades that link `+
+      `without taking it down${phy.length>1?` (and ${phy.length-1} more)`:""} — errors that survive a cutover unnoticed.`,
+      severity:"watch"});
+  }
+
+  // ---- addressing clashes (duplicate IPs / overlapping subnets) ----
+  let addr={total:0}; try{addr=(typeof addressingConflicts==="function")?addressingConflicts():{total:0};}catch(_){addr={total:0};}
+  if(addr.total){
+    out.push({text:`${esc(addr.total)} addressing conflict${addr.total===1?"":"s"} `+
+      `(duplicate L3 IPs / overlapping subnets) will collide the moment two domains merge — resolve before consolidating.`,
+      severity:"risk"});
+  }
+
+  // ---- trunk: native-VLAN mismatch / asymmetric pruning ----
+  let trunk=[]; try{trunk=(typeof trunkConsistency==="function")?trunkConsistency():[];}catch(_){trunk=[];}
+  if(trunk.length){const native=trunk.filter(t=>t.kind==="native").length;
+    out.push({text:`${esc(trunk.length)} trunk inconsistenc${trunk.length===1?"y":"ies"}`+
+      `${native?` (incl. ${native} native-VLAN mismatch${native===1?"":"es"})`:""} `+
+      `on inter-switch links — silent L2 leaks or black-holed VLANs.`,
+      severity:"watch"});
+  }
+
+  // ---- fleet posture: worst switch + average, from health_scores ----
+  const hs=(typeof healthList==="function")?healthList():[];
+  if(hs.length){
+    const n=hs.length, avg=Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
+    const worst=hs.slice().sort((a,b)=>(a.score||0)-(b.score||0))[0];
+    const wtok=worst.band?healthBandToken(worst.band):scoreToken(worst.score);
+    const sev=wtok==="crit"?"crit":wtok==="risk"?"risk":wtok==="watch"?"watch":"ok";
+    out.push({text:`Fleet health averages <b>${esc(avg)}</b>/100 across ${esc(n)} switch${n===1?"":"es"}; `+
+      `weakest is ${wrapHost(worst.switch)} at <b>${esc(worst.score)}</b>${worst.band?` (${esc(worst.band)})`:""}. `+
+      `Treat the score as a heat-map and fix the structural SPOFs above first.`,
+      severity:sev});
+  }
+
+  // ---- nothing fired: a single positive line ----
+  if(!out.length)
+    return [{text:"No cross-layer risks detected — no structural SPOFs, FHRP gaps, addressing clashes, "+
+      "trunk inconsistencies or L1 mismatches surfaced in this snapshot.",severity:"ok"}];
+
+  // rank by severity, keep the 2–5 most important, stable within a tier
+  out.forEach((o,i)=>o._i=i);
+  out.sort((a,b)=>(_NARR_RANK[b.severity]-_NARR_RANK[a.severity])||(a._i-b._i));
+  return out.slice(0,5).map(o=>({text:o.text,severity:o.severity}));
+}
+/* tiny guard for Map-or-undefined model fields (back-compat with partial models) */
+function model_has(m,k){return m&&m[k]&&typeof m[k].size==="number";}
+
+function narrativeCard(){
+  const lines=buildNarrative(MODEL);
+  if(!lines||!lines.length)return "";
+  const items=lines.map((l,i)=>
+    `<li class="${esc(l.severity)} nrev" style="--nd:${Math.min(420,i*90)}ms">${l.text}</li>`).join("");
+  const worst=lines.reduce((a,l)=>Math.max(a,_NARR_RANK[l.severity]||0),0);
+  const allClear=lines.length===1&&lines[0].severity==="ok";
+  const badge=allClear?`<span class="badge b-ok">all clear</span>`
+    :worst>=3?`<span class="badge b-crit">act now</span>`
+    :worst>=2?`<span class="badge b-risk">plan</span>`
+    :`<span class="badge b-watch">review</span>`;
+  return `<div class="sec"><div class="card narr accent">
+    <div class="ct"><span class="nm"><span class="eyebrow">Executive summary</span>What matters most</span>${badge}</div>
+    <ol>${items}</ol>
+    <div class="ln faint" style="margin-top:8px;padding-top:7px;border-top:1px dashed var(--border)">Auto-generated by correlating the per-layer findings below — ranked by migration impact.</div>
+  </div></div>`;
+}
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
   if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
@@ -2709,6 +2857,7 @@ function drawHealth(){
   // is the scoring crying wolf?
   const allBad=(bands.crit+bands.risk)===n && n>2;
   return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title"><span class="num" data-to="${avg}">0</span><span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span></div></div>
+    ${narrativeCard()}
     <div class="sec"><div class="headline">
       <div class="stat ok"><div class="v"><span class="num" data-to="${bands.ok}">0</span></div><div class="k">good</div></div>
       <div class="stat risk"><div class="v"><span class="num" data-to="${bands.watch+bands.risk}">0</span></div><div class="k">fair/poor</div></div>
