@@ -4032,12 +4032,39 @@ function oneSidedSection(){const m=oneSidedAdjacencies(); if(!m.length)return ""
   const rows=m.map(x=>`<div class="ln"><span class="pill pl-crit">✗ one-sided ${_protoLabel(x.proto)}</span> <span class="mono">${esc(shortName(x.host))} ${esc(x.localIf)}</span> → <span class="mono">${esc(shortName(x.peer))}</span> <span class="faint">(${esc(x.state)}; ${x.peerRuns?"no matching adjacency back":"peer runs no routing protocol"})</span> — adjacency won't form bidirectionally.</div>`).join("");
   return `<div class="sec"><h3>One-sided adjacencies <span class="ct">${m.length}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">A neighbor seen on one end of a link with no adjacency back — area/auth/MTU mismatch, or routing enabled toward a non-routing device.</div>${rows}</div>`;}
+/* Protocol HEALTH (V3.23.78): surface the Python-computed SNAP.protocol_health — per (switch, protocol)
+   STP / EtherChannel / VTP / OSPF / BGP / EIGRP / FHRP health with a severity — which the explorer had
+   never consumed (it derived only routing PARTICIPATION from raw neighbor data). One source of truth: this
+   is exactly the collector's analysis the 'Protocol Health' workbook sheet shows. Records: {switch,
+   protocol, severity, summary, detail}. */
+function _phRank(s){return s==="High"?3:s==="Medium"?2:s==="Low"?1:0;}
+function _phTok(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";}
+function protoHealthFor(host){return ((SNAP&&SNAP.protocol_health)||[]).filter(r=>r.switch===host);}
+function protoHealthRow(r){
+  return `<div class="ln"><span class="pill pl-${_phTok(r.severity)}">${esc(r.severity)}</span> `+
+    `<span class="pill pl-neutral">${esc(r.protocol)}</span> <span class="mono">${esc(shortName(r.switch))}</span> — ${esc(r.summary||"")}`+
+    `${r.detail?` <span class="faint">(${esc(String(r.detail).slice(0,80))}${String(r.detail).length>80?"…":""})</span>`:""}</div>`;}
+function protoHealthSection(){
+  const ph=(SNAP&&SNAP.protocol_health)||[]; if(!ph.length)return "";
+  const counts={High:0,Medium:0,Low:0,Info:0}; ph.forEach(r=>{if(counts[r.severity]!=null)counts[r.severity]++;});
+  const flagged=ph.slice().filter(r=>_phRank(r.severity)>=2)
+    .sort((a,b)=>_phRank(b.severity)-_phRank(a.severity)||String(a.protocol).localeCompare(b.protocol)||String(a.switch).localeCompare(b.switch));
+  if(!flagged.length)
+    return `<div class="sec"><h3>Protocol health <span class="badge b-ok">clean</span></h3>`+
+      `<div class="ln faint">✓ All ${ph.length} STP / EtherChannel / VTP / routing-protocol checks are Info — no High/Medium protocol-health issues to carry into the migration.</div></div>`;
+  const CAP=20; const rows=flagged.slice(0,CAP).map(protoHealthRow).join("");
+  const more=flagged.length>CAP?`<div class="ln faint" style="margin-top:6px">…and <b>${flagged.length-CAP}</b> more — see the <b>Protocol Health</b> workbook sheet.</div>`:"";
+  return `<div class="sec"><h3>Protocol health <span class="badge b-crit">${flagged.length} issue${flagged.length===1?"":"s"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Per-device STP · EtherChannel · VTP · FHRP · routing-protocol health from the collector (<b>${counts.High}</b> High · ${counts.Medium} Medium of ${ph.length} checks) — e.g. port-channel members not bundled, VTP mode/revision risk, STP inconsistencies.</div>`+
+    rows+more+`</div>`;
+}
 function drawProtocols(){
   const hosts=(MODEL?MODEL.hosts:[]).slice();
   const withProto=hosts.filter(h=>protoSet(h).size>0).sort();
-  if(!withProto.length)return `<div class="drawer-head"><div class="eyebrow">Protocols</div><div class="title">Routing-protocol topology</div></div>
+  const ph=(SNAP&&SNAP.protocol_health)||[];
+  if(!withProto.length&&!ph.length)return `<div class="drawer-head"><div class="eyebrow">Protocols</div><div class="title">Routing-protocol topology</div></div>
     <div class="empty"><div class="big">⌥</div><p>No routing-protocol data in this snapshot.</p>
-    <p class="faint">Needs <b>routing_neighbors</b> / <b>redistribution</b> / route <b>source</b> data (parsed offline from OSPF·EIGRP·BGP neighbors + run-config).</p></div>`;
+    <p class="faint">Needs <b>routing_neighbors</b> / <b>redistribution</b> / route <b>source</b> data (parsed offline from OSPF·EIGRP·BGP neighbors + run-config), or <b>protocol_health</b>.</p></div>`;
   if(SEL&&withProto.includes(SEL))return drawProtocolsDetail(SEL);
   const redistPts=withProto.filter(isRedistPoint);
   const adj=allAdjacencies(), stuck=adj.filter(a=>!a.ok);
@@ -4054,7 +4081,9 @@ function drawProtocols(){
       <div class="stat"><div class="v">${withProto.length}</div><div class="k">routing devices</div></div>
       <div class="stat ${redistPts.length?"watch":""}"><div class="v">${redistPts.length}</div><div class="k">boundaries</div></div>
       <div class="stat ${stuck.length?"crit":"ok"}"><div class="v">${stuck.length}</div><div class="k">stuck adj</div></div>
+      <div class="stat ${ph.filter(r=>r.severity==="High").length?"crit":"ok"}"><div class="v">${ph.filter(r=>r.severity==="High").length}</div><div class="k">proto issues</div></div>
     </div></div>
+    ${protoHealthSection()}
     <div class="sec"><h3>Protocol fingerprint <span class="ct">${withProto.length}</span></h3>
       <table><tbody>${fpRows}</tbody></table>
       <p class="faint" style="margin-top:6px">Click a switch for its full routing-protocol profile.</p></div>
@@ -4076,6 +4105,9 @@ function drawProtocolsDetail(host){
     <div class="sec"><h3>Adjacencies <span class="ct">${adj.length}</span></h3>${adjRows}</div>
     <div class="sec"><h3>Redistribution <span class="ct">${edges.length}</span></h3>${edgeRows}</div>
     <div class="sec"><h3>Route sources</h3>${distBars(routeSourceDist(host))||'<p class="faint">No routes in scope.</p>'}</div>
+    ${(function(){const ph=protoHealthFor(host);if(!ph.length)return "";
+      const sorted=ph.slice().sort((a,b)=>_phRank(b.severity)-_phRank(a.severity)||String(a.protocol).localeCompare(b.protocol));
+      return `<div class="sec"><h3>Protocol health <span class="ct">${ph.length}</span></h3>${sorted.map(protoHealthRow).join("")}</div>`;})()}
     <p class="faint" style="margin:0 0 10px"><button class="btn" onclick="SEL=null;repaint();renderDrawer()">← Back to all protocols</button></p>`;
 }
 
