@@ -1564,6 +1564,14 @@ def main():
     snap_dict["routes"] = all_routes                                # NEW (route-aware reachability): {host:[{prefix,source,next_hop,out_intf}]}
     snap_dict["routing_neighbors"] = all_routing_neighbors          # NEW (protocol-to-protocol analysis): {host:{ospf:[...],eigrp:[...],bgp:[...]}}
     snap_dict["redistribution"] = all_redistribution                # NEW (protocol-to-protocol analysis): {host:[{into_proto,into_id,from_proto,from_id,route_map,raw}]}
+    # NEW-V3.23.81: embed the causality chains + failure-impact rollup the workbook computes, so the
+    # explorer's Causality mode + cockpit keystones consume the SAME analysis instead of re-deriving in JS
+    # (one source of truth). Local import keeps these out of this module's public surface (they live in
+    # analyze, per the test_package re-export contract). Tuples -> dicts for a self-describing JSON contract.
+    from cisco_toolkit.analyze import compute_causality_chains, compute_failure_impact
+    snap_dict["causality"] = [{"severity": s, "trigger": t, "mechanism": m, "impact": i, "mitigation": mt}
+                              for (s, t, m, i, mt) in compute_causality_chains(all_interfaces)]
+    snap_dict["failure_impact"] = compute_failure_impact(all_interfaces)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
