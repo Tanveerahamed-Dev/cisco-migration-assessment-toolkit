@@ -342,6 +342,7 @@ from cisco_toolkit.excel import (
     write_nat_sheet,   # NAT inventory V3.23.50
     write_security_sheet,   # Security Posture (CIS-aligned) V3.23.59
     write_config_hygiene_sheet,   # Config Hygiene (undefined refs / unused structures) V3.23.61
+    write_stp_roots_sheet,   # STP Root Bridges (accidental root / gateway misalignment) V3.23.62
     write_protocol_boundaries_sheet,   # protocol-to-protocol analysis (workbook surfacing)
     write_addressing_conflicts_sheet,  # reachability findings -> workbook surfacing
     write_fhrp_consistency_sheet,      # reachability findings -> workbook surfacing
@@ -360,7 +361,7 @@ from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
-    build_routes, inscope_subnets, scope_routes, build_nat, build_security, build_config_hygiene, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_nat, build_security, build_config_hygiene, build_stp_roots, build_routing_neighbors,
     build_redistribution,
 )
 # NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
@@ -1300,6 +1301,7 @@ def main():
     all_nat: Dict[str, dict] = {}                                    # NEW-V3.23.50 (NAT inventory)
     all_security: Dict[str, dict] = {}                               # NEW-V3.23.59 (CIS-aligned security posture)
     all_config_hygiene: Dict[str, dict] = {}                         # NEW-V3.23.61 (undefined refs / unused structures)
+    all_stp_roots: Dict[str, dict] = {}                              # NEW-V3.23.62 (per-VLAN STP root bridge)
     all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
     for hostname, platform, cmd_to_file in all_devices_meta:
@@ -1328,6 +1330,10 @@ def main():
             _hs = hyg.get("summary", {})
             logger.info(f"  [HYGIENE] {hostname}: {_hs.get('undefined', 0)} undefined ref(s), "
                         f"{_hs.get('unused', 0)} unused structure(s)")
+        stp_roots = build_stp_roots(cmd_to_file)
+        if stp_roots:
+            all_stp_roots[hostname] = stp_roots
+            logger.info(f"  [STP] {hostname}: root bridge info for {len(stp_roots)} VLAN(s)")
         rn = build_routing_neighbors(cmd_to_file)
         if any(rn.values()):
             all_routing_neighbors[hostname] = rn
@@ -1494,6 +1500,7 @@ def main():
     _run_phase("NAT Inventory sheet", write_nat_sheet, wb, all_nat)
     _run_phase("Config Compliance sheet", write_security_sheet, wb, all_security)
     _run_phase("Config Hygiene sheet", write_config_hygiene_sheet, wb, all_config_hygiene)
+    _run_phase("STP Root Bridges sheet", write_stp_roots_sheet, wb, all_stp_roots, all_interfaces)
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
@@ -1523,6 +1530,7 @@ def main():
     snap_dict["nat"] = all_nat                                       # NEW-V3.23.50 (NAT inventory: {host:{static,dynamic,pools,inside,outside}})
     snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
+    snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}

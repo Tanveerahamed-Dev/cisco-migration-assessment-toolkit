@@ -438,6 +438,62 @@ def parse_spanning_tree_states(output: str) -> Dict[str, str]:
         elif st.get("Disabled"):   out[ifn] = "Disabled"
     return out
 
+# ----------------------------------------------------------------------------- #
+# STP ROOT BRIDGE (NEW-V3.23.62) - parse the per-VLAN 'Root ID' / 'Bridge ID'
+# blocks of 'show spanning-tree' (already collected) so the explorer can flag two
+# design smells migrations love to inherit: (1) an ACCIDENTAL root -- a VLAN whose
+# root runs the default priority (32768 + sys-id-ext), i.e. nobody deliberately
+# elected a root, so it was won on a MAC tiebreak and can move unexpectedly; and
+# (2) a root that is NOT the switch hosting the VLAN's gateway (suboptimal L2
+# hairpinning). is_root is true when this switch's Root ID == its own Bridge ID.
+# Tolerant; never raises. The interface-table rows are handled by the detail parser.
+# ----------------------------------------------------------------------------- #
+def parse_spanning_tree_root(output: str) -> Dict[str, dict]:
+    """'show spanning-tree' -> {vlan: {root_priority:int|None, root_address:str,
+    bridge_priority:int|None, is_root:bool}}; {} when none. is_root = this switch is the
+    root for that VLAN (Root ID address == Bridge ID address, or an explicit root line)."""
+    if not output:
+        return {}
+    vhdr = re.compile(r"^(?:VLAN0*(\d+)|MST0*(\d+))\b", re.IGNORECASE)
+    raw_recs: Dict[str, dict] = {}
+    cur: Optional[str] = None
+    section: Optional[str] = None
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        vm = vhdr.match(s)
+        if vm:
+            cur = vm.group(1) or vm.group(2)
+            raw_recs.setdefault(cur, {})
+            section = None
+            continue
+        if cur is None:
+            continue
+        mroot = re.match(r"^Root\s+ID\s+Priority\s+(\d+)", s, re.IGNORECASE)
+        if mroot:
+            raw_recs[cur]["root_priority"] = int(mroot.group(1)); section = "root"; continue
+        mbridge = re.match(r"^Bridge\s+ID\s+Priority\s+(\d+)", s, re.IGNORECASE)
+        if mbridge:
+            raw_recs[cur]["bridge_priority"] = int(mbridge.group(1)); section = "bridge"; continue
+        maddr = re.match(r"^Address\s+([0-9A-Fa-f][0-9A-Fa-f.:]+)\s*$", s, re.IGNORECASE)
+        if maddr and section in ("root", "bridge"):
+            raw_recs[cur][section + "_address"] = normalize_mac(maddr.group(1)); continue
+        if re.match(r"^This\s+bridge\s+is\s+the\s+root", s, re.IGNORECASE):
+            raw_recs[cur]["is_root"] = True; continue
+    out: Dict[str, dict] = {}
+    for vlan, r in raw_recs.items():
+        if not r:
+            continue
+        ra, ba = r.get("root_address"), r.get("bridge_address")
+        is_root = bool(r.get("is_root")) or (bool(ra) and ra == ba)
+        rec: dict = {"root_priority": r.get("root_priority"),
+                     "root_address": ra or "", "is_root": is_root}
+        if "bridge_priority" in r:
+            rec["bridge_priority"] = r["bridge_priority"]
+        out[vlan] = rec
+    return out
+
 def _compress_vlans(vlans: List[str]) -> str:
     """[10, 20, 21, 22, 23] -> '10,20-23'. Non-numeric ids are appended as-is."""
     nums = sorted({int(v) for v in vlans if str(v).isdigit()})

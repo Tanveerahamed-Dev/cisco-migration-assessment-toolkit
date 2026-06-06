@@ -261,6 +261,14 @@
   "Name",
   "Where / note"
  ],
+ "STP Root Bridges": [
+  "VLAN",
+  "Root switch",
+  "Root priority",
+  "Accidental root?",
+  "VLAN gateway(s)",
+  "Aligned?"
+ ],
  "Protocol Boundaries": [
   "Switch",
   "Protocols",

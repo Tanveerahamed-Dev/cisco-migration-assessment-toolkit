@@ -195,13 +195,23 @@ Group  Port-channel  Protocol    Ports
     "show spanning-tree": """\
 VLAN0010
   Spanning tree enabled protocol rstp
+  Root ID    Priority    24586
+             Address     aaaa.0001.0001
+             This bridge is the root
+  Bridge ID  Priority    24586  (priority 24576 sys-id-ext 10)
+             Address     aaaa.0001.0001
 Interface        Role Sts Cost      Prio.Nbr Type
 ---------------- ---- --- --------- -------- ----
 Gi1/0/24         Desg FWD 4         128.24   P2p
-Po1              Root FWD 3         128.65   P2p
+Po1              Desg FWD 3         128.65   P2p
 
 VLAN0030
   Spanning tree enabled protocol rstp
+  Root ID    Priority    32798
+             Address     cccc.0003.0003
+             Cost        4
+  Bridge ID  Priority    32798  (priority 32768 sys-id-ext 30)
+             Address     aaaa.0001.0001
 Interface        Role Sts Cost      Prio.Nbr Type
 ---------------- ---- --- --------- -------- ----
 Gi1/0/24         Desg FWD 4         128.24   P2p
@@ -493,15 +503,25 @@ interface GigabitEthernet0/10
     "show spanning-tree": """\
 VLAN0010
   Spanning tree enabled protocol rstp
+  Root ID    Priority    24586
+             Address     aaaa.0001.0001
+             Cost        4
+  Bridge ID  Priority    32778  (priority 32768 sys-id-ext 10)
+             Address     cccc.0003.0003
 Interface        Role Sts Cost      Prio.Nbr Type
 ---------------- ---- --- --------- -------- ----
 Gi0/1            Root FWD 4         128.1    P2p
 
 VLAN0030
   Spanning tree enabled protocol rstp
+  Root ID    Priority    32798
+             Address     cccc.0003.0003
+             This bridge is the root
+  Bridge ID  Priority    32798  (priority 32768 sys-id-ext 30)
+             Address     cccc.0003.0003
 Interface        Role Sts Cost      Prio.Nbr Type
 ---------------- ---- --- --------- -------- ----
-Gi0/1            Root FWD 4         128.1    P2p
+Gi0/1            Desg FWD 4         128.1    P2p
 """,
     "show cdp neighbors detail": """\
 -------------------------

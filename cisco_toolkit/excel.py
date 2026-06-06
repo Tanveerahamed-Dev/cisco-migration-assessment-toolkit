@@ -904,6 +904,49 @@ def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:
                 f"{nunused} unused across {nhosts} switch(es)")
 
 
+STP_ROOTS_SHEET_NAME = "STP Root Bridges"   # root-bridge placement analysis (NEW-V3.23.62)
+
+def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None:
+    """Write the 'STP Root Bridges' sheet: per VLAN, which switch is the spanning-tree root, its
+    bridge priority, whether that root is ACCIDENTAL (default priority -> elected on a MAC tiebreak,
+    not by design) and whether it ALIGNS with the VLAN's L3 gateway (root != gateway -> the path to
+    the default gateway hairpins through the root). Migration-relevant L2 design hygiene."""
+    from cisco_toolkit.analyze import stp_root_findings
+    f = stp_root_findings(all_stp_roots, all_interfaces)
+    acc = {(x["vlan"], x["host"]) for x in f["accidental"]}
+    mis = {x["vlan"]: x["gateways"] for x in f["misaligned"]}
+    ws = wb.create_sheet(STP_ROOTS_SHEET_NAME)
+    for col, h in enumerate(["VLAN", "Root switch", "Root priority", "Accidental root?",
+                             "VLAN gateway(s)", "Aligned?"], 1):
+        c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    root_of: dict = {}
+    for host in sorted(all_stp_roots or {}):
+        for vlan, r in (all_stp_roots[host] or {}).items():
+            if r.get("is_root"):
+                root_of.setdefault(vlan, (host, r.get("root_priority")))
+    warn = PatternFill("solid", fgColor="FCE5CD")
+    r = 2; nrows = 0
+    for vlan in sorted(root_of, key=lambda v: int(v)):
+        host, prio = root_of[vlan]
+        is_acc = (vlan, host) in acc
+        gws = mis.get(vlan)
+        ws.cell(r, 1, vlan); ws.cell(r, 2, host)
+        ws.cell(r, 3, prio if prio is not None else "")
+        ws.cell(r, 4, "yes (default priority)" if is_acc else "no")
+        ws.cell(r, 5, ", ".join(gws) if gws else "(root hosts gateway / none collected)")
+        ws.cell(r, 6, "no - root != gateway" if gws else "yes")
+        if is_acc or gws:
+            for col in range(1, 7):
+                ws.cell(r, col).fill = warn
+        r += 1; nrows += 1
+    for i, w in enumerate([8, 16, 14, 20, 28, 22], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{STP_ROOTS_SHEET_NAME}' sheet: {nrows} rooted VLAN(s), "
+                f"{len(f['accidental'])} accidental, {len(f['misaligned'])} misaligned")
+
+
 PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
 
 def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:

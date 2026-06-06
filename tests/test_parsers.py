@@ -244,6 +244,39 @@ def test_parse_config_hygiene_absent(cp):
     assert parse.parse_config_hygiene("hostname r1\n!\n") == {}
 
 
+def test_parse_spanning_tree_root(cp):
+    out = textwrap.dedent("""\
+        VLAN0010
+          Spanning tree enabled protocol rstp
+          Root ID    Priority    24586
+                     Address     aaaa.0001.0001
+                     This bridge is the root
+          Bridge ID  Priority    24586  (priority 24576 sys-id-ext 10)
+                     Address     aaaa.0001.0001
+        Interface        Role Sts Cost      Prio.Nbr Type
+        Po1              Desg FWD 3         128.65   P2p
+
+        VLAN0030
+          Spanning tree enabled protocol rstp
+          Root ID    Priority    32798
+                     Address     cccc.0003.0003
+          Bridge ID  Priority    32798  (priority 32768 sys-id-ext 30)
+                     Address     aaaa.0001.0001
+        Interface        Role Sts Cost      Prio.Nbr Type
+        Gi1/0/24         Root FWD 4         128.24   P2p
+    """)
+    r = parse.parse_spanning_tree_root(out)
+    assert r["10"]["is_root"] is True and r["10"]["root_priority"] == 24586     # this switch IS the root for VLAN10
+    assert r["30"]["is_root"] is False                                          # root is elsewhere (root addr != bridge addr)
+    assert r["30"]["root_address"] == "cccc.0003.0003"
+    # the detail/state parser is unaffected by the added Root ID / Bridge ID blocks
+    assert parse.parse_spanning_tree_states(out) == {"Po1": "Forwarding", "Gi1/0/24": "Forwarding"}
+
+
+def test_parse_spanning_tree_root_absent(cp):
+    assert parse.parse_spanning_tree_root("") == {}
+
+
 def test_parse_redistribution(cp):
     # protocol-to-protocol edges: each 'redistribute' under a 'router X' block; a col-0 line ends the block
     out = textwrap.dedent("""\

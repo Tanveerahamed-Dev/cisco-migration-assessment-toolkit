@@ -160,6 +160,26 @@ def test_score_sensitivity_sweeps_security_group(cp):
     assert any(r["group"] == "sec_weights" for r in rows)
 
 
+def test_stp_root_findings(cp):
+    # VLAN30 is rooted on the default priority (32768+30) AND on a switch (acc1) that doesn't host its
+    # gateway (core1 does) -> accidental + misaligned. VLAN10's root (core1) is deliberate + hosts the gateway.
+    from cisco_toolkit import analyze
+    from cisco_toolkit.model import InterfaceData
+    stp = {"core1": {"10": {"is_root": True, "root_priority": 24586},
+                     "30": {"is_root": False, "root_priority": 32798}},
+           "acc1":  {"10": {"is_root": False, "root_priority": 24586},
+                     "30": {"is_root": True, "root_priority": 32798}}}
+    ifaces = {"core1": {"Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.1"),
+                        "Vlan30": InterfaceData(port="Vlan30", svi_ip="10.0.30.1")},
+              "acc1": {}}
+    f = analyze.stp_root_findings(stp, ifaces)
+    assert any(a["vlan"] == "30" and a["host"] == "acc1" for a in f["accidental"])   # default-priority root
+    assert not any(a["vlan"] == "10" for a in f["accidental"])                       # 24586 is deliberate
+    assert any(m["vlan"] == "30" and m["root"] == "acc1" and "core1" in m["gateways"]
+               for m in f["misaligned"])                                             # root acc1 != gateway core1
+    assert not any(m["vlan"] == "10" for m in f["misaligned"])                       # root core1 hosts the gateway
+
+
 # --------------------------------------------------------------------------- #
 # compute_migration_readiness
 # --------------------------------------------------------------------------- #

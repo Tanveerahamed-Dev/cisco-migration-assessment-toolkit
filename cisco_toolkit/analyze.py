@@ -1637,3 +1637,38 @@ def trace_full_flow(src_ip: str, dst_ip: str,
         "incomplete": incomplete, "partitioned": partitioned, "notes": notes,
     }
     return {"summary": summary, "hops": hops}
+
+
+def stp_root_findings(all_stp_roots: Dict[str, dict],
+                      all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> dict:
+    """NEW-V3.23.62: cross-switch STP root-bridge analysis over the per-switch
+    `parse_spanning_tree_root` data. Surfaces two design smells a migration inherits:
+    (1) ACCIDENTAL root -- a VLAN whose root runs the default bridge priority
+    (32768 + sys-id-ext), i.e. nobody deliberately elected a root, so it was won on a
+    MAC tiebreak and can move unexpectedly on a cutover; and (2) root / gateway
+    MISALIGNMENT -- the VLAN's root bridge is not a switch that hosts its L3 gateway
+    SVI, so intra-VLAN traffic to the default gateway hairpins through the root. Pure
+    derivation; no new collection. Returns {accidental:[...], misaligned:[...]}."""
+    root_of: Dict[str, str] = {}
+    for host in sorted(all_stp_roots or {}):
+        for vlan, r in (all_stp_roots[host] or {}).items():
+            if r.get("is_root"):
+                root_of.setdefault(vlan, host)
+    gw_of: Dict[str, set] = {}
+    for host, ifaces in (all_interfaces or {}).items():
+        for port, d in (ifaces or {}).items():
+            m = re.match(r"^Vlan0*(\d+)$", port, re.IGNORECASE)
+            if m and (getattr(d, "svi_ip", "") or "").strip():
+                gw_of.setdefault(m.group(1), set()).add(host)
+    accidental: List[dict] = []
+    misaligned: List[dict] = []
+    for vlan, host in root_of.items():
+        prio = (all_stp_roots[host][vlan] or {}).get("root_priority")
+        if isinstance(prio, int) and prio == 32768 + int(vlan):
+            accidental.append({"vlan": vlan, "host": host, "priority": prio})
+        gws = gw_of.get(vlan)
+        if gws and host not in gws:
+            misaligned.append({"vlan": vlan, "root": host, "gateways": sorted(gws)})
+    accidental.sort(key=lambda x: int(x["vlan"]))
+    misaligned.sort(key=lambda x: int(x["vlan"]))
+    return {"accidental": accidental, "misaligned": misaligned}
