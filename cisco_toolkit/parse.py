@@ -1644,12 +1644,18 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
 
 
 def parse_show_environment(output: str) -> Dict[str, str]:
-    """Parse fan and temperature health from 'show environment' (IOS + NX-OS)."""
-    r = {"fan_status":"","temperature_status":""}
+    """Parse fan, temperature AND power-supply health from 'show environment' (IOS + NX-OS).
+
+    On Catalyst 4948E / 4500-X(-VSS) the PS health + fan-sensor live in the 'show environment'
+    Power-Supply table, NOT in 'show environment power' (which returns '% Invalid input' there),
+    so this also recovers ps_status / num_ps for the build layer to fall back on."""
+    r = {"fan_status":"","temperature_status":"","ps_status":"","num_ps":"0"}
     if not output:
         return r
     fan_states: List[str]  = []
     temp_states: List[str] = []
+    ps_states: List[str]   = []
+    n_ps = 0
     for line in output.splitlines():
         low = line.strip().lower()
         if not low: continue
@@ -1665,6 +1671,27 @@ def parse_show_environment(output: str) -> Dict[str, str]:
             if "ok" in low or "good" in low:       fan_states.append("OK")
             elif "fail" in low or "fault" in low:  fan_states.append("Failed")
             elif "warn" in low or "minor" in low:  fan_states.append("Warning")
+        # Catalyst 'Fantray : Good' (4948E) / 'Fantray 1 : ... status : Good' (4500-X) - only a
+        # line that actually carries a health word (skips 'removal timeout', 'consumed by').
+        if "fantray" in low and re.search(r"\b(good|ok|failed|fail|fault|bad)\b", low):
+            if "good" in low or re.search(r"\bok\b", low):        fan_states.append("OK")
+            elif "fail" in low or "fault" in low or "bad" in low: fan_states.append("Failed")
+        # Catalyst Power-Supply table row: 'PS1  PWR-C49E-300AC-R  AC 300W  good  good  n.a.'
+        # Columns: Supply | Model | Type(=watts) | Status | Fan Sensor | Inline. Split on 2+ spaces
+        # and key off the watts column so leading-column drift doesn't matter.
+        if re.match(r"^\s*ps\d+\b", low):
+            cols = re.split(r"\s{2,}", line.strip())
+            watt_idx = next((i for i, c in enumerate(cols) if re.search(r"\d+\s*w\b", c.lower())), None)
+            if watt_idx is not None:
+                n_ps += 1
+                ps_tok  = cols[watt_idx + 1].lower() if watt_idx + 1 < len(cols) else ""
+                fan_tok = cols[watt_idx + 2].lower() if watt_idx + 2 < len(cols) else ""
+                if "good" in ps_tok or "ok" in ps_tok:                    ps_states.append("OK")
+                elif "fail" in ps_tok or "fault" in ps_tok or "bad" in ps_tok: ps_states.append("FAIL")
+                if "good" in fan_tok or "ok" in fan_tok:                  fan_states.append("OK")
+                elif "fail" in fan_tok or "fault" in fan_tok:             fan_states.append("Failed")
+            elif any(t in low for t in ("absent", "not present", "none")):
+                n_ps += 1; ps_states.append("ABSENT")
         if re.match(r"^\s*\d+\s+\S", low) and any(k in low for k in ("inlet","outlet","sensor")):
             if "ok" in low or "normal" in low:        temp_states.append("OK")
             elif "critical" in low or "major" in low: temp_states.append("Critical")
@@ -1676,6 +1703,8 @@ def parse_show_environment(output: str) -> Dict[str, str]:
         return ""
     r["fan_status"]         = _worst(fan_states)
     r["temperature_status"] = _worst(temp_states)
+    r["ps_status"]          = " / ".join(dict.fromkeys(ps_states))   # distinct, e.g. 'OK' or 'OK / FAIL'
+    r["num_ps"]             = str(n_ps)
     return r
 
 

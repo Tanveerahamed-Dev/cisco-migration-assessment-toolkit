@@ -538,6 +538,49 @@ def test_parse_interface_counters(cp):
     assert res["Gi1/0/9"]["crc"] == 17
 
 
+# ---- show environment: Catalyst 4948E / 4500-X PS table -------------------- #
+def test_parse_show_environment_catalyst_ps_table(cp):
+    # 4948E layout: PS health + fan-sensor live here (NOT in 'show environment power',
+    # which returns '% Invalid input' on this platform). Recover ps_status / fan / num_ps.
+    out = textwrap.dedent("""\
+        no temperature alarms
+
+        Module Sensor                     Temperature          Status
+        ------+--------------------------+--------------------+------------
+        1      air inlet                  26C (49C,64C,67C)              ok
+        1      air outlet                 43C (69C,85C,88C)              ok
+
+        Power                                             Fan      Inline
+        Supply  Model No          Type       Status       Sensor   Status
+        ------  ----------------  ---------  -----------  -------  -------
+        PS1     PWR-C49E-300AC-R  AC 300W    good         good     n.a.
+        PS2     PWR-C49E-300AC-R  AC 300W    good         good     n.a.
+
+        Power supplies needed by system    : 1
+        Power supplies currently available : 2
+
+        Fantray : Good
+    """)
+    res = parse.parse_show_environment(out)
+    assert res["ps_status"] == "OK"          # both PSUs good -> distinct -> "OK"
+    assert res["num_ps"] == "2"
+    assert res["fan_status"] == "OK"         # PS fan-sensor column + Fantray line
+    assert res["temperature_status"] == "OK"
+
+
+def test_parse_show_environment_flags_failed_ps(cp):
+    out = textwrap.dedent("""\
+        Power                                             Fan      Inline
+        Supply  Model No          Type       Status       Sensor   Status
+        ------  ----------------  ---------  -----------  -------  -------
+        PS1     PWR-C49E-300AC-R  AC 300W    good         good     n.a.
+        PS2     PWR-C49E-300AC-R  AC 300W    faulty       good     n.a.
+    """)
+    res = parse.parse_show_environment(out)
+    assert res["ps_status"] == "OK / FAIL"   # one healthy, one failed -> both shown
+    assert res["num_ps"] == "2"
+
+
 # ---- tolerance: empty / garbage input never raises ------------------------- #
 def test_parsers_tolerate_empty_and_garbage(cp):
     for fn in (parse.parse_show_interface_status, parse.parse_show_interface_switchport,
