@@ -2928,6 +2928,28 @@ function paintEndpointReach(){
 }
 
 /* ---- TRACE ---- */
+/* Path hazards (V3.23.80): inspect the LINKS the traced path actually traverses (TRACE.linkIdxs) for the
+   silent L1/L2 migration risks that a reachability check alone misses — native-VLAN mismatch (VLAN leak),
+   duplex/speed mismatch (errors / degraded), and MTU mismatch (jumbo black-hole). Reuses the existing
+   per-interface detectors (_nativeVlan / _ifPhy / _ifMtu) — one source of truth with the Health-mode
+   trunk/L1/MTU cards. So "reachable" no longer means "clean": the path can work yet still carry a leak. */
+function tracePathHazards(){
+  if(!TRACE||!TRACE.linkIdxs||!TRACE.linkIdxs.length)return [];
+  const out=[], seen=new Set();
+  for(const li of TRACE.linkIdxs){ if(li<0)continue; const L=MODEL.links[li]; if(!L)continue;
+    const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
+    const a=L.a,ap=L.aPort,b=L.b,bp=L.bPort, hop=`${shortName(a)} ${ap} ↔ ${shortName(b)} ${bp}`;
+    const an=_nativeVlan(a,ap), bn=_nativeVlan(b,bp);
+    if(an!==bn)out.push({hop,kind:"native VLAN",msg:`native ${an} ↔ ${bn} — untagged traffic crosses VLANs (L2 leak / STP inconsistency)`});
+    const pa=_ifPhy(a,ap), pb=_ifPhy(b,bp);
+    if(pa.duplex&&pb.duplex&&pa.duplex!==pb.duplex)out.push({hop,kind:"duplex",msg:`${pa.duplex} ↔ ${pb.duplex} — late collisions / CRC errors, link up but degraded`});
+    else if(pa.speed&&pb.speed&&pa.speed!==pb.speed)out.push({hop,kind:"speed",msg:`${pa.speed} ↔ ${pb.speed} Mb/s mismatch`});
+    const ma=_ifMtu(a,ap), mb=_ifMtu(b,bp);
+    if(ma!=null&&mb!=null&&ma!==mb)out.push({hop,kind:"MTU",msg:`${ma} ↔ ${mb} — frames above ${Math.min(ma,mb)} dropped (black-hole)`});
+    else if((ma!=null&&ma>1500&&mb==null)||(mb!=null&&mb>1500&&ma==null))out.push({hop,kind:"MTU",msg:`jumbo on one end only — jumbo frames dropped where MTU is default`});
+  }
+  return out;
+}
 function drawTrace(){
   if(!TRACE_SRC||!TRACE_DST){
     return `<div class="drawer-head"><div class="eyebrow">Path trace</div><div class="title">East-west reachability</div></div>
@@ -2949,17 +2971,25 @@ function drawTrace(){
   TRACE.path.forEach((h,i)=>{const isSpof=TRACE.artic.includes(h);
     chain+=`<div class="hop ${isSpof?"spof":""}"><div class="l1 mono">${esc(shortName(h))} ${isSpof?'<span class="pill pl-risk">SPOF</span>':""}</div></div>`;});
   chain+="</div></div>";
+  const haz=tracePathHazards();
+  const hazSec=haz.length?
+    `<div class="sec"><h3>Path hazards <span class="badge b-crit">${haz.length}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">L1/L2 issues on the links this path traverses — reachable, but these still bite at cutover.</div>`+
+    haz.map(z=>`<div class="ln"><span class="pill pl-crit">✗ ${esc(z.kind)}</span> <span class="mono">${esc(z.hop)}</span> — ${esc(z.msg)}</div>`).join("")+`</div>`
+    :`<div class="sec"><h3>Path hazards <span class="badge b-ok">clean</span></h3><div class="ln faint">✓ No native-VLAN, duplex/speed, or MTU mismatches on the traversed links.</div></div>`;
   return `<div class="drawer-head"><div class="eyebrow">Path trace · VLAN ${traceVid()}</div>
       <div class="title"><span class="mono">${esc(shortName(TRACE_SRC))}</span> → <span class="mono">${esc(shortName(TRACE_DST))}</span></div></div>
     <div class="sec"><div class="headline">
       <div class="stat"><div class="v">${hops}</div><div class="k">hops</div></div>
       <div class="stat ${spofL?"crit":"ok"}"><div class="v">${spofL}</div><div class="k">SPOF links</div></div>
       <div class="stat ${spofS?"crit":"ok"}"><div class="v">${spofS}</div><div class="k">SPOF switches</div></div>
+      <div class="stat ${haz.length?"crit":"ok"}"><div class="v">${haz.length}</div><div class="k">L1/L2 hazards</div></div>
     </div>
     <div style="margin-top:11px" class="sub">${spofL||spofS?
       `This path has single points of failure. ${TRACE.backupPath?'A backup path would re-converge after STP (transient outage).':'No backup path — loss is a permanent partition.'}`
       :"Fully resilient — alternate path at every hop."}</div></div>
-    ${chain}`;
+    ${chain}
+    ${hazSec}`;
 }
 
 /* ---- COMPARE ---- */
