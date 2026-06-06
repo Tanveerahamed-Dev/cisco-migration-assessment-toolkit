@@ -248,6 +248,13 @@
   "Phase",
   "Detail"
  ],
+ "Wave Sequencing": [
+  "Group",
+  "Cutover Plan",
+  "Hard Cutover (window)",
+  "Make-Before-Break",
+  "Endpoints at Risk"
+ ],
  "Score Sensitivity": [
   "Perturbation",
   "Switches Changing Band",

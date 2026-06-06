@@ -1146,6 +1146,12 @@ function demoSnapshot(){
      blocked_paths:["ACC-1/Gi1/0/23 blocks 10,20"],
      vlan1_spans:false},
   ],
+  // V3.23.89: per-group cutover sequencing (mirrors the Python compute_wave_sequencing). DIST-1/DIST-2 are
+  // dual-homed (make-before-break); the single-homed access switches are hard cutovers needing a window.
+  wave_sequencing:[
+    {group:"Group 1",make_before_break:["DIST-1","DIST-2"],hard_cutover:["ACC-1","ACC-2","ACC-3","ACC-4"],hard_cutover_endpoints:34,
+     sequence:"4 hard cutover (single-homed, schedule a window) + 2 make-before-break (dual-homed)"},
+  ],
   // V3.23.87: port + PoE capacity headroom (mirrors the Python compute_capacity / 'Capacity' sheet). ACC-1
   // is port-bound (94%), ACC-2 PoE-bound (83%); the rest have headroom to absorb consolidated endpoints.
   capacity:[
@@ -3998,6 +4004,7 @@ function paintXLayer(){
 function wavesData(){
   const mg=(SNAP&&Array.isArray(SNAP.move_groups))?SNAP.move_groups:[];
   const mr=(SNAP&&Array.isArray(SNAP.migration_readiness))?SNAP.migration_readiness:[];
+  const ws=(SNAP&&Array.isArray(SNAP.wave_sequencing))?SNAP.wave_sequencing:[];   // V3.23.89 cutover plan, index-aligned
   return mg.map((g,i)=>{
     // Both lists derive from the same compute_move_groups order, so join by index; fall back to an
     // exact switch-set match if the lengths ever disagree (defensive — keeps the verdict attached).
@@ -4006,7 +4013,7 @@ function wavesData(){
       const gs=new Set(g.switches||[]);
       r=mr.find(x=>x.switches&&x.switches.length===gs.size&&x.switches.every(h=>gs.has(h)))||r||null;
     }
-    return {idx:i, g, r};
+    return {idx:i, g, r, seq:ws[i]||null};
   });
 }
 function drawWaves(){
@@ -4020,7 +4027,7 @@ function drawWaves(){
   const tally={READY:0,CAUTION:0,"NOT READY":0};
   data.forEach(d=>{const v=d.r&&d.r.readiness; if(tally[v]!=null)tally[v]++;});
   const verdTok=v=>v==="READY"?"ok":v==="CAUTION"?"watch":v==="NOT READY"?"crit":"neutral";
-  const cards=data.map(d=>{const g=d.g, r=d.r, i=d.idx;
+  const cards=data.map(d=>{const g=d.g, r=d.r, i=d.idx, seq=d.seq;
     const v=(r&&r.readiness)||"—"; const tok=verdTok(v);
     const sel=WAVE_SEL===i?" xlactive":"";
     const sw=g.switches||[];
@@ -4033,6 +4040,13 @@ function drawWaves(){
       return `<div class="checkrow"><span class="dot" style="background:var(--${ct})"></span>
         <div><div class="nm">${esc(c.check)}</div><div class="nt">${esc(c.note||"")}</div></div></div>`;}).join("");
     const dual=g.vlan1_spans?`<div class="ln faint" style="margin-top:4px">⚠ VLAN 1 spans this group — untagged management traffic crosses every member.</div>`:"";
+    // V3.23.89: cutover plan — single-homed switches are hard cutovers (window), dual-homed go make-before-break
+    let cutover="";
+    if(seq){const hard=(seq.hard_cutover||[]), mbb=(seq.make_before_break||[]);
+      if(hard.length||mbb.length){
+        const hp=hard.length?`<div class="ln"><span class="pill pl-watch">hard cutover</span> <span class="faint">single-homed — needs a window${seq.hard_cutover_endpoints?` · ${seq.hard_cutover_endpoints} endpoints at risk`:""}:</span> ${hard.map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}</div>`:"";
+        const mp=mbb.length?`<div class="ln"><span class="pill pl-ok">make-before-break</span> <span class="faint">dual-homed — migrate live:</span> ${mbb.map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}</div>`:"";
+        cutover=`<div style="margin-top:6px"><div class="kv" style="border:0;padding:0 0 3px"><span class="k">Cutover plan</span><span class="v faint">${esc(seq.sequence||"")}</span></div>${hp}${mp}</div>`;}}
     return `<div class="card ${tok} xlcard${sel}" data-wave="${i}" tabindex="0" role="button" style="cursor:pointer"
         aria-label="Move group ${i+1}: ${sw.length} switches, ${esc(v)} — click to highlight on the graph">
       <div class="ct"><span class="nm">Group ${i+1}</span><span class="pill pl-${tok}">${esc(v)}</span></div>
@@ -4041,6 +4055,7 @@ function drawWaves(){
       ${vlans?`<div class="ln" style="margin-top:5px"><span class="faint">Bound by:</span> ${vlans}${moreV}</div>`:""}
       ${gws?`<div class="ln faint" style="margin-top:4px">Gateways: ${gws}</div>`:""}
       ${dual}
+      ${cutover}
       ${checkRows?`<div style="margin-top:6px">${checkRows}</div>`:(r?`<div class="ln faint" style="margin-top:4px">✓ All readiness checks pass — this group is clear to schedule.</div>`:"")}
     </div>`;}).join("");
   return head+

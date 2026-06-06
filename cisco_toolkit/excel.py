@@ -1564,6 +1564,44 @@ def write_link_centrality_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
                 f"{sum(1 for x in rows if x['is_bridge'])} bridge(s)")
 
 
+WAVE_SEQUENCING_SHEET_NAME = "Wave Sequencing"
+
+def write_wave_sequencing_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                                move_groups: List[Dict[str, object]]) -> None:
+    """Write (or replace) 'Wave Sequencing': per move-group cutover plan -- which member switches are HARD
+    CUTOVERS (single-homed, need a maintenance window) vs MAKE-BEFORE-BREAK (dual-homed, migrate live).
+    Same compute_wave_sequencing the explorer's Waves mode consumes (one source of truth)."""
+    from cisco_toolkit.analyze import compute_wave_sequencing
+    cols = ["Group", "Cutover Plan", "Hard Cutover (window)", "Make-Before-Break", "Endpoints at Risk"]
+    if WAVE_SEQUENCING_SHEET_NAME in wb.sheetnames:
+        del wb[WAVE_SEQUENCING_SHEET_NAME]
+    ws = wb.create_sheet(WAVE_SEQUENCING_SHEET_NAME)
+    _census_header(ws, cols)
+    rows = compute_wave_sequencing(all_interfaces, move_groups)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    DAT_C = Alignment(horizontal="center", vertical="center")
+    warn_fill = PatternFill("solid", fgColor="FCE5CD")
+    r = 2
+    for rec in rows:
+        hard = ", ".join(str(h) for h in rec["hard_cutover"])
+        mbb = ", ".join(str(h) for h in rec["make_before_break"])
+        vals = [rec["group"], rec["sequence"], hard, mbb, rec["hard_cutover_endpoints"]]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
+            c.alignment = DAT_C if col == 5 else DAT_L
+            if rec["hard_cutover"] and col in (3, 5):
+                c.fill = warn_fill
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "-"); ws.cell(2, 2, "No move groups")
+    _census_autofit(ws, len(cols), r - 1)
+    ws.column_dimensions["B"].width = 54
+    ws.column_dimensions["C"].width = 34
+    ws.column_dimensions["D"].width = 34
+    logger.info(f"  [OK] '{WAVE_SEQUENCING_SHEET_NAME}' sheet: {len(rows)} group(s)")
+
+
 EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,

@@ -820,6 +820,46 @@ def compute_link_centrality(all_interfaces: Dict[str, Dict[str, InterfaceData]])
     return out
 
 
+def compute_wave_sequencing(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                            move_groups: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Per move-group CUTOVER SEQUENCING (migration doctrine: make-before-break vs hard cutover).
+    Classify each member switch by uplink redundancy from the physical topology: a SINGLE-homed switch
+    (one inter-switch uplink — its uplink is a bridge, see compute_link_centrality) is a HARD CUTOVER
+    (the uplink can't be moved make-before-break, so schedule a maintenance window and the endpoints on it
+    take a hit), while a DUAL-homed switch (>=2 uplinks) can migrate MAKE-BEFORE-BREAK (move one path,
+    validate, move the other — no outage). Topology-derived (reuses _topology_adjacency); one source of
+    truth with the bridge analysis. Returns, per group (index-aligned with move_groups / migration_readiness):
+    {group, make_before_break:[host], hard_cutover:[host], hard_cutover_endpoints:int, sequence:str}."""
+    _hosts, adj, _edges = _topology_adjacency(all_interfaces)
+    ep: Dict[str, int] = {}                       # per-host distinct end-host count (mirrors compute_move_groups)
+    for host, ifaces in all_interfaces.items():
+        macs: set = set()
+        for d in ifaces.values():
+            if (d.switchport_mode or "") == "Access":
+                for m in _split_macs(d.end_host_mac):
+                    macs.add(m)
+        ep[host] = len(macs)
+    out: List[Dict[str, object]] = []
+    for gi, g in enumerate(move_groups, 1):
+        switches = [str(h) for h in (g.get("switches") or [])]
+        mbb, hard = [], []
+        for h in switches:
+            (mbb if len(adj.get(h, set())) >= 2 else hard).append(h)
+        hard_ep = sum(ep.get(h, 0) for h in hard)
+        if not switches:
+            seq = "empty group"
+        elif not hard:
+            seq = f"all {len(mbb)} switch(es) dual-homed — fully make-before-break (no outage window needed)"
+        elif not mbb:
+            seq = f"all {len(hard)} switch(es) single-homed — every cutover needs a maintenance window"
+        else:
+            seq = (f"{len(hard)} hard cutover (single-homed, schedule a window) + "
+                   f"{len(mbb)} make-before-break (dual-homed)")
+        out.append({"group": f"Group {gi}", "make_before_break": sorted(mbb),
+                    "hard_cutover": sorted(hard), "hard_cutover_endpoints": hard_ep, "sequence": seq})
+    return out
+
+
 def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[str, float]:
     """NEW-V3.23.7: per-switch collection completeness = fraction of the essential
     command set that returned usable (non-empty, non-error) output, via the
