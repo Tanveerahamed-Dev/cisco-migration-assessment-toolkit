@@ -124,6 +124,18 @@ def test_analyze_reexported_and_functional(cp):
     }
     links = analyze.compute_topology_links(tl)
     assert len(links) == 1 and links[0]["confirmation"] == "Both ends"
+    # FQDN regression: a scanned host advertised over CDP by its domain-qualified id must
+    # resolve to its short scanned hostname in b_host - otherwise the diagram / Topology
+    # Links sheet split it into a duplicate node (real-world bug: '*.broadcast.[HISTORY-REDACTED]' ids).
+    fq = {
+        "core1": {"Te1/1/1": ID(port="Te1/1/1", cdp_neighbor="acc1.example.com",
+                                neighbor_port="Te1/49", endpoint_type="Switch")},
+        "acc1":  {"Te1/49": ID(port="Te1/49", cdp_neighbor="core1.example.com",
+                               neighbor_port="Te1/1/1", endpoint_type="Switch")},
+    }
+    fql = analyze.compute_topology_links(fq)
+    assert len(fql) == 1
+    assert {fql[0]["a_host"], fql[0]["b_host"]} == {"core1", "acc1"}   # both short, no FQDN node
     # two SVIs for VLAN 20 with no FHRP -> a High "Gateway redundancy" finding.
     fi = {"sw1": {"Vlan20": ID(port="Vlan20")}, "sw2": {"Vlan20": ID(port="Vlan20")}}
     assert any(sev == "High" and cat == "Gateway redundancy"

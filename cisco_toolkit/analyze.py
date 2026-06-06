@@ -220,18 +220,24 @@ def _canon_host(name: str) -> str:
 def compute_topology_links(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:
     """De-duplicated inter-switch links from CDP/LLDP, one record per physical link.
     Each record: a_host, a_port, b_host, b_port, platform, speed, confirmation."""
-    scanned = {_canon_host(h) for h in all_interfaces}
+    scanned_map = {_canon_host(h): h for h in all_interfaces}   # canon -> real scanned hostname
+    scanned = set(scanned_map)
     links: Dict[Tuple[str, str], Dict[str, object]] = {}
     for host, ifaces in all_interfaces.items():
         for port, d in ifaces.items():
             if not d.cdp_neighbor or not _is_infra_neighbor(d, scanned):
                 continue
             nbr = d.cdp_neighbor.strip()
+            # Display name: resolve a scanned neighbor advertised by its FQDN/serial-suffixed
+            # CDP id (e.g. 'CORE.broadcast.[HISTORY-REDACTED]') back to its real scanned hostname, so the
+            # diagram / 'Topology Links' sheet don't render it as a second, duplicate node. A
+            # genuinely off-scan neighbor (no canon match) keeps its raw advertised name.
+            b_host = scanned_map.get(_canon_host(nbr), nbr)
             key = tuple(sorted([f"{_canon_host(host)}|{port.lower()}",
                                 f"{_canon_host(nbr)}|{(d.neighbor_port or '?').lower()}"]))
             rec = links.get(key)
             if rec is None:
-                links[key] = {"a_host": host, "a_port": port, "b_host": nbr,
+                links[key] = {"a_host": host, "a_port": port, "b_host": b_host,
                               "b_port": d.neighbor_port or "", "platform": d.neighbor_platform or "",
                               "speed": d.speed or "", "seen_from": {_canon_host(host)}}
             else:
