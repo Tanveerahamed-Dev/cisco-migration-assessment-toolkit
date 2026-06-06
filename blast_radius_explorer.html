@@ -562,6 +562,8 @@
   .ckp-bar span{display:block; height:100%; transition:filter .15s}
   .ckp-row:hover .ckp-lbl{color:var(--accent)}
   .ckp-row:hover .ckp-bar span{filter:brightness(1.18)}
+  .ckp-row.active .ckp-lbl{color:var(--accent); font-weight:750}
+  .ckp-row.active .ckp-bar{outline:1.5px solid var(--accent); outline-offset:1px}
   .ckp-tail{display:flex; gap:5px; justify-content:flex-end; align-items:center; white-space:nowrap}
   .ckp-leg{display:flex; gap:12px; flex-wrap:wrap; margin:8px 0 2px; font-size:10px; color:var(--text-dim)}
   .ckp-leg span{display:inline-flex; align-items:center; gap:4px}
@@ -1273,6 +1275,7 @@ let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + 
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
 let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // L4 tuple for the ACL allow/deny eval (G2; sport=I, icmptype=J)
 let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding card (null = none)
+let TIER_FOCUS=null;   // V3.23.72: {name, hosts:Set} — a Risk-cockpit tier highlighted on the topology (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on a NEW selection; cancel pending stagger timers
@@ -1345,7 +1348,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -2124,6 +2127,10 @@ function paintHealth(){
       n.g.insertBefore(track,after); n.g.insertBefore(arc,after);
       n.scoreTrack=track; n.scoreArc=arc;
     }});
+  // V3.23.72: a Risk-cockpit tier click dims every switch outside that tier, so the role group
+  // (e.g. all Distribution switches) stands out on the topology. Only when no single switch is selected.
+  if(TIER_FOCUS&&TIER_FOCUS.hosts&&TIER_FOCUS.hosts.size&&!SEL){
+    MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n&&!TIER_FOCUS.hosts.has(h))n.g.classList.add("dim");});}
   if(SEL&&nodeEls[SEL])nodeEls[SEL].g.classList.add("sel");
 }
 
@@ -2296,6 +2303,7 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
   if(m!=="xlayer")XLSEL=null;   // U1: a cross-layer highlight only makes sense in its own mode
+  if(m!=="health")TIER_FOCUS=null;   // V3.23.72: a cockpit tier highlight only lives in Health mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
@@ -2460,6 +2468,14 @@ function renderDrawer(){
   else if(MODE==="protocols")p.innerHTML=drawProtocols();
   else if(MODE==="xlayer")p.innerHTML=drawXLayer();
   else if(MODE==="causality")p.innerHTML=drawCausality();
+  // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
+  // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
+  p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
+    const name=r.dataset.tier, hosts=(r.dataset.tierHosts||"").split(",").filter(Boolean);
+    const same=TIER_FOCUS&&TIER_FOCUS.name===name;
+    TIER_FOCUS=same?null:{name,hosts:new Set(hosts)};
+    p.querySelectorAll("[data-tier-hosts]").forEach(x=>x.classList.toggle("active",!same&&x.dataset.tier===name));
+    repaint();});
   // wire cross-layer finding cards (click highlights the involved hosts on the canvas)
   p.querySelectorAll("[data-xlhosts]").forEach(c=>c.onclick=()=>{
     const hosts=(c.dataset.xlhosts||"").split(",").filter(Boolean);
@@ -4459,8 +4475,8 @@ function cockpitCard(){
       const seg=tok=>{const n=a.bands[tok]; return n?`<span style="width:${(n/tot*100).toFixed(1)}%;background:var(${_CKP_BANDCOL[tok]})" title="${n} ${tok}"></span>`:"";};
       const bar=`<div class="ckp-bar">${seg("ok")}${seg("watch")}${seg("risk")}${seg("crit")}</div>`;
       const pills=(a.crit?`<span class="pill pl-crit">${a.crit} crit</span>`:"")+(a.high?`<span class="pill pl-crit">${a.high} high</span>`:"");
-      const jump=a.worst?` data-jump="${esc(a.worst.switch)}"`:"";
-      return `<div class="ckp-row"${jump} title="${a.hosts.length} ${esc(a.tier)} switch(es)${a.worst?` — worst ${esc(shortName(a.worst.switch))} (${a.worst.score}/100)`:""}">
+      const active=TIER_FOCUS&&TIER_FOCUS.name===a.tier?" active":"";
+      return `<div class="ckp-row${active}" data-tier="${esc(a.tier)}" data-tier-hosts="${esc(a.hosts.join(","))}" title="Highlight the ${a.hosts.length} ${esc(a.tier)} switch(es) on the map${a.worst?` — worst-scoring is ${esc(shortName(a.worst.switch))} (${a.worst.score}/100)`:""}">
         <div class="ckp-lbl">${esc(a.tier)}<span class="ckp-n">×${a.hosts.length}</span></div>
         ${bar}
         <div class="ckp-tail">${pills||'<span class="pill pl-neutral">clean</span>'}</div>
@@ -4482,7 +4498,7 @@ function cockpitCard(){
   }
   if(!tierRows&&!catRows)return "";
   return `<div class="sec"><h3>Risk cockpit <span class="badge b-neutral">${MODEL.hosts.length} switches</span></h3>
-    <div class="sub" style="margin-bottom:7px">Where the migration risk concentrates and what shape the work is — distilled from the per-switch health scores and the ${pl.length}-item punch-list.${tierRows?" Click a tier to jump to its worst switch.":""}</div>
+    <div class="sub" style="margin-bottom:7px">Where the migration risk concentrates and what shape the work is — distilled from the per-switch health scores and the ${pl.length}-item punch-list.${tierRows?" Click a tier to highlight its switches on the map.":""}</div>
     ${tierRows?`<div class="ckp-grid">${tierRows}</div>${legend}`:""}
     ${catRows?`<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 5px"><span class="k">Punch-list by category</span><span class="v faint">${pl.length} total</span></div><div class="ckp-cat">${catRows}</div></div>`:""}
   </div>`;
