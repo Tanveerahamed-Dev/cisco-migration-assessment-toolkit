@@ -194,6 +194,17 @@
   #minimap .mm-edge{stroke:var(--border-strong); stroke-width:.6; opacity:.45}
   #minimap .mm-dot{fill:var(--text-dim)}
   #minimap .mm-vp{fill:var(--accent); fill-opacity:.12; stroke:var(--accent); stroke-width:1.2}
+  /* U10: health-heat tint on overview dots (fill set inline per band) + ambient pulse
+     on Poor/Critical-band nodes so trouble spots draw the eye even in the mini-map. */
+  #minimap .mm-dot.mm-heat{r:2.4}
+  #minimap .mm-dot.mm-crit{transform-box:fill-box; transform-origin:center;
+    animation:mmPulse 1.9s ease-in-out infinite}
+  @keyframes mmPulse{0%,100%{opacity:.65; transform:scale(1)}
+    50%{opacity:1; transform:scale(1.45)}}
+  /* Reduced motion: static tint only — kill the pulse, keep the heat color. */
+  @media (prefers-reduced-motion: reduce){
+    #minimap .mm-dot.mm-crit{animation:none; opacity:1; transform:none}
+  }
 
   /* ---- SVG node/link classes ---- */
   .lnk{fill:none; stroke:var(--border-strong); stroke-width:2; transition:stroke .2s, stroke-width .2s, stroke-opacity .2s}
@@ -227,6 +238,61 @@
     filter:drop-shadow(0 0 4px var(--accent))}
   @keyframes legendPulse{0%,100%{filter:drop-shadow(0 0 2px currentColor)}50%{filter:drop-shadow(0 0 6px currentColor)}}
 
+  /* ---- Causality mode: root-cause→impact flow diagram (U2) ---- */
+  .causalDiagram{width:100%; display:block; border-radius:9px; background:var(--surface-2); border:1px solid var(--border)}
+  .cz-conn{fill:none; stroke:var(--border-strong); stroke-width:2}
+  /* the moving energy pulse rides on top of each connector; its dash + offset are animated */
+  .cz-flow{fill:none; stroke:var(--accent); stroke-width:3; stroke-linecap:round;
+    stroke-dasharray:14 86; filter:drop-shadow(0 0 3px var(--accent));
+    animation:causalFlow 2.4s linear infinite}
+  @keyframes causalFlow{from{stroke-dashoffset:100}to{stroke-dashoffset:0}}
+  .cz-node-box{stroke-width:1.5; rx:9}
+  .cz-stage{font:700 8.5px var(--sans); letter-spacing:1.1px; text-transform:uppercase; text-anchor:middle; pointer-events:none}
+  .cz-node-t{font:550 10px var(--sans); fill:var(--text); text-anchor:middle; pointer-events:none}
+  .cz-spark{fill:var(--accent); stroke:var(--surface); stroke-width:1.2; pointer-events:none;
+    filter:drop-shadow(0 0 4px var(--accent))}
+  .cz-legend-stage{display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-dim); margin:2px 0}
+  .cz-legend-stage .dot{width:9px; height:9px; border-radius:3px; display:inline-block}
+  /* selected chain card — accent ring so the active chain reads at a glance */
+  .card.czsel{box-shadow:0 0 0 2px var(--accent); border-left-color:var(--accent)}
+  @media (prefers-reduced-motion: reduce){
+    /* no traveling pulse: hide the moving stroke, keep the static connector visible */
+    .cz-flow{animation:none !important; stroke-dasharray:none; opacity:.55}
+    .cz-spark{display:none}
+  }
+  /* ---- animated layer-lens (U9): an L1→L4 "scanline" sweeps the canvas; edges/nodes
+     tint by the layer currently in focus. The sweep band lives under #vp (tracks pan/zoom)
+     and never blocks pointer input. Under reduced-motion the band holds static (no sweep)
+     and the layer cycles in discrete steps. */
+  /* the band's X is driven by rAF (normal motion) so it tracks the canvas precisely;
+     the @keyframes is the reduced-motion-aware fallback hook only — applied via .sweep
+     ONLY when rAF is unavailable, and neutralized under prefers-reduced-motion below. */
+  .lensband{pointer-events:none}
+  .lensband.sweep{animation:layerSweep 2.6s linear infinite}
+  @keyframes layerSweep{0%{opacity:.35}50%{opacity:.7}100%{opacity:.35}}
+  /* per-layer tint of the matching graph elements (additive class, removed on stop) */
+  .lnk.lensL1{stroke:var(--text-dim) !important; stroke-width:3.2 !important; stroke-opacity:.9 !important; stroke-dasharray:2 3}
+  .lnk.lensL2{stroke:var(--accent) !important; stroke-width:3.6 !important; stroke-opacity:1 !important;
+    filter:drop-shadow(0 0 3px var(--accent))}
+  .node.lensL3 .body{stroke:var(--ok) !important; stroke-width:3.4 !important; fill:var(--ok-soft) !important;
+    filter:drop-shadow(0 0 4px var(--ok))}
+  .node.lensL4 .body{stroke:var(--risk) !important; stroke-width:3.4 !important; fill:var(--risk-soft) !important;
+    filter:drop-shadow(0 0 4px var(--risk))}
+  .btn.lenson{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+  /* floating label showing the layer currently in focus (fixed in the stage, not under #vp) */
+  #lensLabel{position:absolute; top:54px; left:50%; transform:translateX(-50%); z-index:6;
+    pointer-events:none; padding:5px 13px; border-radius:999px; font:700 11px var(--sans);
+    letter-spacing:.6px; background:var(--surface); border:1px solid var(--border-strong);
+    color:var(--text); box-shadow:0 4px 16px rgba(0,0,0,.28); white-space:nowrap;
+    display:flex; align-items:center; gap:8px}
+  #lensLabel .dot{width:9px; height:9px; border-radius:50%; background:currentColor;
+    box-shadow:0 0 6px currentColor}
+  #lensLabel.l1{color:var(--text-dim)} #lensLabel.l2{color:var(--accent)}
+  #lensLabel.l3{color:var(--ok)} #lensLabel.l4{color:var(--risk)}
+  @media (prefers-reduced-motion: reduce){
+    .lensband, .lensband.sweep{animation:none !important; transform:none !important; opacity:.5}
+  }
+
   .pcbadge{fill:var(--surface); stroke:var(--border-strong); stroke-width:1}
   .pcbadge-t{fill:var(--text-dim); font:600 9px var(--mono); text-anchor:middle; pointer-events:none}
 
@@ -239,6 +305,11 @@
   .node.dim{opacity:.32}
   .node.dead .body{fill:url(#hatch); stroke:var(--crit); stroke-width:2; stroke-dasharray:5 3}
   .node.match .body{stroke:var(--accent); stroke-width:2.5}
+  /* U1 — Cross-Layer spotlight: the switches a selected finding spans pulse; the rest dim back */
+  .node.xlhl .body{stroke:var(--accent); stroke-width:3; filter:drop-shadow(0 0 5px var(--accent))}
+  .node.xlhl .halo{stroke:var(--accent); stroke-opacity:.35; stroke-width:7; fill:none; transform-box:fill-box; transform-origin:center; animation:xlGlow 1.4s ease-in-out infinite}
+  .node.xldim{opacity:.3}
+  @keyframes xlGlow{0%,100%{stroke-opacity:.18; stroke-width:5}50%{stroke-opacity:.45; stroke-width:9}}
   .node.pinned .halo{stroke:var(--accent); stroke-opacity:.25; stroke-width:2; stroke-dasharray:3 3; fill:none}
   /* Blast-radius ripple wave (anim): pulse on the removed node + a hop-staggered flash on collateral switches.
      Final coloring is unchanged — these only govern HOW the highlight appears. Auto-disabled under reduced-motion. */
@@ -249,6 +320,23 @@
     100%{stroke-width:9; stroke-opacity:0; transform:scale(1.28)}}
   .node.ripple .body{transform-box:fill-box; transform-origin:center; animation:rippleIn .5s ease-out both}
   @keyframes rippleIn{0%{transform:scale(1)} 30%{transform:scale(1.13)} 100%{transform:scale(1)}}
+  /* Severity halos (U8): a soft pulsing ring drawn BEHIND the most critical/SPOF nodes so the
+     eye is drawn to risk. Colored by semantic severity; higher severity pulses stronger/faster.
+     The ring is an extra SVG <circle> inserted as the first child of the node <g> (under the body
+     glyph). Reduced-motion → a static, non-animated ring (see the reduce branch below). */
+  .sev-halo{fill:none; pointer-events:none; transform-box:fill-box; transform-origin:center;
+    stroke:var(--text-faint); stroke-opacity:.5; stroke-width:3}
+  .sev-halo.crit{stroke:var(--crit); animation:haloPulse 1.5s ease-in-out infinite}
+  .sev-halo.risk{stroke:var(--risk); animation:haloPulse 2.1s ease-in-out infinite}
+  .sev-halo.watch{stroke:var(--watch); animation:haloPulse 2.8s ease-in-out infinite}
+  @keyframes haloPulse{
+    0%,100%{stroke-width:2.5; stroke-opacity:.30; transform:scale(1)}
+    50%    {stroke-width:5;   stroke-opacity:.85; transform:scale(1.07)}}
+  @media (prefers-reduced-motion: reduce){
+    /* static ring — no scale/opacity pulse; the global reduce rule neuters the animation, but we
+       also pin a steady, clearly-visible stroke so the risk cue survives without motion. */
+    .sev-halo{animation:none !important; stroke-width:3.5; stroke-opacity:.7; transform:none}
+  }
   .nname{fill:var(--text); font:650 12px var(--sans); text-anchor:middle; pointer-events:none}
   .nsub{fill:var(--text-dim); font:500 9.5px var(--mono); text-anchor:middle; pointer-events:none}
   .nrole{fill:var(--text-faint); font:650 8px var(--sans); letter-spacing:1px; text-anchor:middle; pointer-events:none; text-transform:uppercase}
@@ -279,6 +367,51 @@
      so the global reduced-motion rule (which kills the animation) leaves content in place */
   .reveal{animation:cardIn .34s cubic-bezier(.2,.7,.3,1) both}
   @keyframes cardIn{from{opacity:0; transform:translateY(7px)} to{opacity:1; transform:none}}
+  /* ---- U5: cross-layer severity heatmap (devices × L1-L4) ---- */
+  .lhm-grid{display:grid; grid-template-columns:minmax(86px,1.4fr) repeat(4,1fr); gap:4px; margin-top:4px}
+  .lhm-cell{position:relative; min-height:30px; display:flex; align-items:center; justify-content:center;
+    border-radius:6px; border:1px solid var(--border); background:var(--surface-2);
+    font-size:11px; font-weight:650; color:var(--text-dim); padding:4px 5px; text-align:center;
+    /* staggered entrance: cells fade/scale in, --d set per-cell; resting state is fully visible
+       so the global reduced-motion rule leaves them in place */
+    animation:cellIn .3s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--d,0ms)}
+  @keyframes cellIn{from{opacity:0; transform:scale(.9)} to{opacity:1; transform:none}}
+  .lhm-cell.lhm-head{background:transparent; border-color:transparent; color:var(--text-faint);
+    font-size:10px; letter-spacing:.6px; text-transform:uppercase; font-weight:700; min-height:0; padding-bottom:2px}
+  .lhm-cell.lhm-dev{justify-content:flex-start; font-family:var(--mono); font-weight:600;
+    color:var(--text); background:var(--surface); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .lhm-cell.sev-none{color:var(--text-faint); opacity:.62}
+  .lhm-cell.sev-info{background:var(--accent-soft); border-color:var(--accent-dim); color:var(--accent)}
+  .lhm-cell.sev-warn{background:var(--watch-soft); border-color:var(--watch); color:var(--watch)}
+  .lhm-cell.sev-crit{background:var(--crit-soft); border-color:var(--crit); color:var(--crit)}
+  .lhm-cell.has-detail{cursor:help}
+  .lhm-cell.has-detail:hover, .lhm-cell.has-detail:focus-visible{filter:brightness(1.12); outline:none}
+  .lhm-detail{min-height:34px; margin-top:9px; padding:7px 9px; border-radius:7px;
+    border:1px solid var(--border); background:var(--surface-2); color:var(--text-dim);
+    font-size:11.5px; line-height:1.4; transition:border-color .14s ease}
+  .lhm-detail.on{border-color:var(--border-strong); color:var(--text)}
+  .lhm-detail .lhm-d-loc{font-weight:700; color:var(--text)}
+  .lhm-detail .lhm-d-dot{display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; vertical-align:baseline}
+  /* U7 cross-layer "why" ladder: vertical L1->L4 rungs, each staggered top-to-bottom. Resting state is
+     fully visible (opacity:1, no transform) so the global reduced-motion rule leaves every rung in place. */
+  .why-rung{display:flex; gap:10px; align-items:flex-start; padding:7px 0; border-top:1px solid var(--border-faint);
+    animation:rungIn .32s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--d,0ms)}
+  .why-rung:first-child{border-top:0}
+  @keyframes rungIn{from{opacity:0; transform:translateX(-8px)} to{opacity:1; transform:none}}
+  .why-rung .wl{flex:0 0 auto; min-width:30px; text-align:center; font-family:var(--mono); font-size:10px;
+    font-weight:700; padding:2px 6px; border-radius:6px; color:var(--text-dim); background:var(--surface-3);
+    border:1px solid var(--border)}
+  .why-rung .wi{flex:0 0 auto; font-size:13px; line-height:1.4; width:15px; text-align:center}
+  .why-rung .wb{flex:1 1 auto; min-width:0}
+  .why-rung .wb .wt{font-size:11.5px; font-weight:650; color:var(--text)}
+  .why-rung .wb .wr{font-size:11px; color:var(--text-dim); margin-top:2px; line-height:1.5}
+  .why-rung.ok .wi{color:var(--ok)} .why-rung.ok .wl{color:var(--ok); border-color:var(--ok)}
+  .why-rung.watch .wi{color:var(--watch)} .why-rung.watch .wl{color:var(--watch); border-color:var(--watch)}
+  .why-rung.block .wi{color:var(--crit)} .why-rung.block .wl{color:var(--crit); border-color:var(--crit)}
+  .why-rung.na{opacity:.62}
+  .why-rung.decisive{background:var(--crit-soft); border-radius:7px; padding-left:7px; padding-right:7px;
+    margin:2px -7px; border-top:0}
+  .why-rung.decisive+.why-rung{border-top:0}
   .sec h3{margin:0 0 11px; font-size:10px; letter-spacing:1.3px; text-transform:uppercase;
     color:var(--text-faint); font-weight:700; display:flex; align-items:center; gap:7px}
   .sec h3 .ct{color:var(--text-dim); background:var(--surface-2); border:1px solid var(--border);
@@ -336,6 +469,47 @@
   .card .ln b{color:var(--text)}
   .card .fix{font-size:11.5px; color:var(--text-dim); margin-top:6px; padding-top:6px; border-top:1px dashed var(--border)}
   .card .fix b{color:var(--ok)}
+
+  /* U1 — Cross-Layer: L1–L4 layer badges + correlation card accent */
+  .xlchips{display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:0 0 7px}
+  .layer-chip{display:inline-block; padding:2px 7px; border-radius:5px; font-size:9.5px; font-weight:750;
+    letter-spacing:.4px; border:1px solid; font-family:var(--mono)}
+  .lc-l1{color:var(--accent); background:var(--accent-soft); border-color:var(--accent)}   /* L1 physical */
+  .lc-l2{color:var(--ok);     background:var(--ok-soft);     border-color:var(--ok)}        /* L2 data-link */
+  .lc-l3{color:var(--watch);  background:var(--watch-soft);  border-color:var(--watch)}     /* L3 network */
+  .lc-l4{color:var(--risk);   background:var(--risk-soft);   border-color:var(--risk)}      /* L4 transport */
+  .xlcard{transition:box-shadow .15s ease, transform .15s ease}
+  .xlcard:hover{box-shadow:var(--shadow)}
+  .xlcard:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .xlcard.xlactive{box-shadow:0 0 0 2px var(--accent); border-left-color:var(--accent)}
+  /* ---- U4: executive narrative card (top of Health view) ---- */
+  .narr{border-left-color:var(--accent); background:
+    linear-gradient(180deg,var(--accent-soft) 0%,transparent 70%),var(--surface-2);
+    padding:13px 15px}
+  .narr .ct{margin-bottom:9px}
+  .narr .nm{font-size:13px; letter-spacing:-.1px}
+  .narr .eyebrow{font-size:9.5px; letter-spacing:1.3px; text-transform:uppercase; color:var(--accent);
+    font-weight:700; display:block; margin-bottom:1px}
+  .narr ol{list-style:none; counter-reset:narr; margin:0; padding:0}
+  .narr li{counter-increment:narr; position:relative; padding:7px 0 7px 26px; font-size:12px; line-height:1.55;
+    color:var(--text-dim); border-top:1px solid var(--border-faint)}
+  .narr li:first-child{border-top:0}
+  .narr li b{color:var(--text)} .narr li .mono{font-family:var(--mono); font-size:11px; color:var(--text)}
+  .narr li::before{content:counter(narr); position:absolute; left:0; top:7px; width:17px; height:17px;
+    border-radius:50%; font-size:9.5px; font-weight:700; line-height:17px; text-align:center;
+    color:#fff; background:var(--text-faint)}
+  .narr li.crit::before{background:var(--crit)} .narr li.risk::before{background:var(--risk)}
+  .narr li.watch::before{background:var(--watch)} .narr li.ok::before{background:var(--ok)}
+  .narr li.crit{color:var(--text)} .narr li.risk{color:var(--text)}
+  /* per-line staggered fade/slide reveal. The reveal uses fill-mode 'both' + a per-line delay, so the
+     global reduced-motion rule (which zeroes only animation-DURATION, not the delay) would otherwise leave
+     delayed lines stuck at the backwards 'from' (opacity:0). The explicit reduced-motion block below drops
+     the animation entirely, so the lines rest at their natural fully-visible state. */
+  .narr li.nrev{animation:narrIn .42s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--nd,0ms)}
+  @keyframes narrIn{from{opacity:0; transform:translateX(-6px)} to{opacity:1; transform:none}}
+  @media (prefers-reduced-motion: reduce){
+    .narr li.nrev{animation:none !important; animation-delay:0ms !important; opacity:1 !important; transform:none !important}
+  }
   .epdrill{margin-top:7px}
   .epdrill>summary{cursor:pointer; font-size:11px; color:var(--text-dim); user-select:none; padding:3px 0}
   .epdrill>summary:hover{color:var(--text)}
@@ -346,6 +520,33 @@
 
   .bar{height:7px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin:4px 0}
   .bar i{display:block; height:100%; border-radius:999px}
+
+  /* root-cause ranking (Health) — animated impact bar; width set post-render so it grows from 0 */
+  .rc-row{padding:8px 0; border-top:1px solid var(--border-faint)}
+  .rc-row:first-child{border-top:0}
+  .rc-head{display:flex; justify-content:space-between; align-items:baseline; gap:10px; font-size:12px}
+  .rc-head .nm{font-weight:600; color:var(--text)}
+  .rc-head .sc{font-weight:700; color:var(--text); font-variant-numeric:tabular-nums}
+  .rc-bar{height:8px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin:5px 0 3px}
+  .rc-bar i{display:block; height:100%; width:0; border-radius:999px; transition:width .9s cubic-bezier(.2,.7,.2,1)}
+  .rc-meta{font-size:11px; color:var(--text-dim)}
+  .rc-meta b{color:var(--text)}
+  @media (prefers-reduced-motion: reduce){ .rc-bar i{transition:none !important} }
+  /* What-if remediation simulator: before/after stranded-endpoint bars. The fill grows from
+     0 to its target width with a transition; the global reduced-motion rule above neutralizes
+     the transition (it leaves the final width in place since width is set inline, not animated). */
+  .rem-grid{display:flex; gap:11px; margin:9px 0 4px}
+  .rem-col{flex:1; min-width:0}
+  .rem-col .lbl{font-size:9.5px; letter-spacing:.5px; text-transform:uppercase; color:var(--text-faint); font-weight:650; display:flex; justify-content:space-between; align-items:baseline; gap:6px}
+  .rem-col .lbl .n{font-size:20px; font-weight:750; line-height:1; font-variant-numeric:tabular-nums}
+  .rem-col.before .lbl .n{color:var(--crit)}
+  .rem-col.after .lbl .n{color:var(--ok)}
+  .rem-bar{height:12px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin-top:6px}
+  .rem-bar i{display:block; height:100%; border-radius:999px; width:0;
+    transition:width .65s cubic-bezier(.2,.7,.3,1)}
+  .rem-bar.before i{background:var(--crit)}
+  .rem-bar.after i{background:var(--ok)}
+  @media (prefers-reduced-motion: reduce){ .rem-bar i{transition:none} }
 
   .kv{display:flex; justify-content:space-between; gap:10px; padding:5px 0; font-size:12px; border-top:1px solid var(--border-faint)}
   .kv:first-child{border-top:0}
@@ -464,6 +665,8 @@
       <button data-mode="flow" aria-pressed="false"><span class="gl" aria-hidden="true">⚡</span>Flow</button>
       <button data-mode="health" aria-pressed="false"><span class="gl" aria-hidden="true">✚</span>Health</button>
       <button data-mode="protocols" aria-pressed="false"><span class="gl" aria-hidden="true">⌥</span>Protocols</button>
+      <button data-mode="xlayer" aria-pressed="false"><span class="gl" aria-hidden="true">⌗</span>Cross-Layer</button>
+      <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causality</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -476,6 +679,7 @@
       <button class="btn iconbtn" id="exportPngBtn" title="Export topology as PNG" aria-label="Export topology as PNG">▦</button>
       <button class="btn iconbtn" id="resetBtn" title="Reset layout — clear pinned positions (R)" aria-label="Reset layout, clear pinned node positions">⟲</button>
       <button class="btn iconbtn" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
+      <button class="btn iconbtn" id="lensBtn" title="Layer lens — sweep L1→L4 across the topology" aria-label="Toggle animated layer lens" aria-pressed="false">⧉</button>
       <button class="btn iconbtn" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">?</button>
     </div>
     <input type="file" id="file" accept=".json,application/json" hidden>
@@ -491,6 +695,7 @@
         <div class="panelbox modetag" id="modetag"></div>
       </div>
       <svg id="svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Network topology graph"></svg>
+      <div id="lensLabel" role="status" aria-live="polite" hidden></div>
       <div id="tip" role="tooltip" hidden></div>
       <div id="tableView" tabindex="-1" hidden></div>
       <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -511,7 +716,7 @@
 <div class="modal" id="help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><div class="box">
   <span class="close" id="helpClose" role="button" tabindex="0" aria-label="Close">✕</span>
   <h2>Keyboard shortcuts</h2>
-  <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">5</span></div>
+  <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">7</span></div>
   <div class="krow"><span>Focus search</span><span class="kbd">/</span></div>
   <div class="krow"><span>Fit to screen</span><span class="kbd">F</span></div>
   <div class="krow"><span>Reset layout (clear pins)</span><span class="kbd">R</span></div>
@@ -771,7 +976,8 @@ function demoSnapshot(){
        "Gi1/0/1":link("ACC-1","Gi1/0/24",{port:"Gi1/0/1",fwd:ALL,native:"99"}),   // trunk consistency: native VLAN 99 here vs ACC-1's default 1 -> mismatch
 
        "Gi1/0/2":link("ACC-2","Gi1/0/24",{port:"Gi1/0/2",fwd:ALL,duplex:"Full-duplex"}),   // L1 demo: this end full…
-       "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL})}),
+       "Gi1/0/4":link("ACC-4","Gi1/0/24",{port:"Gi1/0/4",fwd:ALL}),
+       "Gi1/0/5":link("ACC-5","Gi1/0/24",{port:"Gi1/0/5",fwd:"1,10,50"})}),   // X-layer: single non-PC uplink for ACC-5's VLAN 50 (sole gateway lives there too)
     "DIST-2":Object.assign({},
       {"Vlan10":gw(10,"10.0.10.3","HSRP grp10 standby vIP 10.0.10.1"),
        "Vlan20":gw(20,"10.0.20.3","HSRP grp21 standby vIP 10.0.20.1"),   // FHRP consistency: WRONG group (21 vs DIST-1's 20) -> fake redundancy
@@ -788,9 +994,14 @@ function demoSnapshot(){
        "Gi1/0/12":link("ACC-3","Gi1/0/24",{port:"Gi1/0/12",fwd:ALL})}),
     "ACC-3":Object.assign({},eps(10,5,1),
       {"Gi1/0/24":link("ACC-2","Gi1/0/12",{port:"Gi1/0/24",fwd:ALL,mtu:"9216"})}),   // path-MTU: jumbo on this uplink only (peer Gi1/0/12 default) -> mismatch on flows via ACC-3
-    "ACC-4":Object.assign({},eps(10,7,1),eps(20,5,8),eps(40,2,13),   // PHASE K: 2 endpoints in the VRF-isolated VLAN 40
+    "ACC-4":Object.assign({},eps(10,7,1),eps(20,5,8),eps(40,2,13),eps(50,2,15),   // PHASE K: 2 endpoints in the VRF-isolated VLAN 40; X-layer: 2 endpoints in VLAN 50 (collateral behind ACC-5's sole gateway)
       {"Gi1/0/24":link("DIST-1","Gi1/0/4",{port:"Gi1/0/24",fwd:ALL}),
        "Gi1/0/23":link("DIST-2","Gi1/0/4",{port:"Gi1/0/23",fwd:ALL})}),
+    // X-layer demo (L1∧L3): ACC-5 is single-homed (one non-PC uplink) AND the only gateway for VLAN 50 with no FHRP standby.
+    // One fibre fault both isolates ACC-5 and removes VLAN 50's only default gateway -> correlated High finding.
+    "ACC-5":Object.assign({},eps(50,4,1),
+      {"Vlan50":gw(50,"10.0.50.1",""),   // sole, FHRP-less gateway for VLAN 50
+       "Gi1/0/24":link("DIST-1","Gi1/0/5",{port:"Gi1/0/24",fwd:"1,10,50"})}),   // single non-port-channel uplink
   },
   // L4 ACL definitions (G2 eval): bodies for the ACLs the demo SVIs apply on DIST-1 (Vlan20 in, Vlan30 out).
   acls:{"DIST-1":{
@@ -842,6 +1053,15 @@ function demoSnapshot(){
   calibration:{"n":6,"score_stats":{"min":58,"max":88,"mean":71.3,"median":68.5,"p25":62.2,"p75":80.8,"stdev":11.2},"band_distribution":[{"band":"Excellent","count":0,"pct":0},{"band":"Good","count":2,"pct":33},{"band":"Fair","count":3,"pct":50},{"band":"Poor","count":1,"pct":17},{"band":"Critical","count":0,"pct":0}],"modal_band":"Fair","modal_pct":50,"discrimination":0.63,"discrimination_quality":"fair","suggested_bands":null,"note":"6 switch(es); scores 58-88 (median 68.5). 50% in 'Fair'. Band discrimination: fair."},
   // NAT-B: a static NAT for the VLAN-30 server, so the VLAN10->VLAN30 flow surfaces the translation + the L4 caveat.
   nat:{"DIST-1":{static:[{direction:"inside",proto:"",local:"10.0.30.9",global:"203.0.113.9"}],dynamic:[],pools:{},inside:["Vlan30"],outside:["Po1"]}},
+  // U1 Cross-Layer: a small array of pre-computed findings the Python pipeline would embed (CL-01..),
+  // ingested + merged with the client-computed correlations (de-duped by host-set + title). This one is
+  // a protocol-layer correlation the client engine doesn't compute, so it shows the SNAP-ingest path.
+  cross_layer:[
+    {id:"CL-07",severity:"Medium",layers:["L3","L4"],hosts:["DIST-1"],
+     title:"Stuck OSPF adjacency on the redistribution boundary",
+     detail:"DIST-1 is the OSPF↔BGP mutual-redistribution boundary and also has an OSPF neighbor stuck in EXSTART/INIT. While that adjacency is down, redistributed routes flap — inter-domain reachability is intermittent exactly where the two routing protocols meet.",
+     recommendation:"Fix the stuck OSPF adjacency (MTU / network-type / authentication) before relying on redistribution; add a route-map and tags to prevent re-injection loops across the boundary."}
+  ],
   // protocol-to-protocol analysis: DIST-1 is the OSPF/BGP redistribution boundary (mutual = risk) with one stuck OSPF adjacency; DIST-2 runs OSPF only.
   routing_neighbors:{
     "DIST-1":{ospf:[{neighbor:"10.0.99.3",state:"FULL/DR",address:"10.0.99.3",interface:"Po1"},
@@ -931,6 +1151,7 @@ let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
 let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // L4 tuple for the ACL allow/deny eval (G2; sport=I, icmptype=J)
+let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding card (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
 let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on a NEW selection; cancel pending stagger timers
@@ -941,6 +1162,11 @@ let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on 
    PACKET_EL is the <circle> under #vp; PACKET_RAF the rAF id (cancelled on clear). */
 let PATH_ANIM_KEY=null, PACKET_EL=null, PACKET_RAF=null;
 function reducedMotion(){return window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;}
+
+/* ---- Causality mode (U2) ----------------------------------------------------
+   CAUSAL_SEL = index into the current chain list of the selected chain (null = none).
+   CAUSAL_RAF = rAF id for the four-stage spark loop; cancelled on mode change / re-render. */
+let CAUSAL_SEL=null, CAUSAL_RAF=null;
 
 /* ---- pinned (hand-dragged) node positions ---------------------------------
    PINNED maps host->{x,y} for nodes the user has dragged. These survive layout
@@ -1037,7 +1263,7 @@ function buildChips(){
 function setVlan(v){VLAN=v;buildChips();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -1150,6 +1376,14 @@ function buildSvg(){
 
   buildNavOrder();
   applyTransform(); positionAll();
+  // LAYER LENS (U9): this rebuild discarded the old band/defs-gradient and made fresh
+  // edge/node elements; if the lens was on, restart it so the rAF closure references the
+  // new band (no orphaned loop writing to a detached node).
+  if(LENS_ON&&typeof stopLayerLens==="function"){
+    if(LENS_RAF){cancelAnimationFrame(LENS_RAF); LENS_RAF=null;}
+    if(LENS_TIMER){clearTimeout(LENS_TIMER); LENS_TIMER=null;}
+    _lensBand=null; LENS_ON=true; layerLens();
+  }
 }
 function shortName(h){return h.length>20?h.slice(0,19)+"…":h;}
 function positionNode(h){nodeEls[h].g.setAttribute("transform",`translate(${POS[h].x},${POS[h].y})`);}
@@ -1201,10 +1435,32 @@ function renderMinimap(){
   for(const L of MODEL.links){const a=POS[L.a],b=POS[L.b]; if(!a||!b)continue;
     svgs+=`<line class="mm-edge" x1="${(ox+a.x*s).toFixed(1)}" y1="${(oy+a.y*s).toFixed(1)}" x2="${(ox+b.x*s).toFixed(1)}" y2="${(oy+b.y*s).toFixed(1)}"/>`;}
   for(const h of MODEL.hosts){const p=POS[h]; if(!p)continue;
-    svgs+=`<circle class="mm-dot" cx="${(ox+p.x*s).toFixed(1)}" cy="${(oy+p.y*s).toFixed(1)}" r="2.1"/>`;}
+    svgs+=`<circle class="mm-dot" data-h="${esc(h)}" cx="${(ox+p.x*s).toFixed(1)}" cy="${(oy+p.y*s).toFixed(1)}" r="2.1"/>`;}
   svgs+=`<rect class="mm-vp" id="mmVp" rx="1.5"/>`;
   svgEl.innerHTML=svgs;
   updateMinimapRect();
+  minimapHeat();                                       // U10: health-band tint + ambient pulse
+}
+/* U10 — turn the mini-map into a health heat-overview. Tints each overview dot by
+   its switch's health band (SNAP.health_scores) reusing healthBandToken → --ok/
+   --watch/--risk/--crit; Poor/Critical bands also get an ambient .mm-crit pulse.
+   Nodes with no score stay neutral. Purely visual: only sets fill + adds a class on
+   the existing .mm-dot circles, so the viewport rect (mmVp) and click-to-pan are
+   untouched. Re-run safely after every renderMinimap (dots are rebuilt each time). */
+function minimapHeat(){
+  const svgEl=document.getElementById("minimapSvg"); if(!svgEl)return;
+  const hs=(typeof healthList==="function")?healthList():(SNAP&&SNAP.health_scores||[]);
+  const by={}; hs.forEach(r=>{by[r.switch]=r;});
+  svgEl.querySelectorAll("circle.mm-dot").forEach(c=>{
+    const h=c.getAttribute("data-h"); const r=h?by[h]:null;
+    if(!r){c.classList.remove("mm-heat","mm-crit"); c.style.fill=""; return;}  // no score → neutral
+    const tok=r.band?healthBandToken(r.band):scoreToken(r.score);
+    if(tok==="neutral"){c.classList.remove("mm-heat","mm-crit"); c.style.fill=""; return;}
+    c.classList.add("mm-heat");
+    c.style.fill=`var(--${tok})`;
+    // Poor (risk) / Critical (crit) bands pulse to flag trouble spots.
+    if(tok==="risk"||tok==="crit")c.classList.add("mm-crit"); else c.classList.remove("mm-crit");
+  });
 }
 function updateMinimapRect(){
   const mm=document.getElementById("minimap"); if(!mm||mm.classList.contains("hidden"))return;
@@ -1249,9 +1505,15 @@ window.addEventListener("mouseup",()=>{
    ===================================================================== */
 function cancelBlastWave(){_blastTimers.forEach(clearTimeout); _blastTimers=[];
   MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.remove("blastpulse","ripple");});}
+/* Cancel the causality four-stage spark rAF. Idempotent; safe to call repeatedly.
+   The diagram itself lives in the drawer SVG (rebuilt each renderDrawer), so this
+   just kills the loop's rAF handle — the stale element is discarded with the DOM. */
+function clearCausalFlow(){
+  if(CAUSAL_RAF!=null){cancelAnimationFrame(CAUSAL_RAF); CAUSAL_RAF=null;}
+}
 function clearFx(){
-  cancelBlastWave();
-  MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match");
+  cancelBlastWave(); clearCausalFlow();
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match","xlhl","xldim");
     n.g.style.removeProperty("--ov"); n.body.style.removeProperty("fill"); n.body.style.removeProperty("stroke");
     n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");});
   edgeEls.forEach(({path})=>{path.className.baseVal="lnk";
@@ -1279,6 +1541,52 @@ function applySearch(){
     if(!hit){for(const e of endpointsOf(h)){if((e.ip&&e.ip.toLowerCase().includes(q))||(e.mac&&e.mac.toLowerCase().includes(q))){hit=true;break;}}}
     if(hit)nodeEls[h].g.classList.add("match");});
 }
+/* ---------------------------------------------------------------------------
+   U8: Severity halos & critical-node pulse.
+   Draw a soft, severity-colored ring BEHIND the most critical / SPOF nodes so
+   the eye is drawn straight to risk. The ring pulses (scale + opacity) via the
+   @keyframes haloPulse above — higher severity pulses stronger/faster. Under
+   prefers-reduced-motion the ring renders static (CSS reduce branch). Rebuilt
+   on every repaint() (clearHalos first) so halos never accumulate.
+   --------------------------------------------------------------------------- */
+function clearHalos(){
+  // remove every previously-rendered halo circle (self-contained cleanup — does not
+  // touch the existing .halo selection/pin rect, which is a different element/class).
+  if(!nodeEls)return;
+  for(const h in nodeEls){const n=nodeEls[h]; if(n&&n.sevHalo&&n.sevHalo.parentNode){
+    n.sevHalo.parentNode.removeChild(n.sevHalo);} if(n)n.sevHalo=null;}
+}
+function _haloSeverity(){
+  // Worst severity per host from two independent signals:
+  //   (1) causalityChains implicated switches (structural SPOFs) — High→crit, Medium→risk, Low→watch
+  //   (2) health_scores Poor/Critical (and Fair) bands — Critical→crit, Poor→risk, Fair→watch
+  // Returns Map(host -> "crit"|"risk"|"watch"); higher rank wins.
+  const rank={crit:3,risk:2,watch:1};
+  const out=new Map();
+  const bump=(h,tok)=>{if(!h||!tok||!nodeEls[h])return;
+    if(!out.has(h)||rank[tok]>rank[out.get(h)])out.set(h,tok);};
+  try{const chains=causalityChains(MODEL)||[];
+    for(const c of chains){const tok=sevToken(c.sev); if(tok!=="neutral")bump(c.switch,tok);}}catch(e){}
+  const hs=healthList();
+  for(const r of hs){const b=(r.band||"").toLowerCase();
+    if(b.includes("critical"))bump(r.switch,"crit");
+    else if(b.includes("poor"))bump(r.switch,"risk");
+    else if(b.includes("fair"))bump(r.switch,"watch");}
+  return out;
+}
+function severityHalo(){
+  clearHalos();                 // always rebuild from scratch so halos never accumulate
+  if(!MODEL||!nodeEls)return;
+  const sev=_haloSeverity();
+  sev.forEach((tok,h)=>{const n=nodeEls[h]; if(!n||!n.g)return;
+    // radius hugs the node box; the ring fully encloses the wide glyph and sits behind it.
+    const r=Math.max(n.w,n.ht)/2+11;
+    const c=el("circle",{class:"sev-halo "+tok,cx:0,cy:0,r});
+    c.setAttribute("aria-hidden","true");
+    // insert as the FIRST child of the group → renders under the body/text glyphs (z-order).
+    n.g.insertBefore(c,n.g.firstChild);
+    n.sevHalo=c;});
+}
 function repaint(){
   if(!MODEL)return; clearFx(); baseEdge();
   if(MODE==="blast")paintBlast();
@@ -1287,8 +1595,14 @@ function repaint(){
   else if(MODE==="flow")paintFlow();
   else if(MODE==="health")paintHealth();
   else if(MODE==="protocols")paintProtocols();
+  else if(MODE==="xlayer")paintXLayer();
+  else if(MODE==="causality")paintCausality();
+  severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   runPathAnim();   // draw-on + traveling packet for Path/Flow; teardown otherwise (keyed on path change)
+  // LAYER LENS (U9): baseEdge() above rewrote every edge's className (wiping lensL* edge tint),
+  // so if the lens is active, re-stamp the layer currently in focus. The lens persists across modes.
+  if(LENS_ON)_lensApplyLayer(LENS_LAYER);
 }
 
 function sevToken(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";}
@@ -1492,6 +1806,126 @@ function animatePacket(pts){
   PACKET_RAF=requestAnimationFrame(frame);
 }
 
+/* =====================================================================
+   ANIMATED LAYER LENS (U9) — a graphical way to "feel" the stack.
+   A scanline band sweeps the canvas while the focus cycles L1→L2→L3→L4
+   (and loops). As each layer is in focus, the matching graph elements are
+   tinted with a transient lensL* class:
+     L1 physical  → all links (raw cabling)        .lnk.lensL1
+     L2 data-link → trunk links carrying VLANs      .lnk.lensL2
+     L3 network   → gateway / SVI switches          .node.lensL3
+     L4 transport → switches with an ACL applied     .node.lensL4
+   Self-contained: the band + gradient live under #vp (track pan/zoom) and
+   are created lazily / removed on stop; the rAF handle is cancelled on stop
+   AND on mode change. pointer-events:none → never blocks node interaction.
+   Reduced-motion: no rAF sweep — the layer is stepped on a slow timer and the
+   band holds static (CSS neuters the keyframe; we also skip the X animation). */
+let LENS_ON=false, LENS_RAF=null, LENS_TIMER=null, LENS_LAYER=0, _lensBand=null;
+const LENS_LAYERS=[
+  {key:"l1",name:"L1 · Physical",sub:"cabling"},
+  {key:"l2",name:"L2 · Data link",sub:"trunks / VLANs"},
+  {key:"l3",name:"L3 · Network",sub:"gateways / SVIs"},
+  {key:"l4",name:"L4 · Transport",sub:"ACL filtering"}
+];
+const LENS_PERIOD=2600;   // ms per layer (matches the CSS sweep duration)
+
+/* which hosts terminate an L3 gateway / an L4 (ACL) policy — derived from MODEL */
+function _lensGatewayHosts(){const s=new Set();
+  if(MODEL&&MODEL.gateways)for(const gws of MODEL.gateways.values())for(const h of gws)s.add(h);
+  return s;}
+function _lensAclHosts(){const s=new Set();
+  if(MODEL&&MODEL.svuAcl)for(const k of MODEL.svuAcl.keys()){const h=k.split("|")[0]; if(h)s.add(h);}
+  return s;}
+/* a link is an L2 "trunk" if it forwards at least one VLAN across (uses linkCarries) */
+function _lensIsTrunk(e){if(!e||!e.members)return false;
+  return e.members.some(L=>{for(const v of (L.fwd||[]))if(linkCarries(L,v)==="fwd")return true; return false;});}
+
+function _lensClearTint(){
+  edgeEls.forEach(({path})=>path.classList.remove("lensL1","lensL2"));
+  if(MODEL)MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.remove("lensL3","lensL4");});
+}
+function _lensApplyLayer(i){
+  if(!MODEL)return;
+  _lensClearTint();
+  LENS_LAYER=((i%LENS_LAYERS.length)+LENS_LAYERS.length)%LENS_LAYERS.length;
+  const L=LENS_LAYERS[LENS_LAYER];
+  if(L.key==="l1"){edgeEls.forEach(({path})=>path.classList.add("lensL1"));}
+  else if(L.key==="l2"){edgeEls.forEach(({e,path})=>{if(_lensIsTrunk(e))path.classList.add("lensL2");});}
+  else if(L.key==="l3"){const gw=_lensGatewayHosts();gw.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.add("lensL3");});}
+  else if(L.key==="l4"){const ac=_lensAclHosts();ac.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.add("lensL4");});}
+  const lbl=document.getElementById("lensLabel");
+  if(lbl){lbl.className=L.key; lbl.hidden=false;
+    lbl.innerHTML=`<span class="dot" aria-hidden="true"></span>${L.name}<span style="opacity:.6;font-weight:500">— ${L.sub}</span>`;}
+}
+/* lazily create the sweep band (rect + moving linear-gradient) under #vp */
+function _lensEnsureBand(){
+  const vp=document.getElementById("vp"); if(!vp)return null;
+  if(_lensBand&&_lensBand.isConnected)return _lensBand;
+  const defs=svg().querySelector("defs");
+  if(defs&&!defs.querySelector("#lensGrad")){
+    const g=el("linearGradient",{id:"lensGrad",x1:"0",y1:"0",x2:"1",y2:"0"});
+    g.innerHTML=`<stop offset="0" stop-color="var(--accent)" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="var(--accent)" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="var(--accent)" stop-opacity="0"/>`;
+    defs.appendChild(g);
+  }
+  const w=LOGICAL.w, h=LOGICAL.h, bw=Math.max(60,w*0.18);
+  const rect=el("rect",{class:"lensband",x:0,y:-h*0.1,width:bw,height:h*1.2,fill:"url(#lensGrad)"});
+  vp.insertBefore(rect,vp.firstChild);   // behind links/nodes so tint reads on top
+  _lensBand=rect; return rect;
+}
+function _lensRemoveBand(){
+  if(_lensBand){_lensBand.remove(); _lensBand=null;}
+  const grad=svg()&&svg().querySelector("#lensGrad"); if(grad)grad.remove();
+}
+function layerLens(){
+  if(!LENS_ON||!MODEL)return;
+  const band=_lensEnsureBand();
+  const reduce=reducedMotion();
+  if(reduce){
+    // reduced-motion: hold the band static, step the layer on a slow timer (user-perceivable, no sweep)
+    if(band){const bw=+band.getAttribute("width")||60; band.setAttribute("x",(LOGICAL.w-bw)/2); band.classList.remove("sweep");}
+    _lensApplyLayer(LENS_LAYER);
+    LENS_TIMER=setTimeout(()=>{if(LENS_ON){LENS_LAYER++; layerLens();}},LENS_PERIOD);
+    return;
+  }
+  if(band)band.classList.add("sweep");   // adds only a subtle opacity shimmer; X is driven by rAF below
+  const w=LOGICAL.w, bw=band?(+band.getAttribute("width")||60):60;
+  const span=w+bw;            // travel from fully off the left to fully off the right
+  let t0=null, lastLayer=-1;
+  const frame=ts=>{
+    if(!LENS_ON){LENS_RAF=null; return;}
+    if(t0==null)t0=ts;
+    const elapsed=ts-t0;
+    const layer=Math.floor(elapsed/LENS_PERIOD)%LENS_LAYERS.length;
+    const phase=(elapsed%LENS_PERIOD)/LENS_PERIOD;          // 0→1 within the current layer
+    if(band)band.setAttribute("x", -bw + span*phase);       // sweep left→right across the canvas
+    if(layer!==lastLayer){lastLayer=layer; _lensApplyLayer(layer);}
+    LENS_RAF=requestAnimationFrame(frame);
+  };
+  LENS_RAF=requestAnimationFrame(frame);
+}
+function stopLayerLens(){
+  LENS_ON=false;
+  if(LENS_RAF){cancelAnimationFrame(LENS_RAF); LENS_RAF=null;}
+  if(LENS_TIMER){clearTimeout(LENS_TIMER); LENS_TIMER=null;}
+  _lensClearTint(); _lensRemoveBand();
+  const lbl=document.getElementById("lensLabel"); if(lbl){lbl.hidden=true; lbl.className=""; lbl.textContent="";}
+}
+function toggleLayerLens(force){
+  const want = force!==undefined ? !!force : !LENS_ON;
+  const btn=document.getElementById("lensBtn");
+  if(want){
+    if(!MODEL)return;
+    LENS_ON=true; LENS_LAYER=0;
+    if(btn){btn.setAttribute("aria-pressed","true"); btn.classList.add("lenson");}
+    layerLens();
+  }else{
+    stopLayerLens();
+    if(btn){btn.setAttribute("aria-pressed","false"); btn.classList.remove("lenson");}
+  }
+}
+
 function healthList(){return SNAP&&SNAP.health_scores?SNAP.health_scores:[];}
 function healthBandToken(band){const b=(band||"").toLowerCase();
   if(b.includes("excellent"))return "ok"; if(b.includes("good"))return "ok";
@@ -1650,6 +2084,7 @@ function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} E
   else if(MODE==="blast"||MODE==="health"||MODE==="protocols"){SEL=(SEL===h)?null:h;repaint();renderDrawer();writeHash();
     srAnnounce(SEL?`${h} selected. ${deviceRole(MODEL,h)==="core"?"Core / distribution":"Access"} switch, ${epTotalOf(h)} hosts.`:`${h} deselected.`);}}
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
+  else if(MODE==="xlayer"&&XLSEL){XLSEL=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
@@ -1660,10 +2095,11 @@ function clearTrace(){TRACE_SRC=TRACE_DST=TRACE=null;repaint();renderDrawer();}
 function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
   document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
+  if(m!=="xlayer")XLSEL=null;   // U1: a cross-layer highlight only makes sense in its own mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols"}[m]||m)+" mode.");
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains"}[m]||m)+" mode.");
   writeHash();}
 
 /* =====================================================================
@@ -1675,7 +2111,9 @@ function setHint(){const h=document.getElementById("hint");const m={
   compare:MODEL_B?`Diff loaded — <b>red</b> regressed, <b>green</b> improved`:`Load a second snapshot to <b>compare</b>`,
   flow:flowObj()?`Rendering the collector's <b>L1→L3 flow trace</b>`:`No flow trace embedded`,
   health:`Click a switch for its <b>health breakdown</b>`,
-  protocols:`Click a switch for its <b>routing-protocol profile</b>`}[MODE];
+  protocols:`Click a switch for its <b>routing-protocol profile</b>`,
+  xlayer:`Click a finding to <b>highlight the switches it spans</b>`,
+  causality:`Select a chain to <b>animate its root-cause flow</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -1683,7 +2121,9 @@ function setModeTag(){const el=document.getElementById("modetag");
     compare:"Diff two snapshots: which SPOFs were resolved, which were introduced.",
     flow:"The collector's full-stack endpoint→gateway path with per-hop risk.",
     health:"Per-switch 0–100 health and per-group migration readiness.",
-    protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health."}[MODE];
+    protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
+    xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
+    causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -1696,6 +2136,8 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="flow")h+=ln("var(--accent)","flow path","flowpath")+bx("var(--risk)","SPOF hop","spof");
   else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit");
   else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
+  else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
+  else if(MODE==="causality"){h+=bx("var(--crit)","root-cause host","")+`<div class="row faint" style="margin-top:3px">Select a chain in the panel — its host is ringed here and its trigger→mitigation flow animates.</div>`;}
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -1734,12 +2176,13 @@ function _nodeMatchesHl(n,kind){const tag=(n.tag.textContent||"").toUpperCase();
     case"band-watch":return isTok("watch");
     case"band-risk":return isTok("risk");
     case"band-crit":return isTok("crit");
+    case"xlsel":return n.g.classList.contains("xlhl");   // U1: switches spotlit by paintXLayer for the selected finding
     default:return false;}}
 function highlightLegend(kind){
   if(!MODEL||!kind)return; clearLegendHighlight();
   // edge-only kinds vs node-only kinds; `spof` matches both (link + switch)
   const edgeKinds={fwd:1,blocked:1,sev:1,path:1,spof:1,flowpath:1,"adj-ospf":1,"adj-eigrp":1};
-  const nodeKinds={spof:1,removed:1,regressed:1,improved:1,redist:1,runs:1,stuck:1,"band-ok":1,"band-watch":1,"band-risk":1,"band-crit":1};
+  const nodeKinds={spof:1,removed:1,regressed:1,improved:1,redist:1,runs:1,stuck:1,"band-ok":1,"band-watch":1,"band-risk":1,"band-crit":1,xlsel:1};
   if(edgeKinds[kind]){
     edgeEls.forEach(({path})=>{if(_edgeMatchesHl(path,kind))path.classList.add("hl");});
   }
@@ -1793,6 +2236,18 @@ function animateDrawer(p){
   p.querySelectorAll(".num[data-to]").forEach(el=>countUp(el,parseFloat(el.dataset.to)));
   let i=0; p.querySelectorAll(".sec,.card").forEach(el=>{
     el.style.animationDelay=Math.min(300,i*45)+"ms"; el.classList.add("reveal"); i++;});
+  // root-cause impact bars: width is held at 0 by CSS, then driven to target so it grows (snaps when reduced-motion).
+  const _rcReduce=_REDUCE_MOTION&&_REDUCE_MOTION.matches;
+  p.querySelectorAll(".rc-bar i[data-rcw]").forEach(el=>{const w=el.dataset.rcw+"%";
+    if(_rcReduce){el.style.width=w;} else {requestAnimationFrame(()=>requestAnimationFrame(()=>{el.style.width=w;}));}});
+  // grow what-if remediation bars from 0 → their target width (CSS transition; reduced-motion kills it,
+  // leaving the final width in place). Defer one frame so the 0-width resting state paints first.
+  const bars=p.querySelectorAll(".rem-bar i[data-w]");
+  if(bars.length){
+    const apply=()=>bars.forEach(b=>{b.style.width=b.dataset.w+"%";});
+    if(_REDUCE_MOTION&&_REDUCE_MOTION.matches)apply();
+    else requestAnimationFrame(()=>requestAnimationFrame(apply));
+  }
 }
 function renderDrawer(){
   if(!MODEL)return; const p=document.getElementById("panel");
@@ -1803,6 +2258,20 @@ function renderDrawer(){
   else if(MODE==="flow")p.innerHTML=drawFlow();
   else if(MODE==="health")p.innerHTML=drawHealth();
   else if(MODE==="protocols")p.innerHTML=drawProtocols();
+  else if(MODE==="xlayer")p.innerHTML=drawXLayer();
+  else if(MODE==="causality")p.innerHTML=drawCausality();
+  // wire cross-layer finding cards (click highlights the involved hosts on the canvas)
+  p.querySelectorAll("[data-xlhosts]").forEach(c=>c.onclick=()=>{
+    const hosts=(c.dataset.xlhosts||"").split(",").filter(Boolean);
+    const same=XLSEL&&XLSEL.length===hosts.length&&XLSEL.every((h,i)=>h===hosts[i]);
+    XLSEL=same?null:hosts;   // clicking the active card again clears the highlight
+    repaint(); renderDrawer();});
+  // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
+  const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
+    const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
+  p.querySelectorAll("[data-causal]").forEach(r=>{const i=+r.dataset.causal;
+    r.onclick=()=>_selCausal(i);
+    r.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();_selCausal(i);}};});
   // wire row clicks (jump-to-switch); clears any endpoint drill-down
   p.querySelectorAll("[data-jump]").forEach(r=>r.onclick=()=>{const h=r.dataset.jump;
     if(MODE==="trace"){EPSEL=null;pickTrace(h);} else{SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);writeHash();}});
@@ -1821,7 +2290,25 @@ function renderDrawer(){
   {const pd=document.getElementById("flowDport"); if(pd)pd.addEventListener("change",()=>{const n=parseInt(pd.value,10); if(n>=1&&n<=65535)FLOW_DPORT=n; _reflow();});}
   {const ps=document.getElementById("flowSport"); if(ps)ps.addEventListener("change",()=>{const v=ps.value.trim(); const n=parseInt(v,10); FLOW_SPORT=(v===""||!(n>=1&&n<=65535))?null:n; _reflow();});}
   {const pi=document.getElementById("flowIcmp"); if(pi)pi.addEventListener("change",()=>{const v=pi.value.trim(); FLOW_ICMPTYPE=v||null; _reflow();});}
+  wireHeatmapCells(p);
   animateDrawer(p);
+  if(MODE==="causality"&&!EPSEL)animateCausalFlow();   // start the four-stage spark loop (no-op under reduced-motion)
+}
+/* U5: reveal a flagged heatmap cell's finding in the inline #lhm-detail panel on hover/focus. */
+function wireHeatmapCells(p){
+  const det=p.querySelector("#lhm-detail"); if(!det)return;
+  const _SEVD={info:"var(--accent)",warn:"var(--watch)",crit:"var(--crit)",none:"var(--text-faint)"};
+  const reset=()=>{det.classList.remove("on"); det.innerHTML="Hover or focus a colored cell to see the finding.";};
+  const show=cell=>{const loc=cell.dataset.lhmLoc, sev=cell.dataset.lhmSev||"info", txt=cell.dataset.lhmDetail||"";
+    det.classList.add("on");
+    det.innerHTML=`<span class="lhm-d-dot" style="background:${_SEVD[sev]||_SEVD.info}"></span>`+
+      `<span class="lhm-d-loc">${esc(loc||"")}</span> — ${esc(txt)}`;};
+  p.querySelectorAll(".lhm-cell.has-detail").forEach(c=>{
+    c.addEventListener("mouseenter",()=>show(c));
+    c.addEventListener("focus",()=>show(c));
+    c.addEventListener("mouseleave",reset);
+    c.addEventListener("blur",reset);
+  });
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -2241,6 +2728,7 @@ function drawFlow(){
       (F.aclVerdicts&&F.aclVerdicts.length?aclVerdictCard(F.aclVerdicts,FLOW_PROTO,FLOW_DPORT):aclFlagCard(F.aclFlags,"this path"))+
       (F.mtu&&F.mtu.mismatch?`<div class="card watch" style="margin:0 0 8px"><div class="ct"><span class="nm">⚠ Path MTU mismatch</span><span class="pill pl-watch">${F.mtu.pathMtu} eff.</span></div><div class="ln faint" style="margin-top:2px">${esc(F.mtu.note)} The flow still reaches — only large / jumbo frames are affected.</div></div>`:"")+
       natCard(natStaticsFor([F.src&&F.src.ip, F.dst&&F.dst.ip]))+
+      flowWhyCard(F)+
       `<div>${steps}</div>`+
       `<p class="faint" style="margin-top:9px"><b>Path is L1–L3</b>, VRF-aware and route-aware: the source gateway must have a route covering the destination (when no route table was collected for it, the routed hop is assumed). Different-VRF subnets are reported unreachable; route leak / VRF fusion isn't modeled. The L4 verdict, when shown, evaluates the ACLs on the crossed gateway SVIs and the routed egress interface for <b>${esc(String(FLOW_PROTO).toUpperCase())}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""}</b> — first-match, implicit deny. <b>Stateful</b>: an <span class="mono">established</span> rule is treated as TCP return-only (it never permits a new/forward flow); a <span class="mono">time-range</span> rule is reported indeterminate (its active window can't be known offline). <b>Path MTU</b> consistency is checked — jumbo-frame black-holes are flagged (the flow still reaches; only oversized frames drop). Known <b>static NAT</b> mappings touching either endpoint are surfaced (the L4 verdict is against the untranslated address).</p></div>`;
   } else if(FLOW_SRC||FLOW_DST){
@@ -2379,6 +2867,114 @@ function flowBetween(s,d){
   hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
   F.mtu=pathMtu(F,s,d); F.reachable=true; F.verdict="REACHABLE — L3 (routed via gateway)";
   return F;
+}
+
+/* ---- U7: Cross-layer "why" ladder ----------------------------------------------------------------
+   Explain, layer by layer, WHY the current flow (the SAME F that flowBetween already computed) reaches
+   or is blocked — one coherent causal story L1->L4. Each rung is {layer,label,verdict,reason,decisive}
+   where verdict is ok | block | watch | na. We derive everything from F's own facts and verdict/reason
+   so the ladder never contradicts the headline verdict or re-runs reachability differently. flowBetween
+   returns EARLY on a block, so the decisive layer is read off the final (reason-carrying) hop. */
+function flowWhyLadder(F){
+  if(!F)return [];
+  // VLAN entirely unknown -> we can't reason about any layer.
+  if(F.verdict==="UNKNOWN")
+    return [{layer:"L1",label:"Physical",verdict:"na",reason:F.reason||"Endpoint VLAN unknown — path can't be traced."},
+            {layer:"L2",label:"Switching",verdict:"na",reason:"Not evaluated — VLAN unknown."},
+            {layer:"L3",label:"Routing",verdict:"na",reason:"Not evaluated — VLAN unknown."},
+            {layer:"L4",label:"Security",verdict:"na",reason:"Not evaluated — VLAN unknown."}];
+  // The decisive blocking layer (when blocked) is the layer of the last hop, which carries F.reason.
+  const lastHop=F.hops.length?F.hops[F.hops.length-1]:null;
+  const blockLayer=F.reachable?null:(lastHop?lastHop.layer:null);
+  const routed=(F.gateways&&F.gateways.length>0);     // an inter-subnet (L3) flow actually engaged a gateway
+  const rungs=[];
+
+  // L1 — Physical / MTU. The source endpoint's own access is intact whenever we got past VLAN lookup;
+  // a path-MTU mismatch is a 'watch' (the flow still reaches, only oversized frames drop).
+  if(F.mtu&&F.mtu.mismatch)
+    rungs.push({layer:"L1",label:"Physical",verdict:"watch",
+      reason:`${F.mtu.note} Path still forwards; only frames above ${F.mtu.pathMtu} bytes are dropped.`});
+  else if(blockLayer==="L1")
+    rungs.push({layer:"L1",label:"Physical",verdict:"block",reason:F.reason||"Physical-layer break on the path."});
+  else
+    rungs.push({layer:"L1",label:"Physical",verdict:"ok",
+      reason:"Access ports up and no path-MTU black-hole — frames pass at L1."});
+
+  // L2 — Switching / Trunk. Blocked when the decisive reason is an L2 partition / no STP-forwarding path /
+  // native-VLAN or asymmetric-prune break; otherwise the VLAN reached its target (or its gateway).
+  if(blockLayer==="L2")
+    rungs.push({layer:"L2",label:"Switching",verdict:"block",reason:F.reason||"No L2-forwarding path for this VLAN."});
+  else
+    rungs.push({layer:"L2",label:"Switching",verdict:"ok",
+      reason:routed?"All trunks on the path carry the VLAN to its gateway (no native mismatch / asymmetric prune)."
+                   :"Source and destination share the VLAN and a forwarding L2 path connects them."});
+
+  // L3 — Routing / VRF. 'na' for a same-subnet (pure L2) reachable flow that never needed routing.
+  if(blockLayer==="L3")
+    rungs.push({layer:"L3",label:"Routing",verdict:"block",reason:F.reason||"No L3 path between the subnets."});
+  else if(!routed)
+    rungs.push({layer:"L3",label:"Routing",verdict:"na",
+      reason:"Same subnet — no inter-VLAN routing needed; the flow stays at L2."});
+  else{
+    const gwTxt=F.gateways[0]?`${shortName(F.gateways[0])} has a covering route to the destination, same VRF`:"Routed via the gateway, same VRF";
+    rungs.push({layer:"L3",label:"Routing",verdict:"ok",reason:`${gwTxt} — the inter-subnet hop forwards.`});
+  }
+
+  // L4 — Security / NAT. Driven by the ACL verdicts flowBetween already evaluated on the crossed SVIs /
+  // routed egress; NAT-touch is surfaced as a caveat on the rung when present.
+  const natTouch=natStaticsFor([F.src&&F.src.ip, F.dst&&F.dst.ip]);
+  const natNote=natTouch.length?` Static NAT touches an endpoint, so the verdict is against the untranslated address.`:"";
+  if(F.aclVerdicts&&F.aclVerdicts.length){
+    const deny=F.aclVerdicts.find(v=>v.verdict==="deny");
+    const indet=F.aclVerdicts.find(v=>v.verdict==="indeterminate");
+    if(deny){
+      const why=deny.implicit?"implicit deny — no rule matched":(deny.rule?`rule ${deny.idx+1}: ${deny.rule.raw}`:"a deny rule matched");
+      rungs.push({layer:"L4",label:"Security",verdict:"block",
+        reason:`ACL ${deny.name} on ${shortName(deny.host)} denies this flow (${why}).${natNote}`});
+    } else if(indet){
+      const why=indet.nobody?"its body wasn't collected":(indet.rule?`rule ${indet.idx+1} can't be modeled offline`:"no rule conclusively matched");
+      rungs.push({layer:"L4",label:"Security",verdict:"watch",
+        reason:`ACL ${indet.name} on ${shortName(indet.host)} is indeterminate (${why}) — can't confirm permit/deny.${natNote}`});
+    } else {
+      rungs.push({layer:"L4",label:"Security",verdict:"ok",
+        reason:`Every crossed ACL permits this flow.${natNote}`});
+    }
+  } else if(blockLayer&&!F.reachable){
+    rungs.push({layer:"L4",label:"Security",verdict:"na",
+      reason:"Not reached — the flow is already blocked at a lower layer."});
+  } else if(natTouch.length){
+    rungs.push({layer:"L4",label:"Security",verdict:"watch",
+      reason:`No ACL on the path to evaluate, but static NAT touches an endpoint (verdict is against the untranslated address).`});
+  } else {
+    rungs.push({layer:"L4",label:"Security",verdict:"na",
+      reason:F.reachable?"No ACL applied on the crossed interfaces (or no L4 tuple to test) — nothing filtering this flow.":"Not evaluated."});
+  }
+
+  // Mark the FIRST blocking rung as the decisive cause. A flow can be L1–L3 'reachable' yet denied at L4
+  // (flowBetween's F.reachable only covers L1–L3), so any block rung — including an L4 ACL deny — is decisive.
+  {const dec=rungs.find(r=>r.verdict==="block"); if(dec)dec.decisive=true;}
+  return rungs;
+}
+function flowWhyCard(F){
+  const rungs=flowWhyLadder(F); if(!rungs.length)return "";
+  const icon={ok:"✓",watch:"⚠",block:"✗",na:"—"};
+  // 'blocked' if ANY rung blocks (an L4 ACL deny blocks the flow even when F.reachable is true at L1–L3).
+  const blocked=rungs.some(r=>r.verdict==="block"), watched=rungs.some(r=>r.verdict==="watch");
+  const tok=blocked?"crit":watched?"watch":"ok";
+  const headBadge=blocked?'<span class="badge b-crit">blocked</span>'
+    :watched?'<span class="badge b-watch">reaches · with caveats</span>'
+            :'<span class="badge b-ok">reaches</span>';
+  const rows=rungs.map((r,i)=>{
+    const dec=r.decisive?" decisive":"";
+    const tag=r.decisive?' <span class="pill pl-crit">decisive cause</span>':"";
+    return `<div class="why-rung ${esc(r.verdict)}${dec}" style="--d:${Math.min(280,i*70)}ms">`+
+      `<span class="wl">${esc(r.layer)}</span>`+
+      `<span class="wi">${icon[r.verdict]||"·"}</span>`+
+      `<span class="wb"><span class="wt">${esc(r.label)}${tag}</span><span class="wr">${esc(r.reason)}</span></span>`+
+    `</div>`;}).join("");
+  return `<div class="card ${tok}" style="margin:0 0 8px"><div class="ct"><span class="nm">Why — cross-layer ladder</span>${headBadge}</div>`+
+    `<div class="ln faint" style="margin:2px 0 6px">The single causal story, L1 → L4. ${blocked?"The decisive ✗ is the cause; layers below it carry no traffic.":"Each layer forwards, in order."}</div>`+
+    rows+`</div>`;
 }
 
 
@@ -2526,6 +3122,471 @@ function linkPhyCard(){
     rows+`</div>`;
 }
 /* =====================================================================
+   CROSS-LAYER ANALYSIS (U1) — correlate the per-layer detectors above into
+   ranked findings: where a weakness at one layer COMPOUNDS a weakness at
+   another into a single real migration risk no single-layer view surfaces.
+   Pure client-side (reuses the existing detectors — never re-implements them);
+   ALSO ingests an optional SNAP.cross_layer array (CL-01..CL-10 from the Python
+   pipeline) when present, normalizing to the same shape and de-duping by
+   host-set + title. Absent keys -> empty, back-compat.
+   ===================================================================== */
+const _XL_SEV_RANK={High:3,Medium:2,Low:1,Info:0};
+const _xlSevTok=s=>s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";
+/* the access/leaf switches that actually hold endpoints in VLAN vid (the population put at risk) */
+function _xlHostsInVlan(vid){const out=[]; for(const [h,m] of MODEL.endpoints)if(m.get(vid))out.push(h); return out;}
+function _xlEpsInVlan(vid){let n=0; for(const [,m] of MODEL.endpoints)n+=(m.get(vid)||0); return n;}
+/* does any STP-forwarding (active) inter-switch link in vid carry an explicit, MISMATCHED MTU?
+   Reuses _ifMtu (the pathMtu primitive) over the live forwarding topology — a jumbo set on one end of an
+   active uplink while the peer is default is the classic post-cutover black-hole. Reported once PER LINK
+   (not per VLAN — the mismatch is a link property), citing every endpoint-bearing VLAN the link carries. */
+function _xlMtuMismatchLinks(){
+  const out=[], seen=new Set();
+  for(const L of (MODEL&&MODEL.links)||[]){
+    const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
+    const ma=_ifMtu(L.a,L.aPort), mb=_ifMtu(L.b,L.bPort);
+    let mtus=null;
+    if(ma!=null&&mb!=null&&ma!==mb)mtus=[ma,mb].sort((x,y)=>x-y);
+    else if((ma!=null&&ma>1500&&mb==null)||(mb!=null&&mb>1500&&ma==null))mtus=[1500,Math.max(ma||0,mb||0)];   // jumbo on one end, default (unset) on the other
+    if(!mtus)continue;
+    // the VLANs this link actively forwards AND that have endpoints somewhere with a gateway to reach
+    const vids=[...MODEL.vlans].filter(v=>linkCarries(L,v)==="fwd"&&_xlEpsInVlan(v)>0&&(MODEL.gateways.get(v)||new Set()).size>0).sort((x,y)=>x-y);
+    if(!vids.length)continue;
+    out.push({a:L.a,aPort:L.aPort,b:L.b,bPort:L.bPort,mtus,vids});
+  }
+  return out;
+}
+function crossLayerCorrelate(model){
+  if(!model)return [];
+  const out=[]; const uniq=new Set();
+  const push=(f)=>{const hosts=[...new Set((f.hosts||[]).filter(Boolean))].sort();
+    const key=hosts.join(",")+"|"+(f.title||"").toLowerCase().replace(/\s+/g," ").trim();
+    if(uniq.has(key))return; uniq.add(key);
+    out.push({severity:f.severity||"Medium",title:f.title||"Cross-layer finding",
+      layers:[...new Set(f.layers||[])],detail:f.detail||"",recommendation:f.recommendation||"",hosts,
+      source:f.source||"client",id:f.id||null});};
+
+  const chains=(typeof CHAINS!=="undefined"&&CHAINS&&CHAINS.length)?CHAINS:causalityChains(model);
+  const soleGwVids=new Set(chains.filter(c=>c.type==="A").map(c=>c.vid));        // L3: VLANs with a no-FHRP sole gateway
+  const singleUplink=chains.filter(c=>c.type==="C");                            // L1/L2: a leaf on a single non-PC uplink
+
+  // (1) L1∧L3 — a switch that is BOTH single-homed (one fiber/uplink) AND the sole, FHRP-less gateway for a VLAN.
+  //     One optic fault then drops the whole VLAN's default gateway with no second path and no failover.
+  for(const c of singleUplink){
+    const gws=model.gateways.get(c.vid)||new Set();
+    if(gws.has(c.switch)&&soleGwVids.has(c.vid)){
+      push({severity:"High",layers:["L1","L3"],hosts:[c.switch],
+        title:`Single uplink under the sole gateway · VLAN ${c.vid}`,
+        detail:`${shortName(c.switch)} reaches VLAN ${c.vid} over a single non-port-channel uplink (L1) AND is the only gateway for VLAN ${c.vid} with no FHRP standby (L3). A single fibre/optic fault both isolates the switch and removes the VLAN's only default gateway — there is neither a second path nor a failover.`,
+        recommendation:`Bundle the uplink into a port-channel (or dual-home ${shortName(c.switch)}) and add an FHRP peer (HSRP/VRRP) for VLAN ${c.vid} on a second distribution switch.`});
+    }
+  }
+
+  // (2) L1∧L3 — an MTU black-hole on an ACTIVE uplink that endpoints must traverse to reach their gateway.
+  //     Frames above the smaller MTU are silently dropped end-to-end after cutover (jumbo / mismatched MTU).
+  //     Reported once per mismatched link, listing every endpoint-bearing VLAN it carries.
+  for(const mm of _xlMtuMismatchLinks()){
+    const vlist=mm.vids.join(", ");
+    push({severity:"Medium",layers:["L1","L3"],hosts:[mm.a,mm.b],
+      title:`MTU black-hole on an active uplink · ${shortName(mm.a)} ↔ ${shortName(mm.b)}`,
+      detail:`The forwarding uplink ${shortName(mm.a)} ${mm.aPort} ↔ ${shortName(mm.b)} ${mm.bPort} has mismatched MTU (${mm.mtus.join(" / ")} bytes) and carries VLAN ${vlist} traffic toward their L3 gateway. Frames larger than ${mm.mtus[0]} are dropped at the smaller-MTU hop — a silent, intermittent black-hole that survives a cutover (small packets pass, large ones vanish).`,
+      recommendation:`Align the MTU on both ends of this uplink (set jumbo end-to-end or revert both to ${mm.mtus[0]}). Verify with a large-payload, do-not-fragment ping across the path.`});
+  }
+
+  // (3) L3∧L4 — a VRF-isolated VLAN whose clients depend on DHCP relay (ip helper-address) to a server the
+  //     gateway can't route to. VRF isolation (L3) makes the relay target unreachable -> clients never get a lease.
+  for(const vid of [...model.vlans].sort((a,b)=>a-b)){
+    const gws=[...(model.gateways.get(vid)||new Set())].sort(); if(!gws.length)continue;
+    const D=dhcpReach(vid,gws); if(D.state!=="fail")continue;                   // only when relay can't reach its server
+    const isVrf=gws.some(g=>_normVrf(gwVrf(g,vid))!=="");
+    const sev=isVrf?"High":"Medium";
+    const bad=(D.helpers||[]).filter(h=>h.state==="fail").map(h=>h.ip);
+    push({severity:sev,layers:["L3","L4"],hosts:_xlHostsInVlan(vid).concat(gws),
+      title:`DHCP relay unreachable${isVrf?" across VRF":""} · VLAN ${vid}`,
+      detail:`VLAN ${vid}'s gateway forwards DHCP (ip helper-address ${bad.join(", ")||"set"}) to a server that is NOT in the gateway's routing table${isVrf?` — and VLAN ${vid} sits in VRF ${gwVrf(gws[0],vid)||"a tenant VRF"}, so the relayed request can't cross into the server's routing domain`:""}. Clients here boot, broadcast DHCP, and never receive a lease — they come up with no IP after the move.`,
+      recommendation:`Point ip helper-address at a server the VLAN-${vid} gateway can route to${isVrf?" within the same VRF (or leak a route to the DHCP server into the VRF)":""}, or stand up a relay/server inside this routing domain.`});
+  }
+
+  // (4) L2∧L3 — asymmetric trunk pruning (a VLAN allowed on one trunk end but pruned on the other) on a link
+  //     that is the BACKUP/forwarding path for a VLAN that has endpoints. The VLAN silently won't cross -> lost failover.
+  for(const t of trunkConsistency()){
+    if(t.kind!=="allowed")continue;
+    const pruned=[...new Set([...(t.prunedOnA||[]),...(t.prunedOnB||[])])];
+    const hit=pruned.filter(v=>_xlEpsInVlan(v)>0);                             // only VLANs with real endpoints at stake
+    if(!hit.length)continue;
+    push({severity:"Medium",layers:["L2","L3"],hosts:[t.a,t.b],
+      title:`Asymmetric trunk pruning on a redundancy path · VLAN ${hit.join(", ")}`,
+      detail:`The trunk ${shortName(t.a)} ${t.aPort} ↔ ${shortName(t.b)} ${t.bPort} allows VLAN ${hit.join(", ")} on one end but prunes it on the other, so that VLAN cannot cross this link. Because endpoints in VLAN ${hit.join(", ")} rely on this fabric path to reach their L3 gateway, this silently removes a redundancy / failover path — reachability looks fine until the primary path drops.`,
+      recommendation:`Make the trunk allowed-VLAN list symmetric on both ends (add VLAN ${hit.join(", ")} to the pruning end, or prune it on both), so the backup path genuinely carries the VLAN.`});
+  }
+
+  // (5) L3∧L3 — a duplicate L3 address / overlapping subnet that COINCIDES with a live gateway (an SVI that is a
+  //     default gateway for endpoints). Two interfaces claim one IP, or one subnet is behind two VLANs — ambiguous
+  //     routing exactly where clients send their default-route traffic. The classic silent outage on a domain merge.
+  {
+    const conf=addressingConflicts();
+    const gwHosts=new Set(); for(const s of model.gateways.values())for(const h of s)gwHosts.add(h);
+    for(const d of conf.dupIp){
+      const onGw=d.where.filter(w=>gwHosts.has(w.host)&&model.gateways.get(w.vid)&&model.gateways.get(w.vid).has(w.host));
+      if(onGw.length<1)continue;
+      const hosts=d.where.map(w=>w.host);
+      push({severity:"High",layers:["L3","L3"],hosts,
+        title:`Duplicate gateway IP · ${d.ip}`,
+        detail:`The L3 address ${d.ip} is configured on ${d.where.map(w=>shortName(w.host)+" "+(w.vid!=null?"VLAN "+w.vid:w.port)).join(" and ")} — and at least one of those is a live default gateway for endpoints. Two interfaces answering for one gateway IP cause ARP flaps and intermittent black-holing for every client pointed at it.`,
+        recommendation:`Resolve the duplicate L3 address before cutover — re-IP one SVI, or (if this is meant to be a redundant gateway) convert it to a shared FHRP virtual IP instead of an identical physical address.`});
+    }
+    for(const d of conf.dupSubnet){
+      const onGw=d.where.filter(w=>gwHosts.has(w.host));
+      if(onGw.length<2)continue;
+      const hosts=[...new Set(d.where.map(w=>w.host))];
+      const vids=[...new Set(d.where.map(w=>w.vid))];
+      push({severity:"Medium",layers:["L3","L3"],hosts,
+        title:`Overlapping gateway subnet · ${d.netStr}`,
+        detail:`The subnet ${d.netStr}${d.vrf?" (VRF "+d.vrf+")":""} is configured as the gateway subnet behind two VLANs (${vids.join(", ")}). Overlapping addressing on gateway SVIs makes inter-subnet routing ambiguous — return traffic can be sent out the wrong VLAN, which presents as partial / one-way reachability after a merge.`,
+        recommendation:`Re-address one of the overlapping VLANs so each gateway subnet is unique within its VRF before consolidating these domains.`});
+    }
+  }
+
+  // ---- ingest SNAP.cross_layer (CL-01..CL-10) from the Python pipeline, normalized to the same shape ----
+  const ext=(SNAP&&Array.isArray(SNAP.cross_layer))?SNAP.cross_layer:[];
+  for(const f of ext){if(!f||typeof f!=="object")continue;
+    const sevRaw=String(f.severity||"").trim();
+    const severity=/^high$/i.test(sevRaw)?"High":/^med/i.test(sevRaw)?"Medium":/^low$/i.test(sevRaw)?"Low":/^info$/i.test(sevRaw)?"Info":(_XL_SEV_RANK[sevRaw]!=null?sevRaw:"Medium");
+    const layers=Array.isArray(f.layers)?f.layers.map(l=>String(l).toUpperCase().replace(/^LAYER\s*/,"L").replace(/^(\d)/,"L$1")):[];
+    const hosts=Array.isArray(f.hosts)?f.hosts.filter(h=>typeof h==="string"):[];
+    push({severity,layers,hosts,title:f.title||f.id||"Cross-layer finding",
+      detail:f.detail||"",recommendation:f.recommendation||"",id:f.id||null,source:"snapshot"});}
+
+  out.sort((a,b)=>(_XL_SEV_RANK[b.severity]||0)-(_XL_SEV_RANK[a.severity]||0)||a.title.localeCompare(b.title));
+  return out;
+}
+/* the 4 layer badges for a finding (colored L1=accent, L2=ok, L3=watch, L4=risk; deduped, in L1..L4 order) */
+const _XL_LAYER_ORDER=["L1","L2","L3","L4"];
+function xlLayerChips(layers){
+  const set=new Set((layers||[]).map(l=>String(l).toUpperCase()));
+  return _XL_LAYER_ORDER.filter(l=>set.has(l))
+    .map(l=>`<span class="layer-chip lc-${l.toLowerCase()}">${l}</span>`).join("");
+}
+function drawXLayer(){
+  if(!MODEL)return "";
+  const findings=crossLayerCorrelate(MODEL);
+  const head=`<div class="drawer-head"><div class="eyebrow">Cross-layer analysis</div>
+    <div class="title">Correlated findings</div></div>`;
+  if(!findings.length){
+    return head+`<div class="sec"><div class="headline">
+      <div class="stat ok"><div class="v">0</div><div class="k">correlated risks</div></div></div>
+      <p class="faint" style="margin-top:10px">✓ No cross-layer correlations found. The per-layer detectors (Health mode) report no weaknesses that <b>compound</b> across L1–L4 — e.g. no single-homed sole gateway, no MTU black-hole on an active path, no relay stranded behind a VRF.</p></div>`;
+  }
+  const counts={High:0,Medium:0,Low:0,Info:0};
+  findings.forEach(f=>{counts[f.severity]=(counts[f.severity]||0)+1;});
+  const cards=findings.map(f=>{const tok=_xlSevTok(f.severity);
+    const hostList=f.hosts.length?`<div class="ln faint" style="margin-top:4px">Spans: ${f.hosts.map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}</div>`:"";
+    const src=f.source==="snapshot"?` <span class="pill pl-neutral" title="from the collector's cross_layer findings">${esc(f.id||"pipeline")}</span>`:"";
+    const sel=(XLSEL&&XLSEL.length===f.hosts.length&&XLSEL.every((h,i)=>h===f.hosts[i]))?" xlactive":"";
+    return `<div class="card ${tok} xlcard${sel}" data-xlhosts="${esc(f.hosts.join(","))}" tabindex="0" role="button" style="cursor:pointer" aria-label="${esc(f.title)} — click to highlight on the graph">
+      <div class="ct"><span class="nm">${esc(f.title)}</span><span class="pill pl-${tok}">${f.severity}</span></div>
+      <div class="xlchips">${xlLayerChips(f.layers)}${src}</div>
+      <div class="ln">${esc(f.detail)}</div>
+      <div class="fix"><b>Fix:</b> ${esc(f.recommendation)}</div>
+      ${hostList}</div>`;}).join("");
+  return head+
+    `<div class="sec"><div class="headline">
+      <div class="stat ${counts.High?"crit":""}"><div class="v"><span class="num" data-to="${counts.High}">0</span></div><div class="k">high</div></div>
+      <div class="stat ${counts.Medium?"risk":""}"><div class="v"><span class="num" data-to="${counts.Medium}">0</span></div><div class="k">medium</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${counts.Low+counts.Info}">0</span></div><div class="k">low / info</div></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0">Each finding ties together two or more layers' detector outputs into one ranked risk. <b>Click a card</b> to spotlight the switches it spans on the canvas.</p></div>
+    <div class="sec"><h3>Findings <span class="ct">${findings.length}</span></h3>${cards}</div>`;
+}
+/* paint hook: spotlight the switches of the selected finding (XLSEL) with a distinct .xlhl class,
+   dim the rest. No selection -> clean canvas. Mirrors the legend-highlight pattern but persistent. */
+function paintXLayer(){
+  if(!XLSEL||!XLSEL.length)return;                       // no card selected -> leave the base topology untouched
+  const set=new Set(XLSEL);
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+    if(set.has(h)){n.g.classList.add("xlhl");}
+    else{n.g.classList.add("xldim");}});
+  edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
+}
+
+/* =====================================================================
+   U5: CROSS-LAYER SEVERITY HEATMAP (devices × L1-L4)
+   A single devices×layers grid that folds every per-layer detector into one
+   at-a-glance matrix: rows = MODEL.hosts, cols = L1/L2/L3/L4. Each cell is a
+   {sev,detail} consulting the SAME detectors used by the cards above — no new
+   network logic, just a per-host projection of existing findings. Defensive
+   throughout: any missing data leaves a cell "none".
+   ===================================================================== */
+const _LHM_RANK={none:0,info:1,warn:2,crit:3};                         // severity ordering for "worst wins"
+function _lhmWorse(a,b){return (_LHM_RANK[b]||0)>(_LHM_RANK[a]||0)?b:a;}
+// fold a finding into a cell: raise severity to the worst seen, accumulate the detail text
+function _lhmBump(cell,sev,detail){
+  cell.sev=_lhmWorse(cell.sev,sev);
+  if(detail){cell.notes.push(detail); cell.detail=cell.notes.join(" · ");}
+}
+function layerHeatmap(model){
+  const M=model||MODEL;
+  const hosts=(M&&M.hosts)?M.hosts.slice():[];
+  const cells={};
+  hosts.forEach(h=>{cells[h]={L1:{sev:"none",detail:"",notes:[]},L2:{sev:"none",detail:"",notes:[]},
+    L3:{sev:"none",detail:"",notes:[]},L4:{sev:"none",detail:"",notes:[]}};});
+  const has=h=>cells[h];                                                // only attribute to hosts we have rows for
+  // ---- L1: duplex / speed mismatches on inter-switch links touching the host ----
+  try{(linkPhyConsistency()||[]).forEach(x=>{
+    const what=x.duplex?`duplex ${x.duplex[0]}/${x.duplex[1]}`:x.speed?`speed mismatch`:"L1 mismatch";
+    const d=`${shortName(x.a)} ${x.aPort} ↔ ${shortName(x.b)} ${x.bPort} — ${what}`;
+    if(has(x.a))_lhmBump(cells[x.a].L1,"warn",d);                       // degraded-not-down -> warn
+    if(has(x.b))_lhmBump(cells[x.b].L1,"warn",d);});}catch(e){}
+  // ---- L2: native-VLAN mismatch / allowed-VLAN asymmetry on trunks touching the host ----
+  try{(trunkConsistency()||[]).forEach(x=>{
+    const d=x.kind==="native"
+      ?`native VLAN ${x.an}↔${x.bn} mismatch on ${shortName(x.a)} ${x.aPort} ↔ ${shortName(x.b)} ${x.bPort} (VLAN leak)`
+      :`asymmetric VLAN pruning on ${shortName(x.a)} ${x.aPort} ↔ ${shortName(x.b)} ${x.bPort} (black-hole / no failover)`;
+    if(has(x.a))_lhmBump(cells[x.a].L2,"crit",d);
+    if(has(x.b))_lhmBump(cells[x.b].L2,"crit",d);});}catch(e){}
+  // ---- L3: addressing conflicts + FHRP consistency + sole/no-FHRP gateway, per the host's gateway VLANs ----
+  try{const c=addressingConflicts();
+    const attribIp=d=>d.where.forEach(w=>{if(has(w.host))_lhmBump(cells[w.host].L3,"crit",
+      `duplicate L3 IP ${d.ip}${w.vid!=null?` (VLAN ${w.vid})`:""}`);});
+    const attribSub=d=>d.where.forEach(w=>{if(has(w.host))_lhmBump(cells[w.host].L3,"crit",
+      `overlapping subnet ${d.netStr}${w.vid!=null?` (VLAN ${w.vid})`:""}`);});
+    (c.dupIp||[]).forEach(attribIp); (c.dupSubnet||[]).forEach(attribSub);
+  }catch(e){}
+  try{hosts.forEach(h=>{
+    const vids=gwVlansOf(h);
+    vids.forEach(vid=>{
+      const gws=(MODEL.gateways.get(vid)||new Set());
+      if(gws.size>=2){                                                  // redundant gateway -> FHRP must be consistent
+        const F=fhrpConsistency(vid);
+        if(F&&F.state&&F.state!=="ok"&&F.state!=="na"){
+          const sev=F.state==="crit"?"crit":"warn";
+          _lhmBump(cells[h].L3,sev,`VLAN ${vid} first-hop redundancy: ${(F.issues[0]&&F.issues[0].t)||"FHRP inconsistency"}`);
+        }
+      }else if(gws.size===1){                                          // sole gateway -> no first-hop redundancy at all
+        _lhmBump(cells[h].L3,"info",`VLAN ${vid} has a single gateway (no FHRP peer)`);
+      }
+    });
+  });}catch(e){}
+  // ---- L4: ACLs applied on the host's gateway SVIs. crit if a body says deny-by-default unevaluable;
+  //          warn if an applied ACL can't be fully evaluated (object-group / unevaluable rule);
+  //          info if an ACL is applied (a filtering policy worth noting). best-effort, never throws. ----
+  try{hosts.forEach(h=>{
+    gwVlansOf(h).forEach(vid=>{
+      const acl=gwAcl(h,vid); if(!acl)return;
+      [["in",acl.in],["out",acl.out]].forEach(([dir,name])=>{
+        if(!name)return;
+        const body=(SNAP&&SNAP.acls&&SNAP.acls[h])?SNAP.acls[h][name]:null;
+        if(!body){_lhmBump(cells[h].L4,"info",`ACL ${name} (${dir}) on VLAN ${vid} — body not in snapshot`);
+          return;}
+        const uneval=body.some(r=>r&&(r.unevaluable||(r.src&&r.src.group!=null)||(r.dst&&r.dst.group!=null)||r.time_range));
+        if(uneval)_lhmBump(cells[h].L4,"warn",`ACL ${name} (${dir}) on VLAN ${vid} — contains rules that can't be fully evaluated offline`);
+        else _lhmBump(cells[h].L4,"info",`ACL ${name} (${dir}) on VLAN ${vid}`);
+      });
+    });
+  });}catch(e){}
+  // strip the scratch 'notes' arrays from the public shape
+  hosts.forEach(h=>["L1","L2","L3","L4"].forEach(L=>{delete cells[h][L].notes;}));
+  return {hosts, cells};
+}
+function layerHeatmapCard(){
+  if(!MODEL||!MODEL.hosts||!MODEL.hosts.length)return "";
+  const hm=layerHeatmap(MODEL); if(!hm.hosts.length)return "";
+  const LAYERS=[["L1","Physical"],["L2","Switching"],["L3","Routing"],["L4","Filtering"]];
+  // worst severity anywhere, for the header badge
+  let worst="none", issues=0;
+  hm.hosts.forEach(h=>LAYERS.forEach(([L])=>{const c=hm.cells[h][L];
+    worst=_lhmWorse(worst,c.sev); if(c.sev==="warn"||c.sev==="crit")issues++;}));
+  const badge=worst==="crit"?`<span class="badge b-crit">${issues} issue${issues===1?"":"s"}</span>`
+    :worst==="warn"?`<span class="badge b-watch">${issues} issue${issues===1?"":"s"}</span>`
+    :worst==="info"?`<span class="badge b-ok">policy notes</span>`
+    :`<span class="badge b-ok">clean</span>`;
+  const glyph={none:"·",info:"i",warn:"!",crit:"✗"};
+  // header row
+  let html=`<div class="lhm-cell lhm-head">Device</div>`+
+    LAYERS.map(([L,t])=>`<div class="lhm-cell lhm-head" title="${esc(t)}">${L}</div>`).join("");
+  // body rows; --d staggers entrance left→right, top→bottom
+  let di=0;
+  hm.hosts.forEach(h=>{
+    html+=`<div class="lhm-cell lhm-dev" style="--d:${Math.min(360,di*22)}ms" title="${esc(h)}">${esc(shortName(h))}</div>`; di++;
+    LAYERS.forEach(([L,t])=>{
+      const c=hm.cells[h][L];
+      const detailAttrs=c.detail
+        ?` data-lhm-loc="${esc(shortName(h)+" · "+t)}" data-lhm-sev="${c.sev}" data-lhm-detail="${esc(c.detail)}" tabindex="0" title="${esc(shortName(h)+" "+L+": "+c.detail)}"`
+        :"";
+      html+=`<div class="lhm-cell sev-${c.sev}${c.detail?" has-detail":""}" style="--d:${Math.min(360,di*22)}ms"${detailAttrs}>${glyph[c.sev]||"·"}</div>`; di++;
+    });
+  });
+  return `<div class="sec" id="lhm-sec"><h3>Cross-layer heatmap ${badge}</h3>`+
+    `<div class="sub" style="margin-bottom:6px">Every device across L1–L4 at a glance — each cell folds in the matching layer detector (physical, switching, routing, filtering). Hover a flagged cell for the finding.</div>`+
+    `<div class="lhm-grid">${html}</div>`+
+    `<div class="lhm-detail" id="lhm-detail" aria-live="polite">Hover or focus a colored cell to see the finding.</div>`+
+    `</div>`;
+}
+/* =====================================================================
+   WHAT-IF REMEDIATION SIMULATOR (Health) — apply a top SPOF's suggested
+   fix to a DEEP-CLONE of the snapshot, re-derive the model, and diff. The
+   global MODEL/SNAP are NEVER mutated: every edit lands on the JSON clone,
+   buildModel() then produces an independent "after" model.
+   ===================================================================== */
+// Choose the remediation to showcase by MEASURED outcome, not just severity: simulate the fix for every
+// chain this simulator can heal (A/B/C) and keep the one with the biggest real improvement — chains
+// resolved first, then endpoints recovered, then severity as a tie-break. This guarantees the card shows
+// a genuine before→after delta rather than landing on a high-severity chain whose synthetic fix is a no-op
+// (e.g. a core articulation point a single bypass can't relieve). Returns the winning simulateFix() result.
+function _bestRemediation(chains){
+  const ord={High:3,Medium:2,Low:1,Info:0};
+  const fixable=(chains||[]).filter(c=>c.type==="A"||c.type==="B"||c.type==="C");
+  if(!fixable.length)return null;
+  let best=null;
+  for(const c of fixable){
+    const r=simulateFix(MODEL,c);
+    if(!r)continue;
+    if(!best)  {best=r;continue;}
+    const a=r,b=best;
+    const aResolved=a.thisResolved?1:0, bResolved=b.thisResolved?1:0;
+    const better =
+      (aResolved-bResolved) ||
+      (a.resolved.length-b.resolved.length) ||
+      (a.saved-b.saved) ||
+      (a.improvements-b.improvements) ||
+      (ord[a.chain.sev]-ord[b.chain.sev]) ||
+      (b.chain.vid-a.chain.vid);   // lower vid wins on a full tie (stable, deterministic)
+    if(better>0)best=r;
+  }
+  return best;
+}
+// Endpoints AT RISK from the specific SPOF this chain describes, measured on `model`. The same metric is
+// read before and after the synthetic fix, so a resolved SPOF drives the count to 0 (the whole point of
+// the before/after bars):
+//  - Type C (single uplink): the access switch's OWN local endpoints ride that one uplink — but ONLY while
+//    the single-uplink condition still holds. Once a redundant uplink is added the SPOF is gone, so those
+//    endpoints are no longer at risk → 0. We re-detect the live Type-C chain on `model` to decide.
+//  - Type A / B: collateral endpoints on OTHER switches that lose the gateway / get partitioned when the
+//    SPOF switch drops — failureImpact(host) hard-strands exactly these for that VLAN (0 once healed).
+function _chainStranded(model,chain){
+  if(!chain)return 0;
+  if(chain.type==="C"){
+    // the chain's risk exists only if THIS switch still has a single-uplink SPOF for this VLAN on `model`
+    const live=causalityChains(model).some(c=>c.type==="C"&&c.switch===chain.switch&&c.vid===chain.vid);
+    if(!live)return 0;
+    const m=model.endpoints.get(chain.switch);return (m&&m.get(chain.vid))||0;
+  }
+  const fi=failureImpact(model,chain.switch);
+  const r=fi.perVlan.find(x=>x.vid===chain.vid);
+  return r?r.strandedHard:0;
+}
+// Find a distribution / core switch to attach a redundant uplink to, distinct from `avoid`.
+// Falls back to any other host so the simulator always has a remediation target.
+function _pickRedundantPeer(model,avoid){
+  const cores=model.hosts.filter(h=>h!==avoid&&deviceRole(model,h)==="core");
+  if(cores.length){
+    // prefer a core NOT already directly linked to `avoid` (a genuinely new, diverse path)
+    const linked=new Set();
+    for(const li of model.adj.get(avoid)){const L=model.links[li];linked.add(L.a===avoid?L.b:L.a);}
+    const diverse=cores.filter(h=>!linked.has(h));
+    return (diverse[0]||cores[0]);
+  }
+  return model.hosts.find(h=>h!==avoid)||null;
+}
+// Inject a synthetic, forwarding trunk between `host` and `peer` into a cloned snapshot's `interfaces`.
+// Mirrors the demoSnapshot link() shape on BOTH ends (cdp_neighbor/neighbor_port/stp_fwd_vlans) so
+// buildModel() merges them into one bidirectional link carrying every VLAN forward.
+function _injectTrunk(ifaces,host,peer,fwdVlans){
+  const fwd=fwdVlans.join(",");
+  const mk=(nbr,np,port)=>({port,cdp_neighbor:nbr,neighbor_port:np,stp_fwd_vlans:fwd,stp_blk_vlans:"",
+    trunk_allowed_vlans:"all",port_channel:"",switchport_mode:"trunk",end_host_mac:""});
+  ifaces[host]=ifaces[host]||{}; ifaces[peer]=ifaces[peer]||{};
+  // a synthetic port name that is GUARANTEED not to clash with a real port on either end (so we never
+  // overwrite live interface data in the clone) — the same name on both ends so buildModel pairs them.
+  let port="SimLink0", i=0;
+  while(ifaces[host][port]||ifaces[peer][port])port="SimLink"+(++i);
+  ifaces[host][port]=mk(peer,port,port);
+  ifaces[peer][port]=mk(host,port,port);
+}
+// Build the "after" snapshot+model that applies `chain`'s recommended remediation, then diff vs before.
+// DEEP-CLONES SNAP (JSON round-trip) — never touches the live MODEL/SNAP.
+function simulateFix(model,chain){
+  if(!chain)return null;
+  const before=model;
+  const beforeStranded=_chainStranded(before,chain);
+  const clone=JSON.parse(JSON.stringify(SNAP));            // deep clone — isolation from the real snapshot
+  const ifaces=clone.interfaces=clone.interfaces||{};
+  const allVlans=[...before.vlans].sort((a,b)=>a-b);
+  let fixLabel="";
+  if(chain.type==="C"){
+    // redundant uplink from the single-homed access switch to a second distribution switch
+    const peer=_pickRedundantPeer(before,chain.switch);
+    if(peer){_injectTrunk(ifaces,chain.switch,peer,allVlans);
+      fixLabel=`Dual-home <b>${esc(shortName(chain.switch))}</b> with a redundant uplink to <b>${esc(shortName(peer))}</b>.`;}
+  } else if(chain.type==="B"){
+    // bypass link giving the partitioned endpoints a second path to the gateway, around the articulation switch
+    const peer=_pickRedundantPeer(before,chain.switch);
+    if(peer){_injectTrunk(ifaces,chain.switch,peer,allVlans);
+      fixLabel=`Add a bypass uplink from <b>${esc(shortName(chain.switch))}</b> to <b>${esc(shortName(peer))}</b> so partitioned endpoints keep a path to the gateway.`;}
+  } else if(chain.type==="A"){
+    // add a second gateway / FHRP standby for this VLAN on another distribution switch
+    const peer=_pickRedundantPeer(before,chain.switch);
+    if(peer){
+      // mirror the existing gateway's addressing, but as an HSRP standby peer (a real second gateway)
+      let baseIp="";
+      const ex=ifaces[chain.switch];
+      if(ex)for(const p in ex){const d=ex[p];if(isSvi(d)&&sviVid(d)===chain.vid&&d.svi_ip){baseIp=String(d.svi_ip).trim().split(/\s+/)[0];break;}}
+      const peerIp=baseIp?baseIp.replace(/\.(\d+)$/,(m,n)=>"."+(((+n)%254)+1)):"";   // a distinct host IP in the same subnet
+      ifaces[peer]=ifaces[peer]||{};
+      ifaces[peer]["Vlan"+chain.vid]={port:"Vlan"+chain.vid,svi_ip:peerIp,vlan:String(chain.vid),
+        hsrp_behavior:`HSRP grp${chain.vid} standby vIP ${baseIp||""}`,switchport_mode:"",end_host_mac:"",acl_in:"",acl_out:"",vrf:"",dhcp_helpers:""};
+      fixLabel=`Add an FHRP standby gateway for <b>VLAN ${chain.vid}</b> on <b>${esc(shortName(peer))}</b> (HSRP peer for ${esc(shortName(chain.switch))}).`;}
+  }
+  const after=buildModel(clone);
+  const afterStranded=_chainStranded(after,chain);
+  const cmp=compareModels(before,after);
+  // resolved chains that match THIS chain's identity (or, failing an exact id match, share its switch+vid)
+  const idOf=c=>`${c.type}|${c.switch}|${c.vid}`;
+  const resolved=cmp.resolvedChains;
+  const thisResolved=resolved.some(c=>idOf(c)===idOf(chain)||(c.switch===chain.switch&&c.vid===chain.vid));
+  const saved=Math.max(0,beforeStranded-afterStranded);
+  return {chain,fixLabel,beforeStranded,afterStranded,saved,resolved,thisResolved,
+    improvements:cmp.improvements,regressions:cmp.regressions,
+    summary:thisResolved?`Resolves the ${chain.title} SPOF; ${saved} endpoint(s) gain a surviving path.`
+                        :`Improves resilience for ${chain.title}${saved?` (${saved} endpoint(s) recovered)`:""}.`};
+}
+function remediationCard(){
+  if(!MODEL||!CHAINS||!CHAINS.length)return "";
+  const r=_bestRemediation(CHAINS);
+  if(!r)return "";
+  const chain=r.chain;
+  const tok=sevToken(chain.sev);
+  // bar widths: scale both bars against the BEFORE count so the shrink is visually honest (after near 0)
+  const max=Math.max(1,r.beforeStranded);
+  const wBefore=Math.round((r.beforeStranded/max)*100);
+  const wAfter=Math.round((r.afterStranded/max)*100);
+  const resolvedList=r.resolved.length?
+    `<div class="ln" style="margin-top:7px"><b>Chains resolved (${r.resolved.length}):</b></div>`+
+    r.resolved.slice(0,4).map(c=>`<div class="ln faint">✓ ${esc(c.title)} <span class="mono">(${esc(shortName(c.switch))})</span></div>`).join("")+
+    (r.resolved.length>4?`<div class="ln faint">…and ${r.resolved.length-4} more.</div>`:"")
+    :`<div class="ln faint" style="margin-top:7px">No full chain resolved by this single change — partial hardening only.</div>`;
+  const regWarn=r.regressions?`<div class="ln" style="color:var(--watch)">⚠ ${r.regressions} new concern(s) introduced — review before applying.</div>`:"";
+  return `<div class="sec"><h3>What-if: apply the fix <span class="badge b-${tok}">${chain.sev}</span></h3>
+    <div class="sub" style="margin-bottom:7px">Simulating the recommended remediation for the top SPOF on a sandbox copy of the topology — endpoints stranded by it, before vs after.</div>
+    <div class="card ${tok}">
+      <div class="ct"><span class="nm">${esc(chain.title)}</span><span class="pill pl-${tok}">${esc(shortName(chain.switch))}</span></div>
+      <div class="ln"><b>Fix:</b> ${r.fixLabel||esc(chain.fix)}</div>
+      <div class="rem-grid">
+        <div class="rem-col before">
+          <div class="lbl"><span>stranded now</span><span class="num n" data-to="${r.beforeStranded}">0</span></div>
+          <div class="rem-bar before"><i data-w="${wBefore}"></i></div>
+        </div>
+        <div class="rem-col after">
+          <div class="lbl"><span>after fix</span><span class="num n" data-to="${r.afterStranded}">0</span></div>
+          <div class="rem-bar after"><i data-w="${wAfter}"></i></div>
+        </div>
+      </div>
+      <div class="ln"><b>${r.saved}</b> endpoint(s) recovered.</div>
+      ${resolvedList}
+      ${regWarn}
+      <div class="fix"><b>Result:</b> ${esc(r.summary)}</div>
+    </div></div>`;
+}
+/* =====================================================================
    PROTOCOLS mode — routing-protocol topology, boundaries, redistribution,
    adjacency health. Reads SNAP.routing_neighbors / SNAP.redistribution /
    SNAP.routes[].source (all offline; absent keys -> empty, back-compat).
@@ -2641,6 +3702,136 @@ function drawProtocolsDetail(host){
     <div class="sec"><h3>Route sources</h3>${distBars(routeSourceDist(host))||'<p class="faint">No routes in scope.</p>'}</div>
     <p class="faint" style="margin:0 0 10px"><button class="btn" onclick="SEL=null;repaint();renderDrawer()">← Back to all protocols</button></p>`;
 }
+
+/* =====================================================================
+   CAUSALITY DRAWER + ANIMATED FOUR-STAGE FLOW DIAGRAM (U2)
+   ===================================================================== */
+const CAUSAL_STAGES=[
+  {key:"trigger",   label:"Trigger",    tok:"crit"},
+  {key:"mechanism", label:"Mechanism",  tok:"risk"},
+  {key:"impact",    label:"Impact",     tok:"watch"},
+  {key:"mitigation",label:"Mitigation", tok:"ok"}];
+/* Render the four ordered stage-boxes + connectors as an inline SVG string. The
+   connectors carry a static base line plus a .cz-flow stroke whose dash animates
+   L→R (CSS @keyframes causalFlow); animateCausalFlow() then drives a spark dot
+   along them via rAF. Under reduced-motion the spark is skipped and the CSS rule
+   freezes the flow stroke to a faint static line — the chain stays fully legible. */
+function causalDiagramSvg(chain){
+  const W=440, padX=14, n=CAUSAL_STAGES.length;
+  const boxW=92, gap=(W-2*padX-n*boxW)/(n-1);
+  const boxH=62, top=30, H=top+boxH+18;
+  const cy=top+boxH/2;
+  const xOf=i=>padX+i*(boxW+gap);
+  let boxes="", conns="", flows="";
+  CAUSAL_STAGES.forEach((st,i)=>{
+    const x=xOf(i), txt=String((chain[st.key]||"—"));
+    const lines=_czWrap(txt, 15, 4);
+    const tspans=lines.map((ln,k)=>`<tspan x="${x+boxW/2}" dy="${k===0?0:11}">${esc(ln)}</tspan>`).join("");
+    const ty=cy-((lines.length-1)*11)/2;
+    boxes+=`<rect class="cz-node-box" x="${x}" y="${top}" width="${boxW}" height="${boxH}" rx="9"
+        fill="var(--${st.tok}-soft)" stroke="var(--${st.tok})"/>
+      <text class="cz-stage" x="${x+boxW/2}" y="${top-8}" fill="var(--${st.tok})">${st.label}</text>
+      <text class="cz-node-t" x="${x+boxW/2}" y="${ty}">${tspans}</text>`;
+    if(i<n-1){const x1=x+boxW, x2=xOf(i+1);
+      conns+=`<line class="cz-conn" x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" marker-end="url(#czArrow)"/>`;
+      flows+=`<line class="cz-flow" x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}"/>`;}
+  });
+  return `<svg class="causalDiagram" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Causal flow: ${esc(chain.trigger||"")} leads to ${esc(chain.impact||"")}; mitigated by ${esc(chain.mitigation||"")}">
+    <defs><marker id="czArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--border-strong)"/></marker></defs>
+    ${conns}${flows}${boxes}
+    <circle id="czSpark" class="cz-spark" r="4" cx="${xOf(0)+boxW}" cy="${cy}" style="opacity:0"/>
+  </svg>`;
+}
+/* tiny word-wrapper: split into ≤maxLines lines of ≤maxChars chars (greedy by word) */
+function _czWrap(s,maxChars,maxLines){
+  const words=String(s).split(/\s+/), out=[]; let cur="";
+  for(const w of words){
+    if(!cur){cur=w;continue;}
+    if((cur+" "+w).length<=maxChars)cur+=" "+w; else {out.push(cur);cur=w; if(out.length===maxLines-1)break;}}
+  if(cur&&out.length<maxLines)out.push(cur);
+  // if we truncated, mark the last line with an ellipsis
+  const consumed=out.join(" ").split(/\s+/).length;
+  if(consumed<words.length&&out.length)out[out.length-1]=out[out.length-1].replace(/.{1}$/,"…");
+  return out.length?out:["—"];
+}
+function drawCausality(){
+  const list=causalityList();
+  if(!list.length){
+    return `<div class="drawer-head"><div class="eyebrow">Causality</div><div class="title">Root-cause chains</div></div>
+      <div class="empty"><div class="big">⤳</div><p>No structural single-points-of-failure detected in this fabric.</p>
+      <p class="faint">A causal chain appears when a switch is a sole gateway, a transit articulation point, or rides a single uplink — none are present here.</p></div>`;
+  }
+  // clamp / default the selection so a row is always active
+  if(CAUSAL_SEL==null||CAUSAL_SEL<0||CAUSAL_SEL>=list.length)CAUSAL_SEL=0;
+  const sel=list[CAUSAL_SEL];
+  const sevCount={crit:0,risk:0,watch:0,neutral:0};
+  list.forEach(c=>{sevCount[c.tok]=(sevCount[c.tok]||0)+1;});
+  const cards=list.map((c,i)=>{const on=i===CAUSAL_SEL;
+    return `<div class="card ${c.tok}${on?" czsel":""}" data-causal="${i}" tabindex="0" role="button"
+        aria-pressed="${on?"true":"false"}" style="cursor:pointer">
+      <div class="ct"><span class="nm">${esc(c.title)}</span><span class="pill pl-${c.tok}">${esc(c.sev||"")}</span></div>
+      <div class="ln mono faint">${esc(c.kind)}${c.hosts.length?" · "+esc(c.hosts.map(shortName).join(", ")):""}</div>
+      <div class="ln">${esc(c.impact||"")}</div></div>`;}).join("");
+  const stageLegend=CAUSAL_STAGES.map(st=>`<span class="cz-legend-stage"><span class="dot" style="background:var(--${st.tok})"></span>${st.label}</span>`).join("");
+  return `<div class="drawer-head"><div class="eyebrow">Causality</div>
+      <div class="title">Root-cause → impact</div></div>
+    <div class="sec"><div class="headline">
+      <div class="stat ${sevCount.crit?"crit":"ok"}"><div class="v"><span class="num" data-to="${list.length}">0</span></div><div class="k">causal chains</div></div>
+      <div class="stat ${sevCount.crit?"crit":""}"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${sevCount.crit}">0</span></div><div class="k">high severity</div></div>
+      <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${sel.hosts.length}">0</span></div><div class="k">hosts in chain</div></div>
+    </div>
+    <p class="sub" style="margin:11px 0 0">Each chain traces a <b>trigger</b> through the <b>mechanism</b> that propagates it to its <b>impact</b>, and the <b>mitigation</b> that breaks it. Select a chain to animate its flow and highlight the host on the map.</p>
+    </div>
+    <div class="sec"><h3>Causal flow — ${esc(sel.title)}</h3>
+      ${causalDiagramSvg(sel)}
+      <div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:12px">${stageLegend}</div>
+      <div class="card ${sel.tok}" style="margin-top:11px">
+        <div class="ln"><b>Trigger:</b> ${esc(sel.trigger||"—")}</div>
+        <div class="ln"><b>Mechanism:</b> ${esc(sel.mechanism||"—")}</div>
+        <div class="ln"><b>Impact:</b> ${esc(sel.impact||"—")}</div>
+        <div class="fix"><b>Mitigation:</b> ${esc(sel.mitigation||"—")}</div>
+      </div></div>
+    <div class="sec"><h3>All causal chains <span class="ct">${list.length}</span></h3>${cards}</div>`;
+}
+/* rAF spark traveling along the four-stage connectors, mirroring animatePacket's
+   structure: lerp a dot through the connector endpoints at near-constant speed with
+   a brief pause, looping. Cancelled via clearCausalFlow() on mode change / re-render.
+   Reduced-motion → no-op (the static diagram is already fully rendered). */
+function animateCausalFlow(){
+  clearCausalFlow();                       // never stack two loops
+  if(reducedMotion())return;
+  const panel=document.getElementById("panel"); if(!panel)return;
+  const spark=panel.querySelector("#czSpark"); if(!spark)return;
+  // connector endpoints, in order, read straight from the rendered .cz-flow lines
+  const flows=[...panel.querySelectorAll(".cz-flow")];
+  if(!flows.length)return;
+  const pts=[];
+  flows.forEach((f,i)=>{const x1=+f.getAttribute("x1"),y1=+f.getAttribute("y1"),x2=+f.getAttribute("x2"),y2=+f.getAttribute("y2");
+    if(i===0)pts.push({x:x1,y:y1}); pts.push({x:x2,y:y2});});
+  if(pts.length<2)return;
+  const segLen=[]; let total=0;
+  for(let i=0;i+1<pts.length;i++){const dx=pts[i+1].x-pts[i].x,dy=pts[i+1].y-pts[i].y;
+    const l=Math.hypot(dx,dy); segLen.push(l); total+=l;}
+  if(total<=0)return;
+  const SPEED=0.11, dur=total/SPEED, PAUSE=700, period=dur+PAUSE; let t0=null;
+  const frame=ts=>{
+    if(!spark.isConnected){CAUSAL_RAF=null;return;}   // diagram was replaced → stop
+    if(t0==null)t0=ts;
+    const p=((ts-t0)%period), d=Math.min(p,dur);
+    let acc=0,x=pts[pts.length-1].x,y=pts[pts.length-1].y;
+    for(let i=0;i<segLen.length;i++){
+      if(d<=acc+segLen[i]||i===segLen.length-1){
+        const f=segLen[i]?Math.min(1,(d-acc)/segLen[i]):1;
+        x=pts[i].x+(pts[i+1].x-pts[i].x)*f; y=pts[i].y+(pts[i+1].y-pts[i].y)*f; break;}
+      acc+=segLen[i];}
+    spark.setAttribute("cx",x); spark.setAttribute("cy",y);
+    spark.style.opacity=(p<dur)?"1":"0";                // fade out during the pause
+    CAUSAL_RAF=requestAnimationFrame(frame);
+  };
+  CAUSAL_RAF=requestAnimationFrame(frame);
+}
 /* A2 overlay: which routing protocol's adjacency runs over a topology edge. An OSPF/EIGRP neighbor's
    LOCAL interface (from the neighbor table) is matched to a port the aggregated edge uses; BGP peers carry
    no local interface (often external) so they don't color an edge. null when no adjacency maps. */
@@ -2665,6 +3856,230 @@ function paintProtocols(){
     else if(ps.size){n.tag.textContent=[...ps].map(_protoLabel).join("/");n.tag.setAttribute("fill","var(--ok)");}});
   // A2: tint each edge by the routing protocol whose adjacency traverses it (class -> reset by baseEdge each repaint)
   edgeEls.forEach(({e,path})=>{const p=edgeProto(e); if(p)path.className.baseVal="lnk adj-"+p+(e.pc?" pc":"");});
+}
+
+/* =====================================================================
+   CAUSALITY CHAINS MODE (U2) — root-cause→impact, four-stage animated flow
+   ===================================================================== */
+/* Build the ordered list of causal chains the mode shows. Primary source is the
+   structural SPOF engine causalityChains(MODEL) (reused, not reimplemented); when
+   the snapshot carries a cross_layer array we APPEND those as extra chains. Each
+   entry is normalised to the four narrative stages: trigger / mechanism / impact /
+   mitigation, plus a list of `hosts` to highlight on the canvas. */
+function causalSevToken(s){const t=(s||"").toLowerCase();
+  if(t.includes("crit")||t==="high")return "crit";
+  if(t==="medium"||t.includes("warn"))return "risk";
+  if(t==="low")return "watch"; return "neutral";}
+function causalityList(){
+  const out=[];
+  (CHAINS||[]).forEach((c,i)=>{out.push({
+    key:"struct-"+i, kind:"Structural SPOF", sev:c.sev, tok:sevToken(c.sev),
+    title:c.title, hosts:[c.switch],
+    trigger:c.root, mechanism:c.mech, impact:c.blast, mitigation:c.fix});});
+  const cl=(SNAP&&Array.isArray(SNAP.cross_layer))?SNAP.cross_layer:[];
+  cl.forEach((x,i)=>{const hosts=Array.isArray(x.hosts)?x.hosts.filter(h=>MODEL&&MODEL.hosts.includes(h)):[];
+    out.push({
+      key:"cl-"+(x.id||i), kind:"Cross-layer", sev:x.severity, tok:causalSevToken(x.severity),
+      title:x.title||("Cross-layer finding "+(x.id||i+1)), hosts,
+      trigger:x.detail||"", mechanism:Array.isArray(x.layers)?("Spans layers: "+x.layers.join(" → ")):"",
+      impact:x.detail||"", mitigation:x.recommendation||""});});
+  return out;
+}
+/* Resolve a severity token to a DEFINED color family. crit/risk/watch/ok all have
+   --<tok> + --<tok>-soft vars; "neutral" (or any unknown, e.g. an Info-severity
+   cross_layer entry) does NOT — so fall back to the accent family so the host ring
+   stays visible instead of silently dropping to the default border. */
+function causalColorTok(tok){return (tok==="crit"||tok==="risk"||tok==="watch"||tok==="ok")?tok:"accent";}
+/* paint hook: ring + label the selected chain's host(s) on the topology */
+function paintCausality(){
+  if(!MODEL)return;
+  const list=causalityList(); if(!list.length)return;
+  // default/clamp the selection here too: repaint() runs BEFORE renderDrawer() on a
+  // mode switch, so without this the first paint would have no chain highlighted.
+  if(CAUSAL_SEL==null||CAUSAL_SEL<0||CAUSAL_SEL>=list.length)CAUSAL_SEL=0;
+  const sel=list[CAUSAL_SEL];
+  if(!sel)return;
+  const ctok=causalColorTok(sel.tok);
+  const set=new Set(sel.hosts);
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+    if(set.has(h)){n.g.classList.add("sel"); n.body.style.stroke=`var(--${ctok})`; n.body.style.fill=`var(--${ctok}-soft)`;
+      n.tag.textContent="ROOT CAUSE"; n.tag.setAttribute("fill",`var(--${ctok})`);}
+    else{n.g.classList.add("dim");}});
+}
+/* Root-cause ranking (Health): take the structural SPOF chains from causalityChains() and rank them by an
+   impact x confidence score so the single worst migration blocker floats to the top. Impact is the chain's
+   blast-radius endpoint count (cross-checked against failureImpact where the chain names a removable host);
+   confidence is a likelihood factor derived from chain TYPE + severity — a sole-gateway with no FHRP, or a
+   single non-port-channel uplink, is near-certain to bite on the very first fault, whereas an STP-healed
+   backup-covered partition is only a transient blip. Defensive: returns [] when there are no chains. */
+function rootCauseRank(model){
+  if(!model)return [];
+  let chains=[];
+  try{chains=causalityChains(model)||[];}catch(e){chains=[];}
+  if(!chains.length)return [];
+  // confidence/likelihood factor (0..1): how reliably this structural weakness turns into a real outage.
+  const conf=c=>{
+    if(c.type==="A")return 0.95;                                   // sole gateway, no FHRP standby -> no failover at all
+    if(c.type==="B")return c.sev==="High"?0.85:0.45;              // hard partition (certain) vs STP-healed (transient)
+    if(c.type==="C")return 0.7;                                    // single uplink -> one optic/port fault isolates it
+    return c.sev==="High"?0.8:c.sev==="Medium"?0.5:0.3;
+  };
+  // cross-check the stated blast against failureImpact's stranded-endpoint count for the named host (where it
+  // makes sense — type A/C name the affected switch itself, not a removable transit node). Take the larger so
+  // we never under-state impact, but fall back gracefully if the lookup throws.
+  const impactOf=c=>{
+    let ep=Number(c.endpoints)||0;
+    if(c.type==="B"&&c.switch){
+      try{const fi=failureImpact(model,c.switch);
+        if(fi){const row=(fi.perVlan||[]).find(r=>r.vid===c.vid);
+          if(row)ep=Math.max(ep,row.strandedActive||0);}}catch(e){}
+    }
+    return ep;
+  };
+  const rows=chains.map(c=>{const ep=impactOf(c), k=conf(c);
+    return {chain:c, title:c.title, hosts:c.switch, vid:c.vid, impactEndpoints:ep,
+            confidencePct:Math.round(k*100), _raw:ep*k, why:c.root};});
+  const maxRaw=Math.max(...rows.map(r=>r._raw), 1e-9);            // normalize so the worst cause is 100%
+  rows.forEach(r=>{r.scorePct=Math.max(1,Math.round(r._raw/maxRaw*100));});
+  rows.sort((a,b)=>b._raw-a._raw || b.impactEndpoints-a.impactEndpoints);
+  return rows;
+}
+function rootCauseCard(){
+  const ranked=rootCauseRank(MODEL); if(!ranked.length)return "";
+  const tot=ranked.reduce((s,r)=>s+r.impactEndpoints,0);
+  const tokOf=r=>sevToken(r.chain.sev);
+  const colOf=r=>{const t=tokOf(r); return t==="neutral"?"var(--accent)":"var(--"+t+")";};
+  const rows=ranked.slice(0,6).map(r=>{const col=colOf(r);
+    return `<div class="rc-row">
+      <div class="rc-head">
+        <span class="nm">${esc(r.title)} <span class="pill pl-${tokOf(r)}">${esc(r.chain.sev)}</span></span>
+        <span class="sc"><span class="num" data-to="${r.scorePct}">0</span>%</span>
+      </div>
+      <div class="rc-bar"><i data-rcw="${r.scorePct}" style="background:${col}"></i></div>
+      <div class="rc-meta"><span class="mono">${esc(shortName(r.hosts))}</span> · impact <b><span class="num" data-to="${r.impactEndpoints}">0</span></b> endpoint${r.impactEndpoints===1?"":"s"} · confidence <b><span class="num" data-to="${r.confidencePct}">0</span>%</b></div>
+      <div class="rc-meta" style="margin-top:2px">${esc(r.why)}</div>
+    </div>`;}).join("");
+  return `<div class="sec"><h3>Root-cause ranking <span class="ct">${ranked.length}</span></h3>
+    <p class="sub" style="margin:0 0 8px">Structural SPOFs ranked by <b>impact × confidence</b> — the blast-radius (endpoints that lose their gateway/path) weighted by how reliably the weakness fires on the first fault. Fix the top bar first. <span class="faint">${tot} endpoint${tot===1?"":"s"} exposed across ${ranked.length} cause${ranked.length===1?"":"s"}.</span></p>
+    ${rows}</div>`;
+}
+/* =====================================================================
+   U4 — EXECUTIVE NARRATIVE (Health, top card)
+   Auto-generate a short, plain-English "what matters most" summary that
+   CORRELATES the existing per-layer findings into ranked sentences:
+     - structural SPOFs  (causalityChains -> CHAINS)   L1/L2/L3 topology
+     - FHRP / sole-gateway gaps (fhrpConsistency + MODEL.gateways)  L3
+     - L1 duplex/speed mismatch (linkPhyConsistency)
+     - addressing clashes (addressingConflicts)
+     - native-VLAN / pruning trunk issues (trunkConsistency)
+     - fleet posture (SNAP.health_scores: worst switch, average, bands)
+   Defensive throughout: missing data -> the slice is skipped; an empty
+   result yields one positive "no cross-layer risks" line.
+   Returns an array of {text, severity}.  severity in ok|watch|risk|crit.
+   ===================================================================== */
+const _NARR_RANK={crit:3,risk:2,watch:1,ok:0};
+function buildNarrative(model){
+  const m=model||MODEL; const out=[];
+  if(!m){return [{text:"Snapshot not loaded yet.",severity:"watch"}];}
+  const sn=h=>esc(shortName(h)), wrapHost=h=>`<span class="mono">${sn(h)}</span>`;
+
+  // ---- structural SPOFs: the single highest-impact correlation we can make ----
+  const chains=(typeof CHAINS!=="undefined"&&CHAINS.length)?CHAINS:[];
+  if(chains.length){
+    const top=chains[0];                                              // already severity-ranked
+    const sev=top.sev==="High"?"crit":top.sev==="Medium"?"risk":"watch";
+    const eps=top.endpoints||0;
+    out.push({text:`${wrapHost(top.switch)} is the top migration risk: ${esc(top.title.toLowerCase())} `+
+      `— ${esc(top.root)}${eps?` A failure here isolates <b>${eps}</b> endpoint(s).`:""}`,
+      severity:sev});
+    const more=chains.length-1;
+    if(more>0) out.push({text:`${more} more structural single-point-of-failure${more===1?"":"s"} `+
+      `(${esc(chains.filter(c=>c.sev==="High").length+" high")}-severity in total) — see the prioritised SPOF list below.`,
+      severity:chains.some(c=>c.sev==="High")?"risk":"watch"});
+  }
+
+  // ---- FHRP / first-hop redundancy gaps across every multi-gateway VLAN ----
+  const fhrpBad=[];
+  if(model_has(m,"gateways")&&typeof fhrpConsistency==="function"){
+    for(const [vid,gws] of m.gateways){ if(!gws||gws.size<2)continue;
+      let F; try{F=fhrpConsistency(vid);}catch(_){F=null;}
+      if(F&&F.state==="crit")fhrpBad.push(vid);}
+  }
+  if(fhrpBad.length){
+    const v=fhrpBad.slice(0,3).join(", ")+(fhrpBad.length>3?"…":"");
+    out.push({text:`First-hop redundancy is broken on VLAN ${esc(v)} — multiple gateways but mismatched or missing `+
+      `HSRP/VRRP, so clients won't actually fail over. Reconcile the FHRP groups/VIPs before any cutover.`,
+      severity:"crit"});
+  }
+
+  // ---- L1: duplex / speed mismatch (silent "up but slow") ----
+  let phy=[]; try{phy=(typeof linkPhyConsistency==="function")?linkPhyConsistency():[];}catch(_){phy=[];}
+  if(phy.length){const x=phy[0];
+    out.push({text:`An L1 mismatch on <span class="mono">${sn(x.a)} ${esc(x.aPort)}</span> ↔ `+
+      `<span class="mono">${sn(x.b)} ${esc(x.bPort)}</span> (${x.duplex?"duplex":"speed"}) degrades that link `+
+      `without taking it down${phy.length>1?` (and ${phy.length-1} more)`:""} — errors that survive a cutover unnoticed.`,
+      severity:"watch"});
+  }
+
+  // ---- addressing clashes (duplicate IPs / overlapping subnets) ----
+  let addr={total:0}; try{addr=(typeof addressingConflicts==="function")?addressingConflicts():{total:0};}catch(_){addr={total:0};}
+  if(addr.total){
+    out.push({text:`${esc(addr.total)} addressing conflict${addr.total===1?"":"s"} `+
+      `(duplicate L3 IPs / overlapping subnets) will collide the moment two domains merge — resolve before consolidating.`,
+      severity:"risk"});
+  }
+
+  // ---- trunk: native-VLAN mismatch / asymmetric pruning ----
+  let trunk=[]; try{trunk=(typeof trunkConsistency==="function")?trunkConsistency():[];}catch(_){trunk=[];}
+  if(trunk.length){const native=trunk.filter(t=>t.kind==="native").length;
+    out.push({text:`${esc(trunk.length)} trunk inconsistenc${trunk.length===1?"y":"ies"}`+
+      `${native?` (incl. ${native} native-VLAN mismatch${native===1?"":"es"})`:""} `+
+      `on inter-switch links — silent L2 leaks or black-holed VLANs.`,
+      severity:"watch"});
+  }
+
+  // ---- fleet posture: worst switch + average, from health_scores ----
+  const hs=(typeof healthList==="function")?healthList():[];
+  if(hs.length){
+    const n=hs.length, avg=Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
+    const worst=hs.slice().sort((a,b)=>(a.score||0)-(b.score||0))[0];
+    const wtok=worst.band?healthBandToken(worst.band):scoreToken(worst.score);
+    const sev=wtok==="crit"?"crit":wtok==="risk"?"risk":wtok==="watch"?"watch":"ok";
+    out.push({text:`Fleet health averages <b>${esc(avg)}</b>/100 across ${esc(n)} switch${n===1?"":"es"}; `+
+      `weakest is ${wrapHost(worst.switch)} at <b>${esc(worst.score)}</b>${worst.band?` (${esc(worst.band)})`:""}. `+
+      `Treat the score as a heat-map and fix the structural SPOFs above first.`,
+      severity:sev});
+  }
+
+  // ---- nothing fired: a single positive line ----
+  if(!out.length)
+    return [{text:"No cross-layer risks detected — no structural SPOFs, FHRP gaps, addressing clashes, "+
+      "trunk inconsistencies or L1 mismatches surfaced in this snapshot.",severity:"ok"}];
+
+  // rank by severity, keep the 2–5 most important, stable within a tier
+  out.forEach((o,i)=>o._i=i);
+  out.sort((a,b)=>(_NARR_RANK[b.severity]-_NARR_RANK[a.severity])||(a._i-b._i));
+  return out.slice(0,5).map(o=>({text:o.text,severity:o.severity}));
+}
+/* tiny guard for Map-or-undefined model fields (back-compat with partial models) */
+function model_has(m,k){return m&&m[k]&&typeof m[k].size==="number";}
+
+function narrativeCard(){
+  const lines=buildNarrative(MODEL);
+  if(!lines||!lines.length)return "";
+  const items=lines.map((l,i)=>
+    `<li class="${esc(l.severity)} nrev" style="--nd:${Math.min(420,i*90)}ms">${l.text}</li>`).join("");
+  const worst=lines.reduce((a,l)=>Math.max(a,_NARR_RANK[l.severity]||0),0);
+  const allClear=lines.length===1&&lines[0].severity==="ok";
+  const badge=allClear?`<span class="badge b-ok">all clear</span>`
+    :worst>=3?`<span class="badge b-crit">act now</span>`
+    :worst>=2?`<span class="badge b-risk">plan</span>`
+    :`<span class="badge b-watch">review</span>`;
+  return `<div class="sec"><div class="card narr accent">
+    <div class="ct"><span class="nm"><span class="eyebrow">Executive summary</span>What matters most</span>${badge}</div>
+    <ol>${items}</ol>
+    <div class="ln faint" style="margin-top:8px;padding-top:7px;border-top:1px dashed var(--border)">Auto-generated by correlating the per-layer findings below — ranked by migration impact.</div>
+  </div></div>`;
 }
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
@@ -2709,6 +4124,7 @@ function drawHealth(){
   // is the scoring crying wolf?
   const allBad=(bands.crit+bands.risk)===n && n>2;
   return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title"><span class="num" data-to="${avg}">0</span><span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span></div></div>
+    ${narrativeCard()}
     <div class="sec"><div class="headline">
       <div class="stat ok"><div class="v"><span class="num" data-to="${bands.ok}">0</span></div><div class="k">good</div></div>
       <div class="stat risk"><div class="v"><span class="num" data-to="${bands.watch+bands.risk}">0</span></div><div class="k">fair/poor</div></div>
@@ -2719,13 +4135,16 @@ function drawHealth(){
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${calibrationCard()}
+    ${rootCauseCard()}
     ${addressingCard()}
     ${trunkConsistencyCard()}
     ${linkPhyCard()}
+    ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
-      ${chainCards(CHAINS,6)}</div>`:""}`;
+      ${chainCards(CHAINS,6)}</div>`:""}
+    ${CHAINS.length?remediationCard():""}`;
 }
 
 /* =====================================================================
@@ -2998,6 +4417,7 @@ document.getElementById("exportSvgBtn").onclick=exportSvg;
 document.getElementById("exportPngBtn").onclick=()=>{exportPng().catch(()=>{});};
 document.getElementById("resetBtn").onclick=resetLayout;
 document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
+document.getElementById("lensBtn").onclick=()=>toggleLayerLens();   // U9: animated L1→L4 layer lens
 document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();writeHash();};
 document.getElementById("tableBtn").onclick=()=>toggleTableView();
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("on");
@@ -3027,6 +4447,7 @@ window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   const k=e.key.toLowerCase();
   if(k==="1")setMode("blast");else if(k==="2")setMode("trace");else if(k==="3")setMode("compare");
   else if(k==="4")setMode("flow");else if(k==="5")setMode("health");else if(k==="6")setMode("protocols");
+  else if(k==="7")setMode("causality");
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
   else if(k==="g")toggleTableView();
   else if(k==="m")toggleMinimap();
