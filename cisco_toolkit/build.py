@@ -22,7 +22,7 @@ from cisco_toolkit.parse import (
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
-    parse_acls, parse_object_groups, parse_nat, parse_security,
+    parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
     parse_redistribution,                                            # protocol-to-protocol analysis (slice 2)
 )
@@ -60,6 +60,14 @@ def build_security(cmd_to_file: Dict[str, str]) -> dict:
     redacts every secret value before it reaches the snapshot. Fail-soft via _safe_parse."""
     run = _load_cmd_output(cmd_to_file, "show running-config")
     return _safe_parse(parse_security, run) or {}
+
+
+def build_config_hygiene(cmd_to_file: Dict[str, str]) -> dict:
+    """Batfish-style config hygiene (undefined references + unused structures) parsed from this
+    device's already-collected 'show running-config' -> {undefined,unused,summary}; {} when the
+    config defines/references no ACL/route-map/object-group/prefix-list. Fail-soft via _safe_parse."""
+    run = _load_cmd_output(cmd_to_file, "show running-config")
+    return _safe_parse(parse_config_hygiene, run) or {}
 
 
 def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:

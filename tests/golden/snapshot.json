@@ -1810,6 +1810,33 @@
    }
   }
  },
+ "config_hygiene": {
+  "core1": {
+   "undefined": [
+    {
+     "kind": "acl",
+     "name": "7",
+     "context": "ip nat inside source list 7 pool MIGRATE_POOL overload"
+    },
+    {
+     "kind": "route-map",
+     "name": "OSPF_TO_BGP",
+     "context": "router bgp 65001"
+    }
+   ],
+   "unused": [
+    {
+     "kind": "acl",
+     "name": "INET_RETURN"
+    }
+   ],
+   "summary": {
+    "undefined": 2,
+    "unused": 1,
+    "structures": 5
+   }
+  }
+ },
  "calibration": {
   "n": 3,
   "score_stats": {
