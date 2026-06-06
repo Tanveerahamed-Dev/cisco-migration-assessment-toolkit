@@ -21,6 +21,7 @@ from cisco_toolkit.parse import (
     parse_show_ip_arp, parse_show_mac_address_table, parse_show_module_count,
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
+    parse_spanning_tree_root,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
@@ -68,6 +69,13 @@ def build_config_hygiene(cmd_to_file: Dict[str, str]) -> dict:
     config defines/references no ACL/route-map/object-group/prefix-list. Fail-soft via _safe_parse."""
     run = _load_cmd_output(cmd_to_file, "show running-config")
     return _safe_parse(parse_config_hygiene, run) or {}
+
+
+def build_stp_roots(cmd_to_file: Dict[str, str]) -> dict:
+    """Per-VLAN STP root-bridge info (priority / address / is-this-switch-root) parsed from this
+    device's already-collected 'show spanning-tree' -> {vlan:{root_priority,root_address,is_root}};
+    {} when none. Powers the accidental-root + root/gateway-misalignment analysis. Fail-soft."""
+    return _safe_parse(parse_spanning_tree_root, _load_cmd_output(cmd_to_file, "show spanning-tree")) or {}
 
 
 def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:
