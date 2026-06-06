@@ -1288,6 +1288,7 @@ let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + 
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
 let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // L4 tuple for the ACL allow/deny eval (G2; sport=I, icmptype=J)
 let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding card (null = none)
+let XL_LAYER_FILTER=null, XL_SEV_FILTER=null;   // V3.23.82: Cross-Layer mode filters (null = all)
 let TIER_FOCUS=null;   // V3.23.72: {name, hosts:Set} — a Risk-cockpit tier highlighted on the topology (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
@@ -1361,7 +1362,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -2329,7 +2330,7 @@ function modeSummary(m){
 function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
   document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
-  if(m!=="xlayer")XLSEL=null;   // U1: a cross-layer highlight only makes sense in its own mode
+  if(m!=="xlayer"){XLSEL=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null;}   // U1: cross-layer highlight + filters only live in their mode
   if(m!=="health")TIER_FOCUS=null;   // V3.23.72: a cockpit tier highlight only lives in Health mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
@@ -2509,6 +2510,11 @@ function renderDrawer(){
     const same=XLSEL&&XLSEL.length===hosts.length&&XLSEL.every((h,i)=>h===hosts[i]);
     XLSEL=same?null:hosts;   // clicking the active card again clears the highlight
     repaint(); renderDrawer();});
+  // V3.23.82: cross-layer layer/severity filter chips (drawer-only; re-render the filtered list)
+  p.querySelectorAll("[data-xlf-layer]").forEach(b=>b.onclick=()=>{const v=b.dataset.xlfLayer;
+    XL_LAYER_FILTER=(v===""||XL_LAYER_FILTER===v)?null:v; renderDrawer();});
+  p.querySelectorAll("[data-xlf-sev]").forEach(b=>b.onclick=()=>{const v=b.dataset.xlfSev;
+    XL_SEV_FILTER=(v===""||XL_SEV_FILTER===v)?null:v; renderDrawer();});
   // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
   const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
     const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
@@ -3699,12 +3705,26 @@ function drawXLayer(){
   }
   const counts={High:0,Medium:0,Low:0,Info:0};
   findings.forEach(f=>{counts[f.severity]=(counts[f.severity]||0)+1;});
+  // V3.23.82: filter the (thousands of) findings by LAYER and/or SEVERITY before the cap, so the mode is
+  // navigable — pick "L3" or "High" and the top-N re-ranks within that slice.
+  const _xlLayers=f=>(f.layers||[]).map(l=>String(l).toUpperCase());
+  const filtered=findings.filter(f=>
+    (!XL_LAYER_FILTER||_xlLayers(f).includes(XL_LAYER_FILTER)) &&
+    (!XL_SEV_FILTER||f.severity===XL_SEV_FILTER));
+  const layerChip=L=>`<button type="button" class="chip${XL_LAYER_FILTER===L?" on":""}" data-xlf-layer="${L}">${L}</button>`;
+  const sevChip=s=>`<button type="button" class="chip${XL_SEV_FILTER===s?" on":""}" data-xlf-sev="${s}">${s}</button>`;
+  const filterBar=`<div class="sec"><div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center">`+
+    `<span class="lbl" style="color:var(--text-faint);font-size:10px;letter-spacing:.8px;text-transform:uppercase;font-weight:650">Layer</span>`+
+    `<button type="button" class="chip${XL_LAYER_FILTER===null?" on":""}" data-xlf-layer="">All</button>`+["L1","L2","L3","L4"].map(layerChip).join("")+
+    `<span class="lbl" style="margin-left:8px;color:var(--text-faint);font-size:10px;letter-spacing:.8px;text-transform:uppercase;font-weight:650">Severity</span>`+
+    `<button type="button" class="chip${XL_SEV_FILTER===null?" on":""}" data-xlf-sev="">All</button>`+["High","Medium","Low"].map(sevChip).join("")+
+    `</div></div>`;
   // Cap the rendered cards (V3.23.74): a real fleet yields thousands of correlated findings (≈2,963 on the
   // 60-switch AJ fleet), and dumping every one as a card built a 2.6 MB DOM that was janky to scroll and
   // impossible to read. Show the most-severe top-N (the rest live in the workbook's Cross-Layer Analysis
   // sheet; the cockpit distils all of them into fix-first priorities).
   const XL_CARD_CAP=60;
-  const shown=findings.slice().sort((a,b)=>(_XL_SEV_RANK[b.severity]||0)-(_XL_SEV_RANK[a.severity]||0)).slice(0,XL_CARD_CAP);
+  const shown=filtered.slice().sort((a,b)=>(_XL_SEV_RANK[b.severity]||0)-(_XL_SEV_RANK[a.severity]||0)).slice(0,XL_CARD_CAP);
   const cards=shown.map(f=>{const tok=_xlSevTok(f.severity);
     const hostList=f.hosts.length?`<div class="ln faint" style="margin-top:4px">Spans: ${f.hosts.map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}</div>`:"";
     const src=f.source==="snapshot"?` <span class="pill pl-neutral" title="from the collector's cross_layer findings">${esc(f.id||"pipeline")}</span>`:"";
@@ -3722,7 +3742,8 @@ function drawXLayer(){
       <div class="stat"><div class="v"><span class="num" data-to="${counts.Low+counts.Info}">0</span></div><div class="k">low / info</div></div>
     </div>
     <p class="sub" style="margin:10px 0 0">Each finding ties together two or more layers' detector outputs into one ranked risk. <b>Click a card</b> to spotlight the switches it spans on the canvas.</p></div>
-    <div class="sec"><h3>Top findings <span class="ct">${shown.length} of ${findings.length}</span></h3>${cards}${findings.length>XL_CARD_CAP?`<div class="ln faint" style="margin-top:8px">…and <b>${findings.length-XL_CARD_CAP}</b> more correlated finding(s) — see the full <b>Cross-Layer Analysis</b> workbook sheet. The cockpit (Health mode) distils all ${findings.length} into fix-first priorities.</div>`:""}</div>`;
+    ${filterBar}
+    <div class="sec"><h3>Top findings <span class="ct">${shown.length} of ${filtered.length}${(XL_LAYER_FILTER||XL_SEV_FILTER)?` <span class="faint">(filtered from ${findings.length})</span>`:""}</span></h3>${cards||'<p class="faint">No findings match this filter.</p>'}${filtered.length>XL_CARD_CAP?`<div class="ln faint" style="margin-top:8px">…and <b>${filtered.length-XL_CARD_CAP}</b> more — narrow with the filters above, or see the full <b>Cross-Layer Analysis</b> workbook sheet.</div>`:""}</div>`;
 }
 /* paint hook: spotlight the switches of the selected finding (XLSEL) with a distinct .xlhl class,
    dim the rest. No selection -> clean canvas. Mirrors the legend-highlight pattern but persistent. */
