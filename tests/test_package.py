@@ -154,7 +154,8 @@ def test_analyze_reexported_and_functional(cp):
         assert getattr(cp, name) is getattr(analyze, name)
     # empty inputs -> a perfect, deduction-free score.
     hs = analyze.compute_health_scores({"sw1": {}}, [], [], [], [])
-    assert hs == [{"switch": "sw1", "score": 100, "band": "Excellent", "deductions": []}]
+    assert hs == [{"switch": "sw1", "score": 100, "band": "Excellent",
+                   "role": "access", "criticality": 1.0, "deductions": []}]
     # data-quality fraction: no collected files -> 0.0; no hosts -> empty.
     assert analyze.compute_data_quality({}) == {}
     assert analyze.compute_data_quality({"sw1": {}}) == {"sw1": 0.0}

@@ -91,7 +91,8 @@ def test_cross_layer_clean_dep_yields_nothing(cp):
 # --------------------------------------------------------------------------- #
 def test_health_clean_host_is_perfect(cp):
     recs = cp.compute_health_scores({"clean": {}}, [], [], [], [])
-    assert recs == [{"switch": "clean", "score": 100, "band": "Excellent", "deductions": []}]
+    assert recs == [{"switch": "clean", "score": 100, "band": "Excellent",
+                     "role": "access", "criticality": 1.0, "deductions": []}]
 
 
 def test_health_l1_category_is_capped(cp):
