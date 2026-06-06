@@ -249,6 +249,23 @@
     100%{stroke-width:9; stroke-opacity:0; transform:scale(1.28)}}
   .node.ripple .body{transform-box:fill-box; transform-origin:center; animation:rippleIn .5s ease-out both}
   @keyframes rippleIn{0%{transform:scale(1)} 30%{transform:scale(1.13)} 100%{transform:scale(1)}}
+  /* Severity halos (U8): a soft pulsing ring drawn BEHIND the most critical/SPOF nodes so the
+     eye is drawn to risk. Colored by semantic severity; higher severity pulses stronger/faster.
+     The ring is an extra SVG <circle> inserted as the first child of the node <g> (under the body
+     glyph). Reduced-motion → a static, non-animated ring (see the reduce branch below). */
+  .sev-halo{fill:none; pointer-events:none; transform-box:fill-box; transform-origin:center;
+    stroke:var(--text-faint); stroke-opacity:.5; stroke-width:3}
+  .sev-halo.crit{stroke:var(--crit); animation:haloPulse 1.5s ease-in-out infinite}
+  .sev-halo.risk{stroke:var(--risk); animation:haloPulse 2.1s ease-in-out infinite}
+  .sev-halo.watch{stroke:var(--watch); animation:haloPulse 2.8s ease-in-out infinite}
+  @keyframes haloPulse{
+    0%,100%{stroke-width:2.5; stroke-opacity:.30; transform:scale(1)}
+    50%    {stroke-width:5;   stroke-opacity:.85; transform:scale(1.07)}}
+  @media (prefers-reduced-motion: reduce){
+    /* static ring — no scale/opacity pulse; the global reduce rule neuters the animation, but we
+       also pin a steady, clearly-visible stroke so the risk cue survives without motion. */
+    .sev-halo{animation:none !important; stroke-width:3.5; stroke-opacity:.7; transform:none}
+  }
   .nname{fill:var(--text); font:650 12px var(--sans); text-anchor:middle; pointer-events:none}
   .nsub{fill:var(--text-dim); font:500 9.5px var(--mono); text-anchor:middle; pointer-events:none}
   .nrole{fill:var(--text-faint); font:650 8px var(--sans); letter-spacing:1px; text-anchor:middle; pointer-events:none; text-transform:uppercase}
@@ -1279,6 +1296,52 @@ function applySearch(){
     if(!hit){for(const e of endpointsOf(h)){if((e.ip&&e.ip.toLowerCase().includes(q))||(e.mac&&e.mac.toLowerCase().includes(q))){hit=true;break;}}}
     if(hit)nodeEls[h].g.classList.add("match");});
 }
+/* ---------------------------------------------------------------------------
+   U8: Severity halos & critical-node pulse.
+   Draw a soft, severity-colored ring BEHIND the most critical / SPOF nodes so
+   the eye is drawn straight to risk. The ring pulses (scale + opacity) via the
+   @keyframes haloPulse above — higher severity pulses stronger/faster. Under
+   prefers-reduced-motion the ring renders static (CSS reduce branch). Rebuilt
+   on every repaint() (clearHalos first) so halos never accumulate.
+   --------------------------------------------------------------------------- */
+function clearHalos(){
+  // remove every previously-rendered halo circle (self-contained cleanup — does not
+  // touch the existing .halo selection/pin rect, which is a different element/class).
+  if(!nodeEls)return;
+  for(const h in nodeEls){const n=nodeEls[h]; if(n&&n.sevHalo&&n.sevHalo.parentNode){
+    n.sevHalo.parentNode.removeChild(n.sevHalo);} if(n)n.sevHalo=null;}
+}
+function _haloSeverity(){
+  // Worst severity per host from two independent signals:
+  //   (1) causalityChains implicated switches (structural SPOFs) — High→crit, Medium→risk, Low→watch
+  //   (2) health_scores Poor/Critical (and Fair) bands — Critical→crit, Poor→risk, Fair→watch
+  // Returns Map(host -> "crit"|"risk"|"watch"); higher rank wins.
+  const rank={crit:3,risk:2,watch:1};
+  const out=new Map();
+  const bump=(h,tok)=>{if(!h||!tok||!nodeEls[h])return;
+    if(!out.has(h)||rank[tok]>rank[out.get(h)])out.set(h,tok);};
+  try{const chains=causalityChains(MODEL)||[];
+    for(const c of chains){const tok=sevToken(c.sev); if(tok!=="neutral")bump(c.switch,tok);}}catch(e){}
+  const hs=healthList();
+  for(const r of hs){const b=(r.band||"").toLowerCase();
+    if(b.includes("critical"))bump(r.switch,"crit");
+    else if(b.includes("poor"))bump(r.switch,"risk");
+    else if(b.includes("fair"))bump(r.switch,"watch");}
+  return out;
+}
+function severityHalo(){
+  clearHalos();                 // always rebuild from scratch so halos never accumulate
+  if(!MODEL||!nodeEls)return;
+  const sev=_haloSeverity();
+  sev.forEach((tok,h)=>{const n=nodeEls[h]; if(!n||!n.g)return;
+    // radius hugs the node box; the ring fully encloses the wide glyph and sits behind it.
+    const r=Math.max(n.w,n.ht)/2+11;
+    const c=el("circle",{class:"sev-halo "+tok,cx:0,cy:0,r});
+    c.setAttribute("aria-hidden","true");
+    // insert as the FIRST child of the group → renders under the body/text glyphs (z-order).
+    n.g.insertBefore(c,n.g.firstChild);
+    n.sevHalo=c;});
+}
 function repaint(){
   if(!MODEL)return; clearFx(); baseEdge();
   if(MODE==="blast")paintBlast();
@@ -1287,6 +1350,7 @@ function repaint(){
   else if(MODE==="flow")paintFlow();
   else if(MODE==="health")paintHealth();
   else if(MODE==="protocols")paintProtocols();
+  severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   runPathAnim();   // draw-on + traveling packet for Path/Flow; teardown otherwise (keyed on path change)
 }
