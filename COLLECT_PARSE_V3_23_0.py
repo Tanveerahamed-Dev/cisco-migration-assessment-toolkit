@@ -323,6 +323,7 @@ from cisco_toolkit.analyze import (
     compute_score_sensitivity, compute_calibration_report, compute_migration_readiness,
     compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
+    stp_root_findings, compute_migration_punchlist,   # NEW-V3.23.62 / .63 (STP root analysis + consolidated punch-list)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -343,6 +344,7 @@ from cisco_toolkit.excel import (
     write_security_sheet,   # Security Posture (CIS-aligned) V3.23.59
     write_config_hygiene_sheet,   # Config Hygiene (undefined refs / unused structures) V3.23.61
     write_stp_roots_sheet,   # STP Root Bridges (accidental root / gateway misalignment) V3.23.62
+    write_punchlist_sheet,   # Migration Punch-List (consolidated, severity-ranked) V3.23.63
     write_protocol_boundaries_sheet,   # protocol-to-protocol analysis (workbook surfacing)
     write_addressing_conflicts_sheet,  # reachability findings -> workbook surfacing
     write_fhrp_consistency_sheet,      # reachability findings -> workbook surfacing
@@ -1501,6 +1503,14 @@ def main():
     _run_phase("Config Compliance sheet", write_security_sheet, wb, all_security)
     _run_phase("Config Hygiene sheet", write_config_hygiene_sheet, wb, all_config_hygiene)
     _run_phase("STP Root Bridges sheet", write_stp_roots_sheet, wb, all_stp_roots, all_interfaces)
+
+    # Phase 30d: Migration Punch-List - NEW-V3.23.63 (consolidated, severity-ranked fix-this-first roll-up)
+    _stp_findings = stp_root_findings(all_stp_roots, all_interfaces)
+    punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
+                           cross_layer, all_security, all_config_hygiene, physical_health,
+                           l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
+                           _default=[])
+    _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
@@ -1531,6 +1541,7 @@ def main():
     snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
+    snap_dict["punchlist"] = punchlist                              # NEW-V3.23.63 (consolidated severity-ranked migration punch-list)
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}

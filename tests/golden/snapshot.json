@@ -1867,6 +1867,257 @@
    }
   }
  },
+ "punchlist": [
+  {
+   "severity": "Critical",
+   "rank": 4,
+   "category": "Cross-layer",
+   "devices": [
+    "access1",
+    "core1"
+   ],
+   "wave": "",
+   "title": "VLAN 30: single-fiber uplink to a sole gateway",
+   "detail": "VLAN 30's only L3 gateway is core1 (no FHRP); access1 Gi0/1 reach the fabric over a single non-redundant fiber.",
+   "remediation": "",
+   "priority": 1
+  },
+  {
+   "severity": "Critical",
+   "rank": 4,
+   "category": "Cross-layer",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "core1: stacked single point of failure across L1, L3",
+   "detail": "core1 is implicated at multiple layers at once (L1, L3) - its loss compounds physical, switching, and/or routing failure.",
+   "remediation": "",
+   "priority": 2
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Config hygiene",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Undefined acl '7'",
+   "detail": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined -- it silently does nothing.",
+   "remediation": "Define the referenced structure, or remove the dangling reference.",
+   "priority": 3
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Config hygiene",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Undefined route-map 'OSPF_TO_BGP'",
+   "detail": "Referenced (router bgp 65001) but never defined -- it silently does nothing.",
+   "remediation": "Define the referenced structure, or remove the dangling reference.",
+   "priority": 4
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Cross-layer",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "VLAN 30: sole gateway core1 with no FHRP",
+   "detail": "core1 is the only in-scan L3 gateway for VLAN 30; loss drops the default gateway for every VLAN 30 host.",
+   "remediation": "",
+   "priority": 5
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Health",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Critical-health switch",
+   "detail": "Health score 3 (Critical band).",
+   "remediation": "Resolve the deductions above before migrating this device.",
+   "priority": 6
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "L1",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "err disabled",
+   "detail": "L1 risk 'err-disabled' on 1 switch(es).",
+   "remediation": "",
+   "priority": 7
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "L3",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "single gateway",
+   "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
+   "remediation": "Add gateway / FHRP redundancy.",
+   "priority": 8
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Protocol",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "OSPF high",
+   "detail": "10.0.99.9 EXSTART/DROTHER",
+   "remediation": "",
+   "priority": 9
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Security",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Local user password storage",
+   "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
+   "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
+   "priority": 10
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Security",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "SNMP access",
+   "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
+   "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
+   "priority": 11
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Security",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "VTY transport (telnet)",
+   "detail": "a VTY line permits telnet (cleartext management).",
+   "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
+   "priority": 12
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Cross-layer",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "core1: L1 fault on an L3 gateway switch",
+   "detail": "core1 hosts L3 gateway SVIs and has an err-disabled or high-error port - physical instability at a routing aggregation point.",
+   "remediation": "",
+   "priority": 13
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "L1",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "single fiber uplink",
+   "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
+   "remediation": "",
+   "priority": 14
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "STP",
+   "devices": [
+    "access1",
+    "core1"
+   ],
+   "wave": "",
+   "title": "STP root != gateway (VLAN 30)",
+   "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
+   "remediation": "Align the STP root priority with the active gateway switch.",
+   "priority": 15
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Security",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Unused / risky services",
+   "detail": "enabled: HTTP server (cleartext).",
+   "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
+   "priority": 16
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Security",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "VTY line hardening",
+   "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+   "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
+   "priority": 17
+  },
+  {
+   "severity": "Low",
+   "rank": 1,
+   "category": "STP",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "Accidental root (VLAN 30)",
+   "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
+   "remediation": "Set a deliberate root-bridge priority on the intended switch.",
+   "priority": 18
+  },
+  {
+   "severity": "Low",
+   "rank": 1,
+   "category": "Security",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Login banner",
+   "detail": "no login / MOTD legal-notice banner.",
+   "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
+   "priority": 19
+  }
+ ],
  "calibration": {
   "n": 3,
   "score_stats": {

@@ -1105,6 +1105,18 @@ function demoSnapshot(){
     "DIST-1":{"10":{root_priority:24586,root_address:"0001.0001.0001",is_root:true}},
     "ACC-3":{"30":{root_priority:32798,root_address:"0003.0003.0003",is_root:true}},
   },
+  // V3.23.63: the consolidated, severity-ranked migration punch-list the Python pipeline computes
+  // (compute_migration_punchlist) — every finding across all layers in one prioritized list.
+  punchlist:[
+    {priority:1,severity:"Critical",rank:4,category:"Cross-layer",devices:["DIST-1"],wave:"Group A",title:"Stuck OSPF adjacency on the redistribution boundary",detail:"Redistributed routes flap while the adjacency is down.",remediation:"Stabilize the OSPF/BGP boundary."},
+    {priority:2,severity:"High",rank:3,category:"L3",devices:["DIST-1"],wave:"Group A",title:"single gateway",detail:"VLAN 30 has a sole gateway with no FHRP peer.",remediation:"Add gateway / FHRP redundancy."},
+    {priority:3,severity:"High",rank:3,category:"Security",devices:["DIST-1"],wave:"Group A",title:"SNMP access",detail:"v1/v2c default community (cleartext).",remediation:"Use SNMPv3 with auth+priv."},
+    {priority:4,severity:"High",rank:3,category:"Security",devices:["DIST-1"],wave:"Group A",title:"VTY transport (telnet)",detail:"A VTY line permits telnet.",remediation:"Set 'transport input ssh'."},
+    {priority:5,severity:"High",rank:3,category:"Config hygiene",devices:["DIST-1"],wave:"Group A",title:"Undefined acl '7'",detail:"Referenced by NAT but never defined.",remediation:"Define or remove the reference."},
+    {priority:6,severity:"High",rank:3,category:"Health",devices:["DIST-1"],wave:"Group A",title:"Poor-health switch",detail:"Health score 58 (Poor band).",remediation:"Resolve the deductions before migrating."},
+    {priority:7,severity:"Medium",rank:2,category:"STP",devices:["ACC-3","DIST-1"],wave:"Group A",title:"STP root != gateway (VLAN 30)",detail:"Gateway traffic hairpins through the root.",remediation:"Align the STP root with the gateway."},
+    {priority:8,severity:"Low",rank:1,category:"STP",devices:["ACC-3"],wave:"Group A",title:"Accidental root (VLAN 30)",detail:"Rooted on the default priority.",remediation:"Set a deliberate root priority."},
+  ],
   // U1 Cross-Layer: a small array of pre-computed findings the Python pipeline would embed (CL-01..),
   // ingested + merged with the client-computed correlations (de-duped by host-set + title). This one is
   // a protocol-layer correlation the client engine doesn't compute, so it shows the SNAP-ingest path.
@@ -3234,6 +3246,22 @@ function stpRootCard(){
     `<div class="sub" style="margin-bottom:6px">Root-bridge design smells a migration inherits — an accidental (default-priority) root, or a root that isn't where the gateway is.</div>`+
     misRows+accRows+`</div>`;
 }
+/* Migration punch-list (the executive roll-up): the Python pipeline consolidates EVERY actionable
+   finding across all layers into one severity-ranked, per-device, per-wave list (SNAP.punchlist).
+   This card renders the top N so a migration lead reads 'fix-this-first, in this order' without
+   cross-referencing every other card/sheet. Back-compatible: no key -> no card. */
+function punchlistCard(){
+  const pl=SNAP&&SNAP.punchlist; if(!pl||!pl.length)return "";
+  const sevPill=s=>`<span class="pill ${s==="Critical"||s==="High"?"pl-crit":s==="Medium"?"pl-watch":"pl-neutral"}">${esc(s)}</span>`;
+  const counts={Critical:0,High:0,Medium:0,Low:0};
+  pl.forEach(i=>{ if(counts[i.severity]!=null)counts[i.severity]++; });
+  const N=12;
+  const rows=pl.slice(0,N).map(i=>`<div class="ln">${sevPill(i.severity)} <span class="faint">#${i.priority}</span> <b>${esc(i.title)}</b> <span class="faint">· ${esc(i.category)} · ${(i.devices||[]).map(d=>esc(shortName(d))).join(", ")}${i.wave?` · wave ${esc(i.wave)}`:""}</span></div>`).join("");
+  const more=pl.length>N?`<div class="ln faint" style="margin-top:4px">…and ${pl.length-N} more — see the full <b>Migration Punch-List</b> workbook sheet.</div>`:"";
+  return `<div class="sec"><h3>Migration punch-list <span class="badge b-crit">${pl.length} item${pl.length===1?"":"s"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Every finding across all layers, de-duplicated and ranked — work it top-down, by migration wave. <b style="color:var(--crit)">${counts.Critical} critical</b> · ${counts.High} high · ${counts.Medium} medium · ${counts.Low} low.</div>`+
+    rows+more+`</div>`;
+}
 /* Trunk consistency: native-VLAN mismatch on an inter-switch trunk. When the two ends disagree on the
    native (untagged) VLAN, frames sent untagged on one side pop out in a DIFFERENT VLAN on the other --
    a silent L2 leak between those VLANs, an STP inconsistency, and a classic VLAN-hopping exposure. The
@@ -4317,6 +4345,7 @@ function drawHealth(){
     </div>
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${punchlistCard()}
     ${calibrationCard()}
     ${rootCauseCard()}
     ${addressingCard()}

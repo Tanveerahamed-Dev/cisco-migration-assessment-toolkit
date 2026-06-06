@@ -1672,3 +1672,107 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
     accidental.sort(key=lambda x: int(x["vlan"]))
     misaligned.sort(key=lambda x: int(x["vlan"]))
     return {"accidental": accidental, "misaligned": misaligned}
+
+
+_PUNCH_RANK = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+
+def compute_migration_punchlist(cross_layer: List[dict],
+                                security: Dict[str, dict],
+                                config_hygiene: Dict[str, dict],
+                                physical_health: List[dict],
+                                l3_forwarding: List[dict],
+                                protocol_health: List[dict],
+                                stp_findings: dict,
+                                health_scores: List[dict],
+                                move_groups: List[dict]) -> List[dict]:
+    """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
+    de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
+    produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
+    STP design, device health) so a migration lead reads one 'fix-this-first, in this order'
+    list instead of cross-referencing ~25 sheets. Pure synthesis of already-computed records;
+    no new collection. Sorted Critical->Low; like findings are grouped (one row + a device list,
+    not one row per port) so it does not 'cry wolf'."""
+    wave_of: Dict[str, str] = {}
+    for g in (move_groups or []):
+        for h in g.get("switches", []):
+            wave_of.setdefault(h, g.get("group", ""))
+    items: List[dict] = []
+
+    def add(severity: str, category: str, devices, title: str, detail: str, remediation: str = "") -> None:
+        devs = sorted({d for d in devices if d})
+        waves = sorted({wave_of.get(d, "") for d in devs} - {""})
+        items.append({"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
+                      "category": category, "devices": devs, "wave": ", ".join(waves),
+                      "title": title, "detail": (detail or "")[:300], "remediation": remediation})
+
+    for f in (cross_layer or []):                                   # already severity + hosts + title
+        add(f.get("severity", "Medium"), "Cross-layer", f.get("hosts", []),
+            f.get("title", f.get("id", "")), f.get("detail", ""), "")
+
+    secgrp: Dict[str, dict] = {}                                    # group a security check across the devices it fails on
+    for host, s in (security or {}).items():
+        for f in (s.get("findings") or []):
+            if f.get("status") == "fail":
+                e = secgrp.setdefault(f.get("id", ""), {
+                    "sev": f.get("severity", "medium"), "title": f.get("title", ""),
+                    "rem": f.get("remediation", ""), "detail": f.get("detail", ""), "devs": []})
+                e["devs"].append(host)
+    for e in secgrp.values():
+        add(str(e["sev"]).capitalize(), "Security", e["devs"], e["title"], e["detail"], e["rem"])
+
+    for host, h in (config_hygiene or {}).items():
+        for u in (h.get("undefined") or []):
+            add("High", "Config hygiene", [host],
+                f"Undefined {u.get('kind', '')} '{u.get('name', '')}'",
+                f"Referenced ({u.get('context', '')}) but never defined -- it silently does nothing.",
+                "Define the referenced structure, or remove the dangling reference.")
+
+    L3SEV = {"single-gateway": "High", "tracked-object-down": "High", "no-FHRP": "Medium"}
+    l3grp: Dict[tuple, list] = {}
+    for r in (l3_forwarding or []):
+        for flag, sev in L3SEV.items():
+            if flag in r.get("risk", ""):
+                l3grp.setdefault((flag, sev), []).append(r.get("switch"))
+    for (flag, sev), devs in l3grp.items():
+        add(sev, "L3", devs, flag.replace("-", " "),
+            f"L3 forwarding risk '{flag}' on {len(set(devs))} switch(es).",
+            "Add gateway / FHRP redundancy." if ("gateway" in flag or "FHRP" in flag)
+            else "Investigate the tracked object / SLA.")
+
+    L1SEV = {"err-disabled": "High", "single-fiber-uplink": "Medium",
+             "half-duplex": "Medium", "error-rate-high": "Medium"}
+    l1grp: Dict[tuple, list] = {}
+    for r in (physical_health or []):
+        for flag, sev in L1SEV.items():
+            if flag in r.get("risk", ""):
+                l1grp.setdefault((flag, sev), []).append(r.get("switch"))
+    for (flag, sev), devs in l1grp.items():
+        add(sev, "L1", devs, flag.replace("-", " "),
+            f"L1 risk '{flag}' on {len(set(devs))} switch(es).", "")
+
+    for r in (protocol_health or []):
+        if r.get("severity") in ("High", "Medium"):
+            add(r["severity"], "Protocol", [r.get("switch")],
+                f"{r.get('protocol', '')} {r['severity'].lower()}", r.get("detail", ""), "")
+
+    sf = stp_findings or {}
+    for m in sf.get("misaligned", []):
+        add("Medium", "STP", [m.get("root")] + list(m.get("gateways", [])),
+            f"STP root != gateway (VLAN {m.get('vlan')})",
+            "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
+            "Align the STP root priority with the active gateway switch.")
+    for a in sf.get("accidental", []):
+        add("Low", "STP", [a.get("host")], f"Accidental root (VLAN {a.get('vlan')})",
+            "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
+            "Set a deliberate root-bridge priority on the intended switch.")
+
+    for r in (health_scores or []):
+        if r.get("band") in ("Critical", "Poor"):
+            add("High" if r["band"] == "Critical" else "Medium", "Health", [r.get("switch")],
+                f"{r['band']}-health switch", f"Health score {r.get('score', '')} ({r['band']} band).",
+                "Resolve the deductions above before migrating this device.")
+
+    items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
+    for i, it in enumerate(items, 1):
+        it["priority"] = i
+    return items

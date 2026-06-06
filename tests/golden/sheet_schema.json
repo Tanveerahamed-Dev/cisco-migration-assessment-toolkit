@@ -269,6 +269,16 @@
   "VLAN gateway(s)",
   "Aligned?"
  ],
+ "Migration Punch-List": [
+  "#",
+  "Severity",
+  "Category",
+  "Device(s)",
+  "Wave",
+  "Issue",
+  "Detail",
+  "Remediation"
+ ],
  "Protocol Boundaries": [
   "Switch",
   "Protocols",
