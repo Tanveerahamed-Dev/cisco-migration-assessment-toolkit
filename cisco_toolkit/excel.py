@@ -871,6 +871,39 @@ def write_security_sheet(wb, all_security: dict) -> None:
                 f"across {nhosts} switch(es)")
 
 
+CONFIG_HYGIENE_SHEET_NAME = "Config Hygiene"   # Batfish-style undefined refs + unused structures (NEW-V3.23.61)
+
+def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:
+    """Write the 'Config Hygiene' sheet from {host: parse_config_hygiene()} -- undefined references
+    (a referenced-but-undefined ACL/route-map/object-group/prefix-list silently does nothing: a real
+    migration-breaker) and unused structures (defined-but-never-referenced cruft), so each can be fixed
+    or dropped before cutover."""
+    ws = wb.create_sheet(CONFIG_HYGIENE_SHEET_NAME)
+    for col, h in enumerate(["Switch", "Issue", "Kind", "Name", "Where / note"], 1):
+        c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    undef_fill = PatternFill("solid", fgColor="F4CCCC"); unused_fill = PatternFill("solid", fgColor="FFF2CC")
+    r = 2; nundef = 0; nunused = 0
+    for host in sorted(all_hygiene):
+        hyg = all_hygiene[host] or {}
+        for u in hyg.get("undefined", []):
+            ws.cell(r, 1, host); ws.cell(r, 2, "undefined reference"); ws.cell(r, 3, u.get("kind", ""))
+            ws.cell(r, 4, u.get("name", "")); ws.cell(r, 5, u.get("context", ""))
+            for col in range(1, 6): ws.cell(r, col).fill = undef_fill
+            r += 1; nundef += 1
+        for u in hyg.get("unused", []):
+            ws.cell(r, 1, host); ws.cell(r, 2, "unused (no reference found)"); ws.cell(r, 3, u.get("kind", ""))
+            ws.cell(r, 4, u.get("name", "")); ws.cell(r, 5, "defined but never referenced in the running-config")
+            for col in range(1, 6): ws.cell(r, col).fill = unused_fill
+            r += 1; nunused += 1
+    for i, w in enumerate([14, 26, 16, 26, 64], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    nhosts = len([h for h in all_hygiene if all_hygiene[h]])
+    logger.info(f"  [OK] '{CONFIG_HYGIENE_SHEET_NAME}' sheet: {nundef} undefined ref(s), "
+                f"{nunused} unused across {nhosts} switch(es)")
+
+
 PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
 
 def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:

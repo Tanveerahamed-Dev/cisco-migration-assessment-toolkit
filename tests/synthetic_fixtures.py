@@ -161,6 +161,11 @@ ip access-list extended INET_RETURN
  permit tcp 10.0.10.0 0.0.0.255 any eq 443 time-range BUSINESS_HOURS
  deny   ip any any
 !
+interface GigabitEthernet1/0/5
+ ip access-group PROTECT_SERVERS in
+ ip access-group VOICE_FILTER out
+interface GigabitEthernet1/0/6
+ ip access-group MGMT_IN in
 interface Vlan10
  ip nat inside
 interface GigabitEthernet1/0/24

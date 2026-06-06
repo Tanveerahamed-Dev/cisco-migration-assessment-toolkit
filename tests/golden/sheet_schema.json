@@ -254,6 +254,13 @@
   "Finding",
   "CIS / Remediation"
  ],
+ "Config Hygiene": [
+  "Switch",
+  "Issue",
+  "Kind",
+  "Name",
+  "Where / note"
+ ],
  "Protocol Boundaries": [
   "Switch",
   "Protocols",

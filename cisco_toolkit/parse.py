@@ -1079,6 +1079,120 @@ def parse_security(output: str) -> dict:
 
 
 # ----------------------------------------------------------------------------- #
+# CONFIG HYGIENE (NEW-V3.23.61) - Batfish-style static cross-reference over the
+# already-collected 'show running-config': (1) UNDEFINED references -- a named
+# ACL / route-map / object-group / prefix-list that is *referenced* but never
+# *defined* (silently does nothing -> a classic migration-breaker), and (2) UNUSED
+# structures -- a named structure *defined* but never *referenced* (cruft to drop
+# at cutover). Order-independent (all defs gathered, then all refs). Tolerant: any
+# unrecognized line is skipped, never raises. Conservative on purpose -- only the
+# four well-bounded structure kinds and high-confidence reference forms, so it does
+# not 'cry wolf'. {} when the config defines/references none of them.
+# ----------------------------------------------------------------------------- #
+_HYGIENE_KINDS = ("acl", "route-map", "object-group", "prefix-list")
+# A captured name equal to one of these is a mis-parse of a keyword, not a real reference.
+_HYGIENE_RESERVED = {"in", "out", "prefix", "prefix-list", "route-map", "network",
+                     "service", "ip", "ipv6", "gateway", "interface", "any", "host"}
+
+
+def parse_config_hygiene(output: str) -> dict:
+    """'show running-config' -> {undefined:[{kind,name,context}], unused:[{kind,name}],
+    summary:{undefined,unused,structures}}; {} when no ACL/route-map/object-group/prefix-list
+    is defined or referenced. Tolerant; never raises.
+
+    undefined = referenced-but-not-defined (a real bug). unused = defined-but-not-referenced
+    (advisory: 'no reference found in this running-config')."""
+    if not output:
+        return {}
+    defs: Dict[str, set] = {k: set() for k in _HYGIENE_KINDS}
+    refs: List[dict] = []
+
+    D_ACL_NAMED = re.compile(r"^\s*ip\s+access-list\s+(?:standard|extended)\s+(\S+)", re.IGNORECASE)
+    D_ACL_NX    = re.compile(r"^\s*ip\s+access-list\s+(\S+)\s*$", re.IGNORECASE)
+    D_ACL_V6    = re.compile(r"^\s*ipv6\s+access-list\s+(\S+)", re.IGNORECASE)
+    D_ACL_NUM   = re.compile(r"^\s*access-list\s+(\d+)\s+", re.IGNORECASE)
+    D_RMAP      = re.compile(r"^\s*route-map\s+(\S+)", re.IGNORECASE)
+    D_OBJG      = re.compile(r"^\s*object-group\s+(?:network|service|ip\s+address|ip\s+port)\s+(\S+)", re.IGNORECASE)
+    D_PLIST     = re.compile(r"^\s*ip(?:v6)?\s+prefix-list\s+(\S+)", re.IGNORECASE)
+
+    # (regex, kind) -- high-confidence reference forms only.
+    REF_RX = [
+        (re.compile(r"\bip\s+access-group\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "acl"),
+        (re.compile(r"\baccess-class\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "acl"),
+        (re.compile(r"\bipv6\s+traffic-filter\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "acl"),
+        (re.compile(r"\bip\s+nat\s+(?:inside|outside)\s+source\s+list\s+(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bmatch\s+ip\s+address\s+(?!prefix-list\b)(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bredistribute\b.*\broute-map\s+(\S+)", re.IGNORECASE), "route-map"),
+        (re.compile(r"\bneighbor\s+\S+\s+route-map\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "route-map"),
+        (re.compile(r"\bip\s+policy\s+route-map\s+(\S+)", re.IGNORECASE), "route-map"),
+        (re.compile(r"\bmatch\s+ip\s+address\s+prefix-list\s+(\S+)", re.IGNORECASE), "prefix-list"),
+        (re.compile(r"\bneighbor\s+\S+\s+prefix-list\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "prefix-list"),
+        (re.compile(r"\bdistribute-list\s+prefix\s+(\S+)", re.IGNORECASE), "prefix-list"),
+    ]
+    OBJG_REF = re.compile(r"\bobject-group\s+(\S+)", re.IGNORECASE)
+    GRPOBJ_REF = re.compile(r"\bgroup-object\s+(\S+)", re.IGNORECASE)
+
+    ctx = ""
+    for raw in output.splitlines():
+        line = raw.rstrip()
+        s = line.strip()
+        if not s:
+            continue
+        if not raw[:1].isspace():                                   # col-0 stanza header = context for any ref below it
+            ctx = s[:60]
+        if s.lower().startswith(("remark ", "description ")):       # free text -> never a def/ref
+            continue
+        # --- definitions ---
+        md = D_ACL_NAMED.match(line) or D_ACL_NX.match(line) or D_ACL_V6.match(line)
+        if md:
+            defs["acl"].add(md.group(1))
+        else:
+            mn = D_ACL_NUM.match(line)
+            if mn:
+                defs["acl"].add(mn.group(1))
+        mr = D_RMAP.match(line)
+        if mr:
+            defs["route-map"].add(mr.group(1))
+        mo = D_OBJG.match(line)
+        if mo:
+            defs["object-group"].add(mo.group(1))
+        mp = D_PLIST.match(line)
+        if mp:
+            defs["prefix-list"].add(mp.group(1))
+        # --- references ---
+        for rx, kind in REF_RX:
+            for m in rx.finditer(line):
+                nm = m.group(1)
+                if nm.lower() not in _HYGIENE_RESERVED:
+                    refs.append({"kind": kind, "name": nm, "context": ctx})
+        for m in OBJG_REF.finditer(line):                           # 'object-group NAME' inside an ACL rule (not a def header)
+            nm = m.group(1)
+            if nm.lower() not in _HYGIENE_RESERVED:
+                refs.append({"kind": "object-group", "name": nm, "context": ctx})
+        for m in GRPOBJ_REF.finditer(line):                         # nested 'group-object NAME'
+            nm = m.group(1)
+            if nm.lower() not in _HYGIENE_RESERVED:
+                refs.append({"kind": "object-group", "name": nm, "context": ctx})
+
+    referenced: Dict[str, set] = {k: set() for k in _HYGIENE_KINDS}
+    for r in refs:
+        referenced[r["kind"]].add(r["name"])
+    undefined_map: Dict[tuple, dict] = {}
+    for r in refs:
+        if r["name"] not in defs[r["kind"]]:
+            undefined_map.setdefault((r["kind"], r["name"]), r)     # first context wins
+    undefined = sorted(undefined_map.values(), key=lambda x: (x["kind"], x["name"]))
+    unused = sorted(
+        ({"kind": k, "name": nm} for k in _HYGIENE_KINDS for nm in defs[k] if nm not in referenced[k]),
+        key=lambda x: (x["kind"], x["name"]))
+    total_defs = sum(len(v) for v in defs.values())
+    if not total_defs and not refs:
+        return {}
+    return {"undefined": undefined, "unused": unused,
+            "summary": {"undefined": len(undefined), "unused": len(unused), "structures": total_defs}}
+
+
+# ----------------------------------------------------------------------------- #
 # REDISTRIBUTION (protocol-to-protocol analysis) - parse the 'router <proto>' /
 # 'redistribute' stanzas out of the already-collected 'show running-config'. Each
 # 'redistribute' under a 'router X' block is one protocol-to-protocol edge
