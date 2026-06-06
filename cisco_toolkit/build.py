@@ -22,7 +22,7 @@ from cisco_toolkit.parse import (
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
-    parse_acls, parse_object_groups, parse_nat,
+    parse_acls, parse_object_groups, parse_nat, parse_security,
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
     parse_redistribution,                                            # protocol-to-protocol analysis (slice 2)
 )
@@ -51,6 +51,15 @@ def build_nat(cmd_to_file: Dict[str, str]) -> dict:
     Fail-soft via _safe_parse."""
     run = _load_cmd_output(cmd_to_file, "show running-config")
     return _safe_parse(parse_nat, run) or {}
+
+
+def build_security(cmd_to_file: Dict[str, str]) -> dict:
+    """Parse the CIS-aligned security/compliance posture (weak credentials, insecure SNMP/telnet,
+    risky services, missing baseline hardening) from this device's already-collected
+    'show running-config' -> {findings:[...], summary:{...}}; {} when no run-config. The parser
+    redacts every secret value before it reaches the snapshot. Fail-soft via _safe_parse."""
+    run = _load_cmd_output(cmd_to_file, "show running-config")
+    return _safe_parse(parse_security, run) or {}
 
 
 def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:

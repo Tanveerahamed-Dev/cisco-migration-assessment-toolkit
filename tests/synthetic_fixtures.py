@@ -127,6 +127,20 @@ interface Vlan30
 """,
     "show running-config": """\
 !
+service password-encryption
+aaa new-model
+enable secret 9 $9$FAKEsecretHASHonly
+username admin privilege 15 secret 9 $9$FAKEadminHASHonly
+username legacy password 7 070C285F4D06
+snmp-server community public RO
+ntp server 10.0.0.10
+logging host 10.0.0.20
+ip http server
+no ip http secure-server
+line vty 0 4
+ transport input telnet ssh
+ exec-timeout 0 0
+!
 object-group network MGMT_HOSTS
  host 10.0.99.10
  10.0.40.0 255.255.255.0

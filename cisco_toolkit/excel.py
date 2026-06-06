@@ -836,6 +836,41 @@ def write_nat_sheet(wb, all_nat: dict) -> None:
     logger.info(f"  [OK] '{NAT_INVENTORY_SHEET_NAME}' sheet: {total} NAT rule(s) across {nhosts} switch(es)")
 
 
+CONFIG_COMPLIANCE_SHEET_NAME = "Config Compliance"   # CIS-aligned config-hardening checks (NEW-V3.23.59); distinct from the operational 'Security Posture' sheet
+
+def write_security_sheet(wb, all_security: dict) -> None:
+    """Write the 'Config Compliance' sheet from {host: parse_security()} -- one row per CIS-aligned
+    config-hardening check (pass / fail / na) with severity + remediation, so the migration can
+    remediate (or consciously carry) config technical debt. Secret values were redacted by the parser."""
+    ws = wb.create_sheet(CONFIG_COMPLIANCE_SHEET_NAME)
+    for col, h in enumerate(["Switch", "Severity", "Status", "Check", "Finding", "CIS / Remediation"], 1):
+        c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    sev_fill = {"high": "F4CCCC", "medium": "FCE5CD", "low": "FFF2CC"}
+    r = 2; total = 0; nfail = 0
+    for host in sorted(all_security):
+        sec = all_security[host] or {}
+        for f in sec.get("findings", []):
+            ws.cell(r, 1, host)
+            ws.cell(r, 2, (f.get("severity") or "").upper() if f.get("status") == "fail" else "-")
+            ws.cell(r, 3, (f.get("status") or "").upper())
+            ws.cell(r, 4, f.get("title", ""))
+            ws.cell(r, 5, f.get("detail", ""))
+            ws.cell(r, 6, f"{f.get('cis_ref', '')} - {f.get('remediation', '')}")
+            if f.get("status") == "fail":
+                fill = PatternFill("solid", fgColor=sev_fill.get(f.get("severity"), "F4CCCC"))
+                for col in range(1, 7):
+                    ws.cell(r, col).fill = fill
+                nfail += 1
+            r += 1; total += 1
+    for i, w in enumerate([14, 10, 8, 26, 72, 60], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    nhosts = len([h for h in all_security if all_security[h]])
+    logger.info(f"  [OK] '{CONFIG_COMPLIANCE_SHEET_NAME}' sheet: {nfail} fail / {total} check(s) "
+                f"across {nhosts} switch(es)")
+
+
 PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
 
 def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:

@@ -140,6 +140,62 @@ def test_parse_nat_absent(cp):
     assert parse.parse_nat("hostname r1\n!\n") == {}
 
 
+def test_parse_security(cp):
+    # CIS-aligned posture: weak credentials, insecure SNMP/telnet, risky service, missing baseline
+    out = textwrap.dedent("""\
+        username legacy password 7 070C285F4D06
+        enable password cisco123
+        snmp-server community S3cr3tCOMM RW
+        ip http server
+        line vty 0 4
+         transport input telnet ssh
+         exec-timeout 0 0
+    """)
+    sec = parse.parse_security(out)
+    by = {f["id"]: f for f in sec["findings"]}
+    assert by["weak-user-pw"]["status"] == "fail" and "legacy" in by["weak-user-pw"]["detail"]
+    assert "070C285F4D06" not in by["weak-user-pw"]["detail"]          # password hash is never echoed
+    assert by["weak-enable"]["status"] == "fail"                       # 'enable password' (reversible)
+    assert by["insecure-snmp"]["status"] == "fail" and by["insecure-snmp"]["severity"] == "high"
+    assert "<redacted>" in by["insecure-snmp"]["detail"]               # community string is redacted
+    assert by["telnet-enabled"]["status"] == "fail"
+    assert by["vty-hardening"]["status"] == "fail"                     # exec-timeout 0 0, no access-class
+    assert by["risky-services"]["status"] == "fail" and "HTTP" in by["risky-services"]["detail"]
+    for cid in ("password-encryption", "no-aaa", "no-ntp", "no-logging", "no-banner"):
+        assert by[cid]["status"] == "fail"                            # missing baseline controls
+    assert sec["summary"]["grade"] == "weak" and sec["summary"]["fail"] >= 8
+
+
+def test_parse_security_hardened(cp):
+    # a hardened config: every control satisfied, no risky services -> all pass, grade 'hardened'
+    out = textwrap.dedent("""\
+        service password-encryption
+        aaa new-model
+        enable secret 9 $9$hardenedHASH
+        username admin privilege 15 secret 9 $9$adminHASH
+        snmp-server group NETADMIN v3 priv
+        snmp-server user netops NETADMIN v3 auth sha A priv aes 256 P
+        ntp server 10.0.0.10
+        logging host 10.0.0.20
+        banner login ^C authorized access only ^C
+        no ip http server
+        line vty 0 4
+         access-class MGMT_IN in
+         exec-timeout 5 0
+         transport input ssh
+    """)
+    sec = parse.parse_security(out)
+    by = {f["id"]: f for f in sec["findings"]}
+    assert all(by[cid]["status"] == "pass" for cid in (
+        "password-encryption", "no-aaa", "weak-enable", "weak-user-pw", "insecure-snmp",
+        "telnet-enabled", "vty-hardening", "risky-services", "no-ntp", "no-logging", "no-banner"))
+    assert sec["summary"]["fail"] == 0 and sec["summary"]["grade"] == "hardened"
+
+
+def test_parse_security_absent(cp):
+    assert parse.parse_security("") == {}
+
+
 def test_parse_redistribution(cp):
     # protocol-to-protocol edges: each 'redistribute' under a 'router X' block; a col-0 line ends the block
     out = textwrap.dedent("""\
