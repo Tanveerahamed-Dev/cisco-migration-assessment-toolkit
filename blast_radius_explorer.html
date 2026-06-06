@@ -227,6 +227,29 @@
     filter:drop-shadow(0 0 4px var(--accent))}
   @keyframes legendPulse{0%,100%{filter:drop-shadow(0 0 2px currentColor)}50%{filter:drop-shadow(0 0 6px currentColor)}}
 
+  /* ---- Causality mode: root-cause→impact flow diagram (U2) ---- */
+  .causalDiagram{width:100%; display:block; border-radius:9px; background:var(--surface-2); border:1px solid var(--border)}
+  .cz-conn{fill:none; stroke:var(--border-strong); stroke-width:2}
+  /* the moving energy pulse rides on top of each connector; its dash + offset are animated */
+  .cz-flow{fill:none; stroke:var(--accent); stroke-width:3; stroke-linecap:round;
+    stroke-dasharray:14 86; filter:drop-shadow(0 0 3px var(--accent));
+    animation:causalFlow 2.4s linear infinite}
+  @keyframes causalFlow{from{stroke-dashoffset:100}to{stroke-dashoffset:0}}
+  .cz-node-box{stroke-width:1.5; rx:9}
+  .cz-stage{font:700 8.5px var(--sans); letter-spacing:1.1px; text-transform:uppercase; text-anchor:middle; pointer-events:none}
+  .cz-node-t{font:550 10px var(--sans); fill:var(--text); text-anchor:middle; pointer-events:none}
+  .cz-spark{fill:var(--accent); stroke:var(--surface); stroke-width:1.2; pointer-events:none;
+    filter:drop-shadow(0 0 4px var(--accent))}
+  .cz-legend-stage{display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-dim); margin:2px 0}
+  .cz-legend-stage .dot{width:9px; height:9px; border-radius:3px; display:inline-block}
+  /* selected chain card — accent ring so the active chain reads at a glance */
+  .card.czsel{box-shadow:0 0 0 2px var(--accent); border-left-color:var(--accent)}
+  @media (prefers-reduced-motion: reduce){
+    /* no traveling pulse: hide the moving stroke, keep the static connector visible */
+    .cz-flow{animation:none !important; stroke-dasharray:none; opacity:.55}
+    .cz-spark{display:none}
+  }
+
   .pcbadge{fill:var(--surface); stroke:var(--border-strong); stroke-width:1}
   .pcbadge-t{fill:var(--text-dim); font:600 9px var(--mono); text-anchor:middle; pointer-events:none}
 
@@ -483,6 +506,7 @@
       <button data-mode="health" aria-pressed="false"><span class="gl" aria-hidden="true">✚</span>Health</button>
       <button data-mode="protocols" aria-pressed="false"><span class="gl" aria-hidden="true">⌥</span>Protocols</button>
       <button data-mode="xlayer" aria-pressed="false"><span class="gl" aria-hidden="true">⌗</span>Cross-Layer</button>
+      <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causality</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -530,7 +554,7 @@
 <div class="modal" id="help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><div class="box">
   <span class="close" id="helpClose" role="button" tabindex="0" aria-label="Close">✕</span>
   <h2>Keyboard shortcuts</h2>
-  <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">5</span></div>
+  <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">7</span></div>
   <div class="krow"><span>Focus search</span><span class="kbd">/</span></div>
   <div class="krow"><span>Fit to screen</span><span class="kbd">F</span></div>
   <div class="krow"><span>Reset layout (clear pins)</span><span class="kbd">R</span></div>
@@ -977,6 +1001,11 @@ let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on 
 let PATH_ANIM_KEY=null, PACKET_EL=null, PACKET_RAF=null;
 function reducedMotion(){return window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;}
 
+/* ---- Causality mode (U2) ----------------------------------------------------
+   CAUSAL_SEL = index into the current chain list of the selected chain (null = none).
+   CAUSAL_RAF = rAF id for the four-stage spark loop; cancelled on mode change / re-render. */
+let CAUSAL_SEL=null, CAUSAL_RAF=null;
+
 /* ---- pinned (hand-dragged) node positions ---------------------------------
    PINNED maps host->{x,y} for nodes the user has dragged. These survive layout
    toggles, mode changes, and reloads (overlaid in computeLayout, persisted to
@@ -1072,7 +1101,7 @@ function buildChips(){
 function setVlan(v){VLAN=v;buildChips();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -1284,8 +1313,14 @@ window.addEventListener("mouseup",()=>{
    ===================================================================== */
 function cancelBlastWave(){_blastTimers.forEach(clearTimeout); _blastTimers=[];
   MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.remove("blastpulse","ripple");});}
+/* Cancel the causality four-stage spark rAF. Idempotent; safe to call repeatedly.
+   The diagram itself lives in the drawer SVG (rebuilt each renderDrawer), so this
+   just kills the loop's rAF handle — the stale element is discarded with the DOM. */
+function clearCausalFlow(){
+  if(CAUSAL_RAF!=null){cancelAnimationFrame(CAUSAL_RAF); CAUSAL_RAF=null;}
+}
 function clearFx(){
-  cancelBlastWave();
+  cancelBlastWave(); clearCausalFlow();
   MODEL.hosts.forEach(h=>{const n=nodeEls[h];n.g.classList.remove("sel","dead","dim","match","xlhl","xldim");
     n.g.style.removeProperty("--ov"); n.body.style.removeProperty("fill"); n.body.style.removeProperty("stroke");
     n.tag.textContent=""; n.tag.removeAttribute("fill"); n.score.textContent=""; n.score.removeAttribute("fill");});
@@ -1323,6 +1358,7 @@ function repaint(){
   else if(MODE==="health")paintHealth();
   else if(MODE==="protocols")paintProtocols();
   else if(MODE==="xlayer")paintXLayer();
+  else if(MODE==="causality")paintCausality();
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   runPathAnim();   // draw-on + traveling packet for Path/Flow; teardown otherwise (keyed on path change)
 }
@@ -1701,7 +1737,7 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis"}[m]||m)+" mode.");
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains"}[m]||m)+" mode.");
   writeHash();}
 
 /* =====================================================================
@@ -1714,7 +1750,8 @@ function setHint(){const h=document.getElementById("hint");const m={
   flow:flowObj()?`Rendering the collector's <b>L1→L3 flow trace</b>`:`No flow trace embedded`,
   health:`Click a switch for its <b>health breakdown</b>`,
   protocols:`Click a switch for its <b>routing-protocol profile</b>`,
-  xlayer:`Click a finding to <b>highlight the switches it spans</b>`}[MODE];
+  xlayer:`Click a finding to <b>highlight the switches it spans</b>`,
+  causality:`Select a chain to <b>animate its root-cause flow</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -1723,7 +1760,8 @@ function setModeTag(){const el=document.getElementById("modetag");
     flow:"The collector's full-stack endpoint→gateway path with per-hop risk.",
     health:"Per-switch 0–100 health and per-group migration readiness.",
     protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
-    xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk."}[MODE];
+    xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
+    causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -1737,6 +1775,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit");
   else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
   else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
+  else if(MODE==="causality"){h+=bx("var(--crit)","root-cause host","")+`<div class="row faint" style="margin-top:3px">Select a chain in the panel — its host is ringed here and its trigger→mitigation flow animates.</div>`;}
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -1846,12 +1885,19 @@ function renderDrawer(){
   else if(MODE==="health")p.innerHTML=drawHealth();
   else if(MODE==="protocols")p.innerHTML=drawProtocols();
   else if(MODE==="xlayer")p.innerHTML=drawXLayer();
+  else if(MODE==="causality")p.innerHTML=drawCausality();
   // wire cross-layer finding cards (click highlights the involved hosts on the canvas)
   p.querySelectorAll("[data-xlhosts]").forEach(c=>c.onclick=()=>{
     const hosts=(c.dataset.xlhosts||"").split(",").filter(Boolean);
     const same=XLSEL&&XLSEL.length===hosts.length&&XLSEL.every((h,i)=>h===hosts[i]);
     XLSEL=same?null:hosts;   // clicking the active card again clears the highlight
     repaint(); renderDrawer();});
+  // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
+  const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
+    const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
+  p.querySelectorAll("[data-causal]").forEach(r=>{const i=+r.dataset.causal;
+    r.onclick=()=>_selCausal(i);
+    r.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();_selCausal(i);}};});
   // wire row clicks (jump-to-switch); clears any endpoint drill-down
   p.querySelectorAll("[data-jump]").forEach(r=>r.onclick=()=>{const h=r.dataset.jump;
     if(MODE==="trace"){EPSEL=null;pickTrace(h);} else{SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);writeHash();}});
@@ -1871,6 +1917,7 @@ function renderDrawer(){
   {const ps=document.getElementById("flowSport"); if(ps)ps.addEventListener("change",()=>{const v=ps.value.trim(); const n=parseInt(v,10); FLOW_SPORT=(v===""||!(n>=1&&n<=65535))?null:n; _reflow();});}
   {const pi=document.getElementById("flowIcmp"); if(pi)pi.addEventListener("change",()=>{const v=pi.value.trim(); FLOW_ICMPTYPE=v||null; _reflow();});}
   animateDrawer(p);
+  if(MODE==="causality"&&!EPSEL)animateCausalFlow();   // start the four-stage spark loop (no-op under reduced-motion)
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -2877,6 +2924,136 @@ function drawProtocolsDetail(host){
     <div class="sec"><h3>Route sources</h3>${distBars(routeSourceDist(host))||'<p class="faint">No routes in scope.</p>'}</div>
     <p class="faint" style="margin:0 0 10px"><button class="btn" onclick="SEL=null;repaint();renderDrawer()">← Back to all protocols</button></p>`;
 }
+
+/* =====================================================================
+   CAUSALITY DRAWER + ANIMATED FOUR-STAGE FLOW DIAGRAM (U2)
+   ===================================================================== */
+const CAUSAL_STAGES=[
+  {key:"trigger",   label:"Trigger",    tok:"crit"},
+  {key:"mechanism", label:"Mechanism",  tok:"risk"},
+  {key:"impact",    label:"Impact",     tok:"watch"},
+  {key:"mitigation",label:"Mitigation", tok:"ok"}];
+/* Render the four ordered stage-boxes + connectors as an inline SVG string. The
+   connectors carry a static base line plus a .cz-flow stroke whose dash animates
+   L→R (CSS @keyframes causalFlow); animateCausalFlow() then drives a spark dot
+   along them via rAF. Under reduced-motion the spark is skipped and the CSS rule
+   freezes the flow stroke to a faint static line — the chain stays fully legible. */
+function causalDiagramSvg(chain){
+  const W=440, padX=14, n=CAUSAL_STAGES.length;
+  const boxW=92, gap=(W-2*padX-n*boxW)/(n-1);
+  const boxH=62, top=30, H=top+boxH+18;
+  const cy=top+boxH/2;
+  const xOf=i=>padX+i*(boxW+gap);
+  let boxes="", conns="", flows="";
+  CAUSAL_STAGES.forEach((st,i)=>{
+    const x=xOf(i), txt=String((chain[st.key]||"—"));
+    const lines=_czWrap(txt, 15, 4);
+    const tspans=lines.map((ln,k)=>`<tspan x="${x+boxW/2}" dy="${k===0?0:11}">${esc(ln)}</tspan>`).join("");
+    const ty=cy-((lines.length-1)*11)/2;
+    boxes+=`<rect class="cz-node-box" x="${x}" y="${top}" width="${boxW}" height="${boxH}" rx="9"
+        fill="var(--${st.tok}-soft)" stroke="var(--${st.tok})"/>
+      <text class="cz-stage" x="${x+boxW/2}" y="${top-8}" fill="var(--${st.tok})">${st.label}</text>
+      <text class="cz-node-t" x="${x+boxW/2}" y="${ty}">${tspans}</text>`;
+    if(i<n-1){const x1=x+boxW, x2=xOf(i+1);
+      conns+=`<line class="cz-conn" x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" marker-end="url(#czArrow)"/>`;
+      flows+=`<line class="cz-flow" x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}"/>`;}
+  });
+  return `<svg class="causalDiagram" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Causal flow: ${esc(chain.trigger||"")} leads to ${esc(chain.impact||"")}; mitigated by ${esc(chain.mitigation||"")}">
+    <defs><marker id="czArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--border-strong)"/></marker></defs>
+    ${conns}${flows}${boxes}
+    <circle id="czSpark" class="cz-spark" r="4" cx="${xOf(0)+boxW}" cy="${cy}" style="opacity:0"/>
+  </svg>`;
+}
+/* tiny word-wrapper: split into ≤maxLines lines of ≤maxChars chars (greedy by word) */
+function _czWrap(s,maxChars,maxLines){
+  const words=String(s).split(/\s+/), out=[]; let cur="";
+  for(const w of words){
+    if(!cur){cur=w;continue;}
+    if((cur+" "+w).length<=maxChars)cur+=" "+w; else {out.push(cur);cur=w; if(out.length===maxLines-1)break;}}
+  if(cur&&out.length<maxLines)out.push(cur);
+  // if we truncated, mark the last line with an ellipsis
+  const consumed=out.join(" ").split(/\s+/).length;
+  if(consumed<words.length&&out.length)out[out.length-1]=out[out.length-1].replace(/.{1}$/,"…");
+  return out.length?out:["—"];
+}
+function drawCausality(){
+  const list=causalityList();
+  if(!list.length){
+    return `<div class="drawer-head"><div class="eyebrow">Causality</div><div class="title">Root-cause chains</div></div>
+      <div class="empty"><div class="big">⤳</div><p>No structural single-points-of-failure detected in this fabric.</p>
+      <p class="faint">A causal chain appears when a switch is a sole gateway, a transit articulation point, or rides a single uplink — none are present here.</p></div>`;
+  }
+  // clamp / default the selection so a row is always active
+  if(CAUSAL_SEL==null||CAUSAL_SEL<0||CAUSAL_SEL>=list.length)CAUSAL_SEL=0;
+  const sel=list[CAUSAL_SEL];
+  const sevCount={crit:0,risk:0,watch:0,neutral:0};
+  list.forEach(c=>{sevCount[c.tok]=(sevCount[c.tok]||0)+1;});
+  const cards=list.map((c,i)=>{const on=i===CAUSAL_SEL;
+    return `<div class="card ${c.tok}${on?" czsel":""}" data-causal="${i}" tabindex="0" role="button"
+        aria-pressed="${on?"true":"false"}" style="cursor:pointer">
+      <div class="ct"><span class="nm">${esc(c.title)}</span><span class="pill pl-${c.tok}">${esc(c.sev||"")}</span></div>
+      <div class="ln mono faint">${esc(c.kind)}${c.hosts.length?" · "+esc(c.hosts.map(shortName).join(", ")):""}</div>
+      <div class="ln">${esc(c.impact||"")}</div></div>`;}).join("");
+  const stageLegend=CAUSAL_STAGES.map(st=>`<span class="cz-legend-stage"><span class="dot" style="background:var(--${st.tok})"></span>${st.label}</span>`).join("");
+  return `<div class="drawer-head"><div class="eyebrow">Causality</div>
+      <div class="title">Root-cause → impact</div></div>
+    <div class="sec"><div class="headline">
+      <div class="stat ${sevCount.crit?"crit":"ok"}"><div class="v"><span class="num" data-to="${list.length}">0</span></div><div class="k">causal chains</div></div>
+      <div class="stat ${sevCount.crit?"crit":""}"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${sevCount.crit}">0</span></div><div class="k">high severity</div></div>
+      <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${sel.hosts.length}">0</span></div><div class="k">hosts in chain</div></div>
+    </div>
+    <p class="sub" style="margin:11px 0 0">Each chain traces a <b>trigger</b> through the <b>mechanism</b> that propagates it to its <b>impact</b>, and the <b>mitigation</b> that breaks it. Select a chain to animate its flow and highlight the host on the map.</p>
+    </div>
+    <div class="sec"><h3>Causal flow — ${esc(sel.title)}</h3>
+      ${causalDiagramSvg(sel)}
+      <div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:12px">${stageLegend}</div>
+      <div class="card ${sel.tok}" style="margin-top:11px">
+        <div class="ln"><b>Trigger:</b> ${esc(sel.trigger||"—")}</div>
+        <div class="ln"><b>Mechanism:</b> ${esc(sel.mechanism||"—")}</div>
+        <div class="ln"><b>Impact:</b> ${esc(sel.impact||"—")}</div>
+        <div class="fix"><b>Mitigation:</b> ${esc(sel.mitigation||"—")}</div>
+      </div></div>
+    <div class="sec"><h3>All causal chains <span class="ct">${list.length}</span></h3>${cards}</div>`;
+}
+/* rAF spark traveling along the four-stage connectors, mirroring animatePacket's
+   structure: lerp a dot through the connector endpoints at near-constant speed with
+   a brief pause, looping. Cancelled via clearCausalFlow() on mode change / re-render.
+   Reduced-motion → no-op (the static diagram is already fully rendered). */
+function animateCausalFlow(){
+  clearCausalFlow();                       // never stack two loops
+  if(reducedMotion())return;
+  const panel=document.getElementById("panel"); if(!panel)return;
+  const spark=panel.querySelector("#czSpark"); if(!spark)return;
+  // connector endpoints, in order, read straight from the rendered .cz-flow lines
+  const flows=[...panel.querySelectorAll(".cz-flow")];
+  if(!flows.length)return;
+  const pts=[];
+  flows.forEach((f,i)=>{const x1=+f.getAttribute("x1"),y1=+f.getAttribute("y1"),x2=+f.getAttribute("x2"),y2=+f.getAttribute("y2");
+    if(i===0)pts.push({x:x1,y:y1}); pts.push({x:x2,y:y2});});
+  if(pts.length<2)return;
+  const segLen=[]; let total=0;
+  for(let i=0;i+1<pts.length;i++){const dx=pts[i+1].x-pts[i].x,dy=pts[i+1].y-pts[i].y;
+    const l=Math.hypot(dx,dy); segLen.push(l); total+=l;}
+  if(total<=0)return;
+  const SPEED=0.11, dur=total/SPEED, PAUSE=700, period=dur+PAUSE; let t0=null;
+  const frame=ts=>{
+    if(!spark.isConnected){CAUSAL_RAF=null;return;}   // diagram was replaced → stop
+    if(t0==null)t0=ts;
+    const p=((ts-t0)%period), d=Math.min(p,dur);
+    let acc=0,x=pts[pts.length-1].x,y=pts[pts.length-1].y;
+    for(let i=0;i<segLen.length;i++){
+      if(d<=acc+segLen[i]||i===segLen.length-1){
+        const f=segLen[i]?Math.min(1,(d-acc)/segLen[i]):1;
+        x=pts[i].x+(pts[i+1].x-pts[i].x)*f; y=pts[i].y+(pts[i+1].y-pts[i].y)*f; break;}
+      acc+=segLen[i];}
+    spark.setAttribute("cx",x); spark.setAttribute("cy",y);
+    spark.style.opacity=(p<dur)?"1":"0";                // fade out during the pause
+    CAUSAL_RAF=requestAnimationFrame(frame);
+  };
+  CAUSAL_RAF=requestAnimationFrame(frame);
+}
 /* A2 overlay: which routing protocol's adjacency runs over a topology edge. An OSPF/EIGRP neighbor's
    LOCAL interface (from the neighbor table) is matched to a port the aggregated edge uses; BGP peers carry
    no local interface (often external) so they don't color an edge. null when no adjacency maps. */
@@ -2901,6 +3078,55 @@ function paintProtocols(){
     else if(ps.size){n.tag.textContent=[...ps].map(_protoLabel).join("/");n.tag.setAttribute("fill","var(--ok)");}});
   // A2: tint each edge by the routing protocol whose adjacency traverses it (class -> reset by baseEdge each repaint)
   edgeEls.forEach(({e,path})=>{const p=edgeProto(e); if(p)path.className.baseVal="lnk adj-"+p+(e.pc?" pc":"");});
+}
+
+/* =====================================================================
+   CAUSALITY CHAINS MODE (U2) — root-cause→impact, four-stage animated flow
+   ===================================================================== */
+/* Build the ordered list of causal chains the mode shows. Primary source is the
+   structural SPOF engine causalityChains(MODEL) (reused, not reimplemented); when
+   the snapshot carries a cross_layer array we APPEND those as extra chains. Each
+   entry is normalised to the four narrative stages: trigger / mechanism / impact /
+   mitigation, plus a list of `hosts` to highlight on the canvas. */
+function causalSevToken(s){const t=(s||"").toLowerCase();
+  if(t.includes("crit")||t==="high")return "crit";
+  if(t==="medium"||t.includes("warn"))return "risk";
+  if(t==="low")return "watch"; return "neutral";}
+function causalityList(){
+  const out=[];
+  (CHAINS||[]).forEach((c,i)=>{out.push({
+    key:"struct-"+i, kind:"Structural SPOF", sev:c.sev, tok:sevToken(c.sev),
+    title:c.title, hosts:[c.switch],
+    trigger:c.root, mechanism:c.mech, impact:c.blast, mitigation:c.fix});});
+  const cl=(SNAP&&Array.isArray(SNAP.cross_layer))?SNAP.cross_layer:[];
+  cl.forEach((x,i)=>{const hosts=Array.isArray(x.hosts)?x.hosts.filter(h=>MODEL&&MODEL.hosts.includes(h)):[];
+    out.push({
+      key:"cl-"+(x.id||i), kind:"Cross-layer", sev:x.severity, tok:causalSevToken(x.severity),
+      title:x.title||("Cross-layer finding "+(x.id||i+1)), hosts,
+      trigger:x.detail||"", mechanism:Array.isArray(x.layers)?("Spans layers: "+x.layers.join(" → ")):"",
+      impact:x.detail||"", mitigation:x.recommendation||""});});
+  return out;
+}
+/* Resolve a severity token to a DEFINED color family. crit/risk/watch/ok all have
+   --<tok> + --<tok>-soft vars; "neutral" (or any unknown, e.g. an Info-severity
+   cross_layer entry) does NOT — so fall back to the accent family so the host ring
+   stays visible instead of silently dropping to the default border. */
+function causalColorTok(tok){return (tok==="crit"||tok==="risk"||tok==="watch"||tok==="ok")?tok:"accent";}
+/* paint hook: ring + label the selected chain's host(s) on the topology */
+function paintCausality(){
+  if(!MODEL)return;
+  const list=causalityList(); if(!list.length)return;
+  // default/clamp the selection here too: repaint() runs BEFORE renderDrawer() on a
+  // mode switch, so without this the first paint would have no chain highlighted.
+  if(CAUSAL_SEL==null||CAUSAL_SEL<0||CAUSAL_SEL>=list.length)CAUSAL_SEL=0;
+  const sel=list[CAUSAL_SEL];
+  if(!sel)return;
+  const ctok=causalColorTok(sel.tok);
+  const set=new Set(sel.hosts);
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+    if(set.has(h)){n.g.classList.add("sel"); n.body.style.stroke=`var(--${ctok})`; n.body.style.fill=`var(--${ctok}-soft)`;
+      n.tag.textContent="ROOT CAUSE"; n.tag.setAttribute("fill",`var(--${ctok})`);}
+    else{n.g.classList.add("dim");}});
 }
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
@@ -3263,6 +3489,7 @@ window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   const k=e.key.toLowerCase();
   if(k==="1")setMode("blast");else if(k==="2")setMode("trace");else if(k==="3")setMode("compare");
   else if(k==="4")setMode("flow");else if(k==="5")setMode("health");else if(k==="6")setMode("protocols");
+  else if(k==="7")setMode("causality");
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
   else if(k==="g")toggleTableView();
   else if(k==="m")toggleMinimap();
