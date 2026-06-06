@@ -1500,6 +1500,128 @@ def write_failure_impact_sheet(wb, all_interfaces: Dict[str, Dict[str, Interface
     logger.info(f"  [OK] '{FAILURE_SHEET_NAME}' sheet: {len(rows)} switch(es) analyzed")
 
 
+EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
+
+def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
+                                  migration_readiness: list,
+                                  all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+    """Write the 'Executive Summary' landing sheet (moved to the FRONT of the workbook): a one-page
+    synthesis -- fleet posture, the keystone devices the fleet most depends on (migration blast radius),
+    the punch-list severity / category breakdown, and per-group migration readiness -- so a reader knows
+    where to start without opening all 30+ detail tabs. This is the workbook twin of the explorer's Risk
+    cockpit: pure presentation of already-computed data; every detail tab remains the source of record."""
+    ws = wb.create_sheet(EXEC_SUMMARY_SHEET_NAME)
+    TITLE = Font(name="Calibri", bold=True, size=15, color="1F3864")
+    SUB   = Font(name="Calibri", bold=True, size=11, color="1F3864")
+    KEY   = Font(name="Calibri", bold=True, size=10)
+    DAT   = Font(name="Calibri", size=10)
+    HDR   = Font(name="Calibri", bold=True, size=10, color="FFFFFF")
+    HFILL = PatternFill("solid", fgColor="434343")
+    WRAP  = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    CEN   = Alignment(horizontal="center")
+    r = 1
+    def _sub(t):
+        nonlocal r
+        ws.cell(r, 1, t).font = SUB; r += 1
+    def _kv(k, v):
+        nonlocal r
+        ws.cell(r, 1, k).font = KEY; ws.cell(r, 2, v).font = DAT; r += 1
+    def _hdr(cols):
+        nonlocal r
+        for i, h in enumerate(cols, 1):
+            c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL; c.alignment = CEN
+        r += 1
+
+    ws.cell(r, 1, "Network Migration Assessment — Executive Summary").font = TITLE
+    r += 2
+
+    # --- fleet posture (health band distribution) ---
+    hs = health_scores or []
+    n = len(hs)
+    bands = {"Excellent": 0, "Good": 0, "Fair": 0, "Poor": 0, "Critical": 0}
+    for x in hs:
+        b = x.get("band", "")
+        if b in bands:
+            bands[b] += 1
+    avg = round(sum((x.get("score") or 0) for x in hs) / n) if n else 0
+    _sub("Fleet posture")
+    _kv("Switches assessed", n)
+    _kv("Average health score", f"{avg} / 100")
+    _kv("Critical band", bands["Critical"])
+    _kv("Poor / Fair", bands["Poor"] + bands["Fair"])
+    _kv("Good / Excellent", bands["Good"] + bands["Excellent"])
+    r += 1
+
+    # --- punch-list severity / category breakdown ---
+    pl = punchlist or []
+    sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    cats: Dict[str, int] = {}
+    for it in pl:
+        s = it.get("severity", "")
+        if s in sev:
+            sev[s] += 1
+        cat = it.get("category", "Other")
+        cats[cat] = cats.get(cat, 0) + 1
+    _sub(f"Migration punch-list — {len(pl)} item(s)")
+    _kv("Critical / High", f"{sev['Critical']} / {sev['High']}")
+    _kv("Medium / Low", f"{sev['Medium']} / {sev['Low']}")
+    top_cats = sorted(cats.items(), key=lambda t: -t[1])[:5]
+    _kv("Top categories", ", ".join(f"{k} ({v})" for k, v in top_cats) or "—")
+    r += 1
+
+    # --- keystone devices (the few the fleet actually depends on; works when scores saturate) ---
+    fi = compute_failure_impact(all_interfaces) or []
+    _sub("Keystone devices — fix-first (by migration blast radius)")
+    _hdr(["Rank", "Device", "Severity", "Endpoints stranded", "VLANs impacted"])
+    for i, rec in enumerate(fi[:10], 1):
+        ws.cell(r, 1, i).font = DAT
+        ws.cell(r, 2, rec.get("host", "")).font = DAT
+        ws.cell(r, 3, rec.get("severity", "")).font = DAT
+        ws.cell(r, 4, rec.get("stranded", 0)).font = DAT
+        ws.cell(r, 5, rec.get("vlans_impacted", 0)).font = DAT
+        r += 1
+    r += 1
+
+    # --- per-group migration readiness ---
+    mr = migration_readiness or []
+    if mr:
+        _sub("Migration readiness (per move group)")
+        _hdr(["Group", "Verdict", "Switches", "Endpoints", "Fail", "Warn"])
+        for g in mr:
+            ws.cell(r, 1, g.get("group", "")).font = DAT
+            ws.cell(r, 2, g.get("readiness", "")).font = DAT
+            ws.cell(r, 3, len(g.get("switches", []) or [])).font = DAT
+            ws.cell(r, 4, g.get("endpoints", 0)).font = DAT
+            ws.cell(r, 5, g.get("n_fail", 0)).font = DAT
+            ws.cell(r, 6, g.get("n_warn", 0)).font = DAT
+            r += 1
+        r += 1
+
+    # --- headline: where to start ---
+    _sub("Where to start")
+    lines = []
+    if fi:
+        top = fi[0]
+        lines.append(f"• {top.get('host')} is the top keystone — its loss strands "
+                     f"{top.get('stranded', 0)} endpoint(s). Harden it first (FHRP / a redundant path).")
+    if n and bands["Critical"] == n:
+        lines.append(f"• All {n} switches land in the Critical band — the per-switch score is "
+                     f"saturated, so prioritise by blast radius (above), not by score.")
+    lines.append(f"• {sev['Critical']} critical + {sev['High']} high punch-list item(s) — see the "
+                 f"'Migration Punch-List' tab for the full ranked, per-device action list.")
+    for ln in lines:
+        c = ws.cell(r, 1, ln); c.font = DAT; c.alignment = WRAP
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+        r += 1
+
+    for i, w in enumerate([26, 30, 16, 20, 16, 12], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    # land the summary as the first tab in the workbook
+    wb.move_sheet(ws, -wb.index(ws))
+    logger.info(f"  [OK] '{EXEC_SUMMARY_SHEET_NAME}' sheet: {n} switch(es); "
+                f"top keystone {fi[0]['host'] if fi else '-'}")
+
+
 # =============================================================================
 # Fused compute-in-writer sheets (PHASE 2.7 step 25): write_physical_health_sheet
 # and write_l3_forwarding_sheet compute their L1/L3 records inline AND return them to

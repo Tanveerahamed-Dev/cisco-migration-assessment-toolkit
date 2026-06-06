@@ -244,6 +244,36 @@ def test_compute_hostname_mismatches(cp):
 
 
 # --------------------------------------------------------------------------- #
+# write_executive_summary_sheet (V3.23.75) — one-page landing synthesis
+# --------------------------------------------------------------------------- #
+def test_executive_summary_sheet_is_first_and_synthesizes(cp):
+    from openpyxl import Workbook
+    health_scores = [
+        {"switch": "GW-CORE", "score": 0, "band": "Critical"},
+        {"switch": "ACC1", "score": 80, "band": "Good"},
+        {"switch": "ACC2", "score": 55, "band": "Fair"},
+    ]
+    punchlist = [
+        {"severity": "Critical", "category": "Cross-layer", "devices": ["GW-CORE"]},
+        {"severity": "High", "category": "FHRP", "devices": ["GW-CORE"]},
+        {"severity": "Medium", "category": "STP", "devices": ["ACC1"]},
+    ]
+    migration_readiness = [{"group": "Group 1", "readiness": "NOT READY",
+                            "switches": ["GW-CORE", "ACC1", "ACC2"], "endpoints": 2,
+                            "n_fail": 1, "n_warn": 1}]
+    wb = Workbook(); wb.active.title = "Pre-Existing"   # prove our sheet lands ahead of it
+    cp.write_executive_summary_sheet(wb, health_scores, punchlist, migration_readiness, {})
+    assert wb.sheetnames[0] == "Executive Summary"      # moved to the FRONT of the workbook
+    ws = wb["Executive Summary"]
+    text = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+    # the four synthesis sections + the consumed inputs are all present
+    for needle in ("Executive Summary", "Fleet posture", "Migration punch-list",
+                   "Keystone devices", "Where to start", "Cross-layer", "Group 1"):
+        assert needle in text, needle
+    assert "3" in text   # 3 switches assessed / 3 punch-list items
+
+
+# --------------------------------------------------------------------------- #
 # compute_migration_readiness
 # --------------------------------------------------------------------------- #
 def test_readiness_not_ready_on_hard_fails(cp):
