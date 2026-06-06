@@ -538,6 +538,24 @@
   .bar{height:7px; border-radius:999px; background:var(--surface-3); overflow:hidden; margin:4px 0}
   .bar i{display:block; height:100%; border-radius:999px}
 
+  /* EXEC COCKPIT (Health, top) — risk-by-tier matrix + punch-list triage. Stacked severity bars and a
+     clickable tier grid, built from the Python-computed health_scores + punchlist (one source of truth). V3.23.70 */
+  .ckp-grid{display:grid; grid-template-columns:auto 1fr auto; gap:7px 11px; align-items:center; margin-top:4px}
+  .ckp-row{display:contents; cursor:pointer}
+  .ckp-row .ckp-lbl{font:650 11.5px var(--sans); color:var(--text); white-space:nowrap}
+  .ckp-row .ckp-lbl .ckp-n{color:var(--text-faint); font-weight:500; font-size:10px; margin-left:5px}
+  .ckp-bar{display:flex; height:11px; border-radius:999px; overflow:hidden; background:var(--surface-3); min-width:60px}
+  .ckp-bar span{display:block; height:100%; transition:filter .15s}
+  .ckp-row:hover .ckp-lbl{color:var(--accent)}
+  .ckp-row:hover .ckp-bar span{filter:brightness(1.18)}
+  .ckp-tail{display:flex; gap:5px; justify-content:flex-end; align-items:center; white-space:nowrap}
+  .ckp-leg{display:flex; gap:12px; flex-wrap:wrap; margin:8px 0 2px; font-size:10px; color:var(--text-dim)}
+  .ckp-leg span{display:inline-flex; align-items:center; gap:4px}
+  .ckp-leg i{width:9px; height:9px; border-radius:2px; display:inline-block}
+  .ckp-cat{display:grid; grid-template-columns:auto 1fr auto; gap:5px 10px; align-items:center; margin-top:4px}
+  .ckp-cat .cnm{font:600 11px var(--mono); color:var(--text-dim); white-space:nowrap}
+  .ckp-cat .cval{font:700 11px var(--sans); color:var(--text); text-align:right}
+
   /* root-cause ranking (Health) — animated impact bar; width set post-render so it grows from 0 */
   .rc-row{padding:8px 0; border-top:1px solid var(--border-faint)}
   .rc-row:first-child{border-top:0}
@@ -853,7 +871,26 @@ function vlanComponents(model,vid,removed=null,backup=false){
   return comps;
 }
 const compIndexOf=(comps,h)=>{for(let i=0;i<comps.length;i++)if(comps[i].has(h))return i;return -1;};
+/* ---- per-model analysis memoization (V3.23.69) ----------------------------------------
+   failureImpact / causalityChains and the fleet-wide detectors below are PURE functions of
+   the active MODEL (+ the paired SNAP), which load() replaces atomically. On the 6-node demo
+   they're instant, but on a real fleet (60 switches x 150+ VLANs) the Health view recomputed
+   them MANY times per render — rootCauseRank re-ran causalityChains, buildNarrative + the
+   per-detector cards + layerHeatmap each re-ran the same detectors, and the remediation
+   simulator re-derived everything once PER candidate chain — which froze the main thread for
+   minutes. Caching keyed on the MODEL object (a WeakMap, so a fresh load() drops the stale
+   cache automatically, and compareModels' independent "after" model gets its own entry) turns
+   every repeat into a hit with byte-identical results. */
+const _ANALYSIS_MEMO = new WeakMap();
+function _memo(model, key, compute){
+  if(!model) return compute();                 // no model yet -> just compute (don't cache)
+  let m = _ANALYSIS_MEMO.get(model);
+  if(!m){ m = new Map(); _ANALYSIS_MEMO.set(model, m); }
+  if(m.has(key)) return m.get(key);
+  const v = compute(); m.set(key, v); return v;
+}
 function failureImpact(model,host){
+ return _memo(model,"fi:"+host,()=>{
   const perVlan=[];let hardStranded=0,healable=0;
   for(const vid of [...model.vlans].sort((a,b)=>a-b)){
     let collateralEps=0;const ch=[];
@@ -880,8 +917,10 @@ function failureImpact(model,host){
   for(const r of perVlan)if(ord[r.sev]>ord[worst])worst=r.sev;
   perVlan.sort((a,b)=>ord[b.sev]-ord[a.sev]||a.vid-b.vid);
   return {host,perVlan,hardStranded,healable,worst};
+ });
 }
 function causalityChains(model){
+ return _memo(model,"chains",()=>{
   const chains=[];
   for(const [vid,gws] of model.gateways){if(gws.size!==1)continue;const gw=[...gws][0];
     const f=model.fhrp.get(vid);if(f&&f.standby.size>0)continue;
@@ -921,6 +960,7 @@ function causalityChains(model){
   const ord={High:3,Medium:2,Low:1,Info:0};
   chains.sort((a,b)=>ord[b.sev]-ord[a.sev]||a.type.localeCompare(b.type)||a.vid-b.vid);
   return chains;
+ });
 }
 function _bfsPath(model,vid,src,dst,bk,exL=-1,exH=null){if(src===dst)return [src];
   const prev=new Map([[src,null]]);const q=[src];
@@ -2414,6 +2454,15 @@ function renderDrawer(){
   {const pd=document.getElementById("flowDport"); if(pd)pd.addEventListener("change",()=>{const n=parseInt(pd.value,10); if(n>=1&&n<=65535)FLOW_DPORT=n; _reflow();});}
   {const ps=document.getElementById("flowSport"); if(ps)ps.addEventListener("change",()=>{const v=ps.value.trim(); const n=parseInt(v,10); FLOW_SPORT=(v===""||!(n>=1&&n<=65535))?null:n; _reflow();});}
   {const pi=document.getElementById("flowIcmp"); if(pi)pi.addEventListener("change",()=>{const v=pi.value.trim(); FLOW_ICMPTYPE=v||null; _reflow();});}
+  // wire the lazy what-if remediation simulator (V3.23.69): the heavy per-candidate simulation runs only on
+  // click, after the disabled/"Simulating…" state has painted, so the Health view itself never blocks.
+  {const rb=p.querySelector("#runRemediation"); if(rb)rb.onclick=()=>{
+    rb.disabled=true; rb.textContent="Simulating…";
+    setTimeout(()=>{ const host=p.querySelector("#remediation-result");
+      if(host){host.innerHTML=remediationResultHtml(); animateDrawer(host);}
+      rb.remove();
+    },30);
+  };}
   wireHeatmapCells(p);
   animateDrawer(p);
   if(MODE==="causality"&&!EPSEL)animateCausalFlow();   // start the four-stage spark loop (no-op under reduced-motion)
@@ -2567,6 +2616,7 @@ function parseFhrp(behavior){const m=/(HSRP|VRRP|GLBP)\s*grp\s*(\d+)\s+(\w+)(?:\
   return m?{proto:m[1].toUpperCase(),group:m[2],role:m[3].toLowerCase(),vip:m[4]||""}:null;}
 function fhrpFor(host,vid){return parseFhrp((MODEL&&MODEL.svuFhrp)?MODEL.svuFhrp.get(host+"|"+vid):"");}
 function fhrpConsistency(vid){
+ return _memo(MODEL,"fhrp:"+vid,()=>{
   const gws=[...(MODEL.gateways.get(vid)||new Set())].sort();
   const F={vid, gateways:gws, members:[], issues:[], state:"na", summary:""};
   if(gws.length<2)return F;                                          // single/zero gateway -> SPOF handled elsewhere
@@ -2587,6 +2637,7 @@ function fhrpConsistency(vid){
   else{F.state="ok"; const a=actives[0]||withF[0];
     F.summary=`${a.f.proto} group ${a.f.group}, VIP ${a.f.vip||"?"} — ${actives.length} active + ${withF.length-actives.length} standby across ${withF.length} gateways.`;}
   return F;
+ });
 }
 /* path-MTU mismatch: collect the MTUs of the physical interfaces a flow traverses (access ports +
    each trunk link's two ends + the routed egress). >=2 distinct explicit MTUs, or jumbo set on only
@@ -3152,6 +3203,7 @@ function _parseSviIp(svi_ip){          // "10.0.10.2 255.255.255.0" | "10.0.10.2
   return {ip, netStr:_int2ip((a&mask)>>>0)+"/"+plen};
 }
 function addressingConflicts(){
+ return _memo(MODEL,"addr",()=>{
   const ifs=(SNAP&&SNAP.interfaces)||{}; const byIp=new Map(), bySub=new Map();
   for(const host in ifs)for(const port in ifs[host]){const d=ifs[host][port];
     if(!isSvi(d)||!d.svi_ip)continue; const p=_parseSviIp(d.svi_ip); if(!p)continue;
@@ -3162,6 +3214,7 @@ function addressingConflicts(){
   for(const [ip,arr] of byIp){if(new Set(arr.map(a=>a.host+"|"+a.port)).size>1)dupIp.push({ip,where:arr});}   // same IP on >=2 distinct interfaces
   for(const [,arr] of bySub){if(new Set(arr.map(a=>a.vid)).size>1)dupSubnet.push({netStr:arr[0].netStr,vrf:arr[0].vrf,where:arr});}   // one subnet behind >=2 VLANs (same VRF)
   return {dupIp, dupSubnet, total:dupIp.length+dupSubnet.length};
+ });
 }
 function addressingCard(){
   if(!SNAP||!SNAP.interfaces)return "";
@@ -3272,6 +3325,7 @@ function punchlistCard(){
 function _nativeVlan(host,port){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host][port]:null;
   const n=d&&d.trunk_native_vlan?String(d.trunk_native_vlan).trim():""; return n||"1";}
 function trunkConsistency(){
+ return _memo(MODEL,"trunk",()=>{
   const out=[], seen=new Set();
   const okOn=(set,v)=>set==null||set.has(v);   // null/undefined allowed = "all" permitted
   for(const L of (MODEL&&MODEL.links)||[]){
@@ -3284,6 +3338,7 @@ function trunkConsistency(){
       prunedOnA:asym.filter(v=>!okOn(L.allowedA,v)), prunedOnB:asym.filter(v=>!okOn(L.allowedB,v))});
   }
   return out;
+ });
 }
 function trunkConsistencyCard(){
   if(!MODEL||!MODEL.links)return "";
@@ -3313,6 +3368,7 @@ function _ifPhy(host,port){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host]
   const sm=String(d.speed||"").toLowerCase().match(/(\d+)\s*(g|m)?/), speed=sm?(+sm[1])*(sm[2]==="g"?1000:1):0;   // normalize to Mbps; 0 = unknown/auto
   return {duplex,speed};}
 function linkPhyConsistency(){
+ return _memo(MODEL,"linkphy",()=>{
   const out=[], seen=new Set();
   for(const L of (MODEL&&MODEL.links)||[]){
     const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
@@ -3321,6 +3377,7 @@ function linkPhyConsistency(){
     const speed=(a.speed&&b.speed&&a.speed!==b.speed)?[a.speed,b.speed]:null;
     if(duplex||speed)out.push({a:L.a,aPort:L.aPort,b:L.b,bPort:L.bPort,duplex,speed});}
   return out;
+ });
 }
 function linkPhyCard(){
   if(!MODEL||!MODEL.links)return "";
@@ -3645,12 +3702,21 @@ function layerHeatmapCard(){
 // resolved first, then endpoints recovered, then severity as a tie-break. This guarantees the card shows
 // a genuine before→after delta rather than landing on a high-severity chain whose synthetic fix is a no-op
 // (e.g. a core articulation point a single bypass can't relieve). Returns the winning simulateFix() result.
+// How many candidate SPOFs the remediation simulator actually evaluates. simulateFix deep-clones the
+// snapshot + re-derives the model + diffs (≈1.7s each on a real fleet), so running it for EVERY fixable
+// chain (518 on the 60-switch [HISTORY-REDACTED] fleet ⇒ ~14 min) is what froze the Health view. The card shows
+// only ONE remediation, and the genuine best fix is reliably among the highest-impact chains, so we
+// pre-rank cheaply (severity, then stated blast) and simulate just the strongest few. (V3.23.69)
+const REMEDIATION_SIM_CAP=6;
 function _bestRemediation(chains){
   const ord={High:3,Medium:2,Low:1,Info:0};
   const fixable=(chains||[]).filter(c=>c.type==="A"||c.type==="B"||c.type==="C");
   if(!fixable.length)return null;
+  const candidates=fixable.slice().sort((a,b)=>
+    (ord[b.sev]-ord[a.sev]) || ((b.endpoints||0)-(a.endpoints||0)) || (a.vid-b.vid)
+  ).slice(0,REMEDIATION_SIM_CAP);
   let best=null;
-  for(const c of fixable){
+  for(const c of candidates){
     const r=simulateFix(MODEL,c);
     if(!r)continue;
     if(!best)  {best=r;continue;}
@@ -3764,8 +3830,20 @@ function simulateFix(model,chain){
 }
 function remediationCard(){
   if(!MODEL||!CHAINS||!CHAINS.length)return "";
+  if(!CHAINS.some(c=>c.type==="A"||c.type==="B"||c.type==="C"))return "";
+  // Lazy (V3.23.69): the what-if simulator deep-clones the snapshot + re-derives the model + diffs PER
+  // candidate chain, so it runs ON DEMAND (a click) rather than during the synchronous Health render —
+  // that per-candidate cost over 500+ chains was the Health-view freeze on a real fleet. Wired in
+  // renderDrawer(): the click swaps in remediationResultHtml() and re-animates that sub-container.
+  return `<div class="sec" id="remediation-sec"><h3>What-if: apply the fix <span class="badge b-neutral">on demand</span></h3>
+    <div class="sub" style="margin-bottom:9px">Simulate the recommended remediation for the top SPOFs on a sandbox copy of the topology — endpoints stranded by each, before vs after. Evaluates the strongest ${REMEDIATION_SIM_CAP} candidate${REMEDIATION_SIM_CAP===1?"":"s"} by impact, then shows the one with the biggest measured improvement.</div>
+    <button type="button" class="btn primary" id="runRemediation">▶ Simulate best remediation</button>
+    <div id="remediation-result"></div></div>`;
+}
+function remediationResultHtml(){
+  if(!MODEL||!CHAINS||!CHAINS.length)return "";
   const r=_bestRemediation(CHAINS);
-  if(!r)return "";
+  if(!r)return `<div class="ln faint" style="margin-top:10px">No single-change remediation improved a SPOF among the evaluated candidates.</div>`;
   const chain=r.chain;
   const tok=sevToken(chain.sev);
   // bar widths: scale both bars against the BEFORE count so the shrink is visually honest (after near 0)
@@ -3778,10 +3856,8 @@ function remediationCard(){
     (r.resolved.length>4?`<div class="ln faint">…and ${r.resolved.length-4} more.</div>`:"")
     :`<div class="ln faint" style="margin-top:7px">No full chain resolved by this single change — partial hardening only.</div>`;
   const regWarn=r.regressions?`<div class="ln" style="color:var(--watch)">⚠ ${r.regressions} new concern(s) introduced — review before applying.</div>`:"";
-  return `<div class="sec"><h3>What-if: apply the fix <span class="badge b-${tok}">${chain.sev}</span></h3>
-    <div class="sub" style="margin-bottom:7px">Simulating the recommended remediation for the top SPOF on a sandbox copy of the topology — endpoints stranded by it, before vs after.</div>
-    <div class="card ${tok}">
-      <div class="ct"><span class="nm">${esc(chain.title)}</span><span class="pill pl-${tok}">${esc(shortName(chain.switch))}</span></div>
+  return `<div class="card ${tok}" style="margin-top:10px">
+      <div class="ct"><span class="nm">Top SPOF: ${esc(chain.title)}</span><span class="pill pl-${tok}">${esc(chain.sev)} · ${esc(shortName(chain.switch))}</span></div>
       <div class="ln"><b>Fix:</b> ${r.fixLabel||esc(chain.fix)}</div>
       <div class="rem-grid">
         <div class="rem-col before">
@@ -4294,6 +4370,87 @@ function narrativeCard(){
     <div class="ln faint" style="margin-top:8px;padding-top:7px;border-top:1px dashed var(--border)">Auto-generated by correlating the per-layer findings below — ranked by migration impact.</div>
   </div></div>`;
 }
+/* =====================================================================
+   EXEC COCKPIT (Health, top) — V3.23.70
+   A graphical, self-explanatory "where is the risk + what shape is the work" summary for large fleets,
+   where a 3,000-row punch-list and a 60-node hairball are impossible to read at a glance. Two views, both
+   built ENTIRELY from the Python-computed snapshot (health_scores + punchlist — one source of truth, no
+   client re-derivation):
+     1. Risk-by-tier matrix — devices bucketed Core/Distribution/Access-Core/Access by their hostname role
+        code, each row a health-band-distribution bar + the Critical/High punch-list items attributed to
+        that tier. Shows WHERE risk concentrates (core/dist faults have the widest blast radius). Clicking
+        a tier jumps to its worst-scoring switch (reuses the data-jump wiring).
+     2. Punch-list triage — the whole punch-list as severity-stacked bars per category, sorted by volume,
+        so the SHAPE of the work (e.g. cross-layer SPOFs dominating) is obvious without scrolling.
+   Back-compat: absent health_scores / punchlist -> that block is skipped (older snapshots show less). */
+const _CKP_TIERS=["Core","Distribution","Access-Core","Access","Other"];
+const _CKP_BANDCOL={ok:"--ok",watch:"--watch",risk:"--risk",crit:"--crit"};
+function _cockpitTier(h){
+  const p=String(h).toUpperCase();
+  if(/^CS\d|^CORE/.test(p))return "Core";
+  if(/(^|[-])DS[-\d]|^DIST|VSS/.test(p))return "Distribution";
+  if(/^ACS\d/.test(p))return "Access-Core";
+  if(/^A?AS\d|^ACC/.test(p))return "Access";
+  return "Other";
+}
+function cockpitTierData(){
+  const hs=healthList(); const byHost={}; hs.forEach(r=>byHost[r.switch]=r);
+  const pl=(SNAP&&SNAP.punchlist)||[];
+  const agg={}; _CKP_TIERS.forEach(t=>agg[t]={tier:t,hosts:[],worst:null,bands:{ok:0,watch:0,risk:0,crit:0},crit:0,high:0});
+  (MODEL?MODEL.hosts:[]).forEach(h=>{const a=agg[_cockpitTier(h)]; a.hosts.push(h);
+    const r=byHost[h]; if(r){const tok=r.band?healthBandToken(r.band):scoreToken(r.score);
+      if(a.bands[tok]!=null)a.bands[tok]++;
+      if(!a.worst||r.score<a.worst.score)a.worst=r;}});
+  pl.forEach(i=>{const tiers=new Set((i.devices||[]).map(_cockpitTier));   // attribute once per tier per item
+    tiers.forEach(t=>{const a=agg[t]; if(!a)return; if(i.severity==="Critical")a.crit++; else if(i.severity==="High")a.high++;});});
+  return _CKP_TIERS.map(t=>agg[t]).filter(a=>a.hosts.length);
+}
+function cockpitCatData(){
+  const pl=(SNAP&&SNAP.punchlist)||[]; const cats={};
+  pl.forEach(i=>{const c=cats[i.category]||(cats[i.category]={cat:i.category||"Other",Critical:0,High:0,Medium:0,Low:0,total:0});
+    if(c[i.severity]!=null)c[i.severity]++; c.total++;});
+  return Object.values(cats).sort((a,b)=>b.total-a.total);
+}
+function cockpitCard(){
+  if(!MODEL||!MODEL.hosts||!MODEL.hosts.length)return "";
+  const pl=(SNAP&&SNAP.punchlist)||[];
+  // --- risk-by-tier matrix (health band mix + punch-list crit/high per tier) ---
+  const tiers=cockpitTierData();
+  let tierRows="";
+  if(tiers.some(a=>a.bands.ok+a.bands.watch+a.bands.risk+a.bands.crit>0)){
+    tierRows=tiers.map(a=>{
+      const tot=Math.max(1,a.hosts.length);
+      const seg=tok=>{const n=a.bands[tok]; return n?`<span style="width:${(n/tot*100).toFixed(1)}%;background:var(${_CKP_BANDCOL[tok]})" title="${n} ${tok}"></span>`:"";};
+      const bar=`<div class="ckp-bar">${seg("ok")}${seg("watch")}${seg("risk")}${seg("crit")}</div>`;
+      const pills=(a.crit?`<span class="pill pl-crit">${a.crit} crit</span>`:"")+(a.high?`<span class="pill pl-crit">${a.high} high</span>`:"");
+      const jump=a.worst?` data-jump="${esc(a.worst.switch)}"`:"";
+      return `<div class="ckp-row"${jump} title="${a.hosts.length} ${esc(a.tier)} switch(es)${a.worst?` — worst ${esc(shortName(a.worst.switch))} (${a.worst.score}/100)`:""}">
+        <div class="ckp-lbl">${esc(a.tier)}<span class="ckp-n">×${a.hosts.length}</span></div>
+        ${bar}
+        <div class="ckp-tail">${pills||'<span class="pill pl-neutral">clean</span>'}</div>
+      </div>`;}).join("");
+  }
+  const legend=tierRows?`<div class="ckp-leg">
+    <span><i style="background:var(--ok)"></i>good</span><span><i style="background:var(--watch)"></i>fair</span>
+    <span><i style="background:var(--risk)"></i>poor</span><span><i style="background:var(--crit)"></i>critical</span></div>`:"";
+  // --- punch-list triage by category (severity-stacked bars, scaled by volume) ---
+  const cats=cockpitCatData(); let catRows="";
+  if(cats.length){
+    const max=Math.max(1,...cats.map(c=>c.total));
+    const sevcol={Critical:"--crit",High:"--risk",Medium:"--watch",Low:"--ok"};
+    catRows=cats.slice(0,8).map(c=>{
+      const seg=s=>{const n=c[s]; return n?`<span style="width:${(n/c.total*100).toFixed(1)}%;background:var(${sevcol[s]})" title="${n} ${s}"></span>`:"";};
+      return `<div class="cnm">${esc(c.cat)}</div>
+        <div class="ckp-bar" style="width:${(c.total/max*100).toFixed(1)}%;min-width:34px" title="${c.Critical} crit · ${c.High} high · ${c.Medium} med · ${c.Low} low">${seg("Critical")}${seg("High")}${seg("Medium")}${seg("Low")}</div>
+        <div class="cval">${c.total}</div>`;}).join("");
+  }
+  if(!tierRows&&!catRows)return "";
+  return `<div class="sec"><h3>Risk cockpit <span class="badge b-neutral">${MODEL.hosts.length} switches</span></h3>
+    <div class="sub" style="margin-bottom:7px">Where the migration risk concentrates and what shape the work is — distilled from the per-switch health scores and the ${pl.length}-item punch-list.${tierRows?" Click a tier to jump to its worst switch.":""}</div>
+    ${tierRows?`<div class="ckp-grid">${tierRows}</div>${legend}`:""}
+    ${catRows?`<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 5px"><span class="k">Punch-list by category</span><span class="v faint">${pl.length} total</span></div><div class="ckp-cat">${catRows}</div></div>`:""}
+  </div>`;
+}
 function drawHealth(){
   const hs=healthList(); const mr=(SNAP&&SNAP.migration_readiness)||[];
   if(!hs.length){return `<div class="drawer-head"><div class="eyebrow">Health</div><div class="title">Health & readiness</div></div>
@@ -4346,6 +4503,7 @@ function drawHealth(){
     </div>
     ${allBad?`<div class="card crit" style="margin-top:11px"><div class="ln"><b>Heads-up:</b> every switch lands in poor/critical. When the whole fleet is red, the scoring is usually mis-calibrated (one finding counted many times) rather than the network being uniformly broken. Click a switch to see its <b>dominant driver</b> — then trust the <b>real SPOF list</b> below for what to actually fix first.</div></div>`:""}
     </div>
+    ${cockpitCard()}
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${punchlistCard()}
