@@ -356,6 +356,31 @@
      so the global reduced-motion rule (which kills the animation) leaves content in place */
   .reveal{animation:cardIn .34s cubic-bezier(.2,.7,.3,1) both}
   @keyframes cardIn{from{opacity:0; transform:translateY(7px)} to{opacity:1; transform:none}}
+  /* ---- U5: cross-layer severity heatmap (devices × L1-L4) ---- */
+  .lhm-grid{display:grid; grid-template-columns:minmax(86px,1.4fr) repeat(4,1fr); gap:4px; margin-top:4px}
+  .lhm-cell{position:relative; min-height:30px; display:flex; align-items:center; justify-content:center;
+    border-radius:6px; border:1px solid var(--border); background:var(--surface-2);
+    font-size:11px; font-weight:650; color:var(--text-dim); padding:4px 5px; text-align:center;
+    /* staggered entrance: cells fade/scale in, --d set per-cell; resting state is fully visible
+       so the global reduced-motion rule leaves them in place */
+    animation:cellIn .3s cubic-bezier(.2,.7,.3,1) both; animation-delay:var(--d,0ms)}
+  @keyframes cellIn{from{opacity:0; transform:scale(.9)} to{opacity:1; transform:none}}
+  .lhm-cell.lhm-head{background:transparent; border-color:transparent; color:var(--text-faint);
+    font-size:10px; letter-spacing:.6px; text-transform:uppercase; font-weight:700; min-height:0; padding-bottom:2px}
+  .lhm-cell.lhm-dev{justify-content:flex-start; font-family:var(--mono); font-weight:600;
+    color:var(--text); background:var(--surface); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .lhm-cell.sev-none{color:var(--text-faint); opacity:.62}
+  .lhm-cell.sev-info{background:var(--accent-soft); border-color:var(--accent-dim); color:var(--accent)}
+  .lhm-cell.sev-warn{background:var(--watch-soft); border-color:var(--watch); color:var(--watch)}
+  .lhm-cell.sev-crit{background:var(--crit-soft); border-color:var(--crit); color:var(--crit)}
+  .lhm-cell.has-detail{cursor:help}
+  .lhm-cell.has-detail:hover, .lhm-cell.has-detail:focus-visible{filter:brightness(1.12); outline:none}
+  .lhm-detail{min-height:34px; margin-top:9px; padding:7px 9px; border-radius:7px;
+    border:1px solid var(--border); background:var(--surface-2); color:var(--text-dim);
+    font-size:11.5px; line-height:1.4; transition:border-color .14s ease}
+  .lhm-detail.on{border-color:var(--border-strong); color:var(--text)}
+  .lhm-detail .lhm-d-loc{font-weight:700; color:var(--text)}
+  .lhm-detail .lhm-d-dot{display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; vertical-align:baseline}
   .sec h3{margin:0 0 11px; font-size:10px; letter-spacing:1.3px; text-transform:uppercase;
     color:var(--text-faint); font-weight:700; display:flex; align-items:center; gap:7px}
   .sec h3 .ct{color:var(--text-dim); background:var(--surface-2); border:1px solid var(--border);
@@ -2189,8 +2214,25 @@ function renderDrawer(){
   {const pd=document.getElementById("flowDport"); if(pd)pd.addEventListener("change",()=>{const n=parseInt(pd.value,10); if(n>=1&&n<=65535)FLOW_DPORT=n; _reflow();});}
   {const ps=document.getElementById("flowSport"); if(ps)ps.addEventListener("change",()=>{const v=ps.value.trim(); const n=parseInt(v,10); FLOW_SPORT=(v===""||!(n>=1&&n<=65535))?null:n; _reflow();});}
   {const pi=document.getElementById("flowIcmp"); if(pi)pi.addEventListener("change",()=>{const v=pi.value.trim(); FLOW_ICMPTYPE=v||null; _reflow();});}
+  wireHeatmapCells(p);
   animateDrawer(p);
   if(MODE==="causality"&&!EPSEL)animateCausalFlow();   // start the four-stage spark loop (no-op under reduced-motion)
+}
+/* U5: reveal a flagged heatmap cell's finding in the inline #lhm-detail panel on hover/focus. */
+function wireHeatmapCells(p){
+  const det=p.querySelector("#lhm-detail"); if(!det)return;
+  const _SEVD={info:"var(--accent)",warn:"var(--watch)",crit:"var(--crit)",none:"var(--text-faint)"};
+  const reset=()=>{det.classList.remove("on"); det.innerHTML="Hover or focus a colored cell to see the finding.";};
+  const show=cell=>{const loc=cell.dataset.lhmLoc, sev=cell.dataset.lhmSev||"info", txt=cell.dataset.lhmDetail||"";
+    det.classList.add("on");
+    det.innerHTML=`<span class="lhm-d-dot" style="background:${_SEVD[sev]||_SEVD.info}"></span>`+
+      `<span class="lhm-d-loc">${esc(loc||"")}</span> — ${esc(txt)}`;};
+  p.querySelectorAll(".lhm-cell.has-detail").forEach(c=>{
+    c.addEventListener("mouseenter",()=>show(c));
+    c.addEventListener("focus",()=>show(c));
+    c.addEventListener("mouseleave",reset);
+    c.addEventListener("blur",reset);
+  });
 }
 function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage");
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
@@ -3082,6 +3124,119 @@ function paintXLayer(){
 }
 
 /* =====================================================================
+   U5: CROSS-LAYER SEVERITY HEATMAP (devices × L1-L4)
+   A single devices×layers grid that folds every per-layer detector into one
+   at-a-glance matrix: rows = MODEL.hosts, cols = L1/L2/L3/L4. Each cell is a
+   {sev,detail} consulting the SAME detectors used by the cards above — no new
+   network logic, just a per-host projection of existing findings. Defensive
+   throughout: any missing data leaves a cell "none".
+   ===================================================================== */
+const _LHM_RANK={none:0,info:1,warn:2,crit:3};                         // severity ordering for "worst wins"
+function _lhmWorse(a,b){return (_LHM_RANK[b]||0)>(_LHM_RANK[a]||0)?b:a;}
+// fold a finding into a cell: raise severity to the worst seen, accumulate the detail text
+function _lhmBump(cell,sev,detail){
+  cell.sev=_lhmWorse(cell.sev,sev);
+  if(detail){cell.notes.push(detail); cell.detail=cell.notes.join(" · ");}
+}
+function layerHeatmap(model){
+  const M=model||MODEL;
+  const hosts=(M&&M.hosts)?M.hosts.slice():[];
+  const cells={};
+  hosts.forEach(h=>{cells[h]={L1:{sev:"none",detail:"",notes:[]},L2:{sev:"none",detail:"",notes:[]},
+    L3:{sev:"none",detail:"",notes:[]},L4:{sev:"none",detail:"",notes:[]}};});
+  const has=h=>cells[h];                                                // only attribute to hosts we have rows for
+  // ---- L1: duplex / speed mismatches on inter-switch links touching the host ----
+  try{(linkPhyConsistency()||[]).forEach(x=>{
+    const what=x.duplex?`duplex ${x.duplex[0]}/${x.duplex[1]}`:x.speed?`speed mismatch`:"L1 mismatch";
+    const d=`${shortName(x.a)} ${x.aPort} ↔ ${shortName(x.b)} ${x.bPort} — ${what}`;
+    if(has(x.a))_lhmBump(cells[x.a].L1,"warn",d);                       // degraded-not-down -> warn
+    if(has(x.b))_lhmBump(cells[x.b].L1,"warn",d);});}catch(e){}
+  // ---- L2: native-VLAN mismatch / allowed-VLAN asymmetry on trunks touching the host ----
+  try{(trunkConsistency()||[]).forEach(x=>{
+    const d=x.kind==="native"
+      ?`native VLAN ${x.an}↔${x.bn} mismatch on ${shortName(x.a)} ${x.aPort} ↔ ${shortName(x.b)} ${x.bPort} (VLAN leak)`
+      :`asymmetric VLAN pruning on ${shortName(x.a)} ${x.aPort} ↔ ${shortName(x.b)} ${x.bPort} (black-hole / no failover)`;
+    if(has(x.a))_lhmBump(cells[x.a].L2,"crit",d);
+    if(has(x.b))_lhmBump(cells[x.b].L2,"crit",d);});}catch(e){}
+  // ---- L3: addressing conflicts + FHRP consistency + sole/no-FHRP gateway, per the host's gateway VLANs ----
+  try{const c=addressingConflicts();
+    const attribIp=d=>d.where.forEach(w=>{if(has(w.host))_lhmBump(cells[w.host].L3,"crit",
+      `duplicate L3 IP ${d.ip}${w.vid!=null?` (VLAN ${w.vid})`:""}`);});
+    const attribSub=d=>d.where.forEach(w=>{if(has(w.host))_lhmBump(cells[w.host].L3,"crit",
+      `overlapping subnet ${d.netStr}${w.vid!=null?` (VLAN ${w.vid})`:""}`);});
+    (c.dupIp||[]).forEach(attribIp); (c.dupSubnet||[]).forEach(attribSub);
+  }catch(e){}
+  try{hosts.forEach(h=>{
+    const vids=gwVlansOf(h);
+    vids.forEach(vid=>{
+      const gws=(MODEL.gateways.get(vid)||new Set());
+      if(gws.size>=2){                                                  // redundant gateway -> FHRP must be consistent
+        const F=fhrpConsistency(vid);
+        if(F&&F.state&&F.state!=="ok"&&F.state!=="na"){
+          const sev=F.state==="crit"?"crit":"warn";
+          _lhmBump(cells[h].L3,sev,`VLAN ${vid} first-hop redundancy: ${(F.issues[0]&&F.issues[0].t)||"FHRP inconsistency"}`);
+        }
+      }else if(gws.size===1){                                          // sole gateway -> no first-hop redundancy at all
+        _lhmBump(cells[h].L3,"info",`VLAN ${vid} has a single gateway (no FHRP peer)`);
+      }
+    });
+  });}catch(e){}
+  // ---- L4: ACLs applied on the host's gateway SVIs. crit if a body says deny-by-default unevaluable;
+  //          warn if an applied ACL can't be fully evaluated (object-group / unevaluable rule);
+  //          info if an ACL is applied (a filtering policy worth noting). best-effort, never throws. ----
+  try{hosts.forEach(h=>{
+    gwVlansOf(h).forEach(vid=>{
+      const acl=gwAcl(h,vid); if(!acl)return;
+      [["in",acl.in],["out",acl.out]].forEach(([dir,name])=>{
+        if(!name)return;
+        const body=(SNAP&&SNAP.acls&&SNAP.acls[h])?SNAP.acls[h][name]:null;
+        if(!body){_lhmBump(cells[h].L4,"info",`ACL ${name} (${dir}) on VLAN ${vid} — body not in snapshot`);
+          return;}
+        const uneval=body.some(r=>r&&(r.unevaluable||(r.src&&r.src.group!=null)||(r.dst&&r.dst.group!=null)||r.time_range));
+        if(uneval)_lhmBump(cells[h].L4,"warn",`ACL ${name} (${dir}) on VLAN ${vid} — contains rules that can't be fully evaluated offline`);
+        else _lhmBump(cells[h].L4,"info",`ACL ${name} (${dir}) on VLAN ${vid}`);
+      });
+    });
+  });}catch(e){}
+  // strip the scratch 'notes' arrays from the public shape
+  hosts.forEach(h=>["L1","L2","L3","L4"].forEach(L=>{delete cells[h][L].notes;}));
+  return {hosts, cells};
+}
+function layerHeatmapCard(){
+  if(!MODEL||!MODEL.hosts||!MODEL.hosts.length)return "";
+  const hm=layerHeatmap(MODEL); if(!hm.hosts.length)return "";
+  const LAYERS=[["L1","Physical"],["L2","Switching"],["L3","Routing"],["L4","Filtering"]];
+  // worst severity anywhere, for the header badge
+  let worst="none", issues=0;
+  hm.hosts.forEach(h=>LAYERS.forEach(([L])=>{const c=hm.cells[h][L];
+    worst=_lhmWorse(worst,c.sev); if(c.sev==="warn"||c.sev==="crit")issues++;}));
+  const badge=worst==="crit"?`<span class="badge b-crit">${issues} issue${issues===1?"":"s"}</span>`
+    :worst==="warn"?`<span class="badge b-watch">${issues} issue${issues===1?"":"s"}</span>`
+    :worst==="info"?`<span class="badge b-ok">policy notes</span>`
+    :`<span class="badge b-ok">clean</span>`;
+  const glyph={none:"·",info:"i",warn:"!",crit:"✗"};
+  // header row
+  let html=`<div class="lhm-cell lhm-head">Device</div>`+
+    LAYERS.map(([L,t])=>`<div class="lhm-cell lhm-head" title="${esc(t)}">${L}</div>`).join("");
+  // body rows; --d staggers entrance left→right, top→bottom
+  let di=0;
+  hm.hosts.forEach(h=>{
+    html+=`<div class="lhm-cell lhm-dev" style="--d:${Math.min(360,di*22)}ms" title="${esc(h)}">${esc(shortName(h))}</div>`; di++;
+    LAYERS.forEach(([L,t])=>{
+      const c=hm.cells[h][L];
+      const detailAttrs=c.detail
+        ?` data-lhm-loc="${esc(shortName(h)+" · "+t)}" data-lhm-sev="${c.sev}" data-lhm-detail="${esc(c.detail)}" tabindex="0" title="${esc(shortName(h)+" "+L+": "+c.detail)}"`
+        :"";
+      html+=`<div class="lhm-cell sev-${c.sev}${c.detail?" has-detail":""}" style="--d:${Math.min(360,di*22)}ms"${detailAttrs}>${glyph[c.sev]||"·"}</div>`; di++;
+    });
+  });
+  return `<div class="sec" id="lhm-sec"><h3>Cross-layer heatmap ${badge}</h3>`+
+    `<div class="sub" style="margin-bottom:6px">Every device across L1–L4 at a glance — each cell folds in the matching layer detector (physical, switching, routing, filtering). Hover a flagged cell for the finding.</div>`+
+    `<div class="lhm-grid">${html}</div>`+
+    `<div class="lhm-detail" id="lhm-detail" aria-live="polite">Hover or focus a colored cell to see the finding.</div>`+
+    `</div>`;
+}
+/* =====================================================================
    PROTOCOLS mode — routing-protocol topology, boundaries, redistribution,
    adjacency health. Reads SNAP.routing_neighbors / SNAP.redistribution /
    SNAP.routes[].source (all offline; absent keys -> empty, back-compat).
@@ -3634,6 +3789,7 @@ function drawHealth(){
     ${addressingCard()}
     ${trunkConsistencyCard()}
     ${linkPhyCard()}
+    ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}
     ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
