@@ -2742,6 +2742,17 @@ function parseFhrp(behavior){const m=/(HSRP|VRRP|GLBP)\s*grp\s*(\d+)\s+(\w+)(?:\
 function fhrpFor(host,vid){return parseFhrp((MODEL&&MODEL.svuFhrp)?MODEL.svuFhrp.get(host+"|"+vid):"");}
 function fhrpConsistency(vid){
  return _memo(MODEL,"fhrp:"+vid,()=>{
+  // NEW-V3.23.84: prefer the Python-computed result embedded in the snapshot (one source of truth).
+  // Python lists ONLY VLANs WITH an issue, so: if this vid IS in SNAP.fhrp, build the ISSUE verdict
+  // from Python (authoritative). If it's NOT in SNAP.fhrp (or the key is absent), fall back to the JS
+  // below — "absent" means "no issue / no data here", which renders the benign ok / na cases.
+  if(SNAP&&SNAP.fhrp){const py=SNAP.fhrp.find(x=>+x.vid===+vid);
+    if(py){const gws=[...(MODEL.gateways.get(vid)||new Set())].sort();
+      const members=(py.members||[]).map(m=>m.fhrp
+        ?{host:m.host,proto:(m.proto||"").toUpperCase(),group:m.group||"",role:(m.role||"").toLowerCase(),vip:m.vip||""}
+        :{host:m.host,none:true});
+      const issues=(py.issues||[]).map(t=>({sev:"crit",t}));   // every Python FHRP issue is critical (fake redundancy)
+      return {vid, gateways:gws, members, issues, state:issues.length?"crit":"na", summary:""};}}
   const gws=[...(MODEL.gateways.get(vid)||new Set())].sort();
   const F={vid, gateways:gws, members:[], issues:[], state:"na", summary:""};
   if(gws.length<2)return F;                                          // single/zero gateway -> SPOF handled elsewhere
@@ -3359,6 +3370,13 @@ function _parseSviIp(svi_ip){          // "10.0.10.2 255.255.255.0" | "10.0.10.2
 }
 function addressingConflicts(){
  return _memo(MODEL,"addr",()=>{
+  // NEW-V3.23.84: prefer the Python-computed result embedded in the snapshot (one source of truth);
+  // fall back to the JS re-derivation only when the key is absent (older snapshots / in-page demo).
+  if(SNAP&&SNAP.addressing_conflicts){const ac=SNAP.addressing_conflicts;
+    const mapW=w=>(w||[]).map(t=>({host:t[0],port:t[1],vid:t[2]}));   // Python tuple [host,port,vid] -> JS {host,port,vid}
+    const dupIp=(ac.dup_ip||[]).map(d=>({ip:d.ip,where:mapW(d.where)}));
+    const dupSubnet=(ac.dup_subnet||[]).map(d=>({netStr:d.net,vrf:d.vrf||"",where:mapW(d.where)}));   // Python 'net' -> JS 'netStr'
+    return {dupIp, dupSubnet, total:dupIp.length+dupSubnet.length};}
   const ifs=(SNAP&&SNAP.interfaces)||{}; const byIp=new Map(), bySub=new Map();
   for(const host in ifs)for(const port in ifs[host]){const d=ifs[host][port];
     if(!isSvi(d)||!d.svi_ip)continue; const p=_parseSviIp(d.svi_ip); if(!p)continue;
@@ -3483,10 +3501,17 @@ function trunkConsistency(){
  return _memo(MODEL,"trunk",()=>{
   const out=[], seen=new Set();
   const okOn=(set,v)=>set==null||set.has(v);   // null/undefined allowed = "all" permitted
+  // NEW-V3.23.84: the NATIVE-VLAN mismatches come from the Python-computed snapshot key when present
+  // (one source of truth). The allowed-VLAN ASYMMETRY entries stay JS-only (Python computes native only).
+  const pyNative=(SNAP&&SNAP.trunk_native)||null;
+  if(pyNative)for(const t of pyNative)
+    out.push({kind:"native",a:t.a_host,aPort:t.a_port,an:String(t.a_native),b:t.b_host,bPort:t.b_port,bn:String(t.b_native)});
   for(const L of (MODEL&&MODEL.links)||[]){
     const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
-    const an=_nativeVlan(L.a,L.aPort), bn=_nativeVlan(L.b,L.bPort);
-    if(an!==bn)out.push({kind:"native",a:L.a,aPort:L.aPort,an, b:L.b,bPort:L.bPort,bn});
+    if(!pyNative){   // fall back to the JS native check only when the snapshot lacks it (older snapshots / demo)
+      const an=_nativeVlan(L.a,L.aPort), bn=_nativeVlan(L.b,L.bPort);
+      if(an!==bn)out.push({kind:"native",a:L.a,aPort:L.aPort,an, b:L.b,bPort:L.bPort,bn});
+    }
     // allowed-VLAN asymmetry: an in-use VLAN permitted on one end but pruned on the other won't cross (linkCarries now enforces this)
     const asym=[...(MODEL.vlans||[])].filter(v=>okOn(L.allowedA,v)!==okOn(L.allowedB,v)).sort((x,y)=>x-y);
     if(asym.length)out.push({kind:"allowed",a:L.a,aPort:L.aPort,b:L.b,bPort:L.bPort,
@@ -3524,6 +3549,10 @@ function _ifPhy(host,port){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host]
   return {duplex,speed};}
 function linkPhyConsistency(){
  return _memo(MODEL,"linkphy",()=>{
+  // NEW-V3.23.84: prefer the Python-computed result embedded in the snapshot (one source of truth).
+  // duplex / speed arrive as [a,b] arrays (or null) — the same shape the JS produces — so map directly.
+  if(SNAP&&SNAP.link_phy)return SNAP.link_phy.map(x=>({a:x.a_host,aPort:x.a_port,b:x.b_host,bPort:x.b_port,
+    duplex:x.duplex||null,speed:x.speed||null}));
   const out=[], seen=new Set();
   for(const L of (MODEL&&MODEL.links)||[]){
     const key=[L.a+"|"+L.aPort,L.b+"|"+L.bPort].sort().join("::"); if(seen.has(key))continue; seen.add(key);
