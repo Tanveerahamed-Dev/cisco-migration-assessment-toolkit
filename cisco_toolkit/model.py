@@ -96,3 +96,7 @@ class DevicePhysical:
     active_ports: int = 0
     fan_status: str = ""
     temperature_status: str = ""
+    # NEW-V3.23.68: the device's OWN configured hostname (from 'show version' "<host> uptime is").
+    # Compared against `hostname` (the inventory/collection key) to flag inventory typos that
+    # otherwise surface as a phantom split node in the topology (e.g. 'AS08--' vs real 'AS08-').
+    reported_hostname: str = ""
