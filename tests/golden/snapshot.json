@@ -2547,5 +2547,12 @@
    "fhrp": 0,
    "detail": "No reachability impact from removing this switch (within the scan)."
   }
- ]
+ ],
+ "addressing_conflicts": {
+  "dup_ip": [],
+  "dup_subnet": []
+ },
+ "fhrp": [],
+ "trunk_native": [],
+ "link_phy": []
 }
