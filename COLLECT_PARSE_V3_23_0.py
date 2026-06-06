@@ -1572,6 +1572,14 @@ def main():
     snap_dict["causality"] = [{"severity": s, "trigger": t, "mechanism": m, "impact": i, "mitigation": mt}
                               for (s, t, m, i, mt) in compute_causality_chains(all_interfaces)]
     snap_dict["failure_impact"] = compute_failure_impact(all_interfaces)
+    # NEW-V3.23.84: embed the 4 cross-switch L2/L3 consistency checks the workbook computes, so the
+    # explorer consumes the SAME analysis instead of re-deriving in JS (one source of truth). These
+    # compute_* fns are already imported at module level (V3.23.64, also used to build the punch-list
+    # above), so no local re-import is needed — and adding one would shadow that earlier use.
+    snap_dict["addressing_conflicts"] = compute_addressing_conflicts(all_interfaces)
+    snap_dict["fhrp"] = compute_fhrp_consistency(all_interfaces)
+    snap_dict["trunk_native"] = compute_trunk_native_mismatches(all_interfaces)
+    snap_dict["link_phy"] = compute_duplex_speed_mismatches(all_interfaces)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
