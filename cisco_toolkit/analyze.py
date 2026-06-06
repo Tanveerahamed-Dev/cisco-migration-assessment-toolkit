@@ -43,9 +43,15 @@ class ScoringConfig:
         "Critical": 18, "High": 10, "Medium": 4, "Low": 2})
     proto_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
         "High": 10, "Medium": 4})
-    # Per-category cap (max total deduction a single category can contribute).
+    # NEW-V3.23.60: per-severity deduction for a FAILED CIS-aligned config-hardening check
+    # (parse_security). Config/security posture is technical debt that lowers migration health;
+    # only assessed on devices with a captured run-config (missing data is never treated as bad).
+    sec_weights: Dict[str, int] = _dcfield(default_factory=lambda: {
+        "high": 8, "medium": 3, "low": 1})
+    # Per-category cap (max total deduction a single category can contribute). SEC (18) keeps config
+    # posture meaningful without eclipsing the cross-layer SPOFs (45) that are the real blockers.
     caps: Dict[str, int] = _dcfield(default_factory=lambda: {
-        "L1": 30, "L3": 30, "XL": 45, "PROTO": 25})
+        "L1": 30, "L3": 30, "XL": 45, "PROTO": 25, "SEC": 18})
     # Score -> (band label, fill); first row whose threshold the score meets wins.
     bands: List[Tuple[int, str, str]] = _dcfield(default_factory=lambda: list(_HEALTH_BANDS))
     # Status a readiness check emits when its risk condition fires ('fail' ->
@@ -690,13 +696,17 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                           physical_health: List[dict], l3_forwarding: List[dict],
                           cross_layer: List[dict], protocol_health: List[dict],
                           config: ScoringConfig = SCORING,
-                          data_quality: Optional[Dict[str, float]] = None) -> List[dict]:
+                          data_quality: Optional[Dict[str, float]] = None,
+                          security: Optional[Dict[str, dict]] = None) -> List[dict]:
     """Per-switch 0-100 health score with weighted, category-capped deductions.
     Weights/caps/bands come from `config` (ScoringConfig); the default instance
-    reproduces the prior hard-coded behaviour byte-for-byte."""
+    reproduces the prior hard-coded behaviour byte-for-byte. `security` (NEW-V3.23.60,
+    optional) is {host: parse_security()}; each FAILED CIS check deducts via
+    config.sec_weights (capped at caps['SEC']). Omitting it (or a host without a
+    captured run-config) adds no SEC deduction -- missing posture is never scored as bad."""
     hosts = sorted(all_interfaces)
     ded: Dict[str, Dict[str, List[Tuple[str, int]]]] = {
-        h: {"L1": [], "L3": [], "XL": [], "PROTO": []} for h in hosts}
+        h: {"L1": [], "L3": [], "XL": [], "PROTO": [], "SEC": []} for h in hosts}
 
     L1W = config.l1_weights
     for rec in (physical_health or []):
@@ -725,6 +735,16 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         h = rec.get("switch")
         if h in ded and rec.get("severity") in PW:
             ded[h]["PROTO"].append((f"{rec['protocol']} {rec['severity']}", PW[rec["severity"]]))
+    SECW = config.sec_weights                                    # NEW-V3.23.60 (CIS config-hardening posture)
+    for h, sec in (security or {}).items():
+        if h not in ded:
+            continue
+        for f in (sec.get("findings") or []):
+            if f.get("status") != "fail":
+                continue
+            pts = SECW.get(f.get("severity"), 0)
+            if pts:
+                ded[h]["SEC"].append((f"{f.get('id', '')} {f.get('severity', '')}", pts))
 
     CAP = config.caps
     records: List[dict] = []
@@ -737,6 +757,8 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         total = 0
         reasons: List[str] = []
         for cat, items in ded[h].items():
+            if cat not in CAP:                                  # NEW-V3.23.60: a custom ScoringConfig whose
+                continue                                        # caps dict predates a category (e.g. SEC) just skips it
             csum = min(round(sum(p for _r, p in items) * factor), CAP[cat])
             total += csum
             for r, p in sorted(items, key=lambda x: -x[1]):
@@ -758,7 +780,8 @@ def compute_score_sensitivity(all_interfaces: Dict[str, Dict[str, InterfaceData]
                               physical_health: List[dict], l3_forwarding: List[dict],
                               cross_layer: List[dict], protocol_health: List[dict],
                               config: ScoringConfig = SCORING,
-                              deltas: Tuple[float, ...] = (-0.5, -0.25, 0.25, 0.5)) -> List[dict]:
+                              deltas: Tuple[float, ...] = (-0.5, -0.25, 0.25, 0.5),
+                              security: Optional[Dict[str, dict]] = None) -> List[dict]:
     """NEW-V3.23.5: one-at-a-time (OAT) sensitivity sweep over the scoring weights.
     For each weight group, re-score the fleet with that group scaled by each delta
     and report how many switches change health band. Verdicts that flip under a
@@ -768,11 +791,12 @@ def compute_score_sensitivity(all_interfaces: Dict[str, Dict[str, InterfaceData]
 
     def _bands(cfg):
         return {r["switch"]: r["band"] for r in compute_health_scores(
-            all_interfaces, physical_health, l3_forwarding, cross_layer, protocol_health, cfg)}
+            all_interfaces, physical_health, l3_forwarding, cross_layer, protocol_health, cfg,
+            security=security)}
 
     base = _bands(config)
     out: List[dict] = []
-    for grp in ("l1_weights", "l3_weights", "xl_weights", "proto_weights"):
+    for grp in ("l1_weights", "l3_weights", "xl_weights", "proto_weights", "sec_weights"):
         for delta in deltas:
             scaled = {k: max(0, round(v * (1 + delta))) for k, v in getattr(config, grp).items()}
             new = _bands(dataclasses.replace(config, **{grp: scaled}))

@@ -126,6 +126,40 @@ def test_health_scores_spread_across_bands(cp):
     assert len(bands) == 3                           # genuine spread, not all-Critical
 
 
+def test_health_security_deductions_capped(cp):
+    # NEW-V3.23.60: a FAILED CIS config-hardening check deducts via sec_weights (high 8 / med 3 / low 1);
+    # pass/info/na are ignored. {"h": {}} has no SVI -> access role (x1.0), so no criticality scaling.
+    sec = {"h": {"findings": [
+        {"id": "telnet-enabled", "severity": "high", "status": "fail"},       # -8
+        {"id": "insecure-snmp", "severity": "high", "status": "fail"},        # -8
+        {"id": "no-ntp", "severity": "low", "status": "fail"},                # -1
+        {"id": "password-encryption", "severity": "info", "status": "pass"},  # ignored
+    ]}}
+    base = cp.compute_health_scores({"h": {}}, [], [], [], [])[0]["score"]
+    withsec = cp.compute_health_scores({"h": {}}, [], [], [], [], security=sec)[0]["score"]
+    assert base == 100 and withsec == 100 - (8 + 8 + 1)                       # only fails count
+
+
+def test_health_security_missing_data_not_penalized(cp):
+    # a host with no captured run-config (absent from the security dict) gets NO SEC deduction --
+    # missing posture must never be scored as 'bad' (distinct from present-and-hardened).
+    recs = cp.compute_health_scores({"x": {}}, [], [], [], [], security={})
+    assert recs[0]["score"] == 100
+
+
+def test_health_security_category_capped(cp):
+    # SEC is capped at 18: six high-severity fails (6 * 8 = 48) deduct only -18.
+    sec = {"h": {"findings": [{"id": f"c{i}", "severity": "high", "status": "fail"} for i in range(6)]}}
+    rec = cp.compute_health_scores({"h": {}}, [], [], [], [], security=sec)[0]
+    assert rec["score"] == 100 - 18
+
+
+def test_score_sensitivity_sweeps_security_group(cp):
+    sec = {"h": {"findings": [{"id": "telnet-enabled", "severity": "high", "status": "fail"}]}}
+    rows = cp.compute_score_sensitivity({"h": {}}, [], [], [], [], security=sec)
+    assert any(r["group"] == "sec_weights" for r in rows)
+
+
 # --------------------------------------------------------------------------- #
 # compute_migration_readiness
 # --------------------------------------------------------------------------- #
