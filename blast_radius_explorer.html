@@ -1208,7 +1208,29 @@ function demoSnapshot(){
   redistribution:{
     "DIST-1":[{into_proto:"ospf",into_id:"1",from_proto:"bgp",from_id:"65001",route_map:"",raw:"redistribute bgp 65001 subnets"},
               {into_proto:"ospf",into_id:"1",from_proto:"connected",from_id:"",route_map:"",raw:"redistribute connected"},
-              {into_proto:"bgp",into_id:"65001",from_proto:"ospf",from_id:"1",route_map:"OSPF_TO_BGP",raw:"redistribute ospf 1 route-map OSPF_TO_BGP"}]}};
+              {into_proto:"bgp",into_id:"65001",from_proto:"ospf",from_id:"1",route_map:"OSPF_TO_BGP",raw:"redistribute ospf 1 route-map OSPF_TO_BGP"}]},
+  // V3.23.85: gateway-per-VLAN forwarding-proof (one record per gateway SVI, mirrors the Python
+  // l3_forwarding). VLAN 30 is single-homed on DIST-1 with no FHRP (High); VLAN 50's sole gateway lives
+  // on ACC-5 with no FHRP (High); VLANs 10/20/99 are HSRP-redundant across DIST-1/DIST-2 (ok).
+  l3_forwarding:[
+    {switch:"DIST-1",vlan:30,svi_ip:"10.0.30.1",fhrp:"none",role:"",vip:"",routing_source:"connected",next_hop:"",primary_subnet:"10.0.30.0/24",secondary:"",tracking:"",risk:"single-gateway",severity:"High"},
+    {switch:"ACC-5",vlan:50,svi_ip:"10.0.50.1",fhrp:"none",role:"",vip:"",routing_source:"connected",next_hop:"",primary_subnet:"10.0.50.0/24",secondary:"",tracking:"",risk:"single-gateway",severity:"High"},
+    {switch:"DIST-1",vlan:40,svi_ip:"10.0.40.1",fhrp:"none",role:"",vip:"",routing_source:"connected",next_hop:"",primary_subnet:"10.0.40.0/24 (VRF TENANT_RED)",secondary:"",tracking:"",risk:"single-gateway",severity:"High"},
+    {switch:"DIST-1",vlan:10,svi_ip:"10.0.10.2",fhrp:"hsrp",role:"active",vip:"10.0.10.1",routing_source:"connected",next_hop:"",primary_subnet:"10.0.10.0/24",secondary:"",tracking:"",risk:"ok",severity:"Info"},
+    {switch:"DIST-2",vlan:10,svi_ip:"10.0.10.3",fhrp:"hsrp",role:"standby",vip:"10.0.10.1",routing_source:"connected",next_hop:"",primary_subnet:"10.0.10.0/24",secondary:"",tracking:"",risk:"ok",severity:"Info"},
+    {switch:"DIST-1",vlan:20,svi_ip:"10.0.20.2",fhrp:"hsrp",role:"active",vip:"10.0.20.1",routing_source:"connected",next_hop:"",primary_subnet:"10.0.20.0/24",secondary:"",tracking:"",risk:"ok",severity:"Info"},
+  ],
+  // V3.23.85: health-score weight ROBUSTNESS (one-at-a-time +/-25-50% sweep, mirrors the Python
+  // score_sensitivity; already sorted most-impactful first). ACC-3 sits right on a Fair/Poor band edge,
+  // so an L3-weight bump flips it -> a fragile verdict; most perturbations move nothing.
+  score_sensitivity:[
+    {perturbation:"L3 +50%",group:"l3_weights",delta_pct:50,switches_changed_band:2,changed:["ACC-3","DIST-1"],detail:"ACC-3: Fair->Poor; DIST-1: Poor->Critical"},
+    {perturbation:"L3 +25%",group:"l3_weights",delta_pct:25,switches_changed_band:1,changed:["ACC-3"],detail:"ACC-3: Fair->Poor"},
+    {perturbation:"L1 +50%",group:"l1_weights",delta_pct:50,switches_changed_band:1,changed:["ACC-2"],detail:"ACC-2: Fair->Poor"},
+    {perturbation:"L1 -25%",group:"l1_weights",delta_pct:-25,switches_changed_band:0,changed:[],detail:"no band changes"},
+    {perturbation:"XL +25%",group:"xl_weights",delta_pct:25,switches_changed_band:0,changed:[],detail:"no band changes"},
+    {perturbation:"SEC +50%",group:"sec_weights",delta_pct:50,switches_changed_band:0,changed:[],detail:"no band changes"},
+  ]};
 }
 
 /* =====================================================================
@@ -3352,6 +3374,76 @@ function calibrationCard(){
     ${dist?`<div class="ln" style="margin-top:4px">${dist}</div>`:""}
     ${sugg}</div>`;
 }
+/* Score sensitivity (health-score weight ROBUSTNESS): reads SNAP.score_sensitivity -- the OAT
+   (one-at-a-time) sweep the Python pipeline already embeds. Each record perturbs one scoring weight
+   group by +/-25-50% and reports how many switches flip health band. A verdict that flips under a tiny
+   weight change is WEAKLY SUPPORTED -- the scoring is uncalibrated, so trust the structural SPOF list
+   over the exact band for those switches. Natural sibling of calibrationCard (both robustness diagnostics).
+   The array is already sorted most-impactful first. Back-compat: missing/empty key -> no card. */
+function sensitivityCard(){
+  if(!SNAP||!Array.isArray(SNAP.score_sensitivity)||!SNAP.score_sensitivity.length)return "";
+  const ss=SNAP.score_sensitivity;
+  const flips=ss.filter(r=>(+r.switches_changed_band||0)>0);
+  const worst=Math.max(0,...ss.map(r=>+r.switches_changed_band||0));
+  // every switch that flips its band under ANY perturbation = a fragile verdict
+  const fragile=new Set(); flips.forEach(r=>(r.changed||[]).forEach(h=>fragile.add(h)));
+  if(!flips.length)
+    return `<div class="sec"><h3>Score sensitivity <span class="badge b-ok">robust</span></h3>`+
+      `<div class="sub" style="margin-bottom:6px">Does a small change to a scoring weight flip any verdict? <span class="faint">(one-at-a-time +/-25-50% sweep over each weight group)</span></div>`+
+      `<div class="ln faint">✓ No switch changes health band under a ±25–50% perturbation of any weight group — the bands are stable, so the per-switch verdicts don't hinge on the exact (uncalibrated) weights.</div></div>`;
+  const tok=worst>=3?"crit":worst===2?"risk":"watch";
+  const N=6;
+  const rows=flips.slice(0,N).map(r=>{const k=+r.switches_changed_band||0;
+    const pill=`<span class="pill ${k>=3?"pl-crit":k===2?"pl-risk":"pl-watch"}">${k} switch${k===1?"":"es"}</span>`;
+    return `<div class="ln">${pill} <b>${esc(r.perturbation)}</b> <span class="faint">— ${esc(r.detail)}</span></div>`;}).join("");
+  const more=flips.length>N?`<div class="ln faint" style="margin-top:4px">…and ${flips.length-N} more perturbation${flips.length-N===1?"":"s"} flip a band — see the full <b>Score Sensitivity</b> workbook sheet.</div>`:"";
+  const frag=fragile.size?`<div class="ln" style="margin-top:6px"><b>Fragile verdicts</b> <span class="faint">(band depends on the weights):</span> `+
+    [...fragile].sort().map(h=>`<span class="mono click" data-jump="${esc(h)}" style="cursor:pointer">${esc(shortName(h))}</span>`).join(" · ")+
+    ` — trust the structural SPOF list over the exact band for these.</div>`:"";
+  return `<div class="sec"><h3>Score sensitivity <span class="badge b-${tok}"><span class="num" data-to="${fragile.size}">0</span> fragile</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Verdicts that flip under a small (±25–50%) change to one scoring weight group are weakly supported — the weights are an uncalibrated default. Sorted most-impactful first.</div>`+
+    rows+more+frag+`</div>`;
+}
+/* Forwarding map (gateway-per-VLAN forwarding-proof): reads SNAP.l3_forwarding -- one record per gateway
+   SVI the Python pipeline already embeds. This is the "the gateway stays on the core" migration premise
+   made auditable: for each VLAN gateway, which switch hosts it, its SVI IP, FHRP role/VIP, routing source
+   + next-hop, and the risk flags (single-gateway SPOF, tracked-object-down, no-FHRP). Grouped by severity,
+   High first. Rows naming a switch reuse the data-jump click-to-center pattern. Back-compat: missing/empty
+   key -> no card. */
+function forwardingCard(){
+  if(!SNAP||!Array.isArray(SNAP.l3_forwarding)||!SNAP.l3_forwarding.length)return "";
+  const recs=SNAP.l3_forwarding;
+  const sevRank={High:3,Medium:2,Low:1,Info:0};
+  const sevTok={High:"crit",Medium:"risk",Low:"watch",Info:"neutral"};
+  const flagPill=f=>{const t=f==="tracked-object-down"||f==="single-gateway"?"pl-crit":f==="no-FHRP"?"pl-watch":f==="ok"?"pl-ok":"pl-neutral";
+    return `<span class="pill ${t}">${esc(f)}</span>`;}
+  const flagsOf=r=>String(r.risk||"").split(";").map(s=>s.trim()).filter(Boolean);
+  const flagged=recs.filter(r=>flagsOf(r).some(f=>f!=="ok"));
+  // severity counts over the FLAGGED records (Info/ok rows are clean)
+  const counts={High:0,Medium:0,Low:0};
+  flagged.forEach(r=>{ if(counts[r.severity]!=null)counts[r.severity]++; });
+  const sorted=recs.slice().sort((a,b)=>(sevRank[b.severity]||0)-(sevRank[a.severity]||0)
+    || String(a.switch).localeCompare(String(b.switch)) || (+a.vlan-+b.vlan));
+  const fhrpOf=r=>{const p=String(r.fhrp||"").trim();
+    if(!p||p==="none")return "no FHRP";
+    return esc(p)+(r.role?` <span class="faint">${esc(r.role)}</span>`:"")+(r.vip?` <span class="faint">vIP ${esc(r.vip)}</span>`:"");};
+  const routeOf=r=>{const src=String(r.routing_source||"").trim(), nh=String(r.next_hop||"").trim();
+    if(!src&&!nh)return "";
+    return ` <span class="faint">· via ${src?esc(src):"?"}${nh?` → ${esc(nh)}`:""}</span>`;};
+  const rows=sorted.map(r=>{const flags=flagsOf(r);
+    const pills=flags.map(flagPill).join(" ");
+    return `<div class="ln click" data-jump="${esc(r.switch)}" style="cursor:pointer">`+
+      `<span class="mono">${esc(shortName(r.switch))}</span> · VLAN <b>${esc(r.vlan)}</b>`+
+      (r.svi_ip?` <span class="mono faint">${esc(r.svi_ip)}</span>`:"")+
+      ` · ${fhrpOf(r)}${routeOf(r)} ${pills}</div>`;}).join("");
+  const nFlag=flagged.length;
+  const badge=nFlag?`<span class="badge b-${sevTok[counts.High?"High":counts.Medium?"Medium":"Low"]||"watch"}"><span class="num" data-to="${nFlag}">0</span> at risk</span>`
+                   :`<span class="badge b-ok">all redundant</span>`;
+  return `<div class="sec"><h3>Forwarding map ${badge}</h3>`+
+    `<div class="sub" style="margin-bottom:6px">Every VLAN gateway and its forwarding-proof — the “gateway stays on the core” migration premise, made auditable. `+
+      (nFlag?`<b style="color:var(--crit)">${counts.High} high</b> · ${counts.Medium} medium · ${counts.Low} low.`:`No single-homed gateways, down tracked objects, or FHRP gaps.`)+
+    `</div>${rows}</div>`;
+}
 /* Addressing integrity (migration consolidation): scan every L3 interface's physical IP across the WHOLE
    fabric for two silent, offline-detectable killers that surface when domains merge or a move-group cuts
    over -- (1) the same physical IP on two interfaces (duplicate L3 address; the FHRP virtual IP lives in
@@ -4808,7 +4900,9 @@ function drawHealth(){
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${punchlistCard()}
     ${calibrationCard()}
+    ${sensitivityCard()}
     ${rootCauseCard()}
+    ${forwardingCard()}
     ${addressingCard()}
     ${trunkConsistencyCard()}
     ${linkPhyCard()}
