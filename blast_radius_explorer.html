@@ -227,6 +227,39 @@
     filter:drop-shadow(0 0 4px var(--accent))}
   @keyframes legendPulse{0%,100%{filter:drop-shadow(0 0 2px currentColor)}50%{filter:drop-shadow(0 0 6px currentColor)}}
 
+  /* ---- animated layer-lens (U9): an L1→L4 "scanline" sweeps the canvas; edges/nodes
+     tint by the layer currently in focus. The sweep band lives under #vp (tracks pan/zoom)
+     and never blocks pointer input. Under reduced-motion the band holds static (no sweep)
+     and the layer cycles in discrete steps. */
+  /* the band's X is driven by rAF (normal motion) so it tracks the canvas precisely;
+     the @keyframes is the reduced-motion-aware fallback hook only — applied via .sweep
+     ONLY when rAF is unavailable, and neutralized under prefers-reduced-motion below. */
+  .lensband{pointer-events:none}
+  .lensband.sweep{animation:layerSweep 2.6s linear infinite}
+  @keyframes layerSweep{0%{opacity:.35}50%{opacity:.7}100%{opacity:.35}}
+  /* per-layer tint of the matching graph elements (additive class, removed on stop) */
+  .lnk.lensL1{stroke:var(--text-dim) !important; stroke-width:3.2 !important; stroke-opacity:.9 !important; stroke-dasharray:2 3}
+  .lnk.lensL2{stroke:var(--accent) !important; stroke-width:3.6 !important; stroke-opacity:1 !important;
+    filter:drop-shadow(0 0 3px var(--accent))}
+  .node.lensL3 .body{stroke:var(--ok) !important; stroke-width:3.4 !important; fill:var(--ok-soft) !important;
+    filter:drop-shadow(0 0 4px var(--ok))}
+  .node.lensL4 .body{stroke:var(--risk) !important; stroke-width:3.4 !important; fill:var(--risk-soft) !important;
+    filter:drop-shadow(0 0 4px var(--risk))}
+  .btn.lenson{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+  /* floating label showing the layer currently in focus (fixed in the stage, not under #vp) */
+  #lensLabel{position:absolute; top:54px; left:50%; transform:translateX(-50%); z-index:6;
+    pointer-events:none; padding:5px 13px; border-radius:999px; font:700 11px var(--sans);
+    letter-spacing:.6px; background:var(--surface); border:1px solid var(--border-strong);
+    color:var(--text); box-shadow:0 4px 16px rgba(0,0,0,.28); white-space:nowrap;
+    display:flex; align-items:center; gap:8px}
+  #lensLabel .dot{width:9px; height:9px; border-radius:50%; background:currentColor;
+    box-shadow:0 0 6px currentColor}
+  #lensLabel.l1{color:var(--text-dim)} #lensLabel.l2{color:var(--accent)}
+  #lensLabel.l3{color:var(--ok)} #lensLabel.l4{color:var(--risk)}
+  @media (prefers-reduced-motion: reduce){
+    .lensband, .lensband.sweep{animation:none !important; transform:none !important; opacity:.5}
+  }
+
   .pcbadge{fill:var(--surface); stroke:var(--border-strong); stroke-width:1}
   .pcbadge-t{fill:var(--text-dim); font:600 9px var(--mono); text-anchor:middle; pointer-events:none}
 
@@ -476,6 +509,7 @@
       <button class="btn iconbtn" id="exportPngBtn" title="Export topology as PNG" aria-label="Export topology as PNG">▦</button>
       <button class="btn iconbtn" id="resetBtn" title="Reset layout — clear pinned positions (R)" aria-label="Reset layout, clear pinned node positions">⟲</button>
       <button class="btn iconbtn" id="themeBtn" title="Toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
+      <button class="btn iconbtn" id="lensBtn" title="Layer lens — sweep L1→L4 across the topology" aria-label="Toggle animated layer lens" aria-pressed="false">⧉</button>
       <button class="btn iconbtn" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">?</button>
     </div>
     <input type="file" id="file" accept=".json,application/json" hidden>
@@ -491,6 +525,7 @@
         <div class="panelbox modetag" id="modetag"></div>
       </div>
       <svg id="svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Network topology graph"></svg>
+      <div id="lensLabel" role="status" aria-live="polite" hidden></div>
       <div id="tip" role="tooltip" hidden></div>
       <div id="tableView" tabindex="-1" hidden></div>
       <div id="srStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -1150,6 +1185,14 @@ function buildSvg(){
 
   buildNavOrder();
   applyTransform(); positionAll();
+  // LAYER LENS (U9): this rebuild discarded the old band/defs-gradient and made fresh
+  // edge/node elements; if the lens was on, restart it so the rAF closure references the
+  // new band (no orphaned loop writing to a detached node).
+  if(LENS_ON&&typeof stopLayerLens==="function"){
+    if(LENS_RAF){cancelAnimationFrame(LENS_RAF); LENS_RAF=null;}
+    if(LENS_TIMER){clearTimeout(LENS_TIMER); LENS_TIMER=null;}
+    _lensBand=null; LENS_ON=true; layerLens();
+  }
 }
 function shortName(h){return h.length>20?h.slice(0,19)+"…":h;}
 function positionNode(h){nodeEls[h].g.setAttribute("transform",`translate(${POS[h].x},${POS[h].y})`);}
@@ -1289,6 +1332,9 @@ function repaint(){
   else if(MODE==="protocols")paintProtocols();
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   runPathAnim();   // draw-on + traveling packet for Path/Flow; teardown otherwise (keyed on path change)
+  // LAYER LENS (U9): baseEdge() above rewrote every edge's className (wiping lensL* edge tint),
+  // so if the lens is active, re-stamp the layer currently in focus. The lens persists across modes.
+  if(LENS_ON)_lensApplyLayer(LENS_LAYER);
 }
 
 function sevToken(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch":"neutral";}
@@ -1490,6 +1536,126 @@ function animatePacket(pts){
     PACKET_RAF=requestAnimationFrame(frame);
   };
   PACKET_RAF=requestAnimationFrame(frame);
+}
+
+/* =====================================================================
+   ANIMATED LAYER LENS (U9) — a graphical way to "feel" the stack.
+   A scanline band sweeps the canvas while the focus cycles L1→L2→L3→L4
+   (and loops). As each layer is in focus, the matching graph elements are
+   tinted with a transient lensL* class:
+     L1 physical  → all links (raw cabling)        .lnk.lensL1
+     L2 data-link → trunk links carrying VLANs      .lnk.lensL2
+     L3 network   → gateway / SVI switches          .node.lensL3
+     L4 transport → switches with an ACL applied     .node.lensL4
+   Self-contained: the band + gradient live under #vp (track pan/zoom) and
+   are created lazily / removed on stop; the rAF handle is cancelled on stop
+   AND on mode change. pointer-events:none → never blocks node interaction.
+   Reduced-motion: no rAF sweep — the layer is stepped on a slow timer and the
+   band holds static (CSS neuters the keyframe; we also skip the X animation). */
+let LENS_ON=false, LENS_RAF=null, LENS_TIMER=null, LENS_LAYER=0, _lensBand=null;
+const LENS_LAYERS=[
+  {key:"l1",name:"L1 · Physical",sub:"cabling"},
+  {key:"l2",name:"L2 · Data link",sub:"trunks / VLANs"},
+  {key:"l3",name:"L3 · Network",sub:"gateways / SVIs"},
+  {key:"l4",name:"L4 · Transport",sub:"ACL filtering"}
+];
+const LENS_PERIOD=2600;   // ms per layer (matches the CSS sweep duration)
+
+/* which hosts terminate an L3 gateway / an L4 (ACL) policy — derived from MODEL */
+function _lensGatewayHosts(){const s=new Set();
+  if(MODEL&&MODEL.gateways)for(const gws of MODEL.gateways.values())for(const h of gws)s.add(h);
+  return s;}
+function _lensAclHosts(){const s=new Set();
+  if(MODEL&&MODEL.svuAcl)for(const k of MODEL.svuAcl.keys()){const h=k.split("|")[0]; if(h)s.add(h);}
+  return s;}
+/* a link is an L2 "trunk" if it forwards at least one VLAN across (uses linkCarries) */
+function _lensIsTrunk(e){if(!e||!e.members)return false;
+  return e.members.some(L=>{for(const v of (L.fwd||[]))if(linkCarries(L,v)==="fwd")return true; return false;});}
+
+function _lensClearTint(){
+  edgeEls.forEach(({path})=>path.classList.remove("lensL1","lensL2"));
+  if(MODEL)MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.remove("lensL3","lensL4");});
+}
+function _lensApplyLayer(i){
+  if(!MODEL)return;
+  _lensClearTint();
+  LENS_LAYER=((i%LENS_LAYERS.length)+LENS_LAYERS.length)%LENS_LAYERS.length;
+  const L=LENS_LAYERS[LENS_LAYER];
+  if(L.key==="l1"){edgeEls.forEach(({path})=>path.classList.add("lensL1"));}
+  else if(L.key==="l2"){edgeEls.forEach(({e,path})=>{if(_lensIsTrunk(e))path.classList.add("lensL2");});}
+  else if(L.key==="l3"){const gw=_lensGatewayHosts();gw.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.add("lensL3");});}
+  else if(L.key==="l4"){const ac=_lensAclHosts();ac.forEach(h=>{const n=nodeEls[h]; if(n)n.g.classList.add("lensL4");});}
+  const lbl=document.getElementById("lensLabel");
+  if(lbl){lbl.className=L.key; lbl.hidden=false;
+    lbl.innerHTML=`<span class="dot" aria-hidden="true"></span>${L.name}<span style="opacity:.6;font-weight:500">— ${L.sub}</span>`;}
+}
+/* lazily create the sweep band (rect + moving linear-gradient) under #vp */
+function _lensEnsureBand(){
+  const vp=document.getElementById("vp"); if(!vp)return null;
+  if(_lensBand&&_lensBand.isConnected)return _lensBand;
+  const defs=svg().querySelector("defs");
+  if(defs&&!defs.querySelector("#lensGrad")){
+    const g=el("linearGradient",{id:"lensGrad",x1:"0",y1:"0",x2:"1",y2:"0"});
+    g.innerHTML=`<stop offset="0" stop-color="var(--accent)" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="var(--accent)" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="var(--accent)" stop-opacity="0"/>`;
+    defs.appendChild(g);
+  }
+  const w=LOGICAL.w, h=LOGICAL.h, bw=Math.max(60,w*0.18);
+  const rect=el("rect",{class:"lensband",x:0,y:-h*0.1,width:bw,height:h*1.2,fill:"url(#lensGrad)"});
+  vp.insertBefore(rect,vp.firstChild);   // behind links/nodes so tint reads on top
+  _lensBand=rect; return rect;
+}
+function _lensRemoveBand(){
+  if(_lensBand){_lensBand.remove(); _lensBand=null;}
+  const grad=svg()&&svg().querySelector("#lensGrad"); if(grad)grad.remove();
+}
+function layerLens(){
+  if(!LENS_ON||!MODEL)return;
+  const band=_lensEnsureBand();
+  const reduce=reducedMotion();
+  if(reduce){
+    // reduced-motion: hold the band static, step the layer on a slow timer (user-perceivable, no sweep)
+    if(band){const bw=+band.getAttribute("width")||60; band.setAttribute("x",(LOGICAL.w-bw)/2); band.classList.remove("sweep");}
+    _lensApplyLayer(LENS_LAYER);
+    LENS_TIMER=setTimeout(()=>{if(LENS_ON){LENS_LAYER++; layerLens();}},LENS_PERIOD);
+    return;
+  }
+  if(band)band.classList.add("sweep");   // adds only a subtle opacity shimmer; X is driven by rAF below
+  const w=LOGICAL.w, bw=band?(+band.getAttribute("width")||60):60;
+  const span=w+bw;            // travel from fully off the left to fully off the right
+  let t0=null, lastLayer=-1;
+  const frame=ts=>{
+    if(!LENS_ON){LENS_RAF=null; return;}
+    if(t0==null)t0=ts;
+    const elapsed=ts-t0;
+    const layer=Math.floor(elapsed/LENS_PERIOD)%LENS_LAYERS.length;
+    const phase=(elapsed%LENS_PERIOD)/LENS_PERIOD;          // 0→1 within the current layer
+    if(band)band.setAttribute("x", -bw + span*phase);       // sweep left→right across the canvas
+    if(layer!==lastLayer){lastLayer=layer; _lensApplyLayer(layer);}
+    LENS_RAF=requestAnimationFrame(frame);
+  };
+  LENS_RAF=requestAnimationFrame(frame);
+}
+function stopLayerLens(){
+  LENS_ON=false;
+  if(LENS_RAF){cancelAnimationFrame(LENS_RAF); LENS_RAF=null;}
+  if(LENS_TIMER){clearTimeout(LENS_TIMER); LENS_TIMER=null;}
+  _lensClearTint(); _lensRemoveBand();
+  const lbl=document.getElementById("lensLabel"); if(lbl){lbl.hidden=true; lbl.className=""; lbl.textContent="";}
+}
+function toggleLayerLens(force){
+  const want = force!==undefined ? !!force : !LENS_ON;
+  const btn=document.getElementById("lensBtn");
+  if(want){
+    if(!MODEL)return;
+    LENS_ON=true; LENS_LAYER=0;
+    if(btn){btn.setAttribute("aria-pressed","true"); btn.classList.add("lenson");}
+    layerLens();
+  }else{
+    stopLayerLens();
+    if(btn){btn.setAttribute("aria-pressed","false"); btn.classList.remove("lenson");}
+  }
 }
 
 function healthList(){return SNAP&&SNAP.health_scores?SNAP.health_scores:[];}
@@ -2998,6 +3164,7 @@ document.getElementById("exportSvgBtn").onclick=exportSvg;
 document.getElementById("exportPngBtn").onclick=()=>{exportPng().catch(()=>{});};
 document.getElementById("resetBtn").onclick=resetLayout;
 document.getElementById("themeBtn").onclick=()=>setTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark");
+document.getElementById("lensBtn").onclick=()=>toggleLayerLens();   // U9: animated L1→L4 layer lens
 document.getElementById("layoutBtn").onclick=()=>{LAYOUT=LAYOUT==="layered"?"radial":"layered";computeLayout();fitView();repaint();writeHash();};
 document.getElementById("tableBtn").onclick=()=>toggleTableView();
 document.getElementById("helpBtn").onclick=()=>document.getElementById("help").classList.add("on");
