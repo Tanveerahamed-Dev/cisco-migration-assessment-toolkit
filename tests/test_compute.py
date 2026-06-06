@@ -536,3 +536,27 @@ def test_link_centrality_empty_when_no_links():
     from cisco_toolkit.model import InterfaceData
     from cisco_toolkit.analyze import compute_link_centrality
     assert compute_link_centrality({"lonely": {"Gi0/1": InterfaceData(port="Gi0/1")}}) == []
+
+
+def test_wave_sequencing_classifies_cutover():
+    """A dual-homed switch (>=2 uplinks) is make-before-break; a single-homed switch (1 uplink) is a hard
+    cutover, and its endpoints are counted as at-risk during the window."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_wave_sequencing
+
+    def link(p, nb, npt):
+        return InterfaceData(port=p, cdp_neighbor=nb, neighbor_port=npt, endpoint_type="Switch")
+
+    def ep(p, mac):
+        return InterfaceData(port=p, switchport_mode="Access", vlan="10", end_host_mac=mac)
+
+    ai = {
+        "DIST1": {"Gi0/1": link("Gi0/1", "ACC1", "Gi0/24"), "Gi0/2": link("Gi0/2", "ACC2", "Gi0/24")},
+        "ACC1": {"Gi0/24": link("Gi0/24", "DIST1", "Gi0/1"),
+                 "Gi0/1": ep("Gi0/1", "aaaa.0000.0001"), "Gi0/2": ep("Gi0/2", "aaaa.0000.0002")},
+        "ACC2": {"Gi0/24": link("Gi0/24", "DIST1", "Gi0/2"), "Gi0/1": ep("Gi0/1", "aaaa.0000.0003")},
+    }
+    seq = compute_wave_sequencing(ai, [{"switches": ["ACC1", "ACC2", "DIST1"]}])[0]
+    assert seq["make_before_break"] == ["DIST1"]          # degree 2 -> dual-homed
+    assert seq["hard_cutover"] == ["ACC1", "ACC2"]        # degree 1 -> single-homed
+    assert seq["hard_cutover_endpoints"] == 3             # 2 on ACC1 + 1 on ACC2

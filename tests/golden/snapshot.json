@@ -2570,6 +2570,20 @@
    "rank": 2
   }
  ],
+ "wave_sequencing": [
+  {
+   "group": "Group 1",
+   "make_before_break": [
+    "core1"
+   ],
+   "hard_cutover": [
+    "access1",
+    "core2"
+   ],
+   "hard_cutover_endpoints": 3,
+   "sequence": "2 hard cutover (single-homed, schedule a window) + 1 make-before-break (dual-homed)"
+  }
+ ],
  "addressing_conflicts": {
   "dup_ip": [],
   "dup_subnet": []

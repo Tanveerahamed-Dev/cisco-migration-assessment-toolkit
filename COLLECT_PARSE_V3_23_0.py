@@ -356,6 +356,7 @@ from cisco_toolkit.excel import (
     write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet, write_link_centrality_sheet,      # step 24 (+Link Centrality V3.23.88)
+    write_wave_sequencing_sheet,                                                                # NEW-V3.23.89 (cutover sequencing)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -1491,6 +1492,7 @@ def main():
         all_interfaces, move_groups, health_scores, physical_health, l3_forwarding,
         cross_layer, protocol_health, dep_map, _default=[])
     _run_phase("Migration Readiness sheet", write_migration_readiness_sheet, wb, migration_readiness)
+    _run_phase("Wave Sequencing sheet", write_wave_sequencing_sheet, wb, all_interfaces, move_groups)   # NEW-V3.23.89 (make-before-break vs hard cutover; needs move_groups computed just above)
 
     # Phase 30: Score Sensitivity - NEW-V3.23.5 (OAT robustness sweep over scoring weights)
     logger.info("\n[Phase 30] Writing Score Sensitivity sheet ...")
@@ -1569,11 +1571,13 @@ def main():
     # explorer's Causality mode + cockpit keystones consume the SAME analysis instead of re-deriving in JS
     # (one source of truth). Local import keeps these out of this module's public surface (they live in
     # analyze, per the test_package re-export contract). Tuples -> dicts for a self-describing JSON contract.
-    from cisco_toolkit.analyze import compute_causality_chains, compute_failure_impact, compute_link_centrality
+    from cisco_toolkit.analyze import (compute_causality_chains, compute_failure_impact,
+                                       compute_link_centrality, compute_wave_sequencing)
     snap_dict["causality"] = [{"severity": s, "trigger": t, "mechanism": m, "impact": i, "mitigation": mt}
                               for (s, t, m, i, mt) in compute_causality_chains(all_interfaces)]
     snap_dict["failure_impact"] = compute_failure_impact(all_interfaces)
     snap_dict["link_centrality"] = compute_link_centrality(all_interfaces)   # NEW-V3.23.88 (chokepoint links: betweenness + bridges; LINK twin of failure_impact)
+    snap_dict["wave_sequencing"] = compute_wave_sequencing(all_interfaces, move_groups)   # NEW-V3.23.89 (per-group make-before-break vs hard cutover)
     # NEW-V3.23.84: embed the 4 cross-switch L2/L3 consistency checks the workbook computes, so the
     # explorer consumes the SAME analysis instead of re-deriving in JS (one source of truth). These
     # compute_* fns are already imported at module level (V3.23.64, also used to build the punch-list
