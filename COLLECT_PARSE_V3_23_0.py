@@ -340,6 +340,7 @@ from cisco_toolkit.excel import (
     write_cross_layer_sheet, write_protocol_health_sheet,   # _SEV_FILL dropped step 25 (last writers moved)
     write_health_scores_sheet, write_score_sensitivity_sheet, write_calibration_sheet,  # step 23 (+calibration V3.23.47)
     write_nat_sheet,   # NAT inventory V3.23.50
+    write_security_sheet,   # Security Posture (CIS-aligned) V3.23.59
     write_protocol_boundaries_sheet,   # protocol-to-protocol analysis (workbook surfacing)
     write_addressing_conflicts_sheet,  # reachability findings -> workbook surfacing
     write_fhrp_consistency_sheet,      # reachability findings -> workbook surfacing
@@ -358,7 +359,7 @@ from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
-    build_routes, inscope_subnets, scope_routes, build_nat, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_nat, build_security, build_routing_neighbors,
     build_redistribution,
 )
 # NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
@@ -1296,6 +1297,7 @@ def main():
     all_acls: Dict[str, dict] = {}
     all_object_groups: Dict[str, dict] = {}
     all_nat: Dict[str, dict] = {}                                    # NEW-V3.23.50 (NAT inventory)
+    all_security: Dict[str, dict] = {}                               # NEW-V3.23.59 (CIS-aligned security posture)
     all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
     for hostname, platform, cmd_to_file in all_devices_meta:
@@ -1312,6 +1314,12 @@ def main():
             all_nat[hostname] = nat
             logger.info(f"  [NAT] {hostname}: {len(nat.get('static', []))} static, "
                         f"{len(nat.get('dynamic', []))} dynamic rule(s)")
+        sec = build_security(cmd_to_file)
+        if sec:
+            all_security[hostname] = sec
+            _summ = sec.get("summary", {})
+            logger.info(f"  [SEC] {hostname}: {_summ.get('fail', 0)} fail / "
+                        f"{len(sec.get('findings', []))} check(s) ({_summ.get('grade', '')})")
         rn = build_routing_neighbors(cmd_to_file)
         if any(rn.values()):
             all_routing_neighbors[hostname] = rn
@@ -1475,6 +1483,7 @@ def main():
 
     # Phase 30c: NAT Inventory - NEW-V3.23.50 (every static/dynamic NAT rule the migration must recreate)
     _run_phase("NAT Inventory sheet", write_nat_sheet, wb, all_nat)
+    _run_phase("Config Compliance sheet", write_security_sheet, wb, all_security)
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
@@ -1502,6 +1511,7 @@ def main():
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     snap_dict["nat"] = all_nat                                       # NEW-V3.23.50 (NAT inventory: {host:{static,dynamic,pools,inside,outside}})
+    snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}
