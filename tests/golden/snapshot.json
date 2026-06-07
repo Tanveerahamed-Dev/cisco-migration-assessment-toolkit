@@ -1371,6 +1371,76 @@
    "confidence": "observed state = fact; likely cause = Inferred (Cisco doctrine)"
   }
  ],
+ "service_map": {
+  "services": [
+   {
+    "port": 22,
+    "proto": "tcp",
+    "service": "SSH",
+    "category": "Management",
+    "broadcast": false,
+    "refs": 2,
+    "host_count": 1,
+    "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
+   },
+   {
+    "port": 443,
+    "proto": "tcp",
+    "service": "HTTPS",
+    "category": "Web",
+    "broadcast": false,
+    "refs": 2,
+    "host_count": 1,
+    "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
+   },
+   {
+    "port": 5060,
+    "proto": "udp",
+    "service": "SIP",
+    "category": "Voice",
+    "broadcast": false,
+    "refs": 1,
+    "host_count": 1,
+    "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
+   },
+   {
+    "port": 16384,
+    "proto": "udp",
+    "service": "connected",
+    "category": "",
+    "broadcast": false,
+    "refs": 1,
+    "host_count": 1,
+    "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
+   }
+  ],
+  "categories": [
+   {
+    "category": "Management",
+    "refs": 2
+   },
+   {
+    "category": "Web",
+    "refs": 2
+   },
+   {
+    "category": "Voice",
+    "refs": 1
+   },
+   {
+    "category": "",
+    "refs": 1
+   }
+  ],
+  "acl_rule_count": 12,
+  "multicast": {
+   "active_interfaces": 0,
+   "active_switch_count": 0,
+   "active_switches": [],
+   "classified_groups": [],
+   "group_level_collected": false
+  }
+ },
  "health_scores": [
   {
    "switch": "core1",
