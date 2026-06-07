@@ -2697,5 +2697,55 @@
     "Port-bound (>=90%)"
    ]
   }
+ ],
+ "endpoint_identity": [
+  {
+   "host": "access1",
+   "port": "Gi0/2",
+   "vlan": "10",
+   "ip": "10.0.10.50",
+   "mac": "aabb.ccdd.ee01",
+   "mac_count": 1,
+   "vendor": "",
+   "endpoint_class": "Wireless AP",
+   "confidence": "Inferred-high",
+   "evidence": "description 'ap-floor1'"
+  },
+  {
+   "host": "access1",
+   "port": "Gi0/3",
+   "vlan": "10",
+   "ip": "",
+   "mac": "aabb.ccdd.ee02",
+   "mac_count": 1,
+   "vendor": "",
+   "endpoint_class": "Phone",
+   "confidence": "Inferred-high",
+   "evidence": "description 'phone-201'"
+  },
+  {
+   "host": "access1",
+   "port": "Gi0/10",
+   "vlan": "30",
+   "ip": "",
+   "mac": "aabb.ccdd.ee10",
+   "mac_count": 1,
+   "vendor": "",
+   "endpoint_class": "Server",
+   "confidence": "Inferred-high",
+   "evidence": "description 'srv-backup'"
+  },
+  {
+   "host": "core1",
+   "port": "Gi1/0/5",
+   "vlan": "10",
+   "ip": "",
+   "mac": "0011.2233.4455",
+   "mac_count": 2,
+   "vendor": "CIMSYS Inc",
+   "endpoint_class": "Server",
+   "confidence": "Inferred-high",
+   "evidence": "description 'srv-app01'"
+  }
  ]
 }

@@ -618,6 +618,40 @@ def write_capacity_sheet(wb, all_device_physical: List[DevicePhysical]) -> None:
     logger.info(f"  [OK] '{CAPACITY_SHEET_NAME}' sheet: {len(all_device_physical)} device(s)")
 
 
+ENDPOINT_INTEL_SHEET_NAME = "Endpoint Intelligence"   # vendor + class per endpoint (NEW-V3.23.95)
+
+def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
+    """Write (or replace) 'Endpoint Intelligence': one row per access-port endpoint with its VENDOR
+    (MAC OUI -- a fact) and an inferred migration CLASS + confidence + the evidence that drove it.
+    NEW-V3.23.95: renders the precomputed compute_endpoint_identity records (one source of truth with
+    the snapshot / runbook / explorer). A class-distribution summary is written above the table."""
+    cols = ["Switch", "Port", "VLAN", "Endpoint IP", "MACs", "Vendor (OUI fact)",
+            "Class (inferred)", "Confidence", "Evidence"]
+    if ENDPOINT_INTEL_SHEET_NAME in wb.sheetnames:
+        del wb[ENDPOINT_INTEL_SHEET_NAME]
+    ws = wb.create_sheet(ENDPOINT_INTEL_SHEET_NAME)
+    _census_header(ws, cols)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="center")
+    DAT_C = Alignment(horizontal="center", vertical="center")
+    low_fill = PatternFill("solid", fgColor="F2F2F2")   # shade Unknown rows so eyes go to classified ones
+    r = 2
+    for rec in (identity or []):
+        vals = [rec.get("host"), rec.get("port"), rec.get("vlan"), rec.get("ip"),
+                rec.get("mac_count"), rec.get("vendor"), rec.get("endpoint_class"),
+                rec.get("confidence"), rec.get("evidence")]
+        unknown = rec.get("confidence") == "Unknown"
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
+            c.alignment = DAT_C if col in (3, 5, 8) else DAT_L
+            if unknown:
+                c.fill = low_fill
+        r += 1
+    _census_autofit(ws, len(cols), r - 1)
+    ws.column_dimensions["I"].width = 42
+    logger.info(f"  [OK] '{ENDPOINT_INTEL_SHEET_NAME}' sheet: {len(identity or [])} endpoint(s)")
+
+
 def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
     if name not in idmap:
         idmap[name] = f"n{len(idmap)}"
