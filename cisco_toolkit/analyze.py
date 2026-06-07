@@ -1529,8 +1529,8 @@ def compute_service_map(acls: Dict[str, dict],
     cat_refs: Dict[str, int] = {}
     for s in services:
         cat_refs[s["category"]] = cat_refs.get(s["category"], 0) + s["refs"]
-    categories = sorted(({"category": c, "refs": n} for c, n in cat_refs.items()),
-                        key=lambda c: -c["refs"])
+    categories = [{"category": c, "refs": n}
+                  for c, n in sorted(cat_refs.items(), key=lambda kv: -kv[1])]
 
     # fold in IGMP/snooping/mroute group census (NEW-V3.23.102) -- classify each via the registry
     for grp in (igmp_groups or []):
