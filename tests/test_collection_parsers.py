@@ -76,6 +76,19 @@ def test_parse_ptp_clock_dormant_real_format():
     assert parse_ptp_clock("") == {} and parse_ptp_clock("nothing here") == {}
 
 
+def test_parse_ptp_clock_operational_robust_to_missing_port_count():
+    # V3.23.111: a known boundary clock whose output omits 'Number of PTP ports' must NOT be
+    # false-flagged dormant (num_ports unparsed = unknown, not zero).
+    p = parse_ptp_clock("PTP CLOCK INFO\nPTP Device Type: Boundary clock\nClock Domain: 0")
+    assert p["num_ports"] is None and p["operational"] is True
+    # sync evidence alone (a measured offset) also counts as operational even if device type is blank
+    p2 = parse_ptp_clock("PTP info\nOffset From Master(ns): 12")
+    assert p2["operational"] is True
+    # an explicit 0-port known clock is still dormant
+    p3 = parse_ptp_clock("PTP Device Type: Boundary clock\nNumber of PTP ports: 0")
+    assert p3["operational"] is False
+
+
 def test_parse_acl_hitcounts():
     out = """Extended IP access list RELAY
     10 permit udp any any eq 67 (1234 matches)

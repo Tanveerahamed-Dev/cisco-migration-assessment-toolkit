@@ -37,12 +37,15 @@ _FIND_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
 def _finding_key(f: dict) -> tuple:
-    """Stable identity for a punch-list finding across two runs: category + device-set + the title
-    with embedded counts normalized out (so 'Native VLAN 1 on 47 trunks' -> '... # trunks' matches
-    its 46-trunk successor instead of looking like one resolved + one opened)."""
-    title = re.sub(r"\d+", "#", str(f.get("title", "")))
+    """Stable identity for a punch-list finding across two runs: (category, FULL title, device-set).
+    The title is intentionally NOT digit-normalized: stripping digits collapsed DISTINCT per-identifier
+    findings that differ only by an embedded id (e.g. 'Fake FHRP redundancy (VLAN 20)' vs '(VLAN 21)'
+    on the same gateways) into one key, which could hide a real fix-and-new-break swap as 'no change'
+    in the cutover-validation verdict. Device order is normalized so the same finding on the same
+    devices matches regardless of listing order; an aggregated finding whose count changes honestly
+    shows as resolved+opened (its scope genuinely changed)."""
     devs = tuple(sorted(str(d) for d in (f.get("devices") or [])))
-    return (str(f.get("category", "")), title, devs)
+    return (str(f.get("category", "")), str(f.get("title", "")), devs)
 
 
 def compute_snapshot_delta(old: dict, new: dict) -> dict:
@@ -70,10 +73,12 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     # ---- punch-list findings opened vs resolved ----
     o_find = {_finding_key(f): f for f in (old.get("punchlist") or [])}
     n_find = {_finding_key(f): f for f in (new.get("punchlist") or [])}
-    opened = [n_find[k] for k in (set(n_find) - set(o_find))]
-    resolved = [o_find[k] for k in (set(o_find) - set(n_find))]
-    opened.sort(key=lambda f: _FIND_SEV_RANK.get(f.get("severity", ""), 9))
-    resolved.sort(key=lambda f: _FIND_SEV_RANK.get(f.get("severity", ""), 9))
+    # fully-deterministic order (set-difference iteration order is unstable): severity, then the
+    # finding's stable identity, so two runs of the diff workbook are byte-reproducible.
+    def _fsort(f: dict) -> tuple:
+        return (_FIND_SEV_RANK.get(f.get("severity", ""), 9), _finding_key(f))
+    opened = sorted((n_find[k] for k in (set(n_find) - set(o_find))), key=_fsort)
+    resolved = sorted((o_find[k] for k in (set(o_find) - set(n_find))), key=_fsort)
     n_opened_high = sum(1 for f in opened if f.get("severity") in ("Critical", "High"))
 
     # ---- verdict ----
