@@ -2925,12 +2925,17 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
                                      service_map: Optional[dict] = None,
                                      health_scores: Optional[list] = None,
                                      move_groups: Optional[list] = None,
-                                     punchlist: Optional[list] = None) -> dict:
+                                     punchlist: Optional[list] = None,
+                                     subnet_intelligence: Optional[dict] = None) -> dict:
     """NEW-V3.23.112: synthesize the prior layers into named APPLICATION DOMAINS (workloads) with
     footprint, criticality tier, health rollup, migration-wave span, a standards-grounded migration
-    playbook, and per-domain + cross-domain migration RISKS. Pure read; deterministic (sorted output);
-    tolerant of empty / oddly-typed inputs. See the block comment above for the research grounding of
-    each risk rule. Returns {domains, summary, cross_domain_risks, taxonomy_version}."""
+    playbook, and per-domain + cross-domain migration RISKS. NEW-V3.23.113: also connect the domains
+    into a dependency GRAPH -- `edges` (physical-link / shared-subnet / dual-homed couplings, each
+    confidence-tagged) + `keystones` (the most cross-coupled domains = widest migration blast radius)
+    + per-domain `degree`/`neighbors`, plus dependency-driven cross-domain risks. Pure read;
+    deterministic (sorted output); tolerant of empty / oddly-typed inputs. See the block comment above
+    for the research grounding. Returns {domains, summary, cross_domain_risks, edges, keystones,
+    taxonomy_version}."""
     from collections import Counter, defaultdict
     hosts = sorted(all_interfaces or {})
     ident = endpoint_identity or []
@@ -3142,9 +3147,95 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
                               "two produce inconsistent membership and intermittent multicast loss.",
                     "remediation": "Leave exactly one querier active in this subnet (lowest IP wins the election); "
                               "disable the others.", "standard": "RFC 4541"})
+    # ---- inter-domain dependency edges (NEW-V3.23.113) -----------------------------------------
+    # Project per-switch couplings up to domain PAIRS using strong, confidence-tagged signals only:
+    # physical inter-switch links (Confirmed), shared subnets (Inferred-high -- subnets are globally
+    # unique so no VLAN-id-reuse trap), and dual-homed NIC-teams whose legs span domains (Confirmed).
+    # Media multicast is folded in as an enrichment NOTE on edges that touch the media fabric rather
+    # than an invented edge (no per-(S,G) OIL collected -> honest). Undirected pairs.
+    name_of = {d["id"]: d["domain"] for d in out_domains}
+    edge_acc: Dict[Tuple[str, str], "Counter"] = defaultdict(Counter)
+
+    def _bump(a, b, kind, w=1):
+        if a and b and a != b:
+            edge_acc[tuple(sorted((a, b)))][kind] += w
+
+    for L in compute_topology_links(all_interfaces):                          # physical links
+        _bump(host_dom.get(L.get("a_host")), host_dom.get(L.get("b_host")), "physical-link")
+    subnet_doms: Dict[str, set] = defaultdict(set)                            # shared subnets
+    for r in ((subnet_intelligence or {}).get("per_device") or []):
+        dom = host_dom.get(r.get("host"))
+        if not dom:
+            continue
+        for s in (r.get("destination_subnets") or []):
+            subnet_doms[s].add(dom)
+        for s in (r.get("served_subnets") or []):
+            sub = s.get("subnet") if isinstance(s, dict) else s
+            if sub:
+                subnet_doms[sub].add(dom)
+    for doms in subnet_doms.values():
+        dl = sorted(doms)
+        for i in range(len(dl)):
+            for j in range(i + 1, len(dl)):
+                _bump(dl[i], dl[j], "shared-subnet")
+    for dh in (dep.get("dual_homed") or []):                                  # dual-homed NIC-teams
+        dl = sorted({host_dom.get(s) for s in (dh.get("switches") or [])} - {None})
+        for i in range(len(dl)):
+            for j in range(i + 1, len(dl)):
+                _bump(dl[i], dl[j], "dual-homed")
+
+    _ECONF = {"physical-link": "Confirmed-high", "dual-homed": "Confirmed", "shared-subnet": "Inferred-high"}
+    edges: List[dict] = []
+    for (a, b), kinds in edge_acc.items():
+        weight = sum(kinds.values())
+        conf = ("Confirmed-high" if "physical-link" in kinds
+                else "Confirmed" if "dual-homed" in kinds else "Inferred-high")
+        media = a == "media" or b == "media"
+        parts = []
+        if kinds.get("physical-link"): parts.append(f"{kinds['physical-link']} inter-switch link(s)")
+        if kinds.get("shared-subnet"): parts.append(f"{kinds['shared-subnet']} shared subnet(s)")
+        if kinds.get("dual-homed"): parts.append(f"{kinds['dual-homed']} dual-homed endpoint(s)")
+        note = "Make-before-break across this boundary; " if kinds.get("dual-homed") else ""
+        if media:
+            note += ("Media multicast may traverse this coupling -- preserve IGMP snooping/querier + PTP "
+                     "across the cutover.")
+        edges.append({"source": name_of.get(a, a), "target": name_of.get(b, b),
+                      "source_id": a, "target_id": b, "kinds": sorted(kinds.keys()),
+                      "weight": weight, "confidence": conf, "media": media,
+                      "detail": "; ".join(parts), "migration_note": note.strip()})
+    edges.sort(key=lambda e: (-e["weight"], e["source"], e["target"]))
+
+    deg: "Counter" = Counter(); neigh: Dict[str, set] = defaultdict(set)
+    for e in edges:
+        deg[e["source_id"]] += e["weight"]; deg[e["target_id"]] += e["weight"]
+        neigh[e["source_id"]].add(e["target"]); neigh[e["target_id"]].add(e["source"])
+    for d in out_domains:
+        d["degree"] = deg.get(d["id"], 0)
+        d["neighbors"] = sorted(neigh.get(d["id"], set()))
+    keystones = [{"domain": name_of.get(did, did), "degree": dg, "neighbors": sorted(neigh.get(did, set()))}
+                 for did, dg in deg.most_common(5)]
+
+    # dependency-driven cross-domain risks (fold into the same list as the querier risks)
+    if keystones and keystones[0]["degree"] > 0:
+        k = keystones[0]
+        cross.append({"severity": "Low", "kind": "keystone-domain", "vlan": "",
+            "title": f"{k['domain']} is the most cross-coupled domain (keystone)",
+            "detail": f"{k['domain']} couples to {len(k['neighbors'])} other domain(s) (weighted degree "
+                      f"{k['degree']}): {', '.join(k['neighbors'][:8])}. It has the widest cross-domain blast radius.",
+            "remediation": "Sequence this domain deliberately (not as an early pilot); validate every coupled "
+                           "domain after its cutover.", "standard": ""})
+    for d in out_domains:
+        if d["tier"] == "On-air critical" and d.get("degree", 0) > 0 and d.get("neighbors"):
+            cross.append({"severity": "Medium", "kind": "on-air-coupling", "vlan": "",
+                "title": f"On-air-critical domain '{d['domain']}' is coupled to {len(d['neighbors'])} other domain(s)",
+                "detail": f"{d['domain']} shares fabric / subnets / dual-homed endpoints with: "
+                          f"{', '.join(d['neighbors'][:8])}. A cutover in a coupled domain can disrupt the on-air path.",
+                "remediation": "Coordinate the cutover order with these domains and make-before-break shared "
+                               "links/legs; validate the on-air signal after each.", "standard": "SMPTE ST 2022-7"})
+
     cross.sort(key=lambda r: (_APP_SEV_RANK.get(r["severity"], 9),
                               int(r["vlan"]) if str(r["vlan"]).isdigit() else 0))
-    cross = cross[:50]
+    cross = cross[:60]
 
     by_tier = Counter(d["tier"] for d in out_domains)
     summary = {
@@ -3154,6 +3245,10 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
         "n_high_risk": sum(1 for d in out_domains if d["n_high_risk"]),
         "n_cross_domain_risks": len(cross),
         "ptp_boundary_clocked": any(d["ptp_boundary_clocked"] for d in out_domains),
+        "n_edges": len(edges),
+        "keystone_domain": keystones[0]["domain"] if keystones else "",
+        "n_on_air_coupled": sum(1 for d in out_domains
+                                if d["tier"] == "On-air critical" and d.get("degree", 0) > 0),
     }
-    return {"domains": out_domains, "summary": summary,
-            "cross_domain_risks": cross, "taxonomy_version": "app-domains/1"}
+    return {"domains": out_domains, "summary": summary, "cross_domain_risks": cross,
+            "edges": edges, "keystones": keystones, "taxonomy_version": "app-domains/2"}
