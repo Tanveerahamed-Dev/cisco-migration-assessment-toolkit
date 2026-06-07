@@ -2763,5 +2763,90 @@
     "Server: service/app reachability + the NIC-team peer leg stays up"
    ]
   }
+ },
+ "subnet_intelligence": {
+  "per_device": [
+   {
+    "host": "access1",
+    "is_l3": false,
+    "destination_subnets": [],
+    "destination_count": 0,
+    "reachable_count": 0,
+    "reachable_sources": {},
+    "reachable_sample": [],
+    "default_next_hop": "",
+    "served_subnets": [
+     {
+      "subnet": "10.0.10.0/24",
+      "gateway": "core1",
+      "vlan": "10"
+     },
+     {
+      "subnet": "10.0.30.0/24",
+      "gateway": "core1",
+      "vlan": "30"
+     }
+    ],
+    "bgp_received_count": 0
+   },
+   {
+    "host": "core1",
+    "is_l3": true,
+    "destination_subnets": [
+     "10.0.10.0/24",
+     "10.0.20.0/24",
+     "10.0.30.0/24"
+    ],
+    "destination_count": 3,
+    "reachable_count": 2,
+    "reachable_sources": {
+     "static": 2
+    },
+    "reachable_sample": [
+     {
+      "prefix": "10.0.0.0/16",
+      "source": "static",
+      "next_hop": "10.0.30.254"
+     },
+     {
+      "prefix": "192.168.99.0/24",
+      "source": "static",
+      "next_hop": "10.0.10.254"
+     }
+    ],
+    "default_next_hop": "10.0.10.254",
+    "served_subnets": [],
+    "bgp_received_count": 0
+   },
+   {
+    "host": "core2",
+    "is_l3": true,
+    "destination_subnets": [
+     "10.0.10.0/24",
+     "10.0.20.0/24"
+    ],
+    "destination_count": 2,
+    "reachable_count": 0,
+    "reachable_sources": {},
+    "reachable_sample": [],
+    "default_next_hop": "",
+    "served_subnets": [],
+    "bgp_received_count": 0
+   }
+  ],
+  "move_groups": [
+   {
+    "group": "",
+    "switches": 3,
+    "local_subnets": [
+     "10.0.10.0/24",
+     "10.0.20.0/24",
+     "10.0.30.0/24"
+    ],
+    "local_count": 3,
+    "remote_count": 2
+   }
+  ],
+  "bgp_received_collected": false
  }
 }

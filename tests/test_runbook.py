@@ -67,6 +67,21 @@ def _snap():
             "affinity": [{"vlan": "10", "total": 12, "classes": {"VM / Hypervisor": 12}, "dominant": "VM / Hypervisor"}],
             "per_switch_validation": {"sw1": ["Storage: datastore/LUN reachable AND the cluster peer is up"]},
         },
+        "subnet_intelligence": {
+            "per_device": [
+                {"host": "sw1", "is_l3": True, "destination_subnets": ["10.0.10.0/24"],
+                 "destination_count": 1, "reachable_count": 2, "reachable_sources": {"ospf": 2},
+                 "reachable_sample": [], "default_next_hop": "10.0.0.1", "served_subnets": [],
+                 "bgp_received_count": 0},
+                {"host": "sw2", "is_l3": False, "destination_subnets": [], "destination_count": 0,
+                 "reachable_count": 0, "reachable_sources": {}, "reachable_sample": [],
+                 "default_next_hop": "", "served_subnets": [{"subnet": "10.0.10.0/24", "gateway": "sw1", "vlan": "10"}],
+                 "bgp_received_count": 0},
+            ],
+            "move_groups": [{"group": "Group 1", "switches": 2, "local_subnets": ["10.0.10.0/24"],
+                             "local_count": 1, "remote_count": 3}],
+            "bgp_received_collected": False,
+        },
     }
 
 
@@ -119,6 +134,9 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     assert "Endpoint clusters & dependencies" in text
     assert "Service validation by endpoint class" in text
     assert "datastore/LUN reachable" in text
+    # subnet & routing reachability (§6.4) + source<->destination
+    assert "Subnet & routing reachability" in text
+    assert "Remote subnets to preserve" in text
 
 
 def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):

@@ -322,6 +322,34 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                for d in sorted(drift, key=lambda d: _SEV_ORDER.get(d.get("severity"), 9))],
               widths=[0.9, 2.8, 0.9, 4.0])
 
+    si = snap_dict.get("subnet_intelligence") or {}
+    pdv = si.get("per_device") or []
+    if pdv:
+        doc.add_heading("6.4 Subnet & routing reachability", level=2)
+        n_l3 = sum(1 for r in pdv if r.get("is_l3"))
+        bgp_note = ("BGP received-prefixes were collected." if si.get("bgp_received_collected")
+                    else f"BGP received-prefixes were NOT collected ({_CONF_UNKNOWN}); re-run with the "
+                         "new 'show ip bgp' command to populate them.")
+        doc.add_paragraph(
+            f"{n_l3} L3 device(s) terminate/route subnets; {len(pdv) - n_l3} L2 access switch(es) reach "
+            "their subnets transitively via a gateway SVI. Destination = subnets a device terminates "
+            f"({_CONF_CONFIRMED} from connected routes/SVIs); reachable = its route table "
+            f"({_CONF_CONFIRMED}-at-snapshot from 'show ip route'). {bgp_note}")
+        top = sorted([r for r in pdv if r.get("is_l3")],
+                     key=lambda r: -(r.get("destination_count", 0) + r.get("reachable_count", 0)))[:12]
+        doc.add_paragraph("L3 devices — subnets terminated vs reachable:")
+        table(["Switch", "Dest subnets", "Reachable", "Sources", "Default next-hop"],
+              [[r.get("host"), r.get("destination_count"), r.get("reachable_count"),
+                ", ".join(f"{k}:{v}" for k, v in (r.get("reachable_sources") or {}).items()),
+                r.get("default_next_hop", "")] for r in top], widths=[3.0, 1.1, 1.1, 2.4, 1.4])
+        mg = si.get("move_groups") or []
+        if mg:
+            doc.add_paragraph("Per move-group source↔destination (local subnets move with the group; "
+                              "remote subnets must stay reachable across the cutover):")
+            table(["Move group", "Switches", "Local subnets", "Remote subnets to preserve"],
+                  [[m.get("group") or "(group)", m.get("switches"), m.get("local_count"),
+                    m.get("remote_count")] for m in mg[:12]], widths=[2.0, 1.0, 1.4, 2.2])
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()
