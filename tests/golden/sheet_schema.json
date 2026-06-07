@@ -275,6 +275,17 @@
   "VLANs",
   "Note"
  ],
+ "Subnet Reachability": [
+  "Switch",
+  "Role",
+  "Destination subnets (terminates)",
+  "# Dest",
+  "Reachable (#)",
+  "Reachable sources",
+  "Default next-hop",
+  "L2: subnets via gateway",
+  "BGP recv (#)"
+ ],
  "Score Sensitivity": [
   "Perturbation",
   "Switches Changing Band",

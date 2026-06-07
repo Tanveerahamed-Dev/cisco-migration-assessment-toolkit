@@ -60,6 +60,23 @@ def parse_bgp_summary(output: str) -> List[Dict[str, str]]:
     return rows
 
 
+def parse_bgp_table(output: str) -> List[str]:
+    """NEW-V3.23.97: 'show ip bgp' / 'show bgp ipv4 unicast' -> sorted distinct IPv4 prefixes in the
+    BGP RIB (what this device learned via BGP = its received/best prefixes). [] when absent/empty.
+    Tolerant of the leading status codes (*, >, s, d, h, r, i, e) and the header/legend lines."""
+    out: set = set()
+    if not output:
+        return []
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s or s.lower().startswith(("network", "bgp table", "status codes", "origin codes")):
+            continue
+        m = re.match(r"^[*>sdhrieSx&\s]*?(\d{1,3}(?:\.\d{1,3}){3}/\d{1,2})\b", s)
+        if m:
+            out.add(m.group(1))
+    return sorted(out)
+
+
 def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
     routes: Dict[str, Dict[str, object]] = {}
     if not output:

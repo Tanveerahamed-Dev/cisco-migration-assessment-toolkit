@@ -701,6 +701,42 @@ def write_endpoint_dependencies_sheet(wb, dependencies: dict) -> None:
     logger.info(f"  [OK] '{ENDPOINT_DEPS_SHEET_NAME}' sheet: {n} dependency row(s)")
 
 
+SUBNET_REACH_SHEET_NAME = "Subnet Reachability"   # per-device subnet source/destination (NEW-V3.23.97)
+
+def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
+    """Write (or replace) 'Subnet Reachability': per device, which subnets it is the DESTINATION for
+    (terminates / gateways) vs can REACH (route table) vs -- for an L2 access switch -- which subnets
+    its endpoints live in (via the SVI that gateways their VLAN). NEW-V3.23.97: renders the precomputed
+    compute_subnet_intelligence (one source of truth). Route depth is from the full 'show ip route';
+    BGP-received is populated only when the new 'show ip bgp' collection is present."""
+    if SUBNET_REACH_SHEET_NAME in wb.sheetnames:
+        del wb[SUBNET_REACH_SHEET_NAME]
+    ws = wb.create_sheet(SUBNET_REACH_SHEET_NAME)
+    cols = ["Switch", "Role", "Destination subnets (terminates)", "# Dest", "Reachable (#)",
+            "Reachable sources", "Default next-hop", "L2: subnets via gateway", "BGP recv (#)"]
+    _census_header(ws, cols)
+    DAT = Font(name="Calibri", size=10)
+    AL = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    CN = Alignment(horizontal="center", vertical="center")
+    r = 2
+    for rec in (subnet_intelligence or {}).get("per_device", []):
+        dest = rec.get("destination_subnets", [])
+        srcs = ", ".join(f"{k}:{v}" for k, v in (rec.get("reachable_sources") or {}).items())
+        served = "; ".join(f"{s.get('subnet')} (gw {s.get('gateway')})" for s in rec.get("served_subnets", [])[:8])
+        vals = [rec.get("host"), "L3" if rec.get("is_l3") else "L2",
+                ", ".join(dest[:12]) + (f" (+{len(dest) - 12})" if len(dest) > 12 else ""),
+                rec.get("destination_count", 0), rec.get("reachable_count", 0), srcs,
+                rec.get("default_next_hop", ""), served, rec.get("bgp_received_count", 0)]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT
+            c.alignment = CN if col in (2, 4, 5, 9) else AL
+        r += 1
+    _census_autofit(ws, len(cols), r - 1)
+    ws.column_dimensions["C"].width = 40; ws.column_dimensions["H"].width = 44
+    logger.info(f"  [OK] '{SUBNET_REACH_SHEET_NAME}' sheet: "
+                f"{len((subnet_intelligence or {}).get('per_device', []))} device(s)")
+
+
 def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
     if name not in idmap:
         idmap[name] = f"n{len(idmap)}"

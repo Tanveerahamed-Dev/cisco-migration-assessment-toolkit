@@ -2151,6 +2151,113 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
             "affinity": affinity, "per_switch_validation": per_switch_validation}
 
 
+# =============================================================================
+# Subnet & routing reachability intelligence (NEW-V3.23.97, plan workstream A). Per device: which
+# subnets it is the DESTINATION for (terminates / gateways) vs which it can REACH (route table) vs,
+# for an L2 access switch, which subnets its endpoints live in (transitively, via the SVI that
+# gateways their VLAN) -- and, per move-group, the source<->destination split (local subnets that
+# move with the group vs remote subnets that must stay reachable across the cutover). Built from the
+# already-collected full 'show ip route' (passed in parsed) + the SVIs on InterfaceData; received BGP
+# prefixes fold in when the new 'show ip bgp' collection is present (else reported as not-collected).
+# =============================================================================
+def _svi_network(svi_ip: str) -> str:
+    """An SVI address ('ip/mask' CIDR, or 'ip mask', or bare ip) -> its connected network in CIDR, or
+    '' if unparseable. Handles both forms seen in the wild."""
+    import ipaddress
+    s = (svi_ip or "").strip()
+    if not s:
+        return ""
+    try:
+        if "/" in s:
+            return str(ipaddress.ip_network(s.split()[0], strict=False))
+        parts = s.split()
+        if len(parts) >= 2:
+            return str(ipaddress.ip_network(f"{parts[0]}/{parts[1]}", strict=False))
+    except ValueError:
+        return ""
+    return ""
+
+
+def compute_subnet_intelligence(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                                routes_full: Optional[dict] = None,
+                                move_groups: Optional[list] = None,
+                                bgp_received: Optional[dict] = None) -> dict:
+    """NEW-V3.23.97: per-device subnet/routing reachability + per-move-group source<->destination view.
+    `routes_full` = {host: parse_ip_routes output} (the FULL table, not the snapshot's scoped subset);
+    `bgp_received` = {host: [prefix,...]} from the new 'show ip bgp' collection (optional). Pure read.
+    Returns {per_device:[...], move_groups:[...], bgp_received_collected:bool}."""
+    from collections import Counter, defaultdict
+    routes_full = routes_full or {}
+    bgp_received = bgp_received or {}
+
+    vlan_gw: Dict[int, list] = defaultdict(list)        # vid -> [(gateway_host, subnet)]
+    dev_svi_subnets: Dict[str, set] = defaultdict(set)
+    for host, ifaces in all_interfaces.items():
+        for port, d in ifaces.items():
+            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
+            if m:
+                net = _svi_network(getattr(d, "svi_ip", "") or "")
+                if net:
+                    vlan_gw[int(m.group(1))].append((host, net))
+                    dev_svi_subnets[host].add(net)
+
+    per_device = []; reach_full: Dict[str, set] = {}
+    for host in sorted(all_interfaces):
+        rdb = routes_full.get(host) or {}
+        dest = set(dev_svi_subnets.get(host, set())); reach = []; src_c: Counter = Counter(); default_nh = ""
+        for prefix, info in rdb.items():
+            ents = info.get("entries") if isinstance(info, dict) else None
+            ents = ents or [info if isinstance(info, dict) else {}]
+            src = ""; nh = ""
+            for e in ents:
+                if not src and e.get("source"):
+                    src = e.get("source")
+                if not nh and e.get("next_hop"):
+                    nh = e.get("next_hop")
+            src = (src or "").lower()
+            if prefix == "0.0.0.0/0":
+                default_nh = nh or default_nh; continue
+            if src in ("connected", "local"):
+                if src == "connected":
+                    dest.add(prefix)
+                continue
+            reach.append({"prefix": prefix, "source": src or "?", "next_hop": nh}); src_c[src or "?"] += 1
+        is_l3 = bool(rdb) or bool(dev_svi_subnets.get(host))
+        served = []
+        if not is_l3:
+            seen = set()
+            for port, d in all_interfaces[host].items():
+                if (getattr(d, "switchport_mode", "") or "") == "Access" and (getattr(d, "vlan", "") or "").isdigit():
+                    for gw, net in vlan_gw.get(int(d.vlan), []):
+                        if net not in seen:
+                            seen.add(net); served.append({"subnet": net, "gateway": gw, "vlan": d.vlan})
+        reach_full[host] = {e["prefix"] for e in reach}
+        per_device.append({
+            "host": host, "is_l3": is_l3,
+            "destination_subnets": sorted(dest), "destination_count": len(dest),
+            "reachable_count": len(reach), "reachable_sources": dict(src_c),
+            "reachable_sample": sorted(reach, key=lambda e: e["prefix"])[:25],
+            "default_next_hop": default_nh,
+            "served_subnets": sorted(served, key=lambda s: s["subnet"])[:30],
+            "bgp_received_count": len(bgp_received.get(host, [])),
+        })
+
+    dest_by = {r["host"]: set(r["destination_subnets"]) for r in per_device}
+    served_by = {r["host"]: {s["subnet"] for s in r["served_subnets"]} for r in per_device}
+    mg = []
+    for g in (move_groups or []):
+        members = g.get("switches", []); local: set = set(); remote: set = set()
+        for h in members:
+            local |= dest_by.get(h, set()) | served_by.get(h, set())
+        for h in members:
+            remote |= reach_full.get(h, set())
+        remote -= local
+        mg.append({"group": g.get("group", ""), "switches": len(members),
+                   "local_subnets": sorted(local)[:50], "local_count": len(local),
+                   "remote_count": len(remote)})
+    return {"per_device": per_device, "move_groups": mg, "bgp_received_collected": bool(bgp_received)}
+
+
 def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                               all_device_physical: list) -> List[dict]:
     """NEW-V3.23.93: evidence-led FALSE-HEALTH / operational-drift detector. Surfaces the migration
