@@ -26,6 +26,81 @@ _DIFF_FIELDS = ["status", "switchport_mode", "vlan", "trunk_native_vlan",
 def _macset(s: str) -> set:
     return set(t for t in re.split(r"[,\s;]+", s or "") if t)
 
+
+# Pre/post-cutover VALIDATION (NEW-V3.23.106). Beyond the raw interface/SVI/MAC diff, compare the
+# COMPUTED analysis between two snapshots so an operator can answer "did the cutover make anything
+# worse?": per-switch health-band shifts and the consolidated punch-list findings that OPENED vs
+# RESOLVED (the punch-list already rolls up all finding sources, deduped + severity-ranked). Pure
+# read of two snapshot_state() dicts; tolerant of older snapshots that lack the computed keys.
+_BAND_RANK = {"Excellent": 0, "Good": 1, "Fair": 2, "Poor": 3, "Critical": 4, "Insufficient Data": 5}
+_FIND_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+
+
+def _finding_key(f: dict) -> tuple:
+    """Stable identity for a punch-list finding across two runs: category + device-set + the title
+    with embedded counts normalized out (so 'Native VLAN 1 on 47 trunks' -> '... # trunks' matches
+    its 46-trunk successor instead of looking like one resolved + one opened)."""
+    title = re.sub(r"\d+", "#", str(f.get("title", "")))
+    devs = tuple(sorted(str(d) for d in (f.get("devices") or [])))
+    return (str(f.get("category", "")), title, devs)
+
+
+def compute_snapshot_delta(old: dict, new: dict) -> dict:
+    """Migration-validation delta between two snapshots: switch/interface counts, per-switch health-band
+    shifts (regressed vs improved), punch-list findings opened vs resolved, and an overall verdict.
+    Returns a dict; every section degrades to empty when a snapshot lacks the computed keys."""
+    od, nd = old.get("devices", {}) or {}, new.get("devices", {}) or {}
+    oi, ni = old.get("interfaces", {}) or {}, new.get("interfaces", {}) or {}
+
+    # ---- health-band shifts (per switch present in BOTH runs) ----
+    oh = {r.get("switch"): r for r in (old.get("health_scores") or [])}
+    nh = {r.get("switch"): r for r in (new.get("health_scores") or [])}
+    regressed: List[dict] = []
+    improved: List[dict] = []
+    for sw in sorted(set(oh) & set(nh)):
+        ob, nb = oh[sw].get("band", ""), nh[sw].get("band", "")
+        orank, nrank = _BAND_RANK.get(ob, 9), _BAND_RANK.get(nb, 9)
+        if nrank == orank:
+            continue
+        row = {"switch": sw, "old_band": ob, "new_band": nb,
+               "old_score": oh[sw].get("score", ""), "new_score": nh[sw].get("score", "")}
+        (regressed if nrank > orank else improved).append(row)
+    regressed.sort(key=lambda r: -_BAND_RANK.get(r["new_band"], 0))
+
+    # ---- punch-list findings opened vs resolved ----
+    o_find = {_finding_key(f): f for f in (old.get("punchlist") or [])}
+    n_find = {_finding_key(f): f for f in (new.get("punchlist") or [])}
+    opened = [n_find[k] for k in (set(n_find) - set(o_find))]
+    resolved = [o_find[k] for k in (set(o_find) - set(n_find))]
+    opened.sort(key=lambda f: _FIND_SEV_RANK.get(f.get("severity", ""), 9))
+    resolved.sort(key=lambda f: _FIND_SEV_RANK.get(f.get("severity", ""), 9))
+    n_opened_high = sum(1 for f in opened if f.get("severity") in ("Critical", "High"))
+
+    # ---- verdict ----
+    removed_sw = sorted(set(od) - set(nd))
+    if n_opened_high or regressed:
+        verdict = "REGRESSED"
+        note = (f"{n_opened_high} new High/Critical finding(s); {len(regressed)} switch(es) dropped a "
+                "health band. Investigate before declaring the cutover good.")
+    elif opened or removed_sw:
+        verdict = "REVIEW"
+        note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present. "
+                "Confirm these are expected.")
+    else:
+        verdict = "CLEAN"
+        note = "No health-band regressions and no new findings — post-cutover state is no worse than pre."
+
+    return {
+        "switches": {"old": len(od), "new": len(nd),
+                     "added": sorted(set(nd) - set(od)), "removed": removed_sw},
+        "interfaces": {"old": sum(len(v) for v in oi.values()), "new": sum(len(v) for v in ni.values())},
+        "health": {"regressed": regressed, "improved": improved,
+                   "n_regressed": len(regressed), "n_improved": len(improved)},
+        "findings": {"opened": opened, "resolved": resolved, "n_opened": len(opened),
+                     "n_resolved": len(resolved), "n_opened_high": n_opened_high},
+        "verdict": verdict, "verdict_note": note,
+    }
+
 def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
     SVI Changes) comparing two snapshot_state() dicts."""
@@ -57,23 +132,36 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
 
     oi, ni = old.get("interfaces", {}), new.get("interfaces", {})
     od, nd = old.get("devices", {}), new.get("devices", {})
+    delta = compute_snapshot_delta(old, new)   # NEW-V3.23.106: migration-validation analysis
 
-    # Summary
+    # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
     added_sw = sorted(set(nd) - set(od)); removed_sw = sorted(set(od) - set(nd))
     o_if = sum(len(v) for v in oi.values()); n_if = sum(len(v) for v in ni.values())
+    _VERDICT_FILL = {"CLEAN": "C6EFCE", "REVIEW": "FFEB9C", "REGRESSED": "FFC7CE"}
     metrics = [
+        ("CUTOVER VERDICT", "", delta["verdict"], delta["verdict_note"]),
         ("Switches", len(od), len(nd), len(nd) - len(od)),
         ("Switches added", "", "", ", ".join(added_sw) or "0"),
         ("Switches removed", "", "", ", ".join(removed_sw) or "0"),
         ("Interfaces (total)", o_if, n_if, n_if - o_if),
+        ("Health bands regressed", "", delta["health"]["n_regressed"],
+         ", ".join(r["switch"] for r in delta["health"]["regressed"]) or "0"),
+        ("Health bands improved", "", delta["health"]["n_improved"], delta["health"]["n_improved"]),
+        ("Findings opened", "", delta["findings"]["n_opened"],
+         f"{delta['findings']['n_opened_high']} High/Critical"),
+        ("Findings resolved", "", delta["findings"]["n_resolved"], delta["findings"]["n_resolved"]),
     ]
     r = 2
     for m in metrics:
         for c, v in enumerate(m, 1):
             cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+        if m[0] == "CUTOVER VERDICT":
+            vc = ws.cell(row=r, column=3)
+            vc.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(delta["verdict"], "FFFFFF"))
+            vc.font = Font(name="Calibri", bold=True, size=11)
         r += 1
-    autofit(ws, 4)
+    autofit(ws, 4); ws.column_dimensions["D"].width = 70
 
     # Interface Changes
     ws = sheet("Interface Changes", ["Hostname", "Port", "Change", "Field: Old -> New"])
@@ -142,6 +230,39 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
                 cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
             r += 1
     autofit(ws, 4); ws.column_dimensions["D"].width = 60
+
+    # Health Shifts (NEW-V3.23.106) — per-switch health-band change, regressions first
+    ws = sheet("Health Shifts", ["Switch", "Direction", "Old band", "New band", "Old score", "New score"])
+    r = 2
+    for direction, rows in (("REGRESSED", delta["health"]["regressed"]),
+                            ("improved", delta["health"]["improved"])):
+        for d in rows:
+            vals = [d["switch"], direction, d["old_band"], d["new_band"], d["old_score"], d["new_score"]]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            if direction == "REGRESSED":
+                ws.cell(row=r, column=2).fill = PatternFill("solid", fgColor="FFC7CE")
+            r += 1
+    if r == 2:
+        ws.cell(row=2, column=1, value="No health-band changes between the two snapshots.").font = DF
+    autofit(ws, 6)
+
+    # Findings Delta (NEW-V3.23.106) — consolidated punch-list items opened vs resolved by the cutover
+    ws = sheet("Findings Delta", ["State", "Severity", "Category", "Devices", "Finding"])
+    r = 2
+    for state, items in (("OPENED", delta["findings"]["opened"]),
+                         ("resolved", delta["findings"]["resolved"])):
+        for f in items:
+            vals = [state, f.get("severity", ""), f.get("category", ""),
+                    ", ".join(str(d) for d in (f.get("devices") or []))[:60], f.get("title", "")]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            ws.cell(row=r, column=1).fill = PatternFill(
+                "solid", fgColor="FFC7CE" if state == "OPENED" else "C6EFCE")
+            r += 1
+    if r == 2:
+        ws.cell(row=2, column=1, value="No punch-list findings opened or resolved.").font = DF
+    autofit(ws, 5); ws.column_dimensions["E"].width = 70
 
     wb.save(out_path)
 
