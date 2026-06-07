@@ -1484,7 +1484,7 @@ def write_causality_chains_sheet(wb, chains: list) -> None:
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
     r = 2
-    for sev, trig, mech, impact, mit in chains:
+    for sev, trig, mech, impact, mit, *_hosts in chains:   # V3.23.92: chains carry a trailing hosts tuple (sheet ignores it)
         for col, v in enumerate([sev, trig, mech, impact, mit], 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
             if col == 1 and sev in _SEV_FILL:

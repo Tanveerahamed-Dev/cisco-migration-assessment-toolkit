@@ -4707,8 +4707,13 @@ function causalityList(){
   const out=[];
   const pyc=(SNAP&&Array.isArray(SNAP.causality))?SNAP.causality:null;
   if(pyc&&pyc.length){
-    pyc.forEach((c,i)=>{const txt=(c.trigger||"")+" "+(c.impact||"")+" "+(c.mechanism||"");
-      const hosts=(MODEL?MODEL.hosts:[]).filter(h=>txt.indexOf(h)>=0).slice(0,6);
+    pyc.forEach((c,i)=>{
+      // V3.23.92: prefer the explicit host list the collector now emits (one source of truth; exact).
+      // Fall back to substring-scanning the prose only for older snapshots that predate c.hosts — that
+      // scan over-highlighted any host whose name was a substring of another's.
+      const hosts=Array.isArray(c.hosts)
+        ? c.hosts.filter(h=>MODEL&&MODEL.hosts.includes(h)).slice(0,6)
+        : (MODEL?MODEL.hosts:[]).filter(h=>((c.trigger||"")+" "+(c.impact||"")+" "+(c.mechanism||"")).indexOf(h)>=0).slice(0,6);
       out.push({key:"struct-"+i, kind:"Structural SPOF", sev:c.severity, tok:causalSevToken(c.severity),
         title:c.trigger||("Structural SPOF "+(i+1)), hosts,
         trigger:c.trigger||"", mechanism:c.mechanism||"", impact:c.impact||"", mitigation:c.mitigation||""});});

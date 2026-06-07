@@ -142,8 +142,10 @@ def test_causality_aggregates_transit_and_uplink_per_host():
     transit = [c for c in chains if c[1] == "Transit switch T is removed / migrated"]
     assert len(transit) == 1                               # ONE row for T, not one per VLAN
     assert transit[0][0] == "High" and "2 VLAN(s)" in transit[0][2] and "10, 20" in transit[0][2]
+    assert transit[0][5] == ("T",)                         # V3.23.92: explicit host tuple, not parsed from prose
     uplink = [c for c in chains if c[1].startswith("Uplink A ")]
     assert len(uplink) == 1 and "2 VLAN(s)" in uplink[0][2]
+    assert uplink[0][5] == ("A",)
 
 
 # --------------------------------------------------------------------------- #
