@@ -1083,6 +1083,81 @@ def write_service_map_sheet(wb, sm: dict) -> None:
                 f"{mc.get('active_interfaces', 0)} multicast iface(s)")
 
 
+MULTICAST_INTEL_SHEET_NAME = "Multicast Intelligence"   # NEW-V3.23.115 (media-fabric deep-dive)
+
+def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
+    """Write 'Multicast Intelligence' from compute_multicast_intelligence(): MAC-address aliasing (RFC 4541),
+    IGMP querier coverage, the PTP timing tree (ST 2059), and the per-group media census (with L2 MAC)."""
+    if MULTICAST_INTEL_SHEET_NAME in wb.sheetnames:
+        del wb[MULTICAST_INTEL_SHEET_NAME]
+    ws = wb.create_sheet(MULTICAST_INTEL_SHEET_NAME)
+    m = mi or {}
+    s = m.get("summary") or {}
+    HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
+    DAT = Font(name="Calibri", size=10)
+    ws.cell(1, 1, "Multicast / media-fabric intelligence:").font = Font(bold=True, size=10)
+    summ = (f"{s.get('n_groups', 0)} group(s) ({s.get('n_av_groups', 0)} broadcast/AV) · "
+            f"{s.get('n_mac_clashes', 0)} MAC-alias clash(es) · {s.get('n_querier_gaps', 0)} querier gap(s) · "
+            f"{s.get('n_ptp_dormant', 0)}/{s.get('n_ptp_clocks', 0)} PTP dormant · "
+            f"{s.get('n_active_interfaces', 0)} mcast iface(s) / {s.get('n_active_switches', 0)} switch(es)")
+    c0 = ws.cell(1, 2, summ); c0.font = Font(size=10)
+    c0.alignment = Alignment(horizontal="left", wrap_text=True)
+    r = [3]   # boxed row counter so the nested helpers can advance it
+
+    def section(title):
+        ws.cell(r[0], 1, title).font = Font(bold=True); r[0] += 1
+
+    def header(cols):
+        for i, h in enumerate(cols, 1):
+            c = ws.cell(r[0], i, h); c.font = HDR; c.fill = HFILL
+            c.alignment = Alignment(horizontal="center")
+        r[0] += 1
+
+    section("MAC-address aliasing (RFC 4541 — IPv4 multicast is 32:1 into L2 MACs)")
+    aliases = m.get("mac_aliases") or []
+    if not aliases:
+        ws.cell(r[0], 1, "None — no two groups collapse to the same multicast MAC."); r[0] += 1
+    else:
+        header(["L2 MAC", "Overlapping groups", "On-air involved"])
+        for a in aliases:
+            ws.cell(r[0], 1, a.get("mac")).font = DAT
+            ws.cell(r[0], 2, ", ".join(a.get("groups") or [])).font = DAT
+            ws.cell(r[0], 3, "yes" if a.get("has_av") else "").font = DAT
+            r[0] += 1
+    r[0] += 1
+
+    q = m.get("querier") or {}
+    section("IGMP querier coverage (RFC 4541)")
+    ws.cell(r[0], 1, "Multicast SVI VLANs"); ws.cell(r[0], 3, len(q.get("multicast_vlans") or [])); r[0] += 1
+    ws.cell(r[0], 1, "VLANs with a querier"); ws.cell(r[0], 3, q.get("n_querier_vlans", 0)); r[0] += 1
+    gaps = q.get("gap_vlans") or []
+    ws.cell(r[0], 1, "Multicast VLANs WITHOUT a querier")
+    ws.cell(r[0], 3, ", ".join(gaps) if gaps else "none (all covered)"); r[0] += 2
+
+    p = m.get("ptp") or {}
+    section("PTP timing tree (SMPTE ST 2059)")
+    ws.cell(r[0], 1, "PTP clocks"); ws.cell(r[0], 3, p.get("n_clocks", 0)); r[0] += 1
+    ws.cell(r[0], 1, "Operational boundary clocks"); ws.cell(r[0], 3, p.get("n_operational", 0)); r[0] += 1
+    ws.cell(r[0], 1, "Dormant (not boundary-clocked)"); ws.cell(r[0], 3, p.get("n_dormant", 0)); r[0] += 1
+    gms = p.get("grandmasters") or []
+    ws.cell(r[0], 1, "Grandmaster(s)"); ws.cell(r[0], 3, ", ".join(gms) if gms else "none observed"); r[0] += 2
+
+    section(f"Group census ({len(m.get('groups') or [])})")
+    header(["Group", "L2 MAC", "Category", "On-air", "Source", "Name"])
+    for g in (m.get("groups") or []):
+        vals = [g.get("group"), g.get("mac"), g.get("category"), "yes" if g.get("on_air") else "",
+                g.get("source"), g.get("name")]
+        for i, v in enumerate(vals, 1):
+            ws.cell(r[0], i, v).font = DAT
+        r[0] += 1
+
+    for i, w in enumerate([20, 18, 16, 8, 16, 26], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{MULTICAST_INTEL_SHEET_NAME}' sheet: {s.get('n_groups', 0)} group(s), "
+                f"{s.get('n_mac_clashes', 0)} MAC clash(es), {s.get('n_querier_gaps', 0)} querier gap(s)")
+
+
 COLLECTION_COMPLETENESS_SHEET_NAME = "Collection Completeness"   # NEW-V3.23.109
 
 def write_collection_completeness_sheet(wb, cc: dict) -> None:

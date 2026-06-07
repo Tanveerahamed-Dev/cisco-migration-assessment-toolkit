@@ -264,6 +264,14 @@
   "Switches",
   "Evidence"
  ],
+ "Multicast Intelligence": [
+  "Multicast / media-fabric intelligence:",
+  "0 group(s) (0 broadcast/AV) \u00b7 0 MAC-alias clash(es) \u00b7 0 querier gap(s) \u00b7 0/0 PTP dormant \u00b7 0 mcast iface(s) / 0 switch(es)",
+  null,
+  null,
+  null,
+  null
+ ],
  "Collection Completeness": [
   "Inventory",
   3,

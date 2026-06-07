@@ -335,6 +335,7 @@ from cisco_toolkit.analyze import (
     compute_protocol_intelligence,                     # NEW-V3.23.100 (protocol-state doctrine: cause + remediation)
     compute_service_map,                               # NEW-V3.23.101 (L4 service map from ACL ports + multicast activity)
     compute_ptp_readiness,                             # NEW-V3.23.108 (PTP / media-timing readiness -> punch-list)
+    compute_multicast_intelligence,                    # NEW-V3.23.115 (media-fabric deep-dive: MAC-alias / querier / PTP tree)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
@@ -375,6 +376,7 @@ from cisco_toolkit.excel import (
     write_migration_scenarios_sheet,                            # NEW-V3.23.98 (per-group cutover scenario)
     write_protocol_intelligence_sheet,                          # NEW-V3.23.100 (protocol-state cause + remediation)
     write_service_map_sheet,                                     # NEW-V3.23.101 (L4 service map + multicast activity)
+    write_multicast_intelligence_sheet,                          # NEW-V3.23.115 (media-fabric multicast intelligence)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
@@ -1574,6 +1576,12 @@ def main():
                              igmp_groups=all_igmp_groups, ptp=all_ptp,
                              igmp_queriers=all_igmp_queriers, acl_hits=all_acl_hits)
     _run_phase("Service Map sheet", write_service_map_sheet, wb, service_map)
+    # Phase 27c-bis: Multicast Intelligence (NEW-V3.23.115). Media-fabric deep-dive over service_map.multicast
+    # (MAC-address aliasing / IGMP querier coverage / PTP timing tree). Compute once -> sheet + snapshot +
+    # punch-list fold (one source of truth).
+    multicast_intelligence = _run_phase("Multicast intelligence", compute_multicast_intelligence,
+                                        service_map, all_interfaces, _default={})
+    _run_phase("Multicast Intelligence sheet", write_multicast_intelligence_sheet, wb, multicast_intelligence)
 
     # Phase 27d: Collection completeness (NEW-V3.23.109). The pre-assessment blind-spot report -- which
     # INVENTORY (devices.json) devices were not / only partially collected, so the gaps are explicit
@@ -1650,11 +1658,15 @@ def main():
     _drift = _run_phase("Operational drift", compute_operational_drift,
                         all_interfaces, all_device_physical, _default=[])      # NEW-V3.23.93 (false-health)
     _ptp_readiness = _run_phase("PTP readiness", compute_ptp_readiness, service_map, _default=[])  # NEW-V3.23.108
+    # NEW-V3.23.115: fold the media-fabric findings (MAC-aliasing / IGMP querier gaps) into the punch-list;
+    # PTP is already folded via _ptp_readiness, so exclude the ptp-dormant risk to avoid a duplicate item.
+    _media_risks = [r for r in ((multicast_intelligence or {}).get("risks") or [])
+                    if r.get("kind") in ("mac-alias", "querier-gap")]
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
                            l2=_l2, hostname_mismatches=_hostname_mismatches, drift=_drift,
-                           ptp_readiness=_ptp_readiness, _default=[])
+                           ptp_readiness=_ptp_readiness, media_risks=_media_risks, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
 
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
@@ -1698,6 +1710,7 @@ def main():
     snap_dict["protocol_health"] = protocol_health                   # NEW-V3.22
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
+    snap_dict["multicast_intelligence"] = multicast_intelligence     # NEW-V3.23.115 (media-fabric deep-dive; reused from Phase 27c-bis)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
