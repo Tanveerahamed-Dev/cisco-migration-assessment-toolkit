@@ -221,13 +221,38 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         f"In scope: the {n_dev} Cisco switches present in the collected dataset and their "
         "configuration, interface, CDP/LLDP, STP, FHRP/SVI, and routing-adjacency state.")
     doc.add_paragraph("Dataset limits (these bound every claim below):", style="List Bullet")
+    _mc_collected = ((snap_dict.get("service_map") or {}).get("multicast") or {}).get("group_level_collected")
+    _mc_limit = ("Multicast / PTP group membership IS collected; QoS baselines are not — and PTP lock state "
+                 "is read from `show ptp clock`, not observed over time."
+                 if _mc_collected else
+                 "Multicast / PTP / QoS baselines are not collected — broadcast-media timing health is Unknown.")
     for t in (
         "No live forwarding/ARP-aging telemetry — endpoint presence is a snapshot, not a census over time.",
         "Topology is CDP/LLDP-derived: links to off-scan or non-advertising devices are Unknown.",
-        "Multicast / PTP / QoS baselines are not collected — broadcast-media timing health is Unknown.",
+        _mc_limit,
         "Active FHRP ownership and failover behaviour are inferred from config, not observed over a failover.",
     ):
         doc.add_paragraph(t, style="List Bullet 2")
+
+    # Collection completeness / blind spots (NEW-V3.23.109): make the un-/partially-collected inventory
+    # devices explicit -- every finding is only as trustworthy as the data behind it.
+    cc = snap_dict.get("collection_completeness") or {}
+    cs = cc.get("summary") or {}
+    blind = cc.get("devices") or []
+    if cs.get("inventory"):
+        doc.add_heading("2.1 Collection completeness (assessment blind spots)", level=2)
+        doc.add_paragraph(
+            f"Of {cs.get('inventory', 0)} inventory device(s): {cs.get('complete', 0)} fully collected, "
+            f"{cs.get('partial', 0)} partial, {cs.get('not_collected', 0)} NOT collected. The not-/partially-"
+            f"collected devices below are assessment blind spots ({_CONF_UNKNOWN} state) — re-collect them "
+            "before relying on the findings for those devices; a missing device is not a healthy device.")
+        if blind:
+            table(["Status", "Device", "Data quality", "Missing essential commands"],
+                  [[d.get("status", ""), d.get("host", ""), f"{d.get('data_quality', 0)}%",
+                    ", ".join(d.get("missing", []))] for d in blind[:40]],
+                  widths=[1.3, 2.8, 1.0, 3.3])
+            if len(blind) > 40:
+                doc.add_paragraph(f"…and {len(blind) - 40} more — see the 'Collection Completeness' sheet.")
 
     # ===== 3. Scenario Classification =====
     doc.add_heading("3. Scenario Classification", level=1)
