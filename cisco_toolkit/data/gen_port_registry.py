@@ -178,9 +178,9 @@ def build(offline: bool = False) -> int:
             print(f"WARN: IANA fetch failed ({type(e).__name__}: {e}); curated overlay only", file=sys.stderr)
 
     # overlay wins (category/broadcast/note authoritative; relabels service)
-    for (port, proto), (svc, cat, bc, note) in _OVERLAY.items():
-        for p in _expand(proto):
-            rows[(port, p)] = [svc, cat, int(bc), note]
+    for (oport, oproto), (svc, cat, bc, note) in _OVERLAY.items():
+        for p in _expand(oproto):
+            rows[(oport, p)] = [svc, cat, int(bc), note]
 
     lines = ["\t".join((str(port), proto, svc, cat, str(bc), note))
              for (port, proto), (svc, cat, bc, note) in sorted(rows.items())]
