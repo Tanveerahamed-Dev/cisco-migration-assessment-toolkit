@@ -876,10 +876,32 @@ def write_application_intelligence_sheet(wb, ai: dict) -> None:
                                          vertical="top", wrap_text=col in (4, 6))
             r += 1
 
+    # Recommended cutover order block (NEW-V3.23.114): the domains ordered lowest-risk pilot first.
+    order = a.get("cutover_order") or []
+    if order:
+        r += 1
+        ws.cell(row=r, column=1,
+                value="Recommended cutover order (lowest-risk pilot first)").font = Font(bold=True); r += 1
+        for i, h in enumerate(["#", "Band", "Domain", "Tier", "Score", "Rationale"], 1):
+            cell = ws.cell(row=r, column=i, value=h); cell.font = Font(bold=True, size=10)
+        r += 1
+        BANDFILL = {"Pilot": "D9EAD3", "Early": "E2EFDA", "Mid": "FFF2CC", "Late": "FCE4D6", "Last": "F4CCCC"}
+        for c in order:
+            vals = [c.get("order"), c.get("band"), c.get("domain"), c.get("tier"), c.get("score"),
+                    c.get("rationale")]
+            for col, v in enumerate(vals, 1):
+                cc = ws.cell(row=r, column=col, value=v); cc.font = DAT
+                cc.alignment = Alignment(horizontal="center" if col in (1, 5) else "left",
+                                         vertical="top", wrap_text=col == 6)
+                if col == 2:
+                    cc.fill = PatternFill("solid", fgColor=BANDFILL.get(v, "FFFFFF"))
+            r += 1
+
     for i, w in enumerate([34, 15, 9, 7, 10, 26, 16, 14, 12, 7, 40, 24, 34], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{APPLICATION_INTEL_SHEET_NAME}' sheet: {len(a.get('domains', []))} domain(s), "
-                f"{len(cross)} cross-domain risk(s), {len(edges)} dependency edge(s)")
+                f"{len(cross)} cross-domain risk(s), {len(edges)} dependency edge(s), "
+                f"{len(order)} cutover step(s)")
 
 
 def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:

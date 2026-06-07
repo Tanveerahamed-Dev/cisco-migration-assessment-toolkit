@@ -2854,6 +2854,14 @@ def compute_migration_punchlist(cross_layer: List[dict],
 _APP_TIER_RANK = {"On-air critical": 0, "Production": 1, "Support": 2}
 _APP_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 _APP_BAND_RANK = {"Critical": 0, "Poor": 1, "Fair": 2, "Good": 3, "Excellent": 4, "Insufficient Data": 5}
+# Migration-criticality weights (NEW-V3.23.114). Higher total = more critical/risky = cut over LATER with
+# more safeguards; lowest = a safe pilot. Tunable in one place; documented heuristic, not a hard schedule.
+_CRIT_WEIGHTS = {
+    "tier": {"On-air critical": 40, "Production": 24, "Support": 8},
+    "band": {"Critical": 18, "Poor": 11, "Fair": 5, "Good": 0, "Excellent": 0, "Insufficient Data": 6},
+    "health_cap": 12, "high_risk": 5, "risk": 2, "risk_cap": 16,
+    "coupling": 14, "spans_waves": 5, "ptp": 6, "size": 6, "last_threshold": 80,
+}
 
 # Ordered domain taxonomy. `token` (regex, matched case-insensitively on the hostname) is the
 # strongest, most deliberate signal and is tried FIRST in list order; `classes` lets a switch's
@@ -3237,6 +3245,59 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
                               int(r["vlan"]) if str(r["vlan"]).isdigit() else 0))
     cross = cross[:60]
 
+    # ---- per-domain migration criticality score + recommended cutover order (NEW-V3.23.114) ----
+    # Pure post-process over the domain records: blend tier / health / risk / coupling / flags / size into a
+    # 0-100 score (higher = migrate LATER with more safeguards), then order the domains lowest-first (safe
+    # pilot) -> Pilot/Early/Mid/Late/Last. Grounded in wave-planning practice (fail-fast on low-complexity
+    # pilots; mission-critical last). A RECOMMENDATION (the war-room decides) -- like compute_migration_scenarios.
+    W = _CRIT_WEIGHTS
+    max_sw = max((d["switch_count"] for d in out_domains), default=1) or 1
+    max_deg = max((d.get("degree", 0) for d in out_domains), default=0)
+    for d in out_domains:
+        hh = d.get("health") or {}
+        score = float(W["tier"].get(d["tier"], 0))
+        score += W["band"].get(hh.get("worst_band", ""), 0)
+        score += min(hh.get("n_critical", 0) * 3 + hh.get("n_poor", 0) * 1.5, W["health_cap"])
+        score += min(d.get("n_high_risk", 0) * W["high_risk"] + len(d.get("risks") or []) * W["risk"], W["risk_cap"])
+        score += (d.get("degree", 0) / max_deg * W["coupling"]) if max_deg else 0
+        if d.get("spans_waves"):
+            score += W["spans_waves"]
+        if d.get("ptp_present") and not d.get("ptp_boundary_clocked"):
+            score += W["ptp"]
+        score += d["switch_count"] / max_sw * W["size"]
+        d["criticality_score"] = int(max(0, min(100, round(score))))
+
+    ordered = sorted(out_domains, key=lambda d: (d["criticality_score"], d["domain"]))
+    n = len(ordered)
+
+    _BAND_RANK = {"Pilot": 0, "Early": 1, "Mid": 2, "Late": 3, "Last": 4}
+
+    def _band(d, pos):
+        # base band tracks the score-ordered POSITION (lowest score = safest pilot, any tier)
+        frac = pos / max(n - 1, 1)
+        base = ("Pilot" if frac < 0.2 else "Early" if frac < 0.4 else "Mid"
+                if frac < 0.65 else "Late" if frac < 0.85 else "Last")
+        if d["tier"] == "On-air critical":                  # safeguard: on-air never pilots early
+            if pos >= n - 1 or d["criticality_score"] >= W["last_threshold"]:
+                return "Last"
+            if _BAND_RANK[base] < _BAND_RANK["Late"]:
+                return "Late"
+        return base
+
+    cutover_order = []
+    for i, d in enumerate(ordered):
+        band = _band(d, i)
+        nbr = d.get("neighbors") or []
+        rationale = (f"{d['tier']}; health {(d.get('health') or {}).get('worst_band', '') or 'n/a'}; "
+                     f"{d.get('n_high_risk', 0)} high/crit risk(s); couples to {len(nbr)} domain(s)"
+                     + (f" — coordinate with {', '.join(nbr[:3])}" if nbr else "")
+                     + (". Start here to fail-fast and learn." if band == "Pilot"
+                        else ". Migrate last: make-before-break + full validation." if band == "Last"
+                        else "."))
+        d["cutover"] = {"order": i + 1, "band": band, "rationale": rationale}
+        cutover_order.append({"domain": d["domain"], "order": i + 1, "band": band,
+                              "score": d["criticality_score"], "tier": d["tier"], "rationale": rationale})
+
     by_tier = Counter(d["tier"] for d in out_domains)
     summary = {
         "n_domains": len(out_domains), "by_tier": dict(by_tier),
@@ -3249,6 +3310,9 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
         "keystone_domain": keystones[0]["domain"] if keystones else "",
         "n_on_air_coupled": sum(1 for d in out_domains
                                 if d["tier"] == "On-air critical" and d.get("degree", 0) > 0),
+        "pilot_domain": cutover_order[0]["domain"] if cutover_order else "",
+        "last_domain": cutover_order[-1]["domain"] if cutover_order else "",
     }
     return {"domains": out_domains, "summary": summary, "cross_domain_risks": cross,
-            "edges": edges, "keystones": keystones, "taxonomy_version": "app-domains/2"}
+            "edges": edges, "keystones": keystones, "cutover_order": cutover_order,
+            "taxonomy_version": "app-domains/3"}

@@ -4182,6 +4182,7 @@ function drawApps(){
   const tierTok=t=>t==="On-air critical"?"crit":t==="Production"?"watch":"neutral";
   const sevTok=v=>(v==="Critical"||v==="High")?"crit":v==="Medium"?"watch":"neutral";
   const bandTok=b=>b==="Critical"?"crit":b==="Poor"?"risk":b==="Fair"?"watch":"neutral";
+  const cutTok=b=>(b==="Pilot"||b==="Early")?"ok":b==="Mid"?"neutral":b==="Late"?"watch":"crit";
   const cards=domains.map((d,i)=>{
     const tok=tierTok(d.tier); const sel=APP_SEL===i?" xlactive":"";
     const sw=d.switches||[];
@@ -4197,7 +4198,7 @@ function drawApps(){
     const valid=(d.validation||[]).map(v=>`<li>${esc(v)}</li>`).join("");
     return `<div class="card ${tok} xlcard${sel}" data-app="${i}" tabindex="0" role="button" style="cursor:pointer"
         aria-label="${esc(d.domain)} — ${sw.length} switches, ${esc(d.tier)} — click to spotlight on the graph">
-      <div class="ct"><span class="nm">${esc(d.domain)}</span><span class="pill pl-${tok}">${esc(d.tier)}</span></div>
+      <div class="ct"><span class="nm">${esc(d.domain)}</span><span class="pill pl-${tok}">${esc(d.tier)}</span>${d.cutover?`<span class="pill pl-${cutTok(d.cutover.band)}" title="recommended cutover step ${d.cutover.order} of ${domains.length} · criticality ${(+d.criticality_score||0)}/100">#${d.cutover.order} ${esc(d.cutover.band)}</span>`:""}</div>
       <div class="ln faint" style="margin-top:2px"><b>${sw.length}</b> switch${sw.length===1?"":"es"} · <b>${(+d.vlan_count||0)}</b> VLANs · <b>${(+d.endpoint_count||0)}</b> endpoints${d.spans_waves?` · <b style="color:var(--crit)">spans ${(d.waves||[]).length} waves</b>`:""}</div>
       ${(ptp||hb)?`<div class="ln" style="margin-top:5px">${ptp} ${hb}</div>`:""}
       ${groups?`<div class="ln" style="margin-top:5px"><span class="faint">Media/timing groups:</span> ${groups}</div>`:""}
@@ -4222,6 +4223,11 @@ function drawApps(){
       <div class="ln faint" style="margin-top:3px">${esc((e.kinds||[]).join(", "))} · ${esc(e.confidence||"")}${e.detail?` · ${esc(e.detail)}`:""}</div>
       ${e.migration_note?`<div class="ln" style="margin-top:3px">${esc(e.migration_note)}</div>`:""}
     </div>`).join("");
+  const cut=Array.isArray(ai.cutover_order)?ai.cutover_order:[];
+  const cutRows=cut.map(c=>`<div class="card ${cutTok(c.band)}">
+      <div class="ct"><span class="nm">${c.order}. ${esc(c.domain)}</span><span class="pill pl-${cutTok(c.band)}">${esc(c.band)} · score ${c.score}</span></div>
+      <div class="ln faint" style="margin-top:3px">${esc(c.rationale)}</div>
+    </div>`).join("");
   return head+
     `<div class="sec"><div class="headline">
       <div class="stat"><div class="v"><span class="num" data-to="${s.n_domains||domains.length}">0</span></div><div class="k">domains</div></div>
@@ -4233,7 +4239,8 @@ function drawApps(){
     <p class="sub" style="margin:10px 0 0">Switches grouped into <b>application domains</b> by deliberate hostname role, observed PTP/multicast, or dominant endpoint class — each with its criticality tier, health rollup and standards-grounded migration risk (ST 2059 boundary clocks · RFC 4541 querier continuity · ST 2022-7 dual-path · NEXIS dual-leg). <b>Click a domain</b> to spotlight its switches.</p></div>
     <div class="sec"><h3>Domains by criticality <span class="ct">${domains.length}</span></h3>${cards}</div>
     ${cross.length?`<div class="sec"><h3>Cross-domain risks <span class="ct">${cross.length}</span></h3><p class="sub" style="margin:0 0 8px">IGMP querier continuity / split-brain across the cutover (RFC 4541).</p>${crossCards}</div>`:""}
-    ${edges.length?`<div class="sec"><h3>Inter-domain dependencies <span class="ct">${edges.length}</span></h3>${kHtml}<p class="sub" style="margin:0 0 8px">Couplings between domains — physical links · shared subnets · dual-homed endpoints. What must be coordinated / made-before-broken on cutover. <b>Select a domain above</b> to light its coupled neighbours on the graph.</p>${edgeRows}</div>`:""}`;
+    ${edges.length?`<div class="sec"><h3>Inter-domain dependencies <span class="ct">${edges.length}</span></h3>${kHtml}<p class="sub" style="margin:0 0 8px">Couplings between domains — physical links · shared subnets · dual-homed endpoints. What must be coordinated / made-before-broken on cutover. <b>Select a domain above</b> to light its coupled neighbours on the graph.</p>${edgeRows}</div>`:""}
+    ${cut.length?`<div class="sec"><h3>Recommended cutover order <span class="ct">${cut.length}</span></h3><p class="sub" style="margin:0 0 8px">Lowest-risk <b>pilots first</b> (fail-fast &amp; learn); on-air-critical domains <b>last</b> with make-before-break. A recommendation — the war-room decides.</p>${cutRows}</div>`:""}`;
 }
 /* paint hook: spotlight the selected application-domain's switches (APP_SEL), dim the rest.
    No selection -> clean canvas. Mirrors paintWaves (reuses .xlhl / .xldim / .dim). */
