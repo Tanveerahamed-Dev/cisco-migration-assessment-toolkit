@@ -493,6 +493,18 @@ def _vlan_components(model: Dict[str, object], vid: int,
     return comps
 
 
+def _vlan_list_summary(vids, cap: int = 12) -> str:
+    """NEW-V3.23.90: compact, bounded VLAN-id list for an AGGREGATED finding, e.g.
+    '10, 20, 30 (+5 more)'. Keeps an aggregated row's detail readable no matter how
+    many VLANs a single device articulates (some carry 100+), instead of dumping the
+    whole list. Sorted + de-duped so the text is deterministic for the golden."""
+    vids = sorted(set(vids))
+    if not vids:
+        return ""
+    shown = ", ".join(str(v) for v in vids[:cap])
+    return shown if len(vids) <= cap else f"{shown} (+{len(vids) - cap} more)"
+
+
 def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Tuple[str, str, str, str, str]]:
     """Root-cause -> mechanism -> impact -> mitigation chains, derived from the network
     model. Returns (severity, trigger, mechanism, impact, mitigation) tuples."""
@@ -528,6 +540,16 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
 
     # Chain B: transit articulation - removing a switch partitions a VLAN's endpoints from
     # its gateway. A reachable STP-blocked backup softens High -> Medium (transient only).
+    # AGGREGATED per host (NEW-V3.23.90): the old per-(host,vid) emission produced one near-
+    # identical "Transit switch X removed" chain PER VLAN -- ~13k rows on the real fleet (99.8%
+    # of all chains), which buried the genuine criticals, bloated every deliverable (snapshot /
+    # workbook / explorer), and saturated the health score's XL cap fleet-wide (zero band
+    # discrimination). Industry practice for assessment findings is to group around the root-cause
+    # DEVICE, not repeat the symptom per VLAN, so we roll all of a switch's articulation VLANs into
+    # one chain. Severity is the worst across its VLANs: any hard (no-backup) partition -> High,
+    # otherwise transient STP-healed -> Medium.
+    b_hard: Dict[str, dict] = {}   # host -> {"vlans": set, "stranded": set, "eps": int}
+    b_soft: Dict[str, dict] = {}
     for host in model["hosts"]:
         for vid in sorted(model["vlans"]):
             gw_hosts = [g["host"] for g in model["gw"].get(vid, [])]
@@ -547,30 +569,43 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
             for comp in _vlan_components(model, vid, removed_host=host, include_backup=True):
                 if not any(g in comp for g in surviving_gw):
                     still |= (comp & stranded)
-            gwname = surviving_gw[0]
-            if still:
-                chains.append((
-                    "High",
-                    f"Transit switch {host} is removed / migrated",
-                    f"It is the only forwarding L2 path from {', '.join(sorted(stranded))} "
-                    f"to gateway {gwname} for VLAN {vid}",
-                    f"{len(still)} switch(es) / {_ep_count(vid, still)} endpoint(s) lose "
-                    f"reachability to the VLAN {vid} gateway, with no backup link",
-                    "Add a redundant uplink/path, or migrate this switch in the same wave",
-                ))
-            else:
-                chains.append((
-                    "Medium",
-                    f"Transit switch {host} is removed / migrated",
-                    f"It carries the active L2 path to gateway {gwname} for VLAN {vid}; a "
-                    f"redundant link exists but is STP-blocked",
-                    f"{_ep_count(vid, stranded)} endpoint(s) hit a transient outage while STP "
-                    f"reconverges onto the backup link",
-                    "Expected to self-heal; verify STP reconvergence time before cutover",
-                ))
+            bucket = b_hard if still else b_soft
+            affected = still if still else stranded
+            e = bucket.setdefault(host, {"vlans": set(), "stranded": set(), "eps": 0})
+            e["vlans"].add(vid); e["stranded"] |= affected
+            e["eps"] += _ep_count(vid, affected)
+    for host in model["hosts"]:
+        hard, soft = b_hard.get(host), b_soft.get(host)
+        if hard:
+            vl = sorted(hard["vlans"]); sw = sorted(hard["stranded"])
+            extra = (f"; a further {len(soft['vlans'])} VLAN(s) hit only a transient STP outage"
+                     if soft else "")
+            chains.append((
+                "High",
+                f"Transit switch {host} is removed / migrated",
+                f"It is the only forwarding L2 path to the gateway for {len(vl)} VLAN(s) "
+                f"({_vlan_list_summary(vl)})",
+                f"{len(sw)} switch(es) / {hard['eps']} endpoint(s) lose reachability to their "
+                f"VLAN gateway across {len(vl)} VLAN(s), with no backup link{extra}",
+                "Add a redundant uplink/path, or migrate this switch in the same wave as its dependents",
+            ))
+        elif soft:
+            vl = sorted(soft["vlans"])
+            chains.append((
+                "Medium",
+                f"Transit switch {host} is removed / migrated",
+                f"It carries the active L2 path to the gateway for {len(vl)} VLAN(s) "
+                f"({_vlan_list_summary(vl)}); a redundant link exists but is STP-blocked",
+                f"{soft['eps']} endpoint(s) across {len(vl)} VLAN(s) hit a transient outage while "
+                f"STP reconverges onto the backup link",
+                "Expected to self-heal; verify STP reconvergence time before cutover",
+            ))
 
     # Chain C: a switch's only forwarding uplink for an endpoint VLAN is a single
-    # (non-port-channel) link -> link loss isolates that VLAN.
+    # (non-port-channel) link -> link loss isolates that VLAN. AGGREGATED per (host, uplink)
+    # (NEW-V3.23.90): one row per vulnerable uplink listing every VLAN that rides it, not one
+    # row per VLAN (many VLANs share the same single uplink).
+    c_grp: Dict[tuple, dict] = {}   # (host, near_port, far) -> {"vlans": set, "eps": int}
     for host in model["hosts"]:
         host_links = [l for l in model["links"] if host in (l["a"], l["b"])]
         host_vlans = {v for (h, v), n in model["endpoints"].items() if h == host and n > 0}
@@ -584,16 +619,19 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
                 l = carrying[0]
                 far = l["b"] if l["a"] == host else l["a"]
                 near_port = l["ap"] if l["a"] == host else l["bp"]
-                n_ep = model["endpoints"].get((host, vid), 0)
-                chains.append((
-                    "Medium",
-                    f"Uplink {host} {near_port} -> {far} fails",
-                    f"It is {host}'s only forwarding inter-switch link carrying VLAN {vid}, "
-                    f"and it is a single (non-port-channel) link",
-                    f"VLAN {vid} on {host} is isolated from the fabric"
-                    + (f" ({n_ep} endpoint(s))" if n_ep else ""),
-                    "Add a second uplink or bundle the link as a port-channel",
-                ))
+                e = c_grp.setdefault((host, near_port, far), {"vlans": set(), "eps": 0})
+                e["vlans"].add(vid); e["eps"] += model["endpoints"].get((host, vid), 0)
+    for (host, near_port, far), e in sorted(c_grp.items()):
+        vl = sorted(e["vlans"])
+        chains.append((
+            "Medium",
+            f"Uplink {host} {near_port} -> {far} fails",
+            f"It is {host}'s only forwarding inter-switch link carrying {len(vl)} VLAN(s) "
+            f"({_vlan_list_summary(vl)}), and it is a single (non-port-channel) link",
+            f"{len(vl)} VLAN(s) on {host} are isolated from the fabric"
+            + (f" ({e['eps']} endpoint(s))" if e["eps"] else ""),
+            "Add a second uplink or bundle the link as a port-channel",
+        ))
 
     sev_rank = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
     chains.sort(key=lambda c: (sev_rank.get(c[0], 9), c[1], c[3]))
@@ -1496,11 +1534,22 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
                 "A single fiber cut isolates the VLAN with no L1 path and no L3 backup - add a "
                 "redundant uplink AND an FHRP peer.", [gw] + [h for (h, _p) in cset])
 
-    # CL-02 (L2+L3): transit articulation between endpoints and their gateway
-    for (h, vid) in sorted(dep["articulation"]):
+    # CL-02 (L2+L3): transit articulation between endpoints and their gateway. AGGREGATED per host
+    # (NEW-V3.23.90): dep["articulation"] is a set of (host, vid); the old per-pair emission produced
+    # ~13k near-identical rows (95% of ALL cross-layer findings) that buried the genuine criticals,
+    # made the punch-list it feeds unreadable, and saturated the health score's XL cap on every
+    # articulation switch (whole fleet -> no band discrimination). One row per articulation switch,
+    # listing its VLANs. CL-09's stacked-SPOF detection reads dep["articulation"] directly, not these
+    # emitted rows, so its L2 signal is unaffected.
+    art_by_host: Dict[str, set] = {}
+    for (h, vid) in dep["articulation"]:
+        art_by_host.setdefault(h, set()).add(vid)
+    for h in sorted(art_by_host):
+        vl = sorted(art_by_host[h])
         add("CL-02", "High", "L2+L3",
-            f"{h}: only L2 transit to the VLAN {vid} gateway",
-            f"Removing {h} partitions VLAN {vid} endpoints from their L3 gateway over forwarding links.",
+            f"{h}: only L2 transit to the gateway for {len(vl)} VLAN(s)",
+            f"Removing {h} partitions endpoints in {len(vl)} VLAN(s) ({_vlan_list_summary(vl)}) "
+            f"from their L3 gateway over forwarding links.",
             "Add a redundant path, or migrate this switch in the same wave as its dependents.", [h])
 
     # CL-03 (L2+L3): sole gateway, no FHRP (structural L3 SPOF)
@@ -1530,13 +1579,21 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
                 f"{h} {p} is the switch's only forwarding uplink AND is unhealthy ({why}).",
                 "The single path is also failing - replace optic/cable and add a second uplink.", [h])
 
-    # CL-06 (L1+L2): single-member port-channel on an uplink
-    for (h, po) in sorted(dep["single_member_pc"]):
-        if any(uh == h for (uh, _p) in up):
-            add("CL-06", "Medium", "L1+L2",
-                f"{h} {po}: single-member port-channel",
-                f"{po} on {h} bundles only one physical link - the aggregation provides no L1 redundancy.",
-                "Add a second member, or do not rely on the port-channel for resilience.", [h])
+    # CL-06 (L1+L2): single-member port-channel on an uplink. AGGREGATED per host (NEW-V3.23.90):
+    # one row per switch listing its single-member port-channels, not one row per port-channel
+    # (same cry-wolf pattern as CL-02 on switches that bundle many one-member POs).
+    up_hosts = {uh for (uh, _p) in up}
+    smpc_by_host: Dict[str, set] = {}
+    for (h, po) in dep["single_member_pc"]:
+        if h in up_hosts:
+            smpc_by_host.setdefault(h, set()).add(po)
+    for h in sorted(smpc_by_host):
+        pos = sorted(smpc_by_host[h])
+        shown = ", ".join(pos[:12]) + (f" (+{len(pos) - 12} more)" if len(pos) > 12 else "")
+        add("CL-06", "Medium", "L1+L2",
+            f"{h}: {len(pos)} single-member port-channel(s)",
+            f"{shown} on {h} bundle only one physical link each - the aggregation provides no L1 redundancy.",
+            "Add a second member, or do not rely on the port-channel for resilience.", [h])
 
     # CL-07 (L1+L3): err-disabled / high-error port on a switch that hosts an L3 gateway
     gw_hosts = dep["gw_switches"]

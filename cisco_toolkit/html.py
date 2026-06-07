@@ -160,6 +160,43 @@ def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 
 
 # -----------------------------------------------------------------------------
+# NEW-V3.23.90: shrink the snapshot copy EMBEDDED in the single-file explorer.
+# The on-disk snapshot.json stays full-fidelity (it is the data contract and the
+# `--compare` input); this only trims the in-page payload, which on a real fleet
+# (the 254-device AJ scan embedded a 52 MB blob) is dominated by two things the
+# explorer never renders verbatim:
+#   * interfaces  - hundreds of ports/device, ~50 fields each, most empty strings.
+#     The explorer reads every interface field defensively (`d.x||""`, `d.x&&...`,
+#     `(d.x||"").trim()`), so an ABSENT key is indistinguishable from an empty one
+#     -> dropping empty/placeholder field VALUES is display-neutral. The port entry
+#     itself is always kept so buildModel's `Object.keys(ifaces[host])` is unchanged.
+#   * physical_health - tens of thousands of Info/OK rows; the sole consumer
+#     (deviceIntelSection) filters severity to non-Info/non-OK, so they are dead weight.
+# Everything else (already aggregated per-host in analyze, V3.23.90) passes through.
+# -----------------------------------------------------------------------------
+_EMBED_DROP_VALUES: tuple = ("", None, [], {}, "--")
+
+
+def _slim_for_embed(snap_dict: dict) -> dict:
+    """Return a display-neutral, size-reduced copy of the snapshot for embedding in the
+    explorer HTML. Pure (input not mutated); see the block comment above for why each
+    transform is safe. Defensive: tolerates missing/oddly-typed sections."""
+    out = dict(snap_dict)
+    intf = snap_dict.get("interfaces")
+    if isinstance(intf, dict):
+        out["interfaces"] = {
+            host: {port: {k: v for k, v in (rec or {}).items() if v not in _EMBED_DROP_VALUES}
+                   for port, rec in (ports or {}).items()}
+            for host, ports in intf.items()}
+    ph = snap_dict.get("physical_health")
+    if isinstance(ph, list):
+        out["physical_health"] = [
+            r for r in ph
+            if not (isinstance(r, dict) and r.get("severity") in ("Info", "OK", None))]
+    return out
+
+
+# -----------------------------------------------------------------------------
 # NEW-V3.17: HTML consolidation. Bake the live snapshot into a copy of the
 # read-only Blast-Radius Explorer template so one run yields both the workbook
 # and a ready-to-open, air-gapped topology explorer (no second tool, no manual
@@ -205,7 +242,8 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
                        "(template may have changed).")
         return
 
-    embedded = json.dumps(snap_dict, separators=(",", ":"), ensure_ascii=False)
+    slim = _slim_for_embed(snap_dict)                  # NEW-V3.23.90: shrink the in-page payload only
+    embedded = json.dumps(slim, separators=(",", ":"), ensure_ascii=False)
     embedded = embedded.replace("</", "<\\/")          # cannot break out of <script>
     replacement = (f"const EMBEDDED_SNAPSHOT={embedded};\n"
                    f"load(EMBEDDED_SNAPSHOT,{json.dumps(label)},true);")
@@ -216,6 +254,7 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(patched)
+    logger.info(f"[Phase 22] HTML Explorer embedded payload: {len(embedded) / 1e6:.1f} MB")
     logger.info(f"[Phase 22] HTML Explorer written: {output_path}")
 
 

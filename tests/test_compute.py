@@ -87,6 +87,66 @@ def test_cross_layer_clean_dep_yields_nothing(cp):
 
 
 # --------------------------------------------------------------------------- #
+# NEW-V3.23.90: per-VLAN finding-explosion aggregation (cry-wolf fix). An
+# articulation switch / single-member-PC switch must yield ONE row per DEVICE,
+# not one per (host, VLAN) -- the bug that put 13k near-identical rows into the
+# real-fleet snapshot/explorer/punch-list and saturated the health-score XL cap.
+# --------------------------------------------------------------------------- #
+def test_cross_layer_articulation_aggregates_per_host(cp):
+    dep = _dep(articulation={("swA", 10), ("swA", 20), ("swA", 30), ("swB", 40)},
+               model={"hosts": {"swA", "swB"}})
+    cl02 = [f for f in cp.compute_cross_layer_correlations(dep) if f["id"] == "CL-02"]
+    assert len(cl02) == 2                                   # one per host, NOT four (was per-VLAN)
+    a = next(f for f in cl02 if f["hosts"] == ["swA"])
+    assert "3 VLAN(s)" in a["title"]                        # the VLAN COUNT is surfaced
+    assert "10, 20, 30" in a["detail"]                      # and the VLANs are listed
+    assert "1 VLAN(s)" in next(f for f in cl02 if f["hosts"] == ["swB"])["title"]
+
+
+def test_cross_layer_single_member_pc_aggregates_per_host(cp):
+    dep = _dep(single_member_pc={("swA", "Po1"), ("swA", "Po2"), ("swB", "Po3")},
+               uplink_ports={("swA", "Te1/1"), ("swB", "Te1/1")},
+               model={"hosts": {"swA", "swB"}})
+    cl06 = [f for f in cp.compute_cross_layer_correlations(dep) if f["id"] == "CL-06"]
+    assert len(cl06) == 2                                   # one per host, NOT three
+    a = next(f for f in cl06 if f["hosts"] == ["swA"])
+    assert "2 single-member port-channel(s)" in a["title"]
+    assert "Po1" in a["detail"] and "Po2" in a["detail"]
+
+
+def test_causality_aggregates_transit_and_uplink_per_host():
+    """G --- T --- A line: T is the only path from A's endpoints to gateway G for VLANs 10 & 20.
+    Removing T must yield ONE Chain-B row (per device) listing both VLANs, not one per VLAN; A's
+    single uplink must yield ONE Chain-C row. Every trigger is unique (the aggregation invariant)."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_causality_chains
+
+    def trunk(p, nb, npt):
+        return InterfaceData(port=p, cdp_neighbor=nb, neighbor_port=npt,
+                             endpoint_type="Switch", trunk_allowed_vlans="10,20")
+
+    def ep(p, vlan, mac):
+        return InterfaceData(port=p, switchport_mode="Access", vlan=vlan, end_host_mac=mac)
+
+    ai = {
+        "G": {"Vlan10": InterfaceData(port="Vlan10"), "Vlan20": InterfaceData(port="Vlan20"),
+              "Gi0/1": trunk("Gi0/1", "T", "Gi0/1")},
+        "T": {"Gi0/1": trunk("Gi0/1", "G", "Gi0/1"), "Gi0/2": trunk("Gi0/2", "A", "Gi0/24")},
+        "A": {"Gi0/24": trunk("Gi0/24", "T", "Gi0/2"),
+              "Gi0/1": ep("Gi0/1", "10", "aaaa.0000.0001"),
+              "Gi0/2": ep("Gi0/2", "20", "aaaa.0000.0002")},
+    }
+    chains = compute_causality_chains(ai)
+    triggers = [c[1] for c in chains]
+    assert len(triggers) == len(set(triggers))             # aggregation invariant: no dup (host,*) rows
+    transit = [c for c in chains if c[1] == "Transit switch T is removed / migrated"]
+    assert len(transit) == 1                               # ONE row for T, not one per VLAN
+    assert transit[0][0] == "High" and "2 VLAN(s)" in transit[0][2] and "10, 20" in transit[0][2]
+    uplink = [c for c in chains if c[1].startswith("Uplink A ")]
+    assert len(uplink) == 1 and "2 VLAN(s)" in uplink[0][2]
+
+
+# --------------------------------------------------------------------------- #
 # compute_health_scores
 # --------------------------------------------------------------------------- #
 def test_health_clean_host_is_perfect(cp):
