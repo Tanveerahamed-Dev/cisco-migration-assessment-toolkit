@@ -1,7 +1,34 @@
 """NEW-V3.23.101: the L4 service map -- ACL port references + multicast activity resolved to named
 services via the offline port registry. ACL refs are design intent (Inferred), not active traffic."""
-from cisco_toolkit.analyze import compute_service_map
+from cisco_toolkit.analyze import compute_ptp_readiness, compute_service_map
 from cisco_toolkit.model import InterfaceData
+
+
+def _sm_with_ptp(ptp, groups=None):
+    return {"multicast": {"ptp": ptp, "classified_groups": groups or []}}
+
+
+def test_ptp_readiness_all_dormant_is_flagged():
+    # the real AJ case: PTP present on several switches but none operational, PTP multicast flowing
+    sm = _sm_with_ptp(
+        {"sw1": {"operational": False}, "sw2": {"operational": False}},
+        [{"group": "224.0.1.129", "name": "PTP-primary", "broadcast": True}])
+    out = compute_ptp_readiness(sm)
+    assert len(out) == 1 and out[0]["severity"] == "Medium" and out[0]["category"] == "Timing/PTP"
+    assert sorted(out[0]["devices"]) == ["sw1", "sw2"]
+    assert "not boundary-clocked" in out[0]["title"] and "224.0.1.129" in out[0]["detail"]
+
+
+def test_ptp_readiness_partial_is_low_and_lists_dormant_only():
+    sm = _sm_with_ptp({"sw1": {"operational": True}, "sw2": {"operational": False}})
+    out = compute_ptp_readiness(sm)
+    assert len(out) == 1 and out[0]["severity"] == "Low" and out[0]["devices"] == ["sw2"]
+
+
+def test_ptp_readiness_silent_when_all_operational_or_absent():
+    assert compute_ptp_readiness(_sm_with_ptp({"sw1": {"operational": True}})) == []
+    assert compute_ptp_readiness(_sm_with_ptp({})) == []
+    assert compute_ptp_readiness({}) == [] and compute_ptp_readiness({"multicast": {}}) == []
 
 
 def _acl(action="permit", proto="udp", dport=None, sport=None, src=None, dst=None):
