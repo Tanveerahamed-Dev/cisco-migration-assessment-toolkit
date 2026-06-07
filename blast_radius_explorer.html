@@ -1272,6 +1272,14 @@ function demoSnapshot(){
            "SW01-DANTE":{device_type:"Unknown",profile:"Default Profile",domain:"0",clock_identity:"0x5CE176.FFFE.791B80",num_ports:0,grandmaster:"",offset_ns:null,mean_path_delay_ns:null,locked:null,operational:false}},
       igmp_queriers:[{switch:"DIST-1",vlan:"10",querier:"10.0.10.1"},{switch:"DIST-1",vlan:"20",querier:"10.0.20.1"}]},
   },
+  // V3.23.109: pre-assessment blind-spot report (mirrors compute_collection_completeness).
+  collection_completeness:{
+    summary:{inventory:7,complete:5,partial:1,not_collected:1},
+    devices:[
+      {host:"ACC-9-UNREACHABLE",status:"not collected",data_quality:0,missing:["interface status","switchport","version/inventory","CDP/LLDP neighbors"]},
+      {host:"ACC-4",status:"partial",data_quality:75,missing:["CDP/LLDP neighbors"]},
+    ],
+  },
   redistribution:{
     "DIST-1":[{into_proto:"ospf",into_id:"1",from_proto:"bgp",from_id:"65001",route_map:"",raw:"redistribute bgp 65001 subnets"},
               {into_proto:"ospf",into_id:"1",from_proto:"connected",from_id:"",route_map:"",raw:"redistribute connected"},
@@ -3468,6 +3476,21 @@ function calibrationCard(){
     ${dist?`<div class="ln" style="margin-top:4px">${dist}</div>`:""}
     ${sugg}</div>`;
 }
+/* Collection completeness (V3.23.109): the pre-assessment BLIND-SPOT list from SNAP.collection_completeness
+   (one source of truth with the 'Collection Completeness' sheet + runbook §2.1). Inventory devices that
+   were not / only partially collected -- a missing device is not a healthy device. Absent key -> nothing. */
+function collectionCard(){
+  const cc=SNAP&&SNAP.collection_completeness; if(!cc||!cc.summary||!cc.summary.inventory)return "";
+  const s=cc.summary, blind=cc.devices||[];
+  if(!blind.length)
+    return `<div class="sec"><h3>Collection completeness <span class="badge b-ok">complete</span></h3>`+
+      `<div class="ln faint">✓ All ${s.inventory} inventory device(s) fully collected — no assessment blind spots.</div></div>`;
+  const CAP=15, rows=blind.slice(0,CAP).map(d=>`<div class="ln"><span class="pill pl-${d.status==='not collected'?'crit':'risk'}">${esc(d.status)}</span> <span class="mono">${esc(shortName(d.host))}</span> <span class="faint">${d.data_quality}% — missing: ${esc((d.missing||[]).join(', '))}</span></div>`).join("");
+  const more=blind.length>CAP?`<div class="ln faint" style="margin-top:6px">…and <b>${blind.length-CAP}</b> more — see the <b>Collection Completeness</b> sheet.</div>`:"";
+  return `<div class="sec"><h3>Collection completeness <span class="badge b-crit">${s.not_collected} not collected${s.partial?' · '+s.partial+' partial':''}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Assessment blind spots: of ${s.inventory} inventory device(s), <b>${s.complete}</b> fully collected, ${s.partial} partial, <b>${s.not_collected}</b> NOT collected. A missing device is not a healthy device — re-collect before relying on its findings.</div>`+
+    rows+more+`</div>`;
+}
 /* Score sensitivity (health-score weight ROBUSTNESS): reads SNAP.score_sensitivity -- the OAT
    (one-at-a-time) sweep the Python pipeline already embeds. Each record perturbs one scoring weight
    group by +/-25-50% and reports how many switches flip health band. A verdict that flips under a tiny
@@ -5201,6 +5224,7 @@ function drawHealth(){
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${punchlistCard()}
+    ${collectionCard()}
     ${calibrationCard()}
     ${sensitivityCard()}
     ${rootCauseCard()}

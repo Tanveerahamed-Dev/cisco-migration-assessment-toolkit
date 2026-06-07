@@ -958,6 +958,44 @@ def write_service_map_sheet(wb, sm: dict) -> None:
                 f"{mc.get('active_interfaces', 0)} multicast iface(s)")
 
 
+COLLECTION_COMPLETENESS_SHEET_NAME = "Collection Completeness"   # NEW-V3.23.109
+
+def write_collection_completeness_sheet(wb, cc: dict) -> None:
+    """Write the 'Collection Completeness' sheet from compute_collection_completeness(): the
+    pre-assessment blind-spot list -- inventory devices that were not collected / only partially
+    collected, and which essential commands are missing. Lead row is the summary."""
+    ws = wb.create_sheet(COLLECTION_COMPLETENESS_SHEET_NAME)
+    s = (cc or {}).get("summary") or {}
+    ws.cell(1, 1, "Inventory").font = Font(bold=True)
+    ws.cell(1, 2, s.get("inventory", 0))
+    ws.cell(1, 3, f"complete {s.get('complete', 0)} · partial {s.get('partial', 0)} · "
+                  f"NOT collected {s.get('not_collected', 0)} — these are assessment blind spots, "
+                  "re-collect before relying on the report").font = Font(italic=True)
+    headers = ["Status", "Device", "Data quality", "Missing essential commands"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(3, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    fill = {"not collected": "F4CCCC", "partial": "FCE5CD"}
+    rows = (cc or {}).get("devices") or []
+    if not rows:
+        ws.cell(4, 1, "All inventory devices fully collected — no blind spots.")
+    for r, d in enumerate(rows, 4):
+        vals = [d.get("status", ""), d.get("host", ""), f"{d.get('data_quality', 0)}%",
+                ", ".join(d.get("missing", []))]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v)
+            if col == 1 and d.get("status") in fill:
+                c.fill = PatternFill("solid", fgColor=fill[d["status"]])
+                c.font = Font(bold=True)
+    for i, w in enumerate([15, 34, 13, 46], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A4"
+    logger.info(f"  [OK] '{COLLECTION_COMPLETENESS_SHEET_NAME}' sheet: {len(rows)} blind spot(s) "
+                f"of {s.get('inventory', 0)} inventory device(s)")
+
+
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
 MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
 SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
