@@ -334,6 +334,7 @@ from cisco_toolkit.analyze import (
     compute_migration_scenarios,                       # NEW-V3.23.98 (per-group cutover scenario framework)
     compute_protocol_intelligence,                     # NEW-V3.23.100 (protocol-state doctrine: cause + remediation)
     compute_service_map,                               # NEW-V3.23.101 (L4 service map from ACL ports + multicast activity)
+    compute_ptp_readiness,                             # NEW-V3.23.108 (PTP / media-timing readiness -> punch-list)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -1636,10 +1637,12 @@ def main():
     _hostname_mismatches = compute_hostname_mismatches(all_device_physical)   # NEW-V3.23.68
     _drift = _run_phase("Operational drift", compute_operational_drift,
                         all_interfaces, all_device_physical, _default=[])      # NEW-V3.23.93 (false-health)
+    _ptp_readiness = _run_phase("PTP readiness", compute_ptp_readiness, service_map, _default=[])  # NEW-V3.23.108
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
-                           l2=_l2, hostname_mismatches=_hostname_mismatches, drift=_drift, _default=[])
+                           l2=_l2, hostname_mismatches=_hostname_mismatches, drift=_drift,
+                           ptp_readiness=_ptp_readiness, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
 
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)

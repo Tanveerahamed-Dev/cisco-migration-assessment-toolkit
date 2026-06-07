@@ -1564,6 +1564,46 @@ def compute_service_map(acls: Dict[str, dict],
             "acl_rule_count": rule_count, "multicast": multicast}
 
 
+def compute_ptp_readiness(service_map: dict) -> List[dict]:
+    """NEW-V3.23.108: PTP / media-timing readiness findings derived from the service map, shaped like
+    punch-list items so they fold into the consolidated action list. For a broadcast fabric
+    (SMPTE ST 2110 / AES67 / Dante) sub-microsecond timing typically needs PTP boundary-/transparent-
+    clock mode on the media-path switches. Flags when PTP is present but NO switch is an operational
+    boundary clock (timing distributed as plain multicast, not boundary-clocked), or a partial mix.
+    Returns [] when no PTP data. Evidence-disciplined: the switch's clock state is Confirmed; whether
+    media timing depends on it here is Inferred (hence Medium/Low, not High)."""
+    mc = (service_map or {}).get("multicast") or {}
+    ptp = mc.get("ptp") or {}
+    if not ptp:
+        return []
+    oper = sorted(h for h, v in ptp.items() if (v or {}).get("operational"))
+    dormant = sorted(h for h, v in ptp.items() if not (v or {}).get("operational"))
+    ptp_mcast = [g.get("group") for g in (mc.get("classified_groups") or [])
+                 if "PTP" in (g.get("name") or "")]
+    out: List[dict] = []
+    if dormant and not oper:
+        detail = (f"PTP is configured on {len(ptp)} switch(es) but NONE are active boundary/transparent "
+                  "clocks (Device Type Unknown / 0 active ports / no parent clock). "
+                  + (f"PTP multicast ({', '.join(ptp_mcast)}) IS flowing in the fabric, so timing is "
+                     "distributed as plain multicast, not boundary-clocked. " if ptp_mcast else "")
+                  + "SMPTE ST 2110 / AES67 / Dante typically require boundary-clock mode on the media path.")
+        out.append({"severity": "Medium", "category": "Timing/PTP", "devices": dormant,
+                    "title": "PTP enabled but not boundary-clocked (media timing at risk)",
+                    "detail": detail,
+                    "remediation": "Confirm whether the media fabric requires PTP boundary/transparent-clock "
+                                   "mode; if so, enable it on the media-path switches and verify clock lock "
+                                   "(offset within spec) before the cutover."})
+    elif dormant and oper:
+        out.append({"severity": "Low", "category": "Timing/PTP", "devices": dormant,
+                    "title": f"PTP dormant on {len(dormant)} switch(es) ({len(oper)} active boundary clock(s))",
+                    "detail": (f"{len(oper)} switch(es) act as PTP boundary/transparent clocks; "
+                               f"{len(dormant)} have PTP configured but dormant (Device Type Unknown / "
+                               "0 active ports)."),
+                    "remediation": "Confirm the dormant switches are not on a media-timing path; enable "
+                                   "boundary-clock mode where ST 2110/AES67/Dante timing must traverse them."})
+    return out
+
+
 # =============================================================================
 # Physical-health compute helpers (PHASE 2.7 step 17). The pure parsers
 # (parse_interface_phy / _classify_media / _is_physical_port / _parse_poe_watts)
@@ -2592,7 +2632,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 move_groups: List[dict],
                                 l2: Optional[dict] = None,
                                 hostname_mismatches: Optional[list] = None,
-                                drift: Optional[list] = None) -> List[dict]:
+                                drift: Optional[list] = None,
+                                ptp_readiness: Optional[list] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -2728,6 +2769,12 @@ def compute_migration_punchlist(cross_layer: List[dict],
     # so the executive punch-list also carries the traps a green control plane hides.
     for d in (drift or []):
         add(d.get("severity", "Medium"), d.get("category", "False-health"), d.get("devices", []),
+            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
+
+    # NEW-V3.23.108: fold in PTP / media-timing readiness (compute_ptp_readiness) so the broadcast
+    # timing gap (PTP enabled but not boundary-clocked) is in the prioritized action list.
+    for d in (ptp_readiness or []):
+        add(d.get("severity", "Medium"), d.get("category", "Timing/PTP"), d.get("devices", []),
             d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
