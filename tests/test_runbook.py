@@ -92,6 +92,14 @@ def _snap():
             "fleet_recommendation": "89% of switches are Poor/Critical — consider a GREENFIELD rebuild.",
             "scenario_counts": {"parallel-run": 1},
         },
+        "collection_completeness": {
+            "summary": {"inventory": 3, "complete": 1, "partial": 1, "not_collected": 1},
+            "devices": [
+                {"host": "sw3-unreachable", "status": "not collected", "data_quality": 0,
+                 "missing": ["interface status", "switchport", "version/inventory", "CDP/LLDP neighbors"]},
+                {"host": "sw2", "status": "partial", "data_quality": 75, "missing": ["CDP/LLDP neighbors"]},
+            ],
+        },
         "protocol_intelligence": [
             {"switch": "sw1", "protocol": "EtherChannel", "state": "I", "severity": "High",
              "meaning": "Member is stand-alone (individual) — NOT bundled.",
@@ -157,6 +165,9 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # §6.5 protocol behaviour: the abnormal state's cause + remediation are present, evidence-framed
     assert "Protocol behaviour & remediation" in text
     assert "verify LACP on the peer" in text
+    # §2.1 collection completeness: blind-spot devices are made explicit (not-collected listed)
+    assert "Collection completeness" in text
+    assert "sw3-unreachable" in text and "a missing device is not a healthy device" in text
     # §6.6 services & multicast: design-intent caveat + multicast forwarding presence
     assert "Services & multicast" in text
     assert "PTP-event" in text and "run PIM/mroute" in text
