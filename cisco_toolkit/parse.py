@@ -1582,9 +1582,14 @@ def parse_ptp_clock(output: str) -> dict:
             r["mean_path_delay_ns"] = int(m.group(1))
     if r["offset_ns"] is not None:
         r["locked"] = abs(r["offset_ns"]) < 1000   # < 1 microsecond from master => effectively locked
-    # operational = a real boundary/transparent clock: a known device type with >=1 active PTP port.
+    # operational = a real boundary/transparent clock. A known device type that is NOT explicitly
+    # 0-port (num_ports unparsed/None is treated as unknown, NOT dormant -- so a known clock on a
+    # platform whose output omits the port count is not false-flagged), OR positive sync evidence
+    # (a grandmaster identity or a measured offset). The [HISTORY-REDACTED] case (Device Type Unknown / 0 ports /
+    # no parent) stays correctly dormant.
     dt = r["device_type"].lower()
-    r["operational"] = bool(dt and dt != "unknown" and (r["num_ports"] or 0) > 0)
+    r["operational"] = bool((dt and dt != "unknown" and r["num_ports"] != 0)
+                            or r["grandmaster"] or r["offset_ns"] is not None)
     return r
 
 

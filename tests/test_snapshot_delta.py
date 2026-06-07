@@ -10,12 +10,30 @@ def _snap(devices, health, punchlist):
             "health_scores": health, "punchlist": punchlist}
 
 
-def test_finding_key_normalizes_counts_and_devices():
-    a = {"category": "STP", "title": "Native VLAN 1 on 47 trunks", "devices": ["b", "a"]}
-    b = {"category": "STP", "title": "Native VLAN 1 on 46 trunks", "devices": ["a", "b"]}
-    assert _finding_key(a) == _finding_key(b)            # count churn + device order don't matter
-    c = {"category": "STP", "title": "Native VLAN 1 on 46 trunks", "devices": ["a"]}
-    assert _finding_key(b) != _finding_key(c)            # a different device set IS a different finding
+def test_finding_key_distinguishes_ids_and_ignores_device_order():
+    # device ORDER must not matter -- same finding on the same gateways
+    a = {"category": "FHRP", "title": "Fake FHRP redundancy (VLAN 20)", "devices": ["b", "a"]}
+    b = {"category": "FHRP", "title": "Fake FHRP redundancy (VLAN 20)", "devices": ["a", "b"]}
+    assert _finding_key(a) == _finding_key(b)
+    # a DIFFERENT embedded id is a DIFFERENT finding -- must NOT collapse (V3.23.111 fix): otherwise a
+    # 'VLAN 20 fixed, VLAN 21 newly broke' swap on the same devices would read as 'no change'.
+    c = {"category": "FHRP", "title": "Fake FHRP redundancy (VLAN 21)", "devices": ["a", "b"]}
+    assert _finding_key(a) != _finding_key(c)
+    # a different device set is also a different finding
+    d = {"category": "FHRP", "title": "Fake FHRP redundancy (VLAN 20)", "devices": ["a"]}
+    assert _finding_key(a) != _finding_key(d)
+
+
+def test_delta_catches_same_category_same_device_id_swap():
+    # the regression the over-aggressive digit-normalization used to hide
+    old = _snap(["sw1"], [{"switch": "sw1", "band": "Good", "score": 80}],
+                [{"severity": "High", "category": "FHRP", "title": "Fake FHRP redundancy (VLAN 20)", "devices": ["sw1"]}])
+    new = _snap(["sw1"], [{"switch": "sw1", "band": "Good", "score": 80}],
+                [{"severity": "High", "category": "FHRP", "title": "Fake FHRP redundancy (VLAN 21)", "devices": ["sw1"]}])
+    d = compute_snapshot_delta(old, new)
+    assert d["findings"]["n_opened"] == 1 and d["findings"]["opened"][0]["title"].endswith("(VLAN 21)")
+    assert d["findings"]["n_resolved"] == 1 and d["findings"]["resolved"][0]["title"].endswith("(VLAN 20)")
+    assert d["verdict"] == "REGRESSED"                   # a new High finding -> not silently CLEAN
 
 
 def test_delta_health_findings_and_verdict():
