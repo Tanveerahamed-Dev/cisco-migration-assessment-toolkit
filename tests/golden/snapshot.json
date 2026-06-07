@@ -2097,6 +2097,20 @@
   {
    "severity": "Low",
    "rank": 1,
+   "category": "False-health",
+   "devices": [
+    "access1",
+    "core1"
+   ],
+   "wave": "",
+   "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
+   "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+   "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
+   "priority": 18
+  },
+  {
+   "severity": "Low",
+   "rank": 1,
    "category": "STP",
    "devices": [
     "access1"
@@ -2105,7 +2119,7 @@
    "title": "Accidental root (VLAN 30)",
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
-   "priority": 18
+   "priority": 19
   },
   {
    "severity": "Low",
@@ -2118,7 +2132,20 @@
    "title": "Login banner",
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
-   "priority": 19
+   "priority": 20
+  }
+ ],
+ "operational_drift": [
+  {
+   "severity": "Low",
+   "category": "False-health",
+   "devices": [
+    "access1",
+    "core1"
+   ],
+   "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
+   "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+   "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."
   }
  ],
  "calibration": {
