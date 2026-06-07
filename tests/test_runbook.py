@@ -92,6 +92,13 @@ def _snap():
             "fleet_recommendation": "89% of switches are Poor/Critical — consider a GREENFIELD rebuild.",
             "scenario_counts": {"parallel-run": 1},
         },
+        "protocol_intelligence": [
+            {"switch": "sw1", "protocol": "EtherChannel", "state": "I", "severity": "High",
+             "meaning": "Member is stand-alone (individual) — NOT bundled.",
+             "likely_cause": "Incompatible port settings vs the bundle, or no LACP partner.",
+             "remediation": "Make the member config identical to the bundle and verify LACP on the peer.",
+             "confidence": "observed state = fact; likely cause = Inferred (Cisco doctrine)"},
+        ],
     }
 
 
@@ -131,6 +138,9 @@ def test_runbook_is_evidence_disciplined(tmp_path):
         assert token in text, token
     # false-health doctrine + confidence vocabulary are present
     assert "gateway-active is not service proof" in text
+    # §6.5 protocol behaviour: the abnormal state's cause + remediation are present, evidence-framed
+    assert "Protocol behaviour & remediation" in text
+    assert "verify LACP on the peer" in text
     assert "Inferred-high" in text and "Unknown" in text
     # the cross-layer finding surfaced as a titled block
     assert "single-fiber uplink to a sole gateway" in text
