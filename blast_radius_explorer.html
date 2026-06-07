@@ -2700,12 +2700,23 @@ function drawBlast(){
     ${deviceIntelSection(SEL)}
     ${endpointsSec(SEL)}`;
 }
+/* V3.23.95: per-endpoint identity (vendor via MAC-OUI + inferred class) from SNAP.endpoint_identity,
+   indexed host|port. Cached per SNAP; empty/absent (e.g. the demo) -> graceful blanks. */
+function _epIdentMap(){
+  if(_epIdentMap._c&&_epIdentMap._snap===SNAP)return _epIdentMap._c;
+  const m=new Map();const arr=(SNAP&&Array.isArray(SNAP.endpoint_identity))?SNAP.endpoint_identity:[];
+  for(const r of arr)m.set((r.host||"")+"|"+(r.port||""),r);
+  _epIdentMap._c=m;_epIdentMap._snap=SNAP;return m;}
 function endpointsSec(h){const eps=endpointsOf(h);if(!eps.length)return "";
-  let rows="";eps.forEach(e=>{rows+=`<tr class="click" data-ephost="${esc(e.host)}" data-epport="${esc(e.port)}"><td class="mono faint">${esc(e.port)}</td><td class="vid">${esc(e.vlan)}</td>
-    <td class="mono">${esc(e.ip||"—")}</td><td class="mono faint">${esc(e.mac||"")}</td></tr>`;});
+  const im=_epIdentMap();
+  let rows="";eps.forEach(e=>{const id=im.get(e.host+"|"+e.port)||{};
+    const cls=id.endpoint_class&&id.endpoint_class!=="Unknown"?esc(id.endpoint_class)+(id.confidence&&id.confidence!=="Unknown"?` <span class="faint">(${esc(id.confidence)})</span>`:""):"";
+    rows+=`<tr class="click" data-ephost="${esc(e.host)}" data-epport="${esc(e.port)}"><td class="mono faint">${esc(e.port)}</td><td class="vid">${esc(e.vlan)}</td>
+    <td class="mono">${esc(e.ip||"—")}</td><td class="mono faint">${esc(e.mac||"")}</td>
+    <td>${esc(id.vendor||"—")}</td><td>${cls||"—"}</td></tr>`;});
   return `<div class="sec"><h3>Endpoints on this switch <span class="ct">${eps.length}</span></h3>
-    <p class="faint" style="margin:0 0 8px">Click an endpoint for its port / VLAN / IP details.</p>
-    <table><thead><tr><th>Port</th><th>VLAN</th><th>IP</th><th>MAC</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+    <p class="faint" style="margin:0 0 8px">Vendor is the MAC-OUI owner (a fact); class is inferred.</p>
+    <table><thead><tr><th>Port</th><th>VLAN</th><th>IP</th><th>MAC</th><th>Vendor</th><th>Class</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
 /* Device-intelligence dossier (V3.23.79): on the selected switch, fold together every per-device finding
    the collector already computed — health score (SNAP.health_scores), physical port errors
    (SNAP.physical_health, previously NEVER surfaced in the explorer), protocol-health issues

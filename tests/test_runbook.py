@@ -49,6 +49,14 @@ def _snap():
         "operational_drift": [{"severity": "High", "category": "False-health", "devices": ["sw1"],
                                "title": "Temporary L2 bridge on sw1",
                                "detail": "a temp bridge enlarges the STP domain", "remediation": "remove it"}],
+        "endpoint_identity": [
+            {"host": "sw1", "port": "Gi1/0/1", "vlan": "10", "ip": "", "mac": "00:50:56:aa:00:01",
+             "mac_count": 1, "vendor": "VMware, Inc.", "endpoint_class": "VM / Hypervisor",
+             "confidence": "Inferred-high", "evidence": "vendor 'VMware, Inc.'"},
+            {"host": "sw1", "port": "Gi1/0/2", "vlan": "20", "ip": "", "mac": "00:c0:b7:00:00:01",
+             "mac_count": 1, "vendor": "APC", "endpoint_class": "UPS/PDU",
+             "confidence": "Inferred-high", "evidence": "vendor 'APC'"},
+        ],
     }
 
 
@@ -94,6 +102,9 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # the false-health / operational-drift section (§6.3) surfaced the drift finding
     assert "False-health / operational drift" in text
     assert "Temporary L2 bridge on sw1" in text
+    # the endpoint identity section (§7.1) surfaced vendor + class grouping
+    assert "Endpoint identity (vendor & type)" in text
+    assert "VM / Hypervisor" in text and "VMware, Inc." in text
 
 
 def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):

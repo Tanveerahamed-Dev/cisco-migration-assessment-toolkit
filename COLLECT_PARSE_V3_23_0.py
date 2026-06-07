@@ -326,6 +326,7 @@ from cisco_toolkit.analyze import (
     stp_root_findings, compute_migration_punchlist,   # NEW-V3.23.62 / .63 (STP root analysis + consolidated punch-list)
     compute_hostname_mismatches,                       # NEW-V3.23.68 (inventory-name vs configured-hostname)
     compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
+    compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -358,6 +359,7 @@ from cisco_toolkit.excel import (
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet, write_link_centrality_sheet,      # step 24 (+Link Centrality V3.23.88)
     write_wave_sequencing_sheet,                                                                # NEW-V3.23.89 (cutover sequencing)
+    write_endpoint_intelligence_sheet,                          # NEW-V3.23.95 (endpoint vendor + class)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -1418,6 +1420,12 @@ def main():
     logger.info("\n[Phase 15] Writing Capacity sheet ...")
     _run_phase("Capacity sheet", write_capacity_sheet, wb, all_device_physical)
 
+    # Phase 15b: Endpoint Intelligence (NEW-V3.23.95). Compute ONCE here (vendor via offline OUI +
+    # inferred class); reused by the sheet AND the snapshot (one source of truth -> explorer + runbook).
+    logger.info("\n[Phase 15b] Writing Endpoint Intelligence sheet ...")
+    endpoint_identity = _run_phase("Endpoint identity", compute_endpoint_identity, all_interfaces, _default=[])
+    _run_phase("Endpoint Intelligence sheet", write_endpoint_intelligence_sheet, wb, endpoint_identity)
+
     # Phase 16: Interface Health counters (NEW-V15)
     logger.info("\n[Phase 16] Writing Interface Health sheet ...")
     _run_phase("Interface Health sheet", write_interface_health_sheet, wb, all_cmd_to_files)
@@ -1607,6 +1615,7 @@ def main():
     snap_dict["link_phy"] = compute_duplex_speed_mismatches(all_interfaces)
     snap_dict["move_groups"] = move_groups                           # NEW-V3.23.86 (Migration Waves mode: the move-group / shared-VLAN-domain structure the readiness verdicts attach to; already computed above for migration_readiness)
     snap_dict["capacity"] = compute_capacity(all_device_physical)    # NEW-V3.23.87 (port + PoE headroom: same fn that drives the 'Capacity' sheet -> explorer + workbook agree)
+    snap_dict["endpoint_identity"] = endpoint_identity               # NEW-V3.23.95 (per-endpoint vendor + inferred class; reused from the Phase 15b compute)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41

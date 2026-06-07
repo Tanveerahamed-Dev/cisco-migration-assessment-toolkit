@@ -1932,6 +1932,117 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
     return {"accidental": accidental, "misaligned": misaligned}
 
 
+# =============================================================================
+# Endpoint identity & vendor intelligence (NEW-V3.23.95). Passive classification of access-port
+# endpoints from already-collected signals -- MAC OUI (-> vendor, a directly-evidenced fact), the
+# operator description, the CDP neighbour platform, and the collector's own endpoint_type -- into a
+# migration-useful CLASS with an explicit CONFIDENCE label (the skill doctrine: the vendor is a fact;
+# the role inferred from it is Inferred, never Confirmed). The rule base encodes domain research
+# (broadcast A/V + IT vendors, hypervisor platforms, NIC/UPS makers); it is data, not magic.
+# =============================================================================
+# Description keyword -> (class, confidence-rank). Rank 2 = Inferred-high, 1 = Inferred-medium.
+_EP_DESC_RULES = [
+    (re.compile(r"cam(era)?|cctv|\bptz\b|surveill", re.I), "Camera", 2),
+    (re.compile(r"dante|aes67|intercom|\bmic\b|\baudio\b", re.I), "Audio (Dante/AES67)", 2),
+    (re.compile(r"2110|\bsdi\b|playout|ingest|multiview|encoder|decoder|transcode|\bmcr\b|\bpcr\b|on.?air|\bvtr\b", re.I), "Broadcast A/V", 2),
+    (re.compile(r"nexis|isilon|\bnas\b|\bsan\b|storage|datastore|\blun\b|netapp|\bemc\b", re.I), "Storage", 2),
+    (re.compile(r"esx|vmware|hyper-?v|hypervisor|vcenter|nutanix|\bvm\b", re.I), "VM / Hypervisor", 2),
+    (re.compile(r"\bsql\b|oracle|database|\bdb\b|postgres|mysql|mongo", re.I), "Database", 2),
+    (re.compile(r"\bups\b|\bpdu\b", re.I), "UPS/PDU", 2),
+    (re.compile(r"printer|\bmfp\b|copier", re.I), "Printer", 2),
+    (re.compile(r"\bap[-_ ]|access.?point|\bwap\b|wireless", re.I), "Wireless AP", 2),
+    (re.compile(r"phone|voip|\bsip\b", re.I), "Phone", 2),
+    (re.compile(r"robot", re.I), "Robotics", 2),
+    (re.compile(r"render|\bserver\b|\bsrv\b|compute|\bblade\b|\besxi\b", re.I), "Server", 2),
+    (re.compile(r"firewall|\basa\b", re.I), "Firewall", 2),
+    (re.compile(r"router|gateway", re.I), "Router", 1),
+    (re.compile(r"switch", re.I), "Network", 1),
+]
+# Vendor substring -> (class, rank). Unambiguous makers are rank 2; ambiguous (Dell/HP = server OR
+# workstation) are rank 1 so a description/CDP signal wins.
+_EP_VENDOR_RULES = [
+    (("apc", "schneider", "eaton", "tripp", "vertiv", "liebert", "cyberpower"), "UPS/PDU", 2),
+    (("audinate", "lawo", "riedel", "calrec", "digigram"), "Audio (Dante/AES67)", 2),
+    (("grass valley", "evs broadcast", "evertz", "ross video", "blackmagic", "newtek", "imagine comm",
+      "harmonic", "telestream", "vizrt", "nevion", "dektec", "bridge tech", "tag video", "l-s-b",
+      "sony"), "Broadcast A/V", 2),
+    (("axis comm", "hikvision", "dahua", "hanwha", "pelco", "vivotek", "mobotix"), "Camera", 2),
+    (("netapp", "pure storage", "dell emc", "isilon", "nimble", "infinidat", "hitachi data", "qnap",
+      "synology", "quantum corp", "spectra logic"), "Storage", 2),
+    (("vmware", "nutanix"), "VM / Hypervisor", 2),
+    (("avid",), "Storage", 1),
+    (("super micro", "supermicro", "tyan", "inspur", "quanta", "wiwynn"), "Server", 2),
+    (("juniper", "arista", "aruba", "ruckus", "ubiquiti", "extreme net", "fortinet", "palo alto",
+      "check point", "f5 net"), "Network", 1),
+    (("canon", "epson", "brother inds", "xerox", "ricoh", "kyocera", "lexmark", "zebra tech"), "Printer", 2),
+    (("polycom", "avaya", "mitel", "yealink", "grandstream"), "Phone", 2),
+    (("dell", "hewlett packard", "hpe", "lenovo", "intel corp", "gigabyte", "asrock", "asustek"),
+     "Server", 1),
+    (("apple", "microsoft"), "Workstation", 1),
+]
+# Collector's own endpoint_type -> class (rank 2: it is CDP-capability derived).
+_EP_TYPE_MAP = {"server": "Server", "storage": "Storage", "camera": "Camera", "ups/pdu": "UPS/PDU",
+                "router": "Router", "firewall": "Firewall", "switch": "Network"}
+_EP_CONF = {2: "Inferred-high", 1: "Inferred-medium", 0: "Unknown"}
+
+
+def _classify_endpoint(vendor: str, desc: str, plat: str, etype: str, laa: bool):
+    """Pick the highest-confidence class for one endpoint from its signals, returning
+    (class, confidence, evidence-string). The vendor itself is reported separately as a fact."""
+    cands = []  # (rank, class, evidence)
+    for rx, cls, rank in _EP_DESC_RULES:
+        if desc and rx.search(desc):
+            cands.append((rank, cls, f"description '{desc.strip()[:32]}'")); break
+    pl = (plat or "").lower()
+    if "vmware" in pl or "esx" in pl:
+        cands.append((2, "VM / Hypervisor", f"CDP platform '{plat.strip()[:24]}'"))
+    elif "linux" in pl:
+        cands.append((1, "Server", f"CDP platform '{plat.strip()[:24]}'"))
+    if etype and etype.lower() in _EP_TYPE_MAP:
+        cands.append((2, _EP_TYPE_MAP[etype.lower()], f"device-reported type '{etype}'"))
+    if vendor:
+        vl = vendor.lower()
+        for subs, cls, rank in _EP_VENDOR_RULES:
+            if any(s in vl for s in subs):
+                cands.append((rank, cls, f"vendor '{vendor}'")); break
+    if not cands:
+        if laa:
+            return "VM / Hypervisor", "Inferred-medium", "locally-administered MAC (virtual/randomized)"
+        return "Unknown", "Unknown", "no vendor/description/platform signal"
+    rank, cls, ev = max(cands, key=lambda c: c[0])
+    return cls, _EP_CONF[rank], ev
+
+
+def compute_endpoint_identity(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
+    """NEW-V3.23.95: one record per access-port endpoint with its VENDOR (MAC OUI, a fact) and an
+    inferred migration CLASS + confidence + the evidence that drove it. Pure read of already-parsed
+    data + the offline OUI registry. One row per (host, port); a multi-MAC access port (downstream
+    hub) is reported with its mac_count so endpoint-instances and ports stay distinguishable."""
+    from cisco_toolkit.ouidb import vendor_for_mac, is_locally_administered
+    out: List[dict] = []
+    for host in sorted(all_interfaces):
+        for port, d in all_interfaces[host].items():
+            if (d.switchport_mode or "") != "Access":
+                continue
+            macs = _split_macs(d.end_host_mac)
+            if not macs:
+                continue
+            vendor = ""
+            for m in macs:
+                vendor = vendor_for_mac(m)
+                if vendor:
+                    break
+            laa = all(is_locally_administered(m) for m in macs)
+            cls, conf, ev = _classify_endpoint(vendor, d.description or "", d.neighbor_platform or "",
+                                               d.endpoint_type or "", laa)
+            out.append({
+                "host": host, "port": port, "vlan": (d.vlan or "").strip(),
+                "ip": (d.end_host_ip or "").strip(), "mac": macs[0], "mac_count": len(macs),
+                "vendor": vendor, "endpoint_class": cls, "confidence": conf, "evidence": ev,
+            })
+    return out
+
+
 def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                               all_device_physical: list) -> List[dict]:
     """NEW-V3.23.93: evidence-led FALSE-HEALTH / operational-drift detector. Surfaces the migration
