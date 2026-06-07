@@ -3014,7 +3014,11 @@
       "standard": ""
      }
     ],
-    "n_high_risk": 0
+    "n_high_risk": 0,
+    "degree": 5,
+    "neighbors": [
+     "Compute / Virtualization"
+    ]
    },
    {
     "id": "compute",
@@ -3067,7 +3071,11 @@
       "standard": ""
      }
     ],
-    "n_high_risk": 0
+    "n_high_risk": 0,
+    "degree": 5,
+    "neighbors": [
+     "General / Back-office (unclassified)"
+    ]
    }
   ],
   "summary": {
@@ -3078,10 +3086,56 @@
    "n_on_air_critical": 0,
    "n_spanning_waves": 0,
    "n_high_risk": 0,
-   "n_cross_domain_risks": 0,
-   "ptp_boundary_clocked": false
+   "n_cross_domain_risks": 1,
+   "ptp_boundary_clocked": false,
+   "n_edges": 1,
+   "keystone_domain": "Compute / Virtualization",
+   "n_on_air_coupled": 0
   },
-  "cross_domain_risks": [],
-  "taxonomy_version": "app-domains/1"
+  "cross_domain_risks": [
+   {
+    "severity": "Low",
+    "kind": "keystone-domain",
+    "vlan": "",
+    "title": "Compute / Virtualization is the most cross-coupled domain (keystone)",
+    "detail": "Compute / Virtualization couples to 1 other domain(s) (weighted degree 5): General / Back-office (unclassified). It has the widest cross-domain blast radius.",
+    "remediation": "Sequence this domain deliberately (not as an early pilot); validate every coupled domain after its cutover.",
+    "standard": ""
+   }
+  ],
+  "edges": [
+   {
+    "source": "Compute / Virtualization",
+    "target": "General / Back-office (unclassified)",
+    "source_id": "compute",
+    "target_id": "general",
+    "kinds": [
+     "physical-link",
+     "shared-subnet"
+    ],
+    "weight": 5,
+    "confidence": "Confirmed-high",
+    "media": false,
+    "detail": "2 inter-switch link(s); 3 shared subnet(s)",
+    "migration_note": ""
+   }
+  ],
+  "keystones": [
+   {
+    "domain": "Compute / Virtualization",
+    "degree": 5,
+    "neighbors": [
+     "General / Back-office (unclassified)"
+    ]
+   },
+   {
+    "domain": "General / Back-office (unclassified)",
+    "degree": 5,
+    "neighbors": [
+     "Compute / Virtualization"
+    ]
+   }
+  ],
+  "taxonomy_version": "app-domains/2"
  }
 }

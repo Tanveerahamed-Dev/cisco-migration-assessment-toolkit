@@ -116,7 +116,8 @@ def test_class_fallback_health_and_punchlist_rollup():
 def test_empty_inputs_are_well_formed():
     out = compute_application_intelligence({}, None, None, None, None, None, None)
     assert out["domains"] == [] and out["cross_domain_risks"] == []
-    assert out["summary"]["n_domains"] == 0 and out["taxonomy_version"] == "app-domains/1"
+    assert out["summary"]["n_domains"] == 0 and out["taxonomy_version"] == "app-domains/2"
+    assert out["edges"] == [] and out["keystones"] == []
     # a host with no ports / no signal still degrades cleanly to the General bucket
     out2 = compute_application_intelligence({"h": {}}, [], {}, {}, [], [], [])
     assert [d["id"] for d in out2["domains"]] == ["general"]
@@ -129,3 +130,54 @@ def test_output_is_json_serializable_and_deterministic():
     a = compute_application_intelligence(ai, [], {}, _sm(), [], [], [])
     b = compute_application_intelligence(ai, [], {}, _sm(), [], [], [])
     assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+# ---- V3.23.113: inter-domain dependency edges ----
+
+def test_edges_shared_subnet_and_dual_homed_merge_into_one_pair():
+    ai = {"SW01-BC-NEXIS-A": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="11")},
+          "AS01-MGM-X": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="13")}}
+    si = {"per_device": [
+        {"host": "SW01-BC-NEXIS-A", "destination_subnets": ["10.0.5.0/24"], "served_subnets": []},
+        {"host": "AS01-MGM-X", "destination_subnets": ["10.0.5.0/24"], "served_subnets": []}]}
+    dep = {"dual_homed": [{"mac": "aa", "switches": ["SW01-BC-NEXIS-A", "AS01-MGM-X"]}]}
+    out = compute_application_intelligence(ai, [], dep, _sm(), [], [], [], subnet_intelligence=si)
+    assert len(out["edges"]) == 1
+    e = out["edges"][0]
+    assert {e["source_id"], e["target_id"]} == {"storage", "mgmt"}
+    assert "shared-subnet" in e["kinds"] and "dual-homed" in e["kinds"] and e["weight"] == 2
+    assert e["confidence"] == "Confirmed"            # dual-homed present (no physical link)
+    dom = {d["id"]: d for d in out["domains"]}
+    assert dom["storage"]["degree"] == 2 and dom["mgmt"]["degree"] == 2
+    assert out["keystones"][0]["degree"] == 2 and out["summary"]["n_edges"] == 1
+
+
+def test_edge_physical_link_from_cdp():
+    ai = {"SW01-BC-DANTE-A": {"Te1/1": InterfaceData(port="Te1/1", cdp_neighbor="AS01-MGM-X",
+                                                     neighbor_port="Te1/2")},
+          "AS01-MGM-X": {"Te1/1": InterfaceData(port="Te1/1")}}
+    out = compute_application_intelligence(ai, [], {}, _sm(), [], [], [])
+    assert len(out["edges"]) == 1
+    e = out["edges"][0]
+    assert {e["source_id"], e["target_id"]} == {"audio", "mgmt"}
+    assert e["kinds"] == ["physical-link"] and e["confidence"] == "Confirmed-high"
+
+
+def test_media_coupling_adds_note_and_on_air_risk():
+    ai = {"ACS01-BC-X": {"Te1/1": InterfaceData(port="Te1/1", multicast_info="PIM",
+                                                cdp_neighbor="AS01-MGM-Y", neighbor_port="Te1/2")},
+          "AS01-MGM-Y": {"Te1/1": InterfaceData(port="Te1/1")}}
+    out = compute_application_intelligence(ai, [], {}, _sm(), [], [], [])
+    e = out["edges"][0]
+    assert e["media"] is True and "multicast" in e["migration_note"].lower()
+    kinds = [c["kind"] for c in out["cross_domain_risks"]]
+    assert "on-air-coupling" in kinds and "keystone-domain" in kinds
+    risk = next(c for c in out["cross_domain_risks"] if c["kind"] == "on-air-coupling")
+    assert "Media Fabric" in risk["title"] and "2022-7" in risk["standard"]
+
+
+def test_isolated_domain_has_no_edges():
+    ai = {"AS99-X": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="10")}}
+    out = compute_application_intelligence(ai, [], {}, _sm(), [], [], [])
+    assert out["edges"] == [] and out["keystones"] == []
+    assert out["summary"]["n_edges"] == 0 and out["summary"]["keystone_domain"] == ""

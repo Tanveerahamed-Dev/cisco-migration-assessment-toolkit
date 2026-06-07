@@ -4205,6 +4205,7 @@ function drawApps(){
       ${classes?`<div class="ln" style="margin-top:5px"><span class="faint">Endpoints:</span> ${classes}</div>`:""}
       ${risks?`<div style="margin-top:6px">${risks}</div>`:`<div class="ln faint" style="margin-top:4px">✓ No domain-level migration risk flagged.</div>`}
       ${valid?`<details style="margin-top:6px"><summary class="faint" style="cursor:pointer">Cutover validation (${(d.validation||[]).length})</summary><ul class="faint" style="margin:4px 0 0 16px">${valid}</ul></details>`:""}
+      ${(d.neighbors&&d.neighbors.length)?`<div class="ln" style="margin-top:5px"><span class="faint">Coupled with (deg ${(+d.degree||0)}):</span> ${d.neighbors.slice(0,8).map(nm=>`<span class="pill pl-neutral">${esc(nm)}</span>`).join(" ")}${d.neighbors.length>8?` <span class="faint">+${d.neighbors.length-8}</span>`:""}</div>`:""}
       <div class="ln faint" style="margin-top:5px">Why: ${esc(d.evidence||"")}</div>
     </div>`;}).join("");
   const cross=Array.isArray(ai.cross_domain_risks)?ai.cross_domain_risks:[];
@@ -4213,27 +4214,49 @@ function drawApps(){
       <div class="ln faint" style="margin-top:3px">${esc(c.detail||"")}</div>
       ${c.remediation?`<div class="ln" style="margin-top:3px"><b>Fix:</b> ${esc(c.remediation)}${c.standard?` <span class="faint">[${esc(c.standard)}]</span>`:""}</div>`:""}
     </div>`).join("");
+  const edges=Array.isArray(ai.edges)?ai.edges:[];
+  const keystones=Array.isArray(ai.keystones)?ai.keystones:[];
+  const kHtml=keystones.length?`<p class="sub" style="margin:0 0 8px"><b>Keystone:</b> ${esc(keystones[0].domain)} — widest blast radius (weighted degree ${keystones[0].degree}, ${(keystones[0].neighbors||[]).length} neighbour domain(s)). Sequence it deliberately, not as an early pilot.</p>`:"";
+  const edgeRows=edges.slice(0,24).map(e=>`<div class="card neutral">
+      <div class="ct"><span class="nm">${esc(e.source)} ↔ ${esc(e.target)}</span><span class="pill pl-neutral">weight ${e.weight}</span></div>
+      <div class="ln faint" style="margin-top:3px">${esc((e.kinds||[]).join(", "))} · ${esc(e.confidence||"")}${e.detail?` · ${esc(e.detail)}`:""}</div>
+      ${e.migration_note?`<div class="ln" style="margin-top:3px">${esc(e.migration_note)}</div>`:""}
+    </div>`).join("");
   return head+
     `<div class="sec"><div class="headline">
       <div class="stat"><div class="v"><span class="num" data-to="${s.n_domains||domains.length}">0</span></div><div class="k">domains</div></div>
       <div class="stat ${s.n_on_air_critical?"crit":""}"><div class="v"><span class="num" data-to="${s.n_on_air_critical||0}">0</span></div><div class="k">on-air critical</div></div>
       <div class="stat ${s.n_high_risk?"risk":""}"><div class="v"><span class="num" data-to="${s.n_high_risk||0}">0</span></div><div class="k">high risk</div></div>
       <div class="stat ${s.n_cross_domain_risks?"risk":""}"><div class="v"><span class="num" data-to="${s.n_cross_domain_risks||0}">0</span></div><div class="k">cross-domain</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_edges||0}">0</span></div><div class="k">couplings</div></div>
     </div>
     <p class="sub" style="margin:10px 0 0">Switches grouped into <b>application domains</b> by deliberate hostname role, observed PTP/multicast, or dominant endpoint class — each with its criticality tier, health rollup and standards-grounded migration risk (ST 2059 boundary clocks · RFC 4541 querier continuity · ST 2022-7 dual-path · NEXIS dual-leg). <b>Click a domain</b> to spotlight its switches.</p></div>
     <div class="sec"><h3>Domains by criticality <span class="ct">${domains.length}</span></h3>${cards}</div>
-    ${cross.length?`<div class="sec"><h3>Cross-domain risks <span class="ct">${cross.length}</span></h3><p class="sub" style="margin:0 0 8px">IGMP querier continuity / split-brain across the cutover (RFC 4541).</p>${crossCards}</div>`:""}`;
+    ${cross.length?`<div class="sec"><h3>Cross-domain risks <span class="ct">${cross.length}</span></h3><p class="sub" style="margin:0 0 8px">IGMP querier continuity / split-brain across the cutover (RFC 4541).</p>${crossCards}</div>`:""}
+    ${edges.length?`<div class="sec"><h3>Inter-domain dependencies <span class="ct">${edges.length}</span></h3>${kHtml}<p class="sub" style="margin:0 0 8px">Couplings between domains — physical links · shared subnets · dual-homed endpoints. What must be coordinated / made-before-broken on cutover. <b>Select a domain above</b> to light its coupled neighbours on the graph.</p>${edgeRows}</div>`:""}`;
 }
 /* paint hook: spotlight the selected application-domain's switches (APP_SEL), dim the rest.
    No selection -> clean canvas. Mirrors paintWaves (reuses .xlhl / .xldim / .dim). */
 function paintApps(){
   if(APP_SEL==null)return;
   const ai=(SNAP&&SNAP.application_intelligence)||{};
-  const d=(Array.isArray(ai.domains)?ai.domains:[])[APP_SEL]; if(!d)return;
+  const doms=Array.isArray(ai.domains)?ai.domains:[];
+  const d=doms[APP_SEL]; if(!d)return;
   const set=new Set(d.switches||[]);
+  // V3.23.113: the selected domain's COUPLED neighbours (via a dependency edge) stay at normal
+  // brightness; everything uncoupled dims -> the coupling is visible at a glance.
+  const nbrIds=new Set();
+  (Array.isArray(ai.edges)?ai.edges:[]).forEach(e=>{
+    if(e.source_id===d.id)nbrIds.add(e.target_id);
+    else if(e.target_id===d.id)nbrIds.add(e.source_id);});
+  const nbrSet=new Set();
+  doms.forEach(x=>{if(nbrIds.has(x.id))(x.switches||[]).forEach(h=>nbrSet.add(h));});
   MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
-    if(set.has(h))n.g.classList.add("xlhl"); else n.g.classList.add("xldim");});
-  edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
+    if(set.has(h))n.g.classList.add("xlhl");
+    else if(!nbrSet.has(h))n.g.classList.add("xldim");});   // neighbour switches: left at normal brightness
+  edgeEls.forEach(({e,path})=>{
+    const a=set.has(e.a)||nbrSet.has(e.a), b=set.has(e.b)||nbrSet.has(e.b);
+    if(!(a&&b))path.classList.add("dim");});
 }
 
 /* =====================================================================

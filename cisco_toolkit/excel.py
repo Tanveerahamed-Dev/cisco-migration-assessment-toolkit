@@ -849,10 +849,37 @@ def write_application_intelligence_sheet(wb, ai: dict) -> None:
                 cc.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col in (4, 5))
             r += 1
 
+    # Inter-domain dependency block (NEW-V3.23.113): the coupling edges + the keystone domain.
+    edges = a.get("edges") or []
+    keystones = a.get("keystones") or []
+    r += 1
+    ws.cell(row=r, column=1, value="Inter-domain dependencies (couplings)").font = Font(bold=True); r += 1
+    if keystones:
+        k = keystones[0]
+        ws.cell(row=r, column=1, value="Keystone (widest blast radius):").font = Font(size=10)
+        ws.cell(row=r, column=2,
+                value=f"{k.get('domain')} — degree {k.get('degree')}, {len(k.get('neighbors') or [])} neighbour(s)")
+        r += 1
+    if not edges:
+        ws.cell(row=r, column=1, value="No cross-domain couplings detected."); r += 1
+    else:
+        for i, h in enumerate(["Domain A", "Domain B", "Weight", "Kinds", "Confidence", "Migration note"], 1):
+            cell = ws.cell(row=r, column=i, value=h); cell.font = Font(bold=True, size=10)
+        r += 1
+        for e in edges:
+            vals = [e.get("source"), e.get("target"), e.get("weight"), ", ".join(e.get("kinds") or []),
+                    e.get("confidence"),
+                    e.get("migration_note") or ("media-adjacent" if e.get("media") else "")]
+            for col, v in enumerate(vals, 1):
+                cc = ws.cell(row=r, column=col, value=v); cc.font = DAT
+                cc.alignment = Alignment(horizontal="left" if col in (1, 2, 4, 5, 6) else "center",
+                                         vertical="top", wrap_text=col in (4, 6))
+            r += 1
+
     for i, w in enumerate([34, 15, 9, 7, 10, 26, 16, 14, 12, 7, 40, 24, 34], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{APPLICATION_INTEL_SHEET_NAME}' sheet: {len(a.get('domains', []))} domain(s), "
-                f"{len(cross)} cross-domain risk(s)")
+                f"{len(cross)} cross-domain risk(s), {len(edges)} dependency edge(s)")
 
 
 def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
