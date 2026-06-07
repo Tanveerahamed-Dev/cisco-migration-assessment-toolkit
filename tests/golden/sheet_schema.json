@@ -377,6 +377,17 @@
   "Detail",
   "Remediation"
  ],
+ "Remediation Plan": [
+  "\u26a0 GENERATED FOR REVIEW \u2014 validate against the device's running-config and your change-control before applying. Snippets are starting points, not a turnkey script.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Application Intelligence": [
   "Application & network intelligence:",
   "2 domain(s)  \u00b7  0 on-air-critical  \u00b7  0 with High/Critical risk  \u00b7  0 span >1 wave  \u00b7  1 cross-domain risk(s)",
