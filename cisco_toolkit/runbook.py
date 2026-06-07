@@ -449,6 +449,52 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
             doc.add_paragraph(f"IGMP snooping querier present on {len(queriers)} VLAN(s) "
                               f"({_CONF_CONFIRMED}); VLANs without a querier risk multicast flooding/pruning.")
 
+    # ===== 6.7 Application domains (workload synthesis & migration playbook) — NEW-V3.23.112 =====
+    appi = snap_dict.get("application_intelligence") or {}
+    appd = appi.get("domains") or []
+    if appd:
+        doc.add_heading("6.7 Application domains & migration playbook", level=2)
+        asum = appi.get("summary") or {}
+        doc.add_paragraph(
+            f"The fleet resolves into {asum.get('n_domains', len(appd))} application domain(s) "
+            f"({asum.get('n_on_air_critical', 0)} on-air-critical, {asum.get('n_high_risk', 0)} carrying a "
+            "High/Critical migration risk). Each switch is attributed by a deliberate hostname role token, by "
+            f"observed PTP/multicast ({_CONF_CONFIRMED}), or by its dominant endpoint class ({_CONF_MED}); "
+            "switches with no application signal fall to a General bucket rather than being over-claimed as a "
+            "media fabric. Per-domain migration risk is grounded in broadcast-over-IP practice (SMPTE ST 2059 "
+            "boundary clocks, RFC 4541 IGMP-querier continuity, ST 2022-7 dual-path, Avid NEXIS dual-leg).")
+        table(["Domain", "Tier", "Switches", "Endpoints", "PTP", "Top migration risk"],
+              [[d.get("domain"), d.get("tier"), d.get("switch_count"), d.get("endpoint_count"),
+                ("boundary-clocked" if d.get("ptp_boundary_clocked")
+                 else "present, NOT BC" if d.get("ptp_present") else "—"),
+                ((d.get("risks") or [{}])[0].get("title", "—") if d.get("risks") else "—")]
+               for d in appd],
+              widths=[2.2, 1.2, 0.8, 0.9, 1.1, 2.3])
+        # the on-air-critical domain risks as evidence-disciplined findings (false-health doctrine)
+        for d in appd:
+            if d.get("tier") != "On-air critical":
+                continue
+            for r in (d.get("risks") or []):
+                if r.get("severity") not in ("Critical", "High"):
+                    continue
+                finding_block(
+                    f"{d.get('domain')} — {r.get('title')}",
+                    severity=r.get("severity"),
+                    scope=f"{d.get('switch_count')} switch(es); tier {d.get('tier')}",
+                    observed=d.get("evidence", ""),
+                    interpretation=r.get("detail", ""),
+                    impact="On-air media path — a timing or multicast break at cutover is audience-visible.",
+                    confidence=f"{_CONF_CONFIRMED} (switch state) / {_CONF_MED} (media dependency)",
+                    unknowns="Whether this domain's live traffic actually traverses the flagged switches at "
+                             "cutover time (no flow telemetry).",
+                    next_validation="; ".join(d.get("validation") or []),
+                    remediation=r.get("remediation", ""))
+        cross = appi.get("cross_domain_risks") or []
+        if cross:
+            doc.add_paragraph(
+                f"Cross-domain IGMP querier risks (RFC 4541): {len(cross)} finding(s) — "
+                + "; ".join(c.get("title", "") for c in cross[:6]) + ".")
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()

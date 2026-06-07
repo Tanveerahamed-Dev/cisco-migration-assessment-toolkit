@@ -336,6 +336,7 @@ from cisco_toolkit.analyze import (
     compute_service_map,                               # NEW-V3.23.101 (L4 service map from ACL ports + multicast activity)
     compute_ptp_readiness,                             # NEW-V3.23.108 (PTP / media-timing readiness -> punch-list)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
+    compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -375,6 +376,7 @@ from cisco_toolkit.excel import (
     write_protocol_intelligence_sheet,                          # NEW-V3.23.100 (protocol-state cause + remediation)
     write_service_map_sheet,                                     # NEW-V3.23.101 (L4 service map + multicast activity)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
+    write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -1655,6 +1657,17 @@ def main():
                            ptp_readiness=_ptp_readiness, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
 
+    # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
+    # endpoint_dependencies + service_map + health_scores + move_groups + punchlist into named
+    # application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
+    # span, and standards-grounded migration risks (PTP boundary-clock / ST 2059, IGMP querier
+    # continuity / RFC 4541, ST 2022-7 dual-path, NEXIS dual-leg). Pure synthesis of already-computed
+    # records; compute once -> sheet + snapshot (one source of truth).
+    application_intelligence = _run_phase("Application intelligence", compute_application_intelligence,
+                                          all_interfaces, endpoint_identity, endpoint_dependencies,
+                                          service_map, health_scores, move_groups, punchlist, _default={})
+    _run_phase("Application Intelligence sheet", write_application_intelligence_sheet, wb, application_intelligence)
+
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
     logger.info("\n[Phase 30e] Writing Executive Summary sheet ...")
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
@@ -1727,6 +1740,7 @@ def main():
     snap_dict["endpoint_dependencies"] = endpoint_dependencies       # NEW-V3.23.96 (clusters / dual-homed / VLAN tiers / per-switch validation; reused from Phase 29b)
     snap_dict["subnet_intelligence"] = subnet_intelligence           # NEW-V3.23.97 (per-device subnet source/destination + move-group reachability; reused from Phase 29c)
     snap_dict["migration_scenarios"] = migration_scenarios           # NEW-V3.23.98 (per-group cutover scenario recommendation; reused from Phase 29d)
+    snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41

@@ -732,6 +732,7 @@
       <button data-mode="xlayer" aria-pressed="false"><span class="gl" aria-hidden="true">⌗</span>Cross-Layer</button>
       <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causality</button>
       <button data-mode="waves" aria-pressed="false"><span class="gl" aria-hidden="true">⇉</span>Waves</button>
+      <button data-mode="apps" aria-pressed="false"><span class="gl" aria-hidden="true">▦</span>Apps</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -1387,6 +1388,7 @@ let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // 
 let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding card (null = none)
 let XL_LAYER_FILTER=null, XL_SEV_FILTER=null;   // V3.23.82: Cross-Layer mode filters (null = all)
 let WAVE_SEL=null;   // V3.23.86: selected migration move-group index (canvas highlight; null = none)
+let APP_SEL=null;    // V3.23.112: selected application-domain index (Apps mode canvas highlight; null = none)
 let TIER_FOCUS=null;   // V3.23.72: {name, hosts:Set} — a Risk-cockpit tier highlighted on the topology (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
@@ -1460,7 +1462,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null; APP_SEL=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -1535,7 +1537,7 @@ function markActiveChip(){
 function setVlan(v){VLAN=v;markActiveChip();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -1894,6 +1896,7 @@ function repaint(){
   else if(MODE==="xlayer")paintXLayer();
   else if(MODE==="causality")paintCausality();
   else if(MODE==="waves")paintWaves();
+  else if(MODE==="apps")paintApps();
   severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   applyVlanFocus();   // per-VLAN isolation: fade switches not on the selected VLAN (after all paints)
@@ -2405,6 +2408,7 @@ function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} E
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="xlayer"&&XLSEL){XLSEL=null;repaint();renderDrawer();}
   else if(MODE==="waves"&&WAVE_SEL!=null){WAVE_SEL=null;repaint();renderDrawer();}
+  else if(MODE==="apps"&&APP_SEL!=null){APP_SEL=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
@@ -2436,6 +2440,7 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m!=="xlayer"){XLSEL=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null;}   // U1: cross-layer highlight + filters only live in their mode
   if(m!=="health")TIER_FOCUS=null;   // V3.23.72: a cockpit tier highlight only lives in Health mode
   if(m!=="waves")WAVE_SEL=null;   // V3.23.86: a move-group highlight only lives in Waves mode
+  if(m!=="apps")APP_SEL=null;     // V3.23.112: an application-domain highlight only lives in Apps mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
@@ -2454,7 +2459,8 @@ function setHint(){const h=document.getElementById("hint");const m={
   protocols:`Click a switch for its <b>routing-protocol profile</b>`,
   xlayer:`Click a finding to <b>highlight the switches it spans</b>`,
   causality:`Select a chain to <b>animate its root-cause flow</b>`,
-  waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`}[MODE];
+  waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
+  apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -2465,7 +2471,8 @@ function setModeTag(){const el=document.getElementById("modetag");
     protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
     xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
     causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain.",
-    waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict."}[MODE];
+    waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict.",
+    apps:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -2481,6 +2488,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
   else if(MODE==="causality"){h+=bx("var(--crit)","root-cause host","")+`<div class="row faint" style="margin-top:3px">Select a chain in the panel — its host is ringed here and its trigger→mitigation flow animates.</div>`;}
   else if(MODE==="waves"){h+=bx("var(--accent)","switches in the selected group","")+`<div class="row faint" style="margin-top:3px">Click a move-group card to spotlight its shared-VLAN L2 domain.</div>`;}
+  else if(MODE==="apps"){h+=bx("var(--accent)","switches in the selected domain","")+`<div class="row faint" style="margin-top:3px">Click an application-domain card to spotlight its switches; tiers run <b>On-air critical</b> → <b>Production</b> → <b>Support</b>.</div>`;}
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -2604,6 +2612,7 @@ function renderDrawer(){
   else if(MODE==="xlayer")p.innerHTML=drawXLayer();
   else if(MODE==="causality")p.innerHTML=drawCausality();
   else if(MODE==="waves")p.innerHTML=drawWaves();
+  else if(MODE==="apps")p.innerHTML=drawApps();
   // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
   // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
   p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
@@ -2628,6 +2637,11 @@ function renderDrawer(){
     WAVE_SEL=(WAVE_SEL===i)?null:i; repaint(); renderDrawer();
     if(WAVE_SEL!=null){const g=((SNAP&&SNAP.move_groups)||[])[WAVE_SEL];
       if(g&&g.switches&&g.switches.length&&POS[g.switches[0]])centerOn(g.switches[0]);}});
+  // V3.23.112: Application domains — click a domain card to spotlight its switches on the canvas (toggle)
+  p.querySelectorAll("[data-app]").forEach(c=>c.onclick=()=>{const i=+c.dataset.app;
+    APP_SEL=(APP_SEL===i)?null:i; repaint(); renderDrawer();
+    if(APP_SEL!=null){const d=(((SNAP&&SNAP.application_intelligence)||{}).domains||[])[APP_SEL];
+      if(d&&d.switches&&d.switches.length&&POS[d.switches[0]])centerOn(d.switches[0]);}});
   // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
   const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
     const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
@@ -4139,6 +4153,84 @@ function paintWaves(){
   const mg=(SNAP&&Array.isArray(SNAP.move_groups))?SNAP.move_groups:[];
   const g=mg[WAVE_SEL]; if(!g)return;
   const set=new Set(g.switches||[]);
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+    if(set.has(h))n.g.classList.add("xlhl"); else n.g.classList.add("xldim");});
+  edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
+}
+
+/* =====================================================================
+   V3.23.112: APPLICATION & NETWORK INTELLIGENCE (Apps mode).
+   Consumes SNAP.application_intelligence (computed in Python — one source of truth;
+   the explorer never re-derives it). Renders the application DOMAINS as tier-coloured
+   cards (footprint / health / PTP / migration risk + standards-grounded validation) and
+   the cross-domain IGMP-querier (RFC 4541) risks; clicking a domain spotlights its
+   switches on the canvas (paintApps, mirrors paintWaves). Degrades to an empty-state
+   card on a pre-V3.23.112 snapshot that lacks the key.
+   ===================================================================== */
+function drawApps(){
+  if(!MODEL)return "";
+  const head=`<div class="drawer-head"><div class="eyebrow">Application &amp; network intelligence</div><div class="title">Application domains</div></div>`;
+  const ai=(SNAP&&SNAP.application_intelligence)||{};
+  const domains=Array.isArray(ai.domains)?ai.domains:[];
+  const s=ai.summary||{};
+  if(!domains.length){
+    return head+`<div class="sec"><div class="empty"><div class="big">▦</div>
+      <p>No <b>application_intelligence</b> in this snapshot (pre-V3.23.112). This view groups switches into
+      application domains (media fabric, audio, storage, robotics, …) with criticality and standards-grounded
+      migration risk — re-run the assessment to populate it.</p></div></div>`;
+  }
+  const tierTok=t=>t==="On-air critical"?"crit":t==="Production"?"watch":"neutral";
+  const sevTok=v=>(v==="Critical"||v==="High")?"crit":v==="Medium"?"watch":"neutral";
+  const bandTok=b=>b==="Critical"?"crit":b==="Poor"?"risk":b==="Fair"?"watch":"neutral";
+  const cards=domains.map((d,i)=>{
+    const tok=tierTok(d.tier); const sel=APP_SEL===i?" xlactive":"";
+    const sw=d.switches||[];
+    const ptp=d.ptp_present?(d.ptp_boundary_clocked
+      ?`<span class="pill pl-ok">PTP boundary-clocked</span>`
+      :`<span class="pill pl-crit">PTP not boundary-clocked</span>`):"";
+    const hh=d.health||{};
+    const hb=hh.worst_band?`<span class="pill pl-${bandTok(hh.worst_band)}">health ${esc(hh.worst_band)}${(hh.n_critical||hh.n_poor)?` ${hh.n_critical||0}C/${hh.n_poor||0}P`:""}</span>`:"";
+    const groups=(d.media_groups||[]).slice(0,6).map(g=>`<span class="pill pl-a" title="${esc(g.category||"")}">${esc(g.name||g.group||"")}</span>`).join(" ");
+    const classes=Object.entries(d.classes||{}).slice(0,5).map(([k,v])=>`<span class="pill pl-neutral">${esc(k)} ${v}</span>`).join(" ");
+    const risks=(d.risks||[]).map(r=>`<div class="checkrow"><span class="dot" style="background:var(--${sevTok(r.severity)})"></span>
+        <div><div class="nm">${esc(r.severity)} — ${esc(r.title)}</div><div class="nt">${esc(r.detail||"")}${r.remediation?` <b>Fix:</b> ${esc(r.remediation)}`:""}${r.standard?` <span class="faint">[${esc(r.standard)}]</span>`:""}</div></div></div>`).join("");
+    const valid=(d.validation||[]).map(v=>`<li>${esc(v)}</li>`).join("");
+    return `<div class="card ${tok} xlcard${sel}" data-app="${i}" tabindex="0" role="button" style="cursor:pointer"
+        aria-label="${esc(d.domain)} — ${sw.length} switches, ${esc(d.tier)} — click to spotlight on the graph">
+      <div class="ct"><span class="nm">${esc(d.domain)}</span><span class="pill pl-${tok}">${esc(d.tier)}</span></div>
+      <div class="ln faint" style="margin-top:2px"><b>${sw.length}</b> switch${sw.length===1?"":"es"} · <b>${(+d.vlan_count||0)}</b> VLANs · <b>${(+d.endpoint_count||0)}</b> endpoints${d.spans_waves?` · <b style="color:var(--crit)">spans ${(d.waves||[]).length} waves</b>`:""}</div>
+      ${(ptp||hb)?`<div class="ln" style="margin-top:5px">${ptp} ${hb}</div>`:""}
+      ${groups?`<div class="ln" style="margin-top:5px"><span class="faint">Media/timing groups:</span> ${groups}</div>`:""}
+      <div class="ln" style="margin-top:5px">${sw.slice(0,10).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${sw.length>10?` <span class="faint">+${sw.length-10}</span>`:""}</div>
+      ${classes?`<div class="ln" style="margin-top:5px"><span class="faint">Endpoints:</span> ${classes}</div>`:""}
+      ${risks?`<div style="margin-top:6px">${risks}</div>`:`<div class="ln faint" style="margin-top:4px">✓ No domain-level migration risk flagged.</div>`}
+      ${valid?`<details style="margin-top:6px"><summary class="faint" style="cursor:pointer">Cutover validation (${(d.validation||[]).length})</summary><ul class="faint" style="margin:4px 0 0 16px">${valid}</ul></details>`:""}
+      <div class="ln faint" style="margin-top:5px">Why: ${esc(d.evidence||"")}</div>
+    </div>`;}).join("");
+  const cross=Array.isArray(ai.cross_domain_risks)?ai.cross_domain_risks:[];
+  const crossCards=cross.map(c=>`<div class="card ${sevTok(c.severity)}">
+      <div class="ct"><span class="nm">${esc(c.title)}</span><span class="pill pl-${sevTok(c.severity)}">${esc(c.severity)}</span></div>
+      <div class="ln faint" style="margin-top:3px">${esc(c.detail||"")}</div>
+      ${c.remediation?`<div class="ln" style="margin-top:3px"><b>Fix:</b> ${esc(c.remediation)}${c.standard?` <span class="faint">[${esc(c.standard)}]</span>`:""}</div>`:""}
+    </div>`).join("");
+  return head+
+    `<div class="sec"><div class="headline">
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_domains||domains.length}">0</span></div><div class="k">domains</div></div>
+      <div class="stat ${s.n_on_air_critical?"crit":""}"><div class="v"><span class="num" data-to="${s.n_on_air_critical||0}">0</span></div><div class="k">on-air critical</div></div>
+      <div class="stat ${s.n_high_risk?"risk":""}"><div class="v"><span class="num" data-to="${s.n_high_risk||0}">0</span></div><div class="k">high risk</div></div>
+      <div class="stat ${s.n_cross_domain_risks?"risk":""}"><div class="v"><span class="num" data-to="${s.n_cross_domain_risks||0}">0</span></div><div class="k">cross-domain</div></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0">Switches grouped into <b>application domains</b> by deliberate hostname role, observed PTP/multicast, or dominant endpoint class — each with its criticality tier, health rollup and standards-grounded migration risk (ST 2059 boundary clocks · RFC 4541 querier continuity · ST 2022-7 dual-path · NEXIS dual-leg). <b>Click a domain</b> to spotlight its switches.</p></div>
+    <div class="sec"><h3>Domains by criticality <span class="ct">${domains.length}</span></h3>${cards}</div>
+    ${cross.length?`<div class="sec"><h3>Cross-domain risks <span class="ct">${cross.length}</span></h3><p class="sub" style="margin:0 0 8px">IGMP querier continuity / split-brain across the cutover (RFC 4541).</p>${crossCards}</div>`:""}`;
+}
+/* paint hook: spotlight the selected application-domain's switches (APP_SEL), dim the rest.
+   No selection -> clean canvas. Mirrors paintWaves (reuses .xlhl / .xldim / .dim). */
+function paintApps(){
+  if(APP_SEL==null)return;
+  const ai=(SNAP&&SNAP.application_intelligence)||{};
+  const d=(Array.isArray(ai.domains)?ai.domains:[])[APP_SEL]; if(!d)return;
+  const set=new Set(d.switches||[]);
   MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
     if(set.has(h))n.g.classList.add("xlhl"); else n.g.classList.add("xldim");});
   edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
