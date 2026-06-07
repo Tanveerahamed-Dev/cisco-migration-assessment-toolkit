@@ -1582,8 +1582,9 @@ def main():
     # source of the duplicate heavy walks. Tuples -> dicts for a self-describing JSON contract. Local
     # import (link_centrality / wave_sequencing only) keeps those out of this module's public surface.
     from cisco_toolkit.analyze import compute_link_centrality, compute_wave_sequencing
-    snap_dict["causality"] = [{"severity": s, "trigger": t, "mechanism": m, "impact": i, "mitigation": mt}
-                              for (s, t, m, i, mt) in (causality_chains or [])]
+    snap_dict["causality"] = [{"severity": s, "trigger": t, "mechanism": m, "impact": i, "mitigation": mt,
+                               "hosts": list(hosts)}                            # NEW-V3.23.92: explicit host list (one source of truth; explorer highlights these directly)
+                              for (s, t, m, i, mt, hosts) in (causality_chains or [])]
     snap_dict["failure_impact"] = failure_impact
     snap_dict["link_centrality"] = compute_link_centrality(all_interfaces)   # NEW-V3.23.88 (chokepoint links: betweenness + bridges; LINK twin of failure_impact)
     snap_dict["wave_sequencing"] = compute_wave_sequencing(all_interfaces, move_groups)   # NEW-V3.23.89 (per-group make-before-break vs hard cutover)
