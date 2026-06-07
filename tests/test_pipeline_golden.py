@@ -37,13 +37,14 @@ def _make_template(path):
     wb.save(path)
 
 
-def _run_pipeline(tmp_path):
+def _run_pipeline(tmp_path, out_xlsx=None):
     collection = fx.write_collection(str(tmp_path / "collection"))
     devices = tmp_path / "devices.json"
     devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
     template = tmp_path / "template.xlsx"
     _make_template(str(template))
-    out_xlsx = tmp_path / "out.xlsx"
+    if out_xlsx is None:
+        out_xlsx = tmp_path / "out.xlsx"
 
     proc = subprocess.run(
         [sys.executable, SCRIPT,
@@ -107,3 +108,15 @@ def test_excel_sheet_schema_matches_golden(tmp_path):
     assert list(schema.keys()) == list(golden.keys()), "Excel sheet set/order changed"
     for sheet, header in golden.items():
         assert schema[sheet] == header, f"header row of sheet '{sheet}' changed"
+
+
+def test_missing_output_directory_is_created(tmp_path):
+    """FIX-V3.23.103: a non-existent --output directory must be created up-front,
+    not crash openpyxl's save() AFTER all the heavy compute. Point --output at a
+    nested directory that does not exist and assert every output lands there."""
+    out_xlsx = tmp_path / "does" / "not" / "exist" / "out.xlsx"
+    assert not out_xlsx.parent.exists()           # precondition: dir is missing
+    _snap, xlsx = _run_pipeline(tmp_path, out_xlsx=out_xlsx)
+    assert os.path.isfile(xlsx), "workbook was not written into the created directory"
+    snap_path = os.path.splitext(xlsx)[0] + ".snapshot.json"
+    assert os.path.isfile(snap_path), "snapshot was not written into the created directory"

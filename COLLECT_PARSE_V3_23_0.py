@@ -1159,6 +1159,7 @@ def main():
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         diff_out = args.output or f"Migration_Diff_{stamp}.xlsx"
+        os.makedirs(os.path.dirname(os.path.abspath(diff_out)) or ".", exist_ok=True)  # FIX-V3.23.103: same missing-output-dir guard
         write_diff_workbook(old_snap, new_snap, diff_out)
         logger.info(f"[OK] Saved diff workbook: {os.path.abspath(diff_out)}")
         return
@@ -1172,6 +1173,15 @@ def main():
     devices = load_devices(args.devices_file)
     stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_xlsx = args.output or DEFAULT_OUTPUT_FILE.format(stamp)
+
+    # FIX-V3.23.103: create the --output directory up-front, the moment the path is
+    # resolved -- BEFORE the ~31 phases of multi-minute compute. The workbook, snapshot,
+    # topology diagram, HTML explorer and runbook are all emitted only at the very end of
+    # the run, and they all derive their directory from this same out_xlsx (see the
+    # post-save block). A missing output directory would otherwise crash openpyxl's
+    # wb.save() with FileNotFoundError AFTER all the heavy compute, wasting the whole run.
+    # One guard here covers every output. No behaviour change when the directory exists.
+    os.makedirs(os.path.dirname(os.path.abspath(out_xlsx)) or ".", exist_ok=True)
 
     wb = load_workbook(args.template)
     ws = wb.active
