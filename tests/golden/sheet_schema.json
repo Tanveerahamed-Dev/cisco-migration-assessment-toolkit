@@ -136,6 +136,17 @@
   "PoE Util %",
   "Flag"
  ],
+ "Endpoint Intelligence": [
+  "Switch",
+  "Port",
+  "VLAN",
+  "Endpoint IP",
+  "MACs",
+  "Vendor (OUI fact)",
+  "Class (inferred)",
+  "Confidence",
+  "Evidence"
+ ],
  "Interface Health": [
   "Hostname",
   "Port",

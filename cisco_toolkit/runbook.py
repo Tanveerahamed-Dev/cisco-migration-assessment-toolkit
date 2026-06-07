@@ -336,6 +336,25 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
     doc.add_paragraph("Top switches by endpoint count:")
     table(["Switch", "Endpoints"], [[s, c] for s, c in ep_per_switch.most_common(12)], widths=[4.5, 1.5])
 
+    # vendor + endpoint-type grouping with confidence (a skill first-class output). NEW-V3.23.95.
+    ident = snap_dict.get("endpoint_identity") or []
+    if ident:
+        doc.add_heading("7.1 Endpoint identity (vendor & type)", level=2)
+        p = doc.add_paragraph()
+        _label_run(p, "Method:",
+                   "vendor is the MAC-OUI registered owner (a fact); the class is inferred from vendor + "
+                   f"description + CDP platform and is labelled {_CONF_HIGH}/{_CONF_MED}/{_CONF_UNKNOWN} "
+                   "per endpoint (no role is claimed as proven from passive data).")
+        cls_c = Counter(r.get("endpoint_class", "Unknown") for r in ident)
+        ven_c = Counter(r.get("vendor") for r in ident if r.get("vendor"))
+        resolved = sum(1 for r in ident if r.get("vendor"))
+        doc.add_paragraph(f"{len(ident)} endpoints; vendor resolved for {resolved} "
+                          f"({round(100 * resolved / max(len(ident), 1))}%).")
+        doc.add_paragraph("By inferred class:")
+        table(["Class", "Endpoints"], [[k, v] for k, v in cls_c.most_common()], widths=[3.0, 1.5])
+        doc.add_paragraph("Top vendors:")
+        table(["Vendor", "Endpoints"], [[k, v] for k, v in ven_c.most_common(12)], widths=[4.5, 1.5])
+
     # ===== 8. Shared Infrastructure & Consolidation =====
     doc.add_heading("8. Shared Infrastructure & Consolidation", level=1)
     cap = snap_dict.get("capacity") or []
