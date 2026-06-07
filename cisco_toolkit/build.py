@@ -26,6 +26,7 @@ from cisco_toolkit.parse import (
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
     parse_redistribution,                                            # protocol-to-protocol analysis (slice 2)
+    parse_bgp_table,                                                 # NEW-V3.23.97 (BGP received prefixes)
 )
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
 
@@ -113,6 +114,13 @@ def build_routes(cmd_to_file: Dict[str, str]) -> Dict[str, dict]:
     the snapshot by scope_routes; the full parse stays transient.)"""
     out = _load_cmd_output(cmd_to_file, "show ip route", "show ip route vrf all")
     return _safe_parse(parse_ip_routes, out) or {}
+
+
+def build_bgp_received(cmd_to_file: Dict[str, str]) -> list:
+    """NEW-V3.23.97: the BGP RIB (received/best prefixes) from the new 'show ip bgp' collection
+    -> [prefix,...]; [] when the command was not collected / device runs no BGP. Fail-soft."""
+    out = _load_cmd_output(cmd_to_file, "show ip bgp", "show bgp ipv4 unicast")
+    return _safe_parse(parse_bgp_table, out) or []
 
 
 def inscope_subnets(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Set[str]:

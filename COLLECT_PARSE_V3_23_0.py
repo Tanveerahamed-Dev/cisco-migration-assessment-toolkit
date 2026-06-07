@@ -328,6 +328,7 @@ from cisco_toolkit.analyze import (
     compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
     compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
     compute_endpoint_dependencies,                     # NEW-V3.23.96 (clusters / dependencies / per-switch validation)
+    compute_subnet_intelligence,                       # NEW-V3.23.97 (subnet / routing reachability)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -362,6 +363,7 @@ from cisco_toolkit.excel import (
     write_wave_sequencing_sheet,                                                                # NEW-V3.23.89 (cutover sequencing)
     write_endpoint_intelligence_sheet,                          # NEW-V3.23.95 (endpoint vendor + class)
     write_endpoint_dependencies_sheet,                          # NEW-V3.23.96 (clusters / dependencies)
+    write_subnet_reachability_sheet,                            # NEW-V3.23.97 (subnet / routing reachability)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -373,7 +375,7 @@ from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
-    build_routes, inscope_subnets, scope_routes, build_nat, build_security, build_config_hygiene, build_stp_roots, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_routing_neighbors,
     build_redistribution,
 )
 # NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
@@ -460,6 +462,7 @@ COMMANDS_NXOS = [
     "show ip eigrp neighbors",   # NEW-V15 (routing adjacencies)
     "show bgp summary",          # NEW-V15 (routing adjacencies - NX-OS)
     "show ip bgp summary",       # NEW-V15 (routing adjacencies)
+    "show bgp ipv4 unicast",     # NEW-V3.23.97 (BGP RIB / received prefixes - NX-OS)
 ]
 
 COMMANDS_IOS = [
@@ -502,6 +505,7 @@ COMMANDS_IOS = [
     "show ip ospf neighbor",          # NEW-V15 (routing adjacencies)
     "show ip eigrp neighbors",        # NEW-V15 (routing adjacencies)
     "show ip bgp summary",            # NEW-V15 (routing adjacencies)
+    "show ip bgp",                    # NEW-V3.23.97 (BGP RIB / received prefixes - IOS/IOS-XE)
     "show track",                     # NEW-V3.20 (L3 forwarding: object / IP-SLA tracking)
     "show spanning-tree detail",      # NEW-V3.22 (STP topology-change counters)
 ]
@@ -1365,12 +1369,20 @@ def main():
     # Phase 5.7: routing tables (route-aware reachability) - parsed from the already-collected
     # 'show ip route', scoped to the in-scope gateway subnets so the embedded snapshot stays small.
     all_routes: Dict[str, list] = {}
+    all_routes_full: Dict[str, dict] = {}                            # NEW-V3.23.97 (FULL table for subnet intelligence; transient, not embedded)
+    all_bgp_received: Dict[str, list] = {}                           # NEW-V3.23.97 (BGP RIB when 'show ip bgp' was collected)
     _inscope = inscope_subnets(all_interfaces)
     for hostname, platform, cmd_to_file in all_devices_meta:
-        scoped = scope_routes(build_routes(cmd_to_file), _inscope)
+        rdb = build_routes(cmd_to_file)
+        if rdb:
+            all_routes_full[hostname] = rdb
+        scoped = scope_routes(rdb, _inscope)
         if scoped:
             all_routes[hostname] = scoped
             logger.info(f"  [ROUTE] {hostname}: {len(scoped)} in-scope route(s) embedded")
+        bgpr = build_bgp_received(cmd_to_file)
+        if bgpr:
+            all_bgp_received[hostname] = bgpr
 
     # Phase 6: Write interface rows to template sheet (each host guarded so one
     # host's write failure can't abort the run before wb.save()).
@@ -1522,6 +1534,12 @@ def main():
     endpoint_dependencies = _run_phase("Endpoint dependencies", compute_endpoint_dependencies,
                                        endpoint_identity, move_groups, _default={})
     _run_phase("Endpoint Dependencies sheet", write_endpoint_dependencies_sheet, wb, endpoint_dependencies)
+    # Phase 29c: Subnet & routing reachability (NEW-V3.23.97). Full route table (transient) + SVIs +
+    # move_groups -> per-device destination/reachable + per-group source<->destination; compute once.
+    subnet_intelligence = _run_phase("Subnet intelligence", compute_subnet_intelligence,
+                                     all_interfaces, all_routes_full, move_groups, all_bgp_received,
+                                     _default={})
+    _run_phase("Subnet Reachability sheet", write_subnet_reachability_sheet, wb, subnet_intelligence)
 
     # Phase 30: Score Sensitivity - NEW-V3.23.5 (OAT robustness sweep over scoring weights)
     logger.info("\n[Phase 30] Writing Score Sensitivity sheet ...")
@@ -1624,6 +1642,7 @@ def main():
     snap_dict["capacity"] = compute_capacity(all_device_physical)    # NEW-V3.23.87 (port + PoE headroom: same fn that drives the 'Capacity' sheet -> explorer + workbook agree)
     snap_dict["endpoint_identity"] = endpoint_identity               # NEW-V3.23.95 (per-endpoint vendor + inferred class; reused from the Phase 15b compute)
     snap_dict["endpoint_dependencies"] = endpoint_dependencies       # NEW-V3.23.96 (clusters / dual-homed / VLAN tiers / per-switch validation; reused from Phase 29b)
+    snap_dict["subnet_intelligence"] = subnet_intelligence           # NEW-V3.23.97 (per-device subnet source/destination + move-group reachability; reused from Phase 29c)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
