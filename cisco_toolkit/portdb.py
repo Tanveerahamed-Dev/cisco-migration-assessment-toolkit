@@ -64,7 +64,7 @@ def service_for_port(port: int, proto: str = "tcp") -> Optional[dict]:
     except (TypeError, ValueError):
         return None
     ports, _ = _registry()
-    pr = (proto or "tcp").strip().lower()
+    pr = str(proto or "tcp").strip().lower()      # coerce: tolerate a non-string proto, like the rest of the module
     rec = ports.get((p, pr))
     if rec is None and pr not in ("tcp", "udp", "sctp", "dccp"):
         rec = ports.get((p, "tcp")) or ports.get((p, "udp"))
@@ -75,7 +75,7 @@ def classify_multicast(group_ip: str) -> Optional[dict]:
     """{group, category, broadcast, note} for an IPv4 multicast address via longest-prefix match over the
     reserved/well-known group table, or None if it is not multicast / not in the table."""
     try:
-        addr = ipaddress.ip_address((group_ip or "").strip())
+        addr = ipaddress.ip_address(str(group_ip or "").strip())   # coerce: tolerate a non-string arg
     except ValueError:
         return None
     if not addr.is_multicast:

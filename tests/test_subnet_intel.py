@@ -52,3 +52,10 @@ def test_compute_subnet_intelligence():
     g = si["move_groups"][0]
     assert "10.0.10.0/24" in g["local_subnets"] and g["remote_count"] >= 1
     assert si["bgp_received_collected"] is True
+
+
+def test_subnet_intel_tolerates_null_switches():
+    # a move-group with switches=None (not just a missing key) must not crash (defensive, V3.23.105)
+    ai = {"core": {"Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.1/24")}}
+    si = compute_subnet_intelligence(ai, {"core": {}}, [{"group": "G", "switches": None}], None)
+    assert si["move_groups"][0]["switches"] == 0 and si["move_groups"][0]["local_count"] == 0
