@@ -322,7 +322,8 @@ def test_executive_summary_sheet_is_first_and_synthesizes(cp):
                             "switches": ["GW-CORE", "ACC1", "ACC2"], "endpoints": 2,
                             "n_fail": 1, "n_warn": 1}]
     wb = Workbook(); wb.active.title = "Pre-Existing"   # prove our sheet lands ahead of it
-    cp.write_executive_summary_sheet(wb, health_scores, punchlist, migration_readiness, {})
+    # V3.23.91: the 5th arg is the precomputed failure_impact (keystones); empty here.
+    cp.write_executive_summary_sheet(wb, health_scores, punchlist, migration_readiness, [])
     assert wb.sheetnames[0] == "Executive Summary"      # moved to the FRONT of the workbook
     ws = wb["Executive Summary"]
     text = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
@@ -596,6 +597,33 @@ def test_link_centrality_empty_when_no_links():
     from cisco_toolkit.model import InterfaceData
     from cisco_toolkit.analyze import compute_link_centrality
     assert compute_link_centrality({"lonely": {"Gi0/1": InterfaceData(port="Gi0/1")}}) == []
+
+
+def test_link_centrality_pairs_cut_excludes_other_components():
+    """NEW-V3.23.91: a bridge's pairs_cut is the product of the TWO components it actually separates,
+    not size_a*(n-size_a) -- which over-counted switches in OTHER disconnected components AND was
+    non-deterministic (tuple(frozenset) flips the BFS start side by hash order, so pairs_cut swung
+    302<->22082 for one bridge on the real fleet). A--B bridge, B-C-D triangle, plus a separate E-F
+    island: removing A-B severs {A} from {B,C,D} = 1*3 = 3; the unrelated island must NOT count."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_link_centrality
+
+    def sw(*links):
+        return {p: InterfaceData(port=p, cdp_neighbor=nb, neighbor_port=npt, endpoint_type="Switch")
+                for (p, nb, npt) in links}
+
+    ai = {
+        "A": sw(("Gi0/1", "B", "Gi0/1")),
+        "B": sw(("Gi0/1", "A", "Gi0/1"), ("Gi0/2", "C", "Gi0/1"), ("Gi0/3", "D", "Gi0/2")),
+        "C": sw(("Gi0/1", "B", "Gi0/2"), ("Gi0/2", "D", "Gi0/1")),
+        "D": sw(("Gi0/1", "C", "Gi0/2"), ("Gi0/2", "B", "Gi0/3")),
+        "E": sw(("Gi0/1", "F", "Gi0/1")),     # separate island, unreachable from A/B/C/D
+        "F": sw(("Gi0/1", "E", "Gi0/1")),
+    }
+    recs = compute_link_centrality(ai)
+    ab = next(r for r in recs if {r["a_host"], r["b_host"]} == {"A", "B"})
+    assert ab["is_bridge"] is True
+    assert ab["pairs_cut"] == 3            # {A} x {B,C,D}; the {E,F} island excluded (old gave 5 or 9)
 
 
 def test_wave_sequencing_classifies_cutover():

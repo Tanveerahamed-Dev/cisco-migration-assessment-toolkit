@@ -17,8 +17,7 @@ from openpyxl.utils import get_column_letter
 
 from cisco_toolkit.analyze import (
     _health_band, _physical_uplink_index, _poe_device_util, build_network_model,
-    compute_causality_chains, compute_failure_impact, compute_findings,
-    compute_move_groups, compute_topology_links,
+    compute_findings, compute_move_groups, compute_topology_links,
 )
 from cisco_toolkit.cmdio import _load_cmd_output
 from cisco_toolkit.model import DevicePhysical, InterfaceData
@@ -1470,15 +1469,18 @@ def write_routing_adjacency_sheet(wb, all_cmd_to_files: Dict[str, Dict[str, str]
 CAUSALITY_SHEET_NAME = "Causality Chains"
 FAILURE_SHEET_NAME   = "Failure Impact"
 
-def write_causality_chains_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write (or replace) 'Causality Chains': cause -> mechanism -> blast radius reasoning."""
+def write_causality_chains_sheet(wb, chains: list) -> None:
+    """Write (or replace) 'Causality Chains': cause -> mechanism -> blast radius reasoning.
+    NEW-V3.23.91: takes the precomputed chains (compute_causality_chains, run once in main and
+    shared with the snapshot) instead of recomputing -- the heavy host x VLAN articulation walk
+    ran twice per report. Same (severity, trigger, mechanism, impact, mitigation) tuples."""
     cols = ["Severity", "Trigger (root cause)", "Mechanism (why it propagates)",
             "Impact (blast radius)", "Mitigation"]
     if CAUSALITY_SHEET_NAME in wb.sheetnames:
         del wb[CAUSALITY_SHEET_NAME]
     ws = wb.create_sheet(CAUSALITY_SHEET_NAME)
     _census_header(ws, cols)
-    chains = compute_causality_chains(all_interfaces)
+    chains = chains or []
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
     r = 2
@@ -1494,15 +1496,18 @@ def write_causality_chains_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfa
     logger.info(f"  [OK] '{CAUSALITY_SHEET_NAME}' sheet: {len(chains)} chain(s)")
 
 
-def write_failure_impact_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """Write (or replace) 'Failure Impact': per-switch migration blast-radius simulation."""
+def write_failure_impact_sheet(wb, rows: list) -> None:
+    """Write (or replace) 'Failure Impact': per-switch migration blast-radius simulation.
+    NEW-V3.23.91: takes the precomputed records (compute_failure_impact, run once in main and
+    shared with the snapshot + executive summary) instead of recomputing the per-switch removal
+    simulation a third time."""
     cols = ["Severity", "Switch (remove / migrate)", "VLANs Impacted", "Stranded Endpoints",
             "Hard Partitions", "Backup-Covered", "FHRP-Covered", "Per-VLAN Detail"]
     if FAILURE_SHEET_NAME in wb.sheetnames:
         del wb[FAILURE_SHEET_NAME]
     ws = wb.create_sheet(FAILURE_SHEET_NAME)
     _census_header(ws, cols)
-    rows = compute_failure_impact(all_interfaces)
+    rows = rows or []
     DAT_FONT = Font(name="Calibri", size=10)
     DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
     r = 2
@@ -1606,7 +1611,7 @@ EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
                                   migration_readiness: list,
-                                  all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
+                                  failure_impact: list) -> None:
     """Write the 'Executive Summary' landing sheet (moved to the FRONT of the workbook): a one-page
     synthesis -- fleet posture, the keystone devices the fleet most depends on (migration blast radius),
     the punch-list severity / category breakdown, and per-group migration readiness -- so a reader knows
@@ -1672,7 +1677,7 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     r += 1
 
     # --- keystone devices (the few the fleet actually depends on; works when scores saturate) ---
-    fi = compute_failure_impact(all_interfaces) or []
+    fi = failure_impact or []                          # NEW-V3.23.91: precomputed once in main
     _sub("Keystone devices — fix-first (by migration blast radius)")
     _hdr(["Rank", "Device", "Severity", "Endpoints stranded", "VLANs impacted"])
     for i, rec in enumerate(fi[:10], 1):

@@ -789,21 +789,33 @@ def _find_bridges(adj: Dict[str, set]) -> set:
 
 def _bridge_pairs_cut(adj: Dict[str, set], edge: frozenset) -> int:
     """For a bridge, the number of switch-pairs that lose ALL connectivity if it fails = the product
-    of the two component sizes the edge separates."""
+    of the sizes of the TWO components the edge actually separates.
+
+    NEW-V3.23.91: BFS BOTH sides (a's component and b's component, each with the bridge removed) and
+    multiply. The previous `size_a * (n - size_a)` was BOTH:
+      * non-deterministic — `tuple(frozenset)` picks the BFS start side by hash order (PYTHONHASHSEED),
+        so on an unequal split a's-side vs b's-side gave different products run-to-run (observed
+        pairs_cut flipping 302 <-> 22082 for the same bridge); and
+      * wrong on a fabric with OTHER disconnected components — `n - size_a` swept in switches that were
+        never reachable through this bridge at all, over-stating the severed-pair count.
+    component(a) * component(b) is symmetric (deterministic) and counts only pairs that genuinely lose
+    their sole path. On a fully-connected fabric (component_b == n - size_a) it equals the old value."""
     from collections import deque
     a, b = tuple(edge)
-    seen = {a}
-    q = deque([a])
-    while q:
-        u = q.popleft()
-        for w in adj[u]:
-            if (u == a and w == b) or (u == b and w == a):
-                continue                       # don't cross the bridge under test
-            if w not in seen:
-                seen.add(w); q.append(w)
-    n = len(adj)
-    size_a = len(seen)
-    return size_a * (n - size_a)
+
+    def _component_size(start: str) -> int:
+        seen = {start}
+        q = deque([start])
+        while q:
+            u = q.popleft()
+            for w in adj[u]:
+                if (u == a and w == b) or (u == b and w == a):
+                    continue                   # don't cross the bridge under test
+                if w not in seen:
+                    seen.add(w); q.append(w)
+        return len(seen)
+
+    return _component_size(a) * _component_size(b)
 
 
 def compute_link_centrality(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:

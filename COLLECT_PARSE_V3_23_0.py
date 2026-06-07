@@ -1424,13 +1424,21 @@ def main():
     logger.info("\n[Phase 18] Writing Routing Adjacencies sheet ...")
     _run_phase("Routing Adjacencies sheet", write_routing_adjacency_sheet, wb, all_cmd_to_files)
 
-    # Phase 19: Causality Chains (NEW-V3.16 intelligence layer)
+    # Phase 19-20: Causality Chains + Failure Impact (NEW-V3.16 intelligence layer).
+    # NEW-V3.23.91: compute each ONCE here and reuse for the sheet, the executive summary, and the
+    # snapshot. The heavy model rebuild + per-(host,VLAN) articulation walk / per-switch removal
+    # simulation previously ran 2-3x per report (the snapshot-build phase recomputed both), which was
+    # ~2.5 min of the run on the real fleet. Local import keeps these out of this module's namespace
+    # (the test_package re-export contract asserts they are NOT attributes of this module).
+    from cisco_toolkit.analyze import compute_causality_chains, compute_failure_impact
     logger.info("\n[Phase 19] Writing Causality Chains sheet ...")
-    _run_phase("Causality Chains sheet", write_causality_chains_sheet, wb, all_interfaces)
+    causality_chains = _run_phase("Causality Chains", compute_causality_chains, all_interfaces, _default=[])
+    _run_phase("Causality Chains sheet", write_causality_chains_sheet, wb, causality_chains)
 
     # Phase 20: Failure Impact simulation (NEW-V3.16 intelligence layer)
     logger.info("\n[Phase 20] Writing Failure Impact sheet ...")
-    _run_phase("Failure Impact sheet", write_failure_impact_sheet, wb, all_interfaces)
+    failure_impact = _run_phase("Failure Impact", compute_failure_impact, all_interfaces, _default=[])
+    _run_phase("Failure Impact sheet", write_failure_impact_sheet, wb, failure_impact)
     _run_phase("Link Centrality sheet", write_link_centrality_sheet, wb, all_interfaces)   # NEW-V3.23.88 (chokepoint links)
 
     # Phase 23: Physical Health (L1) - NEW-V3.18. Sheet writers must precede wb.save(); the
@@ -1529,7 +1537,7 @@ def main():
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
     logger.info("\n[Phase 30e] Writing Executive Summary sheet ...")
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
-               health_scores, punchlist, migration_readiness, all_interfaces)
+               health_scores, punchlist, migration_readiness, failure_impact)   # NEW-V3.23.91: reuse precomputed fi
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
@@ -1569,13 +1577,14 @@ def main():
     snap_dict["redistribution"] = all_redistribution                # NEW (protocol-to-protocol analysis): {host:[{into_proto,into_id,from_proto,from_id,route_map,raw}]}
     # NEW-V3.23.81: embed the causality chains + failure-impact rollup the workbook computes, so the
     # explorer's Causality mode + cockpit keystones consume the SAME analysis instead of re-deriving in JS
-    # (one source of truth). Local import keeps these out of this module's public surface (they live in
-    # analyze, per the test_package re-export contract). Tuples -> dicts for a self-describing JSON contract.
-    from cisco_toolkit.analyze import (compute_causality_chains, compute_failure_impact,
-                                       compute_link_centrality, compute_wave_sequencing)
+    # (one source of truth). NEW-V3.23.91: REUSE the values already computed for the Phase 19/20 sheets
+    # (causality_chains / failure_impact) instead of recomputing here -- this snapshot phase was the main
+    # source of the duplicate heavy walks. Tuples -> dicts for a self-describing JSON contract. Local
+    # import (link_centrality / wave_sequencing only) keeps those out of this module's public surface.
+    from cisco_toolkit.analyze import compute_link_centrality, compute_wave_sequencing
     snap_dict["causality"] = [{"severity": s, "trigger": t, "mechanism": m, "impact": i, "mitigation": mt}
-                              for (s, t, m, i, mt) in compute_causality_chains(all_interfaces)]
-    snap_dict["failure_impact"] = compute_failure_impact(all_interfaces)
+                              for (s, t, m, i, mt) in (causality_chains or [])]
+    snap_dict["failure_impact"] = failure_impact
     snap_dict["link_centrality"] = compute_link_centrality(all_interfaces)   # NEW-V3.23.88 (chokepoint links: betweenness + bridges; LINK twin of failure_impact)
     snap_dict["wave_sequencing"] = compute_wave_sequencing(all_interfaces, move_groups)   # NEW-V3.23.89 (per-group make-before-break vs hard cutover)
     # NEW-V3.23.84: embed the 4 cross-switch L2/L3 consistency checks the workbook computes, so the
