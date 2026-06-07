@@ -116,8 +116,9 @@ def test_class_fallback_health_and_punchlist_rollup():
 def test_empty_inputs_are_well_formed():
     out = compute_application_intelligence({}, None, None, None, None, None, None)
     assert out["domains"] == [] and out["cross_domain_risks"] == []
-    assert out["summary"]["n_domains"] == 0 and out["taxonomy_version"] == "app-domains/2"
-    assert out["edges"] == [] and out["keystones"] == []
+    assert out["summary"]["n_domains"] == 0 and out["taxonomy_version"] == "app-domains/3"
+    assert out["edges"] == [] and out["keystones"] == [] and out["cutover_order"] == []
+    assert out["summary"]["pilot_domain"] == "" and out["summary"]["last_domain"] == ""
     # a host with no ports / no signal still degrades cleanly to the General bucket
     out2 = compute_application_intelligence({"h": {}}, [], {}, {}, [], [], [])
     assert [d["id"] for d in out2["domains"]] == ["general"]
@@ -181,3 +182,36 @@ def test_isolated_domain_has_no_edges():
     out = compute_application_intelligence(ai, [], {}, _sm(), [], [], [])
     assert out["edges"] == [] and out["keystones"] == []
     assert out["summary"]["n_edges"] == 0 and out["summary"]["keystone_domain"] == ""
+
+
+# ---- V3.23.114: criticality score + recommended cutover order ----
+
+def test_cutover_pilots_low_risk_and_lasts_on_air():
+    ai = {"SW01-BC-DANTE-A": {"Vlan10": InterfaceData(port="Vlan10", multicast_info="PIM")},
+          "AS99-BACKOFFICE": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="20")}}
+    sm = _sm(ptp={"SW01-BC-DANTE-A": {"operational": False}},
+             groups=[{"group": "224.0.1.129", "name": "PTP-primary", "broadcast": True,
+                      "category": "Broadcast-AV"}])
+    hs = [{"switch": "SW01-BC-DANTE-A", "band": "Critical"}, {"switch": "AS99-BACKOFFICE", "band": "Good"}]
+    out = compute_application_intelligence(ai, [], {}, sm, hs, [], [])
+    dom = {d["id"]: d for d in out["domains"]}
+    # the on-air audio domain is more critical than the healthy back-office domain
+    assert dom["audio"]["criticality_score"] > dom["general"]["criticality_score"]
+    assert dom["audio"]["cutover"]["band"] in ("Late", "Last")     # on-air never an early pilot
+    co = out["cutover_order"]
+    assert [c["order"] for c in co] == list(range(1, len(co) + 1))  # contiguous 1..N
+    assert co[0]["domain"] == dom["general"]["domain"]             # lowest-risk pilots first
+    assert co[-1]["domain"] == dom["audio"]["domain"]             # on-air last
+    assert out["summary"]["pilot_domain"] == co[0]["domain"]
+    assert out["summary"]["last_domain"] == co[-1]["domain"]
+
+
+def test_criticality_scores_bounded_and_cutover_well_formed():
+    ai = {"SW01-BC-DANTE-A": {"Vlan10": InterfaceData(port="Vlan10", multicast_info="PIM")},
+          "AS99-X": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", vlan="20")}}
+    out = compute_application_intelligence(ai, [], {}, _sm(ptp={"SW01-BC-DANTE-A": {"operational": False}}),
+                                           [{"switch": "SW01-BC-DANTE-A", "band": "Critical"}], [], [])
+    for d in out["domains"]:
+        assert 0 <= d["criticality_score"] <= 100
+        assert d["cutover"]["order"] >= 1
+        assert d["cutover"]["band"] in ("Pilot", "Early", "Mid", "Late", "Last")

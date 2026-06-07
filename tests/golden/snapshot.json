@@ -3018,7 +3018,13 @@
     "degree": 5,
     "neighbors": [
      "Compute / Virtualization"
-    ]
+    ],
+    "criticality_score": 35,
+    "cutover": {
+     "order": 1,
+     "band": "Pilot",
+     "rationale": "Support; health Fair; 0 high/crit risk(s); couples to 1 domain(s) \u2014 coordinate with Compute / Virtualization. Start here to fail-fast and learn."
+    }
    },
    {
     "id": "compute",
@@ -3075,7 +3081,13 @@
     "degree": 5,
     "neighbors": [
      "General / Back-office (unclassified)"
-    ]
+    ],
+    "criticality_score": 50,
+    "cutover": {
+     "order": 2,
+     "band": "Last",
+     "rationale": "Support; health Critical; 0 high/crit risk(s); couples to 1 domain(s) \u2014 coordinate with General / Back-office (unclassified). Migrate last: make-before-break + full validation."
+    }
    }
   ],
   "summary": {
@@ -3090,7 +3102,9 @@
    "ptp_boundary_clocked": false,
    "n_edges": 1,
    "keystone_domain": "Compute / Virtualization",
-   "n_on_air_coupled": 0
+   "n_on_air_coupled": 0,
+   "pilot_domain": "General / Back-office (unclassified)",
+   "last_domain": "Compute / Virtualization"
   },
   "cross_domain_risks": [
    {
@@ -3136,6 +3150,24 @@
     ]
    }
   ],
-  "taxonomy_version": "app-domains/2"
+  "cutover_order": [
+   {
+    "domain": "General / Back-office (unclassified)",
+    "order": 1,
+    "band": "Pilot",
+    "score": 35,
+    "tier": "Support",
+    "rationale": "Support; health Fair; 0 high/crit risk(s); couples to 1 domain(s) \u2014 coordinate with Compute / Virtualization. Start here to fail-fast and learn."
+   },
+   {
+    "domain": "Compute / Virtualization",
+    "order": 2,
+    "band": "Last",
+    "score": 50,
+    "tier": "Support",
+    "rationale": "Support; health Critical; 0 high/crit risk(s); couples to 1 domain(s) \u2014 coordinate with General / Back-office (unclassified). Migrate last: make-before-break + full validation."
+   }
+  ],
+  "taxonomy_version": "app-domains/3"
  }
 }
