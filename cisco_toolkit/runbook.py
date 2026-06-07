@@ -386,28 +386,39 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         doc.add_paragraph(
             f"L4 services referenced in ACLs are migration *design intent* ({_CONF_UNKNOWN} as live "
             "traffic — there is no flow telemetry); preserve these reachabilities across the cutover. "
-            f"Multicast forwarding presence (PIM/mroute on an interface) is {_CONF_CONFIRMED}, but "
-            "per-group (S,G)/IGMP membership is not collected yet — re-run with 'show ip igmp groups' / "
-            "'show ip mroute' to map the broadcast/PTP groups.")
+            f"Multicast forwarding presence (PIM/mroute on an interface) is {_CONF_CONFIRMED}; when the "
+            "IGMP/mroute group collection is present the broadcast/PTP groups are classified below.")
         if svcs:
             table(["Port", "Proto", "Service", "Category", "ACL refs", "Switches"],
                   [[s.get("port"), s.get("proto"), s.get("service"), s.get("category"),
                     s.get("refs"), s.get("host_count")] for s in svcs[:15]],
                   widths=[0.8, 0.8, 1.7, 1.4, 1.0, 1.0])
         groups = mc.get("classified_groups") or []
-        gnote = (f" {len(groups)} group(s) classified" if groups
-                 else f" Per-group classification: {_CONF_UNKNOWN} until re-collection.")
+        bcast = [g for g in groups if g.get("broadcast")]
+        gnote = (f" {len(groups)} multicast group(s) classified ({len(bcast)} broadcast/AV)." if groups
+                 else f" Per-group (S,G)/IGMP classification {_CONF_UNKNOWN} until re-collection.")
         doc.add_paragraph(
             f"Multicast: {mc.get('active_interfaces', 0)} interface(s) across "
             f"{mc.get('active_switch_count', 0)} switch(es) run PIM/mroute ({_CONF_CONFIRMED} "
             f"forwarding presence).{gnote}")
+        # PTP is a per-switch map {host: clock-summary}; report operational boundary clocks vs dormant.
         ptp = mc.get("ptp") or {}
         if ptp:
-            lock = "locked" if ptp.get("locked") else ("NOT locked" if ptp.get("locked") is False else "lock unknown")
-            doc.add_paragraph(
-                f"PTP (IEEE 1588): grandmaster {ptp.get('grandmaster', '?')}, {ptp.get('device_type', '')}, "
-                f"offset {ptp.get('offset_ns', '?')} ns — {lock} ({_CONF_CONFIRMED}). Timing lock gates "
-                "any ST 2110 / AES67 / Dante move-group cutover.")
+            oper = [h for h, v in ptp.items() if (v or {}).get("operational")]
+            gms = sorted({(v or {}).get("grandmaster") for v in ptp.values() if (v or {}).get("grandmaster")})
+            if oper:
+                doc.add_paragraph(
+                    f"PTP (IEEE 1588): {len(oper)} of {len(ptp)} switch(es) act as boundary/transparent "
+                    f"clocks" + (f" (grandmaster(s) {', '.join(gms)})" if gms else "") +
+                    f"; the rest have PTP present but dormant ({_CONF_CONFIRMED}). PTP lock gates any "
+                    "ST 2110 / AES67 / Dante move-group cutover.")
+            else:
+                doc.add_paragraph(
+                    f"PTP (IEEE 1588): present on {len(ptp)} switch(es) but NONE are active boundary/"
+                    "transparent clocks (Device Type Unknown / 0 ports / no parent) — PTP is flowing as "
+                    f"plain multicast, not boundary-clocked ({_CONF_CONFIRMED}). For ST 2110/AES67/Dante "
+                    "timing accuracy, confirm whether boundary-clock mode is required on the media-path "
+                    "switches before the cutover.")
         queriers = mc.get("igmp_queriers") or []
         if queriers:
             doc.add_paragraph(f"IGMP snooping querier present on {len(queriers)} VLAN(s) "

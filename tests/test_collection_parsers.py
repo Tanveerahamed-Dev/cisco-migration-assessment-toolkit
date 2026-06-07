@@ -38,21 +38,41 @@ def test_parse_igmp_snooping_querier_table_and_detail():
     assert parse_igmp_snooping_querier("") == []
 
 
-def test_parse_ptp_clock_lock_inference():
+def test_parse_ptp_clock_operational_boundary_clock():
     out = """PTP CLOCK INFO
 PTP Device Type: Boundary clock
+PTP Device Profile: Default Profile
+Clock Identity: 0x00A0B1.FFFE.000001
 Clock Domain: 0
+Number of PTP ports: 4
 Grandmaster Clock Identity: 0x00A0B1.FFFE.123456
 Offset From Master(ns): 42
 Mean Path Delay(ns): 310
 """
     p = parse_ptp_clock(out)
-    assert p["device_type"] == "Boundary clock" and p["domain"] == "0"
-    assert p["grandmaster"].endswith("123456")
+    assert p["device_type"] == "Boundary clock" and p["domain"] == "0" and p["num_ports"] == 4
+    assert p["clock_identity"].endswith("000001") and p["grandmaster"].endswith("123456")
     assert p["offset_ns"] == 42 and p["mean_path_delay_ns"] == 310
-    assert p["locked"] is True                       # |42ns| < 1us
+    assert p["locked"] is True and p["operational"] is True
     # a large offset => not locked
-    assert parse_ptp_clock("PTP Device Type: x\nOffset From Master(ns): 50000")["locked"] is False
+    assert parse_ptp_clock("PTP Device Type: Boundary clock\nNumber of PTP ports: 2\n"
+                           "Offset From Master(ns): 50000")["locked"] is False
+
+
+def test_parse_ptp_clock_dormant_real_format():
+    # the real AJ-fleet output: PTP available but NOT an active boundary clock (Unknown / 0 ports / no parent)
+    out = """ PTP CLOCK INFO
+  PTP Device Type: Unknown
+  PTP Device Profile: Default Profile
+  Clock Identity: 0x5C:E1:76:FF:FE:79:1B:80
+  Clock Domain: 0
+  Network Transport Protocol: 802.3
+  Number of PTP ports: 0
+ The clock has no parent clock information."""
+    p = parse_ptp_clock(out)
+    assert p["device_type"] == "Unknown" and p["num_ports"] == 0
+    assert p["clock_identity"].endswith("1B:80") and p["grandmaster"] == ""
+    assert p["operational"] is False                 # the key finding: configured but dormant
     assert parse_ptp_clock("") == {} and parse_ptp_clock("nothing here") == {}
 
 

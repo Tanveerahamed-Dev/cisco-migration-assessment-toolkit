@@ -108,7 +108,12 @@ def _snap():
             "categories": [{"category": "Broadcast-AV", "refs": 2}],
             "acl_rule_count": 12,
             "multicast": {"active_interfaces": 4, "active_switch_count": 2,
-                          "active_switches": ["sw1", "sw2"], "classified_groups": [], "group_level_collected": False},
+                          "active_switches": ["sw1", "sw2"],
+                          "classified_groups": [{"group": "224.0.1.129", "name": "PTP-primary",
+                                                 "category": "Broadcast-AV", "broadcast": True, "source": "IGMP/mroute"}],
+                          "group_level_collected": True,
+                          "ptp": {"sw1": {"device_type": "Unknown", "num_ports": 0, "grandmaster": "", "operational": False}},
+                          "igmp_queriers": [{"switch": "sw1", "vlan": "10", "querier": "10.0.10.1"}]},
         },
     }
 
@@ -155,6 +160,8 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # §6.6 services & multicast: design-intent caveat + multicast forwarding presence
     assert "Services & multicast" in text
     assert "PTP-event" in text and "run PIM/mroute" in text
+    # PTP operational-state finding: dormant (not boundary-clocked) is surfaced, not crashed on the {host:dict} map
+    assert "NONE are active boundary" in text
     assert "Inferred-high" in text and "Unknown" in text
     # the cross-layer finding surfaced as a titled block
     assert "single-fiber uplink to a sole gateway" in text
