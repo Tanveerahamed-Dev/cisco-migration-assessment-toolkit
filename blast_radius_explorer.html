@@ -1242,6 +1242,20 @@ function demoSnapshot(){
                     {neighbor:"10.0.20.5",state:"INIT",address:"10.0.20.5",interface:"Gi1/0/2"}],   // C2: one-sided -> ACC-2 (link Gi1/0/2) runs no OSPF
               eigrp:[], bgp:[{neighbor:"203.0.113.1",as:"65010",state:"4"}]},
     "DIST-2":{ospf:[{neighbor:"10.0.99.2",state:"FULL/BDR",address:"10.0.99.2",interface:"Po1"}],eigrp:[],bgp:[]}},
+  // V3.23.100: protocol-state doctrine -> cause + remediation (mirrors compute_protocol_intelligence).
+  // DIST-1's stuck OSPF EXSTART = MTU; ACC-1 has a standalone EtherChannel member (silent half-bandwidth).
+  protocol_intelligence:[
+    {switch:"DIST-1",protocol:"OSPF",state:"EXSTART/DROTHER",severity:"High",
+     meaning:"Adjacency stuck negotiating the DB-descriptor exchange; it never reaches FULL.",
+     likely_cause:"Interface MTU mismatch between the neighbors (the classic cause); also blocked unicast (ACL/NAT) or a duplicate OSPF router-id.",
+     remediation:"Match the IP MTU on both interfaces (or `ip ospf mtu-ignore` as a stopgap); verify unicast reachability and unique router-ids.",
+     confidence:"observed state = fact; likely cause = Inferred (Cisco doctrine)"},
+    {switch:"ACC-1",protocol:"EtherChannel",state:"I",severity:"High",
+     meaning:"Member is stand-alone (individual) — running on its own, NOT bundled into the channel.",
+     likely_cause:"Port settings incompatible with the bundle (speed/duplex/trunk mode/allowed or native VLAN), or no LACP partner.",
+     remediation:"Make the member config identical to the bundle and verify LACP on the peer. Risk: silent half-bandwidth and a possible bridging loop.",
+     confidence:"observed state = fact; likely cause = Inferred (Cisco doctrine)"},
+  ],
   redistribution:{
     "DIST-1":[{into_proto:"ospf",into_id:"1",from_proto:"bgp",from_id:"65001",route_map:"",raw:"redistribute bgp 65001 subnets"},
               {into_proto:"ospf",into_id:"1",from_proto:"connected",from_id:"",route_map:"",raw:"redistribute connected"},
@@ -4484,6 +4498,29 @@ function protoHealthSection(){
     `<div class="sub" style="margin-bottom:6px">Per-device STP · EtherChannel · VTP · FHRP · routing-protocol health from the collector (<b>${counts.High}</b> High · ${counts.Medium} Medium of ${ph.length} checks) — e.g. port-channel members not bundled, VTP mode/revision risk, STP inconsistencies.</div>`+
     rows+more+`</div>`;
 }
+/* Protocol INTELLIGENCE (V3.23.100): turn each abnormal protocol state into cause + remediation by
+   consuming SNAP.protocol_intelligence (the offline protocol-state doctrine; one source of truth with
+   the 'Protocol Intelligence' workbook sheet + runbook §6.5). The observed state is a fact; the cause is
+   Inferred. Records: {switch, protocol, state, severity, meaning, likely_cause, remediation, confidence}.
+   Absent key -> renders nothing (back-compat with pre-V3.23.100 snapshots). */
+function protoIntelFor(host){return ((SNAP&&SNAP.protocol_intelligence)||[]).filter(r=>r.switch===host);}
+function protoIntelRow(r){
+  return `<div class="card ${r.severity==="High"?"crit":"watch"}" data-jump="${esc(r.switch)}" style="cursor:pointer;margin-bottom:7px">`+
+    `<div class="ct"><span class="nm">${esc(shortName(r.switch))}</span> <span class="pill pl-${_phTok(r.severity)}">${esc(r.severity)}</span> `+
+    `<span class="pill pl-neutral">${esc(r.protocol)} ${esc(r.state)}</span></div>`+
+    `<div class="ln">${esc(r.meaning||"")}</div>`+
+    `<div class="ln"><b>Likely cause</b> <span class="faint">(Inferred)</span>: ${esc(r.likely_cause||"")}</div>`+
+    `<div class="ln"><b>Fix</b>: ${esc(r.remediation||"")}</div></div>`;}
+function protoIntelSection(){
+  const pi=(SNAP&&SNAP.protocol_intelligence)||[]; if(!pi.length)return "";
+  const sorted=pi.slice().sort((a,b)=>_phRank(b.severity)-_phRank(a.severity)||String(a.switch).localeCompare(b.switch));
+  const nHigh=pi.filter(r=>r.severity==="High").length;
+  const CAP=12, rows=sorted.slice(0,CAP).map(protoIntelRow).join("");
+  const more=sorted.length>CAP?`<div class="ln faint" style="margin-top:6px">…and <b>${sorted.length-CAP}</b> more — see the <b>Protocol Intelligence</b> workbook sheet / runbook §6.5.</div>`:"";
+  return `<div class="sec"><h3>Protocol intelligence <span class="badge b-crit">${pi.length} advisor${pi.length===1?"y":"ies"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Each abnormal protocol state turned into <b>cause + remediation</b> (<b>${nHigh}</b> High). The observed state is a <b>fact</b>; the likely cause is <b>Inferred</b> per Cisco doctrine — validate live before cutover.</div>`+
+    rows+more+`</div>`;
+}
 function drawProtocols(){
   const hosts=(MODEL?MODEL.hosts:[]).slice();
   const withProto=hosts.filter(h=>protoSet(h).size>0).sort();
@@ -4509,6 +4546,7 @@ function drawProtocols(){
       <div class="stat ${stuck.length?"crit":"ok"}"><div class="v">${stuck.length}</div><div class="k">stuck adj</div></div>
       <div class="stat ${ph.filter(r=>r.severity==="High").length?"crit":"ok"}"><div class="v">${ph.filter(r=>r.severity==="High").length}</div><div class="k">proto issues</div></div>
     </div></div>
+    ${protoIntelSection()}
     ${protoHealthSection()}
     <div class="sec"><h3>Protocol fingerprint <span class="ct">${withProto.length}</span></h3>
       <table><tbody>${fpRows}</tbody></table>
@@ -4531,6 +4569,9 @@ function drawProtocolsDetail(host){
     <div class="sec"><h3>Adjacencies <span class="ct">${adj.length}</span></h3>${adjRows}</div>
     <div class="sec"><h3>Redistribution <span class="ct">${edges.length}</span></h3>${edgeRows}</div>
     <div class="sec"><h3>Route sources</h3>${distBars(routeSourceDist(host))||'<p class="faint">No routes in scope.</p>'}</div>
+    ${(function(){const pi=protoIntelFor(host);if(!pi.length)return "";
+      const sorted=pi.slice().sort((a,b)=>_phRank(b.severity)-_phRank(a.severity));
+      return `<div class="sec"><h3>Protocol intelligence <span class="ct">${pi.length}</span></h3>${sorted.map(protoIntelRow).join("")}</div>`;})()}
     ${(function(){const ph=protoHealthFor(host);if(!ph.length)return "";
       const sorted=ph.slice().sort((a,b)=>_phRank(b.severity)-_phRank(a.severity)||String(a.protocol).localeCompare(b.protocol));
       return `<div class="sec"><h3>Protocol health <span class="ct">${ph.length}</span></h3>${sorted.map(protoHealthRow).join("")}</div>`;})()}

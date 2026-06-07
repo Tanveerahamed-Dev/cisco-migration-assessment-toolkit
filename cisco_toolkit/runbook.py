@@ -362,6 +362,22 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                   [[m.get("group") or "(group)", m.get("switches"), m.get("local_count"),
                     m.get("remote_count")] for m in mg[:12]], widths=[2.0, 1.0, 1.4, 2.2])
 
+    pintel = snap_dict.get("protocol_intelligence") or []
+    if pintel:
+        doc.add_heading("6.5 Protocol behaviour & remediation", level=2)
+        n_high = sum(1 for r in pintel if r.get("severity") == "High")
+        by_proto = sorted({r.get("protocol", "") for r in pintel})
+        doc.add_paragraph(
+            f"{len(pintel)} abnormal control-plane state(s) across {len(by_proto)} protocol(s) "
+            f"[{', '.join(by_proto)}], {n_high} High. Each observed state is a fact (read from the "
+            f"device); the likely cause is Inferred per Cisco doctrine ({_CONF_UNKNOWN} until validated "
+            "live). Fix these before the affected switches are cut over.")
+        table(["Severity", "Switch", "Protocol", "State", "Likely cause (Inferred) → Remediation"],
+              [[r.get("severity", ""), r.get("switch", ""), r.get("protocol", ""), r.get("state", ""),
+                (r.get("likely_cause", "") + "  →  " + r.get("remediation", "")).strip()[:200]]
+               for r in sorted(pintel, key=lambda r: _SEV_ORDER.get(r.get("severity"), 9))[:18]],
+              widths=[0.9, 2.0, 1.1, 0.7, 4.3])
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()

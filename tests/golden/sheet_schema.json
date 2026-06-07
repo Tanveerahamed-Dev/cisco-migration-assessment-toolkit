@@ -245,6 +245,15 @@
   "Detail",
   "Health"
  ],
+ "Protocol Intelligence": [
+  "Switch",
+  "Protocol",
+  "State",
+  "Severity",
+  "Meaning",
+  "Likely cause (Inferred)",
+  "Remediation"
+ ],
  "Health Scores": [
   "Switch",
   "Score",

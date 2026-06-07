@@ -330,6 +330,7 @@ from cisco_toolkit.analyze import (
     compute_endpoint_dependencies,                     # NEW-V3.23.96 (clusters / dependencies / per-switch validation)
     compute_subnet_intelligence,                       # NEW-V3.23.97 (subnet / routing reachability)
     compute_migration_scenarios,                       # NEW-V3.23.98 (per-group cutover scenario framework)
+    compute_protocol_intelligence,                     # NEW-V3.23.100 (protocol-state doctrine: cause + remediation)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -366,6 +367,7 @@ from cisco_toolkit.excel import (
     write_endpoint_dependencies_sheet,                          # NEW-V3.23.96 (clusters / dependencies)
     write_subnet_reachability_sheet,                            # NEW-V3.23.97 (subnet / routing reachability)
     write_migration_scenarios_sheet,                            # NEW-V3.23.98 (per-group cutover scenario)
+    write_protocol_intelligence_sheet,                          # NEW-V3.23.100 (protocol-state cause + remediation)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -1512,6 +1514,12 @@ def main():
     protocol_health = _run_phase("Protocol Health", compute_protocol_health,
                                  all_interfaces, all_cmd_to_files, _default=[])
     _run_phase("Protocol Health sheet", write_protocol_health_sheet, wb, protocol_health)
+    # Phase 27b: Protocol Intelligence (NEW-V3.23.100). Join the protocol_health rows against the
+    # offline protocol-state doctrine -> meaning + likely cause + remediation. Derived from
+    # protocol_health (no re-parse); compute once -> sheet + snapshot (one source of truth).
+    protocol_intelligence = _run_phase("Protocol intelligence", compute_protocol_intelligence,
+                                       protocol_health, _default=[])
+    _run_phase("Protocol Intelligence sheet", write_protocol_intelligence_sheet, wb, protocol_intelligence)
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
@@ -1612,6 +1620,7 @@ def main():
     snap_dict["l3_forwarding"] = l3_forwarding                       # NEW-V3.20
     snap_dict["cross_layer"] = cross_layer                           # NEW-V3.21
     snap_dict["protocol_health"] = protocol_health                   # NEW-V3.22
+    snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5

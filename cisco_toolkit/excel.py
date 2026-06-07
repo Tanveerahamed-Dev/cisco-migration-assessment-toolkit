@@ -886,6 +886,38 @@ def write_protocol_health_sheet(wb, records: List[dict]) -> None:
     logger.info(f"  [OK] '{PROTOCOL_HEALTH_SHEET_NAME}' sheet: {len(records)} row(s), {n_bad} flagged")
 
 
+PROTOCOL_INTELLIGENCE_SHEET_NAME = "Protocol Intelligence"   # NEW-V3.23.100
+
+def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
+    """Write the 'Protocol Intelligence' sheet from compute_protocol_intelligence(): each abnormal
+    protocol state turned into meaning + likely cause + remediation (the observed state is a fact;
+    the cause is Inferred per Cisco doctrine)."""
+    ws = wb.create_sheet(PROTOCOL_INTELLIGENCE_SHEET_NAME)
+    headers = ["Switch", "Protocol", "State", "Severity", "Meaning",
+               "Likely cause (Inferred)", "Remediation"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    if not records:
+        ws.cell(2, 1, "No abnormal protocol states detected (control plane healthy).")
+    for r, rec in enumerate(records, 2):
+        vals = [rec["switch"], rec["protocol"], rec["state"], rec["severity"],
+                rec["meaning"], rec["likely_cause"], rec["remediation"]]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v)
+            c.alignment = Alignment(vertical="top", wrap_text=col >= 5)
+            if col == 4 and rec["severity"] in _SEV_FILL:
+                c.fill = PatternFill("solid", fgColor=_SEV_FILL[rec["severity"]])
+                c.font = Font(bold=True)
+    for i, w in enumerate([22, 13, 8, 10, 44, 46, 50], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    n_high = sum(1 for x in records if x["severity"] == "High")
+    logger.info(f"  [OK] '{PROTOCOL_INTELLIGENCE_SHEET_NAME}' sheet: {len(records)} advisory row(s), {n_high} High")
+
+
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
 MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
 SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5
