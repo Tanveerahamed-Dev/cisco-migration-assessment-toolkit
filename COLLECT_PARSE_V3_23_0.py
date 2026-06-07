@@ -336,6 +336,7 @@ from cisco_toolkit.analyze import (
     compute_service_map,                               # NEW-V3.23.101 (L4 service map from ACL ports + multicast activity)
     compute_ptp_readiness,                             # NEW-V3.23.108 (PTP / media-timing readiness -> punch-list)
     compute_multicast_intelligence,                    # NEW-V3.23.115 (media-fabric deep-dive: MAC-alias / querier / PTP tree)
+    compute_remediation_plan,                          # NEW-V3.23.116 (assess->act: per-device config snippets, review-only)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
@@ -377,6 +378,7 @@ from cisco_toolkit.excel import (
     write_protocol_intelligence_sheet,                          # NEW-V3.23.100 (protocol-state cause + remediation)
     write_service_map_sheet,                                     # NEW-V3.23.101 (L4 service map + multicast activity)
     write_multicast_intelligence_sheet,                          # NEW-V3.23.115 (media-fabric multicast intelligence)
+    write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
@@ -1669,6 +1671,15 @@ def main():
                            ptp_readiness=_ptp_readiness, media_risks=_media_risks, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
 
+    # Phase 30d-ter: Remediation Plan - NEW-V3.23.116. The assess->act layer: turn the SAME structured finding
+    # sources into per-device, platform-tagged, copy-pasteable Cisco config snippets (review-only). Reuses
+    # the _l2 bundle / _stp_findings / hygiene / security / multicast_intelligence already computed above.
+    _dev_platform = {dp.hostname: {"platform": dp.platform} for dp in all_device_physical}
+    remediation_plan = _run_phase("Remediation plan", compute_remediation_plan,
+                                  _dev_platform, _l2, _stp_findings, all_config_hygiene, all_security,
+                                  multicast_intelligence, move_groups, _default={})
+    _run_phase("Remediation Plan sheet", write_remediation_plan_sheet, wb, remediation_plan)
+
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
     # endpoint_dependencies + service_map + health_scores + move_groups + punchlist into named
     # application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
@@ -1711,6 +1722,7 @@ def main():
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
     snap_dict["multicast_intelligence"] = multicast_intelligence     # NEW-V3.23.115 (media-fabric deep-dive; reused from Phase 27c-bis)
+    snap_dict["remediation_plan"] = remediation_plan                 # NEW-V3.23.116 (generated config snippets, review-only; reused from Phase 30d-ter)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23

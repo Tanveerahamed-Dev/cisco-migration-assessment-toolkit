@@ -1471,6 +1471,343 @@
   },
   "risks": []
  },
+ "remediation_plan": {
+  "items": [
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Config hygiene",
+    "severity": "High",
+    "title": "Undefined acl '7'",
+    "why": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined \u2014 it silently does nothing (e.g. an ACL/route-map that matches nothing).",
+    "commands": [
+     "! Option A \u2014 DEFINE the missing acl '7' with the intended rules, e.g.:",
+     "!   acl 7",
+     "! Option B \u2014 REMOVE the dangling reference at: ip nat inside source list 7 pool MIGRATE_POOL overload",
+     "!   (negate the referencing line with its 'no' form)"
+    ],
+    "verify": "show running-config | include 7",
+    "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
+    "source": "hygiene-undefined",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Config hygiene",
+    "severity": "High",
+    "title": "Undefined route-map 'OSPF_TO_BGP'",
+    "why": "Referenced (router bgp 65001) but never defined \u2014 it silently does nothing (e.g. an ACL/route-map that matches nothing).",
+    "commands": [
+     "! Option A \u2014 DEFINE the missing route-map 'OSPF_TO_BGP' with the intended rules, e.g.:",
+     "!   route-map OSPF_TO_BGP",
+     "! Option B \u2014 REMOVE the dangling reference at: router bgp 65001",
+     "!   (negate the referencing line with its 'no' form)"
+    ],
+    "verify": "show running-config | include OSPF_TO_BGP",
+    "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
+    "source": "hygiene-undefined",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "High",
+    "title": "Local user password storage",
+    "why": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
+    "commands": [
+     "! Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries."
+    ],
+    "verify": "show running-config | include weak-user-pw",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "High",
+    "title": "SNMP access",
+    "why": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
+    "commands": [
+     "! Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES)."
+    ],
+    "verify": "show running-config | include insecure-snmp",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "High",
+    "title": "VTY transport (telnet)",
+    "why": "a VTY line permits telnet (cleartext management).",
+    "commands": [
+     "! Set 'transport input ssh' on every VTY line; disable telnet."
+    ],
+    "verify": "show running-config | include telnet-enabled",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "STP",
+    "severity": "Medium",
+    "title": "STP root not on the gateway for VLAN 30",
+    "why": "The spanning-tree root for VLAN 30 is access1, not the VLAN's gateway \u2014 traffic to the default gateway hairpins.",
+    "commands": [
+     "spanning-tree vlan 30 root primary",
+     "! on access1: raise its priority value (e.g. spanning-tree vlan 30 priority 28672) so it yields"
+    ],
+    "verify": "show spanning-tree vlan 30 root",
+    "caution": "Align the root with the active gateway; do not move the root during traffic hours.",
+    "source": "stp-misaligned",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Medium",
+    "title": "Unused / risky services",
+    "why": "enabled: HTTP server (cleartext).",
+    "commands": [
+     "! Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'."
+    ],
+    "verify": "show running-config | include risky-services",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Medium",
+    "title": "VTY line hardening",
+    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+    "commands": [
+     "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
+    ],
+    "verify": "show running-config | include vty-hardening",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "category": "STP",
+    "severity": "Low",
+    "title": "Accidental root on VLAN 30",
+    "why": "Rooted on the default bridge priority \u2014 elected on a MAC tiebreak, so the root can move on a cutover.",
+    "commands": [
+     "spanning-tree vlan 30 priority 24576",
+     "! (use 28672 for a secondary/backup root)"
+    ],
+    "verify": "show spanning-tree vlan 30",
+    "caution": "Set a DELIBERATE priority on the INTENDED root only; verify the topology before and after.",
+    "source": "stp-accidental",
+    "wave": ""
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Low",
+    "title": "Login banner",
+    "why": "no login / MOTD legal-notice banner.",
+    "commands": [
+     "! Configure a 'banner login' / 'banner motd' legal-notice banner."
+    ],
+    "verify": "show running-config | include no-banner",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   }
+  ],
+  "by_device": {
+   "core1": [
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Config hygiene",
+     "severity": "High",
+     "title": "Undefined acl '7'",
+     "why": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined \u2014 it silently does nothing (e.g. an ACL/route-map that matches nothing).",
+     "commands": [
+      "! Option A \u2014 DEFINE the missing acl '7' with the intended rules, e.g.:",
+      "!   acl 7",
+      "! Option B \u2014 REMOVE the dangling reference at: ip nat inside source list 7 pool MIGRATE_POOL overload",
+      "!   (negate the referencing line with its 'no' form)"
+     ],
+     "verify": "show running-config | include 7",
+     "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
+     "source": "hygiene-undefined",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Config hygiene",
+     "severity": "High",
+     "title": "Undefined route-map 'OSPF_TO_BGP'",
+     "why": "Referenced (router bgp 65001) but never defined \u2014 it silently does nothing (e.g. an ACL/route-map that matches nothing).",
+     "commands": [
+      "! Option A \u2014 DEFINE the missing route-map 'OSPF_TO_BGP' with the intended rules, e.g.:",
+      "!   route-map OSPF_TO_BGP",
+      "! Option B \u2014 REMOVE the dangling reference at: router bgp 65001",
+      "!   (negate the referencing line with its 'no' form)"
+     ],
+     "verify": "show running-config | include OSPF_TO_BGP",
+     "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
+     "source": "hygiene-undefined",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "High",
+     "title": "Local user password storage",
+     "why": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
+     "commands": [
+      "! Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries."
+     ],
+     "verify": "show running-config | include weak-user-pw",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "High",
+     "title": "SNMP access",
+     "why": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
+     "commands": [
+      "! Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES)."
+     ],
+     "verify": "show running-config | include insecure-snmp",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "High",
+     "title": "VTY transport (telnet)",
+     "why": "a VTY line permits telnet (cleartext management).",
+     "commands": [
+      "! Set 'transport input ssh' on every VTY line; disable telnet."
+     ],
+     "verify": "show running-config | include telnet-enabled",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "STP",
+     "severity": "Medium",
+     "title": "STP root not on the gateway for VLAN 30",
+     "why": "The spanning-tree root for VLAN 30 is access1, not the VLAN's gateway \u2014 traffic to the default gateway hairpins.",
+     "commands": [
+      "spanning-tree vlan 30 root primary",
+      "! on access1: raise its priority value (e.g. spanning-tree vlan 30 priority 28672) so it yields"
+     ],
+     "verify": "show spanning-tree vlan 30 root",
+     "caution": "Align the root with the active gateway; do not move the root during traffic hours.",
+     "source": "stp-misaligned",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Medium",
+     "title": "Unused / risky services",
+     "why": "enabled: HTTP server (cleartext).",
+     "commands": [
+      "! Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'."
+     ],
+     "verify": "show running-config | include risky-services",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Medium",
+     "title": "VTY line hardening",
+     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "commands": [
+      "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
+     ],
+     "verify": "show running-config | include vty-hardening",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Low",
+     "title": "Login banner",
+     "why": "no login / MOTD legal-notice banner.",
+     "commands": [
+      "! Configure a 'banner login' / 'banner motd' legal-notice banner."
+     ],
+     "verify": "show running-config | include no-banner",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    }
+   ],
+   "access1": [
+    {
+     "device": "access1",
+     "platform": "ios",
+     "category": "STP",
+     "severity": "Low",
+     "title": "Accidental root on VLAN 30",
+     "why": "Rooted on the default bridge priority \u2014 elected on a MAC tiebreak, so the root can move on a cutover.",
+     "commands": [
+      "spanning-tree vlan 30 priority 24576",
+      "! (use 28672 for a secondary/backup root)"
+     ],
+     "verify": "show spanning-tree vlan 30",
+     "caution": "Set a DELIBERATE priority on the INTENDED root only; verify the topology before and after.",
+     "source": "stp-accidental",
+     "wave": ""
+    }
+   ]
+  },
+  "summary": {
+   "n_items": 10,
+   "n_devices": 2,
+   "by_category": {
+    "Config hygiene": 2,
+    "Security": 6,
+    "STP": 2
+   },
+   "n_high": 5
+  },
+  "banner": "GENERATED FOR REVIEW \u2014 validate against the device's running-config and your change-control before applying. Snippets are starting points, not a turnkey script."
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,

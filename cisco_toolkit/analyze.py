@@ -3443,3 +3443,153 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
     return {"domains": out_domains, "summary": summary, "cross_domain_risks": cross,
             "edges": edges, "keystones": keystones, "cutover_order": cutover_order,
             "taxonomy_version": "app-domains/3"}
+
+
+# =============================================================================
+# Remediation generator (NEW-V3.23.116). The assess->ACT layer: turn the structured findings into
+# per-device, platform-tagged, copy-pasteable Cisco config snippets a network engineer can REVIEW and
+# apply. Generation FOR REVIEW ONLY -- the tool writes nothing and lacks full operational context; every
+# item carries the evidence (why), a verify command, and a caution. Where a fix needs intent the tool
+# cannot know (FHRP virtual IP, the 'correct' native VLAN), the template uses explicit <placeholder>
+# markers rather than guessing. Pure read of the same structured sources the punch-list consumes.
+# =============================================================================
+_REMEDIATION_BANNER = ("GENERATED FOR REVIEW — validate against the device's running-config and your "
+                       "change-control before applying. Snippets are starting points, not a turnkey script.")
+_REMEDIATION_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+
+
+def _is_nxos(platform: str) -> bool:
+    p = (platform or "").lower()
+    return "nx" in p or "nexus" in p
+
+
+def compute_remediation_plan(devices: Optional[dict] = None,
+                             l2: Optional[dict] = None,
+                             stp_findings: Optional[dict] = None,
+                             config_hygiene: Optional[dict] = None,
+                             security: Optional[dict] = None,
+                             multicast_intelligence: Optional[dict] = None,
+                             move_groups: Optional[list] = None) -> dict:
+    """NEW-V3.23.116: per-device, platform-tagged Cisco config snippets generated from the structured finding
+    sources (STP root, trunk native-VLAN, link duplex/speed, config-hygiene undefined refs, CIS security,
+    FHRP, multicast querier). REVIEW-ONLY -- no device writes; each item carries why / verify / caution and
+    uses <placeholders> where the fix needs intent the tool cannot know. Pure read; deterministic; tolerant
+    of empty / oddly-typed input. Returns {items, by_device, summary, banner}."""
+    from collections import Counter, defaultdict
+    devs = devices or {}
+    l2 = l2 or {}
+    wave_of: Dict[str, str] = {}
+    for g in (move_groups or []):
+        for h in (g.get("switches") or []):
+            wave_of.setdefault(h, g.get("group") or "")
+
+    def _plat(host):
+        return (devs.get(host) or {}).get("platform", "ios") or "ios"
+
+    items: List[dict] = []
+
+    def add(device, category, severity, title, why, commands, verify, caution, source):
+        items.append({"device": device, "platform": _plat(device), "category": category,
+                      "severity": severity, "title": title, "why": (why or "")[:300],
+                      "commands": [c for c in commands if c is not None], "verify": verify,
+                      "caution": caution, "source": source, "wave": wave_of.get(device, "")})
+
+    sf = stp_findings or {}
+    for a in sf.get("accidental", []):                                    # STP accidental root (default priority)
+        h, vlan = a.get("host"), a.get("vlan")
+        add(h, "STP", "Low", f"Accidental root on VLAN {vlan}",
+            "Rooted on the default bridge priority — elected on a MAC tiebreak, so the root can move on a cutover.",
+            [f"spanning-tree vlan {vlan} priority 24576", "! (use 28672 for a secondary/backup root)"],
+            f"show spanning-tree vlan {vlan}",
+            "Set a DELIBERATE priority on the INTENDED root only; verify the topology before and after.",
+            "stp-accidental")
+    for m in sf.get("misaligned", []):                                    # STP root != gateway (hairpin)
+        vlan, root, gws = m.get("vlan"), m.get("root"), list(m.get("gateways", []))
+        gw = gws[0] if gws else "<gateway-switch>"
+        add(gw, "STP", "Medium", f"STP root not on the gateway for VLAN {vlan}",
+            f"The spanning-tree root for VLAN {vlan} is {root}, not the VLAN's gateway — traffic to the default "
+            "gateway hairpins.",
+            [f"spanning-tree vlan {vlan} root primary",
+             f"! on {root}: raise its priority value (e.g. spanning-tree vlan {vlan} priority 28672) so it yields"],
+            f"show spanning-tree vlan {vlan} root",
+            "Align the root with the active gateway; do not move the root during traffic hours.", "stp-misaligned")
+
+    for t in (l2.get("trunk_native") or []):                              # trunk native-VLAN mismatch (both ends)
+        a_h, a_p, a_n = t.get("a_host"), t.get("a_port"), t.get("a_native")
+        b_h, b_p, b_n = t.get("b_host"), t.get("b_port"), t.get("b_native")
+        why = f"{a_h} {a_p} (native {a_n}) <-> {b_h} {b_p} (native {b_n}) — untagged L2 leak / VLAN-hopping exposure."
+        for (h, p) in ((a_h, a_p), (b_h, b_p)):
+            add(h, "Trunk", "Medium", f"Native-VLAN mismatch on {p}", why,
+                [f"interface {p}", " switchport trunk native vlan <chosen-native-vlan>"],
+                f"show interfaces {p} trunk",
+                "Both ends MUST use the SAME native VLAN — pick one agreed value and set it on both.", "trunk-native")
+
+    for lp in (l2.get("link_phy") or []):                                 # link duplex/speed mismatch (both ends)
+        what = "duplex" if lp.get("duplex") else "speed"
+        a_h, a_p, b_h, b_p = lp.get("a_host"), lp.get("a_port"), lp.get("b_host"), lp.get("b_port")
+        why = f"{a_h} {a_p} <-> {b_h} {b_p} — {what} differs (late collisions / CRC errors; link up but degraded)."
+        for (h, p) in ((a_h, a_p), (b_h, b_p)):
+            add(h, "Link L1", "Medium", f"{what.capitalize()} mismatch on {p}", why,
+                [f"interface {p}", " duplex auto" if lp.get("duplex") else " speed auto"],
+                f"show interfaces {p} status",
+                "Set BOTH ends to matching auto (or matching fixed) values — autoneg on one side + fixed on the "
+                "other is the classic cause.", "link-phy")
+
+    for host, hg in (config_hygiene or {}).items():                       # config hygiene: undefined references
+        for u in (hg.get("undefined") or []):
+            kind, name, ctx = u.get("kind", ""), u.get("name", ""), u.get("context", "")
+            add(host, "Config hygiene", "High", f"Undefined {kind} '{name}'",
+                f"Referenced ({ctx}) but never defined — it silently does nothing (e.g. an ACL/route-map that "
+                "matches nothing).",
+                [f"! Option A — DEFINE the missing {kind} '{name}' with the intended rules, e.g.:",
+                 f"!   {kind} {name}", f"! Option B — REMOVE the dangling reference at: {ctx}",
+                 "!   (negate the referencing line with its 'no' form)"],
+                f"show running-config | include {name}",
+                "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
+                "hygiene-undefined")
+
+    for host, s in (security or {}).items():                              # CIS security failures
+        for f in (s.get("findings") or []):
+            if f.get("status") != "fail":
+                continue
+            rem = (f.get("remediation") or "").strip()
+            add(host, "Security", str(f.get("severity", "medium")).capitalize(),
+                f.get("title", f.get("id", "CIS check")),
+                f.get("detail", "") or f"CIS check '{f.get('id', '')}' failed.",
+                [f"! {rem}" if rem else "! See the Config Compliance sheet for the hardening step."],
+                f"show running-config | include {f.get('id', '')}",
+                "CIS hardening — confirm the control suits this device's role before applying.", "cis-security")
+
+    for fr in (l2.get("fhrp") or []):                                     # FHRP fake redundancy (templated)
+        vid = fr.get("vid")
+        members = [m.get("host") for m in (fr.get("members") or []) if m.get("host")]
+        why = f"VLAN {vid}: " + "; ".join(fr.get("issues", []))
+        for h in members:
+            if _is_nxos(_plat(h)):
+                cmds = ["feature hsrp", f"interface Vlan{vid}", " hsrp <group>",
+                        "  ip <virtual-ip>", "  priority <100-or-higher-on-primary>", "  preempt"]
+            else:
+                cmds = [f"interface Vlan{vid}", " standby <group> ip <virtual-ip>",
+                        " standby <group> priority <100-or-higher-on-primary>", " standby <group> preempt"]
+            add(h, "FHRP", "High", f"Fake FHRP redundancy on VLAN {vid}", why, cmds,
+                "show hsrp brief" if _is_nxos(_plat(h)) else f"show standby vlan {vid}",
+                "Standardize ONE FHRP protocol / group / virtual-IP across ALL the VLAN's gateways; <virtual-ip> "
+                "is the agreed gateway address.", "fhrp")
+
+    for vlan in ((multicast_intelligence or {}).get("querier") or {}).get("gap_vlans", []):  # multicast querier gap
+        add("(media VLAN)", "Multicast", "High", f"No IGMP querier on multicast VLAN {vlan}",
+            f"VLAN {vlan} carries multicast but no IGMP querier was seen — flooding / blackhole risk.",
+            ["! IOS: ip igmp snooping querier   (exactly one switch per VLAN; lowest IP wins)",
+             f"! NX-OS: vlan configuration {vlan}", "!          ip igmp snooping querier <ip-in-subnet>"],
+            f"show ip igmp snooping querier vlan {vlan}",
+            "Exactly ONE querier per VLAN — a second creates a split-brain.", "querier-gap")
+
+    items.sort(key=lambda it: (_REMEDIATION_RANK.get(it["severity"], 9), str(it["device"]), it["category"],
+                               it["title"]))
+    by_device: Dict[str, list] = defaultdict(list)
+    for it in items:
+        by_device[it["device"]].append(it)
+    summary = {"n_items": len(items), "n_devices": len(by_device),
+               "by_category": dict(Counter(it["category"] for it in items)),
+               "n_high": sum(1 for it in items if it["severity"] in ("Critical", "High"))}
+    return {"items": items, "by_device": dict(by_device), "summary": summary, "banner": _REMEDIATION_BANNER}

@@ -723,6 +723,39 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         _label_run(p, name + ":", f"[{conf}] {gates}")
         sp = doc.add_paragraph(style="List Bullet 2"); _label_run(sp, "Next validation:", nextstep)
 
+    # ===== 13. Remediation Appendix (generated config, review-only) — NEW-V3.23.116 =====
+    rp = snap_dict.get("remediation_plan") or {}
+    rem_items = rp.get("items") or []
+    if rem_items:
+        doc.add_heading("13. Remediation Appendix — generated config (review only)", level=1)
+        bp = doc.add_paragraph()
+        _label_run(bp, "⚠ Review banner:", rp.get("banner") or
+                   "Generated for review — validate against the running-config and change-control before applying.",
+                   GREY)
+        rs = rp.get("summary") or {}
+        doc.add_paragraph(
+            f"{rs.get('n_items', 0)} generated fix snippet(s) across {rs.get('n_devices', 0)} device(s) "
+            f"({rs.get('n_high', 0)} High/Critical), per device in severity order. Placeholders (<...>) mark "
+            "values that require local intent — do not paste them literally.")
+        by_dev = rp.get("by_device") or {}
+        ranked = sorted(by_dev.items(),
+                        key=lambda kv: (-sum(1 for it in kv[1] if it.get("severity") in ("Critical", "High")),
+                                        str(kv[0])))
+        for host, its in ranked[:40]:
+            doc.add_heading(str(host), level=2)
+            for it in its[:8]:
+                hp = doc.add_paragraph()
+                hr = hp.add_run(f"[{it.get('severity')}] {it.get('category')} — {it.get('title')}"); hr.bold = True
+                cp = doc.add_paragraph(); cp.paragraph_format.left_indent = Inches(0.3)
+                cr = cp.add_run("\n".join(it.get("commands") or []))
+                cr.font.name = "Consolas"; cr.font.size = Pt(9)
+                _label_run(doc.add_paragraph(style="List Bullet 2"), "Verify:", it.get("verify", ""))
+                _label_run(doc.add_paragraph(style="List Bullet 2"), "Caution:", it.get("caution", ""))
+            if len(its) > 8:
+                doc.add_paragraph(f"…and {len(its) - 8} more item(s) for {host} — see the Remediation Plan sheet.")
+        if len(ranked) > 40:
+            doc.add_paragraph(f"…and {len(ranked) - 40} more device(s) — see the Remediation Plan workbook sheet.")
+
     # landscape for the wide tables; US Letter
     sec = doc.sections[0]
     sec.orientation = WD_ORIENT.LANDSCAPE
