@@ -82,6 +82,16 @@ def _snap():
                              "local_count": 1, "remote_count": 3}],
             "bgp_received_collected": False,
         },
+        "migration_scenarios": {
+            "per_group": [{"group": "Group 1", "switches": 5, "endpoints": 50, "readiness": "READY",
+                           "make_before_break": 4, "hard_cutover": 1, "hard_cutover_endpoints": 2,
+                           "dual_homed_pct": 80, "recommended_scenario": "parallel-run",
+                           "rationale": "mostly dual-homed — build beside and cut leg-by-leg",
+                           "playbook": {"pre": "build beside", "validate": "cut one leg, prove forwarding",
+                                        "rollback": "fail back to legacy leg"}}],
+            "fleet_recommendation": "89% of switches are Poor/Critical — consider a GREENFIELD rebuild.",
+            "scenario_counts": {"parallel-run": 1},
+        },
     }
 
 
@@ -137,6 +147,9 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # subnet & routing reachability (§6.4) + source<->destination
     assert "Subnet & routing reachability" in text
     assert "Remote subnets to preserve" in text
+    # migration scenario framework (§3 recommendation + §11.2 playbook)
+    assert "GREENFIELD rebuild" in text and "parallel-run" in text
+    assert "Cutover playbook by scenario" in text
 
 
 def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):

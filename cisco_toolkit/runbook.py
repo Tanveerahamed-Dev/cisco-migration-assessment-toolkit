@@ -236,6 +236,18 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         "The plan rests on an endpoint-move architecture: access-layer switches and their endpoints "
         "move in dependency-scoped groups while L3 gateways remain on the legacy core. That premise is "
         "validated per VLAN in §6; VLANs whose gateway cannot be evidenced are gated, not assumed.")
+    scen = snap_dict.get("migration_scenarios") or {}
+    if scen.get("fleet_recommendation"):
+        p = doc.add_paragraph()
+        _label_run(p, "Fleet recommendation:", scen["fleet_recommendation"])
+    pg = scen.get("per_group") or []
+    if pg:
+        doc.add_paragraph("Recommended cutover scenario per move-group (the group's shape decides; the "
+                          "war-room confirms). Playbooks per scenario are in §11:")
+        table(["Move group", "Switches", "Dual-homed %", "Hard cutovers", "Scenario", "Why"],
+              [[g.get("group") or "(group)", g.get("switches"), g.get("dual_homed_pct"),
+                g.get("hard_cutover"), g.get("recommended_scenario"), g.get("rationale")]
+               for g in pg[:12]], widths=[1.6, 0.9, 1.1, 1.1, 1.4, 3.4])
 
     # ===== 4. Platform Intelligence =====
     doc.add_heading("4. Platform Intelligence", level=1)
@@ -479,6 +491,20 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
             "classes to its move:")
         for line in present:
             doc.add_paragraph(line, style="List Bullet")
+
+    # scenario playbooks for the recommended scenarios (NEW-V3.23.98).
+    pg2 = (snap_dict.get("migration_scenarios") or {}).get("per_group") or []
+    if pg2:
+        seen_sc = {}
+        for g in pg2:
+            sc = g.get("recommended_scenario")
+            if sc and sc not in seen_sc and g.get("playbook"):
+                seen_sc[sc] = g["playbook"]
+        if seen_sc:
+            doc.add_heading("11.2 Cutover playbook by scenario", level=2)
+            table(["Scenario", "Pre-check", "Validate", "Rollback"],
+                  [[sc, pb.get("pre", ""), pb.get("validate", ""), pb.get("rollback", "")]
+                   for sc, pb in sorted(seen_sc.items())], widths=[1.3, 2.7, 2.7, 2.7])
 
     # ===== 12. War-Room Decision Logic & Open Unknowns =====
     doc.add_heading("12. War-Room Decision Logic & Open Unknowns", level=1)

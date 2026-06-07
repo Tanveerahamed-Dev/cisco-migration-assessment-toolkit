@@ -2258,6 +2258,80 @@ def compute_subnet_intelligence(all_interfaces: Dict[str, Dict[str, InterfaceDat
     return {"per_device": per_device, "move_groups": mg, "bgp_received_collected": bool(bgp_received)}
 
 
+# =============================================================================
+# Migration scenario framework (NEW-V3.23.98, plan workstream D). Per move-group, recommend a cutover
+# SCENARIO (phased / parallel-run / greenfield / big-bang) from the group's own shape -- readiness
+# verdict, dual-homing ratio (make-before-break vs hard cutover), and size -- and attach the
+# scenario-specific pre-check / validate / rollback playbook. General by design: it recommends, the
+# war-room decides. Research-encoded (greenfield/parallel/phased/big-bang migration doctrine).
+# =============================================================================
+_SCENARIO_PLAYBOOK = {
+    "parallel-run": {
+        "pre": "Build the new path beside the legacy one; confirm both legs of every dual-homed endpoint are up.",
+        "validate": "Cut one leg, prove forwarding from a real endpoint to its gateway + a cross-VLAN service, then cut the second.",
+        "rollback": "Any endpoint loses reachability on the new leg -> fail back to the legacy leg (still up); re-validate."},
+    "phased": {
+        "pre": "Resolve gating checks first; schedule single-homed (hard-cutover) switches into maintenance windows.",
+        "validate": "Per wave, prove forwarding for a sample endpoint of EACH hosted class before the next wave.",
+        "rollback": "A wave fails validation -> re-home that wave's uplinks to the legacy path; hold the remaining waves."},
+    "greenfield": {
+        "pre": "Stand up a clean target fabric; pre-stage config/templates; map each endpoint to its new port/VLAN.",
+        "validate": "Move a pilot group, soak it, prove every endpoint class end-to-end before scaling.",
+        "rollback": "Pilot fails -> endpoints stay on legacy (untouched); fix the target, retry the pilot."},
+    "big-bang": {
+        "pre": "Single cutover window; freeze changes; have every owner on the bridge. HIGH RISK — last resort.",
+        "validate": "Prove the full service set immediately after the window; no partial-success state.",
+        "rollback": "Pre-agreed hard rollback to the legacy config snapshot; rehearse it before the window."},
+}
+
+
+def compute_migration_scenarios(migration_readiness: list, wave_sequencing: list,
+                                health_scores: Optional[list] = None) -> dict:
+    """NEW-V3.23.98: per move-group cutover-scenario recommendation + playbook, plus a fleet-level note.
+    Synthesis of already-computed readiness + wave sequencing (+ optional health bands); no new data.
+    Returns {per_group:[...], fleet_recommendation:str, scenario_counts:{...}}."""
+    ws_by = {w.get("group", ""): w for w in (wave_sequencing or [])}
+    per_group = []; counts: Dict[str, int] = {}
+    for r in (migration_readiness or []):
+        g = r.get("group", ""); w = ws_by.get(g, {})
+        members = len(r.get("switches") or []); eps = r.get("endpoints", 0)
+        mbb = len(w.get("make_before_break") or []); hard = len(w.get("hard_cutover") or [])
+        hard_eps = w.get("hard_cutover_endpoints", 0); readiness = r.get("readiness", "")
+        mbb_pct = round(100 * mbb / (mbb + hard)) if (mbb + hard) else 0
+        if readiness == "NOT READY":
+            sc = "phased"; why = (f"gating checks fail ({r.get('n_fail', 0)} blocker(s)) — resolve them, "
+                                  "then migrate in small validated waves.")
+        elif hard and hard_eps >= max(eps * 0.2, 1):
+            sc = "phased"; why = (f"{hard} single-homed switch(es) ({hard_eps} endpoint(s) at risk) — "
+                                  "phase into maintenance windows; dual-home first where possible.")
+        elif members >= 4 and mbb_pct >= 80:
+            sc = "parallel-run"; why = (f"{mbb_pct}% of switches are dual-homed — build beside and cut "
+                                        "leg-by-leg (make-before-break) for minimal outage.")
+        elif members <= 2:
+            sc = "big-bang" if members <= 1 else "phased"
+            why = ("tiny group — a single window is feasible (rehearse rollback)." if members <= 1
+                   else "small group — migrate phased with per-endpoint validation.")
+        else:
+            sc = "phased"; why = "mixed homing — phased waves with per-class validation are the safe default."
+        counts[sc] = counts.get(sc, 0) + 1
+        per_group.append({"group": g, "switches": members, "endpoints": eps, "readiness": readiness,
+                          "make_before_break": mbb, "hard_cutover": hard, "hard_cutover_endpoints": hard_eps,
+                          "dual_homed_pct": mbb_pct, "recommended_scenario": sc, "rationale": why,
+                          "playbook": _SCENARIO_PLAYBOOK[sc]})
+    fleet = ""
+    hs = health_scores or []
+    if hs:
+        crit = sum(1 for r in hs if r.get("band") in ("Critical", "Poor"))
+        pct = round(100 * crit / len(hs))
+        if pct >= 60:
+            fleet = (f"{pct}% of switches are Poor/Critical — consider a GREENFIELD rebuild for the most "
+                     "degraded segments (move endpoints onto a clean fabric) rather than migrating debt in place.")
+        else:
+            fleet = (f"{pct}% of switches are Poor/Critical — an in-place PHASED / PARALLEL-RUN migration is "
+                     "viable; reserve greenfield for any isolated worst-offenders.")
+    return {"per_group": per_group, "fleet_recommendation": fleet, "scenario_counts": counts}
+
+
 def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                               all_device_physical: list) -> List[dict]:
     """NEW-V3.23.93: evidence-led FALSE-HEALTH / operational-drift detector. Surfaces the migration

@@ -2848,5 +2848,30 @@
    }
   ],
   "bgp_received_collected": false
+ },
+ "migration_scenarios": {
+  "per_group": [
+   {
+    "group": "Group 1",
+    "switches": 3,
+    "endpoints": 5,
+    "readiness": "NOT READY",
+    "make_before_break": 1,
+    "hard_cutover": 2,
+    "hard_cutover_endpoints": 3,
+    "dual_homed_pct": 33,
+    "recommended_scenario": "phased",
+    "rationale": "gating checks fail (4 blocker(s)) \u2014 resolve them, then migrate in small validated waves.",
+    "playbook": {
+     "pre": "Resolve gating checks first; schedule single-homed (hard-cutover) switches into maintenance windows.",
+     "validate": "Per wave, prove forwarding for a sample endpoint of EACH hosted class before the next wave.",
+     "rollback": "A wave fails validation -> re-home that wave's uplinks to the legacy path; hold the remaining waves."
+    }
+   }
+  ],
+  "fleet_recommendation": "33% of switches are Poor/Critical \u2014 an in-place PHASED / PARALLEL-RUN migration is viable; reserve greenfield for any isolated worst-offenders.",
+  "scenario_counts": {
+   "phased": 1
+  }
  }
 }
