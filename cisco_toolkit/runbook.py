@@ -364,10 +364,35 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
     table(["Switch", "Model", "Active/Total", "Port util %"],
           [[c.get("hostname"), c.get("model"), f"{c.get('active_ports')}/{c.get('total_ports')}",
             c.get("port_util")] for c in low_util], widths=[3.2, 2.2, 1.2, 1.2])
-    doc.add_paragraph(
-        "Shared-infrastructure classification (e.g. CCTV/OT mixed with enterprise endpoints) is "
-        f"{_CONF_UNKNOWN} from this dataset — endpoint-type evidence (device descriptions / OUI) is "
-        "not collected fleet-wide. Capture endpoint descriptions to resolve before consolidation.")
+    dep = snap_dict.get("endpoint_dependencies") or {}
+    clusters = dep.get("clusters") or []
+    dual = dep.get("dual_homed") or []
+    affinity = dep.get("affinity") or []
+    if clusters or dual or affinity:
+        doc.add_heading("8.1 Endpoint clusters & dependencies", level=2)
+        doc.add_paragraph(
+            "Cohesive units inferred from the endpoint identity model — a distributed system is a "
+            f"(vendor, class) seen across many switches. Confidence travels with the identities "
+            f"({_CONF_HIGH}/{_CONF_MED}); live cluster role (active/standby) stays {_CONF_UNKNOWN} "
+            "until validated.")
+        if clusters:
+            doc.add_paragraph("Largest cohesive units (clusters):")
+            table(["Class", "Vendor", "Endpoints", "Switches", "VLANs", "Spans move-groups?"],
+                  [[c.get("endpoint_class"), c.get("vendor"), c.get("count"), c.get("switches"),
+                    c.get("vlans"), "YES" if c.get("spans_groups") else "no"] for c in clusters[:12]],
+                  widths=[1.7, 2.4, 1.0, 0.9, 0.8, 1.4])
+        if dual:
+            split = sum(1 for d in dual if d.get("split_across_groups"))
+            doc.add_paragraph(
+                f"Dual-homed / NIC-team endpoints: {len(dual)} (same MAC on >=2 switches) — sequence each "
+                f"make-before-break so the peer leg stays up. {split} are split across move-groups "
+                "(coordinate those waves explicitly).")
+        if affinity:
+            doc.add_paragraph("Per-VLAN application tiers (dominant endpoint class in each VLAN):")
+            table(["VLAN", "Dominant class", "Endpoints", "Class mix"],
+                  [[a.get("vlan"), a.get("dominant"), a.get("total"),
+                    ", ".join(f"{k} ({v})" for k, v in (a.get("classes") or {}).items())]
+                   for a in affinity[:12]], widths=[0.9, 2.0, 1.0, 3.5])
 
     # ===== 9. Migration Dependency & Move Groups =====
     doc.add_heading("9. Migration Dependency & Move Groups", level=1)
@@ -415,6 +440,18 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
             "Re-home the group's uplinks to the legacy path; re-validate"]],
           widths=[1.6, 2.4, 2.4, 2.0, 2.0])
 
+    # per-class service-validation derived from the endpoint classes actually present (NEW-V3.23.96).
+    psv = (snap_dict.get("endpoint_dependencies") or {}).get("per_switch_validation") or {}
+    if psv:
+        present = sorted({line for lines in psv.values() for line in lines})
+        doc.add_heading("11.1 Service validation by endpoint class (what to prove per switch)", level=2)
+        doc.add_paragraph(
+            f"The workbook / snapshot carry a per-switch checklist ({len(psv)} switches). The distinct "
+            "service-validation items across the fleet — attach the ones matching a switch's hosted "
+            "classes to its move:")
+        for line in present:
+            doc.add_paragraph(line, style="List Bullet")
+
     # ===== 12. War-Room Decision Logic & Open Unknowns =====
     doc.add_heading("12. War-Room Decision Logic & Open Unknowns", level=1)
     doc.add_paragraph("GO / HOLD / ROLLBACK matrix:")
@@ -431,9 +468,11 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("Off-scan links and gateways", _CONF_UNKNOWN,
          "A VLAN gatewayed off-scan looks orphaned here; a redundant path off-scan looks like a bridge.",
          "Extend collection to the legacy core / any non-responding device."),
-        ("Endpoint type / shared-infrastructure mix", _CONF_UNKNOWN,
-         "Consolidation and CCTV/OT-vs-enterprise separation cannot be planned without it.",
-         "Collect interface descriptions and resolve MAC OUIs."),
+        ("Live cluster role (active/standby) & application dependencies", _CONF_MED,
+         "Endpoint vendor/class and cohesive units are now inferred (see §7.1/§8.1), but which node is "
+         "active vs standby, and which app depends on which, is not provable from passive data.",
+         "Confirm cluster roles + app dependencies with the application owners using the §8.1 clusters "
+         "and the per-switch service checklist (§11.1) as the starting map."),
     ]
     for name, conf, gates, nextstep in unknowns:
         p = doc.add_paragraph(style="List Bullet")

@@ -2747,5 +2747,21 @@
    "confidence": "Inferred-high",
    "evidence": "description 'srv-app01'"
   }
- ]
+ ],
+ "endpoint_dependencies": {
+  "dual_homed": [],
+  "shared_ip": [],
+  "clusters": [],
+  "affinity": [],
+  "per_switch_validation": {
+   "access1": [
+    "Phone: call-manager registration",
+    "Server: service/app reachability + the NIC-team peer leg stays up",
+    "Wireless AP: controller registration + client roaming"
+   ],
+   "core1": [
+    "Server: service/app reachability + the NIC-team peer leg stays up"
+   ]
+  }
+ }
 }

@@ -266,6 +266,15 @@
   "Make-Before-Break",
   "Endpoints at Risk"
  ],
+ "Endpoint Dependencies": [
+  "Section",
+  "Vendor / detail",
+  "Class",
+  "Endpoints",
+  "Switches",
+  "VLANs",
+  "Note"
+ ],
  "Score Sensitivity": [
   "Perturbation",
   "Switches Changing Band",

@@ -2043,6 +2043,114 @@ def compute_endpoint_identity(all_interfaces: Dict[str, Dict[str, InterfaceData]
     return out
 
 
+# Research-encoded "what to validate when this switch moves", keyed by endpoint class (NEW-V3.23.96).
+# Each line is forwarding/service-proof, not control-plane-only (the false-health doctrine).
+_VALIDATION_BY_CLASS = {
+    "Storage": "datastore/LUN reachable AND the cluster peer (active/standby) is up — before and after the move",
+    "VM / Hypervisor": "guest reachability + the live-migration/vMotion path; confirm shared storage stays reachable",
+    "Broadcast A/V": "PTP clock lock on BOTH primary & secondary networks (ST-2022-7) + multicast (IGMP) joins",
+    "Audio (Dante/AES67)": "Dante/AES67 PTP lock on both networks + flow subscriptions intact",
+    "Camera": "NVR/VMS stream is live + PoE up",
+    "UPS/PDU": "power-telemetry / shutdown-agent path to its manager",
+    "Database": "replication/cluster quorum + application connectivity",
+    "Server": "service/app reachability + the NIC-team peer leg stays up",
+    "Phone": "call-manager registration",
+    "Wireless AP": "controller registration + client roaming",
+    "Robotics": "control/return path + PoE up (often on-air critical)",
+}
+
+
+def compute_endpoint_dependencies(endpoint_identity: List[dict],
+                                  move_groups: Optional[list] = None) -> dict:
+    """NEW-V3.23.96: cluster / dependency intelligence over the endpoint-identity model (workstream C).
+    Turns 'a list of endpoints' into 'cohesive units + what depends on what + what to validate':
+      * dual_homed  -- the SAME MAC seen on >=2 switches (NIC-team / dual-homed / a MAC move): the
+        skill's 'never down both legs together' sequencing rule; flags pairs split across move-groups.
+      * shared_ip   -- the same IP on >=2 switches (a service/cluster/VRRP IP).
+      * clusters    -- per (vendor, class) distributed system: count + switch/VLAN spread + whether it
+        spans multiple move-groups (a migration 'split' risk).
+      * affinity    -- per-VLAN dominant class (the app tier living in that VLAN).
+      * per_switch_validation -- per switch, the service-validation checklist derived from the classes
+        it hosts (research-encoded), answering 'what must I validate when this switch moves'.
+    Pure read of the precomputed identity records (one source of truth); confidence travels with those
+    identity records."""
+    from collections import Counter, defaultdict
+    ident = endpoint_identity or []
+    wave_of: Dict[str, str] = {}
+    for g in (move_groups or []):
+        for h in g.get("switches", []):
+            wave_of.setdefault(h, g.get("group", ""))
+
+    mac_sw: Dict[str, set] = defaultdict(set); mac_meta: Dict[str, dict] = {}
+    ip_sw: Dict[str, set] = defaultdict(set); ip_macs: Dict[str, set] = defaultdict(set)
+    clusters: Dict[tuple, list] = defaultdict(lambda: [set(), set(), 0])   # (vendor,class)->[switches,vlans,count]
+    vlan_cls: Dict[str, Counter] = defaultdict(Counter)
+    sw_classes: Dict[str, set] = defaultdict(set)
+    sw_has_dualhomed: set = set()
+
+    for r in ident:
+        host, mac, ip = r.get("host", ""), (r.get("mac") or "").lower(), (r.get("ip") or "").strip()
+        cls, vendor, vlan = r.get("endpoint_class", "Unknown"), r.get("vendor", ""), (r.get("vlan") or "").strip()
+        if mac:
+            mac_sw[mac].add(host)
+            mac_meta.setdefault(mac, {"vendor": vendor, "endpoint_class": cls, "ip": ip, "ports": set()})
+            mac_meta[mac]["ports"].add(f"{host}:{r.get('port', '')}")
+        if ip:
+            ip_sw[ip].add(host); ip_macs[ip].add(mac)
+        if cls != "Unknown":
+            sw_classes[host].add(cls)
+            if vendor:
+                c = clusters[(vendor, cls)]; c[0].add(host); c[1].add(vlan); c[2] += 1
+            if vlan.isdigit():
+                vlan_cls[vlan][cls] += 1
+
+    dual_homed = []
+    for mac, sws in mac_sw.items():
+        if len(sws) >= 2:
+            m = mac_meta[mac]; groups = sorted({wave_of.get(s, "") for s in sws} - {""})
+            sw_has_dualhomed.update(sws)
+            dual_homed.append({"mac": mac, "ip": m["ip"], "vendor": m["vendor"],
+                               "endpoint_class": m["endpoint_class"], "switches": sorted(sws),
+                               "ports": sorted(m["ports"])[:8], "move_groups": groups,
+                               "split_across_groups": len(groups) > 1})
+    dual_homed.sort(key=lambda d: (not d["split_across_groups"], d["endpoint_class"], d["mac"]))
+
+    shared_ip = [{"ip": ip, "switches": sorted(sws), "macs": sorted(m for m in ip_macs[ip] if m)}
+                 for ip, sws in ip_sw.items() if len(sws) >= 2]
+    shared_ip.sort(key=lambda d: d["ip"])
+
+    clu = []
+    for (vendor, cls), (sws, vlans, cnt) in clusters.items():
+        if cnt < 3:
+            continue
+        groups = sorted({wave_of.get(s, "") for s in sws} - {""})
+        clu.append({"vendor": vendor, "endpoint_class": cls, "count": cnt, "switches": len(sws),
+                    "vlans": len(vlans), "move_groups": len(groups), "spans_groups": len(groups) > 1})
+    clu.sort(key=lambda c: -c["count"])
+
+    affinity = []
+    for vlan, c in vlan_cls.items():
+        total = sum(c.values())
+        if total < 5:
+            continue
+        affinity.append({"vlan": vlan, "total": total, "classes": dict(c.most_common(3)),
+                         "dominant": c.most_common(1)[0][0]})
+    affinity.sort(key=lambda a: -a["total"])
+
+    per_switch_validation: Dict[str, list] = {}
+    for host, classes in sw_classes.items():
+        lines = [f"{cls}: {_VALIDATION_BY_CLASS[cls]}" for cls in sorted(classes)
+                 if cls in _VALIDATION_BY_CLASS]
+        if host in sw_has_dualhomed:
+            lines.append("Dual-homed endpoint(s) present — sequence make-before-break so the peer leg "
+                         "stays up during the move.")
+        if lines:
+            per_switch_validation[host] = lines
+
+    return {"dual_homed": dual_homed, "shared_ip": shared_ip, "clusters": clu,
+            "affinity": affinity, "per_switch_validation": per_switch_validation}
+
+
 def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                               all_device_physical: list) -> List[dict]:
     """NEW-V3.23.93: evidence-led FALSE-HEALTH / operational-drift detector. Surfaces the migration
