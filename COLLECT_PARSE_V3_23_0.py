@@ -335,6 +335,7 @@ from cisco_toolkit.analyze import (
     compute_protocol_intelligence,                     # NEW-V3.23.100 (protocol-state doctrine: cause + remediation)
     compute_service_map,                               # NEW-V3.23.101 (L4 service map from ACL ports + multicast activity)
     compute_ptp_readiness,                             # NEW-V3.23.108 (PTP / media-timing readiness -> punch-list)
+    compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -373,6 +374,7 @@ from cisco_toolkit.excel import (
     write_migration_scenarios_sheet,                            # NEW-V3.23.98 (per-group cutover scenario)
     write_protocol_intelligence_sheet,                          # NEW-V3.23.100 (protocol-state cause + remediation)
     write_service_map_sheet,                                     # NEW-V3.23.101 (L4 service map + multicast activity)
+    write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -1571,6 +1573,14 @@ def main():
                              igmp_queriers=all_igmp_queriers, acl_hits=all_acl_hits)
     _run_phase("Service Map sheet", write_service_map_sheet, wb, service_map)
 
+    # Phase 27d: Collection completeness (NEW-V3.23.109). The pre-assessment blind-spot report -- which
+    # INVENTORY (devices.json) devices were not / only partially collected, so the gaps are explicit
+    # rather than buried in band counts. Compute once -> sheet + snapshot (one source of truth).
+    _inventory_hosts = [d.get("hostname", "") for d in devices]
+    collection_completeness = _run_phase("Collection completeness", compute_collection_completeness,
+                                         _inventory_hosts, all_cmd_to_files, _default={})
+    _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb, collection_completeness)
+
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
     data_quality = _run_phase("data quality", compute_data_quality, all_cmd_to_files, _default={}) or {}
@@ -1674,6 +1684,7 @@ def main():
     snap_dict["protocol_health"] = protocol_health                   # NEW-V3.22
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
+    snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
