@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
 from typing import Any, Dict, List, Optional, Tuple
 
+from cisco_toolkit import protocol_kb
 from cisco_toolkit.cmdio import _load_cmd_output
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
@@ -1399,6 +1400,61 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 f"{len(groups)} group(s) [{', '.join(protos)}]; {actives} active/master")
 
     return records
+
+
+# =============================================================================
+# Protocol-behaviour intelligence (NEW-V3.23.100). Joins the per-(switch,protocol)
+# protocol_health rows against the offline protocol-state doctrine (protocol_kb) so an
+# abnormal state becomes meaning + likely cause + remediation. The observed state is a
+# fact (read from the device); the cause is Inferred. Derived purely from the already-
+# computed protocol_health records -- it does NOT re-parse raw device output and does
+# NOT mutate protocol_health (keeping that snapshot key byte-stable).
+# =============================================================================
+def _extract_protocol_states(proto: str, summary: str, detail: str) -> List[str]:
+    """Pull the observed abnormal-state token(s) out of a protocol_health row's text (the format
+    is produced by compute_protocol_health, so it is stable and under our control)."""
+    summary, detail = summary or "", detail or ""
+    if proto == "EtherChannel":                      # detail: 'Gi1/0/1(s); Gi1/0/2(I)'
+        return sorted(set(re.findall(r"\(([sDIwH])\)", detail)))
+    if proto == "OSPF":                              # detail: '10.0.0.1 EXSTART; 10.0.0.2 INIT'
+        return sorted({seg.strip().split()[-1] for seg in detail.split(";") if seg.strip()})
+    if proto == "BGP":                               # detail: '1.2.3.4 Active; 5.6.7.8 Idle (Admin)'
+        out = set()
+        for seg in detail.split(";"):
+            parts = seg.strip().split(None, 1)
+            if len(parts) == 2 and parts[1].strip():
+                out.add(parts[1].strip().split()[0])   # first word of the state
+        return sorted(out)
+    if proto == "VTP":                               # summary: 'mode server; domain X; rev 150'
+        m_mode = re.search(r"mode\s+(\w+)", summary, re.IGNORECASE)
+        m_rev = re.search(r"rev\s+(\d+)", summary, re.IGNORECASE)
+        if (m_mode and m_rev and m_mode.group(1).lower() == "server"
+                and int(m_rev.group(1)) >= 100):
+            return ["HIGH-REVISION"]
+        return []
+    if proto == "STP":                               # summary: 'mode rstp; 2 blocked, 1 inconsistent'
+        m = re.search(r"(\d+)\s+inconsistent", summary)
+        return ["INCONSISTENT"] if (m and int(m.group(1)) > 0) else []
+    return []
+
+
+def compute_protocol_intelligence(protocol_health: List[dict]) -> List[dict]:
+    """For every abnormal protocol state in `protocol_health`, emit an advisory row with the
+    meaning / likely cause / remediation from the offline doctrine (protocol_kb). One row per
+    (switch, protocol, observed-state). Healthy/unknown states yield nothing. Sorted High first."""
+    out: List[dict] = []
+    for rec in (protocol_health or []):
+        host, proto = rec.get("switch", ""), rec.get("protocol", "")
+        for tok in _extract_protocol_states(proto, rec.get("summary", ""), rec.get("detail", "")):
+            adv = protocol_kb.advise(proto, tok)
+            if not adv:
+                continue
+            out.append({"switch": host, "protocol": proto, "state": tok,
+                        "severity": adv["severity"], "meaning": adv["meaning"],
+                        "likely_cause": adv["likely_cause"], "remediation": adv["remediation"],
+                        "confidence": adv["confidence"]})
+    out.sort(key=lambda r: (_SEV_RANK.get(r["severity"], 9), r["switch"], r["protocol"], r["state"]))
+    return out
 
 
 # =============================================================================

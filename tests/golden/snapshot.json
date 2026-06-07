@@ -1359,6 +1359,18 @@
    "detail": ""
   }
  ],
+ "protocol_intelligence": [
+  {
+   "switch": "core1",
+   "protocol": "OSPF",
+   "state": "EXSTART/DROTHER",
+   "severity": "High",
+   "meaning": "Adjacency stuck negotiating the DB-descriptor exchange; it never reaches FULL.",
+   "likely_cause": "Interface MTU mismatch between the neighbors (the classic cause); also blocked unicast (ACL/NAT) or a duplicate OSPF router-id.",
+   "remediation": "Match the IP MTU on both interfaces (or `ip ospf mtu-ignore` as a stopgap); verify unicast reachability and unique router-ids.",
+   "confidence": "observed state = fact; likely cause = Inferred (Cisco doctrine)"
+  }
+ ],
  "health_scores": [
   {
    "switch": "core1",
