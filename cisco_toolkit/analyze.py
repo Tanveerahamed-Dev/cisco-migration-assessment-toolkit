@@ -749,6 +749,8 @@ _ESSENTIAL_CMD_VARIANTS = (
     ("show version",),
     ("show cdp neighbors detail", "show lldp neighbors detail"),
 )
+# operator-facing label per essential group (NEW-V3.23.109, collection-completeness report)
+_ESSENTIAL_LABELS = ("interface status", "switchport", "version/inventory", "CDP/LLDP neighbors")
 
 def _topology_adjacency(all_interfaces: Dict[str, Dict[str, InterfaceData]]):
     """Undirected adjacency {host: set(neighbor_host)} over SCANNED switches only, plus a
@@ -931,6 +933,46 @@ def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[st
                       if _load_cmd_output(c2f, *variants).strip())
         out[host] = present / len(_ESSENTIAL_CMD_VARIANTS)
     return out
+
+
+def compute_collection_completeness(inventory_hosts: List[str],
+                                    all_cmd_to_files: Dict[str, Dict[str, str]]) -> dict:
+    """NEW-V3.23.109: pre-assessment BLIND-SPOT report. Every assessment finding is only as trustworthy
+    as the data behind it, so this makes the gaps explicit: for each device in the INVENTORY
+    (devices.json), tier it as 'complete' (all essential commands returned usable output), 'partial'
+    (some essentials missing -> the health score bands it Insufficient Data), or 'not collected' (no
+    usable essential output at all -- unreachable / auth-failed / empty captures), and list exactly which
+    essential commands are missing. Pure read; Confirmed evidence (we know what was/wasn't collected).
+    Returns {summary:{inventory,complete,partial,not_collected}, devices:[blind spots only]}."""
+    acf = all_cmd_to_files or {}
+    hosts: List[str] = [h for h in (inventory_hosts or [])]
+    for h in acf:                                   # include any collected host missing from the inventory list
+        if h not in hosts:
+            hosts.append(h)
+    summary = {"inventory": 0, "complete": 0, "partial": 0, "not_collected": 0}
+    devices: List[dict] = []
+    seen: set = set()
+    for host in hosts:
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        summary["inventory"] += 1
+        c2f = acf.get(host, {})
+        missing = [label for variants, label in zip(_ESSENTIAL_CMD_VARIANTS, _ESSENTIAL_LABELS)
+                   if not _load_cmd_output(c2f, *variants).strip()]
+        present = len(_ESSENTIAL_CMD_VARIANTS) - len(missing)
+        dq = round(100 * present / len(_ESSENTIAL_CMD_VARIANTS))
+        if present == 0:
+            status = "not collected"; summary["not_collected"] += 1
+        elif missing:
+            status = "partial"; summary["partial"] += 1
+        else:
+            status = "complete"; summary["complete"] += 1
+        if status != "complete":                    # the report lists only the blind spots
+            devices.append({"host": host, "status": status, "data_quality": dq, "missing": missing})
+    order = {"not collected": 0, "partial": 1}
+    devices.sort(key=lambda d: (order.get(d["status"], 9), d["host"]))
+    return {"summary": summary, "devices": devices}
 
 def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                           physical_health: List[dict], l3_forwarding: List[dict],

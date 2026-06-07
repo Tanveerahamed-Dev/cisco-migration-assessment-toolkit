@@ -1443,6 +1443,15 @@
    "igmp_queriers": []
   }
  },
+ "collection_completeness": {
+  "summary": {
+   "inventory": 3,
+   "complete": 3,
+   "partial": 0,
+   "not_collected": 0
+  },
+  "devices": []
+ },
  "health_scores": [
   {
    "switch": "core1",
