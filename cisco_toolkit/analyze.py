@@ -1469,9 +1469,20 @@ _ACL_PROTOS = {"tcp", "udp", "sctp", "dccp"}
 
 
 def compute_service_map(acls: Dict[str, dict],
-                        all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> dict:
+                        all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                        igmp_groups: Optional[list] = None,
+                        ptp: Optional[dict] = None,
+                        igmp_queriers: Optional[list] = None,
+                        acl_hits: Optional[dict] = None) -> dict:
     """Map ACL L4 port references + fleet multicast activity to named services via portdb.
-    Returns {services, categories, acl_rule_count, multicast}. Pure read; tolerant of empty input."""
+    Returns {services, categories, acl_rule_count, multicast}. Pure read; tolerant of empty input.
+
+    The optional args fold in the richer collection (NEW-V3.23.102) when present, else stay inert:
+      igmp_groups   : [group_ip,...] from IGMP/snooping/mroute -> classified into multicast groups
+      acl_hits      : {"port:proto": matches} from ACL hit-counts -> upgrades a service's evidence to Confirmed
+      ptp           : PTP clock/grandmaster health {device_type, grandmaster, offset_ns, locked, ...}
+      igmp_queriers : [{vlan, querier},...] the L2 querier per VLAN"""
+    acl_hits = acl_hits or {}
     svc: Dict[Tuple[int, str], dict] = {}     # (port, proto) -> {service, category, broadcast, refs, hosts}
     mcast_groups: Dict[str, dict] = {}        # multicast group ip -> classification
     rule_count = 0
@@ -1502,10 +1513,16 @@ def compute_service_map(acls: Dict[str, dict],
                                                 "category": mc["category"], "broadcast": mc["broadcast"],
                                                 "source": "ACL reference"}
 
+    def _evidence(port, proto):
+        m = acl_hits.get(f"{port}:{proto}")
+        if m:
+            return f"Confirmed (ACL hit-counts: {m} matches)"
+        return "Inferred (ACL design intent -- not active traffic; no flow telemetry)"
+
     services = sorted(
         ({"port": p, "proto": pr, "service": e["service"], "category": e["category"],
           "broadcast": e["broadcast"], "refs": e["refs"], "host_count": len(e["hosts"]),
-          "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"}
+          "evidence_class": _evidence(p, pr)}
          for (p, pr), e in svc.items()),
         key=lambda s: (-s["refs"], s["port"]))
 
@@ -1514,6 +1531,15 @@ def compute_service_map(acls: Dict[str, dict],
         cat_refs[s["category"]] = cat_refs.get(s["category"], 0) + s["refs"]
     categories = sorted(({"category": c, "refs": n} for c, n in cat_refs.items()),
                         key=lambda c: -c["refs"])
+
+    # fold in IGMP/snooping/mroute group census (NEW-V3.23.102) -- classify each via the registry
+    for grp in (igmp_groups or []):
+        if grp not in mcast_groups:
+            mc = portdb.classify_multicast(grp)
+            mcast_groups[grp] = {"group": grp, "name": (mc or {}).get("group", ""),
+                                 "category": (mc or {}).get("category", "Multicast"),
+                                 "broadcast": bool((mc or {}).get("broadcast")),
+                                 "source": "IGMP/mroute"}
 
     active_ifaces, active_switches = 0, set()
     for host, ports in (all_interfaces or {}).items():
@@ -1527,8 +1553,10 @@ def compute_service_map(acls: Dict[str, dict],
         "active_switch_count": len(active_switches),
         "active_switches": sorted(active_switches)[:20],
         "classified_groups": sorted(mcast_groups.values(), key=lambda g: g["group"]),
-        # per-group (S,G) / IGMP membership classification needs the richer collection (Unknown until then)
-        "group_level_collected": False,
+        # per-group (S,G)/IGMP membership lights up on the new collection; Unknown until then
+        "group_level_collected": bool(igmp_groups),
+        "ptp": ptp or {},
+        "igmp_queriers": igmp_queriers or [],
     }
     return {"services": services, "categories": categories,
             "acl_rule_count": rule_count, "multicast": multicast}

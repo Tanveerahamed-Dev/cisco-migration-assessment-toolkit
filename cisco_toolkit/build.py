@@ -27,6 +27,7 @@ from cisco_toolkit.parse import (
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
     parse_redistribution,                                            # protocol-to-protocol analysis (slice 2)
     parse_bgp_table,                                                 # NEW-V3.23.97 (BGP received prefixes)
+    parse_igmp_groups, parse_igmp_snooping_querier, parse_ptp_clock, parse_acl_hitcounts,  # NEW-V3.23.102
 )
 from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
 
@@ -121,6 +122,50 @@ def build_bgp_received(cmd_to_file: Dict[str, str]) -> list:
     -> [prefix,...]; [] when the command was not collected / device runs no BGP. Fail-soft."""
     out = _load_cmd_output(cmd_to_file, "show ip bgp", "show bgp ipv4 unicast")
     return _safe_parse(parse_bgp_table, out) or []
+
+
+_MROUTE_GROUP_RE = re.compile(r"\(\s*\S+\s*,\s*(2(?:2[4-9]|3[0-9])\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*\)")
+
+
+def build_igmp_groups(cmd_to_file: Dict[str, str]) -> list:
+    """NEW-V3.23.102: distinct multicast group IPs this device sees -- IGMP membership, IGMP-snooping
+    groups, and mroute (S,G)/(*,G) state. [] when none of those commands were collected. Fail-soft.
+    On a broadcast fabric these are the PTP / Dante / ST-2110 / production groups."""
+    groups: set = set()
+    for cmd in ("show ip igmp groups", "show ip igmp snooping groups"):
+        groups.update(_safe_parse(parse_igmp_groups, _load_cmd_output(cmd_to_file, cmd)) or [])
+    mroute = _load_cmd_output(cmd_to_file, "show ip mroute")
+    if mroute:
+        groups.update(_MROUTE_GROUP_RE.findall(mroute))
+    return sorted(groups, key=lambda ip: tuple(int(o) for o in ip.split(".")))
+
+
+def build_igmp_queriers(cmd_to_file: Dict[str, str]) -> list:
+    """NEW-V3.23.102: the L2 IGMP-snooping querier per VLAN -> [{vlan, querier}]; [] when uncollected."""
+    return _safe_parse(parse_igmp_snooping_querier,
+                       _load_cmd_output(cmd_to_file, "show ip igmp snooping querier")) or []
+
+
+def build_ptp(cmd_to_file: Dict[str, str]) -> dict:
+    """NEW-V3.23.102: PTP (IEEE 1588) clock/grandmaster health -> {device_type, domain, grandmaster,
+    offset_ns, mean_path_delay_ns, locked}; {} when no PTP output was collected. Fail-soft."""
+    out = "\n".join(x for x in (_load_cmd_output(cmd_to_file, "show ptp clock"),
+                                _load_cmd_output(cmd_to_file, "show ptp parent")) if x)
+    return _safe_parse(parse_ptp_clock, out) or {}
+
+
+def build_acl_hits(cmd_to_file: Dict[str, str]) -> dict:
+    """NEW-V3.23.102: ACL hit-counts from 'show ip access-lists' -> {"port:proto": total_matches} for
+    ACEs that report '(N matches)'. Turns ACL design-intent into Confirmed active-traffic evidence.
+    {} when uncollected. Keyed by 'port:proto' to align with compute_service_map's service keys."""
+    aces = _safe_parse(parse_acl_hitcounts, _load_cmd_output(cmd_to_file, "show ip access-lists")) or []
+    hits: dict = {}
+    for a in aces:
+        if a.get("port") and a.get("matches"):
+            proto = a.get("proto") if a.get("proto") in ("tcp", "udp", "sctp", "dccp") else "udp"
+            key = f"{a['port']}:{proto}"
+            hits[key] = hits.get(key, 0) + int(a["matches"])
+    return hits
 
 
 def inscope_subnets(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Set[str]:
