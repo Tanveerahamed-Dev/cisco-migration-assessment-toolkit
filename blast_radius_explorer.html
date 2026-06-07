@@ -2784,7 +2784,8 @@ function deviceIntelSection(host){
   const secFail=((sec.findings)||[]).filter(f=>f.status==="fail");
   const hgUndef=(((SNAP&&SNAP.config_hygiene&&SNAP.config_hygiene[host])||{}).undefined)||[];
   const pl=((SNAP&&SNAP.punchlist)||[]).filter(i=>(i.devices||[]).includes(host));
-  if(!hs&&!phy.length&&!proto.length&&!secFail.length&&!hgUndef.length&&!pl.length)return "";
+  const rem=(((SNAP&&SNAP.remediation_plan&&SNAP.remediation_plan.by_device)||{})[host])||[];   // V3.23.116
+  if(!hs&&!phy.length&&!proto.length&&!secFail.length&&!hgUndef.length&&!pl.length&&!rem.length)return "";
   const pills=[];
   if(hs){const t=hs.band?healthBandToken(hs.band):scoreToken(hs.score);
     pills.push(`<span class="pill pl-${t}">health ${esc(hs.score)}/100${hs.band?" · "+esc(hs.band):""}</span>`);}
@@ -2793,6 +2794,7 @@ function deviceIntelSection(host){
   if(secFail.length)pills.push(`<span class="pill pl-crit">${secFail.length} security gap${secFail.length===1?"":"s"}</span>`);
   if(hgUndef.length)pills.push(`<span class="pill pl-watch">${hgUndef.length} undefined ref${hgUndef.length===1?"":"s"}</span>`);
   if(pl.length)pills.push(`<span class="pill pl-neutral">${pl.length} punch-list item${pl.length===1?"":"s"}</span>`);
+  if(rem.length)pills.push(`<span class="pill pl-ok">${rem.length} fix snippet${rem.length===1?"":"s"}</span>`);
   let phyDetail="";
   if(phy.length){const byRisk={}; phy.forEach(r=>{const k=r.risk||"issue";(byRisk[k]=byRisk[k]||[]).push(r.port);});
     phyDetail=Object.entries(byRisk).slice(0,4).map(([risk,ports])=>
@@ -2800,12 +2802,23 @@ function deviceIntelSection(host){
   const protoDetail=proto.slice(0,3).map(protoHealthRow).join("");
   const plDetail=pl.slice(0,4).map(i=>`<div class="ln"><span class="pill pl-${i.severity==="Critical"||i.severity==="High"?"crit":i.severity==="Medium"?"watch":"neutral"}">${esc(i.severity)}</span> <span class="faint">${esc(i.category)}</span> ${esc(i.title)}</div>`).join("")
     +(pl.length>4?`<div class="ln faint">…and ${pl.length-4} more — see the Health view / punch-list.</div>`:"");
+  // V3.23.116: per-device generated remediation snippets (review-only) from SNAP.remediation_plan
+  const remBanner=((SNAP&&SNAP.remediation_plan)||{}).banner||"Generated for review — validate before applying.";
+  const remTok=it=>(it.severity==="Critical"||it.severity==="High")?"crit":it.severity==="Medium"?"watch":"neutral";
+  const remDetail=rem.slice(0,6).map(it=>`<div class="card ${remTok(it)}" style="margin-bottom:6px">
+      <div class="ct"><span class="nm">${esc(it.title)}</span><span class="pill pl-neutral">${esc(it.platform)}</span></div>
+      <div class="ln faint" style="margin-top:2px">${esc(it.why||"")}</div>
+      <pre style="background:rgba(127,127,127,.12);border:1px solid rgba(127,127,127,.25);border-radius:6px;padding:7px 9px;margin:6px 0;overflow:auto;font-size:12px;line-height:1.45;white-space:pre-wrap">${esc((it.commands||[]).join("\n"))}</pre>
+      <div class="ln faint"><b>Verify:</b> <span class="mono">${esc(it.verify||"")}</span></div>
+      <div class="ln faint"><b>Caution:</b> ${esc(it.caution||"")}</div>
+    </div>`).join("")+(rem.length>6?`<div class="ln faint">…and ${rem.length-6} more for this device — see the Remediation Plan sheet.</div>`:"");
   return `<div class="sec"><h3>Device intelligence</h3>`+
     `<div class="sub" style="margin-bottom:7px">Everything the collector knows about <span class="mono">${esc(shortName(host))}</span> — health, physical, protocol, security, and the punch-list items naming it.</div>`+
     `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px">${pills.join("")}</div>`+
     (phyDetail?`<div class="sub" style="margin:4px 0 3px">Physical (port errors / duplex)</div>${phyDetail}`:"")+
     (protoDetail?`<div class="sub" style="margin:7px 0 3px">Protocol</div>${protoDetail}`:"")+
     (plDetail?`<div class="sub" style="margin:7px 0 3px">Punch-list</div>${plDetail}`:"")+
+    (remDetail?`<div class="sub" style="margin:7px 0 3px">Remediation <span class="pill pl-crit" style="font-size:10px;padding:0 5px">REVIEW ONLY</span></div><div class="ln faint" style="margin-bottom:5px">⚠ ${esc(remBanner)}</div>${remDetail}`:"")+
     `</div>`;
 }
 function drawEndpoint(){const e=EPSEL;

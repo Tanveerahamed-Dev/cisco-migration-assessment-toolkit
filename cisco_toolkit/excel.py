@@ -1470,6 +1470,50 @@ def write_punchlist_sheet(wb, punchlist: list) -> None:
     logger.info(f"  [OK] '{PUNCHLIST_SHEET_NAME}' sheet: {len(punchlist or [])} item(s), {ncrit} critical")
 
 
+REMEDIATION_PLAN_SHEET_NAME = "Remediation Plan"   # NEW-V3.23.116 (assess->act: generated config snippets)
+
+def write_remediation_plan_sheet(wb, rp: dict) -> None:
+    """Write 'Remediation Plan' from compute_remediation_plan(): per-device, platform-tagged Cisco config
+    snippets generated FOR REVIEW from the structured findings. Row 1 carries the review banner."""
+    if REMEDIATION_PLAN_SHEET_NAME in wb.sheetnames:
+        del wb[REMEDIATION_PLAN_SHEET_NAME]
+    ws = wb.create_sheet(REMEDIATION_PLAN_SHEET_NAME)
+    p = rp or {}
+    items = p.get("items") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "⚠ " + (p.get("banner") or "GENERATED FOR REVIEW — validate before applying."))
+    b.font = Font(bold=True, color="9C0006", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_items', 0)} item(s) across {s.get('n_devices', 0)} device(s) · "
+                  f"{s.get('n_high', 0)} High/Critical · by category: "
+                  + ", ".join(f"{k} {v}" for k, v in (s.get("by_category") or {}).items())).font = Font(size=10)
+    hdr_row = 4
+    cols = ["#", "Device", "Platform", "Category", "Severity", "Issue",
+            "Config (review before applying)", "Verify", "Caution"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    SEVFILL = {"Critical": "F4CCCC", "High": "FCE4D6", "Medium": "FFF2CC", "Low": "D9EAD3", "Info": "EFEFEF"}
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+    r = hdr_row + 1
+    for n, it in enumerate(items, 1):
+        vals = [n, it.get("device"), it.get("platform"), it.get("category"), it.get("severity"),
+                it.get("title"), "\n".join(it.get("commands") or []), it.get("verify"), it.get("caution")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col == 7 else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (1, 3, 5) else "left",
+                                    vertical="top", wrap_text=col in (6, 7, 9))
+            if col == 5:
+                c.fill = PatternFill("solid", fgColor=SEVFILL.get(v, "FFFFFF"))
+        r += 1
+    for i, w in enumerate([5, 28, 9, 15, 10, 34, 54, 28, 40], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{REMEDIATION_PLAN_SHEET_NAME}' sheet: {len(items)} item(s), "
+                f"{s.get('n_devices', 0)} device(s)")
+
+
 PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
 
 def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:
