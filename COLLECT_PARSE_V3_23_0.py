@@ -100,9 +100,11 @@ pipeline (build_interfaces / InterfaceData / the main interface sheet) is unchan
    * Topology diagram - writes topology.mmd (Mermaid) and topology.dot (Graphviz) next to
      the workbook; one-end-only links are drawn dashed. (compute_topology_links() is now the
      shared link builder used by the Topology Links sheet, Findings, and the diagram.)
-   * Pre/post-cutover diff - a snapshot JSON (<output>.snapshot.json) is written next to every
-     workbook; run with '--compare OLD.json NEW.json' to emit a diff workbook (Summary /
-     Interface Changes / Endpoint Changes / SVI Changes). --compare skips SSH and the template.
+   * Pre/post-cutover validation - a snapshot JSON (<output>.snapshot.json) is written next to every
+     workbook; run with '--compare OLD.json NEW.json' to emit a validation workbook: a Summary CUTOVER
+     VERDICT (CLEAN / REVIEW / REGRESSED) + Interface / Endpoint / SVI changes + Health Shifts (per-switch
+     band regressions/improvements) + Findings Delta (punch-list findings opened vs resolved by the
+     cutover). --compare skips SSH and the template.
   Tier 2 (new commands collected on both platforms; parsers are best-effort and blank when a
   platform/feature is absent - _load_cmd_output() already skips command output that errored):
    * 'Interface Health' sheet - input/CRC errors, output drops and last-input/last-output from
@@ -1121,8 +1123,9 @@ def main():
                     help="Enable DEBUG logging for per-device ARP counts")
     ap.add_argument("--compare",         nargs=2, default=None,
                     metavar=("OLD_SNAPSHOT", "NEW_SNAPSHOT"),
-                    help="NEW-V15: compare two snapshot JSONs and write a diff workbook; "
-                         "skips collection and the template.")
+                    help="NEW-V15: compare two snapshot JSONs and write a pre/post-cutover validation "
+                         "workbook (Summary verdict + Interface/Endpoint/SVI changes + Health Shifts + "
+                         "Findings Delta); skips collection and the template.")
     ap.add_argument("--no-html",         action="store_true",
                     help="NEW-V3.17: skip Blast-Radius Explorer (HTML) generation "
                          "(default: HTML is always written beside the workbook).")
