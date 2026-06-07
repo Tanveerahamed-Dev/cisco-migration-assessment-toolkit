@@ -1665,7 +1665,8 @@ def main():
     # records; compute once -> sheet + snapshot (one source of truth).
     application_intelligence = _run_phase("Application intelligence", compute_application_intelligence,
                                           all_interfaces, endpoint_identity, endpoint_dependencies,
-                                          service_map, health_scores, move_groups, punchlist, _default={})
+                                          service_map, health_scores, move_groups, punchlist,
+                                          subnet_intelligence=subnet_intelligence, _default={})
     _run_phase("Application Intelligence sheet", write_application_intelligence_sheet, wb, application_intelligence)
 
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)

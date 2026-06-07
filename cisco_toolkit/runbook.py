@@ -492,8 +492,29 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         cross = appi.get("cross_domain_risks") or []
         if cross:
             doc.add_paragraph(
-                f"Cross-domain IGMP querier risks (RFC 4541): {len(cross)} finding(s) — "
-                + "; ".join(c.get("title", "") for c in cross[:6]) + ".")
+                f"Cross-domain risks (IGMP querier continuity / RFC 4541 + dependency coupling): "
+                f"{len(cross)} finding(s) — " + "; ".join(c.get("title", "") for c in cross[:6]) + ".")
+        # 6.7.1 inter-domain dependency graph (NEW-V3.23.113)
+        edges = appi.get("edges") or []
+        keystones = appi.get("keystones") or []
+        if edges:
+            doc.add_heading("6.7.1 Inter-domain dependencies (what couples to what)", level=3)
+            kline = ""
+            if keystones:
+                k = keystones[0]
+                kline = (f" The keystone domain is {k.get('domain')} (weighted coupling degree "
+                         f"{k.get('degree')}, {len(k.get('neighbors') or [])} neighbour domains) — the widest "
+                         "cross-domain blast radius; sequence it deliberately, not as an early pilot.")
+            doc.add_paragraph(
+                f"The domains are coupled by {len(edges)} dependency edge(s): physical inter-switch links "
+                f"({_CONF_CONFIRMED}), shared subnets ({_CONF_HIGH}), and dual-homed endpoints that span domains "
+                f"({_CONF_CONFIRMED}). A coupling means two domains cannot be cut over in isolation without "
+                f"coordination.{kline}")
+            table(["Domain A", "Domain B", "Weight", "Coupling", "Migration note"],
+                  [[e.get("source"), e.get("target"), e.get("weight"), ", ".join(e.get("kinds") or []),
+                    e.get("migration_note") or ("media-adjacent" if e.get("media") else "")]
+                   for e in edges[:15]],
+                  widths=[1.9, 1.9, 0.7, 1.4, 2.6])
 
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
