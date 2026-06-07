@@ -2499,14 +2499,20 @@
    "trigger": "Gateway core1:Vlan30 goes down",
    "mechanism": "It is the only in-scan L3 gateway for VLAN 30, with no FHRP peer",
    "impact": "Every VLAN 30 host loses its default gateway (1 endpoint(s); 1 other switch(es) affected)",
-   "mitigation": "Add an FHRP (HSRP/VRRP/GLBP) peer, or confirm a redundant off-scan gateway"
+   "mitigation": "Add an FHRP (HSRP/VRRP/GLBP) peer, or confirm a redundant off-scan gateway",
+   "hosts": [
+    "core1"
+   ]
   },
   {
    "severity": "Medium",
    "trigger": "Uplink access1 Gi0/1 -> core1 fails",
    "mechanism": "It is access1's only forwarding inter-switch link carrying 2 VLAN(s) (10, 30), and it is a single (non-port-channel) link",
    "impact": "2 VLAN(s) on access1 are isolated from the fabric (3 endpoint(s))",
-   "mitigation": "Add a second uplink or bundle the link as a port-channel"
+   "mitigation": "Add a second uplink or bundle the link as a port-channel",
+   "hosts": [
+    "access1"
+   ]
   }
  ],
  "failure_impact": [

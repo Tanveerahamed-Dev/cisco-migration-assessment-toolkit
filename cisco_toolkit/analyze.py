@@ -505,11 +505,16 @@ def _vlan_list_summary(vids, cap: int = 12) -> str:
     return shown if len(vids) <= cap else f"{shown} (+{len(vids) - cap} more)"
 
 
-def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Tuple[str, str, str, str, str]]:
-    """Root-cause -> mechanism -> impact -> mitigation chains, derived from the network
-    model. Returns (severity, trigger, mechanism, impact, mitigation) tuples."""
+def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[tuple]:
+    """Root-cause -> mechanism -> impact -> mitigation chains, derived from the network model.
+    Returns (severity, trigger, mechanism, impact, mitigation, hosts) tuples, where `hosts` is a
+    tuple of the switch hostname(s) the chain is ABOUT (NEW-V3.23.92: the explorer's Causality mode
+    consumes this directly to highlight the right nodes -- one source of truth, like cross_layer's
+    `hosts` -- instead of reverse-parsing hostnames out of the prose via substring match, which
+    over-highlighted any host whose name was a substring of another's). `hosts` is a tuple (not a
+    list) so the chain tuples stay hashable for the de-dup below."""
     model = build_network_model(all_interfaces)
-    chains: List[Tuple[str, str, str, str, str]] = []
+    chains: List[tuple] = []
 
     def _eps(vid: int) -> set:
         e = {h for (h, v), n in model["endpoints"].items() if v == vid and n > 0}
@@ -536,6 +541,7 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
                     f"Every VLAN {vid} host loses its default gateway "
                     f"({n_ep or 'unknown #'} endpoint(s); {len(remote)} other switch(es) affected)",
                     "Add an FHRP (HSRP/VRRP/GLBP) peer, or confirm a redundant off-scan gateway",
+                    (gw_hosts[0],),
                 ))
 
     # Chain B: transit articulation - removing a switch partitions a VLAN's endpoints from
@@ -588,6 +594,7 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
                 f"{len(sw)} switch(es) / {hard['eps']} endpoint(s) lose reachability to their "
                 f"VLAN gateway across {len(vl)} VLAN(s), with no backup link{extra}",
                 "Add a redundant uplink/path, or migrate this switch in the same wave as its dependents",
+                (host,),
             ))
         elif soft:
             vl = sorted(soft["vlans"])
@@ -599,6 +606,7 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
                 f"{soft['eps']} endpoint(s) across {len(vl)} VLAN(s) hit a transient outage while "
                 f"STP reconverges onto the backup link",
                 "Expected to self-heal; verify STP reconvergence time before cutover",
+                (host,),
             ))
 
     # Chain C: a switch's only forwarding uplink for an endpoint VLAN is a single
@@ -631,6 +639,7 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
             f"{len(vl)} VLAN(s) on {host} are isolated from the fabric"
             + (f" ({e['eps']} endpoint(s))" if e["eps"] else ""),
             "Add a second uplink or bundle the link as a port-channel",
+            (host,),
         ))
 
     sev_rank = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
