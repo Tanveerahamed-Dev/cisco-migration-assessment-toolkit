@@ -1489,6 +1489,8 @@ def compute_service_map(acls: Dict[str, dict],
     for host, named in (acls or {}).items():
         for _name, rules in (named or {}).items():
             for r in (rules or []):
+                if not isinstance(r, dict):          # tolerate a stray non-dict rule entry
+                    continue
                 rule_count += 1
                 proto = (r.get("proto") or "").lower()
                 lookup_proto = proto if proto in _ACL_PROTOS else "udp"
@@ -2239,7 +2241,7 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
     ident = endpoint_identity or []
     wave_of: Dict[str, str] = {}
     for g in (move_groups or []):
-        for h in g.get("switches", []):
+        for h in (g.get("switches") or []):          # tolerate switches=None, not just a missing key
             wave_of.setdefault(h, g.get("group", ""))
 
     mac_sw: Dict[str, set] = defaultdict(set); mac_meta: Dict[str, dict] = {}
@@ -2407,7 +2409,7 @@ def compute_subnet_intelligence(all_interfaces: Dict[str, Dict[str, InterfaceDat
     served_by = {r["host"]: {s["subnet"] for s in r["served_subnets"]} for r in per_device}
     mg = []
     for g in (move_groups or []):
-        members = g.get("switches", []); local: set = set(); remote: set = set()
+        members = g.get("switches") or []; local: set = set(); remote: set = set()
         for h in members:
             local |= dest_by.get(h, set()) | served_by.get(h, set())
         for h in members:
@@ -2600,7 +2602,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
     not one row per port) so it does not 'cry wolf'."""
     wave_of: Dict[str, str] = {}
     for g in (move_groups or []):
-        for h in g.get("switches", []):
+        for h in (g.get("switches") or []):          # tolerate switches=None, not just a missing key
             wave_of.setdefault(h, g.get("group", ""))
     items: List[dict] = []
 

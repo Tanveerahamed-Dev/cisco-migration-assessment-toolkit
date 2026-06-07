@@ -43,6 +43,17 @@ def test_classify_multicast_longest_prefix():
     assert portdb.classify_multicast("garbage") is None
 
 
+def test_lookups_tolerate_non_string_args():
+    # the KB is a reusable utility -- a non-string proto / group must degrade gracefully, never crash
+    assert portdb.service_for_port(443, 123) is not None        # odd proto coerced -> tcp/udp probe finds HTTPS
+    assert portdb.service_for_port(65000, 123) is None
+    assert portdb.classify_multicast(123) is None
+    assert portdb.classify_multicast(1.5) is None
+    assert portdb.classify_multicast(("a",)) is None
+    assert portdb.is_broadcast_av_port(319, "udp") is True      # correct proto -> PTP/AV resolves
+    assert isinstance(portdb.is_broadcast_av_port(319, 123), bool)   # odd proto tolerated, never raises
+
+
 def test_registry_resilient_to_missing_file(monkeypatch):
     monkeypatch.setattr(portdb, "_DATA", "/nonexistent/port_registry.tsv.gz")
     portdb._registry.cache_clear()

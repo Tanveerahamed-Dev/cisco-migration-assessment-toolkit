@@ -49,3 +49,12 @@ def test_service_map_empty_inputs():
     sm = compute_service_map({}, {})
     assert sm["services"] == [] and sm["acl_rule_count"] == 0
     assert sm["multicast"]["active_interfaces"] == 0
+
+
+def test_service_map_tolerates_malformed_rules():
+    # a stray non-dict rule entry must be skipped, not crash (defensive, V3.23.105)
+    acls = {"sw1": {"A": ["junk", {"proto": "udp", "sport": None, "dport": {"op": "eq", "val": 67},
+                                   "src": None, "dst": None}]}}
+    sm = compute_service_map(acls, {})
+    assert {(s["port"], s["service"]) for s in sm["services"]} == {(67, "DHCP-server")}
+    assert sm["acl_rule_count"] == 1   # only the well-formed rule counted
