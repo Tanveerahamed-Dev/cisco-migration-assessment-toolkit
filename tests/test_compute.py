@@ -601,6 +601,45 @@ def test_link_centrality_empty_when_no_links():
     assert compute_link_centrality({"lonely": {"Gi0/1": InterfaceData(port="Gi0/1")}}) == []
 
 
+def test_operational_drift_detects_and_aggregates():
+    """NEW-V3.23.93: the false-health detector finds temp L2 bridges, PoE-fault on powered ports,
+    native-VLAN-1 trunks, and multi-year uptime -- and AGGREGATES the bulk ones (one row + count),
+    honouring the cry-wolf doctrine."""
+    from cisco_toolkit.model import InterfaceData, DevicePhysical
+    from cisco_toolkit.analyze import compute_operational_drift
+
+    ai = {
+        "core1": {
+            "Te1/1": InterfaceData(port="Te1/1", cdp_neighbor="core2", description="##Temp L2 connection##"),
+            "Gi1/0/5": InterfaceData(port="Gi1/0/5", description="*Robotics camera*", poe_status="Fault"),
+            "Te1/2": InterfaceData(port="Te1/2", trunk_status="trunking", trunk_native_vlan="1"),
+        },
+        "acc1": {"Te1/1": InterfaceData(port="Te1/1", trunk_status="trunking", trunk_native_vlan="1")},
+    }
+    dphys = [DevicePhysical(hostname="core1", uptime="10 years, 2 weeks"),
+             DevicePhysical(hostname="acc1", uptime="5 days")]
+    out = compute_operational_drift(ai, dphys)
+    titles = [f["title"] for f in out]
+    assert any("Temporary L2 bridge on core1" in t for t in titles)
+    assert any("PoE fault on powered endpoint(s) on core1" in t for t in titles)
+    # native VLAN 1 -> ONE aggregated finding across 2 trunks / 2 switches (not one row per trunk)
+    nat = next(f for f in out if "Native VLAN 1" in f["title"])
+    assert "2 inter-switch trunk(s)" in nat["title"] and set(nat["devices"]) == {"core1", "acc1"}
+    # multi-year uptime -> ONE aggregated finding; acc1 (<3y) excluded
+    up = next(f for f in out if "Multi-year uptime" in f["title"])
+    assert "1 device" in up["title"] and "10 years" in up["title"] and up["devices"] == ["core1"]
+    assert all(f["category"] == "False-health" for f in out)
+
+
+def test_operational_drift_folds_into_punchlist(cp):
+    """The drift findings reach the executive punch-list (so the runbook / explorer / exec summary
+    surface them) via the new `drift` parameter."""
+    drift = [{"severity": "High", "category": "False-health", "devices": ["core1"],
+              "title": "Temporary L2 bridge on core1", "detail": "x", "remediation": "y"}]
+    pl = cp.compute_migration_punchlist([], {}, {}, [], [], [], {}, [], [], drift=drift)
+    assert any(i["category"] == "False-health" and "Temporary L2 bridge" in i["title"] for i in pl)
+
+
 def test_link_centrality_pairs_cut_excludes_other_components():
     """NEW-V3.23.91: a bridge's pairs_cut is the product of the TWO components it actually separates,
     not size_a*(n-size_a) -- which over-counted switches in OTHER disconnected components AND was

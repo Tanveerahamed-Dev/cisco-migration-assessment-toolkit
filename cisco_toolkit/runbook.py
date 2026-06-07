@@ -308,6 +308,20 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                             "moves this element.",
             remediation=f.get("recommendation", ""))
 
+    drift = snap_dict.get("operational_drift") or []
+    if drift:
+        doc.add_heading("6.3 False-health / operational drift", level=2)
+        doc.add_paragraph(
+            "Conditions a green control plane hides — surfaced because configured/up is not healthy. "
+            "Each is a snapshot-evidenced exposure; whether it is biting right now is Unknown until "
+            "validated live.")
+        table(["Severity", "Finding", "Devices", "Why it matters / next step"],
+              [[d.get("severity", ""), d.get("title", ""),
+                str(len(d.get("devices") or [])),
+                (d.get("detail", "") + " " + (d.get("remediation", "") or "")).strip()[:160]]
+               for d in sorted(drift, key=lambda d: _SEV_ORDER.get(d.get("severity"), 9))],
+              widths=[0.9, 2.8, 0.9, 4.0])
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()

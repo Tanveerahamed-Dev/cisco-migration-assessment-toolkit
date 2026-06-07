@@ -325,6 +325,7 @@ from cisco_toolkit.analyze import (
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
     stp_root_findings, compute_migration_punchlist,   # NEW-V3.23.62 / .63 (STP root analysis + consolidated punch-list)
     compute_hostname_mismatches,                       # NEW-V3.23.68 (inventory-name vs configured-hostname)
+    compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -1533,10 +1534,12 @@ def main():
            "trunk_native": compute_trunk_native_mismatches(all_interfaces),
            "link_phy": compute_duplex_speed_mismatches(all_interfaces)}
     _hostname_mismatches = compute_hostname_mismatches(all_device_physical)   # NEW-V3.23.68
+    _drift = _run_phase("Operational drift", compute_operational_drift,
+                        all_interfaces, all_device_physical, _default=[])      # NEW-V3.23.93 (false-health)
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
-                           l2=_l2, hostname_mismatches=_hostname_mismatches, _default=[])
+                           l2=_l2, hostname_mismatches=_hostname_mismatches, drift=_drift, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
 
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
@@ -1574,6 +1577,7 @@ def main():
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["punchlist"] = punchlist                              # NEW-V3.23.63 (consolidated severity-ranked migration punch-list)
+    snap_dict["operational_drift"] = _drift                         # NEW-V3.23.93 (false-health / operational-drift findings; also folded into the punch-list)
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}

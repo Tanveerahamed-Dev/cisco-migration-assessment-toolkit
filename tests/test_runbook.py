@@ -46,6 +46,9 @@ def _snap():
                            "role": "", "risk": "single-gateway"}],
         "capacity": [{"hostname": "sw1", "model": "C9300", "total_ports": 48, "active_ports": 10,
                       "free_ports": 38, "port_util": 20.8}],
+        "operational_drift": [{"severity": "High", "category": "False-health", "devices": ["sw1"],
+                               "title": "Temporary L2 bridge on sw1",
+                               "detail": "a temp bridge enlarges the STP domain", "remediation": "remove it"}],
     }
 
 
@@ -66,10 +69,19 @@ def test_runbook_has_12_sections_and_reconciles(tmp_path):
     assert exec_rows["Endpoints (access-port host MACs at snapshot)"] == "3"   # trunk MAC excluded
 
 
+def _all_text(doc):
+    """All visible text — paragraphs AND table cells (findings live in both)."""
+    parts = [p.text for p in doc.paragraphs]
+    for t in doc.tables:
+        for row in t.rows:
+            parts.extend(c.text for c in row.cells)
+    return "\n".join(parts)
+
+
 def test_runbook_is_evidence_disciplined(tmp_path):
     out = str(tmp_path / "rb.docx")
     write_runbook_docx(out, _snap(), "Unit Test Fleet")
-    text = "\n".join(p.text for p in Document(out).paragraphs)
+    text = _all_text(Document(out))
     # every material finding carries the evidence frame
     for token in ("Observed Evidence:", "Interpretation:", "Impact / Blast Radius:",
                   "Confidence:", "Unknowns:", "Next Validation:"):
@@ -79,6 +91,9 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     assert "Inferred-high" in text and "Unknown" in text
     # the cross-layer finding surfaced as a titled block
     assert "single-fiber uplink to a sole gateway" in text
+    # the false-health / operational-drift section (§6.3) surfaced the drift finding
+    assert "False-health / operational drift" in text
+    assert "Temporary L2 bridge on sw1" in text
 
 
 def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):
