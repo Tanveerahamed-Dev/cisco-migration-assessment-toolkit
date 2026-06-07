@@ -1541,20 +1541,36 @@ def parse_igmp_snooping_querier(output: str) -> List[dict]:
 
 def parse_ptp_clock(output: str) -> dict:
     """'show ptp clock' (+ optionally 'show ptp parent', concatenated) -> a PTP health summary:
-    {device_type, domain, grandmaster, offset_ns, mean_path_delay_ns, locked}. {} when no PTP output.
-    'locked' is inferred from a small offset-from-master (|offset| < 1us) when present."""
+    {device_type, profile, domain, clock_identity, num_ports, grandmaster, offset_ns,
+    mean_path_delay_ns, locked, operational}. {} when no PTP output.
+
+    `operational` distinguishes a switch acting as a real PTP boundary/transparent clock (a known
+    device type with >=1 active PTP port) from one where `show ptp clock` reports Device Type=Unknown
+    / 0 ports / no parent -- i.e. PTP is available but the switch is NOT in an active timing hierarchy
+    (PTP would be flowing as plain multicast, not boundary-clocked -- a real ST 2110/AES67 finding).
+    `locked` is inferred from a small offset-from-master (|offset| < 1us) when present."""
     if not output or "ptp" not in output.lower():
         return {}
-    r: dict = {"device_type": "", "domain": "", "grandmaster": "",
-               "offset_ns": None, "mean_path_delay_ns": None, "locked": None}
+    r: dict = {"device_type": "", "profile": "", "domain": "", "clock_identity": "", "num_ports": None,
+               "grandmaster": "", "offset_ns": None, "mean_path_delay_ns": None,
+               "locked": None, "operational": None}
     for raw in output.splitlines():
         s = raw.strip()
         m = re.search(r"PTP Device Type\s*[:=]\s*(.+)$", s, re.IGNORECASE)
         if m:
             r["device_type"] = m.group(1).strip()
+        m = re.search(r"PTP Device Profile\s*[:=]\s*(.+)$", s, re.IGNORECASE)
+        if m:
+            r["profile"] = m.group(1).strip()
         m = re.search(r"(?:Clock )?Domain(?: Number)?\s*[:=]\s*(\d+)", s, re.IGNORECASE)
         if m and not r["domain"]:
             r["domain"] = m.group(1)
+        m = re.search(r"Clock Identity\s*[:=]\s*(\S+)", s, re.IGNORECASE)
+        if m and not r["clock_identity"] and "grandmaster" not in s.lower() and "parent" not in s.lower():
+            r["clock_identity"] = m.group(1)
+        m = re.search(r"Number of PTP ports\s*[:=]\s*(\d+)", s, re.IGNORECASE)
+        if m:
+            r["num_ports"] = int(m.group(1))
         m = re.search(r"Grandmaster Clock Identity\s*[:=]\s*(\S+)", s, re.IGNORECASE)
         if m:
             r["grandmaster"] = m.group(1)
@@ -1566,6 +1582,9 @@ def parse_ptp_clock(output: str) -> dict:
             r["mean_path_delay_ns"] = int(m.group(1))
     if r["offset_ns"] is not None:
         r["locked"] = abs(r["offset_ns"]) < 1000   # < 1 microsecond from master => effectively locked
+    # operational = a real boundary/transparent clock: a known device type with >=1 active PTP port.
+    dt = r["device_type"].lower()
+    r["operational"] = bool(dt and dt != "unknown" and (r["num_ports"] or 0) > 0)
     return r
 
 

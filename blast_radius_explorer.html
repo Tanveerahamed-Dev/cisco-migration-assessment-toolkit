@@ -1268,7 +1268,8 @@ function demoSnapshot(){
       classified_groups:[{group:"224.0.1.129",name:"PTP-primary",category:"Broadcast-AV",broadcast:true,source:"IGMP/mroute"},
                          {group:"239.254.3.3",name:"Dante",category:"Broadcast-AV",broadcast:true,source:"IGMP/mroute"}],
       group_level_collected:true,
-      ptp:{device_type:"Boundary clock",domain:"0",grandmaster:"0x00A0B1.FFFE.123456",offset_ns:42,mean_path_delay_ns:310,locked:true},
+      ptp:{"DIST-1":{device_type:"Boundary clock",profile:"Default Profile",domain:"0",clock_identity:"0x00A0B1.FFFE.000001",num_ports:4,grandmaster:"0x00A0B1.FFFE.123456",offset_ns:42,mean_path_delay_ns:310,locked:true,operational:true},
+           "SW01-DANTE":{device_type:"Unknown",profile:"Default Profile",domain:"0",clock_identity:"0x5CE176.FFFE.791B80",num_ports:0,grandmaster:"",offset_ns:null,mean_path_delay_ns:null,locked:null,operational:false}},
       igmp_queriers:[{switch:"DIST-1",vlan:"10",querier:"10.0.10.1"},{switch:"DIST-1",vlan:"20",querier:"10.0.20.1"}]},
   },
   redistribution:{
@@ -4549,7 +4550,14 @@ function serviceMapSection(){
     `${s.refs} ACL ref${s.refs===1?"":"s"} on ${s.host_count} switch${s.host_count===1?"":"es"}</div>`).join("");
   const gset=(mc.classified_groups||[]).slice(0,8).map(g=>`<div class="ln"><span class="pill pl-watch">${esc(g.name||"group")}</span> <span class="mono">${esc(g.group)}</span> <span class="faint">${esc(g.category)}${g.source?" · "+esc(g.source):""}</span></div>`).join("");
   const mcNote=mc.group_level_collected?` <span class="faint">— ${(mc.classified_groups||[]).length} group(s) classified.</span>`:` <span class="faint">— per-group (S,G)/IGMP membership not collected (Unknown); re-run with <b>show ip igmp groups</b> to map the broadcast/PTP groups.</span>`;
-  const ptp=mc.ptp||{}; const ptpLine=(ptp&&ptp.grandmaster)?`<div class="ln" style="margin-top:6px"><span class="pill pl-${ptp.locked?"ok":(ptp.locked===false?"crit":"neutral")}">PTP ${ptp.locked?"locked":(ptp.locked===false?"NOT locked":"present")}</span> GM <span class="mono">${esc(ptp.grandmaster)}</span> <span class="faint">offset ${ptp.offset_ns!=null?esc(String(ptp.offset_ns))+" ns":"?"} — gates ST 2110 / AES67 / Dante cutovers.</span></div>`:"";
+  const ptp=mc.ptp||{}; const ptpHosts=Object.keys(ptp); let ptpLine="";
+  if(ptpHosts.length){
+    const oper=ptpHosts.filter(h=>ptp[h]&&ptp[h].operational);
+    const gms=[...new Set(ptpHosts.map(h=>ptp[h]&&ptp[h].grandmaster).filter(Boolean))];
+    ptpLine=oper.length
+      ? `<div class="ln" style="margin-top:6px"><span class="pill pl-ok">PTP ${oper.length}/${ptpHosts.length} boundary clock(s)</span> ${gms.length?'GM <span class="mono">'+esc(gms.join(', '))+'</span> ':''}<span class="faint">— gates ST 2110 / AES67 / Dante cutovers.</span></div>`
+      : `<div class="ln" style="margin-top:6px"><span class="pill pl-crit">PTP dormant</span> present on ${ptpHosts.length} switch(es), 0 active boundary clocks (Device Type Unknown / 0 ports) <span class="faint">— PTP flows as plain multicast; confirm whether boundary-clock mode is needed on media-path switches.</span></div>`;
+  }
   const q=mc.igmp_queriers||[]; const qLine=q.length?`<div class="ln"><span class="pill pl-ok">IGMP querier</span> present on ${q.length} VLAN(s) <span class="faint">(Confirmed).</span></div>`:"";
   return `<div class="sec"><h3>Services &amp; multicast <span class="ct">${svcs.length}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">L4 ports referenced in ACLs = migration <b>design intent</b> (Inferred — not active traffic, no flow telemetry).</div>`+
