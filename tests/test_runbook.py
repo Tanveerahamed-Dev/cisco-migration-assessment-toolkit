@@ -99,6 +99,17 @@ def _snap():
              "remediation": "Make the member config identical to the bundle and verify LACP on the peer.",
              "confidence": "observed state = fact; likely cause = Inferred (Cisco doctrine)"},
         ],
+        "service_map": {
+            "services": [
+                {"port": 319, "proto": "udp", "service": "PTP-event", "category": "Broadcast-AV",
+                 "broadcast": True, "refs": 2, "host_count": 1,
+                 "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"},
+            ],
+            "categories": [{"category": "Broadcast-AV", "refs": 2}],
+            "acl_rule_count": 12,
+            "multicast": {"active_interfaces": 4, "active_switch_count": 2,
+                          "active_switches": ["sw1", "sw2"], "classified_groups": [], "group_level_collected": False},
+        },
     }
 
 
@@ -141,6 +152,9 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # §6.5 protocol behaviour: the abnormal state's cause + remediation are present, evidence-framed
     assert "Protocol behaviour & remediation" in text
     assert "verify LACP on the peer" in text
+    # §6.6 services & multicast: design-intent caveat + multicast forwarding presence
+    assert "Services & multicast" in text
+    assert "PTP-event" in text and "run PIM/mroute" in text
     assert "Inferred-high" in text and "Unknown" in text
     # the cross-layer finding surfaced as a titled block
     assert "single-fiber uplink to a sole gateway" in text

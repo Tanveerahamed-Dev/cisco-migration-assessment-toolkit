@@ -918,6 +918,46 @@ def write_protocol_intelligence_sheet(wb, records: List[dict]) -> None:
     logger.info(f"  [OK] '{PROTOCOL_INTELLIGENCE_SHEET_NAME}' sheet: {len(records)} advisory row(s), {n_high} High")
 
 
+SERVICE_MAP_SHEET_NAME = "Service Map"   # NEW-V3.23.101
+
+def write_service_map_sheet(wb, sm: dict) -> None:
+    """Write the 'Service Map' sheet from compute_service_map(): L4 services referenced in ACLs
+    (design intent -- Inferred, not active traffic) + fleet multicast activity."""
+    ws = wb.create_sheet(SERVICE_MAP_SHEET_NAME)
+    headers = ["Port", "Proto", "Service", "Category", "Broadcast/AV", "ACL refs", "Switches", "Evidence"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center")
+    services = (sm or {}).get("services") or []
+    r = 2
+    if not services:
+        ws.cell(r, 1, "No L4 service ports referenced in ACLs (rules are mostly permit-ip source allowlists)."); r += 1
+    for s in services:
+        vals = [s["port"], s["proto"], s["service"], s["category"], "yes" if s["broadcast"] else "",
+                s["refs"], s["host_count"], s["evidence_class"]]
+        for col, v in enumerate(vals, 1):
+            ws.cell(r, col, v)
+        r += 1
+    # multicast activity block (Confirmed forwarding presence; per-group classification awaits richer collection)
+    mc = (sm or {}).get("multicast") or {}
+    r += 1
+    ws.cell(r, 1, "Multicast activity").font = Font(bold=True); r += 1
+    ws.cell(r, 1, "PIM/mroute-active interfaces"); ws.cell(r, 3, mc.get("active_interfaces", 0)); r += 1
+    ws.cell(r, 1, "switches running multicast"); ws.cell(r, 3, mc.get("active_switch_count", 0)); r += 1
+    note = ("per-group (S,G) / IGMP membership NOT collected (Unknown) -- re-run with 'show ip igmp groups'"
+            if not mc.get("group_level_collected") else "per-group membership collected")
+    ws.cell(r, 1, "group-level detail"); ws.cell(r, 3, note); r += 1
+    for g in (mc.get("classified_groups") or []):
+        ws.cell(r, 1, "multicast group"); ws.cell(r, 3, f"{g['group']} = {g['name']} ({g['category']})"); r += 1
+    for i, w in enumerate([8, 8, 16, 14, 12, 9, 9, 52], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{SERVICE_MAP_SHEET_NAME}' sheet: {len(services)} service(s), "
+                f"{mc.get('active_interfaces', 0)} multicast iface(s)")
+
+
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
 MIGRATION_READINESS_SHEET_NAME = "Migration Readiness"
 SCORE_SENSITIVITY_SHEET_NAME = "Score Sensitivity"   # NEW-V3.23.5

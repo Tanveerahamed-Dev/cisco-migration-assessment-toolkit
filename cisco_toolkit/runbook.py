@@ -378,6 +378,27 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                for r in sorted(pintel, key=lambda r: _SEV_ORDER.get(r.get("severity"), 9))[:18]],
               widths=[0.9, 2.0, 1.1, 0.7, 4.3])
 
+    sm = snap_dict.get("service_map") or {}
+    svcs = sm.get("services") or []
+    mc = sm.get("multicast") or {}
+    if svcs or mc.get("active_interfaces"):
+        doc.add_heading("6.6 Services & multicast (observed vs intent)", level=2)
+        doc.add_paragraph(
+            f"L4 services referenced in ACLs are migration *design intent* ({_CONF_UNKNOWN} as live "
+            "traffic — there is no flow telemetry); preserve these reachabilities across the cutover. "
+            f"Multicast forwarding presence (PIM/mroute on an interface) is {_CONF_CONFIRMED}, but "
+            "per-group (S,G)/IGMP membership is not collected yet — re-run with 'show ip igmp groups' / "
+            "'show ip mroute' to map the broadcast/PTP groups.")
+        if svcs:
+            table(["Port", "Proto", "Service", "Category", "ACL refs", "Switches"],
+                  [[s.get("port"), s.get("proto"), s.get("service"), s.get("category"),
+                    s.get("refs"), s.get("host_count")] for s in svcs[:15]],
+                  widths=[0.8, 0.8, 1.7, 1.4, 1.0, 1.0])
+        doc.add_paragraph(
+            f"Multicast: {mc.get('active_interfaces', 0)} interface(s) across "
+            f"{mc.get('active_switch_count', 0)} switch(es) run PIM/mroute ({_CONF_CONFIRMED} "
+            f"forwarding presence). Per-group classification: {_CONF_UNKNOWN} until re-collection.")
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()

@@ -331,6 +331,7 @@ from cisco_toolkit.analyze import (
     compute_subnet_intelligence,                       # NEW-V3.23.97 (subnet / routing reachability)
     compute_migration_scenarios,                       # NEW-V3.23.98 (per-group cutover scenario framework)
     compute_protocol_intelligence,                     # NEW-V3.23.100 (protocol-state doctrine: cause + remediation)
+    compute_service_map,                               # NEW-V3.23.101 (L4 service map from ACL ports + multicast activity)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -368,6 +369,7 @@ from cisco_toolkit.excel import (
     write_subnet_reachability_sheet,                            # NEW-V3.23.97 (subnet / routing reachability)
     write_migration_scenarios_sheet,                            # NEW-V3.23.98 (per-group cutover scenario)
     write_protocol_intelligence_sheet,                          # NEW-V3.23.100 (protocol-state cause + remediation)
+    write_service_map_sheet,                                     # NEW-V3.23.101 (L4 service map + multicast activity)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -1520,6 +1522,11 @@ def main():
     protocol_intelligence = _run_phase("Protocol intelligence", compute_protocol_intelligence,
                                        protocol_health, _default=[])
     _run_phase("Protocol Intelligence sheet", write_protocol_intelligence_sheet, wb, protocol_intelligence)
+    # Phase 27c: Service Map (NEW-V3.23.101). Resolve ACL L4 port references + fleet multicast activity to
+    # named services via the offline port registry (portdb). ACL refs are design intent (Inferred), not
+    # active traffic. Compute once -> sheet + snapshot (one source of truth).
+    service_map = _run_phase("Service map", compute_service_map, all_acls, all_interfaces, _default={})
+    _run_phase("Service Map sheet", write_service_map_sheet, wb, service_map)
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
@@ -1621,6 +1628,7 @@ def main():
     snap_dict["cross_layer"] = cross_layer                           # NEW-V3.21
     snap_dict["protocol_health"] = protocol_health                   # NEW-V3.22
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
+    snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
