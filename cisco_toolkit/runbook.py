@@ -394,10 +394,24 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                   [[s.get("port"), s.get("proto"), s.get("service"), s.get("category"),
                     s.get("refs"), s.get("host_count")] for s in svcs[:15]],
                   widths=[0.8, 0.8, 1.7, 1.4, 1.0, 1.0])
+        groups = mc.get("classified_groups") or []
+        gnote = (f" {len(groups)} group(s) classified" if groups
+                 else f" Per-group classification: {_CONF_UNKNOWN} until re-collection.")
         doc.add_paragraph(
             f"Multicast: {mc.get('active_interfaces', 0)} interface(s) across "
             f"{mc.get('active_switch_count', 0)} switch(es) run PIM/mroute ({_CONF_CONFIRMED} "
-            f"forwarding presence). Per-group classification: {_CONF_UNKNOWN} until re-collection.")
+            f"forwarding presence).{gnote}")
+        ptp = mc.get("ptp") or {}
+        if ptp:
+            lock = "locked" if ptp.get("locked") else ("NOT locked" if ptp.get("locked") is False else "lock unknown")
+            doc.add_paragraph(
+                f"PTP (IEEE 1588): grandmaster {ptp.get('grandmaster', '?')}, {ptp.get('device_type', '')}, "
+                f"offset {ptp.get('offset_ns', '?')} ns — {lock} ({_CONF_CONFIRMED}). Timing lock gates "
+                "any ST 2110 / AES67 / Dante move-group cutover.")
+        queriers = mc.get("igmp_queriers") or []
+        if queriers:
+            doc.add_paragraph(f"IGMP snooping querier present on {len(queriers)} VLAN(s) "
+                              f"({_CONF_CONFIRMED}); VLANs without a querier risk multicast flooding/pruning.")
 
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)

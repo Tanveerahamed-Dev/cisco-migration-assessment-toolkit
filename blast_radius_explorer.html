@@ -1265,8 +1265,11 @@ function demoSnapshot(){
     categories:[{category:"Infra",refs:4},{category:"Broadcast-AV",refs:2}],
     acl_rule_count:42,
     multicast:{active_interfaces:6,active_switch_count:2,active_switches:["DIST-1","DIST-2"],
-      classified_groups:[{group:"224.0.1.129",name:"PTP-primary",category:"Broadcast-AV",broadcast:true,source:"ACL reference"}],
-      group_level_collected:false},
+      classified_groups:[{group:"224.0.1.129",name:"PTP-primary",category:"Broadcast-AV",broadcast:true,source:"IGMP/mroute"},
+                         {group:"239.254.3.3",name:"Dante",category:"Broadcast-AV",broadcast:true,source:"IGMP/mroute"}],
+      group_level_collected:true,
+      ptp:{device_type:"Boundary clock",domain:"0",grandmaster:"0x00A0B1.FFFE.123456",offset_ns:42,mean_path_delay_ns:310,locked:true},
+      igmp_queriers:[{switch:"DIST-1",vlan:"10",querier:"10.0.10.1"},{switch:"DIST-1",vlan:"20",querier:"10.0.20.1"}]},
   },
   redistribution:{
     "DIST-1":[{into_proto:"ospf",into_id:"1",from_proto:"bgp",from_id:"65001",route_map:"",raw:"redistribute bgp 65001 subnets"},
@@ -4544,13 +4547,15 @@ function serviceMapSection(){
   const rows=svcs.slice(0,12).map(s=>`<div class="ln"><span class="pill pl-${s.broadcast?"watch":"neutral"}">${esc(s.service)}</span> `+
     `<span class="mono">${esc(String(s.port))}/${esc(s.proto)}</span> <span class="faint">${esc(s.category)}</span> · `+
     `${s.refs} ACL ref${s.refs===1?"":"s"} on ${s.host_count} switch${s.host_count===1?"":"es"}</div>`).join("");
-  const gset=(mc.classified_groups||[]).slice(0,6).map(g=>`<div class="ln"><span class="pill pl-watch">${esc(g.name)}</span> <span class="mono">${esc(g.group)}</span> <span class="faint">${esc(g.category)}</span></div>`).join("");
-  const mcNote=mc.group_level_collected?"":` <span class="faint">— per-group (S,G)/IGMP membership not collected (Unknown); re-run with <b>show ip igmp groups</b> to map the broadcast/PTP groups.</span>`;
+  const gset=(mc.classified_groups||[]).slice(0,8).map(g=>`<div class="ln"><span class="pill pl-watch">${esc(g.name||"group")}</span> <span class="mono">${esc(g.group)}</span> <span class="faint">${esc(g.category)}${g.source?" · "+esc(g.source):""}</span></div>`).join("");
+  const mcNote=mc.group_level_collected?` <span class="faint">— ${(mc.classified_groups||[]).length} group(s) classified.</span>`:` <span class="faint">— per-group (S,G)/IGMP membership not collected (Unknown); re-run with <b>show ip igmp groups</b> to map the broadcast/PTP groups.</span>`;
+  const ptp=mc.ptp||{}; const ptpLine=(ptp&&ptp.grandmaster)?`<div class="ln" style="margin-top:6px"><span class="pill pl-${ptp.locked?"ok":(ptp.locked===false?"crit":"neutral")}">PTP ${ptp.locked?"locked":(ptp.locked===false?"NOT locked":"present")}</span> GM <span class="mono">${esc(ptp.grandmaster)}</span> <span class="faint">offset ${ptp.offset_ns!=null?esc(String(ptp.offset_ns))+" ns":"?"} — gates ST 2110 / AES67 / Dante cutovers.</span></div>`:"";
+  const q=mc.igmp_queriers||[]; const qLine=q.length?`<div class="ln"><span class="pill pl-ok">IGMP querier</span> present on ${q.length} VLAN(s) <span class="faint">(Confirmed).</span></div>`:"";
   return `<div class="sec"><h3>Services &amp; multicast <span class="ct">${svcs.length}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">L4 ports referenced in ACLs = migration <b>design intent</b> (Inferred — not active traffic, no flow telemetry).</div>`+
     (rows||`<p class="faint">No L4 service ports referenced in ACLs (mostly source allowlists).</p>`)+
     `<div class="ln" style="margin-top:8px"><b>Multicast:</b> ${mc.active_interfaces||0} interface(s) across ${mc.active_switch_count||0} switch(es) run PIM/mroute <span class="faint">(Confirmed forwarding presence)</span>.${mcNote}</div>`+
-    gset+`</div>`;
+    gset+ptpLine+qLine+`</div>`;
 }
 function drawProtocols(){
   const hosts=(MODEL?MODEL.hosts:[]).slice();
