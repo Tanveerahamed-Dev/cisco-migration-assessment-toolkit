@@ -376,6 +376,7 @@ from cisco_toolkit.build import (
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import snapshot_state, write_html_explorer, write_diff_workbook, redact_snapshot
+from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -1097,6 +1098,10 @@ def main():
     ap.add_argument("--no-html",         action="store_true",
                     help="NEW-V3.17: skip Blast-Radius Explorer (HTML) generation "
                          "(default: HTML is always written beside the workbook).")
+    ap.add_argument("--no-docx",         action="store_true",
+                    help="NEW-V3.23.93: skip the Assessment & Migration Runbook (DOCX). The runbook is "
+                         "the narrative twin of the workbook; it needs python-docx (a missing library is "
+                         "a warning, not an error).")
     ap.add_argument("--flow-src",        default=None, metavar="IP",
                     help="NEW-V3.19: source endpoint IP for the optional Flow Trace sheet "
                          "(requires --flow-dst).")
@@ -1621,6 +1626,18 @@ def main():
             write_html_explorer(html_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  HTML Explorer write failed: {e}")
+
+    # Phase 31: Assessment & Migration Runbook (DOCX) - NEW-V3.23.93. The narrative sign-off twin of
+    # the workbook, built from the SAME snap_dict (one source of truth -> every number agrees), to the
+    # cisco-network-assessment 12-section, evidence-disciplined standard. Optional (python-docx); a
+    # missing library is a warning, never a crash (the workbook / explorer / JSON already saved).
+    if not args.no_docx:
+        docx_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_runbook.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_runbook_docx(docx_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  Runbook (DOCX) write failed: {e}")
 
 
 if __name__ == "__main__":
