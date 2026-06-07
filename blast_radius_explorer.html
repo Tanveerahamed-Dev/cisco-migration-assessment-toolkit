@@ -1256,6 +1256,18 @@ function demoSnapshot(){
      remediation:"Make the member config identical to the bundle and verify LACP on the peer. Risk: silent half-bandwidth and a possible bridging loop.",
      confidence:"observed state = fact; likely cause = Inferred (Cisco doctrine)"},
   ],
+  // V3.23.101: L4 service map from ACL ports + multicast activity (mirrors compute_service_map).
+  service_map:{
+    services:[
+      {port:67,proto:"udp",service:"DHCP-server",category:"Infra",broadcast:false,refs:4,host_count:2,evidence_class:"Inferred (ACL design intent -- not active traffic; no flow telemetry)"},
+      {port:319,proto:"udp",service:"PTP-event",category:"Broadcast-AV",broadcast:true,refs:2,host_count:1,evidence_class:"Inferred (ACL design intent -- not active traffic; no flow telemetry)"},
+    ],
+    categories:[{category:"Infra",refs:4},{category:"Broadcast-AV",refs:2}],
+    acl_rule_count:42,
+    multicast:{active_interfaces:6,active_switch_count:2,active_switches:["DIST-1","DIST-2"],
+      classified_groups:[{group:"224.0.1.129",name:"PTP-primary",category:"Broadcast-AV",broadcast:true,source:"ACL reference"}],
+      group_level_collected:false},
+  },
   redistribution:{
     "DIST-1":[{into_proto:"ospf",into_id:"1",from_proto:"bgp",from_id:"65001",route_map:"",raw:"redistribute bgp 65001 subnets"},
               {into_proto:"ospf",into_id:"1",from_proto:"connected",from_id:"",route_map:"",raw:"redistribute connected"},
@@ -4521,6 +4533,25 @@ function protoIntelSection(){
     `<div class="sub" style="margin-bottom:6px">Each abnormal protocol state turned into <b>cause + remediation</b> (<b>${nHigh}</b> High). The observed state is a <b>fact</b>; the likely cause is <b>Inferred</b> per Cisco doctrine — validate live before cutover.</div>`+
     rows+more+`</div>`;
 }
+/* Service map (V3.23.101): L4 services referenced in ACLs + fleet multicast activity, resolved to named
+   services via the offline port registry. Consumes SNAP.service_map (one source of truth with the
+   'Service Map' workbook sheet + runbook §6.6). ACL refs are design intent (Inferred), not active traffic;
+   multicast PIM/mroute presence is Confirmed. Absent key -> renders nothing. */
+function serviceMapSection(){
+  const sm=(SNAP&&SNAP.service_map)||null; if(!sm)return "";
+  const svcs=sm.services||[], mc=sm.multicast||{};
+  if(!svcs.length && !(mc.active_interfaces>0))return "";
+  const rows=svcs.slice(0,12).map(s=>`<div class="ln"><span class="pill pl-${s.broadcast?"watch":"neutral"}">${esc(s.service)}</span> `+
+    `<span class="mono">${esc(String(s.port))}/${esc(s.proto)}</span> <span class="faint">${esc(s.category)}</span> · `+
+    `${s.refs} ACL ref${s.refs===1?"":"s"} on ${s.host_count} switch${s.host_count===1?"":"es"}</div>`).join("");
+  const gset=(mc.classified_groups||[]).slice(0,6).map(g=>`<div class="ln"><span class="pill pl-watch">${esc(g.name)}</span> <span class="mono">${esc(g.group)}</span> <span class="faint">${esc(g.category)}</span></div>`).join("");
+  const mcNote=mc.group_level_collected?"":` <span class="faint">— per-group (S,G)/IGMP membership not collected (Unknown); re-run with <b>show ip igmp groups</b> to map the broadcast/PTP groups.</span>`;
+  return `<div class="sec"><h3>Services &amp; multicast <span class="ct">${svcs.length}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">L4 ports referenced in ACLs = migration <b>design intent</b> (Inferred — not active traffic, no flow telemetry).</div>`+
+    (rows||`<p class="faint">No L4 service ports referenced in ACLs (mostly source allowlists).</p>`)+
+    `<div class="ln" style="margin-top:8px"><b>Multicast:</b> ${mc.active_interfaces||0} interface(s) across ${mc.active_switch_count||0} switch(es) run PIM/mroute <span class="faint">(Confirmed forwarding presence)</span>.${mcNote}</div>`+
+    gset+`</div>`;
+}
 function drawProtocols(){
   const hosts=(MODEL?MODEL.hosts:[]).slice();
   const withProto=hosts.filter(h=>protoSet(h).size>0).sort();
@@ -4548,6 +4579,7 @@ function drawProtocols(){
     </div></div>
     ${protoIntelSection()}
     ${protoHealthSection()}
+    ${serviceMapSection()}
     <div class="sec"><h3>Protocol fingerprint <span class="ct">${withProto.length}</span></h3>
       <table><tbody>${fpRows}</tbody></table>
       <p class="faint" style="margin-top:6px">Click a switch for its full routing-protocol profile.</p></div>

@@ -254,6 +254,16 @@
   "Likely cause (Inferred)",
   "Remediation"
  ],
+ "Service Map": [
+  "Port",
+  "Proto",
+  "Service",
+  "Category",
+  "Broadcast/AV",
+  "ACL refs",
+  "Switches",
+  "Evidence"
+ ],
  "Health Scores": [
   "Switch",
   "Score",

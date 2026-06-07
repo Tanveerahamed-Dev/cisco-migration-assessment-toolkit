@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
 from typing import Any, Dict, List, Optional, Tuple
 
-from cisco_toolkit import protocol_kb
+from cisco_toolkit import portdb, protocol_kb
 from cisco_toolkit.cmdio import _load_cmd_output
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
@@ -1455,6 +1455,83 @@ def compute_protocol_intelligence(protocol_health: List[dict]) -> List[dict]:
                         "confidence": adv["confidence"]})
     out.sort(key=lambda r: (_SEV_RANK.get(r["severity"], 9), r["switch"], r["protocol"], r["state"]))
     return out
+
+
+# =============================================================================
+# L4 service map (NEW-V3.23.101). Resolve the L4 ports referenced in ACLs and the
+# multicast activity on the fleet to named services/categories via the offline
+# port/protocol registry (portdb). Evidence discipline: an ACL port reference is
+# DESIGN INTENT (Inferred), NOT proof of active traffic -- there is no flow
+# telemetry. Multicast forwarding presence (PIM/mroute on an interface) IS Confirmed,
+# but per-group (S,G) classification awaits the richer IGMP/mroute collection.
+# =============================================================================
+_ACL_PROTOS = {"tcp", "udp", "sctp", "dccp"}
+
+
+def compute_service_map(acls: Dict[str, dict],
+                        all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> dict:
+    """Map ACL L4 port references + fleet multicast activity to named services via portdb.
+    Returns {services, categories, acl_rule_count, multicast}. Pure read; tolerant of empty input."""
+    svc: Dict[Tuple[int, str], dict] = {}     # (port, proto) -> {service, category, broadcast, refs, hosts}
+    mcast_groups: Dict[str, dict] = {}        # multicast group ip -> classification
+    rule_count = 0
+    for host, named in (acls or {}).items():
+        for _name, rules in (named or {}).items():
+            for r in (rules or []):
+                rule_count += 1
+                proto = (r.get("proto") or "").lower()
+                lookup_proto = proto if proto in _ACL_PROTOS else "udp"
+                for operand in (r.get("sport"), r.get("dport")):
+                    val = operand.get("val") if isinstance(operand, dict) else None
+                    if not val:
+                        continue
+                    rec = portdb.service_for_port(val, lookup_proto)
+                    if not rec:
+                        continue
+                    key = (val, lookup_proto)
+                    e = svc.setdefault(key, {"service": rec["service"], "category": rec["category"],
+                                             "broadcast": rec["broadcast"], "refs": 0, "hosts": set()})
+                    e["refs"] += 1
+                    e["hosts"].add(host)
+                for addr in (r.get("src"), r.get("dst")):
+                    ip = addr.get("ip") if isinstance(addr, dict) else None
+                    if ip and ip not in mcast_groups:
+                        mc = portdb.classify_multicast(ip)
+                        if mc:
+                            mcast_groups[ip] = {"group": ip, "name": mc.get("group", ""),
+                                                "category": mc["category"], "broadcast": mc["broadcast"],
+                                                "source": "ACL reference"}
+
+    services = sorted(
+        ({"port": p, "proto": pr, "service": e["service"], "category": e["category"],
+          "broadcast": e["broadcast"], "refs": e["refs"], "host_count": len(e["hosts"]),
+          "evidence_class": "Inferred (ACL design intent -- not active traffic; no flow telemetry)"}
+         for (p, pr), e in svc.items()),
+        key=lambda s: (-s["refs"], s["port"]))
+
+    cat_refs: Dict[str, int] = {}
+    for s in services:
+        cat_refs[s["category"]] = cat_refs.get(s["category"], 0) + s["refs"]
+    categories = sorted(({"category": c, "refs": n} for c, n in cat_refs.items()),
+                        key=lambda c: -c["refs"])
+
+    active_ifaces, active_switches = 0, set()
+    for host, ports in (all_interfaces or {}).items():
+        for _p, d in (ports or {}).items():
+            if getattr(d, "multicast_info", ""):
+                active_ifaces += 1
+                active_switches.add(host)
+
+    multicast = {
+        "active_interfaces": active_ifaces,
+        "active_switch_count": len(active_switches),
+        "active_switches": sorted(active_switches)[:20],
+        "classified_groups": sorted(mcast_groups.values(), key=lambda g: g["group"]),
+        # per-group (S,G) / IGMP membership classification needs the richer collection (Unknown until then)
+        "group_level_collected": False,
+    }
+    return {"services": services, "categories": categories,
+            "acl_rule_count": rule_count, "multicast": multicast}
 
 
 # =============================================================================
