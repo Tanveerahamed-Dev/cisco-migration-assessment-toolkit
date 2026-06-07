@@ -515,6 +515,19 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                     e.get("migration_note") or ("media-adjacent" if e.get("media") else "")]
                    for e in edges[:15]],
                   widths=[1.9, 1.9, 0.7, 1.4, 2.6])
+        # 6.7.2 recommended cutover order (NEW-V3.23.114)
+        cutover = appi.get("cutover_order") or []
+        if cutover:
+            doc.add_heading("6.7.2 Recommended cutover order", level=3)
+            doc.add_paragraph(
+                "A migration-criticality score (tier + health + open risk + dependency coupling + timing/wave "
+                f"flags) orders the domains lowest-risk first. Start with the {asum.get('pilot_domain', '')} "
+                f"pilot to fail-fast and learn; migrate {asum.get('last_domain', '')} last with make-before-break "
+                "and full validation. A recommendation — the war-room sets the final schedule.")
+            table(["#", "Band", "Domain", "Tier", "Score", "Rationale"],
+                  [[c.get("order"), c.get("band"), c.get("domain"), c.get("tier"), c.get("score"),
+                    c.get("rationale")] for c in cutover],
+                  widths=[0.4, 0.8, 2.0, 1.2, 0.6, 3.0])
 
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
