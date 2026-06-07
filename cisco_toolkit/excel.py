@@ -779,6 +779,82 @@ def write_migration_scenarios_sheet(wb, scenarios: dict) -> None:
     logger.info(f"  [OK] '{MIGRATION_SCENARIO_SHEET_NAME}' sheet: {len(sc.get('per_group', []))} group(s)")
 
 
+APPLICATION_INTEL_SHEET_NAME = "Application Intelligence"   # application-domain synthesis (NEW-V3.23.112)
+
+def write_application_intelligence_sheet(wb, ai: dict) -> None:
+    """Write (or replace) 'Application Intelligence' from compute_application_intelligence(): the
+    application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
+    span, top migration risk + standard + the evidence that placed each switch, followed by a
+    cross-domain (IGMP querier continuity / RFC 4541) risk block. NEW-V3.23.112."""
+    if APPLICATION_INTEL_SHEET_NAME in wb.sheetnames:
+        del wb[APPLICATION_INTEL_SHEET_NAME]
+    ws = wb.create_sheet(APPLICATION_INTEL_SHEET_NAME)
+    a = ai or {}
+    s = a.get("summary") or {}
+    summ = (f"{s.get('n_domains', 0)} domain(s)  ·  {s.get('n_on_air_critical', 0)} on-air-critical  ·  "
+            f"{s.get('n_high_risk', 0)} with High/Critical risk  ·  {s.get('n_spanning_waves', 0)} span >1 wave  ·  "
+            f"{s.get('n_cross_domain_risks', 0)} cross-domain risk(s)")
+    ws.cell(row=1, column=1, value="Application & network intelligence:").font = Font(bold=True, size=10)
+    c0 = ws.cell(row=1, column=2, value=summ); c0.font = Font(size=10)
+    c0.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    hdr_row = 3
+    cols = ["Domain", "Tier", "Switches", "VLANs", "Endpoints", "Top endpoint classes", "PTP",
+            "Worst health", "Waves", "Risks", "Top risk", "Standard", "Why (evidence)"]
+    for i, h in enumerate(cols, 1):
+        cell = ws.cell(row=hdr_row, column=i, value=h)
+        cell.font = Font(bold=True, color="FFFFFF", size=10); cell.fill = PatternFill("solid", fgColor="434343")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(row=hdr_row + 1, column=1)
+    TIERFILL = {"On-air critical": "F4CCCC", "Production": "FFF2CC", "Support": "D9EAD3"}
+    DAT = Font(name="Calibri", size=10)
+    r = hdr_row + 1
+    for d in a.get("domains", []):
+        classes = ", ".join(f"{k} ({v})" for k, v in (d.get("classes") or {}).items())
+        ptp = ("boundary-clocked" if d.get("ptp_boundary_clocked")
+               else "present, NOT BC" if d.get("ptp_present") else "—")
+        hh = d.get("health") or {}
+        hstr = (hh.get("worst_band", "") or "—") + (
+            f" ({hh.get('n_critical', 0)}C/{hh.get('n_poor', 0)}P)"
+            if (hh.get("n_critical") or hh.get("n_poor")) else "")
+        waves = ", ".join(d.get("waves") or []) or "—"
+        risks = d.get("risks") or []
+        toprisk = f"{risks[0]['severity']}: {risks[0]['title']}" if risks else "—"
+        vals = [d.get("domain"), d.get("tier"), d.get("switch_count"), d.get("vlan_count"),
+                d.get("endpoint_count"), classes or "—", ptp, hstr, waves, len(risks), toprisk,
+                d.get("standard", "") or "—", d.get("evidence", "")]
+        for col, v in enumerate(vals, 1):
+            cc = ws.cell(row=r, column=col, value=v); cc.font = DAT
+            cc.alignment = Alignment(horizontal="center" if col in (3, 4, 5, 7, 9, 10) else "left",
+                                     vertical="top", wrap_text=col in (6, 11, 13))
+            if col == 2:
+                cc.fill = PatternFill("solid", fgColor=TIERFILL.get(v, "FFFFFF"))
+        r += 1
+
+    cross = a.get("cross_domain_risks") or []
+    r += 1
+    ws.cell(row=r, column=1,
+            value="Cross-domain risks — IGMP querier continuity (RFC 4541)").font = Font(bold=True); r += 1
+    if not cross:
+        ws.cell(row=r, column=1, value="None detected."); r += 1
+    else:
+        for i, h in enumerate(["Severity", "Kind", "VLAN", "Detail", "Remediation", "Standard"], 1):
+            cell = ws.cell(row=r, column=i, value=h); cell.font = Font(bold=True, size=10)
+        r += 1
+        for cr in cross:
+            vals = [cr.get("severity"), cr.get("kind"), cr.get("vlan"), cr.get("detail"),
+                    cr.get("remediation"), cr.get("standard")]
+            for col, v in enumerate(vals, 1):
+                cc = ws.cell(row=r, column=col, value=v); cc.font = DAT
+                cc.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col in (4, 5))
+            r += 1
+
+    for i, w in enumerate([34, 15, 9, 7, 10, 26, 16, 14, 12, 7, 40, 24, 34], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{APPLICATION_INTEL_SHEET_NAME}' sheet: {len(a.get('domains', []))} domain(s), "
+                f"{len(cross)} cross-domain risk(s)")
+
+
 def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
     if name not in idmap:
         idmap[name] = f"n{len(idmap)}"

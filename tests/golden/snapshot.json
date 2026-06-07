@@ -2966,5 +2966,122 @@
   "scenario_counts": {
    "phased": 1
   }
+ },
+ "application_intelligence": {
+  "domains": [
+   {
+    "id": "general",
+    "domain": "General / Back-office (unclassified)",
+    "tier": "Support",
+    "switches": [
+     "access1",
+     "core2"
+    ],
+    "switch_count": 2,
+    "vlans": [
+     "10",
+     "20",
+     "30"
+    ],
+    "vlan_count": 3,
+    "endpoint_count": 3,
+    "classes": {
+     "Wireless AP": 1,
+     "Phone": 1,
+     "Server": 1
+    },
+    "media_groups": [],
+    "ptp_present": false,
+    "ptp_boundary_clocked": false,
+    "health": {
+     "worst_band": "Fair",
+     "n_critical": 0,
+     "n_poor": 0
+    },
+    "waves": [],
+    "spans_waves": false,
+    "evidence": "no application-specific signal x2",
+    "validation": [
+     "No application-specific signal collected -- classify these switches with the facility owner before scheduling the cutover."
+    ],
+    "standard": "",
+    "risks": [
+     {
+      "severity": "Low",
+      "title": "1 High/Critical punch-list item(s) on this domain's switches",
+      "detail": "Open High/Critical items (categories: Cross-layer) intersect this domain's switches.",
+      "remediation": "See the Migration Punch-List for the prioritized, per-device fix order.",
+      "standard": ""
+     }
+    ],
+    "n_high_risk": 0
+   },
+   {
+    "id": "compute",
+    "domain": "Compute / Virtualization",
+    "tier": "Support",
+    "switches": [
+     "core1"
+    ],
+    "switch_count": 1,
+    "vlans": [
+     "10",
+     "20",
+     "30"
+    ],
+    "vlan_count": 3,
+    "endpoint_count": 1,
+    "classes": {
+     "Server": 1
+    },
+    "media_groups": [],
+    "ptp_present": false,
+    "ptp_boundary_clocked": false,
+    "health": {
+     "worst_band": "Critical",
+     "n_critical": 1,
+     "n_poor": 0
+    },
+    "waves": [],
+    "spans_waves": false,
+    "evidence": "dominant endpoint class 'Server'",
+    "validation": [
+     "guest / app reachability",
+     "NIC-team peer leg stays up",
+     "shared storage stays reachable"
+    ],
+    "standard": "",
+    "risks": [
+     {
+      "severity": "Medium",
+      "title": "Domain rides 1 switch(es) in Critical/Poor health",
+      "detail": "1 Critical + 0 Poor-band switch(es) carry this workload.",
+      "remediation": "Resolve the per-switch health deductions before migrating this domain.",
+      "standard": ""
+     },
+     {
+      "severity": "Low",
+      "title": "12 High/Critical punch-list item(s) on this domain's switches",
+      "detail": "Open High/Critical items (categories: Config hygiene, Cross-layer, Health, L1, L3) intersect this domain's switches.",
+      "remediation": "See the Migration Punch-List for the prioritized, per-device fix order.",
+      "standard": ""
+     }
+    ],
+    "n_high_risk": 0
+   }
+  ],
+  "summary": {
+   "n_domains": 2,
+   "by_tier": {
+    "Support": 2
+   },
+   "n_on_air_critical": 0,
+   "n_spanning_waves": 0,
+   "n_high_risk": 0,
+   "n_cross_domain_risks": 0,
+   "ptp_boundary_clocked": false
+  },
+  "cross_domain_risks": [],
+  "taxonomy_version": "app-domains/1"
  }
 }

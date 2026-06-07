@@ -2823,3 +2823,337 @@ def compute_migration_punchlist(cross_layer: List[dict],
     for i, it in enumerate(items, 1):
         it["priority"] = i
     return items
+
+
+# =============================================================================
+# Application & Network Intelligence (NEW-V3.23.112). The workload-synthesis layer:
+# turn the already-computed device / endpoint / service facts into named APPLICATION
+# DOMAINS, each with footprint (switches / VLANs / endpoints), a criticality tier, a
+# health rollup, its migration-wave span, and a standards-grounded migration playbook
+# + per-domain and cross-domain migration RISKS. Pure read of prior layers
+# (endpoint_identity, endpoint_dependencies, service_map, health_scores, move_groups,
+# punchlist) -- NO new collection; it lights up on the current snapshot.
+#
+# Evidence discipline (the tool's doctrine): a switch is attributed to a domain by a
+# DELIBERATE hostname role token, by OBSERVED PTP/multicast (Confirmed), or by its
+# DOMINANT endpoint class (Inferred) -- never guessed; the basis travels in `evidence`.
+# Unclassified switches fall to a General bucket rather than being over-claimed as a
+# media fabric (in this facility almost every hostname contains "BC", so "BC" is NOT a
+# media signal). The risk rules are grounded in real broadcast / media-over-IP practice:
+#   * SMPTE ST 2059 / Arista M&E PTP   -- media-path switches should be boundary clocks;
+#     plain-multicast PTP (no boundary clock) is the timing risk.
+#   * RFC 4541 (IGMP/MLD snooping)      -- exactly one querier per VLAN; without it
+#     membership times out (multicast floods or blackholes). New cutover rule: a querier
+#     that lands in a DIFFERENT migration wave than its VLAN's switches breaks multicast
+#     on cutover; two distinct queriers on one VLAN is a split-brain hygiene fault.
+#   * SMPTE ST 2022-7 (seamless protect) -- red/blue dual path must never go down
+#     together -> on-air domains that span waves must be make-before-break.
+#   * Avid NEXIS Network & Switch Guide  -- dual NIC legs (same speed/subnet), Rx
+#     flow-control, no oversubscription -> storage dual-leg validation when legs split.
+# =============================================================================
+_APP_TIER_RANK = {"On-air critical": 0, "Production": 1, "Support": 2}
+_APP_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+_APP_BAND_RANK = {"Critical": 0, "Poor": 1, "Fair": 2, "Good": 3, "Excellent": 4, "Insufficient Data": 5}
+
+# Ordered domain taxonomy. `token` (regex, matched case-insensitively on the hostname) is the
+# strongest, most deliberate signal and is tried FIRST in list order; `classes` lets a switch's
+# dominant endpoint class stand in when no token matches. Order resolves the real overlaps in this
+# fleet (e.g. a management switch named "...-MGM-STD..." is Management, not Studio -> mgmt precedes
+# studio). The Media Fabric domain (below) is attributed by observed PTP/multicast, not a token.
+_APP_DOMAINS = [
+    {"id": "audio", "name": "Audio over IP (Dante / AES67)", "tier": "On-air critical",
+     "token": r"DANTE|AES67", "classes": {"Audio (Dante/AES67)"}, "needs_ptp": True, "dual_path": True,
+     "validation": ["Dante/AES67 PTP lock on BOTH networks before and after the move",
+                    "flow subscriptions / channel routing intact post-move"],
+     "standard": "AES67 / SMPTE ST 2110-30 / ST 2059"},
+    {"id": "robotics", "name": "Robotics & Camera Control", "tier": "On-air critical",
+     "token": r"ROBOTIC", "classes": {"Robotics", "Camera"}, "needs_ptp": False, "dual_path": False,
+     "validation": ["control + return path up", "PoE restored (often on-air critical)"],
+     "standard": ""},
+    {"id": "mcr", "name": "Master Control & Playout (MCR)", "tier": "On-air critical",
+     "token": r"\bMCRR?|MASTER.?CONTROL|PLAYOUT", "classes": set(), "needs_ptp": False, "dual_path": True,
+     "validation": ["playout / automation reachability", "router-control + on-air signal path validated"],
+     "standard": ""},
+    {"id": "ingest", "name": "Ingest / Teleport / Satellite", "tier": "Production",
+     "token": r"INGEST|INGR|TELEPORT|TE421|SATR|\bSAT\b|INTERIM", "classes": set(),
+     "needs_ptp": False, "dual_path": False,
+     "validation": ["record / ingest chain reachable", "satellite / teleport feeds locked"],
+     "standard": ""},
+    {"id": "storage", "name": "Shared Storage & Replay (Avid NEXIS / EVS / Render)", "tier": "Production",
+     "token": r"NEXIS|\bAVID|ISIS|\bEVS|RENDERFARM|RENDER", "classes": {"Storage"},
+     "needs_ptp": False, "dual_path": True,
+     "validation": ["both NIC legs up (same speed/subnet)",
+                    "Rx flow-control (LFC) preserved; no new uplink oversubscription",
+                    "datastore / workspace mounts verified before and after"],
+     "standard": "Avid NEXIS Network & Switch Guide"},
+    {"id": "investigative", "name": "Investigative / News", "tier": "Production",
+     "token": r"INVESTIGATIV|\bNEWS", "classes": set(), "needs_ptp": False, "dual_path": False,
+     "validation": ["editorial / craft-edit reachability"],
+     "standard": ""},
+    {"id": "mgmt", "name": "Management / Out-of-Band", "tier": "Support",
+     "token": r"MGMT|MGM-|\bMGM\b|\bOOB\b|SANDBOX", "classes": set(), "needs_ptp": False, "dual_path": False,
+     "validation": ["management / OOB reachability (do not strand a device's only management path)"],
+     "standard": ""},
+    {"id": "studio", "name": "Studio / Sets / LED", "tier": "Production",
+     "token": r"\bSTD|SET\d|LED|STUDIO", "classes": set(), "needs_ptp": False, "dual_path": False,
+     "validation": ["set / LED processors reachable", "camera + return feeds validated"],
+     "standard": ""},
+    {"id": "compute", "name": "Compute / Virtualization", "tier": "Support",
+     "token": "", "classes": {"VM / Hypervisor", "Server", "Database"}, "needs_ptp": False, "dual_path": False,
+     "validation": ["guest / app reachability", "NIC-team peer leg stays up", "shared storage stays reachable"],
+     "standard": ""},
+]
+# Media Fabric: attributed by observed PTP/multicast evidence (no reliable hostname token here).
+_APP_MEDIA = {"id": "media", "name": "Media Fabric (SMPTE ST 2110)", "tier": "On-air critical",
+              "needs_ptp": True, "dual_path": True,
+              "validation": ["PTP clock lock on BOTH red/blue networks (ST 2059) before and after the move",
+                             "IGMP joins re-established for every ST 2110 essence flow",
+                             "ST 2022-7 dual-path: never drop both paths in the same window (make-before-break)"],
+              "standard": "SMPTE ST 2110 / ST 2059 / ST 2022-7"}
+_APP_GENERAL = {"id": "general", "name": "General / Back-office (unclassified)", "tier": "Support",
+                "needs_ptp": False, "dual_path": False,
+                "validation": ["No application-specific signal collected -- classify these switches with the "
+                               "facility owner before scheduling the cutover."],
+                "standard": ""}
+for _d in _APP_DOMAINS:
+    _d["rx"] = re.compile(_d["token"], re.I) if _d.get("token") else None
+
+
+def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                                     endpoint_identity: Optional[list] = None,
+                                     endpoint_dependencies: Optional[dict] = None,
+                                     service_map: Optional[dict] = None,
+                                     health_scores: Optional[list] = None,
+                                     move_groups: Optional[list] = None,
+                                     punchlist: Optional[list] = None) -> dict:
+    """NEW-V3.23.112: synthesize the prior layers into named APPLICATION DOMAINS (workloads) with
+    footprint, criticality tier, health rollup, migration-wave span, a standards-grounded migration
+    playbook, and per-domain + cross-domain migration RISKS. Pure read; deterministic (sorted output);
+    tolerant of empty / oddly-typed inputs. See the block comment above for the research grounding of
+    each risk rule. Returns {domains, summary, cross_domain_risks, taxonomy_version}."""
+    from collections import Counter, defaultdict
+    hosts = sorted(all_interfaces or {})
+    ident = endpoint_identity or []
+    dep = endpoint_dependencies or {}
+    sm = service_map or {}
+    mc = sm.get("multicast") or {}
+    ptp = mc.get("ptp") or {}
+    queriers = mc.get("igmp_queriers") or []
+    # the broadcast/timing multicast groups (PTP-AV etc.) to attribute to the media/audio domains
+    classified = [g for g in (mc.get("classified_groups") or [])
+                  if g.get("broadcast") or "PTP" in (g.get("name") or "")
+                  or (g.get("category") or "") == "Broadcast-AV"]
+    band_of = {r.get("switch"): r.get("band", "") for r in (health_scores or [])}
+    wave_of: Dict[str, str] = {}
+    for g in (move_groups or []):
+        for h in (g.get("switches") or []):              # tolerate switches=None, not just a missing key
+            wave_of.setdefault(h, g.get("group") or "")  # coerce a None group label to "" (move_groups may omit it)
+
+    # ---- per-host endpoint classes + counts (from the identity layer) ----
+    classes_by_host: Dict[str, "Counter"] = defaultdict(Counter)
+    eps_by_host: Dict[str, int] = defaultdict(int)
+    for r in ident:
+        h = r.get("host", "")
+        eps_by_host[h] += 1
+        cls = r.get("endpoint_class", "Unknown")
+        if cls and cls != "Unknown":
+            classes_by_host[h][cls] += 1
+
+    # ---- per-host VLANs (access-port VLAN + SVI) and media evidence (Confirmed) ----
+    def _host_vlans(h: str) -> set:
+        vs = set()
+        for port, d in (all_interfaces.get(h) or {}).items():
+            v = (getattr(d, "vlan", "") or "").strip()
+            if v.isdigit():
+                vs.add(v)
+            m = re.match(r"^Vlan(\d+)$", str(port), re.I)
+            if m:
+                vs.add(m.group(1))
+        return vs
+    host_vlans = {h: _host_vlans(h) for h in hosts}
+    media_host = {h: bool(any(getattr(d, "multicast_info", "") for d in (all_interfaces.get(h) or {}).values())
+                          or h in ptp) for h in hosts}
+
+    # ---- class -> domain id (the fallback when no token matches) ----
+    cls_to_dom: Dict[str, str] = {}
+    for d in _APP_DOMAINS:
+        for c in (d.get("classes") or ()):
+            cls_to_dom.setdefault(c, d["id"])
+    domains_by_id = {d["id"]: d for d in _APP_DOMAINS}
+    domains_by_id[_APP_MEDIA["id"]] = _APP_MEDIA
+    domains_by_id[_APP_GENERAL["id"]] = _APP_GENERAL
+
+    # ---- assign each switch to ONE primary domain (token -> media evidence -> class -> general) ----
+    members: Dict[str, List[str]] = defaultdict(list)
+    evidence_by_dom: Dict[str, "Counter"] = defaultdict(Counter)
+    for h in hosts:
+        hu = h.upper()
+        chosen = None
+        for d in _APP_DOMAINS:
+            if d["rx"] and d["rx"].search(hu):
+                chosen = (d["id"], "hostname role token"); break
+        if not chosen and media_host[h]:
+            chosen = ("media", "PTP / multicast active on this switch (Confirmed)")
+        if not chosen and classes_by_host.get(h):
+            dom_cls = classes_by_host[h].most_common(1)[0][0]
+            did = cls_to_dom.get(dom_cls)
+            if did:
+                chosen = (did, f"dominant endpoint class '{dom_cls}'")
+        if not chosen:
+            chosen = ("general", "no application-specific signal")
+        members[chosen[0]].append(h)
+        evidence_by_dom[chosen[0]][chosen[1]] += 1
+
+    def _risk(sev, title, detail, remediation, standard=""):
+        return {"severity": sev, "title": title, "detail": detail,
+                "remediation": remediation, "standard": standard}
+
+    dual = dep.get("dual_homed") or []
+
+    out_domains: List[dict] = []
+    for did, mhosts in members.items():
+        spec = domains_by_id[did]
+        mhosts = sorted(mhosts)
+        mset = set(mhosts)
+        vlans = set()
+        for h in mhosts:
+            vlans |= host_vlans.get(h, set())
+        vlans_sorted = sorted(vlans, key=lambda x: int(x))
+        ep_count = sum(eps_by_host.get(h, 0) for h in mhosts)
+        cls_counter: "Counter" = Counter()
+        for h in mhosts:
+            cls_counter.update(classes_by_host.get(h, {}))
+        bands = [band_of.get(h, "") for h in mhosts]
+        n_crit = sum(1 for b in bands if b == "Critical")
+        n_poor = sum(1 for b in bands if b == "Poor")
+        worst = min((b for b in bands if b), key=lambda b: _APP_BAND_RANK.get(b, 99), default="")
+        waves = sorted({wave_of.get(h, "") for h in mhosts} - {""})
+        spans = len(waves) > 1
+        ptp_hosts = [h for h in mhosts if h in ptp]
+        ptp_present = bool(ptp_hosts)
+        ptp_bc = any((ptp.get(h) or {}).get("operational") for h in ptp_hosts)
+        hi_find = [f for f in (punchlist or [])
+                   if f.get("severity") in ("Critical", "High") and (mset & set(f.get("devices") or []))]
+        dsplit = [d for d in dual
+                  if spec.get("dual_path") and d.get("split_across_groups") and (set(d.get("switches") or []) & mset)]
+        oncrit = spec["tier"] == "On-air critical"
+
+        risks: List[dict] = []
+        if spec.get("needs_ptp") and ptp_present and not ptp_bc:
+            risks.append(_risk("High" if oncrit else "Medium", "Media timing not boundary-clocked",
+                f"PTP is present on {len(ptp_hosts)} switch(es) in this domain but none is an active boundary/"
+                "transparent clock -- timing is distributed as plain multicast, which does not scale for ST 2110.",
+                "Enable PTP boundary-clock mode on the media-path switches and verify clock lock (offset within "
+                "spec) on both red/blue networks before cutover.", spec.get("standard") or "SMPTE ST 2059"))
+        if oncrit and spans:
+            risks.append(_risk("High", "On-air-critical domain split across migration waves",
+                f"This domain's switches are scheduled across {len(waves)} waves ({', '.join(waves)}); on-air media "
+                "paths (incl. ST 2022-7 red/blue) must not lose both legs together.",
+                "Sequence make-before-break: keep one redundant path/leg in service throughout and validate the "
+                "on-air signal between waves.", "SMPTE ST 2022-7"))
+        if dsplit:
+            risks.append(_risk("High", f"Dual-homed endpoint leg(s) split across waves ({len(dsplit)})",
+                "Dual-homed endpoints in this domain have their two legs on switches in different waves; cutting the "
+                "wrong wave drops both legs / breaks redundancy.",
+                "Make-before-break the legs; for storage validate both NIC legs (same speed/subnet) + Rx flow-control "
+                "and no new oversubscription.", spec.get("standard") or "SMPTE ST 2022-7"))
+        if n_crit or n_poor:
+            risks.append(_risk("Medium", f"Domain rides {n_crit + n_poor} switch(es) in Critical/Poor health",
+                f"{n_crit} Critical + {n_poor} Poor-band switch(es) carry this workload.",
+                "Resolve the per-switch health deductions before migrating this domain.", ""))
+        if hi_find:
+            cats = ", ".join(sorted({f.get("category", "") for f in hi_find})[:5])
+            risks.append(_risk("Low", f"{len(hi_find)} High/Critical punch-list item(s) on this domain's switches",
+                f"Open High/Critical items (categories: {cats}) intersect this domain's switches.",
+                "See the Migration Punch-List for the prioritized, per-device fix order.", ""))
+        risks.sort(key=lambda r: _APP_SEV_RANK.get(r["severity"], 9))
+
+        dom_groups = classified if did in ("media", "audio") else []
+        out_domains.append({
+            "id": did, "domain": spec["name"], "tier": spec["tier"],
+            "switches": mhosts, "switch_count": len(mhosts),
+            "vlans": vlans_sorted[:40], "vlan_count": len(vlans_sorted),
+            "endpoint_count": ep_count, "classes": dict(cls_counter.most_common(6)),
+            "media_groups": [{"group": g.get("group", ""), "name": g.get("name", ""),
+                              "category": g.get("category", "")} for g in dom_groups][:20],
+            "ptp_present": ptp_present, "ptp_boundary_clocked": ptp_bc,
+            "health": {"worst_band": worst, "n_critical": n_crit, "n_poor": n_poor},
+            "waves": waves, "spans_waves": spans,
+            "evidence": "; ".join(f"{e} x{n}" if n > 1 else e
+                                  for e, n in evidence_by_dom[did].most_common(3)),
+            "validation": list(spec.get("validation") or []), "standard": spec.get("standard", ""),
+            "risks": risks, "n_high_risk": sum(1 for r in risks if r["severity"] in ("Critical", "High")),
+        })
+    out_domains.sort(key=lambda d: (_APP_TIER_RANK.get(d["tier"], 9), -d["switch_count"], d["domain"]))
+
+    # ---- cross-domain: IGMP querier continuity / split-brain (RFC 4541) ----
+    vlan_hosts: Dict[str, set] = defaultdict(set)
+    for h in hosts:
+        for v in host_vlans.get(h, set()):
+            vlan_hosts[v].add(h)
+    # Group queriers by (vlan, querier /24) so the SAME VLAN id reused in independent L2 domains
+    # (e.g. VLAN 12 with a querier in 10.202.12.0 AND another in 10.203.12.0) is NOT mis-flagged as a
+    # split-brain -- only >1 distinct querier WITHIN one subnet is a real RFC-4541 fault. q_hosts keeps
+    # the per-VLAN querier switches for the wave-continuity rule.
+    q_hosts: Dict[str, set] = defaultdict(set)
+    q_sub_ips: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+    q_sub_hosts: Dict[str, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+    for q in queriers:
+        v = str(q.get("vlan", "")).strip()
+        ip = (q.get("querier") or "").strip()
+        sw = q.get("switch")
+        if not v or not ip:
+            continue
+        parts = ip.split(".")
+        sub = ".".join(parts[:3]) if len(parts) == 4 else ip
+        q_sub_ips[v][sub].add(ip)
+        if sw:
+            q_hosts[v].add(sw); q_sub_hosts[v][sub].add(sw)
+    host_dom = {}
+    for did, mhosts in members.items():
+        for h in mhosts:
+            host_dom[h] = did
+    oncrit_hosts = {h for h, d in host_dom.items() if domains_by_id[d]["tier"] == "On-air critical"}
+
+    cross: List[dict] = []
+    for v in sorted(vlan_hosts, key=lambda x: int(x)):
+        mh = vlan_hosts[v]
+        vwaves = sorted({wave_of.get(h, "") for h in mh} - {""})
+        if v in q_hosts and len(vwaves) > 1 and (mh & oncrit_hosts):
+            qh = sorted(q_hosts[v]); qw = sorted({wave_of.get(h, "") for h in qh} - {""})
+            cross.append({"severity": "High", "kind": "querier-wave", "vlan": v,
+                "querier_switches": qh[:6], "querier_waves": qw, "vlan_waves": vwaves,
+                "title": f"IGMP querier for VLAN {v} may not survive the cutover",
+                "detail": f"VLAN {v} carries on-air media and spans waves {', '.join(vwaves)}; its IGMP querier is "
+                          f"on {', '.join(qh[:6])} (wave {', '.join(qw) or '?'}). If the querier switch moves/reboots "
+                          "independently, multicast membership times out on the other wave's switches (flood/blackhole).",
+                "remediation": f"Keep an IGMP querier active on VLAN {v} throughout the cutover (querier on a switch "
+                          "that stays up, or a transient secondary) and re-verify joins after each wave.",
+                "standard": "RFC 4541"})
+    for v in sorted(q_sub_ips, key=lambda x: int(x) if x.isdigit() else 0):
+        for sub, ips in q_sub_ips[v].items():
+            if len(ips) > 1:
+                cross.append({"severity": "Medium", "kind": "querier-split", "vlan": v,
+                    "subnet": f"{sub}.0/24", "querier_ips": sorted(ips)[:6],
+                    "querier_switches": sorted(q_sub_hosts[v][sub])[:6], "querier_waves": [], "vlan_waves": [],
+                    "title": f"Multiple IGMP queriers on VLAN {v} ({sub}.0/24)",
+                    "detail": f"VLAN {v} in subnet {sub}.0/24 has {len(ips)} distinct querier IPs "
+                              f"({', '.join(sorted(ips)[:6])}). RFC 4541 expects exactly one querier per L2 domain; "
+                              "two produce inconsistent membership and intermittent multicast loss.",
+                    "remediation": "Leave exactly one querier active in this subnet (lowest IP wins the election); "
+                              "disable the others.", "standard": "RFC 4541"})
+    cross.sort(key=lambda r: (_APP_SEV_RANK.get(r["severity"], 9),
+                              int(r["vlan"]) if str(r["vlan"]).isdigit() else 0))
+    cross = cross[:50]
+
+    by_tier = Counter(d["tier"] for d in out_domains)
+    summary = {
+        "n_domains": len(out_domains), "by_tier": dict(by_tier),
+        "n_on_air_critical": by_tier.get("On-air critical", 0),
+        "n_spanning_waves": sum(1 for d in out_domains if d["spans_waves"]),
+        "n_high_risk": sum(1 for d in out_domains if d["n_high_risk"]),
+        "n_cross_domain_risks": len(cross),
+        "ptp_boundary_clocked": any(d["ptp_boundary_clocked"] for d in out_domains),
+    }
+    return {"domains": out_domains, "summary": summary,
+            "cross_domain_risks": cross, "taxonomy_version": "app-domains/1"}
