@@ -57,6 +57,16 @@ def _snap():
              "mac_count": 1, "vendor": "APC", "endpoint_class": "UPS/PDU",
              "confidence": "Inferred-high", "evidence": "vendor 'APC'"},
         ],
+        "endpoint_dependencies": {
+            "clusters": [{"vendor": "VMware, Inc.", "endpoint_class": "VM / Hypervisor", "count": 12,
+                          "switches": 4, "vlans": 2, "move_groups": 1, "spans_groups": False}],
+            "dual_homed": [{"mac": "bb:00:00:00:00:01", "ip": "10.0.0.5", "vendor": "NetApp",
+                            "endpoint_class": "Storage", "switches": ["sw1", "sw2"], "ports": [],
+                            "move_groups": ["Group 1"], "split_across_groups": False}],
+            "shared_ip": [],
+            "affinity": [{"vlan": "10", "total": 12, "classes": {"VM / Hypervisor": 12}, "dominant": "VM / Hypervisor"}],
+            "per_switch_validation": {"sw1": ["Storage: datastore/LUN reachable AND the cluster peer is up"]},
+        },
     }
 
 
@@ -105,6 +115,10 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # the endpoint identity section (§7.1) surfaced vendor + class grouping
     assert "Endpoint identity (vendor & type)" in text
     assert "VM / Hypervisor" in text and "VMware, Inc." in text
+    # the dependency intelligence (§8.1 clusters/dual-homed + §11.1 per-class validation)
+    assert "Endpoint clusters & dependencies" in text
+    assert "Service validation by endpoint class" in text
+    assert "datastore/LUN reachable" in text
 
 
 def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):

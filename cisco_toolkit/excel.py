@@ -652,6 +652,55 @@ def write_endpoint_intelligence_sheet(wb, identity: list) -> None:
     logger.info(f"  [OK] '{ENDPOINT_INTEL_SHEET_NAME}' sheet: {len(identity or [])} endpoint(s)")
 
 
+ENDPOINT_DEPS_SHEET_NAME = "Endpoint Dependencies"   # cohesive units / clusters (NEW-V3.23.96)
+
+def write_endpoint_dependencies_sheet(wb, dependencies: dict) -> None:
+    """Write (or replace) 'Endpoint Dependencies': the migration 'cohesive units' -- per (vendor, class)
+    distributed system with its endpoint count and switch/VLAN spread, then the dual-homed endpoints
+    (NIC-team / redundant legs to sequence make-before-break) and the per-VLAN app tiers. NEW-V3.23.96:
+    renders the precomputed compute_endpoint_dependencies dict (one source of truth)."""
+    if ENDPOINT_DEPS_SHEET_NAME in wb.sheetnames:
+        del wb[ENDPOINT_DEPS_SHEET_NAME]
+    ws = wb.create_sheet(ENDPOINT_DEPS_SHEET_NAME)
+    cols = ["Section", "Vendor / detail", "Class", "Endpoints", "Switches", "VLANs", "Note"]
+    _census_header(ws, cols)
+    DAT = Font(name="Calibri", size=10)
+    AL = Alignment(horizontal="left", vertical="center")
+    CN = Alignment(horizontal="center", vertical="center")
+    warn = PatternFill("solid", fgColor="FCE5CD")
+    r = 2
+    dep = dependencies or {}
+
+    def row(vals, flag=False):
+        nonlocal r
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT
+            c.alignment = CN if col in (4, 5, 6) else AL
+            if flag and col == 7:
+                c.fill = warn
+        r += 1
+
+    for c in (dep.get("clusters") or []):
+        row(["Cluster", c.get("vendor", ""), c.get("endpoint_class", ""), c.get("count", ""),
+             c.get("switches", ""), c.get("vlans", ""),
+             "spans multiple move-groups — coordinate the waves" if c.get("spans_groups") else ""],
+            flag=c.get("spans_groups"))
+    for d in (dep.get("dual_homed") or []):
+        row(["Dual-homed", f"{d.get('mac', '')}  [{', '.join(d.get('switches', []))}]",
+             d.get("endpoint_class", ""), 1, len(d.get("switches", [])), "",
+             "split across move-groups — sequence make-before-break" if d.get("split_across_groups")
+             else "NIC-team / redundant legs — make-before-break"],
+            flag=d.get("split_across_groups"))
+    for a in (dep.get("affinity") or []):
+        cls = ", ".join(f"{k} ({v})" for k, v in (a.get("classes") or {}).items())
+        row(["VLAN tier", f"VLAN {a.get('vlan', '')}: {cls}", a.get("dominant", ""),
+             a.get("total", ""), "", a.get("vlan", ""), ""])
+    _census_autofit(ws, len(cols), r - 1)
+    ws.column_dimensions["B"].width = 48; ws.column_dimensions["G"].width = 46
+    n = len(dep.get("clusters") or []) + len(dep.get("dual_homed") or []) + len(dep.get("affinity") or [])
+    logger.info(f"  [OK] '{ENDPOINT_DEPS_SHEET_NAME}' sheet: {n} dependency row(s)")
+
+
 def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
     if name not in idmap:
         idmap[name] = f"n{len(idmap)}"

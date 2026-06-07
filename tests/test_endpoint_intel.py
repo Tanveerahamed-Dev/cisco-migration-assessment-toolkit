@@ -59,3 +59,33 @@ def test_compute_endpoint_identity_smoke():
     assert by_port["Gi1/0/2"]["endpoint_class"] == "Storage"
     # every record carries vendor (fact) + class + confidence + evidence
     assert all({"vendor", "endpoint_class", "confidence", "evidence"} <= set(r) for r in recs)
+
+
+def test_endpoint_dependencies_clusters_dualhomed_validation():
+    """NEW-V3.23.96: clusters (cohesive units), dual-homed detection, and the per-switch service
+    checklist — over the identity model, honouring move-group context."""
+    from cisco_toolkit.analyze import compute_endpoint_dependencies
+    ident = [
+        {"host": "sw1", "port": "Gi1/0/1", "vlan": "10", "ip": "", "mac": "aa:00:00:00:00:01",
+         "vendor": "Dell Inc.", "endpoint_class": "Server"},
+        {"host": "sw2", "port": "Gi1/0/1", "vlan": "10", "ip": "", "mac": "aa:00:00:00:00:02",
+         "vendor": "Dell Inc.", "endpoint_class": "Server"},
+        {"host": "sw3", "port": "Gi1/0/1", "vlan": "10", "ip": "", "mac": "aa:00:00:00:00:03",
+         "vendor": "Dell Inc.", "endpoint_class": "Server"},
+        # a dual-homed storage endpoint: SAME MAC on sw1 + sw2 (both in group G1)
+        {"host": "sw1", "port": "Te1/1", "vlan": "20", "ip": "10.0.0.5", "mac": "bb:00:00:00:00:01",
+         "vendor": "NetApp", "endpoint_class": "Storage"},
+        {"host": "sw2", "port": "Te1/1", "vlan": "20", "ip": "10.0.0.5", "mac": "bb:00:00:00:00:01",
+         "vendor": "NetApp", "endpoint_class": "Storage"},
+    ]
+    mg = [{"group": "G1", "switches": ["sw1", "sw2"]}, {"group": "G2", "switches": ["sw3"]}]
+    dep = compute_endpoint_dependencies(ident, mg)
+    # cluster: Dell Server, 3 endpoints across 3 switches, spanning both move-groups
+    clu = next(c for c in dep["clusters"] if c["endpoint_class"] == "Server" and "Dell" in c["vendor"])
+    assert clu["count"] == 3 and clu["switches"] == 3 and clu["spans_groups"] is True
+    # dual-homed: NetApp storage MAC on sw1+sw2 (same group -> not split)
+    dh = next(d for d in dep["dual_homed"] if d["endpoint_class"] == "Storage")
+    assert sorted(dh["switches"]) == ["sw1", "sw2"] and dh["split_across_groups"] is False
+    # per-switch validation: sw1 hosts Server + Storage -> checklist lines + a dual-homed note
+    v = dep["per_switch_validation"]["sw1"]
+    assert any("Storage" in line for line in v) and any("Dual-homed" in line for line in v)
