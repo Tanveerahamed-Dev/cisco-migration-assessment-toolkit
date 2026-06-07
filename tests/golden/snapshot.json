@@ -2504,15 +2504,8 @@
   {
    "severity": "Medium",
    "trigger": "Uplink access1 Gi0/1 -> core1 fails",
-   "mechanism": "It is access1's only forwarding inter-switch link carrying VLAN 10, and it is a single (non-port-channel) link",
-   "impact": "VLAN 10 on access1 is isolated from the fabric (2 endpoint(s))",
-   "mitigation": "Add a second uplink or bundle the link as a port-channel"
-  },
-  {
-   "severity": "Medium",
-   "trigger": "Uplink access1 Gi0/1 -> core1 fails",
-   "mechanism": "It is access1's only forwarding inter-switch link carrying VLAN 30, and it is a single (non-port-channel) link",
-   "impact": "VLAN 30 on access1 is isolated from the fabric (1 endpoint(s))",
+   "mechanism": "It is access1's only forwarding inter-switch link carrying 2 VLAN(s) (10, 30), and it is a single (non-port-channel) link",
+   "impact": "2 VLAN(s) on access1 are isolated from the fabric (3 endpoint(s))",
    "mitigation": "Add a second uplink or bundle the link as a port-channel"
   }
  ],
