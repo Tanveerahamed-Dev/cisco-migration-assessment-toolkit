@@ -1647,6 +1647,126 @@ def compute_ptp_readiness(service_map: dict) -> List[dict]:
 
 
 # =============================================================================
+# Multicast / media-flow + timing intelligence (NEW-V3.23.115). Deepen the already-classified multicast
+# groups + IGMP queriers + PTP clocks in service_map.multicast into media-fabric intelligence with concrete,
+# standards-grounded checks. Group / MAC / VLAN level only -- per-(S,G) OIL is not collected (not faked).
+# =============================================================================
+_MCAST_ONAIR_CATS = {"Broadcast-AV"}
+
+
+def _mcast_mac(ip: str) -> str:
+    """The Ethernet multicast MAC an IPv4 group maps to (RFC 1112): 01:00:5e + the low 23 bits of the group.
+    IPv4->MAC is 32:1, so groups differing only ABOVE the low 23 bits collapse to the SAME MAC and a
+    MAC-level switch forwards them together (the RFC 4541 snooping pitfall). '' if not dotted IPv4 multicast."""
+    try:
+        o = [int(p) for p in str(ip or "").strip().split(".")]
+    except ValueError:
+        return ""
+    if len(o) != 4 or not (224 <= o[0] <= 239) or any(not 0 <= b <= 255 for b in o):
+        return ""
+    return "01:00:5e:%02x:%02x:%02x" % (o[1] & 0x7f, o[2], o[3])
+
+
+def compute_multicast_intelligence(service_map: Optional[dict] = None,
+                                   all_interfaces: Optional[Dict[str, Dict[str, InterfaceData]]] = None) -> dict:
+    """NEW-V3.23.115: media-fabric intelligence over service_map.multicast (classified groups + IGMP queriers
+    + PTP clocks). Concrete checks: MAC aliasing (RFC 4541 -- IPv4 multicast is 32:1 lossy into L2 MACs, so
+    aliased groups cross-deliver), IGMP querier coverage (RFC 4541 -- a multicast VLAN with no querier floods/
+    blackholes), and the PTP timing tree (SMPTE ST 2059). Pure read; deterministic; tolerant of empty input.
+    Group/MAC/VLAN level -- per-(S,G) OIL is not collected. Returns {groups, mac_aliases, querier, ptp,
+    summary, risks}."""
+    from collections import defaultdict
+    mc = ((service_map or {}).get("multicast")) or {}
+    raw = mc.get("classified_groups") or []
+    ptp = mc.get("ptp") or {}
+    queriers = mc.get("igmp_queriers") or []
+
+    def _ipk(ip):
+        try:
+            return tuple(int(o) for o in str(ip).split("."))
+        except ValueError:
+            return (999,)
+
+    groups: List[dict] = []
+    by_mac: Dict[str, list] = defaultdict(list)
+    for g in raw:
+        if not isinstance(g, dict):
+            continue
+        ip = g.get("group", "")
+        mac = _mcast_mac(ip)
+        on_air = bool(g.get("broadcast")) or (g.get("category") or "") in _MCAST_ONAIR_CATS
+        rec = {"group": ip, "name": g.get("name", ""), "category": g.get("category", ""),
+               "broadcast": bool(g.get("broadcast")), "on_air": on_air,
+               "source": g.get("source", ""), "mac": mac}
+        groups.append(rec)
+        if mac:
+            by_mac[mac].append(rec)
+    groups.sort(key=lambda r: _ipk(r["group"]))
+
+    mac_aliases: List[dict] = []
+    for mac, recs in by_mac.items():
+        if len(recs) > 1:
+            mac_aliases.append({"mac": mac, "groups": sorted((r["group"] for r in recs), key=_ipk),
+                                "names": sorted({r["name"] for r in recs if r["name"]}),
+                                "has_av": any(r["on_air"] for r in recs)})
+    mac_aliases.sort(key=lambda a: (not a["has_av"], a["mac"]))
+
+    # querier coverage: multicast-active SVI VLANs (PIM/mroute on a VlanN interface) lacking an IGMP querier
+    q_vlans = {str(q.get("vlan", "")).strip() for q in queriers if str(q.get("vlan", "")).strip()}
+    mcast_vlans: set = set()
+    for _host, ifaces in (all_interfaces or {}).items():
+        for port, d in (ifaces or {}).items():
+            if getattr(d, "multicast_info", ""):
+                m = re.match(r"^Vlan(\d+)$", str(port), re.I)
+                if m:
+                    mcast_vlans.add(m.group(1))
+    gap_vlans = sorted(mcast_vlans - q_vlans, key=lambda v: int(v))
+    querier = {"n_querier_vlans": len(q_vlans),
+               "multicast_vlans": sorted(mcast_vlans, key=lambda v: int(v)), "gap_vlans": gap_vlans}
+
+    # PTP timing tree (ST 2059)
+    oper = sorted(h for h, v in ptp.items() if (v or {}).get("operational"))
+    dormant = sorted(h for h, v in ptp.items() if not (v or {}).get("operational"))
+    gms = sorted({(v or {}).get("grandmaster") for v in ptp.values() if (v or {}).get("grandmaster")})
+    ptp_tree = {"n_clocks": len(ptp), "n_operational": len(oper), "n_dormant": len(dormant),
+                "grandmasters": gms, "operational": oper, "dormant": dormant}
+
+    risks: List[dict] = []
+    for a in mac_aliases:
+        risks.append({"kind": "mac-alias", "severity": "High" if a["has_av"] else "Medium",
+            "title": f"Multicast MAC-address overlap on {a['mac']}",
+            "detail": (f"Groups {', '.join(a['groups'])} all map to L2 MAC {a['mac']} (IPv4 multicast is 32:1 "
+                       "into Ethernet MACs). A switch that constrains multicast at the MAC level forwards them "
+                       "together — receivers of one group see the other's traffic"
+                       + (" (and at least one is a Broadcast-AV / on-air group)." if a["has_av"] else ".")),
+            "remediation": "Re-address one overlapping group so the low-23-bit MAC differs (avoid 224.x/225.x… "
+                           "239.x families that alias), or use IGMPv3 source-specific forwarding end-to-end.",
+            "standard": "RFC 4541 / RFC 1112"})
+    if gap_vlans:
+        risks.append({"kind": "querier-gap", "severity": "High",
+            "title": f"{len(gap_vlans)} multicast VLAN(s) without an IGMP querier",
+            "detail": (f"VLAN(s) {', '.join(gap_vlans)} carry multicast (PIM/mroute on the SVI) but no IGMP "
+                       "querier was seen — membership times out and the switch floods or blackholes the group."),
+            "remediation": "Configure exactly one IGMP (snooping) querier per multicast VLAN (lowest IP wins).",
+            "standard": "RFC 4541"})
+    if ptp and not oper:
+        risks.append({"kind": "ptp-dormant", "severity": "Medium",
+            "title": f"PTP present on {len(ptp)} switch(es) but no active boundary clock",
+            "detail": ("Every PTP switch is dormant (Device Type Unknown / 0 ports / no parent) — timing is "
+                       "distributed as plain multicast, which does not scale for ST 2110 / AES67 / Dante."),
+            "remediation": "Enable PTP boundary-clock mode on the media-path switches and verify lock; see the "
+                           "PTP/media-timing punch-list item.", "standard": "SMPTE ST 2059"})
+
+    summary = {"n_groups": len(groups), "n_av_groups": sum(1 for g in groups if g["on_air"]),
+               "n_mac_clashes": len(mac_aliases), "n_querier_gaps": len(gap_vlans),
+               "n_active_switches": mc.get("active_switch_count", 0),
+               "n_active_interfaces": mc.get("active_interfaces", 0),
+               "n_ptp_clocks": len(ptp), "n_ptp_dormant": len(dormant)}
+    return {"groups": groups, "mac_aliases": mac_aliases, "querier": querier, "ptp": ptp_tree,
+            "summary": summary, "risks": risks}
+
+
+# =============================================================================
 # Physical-health compute helpers (PHASE 2.7 step 17). The pure parsers
 # (parse_interface_phy / _classify_media / _is_physical_port / _parse_poe_watts)
 # live in parse.py; these derive metrics from already-parsed records / the model.
@@ -2675,7 +2795,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 l2: Optional[dict] = None,
                                 hostname_mismatches: Optional[list] = None,
                                 drift: Optional[list] = None,
-                                ptp_readiness: Optional[list] = None) -> List[dict]:
+                                ptp_readiness: Optional[list] = None,
+                                media_risks: Optional[list] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -2817,6 +2938,12 @@ def compute_migration_punchlist(cross_layer: List[dict],
     # timing gap (PTP enabled but not boundary-clocked) is in the prioritized action list.
     for d in (ptp_readiness or []):
         add(d.get("severity", "Medium"), d.get("category", "Timing/PTP"), d.get("devices", []),
+            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
+
+    # NEW-V3.23.115: fold in multicast/media-fabric findings (MAC-aliasing / IGMP querier gaps from
+    # compute_multicast_intelligence) so the broadcast-fabric risks are in the prioritized action list.
+    for d in (media_risks or []):
+        add(d.get("severity", "Medium"), "Multicast/Media", d.get("devices", []),
             d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))

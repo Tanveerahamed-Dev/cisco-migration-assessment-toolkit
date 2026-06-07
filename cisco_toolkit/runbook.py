@@ -448,6 +448,29 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         if queriers:
             doc.add_paragraph(f"IGMP snooping querier present on {len(queriers)} VLAN(s) "
                               f"({_CONF_CONFIRMED}); VLANs without a querier risk multicast flooding/pruning.")
+        # media-fabric intelligence (NEW-V3.23.115): MAC-aliasing / querier coverage / PTP tree
+        mi = snap_dict.get("multicast_intelligence") or {}
+        aliases = mi.get("mac_aliases") or []
+        if aliases:
+            doc.add_paragraph(
+                f"Multicast MAC-address aliasing ({_CONF_CONFIRMED}, RFC 4541): {len(aliases)} case(s) where "
+                "groups collapse to one L2 MAC (IPv4 multicast is 32:1 into Ethernet MACs) so a MAC-level switch "
+                "forwards them together — " + "; ".join(f"{a.get('mac')} ← {', '.join(a.get('groups') or [])}"
+                                                        for a in aliases[:4])
+                + ". Re-address one of each overlapping pair (or use IGMPv3 SSM end-to-end) before the cutover.")
+        gaps = (mi.get("querier") or {}).get("gap_vlans") or []
+        if gaps:
+            doc.add_paragraph(
+                f"Multicast VLANs without an IGMP querier ({_CONF_CONFIRMED}, RFC 4541): VLAN(s) "
+                f"{', '.join(gaps[:20])} carry multicast but have no querier — flooding/blackhole risk; "
+                "configure exactly one querier per multicast VLAN.")
+        ptp_tree = mi.get("ptp") or {}
+        if ptp_tree.get("n_clocks"):
+            doc.add_paragraph(
+                f"PTP timing tree (ST 2059): {ptp_tree.get('n_operational', 0)} of {ptp_tree.get('n_clocks', 0)} "
+                f"clock(s) are active boundary clocks, {ptp_tree.get('n_dormant', 0)} dormant"
+                + (f"; grandmaster(s) {', '.join(ptp_tree.get('grandmasters') or [])}."
+                   if ptp_tree.get("grandmasters") else "; no grandmaster observed."))
 
     # ===== 6.7 Application domains (workload synthesis & migration playbook) — NEW-V3.23.112 =====
     appi = snap_dict.get("application_intelligence") or {}

@@ -1443,6 +1443,34 @@
    "igmp_queriers": []
   }
  },
+ "multicast_intelligence": {
+  "groups": [],
+  "mac_aliases": [],
+  "querier": {
+   "n_querier_vlans": 0,
+   "multicast_vlans": [],
+   "gap_vlans": []
+  },
+  "ptp": {
+   "n_clocks": 0,
+   "n_operational": 0,
+   "n_dormant": 0,
+   "grandmasters": [],
+   "operational": [],
+   "dormant": []
+  },
+  "summary": {
+   "n_groups": 0,
+   "n_av_groups": 0,
+   "n_mac_clashes": 0,
+   "n_querier_gaps": 0,
+   "n_active_switches": 0,
+   "n_active_interfaces": 0,
+   "n_ptp_clocks": 0,
+   "n_ptp_dormant": 0
+  },
+  "risks": []
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,
