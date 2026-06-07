@@ -1932,6 +1932,90 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
     return {"accidental": accidental, "misaligned": misaligned}
 
 
+def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                              all_device_physical: list) -> List[dict]:
+    """NEW-V3.23.93: evidence-led FALSE-HEALTH / operational-drift detector. Surfaces the migration
+    traps a green control plane hides (cisco-network-assessment doctrine: "configured is not healthy;
+    up is not healthy"): temporary L2 bridges enlarging the broadcast/STP domain, PoE faults on ports
+    described as live powered endpoints, native-VLAN-1 on inter-switch trunks, and multi-year uptime
+    (STP / control-plane not exercised recently -> latent risk that surfaces on the first change).
+
+    Bulk patterns are AGGREGATED (one row + a count/list), never one row per port, per the same
+    cry-wolf doctrine the rest of the toolkit follows. Returns punch-list-shaped finding dicts
+    {severity, category, devices, title, detail, remediation}. Pure read of already-parsed data."""
+    TEMP = re.compile(r"\btemp\b|temporary|temp[-_ ]|\btmp\b", re.I)
+    POWERED = re.compile(r"cam|camera|ptz|robot|light|on.?air|access.?point|\bap[-_ ]", re.I)
+    POE_FAULT = re.compile(r"fault|denied|err", re.I)
+    out: List[dict] = []
+
+    # 1. Temporary L2 bridges on infra/trunk ports -- broadcast/STP-domain blast radius.
+    temp_by_host: Dict[str, list] = {}
+    for host, ports in all_interfaces.items():
+        for p, d in ports.items():
+            desc = (d.description or "").strip()
+            is_infra = bool((d.cdp_neighbor or "").strip()) or (d.trunk_status or "").lower().startswith("trunk")
+            if desc and is_infra and TEMP.search(desc):
+                temp_by_host.setdefault(host, []).append(f"{p} ({desc[:40]})")
+    for host, ports in sorted(temp_by_host.items()):
+        out.append({"severity": "High", "category": "False-health", "devices": [host],
+                    "title": f"Temporary L2 bridge on {host}",
+                    "detail": f"{len(ports)} infra port(s) described as a temporary bridge: "
+                              f"{', '.join(ports[:6])}. A temporary L2 bridge enlarges the broadcast / "
+                              "STP domain over production VLANs.",
+                    "remediation": "Confirm whether the temporary bridge is still required; remove it or "
+                                   "convert it to a designed, pruned link before cutover."})
+
+    # 2. PoE fault on a port described as a live powered endpoint -- a pre-cutover action, not cosmetic.
+    poe_by_host: Dict[str, list] = {}
+    for host, ports in all_interfaces.items():
+        for p, d in ports.items():
+            ps = (d.poe_status or ""); desc = (d.description or "").strip()
+            if ps and POE_FAULT.search(ps) and POWERED.search(desc):
+                poe_by_host.setdefault(host, []).append(f"{p} ({desc[:30]}: {ps})")
+    for host, ports in sorted(poe_by_host.items()):
+        out.append({"severity": "High", "category": "False-health", "devices": [host],
+                    "title": f"PoE fault on powered endpoint(s) on {host}",
+                    "detail": f"{len(ports)} port(s) in a PoE fault state with a powered-endpoint "
+                              f"description: {', '.join(ports[:6])}. The endpoint is likely dark.",
+                    "remediation": "Resolve the PoE fault (power budget / cabling / device) before the "
+                                   "cutover window."})
+
+    # 3. Native VLAN 1 on inter-switch trunks -- hygiene / VLAN-hopping exposure. AGGREGATED.
+    nat1_hosts: list = []
+    for host, ports in all_interfaces.items():
+        if any((d.trunk_status or "").lower().startswith("trunk")
+               and (d.trunk_native_vlan or "").strip() == "1" for d in ports.values()):
+            nat1_hosts.append(host)
+    nat1_count = sum(1 for host, ports in all_interfaces.items() for d in ports.values()
+                     if (d.trunk_status or "").lower().startswith("trunk")
+                     and (d.trunk_native_vlan or "").strip() == "1")
+    if nat1_hosts:
+        out.append({"severity": "Low", "category": "False-health", "devices": sorted(nat1_hosts),
+                    "title": f"Native VLAN 1 on {nat1_count} inter-switch trunk(s)",
+                    "detail": f"{nat1_count} trunk(s) across {len(nat1_hosts)} switch(es) carry the default "
+                              "VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+                    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."})
+
+    # 4. Multi-year uptime -- STP / control-plane not exercised recently (latent cutover risk). AGGREGATED.
+    year_re = re.compile(r"(\d+)\s*year")
+    longup: list = []
+    for dp in (all_device_physical or []):
+        m = year_re.search(getattr(dp, "uptime", "") or "")
+        if m and int(m.group(1)) >= 3:
+            longup.append((getattr(dp, "hostname", ""), int(m.group(1))))
+    if longup:
+        longup.sort(key=lambda t: -t[1])
+        top = ", ".join(f"{h} ({y}y)" for h, y in longup[:6])
+        out.append({"severity": "Low", "category": "False-health", "devices": [h for h, _ in longup],
+                    "title": f"Multi-year uptime on {len(longup)} device(s) (max {longup[0][1]} years)",
+                    "detail": f"{len(longup)} device(s) have not reloaded in 3+ years (e.g. {top}). "
+                              "STP / control-plane convergence has not been exercised recently -- latent "
+                              "issues can surface on the first change.",
+                    "remediation": "Plan a deliberate, monitored maintenance window; do not let the cutover "
+                                   "be the first control-plane event in years."})
+    return out
+
+
 _PUNCH_RANK = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
 
 def compute_migration_punchlist(cross_layer: List[dict],
@@ -1944,7 +2028,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 health_scores: List[dict],
                                 move_groups: List[dict],
                                 l2: Optional[dict] = None,
-                                hostname_mismatches: Optional[list] = None) -> List[dict]:
+                                hostname_mismatches: Optional[list] = None,
+                                drift: Optional[list] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -2075,6 +2160,12 @@ def compute_migration_punchlist(cross_layer: List[dict],
             f"Collected as '{hm.get('inventory')}' but the device reports its hostname as "
             f"'{hm.get('reported')}' -- it reconciles as a duplicate/phantom node in the topology.",
             "Correct the inventory/devices.json name to match the device's configured hostname.")
+
+    # NEW-V3.23.93: fold in the false-health / operational-drift findings (compute_operational_drift)
+    # so the executive punch-list also carries the traps a green control plane hides.
+    for d in (drift or []):
+        add(d.get("severity", "Medium"), d.get("category", "False-health"), d.get("devices", []),
+            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
     for i, it in enumerate(items, 1):
