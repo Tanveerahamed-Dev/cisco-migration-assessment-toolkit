@@ -286,6 +286,17 @@
   "L2: subnets via gateway",
   "BGP recv (#)"
  ],
+ "Migration Scenarios": [
+  "Fleet recommendation:",
+  "33% of switches are Poor/Critical \u2014 an in-place PHASED / PARALLEL-RUN migration is viable; reserve greenfield for any isolated worst-offenders.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Score Sensitivity": [
   "Perturbation",
   "Switches Changing Band",

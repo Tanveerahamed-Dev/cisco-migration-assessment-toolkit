@@ -737,6 +737,48 @@ def write_subnet_reachability_sheet(wb, subnet_intelligence: dict) -> None:
                 f"{len((subnet_intelligence or {}).get('per_device', []))} device(s)")
 
 
+MIGRATION_SCENARIO_SHEET_NAME = "Migration Scenarios"   # per-group cutover scenario (NEW-V3.23.98)
+
+def write_migration_scenarios_sheet(wb, scenarios: dict) -> None:
+    """Write (or replace) 'Migration Scenarios': per move-group, the recommended cutover scenario
+    (phased / parallel-run / greenfield / big-bang) + rationale + dual-homing split, with the
+    fleet-level recommendation in row 1. NEW-V3.23.98: renders compute_migration_scenarios."""
+    if MIGRATION_SCENARIO_SHEET_NAME in wb.sheetnames:
+        del wb[MIGRATION_SCENARIO_SHEET_NAME]
+    ws = wb.create_sheet(MIGRATION_SCENARIO_SHEET_NAME)
+    sc = scenarios or {}
+    fleet = sc.get("fleet_recommendation", "")
+    if fleet:
+        ws.cell(row=1, column=1, value="Fleet recommendation:").font = Font(bold=True, size=10)
+        c = ws.cell(row=1, column=2, value=fleet); c.font = Font(size=10)
+        c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    hdr_row = 3 if fleet else 1
+    cols = ["Move group", "Switches", "Endpoints", "Readiness", "Dual-homed %", "Hard cutovers",
+            "At-risk eps", "Recommended scenario", "Rationale"]
+    for i, h in enumerate(cols, 1):
+        cell = ws.cell(row=hdr_row, column=i, value=h)
+        cell.font = Font(bold=True, color="FFFFFF", size=10); cell.fill = PatternFill("solid", fgColor="434343")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(row=hdr_row + 1, column=1)
+    SCFILL = {"parallel-run": "D9EAD3", "phased": "FFF2CC", "greenfield": "CFE2F3", "big-bang": "F4CCCC"}
+    DAT = Font(name="Calibri", size=10)
+    r = hdr_row + 1
+    for g in sc.get("per_group", []):
+        vals = [g.get("group") or "(group)", g.get("switches"), g.get("endpoints"), g.get("readiness"),
+                g.get("dual_homed_pct"), g.get("hard_cutover"), g.get("hard_cutover_endpoints"),
+                g.get("recommended_scenario"), g.get("rationale")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT
+            c.alignment = Alignment(horizontal="center" if 2 <= col <= 8 else "left",
+                                    vertical="top", wrap_text=(col == 9))
+            if col == 8:
+                c.fill = PatternFill("solid", fgColor=SCFILL.get(v, "FFFFFF"))
+        r += 1
+    for colL, w in (("A", 16), ("I", 70)):
+        ws.column_dimensions[colL].width = w
+    logger.info(f"  [OK] '{MIGRATION_SCENARIO_SHEET_NAME}' sheet: {len(sc.get('per_group', []))} group(s)")
+
+
 def _mermaid_id(name: str, idmap: Dict[str, str]) -> str:
     if name not in idmap:
         idmap[name] = f"n{len(idmap)}"
