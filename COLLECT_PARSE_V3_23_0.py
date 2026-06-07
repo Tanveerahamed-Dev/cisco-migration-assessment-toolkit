@@ -382,6 +382,7 @@ from cisco_toolkit.build import (
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
     build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_routing_neighbors,
+    build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
 )
 # NEW-V3.23.39-.40 (PHASE 2.7 steps 29-30): the snapshot-reporting layer - snapshot_state (the JSON
@@ -469,6 +470,12 @@ COMMANDS_NXOS = [
     "show bgp summary",          # NEW-V15 (routing adjacencies - NX-OS)
     "show ip bgp summary",       # NEW-V15 (routing adjacencies)
     "show bgp ipv4 unicast",     # NEW-V3.23.97 (BGP RIB / received prefixes - NX-OS)
+    "show ip igmp groups",          # NEW-V3.23.102 (multicast membership census - broadcast fabric)
+    "show ip igmp snooping groups", # NEW-V3.23.102 (L2 multicast forwarding)
+    "show ip igmp snooping querier",# NEW-V3.23.102 (L2 querier per VLAN)
+    "show ptp clock",               # NEW-V3.23.102 (IEEE 1588 PTP clock health)
+    "show ptp parent",              # NEW-V3.23.102 (PTP grandmaster)
+    "show ip access-lists",         # NEW-V3.23.102 (ACL hit-counts = active-traffic evidence)
 ]
 
 COMMANDS_IOS = [
@@ -514,6 +521,12 @@ COMMANDS_IOS = [
     "show ip bgp",                    # NEW-V3.23.97 (BGP RIB / received prefixes - IOS/IOS-XE)
     "show track",                     # NEW-V3.20 (L3 forwarding: object / IP-SLA tracking)
     "show spanning-tree detail",      # NEW-V3.22 (STP topology-change counters)
+    "show ip igmp groups",            # NEW-V3.23.102 (multicast membership census - broadcast fabric)
+    "show ip igmp snooping groups",   # NEW-V3.23.102 (L2 multicast forwarding)
+    "show ip igmp snooping querier",  # NEW-V3.23.102 (L2 querier per VLAN)
+    "show ptp clock",                 # NEW-V3.23.102 (IEEE 1588 PTP clock health)
+    "show ptp parent",                # NEW-V3.23.102 (PTP grandmaster)
+    "show ip access-lists",           # NEW-V3.23.102 (ACL hit-counts = active-traffic evidence)
 ]
 
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
@@ -1377,6 +1390,11 @@ def main():
     all_routes: Dict[str, list] = {}
     all_routes_full: Dict[str, dict] = {}                            # NEW-V3.23.97 (FULL table for subnet intelligence; transient, not embedded)
     all_bgp_received: Dict[str, list] = {}                           # NEW-V3.23.97 (BGP RIB when 'show ip bgp' was collected)
+    # NEW-V3.23.102: multicast/PTP/ACL-hit collection (inert until the new commands are collected).
+    _igmp_groups: set = set()                                        # distinct multicast groups, fleet-wide
+    all_igmp_queriers: list = []                                     # [{switch, vlan, querier}]
+    all_ptp: Dict[str, dict] = {}                                   # {host: ptp clock health}
+    all_acl_hits: Dict[str, int] = {}                              # {"port:proto": total matches}
     _inscope = inscope_subnets(all_interfaces)
     for hostname, platform, cmd_to_file in all_devices_meta:
         rdb = build_routes(cmd_to_file)
@@ -1389,6 +1407,15 @@ def main():
         bgpr = build_bgp_received(cmd_to_file)
         if bgpr:
             all_bgp_received[hostname] = bgpr
+        _igmp_groups.update(build_igmp_groups(cmd_to_file))
+        for q in build_igmp_queriers(cmd_to_file):
+            all_igmp_queriers.append({"switch": hostname, **q})
+        ptp = build_ptp(cmd_to_file)
+        if ptp:
+            all_ptp[hostname] = ptp
+        for k, v in build_acl_hits(cmd_to_file).items():
+            all_acl_hits[k] = all_acl_hits.get(k, 0) + v
+    all_igmp_groups = sorted(_igmp_groups, key=lambda ip: tuple(int(o) for o in ip.split(".")))
 
     # Phase 6: Write interface rows to template sheet (each host guarded so one
     # host's write failure can't abort the run before wb.save()).
@@ -1525,7 +1552,9 @@ def main():
     # Phase 27c: Service Map (NEW-V3.23.101). Resolve ACL L4 port references + fleet multicast activity to
     # named services via the offline port registry (portdb). ACL refs are design intent (Inferred), not
     # active traffic. Compute once -> sheet + snapshot (one source of truth).
-    service_map = _run_phase("Service map", compute_service_map, all_acls, all_interfaces, _default={})
+    service_map = _run_phase("Service map", compute_service_map, all_acls, all_interfaces, _default={},
+                             igmp_groups=all_igmp_groups, ptp=all_ptp,
+                             igmp_queriers=all_igmp_queriers, acl_hits=all_acl_hits)
     _run_phase("Service Map sheet", write_service_map_sheet, wb, service_map)
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)

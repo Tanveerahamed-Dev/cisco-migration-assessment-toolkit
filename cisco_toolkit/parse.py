@@ -1489,6 +1489,115 @@ def parse_multicast_info(mroute_out: str, pim_out: str) -> Dict[str, str]:
     return {k: " / ".join(dict.fromkeys(v)) for k, v in res.items()}
 
 
+# ----------------------------------------------------------------------------- #
+# Multicast / PTP / ACL-hit collection parsers (NEW-V3.23.102). These read the
+# new commands (show ip igmp groups / snooping groups / snooping querier / ptp
+# clock / ptp parent / ip access-lists). Tolerant: empty/absent -> []/{}. They
+# light up the broadcast-fabric intelligence (multicast group census, PTP lock,
+# active-traffic evidence) on the next data re-collection; inert until then.
+# ----------------------------------------------------------------------------- #
+_MCAST_IP_RE = re.compile(r"\b(2(?:2[4-9]|3[0-9])\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")  # class D 224-239
+
+
+def parse_igmp_groups(output: str) -> List[str]:
+    """'show ip igmp groups' / 'show ip igmp snooping groups' -> sorted distinct multicast group IPs
+    (class-D 224.0.0.0-239.255.255.255). Reporter/querier unicast addresses are ignored. [] when none."""
+    if not output:
+        return []
+    groups = {m for ln in output.splitlines() for m in _MCAST_IP_RE.findall(ln)}
+    return sorted(groups, key=lambda ip: tuple(int(o) for o in ip.split(".")))
+
+
+def parse_igmp_snooping_querier(output: str) -> List[dict]:
+    """'show ip igmp snooping querier' -> [{vlan, querier}] (the L2 querier per VLAN -- critical for
+    broadcast: no querier => multicast floods or is pruned). Tolerant of table + 'detail' forms."""
+    out: List[dict] = []
+    if not output:
+        return out
+    cur_vlan = ""
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        # detail form: 'Vlan 10: IGMP snooping querier status' ... 'IP address    : 10.0.10.1'
+        mv = re.match(r"^Vlan\s+(\d+)\b", s, re.IGNORECASE)
+        if mv:
+            cur_vlan = mv.group(1)
+        mip = re.search(r"IP address\s*[:=]\s*(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
+        if mip and cur_vlan:
+            out.append({"vlan": cur_vlan, "querier": mip.group(1)}); cur_vlan = ""; continue
+        # table form: '10    10.0.10.1    v2    ...'
+        mt = re.match(r"^(\d+)\s+(\d+\.\d+\.\d+\.\d+)\b", s)
+        if mt:
+            out.append({"vlan": mt.group(1), "querier": mt.group(2)})
+    # de-dup (vlan,querier)
+    seen, uniq = set(), []
+    for r in out:
+        k = (r["vlan"], r["querier"])
+        if k not in seen:
+            seen.add(k); uniq.append(r)
+    return uniq
+
+
+def parse_ptp_clock(output: str) -> dict:
+    """'show ptp clock' (+ optionally 'show ptp parent', concatenated) -> a PTP health summary:
+    {device_type, domain, grandmaster, offset_ns, mean_path_delay_ns, locked}. {} when no PTP output.
+    'locked' is inferred from a small offset-from-master (|offset| < 1us) when present."""
+    if not output or "ptp" not in output.lower():
+        return {}
+    r: dict = {"device_type": "", "domain": "", "grandmaster": "",
+               "offset_ns": None, "mean_path_delay_ns": None, "locked": None}
+    for raw in output.splitlines():
+        s = raw.strip()
+        m = re.search(r"PTP Device Type\s*[:=]\s*(.+)$", s, re.IGNORECASE)
+        if m:
+            r["device_type"] = m.group(1).strip()
+        m = re.search(r"(?:Clock )?Domain(?: Number)?\s*[:=]\s*(\d+)", s, re.IGNORECASE)
+        if m and not r["domain"]:
+            r["domain"] = m.group(1)
+        m = re.search(r"Grandmaster Clock Identity\s*[:=]\s*(\S+)", s, re.IGNORECASE)
+        if m:
+            r["grandmaster"] = m.group(1)
+        m = re.search(r"Offset From Master\s*\(ns\)\s*[:=]\s*(-?\d+)", s, re.IGNORECASE)
+        if m:
+            r["offset_ns"] = int(m.group(1))
+        m = re.search(r"Mean Path Delay\s*\(ns\)\s*[:=]\s*(-?\d+)", s, re.IGNORECASE)
+        if m:
+            r["mean_path_delay_ns"] = int(m.group(1))
+    if r["offset_ns"] is not None:
+        r["locked"] = abs(r["offset_ns"]) < 1000   # < 1 microsecond from master => effectively locked
+    return r
+
+
+def parse_acl_hitcounts(output: str) -> List[dict]:
+    """'show ip access-lists' -> [{acl, proto, port, matches}], one per ACE that reports hit counts
+    ('(N matches)'). Turns an ACL reference from design-intent (Inferred) into active-traffic evidence
+    (Confirmed). port is the 'eq <port>' destination port when present, else None. [] when none."""
+    out: List[dict] = []
+    if not output:
+        return out
+    cur = ""
+    HDR = re.compile(r"^(?:Standard|Extended|Reflexive)?\s*IP access list\s+(\S+)", re.IGNORECASE)
+    for raw in output.splitlines():
+        h = HDR.match(raw.strip())
+        if h:
+            cur = h.group(1); continue
+        mm = re.search(r"\((\d+)\s+match(?:es)?\)", raw)
+        if not (mm and cur):
+            continue
+        matches = int(mm.group(1))
+        proto = ""
+        mp = re.search(r"\b(permit|deny)\s+(tcp|udp|ip|icmp)\b", raw, re.IGNORECASE)
+        if mp:
+            proto = mp.group(2).lower()
+        port = None
+        me = re.search(r"\beq\s+(\S+)", raw, re.IGNORECASE)
+        if me:
+            port = _acl_portnum(me.group(1))
+        out.append({"acl": cur, "proto": proto, "port": port, "matches": matches})
+    return out
+
+
 def parse_show_version(output: str) -> Dict[str, str]:
     """Parse 'show version' for IOS/IOS-XE and NX-OS."""
     r: Dict[str, str] = {"model": "", "serial_number": "", "sw_version": "",

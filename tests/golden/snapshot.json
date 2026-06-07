@@ -1438,7 +1438,9 @@
    "active_switch_count": 0,
    "active_switches": [],
    "classified_groups": [],
-   "group_level_collected": false
+   "group_level_collected": false,
+   "ptp": {},
+   "igmp_queriers": []
   }
  },
  "health_scores": [
