@@ -329,6 +329,7 @@ from cisco_toolkit.analyze import (
     compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
     compute_endpoint_dependencies,                     # NEW-V3.23.96 (clusters / dependencies / per-switch validation)
     compute_subnet_intelligence,                       # NEW-V3.23.97 (subnet / routing reachability)
+    compute_migration_scenarios,                       # NEW-V3.23.98 (per-group cutover scenario framework)
 )
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -364,6 +365,7 @@ from cisco_toolkit.excel import (
     write_endpoint_intelligence_sheet,                          # NEW-V3.23.95 (endpoint vendor + class)
     write_endpoint_dependencies_sheet,                          # NEW-V3.23.96 (clusters / dependencies)
     write_subnet_reachability_sheet,                            # NEW-V3.23.97 (subnet / routing reachability)
+    write_migration_scenarios_sheet,                            # NEW-V3.23.98 (per-group cutover scenario)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -1540,6 +1542,14 @@ def main():
                                      all_interfaces, all_routes_full, move_groups, all_bgp_received,
                                      _default={})
     _run_phase("Subnet Reachability sheet", write_subnet_reachability_sheet, wb, subnet_intelligence)
+    # Phase 29d: Migration scenarios (NEW-V3.23.98). Synthesise readiness + wave sequencing + health
+    # bands into a per-group cutover-scenario recommendation; compute once -> sheet + snapshot. Local
+    # import of compute_wave_sequencing keeps it out of this module's namespace (test_package contract).
+    from cisco_toolkit.analyze import compute_wave_sequencing as _compute_ws
+    _ws_seq = _compute_ws(all_interfaces, move_groups)
+    migration_scenarios = _run_phase("Migration scenarios", compute_migration_scenarios,
+                                     migration_readiness, _ws_seq, health_scores, _default={})
+    _run_phase("Migration Scenarios sheet", write_migration_scenarios_sheet, wb, migration_scenarios)
 
     # Phase 30: Score Sensitivity - NEW-V3.23.5 (OAT robustness sweep over scoring weights)
     logger.info("\n[Phase 30] Writing Score Sensitivity sheet ...")
@@ -1643,6 +1653,7 @@ def main():
     snap_dict["endpoint_identity"] = endpoint_identity               # NEW-V3.23.95 (per-endpoint vendor + inferred class; reused from the Phase 15b compute)
     snap_dict["endpoint_dependencies"] = endpoint_dependencies       # NEW-V3.23.96 (clusters / dual-homed / VLAN tiers / per-switch validation; reused from Phase 29b)
     snap_dict["subnet_intelligence"] = subnet_intelligence           # NEW-V3.23.97 (per-device subnet source/destination + move-group reachability; reused from Phase 29c)
+    snap_dict["migration_scenarios"] = migration_scenarios           # NEW-V3.23.98 (per-group cutover scenario recommendation; reused from Phase 29d)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
