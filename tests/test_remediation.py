@@ -54,6 +54,16 @@ def test_cis_security_passes_through_remediation():
     assert _find(compute_remediation_plan(devices={}, security=sec2)["items"], "cis-security") == []
 
 
+def test_cis_multiline_remediation_comments_every_line():
+    # code-review fix: a multi-line CIS remediation must have EVERY line commented (not just the first),
+    # so a review-only snippet never renders uncommented config.
+    sec = {"sw1": {"findings": [{"id": "x", "title": "X", "severity": "medium", "status": "fail",
+                                 "remediation": "first line\nsecond line"}]}}
+    it = _find(compute_remediation_plan(devices={}, security=sec)["items"], "cis-security")[0]
+    assert it["commands"] == ["! first line", "! second line"]
+    assert all(c.startswith("!") for c in it["commands"])
+
+
 def test_fhrp_platform_dialect_and_intent_placeholder():
     l2 = {"fhrp": [{"vid": "20", "members": [{"host": "iosgw"}, {"host": "nxgw"}], "issues": ["no FHRP"]}]}
     devices = {"iosgw": {"platform": "ios"}, "nxgw": {"platform": "nxos"}}
