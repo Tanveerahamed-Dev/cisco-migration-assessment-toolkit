@@ -2283,20 +2283,20 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     r += 2
 
     # --- migration brief (cross-axis synthesis) NEW-V3.23.120 ---
-    b = brief or {}
-    if b.get("axes"):
+    eb = brief or {}
+    if eb.get("axes"):
         _sub("Migration brief")
-        ps = b.get("posture_statement", "")
+        ps = eb.get("posture_statement", "")
         if ps:
             c = ws.cell(r, 1, ps); c.font = Font(name="Calibri", bold=True, size=10, color="9C0006")
             c.alignment = WRAP; r += 1
-        tg = b.get("top_gating") or []
+        tg = eb.get("top_gating") or []
         if tg:
             ws.cell(r, 1, "Address first").font = KEY
             c = ws.cell(r, 2, " · ".join(tg[:6])); c.font = DAT; c.alignment = WRAP; r += 1
         _hdr(["Axis", "Severity", "Headline"])
         SEVFILL = {"Critical": "F4CCCC", "High": "FCE4D6", "Medium": "FFF2CC", "Low": "D9EAD3", "Info": "EFEFEF"}
-        for a in b["axes"]:
+        for a in eb["axes"]:
             ws.cell(r, 1, a.get("axis")).font = DAT
             sc = ws.cell(r, 2, a.get("severity")); sc.font = DAT
             sc.fill = PatternFill("solid", fgColor=SEVFILL.get(a.get("severity"), "FFFFFF"))
