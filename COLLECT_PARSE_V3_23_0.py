@@ -397,7 +397,7 @@ from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
-    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_routing_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
 )
@@ -451,6 +451,7 @@ COMMANDS_NXOS = [
     "show interface transceiver",
     "show port-channel summary",
     "show etherchannel summary",
+    "show vpc",                          # NEW-V3.23.125 (vPC / MLAG peer confirmation for the flow simulator)
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
@@ -1370,6 +1371,7 @@ def main():
     all_security: Dict[str, dict] = {}                               # NEW-V3.23.59 (CIS-aligned security posture)
     all_config_hygiene: Dict[str, dict] = {}                         # NEW-V3.23.61 (undefined refs / unused structures)
     all_stp_roots: Dict[str, dict] = {}                              # NEW-V3.23.62 (per-VLAN STP root bridge)
+    all_vpc: Dict[str, dict] = {}                                    # NEW-V3.23.125 (vPC / MLAG status per device)
     all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
     for hostname, platform, cmd_to_file in all_devices_meta:
@@ -1402,6 +1404,11 @@ def main():
         if stp_roots:
             all_stp_roots[hostname] = stp_roots
             logger.info(f"  [STP] {hostname}: root bridge info for {len(stp_roots)} VLAN(s)")
+        vpc = build_vpc(cmd_to_file)
+        if vpc:
+            all_vpc[hostname] = vpc
+            logger.info(f"  [vPC] {hostname}: domain {vpc.get('domain_id')} role {vpc.get('role') or '?'}, "
+                        f"{len(vpc.get('vpcs', []))} vPC(s)")
         rn = build_routing_neighbors(cmd_to_file)
         if any(rn.values()):
             all_routing_neighbors[hostname] = rn
@@ -1759,6 +1766,7 @@ def main():
     snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
+    snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
     snap_dict["punchlist"] = punchlist                              # NEW-V3.23.63 (consolidated severity-ranked migration punch-list)
     snap_dict["operational_drift"] = _drift                         # NEW-V3.23.93 (false-health / operational-drift findings; also folded into the punch-list)
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
