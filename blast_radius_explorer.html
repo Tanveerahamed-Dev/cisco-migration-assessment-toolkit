@@ -2785,7 +2785,9 @@ function deviceIntelSection(host){
   const hgUndef=(((SNAP&&SNAP.config_hygiene&&SNAP.config_hygiene[host])||{}).undefined)||[];
   const pl=((SNAP&&SNAP.punchlist)||[]).filter(i=>(i.devices||[]).includes(host));
   const rem=(((SNAP&&SNAP.remediation_plan&&SNAP.remediation_plan.by_device)||{})[host])||[];   // V3.23.116
-  if(!hs&&!phy.length&&!proto.length&&!secFail.length&&!hgUndef.length&&!pl.length&&!rem.length)return "";
+  const lc=(((SNAP&&SNAP.lifecycle_risk&&SNAP.lifecycle_risk.per_device)||[]).find(d=>d.host===host))||null;  // V3.23.117
+  const lcConcern=lc&&lc.band&&lc.band!=="Active"&&lc.band!=="Unknown";
+  if(!hs&&!phy.length&&!proto.length&&!secFail.length&&!hgUndef.length&&!pl.length&&!rem.length&&!lcConcern)return "";
   const pills=[];
   if(hs){const t=hs.band?healthBandToken(hs.band):scoreToken(hs.score);
     pills.push(`<span class="pill pl-${t}">health ${esc(hs.score)}/100${hs.band?" · "+esc(hs.band):""}</span>`);}
@@ -2795,6 +2797,8 @@ function deviceIntelSection(host){
   if(hgUndef.length)pills.push(`<span class="pill pl-watch">${hgUndef.length} undefined ref${hgUndef.length===1?"":"s"}</span>`);
   if(pl.length)pills.push(`<span class="pill pl-neutral">${pl.length} punch-list item${pl.length===1?"":"s"}</span>`);
   if(rem.length)pills.push(`<span class="pill pl-ok">${rem.length} fix snippet${rem.length===1?"":"s"}</span>`);
+  const lcTok=b=>b==="Past-LDoS"?"crit":b==="Near-LDoS"?"risk":b==="Past-EoS"?"watch":b==="Active"?"ok":"neutral";
+  if(lc&&lc.band&&lc.band!=="Active")pills.push(`<span class="pill pl-${lcTok(lc.band)}">EoL: ${esc(lc.band)}</span>`);
   let phyDetail="";
   if(phy.length){const byRisk={}; phy.forEach(r=>{const k=r.risk||"issue";(byRisk[k]=byRisk[k]||[]).push(r.port);});
     phyDetail=Object.entries(byRisk).slice(0,4).map(([risk,ports])=>
@@ -2815,6 +2819,7 @@ function deviceIntelSection(host){
   return `<div class="sec"><h3>Device intelligence</h3>`+
     `<div class="sub" style="margin-bottom:7px">Everything the collector knows about <span class="mono">${esc(shortName(host))}</span> — health, physical, protocol, security, and the punch-list items naming it.</div>`+
     `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px">${pills.join("")}</div>`+
+    (lc&&lc.platform?`<div class="ln" style="margin-bottom:6px"><span class="faint">Hardware:</span> <span class="mono">${esc(lc.model)}</span> (${esc(lc.platform)}) — ${esc(lc.status)}${lc.source?` <span class="faint">[${esc(lc.source)}]</span>`:""}</div>`:"")+
     (phyDetail?`<div class="sub" style="margin:4px 0 3px">Physical (port errors / duplex)</div>${phyDetail}`:"")+
     (protoDetail?`<div class="sub" style="margin:7px 0 3px">Protocol</div>${protoDetail}`:"")+
     (plDetail?`<div class="sub" style="margin:7px 0 3px">Punch-list</div>${plDetail}`:"")+
@@ -5308,12 +5313,17 @@ function cockpitCard(){
         <div class="ckp-bar" style="width:${(c.total/max*100).toFixed(1)}%;min-width:34px" title="${c.Critical} crit · ${c.High} high · ${c.Medium} med · ${c.Low} low">${seg("Critical")}${seg("High")}${seg("Medium")}${seg("Low")}</div>
         <div class="cval">${c.total}</div>`;}).join("");
   }
-  if(!tierRows&&!catRows)return "";
+  // V3.23.117: fleet hardware-lifecycle (EoL) rollup from SNAP.lifecycle_risk
+  const lr=(SNAP&&SNAP.lifecycle_risk&&SNAP.lifecycle_risk.summary)||null;
+  const eolLine=lr&&lr.n_devices?`<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 5px"><span class="k">Hardware lifecycle (EoL)</span><span class="v faint">${lr.n_devices} devices${lr.asof?` · as of ${esc(lr.asof)}`:""}</span></div>
+    <div class="row" style="flex-wrap:wrap;gap:5px">${lr.n_past_ldos?`<span class="pill pl-crit">${lr.n_past_ldos} past end-of-support</span>`:""}${lr.n_near?`<span class="pill pl-risk">${lr.n_near} within 1yr</span>`:""}${lr.n_past_eos?`<span class="pill pl-watch">${lr.n_past_eos} past end-of-sale</span>`:""}${lr.n_active?`<span class="pill pl-ok">${lr.n_active} active</span>`:""}${lr.n_unknown?`<span class="pill pl-neutral">${lr.n_unknown} unknown</span>`:""}</div></div>`:"";
+  if(!tierRows&&!catRows&&!eolLine)return "";
   return `<div class="sec"><h3>Risk cockpit <span class="badge b-neutral">${MODEL.hosts.length} switches</span></h3>
     <div class="sub" style="margin-bottom:7px">Where the migration risk concentrates and what shape the work is — distilled from the per-switch health scores and the ${pl.length}-item punch-list.${tierRows?" Click a tier to highlight its switches on the map.":""}</div>
     ${tierRows?`<div class="ckp-grid">${tierRows}</div>${legend}`:""}
     ${keystoneCard()}
     ${catRows?`<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 5px"><span class="k">Punch-list by category</span><span class="v faint">${pl.length} total</span></div><div class="ckp-cat">${catRows}</div></div>`:""}
+    ${eolLine}
   </div>`;
 }
 function drawHealth(){
