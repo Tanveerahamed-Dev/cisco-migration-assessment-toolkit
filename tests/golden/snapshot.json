@@ -3534,5 +3534,56 @@
    }
   ],
   "taxonomy_version": "app-domains/3"
+ },
+ "segmentation": {
+  "vrfs": [
+   {
+    "vrf": "(global)",
+    "gateway_count": 4
+   },
+   {
+    "vrf": "TENANT_RED",
+    "gateway_count": 1
+   }
+  ],
+  "gateway_acl": {
+   "n_gateways": 5,
+   "n_with_acl": 2,
+   "coverage_pct": 40.0
+  },
+  "domains": [
+   {
+    "domain": "Compute / Virtualization",
+    "tier": "Support",
+    "gateways": 3,
+    "vrfs": [
+     "(global)",
+     "TENANT_RED"
+    ],
+    "gateways_with_acl": 2,
+    "isolated": true,
+    "exposure": "Has a dedicated VRF or a gateway ACL."
+   },
+   {
+    "domain": "General / Back-office (unclassified)",
+    "tier": "Support",
+    "gateways": 2,
+    "vrfs": [
+     "(global)"
+    ],
+    "gateways_with_acl": 0,
+    "isolated": false,
+    "exposure": "Shares the global VRF, no gateway ACL \u2014 reachable from every other domain at L3."
+   }
+  ],
+  "summary": {
+   "n_vrfs": 2,
+   "flat": false,
+   "gateway_acl_coverage": 40.0,
+   "n_gateways": 5,
+   "n_oncrit_exposed": 0,
+   "global_only": false
+  },
+  "risks": []
  }
 }

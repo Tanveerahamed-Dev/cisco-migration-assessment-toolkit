@@ -568,6 +568,25 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                     c.get("rationale")] for c in cutover],
                   widths=[0.4, 0.8, 2.0, 1.2, 0.6, 3.0])
 
+    # 6.8 Segmentation & isolation (NEW-V3.23.118)
+    seg = snap_dict.get("segmentation") or {}
+    ss = seg.get("summary") or {}
+    if ss.get("n_gateways"):
+        doc.add_heading("6.8 Segmentation & isolation", level=2)
+        ga = seg.get("gateway_acl") or {}
+        doc.add_paragraph(
+            ("The L3 fabric is FLAT: " if ss.get("flat") else "")
+            + f"{ss.get('n_vrfs', 0)} VRF(s) across {ss.get('n_gateways', 0)} gateway SVI(s); only "
+            f"{ga.get('n_with_acl', 0)} ({ga.get('coverage_pct', 0)}%) apply an ACL. "
+            f"{ss.get('n_oncrit_exposed', 0)} on-air-critical domain(s) are not isolated — they share the global "
+            "routing table with back-office and management and have no gateway ACL. Segmentation for the media "
+            "fabric must be designed into the target.")
+        rows = [[d.get("domain"), d.get("tier"), d.get("gateways"),
+                 "yes" if d.get("isolated") else "NO", d.get("exposure")]
+                for d in (seg.get("domains") or [])]
+        if rows:
+            table(["Domain", "Tier", "Gateways", "Isolated", "Exposure"], rows, widths=[2.2, 1.2, 0.8, 0.8, 3.0])
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()
