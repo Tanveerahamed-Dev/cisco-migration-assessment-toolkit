@@ -4173,6 +4173,12 @@ function fmxMutateModel(mut){
   return Object.assign({},m,{hosts,links,adj,gateways});
 }
 function fmxWithModel(clone,fn){ const orig=MODEL; try{ MODEL=clone; return fn(); } finally{ MODEL=orig; } }
+/* V3.23.136: route-level what-if — `_routeCovers` reads SNAP.routes (not MODEL), so removing a route /
+   prefix needs a SNAP swap (shallow: shares every other key, replaces only routes[host]). */
+function fmxRouteHosts(){ const r=(SNAP&&SNAP.routes)||{}; return Object.keys(r).filter(h=>(r[h]||[]).length).sort(); }
+function fmxMutateSnap(host,prefix){ const routes=Object.assign({},(SNAP&&SNAP.routes)||{});
+  routes[host]=(routes[host]||[]).filter(r=>r.prefix!==prefix); return Object.assign({},SNAP,{routes}); }
+function fmxWithSnap(clone,fn){ const orig=SNAP; try{ SNAP=clone; return fn(); } finally{ SNAP=orig; } }
 /* N×N verdict grid for the CURRENT MODEL (caller swaps it for what-if). */
 function fmxCompute(reps){
   const n=reps.length, grid=[];
@@ -4197,16 +4203,18 @@ function openFlowMatrix(){
   renderFlowMatrix();
 }
 function closeFlowMatrix(){ FMX=null; const el=document.getElementById("flowmatrix"); if(el)el.hidden=true; document.body.style.overflow=""; }
-function fmxSetWhatif(kind){ if(!FMX)return; FMX.whatif={kind,arg:""}; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
+function fmxSetWhatif(kind){ if(!FMX)return; FMX.whatif={kind,arg:"",rhost:""}; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
 function fmxSetArg(arg){ if(!FMX)return; FMX.whatif.arg=arg; fmxApply(); }
+function fmxSetRouteHost(h){ if(!FMX)return; FMX.whatif.rhost=h; FMX.whatif.arg=""; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
 function fmxApply(){ if(!FMX)return; const wf=FMX.whatif;
   if(wf.kind==="none"||!wf.arg){ FMX.mut=null; FMX.diff=null; renderFlowMatrix(); return; }
-  let mut=null;
-  if(wf.kind==="host")mut={downHosts:new Set([wf.arg]),downLinks:new Set()};
-  else if(wf.kind==="link")mut={downHosts:new Set(),downLinks:new Set([wf.arg])};
-  if(!mut){FMX.mut=null;FMX.diff=null;renderFlowMatrix();return;}
-  const clone=fmxMutateModel(mut);
-  FMX.mut=fmxWithModel(clone,()=>fmxCompute(FMX.reps));
+  let runner=null;
+  if(wf.kind==="host"){ const c=fmxMutateModel({downHosts:new Set([wf.arg]),downLinks:new Set()}); runner=()=>fmxWithModel(c,()=>fmxCompute(FMX.reps)); }
+  else if(wf.kind==="link"){ const c=fmxMutateModel({downHosts:new Set(),downLinks:new Set([wf.arg])}); runner=()=>fmxWithModel(c,()=>fmxCompute(FMX.reps)); }
+  else if(wf.kind==="route"){ const k=wf.arg.indexOf("|"); const host=wf.arg.slice(0,k), prefix=wf.arg.slice(k+1);
+    if(host&&prefix){ const sn=fmxMutateSnap(host,prefix); runner=()=>fmxWithSnap(sn,()=>fmxCompute(FMX.reps)); } }
+  if(!runner){FMX.mut=null;FMX.diff=null;renderFlowMatrix();return;}
+  FMX.mut=runner();
   // diff vs baseline
   const n=FMX.reps.length, diff={broke:0,fixed:0,grid:[]};
   for(let i=0;i<n;i++){ const row=[];
@@ -4219,7 +4227,11 @@ function fmxApply(){ if(!FMX)return; const wf=FMX.whatif;
 function fmxCellClick(i,j){ if(!FMX)return; if(i===j)return;
   const F=flowBetween(FMX.reps[i].ep,FMX.reps[j].ep); if(F){ closeFlowMatrix(); openFlowSim(F); } }
 function fmxCopy(){ if(!FMX)return; const reps=FMX.reps, g=(FMX.mut||FMX.base);
-  const L=[`Reachability matrix${FMX.mut?` — WHAT-IF: ${FMX.whatif.kind==="host"?"fail switch "+shortName(FMX.whatif.arg):"fail link "+FMX.whatif.arg}`:""}`,
+  const wfLbl=FMX.whatif.kind==="host"?"fail switch "+shortName(FMX.whatif.arg)
+    :FMX.whatif.kind==="link"?"fail link "+FMX.whatif.arg
+    :FMX.whatif.kind==="route"?"remove route "+FMX.whatif.arg.replace("|"," ")
+    :FMX.whatif.kind;
+  const L=[`Reachability matrix${FMX.mut?` — WHAT-IF: ${wfLbl}`:""}`,
     `Rows = source VLAN, Cols = destination VLAN. R=reachable X=blocked ?=unknown`,""];
   L.push("src\\dst,"+reps.map(r=>"V"+r.vlan).join(","));
   g.forEach((row,i)=>{ L.push("V"+reps[i].vlan+","+row.map(c=>c.self?"-":c.unknown?"?":c.reach?"R":"X").join(",")); });
@@ -4240,15 +4252,21 @@ function renderFlowMatrix(){ const S=FMX; if(!S)return;
   const hostOpts=`<option value="">— pick a switch —</option>`+MODEL.hosts.slice().sort().map(h=>`<option value="${esc(h)}"${S.whatif.kind==="host"&&S.whatif.arg===h?" selected":""}>${esc(shortName(h))}</option>`).join("");
   const linkSigs=[...new Set(MODEL.links.map(_linkSig2))].sort();
   const linkOpts=`<option value="">— pick a link —</option>`+linkSigs.map(sg=>{const[a,b]=sg.split("::");return `<option value="${esc(sg)}"${S.whatif.kind==="link"&&S.whatif.arg===sg?" selected":""}>${esc(shortName(a))} ↔ ${esc(shortName(b))}</option>`;}).join("");
+  const rHosts=fmxRouteHosts();
+  const rHostOpts=`<option value="">— pick a router —</option>`+rHosts.map(h=>`<option value="${esc(h)}"${S.whatif.rhost===h?" selected":""}>${esc(shortName(h))}</option>`).join("");
+  const rRoutes=(S.whatif.rhost&&SNAP.routes&&SNAP.routes[S.whatif.rhost])?SNAP.routes[S.whatif.rhost]:[];
+  const rPfxOpts=`<option value="">— pick a route/prefix —</option>`+rRoutes.map(r=>{const a=S.whatif.rhost+"|"+r.prefix;return `<option value="${esc(a)}"${S.whatif.arg===a?" selected":""}>${esc(r.prefix)} (${esc(r.source||"route")}${r.next_hop?" → "+esc(r.next_hop):""})</option>`;}).join("");
   const tuple=`<div class="fmx-tuple"><span class="fsim-tuplbl">What-if</span>`+
     `<select onchange="fmxSetWhatif(this.value)">`+
       `<option value="none"${S.whatif.kind==="none"?" selected":""}>None (baseline)</option>`+
       `<option value="host"${S.whatif.kind==="host"?" selected":""}>Fail a switch</option>`+
       `<option value="link"${S.whatif.kind==="link"?" selected":""}>Fail a link</option>`+
+      `<option value="route"${S.whatif.kind==="route"?" selected":""}>Remove a route/prefix</option>`+
     `</select>`+
     (S.whatif.kind==="host"?`<select onchange="fmxSetArg(this.value)">${hostOpts}</select>`:"")+
     (S.whatif.kind==="link"?`<select onchange="fmxSetArg(this.value)">${linkOpts}</select>`:"")+
-    `<span class="faint">re-traces every flow with that element down → red-outlined cells are flows that BREAK</span>`+
+    (S.whatif.kind==="route"?`<select onchange="fmxSetRouteHost(this.value)">${rHostOpts}</select>`+(S.whatif.rhost?`<select onchange="fmxSetArg(this.value)">${rPfxOpts}</select>`:""):"")+
+    `<span class="faint">${S.whatif.kind==="route"?"removes that prefix from the router's table → flows that relied on it (e.g. via the default route) BREAK; one-directional removals surface as ⇄ asymmetry":"re-traces every flow with that element down → red-outlined cells are flows that BREAK"}</span>`+
     `<button class="fsim-btn" id="fmxCopyBtn" onclick="fmxCopy()" style="margin-left:auto">⧉ Copy CSV</button></div>`;
   // grid
   let thead=`<tr><th class="corner rh">src \\ dst</th>`+reps.map(r=>`<th title="VLAN ${r.vlan} · ${esc(r.ip)} @ ${esc(shortName(r.host))}">V${r.vlan}</th>`).join("")+`</tr>`;
