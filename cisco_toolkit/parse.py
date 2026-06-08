@@ -511,6 +511,56 @@ def parse_spanning_tree_root(output: str) -> Dict[str, dict]:
         out[vlan] = rec
     return out
 
+
+def parse_vpc(output: str) -> dict:
+    """'show vpc' (NX-OS) -> the device's vPC / MLAG status:
+    {domain_id:int|None, role, peer_status, keepalive_status, consistency, num_vpcs:int,
+     peer_link:{id,port,status,vlans}|None, vpcs:[{id,port,status,consistency,vlans}]}; {} when the
+    device runs no vPC (command absent / errored / 'vPC is not configured'). Defensive: an unexpected
+    NX-OS variant degrades to {} rather than raising. CONFIRMS MLAG/vPC peer pairs (vs the
+    topology-inferred guess) for the flow simulator."""
+    if not output or re.search(r"vPC\s+(?:feature\s+)?is\s+not\s+(?:enabled|configured)",
+                               output, re.IGNORECASE):
+        return {}
+
+    def _kv(label: str) -> str:
+        m = re.search(rf"^\s*{label}\s*:\s*(.+?)\s*$", output, re.IGNORECASE | re.MULTILINE)
+        return m.group(1).strip() if m else ""
+
+    out: dict = {"domain_id": None, "role": _kv(r"vPC role"),
+                 "peer_status": _kv(r"Peer status"),
+                 "keepalive_status": _kv(r"vPC keep-alive status"),
+                 "consistency": _kv(r"Configuration consistency status"),
+                 "num_vpcs": 0, "peer_link": None, "vpcs": []}
+    dom = _kv(r"vPC domain id")
+    if dom.isdigit():
+        out["domain_id"] = int(dom)
+    nv = _kv(r"Number of vPCs configured")
+    if nv.isdigit():
+        out["num_vpcs"] = int(nv)
+    # peer-link table (single data row): "id  Port  Status  Active vlans"
+    pl = re.search(r"vPC[ ]Peer-link[ ]status.*?\n(.*?)(?:\n[ \t]*\n|vPC[ ]status|\Z)",
+                   output, re.IGNORECASE | re.DOTALL)
+    if pl:
+        for line in pl.group(1).splitlines():
+            m = re.match(r"^\s*(\d+)\s+(Po\S+)\s+(\S+)\s+(.*)$", line, re.IGNORECASE)
+            if m:
+                out["peer_link"] = {"id": m.group(1), "port": m.group(2),
+                                    "status": m.group(3).lower(), "vlans": m.group(4).strip()}
+                break
+    # vPC member table: "id  Port  Status  Consistency  Reason  Active vlans"
+    vs = re.search(r"vPC[ ]status\b.*?\n(.*)$", output, re.IGNORECASE | re.DOTALL)
+    if vs:
+        for line in vs.group(1).splitlines():
+            m = re.match(r"^\s*(\d+)\s+(Po\S+)\s+(\S+)\s+(\S+)\s+\S+\s+(.*)$", line, re.IGNORECASE)
+            if m:
+                out["vpcs"].append({"id": m.group(1), "port": m.group(2), "status": m.group(3).lower(),
+                                    "consistency": m.group(4).lower(), "vlans": m.group(5).strip()})
+    if out["domain_id"] is None and not out["vpcs"] and not out["peer_link"]:
+        return {}
+    return out
+
+
 def _compress_vlans(vlans: List[str]) -> str:
     """[10, 20, 21, 22, 23] -> '10,20-23'. Non-numeric ids are appended as-is."""
     nums = sorted({int(v) for v in vlans if str(v).isdigit()})
