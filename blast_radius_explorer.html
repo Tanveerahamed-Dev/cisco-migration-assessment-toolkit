@@ -1523,6 +1523,7 @@ let MODEL_B=null, CMP=null, SNAP_LABEL="DEMO";
 let SEARCHQ="";
 let EPSEL=null, EPALL=[], REACH=null;   // selected endpoint + flat index (A) + cached reachability (B)
 let FLOW_SRC=null, FLOW_DST=null, FLOWRES=null;   // interactive endpoint->endpoint flow (C)
+let FLOW_PICK=null;   // V3.23.131: a clicked switch awaiting an exact-endpoint choice {host,slot}
 let FLOW_PROTO="tcp", FLOW_DPORT=443, FLOW_SPORT=null, FLOW_ICMPTYPE=null;   // L4 tuple for the ACL allow/deny eval (G2; sport=I, icmptype=J)
 let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding card (null = none)
 let XL_LAYER_FILTER=null, XL_SEV_FILTER=null;   // V3.23.82: Cross-Layer mode filters (null = all)
@@ -1601,7 +1602,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null; APP_SEL=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null; APP_SEL=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -2549,7 +2550,7 @@ function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="xlayer"&&XLSEL){XLSEL=null;repaint();renderDrawer();}
   else if(MODE==="waves"&&WAVE_SEL!=null){WAVE_SEL=null;repaint();renderDrawer();}
   else if(MODE==="apps"&&APP_SEL!=null){APP_SEL=null;repaint();renderDrawer();}
-  else if(MODE==="flow"&&(FLOW_SRC||FLOW_DST)){FLOW_SRC=FLOW_DST=FLOWRES=null;repaint();renderDrawer();}
+  else if(MODE==="flow"&&(FLOW_SRC||FLOW_DST)){FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
@@ -2559,12 +2560,16 @@ function clearTrace(){TRACE_SRC=TRACE_DST=TRACE=null;repaint();renderDrawer();}
    each picks a representative endpoint, and the 2nd click opens the cinematic Flow Simulator. */
 function pickFlow(h){const eps=endpointsOf(h).filter(e=>e.ip||e.mac);
   if(!eps.length){srAnnounce(`${shortName(h)} has no traceable endpoints — type an IP/MAC instead.`);return;}
-  const ep=eps[0];
-  if(FLOW_SRC&&!FLOW_DST&&h!==FLOW_SRC.host){FLOW_DST=ep;FLOWRES=flowBetween(FLOW_SRC,FLOW_DST);
-    repaint();renderDrawer();srAnnounce(`Destination ${ep.ip||ep.mac} on ${shortName(h)} — opening the flow simulator.`);
+  const slot=(FLOW_SRC&&!FLOW_DST&&h!==FLOW_SRC.host)?"dst":"src";
+  if(eps.length>1){FLOW_PICK={host:h,slot};repaint();renderDrawer();   // V3.23.131: several endpoints -> let the user pick the exact one
+    srAnnounce(`${shortName(h)} hosts ${eps.length} endpoints — choose one in the panel.`);return;}
+  _setFlowEndpoint(eps[0],slot,h);}
+function _setFlowEndpoint(ep,slot,h){FLOW_PICK=null;
+  if(slot==="dst"&&FLOW_SRC){FLOW_DST=ep;FLOWRES=flowBetween(FLOW_SRC,FLOW_DST);repaint();renderDrawer();
+    srAnnounce(`Destination ${ep.ip||ep.mac} on ${shortName(h||ep.host)} — opening the flow simulator.`);
     if(FLOWRES)openFlowSim(FLOWRES);}
   else{FLOW_SRC=ep;FLOW_DST=null;FLOWRES=null;repaint();renderDrawer();
-    srAnnounce(`Source ${ep.ip||ep.mac} on ${shortName(h)} selected — now click a destination switch.`);}}
+    srAnnounce(`Source ${ep.ip||ep.mac} on ${shortName(h||ep.host)} selected — now click a destination switch.`);}}
 
 /* ---- mode switch ---- */
 /* Lead the screen-reader announcement with the mode's key number (research playbook:
@@ -2810,8 +2815,13 @@ function renderDrawer(){
     const ep=findEndpointByIpMac(inp.value);
     if(inp.id==="flowSrc")FLOW_SRC=ep||null;
     else FLOW_DST=ep||(isMulticastIp(inp.value)?{ip:inp.value.trim(),host:"(group)",vlan:"",mac:"",isGroup:true}:null);  // V3.23.128: multicast group dst
+    FLOW_PICK=null;
     FLOWRES=(FLOW_SRC&&FLOW_DST)?flowBetween(FLOW_SRC,FLOW_DST):null;
     repaint(); renderDrawer();}));
+  // V3.23.131: wire the exact-endpoint chooser rows
+  p.querySelectorAll("[data-pickport]").forEach(r=>{const go=()=>{ if(!FLOW_PICK)return;
+    const e=endpointsOf(FLOW_PICK.host).find(x=>x.port===r.dataset.pickport); if(e)_setFlowEndpoint(e,FLOW_PICK.slot,FLOW_PICK.host);};
+    r.onclick=go; r.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();go();}};});
   // wire flow-mode L4 inputs (protocol + dest port) for the ACL allow/deny eval (G2)
   const _reflow=()=>{FLOWRES=(FLOW_SRC&&FLOW_DST)?flowBetween(FLOW_SRC,FLOW_DST):null; repaint(); renderDrawer();};
   {const ps=document.getElementById("flowProto"); if(ps)ps.addEventListener("change",()=>{FLOW_PROTO=ps.value; _reflow();});}
@@ -3402,7 +3412,16 @@ function drawFlow(){
     `<div class="drawer-head"><div class="eyebrow">Flow</div><div class="title">Endpoint → endpoint</div></div>`+
     `<div class="sec"><p class="sub" style="margin:0 0 9px">Trace the offline L1–L3 path between any two endpoints — by IP or MAC.</p>`+
     slot("Source",FLOW_SRC,"flowSrc")+slot("Destination",FLOW_DST,"flowDst")+l4row+`</div>`+
-    result+embedded;
+    flowPickerHtml()+result+embedded;
+}
+/* V3.23.131: exact-endpoint chooser — when a clicked switch hosts several endpoints, list them to pick. */
+function flowPickerHtml(){ if(!FLOW_PICK)return "";
+  const eps=endpointsOf(FLOW_PICK.host).filter(e=>e.ip||e.mac);
+  if(eps.length<=1){FLOW_PICK=null;return "";}
+  const rows=eps.map(e=>{const id=epIdentity(e);const cls=(id&&id.endpoint_class)||"";
+    return `<div class="ln" data-pickport="${esc(e.port)}" tabindex="0" role="button" style="cursor:pointer;padding:4px 6px;border-radius:6px"><span class="pill pl-neutral">${esc(e.port)}</span> <span class="mono">${esc(e.ip||e.mac)}</span>${cls&&cls!=="Unknown"?` <span class="faint">${esc(cls)}</span>`:""}</div>`;}).join("");
+  return `<div class="sec"><h3>Pick the ${FLOW_PICK.slot==="dst"?"destination":"source"} on ${esc(shortName(FLOW_PICK.host))} <span class="ct">${eps.length}</span></h3>`+
+    `<p class="sub" style="margin:0 0 6px">This switch hosts several endpoints — choose the exact one.</p>${rows}</div>`;
 }
 /* ---- L4 ACL evaluation (PHASE G2): walk an ACL vs a 5-tuple, first-match-wins, implicit deny ---- */
 function aclRules(host,name){return (SNAP&&SNAP.acls&&SNAP.acls[host])?(SNAP.acls[host][name]||null):null;}
@@ -3720,7 +3739,7 @@ function buildBackupJourney(F){const bk=flowBackupPath(F); if(!bk)return null;
   return J;}
 
 /* ===== V3.23.123: the cinematic Flow Simulator overlay (renders buildFlowJourney) ===== */
-let FLOWSIM=null;
+let FLOWSIM=null, FSIM_PIN=null;   // V3.23.131: FSIM_PIN = a pinned flow to compare the next one against
 function openFlowSim(F){ if(!F)return;
   const J=F.multicast?buildMulticastJourney(F.src,(F.dst&&F.dst.ip)||""):buildFlowJourney(F); if(!J||!J.nodes.length)return;
   FLOWSIM={F,J,Jb:null,Jr:null,sym:null,i:0,playing:false,timer:null,useBackup:false,reverse:false};
@@ -3769,6 +3788,14 @@ function fsimCopy(){ if(!FLOWSIM)return;
   const txt=L.join("\n");
   const done=()=>{const b=document.getElementById("fsimCopyBtn"); if(b){b.textContent="✓ Copied";setTimeout(()=>{if(b)b.textContent="⧉ Copy";},1400);}};
   if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done).catch(done); else done(); }
+/* V3.23.131: pin the current flow, then compare the next one against it (verdict + path diff). */
+function _fsimLabel(J){return `${(J.src&&(J.src.ip||J.src.mac))||"?"}→${(J.dst&&(J.dst.ip||J.dst.mac))||"?"}${J.multicast?"":" "+String(FLOW_PROTO).toUpperCase()+((FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:"")}`;}
+function _fsimAclOutcome(J){let w=""; (J.nodes||[]).forEach(n=>(n.layers||[]).forEach(l=>{if(l.layer==="L4"){
+  const v=l.verdict==="block"?"deny":l.verdict==="watch"?"indeterminate":"permit";
+  if(v==="deny")w="deny"; else if(v==="indeterminate"&&w!=="deny")w="indeterminate"; else if(!w)w="permit";}})); return w;}
+function fsimPin(){ if(!FLOWSIM)return; const J=FLOWSIM.J;
+  FSIM_PIN={label:_fsimLabel(J),hosts:_fsimPathHosts(J),verdict:J.verdict,acl:_fsimAclOutcome(J)}; renderFlowSim(); }
+function fsimUnpin(){ FSIM_PIN=null; if(FLOWSIM)renderFlowSim(); }
 function fsimIsolatedHtml(J){return `<div class="fsim-head"><div><div class="fsim-title">⚡ Flow Simulator — failure mode</div>`+
   `<div class="fsim-sum">${esc(J.src.ip||J.src.mac||"?")} → ${esc(J.dst.ip||J.dst.mac||"?")}</div></div>`+
   `<span class="fsim-verdict crit">ISOLATED</span>`+
@@ -3822,7 +3849,12 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
     `<div class="fsim-why">${esc(l.why)}</div></div>`).join("");
   const banner=backupActive?`<div class="fsim-bk crit" style="margin-bottom:12px">⚡ FAILURE MODE — primary link ${esc(J.failLink||"")} down; this is the rerouted backup path.</div>`
     :reverseActive?`<div class="fsim-bk ${S.sym&&S.sym.symmetric?"":"crit"}" style="margin-bottom:12px">⇄ RETURN PATH — ${esc(S.sym?S.sym.note:"")}</div>`:"";
-  const body=banner+`<div class="fsim-nodehdr"><span class="ic">${_fsimIcon(nd.role)}</span>`+
+  const curLabel=_fsimLabel(J);
+  const cmpHtml=(FSIM_PIN&&FSIM_PIN.label!==curLabel)?(function(){const ch=_fsimPathHosts(J);
+    const pathSame=ch.length===FSIM_PIN.hosts.length&&ch.every((h,k)=>h===FSIM_PIN.hosts[k]); const vSame=J.verdict===FSIM_PIN.verdict;
+    const curAcl=_fsimAclOutcome(J), aclSame=curAcl===FSIM_PIN.acl, allSame=vSame&&pathSame&&aclSame;
+    return `<div class="fsim-bk ${allSame?"":"crit"}" style="margin-bottom:10px">📌 <b>vs pinned</b> ${esc(FSIM_PIN.label)} — reachability ${vSame?"same":"<b>changed</b>"}; L4 ACL ${aclSame?"same ("+esc(curAcl||"n/a")+")":`<b>${esc(FSIM_PIN.acl||"n/a")} → ${esc(curAcl||"n/a")}</b>`}; path ${pathSame?"same":"<b>different</b>"} (${FSIM_PIN.hosts.map(shortName).join("→")||"?"} vs ${ch.map(shortName).join("→")||"?"}). <span style="cursor:pointer;text-decoration:underline" onclick="fsimUnpin()">unpin</span></div>`;})():"";
+  const body=cmpHtml+banner+`<div class="fsim-nodehdr"><span class="ic">${_fsimIcon(nd.role)}</span>`+
     `<div><div class="fsim-nname">${esc(nd.label)}${nd.host?` — <span class="mono">${esc(shortName(nd.host))}</span>`:""}${mlag}</div>${ep}</div></div>`+
     `<div class="fsim-rungs">${rungs}</div>`;
   const bk=J.backup;
@@ -3833,7 +3865,8 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
     `<span class="fsim-prog">hop ${i+1} / ${n}</span>`+
     (bk&&!reverseActive?`<button class="fsim-btn ${S.useBackup?"on":""}" onclick="fsimToggleBackup()">${S.useBackup?"↩ Primary path":"⚡ Failure mode"}</button>`:"")+
     (!S.J.multicast?`<button class="fsim-btn ${S.reverse?"on":""}" onclick="fsimToggleReverse()">${S.reverse?"→ Forward":"⇄ Return path"}</button>`:"")+
-    `<button class="fsim-btn" id="fsimCopyBtn" onclick="fsimCopy()" title="Copy this flow walk as text for the runbook">⧉ Copy</button>`;
+    `<button class="fsim-btn" id="fsimCopyBtn" onclick="fsimCopy()" title="Copy this flow walk as text for the runbook">⧉ Copy</button>`+
+    `<button class="fsim-btn ${FSIM_PIN?"on":""}" onclick="fsimPin()" title="Pin this flow to compare the next one against it">📌 Pin</button>`;
   const l4on=(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp");
   const tuple=(J.multicast||reverseActive||backupActive)?"":`<div class="fsim-tuple"><span class="fsim-tuplbl">L4 / ACL eval</span>`+
     `<select onchange="fsimSetTuple(this.value,null)">`+["tcp","udp","icmp","ip"].map(p=>`<option value="${p}"${FLOW_PROTO===p?" selected":""}>${p.toUpperCase()}</option>`).join("")+`</select>`+
