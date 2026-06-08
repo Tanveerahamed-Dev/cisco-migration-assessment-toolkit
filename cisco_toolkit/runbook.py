@@ -72,7 +72,7 @@ def _gateways(snap: dict):
     return rows
 
 
-def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
+def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths: dict = None) -> None:
     """Emit the assessment & migration runbook (.docx) from the live snapshot. Safe/fail-soft:
     a missing python-docx is a warning + skip; never crashes a run whose other outputs are saved."""
     try:
@@ -413,6 +413,22 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
             table(["Move group", "Switches", "Local subnets", "Remote subnets to preserve"],
                   [[m.get("group") or "(group)", m.get("switches"), m.get("local_count"),
                     m.get("remote_count")] for m in mg[:12]], widths=[2.0, 1.0, 1.4, 2.2])
+
+    fpaths = (flow_paths or {}).get("flows") or []
+    if fpaths:
+        fsum = (flow_paths or {}).get("summary") or {}
+        doc.add_heading("6.4.1 Representative end-to-end flow paths", level=3)
+        doc.add_paragraph(
+            f"{fsum.get('n_flows', 0)} representative flow(s) — the lowest-IP endpoint per VLAN, traced "
+            "L1–L3 (the static twin of the explorer's interactive Flow Simulator): "
+            f"{fsum.get('n_at_risk', 0)} at HIGH/CRITICAL risk, {fsum.get('n_partitioned', 0)} partitioned. "
+            "Each path is a lower bound (scan-bound topology); the explorer walks any chosen pair, all OSI "
+            "layers, with the backup path. See the workbook 'Flow Paths' sheet for the full hop list.")
+        table(["Flow (VLAN → VLAN)", "Type", "Risk", "SPOFs on path"],
+              [[f.get("label", ""), (f.get("summary") or {}).get("flow_type", ""),
+                (f.get("summary") or {}).get("risk", ""),
+                "; ".join((f.get("summary") or {}).get("spofs") or []) or "none"]
+               for f in fpaths], widths=[2.8, 1.4, 0.9, 2.4])
 
     pintel = snap_dict.get("protocol_intelligence") or []
     if pintel:
