@@ -3368,9 +3368,15 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
                 "remediation": "Coordinate the cutover order with these domains and make-before-break shared "
                                "links/legs; validate the on-air signal after each.", "standard": "SMPTE ST 2022-7"})
 
-    cross.sort(key=lambda r: (_APP_SEV_RANK.get(r["severity"], 9),
-                              int(r["vlan"]) if str(r["vlan"]).isdigit() else 0))
-    cross = cross[:60]
+    # cap the (potentially many) per-VLAN querier risks, but ALWAYS keep the dependency risks (keystone /
+    # on-air-coupling) -- they are few and would otherwise be truncated by the cap on a large flat fleet
+    # (code-review V3.23.119). Output is unchanged whenever the total is under the cap.
+    def _csort(r):
+        return (_APP_SEV_RANK.get(r["severity"], 9), int(r["vlan"]) if str(r["vlan"]).isdigit() else 0)
+    _dep_kinds = {"keystone-domain", "on-air-coupling"}
+    _deps = [r for r in cross if r.get("kind") in _dep_kinds]
+    _querier = sorted((r for r in cross if r.get("kind") not in _dep_kinds), key=_csort)[:55]
+    cross = sorted(_deps + _querier, key=_csort)[:60]
 
     # ---- per-domain migration criticality score + recommended cutover order (NEW-V3.23.114) ----
     # Pure post-process over the domain records: blend tier / health / risk / coupling / flags / size into a
@@ -3556,7 +3562,8 @@ def compute_remediation_plan(devices: Optional[dict] = None,
             add(host, "Security", str(f.get("severity", "medium")).capitalize(),
                 f.get("title", f.get("id", "CIS check")),
                 f.get("detail", "") or f"CIS check '{f.get('id', '')}' failed.",
-                [f"! {rem}" if rem else "! See the Config Compliance sheet for the hardening step."],
+                (["! " + ln for ln in rem.splitlines()] if rem
+                 else ["! See the Config Compliance sheet for the hardening step."]),
                 f"show running-config | include {f.get('id', '')}",
                 "CIS hardening — confirm the control suits this device's role before applying.", "cis-security")
 
