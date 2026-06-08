@@ -1153,6 +1153,50 @@ function demoSnapshot(){
     {group:"Group 1",make_before_break:["DIST-1","DIST-2"],hard_cutover:["ACC-1","ACC-2","ACC-3","ACC-4"],hard_cutover_endpoints:34,
      sequence:"4 hard cutover (single-homed, schedule a window) + 2 make-before-break (dual-homed)"},
   ],
+  // V3.23.122: false-health / operational drift (compute_operational_drift) -> Health view driftCard.
+  operational_drift:[
+    {severity:"Medium",category:"False-health",devices:["ACC-1","ACC-2"],title:"Temporary L2 bridge enlarging the broadcast domain",detail:"2 access switches carry a recently-added bridging VLAN that widens the STP/broadcast domain beyond the documented design.",remediation:"Confirm the bridge is intentional; prune the VLAN from trunks that don't need it."},
+    {severity:"Low",category:"False-health",devices:["ACC-2"],title:"PoE fault on a powered port",detail:"a port reports a power fault while still forwarding — a powered endpoint may be running on a marginal supply.",remediation:"Check the inline-power budget and the endpoint's power class."},
+    {severity:"Low",category:"False-health",devices:["ACC-1","DIST-1"],title:"Native VLAN 1 on 2 inter-switch trunk(s)",detail:"trunks carry the default VLAN 1 as native (untagged) — a hygiene and VLAN-hopping exposure.",remediation:"Set a dedicated, unused native VLAN on inter-switch trunks."},
+    {severity:"Low",category:"False-health",devices:["DIST-2","ACC-4"],title:"Multi-year uptime on 2 device(s) (max 5 years)",detail:"2 device(s) have not reloaded in 3+ years (DIST-2 5y, ACC-4 3y). STP / control-plane convergence has not been exercised recently — latent issues can surface on the first change.",remediation:"Plan a deliberate, monitored maintenance window; don't let the cutover be the first control-plane event in years."},
+  ],
+  // V3.23.122: per-group cutover scenario + playbook (compute_migration_scenarios) -> Waves scenarioCard.
+  migration_scenarios:{
+    per_group:[
+      {group:"Group 1",switches:6,endpoints:40,readiness:"CAUTION",make_before_break:2,hard_cutover:4,hard_cutover_endpoints:34,dual_homed_pct:33,recommended_scenario:"phased",
+       rationale:"4 single-homed switch(es) (34 endpoint(s) at risk) — phase into maintenance windows; dual-home first where possible.",
+       playbook:{pre:"Resolve gating checks first; schedule single-homed (hard-cutover) switches into maintenance windows.",validate:"Per wave, prove forwarding for a sample endpoint of EACH hosted class before the next wave.",rollback:"A wave fails validation -> re-home that wave's uplinks to the legacy path; hold the remaining waves."}},
+    ],
+    fleet_recommendation:"17% of switches are Poor/Critical — an in-place PHASED / PARALLEL-RUN migration is viable; reserve greenfield for any isolated worst-offenders.",
+    scenario_counts:{phased:1}},
+  // V3.23.122: per-group source<->destination subnet split + L3 reach (compute_subnet_intelligence) -> Waves subnetCard.
+  subnet_intelligence:{
+    per_device:[
+      {host:"DIST-1",is_l3:true,destination_subnets:["10.0.10.0/24","10.0.20.0/24","10.0.30.0/24","10.0.99.0/24"],destination_count:4,reachable_count:18,reachable_sources:{ospf:12,connected:4,static:2},reachable_sample:[],default_next_hop:"203.0.113.1",served_subnets:[],bgp_received_count:0},
+      {host:"DIST-2",is_l3:true,destination_subnets:["10.0.10.0/24","10.0.20.0/24"],destination_count:2,reachable_count:15,reachable_sources:{ospf:13,connected:2},reachable_sample:[],default_next_hop:"203.0.113.1",served_subnets:[],bgp_received_count:0},
+      {host:"ACC-1",is_l3:false,destination_subnets:[],destination_count:0,reachable_count:0,reachable_sources:{},reachable_sample:[],default_next_hop:"",served_subnets:[{subnet:"10.0.10.0/24",gateway:"DIST-1:Vlan10",vlan:"10"}],bgp_received_count:0},
+    ],
+    move_groups:[
+      {group:"Group 1",switches:6,local_subnets:["10.0.10.0/24","10.0.20.0/24","10.0.30.0/24","10.0.99.0/24"],local_count:4,remote_count:14},
+    ],
+    bgp_received_collected:false},
+  // V3.23.122: endpoint clusters / dual-homing / affinity (compute_endpoint_dependencies) -> Apps endpointDepsCard.
+  endpoint_dependencies:{
+    dual_homed:[
+      {mac:"0011.2233.4455",ip:"10.0.30.9",vendor:"Dell",endpoint_class:"Server",switches:["ACC-1","ACC-2"],ports:["ACC-1:Gi1/0/10","ACC-2:Gi1/0/10"],move_groups:["Group 1"],split_across_groups:false},
+      {mac:"00aa.bbcc.ddee",ip:"10.0.20.50",vendor:"HP",endpoint_class:"Server",switches:["ACC-3","ACC-4"],ports:["ACC-3:Gi1/0/5","ACC-4:Gi1/0/5"],move_groups:["Group 1"],split_across_groups:false},
+    ],
+    shared_ip:[{ip:"10.0.20.1",switches:["DIST-1","DIST-2"],macs:["0000.0c07.ac14"]}],
+    clusters:[
+      {vendor:"Dell",endpoint_class:"Server",count:8,switches:3,vlans:2,move_groups:1,spans_groups:false},
+      {vendor:"Axis",endpoint_class:"IP-Camera",count:6,switches:2,vlans:1,move_groups:1,spans_groups:false},
+    ],
+    affinity:[
+      {vlan:"10",total:22,classes:{Workstation:18,Printer:3,"VoIP-Phone":1},dominant:"Workstation"},
+      {vlan:"20",total:12,classes:{"VoIP-Phone":11,Workstation:1},dominant:"VoIP-Phone"},
+      {vlan:"30",total:8,classes:{Server:8},dominant:"Server"},
+    ],
+    per_switch_validation:{"ACC-1":["Server: validate the service it hosts end-to-end after the move.","Dual-homed endpoint(s) present — sequence make-before-break so the peer leg stays up during the move."]}},
   // V3.23.87: port + PoE capacity headroom (mirrors the Python compute_capacity / 'Capacity' sheet). ACC-1
   // is port-bound (94%), ACC-2 PoE-bound (83%); the rest have headroom to absorb consolidated endpoints.
   capacity:[
@@ -4162,7 +4206,8 @@ function drawWaves(){
       <div class="stat ok"><div class="v"><span class="num" data-to="${tally.READY}">0</span></div><div class="k">ready</div></div>
     </div>
     <p class="sub" style="margin:10px 0 0">Each move group is an L2 domain bound by shared VLANs — it must cut over together. Sequence the <b>NOT&nbsp;READY</b> groups' blockers first, biggest blast radius first. <b>Click a group</b> to spotlight its switches on the canvas.</p></div>
-    <div class="sec"><h3>Groups by blast radius <span class="ct">${data.length}</span></h3>${cards}</div>`;
+    <div class="sec"><h3>Groups by blast radius <span class="ct">${data.length}</span></h3>${cards}</div>`
+    +scenarioCard()+subnetCard();
 }
 /* paint hook: spotlight the selected move-group's switches (WAVE_SEL) and the links inside it, dim the
    rest. No selection -> clean canvas. Mirrors the Cross-Layer highlight pattern (reuses .xlhl/.xldim/.dim). */
@@ -4195,7 +4240,8 @@ function drawApps(){
     return head+`<div class="sec"><div class="empty"><div class="big">▦</div>
       <p>No <b>application_intelligence</b> in this snapshot (pre-V3.23.112). This view groups switches into
       application domains (media fabric, audio, storage, robotics, …) with criticality and standards-grounded
-      migration risk — re-run the assessment to populate it.</p></div></div>`;
+      migration risk — re-run the assessment to populate it.</p></div></div>`
+      +endpointDepsCard();   // V3.23.122: endpoint-dependency intelligence is independent of app-domains — show it even when domains are absent
   }
   const tierTok=t=>t==="On-air critical"?"crit":t==="Production"?"watch":"neutral";
   const sevTok=v=>(v==="Critical"||v==="High")?"crit":v==="Medium"?"watch":"neutral";
@@ -4270,7 +4316,8 @@ function drawApps(){
     ${cross.length?`<div class="sec"><h3>Cross-domain risks <span class="ct">${cross.length}</span></h3><p class="sub" style="margin:0 0 8px">IGMP querier continuity / split-brain across the cutover (RFC 4541).</p>${crossCards}</div>`:""}
     ${edges.length?`<div class="sec"><h3>Inter-domain dependencies <span class="ct">${edges.length}</span></h3>${kHtml}<p class="sub" style="margin:0 0 8px">Couplings between domains — physical links · shared subnets · dual-homed endpoints. What must be coordinated / made-before-broken on cutover. <b>Select a domain above</b> to light its coupled neighbours on the graph.</p>${edgeRows}</div>`:""}
     ${cut.length?`<div class="sec"><h3>Recommended cutover order <span class="ct">${cut.length}</span></h3><p class="sub" style="margin:0 0 8px">Lowest-risk <b>pilots first</b> (fail-fast &amp; learn); on-air-critical domains <b>last</b> with make-before-break. A recommendation — the war-room decides.</p>${cutRows}</div>`:""}
-    ${segHtml}`;
+    ${segHtml}`
+    +endpointDepsCard();
 }
 /* paint hook: spotlight the selected application-domain's switches (APP_SEL), dim the rest.
    No selection -> clean canvas. Mirrors paintWaves (reuses .xlhl / .xldim / .dim). */
@@ -5307,6 +5354,93 @@ function briefCard(){
     `<div class="sub" style="margin-bottom:5px">${(+sc.n_devices||0)} devices · ${(+sc.n_domains||0)} application domains · ${(+sc.n_endpoints||0)} endpoints — one headline per axis:</div>`+
     rows+`</div>`;
 }
+/* V3.23.122: false-health / operational-drift findings from SNAP.operational_drift
+   (compute_operational_drift). Sits in the Health view under the punch-list. "Configured is not
+   healthy; up is not healthy." JS fallback: hidden on a snapshot that lacks the key. */
+function driftCard(){
+  const d=(SNAP&&SNAP.operational_drift)||null;
+  if(!Array.isArray(d)||!d.length)return "";
+  const sevTok=v=>(v==="Critical"||v==="High")?"crit":v==="Medium"?"watch":"neutral";
+  const rows=d.map(f=>{const sw=f.devices||[];
+    return `<div class="card ${sevTok(f.severity)}" style="margin-bottom:6px">
+      <div class="ct"><span class="nm">${esc(f.title)}</span><span class="pill pl-${sevTok(f.severity)}">${esc(f.severity)}</span></div>
+      <div class="ln faint" style="margin-top:3px">${esc(f.detail||"")}</div>
+      ${sw.length?`<div class="ln" style="margin-top:3px">${sw.slice(0,10).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${sw.length>10?` <span class="faint">+${sw.length-10}</span>`:""}</div>`:""}
+      ${f.remediation?`<div class="ln" style="margin-top:3px"><b>Fix:</b> ${esc(f.remediation)}</div>`:""}
+    </div>`;}).join("");
+  return `<div class="sec"><h3>False-health / operational drift <span class="ct">${d.length}</span></h3>
+    <p class="sub" style="margin:0 0 7px">A green control plane hides these: temporary L2 bridges enlarging the broadcast domain, PoE faults on powered ports, native-VLAN-1 trunks, multi-year uptime — the migration traps a clean status page won't show.</p>
+    ${rows}</div>`;
+}
+/* V3.23.122: per-move-group cutover SCENARIO + playbook from SNAP.migration_scenarios
+   (compute_migration_scenarios). Augments the Waves view. */
+function scenarioCard(){
+  const ms=(SNAP&&SNAP.migration_scenarios)||null;
+  const pg=ms&&Array.isArray(ms.per_group)?ms.per_group:[];
+  if(!pg.length)return "";
+  const scTok=s=>s==="big-bang"?"crit":s==="phased"?"watch":s==="greenfield"?"risk":"ok"; // parallel-run -> ok
+  const rTok=v=>v==="NOT READY"?"crit":v==="CAUTION"?"watch":"ok";
+  const cards=pg.map(g=>{const p=g.playbook||{};
+    return `<div class="card ${scTok(g.recommended_scenario)}" style="margin-bottom:6px">
+      <div class="ct"><span class="nm">${esc(g.group||"")}</span><span class="pill pl-${scTok(g.recommended_scenario)}">${esc(g.recommended_scenario)}</span>${g.readiness?`<span class="pill pl-${rTok(g.readiness)}">${esc(g.readiness)}</span>`:""}</div>
+      <div class="ln faint" style="margin-top:2px"><b>${+g.switches||0}</b> switch${g.switches===1?"":"es"} · <b>${+g.endpoints||0}</b> endpoints · <b>${+g.dual_homed_pct||0}%</b> dual-homed${g.hard_cutover?` · <b style="color:var(--watch)">${g.hard_cutover} hard cutover</b>`:""}</div>
+      <div class="ln" style="margin-top:4px">${esc(g.rationale||"")}</div>
+      <details style="margin-top:5px"><summary class="faint" style="cursor:pointer">Playbook — pre · validate · rollback</summary>
+        <div class="ln" style="margin-top:4px"><b>Pre:</b> ${esc(p.pre||"")}</div>
+        <div class="ln" style="margin-top:3px"><b>Validate:</b> ${esc(p.validate||"")}</div>
+        <div class="ln" style="margin-top:3px"><b>Rollback:</b> ${esc(p.rollback||"")}</div>
+      </details>
+    </div>`;}).join("");
+  const counts=ms.scenario_counts||{};
+  const chips=Object.entries(counts).map(([k,v])=>`<span class="pill pl-${scTok(k)}">${esc(k)} ${v}</span>`).join(" ");
+  return `<div class="sec"><h3>Recommended cutover scenarios <span class="ct">${pg.length}</span></h3>
+    ${ms.fleet_recommendation?`<p class="sub" style="margin:0 0 7px">${esc(ms.fleet_recommendation)}</p>`:""}
+    ${chips?`<div class="ln" style="margin-bottom:7px">${chips}</div>`:""}
+    ${cards}</div>`;
+}
+/* V3.23.122: per-move-group source<->destination subnet split + L3-gateway reachability from
+   SNAP.subnet_intelligence (compute_subnet_intelligence). Augments the Waves view. */
+function subnetCard(){
+  const si=(SNAP&&SNAP.subnet_intelligence)||null;
+  if(!si)return "";
+  const mg=Array.isArray(si.move_groups)?si.move_groups:[];
+  const pd=Array.isArray(si.per_device)?si.per_device:[];
+  if(!mg.length&&!pd.length)return "";
+  const mgRows=mg.map(g=>`<div class="card neutral" style="margin-bottom:6px">
+      <div class="ct"><span class="nm">${esc(g.group||"")}</span><span class="pill pl-neutral">${+g.switches||0} sw</span></div>
+      <div class="ln faint" style="margin-top:3px"><b style="color:var(--ok)">${+g.local_count||0}</b> local subnet(s) move with the group · <b style="color:var(--watch)">${+g.remote_count||0}</b> remote subnet(s) must stay reachable across the cutover</div>
+      ${(g.local_subnets||[]).length?`<div class="ln" style="margin-top:3px">${(g.local_subnets||[]).slice(0,12).map(s=>`<span class="mono">${esc(s)}</span>`).join(", ")}${(g.local_subnets||[]).length>12?` <span class="faint">+${(g.local_subnets||[]).length-12}</span>`:""}</div>`:""}
+    </div>`).join("");
+  const l3=pd.filter(d=>d.is_l3).sort((a,b)=>(+b.reachable_count||0)-(+a.reachable_count||0)).slice(0,10);
+  const devRows=l3.map(d=>`<div class="ln"><span class="pill pl-neutral">L3</span> <span class="mono">${esc(shortName(d.host))}</span> <span class="faint">gateways ${+d.destination_count||0} subnet(s) · reaches ${+d.reachable_count||0}${d.default_next_hop?` · default → ${esc(d.default_next_hop)}`:""}</span></div>`).join("");
+  const note=si.bgp_received_collected?"":`<p class="sub" style="margin:0 0 7px">BGP received-prefix depth not collected ('show ip bgp') — remote reach is from the route table only.</p>`;
+  return `<div class="sec"><h3>Subnet &amp; reachability <span class="ct">${mg.length}</span></h3>
+    <p class="sub" style="margin:0 0 7px">Per move group: the <b>local</b> subnets that move with it vs the <b>remote</b> subnets it must keep reaching across the cutover — the reachability you validate before and after.</p>
+    ${note}${mgRows}
+    ${devRows?`<div style="margin-top:6px"><div class="sub" style="margin-bottom:4px">L3 gateways by reach</div>${devRows}</div>`:""}</div>`;
+}
+/* V3.23.122: endpoint cluster / dependency intelligence from SNAP.endpoint_dependencies
+   (compute_endpoint_dependencies). Augments the Apps view — the endpoints behind the topology. */
+function endpointDepsCard(){
+  const ed=(SNAP&&SNAP.endpoint_dependencies)||null;
+  if(!ed)return "";
+  const dh=Array.isArray(ed.dual_homed)?ed.dual_homed:[];
+  const clu=Array.isArray(ed.clusters)?ed.clusters:[];
+  const sip=Array.isArray(ed.shared_ip)?ed.shared_ip:[];
+  const aff=Array.isArray(ed.affinity)?ed.affinity:[];
+  if(!dh.length&&!clu.length&&!sip.length&&!aff.length)return "";
+  const dhRows=dh.slice(0,14).map(d=>`<div class="ln"><span class="pill pl-${d.split_across_groups?"crit":"watch"}">${d.split_across_groups?"split across groups":"dual-homed"}</span> <span class="mono">${esc(d.mac)}</span>${d.ip?` <span class="faint">${esc(d.ip)}</span>`:""} <span class="faint">${esc(d.endpoint_class||"")}${d.vendor?" · "+esc(d.vendor):""} on ${(d.switches||[]).map(h=>esc(shortName(h))).join(", ")}</span></div>`).join("");
+  const cluRows=clu.slice(0,12).map(c=>`<div class="ln"><span class="pill pl-${c.spans_groups?"crit":"neutral"}">${+c.count||0}×</span> <span class="mono">${esc(c.endpoint_class)}</span> <span class="faint">${esc(c.vendor||"")} · ${+c.switches||0} switch(es) · ${+c.vlans||0} VLAN(s)${c.spans_groups?" · spans move groups (split risk)":""}</span></div>`).join("");
+  const sipRows=sip.slice(0,8).map(s=>`<div class="ln"><span class="pill pl-watch">shared IP</span> <span class="mono">${esc(s.ip)}</span> <span class="faint">on ${(s.switches||[]).map(h=>esc(shortName(h))).join(", ")}</span></div>`).join("");
+  const affRows=aff.slice(0,10).map(a=>`<div class="ln"><span class="pill pl-neutral">VLAN ${esc(a.vlan)}</span> <span class="faint">${+a.total||0} endpoints · dominant <b>${esc(a.dominant)}</b> (${Object.entries(a.classes||{}).map(([k,v])=>esc(k)+" "+v).join(", ")})</span></div>`).join("");
+  return `<div class="sec"><h3>Endpoint dependencies <span class="ct">${dh.length+clu.length+sip.length}</span></h3>
+    <p class="sub" style="margin:0 0 7px">The endpoints behind the topology: dual-homed servers that must never lose both legs at once, distributed clusters that may split across move groups, shared service IPs, and the dominant app tier per VLAN.</p>
+    ${dh.length?`<div class="sub" style="margin:0 0 4px">Dual-homed / NIC-team endpoints <span class="ct">${dh.length}</span></div>${dhRows}`:""}
+    ${clu.length?`<div class="sub" style="margin:7px 0 4px">Clusters by class <span class="ct">${clu.length}</span></div>${cluRows}`:""}
+    ${sip.length?`<div class="sub" style="margin:7px 0 4px">Shared service IPs <span class="ct">${sip.length}</span></div>${sipRows}`:""}
+    ${aff.length?`<div class="sub" style="margin:7px 0 4px">VLAN affinity <span class="ct">${aff.length}</span></div>${affRows}`:""}
+  </div>`;
+}
 function cockpitCard(){
   if(!MODEL||!MODEL.hosts||!MODEL.hosts.length)return "";
   const pl=(SNAP&&SNAP.punchlist)||[];
@@ -5410,6 +5544,7 @@ function drawHealth(){
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${punchlistCard()}
+    ${driftCard()}
     ${collectionCard()}
     ${calibrationCard()}
     ${sensitivityCard()}
