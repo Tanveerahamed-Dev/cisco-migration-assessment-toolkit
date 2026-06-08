@@ -339,6 +339,7 @@ from cisco_toolkit.analyze import (
     compute_remediation_plan,                          # NEW-V3.23.116 (assess->act: per-device config snippets, review-only)
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
+    compute_executive_brief,                           # NEW-V3.23.120 (cross-axis migration brief synthesis)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
@@ -1712,8 +1713,16 @@ def main():
 
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
     logger.info("\n[Phase 30e] Writing Executive Summary sheet ...")
+    # NEW-V3.23.120: the cross-axis migration brief -- one headline per assessment axis (the 7 new axes +
+    # health + punch-list + readiness) rolled up into one decision-grade synthesis. Compute once -> the
+    # Executive Summary sheet leads with it + snapshot.
+    executive_brief = _run_phase("Executive brief", compute_executive_brief,
+                                 health_scores, punchlist, migration_readiness, application_intelligence,
+                                 lifecycle_risk, segmentation, multicast_intelligence, remediation_plan,
+                                 _default={})
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
-               health_scores, punchlist, migration_readiness, failure_impact)   # NEW-V3.23.91: reuse precomputed fi
+               health_scores, punchlist, migration_readiness, failure_impact,   # NEW-V3.23.91: reuse precomputed fi
+               brief=executive_brief)
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
@@ -1787,6 +1796,7 @@ def main():
     snap_dict["migration_scenarios"] = migration_scenarios           # NEW-V3.23.98 (per-group cutover scenario recommendation; reused from Phase 29d)
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
+    snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41

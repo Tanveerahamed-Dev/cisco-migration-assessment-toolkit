@@ -5292,6 +5292,21 @@ function keystoneCard(){
     <p class="sub" style="margin:0 0 7px">When every switch scores Critical the score can't prioritise — these are the devices the most endpoints actually depend on. Hardening them (FHRP / a redundant path) collapses the risk fastest. Click to drill in.</p>
     ${rows}</div>`;
 }
+/* V3.23.120: the cross-axis migration brief -- one headline per assessment axis, from SNAP.executive_brief.
+   Leads the Health view above the Risk cockpit. JS fallback: hidden on a pre-V3.23.120 snapshot. */
+function briefCard(){
+  const b=(SNAP&&SNAP.executive_brief)||null;
+  if(!b||!(b.axes&&b.axes.length))return "";
+  const sc=b.scale||{}, ps=b.posture_statement||"";
+  const bSevTok=v=>(v==="Critical"||v==="High")?"crit":v==="Medium"?"watch":v==="Info"?"neutral":"ok";
+  const rows=(b.axes||[]).map(a=>`<div class="ln"><span class="pill pl-${bSevTok(a.severity)}">${esc(a.severity)}</span> <b>${esc(a.axis)}</b> — <span class="faint">${esc(a.headline)}</span></div>`).join("");
+  const tg=(b.top_gating||[]).slice(0,6);
+  return `<div class="sec"><h3>Migration brief</h3>`+
+    `<div class="card crit" style="margin-bottom:9px"><div class="ln">${esc(ps)}</div></div>`+
+    (tg.length?`<div class="ln" style="margin-bottom:7px"><b>Address first:</b> <span class="faint">${tg.map(esc).join(" · ")}</span></div>`:"")+
+    `<div class="sub" style="margin-bottom:5px">${(+sc.n_devices||0)} devices · ${(+sc.n_domains||0)} application domains · ${(+sc.n_endpoints||0)} endpoints — one headline per axis:</div>`+
+    rows+`</div>`;
+}
 function cockpitCard(){
   if(!MODEL||!MODEL.hosts||!MODEL.hosts.length)return "";
   const pl=(SNAP&&SNAP.punchlist)||[];
@@ -5390,6 +5405,7 @@ function drawHealth(){
     </div>
     ${allBad?`<div class="card crit" style="margin-top:11px"><div class="ln"><b>Heads-up:</b> every switch lands in poor/critical. When the whole fleet is red, the scoring is usually mis-calibrated (one finding counted many times) rather than the network being uniformly broken. Click a switch to see its <b>dominant driver</b> — then trust the <b>real SPOF list</b> below for what to actually fix first.</div></div>`:""}
     </div>
+    ${briefCard()}
     ${cockpitCard()}
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
