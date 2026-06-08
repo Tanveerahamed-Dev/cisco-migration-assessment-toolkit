@@ -272,6 +272,17 @@
   null,
   null
  ],
+ "Lifecycle Risk": [
+  "Hardware lifecycle (EoL / End-of-Support) \u2014 replacement urgency",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Collection Completeness": [
   "Inventory",
   3,

@@ -292,6 +292,22 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
         doc.add_paragraph("Environmental exceptions (PSU/fan/temperature not nominal):")
         table(["Device", "PSU", "Fan", "Temp"], env_flags[:20], widths=[3.5, 1.3, 1.3, 1.3])
 
+    # 4.1 Hardware lifecycle (EoL / End-of-Support) — NEW-V3.23.117
+    lr = snap_dict.get("lifecycle_risk") or {}
+    ls = lr.get("summary") or {}
+    if ls.get("n_devices"):
+        doc.add_heading("4.1 Hardware lifecycle (EoL / End-of-Support)", level=2)
+        doc.add_paragraph(
+            f"As of {lr.get('asof', '')}, of {ls.get('n_devices', 0)} device(s): "
+            f"{ls.get('n_past_ldos', 0)} are PAST Cisco's last day of support (no software fixes / no TAC), "
+            f"{ls.get('n_near', 0)} reach end-of-support within a year, {ls.get('n_active', 0)} are active, "
+            f"{ls.get('n_unknown', 0)} unknown. End-of-support hardware is a hard migration driver.")
+        _label_run(doc.add_paragraph(), "Reference note:", lr.get("note", ""), GREY)
+        rows = [[p.get("platform"), p.get("count"), p.get("band"), p.get("ldos") or "—"]
+                for p in (ls.get("by_platform") or [])]
+        if rows:
+            table(["Platform", "Devices", "Lifecycle band", "LDoS"], rows, widths=[2.6, 1.0, 1.7, 1.4])
+
     # ===== 5. Topology & Current State =====
     doc.add_heading("5. Topology & Current State", level=1)
     p = doc.add_paragraph()
