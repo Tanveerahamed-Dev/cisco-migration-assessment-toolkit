@@ -338,6 +338,7 @@ from cisco_toolkit.analyze import (
     compute_multicast_intelligence,                    # NEW-V3.23.115 (media-fabric deep-dive: MAC-alias / querier / PTP tree)
     compute_remediation_plan,                          # NEW-V3.23.116 (assess->act: per-device config snippets, review-only)
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
+    compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
@@ -381,6 +382,7 @@ from cisco_toolkit.excel import (
     write_multicast_intelligence_sheet,                          # NEW-V3.23.115 (media-fabric multicast intelligence)
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
+    write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
@@ -1701,6 +1703,12 @@ def main():
                                           service_map, health_scores, move_groups, punchlist,
                                           subnet_intelligence=subnet_intelligence, _default={})
     _run_phase("Application Intelligence sheet", write_application_intelligence_sheet, wb, application_intelligence)
+    # Phase 30d-bis2: Segmentation / isolation audit (NEW-V3.23.118). L3 isolation posture per application
+    # domain (VRF separation + gateway-ACL coverage) from the gateway SVIs + the domain map. Compute once ->
+    # sheet + snapshot.
+    segmentation = _run_phase("Segmentation audit", compute_segmentation,
+                              all_interfaces, application_intelligence, _default={})
+    _run_phase("Segmentation sheet", write_segmentation_sheet, wb, segmentation)
 
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
     logger.info("\n[Phase 30e] Writing Executive Summary sheet ...")
@@ -1778,6 +1786,7 @@ def main():
     snap_dict["subnet_intelligence"] = subnet_intelligence           # NEW-V3.23.97 (per-device subnet source/destination + move-group reachability; reused from Phase 29c)
     snap_dict["migration_scenarios"] = migration_scenarios           # NEW-V3.23.98 (per-group cutover scenario recommendation; reused from Phase 29d)
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
+    snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41

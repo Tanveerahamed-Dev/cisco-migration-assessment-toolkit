@@ -4246,6 +4246,17 @@ function drawApps(){
       <div class="ct"><span class="nm">${c.order}. ${esc(c.domain)}</span><span class="pill pl-${cutTok(c.band)}">${esc(c.band)} · score ${c.score}</span></div>
       <div class="ln faint" style="margin-top:3px">${esc(c.rationale)}</div>
     </div>`).join("");
+  // V3.23.118: L3 segmentation / isolation posture from SNAP.segmentation
+  const seg=(SNAP&&SNAP.segmentation)||null;
+  const segTok=v=>(v==="High"||v==="Critical")?"crit":v==="Medium"?"watch":"neutral";
+  let segHtml="";
+  if(seg&&seg.summary&&seg.summary.n_gateways){
+    const ss=seg.summary, ga=seg.gateway_acl||{};
+    const head2=`<p class="sub" style="margin:0 0 8px">${ss.flat?`<span class="pill pl-crit">FLAT L3</span> `:""}${ss.n_vrfs||0} VRF(s) · gateway-ACL coverage <b>${ga.n_with_acl||0}/${ga.n_gateways||0}</b> (${ga.coverage_pct||0}%) · ${ss.n_oncrit_exposed||0} on-air-critical domain(s) not isolated — is the media fabric actually segmented?</p>`;
+    const domRows=(seg.domains||[]).map(d=>`<div class="ln"><span class="pill pl-${d.isolated?"ok":"crit"}">${d.isolated?"isolated":"exposed"}</span> <span class="mono">${esc(d.domain)}</span> <span class="faint">${d.gateways} gw · ${esc((d.vrfs||[]).join(", ")||"—")} · ${d.gateways_with_acl} ACL</span></div>`).join("");
+    const segRisks=(seg.risks||[]).map(r=>`<div class="card ${segTok(r.severity)}" style="margin-bottom:6px"><div class="ct"><span class="nm">${esc(r.title)}</span><span class="pill pl-${segTok(r.severity)}">${esc(r.severity)}</span></div><div class="ln faint" style="margin-top:3px">${esc(r.detail||"")}</div>${r.remediation?`<div class="ln" style="margin-top:3px"><b>Fix:</b> ${esc(r.remediation)}${r.standard?` <span class="faint">[${esc(r.standard)}]</span>`:""}</div>`:""}</div>`).join("");
+    segHtml=`<div class="sec"><h3>Segmentation &amp; isolation <span class="ct">${(seg.domains||[]).length}</span></h3>${head2}${segRisks}<div style="margin-top:6px">${domRows}</div></div>`;
+  }
   return head+
     `<div class="sec"><div class="headline">
       <div class="stat"><div class="v"><span class="num" data-to="${s.n_domains||domains.length}">0</span></div><div class="k">domains</div></div>
@@ -4258,7 +4269,8 @@ function drawApps(){
     <div class="sec"><h3>Domains by criticality <span class="ct">${domains.length}</span></h3>${cards}</div>
     ${cross.length?`<div class="sec"><h3>Cross-domain risks <span class="ct">${cross.length}</span></h3><p class="sub" style="margin:0 0 8px">IGMP querier continuity / split-brain across the cutover (RFC 4541).</p>${crossCards}</div>`:""}
     ${edges.length?`<div class="sec"><h3>Inter-domain dependencies <span class="ct">${edges.length}</span></h3>${kHtml}<p class="sub" style="margin:0 0 8px">Couplings between domains — physical links · shared subnets · dual-homed endpoints. What must be coordinated / made-before-broken on cutover. <b>Select a domain above</b> to light its coupled neighbours on the graph.</p>${edgeRows}</div>`:""}
-    ${cut.length?`<div class="sec"><h3>Recommended cutover order <span class="ct">${cut.length}</span></h3><p class="sub" style="margin:0 0 8px">Lowest-risk <b>pilots first</b> (fail-fast &amp; learn); on-air-critical domains <b>last</b> with make-before-break. A recommendation — the war-room decides.</p>${cutRows}</div>`:""}`;
+    ${cut.length?`<div class="sec"><h3>Recommended cutover order <span class="ct">${cut.length}</span></h3><p class="sub" style="margin:0 0 8px">Lowest-risk <b>pilots first</b> (fail-fast &amp; learn); on-air-critical domains <b>last</b> with make-before-break. A recommendation — the war-room decides.</p>${cutRows}</div>`:""}
+    ${segHtml}`;
 }
 /* paint hook: spotlight the selected application-domain's switches (APP_SEL), dim the rest.
    No selection -> clean canvas. Mirrors paintWaves (reuses .xlhl / .xldim / .dim). */

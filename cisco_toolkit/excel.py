@@ -1568,6 +1568,77 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
                 f"{s.get('n_past_ldos', 0)} past-LDoS")
 
 
+SEGMENTATION_SHEET_NAME = "Segmentation"   # NEW-V3.23.118 (L3 isolation posture)
+
+def write_segmentation_sheet(wb, seg: dict) -> None:
+    """Write 'Segmentation' from compute_segmentation(): VRF inventory, gateway-ACL coverage, per-domain
+    isolation, and the findings. Row 1 is a static title."""
+    if SEGMENTATION_SHEET_NAME in wb.sheetnames:
+        del wb[SEGMENTATION_SHEET_NAME]
+    ws = wb.create_sheet(SEGMENTATION_SHEET_NAME)
+    g = seg or {}
+    s = g.get("summary") or {}
+    ga = g.get("gateway_acl") or {}
+    HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
+    DAT = Font(name="Calibri", size=10)
+    flat = bool(s.get("flat"))
+    ws.cell(1, 1, "L3 Segmentation & Isolation posture").font = Font(bold=True, size=11)
+    ws.cell(2, 1, ("FLAT L3 — " if flat else "") + f"{s.get('n_vrfs', 0)} VRF(s); gateway ACL coverage "
+                  f"{ga.get('n_with_acl', 0)}/{ga.get('n_gateways', 0)} ({ga.get('coverage_pct', 0)}%); "
+                  f"{s.get('n_oncrit_exposed', 0)} on-air-critical domain(s) not isolated.").font = Font(
+        size=10, bold=flat, color="9C0006" if flat else "000000")
+    r = [4]
+
+    def section(t):
+        ws.cell(r[0], 1, t).font = Font(bold=True); r[0] += 1
+
+    def header(cols):
+        for i, h in enumerate(cols, 1):
+            c = ws.cell(r[0], i, h); c.font = HDR; c.fill = HFILL
+            c.alignment = Alignment(horizontal="center", wrap_text=True)
+        r[0] += 1
+
+    section("VRF inventory")
+    header(["VRF", "Gateways"])
+    for v in g.get("vrfs", []):
+        ws.cell(r[0], 1, v.get("vrf")).font = DAT
+        ws.cell(r[0], 2, v.get("gateway_count")).font = DAT
+        r[0] += 1
+    r[0] += 1
+
+    section("Per-domain isolation")
+    header(["Domain", "Tier", "Gateways", "VRF(s)", "Gateway ACLs", "Isolated", "Exposure"])
+    ISOFILL = {True: "D9EAD3", False: "F4CCCC"}
+    for d in g.get("domains", []):
+        vals = [d.get("domain"), d.get("tier"), d.get("gateways"), ", ".join(d.get("vrfs") or []),
+                d.get("gateways_with_acl"), "yes" if d.get("isolated") else "no", d.get("exposure")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r[0], col, v); c.font = DAT
+            c.alignment = Alignment(vertical="top", wrap_text=col == 7)
+            if col == 6:
+                c.fill = PatternFill("solid", fgColor=ISOFILL.get(bool(d.get("isolated")), "FFFFFF"))
+        r[0] += 1
+    r[0] += 1
+
+    section("Findings")
+    risks = g.get("risks") or []
+    if not risks:
+        ws.cell(r[0], 1, "No segmentation findings.").font = DAT; r[0] += 1
+    else:
+        header(["Severity", "Finding", "Detail", "Remediation"])
+        for x in risks:
+            vals = [x.get("severity"), x.get("title"), x.get("detail"), x.get("remediation")]
+            for col, v in enumerate(vals, 1):
+                c = ws.cell(r[0], col, v); c.font = DAT
+                c.alignment = Alignment(vertical="top", wrap_text=col in (3, 4))
+            r[0] += 1
+
+    for i, w in enumerate([34, 15, 9, 16, 12, 9, 50], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A2"
+    logger.info(f"  [OK] '{SEGMENTATION_SHEET_NAME}' sheet: {s.get('n_gateways', 0)} gateway(s), flat={flat}")
+
+
 PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
 
 def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:
