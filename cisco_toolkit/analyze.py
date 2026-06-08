@@ -3833,6 +3833,9 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
         if it.get("severity") in sev_pl:
             sev_pl[it["severity"]] += 1
     not_ready = sum(1 for r in mr if r.get("readiness") == "NOT READY")
+    lc_tot = lc.get("n_devices", 0)                               # EoL rollup -- shared by the axis + the posture flag
+    lc_pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)        # past-LDoS + near-LDoS = "past/near end-of-support"
+    lc_pct = round(100 * lc_pe / lc_tot) if lc_tot else 0
 
     axes: List[dict] = []
 
@@ -3854,12 +3857,10 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            + (f" · {not_ready} of {len(mr)} wave(s) NOT READY" if mr else ""),
            "Recommended lowest-risk-first order.")
     if lc.get("n_devices"):
-        tot = lc.get("n_devices", 0)
-        pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)
         ax("Hardware lifecycle (EoL)",
            "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near") else "Low",
            f"{lc.get('n_past_ldos', 0)} past end-of-support, {lc.get('n_near', 0)} within 1yr "
-           f"({round(100 * pe / tot) if tot else 0}%)", "Reference dates from the offline KB.")
+           f"({lc_pct}%)", "Reference dates from the offline KB.")
     if seg.get("n_gateways"):
         ax("Segmentation", "High" if seg.get("flat") or seg.get("n_oncrit_exposed") else "Low",
            ("flat L3 — " if seg.get("flat") else "")
@@ -3882,9 +3883,7 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
 
     flags: List[str] = []
     if lc.get("n_past_ldos") or lc.get("n_near"):
-        tot = lc.get("n_devices", 0)
-        pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)
-        flags.append(f"hardware end-of-support is a primary driver ({round(100 * pe / tot) if tot else 0}% past/near)")
+        flags.append(f"hardware end-of-support is a primary driver ({lc_pct}% past/near)")
     if seg.get("flat"):
         flags.append("the L3 fabric is flat (no segmentation)")
     if mi.get("n_ptp_clocks") and mi.get("n_ptp_dormant") == mi.get("n_ptp_clocks"):
