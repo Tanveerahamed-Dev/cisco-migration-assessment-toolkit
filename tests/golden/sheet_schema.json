@@ -216,6 +216,9 @@
   "PoE Allocated (W)",
   "Physical Risk"
  ],
+ "Flow Paths": [
+  "Representative Flow Paths"
+ ],
  "L3 Forwarding Map": [
   "Switch",
   "VLAN",

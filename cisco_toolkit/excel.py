@@ -2555,6 +2555,58 @@ def write_flow_trace_sheet(wb, flow: dict) -> None:
                 f"risk {s['risk']}, {s['spof_count']} SPOF(s)")
 
 
+FLOW_PATHS_SHEET_NAME = "Flow Paths"
+
+
+def write_flow_paths_sheet(wb, flow_paths: dict) -> None:
+    """NEW-V3.23.126: the workbook twin of the explorer's Flow Simulator — representative end-to-end
+    flow paths (one per consecutive-VLAN pair, lowest-IP endpoint each) with their L1-L3 hops, SPOFs
+    and risk. From compute_flow_paths(). Pure presentation; the explorer remains the interactive view."""
+    fp = flow_paths or {}
+    flows = fp.get("flows") or []
+    ws = wb.create_sheet(FLOW_PATHS_SHEET_NAME)
+    bold = Font(bold=True)
+    ws.cell(1, 1, "Representative Flow Paths").font = Font(bold=True, size=14, color="1F3864")
+    s0 = fp.get("summary") or {}
+    ws.cell(2, 1, f"{s0.get('n_flows', 0)} representative flow(s) · {s0.get('n_at_risk', 0)} at-risk "
+                  f"(HIGH/CRITICAL) · {s0.get('n_partitioned', 0)} partitioned. Static twin of the explorer "
+                  f"Flow Simulator: the lowest-IP endpoint per VLAN, traced L1-L3 end to end.").font = \
+        Font(italic=True, size=9)
+    r = 4
+    if not flows:
+        ws.cell(r, 1, "No endpoint IPs in scope to trace (endpoint identity empty).").font = bold
+        for i, w in enumerate([5, 10, 18, 18, 16, 60, 7], 1):
+            ws.column_dimensions[chr(64 + i)].width = w
+        logger.info("  [OK] 'Flow Paths' sheet: 0 flow(s)")
+        return
+    headers = ["#", "Layer", "From", "To", "Interface", "Detail", "SPOF"]
+    for flow in flows:
+        s = flow["summary"]
+        ws.cell(r, 1, flow["label"]).font = Font(bold=True, size=11, color="1F3864"); r += 1
+        ws.cell(r, 1, "Verdict").font = bold
+        vc = ws.cell(r, 2, f"{s.get('flow_type', '')} · risk {s.get('risk', '')}"
+                           + (f" · SPOFs: {', '.join(s.get('spofs') or [])}" if s.get("spofs") else " · no SPOF"))
+        if s.get("risk") in _RISK_FILL:
+            vc.fill = PatternFill("solid", fgColor=_RISK_FILL[s["risk"]]); vc.font = bold
+        r += 1
+        for col, h in enumerate(headers, 1):
+            hc = ws.cell(r, col, h); hc.font = Font(bold=True, color="FFFFFF")
+            hc.fill = PatternFill("solid", fgColor="434343"); hc.alignment = Alignment(horizontal="center")
+        r += 1
+        for hop in flow["hops"]:
+            vals = [hop["n"], hop["layer"], hop["from"], hop["to"], hop["iface"], hop["detail"],
+                    "YES" if hop["spof"] else ""]
+            for col, v in enumerate(vals, 1):
+                hc = ws.cell(r, col, v)
+                if hop["spof"]:
+                    hc.fill = PatternFill("solid", fgColor="F4CCCC")
+            r += 1
+        r += 1
+    for i, w in enumerate([5, 10, 18, 18, 16, 60, 7], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] 'Flow Paths' sheet: {len(flows)} flow(s), {s0.get('n_at_risk', 0)} at-risk")
+
+
 L3_FORWARDING_SHEET_NAME = "L3 Forwarding Map"
 
 def _parse_track(output: str) -> dict:
