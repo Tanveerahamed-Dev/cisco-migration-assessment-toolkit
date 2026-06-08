@@ -515,6 +515,10 @@
   .fsim-x{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);
     color:var(--text-dim);font-size:15px;cursor:pointer}
   .fsim-x:hover{color:var(--text);border-color:var(--accent)}
+  .fsim-tuple{display:flex;align-items:center;gap:8px;padding:8px 22px;border-bottom:1px solid var(--border);background:var(--surface);flex-wrap:wrap}
+  .fsim-tuplbl{font-size:11px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.4px}
+  .fsim-tuple select,.fsim-tuple input{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 8px;font:inherit;font-size:12px}
+  .fsim-tuple input{width:96px}
   .fsim-rail{display:flex;align-items:flex-start;gap:0;overflow-x:auto;padding:20px 22px 16px;
     border-bottom:1px solid var(--border);background:var(--surface-2)}
   .fsim-node{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:104px;opacity:.4;
@@ -3009,6 +3013,19 @@ function _routeCovers(host,ip){
     if(((a&mask)>>>0)===((base&mask)>>>0)&&len>bestLen){best=r;bestLen=len;}}
   return best;                                                          // null = table present but no covering route
 }
+/* V3.23.130: all routes at the LONGEST matching prefix (equal-cost) -> ECMP detection for the flow sim. */
+function _routesCovering(host,ip){
+  const rt=(SNAP&&SNAP.routes&&SNAP.routes[host])?SNAP.routes[host]:null; if(!rt||!rt.length)return [];
+  const a=_ip2int(ip); if(a==null)return [];
+  let bestLen=-1; const out=[];
+  for(const r of rt){const parts=String(r.prefix||"").split("/"); if(parts.length!==2)continue;
+    const base=_ip2int(parts[0]),len=+parts[1]; if(base==null||!(len>=0&&len<=32))continue;
+    const mask=len===0?0:((0xFFFFFFFF<<(32-len))>>>0);
+    if(((a&mask)>>>0)===((base&mask)>>>0)){ if(len>bestLen){bestLen=len;out.length=0;out.push(r);} else if(len===bestLen)out.push(r); }}
+  return out;
+}
+function _fsimEcmpNote(host,ip){const nhs=[...new Set(_routesCovering(host,ip).map(r=>r.next_hop).filter(Boolean))];
+  return nhs.length>1?` ECMP: ${nhs.length} equal-cost next-hops (${nhs.join(", ")}) — load-balanced per src-dst hash.`:"";}
 /* route-aware (endpoint): a representative host IP inside VLAN vid's subnet — that gateway SVI's own
    address — so _routeCovers can test whether a source gateway has a route toward that whole subnet. */
 function gwIp(host,vid){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host]["Vlan"+vid]:null;
@@ -3617,7 +3634,7 @@ function buildFlowJourney(F,srcOverride){if(!F||!F.src||!F.dst)return null;
       const act=fh&&fh.active&&fh.active.size?[...fh.active][0]:null, sby=fh&&fh.standby&&fh.standby.size?[...fh.standby][0]:null;
       const rt=d.ip?_routeCovers(sgw,d.ip):null, vrf=gwVrf(sgw,sv)||"global";
       layers.push(rung("L3","Network","ok",act?`FHRP active = ${shortName(act)}`:`Gateway ${shortName(sgw)}`,
-        `${act?`The active first-hop gateway for VLAN ${sv} is ${shortName(act)}${sby?` (standby ${shortName(sby)})`:""}. `:`VLAN ${sv} gateway is ${shortName(sgw)}${fh?"":" — no FHRP peer (SPOF)"}. `}Route lookup in VRF ${vrf}: ${rt?`longest-prefix ${rt.prefix} via ${rt.source||"route"}${rt.next_hop?` → next-hop ${rt.next_hop}`:""}${rt.out_intf?`, egress ${rt.out_intf}`:""}.`:"destination not found in the routing table."}`,
+        `${act?`The active first-hop gateway for VLAN ${sv} is ${shortName(act)}${sby?` (standby ${shortName(sby)})`:""}. `:`VLAN ${sv} gateway is ${shortName(sgw)}${fh?"":" — no FHRP peer (SPOF)"}. `}Route lookup in VRF ${vrf}: ${rt?`longest-prefix ${rt.prefix} via ${rt.source||"route"}${rt.next_hop?` → next-hop ${rt.next_hop}`:""}${rt.out_intf?`, egress ${rt.out_intf}`:""}.${d.ip?_fsimEcmpNote(sgw,d.ip):""}`:"destination not found in the routing table."}`,
         act?"confirmed":"derived"));
       aclByHost(sgw).forEach(v=>layers.push(rung("L4","Transport",v.verdict==="permit"?"ok":v.verdict==="deny"?"block":"watch",
         `ACL ${v.name} (${v.dir}) → ${String(v.verdict).toUpperCase()}`,
@@ -3735,6 +3752,23 @@ function fsimToggleReverse(){ if(!FLOWSIM)return; const S=FLOWSIM; if(S.J.multic
       if(S.Jr){ S.sym=flowSymmetry(S.J,S.Jr); S.Jr.verdict="RETURN PATH — "+(S.Jr.verdict||""); } } }
   S.i=0; renderFlowSim();
   if(S.reverse&&S.Jr&&!matchMedia("(prefers-reduced-motion: reduce)").matches)fsimPlay(); }
+/* V3.23.130: change the L4 5-tuple INSIDE the overlay -> re-trace + rebuild so the ACL verdict flips live. */
+function fsimSetTuple(proto,dport){ if(!FLOWSIM||!FLOWSIM.F||FLOWSIM.F.multicast)return;
+  if(proto)FLOW_PROTO=proto;
+  if(dport!=null&&dport!==""){const nn=parseInt(dport,10); if(nn>=1&&nn<=65535)FLOW_DPORT=nn;}
+  const F2=flowBetween(FLOWSIM.F.src,FLOWSIM.F.dst);
+  FLOWSIM.F=F2; FLOWSIM.J=buildFlowJourney(F2); FLOWSIM.Jb=FLOWSIM.Jr=FLOWSIM.sym=null;
+  FLOWSIM.useBackup=FLOWSIM.reverse=false; FLOWSIM.i=0; renderFlowSim(); }
+/* V3.23.130: copy the current walk as plaintext (runbook evidence). */
+function fsimCopy(){ if(!FLOWSIM)return;
+  const J=(FLOWSIM.reverse&&FLOWSIM.Jr)?FLOWSIM.Jr:((FLOWSIM.useBackup&&FLOWSIM.Jb)?FLOWSIM.Jb:FLOWSIM.J);
+  const L=[`Flow Simulator — ${(J.src&&(J.src.ip||J.src.mac))||"?"} -> ${(J.dst&&(J.dst.ip||J.dst.mac))||"?"}`,`Verdict: ${J.verdict}`,""];
+  (J.nodes||[]).forEach((n,k)=>{ L.push(`${k+1}. [${n.role}] ${n.label}${n.host?" — "+shortName(n.host):""}`);
+    (n.layers||[]).forEach(l=>L.push(`     ${l.layer} ${l.label}: ${l.decision} — ${l.why} [${l.tag}]`)); });
+  if(J.backup&&J.backup.note)L.push("",`Backup: ${J.backup.note}`);
+  const txt=L.join("\n");
+  const done=()=>{const b=document.getElementById("fsimCopyBtn"); if(b){b.textContent="✓ Copied";setTimeout(()=>{if(b)b.textContent="⧉ Copy";},1400);}};
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done).catch(done); else done(); }
 function fsimIsolatedHtml(J){return `<div class="fsim-head"><div><div class="fsim-title">⚡ Flow Simulator — failure mode</div>`+
   `<div class="fsim-sum">${esc(J.src.ip||J.src.mac||"?")} → ${esc(J.dst.ip||J.dst.mac||"?")}</div></div>`+
   `<span class="fsim-verdict crit">ISOLATED</span>`+
@@ -3798,13 +3832,20 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
     `<button class="fsim-btn" onclick="fsimStep(1)" ${i>=n-1?"disabled":""}>Step ▶</button>`+
     `<span class="fsim-prog">hop ${i+1} / ${n}</span>`+
     (bk&&!reverseActive?`<button class="fsim-btn ${S.useBackup?"on":""}" onclick="fsimToggleBackup()">${S.useBackup?"↩ Primary path":"⚡ Failure mode"}</button>`:"")+
-    (!S.J.multicast?`<button class="fsim-btn ${S.reverse?"on":""}" onclick="fsimToggleReverse()">${S.reverse?"→ Forward":"⇄ Return path"}</button>`:"");
+    (!S.J.multicast?`<button class="fsim-btn ${S.reverse?"on":""}" onclick="fsimToggleReverse()">${S.reverse?"→ Forward":"⇄ Return path"}</button>`:"")+
+    `<button class="fsim-btn" id="fsimCopyBtn" onclick="fsimCopy()" title="Copy this flow walk as text for the runbook">⧉ Copy</button>`;
+  const l4on=(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp");
+  const tuple=(J.multicast||reverseActive||backupActive)?"":`<div class="fsim-tuple"><span class="fsim-tuplbl">L4 / ACL eval</span>`+
+    `<select onchange="fsimSetTuple(this.value,null)">`+["tcp","udp","icmp","ip"].map(p=>`<option value="${p}"${FLOW_PROTO===p?" selected":""}>${p.toUpperCase()}</option>`).join("")+`</select>`+
+    `<input type="number" min="1" max="65535" placeholder="dst port" value="${l4on?FLOW_DPORT:""}" ${l4on?"":"disabled"} onchange="fsimSetTuple(null,this.value)">`+
+    `<span class="faint">change the 5-tuple → the L4 ACL verdict updates live</span></div>`;
   const honesty=`<div class="fsim-honesty">Offline control-plane <b>intent</b>, not observed dataplane — port-channel member = hash-selected; ECMP = one of N; MLAG = inferred (confirm with <span class="mono">show vpc</span>).</div>`;
   document.getElementById("flowsim").innerHTML=
     `<div class="fsim-head"><div><div class="fsim-title">⚡ Flow Simulator</div>`+
       `<div class="fsim-sum">${esc(J.src.ip||J.src.mac||"?")} → ${esc(J.dst.ip||J.dst.mac||"?")}${J.app?` · ${esc(J.app.label)}`:""}</div></div>`+
       `<span class="fsim-verdict ${vtok}">${esc(J.verdict)}</span>`+
       `<button class="fsim-x" onclick="closeFlowSim()" aria-label="Close simulator">✕</button></div>`+
+    tuple+
     `<div class="fsim-rail">${rail}</div>`+
     `<div class="fsim-body"><div class="fsim-stack">${body}${S.useBackup&&bkHtml?`<div style="margin-top:12px">${bkHtml}</div>`:""}</div><div class="fsim-map">${fsimMap(J,i)}</div></div>`+
     `<div class="fsim-foot">${ctrl}${!S.useBackup&&bkHtml?bkHtml:""}${honesty}</div>`; }
