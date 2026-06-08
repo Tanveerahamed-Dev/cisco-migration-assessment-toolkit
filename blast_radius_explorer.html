@@ -3541,11 +3541,11 @@ function flowBackupPath(F){if(!F||!F.reachable)return null;
     const alt=_bfsPath(MODEL,vid,a,b,false,li);
     if(!alt)return {hasBackup:false,failLink:`${shortName(path[i])} ↔ ${shortName(path[i+1])}`,isolates:shortName(path[i+1]),
       note:`If ${shortName(path[i])} ↔ ${shortName(path[i+1])} fails, ${shortName(path[i+1])} is isolated on VLAN ${vid} — single uplink, no backup.`};
-    if(!MODEL.links[li].portChannel)return {hasBackup:true,failLink:`${shortName(path[i])} ↔ ${shortName(path[i+1])}`,via:alt.map(shortName),
+    if(!MODEL.links[li].portChannel)return {hasBackup:true,failLink:`${shortName(path[i])} ↔ ${shortName(path[i+1])}`,viaRaw:alt,via:alt.map(shortName),
       note:`If ${shortName(path[i])} ↔ ${shortName(path[i+1])} fails, traffic reroutes via ${alt.map(shortName).join(" → ")} (STP unblocks the standby path).`};}
   return {hasBackup:true,note:"Primary path is port-channel-protected end-to-end — a member loss degrades bandwidth but doesn't drop the path."};}
 /* The structured journey the cinematic overlay renders. */
-function buildFlowJourney(F){if(!F||!F.src||!F.dst)return null;
+function buildFlowJourney(F,srcOverride){if(!F||!F.src||!F.dst)return null;
   const mlag=inferMlagPairs(), s=F.src,d=F.dst;
   const sv=/^\d+$/.test(s.vlan)?+s.vlan:null, dv=/^\d+$/.test(d.vlan)?+d.vlan:null;
   const routed=!!(F.gateways&&F.gateways.length>1)&&sv!==dv;
@@ -3557,10 +3557,11 @@ function buildFlowJourney(F){if(!F||!F.src||!F.dst)return null;
            app:flowAppContext(F),backup:flowBackupPath(F),decisiveLayer:null,nodes:[]};
   if(!F.reachable&&F.hops.length)J.decisiveLayer=F.hops[F.hops.length-1].layer;
   const seg=(vid,a,b)=>(a===b)?[a]:(_bfsPath(MODEL,vid,a,b)||[a]);
+  const ov=(Array.isArray(srcOverride)&&srcOverride.length)?srcOverride:null;   // V3.23.124: backup-path reroute override
   let hosts=[];
-  if(F.reachable&&!routed)hosts=seg(sv,s.host,d.host);
-  else if(routed){const A=seg(sv,s.host,sgw),B=seg(dv,dgw,d.host); hosts=A.concat(B[0]===A[A.length-1]?B.slice(1):B);}
-  else hosts=seg(sv!=null?sv:dv,s.host,(sgw||d.host));
+  if(F.reachable&&!routed)hosts=ov||seg(sv,s.host,d.host);
+  else if(routed){const A=ov||seg(sv,s.host,sgw),B=seg(dv,dgw,d.host); hosts=A.concat(B[0]===A[A.length-1]?B.slice(1):B);}
+  else hosts=ov||seg(sv!=null?sv:dv,s.host,(sgw||d.host));
   const idxGw=sgw?hosts.indexOf(sgw):-1, rootS=stpRootFor(sv), rootD=stpRootFor(dv);
   // source endpoint
   {const id=epIdentity(s); J.nodes.push({host:s.host,port:s.port,vlan:s.vlan,role:"source",label:"Source endpoint",
@@ -3602,10 +3603,20 @@ function buildFlowJourney(F){if(!F||!F.src||!F.dst)return null;
     layers:[rung(J.decisiveLayer||"—","Decisive","block",F.verdict,F.reason||"Flow does not reach the destination.")]});
   return J;}
 
+/* V3.23.124: the BACKUP journey — re-simulate the flow after the primary uplink fails. Reroute path
+   from flowBackupPath; if there's no backup the source switch is isolated (single-uplink partition). */
+function buildBackupJourney(F){const bk=flowBackupPath(F); if(!bk)return null;
+  if(!bk.hasBackup)return {isolated:true,note:bk.note||"",failLink:bk.failLink||"",src:F.src,dst:F.dst,
+    verdict:"ISOLATED",reachable:false,app:flowAppContext(F),backup:bk,nodes:[]};
+  const J=buildFlowJourney(F,bk.viaRaw||null); if(!J)return null;
+  J.isBackup=true; J.failLink=bk.failLink||""; J.backup=bk;
+  J.verdict=bk.viaRaw?`BACKUP PATH — ${bk.failLink} down, rerouted`:"PORT-CHANNEL PROTECTED — survives member loss";
+  return J;}
+
 /* ===== V3.23.123: the cinematic Flow Simulator overlay (renders buildFlowJourney) ===== */
 let FLOWSIM=null;
 function openFlowSim(F){ if(!F)return; const J=buildFlowJourney(F); if(!J||!J.nodes.length)return;
-  FLOWSIM={J,i:0,playing:false,timer:null,useBackup:false};
+  FLOWSIM={F,J,Jb:null,i:0,playing:false,timer:null,useBackup:false};
   const el=document.getElementById("flowsim"); if(!el)return; el.hidden=false; document.body.style.overflow="hidden";
   renderFlowSim();
   if(!matchMedia("(prefers-reduced-motion: reduce)").matches)fsimPlay(); }
@@ -3616,10 +3627,25 @@ function fsimPlay(){ if(!FLOWSIM)return; FLOWSIM.playing=true; if(FLOWSIM.timer)
   renderFlowSim(); }
 function fsimPause(){ if(!FLOWSIM)return; FLOWSIM.playing=false; if(FLOWSIM.timer){clearInterval(FLOWSIM.timer);FLOWSIM.timer=null;} renderFlowSim(); }
 function fsimStep(dir){ if(!FLOWSIM)return; fsimPause(); FLOWSIM.i=Math.max(0,Math.min(FLOWSIM.J.nodes.length-1,FLOWSIM.i+dir)); renderFlowSim(); }
-function fsimToggleBackup(){ if(!FLOWSIM)return; FLOWSIM.useBackup=!FLOWSIM.useBackup; renderFlowSim(); }
+function fsimToggleBackup(){ if(!FLOWSIM)return; FLOWSIM.useBackup=!FLOWSIM.useBackup;
+  if(FLOWSIM.useBackup&&!FLOWSIM.Jb)FLOWSIM.Jb=buildBackupJourney(FLOWSIM.F);
+  FLOWSIM.i=0; renderFlowSim();
+  if(FLOWSIM.useBackup&&FLOWSIM.Jb&&!FLOWSIM.Jb.isolated&&!matchMedia("(prefers-reduced-motion: reduce)").matches)fsimPlay(); }
+function fsimIsolatedHtml(J){return `<div class="fsim-head"><div><div class="fsim-title">⚡ Flow Simulator — failure mode</div>`+
+  `<div class="fsim-sum">${esc(J.src.ip||J.src.mac||"?")} → ${esc(J.dst.ip||J.dst.mac||"?")}</div></div>`+
+  `<span class="fsim-verdict crit">ISOLATED</span>`+
+  `<button class="fsim-x" onclick="closeFlowSim()" aria-label="Close simulator">✕</button></div>`+
+  `<div class="fsim-body"><div class="fsim-bk crit" style="font-size:14px;padding:14px 16px">✗ No backup path — ${esc(J.note||"")}</div>`+
+  `<p class="fsim-honesty" style="margin-top:14px">This switch reaches the rest of the fabric over a <b>single uplink</b>; losing it partitions the VLAN. Dual-home the switch or bundle a port-channel to create a backup path.</p></div>`+
+  `<div class="fsim-foot"><button class="fsim-btn on" onclick="fsimToggleBackup()">↩ Primary path</button>`+
+  `<div class="fsim-honesty">Backup computed by removing the primary uplink and re-running STP path-finding — offline control-plane intent.</div></div>`;}
 function _fsimIcon(r){return r==="source"?"▶":r==="dest"?"◉":r==="gateway"?"⊕":r==="blocked"?"✗":"▢";}
-function renderFlowSim(){ const S=FLOWSIM; if(!S)return; const J=S.J,i=S.i,n=J.nodes.length;
-  const vtok=J.reachable?"":"crit";
+function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
+  const backupActive=!!(S.useBackup&&S.Jb);
+  const J=backupActive?S.Jb:S.J;
+  if(backupActive&&J.isolated){document.getElementById("flowsim").innerHTML=fsimIsolatedHtml(J);return;}
+  const i=Math.min(S.i,J.nodes.length-1),n=J.nodes.length;
+  const vtok=J.isolated?"crit":(J.reachable?"":"crit");
   const lrTok=v=>v==="ok"?"ok":v==="block"?"crit":v==="watch"?"watch":"neutral";
   let rail="";
   J.nodes.forEach((nd,k)=>{ const cls=k<i?"done":k===i?"current":"future";
@@ -3632,7 +3658,8 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return; const J=S.J,i=S.i,n=J.n
   const rungs=(nd.layers||[]).map(l=>`<div class="fsim-rung ${lrTok(l.verdict)}">`+
     `<div class="fsim-rh"><span class="fsim-ll">${esc(l.layer)} · ${esc(l.label)}</span><b>${esc(l.decision)}</b><span class="fsim-tag">${esc(l.tag)}</span></div>`+
     `<div class="fsim-why">${esc(l.why)}</div></div>`).join("");
-  const body=`<div class="fsim-nodehdr"><span class="ic">${_fsimIcon(nd.role)}</span>`+
+  const banner=backupActive?`<div class="fsim-bk crit" style="margin-bottom:12px">⚡ FAILURE MODE — primary link ${esc(J.failLink||"")} down; this is the rerouted backup path.</div>`:"";
+  const body=banner+`<div class="fsim-nodehdr"><span class="ic">${_fsimIcon(nd.role)}</span>`+
     `<div><div class="fsim-nname">${esc(nd.label)}${nd.host?` — <span class="mono">${esc(shortName(nd.host))}</span>`:""}${mlag}</div>${ep}</div></div>`+
     `<div class="fsim-rungs">${rungs}</div>`;
   const bk=J.backup;
@@ -3641,7 +3668,7 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return; const J=S.J,i=S.i,n=J.n
     `<button class="fsim-btn primary" onclick="${S.playing?"fsimPause()":"fsimPlay()"}">${S.playing?"⏸ Pause":"▶ Play"}</button>`+
     `<button class="fsim-btn" onclick="fsimStep(1)" ${i>=n-1?"disabled":""}>Step ▶</button>`+
     `<span class="fsim-prog">hop ${i+1} / ${n}</span>`+
-    (bk?`<button class="fsim-btn ${S.useBackup?"on":""}" onclick="fsimToggleBackup()">⚡ Failure mode</button>`:"");
+    (bk?`<button class="fsim-btn ${S.useBackup?"on":""}" onclick="fsimToggleBackup()">${S.useBackup?"↩ Primary path":"⚡ Failure mode"}</button>`:"");
   const honesty=`<div class="fsim-honesty">Offline control-plane <b>intent</b>, not observed dataplane — port-channel member = hash-selected; ECMP = one of N; MLAG = inferred (confirm with <span class="mono">show vpc</span>).</div>`;
   document.getElementById("flowsim").innerHTML=
     `<div class="fsim-head"><div><div class="fsim-title">⚡ Flow Simulator</div>`+
