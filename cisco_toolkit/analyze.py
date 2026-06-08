@@ -3689,3 +3689,100 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
     return {"per_device": per_device, "summary": summary, "risks": risks, "asof": today.isoformat(),
             "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is "
                     "often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."}
+
+
+# =============================================================================
+# Segmentation / isolation audit (NEW-V3.23.118). The mirror of the dependency graph: not what couples to
+# what, but what is ISOLATED from what. Reads each gateway SVI's VRF + applied ACL and joins to the
+# application-domain map -> is the on-air media fabric actually segmented, or is the L3 fabric flat (single
+# global VRF, no gateway ACLs)? Pure read of already-collected SVI fields. Reports current posture only.
+# =============================================================================
+def compute_segmentation(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                         application_intelligence: Optional[dict] = None) -> dict:
+    """NEW-V3.23.118: L3 segmentation / isolation posture from the gateway SVIs (vrf + applied ACL) joined to
+    the application-domain map. Pure read; deterministic; tolerant of empty input.
+    Returns {vrfs, gateway_acl, domains, summary, risks}."""
+    from collections import Counter, defaultdict
+
+    def _global_vrf(v):
+        raw = (v or "").strip()
+        return "" if raw.lower() in ("", "default", "global") else raw   # "" = the global routing table
+
+    gw: List[dict] = []
+    for host, ports in (all_interfaces or {}).items():
+        for port, d in (ports or {}).items():
+            if not re.match(r"^Vlan(\d+)$", str(port), re.I):
+                continue
+            if not (getattr(d, "svi_ip", "") or "").strip():
+                continue
+            vrf = _global_vrf(getattr(d, "vrf", ""))
+            has_acl = bool((getattr(d, "acl_in", "") or "").strip() or (getattr(d, "acl_out", "") or "").strip())
+            gw.append({"host": host, "vrf": vrf, "has_acl": has_acl})
+
+    n_gw = len(gw)
+    n_acl = sum(1 for g in gw if g["has_acl"])
+    vrf_counter = Counter((g["vrf"] or "(global)") for g in gw)
+    vrfs = [{"vrf": k, "gateway_count": v} for k, v in sorted(vrf_counter.items(), key=lambda kv: (-kv[1], kv[0]))]
+    distinct_real_vrfs = {g["vrf"] for g in gw if g["vrf"]}          # non-global VRFs
+    flat = n_gw > 0 and not distinct_real_vrfs and n_acl == 0
+    gateway_acl = {"n_gateways": n_gw, "n_with_acl": n_acl,
+                   "coverage_pct": round(100.0 * n_acl / n_gw, 1) if n_gw else 0.0}
+
+    gw_by_host: Dict[str, list] = defaultdict(list)
+    for g in gw:
+        gw_by_host[g["host"]].append(g)
+
+    domains_out: List[dict] = []
+    for dom in ((application_intelligence or {}).get("domains") or []):
+        sws = set(dom.get("switches") or [])
+        dgw = [g for h in sws for g in gw_by_host.get(h, [])]
+        dvrfs = sorted({(g["vrf"] or "(global)") for g in dgw})
+        dacl = sum(1 for g in dgw if g["has_acl"])
+        has_dedicated_vrf = any(g["vrf"] for g in dgw)
+        isolated = bool(dgw) and (has_dedicated_vrf or dacl > 0)
+        if not dgw:
+            exposure = "No L3 gateway on this domain's switches (L2-only, or its gateway lives elsewhere)."
+        elif isolated:
+            exposure = "Has a dedicated VRF or a gateway ACL."
+        else:
+            exposure = "Shares the global VRF, no gateway ACL — reachable from every other domain at L3."
+        domains_out.append({"domain": dom.get("domain"), "tier": dom.get("tier"), "gateways": len(dgw),
+                            "vrfs": dvrfs, "gateways_with_acl": dacl, "isolated": isolated, "exposure": exposure})
+    domains_out.sort(key=lambda d: (_APP_TIER_RANK.get(d["tier"], 9), -d["gateways"], d["domain"]))
+
+    risks: List[dict] = []
+    if flat:
+        risks.append({"severity": "High", "devices": [],
+            "title": "Flat L3 fabric — no VRF separation and no gateway ACLs",
+            "detail": f"All {n_gw} gateway SVI(s) sit in the global routing table and 0 carry an ACL — there is "
+                      "no L3 segmentation between application domains; any endpoint can reach any gateway.",
+            "remediation": "Design segmentation into the target: place sensitive fabrics (on-air media, OT, "
+                           "management) in dedicated VRFs and/or behind gateway ACLs / a firewall.", "standard": ""})
+    else:
+        if n_gw and n_acl == 0:
+            risks.append({"severity": "Medium", "devices": [],
+                "title": "No gateway ACLs — no L3/L4 enforcement at the SVI",
+                "detail": f"0 of {n_gw} gateway SVI(s) apply an ACL; a compromised endpoint in any VLAN can reach "
+                          "every gateway unfiltered.",
+                "remediation": "Apply ingress ACLs on sensitive gateway SVIs.", "standard": ""})
+        if n_gw and not distinct_real_vrfs:
+            risks.append({"severity": "Medium", "devices": [],
+                "title": "No VRF separation — single global routing table",
+                "detail": f"All {n_gw} gateways share the global VRF.",
+                "remediation": "Separate sensitive fabrics into dedicated VRFs in the target design.", "standard": ""})
+
+    exposed_oncrit = [d["domain"] for d in domains_out
+                      if d["tier"] == "On-air critical" and d["gateways"] and not d["isolated"]]
+    if exposed_oncrit:
+        risks.append({"severity": "High", "devices": [],
+            "title": f"{len(exposed_oncrit)} on-air-critical domain(s) are not isolated",
+            "detail": "These on-air domains share the global VRF with back-office and have no gateway ACL: "
+                      + ", ".join(exposed_oncrit[:8]) + ". The media fabric is not segmented.",
+            "remediation": "Isolate the media fabric (dedicated VRF + boundary ACL/firewall) in the target.",
+            "standard": "SMPTE ST 2110 security guidance"})
+
+    summary = {"n_vrfs": len(vrf_counter), "flat": flat, "gateway_acl_coverage": gateway_acl["coverage_pct"],
+               "n_gateways": n_gw, "n_oncrit_exposed": len(exposed_oncrit),
+               "global_only": n_gw > 0 and not distinct_real_vrfs}
+    return {"vrfs": vrfs, "gateway_acl": gateway_acl, "domains": domains_out,
+            "summary": summary, "risks": risks}
