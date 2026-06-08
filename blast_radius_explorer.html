@@ -3706,7 +3706,7 @@ function buildBackupJourney(F){const bk=flowBackupPath(F); if(!bk)return null;
 let FLOWSIM=null;
 function openFlowSim(F){ if(!F)return;
   const J=F.multicast?buildMulticastJourney(F.src,(F.dst&&F.dst.ip)||""):buildFlowJourney(F); if(!J||!J.nodes.length)return;
-  FLOWSIM={F,J,Jb:null,i:0,playing:false,timer:null,useBackup:false};
+  FLOWSIM={F,J,Jb:null,Jr:null,sym:null,i:0,playing:false,timer:null,useBackup:false,reverse:false};
   const el=document.getElementById("flowsim"); if(!el)return; el.hidden=false; document.body.style.overflow="hidden";
   renderFlowSim();
   if(!matchMedia("(prefers-reduced-motion: reduce)").matches)fsimPlay(); }
@@ -3717,10 +3717,24 @@ function fsimPlay(){ if(!FLOWSIM)return; FLOWSIM.playing=true; if(FLOWSIM.timer)
   renderFlowSim(); }
 function fsimPause(){ if(!FLOWSIM)return; FLOWSIM.playing=false; if(FLOWSIM.timer){clearInterval(FLOWSIM.timer);FLOWSIM.timer=null;} renderFlowSim(); }
 function fsimStep(dir){ if(!FLOWSIM)return; fsimPause(); FLOWSIM.i=Math.max(0,Math.min(FLOWSIM.J.nodes.length-1,FLOWSIM.i+dir)); renderFlowSim(); }
-function fsimToggleBackup(){ if(!FLOWSIM)return; FLOWSIM.useBackup=!FLOWSIM.useBackup;
+function fsimToggleBackup(){ if(!FLOWSIM)return; FLOWSIM.useBackup=!FLOWSIM.useBackup; if(FLOWSIM.useBackup)FLOWSIM.reverse=false;
   if(FLOWSIM.useBackup&&!FLOWSIM.Jb)FLOWSIM.Jb=buildBackupJourney(FLOWSIM.F);
   FLOWSIM.i=0; renderFlowSim();
   if(FLOWSIM.useBackup&&FLOWSIM.Jb&&!FLOWSIM.Jb.isolated&&!matchMedia("(prefers-reduced-motion: reduce)").matches)fsimPlay(); }
+/* V3.23.129: the RETURN path + asymmetry check — re-trace dst→src and compare. Asymmetric routing
+   silently breaks stateful firewalls / NAT / one-directional ACLs at cutover. */
+function _fsimPathHosts(J){const p=[]; ((J&&J.nodes)||[]).forEach(n=>{if(n.host&&!p.includes(n.host))p.push(n.host);}); return p;}
+function flowSymmetry(Jf,Jr){const f=_fsimPathHosts(Jf), rr=_fsimPathHosts(Jr), r=rr.slice().reverse();
+  const same=f.length===r.length&&f.every((h,i)=>h===r[i]);
+  return same?{symmetric:true,note:`Forward and return paths traverse the same switches — symmetric (${f.map(shortName).join(" → ")}).`}
+             :{symmetric:false,note:`ASYMMETRIC — forward ${f.map(shortName).join(" → ")}; return ${rr.map(shortName).join(" → ")}. Asymmetric routing breaks stateful firewalls / NAT / one-directional ACLs at cutover; validate BOTH directions.`};}
+function fsimToggleReverse(){ if(!FLOWSIM)return; const S=FLOWSIM; if(S.J.multicast)return;
+  S.reverse=!S.reverse;
+  if(S.reverse){ S.useBackup=false;
+    if(!S.Jr){ const rf=flowBetween(S.F.dst,S.F.src); S.Jr=buildFlowJourney(rf);
+      if(S.Jr){ S.sym=flowSymmetry(S.J,S.Jr); S.Jr.verdict="RETURN PATH — "+(S.Jr.verdict||""); } } }
+  S.i=0; renderFlowSim();
+  if(S.reverse&&S.Jr&&!matchMedia("(prefers-reduced-motion: reduce)").matches)fsimPlay(); }
 function fsimIsolatedHtml(J){return `<div class="fsim-head"><div><div class="fsim-title">⚡ Flow Simulator — failure mode</div>`+
   `<div class="fsim-sum">${esc(J.src.ip||J.src.mac||"?")} → ${esc(J.dst.ip||J.dst.mac||"?")}</div></div>`+
   `<span class="fsim-verdict crit">ISOLATED</span>`+
@@ -3754,7 +3768,8 @@ function fsimMap(J,i){
 }
 function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
   const backupActive=!!(S.useBackup&&S.Jb);
-  const J=backupActive?S.Jb:S.J;
+  const reverseActive=!!(S.reverse&&S.Jr);
+  const J=reverseActive?S.Jr:(backupActive?S.Jb:S.J);
   if(backupActive&&J.isolated){document.getElementById("flowsim").innerHTML=fsimIsolatedHtml(J);return;}
   const i=Math.min(S.i,J.nodes.length-1),n=J.nodes.length;
   const vtok=J.isolated?"crit":(J.reachable?"":"crit");
@@ -3771,7 +3786,8 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
   const rungs=(nd.layers||[]).map(l=>`<div class="fsim-rung ${lrTok(l.verdict)}">`+
     `<div class="fsim-rh"><span class="fsim-ll">${esc(l.layer)} · ${esc(l.label)}</span><b>${esc(l.decision)}</b><span class="fsim-tag">${esc(l.tag)}</span></div>`+
     `<div class="fsim-why">${esc(l.why)}</div></div>`).join("");
-  const banner=backupActive?`<div class="fsim-bk crit" style="margin-bottom:12px">⚡ FAILURE MODE — primary link ${esc(J.failLink||"")} down; this is the rerouted backup path.</div>`:"";
+  const banner=backupActive?`<div class="fsim-bk crit" style="margin-bottom:12px">⚡ FAILURE MODE — primary link ${esc(J.failLink||"")} down; this is the rerouted backup path.</div>`
+    :reverseActive?`<div class="fsim-bk ${S.sym&&S.sym.symmetric?"":"crit"}" style="margin-bottom:12px">⇄ RETURN PATH — ${esc(S.sym?S.sym.note:"")}</div>`:"";
   const body=banner+`<div class="fsim-nodehdr"><span class="ic">${_fsimIcon(nd.role)}</span>`+
     `<div><div class="fsim-nname">${esc(nd.label)}${nd.host?` — <span class="mono">${esc(shortName(nd.host))}</span>`:""}${mlag}</div>${ep}</div></div>`+
     `<div class="fsim-rungs">${rungs}</div>`;
@@ -3781,7 +3797,8 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
     `<button class="fsim-btn primary" onclick="${S.playing?"fsimPause()":"fsimPlay()"}">${S.playing?"⏸ Pause":"▶ Play"}</button>`+
     `<button class="fsim-btn" onclick="fsimStep(1)" ${i>=n-1?"disabled":""}>Step ▶</button>`+
     `<span class="fsim-prog">hop ${i+1} / ${n}</span>`+
-    (bk?`<button class="fsim-btn ${S.useBackup?"on":""}" onclick="fsimToggleBackup()">${S.useBackup?"↩ Primary path":"⚡ Failure mode"}</button>`:"");
+    (bk&&!reverseActive?`<button class="fsim-btn ${S.useBackup?"on":""}" onclick="fsimToggleBackup()">${S.useBackup?"↩ Primary path":"⚡ Failure mode"}</button>`:"")+
+    (!S.J.multicast?`<button class="fsim-btn ${S.reverse?"on":""}" onclick="fsimToggleReverse()">${S.reverse?"→ Forward":"⇄ Return path"}</button>`:"");
   const honesty=`<div class="fsim-honesty">Offline control-plane <b>intent</b>, not observed dataplane — port-channel member = hash-selected; ECMP = one of N; MLAG = inferred (confirm with <span class="mono">show vpc</span>).</div>`;
   document.getElementById("flowsim").innerHTML=
     `<div class="fsim-head"><div><div class="fsim-title">⚡ Flow Simulator</div>`+
