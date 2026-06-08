@@ -62,6 +62,9 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     # lifecycle_risk is date-dependent (bands/years shift relative to 'today') -> exclude from the frozen
     # golden; its logic is pinned deterministically by tests/test_lifecycle.py with a fixed asof. (V3.23.117)
     snap.pop("lifecycle_risk", None)
+    # executive_brief rolls up lifecycle (its EoL headline is date-relative) -> exclude too; pinned by
+    # tests/test_executive_brief.py with synthetic summaries. (V3.23.120)
+    snap.pop("executive_brief", None)
     return snap, str(out_xlsx)
 
 
