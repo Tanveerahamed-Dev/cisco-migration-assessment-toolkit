@@ -329,6 +329,7 @@ from cisco_toolkit.analyze import (
     compute_hostname_mismatches,                       # NEW-V3.23.68 (inventory-name vs configured-hostname)
     compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
     compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
+    compute_flow_paths,                                # NEW-V3.23.126 (representative end-to-end flow paths; workbook/runbook twin of the Flow Simulator)
     compute_endpoint_dependencies,                     # NEW-V3.23.96 (clusters / dependencies / per-switch validation)
     compute_subnet_intelligence,                       # NEW-V3.23.97 (subnet / routing reachability)
     compute_migration_scenarios,                       # NEW-V3.23.98 (per-group cutover scenario framework)
@@ -387,7 +388,7 @@ from cisco_toolkit.excel import (
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
-    write_physical_health_sheet, write_flow_trace_sheet, write_l3_forwarding_sheet,             # step 25
+    write_physical_health_sheet, write_flow_trace_sheet, write_flow_paths_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
 )
 # NEW-V3.23.37-.38 (PHASE 2.7 steps 27-28): the model-construction layer - the per-device
@@ -1557,6 +1558,13 @@ def main():
     elif args.flow_src or args.flow_dst:
         logger.warning("  [WARN] --flow-src and --flow-dst must be given together; skipping Flow Trace.")
 
+    # Phase 24b: Representative Flow Paths - NEW-V3.23.126. The static twin of the explorer's Flow
+    # Simulator: one representative endpoint per VLAN, traced L1->L3 (reuses trace_full_flow). Always
+    # written; NOT embedded in the snapshot (the hop tie-break is topology-dependent -> not golden-stable).
+    flow_paths = _run_phase("Flow paths", compute_flow_paths, all_interfaces, endpoint_identity,
+                            _default={"flows": [], "summary": {}})
+    _run_phase("Flow Paths sheet", write_flow_paths_sheet, wb, flow_paths)
+
     # Phase 25: L3 Forwarding Map - NEW-V3.20 (pre-save; records reused in snapshot)
     logger.info("\n[Phase 25] Writing L3 Forwarding Map sheet ...")
     l3_forwarding = _run_phase("L3 Forwarding Map", write_l3_forwarding_sheet,
@@ -1837,7 +1845,7 @@ def main():
         docx_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_runbook.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
         try:
-            write_runbook_docx(docx_out, snap_dict, label)
+            write_runbook_docx(docx_out, snap_dict, label, flow_paths=flow_paths)
         except Exception as e:
             logger.warning(f"  Runbook (DOCX) write failed: {e}")
 

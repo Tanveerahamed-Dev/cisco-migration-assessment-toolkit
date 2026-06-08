@@ -2262,6 +2262,55 @@ def trace_full_flow(src_ip: str, dst_ip: str,
     return {"summary": summary, "hops": hops}
 
 
+def compute_flow_paths(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                       endpoint_identity: Optional[list] = None, max_flows: int = 8) -> dict:
+    """NEW-V3.23.126: representative end-to-end flow paths for the workbook + runbook — the STATIC twin
+    of the explorer's interactive Flow Simulator. Reuses trace_full_flow() over a deterministic, curated
+    set of flows: one representative endpoint per VLAN (the lowest IP, with its inferred class), paired
+    across consecutive VLANs to exercise the routed inter-subnet path, each scored for SPOF / risk.
+    Deterministic in its SELECTION (sorted VLANs, lowest-IP rep); the hop tie-break inside trace_full_flow
+    is topology-dependent, so this output is intentionally NOT embedded in the frozen golden snapshot.
+    Returns {flows:[{label, summary, hops}], summary:{n_flows, n_at_risk, n_partitioned}}."""
+    ident = endpoint_identity or []
+    by_vlan: Dict[int, dict] = {}                       # vlan -> representative endpoint (lowest IP)
+    for r in ident:
+        ip = (r.get("ip") or "").strip()
+        vlan = str(r.get("vlan") or "").strip()
+        if not ip or not vlan.isdigit():
+            continue
+        parts = ip.split(".")
+        key = (tuple(int(o) for o in parts) if len(parts) == 4 and all(o.isdigit() for o in parts)
+               else (999, 999, 999, 999))
+        v = int(vlan)
+        cur = by_vlan.get(v)
+        if cur is None or key < cur["key"]:
+            by_vlan[v] = {"ip": ip, "host": r.get("host", ""),
+                          "cls": (r.get("endpoint_class") or ""), "key": key}
+    vlans = sorted(by_vlan)
+    flows: List[dict] = []
+    seen: set = set()
+
+    def _lbl(v, ep):
+        cls = ep["cls"]
+        return f"VLAN {v}" + (f" ({cls})" if cls and cls != "Unknown" else "")
+
+    for i in range(len(vlans) - 1):
+        if len(flows) >= max_flows:
+            break
+        a, b = by_vlan[vlans[i]], by_vlan[vlans[i + 1]]
+        if a["ip"] == b["ip"] or (a["ip"], b["ip"]) in seen:
+            continue
+        seen.add((a["ip"], b["ip"]))
+        ft = trace_full_flow(a["ip"], b["ip"], all_interfaces)
+        flows.append({"label": f"{_lbl(vlans[i], a)} → {_lbl(vlans[i + 1], b)}",
+                      "summary": ft["summary"], "hops": ft["hops"]})
+
+    return {"flows": flows,
+            "summary": {"n_flows": len(flows),
+                        "n_at_risk": sum(1 for f in flows if f["summary"].get("risk") in ("HIGH", "CRITICAL")),
+                        "n_partitioned": sum(1 for f in flows if f["summary"].get("partitioned"))}}
+
+
 def stp_root_findings(all_stp_roots: Dict[str, dict],
                       all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> dict:
     """NEW-V3.23.62: cross-switch STP root-bridge analysis over the per-switch
