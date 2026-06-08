@@ -337,6 +337,7 @@ from cisco_toolkit.analyze import (
     compute_ptp_readiness,                             # NEW-V3.23.108 (PTP / media-timing readiness -> punch-list)
     compute_multicast_intelligence,                    # NEW-V3.23.115 (media-fabric deep-dive: MAC-alias / querier / PTP tree)
     compute_remediation_plan,                          # NEW-V3.23.116 (assess->act: per-device config snippets, review-only)
+    compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
@@ -379,6 +380,7 @@ from cisco_toolkit.excel import (
     write_service_map_sheet,                                     # NEW-V3.23.101 (L4 service map + multicast activity)
     write_multicast_intelligence_sheet,                          # NEW-V3.23.115 (media-fabric multicast intelligence)
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
+    write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
@@ -1584,6 +1586,12 @@ def main():
     multicast_intelligence = _run_phase("Multicast intelligence", compute_multicast_intelligence,
                                         service_map, all_interfaces, _default={})
     _run_phase("Multicast Intelligence sheet", write_multicast_intelligence_sheet, wb, multicast_intelligence)
+    # Phase 27c-ter: Hardware Lifecycle Risk (NEW-V3.23.117). Per-device EoL / end-of-support band from the
+    # offline eoldb KB (a top reason orgs migrate). asof defaults to now (the assessment date). Compute once
+    # -> sheet + snapshot + punch-list fold.
+    _dev_lifecycle = {dp.hostname: {"model": dp.model, "sw_version": dp.sw_version} for dp in all_device_physical}
+    lifecycle_risk = _run_phase("Lifecycle risk", compute_lifecycle_risk, _dev_lifecycle, _default={})
+    _run_phase("Lifecycle Risk sheet", write_lifecycle_risk_sheet, wb, lifecycle_risk)
 
     # Phase 27d: Collection completeness (NEW-V3.23.109). The pre-assessment blind-spot report -- which
     # INVENTORY (devices.json) devices were not / only partially collected, so the gaps are explicit
@@ -1664,6 +1672,8 @@ def main():
     # PTP is already folded via _ptp_readiness, so exclude the ptp-dormant risk to avoid a duplicate item.
     _media_risks = [r for r in ((multicast_intelligence or {}).get("risks") or [])
                     if r.get("kind") in ("mac-alias", "querier-gap")]
+    # NEW-V3.23.117: lifecycle risk is kept as its OWN axis (sheet / cockpit / runbook §4.1), NOT folded into
+    # the punch-list -- its band is date-relative, which would make the frozen golden punch-list date-dependent.
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
@@ -1722,6 +1732,7 @@ def main():
     snap_dict["protocol_intelligence"] = protocol_intelligence       # NEW-V3.23.100 (per-(switch,protocol,state) cause + remediation; reused from Phase 27b)
     snap_dict["service_map"] = service_map                           # NEW-V3.23.101 (L4 services from ACL ports + multicast activity; reused from Phase 27c)
     snap_dict["multicast_intelligence"] = multicast_intelligence     # NEW-V3.23.115 (media-fabric deep-dive; reused from Phase 27c-bis)
+    snap_dict["lifecycle_risk"] = lifecycle_risk                     # NEW-V3.23.117 (hardware EoL band per device; reused from Phase 27c-ter)
     snap_dict["remediation_plan"] = remediation_plan                 # NEW-V3.23.116 (generated config snippets, review-only; reused from Phase 30d-ter)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23

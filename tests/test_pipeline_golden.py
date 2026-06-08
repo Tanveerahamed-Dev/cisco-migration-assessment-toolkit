@@ -58,7 +58,10 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     assert os.path.isfile(snap_path), "snapshot.json was not produced"
     with open(snap_path, encoding="utf-8") as f:
         snap = json.load(f)
-    snap.pop("generated_at", None)            # only volatile field
+    snap.pop("generated_at", None)            # volatile: wall-clock timestamp
+    # lifecycle_risk is date-dependent (bands/years shift relative to 'today') -> exclude from the frozen
+    # golden; its logic is pinned deterministically by tests/test_lifecycle.py with a fixed asof. (V3.23.117)
+    snap.pop("lifecycle_risk", None)
     return snap, str(out_xlsx)
 
 

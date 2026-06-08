@@ -1514,6 +1514,60 @@ def write_remediation_plan_sheet(wb, rp: dict) -> None:
                 f"{s.get('n_devices', 0)} device(s)")
 
 
+LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
+
+def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
+    """Write 'Lifecycle Risk' from compute_lifecycle_risk(): per-device hardware EoL / end-of-support band +
+    a platform rollup. Row 1 is a static (date-free) title so the golden sheet schema stays stable."""
+    if LIFECYCLE_RISK_SHEET_NAME in wb.sheetnames:
+        del wb[LIFECYCLE_RISK_SHEET_NAME]
+    ws = wb.create_sheet(LIFECYCLE_RISK_SHEET_NAME)
+    L = lr or {}
+    s = L.get("summary") or {}
+    ws.cell(1, 1, "Hardware lifecycle (EoL / End-of-Support) — replacement urgency").font = Font(bold=True, size=11)
+    ws.cell(2, 1, f"As of {L.get('asof', '')}: {s.get('n_past_ldos', 0)} past end-of-support · "
+                  f"{s.get('n_near', 0)} within 1yr · {s.get('n_active', 0)} active · "
+                  f"{s.get('n_unknown', 0)} unknown (of {s.get('n_devices', 0)}).").font = Font(size=10)
+    ws.cell(3, 1, L.get("note", "")).font = Font(size=9, italic=True, color="808080")
+    BANDFILL = {"Past-LDoS": "F4CCCC", "Near-LDoS": "FCE4D6", "Past-EoS": "FFF2CC",
+                "Active": "D9EAD3", "Unknown": "EFEFEF"}
+    DAT = Font(name="Calibri", size=10)
+    r = 5
+    ws.cell(r, 1, "By platform").font = Font(bold=True); r += 1
+    for i, h in enumerate(["Platform", "Devices", "Band", "LDoS"], 1):
+        c = ws.cell(r, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="434343")
+    r += 1
+    for p in s.get("by_platform", []):
+        vals = [p.get("platform"), p.get("count"), p.get("band"), p.get("ldos") or "—"]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            if col == 3:
+                c.fill = PatternFill("solid", fgColor=BANDFILL.get(v, "FFFFFF"))
+        r += 1
+    r += 1
+    ws.cell(r, 1, "By device").font = Font(bold=True); r += 1
+    cols = ["Device", "Model", "Platform", "SW version", "Band", "Status", "EoS", "LDoS", "Source"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(r, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="434343")
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(r + 1, 1); r += 1
+    for d in L.get("per_device", []):
+        vals = [d.get("host"), d.get("model"), d.get("platform"), d.get("sw_version"), d.get("band"),
+                d.get("status"), d.get("eos") or "—", d.get("ldos") or "—", d.get("source") or "—"]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(vertical="top", wrap_text=col == 6)
+            if col == 5:
+                c.fill = PatternFill("solid", fgColor=BANDFILL.get(v, "FFFFFF"))
+        r += 1
+    for i, w in enumerate([28, 18, 16, 14, 11, 40, 12, 12, 22], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{LIFECYCLE_RISK_SHEET_NAME}' sheet: {s.get('n_devices', 0)} device(s), "
+                f"{s.get('n_past_ldos', 0)} past-LDoS")
+
+
 PROTOCOL_BOUNDARIES_SHEET_NAME = "Protocol Boundaries"   # protocol-to-protocol analysis (workbook surfacing)
 
 def write_protocol_boundaries_sheet(wb, all_routing_neighbors: dict, all_redistribution: dict) -> None:

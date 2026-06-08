@@ -3593,3 +3593,99 @@ def compute_remediation_plan(devices: Optional[dict] = None,
                "by_category": dict(Counter(it["category"] for it in items)),
                "n_high": sum(1 for it in items if it["severity"] in ("Critical", "High"))}
     return {"items": items, "by_device": dict(by_device), "summary": summary, "banner": _REMEDIATION_BANNER}
+
+
+# =============================================================================
+# Hardware lifecycle (EoL / End-of-Support) risk (NEW-V3.23.117). A new assessment AXIS: per-device
+# replacement urgency from the offline `eoldb` knowledge base (a top REASON orgs migrate). Reference
+# dates (curated KB, not device-read); LDoS is often derived = EoS+5yr. The robust output is the BAND
+# (Past-LDoS / Near / Past-EoS / Active / Unknown) -- correct even if an exact date is off by months.
+# =============================================================================
+_LIFECYCLE_BAND_RANK = {"Past-LDoS": 0, "Near-LDoS": 1, "Past-EoS": 2, "Active": 3, "Unknown": 4}
+
+
+def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object] = None) -> dict:
+    """NEW-V3.23.117: per-device hardware lifecycle (EoL/End-of-Support) risk from the offline eoldb KB,
+    classified relative to `asof` (the assessment date; ISO 'YYYY-MM-DD' / date / datetime, default today).
+    Reference dates from a curated KB (not device-read); LDoS often derived = EoS+5yr. Pure read;
+    deterministic; tolerant of empty input. Returns {per_device, summary, risks, asof, note}."""
+    from collections import Counter
+    from datetime import date, datetime
+    from cisco_toolkit import eoldb
+
+    def _to_date(x):
+        if isinstance(x, datetime):
+            return x.date()
+        if isinstance(x, date):
+            return x
+        try:
+            return datetime.strptime(str(x or "")[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return date.today()
+    today = _to_date(asof)
+
+    def _d(s):
+        try:
+            return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+
+    per_device: List[dict] = []
+    for host in sorted(devices or {}):
+        dv = devices[host] or {}
+        model = (dv.get("model") or "").strip()
+        sw = (dv.get("sw_version") or "").strip()
+        rec = eoldb.lifecycle_for(model)
+        if rec is None:
+            per_device.append({"host": host, "model": model or "(unknown)", "platform": "", "sw_version": sw,
+                               "eos": "", "ldos": "", "band": "Unknown", "years_to_ldos": None,
+                               "status": "Unknown model — verify on Cisco's EoL portal", "source": "", "conf": ""})
+            continue
+        eos, ldos = _d(rec["eos"]), _d(rec["ldos"])
+        if rec["conf"] == "active" or (not eos and not ldos):
+            band, status, yrs = "Active", "Active (no end-of-life announced)", None
+        else:
+            yrs = round((ldos - today).days / 365.25, 1) if ldos else None
+            if ldos and today > ldos:
+                band = "Past-LDoS"; status = f"Past end-of-support (LDoS {rec['ldos']}, {rec['conf']})"
+            elif ldos and yrs is not None and yrs <= 1.0:
+                band = "Near-LDoS"; status = f"End-of-support within 1 year (LDoS {rec['ldos']}, {rec['conf']})"
+            elif eos and today > eos:
+                band = "Past-EoS"; status = f"Past end-of-sale (EoS {rec['eos']}; LDoS {rec['ldos']})"
+            else:
+                band = "Active"; status = f"In support (LDoS {rec['ldos']})"
+        per_device.append({"host": host, "model": model, "platform": rec["platform"], "sw_version": sw,
+                           "eos": rec["eos"], "ldos": rec["ldos"], "band": band, "years_to_ldos": yrs,
+                           "status": status, "source": rec["source"], "conf": rec["conf"]})
+
+    by_band = Counter(d["band"] for d in per_device)
+    pcount: "Counter" = Counter(); pband: Dict[str, str] = {}; pldos: Dict[str, str] = {}
+    for d in per_device:
+        key = d["platform"] or "(unknown)"
+        pcount[key] += 1
+        if key not in pband or _LIFECYCLE_BAND_RANK[d["band"]] < _LIFECYCLE_BAND_RANK[pband[key]]:
+            pband[key] = d["band"]; pldos[key] = d["ldos"]
+    by_platform = sorted(({"platform": k, "count": pcount[k], "band": pband[k], "ldos": pldos.get(k, "")}
+                          for k in pcount),
+                         key=lambda r: (_LIFECYCLE_BAND_RANK[r["band"]], -r["count"], r["platform"]))
+
+    risks: List[dict] = []
+    for band, sev, title, rem in (
+        ("Past-LDoS", "Critical", "Hardware past Cisco end-of-support (no TAC / no fixes)",
+         "Prioritize these in the migration / hardware refresh — they get no software fixes or TAC support."),
+        ("Near-LDoS", "High", "Hardware within 1 year of end-of-support",
+         "Schedule replacement before LDoS; confirm the migration target covers these."),
+    ):
+        devs = sorted(d["host"] for d in per_device if d["band"] == band)
+        if devs:
+            plats = sorted({d["platform"] for d in per_device if d["band"] == band})
+            risks.append({"severity": sev, "devices": devs, "title": title,
+                          "detail": f"{len(devs)} device(s) on {', '.join(plats)}.", "remediation": rem})
+
+    summary = {"n_devices": len(per_device), "by_band": dict(by_band),
+               "n_past_ldos": by_band.get("Past-LDoS", 0), "n_near": by_band.get("Near-LDoS", 0),
+               "n_past_eos": by_band.get("Past-EoS", 0), "n_active": by_band.get("Active", 0),
+               "n_unknown": by_band.get("Unknown", 0), "by_platform": by_platform, "asof": today.isoformat()}
+    return {"per_device": per_device, "summary": summary, "risks": risks, "asof": today.isoformat(),
+            "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is "
+                    "often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."}
