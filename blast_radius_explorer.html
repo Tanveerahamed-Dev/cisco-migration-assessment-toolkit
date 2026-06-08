@@ -1277,6 +1277,17 @@ function demoSnapshot(){
       peer_link:{id:"1",port:"Po1",status:"up",vlans:"1,10,20,30,99"},vpcs:[{id:"20",port:"Po20",status:"up",consistency:"success",vlans:"10,20"}]},
     "DIST-2":{domain_id:10,role:"secondary",peer_status:"peer adjacency formed ok",keepalive_status:"peer is alive",consistency:"success",num_vpcs:1,
       peer_link:{id:"1",port:"Po1",status:"up",vlans:"1,10,20,30,99"},vpcs:[{id:"20",port:"Po20",status:"up",consistency:"success",vlans:"10,20"}]}},
+  // V3.23.128: multicast intelligence so the Flow Simulator's multicast branch renders (Dante 239.254.3.3 on VLAN 30, which has NO querier).
+  multicast_intelligence:{
+    groups:[
+      {group:"224.0.1.129",name:"PTP-primary",category:"Broadcast-AV",broadcast:true,on_air:true,source:"IGMP/mroute",mac:"01:00:5e:00:01:81"},
+      {group:"239.254.3.3",name:"Dante",category:"Broadcast-AV",broadcast:true,on_air:true,source:"IGMP/mroute",mac:"01:00:5e:7e:03:03"},
+      {group:"225.1.1.1",name:"",category:"",broadcast:false,on_air:false,source:"IGMP",mac:"01:00:5e:01:01:01"},
+    ],
+    mac_aliases:[{mac:"01:00:5e:01:01:01",groups:["224.1.1.1","225.1.1.1"],names:[],has_av:false}],
+    querier:{n_querier_vlans:1,multicast_vlans:["10","30"],gap_vlans:["30"]},
+    ptp:{n_clocks:2,n_operational:0,n_dormant:2,grandmasters:[],operational:[],dormant:["DIST-1","DIST-2"]},
+    summary:{n_groups:3,n_av_groups:2,n_mac_clashes:1,n_querier_gaps:1,n_active_switches:2,n_active_interfaces:6,n_ptp_clocks:2,n_ptp_dormant:2}},
   // V3.23.87: port + PoE capacity headroom (mirrors the Python compute_capacity / 'Capacity' sheet). ACC-1
   // is port-bound (94%), ACC-2 PoE-bound (83%); the rest have headroom to absorb consolidated endpoints.
   capacity:[
@@ -2793,7 +2804,8 @@ function renderDrawer(){
   // wire flow-mode endpoint pickers (change = on blur / datalist pick)
   p.querySelectorAll(".epin").forEach(inp=>inp.addEventListener("change",()=>{
     const ep=findEndpointByIpMac(inp.value);
-    if(inp.id==="flowSrc")FLOW_SRC=ep||null; else FLOW_DST=ep||null;
+    if(inp.id==="flowSrc")FLOW_SRC=ep||null;
+    else FLOW_DST=ep||(isMulticastIp(inp.value)?{ip:inp.value.trim(),host:"(group)",vlan:"",mac:"",isGroup:true}:null);  // V3.23.128: multicast group dst
     FLOWRES=(FLOW_SRC&&FLOW_DST)?flowBetween(FLOW_SRC,FLOW_DST):null;
     repaint(); renderDrawer();}));
   // wire flow-mode L4 inputs (protocol + dest port) for the ACL allow/deny eval (G2)
@@ -3446,6 +3458,10 @@ function aclVerdictCard(verdicts,proto,dport){
 }
 /* ---- interactive endpoint->endpoint flow (PHASE C): offline L1-L3 port of trace_full_flow ---- */
 function flowBetween(s,d){
+  if(d&&(d.isGroup||isMulticastIp(d.ip))){                            // V3.23.128: multicast dst -> not unicast-routed
+    return {src:s,dst:d,multicast:true,reachable:true,verdict:"MULTICAST — "+(d.ip||"group"),reason:"",
+      hops:[{layer:"L2",text:"Multicast group "+(d.ip||"?")+" — IGMP snooping / querier delivery",spof:false}],
+      pathHosts:new Set([s&&s.host]),linkIdxs:new Set(),spofs:[],gateways:[],aclFlags:[],aclVerdicts:[]};}
   const sv=/^\d+$/.test(s.vlan)?+s.vlan:null, dv=/^\d+$/.test(d.vlan)?+d.vlan:null;
   const F={src:s,dst:d,reachable:false,verdict:"",reason:"",hops:[],pathHosts:new Set([s.host,d.host]),linkIdxs:new Set(),spofs:[],gateways:[],aclFlags:[],aclVerdicts:[]};
   const hop=(layer,text,spof)=>F.hops.push({layer,text,spof:!!spof});
@@ -3630,6 +3646,52 @@ function buildFlowJourney(F,srcOverride){if(!F||!F.src||!F.dst)return null;
     layers:[rung(J.decisiveLayer||"—","Decisive","block",F.verdict,F.reason||"Flow does not reach the destination.")]});
   return J;}
 
+/* V3.23.128: MULTICAST flow — a 224–239.x destination is NOT unicast-routed; delivery follows IGMP
+   snooping + the querier + the L2 32:1 MAC, then PIM/mroute distribution. Builds a focused one-to-many
+   journey from SNAP.multicast_intelligence (group/MAC/VLAN level — per-(S,G) OIL isn't collected). */
+function isMulticastIp(ip){const o=+String(ip||"").split(".")[0]; return o>=224&&o<=239;}
+function buildMulticastJourney(s,groupIp){
+  if(!s)return null;
+  const mi=(SNAP&&SNAP.multicast_intelligence)||{};
+  const groups=mi.groups||[], q=mi.querier||{}, ptp=mi.ptp||{}, aliases=mi.mac_aliases||[];
+  const g=groups.find(x=>x.group===groupIp)||{group:groupIp,name:"",category:"",on_air:false,mac:""};
+  const sv=/^\d+$/.test(s.vlan)?String(+s.vlan):null;
+  const noQuerier=!!(sv&&(q.gap_vlans||[]).includes(sv));
+  const clash=aliases.find(a=>(a.groups||[]).includes(groupIp));
+  const ptpGroup=/ptp|2059|319|320/i.test((g.name||"")+(g.category||""))||String(groupIp).indexOf("224.0.1.129")===0;
+  const rung=(layer,label,verdict,decision,why,tag)=>({layer,label,verdict,decision,why,tag:tag||"derived"});
+  const app={label:(g.name||"Multicast")+(g.category?" · "+g.category:""),verdict:g.on_air?"watch":"ok",tag:"inferred",
+    why:`${groupIp} is an IPv4 multicast group${g.on_air?" — Broadcast-AV / on-air":""}; delivery follows IGMP snooping + the querier, not unicast routing.`};
+  const J={src:s,dst:{ip:groupIp,host:"(group)",mac:g.mac||""},multicast:true,reachable:true,
+    verdict:`MULTICAST — ${groupIp}${g.name?" ("+g.name+")":""}`,app,backup:null,decisiveLayer:null,nodes:[]};
+  // sender
+  {const id=epIdentity(s); J.nodes.push({host:s.host,port:s.port,vlan:s.vlan,role:"source",label:"Multicast sender",
+    ep:{ip:s.ip,mac:s.mac,cls:(id&&id.endpoint_class)||"",vendor:(id&&id.vendor)||""},mlagPeer:"",
+    layers:[rung("L1","Physical","ok",`Access port ${s.port}`,`${s.ip||s.mac} sources group ${groupIp} on ${shortName(s.host)} ${s.port} (VLAN ${sv||"?"}).`),
+            rung("L7","Application",app.verdict,app.label,app.why,app.tag)]});}
+  // L2: snooping / querier / MAC
+  {const layers=[rung("L2","Data-Link","ok",`L2 MAC ${g.mac||"?"} (32:1)`,
+      `IPv4 group ${groupIp} maps to Ethernet MAC ${g.mac||"?"} (RFC 1112, 32:1 — many groups can share one MAC).`)];
+   if(clash)layers.push(rung("L2","Data-Link","watch",`MAC clash on ${clash.mac}`,
+     `That L2 MAC also carries ${(clash.groups||[]).filter(x=>x!==groupIp).join(", ")} — a MAC-constraining switch forwards them together; receivers of one see the other. [RFC 4541/1112]`));
+   layers.push(noQuerier
+     ? rung("L2","Data-Link","block",`No IGMP querier on VLAN ${sv}`,`VLAN ${sv} carries multicast but no IGMP querier was seen — membership times out and the switch floods or blackholes the group. [RFC 4541]`)
+     : rung("L2","Data-Link","ok",`IGMP querier present`,`An IGMP (snooping) querier maintains membership on VLAN ${sv||"?"} — forwarded only to ports that joined.`));
+   J.nodes.push({host:s.host,role:"gateway",label:"IGMP snooping (source switch)",mlagPeer:"",layers});}
+  // L3: distribution + timing
+  {const ns=(mi.summary&&mi.summary.n_active_switches)||0; const layers=[
+     rung("L3","Network","ok",ns?`Carried on ${ns} multicast switch(es)`:"Distribution",
+       ns?`PIM/mroute is active on ${ns} switch(es); the group reaches VLANs/ports with joined receivers (group/VLAN level — per-(S,G) OIL not collected).`:"No PIM/mroute presence collected — L2 snooping / flood only.","inferred")];
+   if(ptpGroup)layers.push(rung("L7","Timing",(ptp.n_clocks&&ptp.n_operational===0)?"watch":"ok",
+     `PTP ${ptp.n_operational||0}/${ptp.n_clocks||0} boundary-clocked`,
+     (ptp.n_clocks&&ptp.n_operational===0)?"This is a PTP / ST 2059 timing group but every PTP switch is dormant — timing is plain multicast, which doesn't scale for ST 2110 / AES67 / Dante.":`PTP boundary clocks: ${ptp.n_operational||0} of ${ptp.n_clocks||0} operational.`));
+   J.nodes.push({host:"",role:"transit",label:"Group distribution",mlagPeer:"",layers});}
+  // receivers
+  J.nodes.push({host:"",role:"dest",label:"Receivers",mlagPeer:"",
+    layers:[rung("L2","Data-Link","ok","Delivered to joined receivers",`Any host that sent an IGMP join for ${groupIp} on its VLAN receives the stream${noQuerier?" — but with no querier, membership is unreliable":""}.`),
+            rung("L7","Application",g.on_air?"watch":"ok",`${g.on_air?"On-air / Broadcast-AV":"Multicast"} stream`,`Receivers consume the ${g.name||groupIp} stream.`)]});
+  return J;}
+
 /* V3.23.124: the BACKUP journey — re-simulate the flow after the primary uplink fails. Reroute path
    from flowBackupPath; if there's no backup the source switch is isolated (single-uplink partition). */
 function buildBackupJourney(F){const bk=flowBackupPath(F); if(!bk)return null;
@@ -3642,7 +3704,8 @@ function buildBackupJourney(F){const bk=flowBackupPath(F); if(!bk)return null;
 
 /* ===== V3.23.123: the cinematic Flow Simulator overlay (renders buildFlowJourney) ===== */
 let FLOWSIM=null;
-function openFlowSim(F){ if(!F)return; const J=buildFlowJourney(F); if(!J||!J.nodes.length)return;
+function openFlowSim(F){ if(!F)return;
+  const J=F.multicast?buildMulticastJourney(F.src,(F.dst&&F.dst.ip)||""):buildFlowJourney(F); if(!J||!J.nodes.length)return;
   FLOWSIM={F,J,Jb:null,i:0,playing:false,timer:null,useBackup:false};
   const el=document.getElementById("flowsim"); if(!el)return; el.hidden=false; document.body.style.overflow="hidden";
   renderFlowSim();
