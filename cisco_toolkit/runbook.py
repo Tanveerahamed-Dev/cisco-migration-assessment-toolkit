@@ -215,6 +215,17 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
                f"{sum(1 for r in mr if r.get('readiness') == 'NOT READY')} of {len(mr)} move group(s) "
                f"are NOT READY on the pre-migration checklist.")
 
+    # cross-axis migration brief (NEW-V3.23.120)
+    eb = snap_dict.get("executive_brief") or {}
+    if eb.get("axes"):
+        _label_run(doc.add_paragraph(), "Migration brief:", eb.get("posture_statement", ""))
+        tg = eb.get("top_gating") or []
+        if tg:
+            _label_run(doc.add_paragraph(), "Address first:", "; ".join(tg[:6]))
+        table(["Axis", "Severity", "Headline"],
+              [[a.get("axis"), a.get("severity"), a.get("headline")] for a in eb["axes"]],
+              widths=[1.8, 0.9, 4.0])
+
     # ===== 2. Scope & Data Completeness =====
     doc.add_heading("2. Scope & Data Completeness", level=1)
     doc.add_paragraph(

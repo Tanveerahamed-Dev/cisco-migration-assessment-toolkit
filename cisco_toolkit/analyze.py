@@ -3793,3 +3793,113 @@ def compute_segmentation(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                "global_only": n_gw > 0 and not distinct_real_vrfs}
     return {"vrfs": vrfs, "gateway_acl": gateway_acl, "domains": domains_out,
             "summary": summary, "risks": risks}
+
+
+# =============================================================================
+# Executive brief (NEW-V3.23.120). The cross-axis capstone: one headline per assessment axis rolled up into
+# a single decision-grade synthesis (the seven new axes + health + punch-list + readiness). Pure read of each
+# layer's already-computed summary; deterministic given inputs; the detail tabs remain the source of record.
+# =============================================================================
+def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Optional[list] = None,
+                            migration_readiness: Optional[list] = None,
+                            application_intelligence: Optional[dict] = None,
+                            lifecycle_risk: Optional[dict] = None, segmentation: Optional[dict] = None,
+                            multicast_intelligence: Optional[dict] = None,
+                            remediation_plan: Optional[dict] = None) -> dict:
+    """NEW-V3.23.120: cross-axis migration brief -- one headline per assessment axis rolled up into a single
+    decision-grade synthesis. Pure read of each layer's already-computed summary; deterministic given inputs.
+    Returns {scale, posture, axes, top_gating, posture_statement}."""
+    hs = health_scores or []
+    pl = punchlist or []
+    mr = migration_readiness or []
+    app = application_intelligence or {}
+    asum = app.get("summary") or {}
+    lc = (lifecycle_risk or {}).get("summary") or {}
+    seg = (segmentation or {}).get("summary") or {}
+    mi = (multicast_intelligence or {}).get("summary") or {}
+    rem = (remediation_plan or {}).get("summary") or {}
+
+    n = len(hs)
+    bands: Dict[str, int] = {}
+    for x in hs:
+        bands[x.get("band", "")] = bands.get(x.get("band", ""), 0) + 1
+    avg = round(sum((x.get("score") or 0) for x in hs) / n) if n else 0
+    n_crit = bands.get("Critical", 0)
+    n_poor = bands.get("Poor", 0)
+    worst = next((b for b in ("Critical", "Poor", "Fair", "Good", "Excellent") if bands.get(b)), "")
+    n_endpoints = sum((d.get("endpoint_count") or 0) for d in (app.get("domains") or []))
+    sev_pl = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for it in pl:
+        if it.get("severity") in sev_pl:
+            sev_pl[it["severity"]] += 1
+    not_ready = sum(1 for r in mr if r.get("readiness") == "NOT READY")
+
+    axes: List[dict] = []
+
+    def ax(axis, severity, headline, detail=""):
+        axes.append({"axis": axis, "severity": severity, "headline": headline, "detail": detail})
+
+    ax("Fleet health", "Critical" if n_crit else "High" if n_poor else "Low",
+       f"{avg}/100 avg · {n_crit} Critical, {n_poor} Poor band", f"{n} switch(es) assessed.")
+    ax("Migration punch-list",
+       "Critical" if sev_pl["Critical"] else "High" if sev_pl["High"] else "Medium" if pl else "Low",
+       f"{len(pl)} item(s) · {sev_pl['Critical']} Critical, {sev_pl['High']} High",
+       "Consolidated fix-this-first action list.")
+    if asum:
+        ax("Application domains", "High" if asum.get("n_high_risk") else "Low",
+           f"{asum.get('n_domains', 0)} domain(s) · {asum.get('n_on_air_critical', 0)} on-air-critical · "
+           f"keystone {asum.get('keystone_domain', '')}", f"{asum.get('n_edges', 0)} inter-domain coupling(s).")
+        ax("Cutover sequence", "Medium" if not_ready else "Low",
+           f"pilot {asum.get('pilot_domain', '')} → last {asum.get('last_domain', '')}"
+           + (f" · {not_ready} of {len(mr)} wave(s) NOT READY" if mr else ""),
+           "Recommended lowest-risk-first order.")
+    if lc.get("n_devices"):
+        tot = lc.get("n_devices", 0)
+        pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)
+        ax("Hardware lifecycle (EoL)",
+           "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near") else "Low",
+           f"{lc.get('n_past_ldos', 0)} past end-of-support, {lc.get('n_near', 0)} within 1yr "
+           f"({round(100 * pe / tot) if tot else 0}%)", "Reference dates from the offline KB.")
+    if seg.get("n_gateways"):
+        ax("Segmentation", "High" if seg.get("flat") or seg.get("n_oncrit_exposed") else "Low",
+           ("flat L3 — " if seg.get("flat") else "")
+           + f"{seg.get('n_oncrit_exposed', 0)} on-air-critical domain(s) not isolated · gateway-ACL "
+           f"{seg.get('gateway_acl_coverage', 0)}%", "Current L3 isolation posture.")
+    if mi.get("n_groups"):
+        ax("Multicast / timing",
+           "High" if mi.get("n_mac_clashes") or mi.get("n_querier_gaps")
+           else "Medium" if mi.get("n_ptp_dormant") else "Low",
+           f"{mi.get('n_mac_clashes', 0)} MAC clash(es) · {mi.get('n_ptp_dormant', 0)}/"
+           f"{mi.get('n_ptp_clocks', 0)} PTP dormant · {mi.get('n_querier_gaps', 0)} querier gap(s)",
+           f"{mi.get('n_av_groups', 0)} broadcast/AV group(s).")
+    if rem.get("n_items"):
+        ax("Remediation", "Info",
+           f"{rem.get('n_items', 0)} review-ready config snippet(s) across {rem.get('n_devices', 0)} device(s)",
+           "Generated for review (validate before applying).")
+
+    axes.sort(key=lambda a: _APP_SEV_RANK.get(a["severity"], 9))
+    top_gating = [a["headline"] for a in axes if a["severity"] in ("Critical", "High")]
+
+    flags: List[str] = []
+    if lc.get("n_past_ldos") or lc.get("n_near"):
+        tot = lc.get("n_devices", 0)
+        pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)
+        flags.append(f"hardware end-of-support is a primary driver ({round(100 * pe / tot) if tot else 0}% past/near)")
+    if seg.get("flat"):
+        flags.append("the L3 fabric is flat (no segmentation)")
+    if mi.get("n_ptp_clocks") and mi.get("n_ptp_dormant") == mi.get("n_ptp_clocks"):
+        flags.append("media timing is not boundary-clocked")
+    if mi.get("n_mac_clashes"):
+        flags.append("a multicast MAC-address clash is present")
+    if not_ready:
+        flags.append(f"{not_ready} migration wave(s) are NOT READY")
+    if n_crit:
+        flags.append(f"{n_crit} switch(es) are in Critical health")
+    posture_statement = ("Migration posture: " + "; ".join(flags[:4])
+                         + ". Address these in the target design and sequence before cutover." if flags
+                         else "Migration posture: no top-tier blockers flagged across the assessed axes — "
+                              "proceed with the standard wave plan.")
+
+    return {"scale": {"n_devices": n, "n_domains": asum.get("n_domains", 0), "n_endpoints": n_endpoints},
+            "posture": {"avg_health": avg, "n_critical": n_crit, "n_poor": n_poor, "worst_band": worst},
+            "axes": axes, "top_gating": top_gating, "posture_statement": posture_statement}
