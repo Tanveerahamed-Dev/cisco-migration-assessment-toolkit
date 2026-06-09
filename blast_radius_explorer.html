@@ -2928,9 +2928,44 @@ function censusSec(){
       <div class="stat"><div class="v"><span class="num" data-to="${vl}">0</span></div><div class="k">vlans</div></div>
     </div>
     <div class="kv" style="margin-top:11px"><span class="k">L3 gateways</span><span class="v">${gw}</span></div>
-    <div class="kv"><span class="k">Structural SPOFs (chains)</span><span class="v">${CHAINS.length}</span></div>
+    <div class="kv"><span class="k">Structural SPOFs (chains)</span><span class="v">${structChains().length}</span></div>
     ${off?`<div class="kv"><span class="k faint">Off-scan uplinks</span><span class="v faint">${off} (impact is a floor)</span></div>`:""}
     </div>`;
+}
+/* V3.23.142: structural-SPOF list as ONE source of truth. Prefer the Python-computed SNAP.causality —
+   the SAME aggregated chains the workbook's 'Causality Chains' sheet and the Causality MODE already show
+   (Chain B rolled up per transit switch, Chain C per uplink, V3.23.90) — and fall back to the JS
+   causalityChains engine (CHAINS) only when the snapshot carries none (older snapshots / the in-page demo).
+   Every Health-view structural-SPOF widget (the SPOF count, Fix-this-first cards, per-switch attribution,
+   keystone 'chains' column, root-cause ranking, executive narrative) routes through this so it matches the
+   workbook; previously they read CHAINS directly, which still emits one chain PER (host,VLAN) and so showed
+   the per-VLAN explosion the collector removed. The interactive remediation simulator deliberately stays on
+   CHAINS: it re-derives chains on MUTATED clone models and matches them by the JS type|switch|vid identity,
+   which the flattened Python form doesn't carry. Python items are normalized to the JS card shape; type /
+   endpoints / vid are recovered from the canonical trigger/impact text the collector emits so the root-cause
+   ranking keeps its impact x confidence scoring. Cached per SNAP (load() swaps SNAP + CHAINS atomically). */
+function structChains(){
+  if(structChains._snap===SNAP)return structChains._c;
+  const py=(SNAP&&Array.isArray(SNAP.causality))?SNAP.causality:null;
+  let out;
+  if(py&&py.length){
+    out=py.map((c,i)=>{
+      const hosts=Array.isArray(c.hosts)?c.hosts.slice():[];
+      const trg=c.trigger||"";
+      const type=/^Gateway\b/.test(trg)?"A":/^Transit switch\b/.test(trg)?"B":/^Uplink\b/.test(trg)?"C":"";
+      const em=(c.impact||"").match(/(\d[\d,]*)\s+endpoint/);   // recover the blast-radius count for ranking
+      const vm=(type==="A")?trg.match(/Vlan(\d+)/i):null;       // Chain A is the only single-VLAN form
+      return {sev:c.severity, switch:hosts[0]||"", hosts,
+              title:c.trigger||("Structural SPOF "+(i+1)),
+              root:c.mechanism||"", mech:c.mechanism||"",
+              blast:c.impact||"", fix:c.mitigation||"",
+              endpoints:em?+em[1].replace(/,/g,""):0,
+              type, vid:vm?+vm[1]:undefined};
+    });
+  } else {
+    out=(CHAINS||[]).slice();
+  }
+  structChains._c=out; structChains._snap=SNAP; return out;
 }
 function chainCards(list,limit){let h="";list.slice(0,limit||list.length).forEach(c=>{const tok=sevToken(c.sev);
   h+=`<div class="card ${tok}" data-jump="${esc(c.switch)}" style="cursor:pointer">
@@ -2944,8 +2979,8 @@ function chainCards(list,limit){let h="";list.slice(0,limit||list.length).forEac
 function drawBlast(){
   if(!SEL){
     return `<div class="drawer-head"><div class="eyebrow">Blast radius</div><div class="title">Fix-this-first</div></div>
-      <div class="sec"><p class="sub" style="margin:0 0 11px">The ${CHAINS.length} structural single-points-of-failure in this fabric, ranked by severity. Click one to jump to the switch.</p>
-      ${CHAINS.length?chainCards(CHAINS,8):'<p class="faint">No structural SPOFs detected.</p>'}</div>
+      <div class="sec"><p class="sub" style="margin:0 0 11px">The ${structChains().length} structural single-points-of-failure in this fabric, ranked by severity. Click one to jump to the switch.</p>
+      ${structChains().length?chainCards(structChains(),8):'<p class="faint">No structural SPOFs detected.</p>'}</div>
       ${censusSec()}
       <div class="empty"><div class="big">◎</div><p>Click any switch on the map to <b>simulate pulling it</b> from the fabric.</p></div>`;
   }
@@ -2954,7 +2989,7 @@ function drawBlast(){
   let rows=fi.perVlan.map(r=>{const t=sevToken(r.sev);
     return `<tr><td class="vid">${r.vid}</td><td><span class="pill pl-${t}">${r.cls}</span></td>
       <td style="text-align:right">${r.strandedHard||"·"}</td><td style="text-align:right" class="faint">${r.healable||"·"}</td></tr>`;}).join("");
-  const myChains=CHAINS.filter(c=>c.switch===SEL);
+  const myChains=structChains().filter(c=>c.switch===SEL);
   return `<div class="drawer-head"><div class="eyebrow">Simulated removal</div>
       <div class="title"><span class="mono">${esc(shortName(SEL))}</span> ${isGateway(SEL)?'<span class="badge b-neutral">gateway</span>':""}</div></div>
     <div class="sec"><div class="headline">
@@ -6059,8 +6094,13 @@ function paintCausality(){
    backup-covered partition is only a transient blip. Defensive: returns [] when there are no chains. */
 function rootCauseRank(model){
   if(!model)return [];
+  // V3.23.142: rank the SAME structural SPOFs the workbook/Causality-mode show (structChains -> SNAP.causality),
+  // not the JS per-VLAN engine — so the Health view's ranking, count, and Fix-this-first list all agree. type /
+  // endpoints / vid are recovered in structChains, so the impact x confidence scoring below still applies; for
+  // Python-sourced Chain B (aggregated, no single vid) the failureImpact cross-check simply falls back to the
+  // recovered endpoint count. Always called with the active MODEL (paired with SNAP).
   let chains=[];
-  try{chains=causalityChains(model)||[];}catch(e){chains=[];}
+  try{chains=structChains()||[];}catch(e){chains=[];}
   if(!chains.length)return [];
   // confidence/likelihood factor (0..1): how reliably this structural weakness turns into a real outage.
   const conf=c=>{
@@ -6129,7 +6169,7 @@ function buildNarrative(model){
   const sn=h=>esc(shortName(h)), wrapHost=h=>`<span class="mono">${sn(h)}</span>`;
 
   // ---- structural SPOFs: the single highest-impact correlation we can make ----
-  const chains=(typeof CHAINS!=="undefined"&&CHAINS.length)?CHAINS:[];
+  const chains=structChains();   // V3.23.142: one source of truth (SNAP.causality, JS CHAINS fallback)
   if(chains.length){
     const top=chains[0];                                              // already severity-ranked
     const sev=top.sev==="High"?"crit":top.sev==="Medium"?"risk":"watch";
@@ -6276,7 +6316,9 @@ function cockpitCatData(){
 function cockpitKeystones(){
   const pl=(SNAP&&SNAP.punchlist)||[];
   const implBy={}; pl.forEach(i=>{const seen=new Set();(i.devices||[]).forEach(d=>{if(seen.has(d))return;seen.add(d);implBy[d]=(implBy[d]||0)+1;});});
-  const chainsBy={}; (CHAINS||[]).forEach(c=>{chainsBy[c.switch]=(chainsBy[c.switch]||0)+1;});
+  // V3.23.142: per-host SPOF count from structChains (SNAP.causality) so this column matches the workbook's
+  // 'Causality Chains' sheet — the JS engine over-counted via its per-VLAN chains. Attribute to every named host.
+  const chainsBy={}; structChains().forEach(c=>{(c.hosts&&c.hosts.length?c.hosts:[c.switch]).forEach(h=>{if(h)chainsBy[h]=(chainsBy[h]||0)+1;});});
   // V3.23.81: prefer the Python failure-impact rollup (SNAP.failure_impact[].stranded) so the explorer's
   // keystone blast-radius numbers match the workbook's 'Failure Impact' sheet exactly (one source of truth);
   // fall back to the JS failureImpact engine when the snapshot doesn't carry it (older snapshots / demo).
@@ -6463,7 +6505,7 @@ function drawHealth(){
       const fams=dedupeDeductions(r.deductions);
       const driver=fams[0];
       let famRows=fams.map(f=>`<div class="kv"><span class="k">${esc(f.label)}${f.count>1?` <span class="pill pl-neutral">×${f.count}</span>`:""}</span><span class="v" style="color:var(--crit)">${f.total}</span></div>`).join("");
-      const myChains=CHAINS.filter(c=>c.switch===SEL);
+      const myChains=structChains().filter(c=>c.switch===SEL);
       return `<div class="drawer-head"><div class="eyebrow">Switch health</div>
         <div class="title"><span class="mono">${esc(shortName(SEL))}</span></div></div>
         <div class="sec"><div class="headline">
@@ -6526,9 +6568,9 @@ function drawHealth(){
     ${stpRootCard()}
     ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}
-    ${CHAINS.length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${CHAINS.length}</span></h3>
+    ${structChains().length?`<div class="sec"><h3>Fix-this-first (real SPOFs) <span class="ct">${structChains().length}</span></h3>
       <p class="sub" style="margin:0 0 10px">Structural single-points-of-failure, de-duplicated and severity-ranked — the genuine migration blockers, independent of the noisy per-port score.</p>
-      ${chainCards(CHAINS,6)}</div>`:""}
+      ${chainCards(structChains(),6)}</div>`:""}
     ${CHAINS.length?remediationCard():""}`;
 }
 
