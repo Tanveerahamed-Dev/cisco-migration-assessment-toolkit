@@ -50,6 +50,8 @@ dependencies = [
 # The DOCX runbook is optional: without python-docx the run still produces the workbook + explorer +
 # snapshot and logs that the runbook was skipped.
 docx = ["python-docx>=1.1,<2"]
+# The executive PPTX deck is optional too (python-pptx).
+pptx = ["python-pptx>=0.6,<2"]
 # Test / lint / type tooling (report-only mypy baseline; ruff gates correctness rules).
 dev = ["pytest>=8,<10", "ruff>=0.5", "mypy>=1.8"]
 

@@ -410,6 +410,7 @@ from cisco_toolkit.build import (
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import snapshot_state, write_html_explorer, write_diff_workbook, redact_snapshot
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
+from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -1151,6 +1152,10 @@ def main():
                     help="NEW-V3.23.93: skip the Assessment & Migration Runbook (DOCX). The runbook is "
                          "the narrative twin of the workbook; it needs python-docx (a missing library is "
                          "a warning, not an error).")
+    ap.add_argument("--no-pptx",         action="store_true",
+                    help="NEW-V3.23.144: skip the Executive presentation deck (PPTX). The deck is the "
+                         "stakeholder twin of the workbook; it needs python-pptx (a missing library is "
+                         "a warning, not an error).")
     ap.add_argument("--flow-src",        default=None, metavar="IP",
                     help="NEW-V3.19: source endpoint IP for the optional Flow Trace sheet "
                          "(requires --flow-dst).")
@@ -1861,6 +1866,16 @@ def main():
             write_runbook_docx(docx_out, snap_dict, label, flow_paths=flow_paths)
         except Exception as e:
             logger.warning(f"  Runbook (DOCX) write failed: {e}")
+
+    # NEW-V3.23.144: Executive presentation deck (PPTX) - the stakeholder twin of the workbook, rendered
+    # from the same snapshot. Optional python-pptx; a missing library is a warning, never a crash.
+    if not args.no_pptx:
+        pptx_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_executive_deck.pptx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_executive_deck_pptx(pptx_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  Executive deck (PPTX) write failed: {e}")
 
 
 if __name__ == "__main__":

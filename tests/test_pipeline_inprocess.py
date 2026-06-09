@@ -79,3 +79,12 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert os.path.isfile(explorer), "explorer HTML was not written"
     html = open(explorer, encoding="utf-8").read()
     assert "EMBEDDED_SNAPSHOT" in html, "explorer did not get the live snapshot embedded"
+
+    # ---- executive deck (optional python-pptx): if the lib is present, main() must have written it ----
+    try:
+        import pptx  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        deck = os.path.splitext(str(out_xlsx))[0] + "_executive_deck.pptx"
+        assert os.path.isfile(deck), "executive deck (PPTX) was not written despite python-pptx installed"
