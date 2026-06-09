@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import cutover, deliverables, engine, execution, graph, summary
+from . import cutover, deliverables, engine, execution, graph, ingest, summary
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -174,6 +174,25 @@ def create_app(db_path: str | None = None) -> FastAPI:
         snap = _parse_snapshot_bytes(await file.read())
         lbl = label.strip() or (file.filename or "snapshot").rsplit(".", 1)[0]
         return store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
+
+    @app.post("/api/campaigns/{campaign_id}/ingest", status_code=201)
+    async def ingest_collection(campaign_id: int, file: UploadFile = File(...),
+                                label: str = Form("")) -> Dict[str, Any]:
+        """Upload a raw collection ZIP (per-device show-command outputs); the real engine pipeline
+        runs server-side and the resulting snapshot is stored like an uploaded one."""
+        if not store.get_campaign(campaign_id):
+            raise HTTPException(404, "Campaign not found")
+        raw = await file.read()
+        try:
+            snap, report = ingest.run_collection_zip(raw)
+        except ingest.IngestError as e:
+            raise HTTPException(400, str(e)) from e
+        except ingest.EngineRunError as e:
+            raise HTTPException(500, str(e)) from e
+        lbl = label.strip() or (file.filename or "collection").rsplit(".", 1)[0]
+        meta = store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
+        meta["ingest"] = report
+        return meta
 
     @app.get("/api/snapshots/{snapshot_id}")
     def get_snapshot(snapshot_id: int) -> Dict[str, Any]:

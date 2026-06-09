@@ -393,6 +393,86 @@ def test_execution_pir_report(client):
     assert any("tanveer" in c for c in all_rows)               # actions are attributed
 
 
+def _fixture_collection_zip(tmp_path, wrap="export/fleet", include_devices_json=False) -> bytes:
+    """A real offline-collection ZIP built from the engine test-suite's synthetic fixtures."""
+    import io
+    import zipfile
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
+    import synthetic_fixtures as fx
+
+    root = tmp_path / "zipsrc"
+    coll = root / wrap if wrap else root
+    fx.write_collection(str(coll))
+    if include_devices_json:
+        import json
+        (coll / "devices.json").write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for p in root.rglob("*"):
+            if p.is_file():
+                zf.write(p, p.relative_to(root).as_posix())
+    return buf.getvalue()
+
+
+def test_ingest_collection_runs_real_engine(client, tmp_path):
+    """The flagship ingest path: a ZIP of raw show outputs (wrapped in a folder, NO devices.json —
+    platforms autodetect) is run through the real engine and stored as a first-class snapshot."""
+    raw = _fixture_collection_zip(tmp_path)
+    cid = client.post("/api/campaigns", json={"name": "ingest"}).json()["id"]
+    r = client.post(f"/api/campaigns/{cid}/ingest",
+                    files={"file": ("fleet.zip", raw, "application/zip")},
+                    data={"label": "Ingested wave"})
+    assert r.status_code == 201, r.text
+    meta = r.json()
+    assert meta["label"] == "Ingested wave"
+    assert meta["n_devices"] == 3                       # core1 / core2 / access1
+    assert meta["ingest"]["devices_json"] == "synthesized"
+    assert sorted(meta["ingest"]["devices"]) == ["access1", "core1", "core2"]
+
+    # the stored snapshot is the engine's own: summary derives and the cutover plan synthesizes
+    s = meta["summary"]
+    assert s["n_switches"] == 3 and s["punchlist"]["total"] >= 1
+    plan = client.get(f"/api/snapshots/{meta['id']}/cutover").json()
+    assert plan["summary"]["n_waves"] >= 1
+
+
+def test_ingest_rejects_bad_archives(client, tmp_path):
+    import io
+    import zipfile
+
+    cid = client.post("/api/campaigns", json={"name": "x"}).json()["id"]
+
+    def post(content, name="c.zip"):
+        return client.post(f"/api/campaigns/{cid}/ingest",
+                           files={"file": (name, content, "application/zip")})
+
+    # not a zip at all
+    assert post(b"definitely not a zip").status_code == 400
+    # path traversal entry is refused before anything runs
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../evil.txt", "x")
+    r = post(buf.getvalue())
+    assert r.status_code == 400 and "traversal" in r.json()["detail"]
+    # show outputs at the archive root (no per-device folders) get an actionable message
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("show_interface_status.txt", "Port Name Status")
+    r = post(buf.getvalue())
+    assert r.status_code == 400 and "own folder" in r.json()["detail"]
+    # a zip with no device outputs at all
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("readme.md", "hello")
+    r = post(buf.getvalue())
+    assert r.status_code == 400 and "No device outputs" in r.json()["detail"]
+    # unknown campaign
+    raw = _fixture_collection_zip(tmp_path)
+    assert client.post("/api/campaigns/999999/ingest",
+                       files={"file": ("c.zip", raw, "application/zip")}).status_code == 404
+
+
 def test_bad_upload_rejected(client):
     cid = client.post("/api/campaigns", json={"name": "x"}).json()["id"]
     r = client.post(f"/api/campaigns/{cid}/snapshots",
