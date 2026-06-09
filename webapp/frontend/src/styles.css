@@ -218,6 +218,57 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
 .cmd { font: 500 12px var(--mono); background: var(--bg); border: 1px solid var(--border-faint);
   border-radius: 6px; padding: 5px 9px; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 
+/* ---- execution console (war room) ---- */
+.execbar { display: flex; align-items: center; gap: 26px; flex-wrap: wrap; }
+.execbar .clock { font-size: 30px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.execbar .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint); margin-top: 4px; }
+.execprog { min-width: 220px; flex: 1; max-width: 380px; }
+.execprog .track { height: 10px; background: var(--surface-3); border-radius: 999px; overflow: hidden; }
+.execprog .fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-dim));
+  transition: width var(--motion) var(--ease); }
+.execstat { display: flex; align-items: baseline; gap: 7px; }
+.execstat b { font: 800 20px var(--sans); }
+
+.estep { display: flex; gap: 11px; padding: 8px 0; border-bottom: 1px solid var(--border-faint); align-items: flex-start; }
+.estep:last-child { border-bottom: 0; }
+.estep .tick {
+  flex: none; width: 24px; height: 24px; margin-top: 2px; border-radius: 50%; cursor: pointer;
+  border: 2px solid var(--border-strong); background: var(--surface); color: var(--ok);
+  font: 800 13px var(--sans); display: grid; place-items: center; padding: 0;
+  transition: border-color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
+}
+.estep .tick:hover { border-color: var(--accent); }
+.estep .tick.done { border-color: var(--ok); background: var(--ok-soft); }
+.estep .tick.skipped { border-color: var(--watch); background: var(--watch-soft); color: var(--watch); }
+.estep .tick:disabled { cursor: default; opacity: .6; }
+.estep .ph { font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .5px; color: var(--accent); }
+.estep .ac { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
+.estep.done .ac, .estep.skipped .ac { color: var(--text-faint); }
+.estep .meta, .checkrow .meta, .wave-card .meta { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
+
+.checkrow { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; }
+.vbtn {
+  font: 700 10px var(--mono); letter-spacing: .4px; padding: 4px 9px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-faint);
+}
+.vbtn.pass:hover, .vbtn.pass.on { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.vbtn.fail:hover, .vbtn.fail.on { color: var(--crit); border-color: var(--crit); background: var(--crit-soft); }
+.vbtn.na:hover, .vbtn.na.on { color: var(--text-dim); border-color: var(--border-strong); background: var(--surface-3); }
+
+.nogowarn {
+  margin-top: 10px; font-size: 12.5px; color: var(--text-dim);
+  border: 1px solid color-mix(in srgb, var(--crit) 45%, var(--border)); background: var(--crit-soft);
+  border-radius: var(--radius-sm); padding: 8px 12px;
+}
+.nogowarn b { color: var(--crit); }
+
+.evlog { max-height: 420px; overflow: auto; display: flex; flex-direction: column; }
+.evrow { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px; padding: 6px 0;
+  border-bottom: 1px solid var(--border-faint); }
+.evrow:last-child { border-bottom: 0; }
+.evrow .t { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.evrow .k { flex: none; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; width: 64px; }
+
 /* ============================================================================
    Motion layer. Grounded in standard UI-motion guidance: compositor-only
    (transform/opacity), asymmetric ease-out, micro 120-220ms / transitions

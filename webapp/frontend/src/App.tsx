@@ -4,6 +4,7 @@ import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import CampaignPage from "./pages/Campaign";
 import SnapshotPage from "./pages/Snapshot";
+import ExecutionPage from "./pages/Execution";
 
 function useTheme() {
   const [theme, setTheme] = useState<string>(() => localStorage.getItem("assesshub-theme") || "dark");
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="/campaigns" element={<Dashboard />} />
         <Route path="/campaigns/:id" element={<CampaignPage />} />
         <Route path="/snapshots/:id" element={<SnapshotPage />} />
+        <Route path="/executions/:id" element={<ExecutionPage />} />
         <Route path="*" element={<div className="container"><div className="empty">Not found. <Link to="/">Go home</Link></div></div>} />
       </Routes>
     </>
