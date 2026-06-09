@@ -22,6 +22,11 @@ SSH collection (CLI engine)  →  snapshot.json  →  AssessHub store  →  cock
   validation plan, capacity, endpoints, lifecycle/EoL…) sliced straight from the snapshot.
 - **Deep explorer** — opens the full single-file `blast_radius_explorer.html` for any snapshot,
   rendered through the engine's own `html.write_html_explorer`.
+- **Fleet topology** — a native force-directed graph of the switch fabric (d3-force), nodes coloured by
+  health band, single-points-of-failure highlighted, click-a-node to trace its blast radius.
+- **Deliverable downloads** — generate and download the engine's narrative outputs for any snapshot:
+  the Runbook (DOCX), As-Built Design Document (DOCX), per-wave MOP (DOCX), and Executive Deck (PPTX),
+  each produced by the engine's own writer (`runbook`/`design`/`mop`/`deck`) — byte-identical to the CLI.
 - **Campaign trajectory** — across ≥2 waves: an IMPROVING / REGRESSING / MIXED verdict plus a
   per-metric trajectory, and a pairwise **compare** (opened/resolved findings, regressed/improved
   health) — both via the engine's `compute_campaign_trend` / `compute_snapshot_delta`.
@@ -106,7 +111,9 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/campaigns/{id}/trend` | campaign trajectory verdict + per-metric trend |
 | `GET`  | `/api/snapshots/{id}` | snapshot meta + derived KPI summary |
 | `GET`  | `/api/snapshots/{id}/section/{name}` | one detail section, sliced from the snapshot |
+| `GET`  | `/api/snapshots/{id}/graph` | switch-topology nodes + edges (for the force graph) |
 | `GET`  | `/api/snapshots/{id}/explorer` | the rendered single-file deep explorer (HTML) |
+| `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`runbook`/`design`/`mop`/`deck`) |
 | `POST` | `/api/compare` | diff two snapshots (`{old_id, new_id}`) |
 
 Interactive API docs at `/docs` when the server is running.
