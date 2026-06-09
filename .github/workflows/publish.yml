@@ -1,0 +1,49 @@
+name: Publish to PyPI
+
+# Build the sdist + wheel and upload them to PyPI via TRUSTED PUBLISHING (OIDC — no API token is
+# stored anywhere). See RELEASING.md for the one-time PyPI setup this requires.
+#
+# Triggers:
+#   * workflow_dispatch — a manual, intentional publish from the Actions tab. This is the default,
+#     safe path: publishing to PyPI is irreversible (a version can't be re-uploaded), so it is opt-in
+#     per run rather than firing automatically on every tag.
+#   * release: published — also fires if you publish a GitHub Release through the web UI.
+#
+# IMPORTANT: nothing is published until the trusted publisher is configured on PyPI (one-time). Until
+# then the upload step fails cleanly and nothing leaves the runner — adding this workflow publishes
+# nothing on its own.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  pypi-publish:
+    name: Build + publish to PyPI
+    runs-on: ubuntu-latest
+    # The 'pypi' environment is what the PyPI trusted-publisher config references; it can also carry
+    # GitHub environment protection rules (e.g. a required reviewer) for an extra approval gate.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/cisco-migration-assessment-toolkit
+    permissions:
+      id-token: write          # OIDC token for PyPI trusted publishing (no stored secret/API token)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Validate distribution metadata
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+      - name: Publish to PyPI (trusted publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
