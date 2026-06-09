@@ -272,6 +272,200 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     wb.save(out_path)
 
 
+# -----------------------------------------------------------------------------
+# Migration CAMPAIGN trend (NEW-V3.23.145). Where compute_snapshot_delta diffs a PAIR (pre/post a single
+# cutover), the campaign tracker ingests a SERIES of collections taken across the whole migration and shows
+# the trajectory: is the network actually getting healthier wave by wave? It extracts the headline metrics
+# per collection (avg health, band mix, punch-list size + Critical/High count, NOT-READY groups, past-EoS),
+# computes the first->last trajectory per metric + an overall IMPROVING/MIXED/REGRESSING verdict, and reuses
+# compute_snapshot_delta for the per-step findings burndown (opened vs resolved). Pure read of N snapshot
+# dicts; tolerant of older snapshots that lack a metric (it is simply omitted from the trajectory).
+# -----------------------------------------------------------------------------
+def _trend_point(snap: dict) -> dict:
+    """Headline metrics for one snapshot in the campaign timeline."""
+    hs = snap.get("health_scores") or []
+    scores = [r.get("score") for r in hs if isinstance(r.get("score"), (int, float))]
+    bands: Dict[str, int] = {}
+    for r in hs:
+        bands[r.get("band", "")] = bands.get(r.get("band", ""), 0) + 1
+    pl = snap.get("punchlist") or []
+    readiness = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
+    for r in (snap.get("migration_readiness") or []):
+        if r.get("readiness") in readiness:
+            readiness[r["readiness"]] += 1
+    lr = (snap.get("lifecycle_risk") or {}).get("summary") or {}
+    avg = ((snap.get("executive_brief") or {}).get("posture") or {}).get("avg_health")
+    if avg is None and scores:
+        avg = round(sum(scores) / len(scores), 1)
+    ts = snap.get("generated_at") or ""
+    return {
+        "date": ts[:10], "generated_at": ts, "version": snap.get("script_version", ""),
+        "n_switches": len(snap.get("devices") or {}),
+        "avg_health": avg if avg is not None else "",
+        "n_critical": bands.get("Critical", 0),
+        "n_punchlist": len(pl),
+        "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")),
+        "n_not_ready": readiness["NOT READY"],
+        "past_eos": lr.get("n_past_eos", "") if lr else "",
+    }
+
+
+# (metric label, timeline key, lower-is-better) for the trajectory + the timeline columns.
+_TREND_METRICS = (("Avg health / 100", "avg_health", False),
+                  ("Critical-band switches", "n_critical", True),
+                  ("Punch-list items", "n_punchlist", True),
+                  ("Critical/High findings", "n_crit_high", True),
+                  ("NOT READY groups", "n_not_ready", True),
+                  ("Past end-of-support", "past_eos", True))
+
+
+def compute_campaign_trend(snapshots: List[dict]) -> dict:
+    """Trajectory of a migration campaign across a SERIES of snapshots. Returns
+    {timeline, steps, trajectory, verdict, verdict_note}; degrades gracefully when a metric is absent."""
+    snaps = list(snapshots or [])
+    timeline = [dict(_trend_point(s), collection=f"C{i + 1}") for i, s in enumerate(snaps)]
+
+    steps: List[dict] = []
+    for i in range(len(snaps) - 1):
+        d = compute_snapshot_delta(snaps[i], snaps[i + 1])
+        steps.append({
+            "from": timeline[i]["collection"], "to": timeline[i + 1]["collection"],
+            "from_date": timeline[i]["date"], "to_date": timeline[i + 1]["date"],
+            "opened": d["findings"]["n_opened"], "opened_high": d["findings"]["n_opened_high"],
+            "resolved": d["findings"]["n_resolved"], "net": d["findings"]["n_opened"] - d["findings"]["n_resolved"],
+            "regressed": d["health"]["n_regressed"], "improved": d["health"]["n_improved"],
+            "verdict": d["verdict"],
+        })
+
+    trajectory: List[dict] = []
+    verdict, note = "INSUFFICIENT", "Need at least two collections to show a trend."
+    if len(timeline) >= 2:
+        first, last = timeline[0], timeline[-1]
+        for metric, key, good_down in _TREND_METRICS:
+            a, b = first.get(key), last.get(key)
+            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+                continue
+            delta = b - a
+            direction = "flat" if delta == 0 else (
+                "improving" if ((delta < 0) if good_down else (delta > 0)) else "worsening")
+            trajectory.append({"metric": metric, "first": a, "last": b,
+                               "delta": round(delta, 1), "direction": direction})
+        better = sum(1 for r in trajectory if r["direction"] == "improving")
+        worse = sum(1 for r in trajectory if r["direction"] == "worsening")
+        if trajectory:                                    # comparable metrics exist -> a real verdict
+            if better == 0 and worse == 0:
+                verdict = "FLAT"
+            elif better > worse:
+                verdict = "IMPROVING"
+            elif worse > better:
+                verdict = "REGRESSING"
+            else:
+                verdict = "MIXED"
+        hr = next((r for r in trajectory if r["metric"].startswith("Avg health")), None)
+        cr = next((r for r in trajectory if r["metric"].startswith("Critical/High")), None)
+        note = (f"Across {len(timeline)} collections: {better} metric(s) improving, {worse} worsening. "
+                + (f"Avg health {hr['first']}→{hr['last']}. " if hr else "")
+                + (f"Critical/High findings {cr['first']}→{cr['last']}." if cr else "")).strip()
+
+    return {"timeline": timeline, "steps": steps, "trajectory": trajectory,
+            "verdict": verdict, "verdict_note": note}
+
+
+def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
+    """Write a migration-campaign trend workbook (Campaign Summary verdict + per-metric trajectory /
+    Timeline w/ a trajectory line chart / Burndown of findings opened-vs-resolved per step) from a SERIES
+    of snapshot_state() dicts."""
+    from openpyxl import Workbook
+    HF = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+    FILL = PatternFill("solid", fgColor="1F497D")
+    AL = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    CEN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    DF = Font(name="Calibri", size=10)
+
+    trend = compute_campaign_trend(snapshots)
+    wb = Workbook(); wb.remove(wb.active)
+
+    def sheet(title, cols):
+        ws = wb.create_sheet(title)
+        for c, h in enumerate(cols, 1):
+            cell = ws.cell(row=1, column=c, value=h); cell.font = HF; cell.fill = FILL; cell.alignment = CEN
+        ws.freeze_panes = "A2"
+        return ws
+
+    def autofit(ws, ncols):
+        for col in range(1, ncols + 1):
+            mx = len(str(ws.cell(row=1, column=col).value or ""))
+            for row in range(2, ws.max_row + 1):
+                v = ws.cell(row=row, column=col).value
+                if v is not None:
+                    mx = max(mx, len(str(v)))
+            ws.column_dimensions[get_column_letter(col)].width = min(max(mx + 2, 12), 60)
+
+    _DIR_FILL = {"improving": "C6EFCE", "worsening": "FFC7CE", "flat": "FFEB9C"}
+    _VERDICT_FILL = {"IMPROVING": "C6EFCE", "MIXED": "FFEB9C", "FLAT": "DDEBF7",
+                     "REGRESSING": "FFC7CE", "INSUFFICIENT": "EFEFEF"}
+
+    # ---- Campaign Summary (leads with the trajectory verdict) ----
+    ws = sheet("Campaign Summary", ["Metric", "First", "Last", "Delta", "Trajectory"])
+    vc = ws.cell(row=2, column=1, value="CAMPAIGN VERDICT"); vc.font = Font(name="Calibri", bold=True, size=11)
+    vv = ws.cell(row=2, column=2, value=trend["verdict"])
+    vv.font = Font(name="Calibri", bold=True, size=11)
+    vv.fill = PatternFill("solid", fgColor=_VERDICT_FILL.get(trend["verdict"], "FFFFFF"))
+    ws.cell(row=2, column=3, value=trend["verdict_note"]).alignment = AL
+    ws.merge_cells(start_row=2, start_column=3, end_row=2, end_column=5)
+    r = 4
+    for t in trend["trajectory"]:
+        for c, v in enumerate([t["metric"], t["first"], t["last"], t["delta"], t["direction"]], 1):
+            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+        ws.cell(row=r, column=5).fill = PatternFill("solid", fgColor=_DIR_FILL.get(t["direction"], "FFFFFF"))
+        r += 1
+    if not trend["trajectory"]:
+        ws.cell(row=4, column=1, value="Not enough comparable metrics across the snapshots.").font = DF
+    autofit(ws, 5); ws.column_dimensions["A"].width = 26
+
+    # ---- Timeline (one row per collection) + a trajectory line chart ----
+    cols = ["Collection", "Date", "Version", "Switches", "Avg Health", "Critical",
+            "Punch-list", "Crit/High", "NOT READY", "Past-EoS"]
+    ws = sheet("Timeline", cols)
+    keys = ["collection", "date", "version", "n_switches", "avg_health", "n_critical",
+            "n_punchlist", "n_crit_high", "n_not_ready", "past_eos"]
+    for i, pt in enumerate(trend["timeline"], start=2):
+        for c, k in enumerate(keys, 1):
+            cell = ws.cell(row=i, column=c, value=pt.get(k, "")); cell.font = DF
+            cell.alignment = CEN if c >= 4 else AL
+    autofit(ws, len(cols))
+    if len(trend["timeline"]) >= 2:
+        try:
+            from openpyxl.chart import LineChart, Reference
+            n = len(trend["timeline"])
+            chart = LineChart(); chart.title = "Migration trajectory"; chart.style = 12
+            chart.y_axis.title = "count / score"; chart.x_axis.title = "collection"; chart.height = 8; chart.width = 16
+            for col in (5, 8, 7):   # Avg Health, Crit/High, Punch-list
+                chart.add_data(Reference(ws, min_col=col, min_row=1, max_row=1 + n), titles_from_data=True)
+            chart.set_categories(Reference(ws, min_col=1, min_row=2, max_row=1 + n))
+            ws.add_chart(chart, get_column_letter(len(cols) + 2) + "2")
+        except Exception as e:
+            logger.warning(f"  Campaign trend chart skipped: {e}")
+
+    # ---- Burndown (findings opened vs resolved per consecutive step) ----
+    ws = sheet("Burndown", ["Step", "Opened", "Opened High/Crit", "Resolved", "Net", "Health regressed",
+                            "Health improved", "Step verdict"])
+    for i, st in enumerate(trend["steps"], start=2):
+        vals = [f"{st['from']} → {st['to']}", st["opened"], st["opened_high"], st["resolved"],
+                st["net"], st["regressed"], st["improved"], st["verdict"]]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=i, column=c, value=v); cell.font = DF
+            cell.alignment = CEN if 2 <= c <= 7 else AL
+        nf = ws.cell(row=i, column=5)
+        nf.fill = PatternFill("solid", fgColor="FFC7CE" if (st["net"] or 0) > 0 else "C6EFCE")
+    if not trend["steps"]:
+        ws.cell(row=2, column=1, value="Need at least two snapshots for a burndown.").font = DF
+    autofit(ws, 8)
+
+    wb.save(out_path)
+    logger.info(f"[OK] Campaign trend: {trend['verdict']} across {len(trend['timeline'])} collections")
+
+
 def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                    all_device_physical: List[DevicePhysical]) -> dict:
     import dataclasses
