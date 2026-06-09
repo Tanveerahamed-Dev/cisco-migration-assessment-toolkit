@@ -113,6 +113,37 @@ function Keystones({ meta }: { meta: SnapshotMeta }) {
   );
 }
 
+function DeliverablesPanel({ snapId }: { snapId: number }) {
+  const { data } = useAsync(() => api.meta(), []);
+  const items = data?.deliverables || [];
+  if (!items.length) return null;
+  return (
+    <div className="panel">
+      <h3>Deliverables · generated from this snapshot</h3>
+      <div className="row-flex">
+        {items.map((d) =>
+          d.available ? (
+            <a key={d.key} className="btn" href={api.deliverableUrl(snapId, d.key)} download>
+              ↓ {d.label} <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>{d.ext.toUpperCase()}</span>
+            </a>
+          ) : (
+            <span key={d.key} className="btn" style={{ opacity: 0.45, cursor: "not-allowed" }}
+              title="Unavailable — the server is missing the optional library for this format">
+              {d.label} <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>{d.ext.toUpperCase()}</span>
+            </span>
+          ),
+        )}
+        <a className="btn" href={api.explorerUrl(snapId)} target="_blank" rel="noreferrer">
+          ◈ Interactive Explorer <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>HTML</span>
+        </a>
+      </div>
+      <div className="faint" style={{ fontSize: 11, marginTop: 10 }}>
+        Each is produced by the engine's own writer from this exact snapshot — identical to the CLI output.
+      </div>
+    </div>
+  );
+}
+
 export default function SnapshotPage() {
   const { id } = useParams();
   const sid = Number(id);
@@ -178,6 +209,8 @@ export default function SnapshotPage() {
       </div>
 
       <div className="grid" style={{ marginTop: 16, gap: 16 }}>
+        <DeliverablesPanel snapId={sid} />
+
         <div className="panel">
           <h3>Fleet topology · coloured by health band</h3>
           <TopologyGraph snapId={sid} />

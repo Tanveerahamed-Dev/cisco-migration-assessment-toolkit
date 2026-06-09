@@ -112,6 +112,22 @@ def test_graph_endpoint(client):
     assert client.get("/api/snapshots/999999/graph").status_code == 404
 
 
+def test_deliverables(client):
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    cat = client.get("/api/meta").json()["deliverables"]
+    assert {d["key"] for d in cat} == {"runbook", "design", "mop", "deck"}
+    for d in cat:
+        r = client.get(f"/api/snapshots/{snap_id}/deliverable/{d['key']}")
+        if d["available"]:
+            assert r.status_code == 200, r.text
+            assert r.content[:2] == b"PK"          # docx/pptx are ZIP containers
+            assert len(r.content) > 1000
+            assert d["key"] in r.headers.get("content-disposition", "")
+        else:
+            assert r.status_code == 503
+    assert client.get(f"/api/snapshots/{snap_id}/deliverable/nope").status_code == 400
+
+
 def test_bad_upload_rejected(client):
     cid = client.post("/api/campaigns", json={"name": "x"}).json()["id"]
     r = client.post(f"/api/campaigns/{cid}/snapshots",

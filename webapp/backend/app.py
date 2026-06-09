@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -17,8 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
-from . import engine, graph, summary
+from . import deliverables, engine, graph, summary
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -87,6 +89,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
             "severity_order": summary.SEVERITY_ORDER,
             "bands": summary.BANDS,
             "section_labels": [{"key": k, "label": v} for k, v in summary.SECTION_LABELS],
+            "deliverables": deliverables.catalogue(),
         }
 
     # -- campaigns ---------------------------------------------------------
@@ -165,6 +168,27 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         html = engine.render_explorer_html(snap, meta["label"])
         return HTMLResponse(content=html)
+
+    @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}")
+    def snapshot_deliverable(snapshot_id: int, kind: str):
+        if kind not in deliverables.SPECS:
+            raise HTTPException(400, f"Unknown deliverable '{kind}'")
+        meta = store.get_snapshot_meta(snapshot_id)
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None or meta is None:
+            raise HTTPException(404, "Snapshot not found")
+        if not deliverables.availability().get(kind):
+            raise HTTPException(503, f"{deliverables.SPECS[kind].needs} is not installed on the server")
+        try:
+            path = deliverables.generate(kind, snap, meta["label"])
+        except Exception as e:  # generation failure (e.g. a malformed snapshot)
+            raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
+        spec = deliverables.SPECS[kind]
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", meta["label"]).strip("_") or "snapshot"
+        return FileResponse(
+            path, media_type=spec.media, filename=f"{safe}_{kind}.{spec.ext}",
+            background=BackgroundTask(lambda p=path: os.path.exists(p) and os.unlink(p)),
+        )
 
     @app.delete("/api/snapshots/{snapshot_id}", status_code=204)
     def delete_snapshot(snapshot_id: int):
