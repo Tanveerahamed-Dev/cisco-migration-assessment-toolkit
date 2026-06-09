@@ -332,8 +332,8 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
     """
     Emit a self-contained Blast-Radius Explorer with the live topology embedded.
 
-    Reads 'blast_radius_explorer.html' from the repo root (one directory above this package module),
-    replaces its demo bootstrap with the embedded snapshot, and writes the patched
+    Reads 'blast_radius_explorer.html' from inside the package (with a fallback to the legacy repo-root
+    location), replaces its demo bootstrap with the embedded snapshot, and writes the patched
     single-file HTML to output_path.
 
     The template boots on a demo via the LAST statement in its <script>:
@@ -353,8 +353,13 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
         break out of the <script> block (valid JSON escape; parses back to '</').
       * label is emitted via json.dumps() -> a properly quoted/escaped JS string literal.
     """
-    template = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "blast_radius_explorer.html")
+    # The explorer template ships INSIDE the package (cisco_toolkit/blast_radius_explorer.html), so it is
+    # present in a built wheel and resolves the same whether the package is run from a checkout or a
+    # pip install. Fall back to the legacy repo-root location for any older layout that still keeps it there.
+    _here = os.path.dirname(os.path.abspath(__file__))
+    template = os.path.join(_here, "blast_radius_explorer.html")
+    if not os.path.isfile(template):
+        template = os.path.join(os.path.dirname(_here), "blast_radius_explorer.html")  # legacy repo-root
     if not os.path.isfile(template):
         logger.warning(f"  HTML Explorer skipped: template not found at {template}")
         return
