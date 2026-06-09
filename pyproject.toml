@@ -1,16 +1,11 @@
 # Packaging for the Cisco Migration-Assessment Toolkit.
 #
-# Scope: this makes the project installable (editable: `pip install -e .` or `pip install -e .[dev,docx]`)
-# and exposes a stable `cisco-assess` console command that runs the same entry point as
-# `python COLLECT_PARSE_V3_23_0.py`. An EDITABLE install runs from the checkout, so the two runtime
-# data sources both resolve correctly: the gzipped KB files via `cisco_toolkit/data/` (relative to the
-# package) and the `blast_radius_explorer.html` template at the repo root (read relative to the package).
-#
-# Toward a fully relocatable WHEEL: the only blocker is that `cisco_toolkit.html.write_html_explorer`
-# locates the explorer template one directory ABOVE the package (the repo root). For a wheel the template
-# would need to live inside the package and be loaded via importlib.resources. That move touches the core
-# deliverable + the dev preview workflow, so it is intentionally deferred; the gzipped KBs are already
-# declared as package-data below and would ship in a wheel today.
+# Scope: this makes the project installable (`pip install .` for a relocatable wheel, or `pip install -e .`
+# / `pip install -e .[dev,docx]` for development) and exposes a stable `cisco-assess` console command that
+# runs the same entry point as `python COLLECT_PARSE_V3_23_0.py`. Both runtime data sources live INSIDE the
+# package and resolve relative to it — the gzipped KB files (`cisco_toolkit/data/`) and the single-file
+# explorer template (`cisco_toolkit/blast_radius_explorer.html`) — so they ship in a wheel and load the
+# same whether the package runs from a checkout or a pip install. Both are declared as package-data below.
 #
 # Tooling config (ruff / pytest / mypy) deliberately stays in ruff.toml / pytest.ini / mypy.ini rather
 # than migrating into [tool.*] here, to avoid any change in how those tools resolve their settings.
@@ -78,8 +73,10 @@ py-modules = ["COLLECT_PARSE_V3_23_0"]
 include = ["cisco_toolkit*"]
 
 [tool.setuptools.package-data]
-# The offline KB files portdb/ouidb load at runtime (gzipped TSV); ship them in any built distribution.
-cisco_toolkit = ["data/*.tsv.gz"]
+# Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load, and the
+# single-file explorer template write_html_explorer patches the live snapshot into. Both now live inside
+# the package and resolve relative to it, so a wheel is fully relocatable.
+cisco_toolkit = ["data/*.tsv.gz", "blast_radius_explorer.html"]
 
 [tool.coverage.run]
 source = ["cisco_toolkit"]
