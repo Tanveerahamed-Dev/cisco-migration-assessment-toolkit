@@ -338,6 +338,7 @@ from cisco_toolkit.analyze import (
     compute_ptp_readiness,                             # NEW-V3.23.108 (PTP / media-timing readiness -> punch-list)
     compute_multicast_intelligence,                    # NEW-V3.23.115 (media-fabric deep-dive: MAC-alias / querier / PTP tree)
     compute_remediation_plan,                          # NEW-V3.23.116 (assess->act: per-device config snippets, review-only)
+    compute_validation_plan,                           # NEW-V3.23.143 (assess->verify: per-wave post-cutover checks)
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
     compute_executive_brief,                           # NEW-V3.23.120 (cross-axis migration brief synthesis)
@@ -383,6 +384,7 @@ from cisco_toolkit.excel import (
     write_service_map_sheet,                                     # NEW-V3.23.101 (L4 service map + multicast activity)
     write_multicast_intelligence_sheet,                          # NEW-V3.23.115 (media-fabric multicast intelligence)
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
+    write_validation_plan_sheet,                                 # NEW-V3.23.143 (per-wave post-cutover validation checklist)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
@@ -1708,6 +1710,16 @@ def main():
                                   multicast_intelligence, move_groups, _default={})
     _run_phase("Remediation Plan sheet", write_remediation_plan_sheet, wb, remediation_plan)
 
+    # Phase 30d-quater: Cutover VALIDATION plan - NEW-V3.23.143 (assess->ACT->verify). From the current-state
+    # topology, generate the per-wave checks an engineer runs after each cutover to PROVE it worked -- gateway
+    # up, FHRP healthy, endpoints reach their gateway, routing adjacencies re-established, STP root unchanged,
+    # port-channels bundled - each with the expected good result captured from the pre-cutover state. Pure
+    # synthesis of already-collected data; compute once -> sheet + snapshot (one source of truth).
+    validation_plan = _run_phase("Validation plan", compute_validation_plan,
+                                 all_interfaces, move_groups, all_routing_neighbors, all_stp_roots,
+                                 _dev_platform, _default={})
+    _run_phase("Cutover Validation sheet", write_validation_plan_sheet, wb, validation_plan)
+
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
     # endpoint_dependencies + service_map + health_scores + move_groups + punchlist into named
     # application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
@@ -1766,6 +1778,7 @@ def main():
     snap_dict["multicast_intelligence"] = multicast_intelligence     # NEW-V3.23.115 (media-fabric deep-dive; reused from Phase 27c-bis)
     snap_dict["lifecycle_risk"] = lifecycle_risk                     # NEW-V3.23.117 (hardware EoL band per device; reused from Phase 27c-ter)
     snap_dict["remediation_plan"] = remediation_plan                 # NEW-V3.23.116 (generated config snippets, review-only; reused from Phase 30d-ter)
+    snap_dict["validation_plan"] = validation_plan                   # NEW-V3.23.143 (per-wave post-cutover validation checklist; reused from Phase 30d-quater)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23

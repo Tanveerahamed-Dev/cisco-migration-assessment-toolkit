@@ -3653,6 +3653,161 @@ def compute_remediation_plan(devices: Optional[dict] = None,
 
 
 # =============================================================================
+# Cutover VALIDATION / test-plan generator (NEW-V3.23.143). Closes the assess->act->VERIFY loop: from the
+# CURRENT-state topology, generate the per-wave checks an engineer runs DURING & AFTER a cutover to PROVE
+# the network still works -- each with the exact show/ping command AND the expected "good" result derived
+# from the pre-cutover state, so post-cutover output can be confirmed to MATCH. Pure synthesis over already-
+# collected data (gateways/FHRP from the model, routing adjacencies, STP roots, port-channels); no new
+# collection, no device writes. Deterministic; tolerant of empty/oddly-typed input. Mirrors the remediation
+# generator's structure. Returns {items, by_wave, summary, banner}.
+# =============================================================================
+_VALIDATION_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+_VALIDATION_BANNER = ("Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good "
+                      "result captured from the pre-cutover state -- a deviation is a regression to investigate.")
+
+
+def _validation_wave_key(w: str):
+    """Sort 'Group 2' before 'Group 10' (numeric), numbered waves before any non-numbered label."""
+    m = re.search(r"(\d+)", w or "")
+    return (0, int(m.group(1))) if m else (1, w or "")
+
+
+def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                            move_groups: Optional[list] = None,
+                            routing_neighbors: Optional[dict] = None,
+                            stp_roots: Optional[dict] = None,
+                            devices: Optional[dict] = None) -> dict:
+    """NEW-V3.23.143: per-wave post-cutover validation checklist generated from the current-state topology.
+    Each item names the device + the command to run + the EXPECTED good result (captured from the pre-cutover
+    state) + why it matters + the severity if it fails. Read-only synthesis; no new collection. Returns
+    {items, by_wave, summary, banner}."""
+    from collections import Counter, defaultdict
+    devs = devices or {}
+    rn = routing_neighbors or {}
+    stp = stp_roots or {}
+    groups = list(move_groups or [])
+
+    # host -> wave label ("Group N", enumerated exactly like compute_migration_readiness). A host not in any
+    # multi-switch group still gets checks under "(unscheduled)" so nothing is silently skipped.
+    wave_of: Dict[str, str] = {}
+    for gi, g in enumerate(groups, 1):
+        for h in (g.get("switches") or []):
+            wave_of.setdefault(h, f"Group {gi}")
+
+    def _plat(host):
+        return (devs.get(host) or {}).get("platform", "ios") or "ios"
+
+    model = build_network_model(all_interfaces)
+    items: List[dict] = []
+
+    def add(device, category, severity, check, command, expect, why):
+        items.append({"device": device, "platform": _plat(device),
+                      "wave": wave_of.get(device, "(unscheduled)"),
+                      "category": category, "severity": severity, "check": check,
+                      "command": command, "expect": expect, "why": (why or "")[:300]})
+
+    # ---- Gateway SVI + first-hop redundancy. Read the SVI IP / FHRP string straight from the interfaces
+    #      (the model only carries the FHRP bool). ----
+    svi: Dict[tuple, dict] = {}   # (host, vid) -> {"ip", "fhrp"}
+    for host, ifaces in all_interfaces.items():
+        for port, d in ifaces.items():
+            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
+            if m and ((getattr(d, "svi_ip", "") or "").strip() or (getattr(d, "hsrp_behavior", "") or "").strip()):
+                svi[(host, int(m.group(1)))] = {"ip": (d.svi_ip or "").strip(),
+                                                "fhrp": (d.hsrp_behavior or "").strip()}
+    for (host, vid), info in sorted(svi.items()):
+        redundant = len({g["host"] for g in model["gw"].get(vid, [])}) >= 2
+        ip = info["ip"].split()[0] if info["ip"] else ""
+        add(host, "Gateway", "High",
+            f"Default gateway for VLAN {vid} is up",
+            f"show ip interface brief | include Vlan{vid}",
+            f"Vlan{vid} {ip or '<svi-ip>'} up/up (line protocol up)",
+            f"VLAN {vid} endpoints lose their default gateway if this SVI is down after cutover.")
+        if redundant and info["fhrp"]:
+            cmd = "show hsrp brief" if _plat(host) == "nxos" else "show standby brief"
+            peers = sorted({g["host"] for g in model["gw"].get(vid, []) if g["host"] != host})
+            add(host, "FHRP", "High",
+                f"First-hop redundancy healthy for VLAN {vid}",
+                cmd,
+                f"VLAN {vid} shows exactly one Active + one Standby across {host}"
+                f"{' + ' + ', '.join(peers) if peers else ''} (same virtual IP)",
+                f"VLAN {vid} has a redundant gateway; a broken FHRP pair means no failover or a "
+                "duplicate-active split-brain.")
+
+    # ---- Endpoint -> gateway reachability: one representative ping per VLAN that has BOTH a gateway and a
+    #      client edge switch (an access switch carrying endpoints that is not itself the gateway). ----
+    for vid in sorted(model["vlans"]):
+        gw_hosts = sorted({g["host"] for g in model["gw"].get(vid, [])})
+        if not gw_hosts:
+            continue
+        edges = sorted((model["access_presence"].get(vid, set())
+                        | {h for (h, v) in model["endpoints"] if v == vid}) - set(gw_hosts))
+        if not edges:
+            continue
+        gw_ip = ""
+        for gh in gw_hosts:
+            ip = (svi.get((gh, vid), {}).get("ip") or "").split()
+            if ip:
+                gw_ip = ip[0]
+                break
+        add(edges[0], "Reachability", "High",
+            f"VLAN {vid} endpoints can reach their gateway",
+            f"ping {gw_ip or '<vlan-%d-gateway-ip>' % vid}",
+            "Success rate is 100 percent",
+            f"Proves a VLAN {vid} client edge ({edges[0]}) still reaches its default gateway after cutover.")
+
+    # ---- Routing adjacencies must re-establish (a dropped adjacency black-holes the routes it learned). ----
+    for host in sorted(rn):
+        nb = rn.get(host) or {}
+        for proto, cmd, verb in (("ospf", "show ip ospf neighbor", "in FULL"),
+                                 ("eigrp", "show ip eigrp neighbors", "present"),
+                                 ("bgp", "show ip bgp summary", "Established")):
+            peers = sorted({n.get("neighbor") for n in (nb.get(proto) or []) if n.get("neighbor")})
+            if peers:
+                add(host, "Routing", "High",
+                    f"{proto.upper()} adjacencies re-established",
+                    cmd,
+                    f"{len(peers)} neighbor(s) {verb}: {', '.join(peers)}",
+                    f"A dropped {proto.upper()} adjacency black-holes the routes it should exchange.")
+
+    # ---- STP root placement unchanged (a moved root reconverges L2 and shifts forwarding paths). ----
+    for host in sorted(stp):
+        for vlan, info in sorted((stp.get(host) or {}).items(), key=lambda kv: _validation_wave_key(str(kv[0]))):
+            if isinstance(info, dict) and info.get("is_root"):
+                add(host, "STP", "Medium",
+                    f"Spanning-tree root for VLAN {vlan} unchanged",
+                    f"show spanning-tree vlan {vlan}",
+                    f"{host} reports 'This bridge is the root' for VLAN {vlan}",
+                    "If the root moves on cutover, the L2 topology reconverges and forwarding paths change.")
+
+    # ---- Port-channel / bundle health (a member that doesn't re-bundle drops or halves the uplink). ----
+    pc_hosts: Dict[str, set] = defaultdict(set)
+    for host, ifaces in all_interfaces.items():
+        for port, d in ifaces.items():
+            pc = (getattr(d, "port_channel", "") or "").strip()
+            if pc:
+                pc_hosts[host].add(pc)
+    for host in sorted(pc_hosts):
+        bundles = sorted(pc_hosts[host])
+        cmd = "show port-channel summary" if _plat(host) == "nxos" else "show etherchannel summary"
+        add(host, "Link", "Medium",
+            "Port-channel uplinks bundled",
+            cmd,
+            f"{len(bundles)} bundle(s) ({', '.join(bundles)}) show all members in (P)/bundled state",
+            "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path.")
+
+    items.sort(key=lambda it: (_validation_wave_key(it["wave"]), _VALIDATION_RANK.get(it["severity"], 9),
+                               it["category"], str(it["device"]), it["check"]))
+    by_wave: Dict[str, list] = defaultdict(list)
+    for it in items:
+        by_wave[it["wave"]].append(it)
+    summary = {"n_items": len(items), "n_waves": len(by_wave),
+               "by_category": dict(Counter(it["category"] for it in items)),
+               "n_high": sum(1 for it in items if it["severity"] in ("Critical", "High"))}
+    return {"items": items, "by_wave": dict(by_wave), "summary": summary, "banner": _VALIDATION_BANNER}
+
+
+# =============================================================================
 # Hardware lifecycle (EoL / End-of-Support) risk (NEW-V3.23.117). A new assessment AXIS: per-device
 # replacement urgency from the offline `eoldb` knowledge base (a top REASON orgs migrate). Reference
 # dates (curated KB, not device-read); LDoS is often derived = EoS+5yr. The robust output is the BAND
