@@ -37,3 +37,6 @@ topology.dot
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# graphify knowledge-graph output (generated; regenerate with the graphify skill)
+graphify-out/
