@@ -214,9 +214,16 @@ export default function CutoverPlanner({ snapId }: { snapId: number }) {
         </div>
       </div>
 
-      <div className="faint" style={{ fontSize: 11, margin: "12px 0 10px" }}>
-        Waves are sequenced <b>pilot-first</b> — the safest zero-outage wave proves the method before the higher-risk hard-cutover waves run. Window estimates are first-order planning anchors.
-      </div>
+      <details className="methodology" style={{ margin: "12px 0 10px" }}>
+        <summary className="faint" style={{ fontSize: 11, cursor: "pointer" }}>
+          Waves are sequenced <b>pilot-first</b> — the safest zero-outage wave proves the method before the higher-risk hard-cutover waves run. Window estimates are first-order planning anchors. <span style={{ textDecoration: "underline" }}>Methodology</span>
+        </summary>
+        {(s.methodology && s.methodology.length > 0) && (
+          <ul className="faint" style={{ fontSize: 11, margin: "8px 0 0", paddingLeft: 18, lineHeight: 1.6 }}>
+            {s.methodology.map((m, i) => <li key={i}>{m}</li>)}
+          </ul>
+        )}
+      </details>
 
       <div className="wave-list">
         {plan.waves.map((w) => <WaveCard key={w.group + w.order} w={w} />)}

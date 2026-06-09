@@ -17,6 +17,17 @@ module adds the judgment layer a migration engineer applies by hand:
 
 Everything degrades gracefully: a snapshot missing any of these sections still yields a coherent
 (smaller) plan rather than an error.
+
+Methodology (grounded in standard network-migration / cutover practice, PPDIOO Implement + Operate):
+  * **make-before-break** (dual-homed) is a *soft* cutover — the target path is established before the
+    legacy one is removed, so it is zero-downtime; **hard cutover** (single-homed) is *break-before-make*
+    — the path is broken first, a partition during the cut, so it needs a maintenance window.
+  * Each hard-cutover wave should be **rehearsed end-to-end (dry run)** before the live window — a
+    rehearsal validates the window and rollback and surfaces hidden dependencies that planning misses.
+  * Capture **config + live-state backups** (running-config, routing/MAC/ARP tables) immediately before
+    each cut for rollback, in addition to the validation 'expect' baselines.
+  * Window figures are **first-order anchors** — there is no universal per-device standard; calibrate
+    them against the dry-run's measured timings before committing to a change window.
 """
 
 from __future__ import annotations
@@ -105,13 +116,19 @@ def _critical_crosslayer(switches: Set[str], cross_layer: List[Dict[str, Any]]) 
 def _window_minutes(n_hard_switches: int, hard_endpoints: int) -> int:
     """First-order maintenance-window estimate for the single-homed (hard-cutover) switches.
 
-    Make-before-break switches are zero-outage and excluded. The model is deliberately simple and
-    conservative — a planning anchor to refine, not a commitment: mobilisation + per-switch cut +
-    per-endpoint re-home/settle.
+    Make-before-break switches are zero-outage and excluded. There is no universal per-device standard
+    (cutover duration depends heavily on platform, scale, and method) — so this is a transparent,
+    additive planning anchor to *calibrate against a dry run*, not a commitment. The model times each
+    block that a windowed cut actually contains: mobilisation/pre-checks + per-switch cut & verify +
+    per-endpoint re-home/settle + a post-cut validation & rollback-decision buffer.
     """
     if n_hard_switches <= 0:
         return 0
-    return 15 + 8 * n_hard_switches + hard_endpoints
+    mobilisation = 15
+    per_switch_cut_verify = 10 * n_hard_switches
+    per_endpoint_settle = hard_endpoints              # ~1 min to re-home/verify each stranded endpoint
+    validation_rollback_buffer = 20
+    return mobilisation + per_switch_cut_verify + per_endpoint_settle + validation_rollback_buffer
 
 
 def _gate(n_fail: int, n_warn: int, n_crit_cl: int, n_high_remediation: int) -> str:
@@ -178,8 +195,9 @@ def _run_of_show(*, mbb: List[str], hard: List[str], hard_ep: int, window: int,
     n_baseline_gates = sum(1 for b in blockers if b.get("status") == "fail")
     steps: List[Dict[str, Any]] = [{
         "phase": "Baseline capture",
-        "action": f"Capture the pre-cutover state for all {len(mbb) + len(hard)} switch(es) "
-                  f"and record the known-good output for the {n_val} validation check(s).",
+        "action": f"Back up config + live state (running-config, routing/MAC/ARP tables) for all "
+                  f"{len(mbb) + len(hard)} switch(es) for rollback, and record the known-good output for "
+                  f"the {n_val} validation check(s) as the post-cut 'expect' baseline.",
     }]
     if n_rem or n_baseline_gates:
         steps.append({
@@ -187,6 +205,13 @@ def _run_of_show(*, mbb: List[str], hard: List[str], hard_ep: int, window: int,
             "action": (f"Clear the {n_baseline_gates} failing readiness check(s) and apply "
                        f"{n_rem} pre-cutover fix(es) — redundant uplinks, FHRP, and config hygiene — "
                        "BEFORE scheduling the window. This wave does not pass the gate until they are resolved."),
+        })
+    if hard:
+        steps.append({
+            "phase": "Rehearsal (dry run)",
+            "action": (f"Rehearse the cut of the {len(hard)} single-homed switch(es) and the rollback "
+                       "end-to-end in a lab or staging — time every block to calibrate the window, and "
+                       "surface hidden dependencies before the live change."),
         })
     if mbb:
         steps.append({
@@ -207,8 +232,9 @@ def _run_of_show(*, mbb: List[str], hard: List[str], hard_ep: int, window: int,
     })
     steps.append({
         "phase": "Rollback gate",
-        "action": ("If a High-severity check regresses or endpoints fail to re-home, fall back to the "
-                   "staged pre-cutover path and re-baseline before re-attempting."),
+        "action": ("If a High-severity check regresses or endpoints fail to re-home within the window, "
+                   "execute the back-out: for a hardware swap re-cable to the legacy device; for a config "
+                   "change restore the captured running-config. Re-baseline before re-attempting."),
     })
     return steps
 
@@ -314,8 +340,23 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         "est_window_label": _fmt_minutes(total_window),
         "gates": {g: sum(1 for w in waves if w["gate"] == g) for g in (GATE_GO, GATE_COND, GATE_NOGO)},
         "statement": _fleet_statement(fleet_gate, waves, n_mbb, n_hard, total_window),
+        "methodology": _METHODOLOGY,
     }
     return {"summary": summary, "waves": waves}
+
+
+# Grounded in standard network-migration / cutover practice (PPDIOO Implement + Operate). Surfaced in the
+# UI and the downloadable plan so the synthesis is defensible, not a black box.
+_METHODOLOGY: List[str] = [
+    "Make-before-break (dual-homed) is a soft, zero-downtime cutover; hard-cutover (single-homed) is "
+    "break-before-make — a partition during the cut, so it needs a maintenance window.",
+    "Each hard-cutover wave should be rehearsed end-to-end (dry run) before the live window — a rehearsal "
+    "validates the window and rollback and surfaces hidden dependencies that planning misses.",
+    "Capture config + live-state backups (running-config, routing/MAC/ARP) immediately before each cut "
+    "for rollback, in addition to the validation 'expect' baselines.",
+    "Window figures are first-order anchors — there is no universal per-device standard; calibrate them "
+    "against the dry-run's measured timings before committing to a change window.",
+]
 
 
 def _fleet_statement(verdict: str, waves: List[Dict[str, Any]], n_mbb: int, n_hard: int,
