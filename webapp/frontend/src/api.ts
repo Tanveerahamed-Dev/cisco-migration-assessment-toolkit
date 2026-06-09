@@ -95,6 +95,7 @@ export interface CutoverPlan {
     est_window_label: string;
     gates: Record<string, number>;
     statement: string;
+    methodology?: string[];
   };
   waves: CutoverWave[];
 }
