@@ -1,0 +1,75 @@
+"""NEW-V3.23.145: migration-campaign trend across a SERIES of snapshots. Pins the trajectory verdict
+(IMPROVING / REGRESSING / INSUFFICIENT), the per-metric directions, the per-step findings burndown
+(reusing compute_snapshot_delta), and the trend workbook's sheets."""
+from openpyxl import load_workbook
+
+from cisco_toolkit.html import compute_campaign_trend, write_campaign_workbook
+
+
+def _snap(date, avg, bands, punch, not_ready, eos):
+    """bands: {band: count} -> health_scores with stable switch names; punch: list of (severity, title)."""
+    hs, i = [], 0
+    for band, cnt in bands.items():
+        for _ in range(cnt):
+            hs.append({"switch": f"sw{i}", "score": avg, "band": band}); i += 1
+    return {
+        "generated_at": date + "T00:00:00", "script_version": "V3.23.0",
+        "devices": {h["switch"]: {} for h in hs}, "interfaces": {},
+        "health_scores": hs,
+        "punchlist": [{"severity": s, "category": "X", "title": t, "devices": ["sw0"]} for (s, t) in punch],
+        "migration_readiness": [{"readiness": "NOT READY", "switches": ["sw0"]} for _ in range(not_ready)],
+        "lifecycle_risk": {"summary": {"n_past_eos": eos}},
+        "executive_brief": {"posture": {"avg_health": avg}},
+    }
+
+
+C1 = _snap("2026-01-01", 50, {"Critical": 2, "Fair": 1, "Good": 1},
+           [("Critical", "A"), ("High", "B"), ("High", "C"), ("Low", "D")], 2, 4)
+C2 = _snap("2026-02-01", 65, {"Critical": 1, "Fair": 2, "Good": 1},
+           [("High", "B"), ("Low", "D")], 1, 2)
+C3 = _snap("2026-03-01", 80, {"Good": 2, "Excellent": 2},
+           [("Low", "D")], 0, 0)
+
+
+def test_improving_campaign_verdict():
+    t = compute_campaign_trend([C1, C2, C3])
+    assert t["verdict"] == "IMPROVING"
+    assert len(t["timeline"]) == 3
+    dirs = {r["metric"]: r["direction"] for r in t["trajectory"]}
+    assert dirs["Avg health / 100"] == "improving"
+    assert dirs["Critical-band switches"] == "improving"
+    assert dirs["Critical/High findings"] == "improving"
+    assert dirs["Past end-of-support"] == "improving"
+    assert t["timeline"][0]["avg_health"] == 50 and t["timeline"][-1]["avg_health"] == 80
+    assert t["timeline"][0]["n_critical"] == 2 and t["timeline"][-1]["n_critical"] == 0
+
+
+def test_burndown_resolves_findings_per_step():
+    t = compute_campaign_trend([C1, C2, C3])
+    assert len(t["steps"]) == 2
+    s1 = t["steps"][0]
+    assert s1["from"] == "C1" and s1["to"] == "C2"
+    assert s1["resolved"] >= 2 and s1["opened"] == 0   # C1->C2 cleared the Critical A + High C findings
+
+
+def test_regressing_campaign():
+    t = compute_campaign_trend([C3, C1])               # reversed series = the network getting worse
+    assert t["verdict"] == "REGRESSING"
+
+
+def test_insufficient_single_snapshot():
+    t = compute_campaign_trend([C1])
+    assert t["verdict"] == "INSUFFICIENT" and t["trajectory"] == [] and t["steps"] == []
+
+
+def test_campaign_workbook_sheets(tmp_path):
+    out = tmp_path / "trend.xlsx"
+    write_campaign_workbook([C1, C2, C3], str(out))
+    wb = load_workbook(str(out))
+    assert wb.sheetnames == ["Campaign Summary", "Timeline", "Burndown"]
+    summ = wb["Campaign Summary"]
+    assert summ.cell(2, 1).value == "CAMPAIGN VERDICT" and summ.cell(2, 2).value == "IMPROVING"
+    tl = wb["Timeline"]
+    assert tl.cell(1, 1).value == "Collection" and tl.max_row == 4    # header + 3 collections
+    bd = wb["Burndown"]
+    assert bd.cell(1, 1).value == "Step" and bd.max_row == 3          # header + 2 steps
