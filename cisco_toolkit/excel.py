@@ -1514,6 +1514,51 @@ def write_remediation_plan_sheet(wb, rp: dict) -> None:
                 f"{s.get('n_devices', 0)} device(s)")
 
 
+VALIDATION_PLAN_SHEET_NAME = "Cutover Validation"   # NEW-V3.23.143 (per-wave post-cutover verification checklist)
+
+def write_validation_plan_sheet(wb, vp: dict) -> None:
+    """Write 'Cutover Validation' from compute_validation_plan(): the per-wave checks to run AFTER each
+    cutover, each with the command + the expected good result captured from the pre-cutover state. Row 1
+    carries the how-to-use banner."""
+    if VALIDATION_PLAN_SHEET_NAME in wb.sheetnames:
+        del wb[VALIDATION_PLAN_SHEET_NAME]
+    ws = wb.create_sheet(VALIDATION_PLAN_SHEET_NAME)
+    p = vp or {}
+    items = p.get("items") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "✓ " + (p.get("banner") or "Run after each wave's cutover to confirm it succeeded."))
+    b.font = Font(bold=True, color="1F6E43", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_items', 0)} check(s) across {s.get('n_waves', 0)} wave(s) · "
+                  f"{s.get('n_high', 0)} High/Critical · by category: "
+                  + ", ".join(f"{k} {v}" for k, v in (s.get("by_category") or {}).items())).font = Font(size=10)
+    hdr_row = 4
+    cols = ["#", "Wave", "Device", "Platform", "Category", "Severity", "Check",
+            "Command", "Expect (good result)", "Why it matters"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="1F6E43")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    SEVFILL = {"Critical": "F4CCCC", "High": "FCE4D6", "Medium": "FFF2CC", "Low": "D9EAD3", "Info": "EFEFEF"}
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+    r = hdr_row + 1
+    for n, it in enumerate(items, 1):
+        vals = [n, it.get("wave"), it.get("device"), it.get("platform"), it.get("category"),
+                it.get("severity"), it.get("check"), it.get("command"), it.get("expect"), it.get("why")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col in (8, 9) else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (1, 4, 6) else "left",
+                                    vertical="top", wrap_text=col in (7, 8, 9, 10))
+            if col == 6:
+                c.fill = PatternFill("solid", fgColor=SEVFILL.get(v, "FFFFFF"))
+        r += 1
+    for i, w in enumerate([5, 12, 22, 9, 14, 10, 40, 34, 40, 50], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{VALIDATION_PLAN_SHEET_NAME}' sheet: {len(items)} check(s), "
+                f"{s.get('n_waves', 0)} wave(s)")
+
+
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
 
 def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
