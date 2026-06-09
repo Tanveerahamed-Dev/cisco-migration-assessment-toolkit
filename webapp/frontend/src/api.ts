@@ -87,6 +87,8 @@ export const api = {
   section: (id: number, name: string) =>
     fetch(`/api/snapshots/${id}/section/${name}`).then((r) => j<{ section: string; data: any }>(r)),
   deleteSnapshot: (id: number) => fetch(`/api/snapshots/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
+  graph: (id: number) =>
+    fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   compare: (oldId: number, newId: number) =>
     fetch("/api/compare", {

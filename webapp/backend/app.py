@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import engine, summary
+from . import engine, graph, summary
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -147,6 +147,15 @@ def create_app(db_path: str | None = None) -> FastAPI:
         if name not in snap:
             raise HTTPException(404, f"Section '{name}' not present in this snapshot")
         return {"section": name, "data": snap[name]}
+
+    @app.get("/api/snapshots/{snapshot_id}/graph")
+    def snapshot_graph(snapshot_id: int) -> Dict[str, Any]:
+        meta = store.get_snapshot_meta(snapshot_id)
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None or meta is None:
+            raise HTTPException(404, "Snapshot not found")
+        keystones = [k.get("host") for k in (meta["summary"].get("keystones") or []) if k.get("host")]
+        return graph.build_graph(snap, keystones)
 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
     def snapshot_explorer(snapshot_id: int) -> HTMLResponse:
