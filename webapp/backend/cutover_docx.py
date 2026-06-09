@@ -129,6 +129,12 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
               "before the higher-risk hard-cutover waves run. Window figures are first-order planning "
               "estimates to refine against change-control, not commitments.")
 
+    methodology = summary.get("methodology") or []
+    if methodology:
+        doc.add_heading("Methodology & assumptions", level=2)
+        for item in methodology:
+            doc.add_paragraph(item, style="List Bullet")
+
     # ---- 2. Wave sequence overview ----
     doc.add_heading("2. Recommended wave sequence", level=1)
     table(

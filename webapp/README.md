@@ -22,7 +22,11 @@ SSH collection (CLI engine)  →  snapshot.json  →  AssessHub store  →  cock
   cross-layer hit), **pilot-first sequencing** (the safe zero-outage waves scheduled before the risky
   NOT-READY ones), a first-order **maintenance-window estimate** for the single-homed (hard-cutover)
   switches, and a PPDIOO-phased **run-of-show** per wave that wires in that wave's pre-cutover
-  remediation and its post-cutover validation commands.
+  remediation and its post-cutover validation commands. Grounded in standard cutover practice:
+  make-before-break is a soft/zero-downtime cutover while hard-cutover is break-before-make (needs a
+  window); hard-cutover waves get a **dry-run rehearsal** step; the run-of-show captures config +
+  live-state backups for rollback; and the window figure is a first-order anchor to calibrate against
+  the rehearsal (there is no universal per-device standard).
 - **Detail sections** — 15+ tabs (punch-list, health scores, failure impact, chokepoints, causality,
   cross-layer, readiness, wave sequencing, application domains, segmentation, protocols, remediation,
   validation plan, capacity, endpoints, lifecycle/EoL…) sliced straight from the snapshot.
