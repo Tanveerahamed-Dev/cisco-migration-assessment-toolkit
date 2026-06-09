@@ -34,6 +34,7 @@ SPECS: Dict[str, Spec] = {
     "runbook": Spec("runbook", "Assessment & Migration Runbook", "docx", _DOCX, "python-docx"),
     "design": Spec("design", "As-Built Network Design Document", "docx", _DOCX, "python-docx"),
     "mop": Spec("mop", "Per-Wave Method of Procedure", "docx", _DOCX, "python-docx"),
+    "cutover": Spec("cutover", "Cutover Plan (Run-of-Show)", "docx", _DOCX, "python-docx"),
     "deck": Spec("deck", "Executive Presentation Deck", "pptx", _PPTX, "python-pptx"),
 }
 
@@ -65,6 +66,9 @@ def generate(kind: str, snap: dict, label: str) -> str:
         from cisco_toolkit.design import write_design_doc_docx as write
     elif kind == "mop":
         from cisco_toolkit.mop import write_mop_docx as write
+    elif kind == "cutover":
+        # AssessHub synthesis — written in the web layer, not the engine (see cutover_docx).
+        from .cutover_docx import write_cutover_docx as write
     elif kind == "deck":
         from cisco_toolkit.deck import write_executive_deck_pptx as write
     else:  # pragma: no cover - guarded by the caller

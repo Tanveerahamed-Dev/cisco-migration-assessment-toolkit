@@ -54,6 +54,51 @@ export interface Meta {
   deliverables: Deliverable[];
 }
 
+export interface CutoverWave {
+  group: string;
+  order: number;
+  readiness: string;
+  gate: string;
+  strategy: string;
+  n_switches: number;
+  switches: string[];
+  make_before_break: string[];
+  hard_cutover: string[];
+  endpoints: number;
+  hard_cutover_endpoints: number;
+  est_window_minutes: number;
+  est_window_label: string;
+  sequence_note: string;
+  gateways: string[];
+  spanning_vlans: Array<[number, string, number]>;
+  blast_radius: { host: string; severity: string; stranded: number; vlans_impacted: number; detail: string } | null;
+  keystones: string[];
+  n_fail: number;
+  n_warn: number;
+  blockers: Array<{ check: string; status: string; note: string; phase: string }>;
+  critical_crosslayer: Array<{ id: string; title: string; layers: string; recommendation: string }>;
+  remediation: Array<{ device: string; title: string; category: string; severity: string; why: string }>;
+  validation: Array<{ category: string; severity: string; check: string; command: string; expect: string }>;
+  run_of_show: Array<{ phase: string; action: string }>;
+}
+
+export interface CutoverPlan {
+  summary: {
+    verdict: string;
+    n_waves: number;
+    n_devices: number;
+    n_endpoints: number;
+    n_make_before_break: number;
+    n_hard_cutover: number;
+    hard_cutover_endpoints: number;
+    est_window_minutes: number;
+    est_window_label: string;
+    gates: Record<string, number>;
+    statement: string;
+  };
+  waves: CutoverWave[];
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
@@ -97,6 +142,7 @@ export const api = {
   deleteSnapshot: (id: number) => fetch(`/api/snapshots/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
   graph: (id: number) =>
     fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
+  cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) =>
@@ -114,3 +160,4 @@ export const sevColor = (s: string) => `var(--sev-${s.replace(/\s+/g, "")}, var(
 export const sevSoft = (s: string) => `var(--sev-${s.replace(/\s+/g, "")}-soft, var(--surface-3))`;
 export const bandColor = (b: string) => `var(--band-${b.replace(/\s+/g, "")}, var(--text-faint))`;
 export const readyColor = (r: string) => `var(--ready-${r.replace(/\s+/g, "")}, var(--text-faint))`;
+export const gateColor = (g: string) => `var(--gate-${g.replace(/[\s-]+/g, "")}, var(--text-faint))`;

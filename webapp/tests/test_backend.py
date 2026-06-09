@@ -112,10 +112,46 @@ def test_graph_endpoint(client):
     assert client.get("/api/snapshots/999999/graph").status_code == 404
 
 
+def test_cutover_plan(client):
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/cutover")
+    assert r.status_code == 200, r.text
+    plan = r.json()
+
+    s = plan["summary"]
+    assert s["verdict"] in ("GO", "CONDITIONAL GO", "NO-GO")
+    assert s["n_waves"] == len(plan["waves"]) >= 1
+    # make-before-break + hard-cutover account for every migrated device
+    assert s["n_make_before_break"] + s["n_hard_cutover"] == s["n_devices"]
+
+    waves = plan["waves"]
+    # pilot-first sequencing: order is monotonic and never schedules a worse gate before a better one
+    rank = {"GO": 0, "CONDITIONAL GO": 1, "NO-GO": 2}
+    assert [w["order"] for w in waves] == list(range(1, len(waves) + 1))
+    assert [rank[w["gate"]] for w in waves] == sorted(rank[w["gate"]] for w in waves)
+
+    for w in waves:
+        assert w["gate"] in rank
+        assert w["strategy"] in ("make-before-break", "hard-cutover", "mixed")
+        # a make-before-break-only wave is zero-outage; a hard-cutover wave needs a window
+        if not w["hard_cutover"]:
+            assert w["est_window_minutes"] == 0
+        else:
+            assert w["est_window_minutes"] > 0
+        # every wave carries a PPDIOO run-of-show ending at the rollback gate
+        phases = [step["phase"] for step in w["run_of_show"]]
+        assert phases[0] == "Baseline capture" and phases[-1] == "Rollback gate"
+        # a NO-GO wave is gated by a failing readiness check or a Critical cross-layer hit
+        if w["gate"] == "NO-GO":
+            assert w["n_fail"] > 0 or w["critical_crosslayer"]
+
+    assert client.get("/api/snapshots/999999/cutover").status_code == 404
+
+
 def test_deliverables(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     cat = client.get("/api/meta").json()["deliverables"]
-    assert {d["key"] for d in cat} == {"runbook", "design", "mop", "deck"}
+    assert {d["key"] for d in cat} == {"runbook", "design", "mop", "cutover", "deck"}
     for d in cat:
         r = client.get(f"/api/snapshots/{snap_id}/deliverable/{d['key']}")
         if d["available"]:
