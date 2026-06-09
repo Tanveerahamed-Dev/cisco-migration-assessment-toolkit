@@ -375,19 +375,29 @@ def collect_global_arp(all_cmd_to_files: Dict[str, Dict[str, str]],
 def apply_global_arp(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                      global_arp: Dict[str, str],
                      global_arp_source: Optional[Dict[str, str]] = None) -> None:
-    """Fill end_host_ip (and arp_source_switch) from global ARP. FIX-R4 + NEW-V11."""
+    """Fill end_host_ip (and arp_source_switch) from global ARP. FIX-R4 + NEW-V11.
+
+    V3.23.140: end_host_ip is now a list ALIGNED with end_host_mac (one IP per MAC, same order),
+    so a port-channel / multi-MAC port shows every endpoint's IP instead of only the first MAC's.
+    A MAC with no ARP entry gets a '-' placeholder so position N of the IP list always matches MAC N;
+    trailing unresolved entries are trimmed to avoid noise. Single-MAC ports are byte-unchanged."""
     filled = 0
     for hostname, interfaces in all_interfaces.items():
         for p, d in interfaces.items():
             if d.end_host_ip or not d.end_host_mac: continue
-            for mac in [m.strip() for m in d.end_host_mac.split(",") if m.strip()]:
-                ip = global_arp.get(mac, "")
-                if ip:
-                    d.end_host_ip = ip
-                    filled += 1
-                    if global_arp_source and not d.arp_source_switch:
-                        d.arp_source_switch = global_arp_source.get(mac, "")   # NEW-V11
-                    break
+            macs = [m.strip() for m in d.end_host_mac.split(",") if m.strip()]
+            ips = [global_arp.get(mac, "") for mac in macs]
+            if not any(ips): continue
+            # trim trailing unresolved positions so we don't dangle '-' at the end
+            last = max(i for i, ip in enumerate(ips) if ip)
+            d.end_host_ip = ", ".join((ip or "-") for ip in ips[:last + 1])
+            filled += sum(1 for ip in ips if ip)
+            if global_arp_source and not d.arp_source_switch:
+                for mac in macs:                                       # NEW-V11: provenance from the first resolved MAC
+                    src = global_arp_source.get(mac, "")
+                    if src:
+                        d.arp_source_switch = src
+                        break
     logger.info(f"  ARP phase filled {filled} IP addresses")
 
 def detect_cross_device_dual_connections(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
