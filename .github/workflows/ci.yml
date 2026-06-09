@@ -90,3 +90,23 @@ jobs:
       # for visibility; `|| true` keeps the check GREEN. Tighten by promoting modules to the gated step.
       - name: mypy (full report — non-gating)
         run: python -m mypy cisco_toolkit COLLECT_PARSE_V3_23_0.py || true
+
+  package:
+    name: Package build + install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      # Build the wheel and install it (NON-editable) so packaging regressions — a missing data file in
+      # package-data, a broken entry point, an unbuildable project — fail CI rather than surfacing only
+      # when someone tries to install.
+      - name: Build + install the wheel
+        run: python -m pip install .
+      - name: Smoke-test the console entry point
+        run: cisco-assess --help
+      - name: Smoke-test that the gzipped KB data shipped in the wheel
+        run: python -c "from cisco_toolkit import portdb; assert portdb.service_for_port(443) is not None; print('packaged KB data loads from the installed wheel')"
