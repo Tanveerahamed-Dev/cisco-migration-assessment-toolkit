@@ -82,8 +82,12 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         return t
 
     def steps(items):
-        for s in items:
-            doc.add_paragraph(s, style="List Number")
+        # Manual numbering rather than Word's built-in "List Number" style: that style's single shared
+        # numbering definition makes numbers CONTINUE across every list block in the document, so a wave's
+        # procedure and rollback (and the next wave's procedure) would not restart at 1. Explicit prefixes
+        # restart per call and render identically in every viewer.
+        for i, s in enumerate(items, 1):
+            doc.add_paragraph(f"{i}. {s}")
 
     # ---- snapshot-derived facts ----
     devices = snap.get("devices") or {}
