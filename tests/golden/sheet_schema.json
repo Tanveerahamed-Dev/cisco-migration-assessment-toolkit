@@ -414,6 +414,12 @@
   null,
   null
  ],
+ "Golden-Config Drift": [
+  "Baseline: the fleet's de-facto MAJORITY baseline (auto-derived) \u2014 0 required directive(s). A device is flagged when it is MISSING one.",
+  null,
+  null,
+  null
+ ],
  "Application Intelligence": [
   "Application & network intelligence:",
   "2 domain(s)  \u00b7  0 on-air-critical  \u00b7  0 with High/Critical risk  \u00b7  0 span >1 wave  \u00b7  1 cross-domain risk(s)",

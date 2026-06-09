@@ -1559,6 +1559,55 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
                 f"{s.get('n_waves', 0)} wave(s)")
 
 
+GOLDEN_DRIFT_SHEET_NAME = "Golden-Config Drift"   # NEW-V3.23.146 (per-device config drift vs a baseline)
+
+def write_golden_drift_sheet(wb, gd: dict) -> None:
+    """Write 'Golden-Config Drift' from compute_golden_drift(): per-device compliance vs the baseline
+    (a supplied golden-config file, else the auto-derived majority baseline) + the missing required
+    directives. Row 1 states which baseline was used."""
+    if GOLDEN_DRIFT_SHEET_NAME in wb.sheetnames:
+        del wb[GOLDEN_DRIFT_SHEET_NAME]
+    ws = wb.create_sheet(GOLDEN_DRIFT_SHEET_NAME)
+    p = gd or {}
+    pdev = p.get("per_device") or []
+    s = p.get("summary") or {}
+    mode = s.get("mode", p.get("mode", "majority"))
+    src = ("a supplied golden-config file" if mode == "golden-file"
+           else "the fleet's de-facto MAJORITY baseline (auto-derived)")
+    b = ws.cell(1, 1, f"Baseline: {src} — {s.get('n_baseline', 0)} required directive(s). "
+                      "A device is flagged when it is MISSING one.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_devices', 0)} device(s) · {s.get('n_drifting', 0)} drifting · "
+                  f"avg compliance {s.get('avg_compliance_pct', 0)}%").font = Font(size=10)
+    hdr_row = 4
+    cols = ["Device", "Compliance %", "Missing", "Missing required directives"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+    r = hdr_row + 1
+    for d in pdev:
+        pct = d.get("compliance_pct", 0)
+        fill = "C6EFCE" if pct >= 100 else ("FFEB9C" if pct >= 80 else "FFC7CE")
+        vals = [d.get("host"), pct, d.get("n_missing", 0), "\n".join(d.get("missing") or [])]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col == 4 else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (2, 3) else "left",
+                                    vertical="top", wrap_text=col == 4)
+            if col == 2:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    if not pdev:
+        ws.cell(hdr_row + 1, 1, "No running-configs available to compare.").font = DAT
+    for i, w in enumerate([24, 14, 9, 80], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{GOLDEN_DRIFT_SHEET_NAME}' sheet: {len(pdev)} device(s), "
+                f"{s.get('n_drifting', 0)} drifting ({mode})")
+
+
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
 
 def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
