@@ -1414,6 +1414,19 @@ function demoSnapshot(){
       unused:[{kind:"acl",name:"INET_RETURN"}],
       summary:{undefined:2,unused:1,structures:5}},
   },
+  // V3.23.146: golden-config drift -> Health view goldenDriftCard + 'Golden-Config Drift' sheet. Majority
+  // baseline (no golden file): DIST-1/DIST-2 set the standard; two access switches drift from it.
+  golden_drift:{
+    mode:"majority",
+    baseline:["service password-encryption","no ip http server","aaa new-model","ntp server 10.0.0.10",
+              "logging host 10.0.0.20","spanning-tree mode rapid-pvst"],
+    per_device:[
+      {host:"DIST-1",compliance_pct:100,n_missing:0,missing:[]},
+      {host:"DIST-2",compliance_pct:100,n_missing:0,missing:[]},
+      {host:"ACC-1",compliance_pct:83,n_missing:1,missing:["no ip http server"]},
+      {host:"ACC-5",compliance_pct:67,n_missing:2,missing:["logging host 10.0.0.20","aaa new-model"]},
+    ],
+    summary:{mode:"majority",n_devices:6,n_baseline:6,n_drifting:2,avg_compliance_pct:92}},
   // V3.23.62: STP root placement. VLAN 10 is rooted at DIST-1 on a deliberate priority and DIST-1 hosts the
   // gateway -> aligned + clean. VLAN 30 is rooted at ACC-3 on the DEFAULT priority (32798 = 32768+30) -> an
   // accidental root, and its gateway lives on DIST-1 (not ACC-3) -> root/gateway misalignment (hairpin).
@@ -4809,6 +4822,27 @@ function hygieneCard(){
     `<div class="sub" style="margin-bottom:6px">Dangling references break silently at cutover; unused structures are cruft. (Batfish-style static cross-reference of the running-config.)</div>`+
     undefRows+unusedRows+`</div>`;
 }
+/* Golden-config DRIFT (V3.23.147 surfacing of V3.23.146): per-device running-config compliance vs a
+   baseline -- a supplied golden file, else the fleet's de-facto MAJORITY baseline (config lines present on
+   most devices). Reads SNAP.golden_drift {mode, baseline, per_device:[{host,compliance_pct,n_missing,
+   missing}], summary}. Health-mode card; one source of truth with the workbook's 'Golden-Config Drift'
+   sheet. No key / empty baseline (e.g. <3 devices and no golden file) -> no card. */
+function goldenDriftCard(){
+  const gd=SNAP&&SNAP.golden_drift; if(!gd)return "";
+  const s=gd.summary||{}; if(!(s.n_baseline>0))return "";
+  const mode=s.mode||gd.mode||"majority";
+  const src=mode==="golden-file"?"a supplied golden-config file":"the fleet’s de-facto majority baseline";
+  const drift=(gd.per_device||[]).filter(d=>d.n_missing>0);
+  if(!drift.length)
+    return `<div class="sec"><h3>Golden-config drift <span class="badge b-ok">aligned</span></h3>`+
+      `<div class="ln faint">✓ All ${s.n_devices} device(s) match ${esc(src)} (${s.n_baseline} required directive(s)) — no config drift.</div></div>`;
+  const rows=drift.slice(0,12).map(d=>{const tok=d.compliance_pct>=80?"pl-watch":"pl-crit";
+    const miss=(d.missing||[]).slice(0,4).map(m=>esc(m)).join("; ")+((d.missing||[]).length>4?` …+${d.missing.length-4}`:"");
+    return `<div class="ln"><span class="pill ${tok}">${d.compliance_pct}%</span> <span class="mono">${esc(shortName(d.host))}</span> — missing ${d.n_missing}: <span class="faint">${miss}</span></div>`;}).join("");
+  return `<div class="sec"><h3>Golden-config drift <span class="badge b-crit">${drift.length} drifting</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Per-device compliance vs ${esc(src)} (${s.n_baseline} required directive(s), avg ${s.avg_compliance_pct}%) — the standard config each device is missing. Full detail in the 'Golden-Config Drift' workbook sheet.</div>`+
+    rows+`</div>`;
+}
 /* STP root placement (cross-layer L2 design): reads SNAP.stp_roots {host:{vlan:{root_priority,is_root}}}
    + the gateway SVIs in SNAP.interfaces. Flags (1) an ACCIDENTAL root -- a VLAN rooted on the DEFAULT
    bridge priority (32768 + vlan), i.e. won on a MAC tiebreak, not elected, so it can move on a cutover;
@@ -6603,6 +6637,7 @@ function drawHealth(){
     ${chokepointCard()}
     ${securityCard()}
     ${hygieneCard()}
+    ${goldenDriftCard()}
     ${stpRootCard()}
     ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}

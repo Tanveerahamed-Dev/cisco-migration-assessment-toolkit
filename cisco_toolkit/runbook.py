@@ -614,6 +614,28 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         if rows:
             table(["Domain", "Tier", "Gateways", "Isolated", "Exposure"], rows, widths=[2.2, 1.2, 0.8, 0.8, 3.0])
 
+    # 6.9 golden-config drift (NEW-V3.23.146): per-device running-config compliance vs the baseline.
+    gd = snap_dict.get("golden_drift") or {}
+    gsum = gd.get("summary") or {}
+    if gsum.get("n_baseline"):
+        doc.add_heading("6.9 Configuration-standard drift", level=2)
+        gmode = gsum.get("mode") or gd.get("mode") or "majority"
+        gsrc = ("a supplied golden-config baseline" if gmode == "golden-file"
+                else "the fleet's de-facto majority baseline (auto-derived)")
+        doc.add_paragraph(
+            f"Each device's running-config measured against {gsrc} of {gsum.get('n_baseline', 0)} required "
+            f"directive(s): {gsum.get('n_drifting', 0)} of {gsum.get('n_devices', 0)} device(s) drift "
+            f"(avg compliance {gsum.get('avg_compliance_pct', 0)}%). Bring the drifting devices up to the "
+            "standard before — or as part of — their cutover wave.")
+        drows = [[d.get("host"), f"{d.get('compliance_pct', 0)}%", d.get("n_missing", 0),
+                  "; ".join((d.get("missing") or [])[:6])]
+                 for d in (gd.get("per_device") or []) if d.get("n_missing")]
+        if drows:
+            table(["Device", "Compliance", "Missing", "Missing required directives"],
+                  drows, widths=[1.6, 1.0, 0.8, 4.6])
+        else:
+            doc.add_paragraph("All devices match the baseline — no configuration drift.")
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()
