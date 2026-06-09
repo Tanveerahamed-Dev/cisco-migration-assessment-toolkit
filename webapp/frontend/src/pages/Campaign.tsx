@@ -1,0 +1,161 @@
+import { useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { api, bandColor } from "../api";
+import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
+
+const DIR_ICON: Record<string, string> = { improving: "▲", worsening: "▼", flat: "▬" };
+const DIR_COLOR: Record<string, string> = { improving: "var(--ok)", worsening: "var(--crit)", flat: "var(--text-faint)" };
+const VERDICT_COLOR: Record<string, string> = {
+  IMPROVING: "var(--ok)", REGRESSING: "var(--crit)", MIXED: "var(--watch)", FLAT: "var(--text-dim)", INSUFFICIENT: "var(--text-faint)",
+};
+
+function Trend({ id }: { id: number }) {
+  const { data, loading } = useAsync(() => api.trend(id), [id]);
+  if (loading || !data) return null;
+  if (data.verdict === "INSUFFICIENT") {
+    return <div className="panel"><h3>Campaign trajectory</h3><div className="dim" style={{ fontSize: 13 }}>{data.verdict_note}</div></div>;
+  }
+  return (
+    <div className="panel">
+      <div className="spread" style={{ marginBottom: 14 }}>
+        <h3 style={{ margin: 0 }}>Campaign trajectory</h3>
+        <span className="chip" style={{ color: VERDICT_COLOR[data.verdict], borderColor: VERDICT_COLOR[data.verdict] }}>
+          <span className="dot" /> {data.verdict}
+        </span>
+      </div>
+      <div className="dim" style={{ fontSize: 13, marginBottom: 14 }}>{data.verdict_note}</div>
+      <div className="grid cols-3">
+        {data.trajectory.map((t: any) => (
+          <div key={t.metric} style={{ border: "1px solid var(--border)", borderRadius: 9, padding: "10px 12px" }}>
+            <div className="faint" style={{ fontSize: 11 }}>{t.metric}</div>
+            <div className="row-flex" style={{ gap: 8, marginTop: 4 }}>
+              <span style={{ fontWeight: 700, fontSize: 18 }}>{t.first} → {t.last}</span>
+              <span style={{ color: DIR_COLOR[t.direction], fontSize: 13, fontWeight: 700 }}>
+                {DIR_ICON[t.direction]} {t.delta > 0 ? "+" : ""}{t.delta}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function CampaignPage() {
+  const { id } = useParams();
+  const cid = Number(id);
+  const nav = useNavigate();
+  const { toast, node } = useToast();
+  const { data, error, loading, reload } = useAsync(() => api.getCampaign(cid), [cid]);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [cmpA, setCmpA] = useState<number | "">("");
+  const [cmpB, setCmpB] = useState<number | "">("");
+  const [cmp, setCmp] = useState<any>(null);
+
+  async function upload() {
+    const f = fileRef.current?.files?.[0];
+    if (!f) { toast("Choose a snapshot .json first."); return; }
+    setBusy(true);
+    try { await api.uploadSnapshot(cid, f, label); toast("Snapshot added."); setLabel(""); if (fileRef.current) fileRef.current.value = ""; reload(); }
+    catch (e: any) { toast(e.message); } finally { setBusy(false); }
+  }
+  async function runCompare() {
+    if (cmpA === "" || cmpB === "" || cmpA === cmpB) { toast("Pick two different snapshots."); return; }
+    try { setCmp(await api.compare(Number(cmpA), Number(cmpB))); }
+    catch (e: any) { toast(e.message); }
+  }
+  async function delCampaign() {
+    if (!confirm("Delete this campaign and all its snapshots?")) return;
+    try { await api.deleteCampaign(cid); nav("/campaigns"); } catch (e: any) { toast(e.message); }
+  }
+
+  if (loading) return <div className="container"><Loading /></div>;
+  if (error) return <div className="container"><ErrorBox msg={error} /></div>;
+  const snaps = data!.snapshots || [];
+
+  return (
+    <div className="container">
+      <div className="breadcrumb"><Link to="/campaigns">Campaigns</Link> / {data!.name}</div>
+      <div className="page-head">
+        <div>
+          <h1>{data!.name}</h1>
+          {data!.description && <div className="sub">{data!.description}</div>}
+        </div>
+        <span style={{ flex: 1 }} />
+        <button className="btn danger ghost" onClick={delCampaign}>Delete</button>
+      </div>
+
+      <div className="grid" style={{ gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+        <div className="grid" style={{ gap: 16 }}>
+          {snaps.length >= 2 && <Trend id={cid} />}
+          <div className="panel">
+            <h3>Waves ({snaps.length})</h3>
+            {snaps.length === 0 ? <div className="faint" style={{ fontSize: 13 }}>No snapshots yet — upload one on the right.</div> : (
+              <div className="grid" style={{ gap: 10 }}>
+                {snaps.map((s, i) => (
+                  <Link key={s.id} to={`/snapshots/${s.id}`} className="panel" style={{ padding: 14, display: "block", color: "inherit", textDecoration: "none", background: "var(--surface-2)" }}>
+                    <div className="spread">
+                      <div className="row-flex" style={{ gap: 10 }}>
+                        <span className="chip mono">C{i + 1}</span>
+                        <b style={{ fontSize: 15 }}>{s.label}</b>
+                      </div>
+                      <span className="dim" style={{ fontSize: 12 }}>{s.n_devices} dev · {new Date(s.uploaded_at).toLocaleDateString()}</span>
+                    </div>
+                    <div style={{ marginTop: 10 }}><SegBar data={s.summary.bands} colorFor={bandColor} /></div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="grid" style={{ gap: 16, alignSelf: "start" }}>
+          <div className="panel">
+            <h3>Add a wave</h3>
+            <label className="field"><span>Snapshot file (.json from the engine)</span>
+              <input ref={fileRef} type="file" accept=".json,application/json" />
+            </label>
+            <label className="field"><span>Label (optional)</span>
+              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Wave 2 post-cutover" />
+            </label>
+            <button className="btn primary" onClick={upload} disabled={busy}>{busy ? "Uploading…" : "Upload snapshot"}</button>
+          </div>
+
+          {snaps.length >= 2 && (
+            <div className="panel">
+              <h3>Compare two waves</h3>
+              <div className="row-flex" style={{ gap: 8 }}>
+                <select value={cmpA} onChange={(e) => setCmpA(Number(e.target.value))}>
+                  <option value="">from…</option>
+                  {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+                <span className="faint">→</span>
+                <select value={cmpB} onChange={(e) => setCmpB(Number(e.target.value))}>
+                  <option value="">to…</option>
+                  {snaps.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </div>
+              <button className="btn" style={{ marginTop: 10 }} onClick={runCompare}>Compare</button>
+              {cmp && (
+                <div style={{ marginTop: 14, fontSize: 13 }}>
+                  <div className="row-flex" style={{ marginBottom: 8 }}>
+                    <span className="chip" style={{ color: VERDICT_COLOR[cmp.verdict] || "var(--text-dim)" }}><span className="dot" /> {cmp.verdict}</span>
+                  </div>
+                  <div className="grid cols-2" style={{ gap: 8 }}>
+                    <div>Opened: <b style={{ color: "var(--crit)" }}>{cmp.findings?.n_opened ?? "—"}</b> ({cmp.findings?.n_opened_high ?? 0} high)</div>
+                    <div>Resolved: <b style={{ color: "var(--ok)" }}>{cmp.findings?.n_resolved ?? "—"}</b></div>
+                    <div>Regressed: <b style={{ color: "var(--crit)" }}>{cmp.health?.n_regressed ?? "—"}</b></div>
+                    <div>Improved: <b style={{ color: "var(--ok)" }}>{cmp.health?.n_improved ?? "—"}</b></div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      {node}
+    </div>
+  );
+}

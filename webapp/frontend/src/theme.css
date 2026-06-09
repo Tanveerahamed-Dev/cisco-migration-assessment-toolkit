@@ -1,0 +1,46 @@
+/* Design tokens mirrored verbatim from cisco_toolkit/blast_radius_explorer.html so AssessHub and the
+   deep explorer read as one product. Dark is the default; [data-theme="light"] flips the palette. */
+:root {
+  --bg: #0e1116; --surface: #161b22; --surface-2: #1c2230; --surface-3: #222a39;
+  --border: #2a313c; --border-strong: #3b4452; --border-faint: #21272f;
+  --text: #e6edf3; --text-dim: #9aa7b4; --text-faint: #6b7785;
+  --accent: #5b9dff; --accent-dim: #3d6fc0; --accent-soft: #14233c;
+  --ok: #3fb950; --ok-soft: #11261a;
+  --watch: #d8a800; --watch-soft: #2a2410;
+  --risk: #f0883e; --risk-soft: #2a1c10;
+  --crit: #f85149; --crit-soft: #2c1517;
+  --shadow: 0 6px 22px rgba(0, 0, 0, .45);
+  --grid: #1a212b;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+[data-theme="light"] {
+  --bg: #eef1f5; --surface: #ffffff; --surface-2: #f3f6fa; --surface-3: #e9eef4;
+  --border: #d6dde6; --border-strong: #bcc6d2; --border-faint: #e6ebf1;
+  --text: #1b2530; --text-dim: #586675; --text-faint: #8a96a4;
+  --accent: #2563eb; --accent-dim: #5b86e0; --accent-soft: #e4eeff;
+  --ok: #1a7f37; --ok-soft: #e7f5ec;
+  --watch: #9a6700; --watch-soft: #fbf2d4;
+  --risk: #bc4c00; --risk-soft: #fcecdc;
+  --crit: #cf222e; --crit-soft: #ffeceb;
+  --shadow: 0 6px 22px rgba(40, 55, 80, .14);
+  --grid: #e4e9f0;
+}
+
+/* Map the engine's severity / band vocabulary onto the token palette so colour is consistent
+   with the workbook and explorer everywhere a chip or bar is drawn. */
+:root {
+  --sev-Critical: var(--crit);   --sev-Critical-soft: var(--crit-soft);
+  --sev-High: var(--risk);       --sev-High-soft: var(--risk-soft);
+  --sev-Medium: var(--watch);    --sev-Medium-soft: var(--watch-soft);
+  --sev-Low: var(--accent);      --sev-Low-soft: var(--accent-soft);
+  --sev-Info: var(--text-faint); --sev-Info-soft: var(--surface-3);
+
+  --band-Excellent: var(--ok);   --band-Good: #6cc24a;
+  --band-Fair: var(--watch);     --band-Poor: var(--risk);
+  --band-Critical: var(--crit);
+
+  --ready-READY: var(--ok); --ready-CAUTION: var(--watch); --ready-NOTREADY: var(--crit);
+}
