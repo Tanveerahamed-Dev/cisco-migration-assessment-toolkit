@@ -38,7 +38,40 @@ So a release bumps **`pyproject.toml`**, never `__version__`.
 - The first release (`v3.23.142`) was bootstrapped with a concise hand-written note pointing at the
   change log (the auto-generated "everything since the first commit" would have listed ~200 PRs); every
   subsequent tag gets a tidy auto-generated diff against the previous tag.
-- No build artifacts are attached: the deliverables (workbook / explorer / runbook) are generated at
-  runtime from a live collection, not shipped in the repo. A future enhancement could attach a built
-  wheel once the explorer-HTML template is relocatable inside the package (see the note in
-  `pyproject.toml`).
+- No build artifacts are attached to the GitHub Release: the *deliverables* (workbook / explorer /
+  runbook) are generated at runtime from a live collection, not shipped in the repo. The installable
+  package itself goes to PyPI (below), not the Release.
+
+## Publishing to PyPI (optional)
+
+The package builds a complete, PyPI-valid sdist + wheel (the explorer template and KB data are bundled
+inside the package, and `twine check` passes). Publishing is wired up via
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) using **trusted publishing** (OIDC —
+no API token is stored anywhere). It is **opt-in**: it runs on a manual *Run workflow* (or when you
+publish a GitHub Release through the UI), never automatically on a tag, because a PyPI upload is
+irreversible.
+
+> ⚠️ **License note.** The repo currently has **no license** (all rights reserved). Publishing to PyPI
+> makes the package publicly `pip install`-able, but without a license others still have no legal right
+> to redistribute or modify it. PyPI does not require an OSI license, but decide whether public
+> installability is what you want before the first publish.
+
+**One-time PyPI setup** (only you can do this — it needs your PyPI account):
+
+1. On <https://pypi.org>, add a **trusted publisher** for the project (PyPI → *Your projects* → the
+   project → *Publishing*, or use the *pending publisher* flow for a brand-new project that isn't on
+   PyPI yet). Fill in:
+   - **Owner:** `Tanveerahamed-Dev`
+   - **Repository:** `cisco-migration-assessment-toolkit`
+   - **Workflow filename:** `publish.yml`
+   - **Environment:** `pypi`
+2. In GitHub → *Settings → Environments*, create an environment named **`pypi`** (optionally add a
+   required reviewer for a manual approval gate before each publish).
+
+**To publish a version:**
+
+1. Cut the release as above (bump `pyproject.toml` version, tag, push — the Release is created).
+2. GitHub → *Actions → Publish to PyPI → Run workflow* (or publish the GitHub Release via the UI).
+3. The workflow builds the sdist + wheel, runs `twine check`, and uploads via the trusted publisher.
+
+To build/inspect locally first: `pip install build twine && python -m build && twine check dist/*`.
