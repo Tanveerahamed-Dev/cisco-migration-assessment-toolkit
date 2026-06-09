@@ -1,0 +1,321 @@
+"""Executive presentation deck (.pptx) — the stakeholder-facing twin of the workbook / explorer / runbook.
+
+Reads the SAME snapshot the other deliverables do and renders a short, design-conscious slide deck that a
+steering committee can read in five minutes: fleet posture, the top migration risks, the keystone devices
+the fleet depends on, hardware end-of-support exposure, the wave plan, and where to start.
+
+python-pptx is an OPTIONAL dependency (like python-docx for the runbook): imported inside the function so the
+package imports fine without it, and a missing library is a warning + skip, never a crash. Every snapshot
+read is defensive (.get / tolerant of missing keys) so an older snapshot degrades gracefully rather than
+failing. Deterministic content; no network, no device data beyond the snapshot.
+"""
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Topic-informed palette (enterprise network risk): a dominant navy with an ice-blue support tone, white
+# content, and severity colours for the risk content. Dark title/closing slides "sandwich" light content.
+_NAVY = (0x1E, 0x27, 0x61)
+_NAVY2 = (0x2A, 0x35, 0x7A)
+_ICE = (0xCA, 0xDC, 0xFC)
+_WHITE = (0xFF, 0xFF, 0xFF)
+_INK = (0x1F, 0x29, 0x37)
+_MUTED = (0x6B, 0x72, 0x80)
+_CRIT = (0xC0, 0x39, 0x2B)
+_HIGH = (0xE6, 0x7E, 0x22)
+_MED = (0xD4, 0xA0, 0x17)
+_OK = (0x27, 0xAE, 0x60)
+_GRID = (0xE5, 0xE7, 0xEB)
+
+_SEV_COLOR = {"Critical": _CRIT, "High": _HIGH, "Medium": _MED, "Low": _OK, "Info": _MUTED}
+_BAND_COLOR = {"Excellent": _OK, "Good": (0x5C, 0xB8, 0x5C), "Fair": _MED, "Poor": _HIGH,
+               "Critical": _CRIT, "Insufficient Data": _MUTED}
+_LC_BAND_COLOR = {"Past-LDoS": _CRIT, "Past-EoS": _HIGH, "Near-LDoS": _MED, "Active": _OK, "Unknown": _MUTED}
+
+_HEAD = "Calibri"   # universally rendered (Office default); hierarchy comes from size / weight / colour
+_BODY = "Calibri"
+
+
+def _clean(s) -> str:
+    """Repair the 'Â·' mojibake that the cross-axis headlines carry for their '·' separator, so the deck
+    reads cleanly regardless of how upstream encoded it."""
+    return (str(s) if s is not None else "").replace("Â·", "·").replace("Â", "")
+
+
+def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> None:
+    """Render the executive deck to `output_path`. A missing python-pptx is a warning + skip (the run's
+    other deliverables are unaffected); any unexpected render error is logged, never raised."""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+        from pptx.enum.shapes import MSO_SHAPE
+    except ImportError:
+        logger.warning("  Executive deck (PPTX) skipped: python-pptx not installed "
+                       "(pip install python-pptx, or pass --no-pptx).")
+        return
+
+    snap = snap_dict or {}
+
+    def C(rgb):
+        return RGBColor(*rgb)
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    W = 13.333
+    blank = prs.slide_layouts[6]
+
+    def slide(dark=False):
+        s = prs.slides.add_slide(blank)
+        s.background.fill.solid()
+        s.background.fill.fore_color.rgb = C(_NAVY if dark else _WHITE)
+        return s
+
+    def text(s, l, t, w, h, runs, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP, space=None):
+        """runs = list of (string, size, rgb, bold[, italic]) for paragraph 0, OR a list of such lists for
+        multiple paragraphs."""
+        tb = s.shapes.add_textbox(Inches(l), Inches(t), Inches(w), Inches(h))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        tf.vertical_anchor = anchor
+        tf.margin_left = tf.margin_right = Pt(0)
+        tf.margin_top = tf.margin_bottom = Pt(0)
+        paras = runs if runs and isinstance(runs[0], list) else [runs]
+        for i, para in enumerate(paras):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.alignment = align
+            if space is not None:
+                p.space_after = Pt(space)
+            for spec in para:
+                txt, size, rgb, bold = spec[0], spec[1], spec[2], spec[3]
+                ital = spec[4] if len(spec) > 4 else False
+                r = p.add_run()
+                r.text = _clean(txt)
+                r.font.size = Pt(size)
+                r.font.bold = bold
+                r.font.italic = ital
+                r.font.name = _HEAD if bold else _BODY
+                r.font.color.rgb = C(rgb)
+        return tb
+
+    def rect(s, l, t, w, h, fill, shape=MSO_SHAPE.RECTANGLE, line=None):
+        sp = s.shapes.add_shape(shape, Inches(l), Inches(t), Inches(w), Inches(h))
+        sp.fill.solid()
+        sp.fill.fore_color.rgb = C(fill)
+        if line is None:
+            sp.line.fill.background()
+        else:
+            sp.line.color.rgb = C(line)
+            sp.line.width = Pt(0.75)
+        sp.shadow.inherit = False
+        return sp
+
+    def chip(s, l, t, txt, fill, w=1.15, h=0.34, tcolor=_WHITE, size=11):
+        sp = rect(s, l, t, w, h, fill, shape=MSO_SHAPE.ROUNDED_RECTANGLE)
+        tf = sp.text_frame
+        tf.word_wrap = False
+        tf.margin_left = tf.margin_right = Pt(4)
+        tf.margin_top = tf.margin_bottom = Pt(1)
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        r = p.add_run()
+        r.text = _clean(txt)
+        r.font.size = Pt(size)
+        r.font.bold = True
+        r.font.name = _HEAD
+        r.font.color.rgb = C(tcolor)
+        return sp
+
+    def stat(s, l, t, num, lbl, numcolor=_NAVY, w=2.4):
+        text(s, l, t, w, 0.9, [(str(num), 46, numcolor, True)])
+        text(s, l, t + 0.92, w, 0.5, [(lbl, 12, _MUTED, False)])
+
+    def propbar(s, l, t, w, segments, h=0.34):
+        total = sum(max(0, c) for c, _ in segments) or 1
+        x = l
+        for count, rgb in segments:
+            if count <= 0:
+                continue
+            seg_w = w * (count / total)
+            rect(s, x, t, max(seg_w, 0.04), h, rgb)
+            x += seg_w
+
+    def header(s, kicker, title, dark=False):
+        text(s, 0.7, 0.55, W - 1.4, 0.4, [(kicker.upper(), 13, _ICE if dark else _HIGH, True)])
+        text(s, 0.7, 0.95, W - 1.4, 0.9, [(title, 32, _WHITE if dark else _NAVY, True)])
+
+    # ---------------------------------------------------------------- 1. Title (dark)
+    s = slide(dark=True)
+    rect(s, 0, 0, W, 7.5, _NAVY)
+    eb = snap.get("executive_brief") or {}
+    scale = eb.get("scale") or {}
+    text(s, 0.9, 2.0, W - 1.8, 1.6,
+         [[("Network Migration", 52, _WHITE, True)], [("Assessment", 52, _ICE, True)]], space=2)
+    text(s, 0.9, 3.95, W - 1.8, 0.5, [(label or "Current-state assessment", 18, _ICE, False, True)])
+    posture = eb.get("posture") or {}
+    sub = eb.get("posture_statement") or (
+        f"{scale.get('n_devices', '—')} devices · {scale.get('n_endpoints', '—')} endpoints assessed")
+    text(s, 0.9, 4.7, W - 1.8, 1.2, [(sub, 14, _ICE, False)])
+    text(s, 0.9, 6.7, W - 1.8, 0.4,
+         [("Generated offline by the Cisco Migration-Assessment Toolkit — full evidence in the workbook, "
+           "explorer & runbook.", 11, (0x9F, 0xB3, 0xE0), False)])
+
+    # ---------------------------------------------------------------- 2. Fleet posture (light)
+    s = slide()
+    header(s, "Executive summary", "Fleet posture")
+    hs = snap.get("health_scores") or []
+    band_counts = {}
+    for r in hs:
+        band_counts[r.get("band", "")] = band_counts.get(r.get("band", ""), 0) + 1
+    avg = posture.get("avg_health", "—")
+    # stat callouts across the full width (generous gaps, no side-by-side columns to overlap)
+    stat(s, 0.7, 1.95, f"{avg}", "avg health / 100", _NAVY, w=3.4)
+    stat(s, 5.0, 1.95, posture.get("n_critical", 0), "Critical-band switches", _CRIT, w=3.4)
+    stat(s, 9.3, 1.95, len(hs), "switches assessed", _INK, w=3.3)
+    # full-width band-distribution bar
+    order = ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
+    segs = [(band_counts.get(b, 0), _BAND_COLOR.get(b, _MUTED)) for b in order]
+    if any(c for c, _ in segs):
+        text(s, 0.7, 3.45, 12.0, 0.3, [("HEALTH-BAND DISTRIBUTION", 12, _MUTED, True)])
+        propbar(s, 0.7, 3.8, 11.9, segs)
+        legend = [b for b in order if band_counts.get(b, 0)]
+        text(s, 0.7, 4.25, 12.0, 0.4,
+             [[(f"{b}: {band_counts.get(b, 0)}     ", 11, _BAND_COLOR.get(b, _MUTED), True) for b in legend]])
+    # full-width per-axis headlines below
+    axes = eb.get("axes") or []
+    text(s, 0.7, 4.95, 12.0, 0.35, [("HEADLINE BY AXIS", 12, _HIGH, True)])
+    y = 5.35
+    for a in axes[:4]:
+        sev = a.get("severity", "Info")
+        chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.3, size=10)
+        text(s, 1.85, y - 0.03, 10.8, 0.5,
+             [[(_clean(a.get("axis", "")) + ":  ", 12, _NAVY, True), (_clean(a.get("headline", "")), 12, _INK, False)]])
+        y += 0.5
+
+    # ---------------------------------------------------------------- 3. Top risks (light)
+    s = slide()
+    header(s, "What gates the migration", "Top migration risks")
+    pl = snap.get("punchlist") or []
+    n_crit = sum(1 for i in pl if i.get("severity") == "Critical")
+    n_high = sum(1 for i in pl if i.get("severity") == "High")
+    text(s, 0.7, 1.95, W - 1.4, 0.4,
+         [[(f"{len(pl)} consolidated finding(s)  ", 14, _NAVY, True),
+           (f"· {n_crit} Critical · {n_high} High — the de-duplicated, severity-ranked punch-list.",
+            13, _MUTED, False)]])
+    y = 2.6
+    for it in pl[:5]:
+        sev = it.get("severity", "Info")
+        chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.34, size=10)
+        devs = ", ".join(str(d) for d in (it.get("devices") or [])[:4])
+        more = "" if len(it.get("devices") or []) <= 4 else f" +{len(it['devices']) - 4}"
+        text(s, 1.85, y - 0.04, W - 2.6, 0.7,
+             [[(_clean(it.get("title", "")), 14, _INK, True)],
+              [(f"{it.get('category', '')}  ·  {devs}{more}", 11, _MUTED, False)]], space=1)
+        y += 0.78
+    if len(pl) > 5:
+        text(s, 1.85, y, W - 2.6, 0.3,
+             [(f"+ {len(pl) - 5} more in the Migration Punch-List workbook sheet.", 11, _MUTED, False, True)])
+
+    # ---------------------------------------------------------------- 4. Keystone devices (light)
+    s = slide()
+    header(s, "Concentrated dependency", "The switches the fleet depends on")
+    fi = sorted((snap.get("failure_impact") or []),
+                key=lambda r: -(int(r.get("stranded") or 0)))
+    keystones = [r for r in fi if int(r.get("stranded") or 0) > 0][:5]
+    text(s, 0.7, 1.95, W - 1.4, 0.5,
+         [("Ranked by migration blast radius — the collateral endpoints stranded if the switch drops "
+           "during its move. Sequence and protect these first.", 13, _MUTED, False)])
+    y = 2.8
+    if keystones:
+        for r in keystones:
+            stat_w = 1.7
+            text(s, 0.7, y, stat_w, 0.5, [(str(r.get("stranded", 0)), 30, _CRIT, True)])
+            text(s, 0.7, y + 0.55, stat_w, 0.3, [("stranded", 10, _MUTED, False)])
+            text(s, 2.5, y + 0.05, W - 3.2, 0.7,
+                 [[(_clean(str(r.get("host", ""))), 16, _NAVY, True),
+                   (f"   {r.get('vlans_impacted', 0)} VLAN(s) · {r.get('hard', 0)} hard-partitioned", 12, _MUTED, False)],
+                  [(_clean(r.get("detail", "")), 11, _INK, False)]], space=1)
+            y += 0.92
+    else:
+        text(s, 0.7, y, W - 1.4, 0.5,
+             [("No switch strands collateral endpoints on removal — dependency is well distributed.", 14, _OK, True)])
+
+    # ---------------------------------------------------------------- 5. Hardware lifecycle (light)
+    lr = snap.get("lifecycle_risk") or {}
+    lsum = lr.get("summary") or {}
+    if lsum.get("n_devices"):
+        s = slide()
+        header(s, "A primary migration driver", "Hardware end-of-support exposure")
+        n = lsum.get("n_devices", 0)
+        past = lsum.get("n_past_eos", 0) + lsum.get("n_past_ldos", 0)
+        near = lsum.get("n_near", 0)
+        pct = round(100 * (past + near) / n) if n else 0
+        stat(s, 0.7, 2.1, f"{pct}%", "past or nearing end-of-support", _HIGH)
+        stat(s, 3.6, 2.1, lsum.get("n_past_eos", 0) + lsum.get("n_past_ldos", 0), "past end-of-support", _CRIT)
+        stat(s, 6.2, 2.1, near, "within 1 year", _MED)
+        lc_order = ["Past-LDoS", "Past-EoS", "Near-LDoS", "Active", "Unknown"]
+        byb = lsum.get("by_band") or {}
+        segs = [(byb.get(b, 0), _LC_BAND_COLOR.get(b, _MUTED)) for b in lc_order]
+        if any(c for c, _ in segs):
+            text(s, 0.7, 3.6, W - 1.4, 0.3, [("Lifecycle band distribution", 12, _MUTED, True)])
+            propbar(s, 0.7, 3.95, W - 1.4, segs)
+            legend = [b for b in lc_order if byb.get(b, 0)]
+            text(s, 0.7, 4.4, W - 1.4, 0.4,
+                 [[(f"{b}: {byb.get(b, 0)}   ", 11, _LC_BAND_COLOR.get(b, _MUTED), True) for b in legend]])
+        text(s, 0.7, 5.3, W - 1.4, 0.5,
+             [("Aging hardware is one of the top reasons to migrate — and a hard constraint on how long the "
+               "current fabric can safely run. Detail in the Lifecycle Risk workbook sheet.", 12, _INK, False, True)])
+
+    # ---------------------------------------------------------------- 6. Migration waves (light)
+    s = slide()
+    header(s, "How it sequences", "Migration waves & readiness")
+    mr = snap.get("migration_readiness") or []
+    mg = snap.get("move_groups") or []
+    tally = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
+    for r in mr:
+        v = r.get("readiness")
+        if v in tally:
+            tally[v] += 1
+    stat(s, 0.7, 2.1, len(mg) or len(mr), "move groups", _NAVY)
+    stat(s, 3.3, 2.1, tally["NOT READY"], "NOT READY", _CRIT)
+    stat(s, 5.9, 2.1, tally["CAUTION"], "CAUTION", _MED)
+    stat(s, 8.5, 2.1, tally["READY"], "READY", _OK)
+    _rt = {"READY": _OK, "CAUTION": _MED, "NOT READY": _CRIT}
+    text(s, 0.7, 3.5, W - 1.4, 0.35, [("PER-GROUP READINESS", 12, _HIGH, True)])
+    y = 3.95
+    for r in mr[:6]:
+        v = r.get("readiness", "—")
+        chip(s, 0.7, y, v, _rt.get(v, _MUTED), w=1.5, h=0.32, size=10)
+        text(s, 2.4, y - 0.02, W - 3.1, 0.4,
+             [[(_clean(r.get("group", "")) + "  ", 13, _NAVY, True),
+               (f"{r.get('n_fail', 0)} blocking · {r.get('n_warn', 0)} warning check(s)", 12, _INK, False)]])
+        y += 0.5
+    text(s, 0.7, 6.7, W - 1.4, 0.4,
+         [("Clear the NOT-READY blockers first, biggest blast radius first — then verify each wave with the "
+           "Cutover Validation plan.", 12, _MUTED, False, True)])
+
+    # ---------------------------------------------------------------- 7. Where to start (dark)
+    s = slide(dark=True)
+    header(s, "Recommendation", "Where to start", dark=True)
+    gating = eb.get("top_gating") or []
+    text(s, 0.7, 2.0, W - 1.4, 0.4,
+         [("Resolve these gating items before the first cutover wave:", 15, _ICE, False)])
+    y = 2.7
+    if gating:
+        for i, g in enumerate(gating[:5], 1):
+            rect(s, 0.7, y, 0.5, 0.5, _HIGH, shape=MSO_SHAPE.OVAL)
+            text(s, 0.7, y + 0.04, 0.5, 0.42, [(str(i), 18, _WHITE, True)], align=PP_ALIGN.CENTER)
+            text(s, 1.4, y + 0.03, W - 2.1, 0.6, [(_clean(g), 15, _WHITE, False)])
+            y += 0.78
+    else:
+        text(s, 0.7, y, W - 1.4, 0.5, [("No High/Critical gating items — the fleet is in good shape to schedule.",
+                                        16, _OK, True)])
+    text(s, 0.7, 6.6, W - 1.4, 0.6,
+         [("Then proceed wave by wave: clear blockers → cut over → run the per-wave Cutover Validation "
+           "checklist → confirm before the next wave.", 12, _ICE, False, True)])
+
+    n_slides = len(prs.slides._sldIdLst)
+    prs.save(output_path)
+    logger.info(f"[Phase 32] Executive deck (PPTX) written: {output_path} ({n_slides} slides)")

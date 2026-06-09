@@ -87,6 +87,12 @@ offline KB data are read relative to the checkout.
   (unless `--no-html`), with the snapshot embedded.
 - `..._snapshot.json` — the data contract shared by the workbook and explorer
   (also re-loadable in the explorer and usable with `--compare`).
+- `..._runbook.docx` — the Assessment & Migration **Runbook**, the narrative twin
+  of the workbook (unless `--no-docx`; needs `python-docx`).
+- `..._executive_deck.pptx` — the **Executive presentation deck**: a short,
+  stakeholder-ready slide summary (posture, top risks, keystone devices,
+  end-of-support exposure, the wave plan, where to start) generated from the same
+  snapshot (unless `--no-pptx`; needs `python-pptx`).
 
 ## Usage
 
