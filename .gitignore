@@ -6,6 +6,12 @@ __pycache__/
 venv/
 env/
 
+# Build / packaging artifacts (pyproject build, wheels)
+build/
+dist/
+*.whl
+_wheeltest/
+
 # OS
 .DS_Store
 Thumbs.db

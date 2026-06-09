@@ -126,3 +126,5 @@ jobs:
         run: cisco-assess --help
       - name: Smoke-test that the gzipped KB data shipped in the wheel
         run: python -c "from cisco_toolkit import portdb; assert portdb.service_for_port(443) is not None; print('packaged KB data loads from the installed wheel')"
+      - name: Smoke-test that the explorer template shipped in the wheel
+        run: python -c "import cisco_toolkit, os; p=os.path.join(os.path.dirname(cisco_toolkit.__file__),'blast_radius_explorer.html'); assert os.path.isfile(p), p; print('explorer template shipped in the wheel:', os.path.getsize(p), 'bytes')"
