@@ -82,6 +82,78 @@ export interface CutoverWave {
   run_of_show: Array<{ phase: string; action: string }>;
 }
 
+export interface ExecStep {
+  phase: string;
+  action: string;
+  status: "pending" | "done" | "skipped";
+  at: string | null;
+  by: string;
+  note: string;
+}
+
+export interface ExecCheck {
+  category: string;
+  severity: string;
+  check: string;
+  command: string;
+  expect: string;
+  result: "pending" | "pass" | "fail" | "na";
+  observed: string;
+  at: string | null;
+  by: string;
+}
+
+export interface ExecWave {
+  group: string;
+  order: number;
+  gate: string;
+  strategy: string;
+  n_switches: number;
+  switches: string[];
+  endpoints: number;
+  hard_cutover_endpoints: number;
+  est_window_minutes: number;
+  est_window_label: string;
+  blockers: Array<{ check: string; status: string; note: string; phase: string }>;
+  steps: ExecStep[];
+  checks: ExecCheck[];
+  closeout: { decision: string | null; at: string | null; by: string; note: string };
+}
+
+export interface ExecutionState {
+  id: number;
+  snapshot_id: number;
+  label: string;
+  operator: string;
+  status: "in_progress" | "completed" | "aborted";
+  outcome: string | null;
+  started_at: string;
+  ended_at: string | null;
+  plan_summary: CutoverPlan["summary"];
+  waves: ExecWave[];
+  events: Array<{ at: string; kind: string; wave: string; text: string; by: string }>;
+  progress: {
+    n_steps: number;
+    n_steps_done: number;
+    n_steps_skipped: number;
+    pct: number;
+    checks: Record<"pending" | "pass" | "fail" | "na", number>;
+    n_deviations: number;
+    elapsed_seconds: number;
+    planned_window_minutes: number;
+    waves: Array<{ group: string; state: string; n_steps: number; n_actioned: number }>;
+  };
+}
+
+export interface ExecutionMeta {
+  id: number;
+  snapshot_id: number;
+  label: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+}
+
 export interface CutoverPlan {
   summary: {
     verdict: string;
@@ -154,7 +226,34 @@ export const api = {
     }).then((r) => j<any>(r)),
 
   seedDemo: () => fetch("/api/demo/seed", { method: "POST" }).then((r) => j<{ campaign: Campaign; snapshot: SnapshotMeta }>(r)),
+
+  // -- cutover execution runs (war room) --
+  startExecution: (snapId: number, label = "", operator = "") =>
+    post<ExecutionState>(`/api/snapshots/${snapId}/executions`, { label, operator }),
+  listExecutions: (snapId: number) =>
+    fetch(`/api/snapshots/${snapId}/executions`).then((r) => j<ExecutionMeta[]>(r)),
+  getExecution: (id: number) => fetch(`/api/executions/${id}`).then((r) => j<ExecutionState>(r)),
+  execStep: (id: number, wave: string, index: number, status: string, note = "", operator = "") =>
+    post<ExecutionState>(`/api/executions/${id}/step`, { wave, index, status, note, operator }),
+  execCheck: (id: number, wave: string, index: number, result: string, observed = "", operator = "") =>
+    post<ExecutionState>(`/api/executions/${id}/check`, { wave, index, result, observed, operator }),
+  execCloseout: (id: number, wave: string, decision: string, note = "", operator = "") =>
+    post<ExecutionState>(`/api/executions/${id}/closeout`, { wave, decision, note, operator }),
+  execEvent: (id: number, kind: string, text: string, wave = "", operator = "") =>
+    post<ExecutionState>(`/api/executions/${id}/event`, { kind, text, wave, operator }),
+  execFinish: (id: number, status: "completed" | "aborted", note = "", operator = "") =>
+    post<ExecutionState>(`/api/executions/${id}/finish`, { status, note, operator }),
+  executionReportUrl: (id: number) => `/api/executions/${id}/report`,
+  deleteExecution: (id: number) => fetch(`/api/executions/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
 };
+
+function post<T>(url: string, body: unknown): Promise<T> {
+  return fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => j<T>(r));
+}
 
 // shared colour helpers (mirror the engine vocabulary -> CSS tokens)
 export const sevColor = (s: string) => `var(--sev-${s.replace(/\s+/g, "")}, var(--text-faint))`;

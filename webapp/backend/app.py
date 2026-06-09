@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -20,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import cutover, deliverables, engine, graph, summary
+from . import cutover, deliverables, engine, execution, graph, summary
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -50,6 +51,47 @@ class CampaignIn(BaseModel):
 class CompareIn(BaseModel):
     old_id: int
     new_id: int
+
+
+class ExecutionIn(BaseModel):
+    label: str = ""
+    operator: str = ""
+
+
+class StepIn(BaseModel):
+    wave: str
+    index: int
+    status: str  # pending | done | skipped
+    note: str = ""
+    operator: str = ""
+
+
+class CheckIn(BaseModel):
+    wave: str
+    index: int
+    result: str  # pending | pass | fail | na
+    observed: str = ""
+    operator: str = ""
+
+
+class CloseoutIn(BaseModel):
+    wave: str
+    decision: str  # COMPLETE | ROLLED BACK | DEFERRED
+    note: str = ""
+    operator: str = ""
+
+
+class EventIn(BaseModel):
+    kind: str  # note | deviation
+    text: str
+    wave: str = ""
+    operator: str = ""
+
+
+class FinishIn(BaseModel):
+    status: str  # completed | aborted
+    note: str = ""
+    operator: str = ""
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -167,6 +209,119 @@ def create_app(db_path: str | None = None) -> FastAPI:
         if snap is None:
             raise HTTPException(404, "Snapshot not found")
         return cutover.build_plan(snap)
+
+    # -- execution runs (war room) ------------------------------------------
+    def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
+        """Atomic read-modify-write on one run's state; returns the updated derived state."""
+        with execution.MUTATION_LOCK:
+            rec = store.get_execution(execution_id)
+            if not rec:
+                raise HTTPException(404, "Execution run not found")
+            try:
+                fn(rec["state"])
+            except KeyError as e:
+                raise HTTPException(404, f"Unknown wave {e}") from e
+            except IndexError as e:
+                raise HTTPException(400, "Step/check index out of range") from e
+            except ValueError as e:
+                code = 409 if "no longer be modified" in str(e) else 400
+                raise HTTPException(code, str(e)) from e
+            store.save_execution(execution_id, rec["state"])
+            return execution.with_progress(execution_id, rec["snapshot_id"], rec["state"])
+
+    @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
+    def start_execution(snapshot_id: int, body: ExecutionIn) -> Dict[str, Any]:
+        """Materialize the snapshot's cutover plan into a live, frozen execution run."""
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        n = len(store.list_executions(snapshot_id)) + 1
+        label = body.label.strip() or f"Cutover run {n}"
+        state = execution.start_run(snap, label, body.operator)
+        if not state["waves"]:
+            raise HTTPException(400, "No migration waves were derived from this snapshot — nothing to execute")
+        eid = store.create_execution(snapshot_id, state)
+        return execution.with_progress(eid, snapshot_id, state)
+
+    @app.get("/api/snapshots/{snapshot_id}/executions")
+    def list_executions(snapshot_id: int) -> List[Dict[str, Any]]:
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        return store.list_executions(snapshot_id)
+
+    @app.get("/api/executions/{execution_id}")
+    def get_execution(execution_id: int) -> Dict[str, Any]:
+        rec = store.get_execution(execution_id)
+        if not rec:
+            raise HTTPException(404, "Execution run not found")
+        return execution.with_progress(rec["id"], rec["snapshot_id"], rec["state"])
+
+    @app.post("/api/executions/{execution_id}/step")
+    def execution_step(execution_id: int, body: StepIn) -> Dict[str, Any]:
+        return _mutate_execution(
+            execution_id,
+            lambda st: execution.apply_step(st, body.wave, body.index, body.status,
+                                            body.note, body.operator))
+
+    @app.post("/api/executions/{execution_id}/check")
+    def execution_check(execution_id: int, body: CheckIn) -> Dict[str, Any]:
+        return _mutate_execution(
+            execution_id,
+            lambda st: execution.apply_check(st, body.wave, body.index, body.result,
+                                             body.observed, body.operator))
+
+    @app.post("/api/executions/{execution_id}/closeout")
+    def execution_closeout(execution_id: int, body: CloseoutIn) -> Dict[str, Any]:
+        return _mutate_execution(
+            execution_id,
+            lambda st: execution.apply_closeout(st, body.wave, body.decision,
+                                                body.note, body.operator))
+
+    @app.post("/api/executions/{execution_id}/event")
+    def execution_event(execution_id: int, body: EventIn) -> Dict[str, Any]:
+        return _mutate_execution(
+            execution_id,
+            lambda st: execution.add_event(st, body.kind, body.text, body.wave, body.operator))
+
+    @app.post("/api/executions/{execution_id}/finish")
+    def execution_finish(execution_id: int, body: FinishIn) -> Dict[str, Any]:
+        return _mutate_execution(
+            execution_id,
+            lambda st: execution.finish(st, body.status, body.note, body.operator))
+
+    @app.get("/api/executions/{execution_id}/report")
+    def execution_report(execution_id: int):
+        """Post-Implementation Review / as-executed change record for this run, as .docx."""
+        rec = store.get_execution(execution_id)
+        if not rec:
+            raise HTTPException(404, "Execution run not found")
+        if not deliverables.availability().get("cutover"):  # same python-docx dependency
+            raise HTTPException(503, "python-docx is not installed on the server")
+        from .pir_docx import write_pir_docx
+
+        snap_meta = store.get_snapshot_meta(rec["snapshot_id"])
+        snap_label = snap_meta["label"] if snap_meta else "snapshot"
+        fd, path = tempfile.mkstemp(suffix=".docx", prefix="assesshub_pir_")
+        os.close(fd)
+        try:
+            write_pir_docx(path, rec["state"], snap_label)
+        except Exception as e:
+            if os.path.exists(path):
+                os.unlink(path)
+            raise HTTPException(500, f"Failed to generate the PIR: {e}") from e
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", rec["state"].get("label", "run")).strip("_") or "run"
+        return FileResponse(
+            path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename=f"{safe}_pir.docx",
+            background=BackgroundTask(lambda p=path: os.path.exists(p) and os.unlink(p)),
+        )
+
+    @app.delete("/api/executions/{execution_id}", status_code=204)
+    def delete_execution(execution_id: int):
+        if not store.delete_execution(execution_id):
+            raise HTTPException(404, "Execution run not found")
+        return JSONResponse(status_code=204, content=None)
 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
     def snapshot_explorer(snapshot_id: int) -> HTMLResponse:
