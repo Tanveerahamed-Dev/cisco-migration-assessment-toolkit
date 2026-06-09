@@ -2052,7 +2052,8 @@ def _find_endpoint_by_ip(all_interfaces: Dict[str, Dict[str, InterfaceData]], ip
         for port, d in sorted(all_interfaces[host].items()):
             if not _is_physical_port(port):
                 continue
-            if (d.end_host_ip or "").strip() == ip:
+            # V3.23.141: end_host_ip may be a MAC-aligned list (V3.23.140) -> match ANY of its addresses
+            if ip in [x.strip() for x in (d.end_host_ip or "").split(",") if x.strip() and x.strip() != "-"]:
                 vid = int(d.vlan) if (d.vlan or "").isdigit() else None
                 return (host, port, vid, d.end_host_mac or "")
     return None
