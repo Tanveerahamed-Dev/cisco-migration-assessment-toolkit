@@ -231,7 +231,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     root_count: Counter = Counter()
     for host, vmap in stp_roots.items():
         for vid, info in (vmap or {}).items():
-            if info.get("is_root"):
+            if isinstance(info, dict) and info.get("is_root"):
                 root_count[host] += 1
     doc.add_paragraph(
         f"The fabric carries {len(vlans)} VLANs. Spanning-tree root placement is recovered from "
@@ -279,11 +279,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
 
     doc.add_heading("2.5 Multicast & timing design", level=2)
     mc = (svc.get("multicast") or {}) if isinstance(svc, dict) else {}
-    if mc:
-        groups = mc.get("classified_groups") or []
-        queriers = mc.get("igmp_queriers") or []
-        ptp = mc.get("ptp") or {}
-        ptp_active = sum(1 for v in ptp.values() if isinstance(v, dict) and v.get("operational"))
+    groups = mc.get("classified_groups") or []
+    queriers = mc.get("igmp_queriers") or []
+    ptp = mc.get("ptp") or {}
+    ptp_active = sum(1 for v in ptp.values() if isinstance(v, dict) and v.get("operational"))
+    # Render the section only when there is actual activity to report; a multicast dict that exists
+    # but carries all-zero counts (a non-media fabric, or commands not collected) gets the fallback
+    # instead of an all-zeros paragraph that reads as filler in a client deliverable.
+    if mc.get("active_switch_count") or mc.get("active_interfaces") or groups or queriers or ptp:
         doc.add_paragraph(
             f"Active multicast was observed on {mc.get('active_switch_count', 0)} switch(es) across "
             f"{mc.get('active_interfaces', 0)} interface(s); {len(groups)} group(s) were classified and "

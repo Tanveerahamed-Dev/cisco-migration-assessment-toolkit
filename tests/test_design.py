@@ -146,6 +146,29 @@ def test_design_bom_aggregates_by_model(tmp_path):
     assert models == {"N9K-C93180YC", "C9300-48T", "WS-C2960X-48FPD-L"}
 
 
+def test_design_multicast_section_suppressed_when_no_activity(tmp_path):
+    """A multicast dict that exists but carries all-zero counts (non-media fabric, or the commands were
+    not collected) gets the fallback message — not an all-zeros 'PTP: 0 of 0' filler paragraph."""
+    snap = _snap()
+    snap["service_map"] = {"multicast": {"active_interfaces": 0, "active_switch_count": 0,
+                                         "classified_groups": [], "igmp_queriers": [], "ptp": {}}}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "No multicast/PTP activity was classified" in text
+    assert "0 of 0 device(s)" not in text
+
+
+def test_design_tolerates_malformed_stp_roots(tmp_path):
+    """A stp_roots VLAN value that is not a dict (malformed snapshot) must not abort the design doc."""
+    snap = _snap()
+    snap["stp_roots"] = {"core1": {"10": None, "20": "garbage", "30": {"is_root": True}}}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")   # must not raise
+    import os
+    assert os.path.exists(out)
+
+
 def test_design_failsoft_without_python_docx(monkeypatch, tmp_path):
     import builtins, os
     real_import = builtins.__import__
