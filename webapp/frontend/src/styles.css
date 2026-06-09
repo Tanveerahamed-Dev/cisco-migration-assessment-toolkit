@@ -63,9 +63,12 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
 .btn {
   display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
   background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim);
-  padding: 8px 14px; border-radius: 9px; font: 600 13px var(--sans); transition: .12s;
+  padding: 8px 14px; border-radius: 9px; font: 600 13px var(--sans);
+  transition: border-color var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease),
+    background var(--motion-fast) var(--ease), transform var(--motion-fast) var(--ease);
 }
 .btn:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-3); text-decoration: none; }
+.btn:active { transform: translateY(1px) scale(.99); }
 .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent-dim)); color: #fff; border-color: transparent; }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.lg { padding: 12px 22px; font-size: 15px; border-radius: 11px; }
@@ -79,6 +82,8 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 18px;
 }
+/* compositor-only hover lift (gated below) */
+.panel { transition: transform var(--motion) var(--ease), box-shadow var(--motion) var(--ease), border-color var(--motion) var(--ease); }
 .panel.pad-lg { padding: 22px 24px; }
 .panel h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); margin-bottom: 14px; }
 .grid { display: grid; gap: 16px; }
@@ -107,7 +112,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
 .chip.sev { color: var(--c); border-color: color-mix(in srgb, var(--c) 45%, var(--border)); background: var(--cs); }
 
 /* ---- segmented bar (severity / band distribution) ---- */
-.segbar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; background: var(--surface-3); }
+.segbar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; background: var(--surface-3); transform-origin: left center; }
 .segbar > span { display: block; height: 100%; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; font-size: 12px; }
 .legend .item { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); }
@@ -119,7 +124,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
 .bars .row { display: grid; grid-template-columns: 130px 1fr 38px; align-items: center; gap: 10px; font-size: 12px; }
 .bars .row .name { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bars .track { height: 9px; background: var(--surface-3); border-radius: 999px; overflow: hidden; }
-.bars .fill { height: 100%; border-radius: 999px; }
+.bars .fill { height: 100%; border-radius: 999px; transform-origin: left center; }
 .bars .n { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
 
 /* ---- gauge (donut) ---- */
@@ -213,4 +218,40 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
 .cmd { font: 500 12px var(--mono); background: var(--bg); border: 1px solid var(--border-faint);
   border-radius: 6px; padding: 5px 9px; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 
+/* ============================================================================
+   Motion layer. Grounded in standard UI-motion guidance: compositor-only
+   (transform/opacity), asymmetric ease-out, micro 120-220ms / transitions
+   200-500ms. Strategy is "static by default, enhance under no-preference" so
+   reduced-motion (and the reduce block below) NEVER leaves content hidden —
+   every animated element's resting state is its final, visible state.
+   ============================================================================ */
+@keyframes reveal-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes grow-x { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* panels reveal on mount, lightly staggered within a grid (supportive orientation, not decoration) */
+  .panel { animation: reveal-up var(--motion-reveal) var(--ease) both; }
+  .grid > .panel:nth-child(2) { animation-delay: .05s; }
+  .grid > .panel:nth-child(3) { animation-delay: .1s; }
+  .grid > .panel:nth-child(4) { animation-delay: .15s; }
+  .panel:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
+  [data-theme="light"] .panel:hover { box-shadow: 0 10px 28px rgba(40, 55, 80, .18); }
+
+  /* distribution bars grow from the left (scaleX is compositor-friendly) */
+  .segbar { animation: grow-x var(--motion-reveal) var(--ease) both; }
+  .bars .fill { animation: grow-x var(--motion-reveal) var(--ease) both; }
+
+  /* tab content + wave run-of-show reveal */
+  .tabfade { animation: fade-in var(--motion) var(--ease) both; }
+  .ros-reveal { animation: reveal-up var(--motion) var(--ease) both; }
+
+  .toast { animation: toast-in var(--motion) var(--ease) both; }
+  .tabs button { transition: color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease); }
+  .wave-card { transition: border-color var(--motion) var(--ease), box-shadow var(--motion) var(--ease); }
+}
+
+/* Belt-and-suspenders: if the user prefers reduced motion, strip all motion. Safe because every
+   resting state above is already the final visible state — nothing is left mid-animation or hidden. */
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

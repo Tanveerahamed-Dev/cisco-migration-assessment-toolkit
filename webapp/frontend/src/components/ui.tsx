@@ -1,4 +1,46 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+
+/* ---- respects the OS "reduce motion" setting (live) ---- */
+export function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const on = () => setReduced(mq.matches);
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+  return reduced;
+}
+
+/* ---- animated number (easeOutCubic). Conveys magnitude; jumps straight to the value under reduced
+   motion. Animates from the previously shown value, so live updates tween rather than restart at 0. ---- */
+export function CountUp({ value, duration = 700, decimals = 0, suffix = "", prefix = "" }:
+  { value: number; duration?: number; decimals?: number; suffix?: string; prefix?: string }) {
+  const reduced = useReducedMotion();
+  const [display, setDisplay] = useState(reduced ? value : 0);
+  const fromRef = useRef(0);
+  useEffect(() => {
+    if (reduced || !Number.isFinite(value)) { setDisplay(value); fromRef.current = value; return; }
+    const from = fromRef.current;
+    const start = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDisplay(from + (value - from) * eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else fromRef.current = value;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration, reduced]);
+  const shown = Number.isFinite(display)
+    ? (decimals ? display.toFixed(decimals) : Math.round(display).toString())
+    : "—";
+  return <>{prefix}{shown}{suffix}</>;
+}
 
 /* ---- async data hook ---- */
 export function useAsync<T>(fn: () => Promise<T>, deps: any[] = []) {
@@ -66,7 +108,7 @@ export function Gauge({ value, max = 100, size = 132, color, label }: { value: n
         />
       </svg>
       <div className="num">
-        <b>{Number.isFinite(value) ? Math.round(value) : "—"}</b>
+        <b>{Number.isFinite(value) ? <CountUp value={value} /> : "—"}</b>
         {label && <span>{label}</span>}
       </div>
     </div>
