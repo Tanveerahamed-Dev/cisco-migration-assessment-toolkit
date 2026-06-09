@@ -16,7 +16,7 @@ DEV-ONLY DEPENDENCY
 DESIGN — deliberately robust, not brittle
     * Compare normalized identifier SETS, never field-by-field text: two independent parsers will
       format/case values differently, and that is not a bug.
-    * Normalize BOTH sides through the project's own ``normalize_ifname`` so interface naming
+    * Normalize interface names through the project's own ``normalize_ifname`` so naming
       (``Gi0/1`` vs ``GigabitEthernet0/1``) can never cause a false mismatch.
     * Assert the project found AT LEAST every entity the reference found (a SUPERSET check). This is
       the gap-detecting direction. The reverse is intentionally NOT asserted because the reference
@@ -24,11 +24,12 @@ DESIGN — deliberately robust, not brittle
       CDP neighbour that the project's parser correctly reports — so a strict ``==`` would fail on a
       project STRENGTH. We only fail when the project misses something the reference saw.
 
-EXTENDING
-    Point it at real captures: drop ``show …`` outputs into per-host text and add a command to the
-    ``_CDP_*`` style helpers below, or parametrize a new ``test_<command>_…`` over the same
-    (project-parser, ntc-command, identity-extractor) shape. The synthetic fixtures here are the
-    smoke layer; the real signal comes from running this against diverse production output.
+COVERAGE
+    Cross-checks ``show cdp neighbors detail`` (neighbour links), ``show vlan brief`` (VLAN ids), and
+    ``show ip ospf neighbor`` (routing adjacencies) across the IOS fixtures. Add a command by writing
+    one more ``test_<command>_…`` that extracts the project's and the reference's identifier sets and
+    calls ``_assert_project_superset`` — the synthetic fixtures are the smoke layer; the real signal
+    comes from running this against diverse production output.
 """
 import pytest
 
@@ -36,51 +37,68 @@ import pytest
 ntc_parse = pytest.importorskip("ntc_templates.parse",
                                 reason="ntc-templates not installed (dev-only cross-check dependency)")
 
-import synthetic_fixtures as fx                                   # noqa: E402
-from cisco_toolkit.parse import normalize_ifname, parse_neighbors_cdp   # noqa: E402
-
-# The IOS hosts in the fixture set that carry `show cdp neighbors detail` (ntc platform = cisco_ios).
-_IOS_HOSTS_WITH_CDP = [
-    h for h, (plat, cmds) in fx.COLLECTIONS.items()
-    if plat == "ios" and "show cdp neighbors detail" in cmds
-]
+import synthetic_fixtures as fx                                              # noqa: E402
+from cisco_toolkit.parse import (                                           # noqa: E402
+    normalize_ifname, parse_neighbors_cdp, parse_vlan_brief, parse_ospf_neighbors,
+)
 
 
-def _ntc_cdp_local_ifaces(data: str) -> set:
-    """Local-interface set the reference parser extracts from `show cdp neighbors detail`,
-    normalized through the project's own ifname normalizer for an apples-to-apples comparison."""
-    recs = ntc_parse.parse_output(platform="cisco_ios",
-                                  command="show cdp neighbors detail", data=data)
-    out = set()
-    for r in recs:
-        # ntc-templates key naming has shifted across versions; accept the known spellings.
-        local = r.get("local_interface") or r.get("LOCAL_PORT") or r.get("local_port") or ""
-        if local:
-            out.add(normalize_ifname(local.strip()))
-    return out
+def _ios_hosts_with(command: str):
+    """IOS fixture hosts (ntc platform = cisco_ios) that carry `command`."""
+    return [h for h, (plat, cmds) in fx.COLLECTIONS.items()
+            if plat == "ios" and command in cmds]
 
 
-@pytest.mark.parametrize("host", _IOS_HOSTS_WITH_CDP)
-def test_cdp_neighbors_project_misses_no_reference_link(host):
-    """The hand-rolled CDP parser must discover at least every neighbour link the reference parser
-    finds — i.e. it never silently drops a CDP adjacency the community template catches."""
-    data = fx.COLLECTIONS[host][1]["show cdp neighbors detail"]
+def _ntc(command: str, data: str):
+    """Reference (ntc-templates) records for an IOS `command`."""
+    return ntc_parse.parse_output(platform="cisco_ios", command=command, data=data)
 
-    project_ifaces = set(parse_neighbors_cdp(data).keys())   # already normalized + keyed by local intf
-    reference_ifaces = _ntc_cdp_local_ifaces(data)
 
-    if not reference_ifaces:
-        pytest.skip(f"reference parser matched no CDP neighbours on the {host} fixture — nothing to cross-check")
-
-    missed = reference_ifaces - project_ifaces
+def _assert_project_superset(host: str, kind: str, project_ids: set, reference_ids: set):
+    """Fail iff the project parser missed an identifier the reference parser found. Skip (don't pass
+    vacuously) when the reference matched nothing on this fixture, so a green run means a real check."""
+    if not reference_ids:
+        pytest.skip(f"reference parser matched no {kind} on the {host} fixture — nothing to cross-check")
+    missed = reference_ids - project_ids
     assert not missed, (
-        f"{host}: the project CDP parser MISSED neighbour link(s) the reference parser found "
-        f"on local interface(s) {sorted(missed)} — likely a parsing gap. "
-        f"project={sorted(project_ifaces)} reference={sorted(reference_ifaces)}"
+        f"{host}: the project parser MISSED {kind} the reference parser found: {sorted(missed)} "
+        f"— likely a parsing gap. project={sorted(project_ids)} reference={sorted(reference_ids)}"
     )
 
 
+@pytest.mark.parametrize("host", _ios_hosts_with("show cdp neighbors detail"))
+def test_cdp_neighbors_no_missed_link(host):
+    """The hand-rolled CDP parser must discover at least every neighbour link the reference finds."""
+    data = fx.COLLECTIONS[host][1]["show cdp neighbors detail"]
+    project = set(parse_neighbors_cdp(data).keys())          # already normalized + keyed by local intf
+    reference = {normalize_ifname((r.get("local_interface") or r.get("local_port") or "").strip())
+                 for r in _ntc("show cdp neighbors detail", data)
+                 if (r.get("local_interface") or r.get("local_port"))}
+    _assert_project_superset(host, "CDP neighbour link(s) (local interface)", project, reference)
+
+
+@pytest.mark.parametrize("host", _ios_hosts_with("show vlan brief"))
+def test_vlan_brief_no_missed_vlan(host):
+    """The hand-rolled VLAN parser must discover at least every VLAN id the reference finds."""
+    data = fx.COLLECTIONS[host][1]["show vlan brief"]
+    project = {str(v) for v in parse_vlan_brief(data).keys()}
+    reference = {str(r["vlan_id"]) for r in _ntc("show vlan brief", data) if r.get("vlan_id")}
+    _assert_project_superset(host, "VLAN id(s)", project, reference)
+
+
+@pytest.mark.parametrize("host", _ios_hosts_with("show ip ospf neighbor"))
+def test_ospf_neighbor_no_missed_adjacency(host):
+    """The hand-rolled OSPF parser must discover at least every adjacency (by neighbour Router ID)
+    the reference finds — a dropped adjacency would understate the routing topology."""
+    data = fx.COLLECTIONS[host][1]["show ip ospf neighbor"]
+    project = {row["neighbor"] for row in parse_ospf_neighbors(data)}
+    reference = {r["neighbor_id"] for r in _ntc("show ip ospf neighbor", data) if r.get("neighbor_id")}
+    _assert_project_superset(host, "OSPF adjacency/adjacencies (neighbour Router ID)", project, reference)
+
+
 def test_harness_actually_runs_against_the_fixtures():
-    """Guard the guard: make sure the parametrization isn't empty (a refactor that renamed the CDP
-    command or the fixture host keys would silently disable the cross-check above)."""
-    assert _IOS_HOSTS_WITH_CDP, "no IOS hosts with a `show cdp neighbors detail` fixture were found"
+    """Guard the guard: make sure the parametrizations aren't empty (a refactor that renamed a command
+    or the fixture host keys would silently disable the cross-checks above)."""
+    assert _ios_hosts_with("show cdp neighbors detail"), "no IOS host with a CDP fixture"
+    assert _ios_hosts_with("show vlan brief"), "no IOS host with a VLAN-brief fixture"
+    assert _ios_hosts_with("show ip ospf neighbor"), "no IOS host with an OSPF-neighbor fixture"
