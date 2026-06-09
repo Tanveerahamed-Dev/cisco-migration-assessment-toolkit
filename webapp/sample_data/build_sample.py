@@ -46,8 +46,16 @@ _PLATFORMS = [
 
 
 def _clone_access(name: str, idx: int, core: str, core_ip: str, core_port: str,
-                  core_platform: str, native: str, plat_i: int) -> dict:
-    """Clone the access1 template, re-homing its uplink to `core` and varying identity/hygiene."""
+                  core_platform: str, native: str, plat_i: int,
+                  carry_vlan30: bool = True, errdisable: bool = False) -> dict:
+    """Clone the access1 template, re-homing its uplink to `core` and varying its health profile.
+
+    The engine's score is driven by a few conditions we can toggle here to spread the bands:
+      * carrying VLAN 30 (the sole-gateway, no-FHRP VLAN) over a single fiber -> CL-01 Critical (-18);
+      * an err-disabled port -> an L1 fault deduction (and an L1-on-gateway cross-layer if applicable);
+      * a non-1 trunk native VLAN -> a native-VLAN mismatch finding.
+    Dropping VLAN 30 lifts a switch toward Fair/Good; stacking the faults pushes it to Critical.
+    """
     d = copy.deepcopy(fx._ACCESS1)
     sn = f"FOC{2300 + idx}A{idx:03d}"
     d["show version"] = _PLATFORMS[plat_i].format(sn=sn)
@@ -61,15 +69,53 @@ def _clone_access(name: str, idx: int, core: str, core_ip: str, core_port: str,
                       f"Port ID (outgoing port): {core_port}", 1)
     d["show cdp neighbors detail"] = cdp
 
-    # Native-VLAN hygiene variety: a non-1 native on the trunk trips the native-mismatch finding.
     if native != "1":
         d["show interfaces trunk"] = d["show interfaces trunk"].replace(
             "trunking      1", f"trunking      {native}")
+
+    if not carry_vlan30:
+        # Drop the server VLAN entirely: trunk no longer carries 30, the server access port moves to
+        # VOICE(20), and 30 disappears from the bridge -> no single-fiber-to-sole-gateway exposure.
+        d["show interfaces trunk"] = d["show interfaces trunk"].replace("Gi0/1       10,20,30", "Gi0/1       10,20")
+        d["show interfaces switchport"] = (d["show interfaces switchport"]
+            .replace("Trunking VLANs Enabled: 10,20,30", "Trunking VLANs Enabled: 10,20")
+            .replace("Access Mode VLAN: 30 (SERVERS)", "Access Mode VLAN: 20 (VOICE)"))
+        d["show interface status"] = d["show interface status"].replace(
+            "Gi0/10    srv-backup         connected    30", "Gi0/10    srv-backup         connected    20")
+        d["show running-config | section ^interface"] = d["show running-config | section ^interface"].replace(
+            " switchport access vlan 30", " switchport access vlan 20")
+        d["show vlan brief"] = d["show vlan brief"].replace(
+            "30   SERVERS                          active    Gi0/10", "30   SERVERS                          active")
+        d["show mac address-table"] = d["show mac address-table"].replace(
+            "  30    aabb.ccdd.ee10    DYNAMIC     Gi0/10\n", "")
+
+    if errdisable:
+        # Two err-disabled ports — a heavier L1 fault footprint to push a single-fiber switch to Critical.
+        d["show interface status"] = d["show interface status"].rstrip("\n") + (
+            "\nGi0/11    faulty-uplink      err-disabled 10           auto  auto  10/100/1000BaseTX"
+            "\nGi0/12    flapping-port      err-disabled 10           auto  auto  10/100/1000BaseTX\n")
+        for port, errs, crc in (("0/11", 203, 31), ("0/12", 451, 77)):
+            d["show interfaces"] = d["show interfaces"].rstrip("\n") + (
+                f"\nGigabitEthernet{port} is down, line protocol is down (err-disabled)\n"
+                "  MTU 1500 bytes, BW 1000000 Kbit/sec, DLY 10 usec\n"
+                "  Auto-duplex, Auto-speed, media type is 10/100/1000BaseTX\n"
+                "  Last input never, output never, output hang never\n"
+                f"     {errs} input errors, {crc} CRC, 0 frame, 0 overrun, 0 ignored\n"
+                "     Total output drops: 0\n")
     return d
 
 
+# Designed archetype mix (count, profile) so the fleet spans the full health-band spectrum rather than
+# a monotonous block. Counts are tuned empirically against the engine's scoring.
+_ARCHETYPES = (
+    [dict(carry_vlan30=True, errdisable=False, native="1")] * 5     # single-fiber to the sole gateway -> Poor
+    + [dict(carry_vlan30=False, errdisable=False, native="1")] * 6  # no VLAN-30 exposure              -> Fair
+    + [dict(carry_vlan30=True, errdisable=True, native="99")] * 5   # stacked L1 faults + sole gateway -> Critical
+)
+
+
 def build_collections() -> dict:
-    """hostname -> (platform, {command: output}) for a 2-core + 14-access fleet."""
+    """hostname -> (platform, {command: output}) for a 2-core + many-access fleet with mixed health."""
     cols: dict = {
         "core1": ("ios", copy.deepcopy(fx._CORE1)),
         "core2": ("nxos", copy.deepcopy(fx._CORE2)),
@@ -77,18 +123,18 @@ def build_collections() -> dict:
     }
 
     core1_cdp_extra, core2_cdp_extra = [], []
-    n_access = 14
-    for i in range(2, 2 + n_access):
+    for off, spec in enumerate(_ARCHETYPES):
+        i = off + 2
         name = f"access{i}"
         ip = f"10.0.99.{i + 10}"
         homes_core1 = (i % 2 == 0)
-        native = "1" if (i % 3 != 0) else "99"          # ~1/3 get a native-VLAN mismatch
         plat_i = i % len(_PLATFORMS)                      # rotate platform / EoL tier
 
         if homes_core1:
             core_port = f"GigabitEthernet1/0/{i + 24}"
             cols[name] = ("ios", _clone_access(name, i, "core1", "10.0.99.1", core_port,
-                                               "WS-C3850-24T", native, plat_i))
+                                               "WS-C3850-24T", spec["native"], plat_i,
+                                               carry_vlan30=spec["carry_vlan30"], errdisable=spec["errdisable"]))
             core1_cdp_extra.append(
                 f"-------------------------\nDevice ID: {name}.lab\n"
                 f"Entry address(es):\n  IP address: {ip}\n"
@@ -98,7 +144,8 @@ def build_collections() -> dict:
         else:
             core_port = f"Ethernet1/{i}"
             cols[name] = ("ios", _clone_access(name, i, "core2", "10.0.99.2", core_port,
-                                               "N9K-C93180YC-EX", native, plat_i))
+                                               "N9K-C93180YC-EX", spec["native"], plat_i,
+                                               carry_vlan30=spec["carry_vlan30"], errdisable=spec["errdisable"]))
             core2_cdp_extra.append(
                 f"----------------------------------------\nDevice ID: {name}.lab\n"
                 f"  IP address: {ip}\n"
