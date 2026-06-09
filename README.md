@@ -93,6 +93,14 @@ offline KB data are read relative to the checkout.
   stakeholder-ready slide summary (posture, top risks, keystone devices,
   end-of-support exposure, the wave plan, where to start) generated from the same
   snapshot (unless `--no-pptx`; needs `python-pptx`).
+- `..._design.docx` — the **As-Built Network Design Document** (HLD + LLD): the
+  current design reconstructed from the snapshot (topology tiers, L2/L3 design,
+  resilience, multicast/timing, segmentation, per-device build detail, BoM) plus
+  target-state recommendations (unless `--no-design`; needs `python-docx`).
+- `..._mop.docx` — the per-wave **Method of Procedure**: a maintenance-window
+  cutover template per migration wave (scope, blockers, pre-cutover baseline, the
+  procedure, post-cutover validation and rollback) (unless `--no-mop`; needs
+  `python-docx`).
 
 ## Usage
 
@@ -113,7 +121,8 @@ python COLLECT_PARSE_V3_23_0.py --help
 ```
 
 Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
-`--no-html` / `--no-docx` / `--no-pptx` (skip the explorer / runbook / deck),
+`--no-html` / `--no-docx` / `--no-pptx` / `--no-design` / `--no-mop` (skip the
+explorer / runbook / deck / design doc / MOP),
 `--output FILE` (override the workbook name), `--golden-config FILE` (a config
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace
