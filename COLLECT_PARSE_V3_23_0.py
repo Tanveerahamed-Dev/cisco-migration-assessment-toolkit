@@ -408,7 +408,8 @@ from cisco_toolkit.build import (
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
-from cisco_toolkit.html import snapshot_state, write_html_explorer, write_diff_workbook, redact_snapshot
+from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_workbook,
+                                write_campaign_workbook, redact_snapshot)   # NEW-V3.23.145 (campaign trend)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
@@ -1162,6 +1163,10 @@ def main():
     ap.add_argument("--flow-dst",        default=None, metavar="IP",
                     help="NEW-V3.19: destination endpoint IP for the optional Flow Trace sheet "
                          "(requires --flow-src).")
+    ap.add_argument("--trend",           nargs="+", default=None, metavar="SNAPSHOT",
+                    help="NEW-V3.23.145: migration-campaign trend across a SERIES of snapshot JSONs (>=2, "
+                         "oldest first) -> a trend workbook (Campaign Summary verdict + Timeline w/ chart + "
+                         "Burndown). Skips collection and the template.")
     ap.add_argument("--redact",          action="store_true",
                     help="NEW-V3.23.41: pseudonymize IPs / MACs / serial numbers in the snapshot "
                          "JSON + embedded HTML explorer (consistent, subnet-preserving; hostnames "
@@ -1188,6 +1193,26 @@ def main():
         os.makedirs(os.path.dirname(os.path.abspath(diff_out)) or ".", exist_ok=True)  # FIX-V3.23.103: same missing-output-dir guard
         write_diff_workbook(old_snap, new_snap, diff_out)
         logger.info(f"[OK] Saved diff workbook: {os.path.abspath(diff_out)}")
+        return
+
+    # NEW-V3.23.145: trend mode - migration-campaign trajectory across a SERIES of snapshots, no SSH/template.
+    if args.trend:
+        if len(args.trend) < 2:
+            ap.error("--trend: need at least two snapshot JSON files (oldest first).")
+        snaps = []
+        try:                                              # clean message, not a raw traceback
+            for p in args.trend:
+                with open(p, encoding="utf-8") as f:
+                    snaps.append(json.load(f))
+        except FileNotFoundError as e:
+            ap.error(f"--trend: snapshot file not found: {e.filename}")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            ap.error(f"--trend: could not parse snapshot JSON ({e})")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        trend_out = args.output or f"Migration_Trend_{stamp}.xlsx"
+        os.makedirs(os.path.dirname(os.path.abspath(trend_out)) or ".", exist_ok=True)
+        write_campaign_workbook(snaps, trend_out)
+        logger.info(f"[OK] Saved campaign trend workbook: {os.path.abspath(trend_out)}")
         return
 
     if not args.devices_file:

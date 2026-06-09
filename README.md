@@ -105,6 +105,9 @@ python COLLECT_PARSE_V3_23_0.py \
 # Diff two previously saved snapshots into a change workbook (no SSH, no template)
 python COLLECT_PARSE_V3_23_0.py --compare old_snapshot.json new_snapshot.json
 
+# Trend a SERIES of snapshots across the migration into a campaign workbook (oldest first)
+python COLLECT_PARSE_V3_23_0.py --trend wave0.snapshot.json wave1.snapshot.json wave2.snapshot.json
+
 # See every option
 python COLLECT_PARSE_V3_23_0.py --help
 ```
