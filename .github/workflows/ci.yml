@@ -1,0 +1,84 @@
+name: CI
+
+# Runs the same quality gates the project already enforces by hand on every PR —
+# ruff lint + the full pytest suite (which includes the golden snapshot/Excel-schema
+# contract) — automatically on each push to main and on every pull request. mypy runs
+# as a non-gating report (the repo keeps an intentional report-only typing baseline;
+# see mypy.ini). No live network is touched: the suite is fully offline (--no-collect
+# / synthetic fixtures), so the deliverables are exercised end to end without SSH.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref so a rapid push sequence doesn't queue stale jobs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Ruff lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      - name: ruff check (E4/E7/E9/F — config in ruff.toml)
+        run: python -m ruff check .
+
+  test:
+    name: Tests · py${{ matrix.python-version }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't let one version/OS failing cancel the rest — we want the full grid of results.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        # Floor (README states 3.8+; 3.10 is the realistic modern floor for the deps) through
+        # 3.14, the interpreter the project is actively developed on.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # Also run one job on Windows (the primary dev OS) so path / line-ending / encoding
+        # regressions surface on the platform the goldens were generated on.
+        include:
+          - os: windows-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      # Runtime deps (netmiko/openpyxl + optional python-docx so the runbook path is exercised)
+      # plus the dev/test deps (pytest/ruff/mypy).
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run test suite (incl. golden snapshot + Excel-schema contract)
+        run: python -m pytest
+
+  typecheck:
+    name: mypy (report-only baseline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      # Non-gating: the repo keeps a documented dynamic-typing baseline (mypy.ini), so the report is
+      # printed for visibility but `|| true` keeps the check GREEN — it never blocks a merge. Tighten
+      # incrementally over time by scoping mypy to already-clean modules and dropping the `|| true`.
+      - name: mypy (non-gating — report printed, never fails the build)
+        run: python -m mypy cisco_toolkit COLLECT_PARSE_V3_23_0.py || true

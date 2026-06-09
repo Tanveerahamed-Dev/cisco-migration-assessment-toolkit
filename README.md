@@ -1,5 +1,7 @@
 # Cisco Migration-Assessment Toolkit
 
+[![CI](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/workflows/ci.yml/badge.svg)](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/workflows/ci.yml)
+
 A Python toolkit that connects to Cisco switches (IOS / IOS-XE / NX-OS), parses
 their `show`-command output, and correlates the full **L1 → L4 + cross-layer +
 routing-protocol + security/config** picture into decision-ready outputs for a
