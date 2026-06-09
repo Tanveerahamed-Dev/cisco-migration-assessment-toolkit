@@ -3907,12 +3907,13 @@ function fsimExportSvg(){ if(!FLOWSIM||!MODEL||!POS)return; const J=fsimActiveJ(
   const path=_fsimPathHosts(J); if(path.length<1){_fsimBtnFlash("fsimSvgBtn","✗ no path");return;}
   const pairs=_fsimAdj(path), pset=new Set(path);
   const W=(LOGICAL&&LOGICAL.w)||1000, H=(LOGICAL&&LOGICAL.h)||600, pad=60;
-  let links="",nodes="";
-  (MODEL.links||[]).forEach(Lk=>{const a=POS[Lk.a],b=POS[Lk.b]; if(!a||!b)return; const on=pairs.has([Lk.a,Lk.b].sort().join("|"));
-    links+=`<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${on?"#3b82f6":"#cbd5e1"}" stroke-width="${on?6:2}" opacity="${on?0.95:0.3}"/>`;});
-  (MODEL.hosts||[]).forEach(h=>{const p=POS[h]; if(!p)return; const on=pset.has(h);
-    nodes+=`<circle cx="${p.x}" cy="${p.y}" r="${on?11:5}" fill="${on?"#fff":"#e2e8f0"}" stroke="${on?"#3b82f6":"#cbd5e1"}" stroke-width="${on?3:1.4}"/>`;
-    if(on)nodes+=`<text x="${p.x}" y="${p.y-16}" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a" font-family="sans-serif">${esc(shortName(h))}</text>`;});
+  const inner=_fsimGraphSvg(   // standalone SVG → hardcoded hex (CSS vars don't resolve outside the app)
+    (L,a,b)=>{const on=pairs.has([L.a,L.b].sort().join("|"));
+      return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${on?"#3b82f6":"#cbd5e1"}" stroke-width="${on?6:2}" opacity="${on?0.95:0.3}"/>`;},
+    (h,p)=>{const on=pset.has(h);
+      let s=`<circle cx="${p.x}" cy="${p.y}" r="${on?11:5}" fill="${on?"#fff":"#e2e8f0"}" stroke="${on?"#3b82f6":"#cbd5e1"}" stroke-width="${on?3:1.4}"/>`;
+      if(on)s+=`<text x="${p.x}" y="${p.y-16}" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a" font-family="sans-serif">${esc(shortName(h))}</text>`;
+      return s;});
   const pp=_fsimPoly(path);
   const pkt=pp.ok?`<circle r="8" fill="#3b82f6"><animateMotion dur="${Math.max(2,path.length*0.7).toFixed(1)}s" repeatCount="indefinite" path="${pp.d}"/></circle>`:"";
   const title=`${(J.src&&(J.src.ip||J.src.mac))||"?"} → ${(J.dst&&(J.dst.ip||J.dst.mac))||"?"} · ${esc(J.verdict||"")}`;
@@ -3920,7 +3921,7 @@ function fsimExportSvg(){ if(!FLOWSIM||!MODEL||!POS)return; const J=fsimActiveJ(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-pad} ${-pad-22} ${W+2*pad} ${H+2*pad+22}" width="${W}" height="${H+22}">`+
     `<rect x="${-pad}" y="${-pad-22}" width="${W+2*pad}" height="${H+2*pad+22}" fill="#f8fafc"/>`+
     `<text x="${W/2}" y="${-pad}" text-anchor="middle" font-size="18" font-weight="700" fill="#0f172a" font-family="sans-serif">${title}</text>`+
-    links+nodes+pkt+`</svg>`;
+    inner+pkt+`</svg>`;
   const blob=new Blob([svg],{type:"image/svg+xml;charset=utf-8"}); downloadBlob(blob,"flow-path.svg"); _fsimBtnFlash("fsimSvgBtn","✓ Saved"); }
 /* V3.23.131: pin the current flow, then compare the next one against it (verdict + path diff). */
 function _fsimLabel(J){return `${(J.src&&(J.src.ip||J.src.mac))||"?"}→${(J.dst&&(J.dst.ip||J.dst.mac))||"?"}${J.multicast?"":" "+String(FLOW_PROTO).toUpperCase()+((FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:"")}`;}
@@ -3945,24 +3946,30 @@ function _fsimAdj(p){const s=new Set(); for(let k=0;k+1<p.length;k++)s.add([p[k]
 /* V3.23.137: shared <animateMotion> path builder — skips hosts without a POS entry (guard) so the
    dual-map / SVG export degrade instead of throwing on a missing position. */
 function _fsimPoly(hosts){const p=(hosts||[]).filter(h=>POS[h]); return {ok:p.length>1, d:p.map((h,k)=>(k?"L":"M")+POS[h].x+" "+POS[h].y).join(" ")};}
+/* V3.23.139: one topology-SVG primitive shared by fsimMap / fsimDualMap / fsimExportSvg — iterates
+   MODEL.links then MODEL.hosts (links under nodes), POS-guarded once. Each caller supplies its own
+   per-link / per-node string builder (so the three keep their distinct styling). */
+function _fsimGraphSvg(linkFn,nodeFn){ let links="",nodes="";
+  (MODEL.links||[]).forEach(L=>{const a=POS[L.a],b=POS[L.b]; if(!a||!b)return; links+=(linkFn(L,a,b)||"");});
+  (MODEL.hosts||[]).forEach(h=>{const p=POS[h]; if(!p)return; nodes+=(nodeFn(h,p)||"");});
+  return links+nodes; }
 function fsimMap(J,i){
   if(!MODEL||!POS||!Object.keys(POS).length)return "";
-  const path=[]; (J.nodes||[]).forEach(n=>{if(n.host&&!path.includes(n.host))path.push(n.host);});
+  const path=_fsimPathHosts(J);
   if(!path.length)return "";
   const pset=new Set(path), pairs=_fsimAdj(path);
   const cur=(J.nodes[i]&&J.nodes[i].host)||path[Math.min(i,path.length-1)];
   const W=(LOGICAL&&LOGICAL.w)||1000, H=(LOGICAL&&LOGICAL.h)||600, pad=48;
-  let links="";
-  (MODEL.links||[]).forEach(L=>{const a=POS[L.a],b=POS[L.b]; if(!a||!b)return;
-    const on=pairs.has([L.a,L.b].sort().join("|"));
-    links+=`<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${on?"var(--accent)":"var(--border)"}" stroke-width="${on?6:2}" opacity="${on?0.95:0.22}"/>`;});
-  let nodes="";
-  (MODEL.hosts||[]).forEach(h=>{const p=POS[h]; if(!p)return; const on=pset.has(h), c=(h===cur);
-    nodes+=`<circle cx="${p.x}" cy="${p.y}" r="${c?17:on?11:6}" fill="${c?"var(--accent)":on?"var(--surface)":"var(--surface-2)"}" stroke="${on?"var(--accent)":"var(--border)"}" stroke-width="${on?3:1.4}" opacity="${on?1:0.3}"/>`;
-    if(on)nodes+=`<text x="${p.x}" y="${p.y-19}" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">${esc(shortName(h))}</text>`;
-    if(c)nodes+=`<circle cx="${p.x}" cy="${p.y}" r="17" fill="none" stroke="var(--accent)" stroke-width="2.5"><animate attributeName="r" values="17;30;17" dur="1.5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.7;0;0.7" dur="1.5s" repeatCount="indefinite"/></circle>`;});
+  const inner=_fsimGraphSvg(
+    (L,a,b)=>{const on=pairs.has([L.a,L.b].sort().join("|"));
+      return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${on?"var(--accent)":"var(--border)"}" stroke-width="${on?6:2}" opacity="${on?0.95:0.22}"/>`;},
+    (h,p)=>{const on=pset.has(h), c=(h===cur);
+      let s=`<circle cx="${p.x}" cy="${p.y}" r="${c?17:on?11:6}" fill="${c?"var(--accent)":on?"var(--surface)":"var(--surface-2)"}" stroke="${on?"var(--accent)":"var(--border)"}" stroke-width="${on?3:1.4}" opacity="${on?1:0.3}"/>`;
+      if(on)s+=`<text x="${p.x}" y="${p.y-19}" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">${esc(shortName(h))}</text>`;
+      if(c)s+=`<circle cx="${p.x}" cy="${p.y}" r="17" fill="none" stroke="var(--accent)" stroke-width="2.5"><animate attributeName="r" values="17;30;17" dur="1.5s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.7;0;0.7" dur="1.5s" repeatCount="indefinite"/></circle>`;
+      return s;});
   return `<div class="fsim-maplbl">Path on the topology · hop ${Math.min(i + 1, path.length)}/${path.length}</div>`+
-    `<svg viewBox="${-pad} ${-pad} ${W + 2 * pad} ${H + 2 * pad}" class="fsim-svg" preserveAspectRatio="xMidYMid meet" aria-label="flow path on the network topology">${links}${nodes}</svg>`;
+    `<svg viewBox="${-pad} ${-pad} ${W + 2 * pad} ${H + 2 * pad}" class="fsim-svg" preserveAspectRatio="xMidYMid meet" aria-label="flow path on the network topology">${inner}</svg>`;
 }
 /* V3.23.134: BOTH directions on one map — forward (accent) + return (watch), with a packet gliding each
    way at once. Legs traversed by only ONE direction are dashed/thick = the asymmetry made visual. */
@@ -3974,17 +3981,15 @@ function fsimDualMap(Jf,Jr){
   const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
   const onSet=new Set([...fwd,...ret]);
   const W=(LOGICAL&&LOGICAL.w)||1000, H=(LOGICAL&&LOGICAL.h)||600, pad=48;
-  let links="";
-  (MODEL.links||[]).forEach(L=>{const a=POS[L.a],b=POS[L.b]; if(!a||!b)return;
-    const sg=[L.a,L.b].sort().join("|"); const onF=fSet.has(sg), onR=rSet.has(sg);
-    if(!onF&&!onR){links+=`<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--border)" stroke-width="2" opacity="0.2"/>`;return;}
-    const both=onF&&onR, only=!both;
-    const col=both?"var(--ok)":onF?"var(--accent)":"var(--watch)";
-    links+=`<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${col}" stroke-width="${only?7:5}" opacity="0.95"${only?' stroke-dasharray="9 6"':""}/>`;});
-  let nodes="";
-  (MODEL.hosts||[]).forEach(h=>{const p=POS[h]; if(!p)return; const on=onSet.has(h);
-    nodes+=`<circle cx="${p.x}" cy="${p.y}" r="${on?10:5}" fill="${on?"var(--surface)":"var(--surface-2)"}" stroke="${on?"var(--accent)":"var(--border)"}" stroke-width="${on?2.6:1.3}" opacity="${on?1:0.28}"/>`;
-    if(on)nodes+=`<text x="${p.x}" y="${p.y-16}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--text)">${esc(shortName(h))}</text>`;});
+  const inner=_fsimGraphSvg(
+    (L,a,b)=>{const sg=[L.a,L.b].sort().join("|"); const onF=fSet.has(sg), onR=rSet.has(sg);
+      if(!onF&&!onR)return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="var(--border)" stroke-width="2" opacity="0.2"/>`;
+      const both=onF&&onR, only=!both, col=both?"var(--ok)":onF?"var(--accent)":"var(--watch)";
+      return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${col}" stroke-width="${only?7:5}" opacity="0.95"${only?' stroke-dasharray="9 6"':""}/>`;},
+    (h,p)=>{const on=onSet.has(h);
+      let s=`<circle cx="${p.x}" cy="${p.y}" r="${on?10:5}" fill="${on?"var(--surface)":"var(--surface-2)"}" stroke="${on?"var(--accent)":"var(--border)"}" stroke-width="${on?2.6:1.3}" opacity="${on?1:0.28}"/>`;
+      if(on)s+=`<text x="${p.x}" y="${p.y-16}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--text)">${esc(shortName(h))}</text>`;
+      return s;});
   const pf=_fsimPoly(fwd), pr=_fsimPoly(ret);
   let pkts="";
   if(!reduce){
@@ -3993,7 +3998,7 @@ function fsimDualMap(Jf,Jr){
   }
   const sym=Jr?flowSymmetry(Jf,Jr):null;
   const lbl=`<div class="fsim-maplbl">Forward <span style="color:var(--accent)">▮</span> + return <span style="color:var(--watch)">▮</span> · ${sym?(sym.symmetric?"symmetric":"<b style='color:var(--watch)'>ASYMMETRIC — dashed legs differ</b>"):"return path"}</div>`;
-  return lbl+`<svg viewBox="${-pad} ${-pad} ${W+2*pad} ${H+2*pad}" class="fsim-svg" preserveAspectRatio="xMidYMid meet" aria-label="forward and return paths on the topology">${links}${nodes}${pkts}</svg>`;
+  return lbl+`<svg viewBox="${-pad} ${-pad} ${W+2*pad} ${H+2*pad}" class="fsim-svg" preserveAspectRatio="xMidYMid meet" aria-label="forward and return paths on the topology">${inner}${pkts}</svg>`;
 }
 /* V3.23.132: ENCAPSULATION / PDU header inspector — synthesize the L2/L3/L4 headers as the packet
    crosses each hop and show what every device REWRITES: MAC rewrite + TTL−1 at routed hops, 802.1Q
@@ -4219,7 +4224,7 @@ function fmxMutateSnap(host,prefix){ const routes=Object.assign({},(SNAP&&SNAP.r
   routes[host]=(routes[host]||[]).filter(r=>r.prefix!==prefix); return Object.assign({},SNAP,{routes}); }
 function fmxWithSnap(clone,fn){ const orig=SNAP; try{ SNAP=clone; return fn(); } finally{ SNAP=orig; } }
 /* N×N verdict grid for the CURRENT MODEL (caller swaps it for what-if). */
-function fmxCompute(reps){
+function fmxCompute(reps,denySpec){
   const n=reps.length, grid=[];
   for(let i=0;i<n;i++){ const row=[];
     for(let j=0;j<n;j++){ if(i===j){row.push({self:true});continue;}
@@ -4227,7 +4232,10 @@ function fmxCompute(reps){
       (F.aclVerdicts||[]).forEach(v=>{ if(v.verdict==="deny")acl="deny"; else if(v.verdict==="indeterminate"&&acl!=="deny")acl="indeterminate"; });
       // V3.23.137: effective end-to-end reachability folds in the L4 ACL — an ACL deny is BLOCKED (matches the
       // single-flow why-ladder). l3 is kept for the tooltip/glyph; indeterminate stays reachable-with-caveat.
-      const l3=!!F.reachable, reach=l3&&acl!=="deny";
+      const l3=!!F.reachable;
+      // V3.23.138: a hypothetical deny ACE (for the current L4 tuple) from src VLAN→dst VLAN denies any matching flow.
+      if(denySpec&&l3&&(denySpec.srcVlan==="any"||+denySpec.srcVlan===reps[i].vlan)&&(denySpec.dstVlan==="any"||+denySpec.dstVlan===reps[j].vlan))acl="deny";
+      const reach=l3&&acl!=="deny";
       row.push({reach,l3,verdict:F.verdict,unknown:F.verdict==="UNKNOWN",acl}); }
     grid.push(row); }
   for(let i=0;i<n;i++)for(let j=0;j<n;j++){ if(i===j)continue; grid[i][j].asym=(!!grid[i][j].reach)!==(!!grid[j][i].reach); }
@@ -4245,9 +4253,12 @@ function openFlowMatrix(){
   renderFlowMatrix();
 }
 function closeFlowMatrix(){ FMX=null; const el=document.getElementById("flowmatrix"); if(el)el.hidden=true; document.body.style.overflow=""; }
-function fmxSetWhatif(kind){ if(!FMX)return; FMX.whatif={kind,arg:"",rhost:""}; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
+function fmxSetWhatif(kind){ if(!FMX)return; FMX.whatif={kind,arg:"",rhost:"",asrc:"any",adst:""}; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
 function fmxSetArg(arg){ if(!FMX)return; FMX.whatif.arg=arg; fmxApply(); }
 function fmxSetRouteHost(h){ if(!FMX)return; FMX.whatif.rhost=h; FMX.whatif.arg=""; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
+/* V3.23.138: add-a-deny-ACE what-if — deny the current L4 tuple from src VLAN (or any) → dst VLAN. */
+function fmxSetAclSrc(v){ if(!FMX)return; FMX.whatif.asrc=v; if(FMX.whatif.adst){FMX.whatif.arg=v+"|"+FMX.whatif.adst; fmxApply();} else renderFlowMatrix(); }
+function fmxSetAclDst(v){ if(!FMX)return; FMX.whatif.adst=v; if(v){FMX.whatif.arg=(FMX.whatif.asrc||"any")+"|"+v; fmxApply();} else {FMX.whatif.arg="";FMX.mut=null;FMX.diff=null;renderFlowMatrix();} }
 /* V3.23.137: change the L4 tuple the matrix evaluates ACLs against — recomputes baseline (+ active what-if). */
 function fmxSetTuple(proto,dport){ if(!FMX)return;
   if(proto)FLOW_PROTO=proto;
@@ -4261,6 +4272,8 @@ function fmxApply(){ if(!FMX)return; const wf=FMX.whatif;
   else if(wf.kind==="link"){ const c=fmxMutateModel({downHosts:new Set(),downLinks:new Set([wf.arg])}); runner=()=>fmxWithModel(c,()=>fmxCompute(FMX.reps)); }
   else if(wf.kind==="route"){ const k=wf.arg.indexOf("|"); const host=wf.arg.slice(0,k), prefix=wf.arg.slice(k+1);
     if(host&&prefix){ const sn=fmxMutateSnap(host,prefix); runner=()=>fmxWithSnap(sn,()=>fmxCompute(FMX.reps)); } }
+  else if(wf.kind==="acl"){ const k=wf.arg.indexOf("|"); const sv=wf.arg.slice(0,k), dv=wf.arg.slice(k+1);
+    if(dv){ const denySpec={srcVlan:sv||"any",dstVlan:dv}; runner=()=>fmxCompute(FMX.reps,denySpec); } }
   if(!runner){FMX.mut=null;FMX.diff=null;renderFlowMatrix();return;}
   FMX.mut=runner();
   // diff vs baseline
@@ -4278,6 +4291,7 @@ function fmxCopy(){ if(!FMX)return; const reps=FMX.reps, g=(FMX.mut||FMX.base);
   const wfLbl=FMX.whatif.kind==="host"?"fail switch "+shortName(FMX.whatif.arg)
     :FMX.whatif.kind==="link"?"fail link "+FMX.whatif.arg
     :FMX.whatif.kind==="route"?"remove route "+FMX.whatif.arg.replace("|"," ")
+    :FMX.whatif.kind==="acl"?("deny "+String(FLOW_PROTO).toUpperCase()+((FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:"")+" "+FMX.whatif.arg.replace("|"," → V"))
     :FMX.whatif.kind;
   const L=[`Reachability matrix${FMX.mut?` — WHAT-IF: ${wfLbl}`:""}`,
     `Rows = source VLAN, Cols = destination VLAN. R=reachable X=blocked ?=unknown`,""];
@@ -4304,17 +4318,22 @@ function renderFlowMatrix(){ const S=FMX; if(!S)return;
   const rHostOpts=`<option value="">— pick a router —</option>`+rHosts.map(h=>`<option value="${esc(h)}"${S.whatif.rhost===h?" selected":""}>${esc(shortName(h))}</option>`).join("");
   const rRoutes=(S.whatif.rhost&&SNAP.routes&&SNAP.routes[S.whatif.rhost])?SNAP.routes[S.whatif.rhost]:[];
   const rPfxOpts=`<option value="">— pick a route/prefix —</option>`+rRoutes.map(r=>{const a=S.whatif.rhost+"|"+r.prefix;return `<option value="${esc(a)}"${S.whatif.arg===a?" selected":""}>${esc(r.prefix)} (${esc(r.source||"route")}${r.next_hop?" → "+esc(r.next_hop):""})</option>`;}).join("");
+  const aclSrcOpts=`<option value="any"${S.whatif.asrc==="any"?" selected":""}>Any src VLAN</option>`+reps.map(r=>`<option value="${r.vlan}"${S.whatif.asrc===String(r.vlan)?" selected":""}>src V${r.vlan}</option>`).join("");
+  const aclDstOpts=`<option value="">— dst VLAN —</option>`+reps.map(r=>`<option value="${r.vlan}"${S.whatif.adst===String(r.vlan)?" selected":""}>dst V${r.vlan}</option>`).join("");
+  const l4tuple=String(FLOW_PROTO).toUpperCase()+((FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:"");
   const tuple=`<div class="fmx-tuple"><span class="fsim-tuplbl">What-if</span>`+
     `<select onchange="fmxSetWhatif(this.value)">`+
       `<option value="none"${S.whatif.kind==="none"?" selected":""}>None (baseline)</option>`+
       `<option value="host"${S.whatif.kind==="host"?" selected":""}>Fail a switch</option>`+
       `<option value="link"${S.whatif.kind==="link"?" selected":""}>Fail a link</option>`+
       `<option value="route"${S.whatif.kind==="route"?" selected":""}>Remove a route/prefix</option>`+
+      `<option value="acl"${S.whatif.kind==="acl"?" selected":""}>Add a deny ACE</option>`+
     `</select>`+
     (S.whatif.kind==="host"?`<select onchange="fmxSetArg(this.value)">${hostOpts}</select>`:"")+
     (S.whatif.kind==="link"?`<select onchange="fmxSetArg(this.value)">${linkOpts}</select>`:"")+
     (S.whatif.kind==="route"?`<select onchange="fmxSetRouteHost(this.value)">${rHostOpts}</select>`+(S.whatif.rhost?`<select onchange="fmxSetArg(this.value)">${rPfxOpts}</select>`:""):"")+
-    `<span class="faint">${S.whatif.kind==="route"?"removes that prefix from the router's table → flows that relied on it (e.g. via the default route) BREAK; one-directional removals surface as ⇄ asymmetry":"re-traces every flow with that element down → red-outlined cells are flows that BREAK"}</span>`+
+    (S.whatif.kind==="acl"?`<span class="faint" style="font-weight:700">deny ${esc(l4tuple)}</span><select onchange="fmxSetAclSrc(this.value)">${aclSrcOpts}</select><span class="faint">→</span><select onchange="fmxSetAclDst(this.value)">${aclDstOpts}</select>`:"")+
+    `<span class="faint">${S.whatif.kind==="route"?"removes that prefix from the router's table → flows that relied on it (e.g. via the default route) BREAK; one-directional removals surface as ⇄ asymmetry":S.whatif.kind==="acl"?"a hypothetical deny ACE (for the L4 tuple at right) → matching flows BREAK (⊘); a one-directional ACE surfaces as ⇄ asymmetry":"re-traces every flow with that element down → red-outlined cells are flows that BREAK"}</span>`+
     `<span class="fsim-tuplbl" style="margin-left:auto">L4 eval</span>`+
     `<select onchange="fmxSetTuple(this.value,null)">`+["tcp","udp","icmp","ip"].map(p=>`<option value="${p}"${FLOW_PROTO===p?" selected":""}>${p.toUpperCase()}</option>`).join("")+`</select>`+
     `<input type="number" min="1" max="65535" placeholder="dst port" title="ACL is evaluated for this proto/port across every cell" value="${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?FLOW_DPORT:""}" ${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"":"disabled"} onchange="fmxSetTuple(null,this.value)">`+
