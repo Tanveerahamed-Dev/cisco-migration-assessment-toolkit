@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, bandColor, readyColor, sevColor, SnapshotMeta } from "../api";
-import { Bars, ErrorBox, Gauge, Loading, SegBar, SevChip, useAsync } from "../components/ui";
+import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
 import CutoverPlanner from "../components/CutoverPlanner";
 
@@ -183,12 +183,12 @@ export default function SnapshotPage() {
         </div>
         <div className={`panel kpi ${s.n_critical > 0 ? "crit" : "ok"}`}>
           <div className="l">Critical-band switches</div>
-          <div className="v">{s.n_critical}</div>
+          <div className="v"><CountUp value={s.n_critical} /></div>
           <div className="hint">of {s.n_switches} switches</div>
         </div>
         <div className={`panel kpi ${HEALTH_TONE(100 - Math.min(100, s.punchlist.crit_high * 8))}`}>
           <div className="l">Punch-list (crit/high)</div>
-          <div className="v">{s.punchlist.crit_high}<span className="faint" style={{ fontSize: 16, fontWeight: 600 }}> / {s.punchlist.total}</span></div>
+          <div className="v"><CountUp value={s.punchlist.crit_high} /><span className="faint" style={{ fontSize: 16, fontWeight: 600 }}> / <CountUp value={s.punchlist.total} /></span></div>
           <div className="hint">prioritised actions</div>
         </div>
         <div className={`panel kpi ${s.readiness["NOT READY"] > 0 ? "crit" : s.readiness.CAUTION > 0 ? "watch" : "ok"}`}>
@@ -238,7 +238,9 @@ export default function SnapshotPage() {
                 </button>
               ))}
             </div>
-            <SectionPane snapId={sid} name={activeTab} />
+            <div className="tabfade" key={activeTab}>
+              <SectionPane snapId={sid} name={activeTab} />
+            </div>
           </div>
         )}
       </div>
