@@ -34,8 +34,33 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set
 
-_SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
-_SEV_RANK = {s: i for i, s in enumerate(_SEVERITY_ORDER)}
+from . import summary
+
+# Single source of truth for the severity vocabulary — reuse summary's rather than redeclaring it, so a
+# new/renamed band can't be ranked here (unknown -> 99 = sorted last) while the cockpit ranks it right.
+_SEV_RANK = {s: i for i, s in enumerate(summary.SEVERITY_ORDER)}
+
+
+def _int(v: Any, default: int = 0) -> int:
+    """Best-effort int from a snapshot value — robust to None/str/garbage in an uploaded snapshot."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_hosts(v: Any) -> Set[str]:
+    """Coerce a snapshot 'hosts'/'switches' field to a set of host strings.
+
+    Robust to a bare string (treated as a single host, NOT its characters — ``set('sw1')`` would
+    otherwise become ``{'s','w','1'}`` and silently drop the match, e.g. dropping a Critical
+    cross-layer hit so the wave is no longer gated NO-GO) and to non-iterables in a malformed snapshot.
+    """
+    if isinstance(v, str):
+        return {v} if v else set()
+    if isinstance(v, (list, tuple, set)):
+        return {str(x) for x in v if x}
+    return set()
 
 # Gate vocabulary, worst -> best. The fleet verdict is the worst wave gate.
 GATE_GO = "GO"
@@ -54,9 +79,9 @@ def _by_group(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 def _wave_switches(seq: Dict[str, Any], readiness: Optional[Dict[str, Any]]) -> List[str]:
     """All switches in a wave — union of the sequencing buckets, backfilled from readiness."""
-    sw = set(seq.get("make_before_break") or []) | set(seq.get("hard_cutover") or [])
+    sw = _as_hosts(seq.get("make_before_break")) | _as_hosts(seq.get("hard_cutover"))
     if not sw and readiness:
-        sw = set(readiness.get("switches") or [])
+        sw = _as_hosts(readiness.get("switches"))
     return sorted(sw)
 
 
@@ -65,21 +90,21 @@ def _match_move_group(switches: Set[str], move_groups: List[Dict[str, Any]]) -> 
     best: Dict[str, Any] = {}
     best_overlap = 0
     for mg in move_groups:
-        overlap = len(switches & set(mg.get("switches") or []))
+        overlap = len(switches & _as_hosts(mg.get("switches")))
         if overlap > best_overlap:
             best, best_overlap = mg, overlap
     return best
 
 
 def _keystone_hosts(snap: Dict[str, Any], top: int = 8) -> Set[str]:
-    """The few hosts the fleet most depends on — engine keystones, else worst failure_impact."""
-    eb = snap.get("executive_brief") or {}
-    ks = eb.get("keystones")
-    if isinstance(ks, list) and ks:
-        return {k.get("host") for k in ks if isinstance(k, dict) and k.get("host")}
-    fi = sorted(_rows(snap, "failure_impact"),
-                key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99), -int(r.get("stranded", 0) or 0)))
-    return {r.get("host") for r in fi[:top] if r.get("host")}
+    """The few hosts the fleet most depends on — reuse summary's keystone heuristic (don't re-derive),
+    so the cockpit's keystone list and the plan's per-wave keystones can't drift apart."""
+    out: Set[str] = set()
+    for k in summary._keystones(snap, top):
+        host = k.get("host") if isinstance(k, dict) else None
+        if host:
+            out.add(host)
+    return out
 
 
 def _worst_blast_radius(switches: Set[str], failure_impact: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -87,12 +112,12 @@ def _worst_blast_radius(switches: Set[str], failure_impact: List[Dict[str, Any]]
     cands = [r for r in failure_impact if r.get("host") in switches]
     if not cands:
         return None
-    worst = min(cands, key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99), -int(r.get("stranded", 0) or 0)))
+    worst = min(cands, key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99), -_int(r.get("stranded"))))
     return {
         "host": worst.get("host", ""),
         "severity": worst.get("severity", ""),
-        "stranded": int(worst.get("stranded", 0) or 0),
-        "vlans_impacted": int(worst.get("vlans_impacted", 0) or 0),
+        "stranded": _int(worst.get("stranded")),
+        "vlans_impacted": _int(worst.get("vlans_impacted")),
         "detail": worst.get("detail", ""),
     }
 
@@ -103,7 +128,7 @@ def _critical_crosslayer(switches: Set[str], cross_layer: List[Dict[str, Any]]) 
     for cl in cross_layer:
         if cl.get("severity") != "Critical":
             continue
-        if switches & set(cl.get("hosts") or []):
+        if switches & _as_hosts(cl.get("hosts")):
             out.append({
                 "id": cl.get("id", ""),
                 "title": cl.get("title", ""),
@@ -268,10 +293,10 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         switches = set(_wave_switches(seq, readiness))
         mg = _match_move_group(switches, move_groups)
 
-        hard_ep = int(seq.get("hard_cutover_endpoints", 0) or 0)
-        endpoints = int(mg.get("endpoints", 0) or 0) or hard_ep
-        n_fail = int((readiness or {}).get("n_fail", 0) or 0)
-        n_warn = int((readiness or {}).get("n_warn", 0) or 0)
+        hard_ep = _int(seq.get("hard_cutover_endpoints"))
+        endpoints = _int(mg.get("endpoints")) or hard_ep
+        n_fail = _int((readiness or {}).get("n_fail"))
+        n_warn = _int((readiness or {}).get("n_warn"))
 
         blockers = _blockers(readiness)
         crit_cl = _critical_crosslayer(switches, cross_layer)

@@ -121,8 +121,10 @@ def test_cutover_plan(client):
     s = plan["summary"]
     assert s["verdict"] in ("GO", "CONDITIONAL GO", "NO-GO")
     assert s["n_waves"] == len(plan["waves"]) >= 1
-    # make-before-break + hard-cutover account for every migrated device
-    assert s["n_make_before_break"] + s["n_hard_cutover"] == s["n_devices"]
+    # n_devices is corroborated against per-wave bucket membership (an independent recount, not its own
+    # definition) — this would fail if a switch were double-counted across buckets/waves.
+    bucket_devices = {sw for w in plan["waves"] for sw in (w["make_before_break"] + w["hard_cutover"])}
+    assert s["n_devices"] == len(bucket_devices)
 
     waves = plan["waves"]
     # pilot-first sequencing: order is monotonic and never schedules a worse gate before a better one
@@ -148,6 +150,50 @@ def test_cutover_plan(client):
     assert client.get("/api/snapshots/999999/cutover").status_code == 404
 
 
+def test_cutover_gate_critical_crosslayer_only():
+    """A wave that passes every readiness check but is hit by a Critical cross-layer must still be
+    NO-GO — the cross-layer-only gating path the API fixture (which fails on readiness) doesn't reach."""
+    from backend import cutover
+
+    snap = {
+        "devices": {"sw1": {}, "sw2": {}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1", "sw2"],
+                             "hard_cutover": [], "hard_cutover_endpoints": 0}],
+        "migration_readiness": [{"group": "G1", "switches": ["sw1", "sw2"], "readiness": "READY",
+                                 "n_fail": 0, "n_warn": 0, "checks": []}],
+        "move_groups": [{"switches": ["sw1", "sw2"], "endpoints": 10}],
+        "cross_layer": [{"id": "CL-1", "severity": "Critical", "title": "x", "layers": "L1+L3",
+                         "recommendation": "fix", "hosts": ["sw1"]}],
+    }
+    plan = cutover.build_plan(snap)
+    wave = plan["waves"][0]
+    assert wave["n_fail"] == 0 and wave["critical_crosslayer"]      # readiness clean, cross-layer hit
+    assert wave["gate"] == "NO-GO"
+    assert plan["summary"]["verdict"] == "NO-GO"
+
+
+def test_cutover_robust_to_malformed_snapshot():
+    """build_plan must degrade gracefully on a malformed (e.g. uploaded) snapshot: a string `hosts`
+    field still matches (not split into characters), and non-numeric counters don't crash."""
+    from backend import cutover
+
+    snap = {
+        "devices": {"sw1": {}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1"], "hard_cutover": [],
+                             "hard_cutover_endpoints": None}],
+        "migration_readiness": [{"group": "G1", "switches": ["sw1"], "readiness": "READY",
+                                 "n_fail": None, "n_warn": None, "checks": []}],
+        "cross_layer": [{"id": "CL-1", "severity": "Critical", "title": "x", "hosts": "sw1"}],  # string
+        "failure_impact": [{"host": "sw1", "severity": "High", "stranded": None, "vlans_impacted": "3"}],
+    }
+    plan = cutover.build_plan(snap)              # must not raise
+    wave = plan["waves"][0]
+    assert wave["gate"] == "NO-GO"               # the string-host Critical cross-layer still gates
+    assert wave["critical_crosslayer"]
+    assert wave["blast_radius"]["stranded"] == 0          # None coerced, not crashed
+    assert wave["blast_radius"]["vlans_impacted"] == 3    # "3" coerced
+
+
 def test_deliverables(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     cat = client.get("/api/meta").json()["deliverables"]
@@ -162,6 +208,28 @@ def test_deliverables(client):
         else:
             assert r.status_code == 503
     assert client.get(f"/api/snapshots/{snap_id}/deliverable/nope").status_code == 400
+
+
+def test_cutover_deliverable_content(client):
+    """The Cutover Plan DOCX is the one deliverable with no engine-side test — validate it actually
+    renders the plan (headings + tables), not just that it's a >1KB zip."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/deliverable/cutover")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert r.status_code == 200, r.text
+
+    import io
+
+    from docx import Document
+
+    doc = Document(io.BytesIO(r.content))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Migration Cutover Plan" in text            # title page
+    assert "Recommended wave sequence" in text         # §2 wave table section
+    assert "Methodology" in text                       # grounding section
+    assert "Run-of-show" in text                       # per-wave run-of-show heading
+    assert len(doc.tables) >= 2                         # summary + sequence tables at minimum
 
 
 def test_bad_upload_rejected(client):
