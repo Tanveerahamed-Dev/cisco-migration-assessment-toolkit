@@ -1619,13 +1619,17 @@ function deviceModel(h){const d=SNAP&&SNAP.devices&&SNAP.devices[h]; return d&&d
 function endpointsOf(h){const out=[];const ifs=SNAP&&SNAP.interfaces&&SNAP.interfaces[h];if(!ifs)return out;
   for(const p of Object.keys(ifs)){const d=ifs[p];if(isAccessEndpoint(d)){
     const macs=(d.end_host_mac||"").split(/[,\s]+/).filter(Boolean);
-    out.push({host:h,port:p,vlan:d.vlan||"",type:d.switchport_mode||"",ip:(d.end_host_ip||"").trim(),mac:macs[0]||"",macs});}}
+    // V3.23.141: end_host_ip may be a list aligned with the MACs (V3.23.140). The flow sim / matrix
+    // parse ep.ip as a SINGLE address, so expose the first real IP as `ip` and keep the full list in `ips`.
+    const ips=(d.end_host_ip||"").split(/[,\s]+/).filter(x=>x&&x!=="-");
+    out.push({host:h,port:p,vlan:d.vlan||"",type:d.switchport_mode||"",ip:ips[0]||"",ips,mac:macs[0]||"",macs});}}
   return out;}
 /* ---- endpoint index + selection (PHASE A: endpoint intelligence) ---- */
 function buildEndpointIndex(){EPALL=[]; if(!SNAP||!SNAP.interfaces)return;
   for(const h of Object.keys(SNAP.interfaces))for(const e of endpointsOf(h))EPALL.push(e);}
 function findEndpointByIpMac(q){q=(q||"").trim().toLowerCase(); if(!q)return null;
   for(const e of EPALL){if((e.ip||"").toLowerCase()===q)return e;
+    if((e.ips||[]).some(x=>(x||"").toLowerCase()===q))return e;   // V3.23.141: match ANY of a multi-IP port's addresses
     for(const m of e.macs)if((m||"").toLowerCase()===q)return e;}
   return null;}
 function selectEndpoint(e){if(!e)return; EPSEL=e; REACH=endpointReach(e); SEL=null; repaint(); renderDrawer();
@@ -3430,7 +3434,7 @@ function drawCompare(){
 /* ---- FLOW ---- */
 function flowRiskTok(r){const m={LOW:"ok",MEDIUM:"watch",HIGH:"risk",CRITICAL:"crit"};return m[(r||"").toUpperCase()]||"neutral";}
 function drawFlow(){
-  const opts=[...new Set(EPALL.filter(e=>e.ip).map(e=>e.ip))].sort().map(ip=>`<option value="${esc(ip)}">`).join("");
+  const opts=[...new Set(EPALL.flatMap(e=>(e.ips&&e.ips.length)?e.ips:(e.ip?[e.ip]:[])))].sort().map(ip=>`<option value="${esc(ip)}">`).join("");   // V3.23.141: list every IP of multi-IP ports
   const inStyle="background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:3px 8px;font:inherit;font-size:12px;width:160px";
   const slot=(label,ep,id)=>`<div class="kv"><span class="k">${label}</span><input class="epin mono" id="${id}" list="eplist" autocomplete="off" placeholder="IP or MAC" style="${inStyle}" value="${esc(ep?(ep.ip||ep.mac):"")}"></div>`;
   const l4on=(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp");
