@@ -15,6 +15,12 @@
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --radius: 12px;
   --radius-sm: 8px;
+  /* motion tokens — one asymmetric ease-out (quick start, slow settle) used everywhere; durations
+     follow standard UI guidance (micro 120-220ms, transitions 200-500ms). */
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --motion-fast: .14s;
+  --motion: .26s;
+  --motion-reveal: .42s;
 }
 [data-theme="light"] {
   --bg: #eef1f5; --surface: #ffffff; --surface-2: #f3f6fa; --surface-3: #e9eef4;

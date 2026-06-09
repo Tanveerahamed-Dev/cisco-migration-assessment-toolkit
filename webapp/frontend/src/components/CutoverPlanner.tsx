@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { api, CutoverWave, gateColor } from "../api";
-import { ErrorBox, Loading, SegBar, SevChip, useAsync } from "./ui";
+import { CountUp, ErrorBox, Loading, SegBar, SevChip, useAsync } from "./ui";
 
 /* The cutover-plan panel: a gated, pilot-first run-of-show synthesized server-side from the
    snapshot's migration model (waves, readiness checks, blast radius, validation, remediation). */
@@ -108,7 +108,7 @@ function WaveCard({ w }: { w: CutoverWave }) {
       </div>
 
       {open && (
-        <div style={{ marginTop: 12 }}>
+        <div className="ros-reveal" style={{ marginTop: 12 }}>
           <div className="ros">
             {w.run_of_show.map((s, i) => (
               <div className="step" key={i}>
@@ -201,10 +201,10 @@ export default function CutoverPlanner({ snapId }: { snapId: number }) {
       <div className="dim" style={{ fontSize: 13, margin: "10px 0 16px", maxWidth: 760 }}>{s.statement}</div>
 
       <div className="row-flex" style={{ gap: 26, padding: "14px 0", borderTop: "1px solid var(--border-faint)", borderBottom: "1px solid var(--border-faint)" }}>
-        <Stat value={s.n_waves} label="waves" />
-        <Stat value={s.n_devices} label="devices" />
-        <Stat value={s.n_make_before_break} label="make-before-break" color="var(--ok)" />
-        <Stat value={`${s.n_hard_cutover}`} label={`hard-cutover · ${s.hard_cutover_endpoints} ep`} color="var(--risk)" />
+        <Stat value={<CountUp value={s.n_waves} />} label="waves" />
+        <Stat value={<CountUp value={s.n_devices} />} label="devices" />
+        <Stat value={<CountUp value={s.n_make_before_break} />} label="make-before-break" color="var(--ok)" />
+        <Stat value={<CountUp value={s.n_hard_cutover} />} label={`hard-cutover · ${s.hard_cutover_endpoints} ep`} color="var(--risk)" />
         <Stat value={s.est_window_label} label="est. total window" color={s.est_window_minutes ? "var(--risk)" : "var(--ok)"} />
         <span style={{ flex: 1 }} />
         <div className="row-flex" style={{ gap: 8 }}>
