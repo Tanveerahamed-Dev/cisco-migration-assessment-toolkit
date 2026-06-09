@@ -39,11 +39,19 @@ export interface Campaign {
   snapshots?: SnapshotMeta[];
 }
 
+export interface Deliverable {
+  key: string;
+  label: string;
+  ext: string;
+  available: boolean;
+}
+
 export interface Meta {
   engine_schema: string;
   severity_order: string[];
   bands: string[];
   section_labels: Array<{ key: string; label: string }>;
+  deliverables: Deliverable[];
 }
 
 async function j<T>(r: Response): Promise<T> {
@@ -90,6 +98,7 @@ export const api = {
   graph: (id: number) =>
     fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
+  deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) =>
     fetch("/api/compare", {
       method: "POST",
