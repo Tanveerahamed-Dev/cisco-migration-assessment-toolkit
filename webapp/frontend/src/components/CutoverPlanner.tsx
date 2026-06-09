@@ -170,6 +170,8 @@ function WaveCard({ w }: { w: CutoverWave }) {
 
 export default function CutoverPlanner({ snapId }: { snapId: number }) {
   const { data, error, loading } = useAsync(() => api.cutover(snapId), [snapId]);
+  const { data: meta } = useAsync(() => api.meta(), []);
+  const canDownload = (meta?.deliverables || []).some((d) => d.key === "cutover" && d.available);
   if (loading) return <div className="panel"><Loading label="Building cutover plan…" /></div>;
   if (error) return <ErrorBox msg={error} />;
   const plan = data!;
@@ -187,7 +189,14 @@ export default function CutoverPlanner({ snapId }: { snapId: number }) {
     <div className="panel pad-lg">
       <div className="spread" style={{ alignItems: "flex-start", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
         <h3 style={{ marginBottom: 0 }}>Cutover plan · run-of-show</h3>
-        <GateBadge gate={s.verdict} big />
+        <div className="row-flex" style={{ gap: 10 }}>
+          {canDownload && (
+            <a className="btn" href={api.deliverableUrl(snapId, "cutover")} download>
+              ↓ Download plan <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>DOCX</span>
+            </a>
+          )}
+          <GateBadge gate={s.verdict} big />
+        </div>
       </div>
       <div className="dim" style={{ fontSize: 13, margin: "10px 0 16px", maxWidth: 760 }}>{s.statement}</div>
 
