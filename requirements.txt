@@ -5,3 +5,6 @@ openpyxl>=3.1,<4
 # Optional: enables the Assessment & Migration Runbook (DOCX) deliverable. Without it the run still
 # produces the workbook + explorer + snapshot and logs that the runbook was skipped (or pass --no-docx).
 python-docx>=1.1,<2   # optional
+# Optional: enables the Executive presentation deck (PPTX) deliverable. Without it the run still produces
+# the other deliverables and logs that the deck was skipped (or pass --no-pptx).
+python-pptx>=0.6,<2   # optional
