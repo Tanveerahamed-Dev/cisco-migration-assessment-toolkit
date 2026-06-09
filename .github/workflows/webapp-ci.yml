@@ -1,0 +1,55 @@
+name: webapp-ci
+
+# Gives the AssessHub web platform (webapp/) the same CI treatment the engine gets: the backend's
+# end-to-end test suite runs against an isolated temp DB, and the frontend is type-checked (tsc
+# strict) + production-built. Both jobs are fully offline — no SSH, no live network. Path-filtered so
+# it only runs when the webapp (or the engine it imports) actually changes.
+
+on:
+  push:
+    branches: [main]
+    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", ".github/workflows/webapp-ci.yml"]
+  pull_request:
+    paths: ["webapp/**", "cisco_toolkit/**", "COLLECT_PARSE_V3_23_0.py", ".github/workflows/webapp-ci.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webapp-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend e2e tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      # Engine runtime deps (the web layer imports cisco_toolkit) + the web layer's own deps.
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r webapp/requirements.txt
+      - name: Backend tests (FastAPI TestClient, isolated temp DB)
+        run: python -m pytest webapp/tests -q
+
+  frontend:
+    name: Frontend type-check + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm ci
+      # `npm run build` is `tsc -p tsconfig.json && vite build`, so a type error or a broken build fails CI.
+      - run: npm run build

@@ -1,0 +1,7 @@
+# AssessHub backend runtime. The engine (cisco_toolkit) is imported from the repo root and brings its
+# own deps (openpyxl, etc.); these are only what the web layer adds on top.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+# dev/test only:
+httpx>=0.27   # required by fastapi.testclient (webapp/tests)
