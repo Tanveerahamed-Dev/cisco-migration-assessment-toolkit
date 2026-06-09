@@ -31,9 +31,10 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
-      # Engine runtime deps (the web layer imports cisco_toolkit) + the web layer's own deps.
+      # Engine runtime deps (the web layer imports cisco_toolkit) + pytest (requirements-dev) + the
+      # web layer's own deps (fastapi/uvicorn/multipart/httpx).
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt -r webapp/requirements.txt
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt -r webapp/requirements.txt
       - name: Backend tests (FastAPI TestClient, isolated temp DB)
         run: python -m pytest webapp/tests -q
 
