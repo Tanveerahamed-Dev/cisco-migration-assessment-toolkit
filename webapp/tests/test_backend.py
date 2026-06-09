@@ -197,7 +197,7 @@ def test_cutover_robust_to_malformed_snapshot():
 def test_deliverables(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     cat = client.get("/api/meta").json()["deliverables"]
-    assert {d["key"] for d in cat} == {"runbook", "design", "mop", "cutover", "deck"}
+    assert {d["key"] for d in cat} == {"runbook", "design", "mop", "cutover", "nrfu", "deck"}
     for d in cat:
         r = client.get(f"/api/snapshots/{snap_id}/deliverable/{d['key']}")
         if d["available"]:
@@ -230,6 +230,32 @@ def test_cutover_deliverable_content(client):
     assert "Methodology" in text                       # grounding section
     assert "Run-of-show" in text                       # per-wave run-of-show heading
     assert len(doc.tables) >= 2                         # summary + sequence tables at minimum
+
+
+def test_nrfu_deliverable_content(client):
+    """The NRFU / Acceptance Test Plan is a web-layer synthesis with no engine test — validate it
+    renders the document-control front matter and all three test phases, not just a valid zip."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/deliverable/nrfu")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert r.status_code == 200, r.text
+    assert "nrfu" in r.headers.get("content-disposition", "")
+
+    import io
+
+    from docx import Document
+
+    doc = Document(io.BytesIO(r.content))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Network Ready-For-Use" in text
+    assert "Document control" in text and "Sign-off" in text     # front matter
+    assert "Phase I" in text and "Phase II" in text and "Phase III" in text
+    assert "Entry criteria" in text and "Exit criteria" in text
+    # Phase II reuses the engine's validation_plan — its test rows carry a command + expected baseline
+    all_rows = [c.text for t in doc.tables for row in t.rows for c in row.cells]
+    assert any("NRFU-II-" in c for c in all_rows)                # generated test IDs
+    assert any("show " in c for c in all_rows)                   # runnable commands
 
 
 def test_bad_upload_rejected(client):

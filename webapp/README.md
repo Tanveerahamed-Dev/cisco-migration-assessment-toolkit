@@ -37,8 +37,10 @@ SSH collection (CLI engine)  →  snapshot.json  →  AssessHub store  →  cock
 - **Deliverable downloads** — generate and download narrative outputs for any snapshot: the Runbook
   (DOCX), As-Built Design Document (DOCX), per-wave MOP (DOCX), and Executive Deck (PPTX) — each
   produced by the engine's own writer (`runbook`/`design`/`mop`/`deck`), byte-identical to the CLI —
-  plus the **Cutover Plan (run-of-show) DOCX** (`cutover`), rendered in the web layer from the planner
-  synthesis (the one deliverable the engine has no CLI writer for).
+  plus two web-layer syntheses the engine has no CLI writer for: the **Cutover Plan (run-of-show) DOCX**
+  (`cutover`) from the planner, and the **Network Ready-For-Use / Acceptance Test Plan DOCX** (`nrfu`) —
+  a Cisco-standard NRFU with document-control + sign-off front matter and three test phases (device /
+  logical / service) built from the snapshot's lifecycle, `validation_plan`, and service-map data.
 - **Campaign trajectory** — across ≥2 waves: an IMPROVING / REGRESSING / MIXED verdict plus a
   per-metric trajectory, and a pairwise **compare** (opened/resolved findings, regressed/improved
   health) — both via the engine's `compute_campaign_trend` / `compute_snapshot_delta`.
@@ -127,7 +129,7 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/snapshots/{id}/graph` | switch-topology nodes + edges (for the force graph) |
 | `GET`  | `/api/snapshots/{id}/cutover` | gated, pilot-first cutover plan (run-of-show) synthesized from the migration model |
 | `GET`  | `/api/snapshots/{id}/explorer` | the rendered single-file deep explorer (HTML) |
-| `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`runbook`/`design`/`mop`/`cutover`/`deck`) |
+| `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`runbook`/`design`/`mop`/`cutover`/`nrfu`/`deck`) |
 | `POST` | `/api/compare` | diff two snapshots (`{old_id, new_id}`) |
 
 Interactive API docs at `/docs` when the server is running.
