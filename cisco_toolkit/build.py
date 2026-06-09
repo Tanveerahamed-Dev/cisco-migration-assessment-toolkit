@@ -34,6 +34,12 @@ from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normali
 logger = logging.getLogger(__name__)
 
 
+def read_run_config(cmd_to_file: Dict[str, str]) -> str:
+    """Return this device's raw 'show running-config' text (offline-loaded), or '' when absent.
+    Used by the golden-config drift check (compute_golden_drift). Fail-soft."""
+    return _load_cmd_output(cmd_to_file, "show running-config") or ""
+
+
 def build_acls(cmd_to_file: Dict[str, str]) -> Dict[str, List[dict]]:
     """Parse ACL definitions (L4 allow/deny sim) from this device's already-collected
     'show running-config' -> {acl_name: [rule,...]}; {} when none. Fail-soft via _safe_parse."""

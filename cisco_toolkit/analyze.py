@@ -3808,6 +3808,106 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 
 
 # =============================================================================
+# Golden-config DRIFT (NEW-V3.23.146). Per-device running-config drift vs a baseline of REQUIRED directives.
+# Baseline source = a user-supplied golden file (--golden-config) if given, else AUTO-DERIVED as the global
+# (top-level) config lines present on a MAJORITY of devices (the fleet's de-facto standard) -> flag the
+# outliers missing them. Matching is normalized (whitespace-collapsed, case-folded) substring/line match, so
+# harmless indentation/spacing differences don't read as drift. Pure read of the running-configs; no new
+# collection. Returns {mode, baseline, per_device, summary}.
+# =============================================================================
+def _norm_cfg_line(line: str) -> str:
+    return re.sub(r"\s+", " ", (line or "").strip()).lower()
+
+
+def compute_golden_drift(run_configs: Optional[dict] = None,
+                         golden_lines: Optional[list] = None,
+                         min_fraction: float = 0.6) -> dict:
+    """Per-device running-config drift vs a baseline. With `golden_lines` (a supplied standard: each entry a
+    required directive; `# ...` comments ignored; `re:<pattern>` for a regex) the baseline is those required
+    directives, matched as normalized substrings of the config; otherwise it is AUTO-DERIVED as the global
+    (top-level) config lines present on >= min_fraction of devices, and devices missing them are flagged.
+    Returns {mode, baseline, per_device, summary}; deterministic; tolerant of empty input."""
+    import math
+    from collections import Counter
+    rc = run_configs or {}
+    hosts = sorted(rc)
+
+    # Structural / identity / secret-bearing top-level lines are excluded from the auto-derived MAJORITY
+    # baseline: they're per-device, not policy, so they'd be noise (and a majority of identical
+    # 'interface Vlan1' lines isn't an org standard). The golden-FILE path searches the whole config and is
+    # unaffected by this filter.
+    _STRUCTURAL = ("interface ", "hostname ", "boot ", "banner ", "username ", "enable secret",
+                   "enable password", "license ", "ip address ", "ipv6 address ", "snmp-server location",
+                   "snmp-server contact", "ntp clock-period", "crypto pki", "certificate ", "description ")
+
+    def _top_lines(text):
+        out = set()
+        for raw in (text or "").splitlines():
+            if raw[:1] in (" ", "\t"):          # skip indented sub-config (interface/etc. = device-specific noise)
+                continue
+            n = _norm_cfg_line(raw)
+            if not n or n.startswith("!") or n in ("end", "exit"):
+                continue
+            if any(n.startswith(p) for p in _STRUCTURAL):
+                continue
+            out.add(n)
+        return out
+
+    if golden_lines:
+        mode = "golden-file"
+        reqs = []                                # (kind, matcher, original)
+        for ln in golden_lines:
+            s = (ln or "").strip()
+            if not s or s.startswith("#"):
+                continue
+            if s[:3].lower() == "re:":
+                try:
+                    reqs.append(("re", re.compile(s[3:].strip(), re.I), s))
+                except re.error:
+                    continue
+            else:
+                reqs.append(("sub", _norm_cfg_line(s), s))
+        baseline = [orig for (_k, _m, orig) in reqs]
+        full = {h: "\n".join(_norm_cfg_line(x) for x in (rc[h] or "").splitlines()) for h in hosts}
+        per_device = []
+        for h in hosts:
+            joined = full[h]
+            missing = [orig for (kind, m, orig) in reqs
+                       if not ((m.search(joined) is not None) if kind == "re" else (m in joined))]
+            present = len(reqs) - len(missing)
+            pct = round(100 * present / len(reqs)) if reqs else 100
+            per_device.append({"host": h, "compliance_pct": pct, "n_missing": len(missing),
+                               "missing": missing[:30]})
+    else:
+        mode = "majority"
+        dev_lines = {h: _top_lines(rc[h]) for h in hosts}
+        n = len(hosts)
+        if n >= 3:                               # a majority baseline needs >= 3 devices to be meaningful
+            freq = Counter()
+            for h in hosts:
+                freq.update(dev_lines[h])
+            thr = max(2, math.ceil(min_fraction * n))
+            baseline = sorted(line for line, c in freq.items() if c >= thr)
+        else:
+            baseline = []
+        per_device = []
+        for h in hosts:
+            have = dev_lines[h]
+            missing = [b for b in baseline if b not in have]
+            present = len(baseline) - len(missing)
+            pct = round(100 * present / len(baseline)) if baseline else 100
+            per_device.append({"host": h, "compliance_pct": pct, "n_missing": len(missing),
+                               "missing": missing[:30]})
+
+    per_device.sort(key=lambda d: (d["compliance_pct"], d["host"]))
+    n_drift = sum(1 for d in per_device if d["n_missing"] > 0)
+    avg = round(sum(d["compliance_pct"] for d in per_device) / len(per_device)) if per_device else 100
+    summary = {"mode": mode, "n_devices": len(per_device), "n_baseline": len(baseline),
+               "n_drifting": n_drift, "avg_compliance_pct": avg}
+    return {"mode": mode, "baseline": baseline, "per_device": per_device, "summary": summary}
+
+
+# =============================================================================
 # Hardware lifecycle (EoL / End-of-Support) risk (NEW-V3.23.117). A new assessment AXIS: per-device
 # replacement urgency from the offline `eoldb` knowledge base (a top REASON orgs migrate). Reference
 # dates (curated KB, not device-read); LDoS is often derived = EoS+5yr. The robust output is the BAND
