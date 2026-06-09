@@ -48,8 +48,11 @@ export default function CampaignPage() {
   const { toast, node } = useToast();
   const { data, error, loading, reload } = useAsync(() => api.getCampaign(cid), [cid]);
   const fileRef = useRef<HTMLInputElement>(null);
+  const zipRef = useRef<HTMLInputElement>(null);
   const [label, setLabel] = useState("");
+  const [zipLabel, setZipLabel] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
   const [cmpA, setCmpA] = useState<number | "">("");
   const [cmpB, setCmpB] = useState<number | "">("");
   const [cmp, setCmp] = useState<any>(null);
@@ -60,6 +63,16 @@ export default function CampaignPage() {
     setBusy(true);
     try { await api.uploadSnapshot(cid, f, label); toast("Snapshot added."); setLabel(""); if (fileRef.current) fileRef.current.value = ""; reload(); }
     catch (e: any) { toast(e.message); } finally { setBusy(false); }
+  }
+  async function ingestZip() {
+    const f = zipRef.current?.files?.[0];
+    if (!f) { toast("Choose a collection .zip first."); return; }
+    setIngesting(true);
+    try {
+      const meta = await api.ingestCollection(cid, f, zipLabel);
+      toast(`Engine run complete — ${meta.ingest.n_device_dirs} device(s) in ${meta.ingest.engine_seconds}s.`);
+      nav(`/snapshots/${meta.id}`);
+    } catch (e: any) { toast(e.message); } finally { setIngesting(false); }
   }
   async function runCompare() {
     if (cmpA === "" || cmpB === "" || cmpA === cmpB) { toast("Pick two different snapshots."); return; }
@@ -121,6 +134,33 @@ export default function CampaignPage() {
               <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Wave 2 post-cutover" />
             </label>
             <button className="btn primary" onClick={upload} disabled={busy}>{busy ? "Uploading…" : "Upload snapshot"}</button>
+          </div>
+
+          <div className="panel">
+            <h3>…or ingest a raw collection</h3>
+            <div className="dim" style={{ fontSize: 12.5, marginBottom: 12 }}>
+              Upload a ZIP of show-command outputs (one folder per device, e.g.{" "}
+              <span className="mono">core1/show_interface_status.txt</span> — the collector's own
+              layout). The real engine pipeline runs on the server and the snapshot lands here.
+              A bundled <span className="mono">devices.json</span> is used if present; otherwise
+              platforms are autodetected.
+            </div>
+            <label className="field"><span>Collection archive (.zip)</span>
+              <input ref={zipRef} type="file" accept=".zip,application/zip" disabled={ingesting} />
+            </label>
+            <label className="field"><span>Label (optional)</span>
+              <input value={zipLabel} onChange={(e) => setZipLabel(e.target.value)}
+                placeholder="e.g. Baseline collection" disabled={ingesting} />
+            </label>
+            <button className="btn primary" onClick={ingestZip} disabled={ingesting}>
+              {ingesting ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Running engine…</> : "⚙ Run engine & ingest"}
+            </button>
+            {ingesting && (
+              <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
+                The full assessment pipeline is running over your outputs — typically seconds for a
+                small fleet, a few minutes for a large one.
+              </div>
+            )}
           </div>
 
           {snaps.length >= 2 && (

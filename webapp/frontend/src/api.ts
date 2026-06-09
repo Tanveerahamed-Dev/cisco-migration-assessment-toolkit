@@ -145,6 +145,15 @@ export interface ExecutionState {
   };
 }
 
+export interface IngestReport {
+  n_archive_files: number;
+  n_device_dirs: number;
+  devices: string[];
+  devices_json: "bundled" | "synthesized";
+  engine_seconds: number;
+  engine_log_tail: string;
+}
+
 export interface ExecutionMeta {
   id: number;
   snapshot_id: number;
@@ -207,6 +216,14 @@ export const api = {
     fd.append("label", label);
     return fetch(`/api/campaigns/${campaignId}/snapshots`, { method: "POST", body: fd }).then((r) =>
       j<SnapshotMeta>(r),
+    );
+  },
+  ingestCollection: (campaignId: number, file: File, label: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("label", label);
+    return fetch(`/api/campaigns/${campaignId}/ingest`, { method: "POST", body: fd }).then((r) =>
+      j<SnapshotMeta & { ingest: IngestReport }>(r),
     );
   },
   getSnapshot: (id: number) => fetch(`/api/snapshots/${id}`).then((r) => j<SnapshotMeta>(r)),
