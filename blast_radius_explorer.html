@@ -608,6 +608,7 @@
   .fmx-cell{width:30px;height:30px;cursor:pointer;font-size:12px;font-weight:700;color:#fff;position:relative;display:block;line-height:30px}
   .fmx-cell.ok{background:color-mix(in srgb,var(--ok) 72%,transparent)}
   .fmx-cell.blk{background:color-mix(in srgb,var(--crit) 70%,transparent)}
+  .fmx-cell.blk.acl{box-shadow:inset 0 0 0 2px var(--watch)}
   .fmx-cell.unk{background:var(--surface-3);color:var(--text-faint)}
   .fmx-cell.self{background:repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2) 4px,var(--surface) 4px,var(--surface) 8px);cursor:default}
   .fmx-cell.broke{background:var(--crit);box-shadow:inset 0 0 0 2px #fff}
@@ -3802,23 +3803,30 @@ function openFlowSim(F){ if(!F)return;
   if(!matchMedia("(prefers-reduced-motion: reduce)").matches)fsimPlay(); }
 function closeFlowSim(){ if(FLOWSIM&&FLOWSIM.timer)clearInterval(FLOWSIM.timer); FLOWSIM=null;
   const el=document.getElementById("flowsim"); if(el)el.hidden=true; document.body.style.overflow=""; }
-function fsimPlay(){ if(!FLOWSIM)return; FLOWSIM.playing=true; if(FLOWSIM.timer)clearInterval(FLOWSIM.timer);
-  const J=fsimActiveJ()||FLOWSIM.J; const ms=Math.max(280,Math.round(1500/(FLOWSIM.speed||1)));
-  FLOWSIM.timer=setInterval(()=>{ if(!FLOWSIM)return; if(FLOWSIM.i>=J.nodes.length-1){fsimPause();return;} FLOWSIM.i++; renderFlowSim(); },ms);
-  renderFlowSim(); }
-/* V3.23.134: playback speed (0.5×–3×) — re-arms the autoplay timer live if playing. */
+/* V3.23.137: playback re-armed WITHOUT a full re-render, so the timeline/speed sliders survive a drag —
+   a full innerHTML rebuild would detach the <input> mid-drag and abort the gesture. fsimSyncHop() (near
+   renderFlowSim) updates only the hop-dependent regions in place; Play/Pause/Step/Goto/Scrub use it. */
+function _fsimHalt(){ if(!FLOWSIM)return; if(FLOWSIM.timer){clearInterval(FLOWSIM.timer);FLOWSIM.timer=null;} FLOWSIM.playing=false; }
+function _fsimArmTimer(){ const S=FLOWSIM; if(!S)return; if(S.timer)clearInterval(S.timer);
+  const ms=Math.max(280,Math.round(1500/(S.speed||1)));
+  S.timer=setInterval(()=>{ if(!FLOWSIM)return; const J=fsimActiveJ()||FLOWSIM.J;
+    if(FLOWSIM.i>=J.nodes.length-1){fsimPause();return;} FLOWSIM.i++; fsimSyncHop(); },ms); }
+function fsimPlay(){ if(!FLOWSIM)return; FLOWSIM.playing=true; _fsimArmTimer(); fsimSyncHop(); }
+function fsimPause(){ if(!FLOWSIM)return; FLOWSIM.playing=false; if(FLOWSIM.timer){clearInterval(FLOWSIM.timer);FLOWSIM.timer=null;} fsimSyncHop(); }
+function fsimStep(dir){ if(!FLOWSIM)return; const J=fsimActiveJ(); if(!J)return; _fsimHalt();
+  FLOWSIM.i=Math.max(0,Math.min(J.nodes.length-1,FLOWSIM.i+dir)); fsimSyncHop(); }
+/* V3.23.134/137: playback speed (0.5×–3×) — re-arms the timer live; updates the label in place (no re-render). */
 function fsimSetSpeed(v){ if(!FLOWSIM)return; const n=parseFloat(v); if(n>0)FLOWSIM.speed=n;
-  if(FLOWSIM.playing)fsimPlay(); else renderFlowSim(); }
-/* V3.23.134: timeline scrubber — jump to any hop (pauses autoplay). */
-function fsimScrub(v){ if(!FLOWSIM)return; const J=fsimActiveJ(); if(!J)return; fsimPause();
-  FLOWSIM.i=Math.max(0,Math.min(J.nodes.length-1,parseInt(v,10)||0)); renderFlowSim(); }
+  const lbl=document.getElementById("fsimSpeedLbl"); if(lbl)lbl.textContent=(FLOWSIM.speed||1)+"×";
+  if(FLOWSIM.playing)_fsimArmTimer(); }
+/* V3.23.134: timeline scrubber — jump to any hop (halts autoplay), updating in place so the drag is smooth. */
+function fsimScrub(v){ if(!FLOWSIM)return; const J=fsimActiveJ(); if(!J)return; _fsimHalt();
+  FLOWSIM.i=Math.max(0,Math.min(J.nodes.length-1,parseInt(v,10)||0)); fsimSyncHop(); }
 /* V3.23.134: overlay the forward AND return paths together so asymmetry is visible at a glance. */
 function fsimToggleBoth(){ if(!FLOWSIM||FLOWSIM.J.multicast)return; const S=FLOWSIM; S.both=!S.both;
   if(S.both){ S.useBackup=false; S.reverse=false;
     if(!S.Jr){ const rf=flowBetween(S.F.dst,S.F.src); S.Jr=buildFlowJourney(rf); if(S.Jr)S.sym=flowSymmetry(S.J,S.Jr); } }
   renderFlowSim(); }
-function fsimPause(){ if(!FLOWSIM)return; FLOWSIM.playing=false; if(FLOWSIM.timer){clearInterval(FLOWSIM.timer);FLOWSIM.timer=null;} renderFlowSim(); }
-function fsimStep(dir){ if(!FLOWSIM)return; fsimPause(); FLOWSIM.i=Math.max(0,Math.min(FLOWSIM.J.nodes.length-1,FLOWSIM.i+dir)); renderFlowSim(); }
 function fsimToggleBackup(){ if(!FLOWSIM)return; FLOWSIM.useBackup=!FLOWSIM.useBackup; if(FLOWSIM.useBackup)FLOWSIM.reverse=false;
   if(FLOWSIM.useBackup&&!FLOWSIM.Jb)FLOWSIM.Jb=buildBackupJourney(FLOWSIM.F);
   FLOWSIM.i=0; renderFlowSim();
@@ -3867,7 +3875,7 @@ function fsimShareLink(){ if(!FLOWSIM||!FLOWSIM.F)return; const F=FLOWSIM.F;
   if(!src||!dst){_fsimBtnFlash("fsimLinkBtn","✗ no endpoints");return;}
   const flow=[src,dst,FLOW_PROTO,((FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?FLOW_DPORT:"")].join("~");
   const params=new URLSearchParams({mode:"flow",vlan:String(VLAN),layout:LAYOUT,sel:"",flow}).toString();
-  const url=location.origin+location.pathname+"#"+params;
+  const url=location.href.split("#")[0]+"#"+params;   // V3.23.137: href (not origin+pathname) so the link is valid under file:// too (file origin = "null")
   _fsimCopyText(url,"fsimLinkBtn"); }
 function openFlowFromHash(fv){ try{ if(!fv||!MODEL)return; const p=String(fv).split("~");
   const s=findEndpointByIpMac(p[0]); if(!s)return;
@@ -3905,8 +3913,8 @@ function fsimExportSvg(){ if(!FLOWSIM||!MODEL||!POS)return; const J=fsimActiveJ(
   (MODEL.hosts||[]).forEach(h=>{const p=POS[h]; if(!p)return; const on=pset.has(h);
     nodes+=`<circle cx="${p.x}" cy="${p.y}" r="${on?11:5}" fill="${on?"#fff":"#e2e8f0"}" stroke="${on?"#3b82f6":"#cbd5e1"}" stroke-width="${on?3:1.4}"/>`;
     if(on)nodes+=`<text x="${p.x}" y="${p.y-16}" text-anchor="middle" font-size="14" font-weight="700" fill="#0f172a" font-family="sans-serif">${esc(shortName(h))}</text>`;});
-  const poly=path.map((h,k)=>(k?"L":"M")+POS[h].x+" "+POS[h].y).join(" ");
-  const pkt=path.length>1?`<circle r="8" fill="#3b82f6"><animateMotion dur="${Math.max(2,path.length*0.7).toFixed(1)}s" repeatCount="indefinite" path="${poly}"/></circle>`:"";
+  const pp=_fsimPoly(path);
+  const pkt=pp.ok?`<circle r="8" fill="#3b82f6"><animateMotion dur="${Math.max(2,path.length*0.7).toFixed(1)}s" repeatCount="indefinite" path="${pp.d}"/></circle>`:"";
   const title=`${(J.src&&(J.src.ip||J.src.mac))||"?"} → ${(J.dst&&(J.dst.ip||J.dst.mac))||"?"} · ${esc(J.verdict||"")}`;
   const svg=`<?xml version="1.0" encoding="UTF-8"?>\n`+
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-pad} ${-pad-22} ${W+2*pad} ${H+2*pad+22}" width="${W}" height="${H+22}">`+
@@ -3934,6 +3942,9 @@ function _fsimIcon(r){return r==="source"?"▶":r==="dest"?"◉":r==="gateway"?"
 /* V3.23.127: the flow's path drawn on the REAL topology (reuses POS node positions) — the current hop
    pulses. Shows WHERE on the network the packet goes, not just a linear list. */
 function _fsimAdj(p){const s=new Set(); for(let k=0;k+1<p.length;k++)s.add([p[k],p[k+1]].sort().join("|")); return s;}
+/* V3.23.137: shared <animateMotion> path builder — skips hosts without a POS entry (guard) so the
+   dual-map / SVG export degrade instead of throwing on a missing position. */
+function _fsimPoly(hosts){const p=(hosts||[]).filter(h=>POS[h]); return {ok:p.length>1, d:p.map((h,k)=>(k?"L":"M")+POS[h].x+" "+POS[h].y).join(" ")};}
 function fsimMap(J,i){
   if(!MODEL||!POS||!Object.keys(POS).length)return "";
   const path=[]; (J.nodes||[]).forEach(n=>{if(n.host&&!path.includes(n.host))path.push(n.host);});
@@ -3974,11 +3985,11 @@ function fsimDualMap(Jf,Jr){
   (MODEL.hosts||[]).forEach(h=>{const p=POS[h]; if(!p)return; const on=onSet.has(h);
     nodes+=`<circle cx="${p.x}" cy="${p.y}" r="${on?10:5}" fill="${on?"var(--surface)":"var(--surface-2)"}" stroke="${on?"var(--accent)":"var(--border)"}" stroke-width="${on?2.6:1.3}" opacity="${on?1:0.28}"/>`;
     if(on)nodes+=`<text x="${p.x}" y="${p.y-16}" text-anchor="middle" font-size="13" font-weight="700" fill="var(--text)">${esc(shortName(h))}</text>`;});
-  const poly=hs=>hs.map((h,k)=>(k?"L":"M")+POS[h].x+" "+POS[h].y).join(" ");
+  const pf=_fsimPoly(fwd), pr=_fsimPoly(ret);
   let pkts="";
   if(!reduce){
-    if(fwd.length>1)pkts+=`<circle r="6.5" fill="var(--accent)"><animateMotion dur="2.6s" repeatCount="indefinite" path="${poly(fwd)}"/></circle>`;
-    if(ret.length>1)pkts+=`<circle r="6.5" fill="var(--watch)"><animateMotion dur="2.6s" repeatCount="indefinite" path="${poly(ret)}"/></circle>`;
+    if(pf.ok)pkts+=`<circle r="6.5" fill="var(--accent)"><animateMotion dur="2.6s" repeatCount="indefinite" path="${pf.d}"/></circle>`;
+    if(pr.ok)pkts+=`<circle r="6.5" fill="var(--watch)"><animateMotion dur="2.6s" repeatCount="indefinite" path="${pr.d}"/></circle>`;
   }
   const sym=Jr?flowSymmetry(Jf,Jr):null;
   const lbl=`<div class="fsim-maplbl">Forward <span style="color:var(--accent)">▮</span> + return <span style="color:var(--watch)">▮</span> · ${sym?(sym.symmetric?"symmetric":"<b style='color:var(--watch)'>ASYMMETRIC — dashed legs differ</b>"):"return path"}</div>`;
@@ -4078,26 +4089,24 @@ function fsimFrameHtml(J,frames,i){
 }
 function fsimActiveJ(){const S=FLOWSIM; if(!S)return null; return (S.reverse&&S.Jr)?S.Jr:((S.useBackup&&S.Jb)?S.Jb:S.J);}
 function fsimToggleFrame(){ if(!FLOWSIM)return; FLOWSIM.showFrame=!FLOWSIM.showFrame; renderFlowSim(); }
-function fsimGoto(k){ if(!FLOWSIM)return; fsimPause(); const J=fsimActiveJ(); if(!J)return;
-  FLOWSIM.i=Math.max(0,Math.min(J.nodes.length-1,k)); renderFlowSim(); }
-function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
-  const backupActive=!!(S.useBackup&&S.Jb);
-  const reverseActive=!!(S.reverse&&S.Jr);
-  const J=reverseActive?S.Jr:(backupActive?S.Jb:S.J);
-  if(backupActive&&J.isolated){document.getElementById("flowsim").innerHTML=fsimIsolatedHtml(J);return;}
-  const i=Math.min(S.i,J.nodes.length-1),n=J.nodes.length;
-  const vtok=J.isolated?"crit":(J.reachable?"":"crit");
-  const lrTok=v=>v==="ok"?"ok":v==="block"?"crit":v==="watch"?"watch":"neutral";
-  let rail="";
+function fsimGoto(k){ if(!FLOWSIM)return; const J=fsimActiveJ(); if(!J)return; _fsimHalt();
+  FLOWSIM.i=Math.max(0,Math.min(J.nodes.length-1,k)); fsimSyncHop(); }
+/* V3.23.137: hop-dependent regions extracted so both the full render AND the in-place fsimSyncHop()
+   can build them — the latter avoids destroying the slider <input>s on a drag (see _fsimArmTimer). */
+function _fsimLrTok(v){return v==="ok"?"ok":v==="block"?"crit":v==="watch"?"watch":"neutral";}
+function _fsimRailHtml(J,i){const n=J.nodes.length; let rail="";
   J.nodes.forEach((nd,k)=>{ const cls=k<i?"done":k===i?"current":"future";
     rail+=`<div class="fsim-node clk ${cls} ${esc(nd.role)}" onclick="fsimGoto(${k})" title="Jump to this hop"><span class="ic">${_fsimIcon(nd.role)}</span>`+
       `<span class="nm">${esc(shortName(nd.host)||"—")}</span><span class="rl">${esc(nd.label)}</span></div>`;
     if(k<n-1)rail+=`<span class="fsim-link ${k<i?"done":""} ${k===i?"lit":""}"></span>`; });
+  return rail;}
+function _fsimMapHtml(S,J,i){return (S.both&&S.Jr)?fsimDualMap(S.J,S.Jr):fsimMap(J,i);}
+function _fsimStackHtml(S,J,i,backupActive,reverseActive){
   const nd=J.nodes[i]||J.nodes[0];
   const ep=nd.ep?`<div class="fsim-ep faint">${esc(nd.ep.ip||"")}${nd.ep.mac?` · ${esc(nd.ep.mac)}`:""}${nd.ep.cls?` · ${esc(nd.ep.cls)}${nd.ep.vendor?" ("+esc(nd.ep.vendor)+")":""}`:""}</div>`:"";
   const mtag=nd.mlagPeer?_mlagTag(nd.host,nd.mlagPeer):"";
   const mlag=nd.mlagPeer?` <span class="pill pl-${mtag==="confirmed"?"ok":"watch"}" title="${mtag==="confirmed"?"confirmed via show vpc":"inferred from topology — confirm with show vpc"}">${mtag} ${mtag==="confirmed"?"vPC":"MLAG"} peer ${esc(shortName(nd.mlagPeer))}</span>`:"";
-  const rungs=(nd.layers||[]).map(l=>`<div class="fsim-rung ${lrTok(l.verdict)}">`+
+  const rungs=(nd.layers||[]).map(l=>`<div class="fsim-rung ${_fsimLrTok(l.verdict)}">`+
     `<div class="fsim-rh"><span class="fsim-ll">${esc(l.layer)} · ${esc(l.label)}</span><b>${esc(l.decision)}</b><span class="fsim-tag">${esc(l.tag)}</span></div>`+
     `<div class="fsim-why">${esc(l.why)}</div></div>`).join("");
   const banner=backupActive?`<div class="fsim-bk crit" style="margin-bottom:12px">⚡ FAILURE MODE — primary link ${esc(J.failLink||"")} down; this is the rerouted backup path.</div>`
@@ -4115,11 +4124,41 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
     (S.showFrame?fsimFrameHtml(J,frames,i):"");
   const bk=J.backup;
   const bkHtml=bk?`<div class="fsim-bk ${bk.hasBackup?"":"crit"}">${bk.hasBackup?"↺ Backup path":"✗ No backup"}: ${esc(bk.note)}</div>`:"";
-  const ctrl=`<button class="fsim-btn" onclick="fsimStep(-1)" ${i<=0?"disabled":""}>◀ Back</button>`+
-    `<button class="fsim-btn primary" onclick="${S.playing?"fsimPause()":"fsimPlay()"}">${S.playing?"⏸ Pause":"▶ Play"}</button>`+
-    `<button class="fsim-btn" onclick="fsimStep(1)" ${i>=n-1?"disabled":""}>Step ▶</button>`+
-    `<span class="fsim-prog">hop ${i+1} / ${n}</span>`+
-    `<span class="fsim-speed" title="Playback speed">⏩ <input type="range" min="0.5" max="3" step="0.5" value="${S.speed||1}" oninput="fsimSetSpeed(this.value)" aria-label="Playback speed"> ${(S.speed||1)}×</span>`+
+  return body+(S.useBackup&&bkHtml?`<div style="margin-top:12px">${bkHtml}</div>`:"");
+}
+/* In-place hop update — only the rail/stack/map + prog/buttons/scrubber, never the foot (so the dragged
+   slider survives). Falls back to a full render if the structural container isn't present (isolated view). */
+function fsimSyncHop(){ const S=FLOWSIM; if(!S)return;
+  const railEl=document.getElementById("fsimRail"); if(!railEl){renderFlowSim();return;}
+  const backupActive=!!(S.useBackup&&S.Jb), reverseActive=!!(S.reverse&&S.Jr);
+  const J=reverseActive?S.Jr:(backupActive?S.Jb:S.J);
+  if(backupActive&&J.isolated){renderFlowSim();return;}
+  const n=J.nodes.length, i=Math.min(S.i,n-1);
+  railEl.innerHTML=_fsimRailHtml(J,i);
+  const st=document.getElementById("fsimStack"); if(st)st.innerHTML=_fsimStackHtml(S,J,i,backupActive,reverseActive);
+  const mp=document.getElementById("fsimMap"); if(mp)mp.innerHTML=_fsimMapHtml(S,J,i);
+  const pr=document.getElementById("fsimProg"); if(pr)pr.textContent=`hop ${i+1} / ${n}`;
+  const bb=document.getElementById("fsimBackBtn"); if(bb)bb.disabled=(i<=0);
+  const sb=document.getElementById("fsimStepBtn"); if(sb)sb.disabled=(i>=n-1);
+  const pb=document.getElementById("fsimPlayBtn"); if(pb){pb.textContent=S.playing?"⏸ Pause":"▶ Play"; pb.setAttribute("onclick",S.playing?"fsimPause()":"fsimPlay()");}
+  const sc=document.getElementById("fsimScrubInput"); if(sc){sc.max=String(n-1); if(String(sc.value)!==String(i))sc.value=i;}
+}
+function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
+  const backupActive=!!(S.useBackup&&S.Jb);
+  const reverseActive=!!(S.reverse&&S.Jr);
+  const J=reverseActive?S.Jr:(backupActive?S.Jb:S.J);
+  if(backupActive&&J.isolated){document.getElementById("flowsim").innerHTML=fsimIsolatedHtml(J);return;}
+  const i=Math.min(S.i,J.nodes.length-1),n=J.nodes.length;
+  const vtok=J.isolated?"crit":(J.reachable?"":"crit");
+  const rail=_fsimRailHtml(J,i);
+  const stack=_fsimStackHtml(S,J,i,backupActive,reverseActive);
+  const bk=J.backup;
+  const bkHtml=bk?`<div class="fsim-bk ${bk.hasBackup?"":"crit"}">${bk.hasBackup?"↺ Backup path":"✗ No backup"}: ${esc(bk.note)}</div>`:"";
+  const ctrl=`<button class="fsim-btn" id="fsimBackBtn" onclick="fsimStep(-1)" ${i<=0?"disabled":""}>◀ Back</button>`+
+    `<button class="fsim-btn primary" id="fsimPlayBtn" onclick="${S.playing?"fsimPause()":"fsimPlay()"}">${S.playing?"⏸ Pause":"▶ Play"}</button>`+
+    `<button class="fsim-btn" id="fsimStepBtn" onclick="fsimStep(1)" ${i>=n-1?"disabled":""}>Step ▶</button>`+
+    `<span class="fsim-prog" id="fsimProg">hop ${i+1} / ${n}</span>`+
+    `<span class="fsim-speed" title="Playback speed">⏩ <input type="range" min="0.5" max="3" step="0.5" value="${S.speed||1}" oninput="fsimSetSpeed(this.value)" aria-label="Playback speed"> <span id="fsimSpeedLbl">${(S.speed||1)}×</span></span>`+
     (bk&&!reverseActive&&!S.both?`<button class="fsim-btn ${S.useBackup?"on":""}" onclick="fsimToggleBackup()">${S.useBackup?"↩ Primary path":"⚡ Failure mode"}</button>`:"")+
     (!S.J.multicast&&!S.both?`<button class="fsim-btn ${S.reverse?"on":""}" onclick="fsimToggleReverse()">${S.reverse?"→ Forward":"⇄ Return path"}</button>`:"")+
     (!S.J.multicast?`<button class="fsim-btn ${S.both?"act":""}" onclick="fsimToggleBoth()" title="Overlay the forward AND return paths on the map at once — asymmetry becomes visible">⇄ Both paths</button>`:"")+
@@ -4129,7 +4168,7 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
     `<button class="fsim-btn" id="fsimLinkBtn" onclick="fsimShareLink()" title="Copy a shareable URL that re-opens THIS exact flow">🔗 Link</button>`+
     `<button class="fsim-btn" id="fsimFramesBtn" onclick="fsimExportFrames()" title="Download a Wireshark-style per-hop frame dump (.txt)">🧬 Frames</button>`+
     `<button class="fsim-btn" id="fsimSvgBtn" onclick="fsimExportSvg()" title="Download an animated SVG of the path walk (offline, vector — a GIF substitute)">🎞 SVG</button>`+
-    `<span class="fsim-scrub"><span class="lbl">Timeline</span><input type="range" min="0" max="${n-1}" value="${i}" oninput="fsimScrub(this.value)" aria-label="Scrub to hop"></span>`;
+    `<span class="fsim-scrub"><span class="lbl">Timeline</span><input type="range" id="fsimScrubInput" min="0" max="${n-1}" value="${i}" oninput="fsimScrub(this.value)" aria-label="Scrub to hop"></span>`;
   const l4on=(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp");
   const tuple=(J.multicast||reverseActive||backupActive)?"":`<div class="fsim-tuple"><span class="fsim-tuplbl">L4 / ACL eval</span>`+
     `<select onchange="fsimSetTuple(this.value,null)">`+["tcp","udp","icmp","ip"].map(p=>`<option value="${p}"${FLOW_PROTO===p?" selected":""}>${p.toUpperCase()}</option>`).join("")+`</select>`+
@@ -4142,8 +4181,8 @@ function renderFlowSim(){ const S=FLOWSIM; if(!S)return;
       `<span class="fsim-verdict ${vtok}">${esc(J.verdict)}</span>`+
       `<button class="fsim-x" onclick="closeFlowSim()" aria-label="Close simulator">✕</button></div>`+
     tuple+
-    `<div class="fsim-rail">${rail}</div>`+
-    `<div class="fsim-body"><div class="fsim-stack">${body}${S.useBackup&&bkHtml?`<div style="margin-top:12px">${bkHtml}</div>`:""}</div><div class="fsim-map">${(S.both&&S.Jr)?fsimDualMap(S.J,S.Jr):fsimMap(J,i)}</div></div>`+
+    `<div class="fsim-rail" id="fsimRail">${rail}</div>`+
+    `<div class="fsim-body"><div class="fsim-stack" id="fsimStack">${stack}</div><div class="fsim-map" id="fsimMap">${_fsimMapHtml(S,J,i)}</div></div>`+
     `<div class="fsim-foot">${ctrl}${!S.useBackup&&bkHtml?bkHtml:""}${honesty}</div>`; }
 window.addEventListener("keydown",e=>{ if(e.key==="Escape"&&FLOWSIM){e.preventDefault();closeFlowSim();}
   else if(e.key==="Escape"&&FMX){e.preventDefault();closeFlowMatrix();} },true);
@@ -4186,7 +4225,10 @@ function fmxCompute(reps){
     for(let j=0;j<n;j++){ if(i===j){row.push({self:true});continue;}
       const F=flowBetween(reps[i].ep,reps[j].ep); let acl="";
       (F.aclVerdicts||[]).forEach(v=>{ if(v.verdict==="deny")acl="deny"; else if(v.verdict==="indeterminate"&&acl!=="deny")acl="indeterminate"; });
-      row.push({reach:!!F.reachable,verdict:F.verdict,unknown:F.verdict==="UNKNOWN",acl}); }
+      // V3.23.137: effective end-to-end reachability folds in the L4 ACL — an ACL deny is BLOCKED (matches the
+      // single-flow why-ladder). l3 is kept for the tooltip/glyph; indeterminate stays reachable-with-caveat.
+      const l3=!!F.reachable, reach=l3&&acl!=="deny";
+      row.push({reach,l3,verdict:F.verdict,unknown:F.verdict==="UNKNOWN",acl}); }
     grid.push(row); }
   for(let i=0;i<n;i++)for(let j=0;j<n;j++){ if(i===j)continue; grid[i][j].asym=(!!grid[i][j].reach)!==(!!grid[j][i].reach); }
   return grid;
@@ -4206,6 +4248,12 @@ function closeFlowMatrix(){ FMX=null; const el=document.getElementById("flowmatr
 function fmxSetWhatif(kind){ if(!FMX)return; FMX.whatif={kind,arg:"",rhost:""}; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
 function fmxSetArg(arg){ if(!FMX)return; FMX.whatif.arg=arg; fmxApply(); }
 function fmxSetRouteHost(h){ if(!FMX)return; FMX.whatif.rhost=h; FMX.whatif.arg=""; FMX.mut=null; FMX.diff=null; renderFlowMatrix(); }
+/* V3.23.137: change the L4 tuple the matrix evaluates ACLs against — recomputes baseline (+ active what-if). */
+function fmxSetTuple(proto,dport){ if(!FMX)return;
+  if(proto)FLOW_PROTO=proto;
+  if(dport!=null&&dport!==""){const nn=parseInt(dport,10); if(nn>=1&&nn<=65535)FLOW_DPORT=nn;}
+  FMX.base=fmxCompute(FMX.reps);
+  if(FMX.whatif&&FMX.whatif.arg)fmxApply(); else renderFlowMatrix(); }
 function fmxApply(){ if(!FMX)return; const wf=FMX.whatif;
   if(wf.kind==="none"||!wf.arg){ FMX.mut=null; FMX.diff=null; renderFlowMatrix(); return; }
   let runner=null;
@@ -4234,15 +4282,15 @@ function fmxCopy(){ if(!FMX)return; const reps=FMX.reps, g=(FMX.mut||FMX.base);
   const L=[`Reachability matrix${FMX.mut?` — WHAT-IF: ${wfLbl}`:""}`,
     `Rows = source VLAN, Cols = destination VLAN. R=reachable X=blocked ?=unknown`,""];
   L.push("src\\dst,"+reps.map(r=>"V"+r.vlan).join(","));
-  g.forEach((row,i)=>{ L.push("V"+reps[i].vlan+","+row.map(c=>c.self?"-":c.unknown?"?":c.reach?"R":"X").join(",")); });
-  const s=FMX.sum; L.push("",`${s.reach}/${s.tot} reachable, ${s.blk} blocked, ${s.unk} unknown, ${s.asym} asymmetric.`);
+  g.forEach((row,i)=>{ L.push("V"+reps[i].vlan+","+row.map(c=>c.self?"-":c.unknown?"?":c.reach?"R":(c.l3&&c.acl==="deny"?"D":"X")).join(",")); });
+  const s=fmxSummary(g); L.push("",`R=reachable X=blocked(L1-L3) D=denied(L4 ACL) ?=unknown -=self`,`${s.reach}/${s.tot} reachable, ${s.blk} blocked, ${s.unk} unknown, ${s.asym} asymmetric.`);
   if(FMX.diff)L.push(`What-if: ${FMX.diff.broke} flow(s) BROKE, ${FMX.diff.fixed} restored.`);
   const txt=L.join("\n"); const done=()=>{const b=document.getElementById("fmxCopyBtn"); if(b){b.textContent="✓ Copied";setTimeout(()=>{if(b)b.textContent="⧉ Copy CSV";},1400);}};
   if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(done).catch(done); else done();
 }
 function renderFlowMatrix(){ const S=FMX; if(!S)return;
   const reps=S.reps, n=reps.length, g=S.mut||S.base, diff=S.diff;
-  const s=S.sum;
+  const s=fmxSummary(g);   // V3.23.137: summarize the grid actually shown (mutated when a what-if is active), not the stale baseline
   // header
   const head=`<div class="fsim-head"><div><div class="fsim-title">▦ Reachability matrix</div>`+
     `<div class="fmx-sum">${n} VLAN representatives · ${s.reach}/${s.tot} reachable · ${s.blk} blocked · ${s.unk} unknown · ${s.asym} asymmetric${S.diff?`  —  WHAT-IF: <b style="color:var(--crit)">${S.diff.broke} broke</b>${S.diff.fixed?`, ${S.diff.fixed} restored`:""}`:""}</div></div>`+
@@ -4267,27 +4315,37 @@ function renderFlowMatrix(){ const S=FMX; if(!S)return;
     (S.whatif.kind==="link"?`<select onchange="fmxSetArg(this.value)">${linkOpts}</select>`:"")+
     (S.whatif.kind==="route"?`<select onchange="fmxSetRouteHost(this.value)">${rHostOpts}</select>`+(S.whatif.rhost?`<select onchange="fmxSetArg(this.value)">${rPfxOpts}</select>`:""):"")+
     `<span class="faint">${S.whatif.kind==="route"?"removes that prefix from the router's table → flows that relied on it (e.g. via the default route) BREAK; one-directional removals surface as ⇄ asymmetry":"re-traces every flow with that element down → red-outlined cells are flows that BREAK"}</span>`+
-    `<button class="fsim-btn" id="fmxCopyBtn" onclick="fmxCopy()" style="margin-left:auto">⧉ Copy CSV</button></div>`;
+    `<span class="fsim-tuplbl" style="margin-left:auto">L4 eval</span>`+
+    `<select onchange="fmxSetTuple(this.value,null)">`+["tcp","udp","icmp","ip"].map(p=>`<option value="${p}"${FLOW_PROTO===p?" selected":""}>${p.toUpperCase()}</option>`).join("")+`</select>`+
+    `<input type="number" min="1" max="65535" placeholder="dst port" title="ACL is evaluated for this proto/port across every cell" value="${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?FLOW_DPORT:""}" ${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"":"disabled"} onchange="fmxSetTuple(null,this.value)">`+
+    `<button class="fsim-btn" id="fmxCopyBtn" onclick="fmxCopy()">⧉ Copy CSV</button></div>`;
   // grid
   let thead=`<tr><th class="corner rh">src \\ dst</th>`+reps.map(r=>`<th title="VLAN ${r.vlan} · ${esc(r.ip)} @ ${esc(shortName(r.host))}">V${r.vlan}</th>`).join("")+`</tr>`;
   let rows="";
   for(let i=0;i<n;i++){ rows+=`<tr><th class="rh" title="VLAN ${reps[i].vlan} · ${esc(reps[i].ip)} @ ${esc(shortName(reps[i].host))}">V${reps[i].vlan} <span class="faint">${esc(shortName(reps[i].host))}</span></th>`;
     for(let j=0;j<n;j++){ const c=g[i][j]; const d=diff?diff.grid[i][j]:"";
+      const aclBlk=(!c.reach&&c.l3&&c.acl==="deny");   // V3.23.137: reaches at L3 but ACL denies → blocked at L4
       let cls="fmx-cell ", ch="";
       if(c.self){cls+="self"; ch="";}
       else if(d==="broke"){cls+="broke"; ch="✗";}
       else if(d==="fixed"){cls+="fixed"; ch="✓";}
       else if(c.unknown){cls+="unk"; ch="?";}
-      else if(c.reach){cls+="ok"; ch="✓";}
+      else if(aclBlk){cls+="blk acl"; ch="⊘";}
+      else if(c.reach){cls+="ok"; ch=(c.acl==="indeterminate")?"✓?":"✓";}
       else {cls+="blk"; ch="✗";}
       const asym=(!c.self&&c.asym)?`<span class="asym" title="directional: reachability differs on the return path">⇄</span>`:"";
-      const tip=c.self?"same VLAN":`V${reps[i].vlan}→V${reps[j].vlan}: ${esc(c.verdict||(c.reach?"reachable":"blocked"))}${c.acl?` · L4 ${c.acl}`:""}${d==="broke"?" · BREAKS under what-if":d==="fixed"?" · restored under what-if":""}`;
+      const stateTxt=c.self?"same VLAN":c.unknown?"unknown (VLAN not traceable)"
+        :aclBlk?"reaches at L3 but BLOCKED at L4 (ACL deny)"
+        :c.reach?("reachable"+(c.acl==="indeterminate"?" — L4 ACL indeterminate":""))
+        :"blocked";
+      const tip=c.self?"same VLAN":`V${reps[i].vlan}→V${reps[j].vlan}: ${esc(stateTxt)}${d==="broke"?" · BREAKS under what-if":d==="fixed"?" · restored under what-if":""}`;
       rows+=`<td><span class="${cls}" title="${tip}" onclick="fmxCellClick(${i},${j})">${ch}${asym}</span></td>`; }
     rows+=`</tr>`; }
   const grid=`<div class="fmx-body"><table class="fmx-grid"><thead>${thead}</thead><tbody>${rows}</tbody></table></div>`;
   const legend=`<div class="fmx-legend">`+
     `<span><span class="sw" style="background:color-mix(in srgb,var(--ok) 72%,transparent)"></span>reachable</span>`+
-    `<span><span class="sw" style="background:color-mix(in srgb,var(--crit) 70%,transparent)"></span>blocked</span>`+
+    `<span><span class="sw" style="background:color-mix(in srgb,var(--crit) 70%,transparent)"></span>blocked (L1–L3)</span>`+
+    `<span>⊘ = L4 ACL deny · ✓? = L4 indeterminate</span>`+
     `<span><span class="sw" style="background:var(--surface-3)"></span>unknown</span>`+
     (S.diff?`<span><span class="sw" style="background:var(--crit);box-shadow:inset 0 0 0 2px #fff"></span>breaks under what-if</span>`:"")+
     `<span>⇄ = directional (return path differs)</span>`+
