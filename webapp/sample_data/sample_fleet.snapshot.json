@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-06-09T19:24:47.360965",
+  "generated_at": "2026-06-09T19:36:30.107138",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -39,7 +39,7 @@
       "power_drawn_w": "",
       "power_remaining_w": "",
       "num_modules": 0,
-      "total_ports": 10,
+      "total_ports": 11,
       "active_ports": 2,
       "fan_status": "",
       "temperature_status": "",
@@ -397,6 +397,90 @@
       "power_remaining_w": "",
       "num_modules": 0,
       "total_ports": 6,
+      "active_ports": 4,
+      "fan_status": "",
+      "temperature_status": "",
+      "reported_hostname": ""
+    },
+    "dist1": {
+      "hostname": "dist1",
+      "platform": "ios",
+      "model": "C9300-48P",
+      "serial_number": "FCW2442D002",
+      "chassis_serial": "",
+      "sw_version": "17.09.04",
+      "uptime": "",
+      "system_mac": "",
+      "num_power_supplies": 0,
+      "ps_status": "",
+      "power_capacity_w": "",
+      "power_drawn_w": "",
+      "power_remaining_w": "",
+      "num_modules": 0,
+      "total_ports": 5,
+      "active_ports": 5,
+      "fan_status": "",
+      "temperature_status": "",
+      "reported_hostname": ""
+    },
+    "dist2": {
+      "hostname": "dist2",
+      "platform": "ios",
+      "model": "C9300-48P",
+      "serial_number": "FCW2443D003",
+      "chassis_serial": "",
+      "sw_version": "17.09.04",
+      "uptime": "",
+      "system_mac": "",
+      "num_power_supplies": 0,
+      "ps_status": "",
+      "power_capacity_w": "",
+      "power_drawn_w": "",
+      "power_remaining_w": "",
+      "num_modules": 0,
+      "total_ports": 5,
+      "active_ports": 5,
+      "fan_status": "",
+      "temperature_status": "",
+      "reported_hostname": ""
+    },
+    "podacc1": {
+      "hostname": "podacc1",
+      "platform": "ios",
+      "model": "C9300-24T",
+      "serial_number": "FCW245501",
+      "chassis_serial": "",
+      "sw_version": "17.06.05",
+      "uptime": "",
+      "system_mac": "",
+      "num_power_supplies": 0,
+      "ps_status": "",
+      "power_capacity_w": "",
+      "power_drawn_w": "",
+      "power_remaining_w": "",
+      "num_modules": 0,
+      "total_ports": 4,
+      "active_ports": 4,
+      "fan_status": "",
+      "temperature_status": "",
+      "reported_hostname": ""
+    },
+    "podacc2": {
+      "hostname": "podacc2",
+      "platform": "ios",
+      "model": "C9300-24T",
+      "serial_number": "FCW245502",
+      "chassis_serial": "",
+      "sw_version": "17.06.05",
+      "uptime": "",
+      "system_mac": "",
+      "num_power_supplies": 0,
+      "ps_status": "",
+      "power_capacity_w": "",
+      "power_drawn_w": "",
+      "power_remaining_w": "",
+      "num_modules": 0,
+      "total_ports": 4,
       "active_ports": 4,
       "fan_status": "",
       "temperature_status": "",
@@ -1250,7 +1334,7 @@
         "link_type": "",
         "description": "",
         "end_host_mac": "",
-        "end_host_ip": "10.0.99.26",
+        "end_host_ip": "10.0.99.50",
         "port_channel": "",
         "port_channel_protocol": "",
         "stp_blocked": "",
@@ -1265,12 +1349,12 @@
         "trunk_allowed_vlans": "",
         "trunk_status": "",
         "arp_source_switch": "",
-        "cdp_neighbor": "access16.lab",
+        "cdp_neighbor": "dist1.lab",
         "current_switch_serial": "FCW1234A001",
         "current_switch_ip": "10.0.99.1",
         "current_switch_vtp_domain": "",
-        "neighbor_switch_serial": "access16.lab",
-        "neighbor_switch_ip": "10.0.99.26",
+        "neighbor_switch_serial": "dist1.lab",
+        "neighbor_switch_ip": "10.0.99.50",
         "neighbor_switch_vtp_domain": "",
         "subnet_primary_route": "",
         "subnet_secondary_routes": "",
@@ -1282,8 +1366,8 @@
         "stp_fwd_vlans": "",
         "stp_blk_vlans": "",
         "stp_other_vlans": "",
-        "neighbor_port": "Gi0/1",
-        "neighbor_platform": "cisco WS-C2960X-48",
+        "neighbor_port": "Gi1/0/3",
+        "neighbor_platform": "cisco C9300-48P",
         "acl_in": "",
         "acl_out": "",
         "mtu": "",
@@ -1962,6 +2046,58 @@
         "stp_other_vlans": "",
         "neighbor_port": "Gi0/1",
         "neighbor_platform": "cisco WS-C2960X-48",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Eth1/20": {
+        "port": "Eth1/20",
+        "status": "",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "",
+        "speed": "",
+        "port_type": "",
+        "link_type": "",
+        "description": "",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.51",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "dist2.lab",
+        "current_switch_serial": "FDO12345ABC",
+        "current_switch_ip": "10.0.99.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "dist2.lab",
+        "neighbor_switch_ip": "10.0.99.51",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi1/0/3",
+        "neighbor_platform": "cisco C9300-48P",
         "acl_in": "",
         "acl_out": "",
         "mtu": "",
@@ -6057,6 +6193,1262 @@
         "mtu": "",
         "dhcp_helpers": ""
       }
+    },
+    "dist1": {
+      "Gi1/0/1": {
+        "port": "Gi1/0/1",
+        "status": "connected",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-dist2-a",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "Po1",
+        "port_channel_protocol": "Active",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/2": {
+        "port": "Gi1/0/2",
+        "status": "connected",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-dist2-b",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "Po1",
+        "port_channel_protocol": "Active",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/3": {
+        "port": "Gi1/0/3",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "1000BaseLX SFP",
+        "link_type": "Fiber",
+        "description": "to-core1",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.1",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "core1.lab",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "core1.lab",
+        "neighbor_switch_ip": "10.0.99.1",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi1/0/40",
+        "neighbor_platform": "cisco WS-C3850-24T",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/10": {
+        "port": "Gi1/0/10",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-podacc1",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.52",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "podacc1.lab",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "podacc1.lab",
+        "neighbor_switch_ip": "10.0.99.52",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi0/1",
+        "neighbor_platform": "cisco C9300-24T",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/11": {
+        "port": "Gi1/0/11",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-podacc2",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.53",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "podacc2.lab",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "podacc2.lab",
+        "neighbor_switch_ip": "10.0.99.53",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi0/1",
+        "neighbor_platform": "cisco C9300-24T",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Po1": {
+        "port": "Po1",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "2000",
+        "port_type": "",
+        "link_type": "",
+        "description": "to-dist2",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.51",
+        "port_channel": "Po1",
+        "port_channel_protocol": "Active",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "dist2.lab",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "dist2.lab",
+        "neighbor_switch_ip": "10.0.99.51",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Po1",
+        "neighbor_platform": "cisco C9300-48P",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "9216",
+        "dhcp_helpers": ""
+      },
+      "Vlan40": {
+        "port": "Vlan40",
+        "status": "",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "POD-USERS",
+        "vrf": "",
+        "duplex": "",
+        "speed": "",
+        "port_type": "",
+        "link_type": "",
+        "description": "POD-USERS",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "HSRP grp 40 Active VIP 10.0.40.1",
+        "multicast_info": "",
+        "svi_ip": "10.0.40.2 255.255.255.0",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Vlan41": {
+        "port": "Vlan41",
+        "status": "",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "POD-VOICE",
+        "vrf": "",
+        "duplex": "",
+        "speed": "",
+        "port_type": "",
+        "link_type": "",
+        "description": "POD-VOICE",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2442D002",
+        "current_switch_ip": "10.0.40.2",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "HSRP grp 41 Active VIP 10.0.41.1",
+        "multicast_info": "",
+        "svi_ip": "10.0.41.2 255.255.255.0",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      }
+    },
+    "dist2": {
+      "Gi1/0/1": {
+        "port": "Gi1/0/1",
+        "status": "connected",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-dist1-a",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "Po1",
+        "port_channel_protocol": "Active",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/2": {
+        "port": "Gi1/0/2",
+        "status": "connected",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-dist1-b",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "Po1",
+        "port_channel_protocol": "Active",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/3": {
+        "port": "Gi1/0/3",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "1000BaseLX SFP",
+        "link_type": "Fiber",
+        "description": "to-core2",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.2",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "core2.lab",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "core2.lab",
+        "neighbor_switch_ip": "10.0.99.2",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Eth1/20",
+        "neighbor_platform": "cisco N9K-C93180YC-EX",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/10": {
+        "port": "Gi1/0/10",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-podacc1",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.52",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "podacc1.lab",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "podacc1.lab",
+        "neighbor_switch_ip": "10.0.99.52",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi0/2",
+        "neighbor_platform": "cisco C9300-24T",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi1/0/11": {
+        "port": "Gi1/0/11",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "to-podacc2",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.53",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "podacc2.lab",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "podacc2.lab",
+        "neighbor_switch_ip": "10.0.99.53",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi0/2",
+        "neighbor_platform": "cisco C9300-24T",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Po1": {
+        "port": "Po1",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "2000",
+        "port_type": "",
+        "link_type": "",
+        "description": "to-dist1",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.50",
+        "port_channel": "Po1",
+        "port_channel_protocol": "Active",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "dist1.lab",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "dist1.lab",
+        "neighbor_switch_ip": "10.0.99.50",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Po1",
+        "neighbor_platform": "cisco C9300-48P",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "9216",
+        "dhcp_helpers": ""
+      },
+      "Vlan40": {
+        "port": "Vlan40",
+        "status": "",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "POD-USERS",
+        "vrf": "",
+        "duplex": "",
+        "speed": "",
+        "port_type": "",
+        "link_type": "",
+        "description": "POD-USERS",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "HSRP grp 40 Standby VIP 10.0.40.1",
+        "multicast_info": "",
+        "svi_ip": "10.0.40.3 255.255.255.0",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Vlan41": {
+        "port": "Vlan41",
+        "status": "",
+        "switchport_mode": "",
+        "vlan": "",
+        "vlan_name": "POD-VOICE",
+        "vrf": "",
+        "duplex": "",
+        "speed": "",
+        "port_type": "",
+        "link_type": "",
+        "description": "POD-VOICE",
+        "end_host_mac": "",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW2443D003",
+        "current_switch_ip": "10.0.40.3",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "HSRP grp 41 Standby VIP 10.0.41.1",
+        "multicast_info": "",
+        "svi_ip": "10.0.41.3 255.255.255.0",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      }
+    },
+    "podacc1": {
+      "Gi0/1": {
+        "port": "Gi0/1",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "1000BaseLX SFP",
+        "link_type": "Fiber",
+        "description": "uplink-to-dist1",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.50",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "dist1.lab",
+        "current_switch_serial": "FCW245501",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "dist1.lab",
+        "neighbor_switch_ip": "10.0.99.50",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi1/0/10",
+        "neighbor_platform": "cisco C9300-48P",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi0/2": {
+        "port": "Gi0/2",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "1000BaseLX SFP",
+        "link_type": "Fiber",
+        "description": "uplink-to-dist2",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.51",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "dist2.lab",
+        "current_switch_serial": "FCW245501",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "dist2.lab",
+        "neighbor_switch_ip": "10.0.99.51",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi1/0/10",
+        "neighbor_platform": "cisco C9300-48P",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi0/3": {
+        "port": "Gi0/3",
+        "status": "connected",
+        "switchport_mode": "Access",
+        "vlan": "40",
+        "vlan_name": "POD-USERS",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "pod-user-pc",
+        "end_host_mac": "1111.2222.4001",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "Disable",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW245501",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi0/4": {
+        "port": "Gi0/4",
+        "status": "connected",
+        "switchport_mode": "Access",
+        "vlan": "41",
+        "vlan_name": "POD-VOICE",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "100",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "pod-phone",
+        "end_host_mac": "1111.2222.4101",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "Disable",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "IP Phone",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW245501",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      }
+    },
+    "podacc2": {
+      "Gi0/1": {
+        "port": "Gi0/1",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "1000BaseLX SFP",
+        "link_type": "Fiber",
+        "description": "uplink-to-dist1",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.50",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "dist1.lab",
+        "current_switch_serial": "FCW245502",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "dist1.lab",
+        "neighbor_switch_ip": "10.0.99.50",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi1/0/11",
+        "neighbor_platform": "cisco C9300-48P",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi0/2": {
+        "port": "Gi0/2",
+        "status": "connected",
+        "switchport_mode": "Trunk",
+        "vlan": "40,41",
+        "vlan_name": "",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "1000BaseLX SFP",
+        "link_type": "Fiber",
+        "description": "uplink-to-dist2",
+        "end_host_mac": "",
+        "end_host_ip": "10.0.99.51",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "Switch",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "1",
+        "trunk_allowed_vlans": "40,41",
+        "trunk_status": "trunking",
+        "arp_source_switch": "",
+        "cdp_neighbor": "dist2.lab",
+        "current_switch_serial": "FCW245502",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "dist2.lab",
+        "neighbor_switch_ip": "10.0.99.51",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "Gi1/0/11",
+        "neighbor_platform": "cisco C9300-48P",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi0/3": {
+        "port": "Gi0/3",
+        "status": "connected",
+        "switchport_mode": "Access",
+        "vlan": "40",
+        "vlan_name": "POD-USERS",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "1000",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "pod-user-pc",
+        "end_host_mac": "1111.2222.4002",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "Disable",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW245502",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      },
+      "Gi0/4": {
+        "port": "Gi0/4",
+        "status": "connected",
+        "switchport_mode": "Access",
+        "vlan": "41",
+        "vlan_name": "POD-VOICE",
+        "vrf": "",
+        "duplex": "Full",
+        "speed": "100",
+        "port_type": "10/100/1000BaseTX",
+        "link_type": "Copper",
+        "description": "pod-phone",
+        "end_host_mac": "1111.2222.4102",
+        "end_host_ip": "",
+        "port_channel": "",
+        "port_channel_protocol": "",
+        "stp_blocked": "",
+        "stp_bpduguard": "",
+        "stp_rootguard": "Disable",
+        "poe_status": "",
+        "system_owner": "",
+        "endpoint_type": "IP Phone",
+        "endpoint_location": "",
+        "dual_connection": "",
+        "trunk_native_vlan": "",
+        "trunk_allowed_vlans": "",
+        "trunk_status": "",
+        "arp_source_switch": "",
+        "cdp_neighbor": "",
+        "current_switch_serial": "FCW245502",
+        "current_switch_ip": "",
+        "current_switch_vtp_domain": "",
+        "neighbor_switch_serial": "",
+        "neighbor_switch_ip": "",
+        "neighbor_switch_vtp_domain": "",
+        "subnet_primary_route": "",
+        "subnet_secondary_routes": "",
+        "route_next_hop": "",
+        "routing_source": "",
+        "hsrp_behavior": "",
+        "multicast_info": "",
+        "svi_ip": "",
+        "stp_fwd_vlans": "",
+        "stp_blk_vlans": "",
+        "stp_other_vlans": "",
+        "neighbor_port": "",
+        "neighbor_platform": "",
+        "acl_in": "",
+        "acl_out": "",
+        "mtu": "",
+        "dhcp_helpers": ""
+      }
     }
   },
   "physical_health": [
@@ -7517,6 +8909,21 @@
     },
     {
       "switch": "core2",
+      "port": "Eth1/20",
+      "status": "",
+      "speed": "unknown",
+      "duplex": "unknown",
+      "media": "unknown",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "core2",
       "port": "Eth1/3",
       "status": "",
       "speed": "unknown",
@@ -7567,6 +8974,276 @@
       "speed": "unknown",
       "duplex": "unknown",
       "media": "unknown",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist1",
+      "port": "Gi1/0/1",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "Po1",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist1",
+      "port": "Gi1/0/10",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist1",
+      "port": "Gi1/0/11",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist1",
+      "port": "Gi1/0/2",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "Po1",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist1",
+      "port": "Gi1/0/3",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "SFP/fiber",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist2",
+      "port": "Gi1/0/1",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "Po1",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist2",
+      "port": "Gi1/0/10",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist2",
+      "port": "Gi1/0/11",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist2",
+      "port": "Gi1/0/2",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "Po1",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist2",
+      "port": "Gi1/0/3",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "SFP/fiber",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc1",
+      "port": "Gi0/1",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "SFP/fiber",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc1",
+      "port": "Gi0/2",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "SFP/fiber",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc1",
+      "port": "Gi0/3",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc1",
+      "port": "Gi0/4",
+      "status": "connected",
+      "speed": "100",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc2",
+      "port": "Gi0/1",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "SFP/fiber",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc2",
+      "port": "Gi0/2",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "SFP/fiber",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc2",
+      "port": "Gi0/3",
+      "status": "connected",
+      "speed": "1000",
+      "duplex": "unknown",
+      "media": "copper",
+      "input_errors": "",
+      "crc_errors": "",
+      "output_drops": "",
+      "port_channel": "",
+      "poe": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "podacc2",
+      "port": "Gi0/4",
+      "status": "connected",
+      "speed": "100",
+      "duplex": "unknown",
+      "media": "copper",
       "input_errors": "",
       "crc_errors": "",
       "output_drops": "",
@@ -7648,6 +9325,66 @@
       "next_hop": "Vlan20",
       "primary_subnet": "10.0.20.0/24",
       "secondary": "10.0.20.3/32",
+      "tracking": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist1",
+      "vlan": 40,
+      "svi_ip": "10.0.40.2 255.255.255.0",
+      "fhrp": "HSRP",
+      "role": "Active",
+      "vip": "10.0.40.1",
+      "routing_source": "",
+      "next_hop": "",
+      "primary_subnet": "",
+      "secondary": "",
+      "tracking": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist1",
+      "vlan": 41,
+      "svi_ip": "10.0.41.2 255.255.255.0",
+      "fhrp": "HSRP",
+      "role": "Active",
+      "vip": "10.0.41.1",
+      "routing_source": "",
+      "next_hop": "",
+      "primary_subnet": "",
+      "secondary": "",
+      "tracking": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist2",
+      "vlan": 40,
+      "svi_ip": "10.0.40.3 255.255.255.0",
+      "fhrp": "HSRP",
+      "role": "Standby",
+      "vip": "10.0.40.1",
+      "routing_source": "",
+      "next_hop": "",
+      "primary_subnet": "",
+      "secondary": "",
+      "tracking": "",
+      "risk": "ok",
+      "severity": "Info"
+    },
+    {
+      "switch": "dist2",
+      "vlan": 41,
+      "svi_ip": "10.0.41.3 255.255.255.0",
+      "fhrp": "HSRP",
+      "role": "Standby",
+      "vip": "10.0.41.1",
+      "routing_source": "",
+      "next_hop": "",
+      "primary_subnet": "",
+      "secondary": "",
       "tracking": "",
       "risk": "ok",
       "severity": "Info"
@@ -7883,6 +9620,50 @@
       "recommendation": "Add a redundant path, or migrate this switch in the same wave as its dependents.",
       "hosts": [
         "core2"
+      ]
+    },
+    {
+      "id": "CL-02",
+      "severity": "High",
+      "layers": "L2+L3",
+      "title": "dist1: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing dist1 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "recommendation": "Add a redundant path, or migrate this switch in the same wave as its dependents.",
+      "hosts": [
+        "dist1"
+      ]
+    },
+    {
+      "id": "CL-02",
+      "severity": "High",
+      "layers": "L2+L3",
+      "title": "dist2: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing dist2 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "recommendation": "Add a redundant path, or migrate this switch in the same wave as its dependents.",
+      "hosts": [
+        "dist2"
+      ]
+    },
+    {
+      "id": "CL-02",
+      "severity": "High",
+      "layers": "L2+L3",
+      "title": "podacc1: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing podacc1 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "recommendation": "Add a redundant path, or migrate this switch in the same wave as its dependents.",
+      "hosts": [
+        "podacc1"
+      ]
+    },
+    {
+      "id": "CL-02",
+      "severity": "High",
+      "layers": "L2+L3",
+      "title": "podacc2: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing podacc2 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "recommendation": "Add a redundant path, or migrate this switch in the same wave as its dependents.",
+      "hosts": [
+        "podacc2"
       ]
     },
     {
@@ -8263,6 +10044,34 @@
       "severity": "Info",
       "summary": "2 group(s) [HSRP]; 1 active/master",
       "detail": ""
+    },
+    {
+      "switch": "dist1",
+      "protocol": "EtherChannel",
+      "severity": "Info",
+      "summary": "1 bundle(s), 2 member(s)",
+      "detail": ""
+    },
+    {
+      "switch": "dist1",
+      "protocol": "FHRP",
+      "severity": "Info",
+      "summary": "2 group(s) [HSRP]; 2 active/master",
+      "detail": ""
+    },
+    {
+      "switch": "dist2",
+      "protocol": "EtherChannel",
+      "severity": "Info",
+      "summary": "1 bundle(s), 2 member(s)",
+      "detail": ""
+    },
+    {
+      "switch": "dist2",
+      "protocol": "FHRP",
+      "severity": "Info",
+      "summary": "2 group(s) [HSRP]; 0 active/master",
+      "detail": ""
     }
   ],
   "protocol_intelligence": [
@@ -8625,21 +10434,73 @@
         "status": "Unknown model — verify on Cisco's EoL portal",
         "source": "",
         "conf": ""
+      },
+      {
+        "host": "dist1",
+        "model": "C9300-48P",
+        "platform": "Catalyst 9300",
+        "sw_version": "17.09.04",
+        "eos": "",
+        "ldos": "",
+        "band": "Active",
+        "years_to_ldos": null,
+        "status": "Active (no end-of-life announced)",
+        "source": "no EoL announced",
+        "conf": "active"
+      },
+      {
+        "host": "dist2",
+        "model": "C9300-48P",
+        "platform": "Catalyst 9300",
+        "sw_version": "17.09.04",
+        "eos": "",
+        "ldos": "",
+        "band": "Active",
+        "years_to_ldos": null,
+        "status": "Active (no end-of-life announced)",
+        "source": "no EoL announced",
+        "conf": "active"
+      },
+      {
+        "host": "podacc1",
+        "model": "C9300-24T",
+        "platform": "Catalyst 9300",
+        "sw_version": "17.06.05",
+        "eos": "",
+        "ldos": "",
+        "band": "Active",
+        "years_to_ldos": null,
+        "status": "Active (no end-of-life announced)",
+        "source": "no EoL announced",
+        "conf": "active"
+      },
+      {
+        "host": "podacc2",
+        "model": "C9300-24T",
+        "platform": "Catalyst 9300",
+        "sw_version": "17.06.05",
+        "eos": "",
+        "ldos": "",
+        "band": "Active",
+        "years_to_ldos": null,
+        "status": "Active (no end-of-life announced)",
+        "source": "no EoL announced",
+        "conf": "active"
       }
     ],
     "summary": {
-      "n_devices": 19,
+      "n_devices": 23,
       "by_band": {
         "Past-EoS": 6,
         "Past-LDoS": 5,
-        "Active": 6,
+        "Active": 10,
         "Near-LDoS": 1,
         "Unknown": 1
       },
       "n_past_ldos": 5,
       "n_near": 1,
       "n_past_eos": 6,
-      "n_active": 6,
+      "n_active": 10,
       "n_unknown": 1,
       "by_platform": [
         {
@@ -8662,7 +10523,7 @@
         },
         {
           "platform": "Catalyst 9300",
-          "count": 6,
+          "count": 10,
           "band": "Active",
           "ldos": ""
         },
@@ -8839,7 +10700,7 @@
         "category": "Trunk",
         "severity": "Medium",
         "title": "Native-VLAN mismatch on Gi0/1",
-        "why": "core1 Gi1/0/40 (native 1) <-> access16 Gi0/1 (native 99) — untagged L2 leak / VLAN-hopping exposure.",
+        "why": "access16 Gi0/1 (native 99) <-> core1 Gi1/0/40 (native 1) — untagged L2 leak / VLAN-hopping exposure.",
         "commands": [
           "interface Gi0/1",
           " switchport trunk native vlan <chosen-native-vlan>"
@@ -8933,7 +10794,7 @@
         "category": "Trunk",
         "severity": "Medium",
         "title": "Native-VLAN mismatch on Gi1/0/40",
-        "why": "core1 Gi1/0/40 (native 1) <-> access16 Gi0/1 (native 99) — untagged L2 leak / VLAN-hopping exposure.",
+        "why": "access16 Gi0/1 (native 99) <-> core1 Gi1/0/40 (native 1) — untagged L2 leak / VLAN-hopping exposure.",
         "commands": [
           "interface Gi1/0/40",
           " switchport trunk native vlan <chosen-native-vlan>"
@@ -9174,7 +11035,7 @@
           "category": "Trunk",
           "severity": "Medium",
           "title": "Native-VLAN mismatch on Gi1/0/40",
-          "why": "core1 Gi1/0/40 (native 1) <-> access16 Gi0/1 (native 99) — untagged L2 leak / VLAN-hopping exposure.",
+          "why": "access16 Gi0/1 (native 99) <-> core1 Gi1/0/40 (native 1) — untagged L2 leak / VLAN-hopping exposure.",
           "commands": [
             "interface Gi1/0/40",
             " switchport trunk native vlan <chosen-native-vlan>"
@@ -9261,7 +11122,7 @@
           "category": "Trunk",
           "severity": "Medium",
           "title": "Native-VLAN mismatch on Gi0/1",
-          "why": "core1 Gi1/0/40 (native 1) <-> access16 Gi0/1 (native 99) — untagged L2 leak / VLAN-hopping exposure.",
+          "why": "access16 Gi0/1 (native 99) <-> core1 Gi1/0/40 (native 1) — untagged L2 leak / VLAN-hopping exposure.",
           "commands": [
             "interface Gi0/1",
             " switchport trunk native vlan <chosen-native-vlan>"
@@ -9736,6 +11597,138 @@
         "command": "show spanning-tree vlan 10",
         "expect": "core1 reports 'This bridge is the root' for VLAN 10",
         "why": "If the root moves on cutover, the L2 topology reconverges and forwarding paths change."
+      },
+      {
+        "device": "dist1",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "FHRP",
+        "severity": "High",
+        "check": "First-hop redundancy healthy for VLAN 40",
+        "command": "show standby brief",
+        "expect": "VLAN 40 shows exactly one Active + one Standby across dist1 + dist2 (same virtual IP)",
+        "why": "VLAN 40 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+      },
+      {
+        "device": "dist1",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "FHRP",
+        "severity": "High",
+        "check": "First-hop redundancy healthy for VLAN 41",
+        "command": "show standby brief",
+        "expect": "VLAN 41 shows exactly one Active + one Standby across dist1 + dist2 (same virtual IP)",
+        "why": "VLAN 41 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+      },
+      {
+        "device": "dist2",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "FHRP",
+        "severity": "High",
+        "check": "First-hop redundancy healthy for VLAN 40",
+        "command": "show standby brief",
+        "expect": "VLAN 40 shows exactly one Active + one Standby across dist2 + dist1 (same virtual IP)",
+        "why": "VLAN 40 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+      },
+      {
+        "device": "dist2",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "FHRP",
+        "severity": "High",
+        "check": "First-hop redundancy healthy for VLAN 41",
+        "command": "show standby brief",
+        "expect": "VLAN 41 shows exactly one Active + one Standby across dist2 + dist1 (same virtual IP)",
+        "why": "VLAN 41 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+      },
+      {
+        "device": "dist1",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Gateway",
+        "severity": "High",
+        "check": "Default gateway for VLAN 40 is up",
+        "command": "show ip interface brief | include Vlan40",
+        "expect": "Vlan40 10.0.40.2 up/up (line protocol up)",
+        "why": "VLAN 40 endpoints lose their default gateway if this SVI is down after cutover."
+      },
+      {
+        "device": "dist1",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Gateway",
+        "severity": "High",
+        "check": "Default gateway for VLAN 41 is up",
+        "command": "show ip interface brief | include Vlan41",
+        "expect": "Vlan41 10.0.41.2 up/up (line protocol up)",
+        "why": "VLAN 41 endpoints lose their default gateway if this SVI is down after cutover."
+      },
+      {
+        "device": "dist2",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Gateway",
+        "severity": "High",
+        "check": "Default gateway for VLAN 40 is up",
+        "command": "show ip interface brief | include Vlan40",
+        "expect": "Vlan40 10.0.40.3 up/up (line protocol up)",
+        "why": "VLAN 40 endpoints lose their default gateway if this SVI is down after cutover."
+      },
+      {
+        "device": "dist2",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Gateway",
+        "severity": "High",
+        "check": "Default gateway for VLAN 41 is up",
+        "command": "show ip interface brief | include Vlan41",
+        "expect": "Vlan41 10.0.41.3 up/up (line protocol up)",
+        "why": "VLAN 41 endpoints lose their default gateway if this SVI is down after cutover."
+      },
+      {
+        "device": "podacc1",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Reachability",
+        "severity": "High",
+        "check": "VLAN 40 endpoints can reach their gateway",
+        "command": "ping 10.0.40.2",
+        "expect": "Success rate is 100 percent",
+        "why": "Proves a VLAN 40 client edge (podacc1) still reaches its default gateway after cutover."
+      },
+      {
+        "device": "podacc1",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Reachability",
+        "severity": "High",
+        "check": "VLAN 41 endpoints can reach their gateway",
+        "command": "ping 10.0.41.2",
+        "expect": "Success rate is 100 percent",
+        "why": "Proves a VLAN 41 client edge (podacc1) still reaches its default gateway after cutover."
+      },
+      {
+        "device": "dist1",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Link",
+        "severity": "Medium",
+        "check": "Port-channel uplinks bundled",
+        "command": "show etherchannel summary",
+        "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+        "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+      },
+      {
+        "device": "dist2",
+        "platform": "ios",
+        "wave": "Group 2",
+        "category": "Link",
+        "severity": "Medium",
+        "check": "Port-channel uplinks bundled",
+        "command": "show etherchannel summary",
+        "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+        "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
       }
     ],
     "by_wave": {
@@ -10103,20 +12096,154 @@
           "expect": "core1 reports 'This bridge is the root' for VLAN 10",
           "why": "If the root moves on cutover, the L2 topology reconverges and forwarding paths change."
         }
+      ],
+      "Group 2": [
+        {
+          "device": "dist1",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "FHRP",
+          "severity": "High",
+          "check": "First-hop redundancy healthy for VLAN 40",
+          "command": "show standby brief",
+          "expect": "VLAN 40 shows exactly one Active + one Standby across dist1 + dist2 (same virtual IP)",
+          "why": "VLAN 40 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+        },
+        {
+          "device": "dist1",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "FHRP",
+          "severity": "High",
+          "check": "First-hop redundancy healthy for VLAN 41",
+          "command": "show standby brief",
+          "expect": "VLAN 41 shows exactly one Active + one Standby across dist1 + dist2 (same virtual IP)",
+          "why": "VLAN 41 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+        },
+        {
+          "device": "dist2",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "FHRP",
+          "severity": "High",
+          "check": "First-hop redundancy healthy for VLAN 40",
+          "command": "show standby brief",
+          "expect": "VLAN 40 shows exactly one Active + one Standby across dist2 + dist1 (same virtual IP)",
+          "why": "VLAN 40 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+        },
+        {
+          "device": "dist2",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "FHRP",
+          "severity": "High",
+          "check": "First-hop redundancy healthy for VLAN 41",
+          "command": "show standby brief",
+          "expect": "VLAN 41 shows exactly one Active + one Standby across dist2 + dist1 (same virtual IP)",
+          "why": "VLAN 41 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+        },
+        {
+          "device": "dist1",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Gateway",
+          "severity": "High",
+          "check": "Default gateway for VLAN 40 is up",
+          "command": "show ip interface brief | include Vlan40",
+          "expect": "Vlan40 10.0.40.2 up/up (line protocol up)",
+          "why": "VLAN 40 endpoints lose their default gateway if this SVI is down after cutover."
+        },
+        {
+          "device": "dist1",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Gateway",
+          "severity": "High",
+          "check": "Default gateway for VLAN 41 is up",
+          "command": "show ip interface brief | include Vlan41",
+          "expect": "Vlan41 10.0.41.2 up/up (line protocol up)",
+          "why": "VLAN 41 endpoints lose their default gateway if this SVI is down after cutover."
+        },
+        {
+          "device": "dist2",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Gateway",
+          "severity": "High",
+          "check": "Default gateway for VLAN 40 is up",
+          "command": "show ip interface brief | include Vlan40",
+          "expect": "Vlan40 10.0.40.3 up/up (line protocol up)",
+          "why": "VLAN 40 endpoints lose their default gateway if this SVI is down after cutover."
+        },
+        {
+          "device": "dist2",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Gateway",
+          "severity": "High",
+          "check": "Default gateway for VLAN 41 is up",
+          "command": "show ip interface brief | include Vlan41",
+          "expect": "Vlan41 10.0.41.3 up/up (line protocol up)",
+          "why": "VLAN 41 endpoints lose their default gateway if this SVI is down after cutover."
+        },
+        {
+          "device": "podacc1",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Reachability",
+          "severity": "High",
+          "check": "VLAN 40 endpoints can reach their gateway",
+          "command": "ping 10.0.40.2",
+          "expect": "Success rate is 100 percent",
+          "why": "Proves a VLAN 40 client edge (podacc1) still reaches its default gateway after cutover."
+        },
+        {
+          "device": "podacc1",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Reachability",
+          "severity": "High",
+          "check": "VLAN 41 endpoints can reach their gateway",
+          "command": "ping 10.0.41.2",
+          "expect": "Success rate is 100 percent",
+          "why": "Proves a VLAN 41 client edge (podacc1) still reaches its default gateway after cutover."
+        },
+        {
+          "device": "dist1",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Link",
+          "severity": "Medium",
+          "check": "Port-channel uplinks bundled",
+          "command": "show etherchannel summary",
+          "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+          "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+        },
+        {
+          "device": "dist2",
+          "platform": "ios",
+          "wave": "Group 2",
+          "category": "Link",
+          "severity": "Medium",
+          "check": "Port-channel uplinks bundled",
+          "command": "show etherchannel summary",
+          "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+          "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+        }
       ]
     },
     "summary": {
-      "n_items": 33,
-      "n_waves": 1,
+      "n_items": 45,
+      "n_waves": 2,
       "by_category": {
-        "FHRP": 4,
-        "Gateway": 5,
-        "Reachability": 3,
+        "FHRP": 8,
+        "Gateway": 9,
+        "Reachability": 5,
         "Routing": 1,
-        "Link": 2,
+        "Link": 4,
         "STP": 18
       },
-      "n_high": 13
+      "n_high": 23
     },
     "banner": "Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good result captured from the pre-cutover state -- a deviation is a regression to investigate."
   },
@@ -10141,8 +12268,8 @@
   },
   "collection_completeness": {
     "summary": {
-      "inventory": 19,
-      "complete": 19,
+      "inventory": 23,
+      "complete": 23,
       "partial": 0,
       "not_collected": 0
     },
@@ -10419,6 +12546,50 @@
         "CL-02 High (-10)"
       ],
       "data_quality": 1.0
+    },
+    {
+      "switch": "dist1",
+      "score": 88,
+      "band": "Good",
+      "role": "distribution",
+      "criticality": 1.2,
+      "deductions": [
+        "CL-02 High (-10)"
+      ],
+      "data_quality": 1.0
+    },
+    {
+      "switch": "dist2",
+      "score": 88,
+      "band": "Good",
+      "role": "distribution",
+      "criticality": 1.2,
+      "deductions": [
+        "CL-02 High (-10)"
+      ],
+      "data_quality": 1.0
+    },
+    {
+      "switch": "podacc1",
+      "score": 90,
+      "band": "Excellent",
+      "role": "access",
+      "criticality": 1.0,
+      "deductions": [
+        "CL-02 High (-10)"
+      ],
+      "data_quality": 1.0
+    },
+    {
+      "switch": "podacc2",
+      "score": 90,
+      "band": "Excellent",
+      "role": "access",
+      "criticality": 1.0,
+      "deductions": [
+        "CL-02 High (-10)"
+      ],
+      "data_quality": 1.0
     }
   ],
   "migration_readiness": [
@@ -10529,6 +12700,99 @@
           "phase": "Rollback"
         }
       ]
+    },
+    {
+      "group": "Group 2",
+      "switches": [
+        "dist1",
+        "dist2",
+        "podacc1",
+        "podacc2"
+      ],
+      "endpoints": 4,
+      "readiness": "READY",
+      "n_fail": 0,
+      "n_warn": 0,
+      "checks": [
+        {
+          "check": "Redundant uplinks",
+          "status": "pass",
+          "note": "no single-homed switch",
+          "phase": "Pilot/cutover"
+        },
+        {
+          "check": "Gateway redundancy",
+          "status": "pass",
+          "note": "gateways redundant / none in group",
+          "phase": "Pilot/cutover"
+        },
+        {
+          "check": "No cross-layer Critical",
+          "status": "pass",
+          "note": "none",
+          "phase": "Dependency mapping"
+        },
+        {
+          "check": "No err-disabled ports",
+          "status": "pass",
+          "note": "none",
+          "phase": "Baseline capture"
+        },
+        {
+          "check": "STP consistency",
+          "status": "pass",
+          "note": "no inconsistent ports",
+          "phase": "Dependency mapping"
+        },
+        {
+          "check": "Port-channels healthy",
+          "status": "pass",
+          "note": "all members bundled / none",
+          "phase": "Baseline capture"
+        },
+        {
+          "check": "Routing adjacencies up",
+          "status": "pass",
+          "note": "all neighbors up / none",
+          "phase": "Baseline capture"
+        },
+        {
+          "check": "No orphan VLANs",
+          "status": "pass",
+          "note": "none",
+          "phase": "Inventory"
+        },
+        {
+          "check": "Clean uplinks (no half-duplex)",
+          "status": "pass",
+          "note": "none",
+          "phase": "Baseline capture"
+        },
+        {
+          "check": "Device health floor",
+          "status": "pass",
+          "note": "all switches Fair or better",
+          "phase": "Pilot/cutover"
+        },
+        {
+          "check": "Dependency mapping complete",
+          "status": "pass",
+          "note": "topology/dependency map covers all group switches",
+          "phase": "Dependency mapping"
+        },
+        {
+          "check": "Baseline capture",
+          "status": "pass",
+          "note": "interface/physical counters captured for all group switches",
+          "phase": "Baseline capture"
+        },
+        {
+          "check": "Rollback plan documented",
+          "status": "info",
+          "note": "manual: confirm documented rollback + back-out window",
+          "phase": "Rollback"
+        }
+      ]
     }
   ],
   "score_sensitivity": [
@@ -10536,7 +12800,7 @@
       "perturbation": "XL -50%",
       "group": "xl_weights",
       "delta_pct": -50,
-      "switches_changed_band": 18,
+      "switches_changed_band": 20,
       "changed": [
         "access1",
         "access10",
@@ -10555,15 +12819,17 @@
         "access7",
         "access8",
         "access9",
-        "core2"
+        "core2",
+        "dist1",
+        "dist2"
       ],
-      "detail": "access1: Poor->Fair; access10: Fair->Good; access11: Fair->Good; access12: Fair->Good; access13: Critical->Poor; access14: Critical->Poor; access15: Critical->Poor; access16: Critical->Poor; access17: Critical->Poor; access2: Poor->Fair; access3: Poor->Fair; access4: Poor->Fair; access5: Poor->Fair; access6: Poor->Fair; access7: Fair->Good; access8: Fair->Good; access9: Fair->Good; core2: Good->Excellent"
+      "detail": "access1: Poor->Fair; access10: Fair->Good; access11: Fair->Good; access12: Fair->Good; access13: Critical->Poor; access14: Critical->Poor; access15: Critical->Poor; access16: Critical->Poor; access17: Critical->Poor; access2: Poor->Fair; access3: Poor->Fair; access4: Poor->Fair; access5: Poor->Fair; access6: Poor->Fair; access7: Fair->Good; access8: Fair->Good; access9: Fair->Good; core2: Good->Excellent; dist1: Good->Excellent; dist2: Good->Excellent"
     },
     {
       "perturbation": "XL -25%",
       "group": "xl_weights",
       "delta_pct": -25,
-      "switches_changed_band": 12,
+      "switches_changed_band": 14,
       "changed": [
         "access1",
         "access13",
@@ -10576,9 +12842,11 @@
         "access4",
         "access5",
         "access6",
-        "core2"
+        "core2",
+        "dist1",
+        "dist2"
       ],
-      "detail": "access1: Poor->Fair; access13: Critical->Poor; access14: Critical->Poor; access15: Critical->Poor; access16: Critical->Poor; access17: Critical->Poor; access2: Poor->Fair; access3: Poor->Fair; access4: Poor->Fair; access5: Poor->Fair; access6: Poor->Fair; core2: Good->Excellent"
+      "detail": "access1: Poor->Fair; access13: Critical->Poor; access14: Critical->Poor; access15: Critical->Poor; access16: Critical->Poor; access17: Critical->Poor; access2: Poor->Fair; access3: Poor->Fair; access4: Poor->Fair; access5: Poor->Fair; access6: Poor->Fair; core2: Good->Excellent; dist1: Good->Excellent; dist2: Good->Excellent"
     },
     {
       "perturbation": "L1 -50%",
@@ -10613,6 +12881,28 @@
         "access17"
       ],
       "detail": "access13: Critical->Poor; access14: Critical->Poor; access15: Critical->Poor; access16: Critical->Poor; access17: Critical->Poor"
+    },
+    {
+      "perturbation": "XL +25%",
+      "group": "xl_weights",
+      "delta_pct": 25,
+      "switches_changed_band": 2,
+      "changed": [
+        "podacc1",
+        "podacc2"
+      ],
+      "detail": "podacc1: Excellent->Good; podacc2: Excellent->Good"
+    },
+    {
+      "perturbation": "XL +50%",
+      "group": "xl_weights",
+      "delta_pct": 50,
+      "switches_changed_band": 2,
+      "changed": [
+        "podacc1",
+        "podacc2"
+      ],
+      "detail": "podacc1: Excellent->Good; podacc2: Excellent->Good"
     },
     {
       "perturbation": "L1 +25%",
@@ -10721,22 +13011,6 @@
     {
       "perturbation": "SEC +50%",
       "group": "sec_weights",
-      "delta_pct": 50,
-      "switches_changed_band": 0,
-      "changed": [],
-      "detail": "no band changes"
-    },
-    {
-      "perturbation": "XL +25%",
-      "group": "xl_weights",
-      "delta_pct": 25,
-      "switches_changed_band": 0,
-      "changed": [],
-      "detail": "no band changes"
-    },
-    {
-      "perturbation": "XL +50%",
-      "group": "xl_weights",
       "delta_pct": 50,
       "switches_changed_band": 0,
       "changed": [],
@@ -11711,6 +13985,58 @@
     {
       "severity": "High",
       "rank": 3,
+      "category": "Cross-layer",
+      "devices": [
+        "dist1"
+      ],
+      "wave": "",
+      "title": "dist1: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing dist1 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "remediation": "",
+      "priority": 41
+    },
+    {
+      "severity": "High",
+      "rank": 3,
+      "category": "Cross-layer",
+      "devices": [
+        "dist2"
+      ],
+      "wave": "",
+      "title": "dist2: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing dist2 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "remediation": "",
+      "priority": 42
+    },
+    {
+      "severity": "High",
+      "rank": 3,
+      "category": "Cross-layer",
+      "devices": [
+        "podacc1"
+      ],
+      "wave": "",
+      "title": "podacc1: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing podacc1 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "remediation": "",
+      "priority": 43
+    },
+    {
+      "severity": "High",
+      "rank": 3,
+      "category": "Cross-layer",
+      "devices": [
+        "podacc2"
+      ],
+      "wave": "",
+      "title": "podacc2: only L2 transit to the gateway for 3 VLAN(s)",
+      "detail": "Removing podacc2 partitions endpoints in 3 VLAN(s) (10, 20, 30) from their L3 gateway over forwarding links.",
+      "remediation": "",
+      "priority": 44
+    },
+    {
+      "severity": "High",
+      "rank": 3,
       "category": "Health",
       "devices": [
         "core1"
@@ -11719,7 +14045,7 @@
       "title": "Critical-health switch",
       "detail": "Health score 3 (Critical band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 41
+      "priority": 45
     },
     {
       "severity": "High",
@@ -11732,7 +14058,7 @@
       "title": "Critical-health switch",
       "detail": "Health score 36 (Critical band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 42
+      "priority": 46
     },
     {
       "severity": "High",
@@ -11745,7 +14071,7 @@
       "title": "Critical-health switch",
       "detail": "Health score 36 (Critical band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 43
+      "priority": 47
     },
     {
       "severity": "High",
@@ -11758,7 +14084,7 @@
       "title": "Critical-health switch",
       "detail": "Health score 36 (Critical band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 44
+      "priority": 48
     },
     {
       "severity": "High",
@@ -11771,7 +14097,7 @@
       "title": "Critical-health switch",
       "detail": "Health score 36 (Critical band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 45
+      "priority": 49
     },
     {
       "severity": "High",
@@ -11784,7 +14110,7 @@
       "title": "Critical-health switch",
       "detail": "Health score 36 (Critical band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 46
+      "priority": 50
     },
     {
       "severity": "High",
@@ -11802,7 +14128,7 @@
       "title": "err disabled",
       "detail": "L1 risk 'err-disabled' on 6 switch(es).",
       "remediation": "",
-      "priority": 47
+      "priority": 51
     },
     {
       "severity": "High",
@@ -11815,7 +14141,7 @@
       "title": "single gateway",
       "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
       "remediation": "Add gateway / FHRP redundancy.",
-      "priority": 48
+      "priority": 52
     },
     {
       "severity": "High",
@@ -11828,7 +14154,7 @@
       "title": "OSPF high",
       "detail": "10.0.99.9 EXSTART/DROTHER",
       "remediation": "",
-      "priority": 49
+      "priority": 53
     },
     {
       "severity": "High",
@@ -11841,7 +14167,7 @@
       "title": "Local user password storage",
       "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
       "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
-      "priority": 50
+      "priority": 54
     },
     {
       "severity": "High",
@@ -11854,7 +14180,7 @@
       "title": "SNMP access",
       "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
       "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
-      "priority": 51
+      "priority": 55
     },
     {
       "severity": "High",
@@ -11867,7 +14193,7 @@
       "title": "VTY transport (telnet)",
       "detail": "a VTY line permits telnet (cleartext management).",
       "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
-      "priority": 52
+      "priority": 56
     },
     {
       "severity": "Medium",
@@ -11880,7 +14206,7 @@
       "title": "core1: L1 fault on an L3 gateway switch",
       "detail": "core1 hosts L3 gateway SVIs and has an err-disabled or high-error port - physical instability at a routing aggregation point.",
       "remediation": "",
-      "priority": 53
+      "priority": 57
     },
     {
       "severity": "Medium",
@@ -11893,7 +14219,7 @@
       "title": "Poor-health switch",
       "detail": "Health score 52 (Poor band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 54
+      "priority": 58
     },
     {
       "severity": "Medium",
@@ -11906,7 +14232,7 @@
       "title": "Poor-health switch",
       "detail": "Health score 52 (Poor band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 55
+      "priority": 59
     },
     {
       "severity": "Medium",
@@ -11919,7 +14245,7 @@
       "title": "Poor-health switch",
       "detail": "Health score 52 (Poor band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 56
+      "priority": 60
     },
     {
       "severity": "Medium",
@@ -11932,7 +14258,7 @@
       "title": "Poor-health switch",
       "detail": "Health score 52 (Poor band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 57
+      "priority": 61
     },
     {
       "severity": "Medium",
@@ -11945,7 +14271,7 @@
       "title": "Poor-health switch",
       "detail": "Health score 52 (Poor band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 58
+      "priority": 62
     },
     {
       "severity": "Medium",
@@ -11958,7 +14284,7 @@
       "title": "Poor-health switch",
       "detail": "Health score 52 (Poor band).",
       "remediation": "Resolve the deductions above before migrating this device.",
-      "priority": 59
+      "priority": 63
     },
     {
       "severity": "Medium",
@@ -11987,7 +14313,7 @@
       "title": "single fiber uplink",
       "detail": "L1 risk 'single-fiber-uplink' on 17 switch(es).",
       "remediation": "",
-      "priority": 60
+      "priority": 64
     },
     {
       "severity": "Medium",
@@ -12001,7 +14327,7 @@
       "title": "STP root != gateway (VLAN 30)",
       "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
       "remediation": "Align the STP root priority with the active gateway switch.",
-      "priority": 61
+      "priority": 65
     },
     {
       "severity": "Medium",
@@ -12014,7 +14340,7 @@
       "title": "Unused / risky services",
       "detail": "enabled: HTTP server (cleartext).",
       "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
-      "priority": 62
+      "priority": 66
     },
     {
       "severity": "Medium",
@@ -12027,7 +14353,7 @@
       "title": "VTY line hardening",
       "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
       "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
-      "priority": 63
+      "priority": 67
     },
     {
       "severity": "Medium",
@@ -12041,21 +14367,7 @@
       "title": "Native-VLAN mismatch (1 vs 99)",
       "detail": "core1 Gi1/0/38 (native 1) <-> access14 Gi0/1 (native 99) -- untagged L2 leak / VLAN-hopping exposure.",
       "remediation": "Set a consistent native VLAN on both trunk ends.",
-      "priority": 64
-    },
-    {
-      "severity": "Medium",
-      "rank": 2,
-      "category": "Trunk",
-      "devices": [
-        "access16",
-        "core1"
-      ],
-      "wave": "",
-      "title": "Native-VLAN mismatch (1 vs 99)",
-      "detail": "core1 Gi1/0/40 (native 1) <-> access16 Gi0/1 (native 99) -- untagged L2 leak / VLAN-hopping exposure.",
-      "remediation": "Set a consistent native VLAN on both trunk ends.",
-      "priority": 65
+      "priority": 68
     },
     {
       "severity": "Medium",
@@ -12069,7 +14381,7 @@
       "title": "Native-VLAN mismatch (1 vs 99)",
       "detail": "core2 Eth1/13 (native 1) <-> access13 Gi0/1 (native 99) -- untagged L2 leak / VLAN-hopping exposure.",
       "remediation": "Set a consistent native VLAN on both trunk ends.",
-      "priority": 66
+      "priority": 69
     },
     {
       "severity": "Medium",
@@ -12083,7 +14395,7 @@
       "title": "Native-VLAN mismatch (1 vs 99)",
       "detail": "core2 Eth1/15 (native 1) <-> access15 Gi0/1 (native 99) -- untagged L2 leak / VLAN-hopping exposure.",
       "remediation": "Set a consistent native VLAN on both trunk ends.",
-      "priority": 67
+      "priority": 70
     },
     {
       "severity": "Medium",
@@ -12097,7 +14409,21 @@
       "title": "Native-VLAN mismatch (1 vs 99)",
       "detail": "core2 Eth1/17 (native 1) <-> access17 Gi0/1 (native 99) -- untagged L2 leak / VLAN-hopping exposure.",
       "remediation": "Set a consistent native VLAN on both trunk ends.",
-      "priority": 68
+      "priority": 71
+    },
+    {
+      "severity": "Medium",
+      "rank": 2,
+      "category": "Trunk",
+      "devices": [
+        "access16",
+        "core1"
+      ],
+      "wave": "",
+      "title": "Native-VLAN mismatch (99 vs 1)",
+      "detail": "access16 Gi0/1 (native 99) <-> core1 Gi1/0/40 (native 1) -- untagged L2 leak / VLAN-hopping exposure.",
+      "remediation": "Set a consistent native VLAN on both trunk ends.",
+      "priority": 72
     },
     {
       "severity": "Low",
@@ -12116,13 +14442,17 @@
         "access7",
         "access8",
         "access9",
-        "core1"
+        "core1",
+        "dist1",
+        "dist2",
+        "podacc1",
+        "podacc2"
       ],
       "wave": "",
-      "title": "Native VLAN 1 on 14 inter-switch trunk(s)",
-      "detail": "14 trunk(s) across 13 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+      "title": "Native VLAN 1 on 26 inter-switch trunk(s)",
+      "detail": "26 trunk(s) across 17 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
       "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
-      "priority": 69
+      "priority": 73
     },
     {
       "severity": "Low",
@@ -12135,7 +14465,7 @@
       "title": "Accidental root (VLAN 30)",
       "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
       "remediation": "Set a deliberate root-bridge priority on the intended switch.",
-      "priority": 70
+      "priority": 74
     },
     {
       "severity": "Low",
@@ -12148,7 +14478,7 @@
       "title": "Login banner",
       "detail": "no login / MOTD legal-notice banner.",
       "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
-      "priority": 71
+      "priority": 75
     }
   ],
   "operational_drift": [
@@ -12168,57 +14498,61 @@
         "access7",
         "access8",
         "access9",
-        "core1"
+        "core1",
+        "dist1",
+        "dist2",
+        "podacc1",
+        "podacc2"
       ],
-      "title": "Native VLAN 1 on 14 inter-switch trunk(s)",
-      "detail": "14 trunk(s) across 13 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+      "title": "Native VLAN 1 on 26 inter-switch trunk(s)",
+      "detail": "26 trunk(s) across 17 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
       "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."
     }
   ],
   "calibration": {
-    "n": 19,
+    "n": 23,
     "score_stats": {
       "min": 3,
-      "max": 88,
-      "mean": 52.8,
+      "max": 90,
+      "mean": 59.1,
       "median": 52.0,
-      "p25": 36.0,
+      "p25": 44.0,
       "p75": 70.0,
-      "stdev": 19.1
+      "stdev": 22.1
     },
     "band_distribution": [
       {
         "band": "Excellent",
-        "count": 0,
-        "pct": 0
+        "count": 2,
+        "pct": 9
       },
       {
         "band": "Good",
-        "count": 1,
-        "pct": 5
+        "count": 3,
+        "pct": 13
       },
       {
         "band": "Fair",
         "count": 6,
-        "pct": 32
+        "pct": 26
       },
       {
         "band": "Poor",
         "count": 6,
-        "pct": 32
+        "pct": 26
       },
       {
         "band": "Critical",
         "count": 6,
-        "pct": 32
+        "pct": 26
       }
     ],
     "modal_band": "Fair",
-    "modal_pct": 32,
-    "discrimination": 0.77,
+    "modal_pct": 26,
+    "discrimination": 0.95,
     "discrimination_quality": "good",
     "suggested_bands": null,
-    "note": "19 switch(es); scores 3-88 (median 52.0). 32% in 'Fair'. Band discrimination: good."
+    "note": "23 switch(es); scores 3-90 (median 52.0). 26% in 'Fair'. Band discrimination: good."
   },
   "acls": {
     "core1": {
@@ -12739,6 +15073,46 @@
       ]
     },
     {
+      "severity": "High",
+      "trigger": "Transit switch dist1 is removed / migrated",
+      "mechanism": "It is the only forwarding L2 path to the gateway for 3 VLAN(s) (10, 20, 30)",
+      "impact": "16 switch(es) / 42 endpoint(s) lose reachability to their VLAN gateway across 3 VLAN(s), with no backup link",
+      "mitigation": "Add a redundant uplink/path, or migrate this switch in the same wave as its dependents",
+      "hosts": [
+        "dist1"
+      ]
+    },
+    {
+      "severity": "High",
+      "trigger": "Transit switch dist2 is removed / migrated",
+      "mechanism": "It is the only forwarding L2 path to the gateway for 3 VLAN(s) (10, 20, 30)",
+      "impact": "16 switch(es) / 42 endpoint(s) lose reachability to their VLAN gateway across 3 VLAN(s), with no backup link",
+      "mitigation": "Add a redundant uplink/path, or migrate this switch in the same wave as its dependents",
+      "hosts": [
+        "dist2"
+      ]
+    },
+    {
+      "severity": "High",
+      "trigger": "Transit switch podacc1 is removed / migrated",
+      "mechanism": "It is the only forwarding L2 path to the gateway for 3 VLAN(s) (10, 20, 30)",
+      "impact": "16 switch(es) / 42 endpoint(s) lose reachability to their VLAN gateway across 3 VLAN(s), with no backup link",
+      "mitigation": "Add a redundant uplink/path, or migrate this switch in the same wave as its dependents",
+      "hosts": [
+        "podacc1"
+      ]
+    },
+    {
+      "severity": "High",
+      "trigger": "Transit switch podacc2 is removed / migrated",
+      "mechanism": "It is the only forwarding L2 path to the gateway for 3 VLAN(s) (10, 20, 30)",
+      "impact": "16 switch(es) / 42 endpoint(s) lose reachability to their VLAN gateway across 3 VLAN(s), with no backup link",
+      "mitigation": "Add a redundant uplink/path, or migrate this switch in the same wave as its dependents",
+      "hosts": [
+        "podacc2"
+      ]
+    },
+    {
       "severity": "Medium",
       "trigger": "Uplink access1 Gi0/1 -> core1 fails",
       "mechanism": "It is access1's only forwarding inter-switch link carrying 2 VLAN(s) (10, 30), and it is a single (non-port-channel) link",
@@ -12939,6 +15313,46 @@
       "backup": 0,
       "fhrp": 0,
       "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition"
+    },
+    {
+      "host": "dist1",
+      "severity": "Low",
+      "vlans_impacted": 2,
+      "stranded": 0,
+      "hard": 0,
+      "backup": 0,
+      "fhrp": 2,
+      "detail": "VLAN 40: FHRP-covered; VLAN 41: FHRP-covered"
+    },
+    {
+      "host": "dist2",
+      "severity": "Low",
+      "vlans_impacted": 2,
+      "stranded": 0,
+      "hard": 0,
+      "backup": 0,
+      "fhrp": 2,
+      "detail": "VLAN 40: FHRP-covered; VLAN 41: FHRP-covered"
+    },
+    {
+      "host": "podacc1",
+      "severity": "Info",
+      "vlans_impacted": 0,
+      "stranded": 0,
+      "hard": 0,
+      "backup": 0,
+      "fhrp": 0,
+      "detail": "No reachability impact from removing this switch (within the scan)."
+    },
+    {
+      "host": "podacc2",
+      "severity": "Info",
+      "vlans_impacted": 0,
+      "stranded": 0,
+      "hard": 0,
+      "backup": 0,
+      "fhrp": 0,
+      "detail": "No reachability impact from removing this switch (within the scan)."
     }
   ],
   "link_centrality": [
@@ -12947,180 +15361,250 @@
       "a_port": "Po1",
       "b_host": "core2",
       "b_port": "Po1",
-      "betweenness": 90.0,
-      "is_bridge": true,
-      "pairs_cut": 90,
+      "betweenness": 99.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
       "rank": 1
+    },
+    {
+      "a_host": "core1",
+      "a_port": "Gi1/0/40",
+      "b_host": "dist1",
+      "b_port": "Gi1/0/3",
+      "betweenness": 39.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
+      "rank": 2
+    },
+    {
+      "a_host": "core2",
+      "a_port": "Eth1/20",
+      "b_host": "dist2",
+      "b_port": "Gi1/0/3",
+      "betweenness": 36.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
+      "rank": 3
+    },
+    {
+      "a_host": "access16",
+      "a_port": "Gi0/1",
+      "b_host": "core1",
+      "b_port": "Gi1/0/40",
+      "betweenness": 22.0,
+      "is_bridge": true,
+      "pairs_cut": 22,
+      "rank": 4
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/24",
       "b_host": "access1",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 2
+      "pairs_cut": 22,
+      "rank": 5
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/34",
       "b_host": "access10",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 3
+      "pairs_cut": 22,
+      "rank": 6
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/36",
       "b_host": "access12",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 4
+      "pairs_cut": 22,
+      "rank": 7
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/38",
       "b_host": "access14",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 5
-    },
-    {
-      "a_host": "core1",
-      "a_port": "Gi1/0/40",
-      "b_host": "access16",
-      "b_port": "Gi0/1",
-      "betweenness": 18.0,
-      "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 6
+      "pairs_cut": 22,
+      "rank": 8
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/26",
       "b_host": "access2",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 7
+      "pairs_cut": 22,
+      "rank": 9
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/28",
       "b_host": "access4",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 8
+      "pairs_cut": 22,
+      "rank": 10
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/30",
       "b_host": "access6",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 9
+      "pairs_cut": 22,
+      "rank": 11
     },
     {
       "a_host": "core1",
       "a_port": "Gi1/0/32",
       "b_host": "access8",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 10
+      "pairs_cut": 22,
+      "rank": 12
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/11",
       "b_host": "access11",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 11
+      "pairs_cut": 22,
+      "rank": 13
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/13",
       "b_host": "access13",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 12
+      "pairs_cut": 22,
+      "rank": 14
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/15",
       "b_host": "access15",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 13
+      "pairs_cut": 22,
+      "rank": 15
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/17",
       "b_host": "access17",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 14
+      "pairs_cut": 22,
+      "rank": 16
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/3",
       "b_host": "access3",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 15
+      "pairs_cut": 22,
+      "rank": 17
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/5",
       "b_host": "access5",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 16
+      "pairs_cut": 22,
+      "rank": 18
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/7",
       "b_host": "access7",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 17
+      "pairs_cut": 22,
+      "rank": 19
     },
     {
       "a_host": "core2",
       "a_port": "Eth1/9",
       "b_host": "access9",
       "b_port": "Gi0/1",
-      "betweenness": 18.0,
+      "betweenness": 22.0,
       "is_bridge": true,
-      "pairs_cut": 18,
-      "rank": 18
+      "pairs_cut": 22,
+      "rank": 20
+    },
+    {
+      "a_host": "dist1",
+      "a_port": "Gi1/0/10",
+      "b_host": "podacc1",
+      "b_port": "Gi0/1",
+      "betweenness": 11.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
+      "rank": 21
+    },
+    {
+      "a_host": "dist1",
+      "a_port": "Gi1/0/11",
+      "b_host": "podacc2",
+      "b_port": "Gi0/1",
+      "betweenness": 11.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
+      "rank": 22
+    },
+    {
+      "a_host": "dist1",
+      "a_port": "Po1",
+      "b_host": "dist2",
+      "b_port": "Po1",
+      "betweenness": 10.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
+      "rank": 23
+    },
+    {
+      "a_host": "dist2",
+      "a_port": "Gi1/0/10",
+      "b_host": "podacc1",
+      "b_port": "Gi0/2",
+      "betweenness": 10.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
+      "rank": 24
+    },
+    {
+      "a_host": "dist2",
+      "a_port": "Gi1/0/11",
+      "b_host": "podacc2",
+      "b_port": "Gi0/2",
+      "betweenness": 10.5,
+      "is_bridge": false,
+      "pairs_cut": 0,
+      "rank": 25
     }
   ],
   "wave_sequencing": [
@@ -13151,6 +15635,18 @@
       ],
       "hard_cutover_endpoints": 45,
       "sequence": "17 hard cutover (single-homed, schedule a window) + 2 make-before-break (dual-homed)"
+    },
+    {
+      "group": "Group 2",
+      "make_before_break": [
+        "dist1",
+        "dist2",
+        "podacc1",
+        "podacc2"
+      ],
+      "hard_cutover": [],
+      "hard_cutover_endpoints": 0,
+      "sequence": "all 4 switch(es) dual-homed — fully make-before-break (no outage window needed)"
     }
   ],
   "addressing_conflicts": {
@@ -13160,18 +15656,18 @@
   "fhrp": [],
   "trunk_native": [
     {
+      "a_host": "access16",
+      "a_port": "Gi0/1",
+      "a_native": "99",
+      "b_host": "core1",
+      "b_port": "Gi1/0/40",
+      "b_native": "1"
+    },
+    {
       "a_host": "core1",
       "a_port": "Gi1/0/38",
       "a_native": "1",
       "b_host": "access14",
-      "b_port": "Gi0/1",
-      "b_native": "99"
-    },
-    {
-      "a_host": "core1",
-      "a_port": "Gi1/0/40",
-      "a_native": "1",
-      "b_host": "access16",
       "b_port": "Gi0/1",
       "b_native": "99"
     },
@@ -13248,6 +15744,35 @@
         "core1:Vlan30",
         "core2:Vlan10",
         "core2:Vlan20"
+      ],
+      "blocked_paths": [],
+      "vlan1_spans": false
+    },
+    {
+      "switches": [
+        "dist1",
+        "dist2",
+        "podacc1",
+        "podacc2"
+      ],
+      "spanning_vlans": [
+        [
+          40,
+          "POD-USERS",
+          4
+        ],
+        [
+          41,
+          "POD-VOICE",
+          4
+        ]
+      ],
+      "endpoints": 4,
+      "gateways": [
+        "dist1:Vlan40",
+        "dist1:Vlan41",
+        "dist2:Vlan40",
+        "dist2:Vlan41"
       ],
       "blocked_paths": [],
       "vlan1_spans": false
@@ -13515,15 +16040,75 @@
     {
       "hostname": "core2",
       "model": "",
-      "total_ports": 10,
+      "total_ports": 11,
       "active_ports": 2,
-      "free_ports": 8,
-      "port_util": 20.0,
+      "free_ports": 9,
+      "port_util": 18.2,
       "poe_capacity_w": "",
       "poe_drawn_w": "",
       "poe_remaining_w": "",
       "poe_util": "",
       "flags": []
+    },
+    {
+      "hostname": "dist1",
+      "model": "C9300-48P",
+      "total_ports": 5,
+      "active_ports": 5,
+      "free_ports": 0,
+      "port_util": 100.0,
+      "poe_capacity_w": "",
+      "poe_drawn_w": "",
+      "poe_remaining_w": "",
+      "poe_util": "",
+      "flags": [
+        "Port-bound (>=90%)"
+      ]
+    },
+    {
+      "hostname": "dist2",
+      "model": "C9300-48P",
+      "total_ports": 5,
+      "active_ports": 5,
+      "free_ports": 0,
+      "port_util": 100.0,
+      "poe_capacity_w": "",
+      "poe_drawn_w": "",
+      "poe_remaining_w": "",
+      "poe_util": "",
+      "flags": [
+        "Port-bound (>=90%)"
+      ]
+    },
+    {
+      "hostname": "podacc1",
+      "model": "C9300-24T",
+      "total_ports": 4,
+      "active_ports": 4,
+      "free_ports": 0,
+      "port_util": 100.0,
+      "poe_capacity_w": "",
+      "poe_drawn_w": "",
+      "poe_remaining_w": "",
+      "poe_util": "",
+      "flags": [
+        "Port-bound (>=90%)"
+      ]
+    },
+    {
+      "hostname": "podacc2",
+      "model": "C9300-24T",
+      "total_ports": 4,
+      "active_ports": 4,
+      "free_ports": 0,
+      "port_util": 100.0,
+      "poe_capacity_w": "",
+      "poe_drawn_w": "",
+      "poe_remaining_w": "",
+      "poe_util": "",
+      "flags": [
+        "Port-bound (>=90%)"
+      ]
     }
   ],
   "endpoint_identity": [
@@ -14078,6 +16663,54 @@
       "endpoint_class": "Server",
       "confidence": "Inferred-high",
       "evidence": "description 'srv-app01'"
+    },
+    {
+      "host": "podacc1",
+      "port": "Gi0/3",
+      "vlan": "40",
+      "ip": "",
+      "mac": "1111.2222.4001",
+      "mac_count": 1,
+      "vendor": "",
+      "endpoint_class": "Unknown",
+      "confidence": "Unknown",
+      "evidence": "no vendor/description/platform signal"
+    },
+    {
+      "host": "podacc1",
+      "port": "Gi0/4",
+      "vlan": "41",
+      "ip": "",
+      "mac": "1111.2222.4101",
+      "mac_count": 1,
+      "vendor": "",
+      "endpoint_class": "Phone",
+      "confidence": "Inferred-high",
+      "evidence": "description 'pod-phone'"
+    },
+    {
+      "host": "podacc2",
+      "port": "Gi0/3",
+      "vlan": "40",
+      "ip": "",
+      "mac": "1111.2222.4002",
+      "mac_count": 1,
+      "vendor": "",
+      "endpoint_class": "Unknown",
+      "confidence": "Unknown",
+      "evidence": "no vendor/description/platform signal"
+    },
+    {
+      "host": "podacc2",
+      "port": "Gi0/4",
+      "vlan": "41",
+      "ip": "",
+      "mac": "1111.2222.4102",
+      "mac_count": 1,
+      "vendor": "",
+      "endpoint_class": "Phone",
+      "confidence": "Inferred-high",
+      "evidence": "description 'pod-phone'"
     }
   ],
   "endpoint_dependencies": {
@@ -14335,6 +16968,12 @@
       ],
       "core1": [
         "Server: service/app reachability + the NIC-team peer leg stays up"
+      ],
+      "podacc1": [
+        "Phone: call-manager registration"
+      ],
+      "podacc2": [
+        "Phone: call-manager registration"
       ]
     }
   },
@@ -14774,6 +17413,82 @@
         "default_next_hop": "",
         "served_subnets": [],
         "bgp_received_count": 0
+      },
+      {
+        "host": "dist1",
+        "is_l3": true,
+        "destination_subnets": [
+          "10.0.40.0/24",
+          "10.0.41.0/24"
+        ],
+        "destination_count": 2,
+        "reachable_count": 0,
+        "reachable_sources": {},
+        "reachable_sample": [],
+        "default_next_hop": "",
+        "served_subnets": [],
+        "bgp_received_count": 0
+      },
+      {
+        "host": "dist2",
+        "is_l3": true,
+        "destination_subnets": [
+          "10.0.40.0/24",
+          "10.0.41.0/24"
+        ],
+        "destination_count": 2,
+        "reachable_count": 0,
+        "reachable_sources": {},
+        "reachable_sample": [],
+        "default_next_hop": "",
+        "served_subnets": [],
+        "bgp_received_count": 0
+      },
+      {
+        "host": "podacc1",
+        "is_l3": false,
+        "destination_subnets": [],
+        "destination_count": 0,
+        "reachable_count": 0,
+        "reachable_sources": {},
+        "reachable_sample": [],
+        "default_next_hop": "",
+        "served_subnets": [
+          {
+            "subnet": "10.0.40.0/24",
+            "gateway": "dist1",
+            "vlan": "40"
+          },
+          {
+            "subnet": "10.0.41.0/24",
+            "gateway": "dist1",
+            "vlan": "41"
+          }
+        ],
+        "bgp_received_count": 0
+      },
+      {
+        "host": "podacc2",
+        "is_l3": false,
+        "destination_subnets": [],
+        "destination_count": 0,
+        "reachable_count": 0,
+        "reachable_sources": {},
+        "reachable_sample": [],
+        "default_next_hop": "",
+        "served_subnets": [
+          {
+            "subnet": "10.0.40.0/24",
+            "gateway": "dist1",
+            "vlan": "40"
+          },
+          {
+            "subnet": "10.0.41.0/24",
+            "gateway": "dist1",
+            "vlan": "41"
+          }
+        ],
+        "bgp_received_count": 0
       }
     ],
     "move_groups": [
@@ -14787,6 +17502,16 @@
         ],
         "local_count": 3,
         "remote_count": 2
+      },
+      {
+        "group": "",
+        "switches": 4,
+        "local_subnets": [
+          "10.0.40.0/24",
+          "10.0.41.0/24"
+        ],
+        "local_count": 2,
+        "remote_count": 0
       }
     ],
     "bgp_received_collected": false
@@ -14809,11 +17534,29 @@
           "validate": "Per wave, prove forwarding for a sample endpoint of EACH hosted class before the next wave.",
           "rollback": "A wave fails validation -> re-home that wave's uplinks to the legacy path; hold the remaining waves."
         }
+      },
+      {
+        "group": "Group 2",
+        "switches": 4,
+        "endpoints": 4,
+        "readiness": "READY",
+        "make_before_break": 4,
+        "hard_cutover": 0,
+        "hard_cutover_endpoints": 0,
+        "dual_homed_pct": 100,
+        "recommended_scenario": "parallel-run",
+        "rationale": "100% of switches are dual-homed — build beside and cut leg-by-leg (make-before-break) for minimal outage.",
+        "playbook": {
+          "pre": "Build the new path beside the legacy one; confirm both legs of every dual-homed endpoint are up.",
+          "validate": "Cut one leg, prove forwarding from a real endpoint to its gateway + a cross-VLAN service, then cut the second.",
+          "rollback": "Any endpoint loses reachability on the new leg -> fail back to the legacy leg (still up); re-validate."
+        }
       }
     ],
-    "fleet_recommendation": "63% of switches are Poor/Critical — consider a GREENFIELD rebuild for the most degraded segments (move endpoints onto a clean fabric) rather than migrating debt in place.",
+    "fleet_recommendation": "52% of switches are Poor/Critical — an in-place PHASED / PARALLEL-RUN migration is viable; reserve greenfield for any isolated worst-offenders.",
     "scenario_counts": {
-      "phased": 1
+      "phased": 1,
+      "parallel-run": 1
     }
   },
   "application_intelligence": {
@@ -14840,19 +17583,25 @@
           "access7",
           "access8",
           "access9",
-          "core2"
+          "core2",
+          "dist1",
+          "dist2",
+          "podacc1",
+          "podacc2"
         ],
-        "switch_count": 18,
+        "switch_count": 22,
         "vlans": [
           "10",
           "20",
-          "30"
+          "30",
+          "40",
+          "41"
         ],
-        "vlan_count": 3,
-        "endpoint_count": 45,
+        "vlan_count": 5,
+        "endpoint_count": 49,
         "classes": {
+          "Phone": 19,
           "Wireless AP": 17,
-          "Phone": 17,
           "Server": 11
         },
         "media_groups": [],
@@ -14865,7 +17614,7 @@
         },
         "waves": [],
         "spans_waves": false,
-        "evidence": "no application-specific signal x18",
+        "evidence": "no application-specific signal x22",
         "validation": [
           "No application-specific signal collected -- classify these switches with the facility owner before scheduling the cutover."
         ],
@@ -14880,14 +17629,14 @@
           },
           {
             "severity": "Low",
-            "title": "42 High/Critical punch-list item(s) on this domain's switches",
+            "title": "46 High/Critical punch-list item(s) on this domain's switches",
             "detail": "Open High/Critical items (categories: Cross-layer, Health, L1) intersect this domain's switches.",
             "remediation": "See the Migration Punch-List for the prioritized, per-device fix order.",
             "standard": ""
           }
         ],
         "n_high_risk": 0,
-        "degree": 13,
+        "degree": 14,
         "neighbors": [
           "Compute / Virtualization"
         ],
@@ -14950,7 +17699,7 @@
           }
         ],
         "n_high_risk": 0,
-        "degree": 13,
+        "degree": 14,
         "neighbors": [
           "General / Back-office (unclassified)"
         ],
@@ -14984,7 +17733,7 @@
         "kind": "keystone-domain",
         "vlan": "",
         "title": "Compute / Virtualization is the most cross-coupled domain (keystone)",
-        "detail": "Compute / Virtualization couples to 1 other domain(s) (weighted degree 13): General / Back-office (unclassified). It has the widest cross-domain blast radius.",
+        "detail": "Compute / Virtualization couples to 1 other domain(s) (weighted degree 14): General / Back-office (unclassified). It has the widest cross-domain blast radius.",
         "remediation": "Sequence this domain deliberately (not as an early pilot); validate every coupled domain after its cutover.",
         "standard": ""
       }
@@ -14999,24 +17748,24 @@
           "physical-link",
           "shared-subnet"
         ],
-        "weight": 13,
+        "weight": 14,
         "confidence": "Confirmed-high",
         "media": false,
-        "detail": "10 inter-switch link(s); 3 shared subnet(s)",
+        "detail": "11 inter-switch link(s); 3 shared subnet(s)",
         "migration_note": ""
       }
     ],
     "keystones": [
       {
         "domain": "Compute / Virtualization",
-        "degree": 13,
+        "degree": 14,
         "neighbors": [
           "General / Back-office (unclassified)"
         ]
       },
       {
         "domain": "General / Back-office (unclassified)",
-        "degree": 13,
+        "degree": 14,
         "neighbors": [
           "Compute / Virtualization"
         ]
@@ -15046,7 +17795,7 @@
     "vrfs": [
       {
         "vrf": "(global)",
-        "gateway_count": 4
+        "gateway_count": 8
       },
       {
         "vrf": "TENANT_RED",
@@ -15054,11 +17803,22 @@
       }
     ],
     "gateway_acl": {
-      "n_gateways": 5,
+      "n_gateways": 9,
       "n_with_acl": 2,
-      "coverage_pct": 40.0
+      "coverage_pct": 22.2
     },
     "domains": [
+      {
+        "domain": "General / Back-office (unclassified)",
+        "tier": "Support",
+        "gateways": 6,
+        "vrfs": [
+          "(global)"
+        ],
+        "gateways_with_acl": 0,
+        "isolated": false,
+        "exposure": "Shares the global VRF, no gateway ACL — reachable from every other domain at L3."
+      },
       {
         "domain": "Compute / Virtualization",
         "tier": "Support",
@@ -15070,24 +17830,13 @@
         "gateways_with_acl": 2,
         "isolated": true,
         "exposure": "Has a dedicated VRF or a gateway ACL."
-      },
-      {
-        "domain": "General / Back-office (unclassified)",
-        "tier": "Support",
-        "gateways": 2,
-        "vrfs": [
-          "(global)"
-        ],
-        "gateways_with_acl": 0,
-        "isolated": false,
-        "exposure": "Shares the global VRF, no gateway ACL — reachable from every other domain at L3."
       }
     ],
     "summary": {
       "n_vrfs": 2,
       "flat": false,
-      "gateway_acl_coverage": 40.0,
-      "n_gateways": 5,
+      "gateway_acl_coverage": 22.2,
+      "n_gateways": 9,
       "n_oncrit_exposed": 0,
       "global_only": false
     },
@@ -15095,12 +17844,12 @@
   },
   "executive_brief": {
     "scale": {
-      "n_devices": 19,
+      "n_devices": 23,
       "n_domains": 2,
-      "n_endpoints": 46
+      "n_endpoints": 50
     },
     "posture": {
-      "avg_health": 53,
+      "avg_health": 59,
       "n_critical": 6,
       "n_poor": 6,
       "worst_band": "Critical"
@@ -15109,25 +17858,25 @@
       {
         "axis": "Fleet health",
         "severity": "Critical",
-        "headline": "53/100 avg · 6 Critical, 6 Poor band",
-        "detail": "19 switch(es) assessed."
+        "headline": "59/100 avg · 6 Critical, 6 Poor band",
+        "detail": "23 switch(es) assessed."
       },
       {
         "axis": "Migration punch-list",
         "severity": "Critical",
-        "headline": "71 item(s) · 2 Critical, 50 High",
+        "headline": "75 item(s) · 2 Critical, 54 High",
         "detail": "Consolidated fix-this-first action list."
       },
       {
         "axis": "Hardware lifecycle (EoL)",
         "severity": "Critical",
-        "headline": "5 past end-of-support, 1 within 1yr (32%)",
+        "headline": "5 past end-of-support, 1 within 1yr (26%)",
         "detail": "Reference dates from the offline KB."
       },
       {
         "axis": "Cutover sequence",
         "severity": "Medium",
-        "headline": "pilot Compute / Virtualization → last General / Back-office (unclassified) · 1 of 1 wave(s) NOT READY",
+        "headline": "pilot Compute / Virtualization → last General / Back-office (unclassified) · 1 of 2 wave(s) NOT READY",
         "detail": "Recommended lowest-risk-first order."
       },
       {
@@ -15139,7 +17888,7 @@
       {
         "axis": "Segmentation",
         "severity": "Low",
-        "headline": "0 on-air-critical domain(s) not isolated · gateway-ACL 40.0%",
+        "headline": "0 on-air-critical domain(s) not isolated · gateway-ACL 22.2%",
         "detail": "Current L3 isolation posture."
       },
       {
@@ -15150,10 +17899,10 @@
       }
     ],
     "top_gating": [
-      "53/100 avg · 6 Critical, 6 Poor band",
-      "71 item(s) · 2 Critical, 50 High",
-      "5 past end-of-support, 1 within 1yr (32%)"
+      "59/100 avg · 6 Critical, 6 Poor band",
+      "75 item(s) · 2 Critical, 54 High",
+      "5 past end-of-support, 1 within 1yr (26%)"
     ],
-    "posture_statement": "Migration posture: hardware end-of-support is a primary driver (32% past/near); 1 migration wave(s) are NOT READY; 6 switch(es) are in Critical health. Address these in the target design and sequence before cutover."
+    "posture_statement": "Migration posture: hardware end-of-support is a primary driver (26% past/near); 1 migration wave(s) are NOT READY; 6 switch(es) are in Critical health. Address these in the target design and sequence before cutover."
   }
 }

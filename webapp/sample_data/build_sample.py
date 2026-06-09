@@ -105,6 +105,164 @@ def _clone_access(name: str, idx: int, core: str, core_ip: str, core_port: str,
     return d
 
 
+# --------------------------------------------------------------------------- #
+# Redundant pod — a properly-built dual-homed pod so the demo also populates the Good/Excellent bands.
+# A cross-linked distribution PAIR (HSRP on every pod VLAN) with access switches dual-homed to BOTH
+# dist switches: no switch is a sole L2 transit and every gateway is redundant, so the engine has
+# nothing to deduct beyond a leaf's own attached endpoints. This is the redundancy the single-homed
+# star deliberately lacks (see the access archetypes above) — exactly what lifts a switch past Fair.
+# --------------------------------------------------------------------------- #
+def _sw_trunk(port: str, vlans: str = "40,41", native: str = "1") -> str:
+    return (f"Name: {port}\nSwitchport: Enabled\nAdministrative Mode: trunk\n"
+            f"Operational Mode: trunk\nAccess Mode VLAN: 1 (default)\n"
+            f"Trunking Native Mode VLAN: {native} (default)\nTrunking VLANs Enabled: {vlans}\n\n")
+
+
+def _sw_access(port: str, vlan: int, vname: str) -> str:
+    return (f"Name: {port}\nSwitchport: Enabled\nAdministrative Mode: static access\n"
+            f"Operational Mode: static access\nAccess Mode VLAN: {vlan} ({vname})\n"
+            f"Trunking Native Mode VLAN: 1 (default)\n\n")
+
+
+def _pod_dist(name: str, peer: str, peer_ip: str, svi_octet: int, hsrp_pri: int, hsrp_state: str,
+              peer_svi_octet: int, up_core: str, up_core_ip: str, up_core_plat: str,
+              up_local: str, up_remote: str) -> dict:
+    """One distribution switch of the redundant pair: Po1 cross-link to its peer, an uplink to a core,
+    two downlinks to the dual-homed pod-access switches, and HSRP SVIs for VLAN 40/41."""
+    return {
+        "show version": (f"Cisco IOS-XE Software, Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.09.04\n"
+                         f"cisco C9300-48P (X86) processor\nSystem serial number        : FCW244{svi_octet}D0{svi_octet:02d}\n"
+                         f"Model number                : C9300-48P\n"),
+        "show interface status": (
+            "Port      Name               Status       Vlan       Duplex  Speed Type\n"
+            f"Gi1/0/1   to-{peer}-a         connected    trunk        full  1000  10/100/1000BaseTX\n"
+            f"Gi1/0/2   to-{peer}-b         connected    trunk        full  1000  10/100/1000BaseTX\n"
+            f"Gi1/0/3   to-{up_core}           connected    trunk        full  1000  1000BaseLX SFP\n"
+            "Gi1/0/10  to-podacc1         connected    trunk        full  1000  10/100/1000BaseTX\n"
+            "Gi1/0/11  to-podacc2         connected    trunk        full  1000  10/100/1000BaseTX\n"
+            f"Po1       to-{peer}           connected    trunk        full  2000\n"),
+        "show etherchannel summary": (
+            "Flags:  D - down        P - bundled in port-channel\n        I - stand-alone s - suspended\n"
+            "Number of channel-groups in use: 1\nNumber of aggregators:           1\n\n"
+            "Group  Port-channel  Protocol    Ports\n"
+            "------+-------------+-----------+-----------------------------------------------\n"
+            "1      Po1(SU)         LACP      Gi1/0/1(P)    Gi1/0/2(P)\n"),
+        "show interfaces switchport": (_sw_trunk("Gi1/0/3") + _sw_trunk("Gi1/0/10")
+                                       + _sw_trunk("Gi1/0/11") + _sw_trunk("Po1")),
+        "show interfaces trunk": (
+            "Port        Mode             Encapsulation  Status        Native vlan\n"
+            "Gi1/0/3     on               802.1q         trunking      1\n"
+            "Gi1/0/10    on               802.1q         trunking      1\n"
+            "Gi1/0/11    on               802.1q         trunking      1\n"
+            "Po1         on               802.1q         trunking      1\n\n"
+            "Port        Vlans allowed on trunk\n"
+            "Gi1/0/3     40,41\nGi1/0/10    40,41\nGi1/0/11    40,41\nPo1         40,41\n"),
+        "show running-config | section ^interface": (
+            "interface GigabitEthernet1/0/1\n description to-peer-a\n switchport mode trunk\n channel-group 1 mode active\n"
+            "interface GigabitEthernet1/0/2\n description to-peer-b\n switchport mode trunk\n channel-group 1 mode active\n"
+            f"interface GigabitEthernet1/0/3\n description to-{up_core}\n switchport trunk encapsulation dot1q\n switchport mode trunk\n"
+            "interface GigabitEthernet1/0/10\n description to-podacc1\n switchport mode trunk\n"
+            "interface GigabitEthernet1/0/11\n description to-podacc2\n switchport mode trunk\n"
+            "interface Port-channel1\n description to-peer\n switchport mode trunk\n mtu 9216\n"
+            f"interface Vlan40\n description POD-USERS\n ip address 10.0.40.{svi_octet} 255.255.255.0\n"
+            f" standby 40 ip 10.0.40.1\n standby 40 priority {hsrp_pri}\n standby 40 preempt\n"
+            f"interface Vlan41\n description POD-VOICE\n ip address 10.0.41.{svi_octet} 255.255.255.0\n"
+            f" standby 41 ip 10.0.41.1\n standby 41 priority {hsrp_pri}\n standby 41 preempt\n"),
+        "show standby brief": (
+            "                     P indicates configured to preempt.\n                     |\n"
+            "Interface   Grp  Pri P State    Active          Standby         Virtual IP\n"
+            f"Vl40        40   {hsrp_pri} P {hsrp_state:8} 10.0.40.{peer_svi_octet if hsrp_state.startswith('Stand') else svi_octet}"
+            f"        10.0.40.{peer_svi_octet}       10.0.40.1\n"
+            f"Vl41        41   {hsrp_pri} P {hsrp_state:8} 10.0.41.{peer_svi_octet if hsrp_state.startswith('Stand') else svi_octet}"
+            f"        10.0.41.{peer_svi_octet}       10.0.41.1\n"),
+        "show vlan brief": (
+            "VLAN Name                             Status    Ports\n"
+            "---- -------------------------------- --------- -------------------------------\n"
+            "40   POD-USERS                        active\n41   POD-VOICE                        active\n"),
+        "show ip interface brief": (
+            "Interface              IP-Address      OK? Method Status                Protocol\n"
+            f"Vlan40                 10.0.40.{svi_octet}       YES NVRAM  up                    up\n"
+            f"Vlan41                 10.0.41.{svi_octet}       YES NVRAM  up                    up\n"),
+        "show cdp neighbors detail": (
+            f"-------------------------\nDevice ID: {peer}.lab\nEntry address(es):\n  IP address: {peer_ip}\n"
+            "Platform: cisco C9300-48P,  Capabilities: Router Switch\n"
+            "Interface: Port-channel1,  Port ID (outgoing port): Port-channel1\nHoldtime : 160 sec\n"
+            f"-------------------------\nDevice ID: {up_core}.lab\nEntry address(es):\n  IP address: {up_core_ip}\n"
+            f"Platform: cisco {up_core_plat},  Capabilities: Router Switch\n"
+            f"Interface: {up_local},  Port ID (outgoing port): {up_remote}\nHoldtime : 150 sec\n"
+            f"-------------------------\nDevice ID: podacc1.lab\nEntry address(es):\n  IP address: 10.0.99.52\n"
+            "Platform: cisco C9300-24T,  Capabilities: Switch\n"
+            f"Interface: GigabitEthernet1/0/10,  Port ID (outgoing port): GigabitEthernet0/{1 if name == 'dist1' else 2}\nHoldtime : 150 sec\n"
+            f"-------------------------\nDevice ID: podacc2.lab\nEntry address(es):\n  IP address: 10.0.99.53\n"
+            "Platform: cisco C9300-24T,  Capabilities: Switch\n"
+            f"Interface: GigabitEthernet1/0/11,  Port ID (outgoing port): GigabitEthernet0/{1 if name == 'dist1' else 2}\nHoldtime : 150 sec\n"),
+    }
+
+
+def _pod_access(name: str, dist_remote: str, u1_mac: str, u2_mac: str) -> dict:
+    """A pod-access switch dual-homed to BOTH dist switches (Gi0/1->dist1, Gi0/2->dist2), with its
+    user/voice endpoints in the HSRP-redundant pod VLANs. `dist_remote` is the dist downlink port."""
+    return {
+        "show version": (f"Cisco IOS-XE Software, Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.06.05\n"
+                         f"cisco C9300-24T (X86) processor\nSystem serial number        : FCW2455{u1_mac[-2:]}\n"
+                         f"Model number                : C9300-24T\n"),
+        "show interface status": (
+            "Port      Name               Status       Vlan       Duplex  Speed Type\n"
+            "Gi0/1     uplink-to-dist1    connected    trunk        full  1000  1000BaseLX SFP\n"
+            "Gi0/2     uplink-to-dist2    connected    trunk        full  1000  1000BaseLX SFP\n"
+            "Gi0/3     pod-user-pc        connected    40           full  1000  10/100/1000BaseTX\n"
+            "Gi0/4     pod-phone          connected    41           full  100   10/100/1000BaseTX\n"),
+        "show interfaces switchport": (_sw_trunk("Gi0/1") + _sw_trunk("Gi0/2")
+                                       + _sw_access("Gi0/3", 40, "POD-USERS") + _sw_access("Gi0/4", 41, "POD-VOICE")),
+        "show interfaces trunk": (
+            "Port        Mode             Encapsulation  Status        Native vlan\n"
+            "Gi0/1       on               802.1q         trunking      1\nGi0/2       on               802.1q         trunking      1\n\n"
+            "Port        Vlans allowed on trunk\nGi0/1       40,41\nGi0/2       40,41\n"),
+        "show running-config | section ^interface": (
+            "interface GigabitEthernet0/1\n description uplink-to-dist1\n switchport trunk encapsulation dot1q\n switchport mode trunk\n"
+            "interface GigabitEthernet0/2\n description uplink-to-dist2\n switchport trunk encapsulation dot1q\n switchport mode trunk\n"
+            "interface GigabitEthernet0/3\n description pod-user-pc\n switchport access vlan 40\n spanning-tree portfast\n"
+            "interface GigabitEthernet0/4\n description pod-phone\n switchport access vlan 41\n spanning-tree portfast\n"),
+        "show vlan brief": (
+            "VLAN Name                             Status    Ports\n"
+            "---- -------------------------------- --------- -------------------------------\n"
+            "40   POD-USERS                        active    Gi0/3\n41   POD-VOICE                        active    Gi0/4\n"),
+        "show ip interface brief": (
+            "Interface              IP-Address      OK? Method Status                Protocol\n"
+            "Vlan1                  unassigned      YES NVRAM  administratively down  down\n"),
+        "show mac address-table": (
+            "          Mac Address Table\n-------------------------------------------\n"
+            "Vlan    Mac Address       Type        Ports\n----    -----------       --------    -----\n"
+            f"  40    {u1_mac}    DYNAMIC     Gi0/3\n  41    {u2_mac}    DYNAMIC     Gi0/4\n"),
+        "show cdp neighbors detail": (
+            f"-------------------------\nDevice ID: dist1.lab\nEntry address(es):\n  IP address: 10.0.99.50\n"
+            "Platform: cisco C9300-48P,  Capabilities: Router Switch\n"
+            f"Interface: GigabitEthernet0/1,  Port ID (outgoing port): {dist_remote}\nHoldtime : 150 sec\n"
+            f"-------------------------\nDevice ID: dist2.lab\nEntry address(es):\n  IP address: 10.0.99.51\n"
+            "Platform: cisco C9300-48P,  Capabilities: Router Switch\n"
+            f"Interface: GigabitEthernet0/2,  Port ID (outgoing port): {dist_remote}\nHoldtime : 150 sec\n"),
+    }
+
+
+def build_pod() -> tuple:
+    """Return (pod_collections, core1_reciprocal_cdp, core2_reciprocal_cdp)."""
+    pod = {
+        "dist1": ("ios", _pod_dist("dist1", "dist2", "10.0.99.51", 2, 110, "Active", 3,
+                                   "core1", "10.0.99.1", "WS-C3850-24T", "GigabitEthernet1/0/3", "GigabitEthernet1/0/40")),
+        "dist2": ("ios", _pod_dist("dist2", "dist1", "10.0.99.50", 3, 100, "Standby", 2,
+                                   "core2", "10.0.99.2", "N9K-C93180YC-EX", "GigabitEthernet1/0/3", "Ethernet1/20")),
+        "podacc1": ("ios", _pod_access("podacc1", "GigabitEthernet1/0/10", "1111.2222.4001", "1111.2222.4101")),
+        "podacc2": ("ios", _pod_access("podacc2", "GigabitEthernet1/0/11", "1111.2222.4002", "1111.2222.4102")),
+    }
+    core1_recip = ("-------------------------\nDevice ID: dist1.lab\nEntry address(es):\n  IP address: 10.0.99.50\n"
+                   "Platform: cisco C9300-48P,  Capabilities: Router Switch\n"
+                   "Interface: GigabitEthernet1/0/40,  Port ID (outgoing port): GigabitEthernet1/0/3\nHoldtime : 150 sec\n")
+    core2_recip = ("----------------------------------------\nDevice ID: dist2.lab\n  IP address: 10.0.99.51\n"
+                   "Platform: cisco C9300-48P,  Capabilities: Router Switch\n"
+                   "Interface: Ethernet1/20,  Port ID (outgoing port): GigabitEthernet1/0/3\n")
+    return pod, core1_recip, core2_recip
+
+
 # Designed archetype mix (count, profile) so the fleet spans the full health-band spectrum rather than
 # a monotonous block. Counts are tuned empirically against the engine's scoring.
 _ARCHETYPES = (
@@ -151,6 +309,12 @@ def build_collections() -> dict:
                 f"  IP address: {ip}\n"
                 f"Platform: cisco WS-C2960X-48,  Capabilities: Switch\n"
                 f"Interface: {core_port},  Port ID (outgoing port): GigabitEthernet0/1\n")
+
+    # Add the redundant pod (dist pair + dual-homed access) and uplink it to both cores.
+    pod, core1_pod_cdp, core2_pod_cdp = build_pod()
+    cols.update(pod)
+    core1_cdp_extra.append(core1_pod_cdp)
+    core2_cdp_extra.append(core2_pod_cdp)
 
     # Splice the new spokes into the cores' CDP neighbour tables so the topology forms a 2-hub star.
     cols["core1"][1]["show cdp neighbors detail"] += "".join(core1_cdp_extra)
