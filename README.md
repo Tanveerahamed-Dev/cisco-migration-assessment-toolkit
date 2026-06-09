@@ -40,14 +40,32 @@ consolidated severity-ranked **migration punch-list**, and a blast-radius
 
 ## Requirements
 
-- **Python 3** (3.8+ recommended)
+- **Python 3.10+** (CI tests 3.10 → 3.14 on Linux and Windows)
 - [`netmiko`](https://pypi.org/project/netmiko/) — SSH collection
 - [`openpyxl`](https://pypi.org/project/openpyxl/) — Excel read/write
+- [`python-docx`](https://pypi.org/project/python-docx/) — *optional*, enables the DOCX runbook
 - Everything else is the standard library.
 
+## Install
+
+The quickest path is just the two runtime dependencies:
+
 ```bash
-pip install netmiko openpyxl
+pip install netmiko openpyxl          # minimal runtime
 ```
+
+Or install the project itself (editable, from a checkout) to get a stable
+**`cisco-assess`** console command plus declared dependencies:
+
+```bash
+pip install -e .                      # runtime only
+pip install -e ".[docx]"             # + the DOCX runbook
+pip install -e ".[dev,docx]"         # + pytest / ruff / mypy for development
+```
+
+After installing, `cisco-assess …` is equivalent to `python COLLECT_PARSE_V3_23_0.py …`
+(same entry point). Use an **editable** install (`-e`): the explorer-HTML template and the
+offline KB data are read relative to the checkout.
 
 ## Inputs & outputs
 

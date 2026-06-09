@@ -1,0 +1,82 @@
+# Packaging for the Cisco Migration-Assessment Toolkit.
+#
+# Scope: this makes the project installable (editable: `pip install -e .` or `pip install -e .[dev,docx]`)
+# and exposes a stable `cisco-assess` console command that runs the same entry point as
+# `python COLLECT_PARSE_V3_23_0.py`. An EDITABLE install runs from the checkout, so the two runtime
+# data sources both resolve correctly: the gzipped KB files via `cisco_toolkit/data/` (relative to the
+# package) and the `blast_radius_explorer.html` template at the repo root (read relative to the package).
+#
+# Toward a fully relocatable WHEEL: the only blocker is that `cisco_toolkit.html.write_html_explorer`
+# locates the explorer template one directory ABOVE the package (the repo root). For a wheel the template
+# would need to live inside the package and be loaded via importlib.resources. That move touches the core
+# deliverable + the dev preview workflow, so it is intentionally deferred; the gzipped KBs are already
+# declared as package-data below and would ship in a wheel today.
+#
+# Tooling config (ruff / pytest / mypy) deliberately stays in ruff.toml / pytest.ini / mypy.ini rather
+# than migrating into [tool.*] here, to avoid any change in how those tools resolve their settings.
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cisco-migration-assessment-toolkit"
+# RELEASE version — tracks the change log and git tags (V3.23.x). This is intentionally DECOUPLED from
+# `cisco_toolkit.__version__` ("3.23.0"): that constant is the snapshot-SCHEMA version baked into the
+# golden data contract (`script_version` in every snapshot), and bumping it would churn the frozen
+# golden. See the change log ("In-code version 3.23.0") and tests/test_pipeline_golden.py.
+version = "3.23.142"
+description = "Evidence-led Cisco L1-L4 network migration-assessment toolkit: one offline SSH collection produces a multi-sheet Excel workbook, an interactive single-file topology explorer, and a DOCX runbook."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Tanveerahamed-Dev" }]
+keywords = ["cisco", "network", "migration", "assessment", "ios", "ios-xe", "nxos", "netmiko", "topology"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Telecommunications Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "netmiko>=4.1,<5",
+    "openpyxl>=3.1,<4",
+]
+
+[project.optional-dependencies]
+# The DOCX runbook is optional: without python-docx the run still produces the workbook + explorer +
+# snapshot and logs that the runbook was skipped.
+docx = ["python-docx>=1.1,<2"]
+# Test / lint / type tooling (report-only mypy baseline; ruff gates correctness rules).
+dev = ["pytest>=8,<10", "ruff>=0.5", "mypy>=1.8"]
+
+[project.scripts]
+# Stable command -> the existing main() in the (versioned-filename) entry module. No refactor required:
+# `main()` is a plain function and the module's __main__ guard already just calls it.
+cisco-assess = "COLLECT_PARSE_V3_23_0:main"
+
+[project.urls]
+Homepage = "https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit"
+Repository = "https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit"
+Changelog = "https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/main/COLLECT_PARSE_V3_23_0.md"
+
+# Explicit layout (the project uses a flat repo root, not a src/ layout): ship the cisco_toolkit package
+# plus the top-level entry module. Explicit config disables setuptools auto-discovery, which would
+# otherwise be ambiguous given the flat root (conftest.py, the entry script, etc.).
+[tool.setuptools]
+py-modules = ["COLLECT_PARSE_V3_23_0"]
+
+[tool.setuptools.packages.find]
+include = ["cisco_toolkit*"]
+
+[tool.setuptools.package-data]
+# The offline KB files portdb/ouidb load at runtime (gzipped TSV); ship them in any built distribution.
+cisco_toolkit = ["data/*.tsv.gz"]
