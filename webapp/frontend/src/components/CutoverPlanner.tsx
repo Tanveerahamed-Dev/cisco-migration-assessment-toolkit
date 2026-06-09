@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { api, CutoverWave, gateColor } from "../api";
 import { CountUp, ErrorBox, Loading, SegBar, SevChip, useAsync } from "./ui";
 
@@ -168,6 +169,46 @@ function WaveCard({ w }: { w: CutoverWave }) {
   );
 }
 
+/* Existing war-room runs over this plan + the entry point to start a new one. */
+function ExecutionRuns({ snapId }: { snapId: number }) {
+  const navigate = useNavigate();
+  const { data: runs, reload } = useAsync(() => api.listExecutions(snapId), [snapId]);
+  const [starting, setStarting] = useState(false);
+  const start = () => {
+    setStarting(true);
+    api.startExecution(snapId)
+      .then((ex) => navigate(`/executions/${ex.id}`))
+      .catch(() => reload())
+      .finally(() => setStarting(false));
+  };
+  const STATUS_COLOR: Record<string, string> = {
+    in_progress: "var(--accent)", completed: "var(--ok)", aborted: "var(--crit)",
+  };
+  return (
+    <div style={{ marginTop: 16, borderTop: "1px solid var(--border-faint)", paddingTop: 14 }}>
+      <div className="row-flex">
+        <button className="btn primary" onClick={start} disabled={starting}>
+          ▶ Start execution run
+        </button>
+        <span className="dim" style={{ fontSize: 12 }}>
+          Opens the live war-room console: check off the run-of-show, record validation results and
+          deviations, and export the as-executed PIR record.
+        </span>
+      </div>
+      {(runs || []).length > 0 && (
+        <div className="row-flex" style={{ marginTop: 10 }}>
+          {(runs || []).map((r) => (
+            <Link key={r.id} to={`/executions/${r.id}`} className="chip" style={{ textDecoration: "none" }}>
+              <span className="dot" style={{ background: STATUS_COLOR[r.status] || "var(--text-faint)" }} />
+              {r.label} · <span className="faint">{r.status.replace("_", " ")}</span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CutoverPlanner({ snapId }: { snapId: number }) {
   const { data, error, loading } = useAsync(() => api.cutover(snapId), [snapId]);
   const { data: meta } = useAsync(() => api.meta(), []);
@@ -228,6 +269,8 @@ export default function CutoverPlanner({ snapId }: { snapId: number }) {
       <div className="wave-list">
         {plan.waves.map((w) => <WaveCard key={w.group + w.order} w={w} />)}
       </div>
+
+      <ExecutionRuns snapId={snapId} />
     </div>
   );
 }

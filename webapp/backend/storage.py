@@ -33,6 +33,16 @@ CREATE TABLE IF NOT EXISTS snapshots (
     snapshot_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_snapshots_campaign ON snapshots(campaign_id, uploaded_at);
+CREATE TABLE IF NOT EXISTS executions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    label       TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'in_progress',
+    started_at  TEXT NOT NULL,
+    ended_at    TEXT,
+    state_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_executions_snapshot ON executions(snapshot_id, started_at);
 """
 
 
@@ -150,6 +160,56 @@ class Store:
     def delete_snapshot(self, snapshot_id: int) -> bool:
         with self._lock:
             cur = self._conn.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    # -- executions ----------------------------------------------------------
+    # A live cutover-execution run (war room) over one snapshot's plan. The state blob is the source
+    # of truth; label/status/timestamps are mirrored into columns for cheap listing.
+    def create_execution(self, snapshot_id: int, state: Dict[str, Any]) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO executions(snapshot_id, label, status, started_at, ended_at, state_json)
+                   VALUES (?,?,?,?,?,?)""",
+                (snapshot_id, state.get("label", ""), state.get("status", "in_progress"),
+                 state.get("started_at", _now()), state.get("ended_at"),
+                 json.dumps(state, separators=(",", ":"))),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def get_execution(self, execution_id: int) -> Optional[Dict[str, Any]]:
+        """{'id', 'snapshot_id', 'state'} or None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, snapshot_id, state_json FROM executions WHERE id = ?", (execution_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return {"id": row["id"], "snapshot_id": row["snapshot_id"],
+                "state": json.loads(row["state_json"])}
+
+    def save_execution(self, execution_id: int, state: Dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE executions SET label=?, status=?, ended_at=?, state_json=? WHERE id=?",
+                (state.get("label", ""), state.get("status", "in_progress"),
+                 state.get("ended_at"), json.dumps(state, separators=(",", ":")), execution_id),
+            )
+            self._conn.commit()
+
+    def list_executions(self, snapshot_id: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, snapshot_id, label, status, started_at, ended_at
+                   FROM executions WHERE snapshot_id = ? ORDER BY started_at DESC, id DESC""",
+                (snapshot_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_execution(self, execution_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM executions WHERE id = ?", (execution_id,))
             self._conn.commit()
             return cur.rowcount > 0
 

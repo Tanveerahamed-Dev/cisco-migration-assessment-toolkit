@@ -258,6 +258,141 @@ def test_nrfu_deliverable_content(client):
     assert any("show " in c for c in all_rows)                   # runnable commands
 
 
+def test_execution_run_lifecycle(client):
+    """The war-room flow end to end: start a run from the cutover plan, check off a step, record
+    validation results, scribe a deviation, close out a wave, finish — then the run is read-only."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+
+    r = client.post(f"/api/snapshots/{snap_id}/executions", json={"label": "", "operator": "lead"})
+    assert r.status_code == 201, r.text
+    ex = r.json()
+    eid = ex["id"]
+    assert ex["label"] == "Cutover run 1"            # auto-labelled
+    assert ex["status"] == "in_progress" and ex["outcome"] is None
+
+    # the run froze the plan: same wave groups, pilot-first order, steps/checks all pending
+    plan = client.get(f"/api/snapshots/{snap_id}/cutover").json()
+    assert [w["group"] for w in ex["waves"]] == [w["group"] for w in plan["waves"]]
+    w0 = ex["waves"][0]
+    assert [s["phase"] for s in w0["steps"]] == [s["phase"] for s in plan["waves"][0]["run_of_show"]]
+    assert all(s["status"] == "pending" for w in ex["waves"] for s in w["steps"])
+    assert len(w0["checks"]) == len(plan["waves"][0]["validation"])
+    assert ex["progress"]["pct"] == 0
+
+    g = w0["group"]
+    # step check-off is timestamped and attributed
+    ex = client.post(f"/api/executions/{eid}/step",
+                     json={"wave": g, "index": 0, "status": "done", "operator": "lead"}).json()
+    s0 = ex["waves"][0]["steps"][0]
+    assert s0["status"] == "done" and s0["at"] and s0["by"] == "lead"
+    assert ex["progress"]["n_steps_done"] == 1 and ex["progress"]["pct"] > 0
+
+    # a failing validation check is recorded AND auto-scribed as a deviation
+    ex = client.post(f"/api/executions/{eid}/check",
+                     json={"wave": g, "index": 0, "result": "fail",
+                           "observed": "neighbor missing", "operator": "lead"}).json()
+    assert ex["waves"][0]["checks"][0]["result"] == "fail"
+    assert ex["progress"]["checks"]["fail"] == 1
+    assert any(e["kind"] == "deviation" and "neighbor missing" in e["text"] for e in ex["events"])
+
+    # explicit deviation + wave closeout
+    client.post(f"/api/executions/{eid}/event",
+                json={"kind": "deviation", "text": "re-seated SFP", "wave": g})
+    ex = client.post(f"/api/executions/{eid}/closeout",
+                     json={"wave": g, "decision": "COMPLETE", "note": "with workaround"}).json()
+    assert ex["waves"][0]["closeout"]["decision"] == "COMPLETE"
+    assert ex["progress"]["waves"][0]["state"] == "complete"
+
+    # finish: outcome derives PARTIAL (other waves never closed), then the run is immutable
+    ex = client.post(f"/api/executions/{eid}/finish", json={"status": "completed"}).json()
+    assert ex["status"] == "completed" and ex["outcome"] == "PARTIALLY IMPLEMENTED"
+    r = client.post(f"/api/executions/{eid}/step", json={"wave": g, "index": 1, "status": "done"})
+    assert r.status_code == 409
+
+    # listed under the snapshot; bad inputs rejected; deletable
+    runs = client.get(f"/api/snapshots/{snap_id}/executions").json()
+    assert [(x["id"], x["status"]) for x in runs] == [(eid, "completed")]
+    assert client.post(f"/api/executions/{eid + 99}/step",
+                       json={"wave": g, "index": 0, "status": "done"}).status_code == 404
+    assert client.delete(f"/api/executions/{eid}").status_code == 204
+    assert client.get(f"/api/executions/{eid}").status_code == 404
+
+
+def test_execution_outcome_vocabulary(client):
+    """Outcome derivation follows the PIR vocabulary: a clean run is SUCCESSFUL, a rolled-back wave
+    dominates, and an abort is ABORTED regardless of progress."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+
+    def run():
+        return client.post(f"/api/snapshots/{snap_id}/executions", json={}).json()
+
+    def close_all(eid, ex, decision):
+        for w in ex["waves"]:
+            ex = client.post(f"/api/executions/{eid}/closeout",
+                             json={"wave": w["group"], "decision": decision}).json()
+        return ex
+
+    # every wave completed, nothing skipped/failed -> SUCCESSFUL
+    ex = run()
+    ex = close_all(ex["id"], ex, "COMPLETE")
+    ex = client.post(f"/api/executions/{ex['id']}/finish", json={"status": "completed"}).json()
+    assert ex["outcome"] == "SUCCESSFUL"
+
+    # a rolled-back wave dominates the verdict, even when every other wave completed
+    ex = run()
+    eid = ex["id"]
+    ex = close_all(eid, ex, "COMPLETE")
+    ex = client.post(f"/api/executions/{eid}/closeout",
+                     json={"wave": ex["waves"][0]["group"], "decision": "ROLLED BACK"}).json()
+    ex = client.post(f"/api/executions/{eid}/finish", json={"status": "completed"}).json()
+    assert ex["outcome"] == "ROLLED BACK"
+
+    # an aborted run is ABORTED
+    ex = run()
+    ex = client.post(f"/api/executions/{ex['id']}/finish", json={"status": "aborted"}).json()
+    assert ex["outcome"] == "ABORTED"
+
+
+def test_execution_pir_report(client):
+    """The PIR / as-executed record renders the run: outcome, planned-vs-actual, the timestamped
+    deviation log, and the per-wave validation results."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    ex = client.post(f"/api/snapshots/{snap_id}/executions",
+                     json={"label": "Window 7", "operator": "tanveer"}).json()
+    eid = ex["id"]
+    g = ex["waves"][0]["group"]
+    client.post(f"/api/executions/{eid}/step", json={"wave": g, "index": 0, "status": "done",
+                                                     "operator": "tanveer"})
+    client.post(f"/api/executions/{eid}/check", json={"wave": g, "index": 0, "result": "pass",
+                                                      "operator": "tanveer"})
+    client.post(f"/api/executions/{eid}/event",
+                json={"kind": "deviation", "text": "uplink LED amber, re-seated SFP", "wave": g})
+    client.post(f"/api/executions/{eid}/closeout", json={"wave": g, "decision": "COMPLETE"})
+    client.post(f"/api/executions/{eid}/finish", json={"status": "completed"})
+
+    r = client.get(f"/api/executions/{eid}/report")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert r.status_code == 200, r.text
+    assert r.content[:2] == b"PK"
+    assert "pir" in r.headers.get("content-disposition", "")
+
+    import io
+
+    from docx import Document
+
+    doc = Document(io.BytesIO(r.content))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Post-Implementation Review" in text
+    assert "Window 7" in text
+    assert "Planned vs actual" in text
+    assert "Timeline & deviation log" in text
+    all_rows = [c.text for t in doc.tables for row in t.rows for c in row.cells]
+    assert any("re-seated SFP" in c for c in all_rows)         # the scribed deviation is in the log
+    assert any("PASS" in c for c in all_rows)                  # the recorded validation result
+    assert any("tanveer" in c for c in all_rows)               # actions are attributed
+
+
 def test_bad_upload_rejected(client):
     cid = client.post("/api/campaigns", json={"name": "x"}).json()["id"]
     r = client.post(f"/api/campaigns/{cid}/snapshots",
