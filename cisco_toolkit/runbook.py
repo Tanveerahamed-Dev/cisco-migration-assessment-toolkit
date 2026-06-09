@@ -758,6 +758,28 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                   [[sc, pb.get("pre", ""), pb.get("validate", ""), pb.get("rollback", "")]
                    for sc, pb in sorted(seen_sc.items())], widths=[1.3, 2.7, 2.7, 2.7])
 
+    # 11.3 generated per-wave post-cutover verification plan (NEW-V3.23.143): the concrete checks +
+    # commands + expected good result (captured from the pre-cutover state) to run after each wave.
+    vp = snap_dict.get("validation_plan") or {}
+    vp_by_wave = vp.get("by_wave") or {}
+    if vp_by_wave:
+        vs = vp.get("summary") or {}
+        doc.add_heading("11.3 Post-cutover verification plan (per wave)", level=2)
+        doc.add_paragraph(
+            f"{vs.get('n_items', 0)} check(s) across {vs.get('n_waves', 0)} wave(s) "
+            f"({vs.get('n_high', 0)} High/Critical). After each wave's cutover run these and confirm the "
+            "result matches the 'Expect' column — it is the known-good output captured from the "
+            "pre-cutover state, so a deviation is a regression. Full detail is in the 'Cutover "
+            "Validation' workbook sheet.")
+        for wave, vits in vp_by_wave.items():
+            doc.add_heading(f"Wave: {wave}", level=3)
+            table(["Device", "Category", "Check", "Command", "Expect (good result)"],
+                  [[it.get("device"), it.get("category"), it.get("check"), it.get("command"), it.get("expect")]
+                   for it in vits[:14]], widths=[1.6, 1.1, 2.6, 2.2, 2.5])
+            if len(vits) > 14:
+                doc.add_paragraph(f"…and {len(vits) - 14} more check(s) for {wave} — see the 'Cutover "
+                                  "Validation' workbook sheet.")
+
     # ===== 12. War-Room Decision Logic & Open Unknowns =====
     doc.add_heading("12. War-Room Decision Logic & Open Unknowns", level=1)
     doc.add_paragraph("GO / HOLD / ROLLBACK matrix:")

@@ -1808,6 +1808,380 @@
   },
   "banner": "GENERATED FOR REVIEW \u2014 validate against the device's running-config and your change-control before applying. Snippets are starting points, not a turnkey script."
  },
+ "validation_plan": {
+  "items": [
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "check": "First-hop redundancy healthy for VLAN 10",
+    "command": "show standby brief",
+    "expect": "VLAN 10 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
+    "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "check": "First-hop redundancy healthy for VLAN 20",
+    "command": "show standby brief",
+    "expect": "VLAN 20 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
+    "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+   },
+   {
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "check": "First-hop redundancy healthy for VLAN 10",
+    "command": "show hsrp brief",
+    "expect": "VLAN 10 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
+    "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+   },
+   {
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "FHRP",
+    "severity": "High",
+    "check": "First-hop redundancy healthy for VLAN 20",
+    "command": "show hsrp brief",
+    "expect": "VLAN 20 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
+    "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "Gateway",
+    "severity": "High",
+    "check": "Default gateway for VLAN 10 is up",
+    "command": "show ip interface brief | include Vlan10",
+    "expect": "Vlan10 10.0.10.2 up/up (line protocol up)",
+    "why": "VLAN 10 endpoints lose their default gateway if this SVI is down after cutover."
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "Gateway",
+    "severity": "High",
+    "check": "Default gateway for VLAN 20 is up",
+    "command": "show ip interface brief | include Vlan20",
+    "expect": "Vlan20 10.0.20.2 up/up (line protocol up)",
+    "why": "VLAN 20 endpoints lose their default gateway if this SVI is down after cutover."
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "Gateway",
+    "severity": "High",
+    "check": "Default gateway for VLAN 30 is up",
+    "command": "show ip interface brief | include Vlan30",
+    "expect": "Vlan30 10.0.30.1 up/up (line protocol up)",
+    "why": "VLAN 30 endpoints lose their default gateway if this SVI is down after cutover."
+   },
+   {
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "Gateway",
+    "severity": "High",
+    "check": "Default gateway for VLAN 10 is up",
+    "command": "show ip interface brief | include Vlan10",
+    "expect": "Vlan10 10.0.10.3/24 up/up (line protocol up)",
+    "why": "VLAN 10 endpoints lose their default gateway if this SVI is down after cutover."
+   },
+   {
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "Gateway",
+    "severity": "High",
+    "check": "Default gateway for VLAN 20 is up",
+    "command": "show ip interface brief | include Vlan20",
+    "expect": "Vlan20 10.0.20.3/24 up/up (line protocol up)",
+    "why": "VLAN 20 endpoints lose their default gateway if this SVI is down after cutover."
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "Reachability",
+    "severity": "High",
+    "check": "VLAN 10 endpoints can reach their gateway",
+    "command": "ping 10.0.10.2",
+    "expect": "Success rate is 100 percent",
+    "why": "Proves a VLAN 10 client edge (access1) still reaches its default gateway after cutover."
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "Reachability",
+    "severity": "High",
+    "check": "VLAN 30 endpoints can reach their gateway",
+    "command": "ping 10.0.30.1",
+    "expect": "Success rate is 100 percent",
+    "why": "Proves a VLAN 30 client edge (access1) still reaches its default gateway after cutover."
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "Routing",
+    "severity": "High",
+    "check": "OSPF adjacencies re-established",
+    "command": "show ip ospf neighbor",
+    "expect": "2 neighbor(s) in FULL: 10.0.99.2, 10.0.99.9",
+    "why": "A dropped OSPF adjacency black-holes the routes it should exchange."
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "Link",
+    "severity": "Medium",
+    "check": "Port-channel uplinks bundled",
+    "command": "show etherchannel summary",
+    "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+    "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+   },
+   {
+    "device": "core2",
+    "platform": "nxos",
+    "wave": "Group 1",
+    "category": "Link",
+    "severity": "Medium",
+    "check": "Port-channel uplinks bundled",
+    "command": "show port-channel summary",
+    "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+    "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "STP",
+    "severity": "Medium",
+    "check": "Spanning-tree root for VLAN 30 unchanged",
+    "command": "show spanning-tree vlan 30",
+    "expect": "access1 reports 'This bridge is the root' for VLAN 30",
+    "why": "If the root moves on cutover, the L2 topology reconverges and forwarding paths change."
+   },
+   {
+    "device": "core1",
+    "platform": "ios",
+    "wave": "Group 1",
+    "category": "STP",
+    "severity": "Medium",
+    "check": "Spanning-tree root for VLAN 10 unchanged",
+    "command": "show spanning-tree vlan 10",
+    "expect": "core1 reports 'This bridge is the root' for VLAN 10",
+    "why": "If the root moves on cutover, the L2 topology reconverges and forwarding paths change."
+   }
+  ],
+  "by_wave": {
+   "Group 1": [
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "check": "First-hop redundancy healthy for VLAN 10",
+     "command": "show standby brief",
+     "expect": "VLAN 10 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
+     "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "check": "First-hop redundancy healthy for VLAN 20",
+     "command": "show standby brief",
+     "expect": "VLAN 20 shows exactly one Active + one Standby across core1 + core2 (same virtual IP)",
+     "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    },
+    {
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "check": "First-hop redundancy healthy for VLAN 10",
+     "command": "show hsrp brief",
+     "expect": "VLAN 10 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
+     "why": "VLAN 10 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    },
+    {
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "FHRP",
+     "severity": "High",
+     "check": "First-hop redundancy healthy for VLAN 20",
+     "command": "show hsrp brief",
+     "expect": "VLAN 20 shows exactly one Active + one Standby across core2 + core1 (same virtual IP)",
+     "why": "VLAN 20 has a redundant gateway; a broken FHRP pair means no failover or a duplicate-active split-brain."
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "Gateway",
+     "severity": "High",
+     "check": "Default gateway for VLAN 10 is up",
+     "command": "show ip interface brief | include Vlan10",
+     "expect": "Vlan10 10.0.10.2 up/up (line protocol up)",
+     "why": "VLAN 10 endpoints lose their default gateway if this SVI is down after cutover."
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "Gateway",
+     "severity": "High",
+     "check": "Default gateway for VLAN 20 is up",
+     "command": "show ip interface brief | include Vlan20",
+     "expect": "Vlan20 10.0.20.2 up/up (line protocol up)",
+     "why": "VLAN 20 endpoints lose their default gateway if this SVI is down after cutover."
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "Gateway",
+     "severity": "High",
+     "check": "Default gateway for VLAN 30 is up",
+     "command": "show ip interface brief | include Vlan30",
+     "expect": "Vlan30 10.0.30.1 up/up (line protocol up)",
+     "why": "VLAN 30 endpoints lose their default gateway if this SVI is down after cutover."
+    },
+    {
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "Gateway",
+     "severity": "High",
+     "check": "Default gateway for VLAN 10 is up",
+     "command": "show ip interface brief | include Vlan10",
+     "expect": "Vlan10 10.0.10.3/24 up/up (line protocol up)",
+     "why": "VLAN 10 endpoints lose their default gateway if this SVI is down after cutover."
+    },
+    {
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "Gateway",
+     "severity": "High",
+     "check": "Default gateway for VLAN 20 is up",
+     "command": "show ip interface brief | include Vlan20",
+     "expect": "Vlan20 10.0.20.3/24 up/up (line protocol up)",
+     "why": "VLAN 20 endpoints lose their default gateway if this SVI is down after cutover."
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "Reachability",
+     "severity": "High",
+     "check": "VLAN 10 endpoints can reach their gateway",
+     "command": "ping 10.0.10.2",
+     "expect": "Success rate is 100 percent",
+     "why": "Proves a VLAN 10 client edge (access1) still reaches its default gateway after cutover."
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "Reachability",
+     "severity": "High",
+     "check": "VLAN 30 endpoints can reach their gateway",
+     "command": "ping 10.0.30.1",
+     "expect": "Success rate is 100 percent",
+     "why": "Proves a VLAN 30 client edge (access1) still reaches its default gateway after cutover."
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "Routing",
+     "severity": "High",
+     "check": "OSPF adjacencies re-established",
+     "command": "show ip ospf neighbor",
+     "expect": "2 neighbor(s) in FULL: 10.0.99.2, 10.0.99.9",
+     "why": "A dropped OSPF adjacency black-holes the routes it should exchange."
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "Link",
+     "severity": "Medium",
+     "check": "Port-channel uplinks bundled",
+     "command": "show etherchannel summary",
+     "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+     "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+    },
+    {
+     "device": "core2",
+     "platform": "nxos",
+     "wave": "Group 1",
+     "category": "Link",
+     "severity": "Medium",
+     "check": "Port-channel uplinks bundled",
+     "command": "show port-channel summary",
+     "expect": "1 bundle(s) (Po1) show all members in (P)/bundled state",
+     "why": "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path."
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "STP",
+     "severity": "Medium",
+     "check": "Spanning-tree root for VLAN 30 unchanged",
+     "command": "show spanning-tree vlan 30",
+     "expect": "access1 reports 'This bridge is the root' for VLAN 30",
+     "why": "If the root moves on cutover, the L2 topology reconverges and forwarding paths change."
+    },
+    {
+     "device": "core1",
+     "platform": "ios",
+     "wave": "Group 1",
+     "category": "STP",
+     "severity": "Medium",
+     "check": "Spanning-tree root for VLAN 10 unchanged",
+     "command": "show spanning-tree vlan 10",
+     "expect": "core1 reports 'This bridge is the root' for VLAN 10",
+     "why": "If the root moves on cutover, the L2 topology reconverges and forwarding paths change."
+    }
+   ]
+  },
+  "summary": {
+   "n_items": 16,
+   "n_waves": 1,
+   "by_category": {
+    "FHRP": 4,
+    "Gateway": 5,
+    "Reachability": 2,
+    "Routing": 1,
+    "Link": 2,
+    "STP": 2
+   },
+   "n_high": 12
+  },
+  "banner": "Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good result captured from the pre-cutover state -- a deviation is a regression to investigate."
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,
