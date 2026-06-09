@@ -43,4 +43,7 @@
   --band-Critical: var(--crit);
 
   --ready-READY: var(--ok); --ready-CAUTION: var(--watch); --ready-NOTREADY: var(--crit);
+
+  /* cutover Go/No-Go gate vocabulary -> same posture palette */
+  --gate-GO: var(--ok); --gate-CONDITIONALGO: var(--watch); --gate-NOGO: var(--crit);
 }

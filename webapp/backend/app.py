@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import deliverables, engine, graph, summary
+from . import cutover, deliverables, engine, graph, summary
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -159,6 +159,14 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         keystones = [k.get("host") for k in (meta["summary"].get("keystones") or []) if k.get("host")]
         return graph.build_graph(snap, keystones)
+
+    @app.get("/api/snapshots/{snapshot_id}/cutover")
+    def snapshot_cutover(snapshot_id: int) -> Dict[str, Any]:
+        """Gated, pilot-first cutover plan (run-of-show) synthesized from the snapshot's migration model."""
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        return cutover.build_plan(snap)
 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
     def snapshot_explorer(snapshot_id: int) -> HTMLResponse:

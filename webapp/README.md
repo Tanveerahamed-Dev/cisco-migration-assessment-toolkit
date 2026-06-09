@@ -17,6 +17,12 @@ SSH collection (CLI engine)  →  snapshot.json  →  AssessHub store  →  cock
 - **Risk cockpit** — per-snapshot: avg-health gauge, health-band distribution, punch-list triaged by
   severity & category, move-group readiness, and the **keystone devices** the fleet most depends on by
   migration blast radius.
+- **Cutover planner (run-of-show)** — a synthesis layer over the engine's migration model: a per-wave
+  **Go / Conditional-Go / No-Go gate** (from the engine's own readiness checks + any Critical
+  cross-layer hit), **pilot-first sequencing** (the safe zero-outage waves scheduled before the risky
+  NOT-READY ones), a first-order **maintenance-window estimate** for the single-homed (hard-cutover)
+  switches, and a PPDIOO-phased **run-of-show** per wave that wires in that wave's pre-cutover
+  remediation and its post-cutover validation commands.
 - **Detail sections** — 15+ tabs (punch-list, health scores, failure impact, chokepoints, causality,
   cross-layer, readiness, wave sequencing, application domains, segmentation, protocols, remediation,
   validation plan, capacity, endpoints, lifecycle/EoL…) sliced straight from the snapshot.
@@ -39,6 +45,7 @@ webapp/
     app.py            REST surface + serves the built SPA (with history fallback)
     storage.py        campaign / snapshot persistence
     summary.py        read-only KPI projection of a snapshot (re-uses engine._trend_point)
+    cutover.py        read-only synthesis of a gated, pilot-first cutover plan (run-of-show)
     engine.py         the ONLY coupling to cisco_toolkit (path bootstrap + reused fns)
   frontend/           Vite + React + TypeScript SPA; mirrors the explorer's design tokens
   tests/              end-to-end backend tests (FastAPI TestClient, isolated temp DB)
@@ -112,6 +119,7 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/snapshots/{id}` | snapshot meta + derived KPI summary |
 | `GET`  | `/api/snapshots/{id}/section/{name}` | one detail section, sliced from the snapshot |
 | `GET`  | `/api/snapshots/{id}/graph` | switch-topology nodes + edges (for the force graph) |
+| `GET`  | `/api/snapshots/{id}/cutover` | gated, pilot-first cutover plan (run-of-show) synthesized from the migration model |
 | `GET`  | `/api/snapshots/{id}/explorer` | the rendered single-file deep explorer (HTML) |
 | `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`runbook`/`design`/`mop`/`deck`) |
 | `POST` | `/api/compare` | diff two snapshots (`{old_id, new_id}`) |
