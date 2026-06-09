@@ -18,9 +18,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from cisco_toolkit import html as _html  # noqa: E402  (after path bootstrap)
+from cisco_toolkit import analyze as _analyze  # noqa: E402  (after path bootstrap)
+from cisco_toolkit import html as _html  # noqa: E402
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
 
+# Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
+canon_host = _analyze._canon_host
 trend_point = _html._trend_point
 compute_snapshot_delta = _html.compute_snapshot_delta
 compute_campaign_trend = _html.compute_campaign_trend

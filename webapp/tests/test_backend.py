@@ -95,6 +95,23 @@ def test_upload_and_compare(client):
     assert len(trend.json()["timeline"]) == 2
 
 
+def test_graph_endpoint(client):
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/graph")
+    assert r.status_code == 200
+    g = r.json()
+    assert g["nodes"] and g["edges"], "graph should have nodes and edges"
+    ids = {n["id"] for n in g["nodes"]}
+    # every edge connects two known nodes (no dangling APs/phones)
+    for e in g["edges"]:
+        assert e["source"] in ids and e["target"] in ids
+        assert "is_bridge" in e
+    # nodes carry the health band used to colour them
+    assert any(n.get("band") for n in g["nodes"])
+    # 404 for a missing snapshot
+    assert client.get("/api/snapshots/999999/graph").status_code == 404
+
+
 def test_bad_upload_rejected(client):
     cid = client.post("/api/campaigns", json={"name": "x"}).json()["id"]
     r = client.post(f"/api/campaigns/{cid}/snapshots",
