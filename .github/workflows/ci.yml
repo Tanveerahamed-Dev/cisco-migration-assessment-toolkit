@@ -91,6 +91,22 @@ jobs:
       - name: mypy (full report — non-gating)
         run: python -m mypy cisco_toolkit COLLECT_PARSE_V3_23_0.py || true
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      # GATED at 80% (the real number is ~87% — the in-process e2e test credits the workbook/HTML
+      # builders). Lift the floor as coverage rises. term-missing prints the uncovered lines in the log.
+      - name: pytest with coverage (fail under 80%)
+        run: python -m pytest --cov=cisco_toolkit --cov-report=term-missing:skip-covered --cov-fail-under=80
+
   package:
     name: Package build + install
     runs-on: ubuntu-latest

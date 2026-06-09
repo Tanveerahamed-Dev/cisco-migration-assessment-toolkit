@@ -80,3 +80,13 @@ include = ["cisco_toolkit*"]
 [tool.setuptools.package-data]
 # The offline KB files portdb/ouidb load at runtime (gzipped TSV); ship them in any built distribution.
 cisco_toolkit = ["data/*.tsv.gz"]
+
+[tool.coverage.run]
+source = ["cisco_toolkit"]
+omit = ["cisco_toolkit/data/gen_port_registry.py"]   # offline data-generator script, not runtime code
+
+[tool.coverage.report]
+# Coverage is meaningful only because tests/test_pipeline_inprocess.py drives the workbook / HTML
+# builders IN-PROCESS — the subprocess golden runs in a child the coverage tool can't see. The floor
+# is enforced in CI via `--cov-fail-under` (kept a few points below the real number for headroom).
+skip_covered = false
