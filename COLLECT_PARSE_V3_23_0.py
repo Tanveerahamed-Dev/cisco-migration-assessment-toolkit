@@ -339,6 +339,7 @@ from cisco_toolkit.analyze import (
     compute_multicast_intelligence,                    # NEW-V3.23.115 (media-fabric deep-dive: MAC-alias / querier / PTP tree)
     compute_remediation_plan,                          # NEW-V3.23.116 (assess->act: per-device config snippets, review-only)
     compute_validation_plan,                           # NEW-V3.23.143 (assess->verify: per-wave post-cutover checks)
+    compute_golden_drift,                              # NEW-V3.23.146 (per-device config drift vs a baseline)
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
     compute_executive_brief,                           # NEW-V3.23.120 (cross-axis migration brief synthesis)
@@ -385,6 +386,7 @@ from cisco_toolkit.excel import (
     write_multicast_intelligence_sheet,                          # NEW-V3.23.115 (media-fabric multicast intelligence)
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
     write_validation_plan_sheet,                                 # NEW-V3.23.143 (per-wave post-cutover validation checklist)
+    write_golden_drift_sheet,                                    # NEW-V3.23.146 (per-device config drift vs baseline)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
@@ -400,6 +402,7 @@ from cisco_toolkit.build import (
     build_interfaces,   # step 28: the big per-device InterfaceData builder
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
+    read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_routing_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -1157,6 +1160,10 @@ def main():
                     help="NEW-V3.23.144: skip the Executive presentation deck (PPTX). The deck is the "
                          "stakeholder twin of the workbook; it needs python-pptx (a missing library is "
                          "a warning, not an error).")
+    ap.add_argument("--golden-config",   default=None, metavar="FILE",
+                    help="NEW-V3.23.146: a golden-config baseline file (one required directive per line; "
+                         "'#' comments and 're:<regex>' supported) for the Golden-Config Drift sheet. "
+                         "Omit to auto-derive the baseline from the fleet's majority (de-facto standard).")
     ap.add_argument("--flow-src",        default=None, metavar="IP",
                     help="NEW-V3.19: source endpoint IP for the optional Flow Trace sheet "
                          "(requires --flow-dst).")
@@ -1407,7 +1414,11 @@ def main():
     all_vpc: Dict[str, dict] = {}                                    # NEW-V3.23.125 (vPC / MLAG status per device)
     all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
+    all_run_configs: Dict[str, str] = {}                             # NEW-V3.23.146 (raw running-config for golden-config drift)
     for hostname, platform, cmd_to_file in all_devices_meta:
+        rc_text = read_run_config(cmd_to_file)                       # NEW-V3.23.146
+        if rc_text:
+            all_run_configs[hostname] = rc_text
         acls = build_acls(cmd_to_file)
         if acls:
             all_acls[hostname] = acls
@@ -1750,6 +1761,21 @@ def main():
                                  _dev_platform, _default={})
     _run_phase("Cutover Validation sheet", write_validation_plan_sheet, wb, validation_plan)
 
+    # Phase 30d-quinquies: Golden-config DRIFT - NEW-V3.23.146. Per-device running-config drift vs a baseline:
+    # the user's --golden-config file (required directives) if supplied, else the fleet's auto-derived MAJORITY
+    # baseline (de-facto standard) -> flag the outliers. Compute once -> sheet + snapshot (one source of truth).
+    _golden_lines = None
+    if args.golden_config:
+        try:
+            with open(args.golden_config, encoding="utf-8") as f:
+                _golden_lines = f.read().splitlines()
+            logger.info(f"[Phase 30d] Golden-config baseline: {len(_golden_lines)} line(s) from {args.golden_config}")
+        except OSError as e:
+            logger.warning(f"  --golden-config not read ({e}); falling back to the auto-derived majority baseline.")
+    golden_drift = _run_phase("Golden-config drift", compute_golden_drift,
+                              all_run_configs, _golden_lines, _default={})
+    _run_phase("Golden-Config Drift sheet", write_golden_drift_sheet, wb, golden_drift)
+
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
     # endpoint_dependencies + service_map + health_scores + move_groups + punchlist into named
     # application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
@@ -1809,6 +1835,7 @@ def main():
     snap_dict["lifecycle_risk"] = lifecycle_risk                     # NEW-V3.23.117 (hardware EoL band per device; reused from Phase 27c-ter)
     snap_dict["remediation_plan"] = remediation_plan                 # NEW-V3.23.116 (generated config snippets, review-only; reused from Phase 30d-ter)
     snap_dict["validation_plan"] = validation_plan                   # NEW-V3.23.143 (per-wave post-cutover validation checklist; reused from Phase 30d-quater)
+    snap_dict["golden_drift"] = golden_drift                         # NEW-V3.23.146 (per-device config drift vs baseline; reused from Phase 30d-quinquies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23

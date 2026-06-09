@@ -2182,6 +2182,25 @@
   },
   "banner": "Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good result captured from the pre-cutover state -- a deviation is a regression to investigate."
  },
+ "golden_drift": {
+  "mode": "majority",
+  "baseline": [],
+  "per_device": [
+   {
+    "host": "core1",
+    "compliance_pct": 100,
+    "n_missing": 0,
+    "missing": []
+   }
+  ],
+  "summary": {
+   "mode": "majority",
+   "n_devices": 1,
+   "n_baseline": 0,
+   "n_drifting": 0,
+   "avg_compliance_pct": 100
+  }
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,
