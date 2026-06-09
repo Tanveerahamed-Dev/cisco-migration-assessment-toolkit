@@ -415,6 +415,8 @@ from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_
                                 write_campaign_workbook, redact_snapshot)   # NEW-V3.23.145 (campaign trend)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
+from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
+from cisco_toolkit.mop import write_mop_docx                         # NEW-V3.23.149 (per-wave Method of Procedure)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -1160,6 +1162,14 @@ def main():
                     help="NEW-V3.23.144: skip the Executive presentation deck (PPTX). The deck is the "
                          "stakeholder twin of the workbook; it needs python-pptx (a missing library is "
                          "a warning, not an error).")
+    ap.add_argument("--no-design",       action="store_true",
+                    help="NEW-V3.23.148: skip the As-Built Network Design Document (HLD/LLD, DOCX). It "
+                         "reconstructs the current design + target-state recommendations from the "
+                         "snapshot; needs python-docx (a missing library is a warning, not an error).")
+    ap.add_argument("--no-mop",          action="store_true",
+                    help="NEW-V3.23.149: skip the per-wave Method of Procedure (MOP, DOCX) — a "
+                         "maintenance-window cutover template per migration wave; needs python-docx "
+                         "(a missing library is a warning, not an error).")
     ap.add_argument("--golden-config",   default=None, metavar="FILE",
                     help="NEW-V3.23.146: a golden-config baseline file (one required directive per line; "
                          "'#' comments and 're:<regex>' supported) for the Golden-Config Drift sheet. "
@@ -1928,6 +1938,28 @@ def main():
             write_executive_deck_pptx(pptx_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  Executive deck (PPTX) write failed: {e}")
+
+    # Phase 33: As-Built Network Design Document (HLD/LLD, DOCX) - NEW-V3.23.148. The Design-phase twin
+    # of the workbook: reconstructs the current (as-built) design + target-state recommendations from the
+    # SAME snapshot (one source of truth). Optional python-docx; a missing library is a warning, never a crash.
+    if not args.no_design:
+        design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_design_doc_docx(design_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  Design document (DOCX) write failed: {e}")
+
+    # Phase 34: per-wave Method of Procedure (MOP, DOCX) - NEW-V3.23.149. The Implement-phase cutover
+    # template, one section per migration wave, reusing the validation plan as the post-cutover checks.
+    # Optional python-docx; a missing library is a warning, never a crash.
+    if not args.no_mop:
+        mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_mop_docx(mop_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  MOP (DOCX) write failed: {e}")
 
 
 if __name__ == "__main__":
