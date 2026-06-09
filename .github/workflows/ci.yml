@@ -67,7 +67,7 @@ jobs:
         run: python -m pytest
 
   typecheck:
-    name: mypy (report-only baseline)
+    name: mypy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,8 +77,16 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-dev.txt
-      # Non-gating: the repo keeps a documented dynamic-typing baseline (mypy.ini), so the report is
-      # printed for visibility but `|| true` keeps the check GREEN — it never blocks a merge. Tighten
-      # incrementally over time by scoping mypy to already-clean modules and dropping the `|| true`.
-      - name: mypy (non-gating — report printed, never fails the build)
+      # GATED: these modules are fully type-clean today and must STAY clean — a regression here fails
+      # CI. Grow this list as more modules are brought to zero mypy errors (incremental typing strategy;
+      # the heavy dynamic modules — analyze/excel/build — remain in the non-gating report below).
+      - name: mypy (gated — type-clean modules must stay clean)
+        run: >-
+          python -m mypy
+          cisco_toolkit/__init__.py cisco_toolkit/cmdio.py cisco_toolkit/eoldb.py
+          cisco_toolkit/model.py cisco_toolkit/ouidb.py cisco_toolkit/portdb.py
+          cisco_toolkit/protocol_kb.py cisco_toolkit/textutils.py
+      # NON-GATING: full-project report (the documented dynamic-typing baseline in mypy.ini). Printed
+      # for visibility; `|| true` keeps the check GREEN. Tighten by promoting modules to the gated step.
+      - name: mypy (full report — non-gating)
         run: python -m mypy cisco_toolkit COLLECT_PARSE_V3_23_0.py || true
