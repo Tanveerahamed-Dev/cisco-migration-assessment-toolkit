@@ -163,4 +163,54 @@ input, textarea, select {
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
 label.field { display: block; margin-bottom: 12px; }
 label.field span { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
+/* ---- cutover planner ---- */
+.gatebadge {
+  display: inline-flex; align-items: center; gap: 9px; text-transform: uppercase; letter-spacing: .03em;
+  font: 800 16px var(--sans); padding: 9px 18px; border-radius: 11px;
+  color: var(--gc); border: 1px solid color-mix(in srgb, var(--gc) 55%, var(--border));
+  background: color-mix(in srgb, var(--gc) 13%, transparent);
+}
+.gatebadge .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--gc) 22%, transparent); }
+.chip.gate { color: var(--gc); border-color: color-mix(in srgb, var(--gc) 45%, var(--border));
+  background: color-mix(in srgb, var(--gc) 12%, transparent); }
+.chip.tag { font-size: 10px; padding: 2px 8px; text-transform: uppercase; letter-spacing: .4px; }
+
+.wave-list { display: flex; flex-direction: column; gap: 12px; }
+.wave-card {
+  border: 1px solid var(--border); border-left: 4px solid var(--gc); border-radius: var(--radius-sm);
+  background: var(--surface-2); padding: 15px 17px;
+}
+.wave-card .wh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wave-card .ordno {
+  display: inline-grid; place-items: center; width: 27px; height: 27px; border-radius: 8px;
+  background: var(--surface-3); color: var(--text-dim); font: 800 13px var(--mono);
+  border: 1px solid var(--border);
+}
+.wave-card .wname { font-weight: 700; font-size: 15px; }
+.wave-card .wmeta { margin-left: auto; display: flex; gap: 16px; align-items: baseline; text-align: right; }
+.wave-card .wmeta .num { font: 800 18px var(--sans); }
+.wave-card .wmeta .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint); }
+.kchips { display: flex; flex-wrap: wrap; gap: 5px; }
+.kchips .chip { font-size: 10px; padding: 2px 8px; }
+@media (max-width: 600px) {
+  .wave-card .wmeta { margin-left: 0; width: 100%; justify-content: flex-start; gap: 22px; margin-top: 6px; }
+}
+
+.blocker { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 4px 0; }
+.blocker .pill { font: 700 9px var(--mono); text-transform: uppercase; letter-spacing: .4px; padding: 2px 7px;
+  border-radius: 999px; flex: none; }
+.blocker .pill.fail { color: var(--crit); background: var(--crit-soft); }
+.blocker .pill.warn { color: var(--watch); background: var(--watch-soft); }
+.blocker .ph { font: 600 10px var(--mono); color: var(--text-faint); flex: none; }
+
+.ros { display: flex; flex-direction: column; margin: 4px 0 2px; border-left: 2px solid var(--border); padding-left: 16px; }
+.ros .step { position: relative; padding: 7px 0; }
+.ros .step::before { content: ""; position: absolute; left: -21px; top: 12px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--surface-2); }
+.ros .step .ph { font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .5px; color: var(--accent); }
+.ros .step .ac { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
+.cmd { font: 500 12px var(--mono); background: var(--bg); border: 1px solid var(--border-faint);
+  border-radius: 6px; padding: 5px 9px; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
