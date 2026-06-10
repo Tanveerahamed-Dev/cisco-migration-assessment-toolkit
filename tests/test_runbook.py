@@ -135,8 +135,11 @@ def test_runbook_has_12_sections_and_reconciles(tmp_path):
     for n in range(1, 13):
         assert any(t.startswith(f"{n}.") for t in h1), f"missing section {n}: {h1}"
 
-    # numbers reconcile to the snapshot (the workbook-vs-runbook agreement contract)
-    exec_rows = {r.cells[0].text: r.cells[1].text for r in d.tables[0].rows}
+    # numbers reconcile to the snapshot (the workbook-vs-runbook agreement contract).
+    # Locate the §1 metric table by its header — the document-control front matter
+    # (V3.23.150) inserts tables before it, so index 0 is no longer the exec summary.
+    exec_t = next(t for t in d.tables if t.rows[0].cells[0].text == "Metric")
+    exec_rows = {r.cells[0].text: r.cells[1].text for r in exec_t.rows}
     assert exec_rows["Devices in scope"] == "2"
     assert exec_rows["Migration move groups"] == "2"
     assert exec_rows["Punch-list items"] == "1"
@@ -192,6 +195,20 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     # migration scenario framework (§3 recommendation + §11.2 playbook)
     assert "GREENFIELD rebuild" in text and "parallel-run" in text
     assert "Cutover playbook by scenario" in text
+
+
+def test_runbook_carries_document_furniture(tmp_path):
+    """V3.23.150: AS-style front/back matter — Document Control between cover and TOC, and the
+    closing acceptance signature gate."""
+    out = str(tmp_path / "rb.docx")
+    write_runbook_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert "Document Control" in h1 and "Document Acceptance" in h1
+    text = _all_text(d)
+    assert "Revision history" in text and "Assumptions & caveats" in text
+    assert "Customer network owner" in text                      # acceptance signature roles
+    assert "Assessment workbook (.xlsx)" in text                 # related-documents cross-reference
 
 
 def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):
