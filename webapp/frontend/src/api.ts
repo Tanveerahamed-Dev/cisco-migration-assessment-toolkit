@@ -197,6 +197,57 @@ export interface CutoverPlan {
   waves: CutoverWave[];
 }
 
+// V3.23.163: the senior-engineer design review (engine compute_architecture_review — the same
+// object behind the DOCX report, the workbook scorecard sheet and the explorer Review mode).
+export type ArchVerdict = "conforms" | "advisory" | "deviation" | "critical" | "not-assessable";
+
+export interface ArchCheck {
+  id: string;
+  domain: string;
+  title: string;
+  verdict: ArchVerdict;
+  observed: string;
+  implication: string;
+  recommendation: string;
+  reference: string;
+  evidence: string[];
+}
+
+export interface ArchDomain {
+  key: string;
+  verdict: ArchVerdict;
+  score_pct: number | null;
+  checks: string[];
+}
+
+export interface ArchAction {
+  rank: number;
+  id: string;
+  domain: string;
+  verdict: ArchVerdict;
+  action: string;
+  evidence: string[];
+}
+
+export interface ArchReview {
+  domains: ArchDomain[];
+  checks: ArchCheck[];
+  top_actions: ArchAction[];
+  summary: {
+    n_checks: number;
+    n_assessable: number;
+    n_conforms: number;
+    n_advisory: number;
+    n_deviation: number;
+    n_critical: number;
+    n_not_assessable: number;
+    score_pct: number | null;
+    grade: string;
+    grade_label: string;
+    statement: string;
+  };
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
@@ -248,6 +299,7 @@ export const api = {
   graph: (id: number) =>
     fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
   cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
+  archreview: (id: number) => fetch(`/api/snapshots/${id}/archreview`).then((r) => j<ArchReview>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),

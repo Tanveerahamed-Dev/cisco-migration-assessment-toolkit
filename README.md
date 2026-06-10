@@ -226,6 +226,12 @@ assessment, AssessHub manages the whole migration *campaign*:
 - **Gate board** — per-wave T-minus sign-offs (commit → checkpoint → readiness → go/no-go →
   window → hypercare exit) recorded on the campaign page; decisions feed back into the
   Engagement Workflow & Plan of Record's "Gate record (as signed)" section.
+- **Ask the engineer** — the senior-engineer architecture review on every snapshot page:
+  A–F conformance grade, deterministic question chips (*where do we start · what blocks the
+  migration · how resilient is the fabric · judge every domain · what couldn't you assess*),
+  and per-domain drill-down — rendering the same verdict object as the DOCX report, the
+  workbook scorecard sheet and the explorer ☑ Review mode. Older snapshots get the review
+  computed server-side by the same engine function.
 
 ```bash
 pip install -r webapp/requirements.txt
