@@ -27,6 +27,24 @@ logger = logging.getLogger(__name__)
 
 _SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
+# The per-wave T-minus gate cadence — ONE source of truth: §4.1 renders from it, AssessHub's gate
+# board offers exactly these gates (webapp/backend/gates.py imports it), and the recorded
+# dispositions land back in §4.3 keyed by these keys. (key, label, when, purpose, go_criteria).
+GATE_SEQUENCE = (
+    ("commit", "Commit", "T-28 days", "Lock scope, owners and window request",
+     "Wave scope frozen; change request submitted; rollback owner named"),
+    ("checkpoint", "Checkpoint", "T-14 days", "Verify preparation is on track",
+     "Blockers for this wave closed; MOP peer-reviewed; spares staged"),
+    ("readiness", "Readiness review", "T-7 days", "Confirm the window can be used",
+     "Change approved; comms sent; baseline snapshot captured (--compare ready)"),
+    ("go_no_go", "Go / No-Go", "T-1 day", "The decision meeting",
+     "All readiness checks pass; on-call roster confirmed; rollback rehearsed"),
+    ("window", "Window", "T-0", "Execute the MOP",
+     "Run-of-show followed; every validation step at or above its expected baseline"),
+    ("hypercare_exit", "Hypercare exit", "T+5 days", "Stand down elevated support",
+     "No Critical/High incident attributable to the wave; NRFU signed"),
+)
+
 
 def _workflow_facts(snap: dict) -> dict:
     """Pull the evidence the workflow synthesizes — all defensive reads of known shapes."""
@@ -92,9 +110,14 @@ def _verdict(f: dict) -> tuple:
     return "PROCEED", ["No gating evidence found — schedule the pilot wave."]
 
 
-def write_engagement_docx(output_path: str, snap_dict: dict, label: str) -> None:
+def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
+                          gate_record: dict | None = None) -> None:
     """Emit the Engagement Workflow & Plan of Record (.docx) to `output_path`. Fail-soft: a missing
-    python-docx is a warning + skip; any unexpected render error is logged, never raised."""
+    python-docx is a warning + skip; any unexpected render error is logged, never raised.
+
+    `gate_record` (optional) is engagement state fed back from AssessHub's gate board:
+    {wave: {gate_key: {"decision", "signed_by", "note", "decided_at"}}} keyed by GATE_SEQUENCE keys.
+    When present, §4.3 renders the as-signed trail; the CLI passes nothing (no project state offline)."""
     try:
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -282,20 +305,10 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str) -> None
         "Migration governance runs each wave through a T-minus gate cadence; a gate that cannot "
         "answer its criteria does not pass — the wave slips, the calendar does not bend.")
     doc.add_heading("4.1 Gate cadence (per wave)", level=2)
-    table(["Gate", "When", "Purpose", "Go criteria"], [
-        ("Commit", "T-28 days", "Lock scope, owners and window request",
-         "Wave scope frozen; change request submitted; rollback owner named"),
-        ("Checkpoint", "T-14 days", "Verify preparation is on track",
-         "Blockers for this wave closed; MOP peer-reviewed; spares staged"),
-        ("Readiness review", "T-7 days", "Confirm the window can be used",
-         "Change approved; comms sent; baseline snapshot captured (--compare ready)"),
-        ("Go / No-Go", "T-1 day", "The decision meeting",
-         "All readiness checks pass; on-call roster confirmed; rollback rehearsed"),
-        ("Window", "T-0", "Execute the MOP",
-         "Run-of-show followed; every validation step at or above its expected baseline"),
-        ("Hypercare exit", "T+5 days", "Stand down elevated support",
-         "No Critical/High incident attributable to the wave; NRFU signed"),
-    ], widths=[1.1, 0.8, 1.7, 3.1])
+    table(["Gate", "When", "Purpose", "Go criteria"],
+          [(g_label, when, purpose, criteria)
+           for _key, g_label, when, purpose, criteria in GATE_SEQUENCE],
+          widths=[1.1, 0.8, 1.7, 3.1])
 
     doc.add_heading("4.2 Wave schedule (from the evidence)", level=2)
     if has_waves:
@@ -327,6 +340,30 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str) -> None
             "No migration waves are derivable from the current evidence (no multi-switch move "
             "groups). The calendar starts when the Assess phase closes its blind spots or the "
             "design defines the move boundaries explicitly.")
+
+    # §4.3 — the feedback loop: gate dispositions recorded against the campaign (AssessHub gate
+    # board) land back in the plan of record as the as-signed trail. Only rendered when something
+    # was actually recorded — an empty record is project state the document must not invent.
+    gr = {w: g for w, g in (gate_record or {}).items() if isinstance(g, dict) and g}
+    if gr:
+        gate_label = {k: lbl for k, lbl, *_rest in GATE_SEQUENCE}
+        gate_order = {k: i for i, (k, *_r) in enumerate(GATE_SEQUENCE)}
+        doc.add_heading("4.3 Gate record (as signed)", level=2)
+        doc.add_paragraph(
+            "Dispositions recorded against this campaign in AssessHub — the as-run trail of the "
+            "calendar above. A NO-GO or SLIPPED row keeps its history here; the calendar shows "
+            "where the wave re-enters.")
+        rows = []
+        for wave in sorted(gr):
+            for key in sorted(gr[wave], key=lambda k: gate_order.get(k, 99)):
+                d = gr[wave][key] or {}
+                rows.append((wave, gate_label.get(key, key),
+                             str(d.get("decision") or "").upper().replace("_", "-") or "—",
+                             d.get("signed_by") or "—",
+                             (str(d.get("decided_at") or "")[:16].replace("T", " ")) or "—",
+                             d.get("note") or "—"))
+        table(["Wave", "Gate", "Decision", "Signed by", "When", "Note"], rows,
+              widths=[0.9, 1.1, 0.9, 1.1, 1.1, 1.6])
 
     # ===== 5. RAID log (seeded) =====
     doc.add_heading("5. RAID Log (seeded from the assessment)", level=1)
