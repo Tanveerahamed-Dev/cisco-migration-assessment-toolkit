@@ -419,6 +419,8 @@ from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23
 from cisco_toolkit.mop import write_mop_docx                         # NEW-V3.23.149 (per-wave Method of Procedure)
 from cisco_toolkit.crd import write_crd_docx                         # NEW-V3.23.156 (Plan-phase requirements capture)
 from cisco_toolkit.engagement import write_engagement_docx           # NEW-V3.23.157 (engagement workflow / plan of record)
+from cisco_toolkit.archreview import (compute_architecture_review,   # NEW-V3.23.160 (leading-practice design review)
+                                      write_archreview_docx)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -1181,6 +1183,11 @@ def main():
                          "phase-gated engagement plan (verdict, gate calendar, RAID log, next actions) "
                          "synthesized from the assessment; needs python-docx (a missing library is a "
                          "warning, not an error).")
+    ap.add_argument("--no-archreview",   action="store_true",
+                    help="NEW-V3.23.160: skip the Architecture Review & Conformance Report (DOCX) — "
+                         "the leading-practice design review (8-domain conformance scorecard + "
+                         "availability analysis); needs python-docx (a missing library is a warning, "
+                         "not an error).")
     ap.add_argument("--golden-config",   default=None, metavar="FILE",
                     help="NEW-V3.23.146: a golden-config baseline file (one required directive per line; "
                          "'#' comments and 're:<regex>' supported) for the Golden-Config Drift sheet. "
@@ -1904,6 +1911,10 @@ def main():
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
+    # NEW-V3.23.160: the senior-engineer design review — synthesizes the ALREADY-ASSEMBLED sections
+    # above into the leading-practice conformance verdicts, so it must be attached last (it reads
+    # snap_dict itself, not the raw interfaces).
+    snap_dict["architecture_review"] = compute_architecture_review(snap_dict)
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41
@@ -1994,6 +2005,18 @@ def main():
             write_engagement_docx(eng_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  Engagement workflow (DOCX) write failed: {e}")
+
+    # Phase 37: Architecture Review & Conformance Report (DOCX) - NEW-V3.23.160. The senior-engineer
+    # design review: 8-domain leading-practice conformance scorecard + availability analysis rendered
+    # from the architecture_review section attached to the snapshot above. Optional python-docx; a
+    # missing library is a warning, never a crash.
+    if not args.no_archreview:
+        ar_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_archreview.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_archreview_docx(ar_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  Architecture review (DOCX) write failed: {e}")
 
 
 if __name__ == "__main__":
