@@ -340,6 +340,7 @@ from cisco_toolkit.analyze import (
     compute_remediation_plan,                          # NEW-V3.23.116 (assess->act: per-device config snippets, review-only)
     compute_validation_plan,                           # NEW-V3.23.143 (assess->verify: per-wave post-cutover checks)
     compute_golden_drift,                              # NEW-V3.23.146 (per-device config drift vs a baseline)
+    compute_syslog_intelligence,                       # NEW-V3.23.164 (NOS-style operational log analysis)
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
     compute_executive_brief,                           # NEW-V3.23.120 (cross-axis migration brief synthesis)
@@ -387,6 +388,7 @@ from cisco_toolkit.excel import (
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
     write_validation_plan_sheet,                                 # NEW-V3.23.143 (per-wave post-cutover validation checklist)
     write_golden_drift_sheet,                                    # NEW-V3.23.146 (per-device config drift vs baseline)
+    write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_architecture_review_sheet,                             # NEW-V3.23.161 (leading-practice conformance scorecard)
@@ -404,6 +406,7 @@ from cisco_toolkit.build import (
     build_device_physical, build_switch_identity, collect_global_arp,
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
+    read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_routing_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -508,6 +511,7 @@ COMMANDS_NXOS = [
     "show ptp clock",               # NEW-V3.23.102 (IEEE 1588 PTP clock health)
     "show ptp parent",              # NEW-V3.23.102 (PTP grandmaster)
     "show ip access-lists",         # NEW-V3.23.102 (ACL hit-counts = active-traffic evidence)
+    "show logging",                 # NEW-V3.23.164 (buffered log = syslog-intelligence evidence)
 ]
 
 COMMANDS_IOS = [
@@ -559,6 +563,7 @@ COMMANDS_IOS = [
     "show ptp clock",                 # NEW-V3.23.102 (IEEE 1588 PTP clock health)
     "show ptp parent",                # NEW-V3.23.102 (PTP grandmaster)
     "show ip access-lists",           # NEW-V3.23.102 (ACL hit-counts = active-traffic evidence)
+    "show logging",                   # NEW-V3.23.164 (buffered log = syslog-intelligence evidence)
 ]
 
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
@@ -1444,10 +1449,12 @@ def main():
     all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
     all_run_configs: Dict[str, str] = {}                             # NEW-V3.23.146 (raw running-config for golden-config drift)
+    all_syslogs: Dict[str, str] = {}                                 # NEW-V3.23.164 (raw 'show logging' for syslog intelligence; '' = not collected)
     for hostname, platform, cmd_to_file in all_devices_meta:
         rc_text = read_run_config(cmd_to_file)                       # NEW-V3.23.146
         if rc_text:
             all_run_configs[hostname] = rc_text
+        all_syslogs[hostname] = read_syslog_log(cmd_to_file)         # NEW-V3.23.164 (every host recorded so not-collected is declared)
         acls = build_acls(cmd_to_file)
         if acls:
             all_acls[hostname] = acls
@@ -1805,6 +1812,15 @@ def main():
                               all_run_configs, _golden_lines, _default={})
     _run_phase("Golden-Config Drift sheet", write_golden_drift_sheet, wb, golden_drift)
 
+    # Phase 30d-sexies: Syslog intelligence - NEW-V3.23.164. The NOS-style operational log analysis
+    # (Cisco's Network Optimization Service names syslog analysis as an analytic pillar): per-device
+    # severity profile + top messages + deterministic detections (MAC flap / err-disable / link flap /
+    # environmental / TCAM / crash / login failures) from the already-collected 'show logging' buffers.
+    # Devices without log output are DECLARED not-collected, never scored. Compute once -> sheet + snapshot.
+    syslog_intelligence = _run_phase("Syslog intelligence", compute_syslog_intelligence,
+                                     all_syslogs, _default={})
+    _run_phase("Syslog Intelligence sheet", write_syslog_intelligence_sheet, wb, syslog_intelligence)
+
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
     # endpoint_dependencies + service_map + health_scores + move_groups + punchlist into named
     # application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
@@ -1884,6 +1900,7 @@ def main():
     snap_dict["remediation_plan"] = remediation_plan                 # NEW-V3.23.116 (generated config snippets, review-only; reused from Phase 30d-ter)
     snap_dict["validation_plan"] = validation_plan                   # NEW-V3.23.143 (per-wave post-cutover validation checklist; reused from Phase 30d-quater)
     snap_dict["golden_drift"] = golden_drift                         # NEW-V3.23.146 (per-device config drift vs baseline; reused from Phase 30d-quinquies)
+    snap_dict["syslog_intelligence"] = syslog_intelligence           # NEW-V3.23.164 (NOS-style operational log analysis; reused from Phase 30d-sexies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23

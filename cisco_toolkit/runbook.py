@@ -634,6 +634,37 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         else:
             doc.add_paragraph("All devices match the baseline — no configuration drift.")
 
+    # 6.10 syslog intelligence (NEW-V3.23.164): NOS-style operational log analysis.
+    si = snap_dict.get("syslog_intelligence") or {}
+    ssum = si.get("summary") or {}
+    if ssum.get("n_devices"):
+        doc.add_heading("6.10 Syslog intelligence (operational log analysis)", level=2)
+        if not ssum.get("n_collected"):
+            doc.add_paragraph(
+                "No 'show logging' output was collected for this fleet, so the operational log "
+                "axis carries no evidence either way. Re-run the collection (the command is part "
+                "of the standard set) to add log-derived detections to this assessment.")
+        else:
+            doc.add_paragraph(
+                f"{ssum.get('total_events', 0)} log event(s) parsed from the buffered 'show logging' "
+                f"output of {ssum.get('n_collected', 0)} of {ssum.get('n_devices', 0)} device(s): "
+                f"{ssum.get('crit_0_2', 0)} critical (severity 0–2), {ssum.get('err_3', 0)} error "
+                f"(severity 3), {ssum.get('n_detections', 0)} operational detection(s). The log buffer "
+                "is a bounded recent window, so counts are floors, not totals.")
+            srows = [[d.get("host"), d.get("label"), d.get("severity"), d.get("count", 0),
+                      d.get("recommendation")]
+                     for d in (si.get("detections") or [])[:20]]
+            if srows:
+                table(["Device", "Finding", "Severity", "Count", "Recommendation"],
+                      srows, widths=[1.4, 1.5, 0.8, 0.6, 3.7])
+            else:
+                doc.add_paragraph("No operational detections in the collected logs.")
+            if ssum.get("n_not_collected"):
+                doc.add_paragraph(
+                    f"{ssum.get('n_not_collected', 0)} device(s) had no 'show logging' output "
+                    f"({', '.join(ssum.get('hosts_not_collected') or [])}); absence of logs is not "
+                    "scored as absence of problems.")
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()

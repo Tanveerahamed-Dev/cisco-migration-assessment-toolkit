@@ -18,7 +18,7 @@ from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
     parse_etherchannel_summary_members, parse_ospf_neighbors, parse_bgp_summary,
-    parse_eigrp_neighbors,
+    parse_eigrp_neighbors, parse_syslog_events,
 )
 from cisco_toolkit.textutils import _split_macs, normalize_ifname
 
@@ -3905,6 +3905,178 @@ def compute_golden_drift(run_configs: Optional[dict] = None,
     summary = {"mode": mode, "n_devices": len(per_device), "n_baseline": len(baseline),
                "n_drifting": n_drift, "avg_compliance_pct": avg}
     return {"mode": mode, "baseline": baseline, "per_device": per_device, "summary": summary}
+
+
+# =============================================================================
+# Syslog intelligence (NEW-V3.23.164). The NOS-style operational log analysis: Cisco's Network
+# Optimization Service names "syslog analysis" (top-N events + critical/error trends) as one of
+# its four analytic pillars; this is its offline twin. Evidence = each device's already-collected
+# 'show logging' buffer. DETECTIONS encode the log signatures a senior engineer greps for first;
+# every one is deterministic on the collected text. A device without 'show logging' output is
+# reported NOT-COLLECTED -- absence of logs is never scored as absence of problems.
+# =============================================================================
+_SYSLOG_DET_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+# kind -> (label, severity, recommendation). The senior-engineer doctrine per signature.
+_SYSLOG_DOCTRINE: Dict[str, tuple] = {
+    "mac-flap": ("MAC address flapping", "High",
+                 "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed "
+                 "host. Verify STP state on both ports and resolve before this domain's cutover window."),
+    "err-disable": ("Port err-disabled", "High",
+                    "Find the err-disable cause ('show interfaces status err-disabled') and fix the "
+                    "root cause -- do not blindly re-enable the port."),
+    "stp-guard": ("STP guard fired", "High",
+                  "Root/loop/BPDU guard blocked a topology change attempt. Identify the offending "
+                  "port or device before migrating this L2 domain."),
+    "stability": ("Memory/CPU distress or traceback", "High",
+                  "The control plane recorded distress (MALLOCFAIL / CPUHOG / traceback). Check the "
+                  "software release against Cisco Bug Search before loading this device with a "
+                  "migration window."),
+    "environment": ("Environmental alarm", "High",
+                    "PSU / fan / thermal alarm in the log window. Replace the failing FRU before "
+                    "the migration window -- environmental failures void redundancy assumptions."),
+    "resource": ("Hardware table pressure", "High",
+                 "TCAM / forwarding-table exhaustion messages recorded. A feature/scale review is "
+                 "needed before adding load or routes to this device."),
+    "link-flap": ("Interface flapping", "Medium",
+                  "Repeated up/down transitions point at physical-layer instability (cable / optic / "
+                  "negotiation). Fix the media -- flapping links invalidate pre-cutover baselines."),
+    "duplex-mismatch": ("Duplex mismatch", "Medium",
+                        "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or "
+                        "pin both); late collisions silently throttle throughput."),
+    "native-vlan-mismatch": ("Native VLAN mismatch", "Medium",
+                             "CDP detected differing native VLANs across a trunk -- untagged frames "
+                             "are leaking between VLANs. Align both trunk ends."),
+    "storm-control": ("Traffic storm suppressed", "Medium",
+                      "Storm-control engaged in the log window. Find the source host or loop -- "
+                      "suppression is a symptom, not a fix."),
+    "reload": ("Device restart recorded", "Medium",
+               "The device restarted inside the log window. Correlate with change records and "
+               "confirm it was planned before trusting this device's baseline."),
+    "login-fail": ("Repeated login failures", "Medium",
+                   "Multiple failed logins recorded. Confirm AAA health and check for unauthorized "
+                   "access attempts before the migration window."),
+}
+
+_SYSLOG_LINK_FLAP_MIN = 6        # >= this many UPDOWN events on ONE interface = a flap detection
+_SYSLOG_LOGIN_FAIL_MIN = 5       # >= this many login failures = a detection
+
+
+def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) -> dict:
+    """NEW-V3.23.164: NOS-style syslog analysis from already-collected 'show logging' text
+    ({host: raw_text}; '' = not collected). Per device: severity profile, top messages and a
+    config-change count. Fleet-wide: deterministic DETECTIONS (MAC flap, err-disable, link flap,
+    duplex / native-VLAN mismatch, STP guard, storm-control, crash/traceback, reload,
+    environmental, TCAM pressure, login failures) each carrying the senior-engineer doctrine.
+    The log buffer is a bounded recent window, so counts are floors, not totals. Pure on its
+    inputs; deterministic; tolerant of empty input; never raises."""
+    from collections import Counter
+    logs = all_syslogs or {}
+    per_device: List[dict] = []
+    detections: List[dict] = []
+    tot_events = tot_crit = tot_err = 0
+
+    def _det(host: str, kind: str, count: int, detail: str, example: str) -> None:
+        label, sev, rec = _SYSLOG_DOCTRINE[kind]
+        detections.append({"host": host, "kind": kind, "label": label, "severity": sev,
+                           "count": count, "detail": detail, "example": example[:220],
+                           "recommendation": rec})
+
+    for host in sorted(logs):
+        text = logs[host] or ""
+        if not text.strip():
+            per_device.append({"host": host, "collected": False, "events": 0,
+                               "by_severity": {}, "top_messages": [], "config_changes": 0})
+            continue
+        events = parse_syslog_events(text)
+        sev_band = {"crit_0_2": 0, "err_3": 0, "warn_4": 0, "info_5_7": 0}
+        msg_count: "Counter" = Counter()
+        kind_events: Dict[str, List[dict]] = {}
+        updown_by_intf: "Counter" = Counter()
+        config_changes = 0
+        login_fails = 0
+        for ev in events:
+            sev = ev["severity"]
+            if sev <= 2:
+                sev_band["crit_0_2"] += 1
+            elif sev == 3:
+                sev_band["err_3"] += 1
+            elif sev == 4:
+                sev_band["warn_4"] += 1
+            else:
+                sev_band["info_5_7"] += 1
+            msg_count[f"{ev['facility']}-{sev}-{ev['mnemonic']}"] += 1
+            fac, mn, up = ev["facility"], ev["mnemonic"], ev["raw"].upper()
+            kind = None
+            if "MACFLAP" in mn:
+                kind = "mac-flap"
+            elif "ERR_DISABLE" in mn or "ERRDISABLE" in mn or "ERROR_DISABLED" in mn:
+                kind = "err-disable"
+            elif fac.startswith("SPANTREE") and any(t in mn for t in
+                                                    ("ROOTGUARD", "LOOPGUARD", "BPDUGUARD", "BLOCK", "PVID")):
+                kind = "stp-guard"
+            elif mn in ("MALLOCFAIL", "CPUHOG") or "TRACEBACK" in up:
+                kind = "stability"
+            elif (("ENV" in fac or "THERMAL" in fac) or
+                  any(t in mn for t in ("FAN", "TEMP", "THERM", "PSU", "POWER"))) and sev <= 3:
+                kind = "environment"
+            elif "TCAM" in up and any(t in up for t in ("EXCEED", "EXHAUST", "FULL", "EXCEPTION")):
+                kind = "resource"
+            elif "DUPLEX_MISMATCH" in mn:
+                kind = "duplex-mismatch"
+            elif "NATIVE_VLAN_MISMATCH" in mn:
+                kind = "native-vlan-mismatch"
+            elif fac.startswith("STORM_CONTROL"):
+                kind = "storm-control"
+            elif mn == "RESTART" or "SYSTEM RESTARTED" in up:
+                kind = "reload"
+            if kind:
+                kind_events.setdefault(kind, []).append(ev)
+            if mn == "UPDOWN" and fac in ("LINK", "LINEPROTO"):
+                im = re.search(r"Interface ([A-Za-z0-9/\.\-]+)", ev["msg"])
+                if im:
+                    updown_by_intf[im.group(1)] += 1
+            if fac == "SYS" and mn == "CONFIG_I":
+                config_changes += 1
+            if "LOGIN" in fac and "FAIL" in mn:
+                login_fails += 1
+
+        for kind in sorted(kind_events):
+            evs = kind_events[kind]
+            _det(host, kind, len(evs), f"{len(evs)} event(s) in the collected log window.",
+                 evs[0]["raw"])
+        flapping = sorted((i for i, c in updown_by_intf.items() if c >= _SYSLOG_LINK_FLAP_MIN),
+                          key=lambda i: (-updown_by_intf[i], i))
+        if flapping:
+            head = ", ".join(f"{i} ({updown_by_intf[i]}x)" for i in flapping[:5])
+            _det(host, "link-flap", sum(updown_by_intf[i] for i in flapping),
+                 f"{len(flapping)} interface(s) with >= {_SYSLOG_LINK_FLAP_MIN} up/down "
+                 f"transitions: {head}.", "")
+        if login_fails >= _SYSLOG_LOGIN_FAIL_MIN:
+            _det(host, "login-fail", login_fails,
+                 f"{login_fails} failed login(s) in the collected log window.", "")
+
+        tot_events += len(events)
+        tot_crit += sev_band["crit_0_2"]
+        tot_err += sev_band["err_3"]
+        per_device.append({
+            "host": host, "collected": True, "events": len(events), "by_severity": sev_band,
+            "top_messages": [{"msg": k, "count": c} for k, c in
+                             sorted(msg_count.items(), key=lambda kv: (-kv[1], kv[0]))[:6]],
+            "config_changes": config_changes})
+
+    detections.sort(key=lambda d: (_SYSLOG_DET_RANK.get(d["severity"], 9), d["host"], d["kind"]))
+    collected = [d for d in per_device if d["collected"]]
+    not_collected = [d["host"] for d in per_device if not d["collected"]]
+    by_kind = Counter(d["kind"] for d in detections)
+    summary = {"n_devices": len(per_device), "n_collected": len(collected),
+               "n_not_collected": len(not_collected), "hosts_not_collected": not_collected[:20],
+               "total_events": tot_events, "crit_0_2": tot_crit, "err_3": tot_err,
+               "n_detections": len(detections), "by_kind": dict(sorted(by_kind.items()))}
+    note = ("Evidence is each device's buffered 'show logging' at collection time -- a bounded, "
+            "recent window (the buffer wraps), so counts are floors, not totals. Devices listed "
+            "as not-collected carry no log evidence either way.")
+    return {"per_device": per_device, "detections": detections, "summary": summary, "note": note}
 
 
 # =============================================================================

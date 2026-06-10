@@ -2201,6 +2201,154 @@
    "avg_compliance_pct": 100
   }
  },
+ "syslog_intelligence": {
+  "per_device": [
+   {
+    "host": "access1",
+    "collected": true,
+    "events": 8,
+    "by_severity": {
+     "crit_0_2": 0,
+     "err_3": 0,
+     "warn_4": 7,
+     "info_5_7": 1
+    },
+    "top_messages": [
+     {
+      "msg": "SEC_LOGIN-4-LOGIN_FAILED",
+      "count": 6
+     },
+     {
+      "msg": "CDP-4-DUPLEX_MISMATCH",
+      "count": 1
+     },
+     {
+      "msg": "SYS-5-CONFIG_I",
+      "count": 1
+     }
+    ],
+    "config_changes": 1
+   },
+   {
+    "host": "core1",
+    "collected": true,
+    "events": 12,
+    "by_severity": {
+     "crit_0_2": 0,
+     "err_3": 4,
+     "warn_4": 3,
+     "info_5_7": 5
+    },
+    "top_messages": [
+     {
+      "msg": "LINK-3-UPDOWN",
+      "count": 4
+     },
+     {
+      "msg": "LINEPROTO-5-UPDOWN",
+      "count": 2
+     },
+     {
+      "msg": "SW_MATM-4-MACFLAP_NOTIF",
+      "count": 2
+     },
+     {
+      "msg": "SYS-5-CONFIG_I",
+      "count": 2
+     },
+     {
+      "msg": "OSPF-5-ADJCHG",
+      "count": 1
+     },
+     {
+      "msg": "PM-4-ERR_DISABLE",
+      "count": 1
+     }
+    ],
+    "config_changes": 2
+   },
+   {
+    "host": "core2",
+    "collected": false,
+    "events": 0,
+    "by_severity": {},
+    "top_messages": [],
+    "config_changes": 0
+   }
+  ],
+  "detections": [
+   {
+    "host": "core1",
+    "kind": "err-disable",
+    "label": "Port err-disabled",
+    "severity": "High",
+    "count": 1,
+    "detail": "1 event(s) in the collected log window.",
+    "example": "*Jun  2 03:15:02.118: %PM-4-ERR_DISABLE: bpduguard error detected on Gi1/0/9, putting Gi1/0/9 in err-disable state",
+    "recommendation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port."
+   },
+   {
+    "host": "core1",
+    "kind": "mac-flap",
+    "label": "MAC address flapping",
+    "severity": "High",
+    "count": 2,
+    "detail": "2 event(s) in the collected log window.",
+    "example": "*Jun  2 03:14:09.001: %SW_MATM-4-MACFLAP_NOTIF: Host 0011.22aa.0001 in vlan 10 is flapping between port Gi1/0/5 and port Gi1/0/9",
+    "recommendation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window."
+   },
+   {
+    "host": "access1",
+    "kind": "duplex-mismatch",
+    "label": "Duplex mismatch",
+    "severity": "Medium",
+    "count": 1,
+    "detail": "1 event(s) in the collected log window.",
+    "example": "*May 28 10:01:01.000: %CDP-4-DUPLEX_MISMATCH: duplex mismatch discovered on GigabitEthernet0/5 (not half duplex), with print-floor2 GigabitEthernet0/1 (half duplex).",
+    "recommendation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput."
+   },
+   {
+    "host": "access1",
+    "kind": "login-fail",
+    "label": "Repeated login failures",
+    "severity": "Medium",
+    "count": 6,
+    "detail": "6 failed login(s) in the collected log window.",
+    "example": "",
+    "recommendation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window."
+   },
+   {
+    "host": "core1",
+    "kind": "link-flap",
+    "label": "Interface flapping",
+    "severity": "Medium",
+    "count": 6,
+    "detail": "1 interface(s) with >= 6 up/down transitions: GigabitEthernet1/0/9 (6x).",
+    "example": "",
+    "recommendation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines."
+   }
+  ],
+  "summary": {
+   "n_devices": 3,
+   "n_collected": 2,
+   "n_not_collected": 1,
+   "hosts_not_collected": [
+    "core2"
+   ],
+   "total_events": 20,
+   "crit_0_2": 0,
+   "err_3": 4,
+   "n_detections": 5,
+   "by_kind": {
+    "duplex-mismatch": 1,
+    "err-disable": 1,
+    "link-flap": 1,
+    "login-fail": 1,
+    "mac-flap": 1
+   }
+  },
+  "note": "Evidence is each device's buffered 'show logging' at collection time -- a bounded, recent window (the buffer wraps), so counts are floors, not totals. Devices listed as not-collected carry no log evidence either way."
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,
