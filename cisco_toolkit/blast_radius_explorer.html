@@ -1499,6 +1499,50 @@ function demoSnapshot(){
              modes:{"MQC":2,"mls qos":1,"none":2},n_voice_ports:3,n_findings:3,
              by_kind:{"mixed-posture":1,"no-trust-boundary":1,"voice-without-qos":1}},
     note:"Assessed from the captured running-config only — the CONFIGURED posture, not live queue counters."},
+  // V3.23.166: software risk screening -> Health view softwareRiskCard + 'Software Risk' sheet.
+  // Demo story: DIST-1 still serves its web UI (the CVE-2023-20198 surface) and a v2c RW community
+  // (the CVE-2025-20352 surface); ACC-3 runs a Classic IOS 15.x train -> Verify EoL band.
+  software_risk:{
+    findings:[
+      {host:"DIST-1",kind:"http-server",surface:"Device web UI (ip http server / secure-server)",severity:"High",
+       evidence:"ip http server",
+       advisories:[{id:"cisco-sa-iosxe-webui-privesc-j22SaA4z",cve:"CVE-2023-20198",note:"actively exploited in the wild (web-UI privilege escalation, CVSS 10)"}],
+       why:"The IOS XE web UI was mass-exploited in 2023-24; any HTTP(S) server on a network device is standing attack surface.",
+       recommendation:"Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker."},
+      {host:"DIST-1",kind:"snmp-v2c-rw",surface:"SNMP v1/v2c with a READ-WRITE community",severity:"High",
+       evidence:"snmp-server community <redacted> RW",
+       advisories:[{id:"cisco-sa-snmp-x4LPhte",cve:"CVE-2025-20352",note:"exploited in the wild (SNMP stack overflow -> RCE/DoS)"}],
+       why:"A v2c RW community is full configuration control protected by a cleartext string.",
+       recommendation:"Remove v1/v2c communities (RW first), move to SNMPv3 auth+priv, and ACL the SNMP service to the management stations."},
+      {host:"ACC-1",kind:"telnet-vty",surface:"Telnet enabled on vty lines",severity:"Medium",
+       evidence:"transport input telnet ssh",advisories:[],
+       why:"Telnet sends credentials and session content in cleartext.",
+       recommendation:"Set 'transport input ssh' on all vty lines (and verify SSHv2-only)."},
+    ],
+    per_device:[
+      {host:"ACC-3",sw_version:"15.2(4)E10",platform:"ios",train:"Classic IOS 15.x",train_band:"Verify EoL",
+       train_note:"Most 15.x trains are past end of software maintenance — verify the platform's EoL notice and target the published recommended release.",
+       config_assessable:true,surfaces:{"http-server":"closed","smart-install":"verify"}},
+      {host:"ACC-1",sw_version:"16.12.04",platform:"ios",train:"IOS XE 16.x",train_band:"Verify EoL",
+       train_note:"Software maintenance has ended for most 16.x releases (16.12 was the final LTS) — verify against Cisco's published notices.",
+       config_assessable:true,surfaces:{"http-server":"closed","telnet-vty":"exposed","smart-install":"verify"}},
+      {host:"DIST-1",sw_version:"17.3.5",platform:"ios",train:"IOS XE 17.x",train_band:"Current-era",
+       train_note:"Current-era train — validate the exact release against the recommended-release page and the Cisco Software Checker.",
+       config_assessable:true,surfaces:{"http-server":"exposed","snmp-v2c-rw":"exposed","smart-install":"verify"}},
+      {host:"DIST-2",sw_version:"17.3.5",platform:"ios",train:"IOS XE 17.x",train_band:"Current-era",
+       train_note:"Current-era train — validate the exact release against the recommended-release page and the Cisco Software Checker.",
+       config_assessable:true,surfaces:{"http-server":"closed","smart-install":"closed"}},
+      {host:"CORE-9K",sw_version:"9.3(8)",platform:"nxos",train:"NX-OS 9.x",train_band:"Current-era",
+       train_note:"Mature train — validate the exact release against the recommended NX-OS release for the platform.",
+       config_assessable:true,surfaces:{}},
+      {host:"ACC-5",sw_version:"(not captured)",platform:"?",train:"(unknown)",train_band:"Unknown",
+       train_note:"Version not captured — not assessable.",config_assessable:false,surfaces:{}},
+    ],
+    summary:{n_devices:6,n_config_assessable:5,n_config_not_assessable:1,hosts_config_not_assessable:["ACC-5"],
+             n_version_known:5,trains:{"Classic IOS 15.x":1,"IOS XE 16.x":1,"IOS XE 17.x":2,"NX-OS 9.x":1,"(unknown)":1},
+             train_bands:{"Current-era":3,"Unknown":1,"Verify EoL":2},n_findings:3,
+             by_kind:{"http-server":1,"snmp-v2c-rw":1,"telnet-vty":1}},
+    note:"Attack-surface SCREENING from configuration evidence joined to landmark public advisories — not a vulnerability scan. Validate every running release with the Cisco PSIRT Software Checker."},
   // V3.23.62: STP root placement. VLAN 10 is rooted at DIST-1 on a deliberate priority and DIST-1 hosts the
   // gateway -> aligned + clean. VLAN 30 is rooted at ACC-3 on the DEFAULT priority (32798 = 32768+30) -> an
   // accidental root, and its gateway lives on DIST-1 (not ACC-3) -> root/gateway misalignment (hairpin).
@@ -5081,6 +5125,30 @@ function qosCard(){
     `<div class="sub" style="margin-bottom:6px">Configured posture of ${s.n_assessable}/${s.n_devices} device(s) (${modes}; ${s.n_voice_ports} voice port(s)) vs the campus leading practice — trust the edge device, mark at ingress, queue consistently per hop. Full detail in the 'QoS Audit' workbook sheet.</div>`+
     rows+miss+`</div>`;
 }
+/* Software risk screening (NEW-V3.23.166): the NOS "software risk analysis" pillar, offline-honest.
+   Reads SNAP.software_risk {findings:[{host,surface,severity,advisories:[{id,cve,note}],recommendation}],
+   per_device:[{host,sw_version,train,train_band,...}], summary}. Findings are config-evidenced EXPOSED
+   SURFACES joined to landmark advisories ("this surface is open", never "this release is vulnerable" --
+   validate with the Cisco Software Checker). Back-compat: no key -> no card. */
+function softwareRiskCard(){
+  const sr=SNAP&&SNAP.software_risk; if(!sr)return "";
+  const s=sr.summary||{}; if(!(s.n_devices>0))return "";
+  const finds=sr.findings||[];
+  const tb=s.train_bands||{};
+  const lifecycle=(sr.per_device||[]).filter(d=>d.train_band==="Replace/Upgrade"||d.train_band==="Verify EoL");
+  const lifeRows=lifecycle.slice(0,6).map(d=>{const tok=d.train_band==="Replace/Upgrade"?"pl-crit":"pl-watch";
+    return `<div class="ln"><span class="pill ${tok}">${esc(d.train_band)}</span> <span class="mono">${esc(shortName(d.host))}</span> — ${esc(d.train)} <span class="mono">${esc(d.sw_version)}</span>: <span class="faint">${esc(d.train_note||"")}</span></div>`;}).join("");
+  if(!finds.length&&!lifecycle.length)
+    return `<div class="sec"><h3>Software risk <span class="badge b-ok">screened</span></h3>`+
+      `<div class="ln faint">✓ No exposed advisory surfaces on ${s.n_config_assessable||0} config-assessable device(s) and no train past/near end of maintenance — still validate exact releases with the Cisco Software Checker (screening, not a scan).</div></div>`;
+  const rows=finds.slice(0,8).map(f=>{const tok=f.severity==="High"?"pl-crit":(f.severity==="Medium"?"pl-watch":"pl-ok");
+    const adv=(f.advisories||[]).map(a=>`${a.cve}`).join(", ");
+    return `<div class="ln"><span class="pill ${tok}">${esc(f.severity)}</span> <span class="mono">${esc(shortName(f.host))}</span> — <b>${esc(f.surface)}</b>${adv?` (${esc(adv)})`:""}: <span class="faint">${esc(f.recommendation||"")}</span></div>`;}).join("");
+  const n=finds.length+lifecycle.length;
+  return `<div class="sec"><h3>Software risk <span class="badge b-crit">${n} item${n===1?"":"s"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Attack-surface screening (config evidence × landmark advisories) + software-train lifecycle. SCREENING, not a vulnerability scan — validate releases with the Cisco PSIRT Software Checker. Full detail in the 'Software Risk' workbook sheet.</div>`+
+    rows+lifeRows+`</div>`;
+}
 /* STP root placement (cross-layer L2 design): reads SNAP.stp_roots {host:{vlan:{root_priority,is_root}}}
    + the gateway SVIs in SNAP.interfaces. Flags (1) an ACCIDENTAL root -- a VLAN rooted on the DEFAULT
    bridge priority (32768 + vlan), i.e. won on a MAC tiebreak, not elected, so it can move on a cutover;
@@ -6957,6 +7025,7 @@ function drawHealth(){
     ${goldenDriftCard()}
     ${syslogCard()}
     ${qosCard()}
+    ${softwareRiskCard()}
     ${stpRootCard()}
     ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}

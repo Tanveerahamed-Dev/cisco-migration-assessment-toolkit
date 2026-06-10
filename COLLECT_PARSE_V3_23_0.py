@@ -342,6 +342,7 @@ from cisco_toolkit.analyze import (
     compute_golden_drift,                              # NEW-V3.23.146 (per-device config drift vs a baseline)
     compute_syslog_intelligence,                       # NEW-V3.23.164 (NOS-style operational log analysis)
     compute_qos_audit,                                 # NEW-V3.23.165 (configured QoS posture + doctrine findings)
+    compute_software_risk,                             # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
     compute_executive_brief,                           # NEW-V3.23.120 (cross-axis migration brief synthesis)
@@ -391,6 +392,7 @@ from cisco_toolkit.excel import (
     write_golden_drift_sheet,                                    # NEW-V3.23.146 (per-device config drift vs baseline)
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
+    write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_architecture_review_sheet,                             # NEW-V3.23.161 (leading-practice conformance scorecard)
@@ -1833,6 +1835,17 @@ def main():
                            all_run_configs, sorted(all_syslogs), _default={})
     _run_phase("QoS Audit sheet", write_qos_audit_sheet, wb, qos_audit)
 
+    # Phase 30d-octies: Software risk screening - NEW-V3.23.166. The last NOS analytic pillar
+    # (software risk analysis): config-evidenced attack surfaces joined to a curated landmark-advisory
+    # KB (exploited-in-the-wild surfaces first) + cautious software-TRAIN lifecycle bands. SCREENING,
+    # not a vulnerability scan -- the note tells the reader to validate releases with the Cisco PSIRT
+    # Software Checker. Reuses _dev_lifecycle ({host:{model,sw_version}}, Phase 27c-ter) and
+    # _dev_platform (Phase 30c); all_syslogs doubles as the full fleet roster. Compute once -> sheet + snapshot.
+    software_risk = _run_phase("Software risk screening", compute_software_risk,
+                               all_run_configs, _dev_lifecycle, _dev_platform,
+                               sorted(all_syslogs), _default={})
+    _run_phase("Software Risk sheet", write_software_risk_sheet, wb, software_risk)
+
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
     # endpoint_dependencies + service_map + health_scores + move_groups + punchlist into named
     # application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
@@ -1914,6 +1927,7 @@ def main():
     snap_dict["golden_drift"] = golden_drift                         # NEW-V3.23.146 (per-device config drift vs baseline; reused from Phase 30d-quinquies)
     snap_dict["syslog_intelligence"] = syslog_intelligence           # NEW-V3.23.164 (NOS-style operational log analysis; reused from Phase 30d-sexies)
     snap_dict["qos_audit"] = qos_audit                               # NEW-V3.23.165 (configured QoS posture + doctrine findings; reused from Phase 30d-septies)
+    snap_dict["software_risk"] = software_risk                       # NEW-V3.23.166 (advisory-surface screening + train lifecycle; reused from Phase 30d-octies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23

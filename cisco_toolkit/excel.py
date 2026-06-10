@@ -1770,6 +1770,92 @@ def write_qos_audit_sheet(wb, qa: dict) -> None:
                 f"{s.get('n_assessable', 0)}/{s.get('n_devices', 0)} device(s) assessable")
 
 
+SOFTWARE_RISK_SHEET_NAME = "Software Risk"   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
+
+def write_software_risk_sheet(wb, sr: dict) -> None:
+    """Write 'Software Risk' from compute_software_risk(): the attack-surface screening
+    findings (each joined to its landmark advisory) and the per-device software-train
+    lifecycle bands. Screening, not a vulnerability scan -- the banner says so."""
+    if SOFTWARE_RISK_SHEET_NAME in wb.sheetnames:
+        del wb[SOFTWARE_RISK_SHEET_NAME]
+    ws = wb.create_sheet(SOFTWARE_RISK_SHEET_NAME)
+    p = sr or {}
+    finds = p.get("findings") or []
+    pdev = p.get("per_device") or []
+    s = p.get("summary") or {}
+    bands = s.get("train_bands") or {}
+    band_txt = ", ".join(f"{k}: {v}" for k, v in bands.items()) or "—"
+    b = ws.cell(1, 1, f"Software risk SCREENING: {s.get('n_findings', 0)} exposed surface(s) on "
+                      f"{s.get('n_config_assessable', 0)} of {s.get('n_devices', 0)} config-assessable "
+                      "device(s), joined to landmark public advisories. This is configuration-evidence "
+                      "screening, NOT a vulnerability scan — validate every running release with the "
+                      "Cisco PSIRT Software Checker.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"Software trains — {band_txt} · {s.get('n_version_known', 0)} of "
+                  f"{s.get('n_devices', 0)} version(s) captured").font = Font(size=10)
+    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC", "Low": "D9EAD3"}
+    BANDFILL = {"Replace/Upgrade": "F4CCCC", "Verify EoL": "FFF2CC",
+                "Current-era": "C6EFCE", "Unknown": "EFEFEF"}
+    HDRF = Font(bold=True, color="FFFFFF", size=10)
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+
+    hdr_row = 4
+    cols = ["Device", "Exposed surface", "Severity", "Evidence", "Landmark advisory",
+            "Why it matters", "Recommendation"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    r = hdr_row + 1
+    for f in finds:
+        advs = "\n".join(f"{a.get('id')} ({a.get('cve')}) — {a.get('note')}"
+                         for a in (f.get("advisories") or [])) or "—"
+        vals = [f.get("host"), f.get("surface"), f.get("severity"), f.get("evidence"),
+                advs, f.get("why"), f.get("recommendation")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col in (4, 5) else DAT)
+            c.alignment = Alignment(horizontal="center" if col == 3 else "left",
+                                    vertical="top", wrap_text=col in (4, 5, 6, 7))
+            if col == 3 and v in SEVFILL:
+                c.fill = PatternFill("solid", fgColor=SEVFILL[v])
+        r += 1
+    if not finds:
+        ws.cell(r, 1, "No exposed advisory surfaces on the config-assessable devices."
+                if s.get("n_config_assessable")
+                else "No full running-config captures -- surface screening not assessable.").font = DAT
+        r += 1
+
+    r += 2
+    ws.cell(r, 1, "Per-device software train (lifecycle screening)").font = Font(bold=True, color="7030A0", size=10)
+    r += 1
+    cols2 = ["Device", "Platform", "Version", "Train", "Band", "Guidance", "Config captured"]
+    for i, h in enumerate(cols2, 1):
+        c = ws.cell(r, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    r += 1
+    for d in pdev:
+        vals = [d.get("host"), d.get("platform"), d.get("sw_version"), d.get("train"),
+                d.get("train_band"), d.get("train_note"),
+                "yes" if d.get("config_assessable") else "NO"]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col == 3 else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (2, 5, 7) else "left",
+                                    vertical="top", wrap_text=col == 6)
+            if col == 5 and v in BANDFILL:
+                c.fill = PatternFill("solid", fgColor=BANDFILL[v])
+            if col == 7 and not d.get("config_assessable"):
+                c.fill = PatternFill("solid", fgColor="EFEFEF")
+        r += 1
+    # shared widths: findings table (A-G) wide prose; train table tolerates them.
+    for i, w in enumerate([22, 30, 11, 34, 44, 44, 46], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{SOFTWARE_RISK_SHEET_NAME}' sheet: {len(finds)} exposed surface(s), "
+                f"bands {band_txt}")
+
+
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
 
 def write_lifecycle_risk_sheet(wb, lr: dict) -> None:

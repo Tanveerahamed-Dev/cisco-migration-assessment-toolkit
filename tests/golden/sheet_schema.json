@@ -443,6 +443,15 @@
   null,
   null
  ],
+ "Software Risk": [
+  "Software risk SCREENING: 3 exposed surface(s) on 1 of 3 config-assessable device(s), joined to landmark public advisories. This is configuration-evidence screening, NOT a vulnerability scan \u2014 validate every running release with the Cisco PSIRT Software Checker.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Application Intelligence": [
   "Application & network intelligence:",
   "2 domain(s)  \u00b7  0 on-air-critical  \u00b7  0 with High/Critical risk  \u00b7  0 span >1 wave  \u00b7  1 cross-domain risk(s)",
