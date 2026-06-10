@@ -183,6 +183,36 @@ def test_design_carries_document_furniture(tmp_path):
     assert "Per-Wave Method of Procedure (.docx)" in text        # related-documents cross-reference
 
 
+def test_design_software_plan_flags_mixed_versions_and_eol(tmp_path):
+    """V3.23.153: LLD §3.5 — version sprawl per model is flagged with the most widely deployed
+    image as the standardization candidate, and past-EoS hardware gets a replace-not-upgrade rec."""
+    snap = _snap()
+    # second + third 2960X: two devices on 15.2(7)E, the original acc1 on 15.2 → MIXED, candidate 15.2(7)E
+    for n in ("acc2", "acc3"):
+        snap["devices"][n] = {"hostname": n, "model": "WS-C2960X-48FPD-L", "serial_number": f"S{n}",
+                              "sw_version": "15.2(7)E", "platform": "ios"}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert any(t == "3.5 Software plan & recommendations" for t in h2), h2
+    text = _all_text(d)
+    assert "MIXED — standardize on 15.2(7)E" in text          # majority image is the candidate
+    assert "validate it against Cisco's published recommended release" in text
+    assert "replacement, not an image upgrade" in text and "WS-C2960X-48FPD-L" in text
+
+
+def test_design_software_plan_consistent_fleet_message(tmp_path):
+    """A fleet with one image per model and no past-EoS hardware gets the carry-forward message."""
+    snap = _snap()
+    snap["lifecycle_risk"]["per_device"][2]["band"] = "Active"   # acc1 no longer Past-EoS
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "carry the current images forward as the minimum-version baseline" in text
+    assert "MIXED" not in text
+
+
 def test_design_failsoft_without_python_docx(monkeypatch, tmp_path):
     import builtins, os
     real_import = builtins.__import__
