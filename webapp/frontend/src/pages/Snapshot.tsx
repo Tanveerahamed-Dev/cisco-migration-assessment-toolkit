@@ -4,6 +4,7 @@ import { api, bandColor, readyColor, sevColor, SnapshotMeta } from "../api";
 import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
 import CutoverPlanner from "../components/CutoverPlanner";
+import ArchReviewPanel from "../components/ArchReview";
 
 const HEALTH_TONE = (n: number) => (n >= 80 ? "ok" : n >= 60 ? "watch" : n >= 35 ? "risk" : "crit");
 const GAUGE_COLOR = (n: number) => (n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
@@ -210,6 +211,8 @@ export default function SnapshotPage() {
       </div>
 
       <div className="grid" style={{ marginTop: 16, gap: 16 }}>
+        <ArchReviewPanel snapId={sid} />
+
         <CutoverPlanner snapId={sid} />
 
         <DeliverablesPanel snapId={sid} />

@@ -292,6 +292,27 @@ def test_gate_board_roundtrip_and_plan_of_record_feedback(client):
     assert "Gate record (as signed)" not in _text(r)
 
 
+def test_archreview_endpoint(client):
+    """V3.23.163: the Ask-the-Engineer panel's data — the senior-engineer design review. The server
+    prefers the snapshot's stored architecture_review section and computes with the SAME engine
+    function otherwise, so any stored snapshot (old or new) gets a review; absent evidence renders
+    not-assessable verdicts, never a fabricated grade."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/archreview")
+    assert r.status_code == 200, r.text
+    ar = r.json()
+    assert len(ar["domains"]) == 8
+    assert ar["summary"]["n_checks"] == len(ar["checks"]) >= 20
+    assert ar["summary"]["grade"] in ("A", "B", "C", "D", "F", "N/A")
+    allowed = {"conforms", "advisory", "deviation", "critical", "not-assessable"}
+    assert {c["verdict"] for c in ar["checks"]} <= allowed
+    # every check carries the full senior-engineer block the panel renders
+    for c in ar["checks"]:
+        for k in ("observed", "implication", "recommendation", "reference", "evidence"):
+            assert k in c, (c.get("id"), k)
+    assert client.get("/api/snapshots/999999/archreview").status_code == 404
+
+
 def test_cutover_deliverable_content(client):
     """The Cutover Plan DOCX is the one deliverable with no engine-side test — validate it actually
     renders the plan (headings + tables), not just that it's a >1KB zip."""

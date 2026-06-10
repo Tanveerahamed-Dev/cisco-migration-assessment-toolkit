@@ -303,6 +303,23 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         return cutover.build_plan(snap)
 
+    @app.get("/api/snapshots/{snapshot_id}/archreview")
+    def snapshot_archreview(snapshot_id: int) -> Dict[str, Any]:
+        """The senior-engineer design review (V3.23.160 engine compute) for this snapshot.
+        Fast path: the stored architecture_review section (json_extract, no full-blob parse) when
+        the snapshot was produced by V3.23.160+; otherwise computed server-side from the stored
+        snapshot with the SAME engine function the CLI runs — one source of truth either way."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        ar = store.get_snapshot_section(snapshot_id, "architecture_review")
+        if not (isinstance(ar, dict) and ar.get("checks")):
+            from cisco_toolkit.archreview import compute_architecture_review
+            snap = store.get_snapshot(snapshot_id)
+            if snap is None:
+                raise HTTPException(404, "Snapshot not found")
+            ar = compute_architecture_review(snap)
+        return ar
+
     # -- execution runs (war room) ------------------------------------------
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
         """Atomic read-modify-write on one run's state; returns the updated derived state."""
