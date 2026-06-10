@@ -156,6 +156,44 @@ def test_engagement_no_waves_fallback(tmp_path):
     assert "Document Acceptance" in h1                          # furniture survives the fallback
 
 
+def test_engagement_gate_record_renders_as_signed_trail(tmp_path):
+    """V3.23.158: gate dispositions fed back from AssessHub land in §4.3, keyed by GATE_SEQUENCE."""
+    record = {"Group 2": {
+        "go_no_go": {"decision": "go", "signed_by": "A. Engineer",
+                     "decided_at": "2026-06-10T21:00:00+00:00", "note": "all checks green"},
+        "commit": {"decision": "slipped", "signed_by": "PM", "decided_at": "2026-06-01T09:00:00+00:00",
+                   "note": ""},
+    }}
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, _snap(), "Unit Test Fleet", gate_record=record)
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert any("4.3 Gate record (as signed)" in t for t in h2)
+    text = _all_text(d)
+    assert "GO" in text and "SLIPPED" in text and "A. Engineer" in text
+    assert "all checks green" in text
+    assert "2026-06-10 21:00" in text                       # ISO stamp rendered human-readable
+
+
+def test_engagement_without_gate_record_has_no_signed_section(tmp_path):
+    """No recorded state -> no §4.3; the document must not invent project state. An all-empty
+    record (waves mapped to nothing) is the same as no record."""
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, _snap(), "Unit Test Fleet", gate_record={"Group 1": {}})
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert not any("Gate record" in t for t in h2)
+
+
+def test_gate_sequence_is_the_cadence_contract():
+    """The webapp gate board and §4.1 both render from GATE_SEQUENCE — pin its keys and order."""
+    from cisco_toolkit.engagement import GATE_SEQUENCE
+    assert [k for k, *_ in GATE_SEQUENCE] == [
+        "commit", "checkpoint", "readiness", "go_no_go", "window", "hypercare_exit"]
+    for _key, label, when, purpose, criteria in GATE_SEQUENCE:
+        assert label and when and purpose and criteria
+
+
 def test_engagement_failsoft_without_python_docx(monkeypatch, tmp_path):
     import builtins, os
     real_import = builtins.__import__

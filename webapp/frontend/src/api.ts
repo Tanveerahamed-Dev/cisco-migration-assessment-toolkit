@@ -145,6 +145,21 @@ export interface ExecutionState {
   };
 }
 
+export interface GateRecord {
+  wave: string;
+  gate: string;
+  decision: string; // go | no-go | slipped (pending rows are not stored)
+  signed_by: string;
+  note: string;
+  decided_at: string;
+}
+
+export interface GateBoardData {
+  cadence: Array<{ key: string; label: string; when: string }>;
+  waves: string[];
+  records: GateRecord[];
+}
+
 export interface IngestReport {
   n_archive_files: number;
   n_device_dirs: number;
@@ -206,6 +221,9 @@ export const api = {
     post<Campaign>("/api/campaigns", { name, description }),
   deleteCampaign: (id: number) => fetch(`/api/campaigns/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
   trend: (id: number) => fetch(`/api/campaigns/${id}/trend`).then((r) => j<any>(r)),
+  getGates: (id: number) => fetch(`/api/campaigns/${id}/gates`).then((r) => j<GateBoardData>(r)),
+  setGate: (id: number, wave: string, gate: string, decision: string, signed_by = "", note = "") =>
+    post<{ records: GateRecord[] }>(`/api/campaigns/${id}/gates`, { wave, gate, decision, signed_by, note }),
 
   uploadSnapshot: (campaignId: number, file: File, label: string) => {
     const fd = new FormData();
