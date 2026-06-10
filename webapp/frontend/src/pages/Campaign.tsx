@@ -1,27 +1,59 @@
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, bandColor } from "../api";
+import { api, bandColor, gateColor } from "../api";
+import type { GateRecord } from "../api";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
 
-const GATE_DECISION_COLOR: Record<string, string> = {
-  go: "var(--ok)", "no-go": "var(--crit)", slipped: "var(--watch)", pending: "var(--text-faint)",
-};
 const NEXT_DECISION: Record<string, string> = { pending: "go", go: "no-go", "no-go": "slipped", slipped: "pending" };
 
-function GateBoard({ id, toast }: { id: number; toast: (m: string) => void }) {
-  const { data, loading, reload } = useAsync(() => api.getGates(id), [id]);
+function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (m: string) => void }) {
+  // `latest` (newest snapshot id) is a dependency so uploading/ingesting a snapshot refetches the
+  // derivable waves (V3.23.159 — the board previously kept the old snapshot's waves until remount).
+  const { data, error, reload } = useAsync(() => api.getGates(id), [id, latest]);
   const [signer, setSigner] = useState("");
-  if (loading || !data) return null;
+  const [busy, setBusy] = useState(false);
+  // The POST response already carries the authoritative records — apply it locally instead of a
+  // second round-trip GET; a real refetch (deps change) supersedes the optimistic list.
+  const [recOverride, setRecOverride] = useState<GateRecord[] | null>(null);
+  useEffect(() => setRecOverride(null), [data]);
+
+  // Keep the last data rendered through a refetch (no unmount-flash); surface a failed load
+  // instead of silently vanishing (V3.23.159).
+  if (!data) {
+    if (error) {
+      return (
+        <div className="panel">
+          <h3>Gate board · T-minus sign-offs</h3>
+          <ErrorBox msg={error} />
+        </div>
+      );
+    }
+    return null;
+  }
+  const records = recOverride ?? data.records;
   // union: waves derivable from the latest snapshot + any wave that already has recorded history
-  const waves = Array.from(new Set([...data.waves, ...data.records.map((r) => r.wave)]));
+  const waves = Array.from(new Set([...data.waves, ...records.map((r) => r.wave)]));
   if (waves.length === 0) return null;
-  const rec = new Map(data.records.map((r) => [`${r.wave}|${r.gate}`, r]));
+  const rec = new Map(records.map((r) => [`${r.wave}|${r.gate}`, r]));
 
   async function cycle(wave: string, gate: string) {
-    const cur = rec.get(`${wave}|${gate}`)?.decision || "pending";
-    const next = NEXT_DECISION[cur] || "go";
-    try { await api.setGate(id, wave, gate, next, signer); reload(); }
-    catch (e: any) { toast(e.message); }
+    if (busy) return; // one decision in flight — a double-click must not re-read stale state
+    const r = rec.get(`${wave}|${gate}`);
+    const next = NEXT_DECISION[r?.decision || "pending"] || "go";
+    // Advancing a signed gate must not erase its trail: a typed signer wins, otherwise the
+    // existing signer and note carry forward (V3.23.159 — empty re-posts were stomping them).
+    const by = signer.trim() || r?.signed_by || "";
+    const note = r?.note || "";
+    setBusy(true);
+    try {
+      const resp = await api.setGate(id, wave, gate, next, by, note);
+      setRecOverride(resp.records);
+    } catch (e: any) {
+      toast(e.message);
+      reload();
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -51,12 +83,13 @@ function GateBoard({ id, toast }: { id: number; toast: (m: string) => void }) {
               {data.cadence.map((g) => {
                 const r = rec.get(`${w}|${g.key}`);
                 const d = r?.decision || "pending";
-                const color = GATE_DECISION_COLOR[d] || "var(--text-faint)";
                 const tip = r ? `${d.toUpperCase()} — ${r.signed_by || "unsigned"} · ${new Date(r.decided_at).toLocaleString()}${r.note ? ` · ${r.note}` : ""}` : "pending — click to sign";
                 return (
-                  <span key={`${w}|${g.key}`} role="button" className="chip" onClick={() => cycle(w, g.key)}
+                  <span key={`${w}|${g.key}`} role="button" tabIndex={0} className="chip gate"
+                    onClick={() => cycle(w, g.key)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycle(w, g.key); } }}
                     data-wave={w} data-gate={g.key} title={tip}
-                    style={{ cursor: "pointer", justifyContent: "center", color, borderColor: color, fontSize: 11 }}>
+                    style={{ ["--gc" as any]: gateColor(d === "pending" ? "PENDING" : d.toUpperCase()), cursor: "pointer", justifyContent: "center", fontSize: 11, opacity: busy ? 0.65 : 1 }}>
                     {d === "pending" ? "—" : d.toUpperCase()}
                   </span>
                 );
@@ -188,7 +221,9 @@ export default function CampaignPage() {
               </div>
             )}
           </div>
-          {snaps.length > 0 && <GateBoard id={cid} toast={toast} />}
+          {/* Always mounted: gate records are campaign-scoped and must stay visible/clearable
+              even with zero snapshots (the board hides itself when there is nothing to show). */}
+          <GateBoard id={cid} latest={snaps[snaps.length - 1]?.id ?? 0} toast={toast} />
         </div>
 
         <div className="grid" style={{ gap: 16, alignSelf: "start" }}>

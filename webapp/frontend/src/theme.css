@@ -52,4 +52,5 @@
 
   /* cutover Go/No-Go gate vocabulary -> same posture palette */
   --gate-GO: var(--ok); --gate-CONDITIONALGO: var(--watch); --gate-NOGO: var(--crit);
+  --gate-SLIPPED: var(--watch); /* gate-board sign-off state (V3.23.159) */
 }

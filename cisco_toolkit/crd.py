@@ -20,11 +20,10 @@ library is a warning + skip, never a crash. Every snapshot read is defensive. De
 import logging
 from datetime import datetime
 
+from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
 
 logger = logging.getLogger(__name__)
-
-_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
 def _evidence_facts(snap: dict) -> dict:

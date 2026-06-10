@@ -94,7 +94,9 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None) ->
     fd, path = tempfile.mkstemp(suffix="." + spec.ext, prefix=f"assesshub_{kind}_")
     os.close(fd)
     try:
-        if kind == "engagement" and gates:
+        if kind == "engagement":
+            # The writer treats None and {} identically (its own gr filter), so no `and gates`
+            # second branch — one call shape per kind (V3.23.159 review simplification).
             write(path, snap, label, gate_record=gates)
         else:
             write(path, snap, label)
