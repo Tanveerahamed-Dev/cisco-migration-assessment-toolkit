@@ -35,6 +35,8 @@ SPECS: Dict[str, Spec] = {
     "crd": Spec("crd", "Customer Requirements Document (CRD)", "docx", _DOCX, "python-docx"),
     "runbook": Spec("runbook", "Assessment & Migration Runbook", "docx", _DOCX, "python-docx"),
     "design": Spec("design", "As-Built Network Design Document", "docx", _DOCX, "python-docx"),
+    "archreview": Spec("archreview", "Architecture Review & Conformance Report", "docx", _DOCX,
+                       "python-docx"),
     "mop": Spec("mop", "Per-Wave Method of Procedure", "docx", _DOCX, "python-docx"),
     "cutover": Spec("cutover", "Cutover Plan (Run-of-Show)", "docx", _DOCX, "python-docx"),
     "nrfu": Spec("nrfu", "Network Ready-For-Use (NRFU) Test Plan", "docx", _DOCX, "python-docx"),
@@ -78,6 +80,9 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None) ->
         from cisco_toolkit.runbook import write_runbook_docx as write
     elif kind == "design":
         from cisco_toolkit.design import write_design_doc_docx as write
+    elif kind == "archreview":
+        # Computes the review from the stored snapshot when the section is absent (older snapshots).
+        from cisco_toolkit.archreview import write_archreview_docx as write
     elif kind == "mop":
         from cisco_toolkit.mop import write_mop_docx as write
     elif kind == "cutover":

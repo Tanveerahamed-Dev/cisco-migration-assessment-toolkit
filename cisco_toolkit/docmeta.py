@@ -36,6 +36,8 @@ FAMILY = (
      "Narrative findings, risk register and remediation detail"),
     ("design", "As-Built Network Design Document (.docx)",
      "HLD + LLD design record recovered from the fleet evidence"),
+    ("archreview", "Architecture Review & Conformance Report (.docx)",
+     "Leading-practice conformance scorecard, availability analysis and the design-review verdicts"),
     ("mop", "Per-Wave Method of Procedure (.docx)",
      "Maintenance-window change procedure, validation and rollback per wave"),
     ("cutover", "Cutover Plan / Run-of-Show (.docx)",
