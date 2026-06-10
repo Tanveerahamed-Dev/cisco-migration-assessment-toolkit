@@ -2417,6 +2417,115 @@
   },
   "note": "Assessed from the captured running-config only \u2014 the CONFIGURED posture, not live queue counters. A device without a full 'show running-config' capture is declared not assessable, never scored."
  },
+ "software_risk": {
+  "per_device": [
+   {
+    "host": "access1",
+    "sw_version": "15.2(7)E3",
+    "platform": "ios",
+    "train": "Classic IOS 15.x",
+    "train_band": "Verify EoL",
+    "train_note": "Most 15.x trains are past end of software maintenance -- verify the platform's EoL notice and target the published recommended release.",
+    "config_assessable": false,
+    "surfaces": {}
+   },
+   {
+    "host": "core1",
+    "sw_version": "16.12.4",
+    "platform": "ios",
+    "train": "IOS XE 16.x",
+    "train_band": "Verify EoL",
+    "train_note": "Software maintenance has ended for most 16.x releases (16.12 was the final LTS) -- verify against Cisco's published notices and the recommended-release page.",
+    "config_assessable": true,
+    "surfaces": {
+     "http-server": "exposed",
+     "smart-install": "verify",
+     "snmp-v2c-ro": "exposed",
+     "telnet-vty": "exposed"
+    }
+   },
+   {
+    "host": "core2",
+    "sw_version": "(not captured)",
+    "platform": "nxos",
+    "train": "(unknown)",
+    "train_band": "Unknown",
+    "train_note": "Version not captured -- not assessable.",
+    "config_assessable": false,
+    "surfaces": {}
+   }
+  ],
+  "findings": [
+   {
+    "host": "core1",
+    "kind": "http-server",
+    "surface": "Device web UI (ip http server / secure-server)",
+    "severity": "High",
+    "evidence": "ip http server",
+    "advisories": [
+     {
+      "id": "cisco-sa-iosxe-webui-privesc-j22SaA4z",
+      "cve": "CVE-2023-20198",
+      "note": "actively exploited in the wild (web-UI privilege escalation, CVSS 10)"
+     }
+    ],
+    "why": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
+    "recommendation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker."
+   },
+   {
+    "host": "core1",
+    "kind": "snmp-v2c-ro",
+    "surface": "SNMP v1/v2c read-only community",
+    "severity": "Medium",
+    "evidence": "snmp-server community <redacted>",
+    "advisories": [
+     {
+      "id": "cisco-sa-snmp-x4LPhte",
+      "cve": "CVE-2025-20352",
+      "note": "exploited in the wild (SNMP stack overflow -> RCE/DoS)"
+     }
+    ],
+    "why": "Cleartext community strings leak topology and credentials material, and v1/v2c packets still reach the (historically exploited) SNMP stack.",
+    "recommendation": "Move to SNMPv3 auth+priv and ACL the SNMP service."
+   },
+   {
+    "host": "core1",
+    "kind": "telnet-vty",
+    "surface": "Telnet enabled on vty lines",
+    "severity": "Medium",
+    "evidence": "transport input telnet ssh",
+    "advisories": [],
+    "why": "Telnet sends credentials and session content in cleartext -- one capture on any transit segment is a full management compromise.",
+    "recommendation": "Set 'transport input ssh' on all vty lines (and verify SSHv2-only)."
+   }
+  ],
+  "summary": {
+   "n_devices": 3,
+   "n_config_assessable": 1,
+   "n_config_not_assessable": 2,
+   "hosts_config_not_assessable": [
+    "access1",
+    "core2"
+   ],
+   "n_version_known": 2,
+   "trains": {
+    "(unknown)": 1,
+    "Classic IOS 15.x": 1,
+    "IOS XE 16.x": 1
+   },
+   "train_bands": {
+    "Unknown": 1,
+    "Verify EoL": 2
+   },
+   "n_findings": 3,
+   "by_kind": {
+    "http-server": 1,
+    "snmp-v2c-ro": 1,
+    "telnet-vty": 1
+   }
+  },
+  "note": "Attack-surface SCREENING from configuration evidence joined to landmark public advisories -- not a vulnerability scan. The offline toolkit carries no live advisory feed: validate every running release with the Cisco PSIRT Software Checker, and read 'exposed' as 'this surface is open', never as 'this release is vulnerable'."
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,
