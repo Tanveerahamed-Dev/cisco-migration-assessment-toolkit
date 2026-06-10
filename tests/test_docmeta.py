@@ -23,6 +23,8 @@ def test_related_rows_excludes_the_document_being_written():
     assert not any("Method of Procedure" in n for n in names)
     assert any("Assessment workbook" in n for n in names)
     assert len(rows) == 7  # the 8-document family minus self
+    # a bare-string exclude is one key, not an iterable of letters (set("mop") footgun)
+    assert related_rows(exclude="mop") == rows
 
 
 def test_document_control_renders_all_furniture():

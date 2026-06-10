@@ -54,8 +54,10 @@ DEFAULT_ROLES = ("Customer network owner", "Customer operations lead",
 
 
 def related_rows(exclude=()):
-    """(name, role) rows for the Related-Documents table, excluding the document being written."""
-    ex = set(exclude)
+    """(name, role) rows for the Related-Documents table, excluding the document being written.
+    `exclude` is a family key or an iterable of keys; a bare string is treated as one key (set("mop")
+    would otherwise dissolve into letters and silently keep the document in its own related list)."""
+    ex = {exclude} if isinstance(exclude, str) else set(exclude)
     return [(name, role) for key, name, role in FAMILY if key not in ex]
 
 

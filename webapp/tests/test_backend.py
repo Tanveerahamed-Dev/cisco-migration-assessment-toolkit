@@ -239,6 +239,22 @@ def test_cutover_deliverable_content(client):
     assert len(doc.tables) >= 2                         # summary + sequence tables at minimum
 
 
+def test_cutover_no_waves_still_carries_acceptance(tmp_path):
+    """A degenerate snapshot (no derivable waves) takes the early-return path — the document must
+    still carry the full furniture, including the closing acceptance gate (review fix, V3.23.151)."""
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.cutover_docx import write_cutover_docx
+
+    out = str(tmp_path / "cutover_empty.docx")
+    write_cutover_docx(out, {"devices": {}}, "Empty Fleet")
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    assert "No migration waves were derived" in text
+    assert "Document Control" in text
+    assert "Document Acceptance" in text
+
+
 def test_nrfu_deliverable_content(client):
     """The NRFU / Acceptance Test Plan is a web-layer synthesis with no engine test — validate it
     renders the document-control front matter and all three test phases, not just a valid zip."""
