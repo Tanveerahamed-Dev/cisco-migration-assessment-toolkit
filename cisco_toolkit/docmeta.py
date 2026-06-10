@@ -19,6 +19,8 @@ from datetime import datetime
 # The deliverable family, keyed for self-exclusion in the Related-Documents table.
 # Order is the recommended reading order of the set.
 FAMILY = (
+    ("engagement", "Engagement Workflow & Plan of Record (.docx)",
+     "Phase-gated engagement workflow: verdict, gate calendar, RAID log and the next-action queue"),
     ("crd", "Customer Requirements Document (.docx)",
      "Plan-phase requirements capture: REQ-IDs, owners, and traceability into design and acceptance"),
     ("workbook", "Assessment workbook (.xlsx)",
