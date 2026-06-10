@@ -19,6 +19,8 @@ from datetime import datetime
 # The deliverable family, keyed for self-exclusion in the Related-Documents table.
 # Order is the recommended reading order of the set.
 FAMILY = (
+    ("crd", "Customer Requirements Document (.docx)",
+     "Plan-phase requirements capture: REQ-IDs, owners, and traceability into design and acceptance"),
     ("workbook", "Assessment workbook (.xlsx)",
      "Full per-sheet evidence; every number in the narrative documents reconciles to it"),
     ("explorer", "Blast-Radius Explorer (.html)",
