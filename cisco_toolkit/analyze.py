@@ -4228,6 +4228,235 @@ def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
 
 
 # =============================================================================
+# Software risk screening (NEW-V3.23.166). The last pillar of Cisco's NOS analytic quartet
+# (design review / config best practices / syslog analysis / SOFTWARE RISK). Two evidence-led
+# layers, both honest about what an OFFLINE tool can know:
+#   (1) ATTACK-SURFACE screening -- config-evidenced exposed services joined to a curated KB of
+#       landmark public advisories (the ones a senior engineer checks first because they were
+#       exploited in the wild). The claim is always "this surface is open and it is the surface
+#       of advisory X" -- NEVER "this device is vulnerable to X": release applicability must be
+#       validated with the Cisco PSIRT Software Checker (no live feed offline).
+#   (2) SOFTWARE-TRAIN lifecycle -- a cautious, curated classification of the running release's
+#       train (12.x / 15.x / XE 3.x|16.x|17.x / NX-OS 6|7|9|10) into replace / verify / current-era
+#       bands with verify-against-Cisco wording; never an invented per-release EoL date.
+# =============================================================================
+_SWRISK_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+# kind -> (surface label, severity, [(advisory id, cve, note)], why, fix)
+_SWRISK_SURFACE_KB: Dict[str, tuple] = {
+    "http-server": (
+        "Device web UI (ip http server / secure-server)", "High",
+        [("cisco-sa-iosxe-webui-privesc-j22SaA4z", "CVE-2023-20198",
+          "actively exploited in the wild (web-UI privilege escalation, CVSS 10)")],
+        "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices "
+        "implanted); any HTTP(S) server on a network device is standing attack surface.",
+        "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management "
+        "network with an ACL; validate the running release with the Cisco Software Checker."),
+    "snmp-v2c-rw": (
+        "SNMP v1/v2c with a READ-WRITE community", "High",
+        [("cisco-sa-snmp-x4LPhte", "CVE-2025-20352",
+          "exploited in the wild (SNMP stack overflow -> RCE/DoS)")],
+        "A v2c RW community is full configuration control protected by a cleartext string, and "
+        "the SNMP stack itself has had exploited RCEs.",
+        "Remove v1/v2c communities (RW first), move to SNMPv3 auth+priv, and ACL the SNMP "
+        "service to the management stations."),
+    "snmp-v2c-ro": (
+        "SNMP v1/v2c read-only community", "Medium",
+        [("cisco-sa-snmp-x4LPhte", "CVE-2025-20352",
+          "exploited in the wild (SNMP stack overflow -> RCE/DoS)")],
+        "Cleartext community strings leak topology and credentials material, and v1/v2c packets "
+        "still reach the (historically exploited) SNMP stack.",
+        "Move to SNMPv3 auth+priv and ACL the SNMP service."),
+    "smart-install": (
+        "Smart Install (vstack)", "High",
+        [("cisco-sa-20180328-smi", "CVE-2018-0171",
+          "mass-abused since 2018; CISA re-warned in 2024 that state actors still leverage "
+          "exposed Smart Install")],
+        "An exposed Smart Install client allows unauthenticated config/image replacement on "
+        "older Catalyst platforms.",
+        "Configure 'no vstack' on every switch that is not actively being zero-touch "
+        "provisioned, and verify with 'show vstack config'."),
+    "telnet-vty": (
+        "Telnet enabled on vty lines", "Medium", [],
+        "Telnet sends credentials and session content in cleartext -- one capture on any "
+        "transit segment is a full management compromise.",
+        "Set 'transport input ssh' on all vty lines (and verify SSHv2-only)."),
+    "ssh-v1": (
+        "SSH protocol version 1", "Medium", [],
+        "SSHv1 has known protocol-level weaknesses (CRC32 insertion) and is long deprecated.",
+        "Configure 'ip ssh version 2'."),
+    "ikev1": (
+        "IKEv1 (crypto isakmp)", "Medium",
+        [("cisco-sa-20160916-ikev1", "CVE-2016-6415",
+          "information disclosure (BENIGNCERTAIN, an exploited NSA-toolkit leak)")],
+        "IKEv1 endpoints have leaked memory contents to crafted packets and lack IKEv2's "
+        "anti-DoS protections.",
+        "Migrate crypto peers to IKEv2; if IKEv1 must stay, restrict peers with an ACL and "
+        "validate the release with the Cisco Software Checker."),
+    "small-services": (
+        "Legacy small services (finger / rcmd / small-servers)", "Low", [],
+        "Legacy diagnostic services expose information and reflection primitives for no "
+        "operational benefit on a modern network.",
+        "Remove 'service finger' / 'ip rcmd ...' / TCP-UDP small-servers."),
+}
+
+# train prefix tables: (match fn input = sw_version string, platform hint) -> (train, band, note)
+_SWRISK_BAND_RANK = {"Replace/Upgrade": 0, "Verify EoL": 1, "Current-era": 2, "Unknown": 3}
+
+
+def _swrisk_train(sw: str, platform: str) -> tuple:
+    """Classify a running release string into a cautious lifecycle band:
+    (train, band, note). Curated train-level knowledge only -- never an invented
+    per-release date; 'verify' wording points at Cisco's published notices."""
+    s = (sw or "").strip()
+    if not s:
+        return ("(unknown)", "Unknown", "Version not captured -- not assessable.")
+    p = (platform or "").lower()
+    checks = [
+        ("12.", "Classic IOS 12.x", "Replace/Upgrade",
+         "End of software maintenance long past -- no current PSIRT fixes are produced for this "
+         "train. Plan replacement or upgrade before the migration."),
+        ("15.", "Classic IOS 15.x", "Verify EoL",
+         "Most 15.x trains are past end of software maintenance -- verify the platform's EoL "
+         "notice and target the published recommended release."),
+        ("03.", "IOS XE 3.x", "Replace/Upgrade",
+         "The converged-access IOS XE 3.x trains are past end of software maintenance. Plan the "
+         "upgrade path to a supported XE release."),
+        ("16.", "IOS XE 16.x", "Verify EoL",
+         "Software maintenance has ended for most 16.x releases (16.12 was the final LTS) -- "
+         "verify against Cisco's published notices and the recommended-release page."),
+        ("17.", "IOS XE 17.x", "Current-era",
+         "Current-era train -- validate the exact release against the recommended-release page "
+         "and the Cisco Software Checker."),
+    ]
+    if p == "nxos":
+        checks = [
+            ("6.", "NX-OS 6.x", "Replace/Upgrade",
+             "NX-OS 6.x is long past software maintenance -- plan the upgrade/replacement."),
+            ("7.", "NX-OS 7.x", "Verify EoL",
+             "Most NX-OS 7.x trains are past or near end of maintenance -- verify the platform's "
+             "notice and the recommended NX-OS release."),
+            ("9.", "NX-OS 9.x", "Current-era",
+             "Mature train -- validate the exact release against the recommended NX-OS release "
+             "for the platform."),
+            ("10.", "NX-OS 10.x", "Current-era",
+             "Current-era train -- validate the exact release against the recommended NX-OS "
+             "release for the platform."),
+        ]
+    for prefix, train, band, note in checks:
+        if s.startswith(prefix):
+            return (train, band, note)
+    return (f"({s.split('(')[0].strip() or s})", "Unknown",
+            "Train not in the curated table -- verify the release against Cisco's published "
+            "EoL notices and the Software Checker.")
+
+
+def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
+                          devices: Optional[Dict[str, dict]] = None,
+                          platforms: Optional[Dict[str, dict]] = None,
+                          all_hosts: Optional[List[str]] = None) -> dict:
+    """NEW-V3.23.166: the NOS 'software risk analysis' pillar, offline-honest. From the captured
+    full running-configs: attack-surface SCREENING (exposed web UI / SNMP v1-v2c / Smart Install /
+    telnet / SSHv1 / IKEv1 / small services) joined to a curated landmark-advisory KB -- the claim
+    is 'surface open' + 'this is the surface of advisory X (exploited in the wild)', never a
+    per-release vulnerability verdict. From `devices` ({host:{model,sw_version}}) + `platforms`
+    ({host:{platform}}): cautious software-TRAIN lifecycle bands (replace / verify / current-era)
+    with verify-with-Cisco wording. A device without evidence for a layer is DECLARED not
+    assessable for that layer. Pure on its inputs; deterministic; never raises."""
+    from collections import Counter
+    rc = run_configs or {}
+    dv = devices or {}
+    pf = platforms or {}
+    hosts = sorted(set(all_hosts or []) | set(rc) | set(dv))
+    per_device: List[dict] = []
+    findings: List[dict] = []
+
+    def _surface_status(text: str) -> Dict[str, tuple]:
+        """kind -> (status, evidence). status: exposed / closed / verify."""
+        lines = [ln.strip() for ln in text.splitlines()]
+        def has(pat):
+            rx = re.compile(pat, re.I)
+            for ln in lines:
+                if rx.match(ln):
+                    return ln
+            return None
+        out: Dict[str, tuple] = {}
+        hs = has(r"^ip http server$") or has(r"^ip http secure-server$")
+        if hs:
+            out["http-server"] = ("exposed", hs)
+        elif has(r"^no ip http server$") or has(r"^no ip http secure-server$"):
+            out["http-server"] = ("closed", "no ip http server")
+        else:
+            out["http-server"] = ("verify", "no explicit http-server line in the capture")
+        if has(r"^snmp-server community\s+\S+\s+rw\b"):
+            out["snmp-v2c-rw"] = ("exposed", "snmp-server community <redacted> RW")
+        elif has(r"^snmp-server community\s+\S+"):
+            out["snmp-v2c-ro"] = ("exposed", "snmp-server community <redacted>")
+        vs = has(r"^vstack($|\s)")
+        if vs:
+            out["smart-install"] = ("exposed", vs)
+        elif has(r"^no vstack($|\s)"):
+            out["smart-install"] = ("closed", "no vstack")
+        else:
+            out["smart-install"] = ("verify",
+                                    "no vstack line in the capture -- default-on for older "
+                                    "Catalyst; confirm with 'show vstack config'")
+        tl = has(r"^transport input .*telnet")
+        if tl:
+            out["telnet-vty"] = ("exposed", tl)
+        if has(r"^ip ssh version 1$"):
+            out["ssh-v1"] = ("exposed", "ip ssh version 1")
+        if has(r"^crypto isakmp policy"):
+            out["ikev1"] = ("exposed", "crypto isakmp policy ...")
+        sm = has(r"^service finger$") or has(r"^ip rcmd") or has(r"^service (tcp|udp)-small-servers$")
+        if sm:
+            out["small-services"] = ("exposed", sm)
+        return out
+
+    for host in hosts:
+        text = (rc.get(host) or "").strip()
+        meta = dv.get(host) or {}
+        sw = (meta.get("sw_version") or "").strip()
+        platform = ((pf.get(host) or {}).get("platform") or "").strip()
+        train, band, tnote = _swrisk_train(sw, platform)
+        surfaces: Dict[str, str] = {}
+        if text:
+            st = _surface_status(text)
+            for kind, (status, evidence) in sorted(st.items()):
+                surfaces[kind] = status
+                if status != "exposed":
+                    continue
+                label, sev, advs, why, fix = _SWRISK_SURFACE_KB[kind]
+                findings.append({
+                    "host": host, "kind": kind, "surface": label, "severity": sev,
+                    "evidence": evidence,
+                    "advisories": [{"id": a, "cve": c, "note": n} for a, c, n in advs],
+                    "why": why, "recommendation": fix})
+        per_device.append({
+            "host": host, "sw_version": sw or "(not captured)", "platform": platform or "?",
+            "train": train, "train_band": band, "train_note": tnote,
+            "config_assessable": bool(text), "surfaces": surfaces})
+
+    findings.sort(key=lambda f: (_SWRISK_RANK.get(f["severity"], 9), f["host"], f["kind"]))
+    per_device.sort(key=lambda d: (_SWRISK_BAND_RANK.get(d["train_band"], 9), d["host"]))
+    assessable = [d for d in per_device if d["config_assessable"]]
+    not_assessable = [d["host"] for d in per_device if not d["config_assessable"]]
+    summary = {"n_devices": len(per_device), "n_config_assessable": len(assessable),
+               "n_config_not_assessable": len(not_assessable),
+               "hosts_config_not_assessable": sorted(not_assessable)[:20],
+               "n_version_known": sum(1 for d in per_device if d["sw_version"] != "(not captured)"),
+               "trains": dict(sorted(Counter(d["train"] for d in per_device).items())),
+               "train_bands": dict(sorted(Counter(d["train_band"] for d in per_device).items())),
+               "n_findings": len(findings),
+               "by_kind": dict(sorted(Counter(f["kind"] for f in findings).items()))}
+    note = ("Attack-surface SCREENING from configuration evidence joined to landmark public "
+            "advisories -- not a vulnerability scan. The offline toolkit carries no live advisory "
+            "feed: validate every running release with the Cisco PSIRT Software Checker, and read "
+            "'exposed' as 'this surface is open', never as 'this release is vulnerable'.")
+    return {"per_device": per_device, "findings": findings, "summary": summary, "note": note}
+
+
+# =============================================================================
 # Hardware lifecycle (EoL / End-of-Support) risk (NEW-V3.23.117). A new assessment AXIS: per-device
 # replacement urgency from the offline `eoldb` knowledge base (a top REASON orgs migrate). Reference
 # dates (curated KB, not device-read); LDoS is often derived = EoS+5yr. The robust output is the BAND

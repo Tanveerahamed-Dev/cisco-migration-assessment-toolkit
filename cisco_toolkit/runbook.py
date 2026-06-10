@@ -696,6 +696,47 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                     f"({', '.join(qsum.get('hosts_not_assessable') or [])}) — no full "
                     "running-config capture.")
 
+    # 6.12 software risk screening (NEW-V3.23.166): advisory-surface + train lifecycle.
+    sr = snap_dict.get("software_risk") or {}
+    rsum = sr.get("summary") or {}
+    if rsum.get("n_devices"):
+        doc.add_heading("6.12 Software risk screening", level=2)
+        doc.add_paragraph(
+            "Attack-surface screening from configuration evidence joined to landmark public "
+            "advisories (the exploited-in-the-wild surfaces an engineer checks first), plus a "
+            "cautious software-train lifecycle classification. This is screening, NOT a "
+            "vulnerability scan — validate every running release with the Cisco PSIRT Software "
+            "Checker before drawing release-level conclusions.")
+        rrows = []
+        for f in (sr.get("findings") or [])[:15]:
+            adv = "; ".join(f"{a.get('cve')}" for a in (f.get("advisories") or [])) or "—"
+            rrows.append([f.get("host"), f.get("surface"), f.get("severity"), adv,
+                          f.get("recommendation")])
+        if rrows:
+            table(["Device", "Exposed surface", "Severity", "Advisory", "Recommendation"],
+                  rrows, widths=[1.1, 1.7, 0.7, 1.1, 3.4])
+        else:
+            doc.add_paragraph("No exposed advisory surfaces on the config-assessable devices."
+                              if rsum.get("n_config_assessable") else
+                              "No full running-config captures — surface screening not assessable.")
+        tb = rsum.get("train_bands") or {}
+        worst = [b for b in ("Replace/Upgrade", "Verify EoL") if tb.get(b)]
+        if worst:
+            wrows = [[d.get("host"), d.get("platform"), d.get("sw_version"), d.get("train"),
+                      d.get("train_band")]
+                     for d in (sr.get("per_device") or [])
+                     if d.get("train_band") in ("Replace/Upgrade", "Verify EoL")][:12]
+            doc.add_paragraph(
+                "Software trains needing lifecycle attention (band = curated train-level "
+                "knowledge; exact dates live in Cisco's published EoL notices):")
+            table(["Device", "Platform", "Version", "Train", "Band"],
+                  wrows, widths=[1.4, 1.0, 1.6, 2.0, 2.0])
+        if rsum.get("n_config_not_assessable"):
+            doc.add_paragraph(
+                f"{rsum.get('n_config_not_assessable', 0)} device(s) had no full running-config "
+                f"({', '.join(rsum.get('hosts_config_not_assessable') or [])}) — surface "
+                "screening declared not assessable for them.")
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()
