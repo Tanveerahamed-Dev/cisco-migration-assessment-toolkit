@@ -40,6 +40,13 @@ def read_run_config(cmd_to_file: Dict[str, str]) -> str:
     return _load_cmd_output(cmd_to_file, "show running-config") or ""
 
 
+def read_syslog_log(cmd_to_file: Dict[str, str]) -> str:
+    """NEW-V3.23.164: return this device's raw 'show logging' text (offline-loaded), or ''
+    when absent / a Cisco error. Used by the syslog-intelligence axis
+    (compute_syslog_intelligence). Fail-soft."""
+    return _load_cmd_output(cmd_to_file, "show logging") or ""
+
+
 def build_acls(cmd_to_file: Dict[str, str]) -> Dict[str, List[dict]]:
     """Parse ACL definitions (L4 allow/deny sim) from this device's already-collected
     'show running-config' -> {acl_name: [rule,...]}; {} when none. Fail-soft via _safe_parse."""

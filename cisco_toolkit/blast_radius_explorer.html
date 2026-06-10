@@ -1428,6 +1428,44 @@ function demoSnapshot(){
       {host:"ACC-5",compliance_pct:67,n_missing:2,missing:["logging host 10.0.0.20","aaa new-model"]},
     ],
     summary:{mode:"majority",n_devices:6,n_baseline:6,n_drifting:2,avg_compliance_pct:92}},
+  // V3.23.164: syslog intelligence -> Health view syslogCard + 'Syslog Intelligence' sheet. NOS-style log
+  // analysis: ACC-3 (the loop-prone closet) flaps a MAC + err-disables a port; DIST-2 logs a PSU alarm;
+  // ACC-1 has a flapping uplink; ACC-5's 'show logging' was never collected (declared, not scored).
+  syslog_intelligence:{
+    detections:[
+      {host:"ACC-3",kind:"mac-flap",label:"MAC address flapping",severity:"High",count:14,
+       detail:"14 event(s) in the collected log window.",
+       example:"%SW_MATM-4-MACFLAP_NOTIF: Host 0050.b6aa.0001 in vlan 30 is flapping between port Gi1/0/7 and port Gi1/0/12",
+       recommendation:"The same MAC is being learned on two ports — usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window."},
+      {host:"ACC-3",kind:"err-disable",label:"Port err-disabled",severity:"High",count:2,
+       detail:"2 event(s) in the collected log window.",
+       example:"%PM-4-ERR_DISABLE: bpduguard error detected on Gi1/0/12, putting Gi1/0/12 in err-disable state",
+       recommendation:"Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause — do not blindly re-enable the port."},
+      {host:"DIST-2",kind:"environment",label:"Environmental alarm",severity:"High",count:1,
+       detail:"1 event(s) in the collected log window.",
+       example:"%ENVMON-2-SUPPLY: Power supply 2 is faulty or removed",
+       recommendation:"PSU / fan / thermal alarm in the log window. Replace the failing FRU before the migration window — environmental failures void redundancy assumptions."},
+      {host:"ACC-1",kind:"link-flap",label:"Interface flapping",severity:"Medium",count:9,
+       detail:"1 interface(s) with >= 6 up/down transitions: Gi1/0/24 (9x).",example:"",
+       recommendation:"Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media — flapping links invalidate pre-cutover baselines."},
+    ],
+    per_device:[
+      {host:"ACC-1",collected:true,events:31,by_severity:{crit_0_2:0,err_3:9,warn_4:2,info_5_7:20},
+       top_messages:[{msg:"LINK-3-UPDOWN",count:9},{msg:"LINEPROTO-5-UPDOWN",count:9}],config_changes:1},
+      {host:"ACC-3",collected:true,events:25,by_severity:{crit_0_2:0,err_3:2,warn_4:16,info_5_7:7},
+       top_messages:[{msg:"SW_MATM-4-MACFLAP_NOTIF",count:14},{msg:"PM-4-ERR_DISABLE",count:2}],config_changes:0},
+      {host:"ACC-5",collected:false,events:0,by_severity:{},top_messages:[],config_changes:0},
+      {host:"DIST-1",collected:true,events:6,by_severity:{crit_0_2:0,err_3:0,warn_4:0,info_5_7:6},
+       top_messages:[{msg:"SYS-5-CONFIG_I",count:4}],config_changes:4},
+      {host:"DIST-2",collected:true,events:8,by_severity:{crit_0_2:1,err_3:0,warn_4:1,info_5_7:6},
+       top_messages:[{msg:"ENVMON-2-SUPPLY",count:1}],config_changes:2},
+      {host:"CORE-9K",collected:true,events:3,by_severity:{crit_0_2:0,err_3:0,warn_4:0,info_5_7:3},
+       top_messages:[{msg:"VSHD-5-VSHD_SYSLOG_CONFIG_I",count:3}],config_changes:0},
+    ],
+    summary:{n_devices:6,n_collected:5,n_not_collected:1,hosts_not_collected:["ACC-5"],
+             total_events:73,crit_0_2:1,err_3:11,n_detections:4,
+             by_kind:{"mac-flap":1,"err-disable":1,environment:1,"link-flap":1}},
+    note:"Evidence is each device's buffered 'show logging' at collection time — a bounded, recent window (the buffer wraps), so counts are floors, not totals."},
   // V3.23.62: STP root placement. VLAN 10 is rooted at DIST-1 on a deliberate priority and DIST-1 hosts the
   // gateway -> aligned + clean. VLAN 30 is rooted at ACC-3 on the DEFAULT priority (32798 = 32768+30) -> an
   // accidental root, and its gateway lives on DIST-1 (not ACC-3) -> root/gateway misalignment (hairpin).
@@ -4962,6 +5000,30 @@ function goldenDriftCard(){
     `<div class="sub" style="margin-bottom:6px">Per-device compliance vs ${esc(src)} (${s.n_baseline} required directive(s), avg ${s.avg_compliance_pct}%) — the standard config each device is missing. Full detail in the 'Golden-Config Drift' workbook sheet.</div>`+
     rows+`</div>`;
 }
+/* Syslog intelligence (NEW-V3.23.164): the NOS-style operational log analysis. Reads
+   SNAP.syslog_intelligence {detections:[{host,label,severity,count,detail,recommendation}],
+   per_device, summary:{n_devices,n_collected,total_events,n_detections,hosts_not_collected}}.
+   Detections are the log signatures a senior engineer greps for first (MAC flap, err-disable,
+   link flap, environmental, TCAM, crash). Not-collected devices are DECLARED, never scored.
+   Back-compat: no key -> no card. */
+function syslogCard(){
+  const si=SNAP&&SNAP.syslog_intelligence; if(!si)return "";
+  const s=si.summary||{}; if(!(s.n_devices>0))return "";
+  if(!(s.n_collected>0))
+    return `<div class="sec"><h3>Syslog intelligence <span class="badge b-warn">not collected</span></h3>`+
+      `<div class="ln faint">No 'show logging' output in this collection — the operational log axis carries no evidence either way. Re-run the collection to add it.</div></div>`;
+  const dets=si.detections||[];
+  const miss=(s.hosts_not_collected||[]).length?
+    `<div class="ln faint">⚠ ${s.n_not_collected} device(s) without 'show logging' output (${(s.hosts_not_collected||[]).map(h=>esc(shortName(h))).join(", ")}) — absence of logs ≠ absence of problems.</div>`:"";
+  if(!dets.length)
+    return `<div class="sec"><h3>Syslog intelligence <span class="badge b-ok">quiet</span></h3>`+
+      `<div class="ln faint">✓ ${s.total_events} log event(s) parsed on ${s.n_collected} of ${s.n_devices} device(s) — no MAC flaps, err-disables, link flaps, crashes or environmental alarms in the collected window.</div>`+miss+`</div>`;
+  const rows=dets.slice(0,10).map(d=>{const tok=d.severity==="High"?"pl-crit":"pl-watch";
+    return `<div class="ln"><span class="pill ${tok}">${esc(d.severity)}</span> <span class="mono">${esc(shortName(d.host))}</span> — <b>${esc(d.label)}</b> (${d.count}×): <span class="faint">${esc(d.recommendation||d.detail||"")}</span></div>`;}).join("");
+  return `<div class="sec"><h3>Syslog intelligence <span class="badge b-crit">${dets.length} detection${dets.length===1?"":"s"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">${s.total_events} event(s) from the buffered logs of ${s.n_collected}/${s.n_devices} device(s) — the log signatures an engineer greps for first. The buffer is a bounded window: counts are floors. Full detail in the 'Syslog Intelligence' workbook sheet.</div>`+
+    rows+miss+`</div>`;
+}
 /* STP root placement (cross-layer L2 design): reads SNAP.stp_roots {host:{vlan:{root_priority,is_root}}}
    + the gateway SVIs in SNAP.interfaces. Flags (1) an ACCIDENTAL root -- a VLAN rooted on the DEFAULT
    bridge priority (32768 + vlan), i.e. won on a MAC tiebreak, not elected, so it can move on a cutover;
@@ -6836,6 +6898,7 @@ function drawHealth(){
     ${securityCard()}
     ${hygieneCard()}
     ${goldenDriftCard()}
+    ${syslogCard()}
     ${stpRootCard()}
     ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}

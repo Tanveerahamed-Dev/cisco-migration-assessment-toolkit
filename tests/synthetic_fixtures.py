@@ -302,6 +302,29 @@ Vlan20                 10.0.20.2       YES NVRAM  up                    up
 Vlan30                 10.0.30.1       YES NVRAM  up                    up
 GigabitEthernet0/0     10.0.99.1       YES NVRAM  up                    up
 """,
+    # NEW-V3.23.164 (syslog intelligence): a MAC flap + the err-disable that explains the
+    # quarantined Gi1/0/9, a flapping Gi1/0/9 (6 up/down transitions), the down OSPF
+    # neighbor's ADJCHG, and a config-change audit trail. core2 has NO 'show logging'
+    # fixture on purpose (exercises the declared not-collected path).
+    "show logging": """\
+Syslog logging: enabled (0 messages dropped, 0 messages rate-limited, 0 flushes, 0 overruns)
+    Console logging: level debugging, 14 messages logged
+    Buffer logging: level debugging, 14 messages logged
+Log Buffer (8192 bytes):
+
+*Jun  1 09:12:01.123: %SYS-5-CONFIG_I: Configured from console by svc-audit on vty0 (10.0.99.50)
+*Jun  2 03:14:09.001: %SW_MATM-4-MACFLAP_NOTIF: Host 0011.22aa.0001 in vlan 10 is flapping between port Gi1/0/5 and port Gi1/0/9
+*Jun  2 03:14:11.530: %SW_MATM-4-MACFLAP_NOTIF: Host 0011.22aa.0001 in vlan 10 is flapping between port Gi1/0/5 and port Gi1/0/9
+*Jun  2 03:15:02.118: %PM-4-ERR_DISABLE: bpduguard error detected on Gi1/0/9, putting Gi1/0/9 in err-disable state
+*Jun  2 03:15:03.220: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/9, changed state to down
+*Jun  2 03:16:10.002: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/9, changed state to up
+*Jun  2 03:16:55.481: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/9, changed state to down
+*Jun  2 03:17:30.110: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/9, changed state to up
+*Jun  2 03:17:31.220: %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet1/0/9, changed state to up
+*Jun  2 03:18:02.957: %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet1/0/9, changed state to down
+*Jun  3 11:02:44.901: %OSPF-5-ADJCHG: Process 1, Nbr 10.0.99.2 on Vlan20 from FULL to DOWN, Neighbor Down: Dead timer expired
+*Jun  4 18:30:00.005: %SYS-5-CONFIG_I: Configured from console by svc-audit on vty0 (10.0.99.50)
+""",
 }
 
 # --------------------------------------------------------------------------- #
@@ -573,6 +596,22 @@ GigabitEthernet0/1 is up, line protocol is up (connected)
 Interface              IP-Address      OK? Method Status                Protocol
 Vlan1                  unassigned      YES NVRAM  administratively down  down
 GigabitEthernet0/0     10.0.99.3       YES NVRAM  up                    up
+""",
+    # NEW-V3.23.164 (syslog intelligence): a CDP duplex mismatch on an access port and a
+    # burst of failed logins (>= the login-fail threshold) -> two access-layer detections.
+    "show logging": """\
+Syslog logging: enabled (0 messages dropped, 0 messages rate-limited, 0 flushes, 0 overruns)
+    Buffer logging: level debugging, 8 messages logged
+Log Buffer (4096 bytes):
+
+*May 28 10:01:01.000: %CDP-4-DUPLEX_MISMATCH: duplex mismatch discovered on GigabitEthernet0/5 (not half duplex), with print-floor2 GigabitEthernet0/1 (half duplex).
+*May 30 22:13:41.404: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: admin] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
+*May 30 22:13:48.612: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: admin] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
+*May 30 22:13:55.020: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: admin] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
+*May 30 22:14:02.330: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: root] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
+*May 30 22:14:09.551: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: root] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
+*May 30 22:14:16.808: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: root] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
+*Jun  1 08:00:09.121: %SYS-5-CONFIG_I: Configured from console by svc-audit on vty0 (10.0.99.50)
 """,
 }
 

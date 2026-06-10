@@ -1608,6 +1608,88 @@ def write_golden_drift_sheet(wb, gd: dict) -> None:
                 f"{s.get('n_drifting', 0)} drifting ({mode})")
 
 
+SYSLOG_SHEET_NAME = "Syslog Intelligence"   # NEW-V3.23.164 (NOS-style operational log analysis)
+
+def write_syslog_intelligence_sheet(wb, si: dict) -> None:
+    """Write 'Syslog Intelligence' from compute_syslog_intelligence(): the operational
+    detections (MAC flap / err-disable / link flap / environmental / ...) with the
+    senior-engineer doctrine per finding, then the per-device log profile. Devices whose
+    'show logging' was not collected are declared, never scored."""
+    if SYSLOG_SHEET_NAME in wb.sheetnames:
+        del wb[SYSLOG_SHEET_NAME]
+    ws = wb.create_sheet(SYSLOG_SHEET_NAME)
+    p = si or {}
+    dets = p.get("detections") or []
+    pdev = p.get("per_device") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, f"Operational log analysis: {s.get('total_events', 0)} event(s) parsed on "
+                      f"{s.get('n_collected', 0)} of {s.get('n_devices', 0)} device(s) -> "
+                      f"{s.get('n_detections', 0)} detection(s). The log buffer is a bounded recent "
+                      "window, so counts are floors; absence of logs is never scored as absence of problems.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('crit_0_2', 0)} critical (sev 0-2) · {s.get('err_3', 0)} error (sev 3) · "
+                  f"{s.get('n_not_collected', 0)} device(s) without 'show logging' output").font = Font(size=10)
+    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC", "Low": "D9EAD3"}
+    HDRF = Font(bold=True, color="FFFFFF", size=10)
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+
+    hdr_row = 4
+    cols = ["Device", "Finding", "Severity", "Count", "Detail", "Evidence (first event)", "Recommendation"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    r = hdr_row + 1
+    for d in dets:
+        vals = [d.get("host"), d.get("label"), d.get("severity"), d.get("count", 0),
+                d.get("detail"), d.get("example"), d.get("recommendation")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col == 6 else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (3, 4) else "left",
+                                    vertical="top", wrap_text=col in (5, 6, 7))
+            if col == 3 and v in SEVFILL:
+                c.fill = PatternFill("solid", fgColor=SEVFILL[v])
+        r += 1
+    if not dets:
+        ws.cell(r, 1, "No operational detections in the collected logs." if s.get("n_collected")
+                else "No 'show logging' output collected -- log evidence unavailable.").font = DAT
+        r += 1
+
+    r += 2
+    ws.cell(r, 1, "Per-device log profile").font = Font(bold=True, color="7030A0", size=10)
+    r += 1
+    cols2 = ["Device", "Collected", "Events", "Crit (0-2)", "Err (3)", "Warn (4)",
+             "Info (5-7)", "Config changes", "Top messages"]
+    for i, h in enumerate(cols2, 1):
+        c = ws.cell(r, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    r += 1
+    for d in pdev:
+        bs = d.get("by_severity") or {}
+        top = ", ".join(f"{m['msg']} ({m['count']}x)" for m in (d.get("top_messages") or []))
+        vals = [d.get("host"), "yes" if d.get("collected") else "NOT COLLECTED",
+                d.get("events", 0), bs.get("crit_0_2", 0), bs.get("err_3", 0),
+                bs.get("warn_4", 0), bs.get("info_5_7", 0), d.get("config_changes", 0), top]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col == 9 else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (2, 3, 4, 5, 6, 7, 8) else "left",
+                                    vertical="top", wrap_text=col == 9)
+            if col == 2 and not d.get("collected"):
+                c.fill = PatternFill("solid", fgColor="EFEFEF")
+            if col == 4 and bs.get("crit_0_2", 0):
+                c.fill = PatternFill("solid", fgColor="F4CCCC")
+        r += 1
+    # shared column widths: table 1 (A-G) needs wide Detail/Evidence/Recommendation;
+    # table 2 (A-I) tolerates wide numeric columns.
+    for i, w in enumerate([22, 24, 11, 9, 36, 42, 46, 13, 42], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{SYSLOG_SHEET_NAME}' sheet: {len(dets)} detection(s) on "
+                f"{s.get('n_collected', 0)}/{s.get('n_devices', 0)} device(s) with logs")
+
+
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
 
 def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
