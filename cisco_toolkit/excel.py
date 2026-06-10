@@ -1690,6 +1690,86 @@ def write_syslog_intelligence_sheet(wb, si: dict) -> None:
                 f"{s.get('n_collected', 0)}/{s.get('n_devices', 0)} device(s) with logs")
 
 
+QOS_AUDIT_SHEET_NAME = "QoS Audit"   # NEW-V3.23.165 (configured QoS posture + doctrine findings)
+
+def write_qos_audit_sheet(wb, qa: dict) -> None:
+    """Write 'QoS Audit' from compute_qos_audit(): the doctrine findings (voice edge
+    without QoS, missing trust boundary, inert/dangling policy, fleet consistency),
+    then the per-device configured posture. Devices without a full running-config
+    capture are declared not assessable, never scored."""
+    if QOS_AUDIT_SHEET_NAME in wb.sheetnames:
+        del wb[QOS_AUDIT_SHEET_NAME]
+    ws = wb.create_sheet(QOS_AUDIT_SHEET_NAME)
+    p = qa or {}
+    finds = p.get("findings") or []
+    pdev = p.get("per_device") or []
+    s = p.get("summary") or {}
+    modes = s.get("modes") or {}
+    mode_txt = ", ".join(f"{k}: {v}" for k, v in modes.items()) or "none assessable"
+    b = ws.cell(1, 1, f"Configured QoS posture from the captured running-configs of "
+                      f"{s.get('n_assessable', 0)} of {s.get('n_devices', 0)} device(s) -> "
+                      f"{s.get('n_findings', 0)} finding(s). Config evidence only (no live queue "
+                      "counters); a device without a full capture is declared not assessable.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"Posture by mode — {mode_txt} · {s.get('n_voice_ports', 0)} voice-VLAN port(s) "
+                  f"· {s.get('n_not_assessable', 0)} not assessable").font = Font(size=10)
+    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC", "Low": "D9EAD3"}
+    HDRF = Font(bold=True, color="FFFFFF", size=10)
+    DAT = Font(name="Calibri", size=10)
+
+    hdr_row = 4
+    cols = ["Device", "Finding", "Severity", "Detail", "Recommendation"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    r = hdr_row + 1
+    for f in finds:
+        vals = [f.get("host"), f.get("label"), f.get("severity"), f.get("detail"),
+                f.get("recommendation")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="center" if col == 3 else "left",
+                                    vertical="top", wrap_text=col in (4, 5))
+            if col == 3 and v in SEVFILL:
+                c.fill = PatternFill("solid", fgColor=SEVFILL[v])
+        r += 1
+    if not finds:
+        ws.cell(r, 1, "No QoS findings on the assessable devices." if s.get("n_assessable")
+                else "No full running-config captures -- QoS posture not assessable.").font = DAT
+        r += 1
+
+    r += 2
+    ws.cell(r, 1, "Per-device configured posture").font = Font(bold=True, color="7030A0", size=10)
+    r += 1
+    cols2 = ["Device", "Assessable", "Mode", "Class-maps", "Policy-maps", "Attached if",
+             "Trust if", "Auto-QoS if", "Voice if", "Posture"]
+    for i, h in enumerate(cols2, 1):
+        c = ws.cell(r, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    r += 1
+    for d in pdev:
+        vals = [d.get("host"), "yes" if d.get("assessable") else "NOT ASSESSABLE",
+                d.get("mode"), d.get("n_class_maps", 0), d.get("n_policy_maps", 0),
+                d.get("n_attached_if", 0), d.get("n_trust_if", 0), d.get("n_auto_if", 0),
+                d.get("n_voice_if", 0), d.get("posture")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="center" if col in (2, 4, 5, 6, 7, 8, 9) else "left",
+                                    vertical="top", wrap_text=col == 10)
+            if col == 2 and not d.get("assessable"):
+                c.fill = PatternFill("solid", fgColor="EFEFEF")
+        r += 1
+    # shared widths: table 1 (A-E) needs wide Detail/Recommendation; table 2 spreads A-J.
+    for i, w in enumerate([22, 30, 11, 48, 48, 12, 10, 12, 10, 46], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{QOS_AUDIT_SHEET_NAME}' sheet: {len(finds)} finding(s), "
+                f"{s.get('n_assessable', 0)}/{s.get('n_devices', 0)} device(s) assessable")
+
+
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
 
 def write_lifecycle_risk_sheet(wb, lr: dict) -> None:

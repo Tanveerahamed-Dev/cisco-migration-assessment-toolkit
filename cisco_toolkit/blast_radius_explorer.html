@@ -1466,6 +1466,39 @@ function demoSnapshot(){
              total_events:73,crit_0_2:1,err_3:11,n_detections:4,
              by_kind:{"mac-flap":1,"err-disable":1,environment:1,"link-flap":1}},
     note:"Evidence is each device's buffered 'show logging' at collection time — a bounded, recent window (the buffer wraps), so counts are floors, not totals."},
+  // V3.23.165: QoS audit -> Health view qosCard + 'QoS Audit' sheet. Configured posture story: the
+  // distribution pair runs MQC consistently; ACC-1 carries voice VLANs with no edge policy; ACC-3
+  // enabled 'mls qos' with no trust boundary (the classic foot-gun); ACC-5 has no full capture.
+  qos_audit:{
+    findings:[
+      {host:"ACC-1",kind:"voice-without-qos",label:"Voice VLAN without a QoS edge policy",severity:"High",
+       detail:"3 voice-VLAN port(s) with no trust / auto-QoS / service-policy: Gi1/0/2, Gi1/0/4, Gi1/0/11.",
+       recommendation:"A voice VLAN whose port carries no trust statement, auto-QoS macro or service-policy means phone markings are not honored at the edge. Trust the phone ('trust device cisco-phone' / 'auto qos voip cisco-phone') or attach the access policy before migrating voice."},
+      {host:"ACC-3",kind:"no-trust-boundary",label:"QoS enabled with no trust boundary",severity:"High",
+       detail:"'mls qos' is enabled globally but no interface carries a trust statement, auto-QoS macro or service-policy.",
+       recommendation:"'mls qos' makes every port untrusted by default, so ingress CoS/DSCP is remarked to 0 fleet-wide — QoS in this state actively harms traffic. Define the trust boundary (trust phones/APs/uplinks, mark at access) or remove the global enable."},
+      {host:"(fleet)",kind:"mixed-posture",label:"Inconsistent QoS posture across the fleet",severity:"Medium",
+       detail:"3 device(s) carry QoS configuration (DIST-1, DIST-2, ACC-3) while 2 carry none (ACC-1, CORE-9K).",
+       recommendation:"End-to-end QoS is only as good as the weakest hop: one unconfigured switch in the path queues FIFO and may re-mark. Standardize the per-hop behavior (same trust + queuing template per role) before the migration."},
+    ],
+    per_device:[
+      {host:"ACC-1",assessable:true,mode:"none",n_class_maps:0,n_policy_maps:0,n_attached_if:0,
+       n_trust_if:0,n_auto_if:0,n_voice_if:3,posture:"No QoS configuration — all traffic is forwarded best-effort."},
+      {host:"ACC-3",assessable:true,mode:"mls qos",n_class_maps:0,n_policy_maps:0,n_attached_if:0,
+       n_trust_if:0,n_auto_if:0,n_voice_if:0,posture:"mls qos: 0 policy-map(s), service-policy on 0 interface(s), trust on 0, auto-QoS on 0."},
+      {host:"ACC-5",assessable:false,mode:"not assessable",n_class_maps:0,n_policy_maps:0,n_attached_if:0,
+       n_trust_if:0,n_auto_if:0,n_voice_if:0,posture:"Not assessable — full running-config not captured."},
+      {host:"CORE-9K",assessable:true,mode:"none",n_class_maps:0,n_policy_maps:0,n_attached_if:0,
+       n_trust_if:0,n_auto_if:0,n_voice_if:0,posture:"No QoS configuration — all traffic is forwarded best-effort."},
+      {host:"DIST-1",assessable:true,mode:"MQC",n_class_maps:4,n_policy_maps:2,n_attached_if:6,
+       n_trust_if:6,n_auto_if:0,n_voice_if:0,posture:"MQC: 2 policy-map(s), service-policy on 6 interface(s), trust on 6, auto-QoS on 0."},
+      {host:"DIST-2",assessable:true,mode:"MQC",n_class_maps:4,n_policy_maps:2,n_attached_if:6,
+       n_trust_if:6,n_auto_if:0,n_voice_if:0,posture:"MQC: 2 policy-map(s), service-policy on 6 interface(s), trust on 6, auto-QoS on 0."},
+    ],
+    summary:{n_devices:6,n_assessable:5,n_not_assessable:1,hosts_not_assessable:["ACC-5"],
+             modes:{"MQC":2,"mls qos":1,"none":2},n_voice_ports:3,n_findings:3,
+             by_kind:{"mixed-posture":1,"no-trust-boundary":1,"voice-without-qos":1}},
+    note:"Assessed from the captured running-config only — the CONFIGURED posture, not live queue counters."},
   // V3.23.62: STP root placement. VLAN 10 is rooted at DIST-1 on a deliberate priority and DIST-1 hosts the
   // gateway -> aligned + clean. VLAN 30 is rooted at ACC-3 on the DEFAULT priority (32798 = 32768+30) -> an
   // accidental root, and its gateway lives on DIST-1 (not ACC-3) -> root/gateway misalignment (hairpin).
@@ -5024,6 +5057,30 @@ function syslogCard(){
     `<div class="sub" style="margin-bottom:6px">${s.total_events} event(s) from the buffered logs of ${s.n_collected}/${s.n_devices} device(s) — the log signatures an engineer greps for first. The buffer is a bounded window: counts are floors. Full detail in the 'Syslog Intelligence' workbook sheet.</div>`+
     rows+miss+`</div>`;
 }
+/* QoS audit (NEW-V3.23.165): the configured QoS posture from the captured running-configs. Reads
+   SNAP.qos_audit {findings:[{host,label,severity,recommendation}], per_device, summary:{n_devices,
+   n_assessable,modes,n_voice_ports,n_findings,hosts_not_assessable}}. Config evidence only (no live
+   queue counters); devices without a full capture are DECLARED not assessable, never scored.
+   Back-compat: no key -> no card. */
+function qosCard(){
+  const qa=SNAP&&SNAP.qos_audit; if(!qa)return "";
+  const s=qa.summary||{}; if(!(s.n_devices>0))return "";
+  if(!(s.n_assessable>0))
+    return `<div class="sec"><h3>QoS posture <span class="badge b-warn">not assessable</span></h3>`+
+      `<div class="ln faint">No full running-config captures — the configured QoS posture carries no evidence either way.</div></div>`;
+  const finds=qa.findings||[];
+  const modes=Object.entries(s.modes||{}).map(([k,v])=>`${v}× ${esc(k)}`).join(", ");
+  const miss=(s.hosts_not_assessable||[]).length?
+    `<div class="ln faint">⚠ ${s.n_not_assessable} device(s) not assessable (${(s.hosts_not_assessable||[]).map(h=>esc(shortName(h))).join(", ")}) — no full running-config capture.</div>`:"";
+  if(!finds.length)
+    return `<div class="sec"><h3>QoS posture <span class="badge b-ok">consistent</span></h3>`+
+      `<div class="ln faint">✓ ${s.n_assessable} of ${s.n_devices} device(s) assessable (${modes}) — no departures from the campus QoS leading practice.</div>`+miss+`</div>`;
+  const rows=finds.slice(0,10).map(f=>{const tok=f.severity==="High"?"pl-crit":(f.severity==="Medium"?"pl-watch":"pl-ok");
+    return `<div class="ln"><span class="pill ${tok}">${esc(f.severity)}</span> <span class="mono">${esc(shortName(f.host))}</span> — <b>${esc(f.label)}</b>: <span class="faint">${esc(f.recommendation||f.detail||"")}</span></div>`;}).join("");
+  return `<div class="sec"><h3>QoS posture <span class="badge b-crit">${finds.length} finding${finds.length===1?"":"s"}</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">Configured posture of ${s.n_assessable}/${s.n_devices} device(s) (${modes}; ${s.n_voice_ports} voice port(s)) vs the campus leading practice — trust the edge device, mark at ingress, queue consistently per hop. Full detail in the 'QoS Audit' workbook sheet.</div>`+
+    rows+miss+`</div>`;
+}
 /* STP root placement (cross-layer L2 design): reads SNAP.stp_roots {host:{vlan:{root_priority,is_root}}}
    + the gateway SVIs in SNAP.interfaces. Flags (1) an ACCIDENTAL root -- a VLAN rooted on the DEFAULT
    bridge priority (32768 + vlan), i.e. won on a MAC tiebreak, not elected, so it can move on a cutover;
@@ -6899,6 +6956,7 @@ function drawHealth(){
     ${hygieneCard()}
     ${goldenDriftCard()}
     ${syslogCard()}
+    ${qosCard()}
     ${stpRootCard()}
     ${MODEL.hosts.length?layerHeatmapCard():""}
     ${mrCards}
