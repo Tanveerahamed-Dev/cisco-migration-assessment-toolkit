@@ -232,6 +232,10 @@ def test_cutover_deliverable_content(client):
     assert "Recommended wave sequence" in text         # §2 wave table section
     assert "Methodology" in text                       # grounding section
     assert "Run-of-show" in text                       # per-wave run-of-show heading
+    assert "Document Control" in text                  # AS-style front matter (V3.23.150)
+    assert "Document Acceptance" in text               # closing signature gate
+    all_rows = [c.text for t in doc.tables for row in t.rows for c in row.cells]
+    assert any("Customer network owner" in c for c in all_rows)   # acceptance roles
     assert len(doc.tables) >= 2                         # summary + sequence tables at minimum
 
 
@@ -253,6 +257,7 @@ def test_nrfu_deliverable_content(client):
     text = "\n".join(p.text for p in doc.paragraphs)
     assert "Network Ready-For-Use" in text
     assert "Document control" in text and "Sign-off" in text     # front matter
+    assert "Related documents" in text                           # family cross-reference (V3.23.150)
     assert "Phase I" in text and "Phase II" in text and "Phase III" in text
     assert "Entry criteria" in text and "Exit criteria" in text
     # Phase II reuses the engine's validation_plan — its test rows carry a command + expected baseline
@@ -437,6 +442,7 @@ def test_execution_pir_report(client):
     assert "Window 7" in text
     assert "Planned vs actual" in text
     assert "Timeline & deviation log" in text
+    assert "Related documents" in text                            # family cross-reference (V3.23.150)
     all_rows = [c.text for t in doc.tables for row in t.rows for c in row.cells]
     assert any("re-seated SFP" in c for c in all_rows)         # the scribed deviation is in the log
     assert any("PASS" in c for c in all_rows)                  # the recorded validation result

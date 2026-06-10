@@ -18,6 +18,8 @@ library is a warning + skip, never a crash. Every snapshot read is defensive. De
 import logging
 from datetime import datetime
 
+from cisco_toolkit.docmeta import add_acceptance, add_document_control
+
 logger = logging.getLogger(__name__)
 
 _SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
@@ -137,6 +139,19 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                "If any validation check fails and cannot be corrected within the window, execute the "
                "rollback. Every <placeholder> (date, owner, approver, exact uplinks) must be completed "
                "by the implementing engineer.", GREY)
+    doc.add_page_break()
+
+    # ---- document control (AS-style front matter; unnumbered so the wave sections are untouched) ----
+    add_document_control(
+        doc, document="Migration Method of Procedure (MOP)", label=label,
+        engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        audience="The implementing engineer(s) executing each maintenance window, the validation / "
+                 "war-room lead, and the change manager approving the windows.",
+        exclude=("mop",),
+        extra_assumptions=(
+            "“Ready for service” for a wave means the environment functions as per the "
+            "post-cutover validation checks documented in that wave's section — acceptance criteria "
+            "live in this MOP, not in a separate test document.",))
     doc.add_page_break()
 
     # ---- table of contents ----
@@ -335,6 +350,11 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         "the consolidated punch-list has no open Critical/High item, and a final fleet re-assessment "
         "(re-run this toolkit and compare via the campaign-trend report) confirms the target-state "
         "health bands. Record the final sign-off and archive the per-wave evidence.")
+    # closing signature gate under the existing section (heading=None: no new H1)
+    add_acceptance(
+        doc, heading=None,
+        scope_note="Sign-off below closes the change as a whole; each wave's in-window sign-off is "
+                   "recorded in its own section.")
 
     n_sections = len([p for p in doc.paragraphs if p.style.name == "Heading 1"])
     doc.save(output_path)

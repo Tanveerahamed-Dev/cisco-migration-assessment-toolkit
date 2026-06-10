@@ -169,6 +169,20 @@ def test_design_tolerates_malformed_stp_roots(tmp_path):
     assert os.path.exists(out)
 
 
+def test_design_carries_document_furniture(tmp_path):
+    """V3.23.150: AS-style front/back matter — Document Control between cover and TOC, and the
+    closing acceptance signature gate."""
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert "Document Control" in h1 and "Document Acceptance" in h1
+    text = _all_text(d)
+    assert "Revision history" in text and "Assumptions & caveats" in text
+    assert "Customer network owner" in text                      # acceptance signature roles
+    assert "Per-Wave Method of Procedure (.docx)" in text        # related-documents cross-reference
+
+
 def test_design_failsoft_without_python_docx(monkeypatch, tmp_path):
     import builtins, os
     real_import = builtins.__import__

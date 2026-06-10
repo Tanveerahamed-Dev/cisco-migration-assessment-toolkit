@@ -24,6 +24,8 @@ import logging
 from collections import Counter
 from datetime import datetime
 
+from cisco_toolkit.docmeta import add_acceptance, add_document_control
+
 logger = logging.getLogger(__name__)
 
 # Confidence vocabulary (governance/terminology-and-confidence-glossary.md).
@@ -176,6 +178,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                "Inferred-high (a neighbour was advertised), never Confirmed; off-scan links are Unknown. "
                "Endpoint presence is Confirmed at snapshot time only. Configured is not healthy; up is "
                "not healthy; gateway-active is not service proof.", GREY)
+    doc.add_page_break()
+
+    # ---- document control (AS-style front matter; unnumbered so §1–§13 are untouched) ----
+    add_document_control(
+        doc, document="Network Assessment & Migration Runbook", label=label,
+        engine_version=str(snap_dict.get("script_version", "")),
+        generated_at=snap_dict.get("generated_at"),
+        audience="The customer's network engineering and operations teams and the migration war "
+                 "room; review owner: the customer's network architecture owner.",
+        exclude=("runbook",))
     doc.add_page_break()
 
     # ---- table of contents (auto-updates in Word) ----
@@ -861,6 +873,11 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 doc.add_paragraph(f"…and {len(its) - 8} more item(s) for {host} — see the Remediation Plan sheet.")
         if len(ranked) > 40:
             doc.add_paragraph(f"…and {len(ranked) - 40} more device(s) — see the Remediation Plan workbook sheet.")
+
+    # ---- closing acceptance gate (AS-style back matter) ----
+    add_acceptance(
+        doc, scope_note="Acceptance of this runbook confirms its findings and migration approach as "
+                        "the agreed basis for the MOP and cutover planning that follow.")
 
     # landscape for the wide tables; US Letter
     sec = doc.sections[0]
