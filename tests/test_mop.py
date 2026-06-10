@@ -148,6 +148,40 @@ def test_mop_carries_document_furniture(tmp_path):
     assert "Assessment workbook (.xlsx)" in text      # related-documents cross-reference
 
 
+def test_mop_port_mapping_raci_and_success_criteria(tmp_path):
+    """V3.23.155: the migration-service MOP shape — §2.1 RACI, per-wave §x.4 port/interface mapping
+    with <target> columns + evidence-derived staged config stubs, and a success criterion per step."""
+    snap = _snap()
+    snap["interfaces"] = {
+        "acc1": {
+            "Gi1/0/5": {"switchport_mode": "Access", "vlan": "20", "end_host_mac": "bbbb.0000.0001",
+                        "description": "CAM-12"},
+            "Gi1/0/1": {"switchport_mode": "Trunk", "cdp_neighbor": "distA"},
+            "Gi1/0/9": {"switchport_mode": "Access", "vlan": "30"},   # no endpoint evidence
+        },
+    }
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    text = _all_text(d)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    # RACI up front, per the AS migration-service ownership split
+    assert "2.1 Responsibilities (RACI)" in h2
+    assert "In-window execution of each step" in text and "Customer operations" in text
+    # wave 2 (acc1) = section 4: mapping table reads the evidence, target columns stay placeholders
+    assert "4.4 Port / interface mapping & staged configuration" in h2, h2
+    assert "Gi1/0/5" in text and "<target device>" in text
+    assert "Uplink → distA" in text
+    assert "Gi1/0/9" not in text                        # no endpoint evidence → excluded
+    assert "switchport access vlan 20" in text          # evidence-derived staged stub
+    assert "description CAM-12" in text
+    # renumbered chain + per-step success criteria
+    assert "4.5 Cutover procedure" in h2 and "4.8 Sign-off" in h2
+    assert "Success:" in text
+    # wave 1 (distA/distB) has no interface evidence → the fresh-collection fallback renders
+    assert "build the mapping from a fresh interface collection" in text
+
+
 def test_mop_failsoft_without_python_docx(monkeypatch, tmp_path):
     import builtins, os
     real_import = builtins.__import__
