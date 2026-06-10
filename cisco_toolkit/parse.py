@@ -2161,3 +2161,76 @@ def parse_syslog_events(text: str) -> List[dict]:
                        "mnemonic": m.group(3), "msg": m.group(4).strip(),
                        "raw": raw.strip()})
     return events
+
+
+# =============================================================================
+# QoS CONFIG PARSER (NEW-V3.23.165). Structures the QoS-relevant slice of an
+# already-collected full 'show running-config' for the QoS-audit axis: global
+# enablement ('mls qos'), MQC objects (class-map / policy-map, incl. NX-OS
+# 'type qos|queuing|network-qos'), and per-interface QoS attributes (voice VLAN,
+# trust statements, auto-QoS macros, attached service-policies). Pure config
+# evidence -- no live queue counters. Tolerant; never raises.
+# =============================================================================
+_QOS_CLASS_MAP_RE = re.compile(
+    r"^class-map\s+(?:type\s+(\S+)\s+)?(?:match-(?:any|all)\s+)?(\S+)\s*$")
+_QOS_POLICY_MAP_RE = re.compile(r"^policy-map\s+(?:type\s+(\S+)\s+)?(\S+)\s*$")
+_QOS_SERVICE_POLICY_RE = re.compile(
+    r"^\s*service-policy\s+(?:type\s+\S+\s+)?(input|output)\s+(\S+)\s*$")
+# non-interface attachments (NX-OS 'system qos', control-plane) may omit the direction
+_QOS_SERVICE_POLICY_ANY_RE = re.compile(
+    r"^\s*service-policy\s+(?:type\s+\S+\s+)?(?:(?:input|output)\s+)?(\S+)\s*$")
+_QOS_IF_ATTR_KEYS = ("voice_vlan", "trust", "auto_qos", "policy_in", "policy_out")
+
+
+def parse_qos_config(text: str) -> dict:
+    """Parse a full running-config -> the device's QoS posture facts:
+    {mls_qos, class_maps, policy_maps, interfaces:{if:{voice_vlan,trust,auto_qos,
+    policy_in,policy_out}}, global_attach:[policy names attached outside interfaces]}.
+    Only interfaces with at least one QoS-relevant attribute are listed.
+    Empty/None input -> the same shape with empty members. Tolerant; never raises."""
+    res: dict = {"mls_qos": False, "class_maps": [], "policy_maps": [],
+                 "interfaces": {}, "global_attach": []}
+    cur: Optional[str] = None          # current interface block, else None
+    in_iface = False
+    for raw in (text or "").splitlines():
+        if raw[:1] not in (" ", "\t"):                     # a new top-level stanza
+            line = raw.strip()
+            im = re.match(r"^interface\s+(\S+)\s*$", line)
+            in_iface = bool(im)
+            cur = normalize_ifname(im.group(1)) if im else None
+            if line == "mls qos":
+                res["mls_qos"] = True
+                continue
+            cm = _QOS_CLASS_MAP_RE.match(line)
+            if cm and cm.group(2) not in res["class_maps"]:
+                res["class_maps"].append(cm.group(2))
+                continue
+            pm = _QOS_POLICY_MAP_RE.match(line)
+            if pm and pm.group(2) not in res["policy_maps"]:
+                res["policy_maps"].append(pm.group(2))
+            continue
+        # indented: an attribute of the enclosing block
+        sp = _QOS_SERVICE_POLICY_RE.match(raw)
+        if not in_iface:
+            # service-policy under system qos / control-plane / etc. = an attachment in use
+            # (may be directionless, e.g. NX-OS 'service-policy type network-qos NQ-8E')
+            ga = _QOS_SERVICE_POLICY_ANY_RE.match(raw)
+            if ga and ga.group(1) not in res["global_attach"]:
+                res["global_attach"].append(ga.group(1))
+            continue
+        line = raw.strip()
+        attrs = res["interfaces"].setdefault(
+            cur, {k: (False if k == "auto_qos" else None) for k in _QOS_IF_ATTR_KEYS})
+        vm = re.match(r"^switchport voice vlan\s+(\d+)", line)
+        if vm:
+            attrs["voice_vlan"] = vm.group(1)
+        elif re.match(r"^(mls\s+)?qos trust\s+\S+", line) or line.startswith("trust device "):
+            attrs["trust"] = line.split("trust", 1)[1].strip() or "trusted"
+        elif line.startswith("auto qos"):
+            attrs["auto_qos"] = True
+        elif sp:
+            attrs["policy_in" if sp.group(1) == "input" else "policy_out"] = sp.group(2)
+        # drop the entry again if nothing QoS-relevant was ever set on it
+        if all(attrs[k] in (None, False) for k in _QOS_IF_ATTR_KEYS):
+            del res["interfaces"][cur]
+    return res
