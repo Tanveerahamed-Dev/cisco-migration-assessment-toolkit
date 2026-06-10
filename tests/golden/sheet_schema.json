@@ -431,6 +431,18 @@
   null,
   null
  ],
+ "QoS Audit": [
+  "Configured QoS posture from the captured running-configs of 1 of 3 device(s) -> 1 finding(s). Config evidence only (no live queue counters); a device without a full capture is declared not assessable.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Application Intelligence": [
   "Application & network intelligence:",
   "2 domain(s)  \u00b7  0 on-air-critical  \u00b7  0 with High/Critical risk  \u00b7  0 span >1 wave  \u00b7  1 cross-domain risk(s)",

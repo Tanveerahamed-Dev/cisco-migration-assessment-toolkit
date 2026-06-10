@@ -665,6 +665,37 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                     f"({', '.join(ssum.get('hosts_not_collected') or [])}); absence of logs is not "
                     "scored as absence of problems.")
 
+    # 6.11 QoS audit (NEW-V3.23.165): configured QoS posture from the captured running-configs.
+    qa = snap_dict.get("qos_audit") or {}
+    qsum = qa.get("summary") or {}
+    if qsum.get("n_devices"):
+        doc.add_heading("6.11 QoS posture (configured)", level=2)
+        if not qsum.get("n_assessable"):
+            doc.add_paragraph(
+                "No full 'show running-config' captures are available, so the QoS posture is not "
+                "assessable for this fleet — declared, not scored.")
+        else:
+            qmodes = qsum.get("modes") or {}
+            mtxt = ", ".join(f"{v}× {k}" for k, v in qmodes.items()) or "—"
+            doc.add_paragraph(
+                f"Configured QoS posture of the {qsum.get('n_assessable', 0)} device(s) with a full "
+                f"running-config capture (of {qsum.get('n_devices', 0)} total): {mtxt}; "
+                f"{qsum.get('n_voice_ports', 0)} voice-VLAN port(s); "
+                f"{qsum.get('n_findings', 0)} finding(s). This is the configured posture — live "
+                "queue counters are out of scope for an offline assessment.")
+            qrows = [[f.get("host"), f.get("label"), f.get("severity"), f.get("recommendation")]
+                     for f in (qa.get("findings") or [])[:15]]
+            if qrows:
+                table(["Device", "Finding", "Severity", "Recommendation"],
+                      qrows, widths=[1.3, 2.0, 0.8, 3.9])
+            else:
+                doc.add_paragraph("No QoS findings on the assessable devices.")
+            if qsum.get("n_not_assessable"):
+                doc.add_paragraph(
+                    f"{qsum.get('n_not_assessable', 0)} device(s) not assessable "
+                    f"({', '.join(qsum.get('hosts_not_assessable') or [])}) — no full "
+                    "running-config capture.")
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()

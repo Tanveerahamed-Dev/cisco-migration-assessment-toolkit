@@ -2349,6 +2349,74 @@
   },
   "note": "Evidence is each device's buffered 'show logging' at collection time -- a bounded, recent window (the buffer wraps), so counts are floors, not totals. Devices listed as not-collected carry no log evidence either way."
  },
+ "qos_audit": {
+  "per_device": [
+   {
+    "host": "access1",
+    "assessable": false,
+    "mode": "not assessable",
+    "n_class_maps": 0,
+    "n_policy_maps": 0,
+    "n_attached_if": 0,
+    "n_trust_if": 0,
+    "n_auto_if": 0,
+    "n_voice_if": 0,
+    "posture": "Not assessable \u2014 full running-config not captured."
+   },
+   {
+    "host": "core1",
+    "assessable": true,
+    "mode": "none",
+    "n_class_maps": 0,
+    "n_policy_maps": 0,
+    "n_attached_if": 0,
+    "n_trust_if": 0,
+    "n_auto_if": 0,
+    "n_voice_if": 0,
+    "posture": "No QoS configuration \u2014 all traffic is forwarded best-effort."
+   },
+   {
+    "host": "core2",
+    "assessable": false,
+    "mode": "not assessable",
+    "n_class_maps": 0,
+    "n_policy_maps": 0,
+    "n_attached_if": 0,
+    "n_trust_if": 0,
+    "n_auto_if": 0,
+    "n_voice_if": 0,
+    "posture": "Not assessable \u2014 full running-config not captured."
+   }
+  ],
+  "findings": [
+   {
+    "host": "(fleet)",
+    "kind": "best-effort-fleet",
+    "label": "No QoS configured anywhere",
+    "severity": "Low",
+    "detail": "None of the 1 assessable device(s) carries any QoS configuration.",
+    "recommendation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration."
+   }
+  ],
+  "summary": {
+   "n_devices": 3,
+   "n_assessable": 1,
+   "n_not_assessable": 2,
+   "hosts_not_assessable": [
+    "access1",
+    "core2"
+   ],
+   "modes": {
+    "none": 1
+   },
+   "n_voice_ports": 0,
+   "n_findings": 1,
+   "by_kind": {
+    "best-effort-fleet": 1
+   }
+  },
+  "note": "Assessed from the captured running-config only \u2014 the CONFIGURED posture, not live queue counters. A device without a full 'show running-config' capture is declared not assessable, never scored."
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,

@@ -308,6 +308,35 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         "Where neither a dedicated VRF nor a gateway ACL is present, inter-VLAN traffic is openly "
         "routed — the migration is an opportunity to introduce intended segmentation.")
 
+    # NEW-V3.23.165: QoS is a named HLD design domain; render the audited CONFIGURED posture
+    # when the snapshot carries the qos_audit axis (older snapshots simply skip the section).
+    qa = snap_dict.get("qos_audit") or {}
+    qsum = qa.get("summary") or {}
+    if qsum.get("n_devices"):
+        doc.add_heading("2.7 Quality of service (configured posture)", level=2)
+        if not qsum.get("n_assessable"):
+            doc.add_paragraph(
+                "QoS posture is not assessable — no full running-config captures were available. "
+                "The target design must state the QoS intent (trust boundary, marking, queuing) "
+                "explicitly rather than inherit an unknown current state.")
+        else:
+            qmodes = qsum.get("modes") or {}
+            mtxt = ", ".join(f"{v} device(s) {k}" for k, v in qmodes.items())
+            doc.add_paragraph(
+                f"Configured posture across the {qsum.get('n_assessable', 0)} assessable device(s): "
+                f"{mtxt}. {qsum.get('n_voice_ports', 0)} voice-VLAN port(s) observed. The campus "
+                "leading practice is a trust boundary at the access edge (trust detected phones/APs, "
+                "mark at ingress) with consistent per-hop queuing fleet-wide; the table below lists "
+                "where the observed configuration departs from that intent.")
+            qrows = [(f.get("host"), f.get("label"), f.get("severity"))
+                     for f in (qa.get("findings") or [])[:12]]
+            if qrows:
+                table(["Device", "Departure from leading practice", "Severity"],
+                      qrows, widths=[1.6, 4.0, 1.0])
+            else:
+                doc.add_paragraph("No departures: the configured posture is consistent on every "
+                                  "assessable device.")
+
     # ===== 3. Low-Level Design (LLD) =====
     doc.add_heading("3. Low-Level Design (LLD)", level=1)
 

@@ -18,7 +18,7 @@ from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
     parse_etherchannel_summary_members, parse_ospf_neighbors, parse_bgp_summary,
-    parse_eigrp_neighbors, parse_syslog_events,
+    parse_eigrp_neighbors, parse_syslog_events, parse_qos_config,
 )
 from cisco_toolkit.textutils import _split_macs, normalize_ifname
 
@@ -4077,6 +4077,154 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
             "recent window (the buffer wraps), so counts are floors, not totals. Devices listed "
             "as not-collected carry no log evidence either way.")
     return {"per_device": per_device, "detections": detections, "summary": summary, "note": note}
+
+
+# =============================================================================
+# QoS & service-policy audit (NEW-V3.23.165). QoS is a named design domain in every Cisco HLD/LLD
+# (trust boundary at the access edge, per-hop behavior consistency fleet-wide) and the campus
+# leading practice is explicit: trust only detected phones/APs at the edge, mark/police at ingress,
+# queue on uplinks. This axis audits the CONFIGURED posture from the captured running-configs --
+# config evidence only (never live queue counters), and a device without a full running-config
+# capture is declared NOT ASSESSABLE, never scored.
+# =============================================================================
+_QOS_FINDING_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+_QOS_DOCTRINE: Dict[str, tuple] = {
+    "voice-without-qos": ("Voice VLAN without a QoS edge policy", "High",
+                          "A voice VLAN whose port carries no trust statement, auto-QoS macro or "
+                          "service-policy means phone markings are not honored at the edge. Trust "
+                          "the phone ('trust device cisco-phone' / 'auto qos voip cisco-phone') or "
+                          "attach the access policy before migrating voice."),
+    "no-trust-boundary": ("QoS enabled with no trust boundary", "High",
+                          "'mls qos' makes every port untrusted by default, so ingress CoS/DSCP is "
+                          "remarked to 0 fleet-wide -- QoS in this state actively harms traffic. "
+                          "Define the trust boundary (trust phones/APs/uplinks, mark at access) or "
+                          "remove the global enable."),
+    "inert-policy": ("Policy-maps defined but attached nowhere", "Medium",
+                     "QoS policy exists only on paper: no interface or system target carries a "
+                     "service-policy. Attach the policies or remove the dead config before it "
+                     "misleads the next engineer."),
+    "undefined-policy-ref": ("service-policy references a missing policy-map", "Medium",
+                             "An attached service-policy names a policy-map that is absent from the "
+                             "captured config. Verify the capture is complete, or fix the dangling "
+                             "reference."),
+    "mixed-posture": ("Inconsistent QoS posture across the fleet", "Medium",
+                      "End-to-end QoS is only as good as the weakest hop: one unconfigured switch "
+                      "in the path queues FIFO and may re-mark. Standardize the per-hop behavior "
+                      "(same trust + queuing template per role) before the migration."),
+    "best-effort-fleet": ("No QoS configured anywhere", "Low",
+                          "The whole assessable fleet runs best-effort. Acceptable for pure data; a "
+                          "documented risk if voice/video/storage rides this network. Record the "
+                          "customer's stance as a CRD requirement before the migration."),
+}
+
+
+def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
+                      all_hosts: Optional[List[str]] = None) -> dict:
+    """NEW-V3.23.165: audit the CONFIGURED QoS posture per device from the captured full
+    running-configs ({host: text}); `all_hosts` (optional) is the complete fleet so devices
+    without a capture are DECLARED not-assessable. Per device: mechanisms in use (MQC /
+    auto-QoS / 'mls qos'), object + attachment + trust + voice-port counts. Fleet: doctrine
+    findings (voice edge without QoS, trust-boundary absent, inert/dangling policy, mixed
+    posture, best-effort fleet). Config-derived only -- never live queue state. Pure on its
+    inputs; deterministic; tolerant of empty input; never raises."""
+    from collections import Counter
+    rc = run_configs or {}
+    hosts = sorted(set(all_hosts or []) | set(rc))
+    per_device: List[dict] = []
+    findings: List[dict] = []
+
+    def _find(host: str, kind: str, detail: str) -> None:
+        label, sev, rec = _QOS_DOCTRINE[kind]
+        findings.append({"host": host, "kind": kind, "label": label, "severity": sev,
+                         "detail": detail, "recommendation": rec})
+
+    n_voice_total = 0
+    for host in hosts:
+        text = (rc.get(host) or "").strip()
+        if not text:
+            per_device.append({"host": host, "assessable": False, "mode": "not assessable",
+                               "n_class_maps": 0, "n_policy_maps": 0, "n_attached_if": 0,
+                               "n_trust_if": 0, "n_auto_if": 0, "n_voice_if": 0,
+                               "posture": "Not assessable — full running-config not captured."})
+            continue
+        q = parse_qos_config(text)
+        ifs = q["interfaces"]
+        attached_if = [i for i, a in ifs.items() if a["policy_in"] or a["policy_out"]]
+        trust_if = [i for i, a in ifs.items() if a["trust"]]
+        auto_if = [i for i, a in ifs.items() if a["auto_qos"]]
+        voice_if = [i for i, a in ifs.items() if a["voice_vlan"]]
+        n_voice_total += len(voice_if)
+        mechanisms = []
+        if q["policy_maps"] or attached_if or q["global_attach"]:
+            mechanisms.append("MQC")
+        if auto_if:
+            mechanisms.append("auto-QoS")
+        if q["mls_qos"]:
+            mechanisms.append("mls qos")
+        has_qos = bool(mechanisms or trust_if or q["class_maps"])
+        mode = " + ".join(mechanisms) if mechanisms else ("trust-only" if trust_if else "none")
+        if has_qos:
+            posture = (f"{mode}: {len(q['policy_maps'])} policy-map(s), service-policy on "
+                       f"{len(attached_if)} interface(s), trust on {len(trust_if)}, "
+                       f"auto-QoS on {len(auto_if)}.")
+        else:
+            posture = "No QoS configuration — all traffic is forwarded best-effort."
+        per_device.append({"host": host, "assessable": True, "mode": mode,
+                           "n_class_maps": len(q["class_maps"]), "n_policy_maps": len(q["policy_maps"]),
+                           "n_attached_if": len(attached_if), "n_trust_if": len(trust_if),
+                           "n_auto_if": len(auto_if), "n_voice_if": len(voice_if),
+                           "posture": posture})
+
+        # per-device doctrine checks
+        naked_voice = sorted(i for i in voice_if
+                             if not (ifs[i]["trust"] or ifs[i]["auto_qos"]
+                                     or ifs[i]["policy_in"] or ifs[i]["policy_out"]))
+        if naked_voice:
+            _find(host, "voice-without-qos",
+                  f"{len(naked_voice)} voice-VLAN port(s) with no trust / auto-QoS / "
+                  f"service-policy: {', '.join(naked_voice[:6])}"
+                  + (" …" if len(naked_voice) > 6 else "") + ".")
+        if q["mls_qos"] and not (trust_if or auto_if or attached_if or q["global_attach"]):
+            _find(host, "no-trust-boundary",
+                  "'mls qos' is enabled globally but no interface carries a trust statement, "
+                  "auto-QoS macro or service-policy.")
+        if q["policy_maps"] and not (attached_if or q["global_attach"]):
+            _find(host, "inert-policy",
+                  f"{len(q['policy_maps'])} policy-map(s) defined "
+                  f"({', '.join(q['policy_maps'][:5])}) but no service-policy attaches any of them.")
+        attached_names = sorted({a["policy_in"] for a in ifs.values() if a["policy_in"]}
+                                | {a["policy_out"] for a in ifs.values() if a["policy_out"]}
+                                | set(q["global_attach"]))
+        dangling = [n for n in attached_names if n not in q["policy_maps"]]
+        if dangling:
+            _find(host, "undefined-policy-ref",
+                  f"service-policy attaches {', '.join(dangling[:5])} but no such policy-map "
+                  "exists in the captured config.")
+
+    # fleet-level doctrine checks (assessable devices only)
+    assessable = [d for d in per_device if d["assessable"]]
+    with_qos = [d["host"] for d in assessable if d["mode"] != "none"]
+    without_qos = [d["host"] for d in assessable if d["mode"] == "none"]
+    if with_qos and without_qos:
+        _find("(fleet)", "mixed-posture",
+              f"{len(with_qos)} device(s) carry QoS configuration ({', '.join(with_qos[:5])}) "
+              f"while {len(without_qos)} carry none ({', '.join(without_qos[:5])}).")
+    elif assessable and not with_qos:
+        _find("(fleet)", "best-effort-fleet",
+              f"None of the {len(assessable)} assessable device(s) carries any QoS configuration.")
+
+    findings.sort(key=lambda f: (_QOS_FINDING_RANK.get(f["severity"], 9), f["host"], f["kind"]))
+    not_assessable = [d["host"] for d in per_device if not d["assessable"]]
+    summary = {"n_devices": len(per_device), "n_assessable": len(assessable),
+               "n_not_assessable": len(not_assessable), "hosts_not_assessable": not_assessable[:20],
+               "modes": dict(sorted(Counter(d["mode"] for d in assessable).items())),
+               "n_voice_ports": n_voice_total, "n_findings": len(findings),
+               "by_kind": dict(sorted(Counter(f["kind"] for f in findings).items()))}
+    note = ("Assessed from the captured running-config only — the CONFIGURED posture, not live "
+            "queue counters. A device without a full 'show running-config' capture is declared "
+            "not assessable, never scored.")
+    return {"per_device": per_device, "findings": findings, "summary": summary, "note": note}
 
 
 # =============================================================================
