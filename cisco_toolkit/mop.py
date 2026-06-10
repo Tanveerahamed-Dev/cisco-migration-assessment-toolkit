@@ -74,8 +74,18 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         # numbering definition makes numbers CONTINUE across every list block in the document, so a wave's
         # procedure and rollback (and the next wave's procedure) would not restart at 1. Explicit prefixes
         # restart per call and render identically in every viewer.
+        # An item may be a plain string, or an (action, success_criterion) tuple — the MOP definition in
+        # the AS migration service is steps + precautions + SUCCESS CRITERIA per step (V3.23.155).
         for i, s in enumerate(items, 1):
-            doc.add_paragraph(f"{i}. {s}")
+            if isinstance(s, tuple):
+                action, success = s
+                p = doc.add_paragraph(f"{i}. {action}")
+                if success:
+                    r = p.add_run("  Success: " + success)
+                    r.bold = True
+                    r.font.color.rgb = NAVY
+            else:
+                doc.add_paragraph(f"{i}. {s}")
 
     # ---- snapshot-derived facts ----
     devices = snap.get("devices") or {}
@@ -195,6 +205,27 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         "post-cutover validation must pass).",
     ])
 
+    # 2.1 responsibilities — the AS migration-service ownership split, stated up front
+    doc.add_heading("2.1 Responsibilities (RACI)", level=2)
+    doc.add_paragraph(
+        "Ownership follows the standard AS migration-service split: the delivery engineer prepares "
+        "the MOP, mappings and pre/post checks; the customer's team executes the steps in the window "
+        "and owns the key in-window decisions. Adjust names per the engagement before approval.")
+    table(["Activity", "Responsible", "Notes"], [
+        ("MOP preparation, port mapping & staged configuration", "Delivery engineer (author)",
+         "Reviewed and approved by the customer network owner"),
+        ("Pre/post check definition & baseline capture", "Delivery engineer (author)",
+         "From the assessment's validation plan — one source of truth"),
+        ("Change approval & window scheduling", "Customer change manager",
+         "Via the customer's change-advisory process"),
+        ("In-window execution of each step", "Customer operations / implementing engineer",
+         "Delivery engineer advises; steps are executed exactly as written"),
+        ("Go/no-go and rollback decision", "Customer network owner (change owner)",
+         "At the rollback decision time stated in each wave's scope table"),
+        ("Validation evidence & sign-off records", "Validation / war-room lead",
+         "Archived with the post-implementation review"),
+    ], widths=[2.6, 2.0, 2.2])
+
     # ===== per-wave sections =====
     for wi, (name, switches) in enumerate(waves, start=3):
         r = readiness_by_group.get(name, {})
@@ -261,39 +292,106 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                    "'show running-config', 'show ip interface brief', 'show cdp neighbors', "
                    "'show spanning-tree summary', and (if L3) 'show ip route' / 'show standby brief'."])
 
-        # 2.x.4 procedure
-        doc.add_heading(f"{wi}.4 Cutover procedure", level=2)
+        # 2.x.4 port / interface mapping & staged configuration (AS migration-service deliverable)
+        doc.add_heading(f"{wi}.4 Port / interface mapping & staged configuration", level=2)
+        doc.add_paragraph(
+            "The MOP carries the physical port/interface mapping and the staged (converted) "
+            "configuration — the legacy side is read from the collected evidence; every <target> "
+            "column must be completed by the implementing engineer before the window.")
+        map_rows = []
+        ifaces_all = snap.get("interfaces") or {}
+        for h in switches:
+            for pname, dd in sorted((ifaces_all.get(h) or {}).items()):
+                dd = dd or {}
+                mode = (dd.get("switchport_mode") or "").lower()
+                if mode == "access" and ((dd.get("end_host_mac") or "").strip()
+                                         or (dd.get("end_host_ip") or "").strip()):
+                    kind = "Endpoint"
+                elif mode == "trunk" and (dd.get("cdp_neighbor") or "").strip():
+                    kind = f"Uplink → {dd.get('cdp_neighbor')}"
+                else:
+                    continue
+                map_rows.append((h, pname, kind, dd.get("vlan") or "—",
+                                 (dd.get("description") or dd.get("endpoint_type") or "—"),
+                                 "<target device>", "<target port>"))
+        if map_rows:
+            table(["Legacy device", "Port", "Role", "VLAN", "Description / endpoint",
+                   "Target device", "Target port"],
+                  map_rows[:30], widths=[1.0, 0.8, 1.2, 0.5, 1.4, 1.0, 0.9])
+            if len(map_rows) > 30:
+                doc.add_paragraph(f"… and {len(map_rows) - 30} more port(s); the full per-port "
+                                  "inventory is in the workbook's interface sheets.")
+            stub_by_host: dict = {}
+            for h, pname, kind, v, desc, *_ in map_rows:
+                if kind == "Endpoint" and v != "—":
+                    stub_by_host.setdefault(h, []).append((pname, v, desc))
+            if stub_by_host:
+                doc.add_paragraph(
+                    "Staged endpoint-port configuration, derived from the evidence (mode/VLAN/"
+                    "description only — review, complete and peer-review before any use):")
+                for h in sorted(stub_by_host)[:2]:
+                    lines = [f"! {h} — staged endpoint-port config (evidence-derived)"]
+                    for pname, v, desc in stub_by_host[h][:6]:
+                        lines.append(f"interface <target port for {pname}>")
+                        if desc != "—":
+                            lines.append(f" description {desc}")
+                        lines += [" switchport mode access", f" switchport access vlan {v}", "!"]
+                    cp = doc.add_paragraph()
+                    cr = cp.add_run("\n".join(lines))
+                    cr.font.name = "Consolas"; cr.font.size = Pt(9)
+        else:
+            doc.add_paragraph("No endpoint or uplink port evidence for this wave's devices in the "
+                              "snapshot — build the mapping from a fresh interface collection before "
+                              "the window.")
+
+        # 2.x.5 procedure (each step carries its success criterion — the MOP definition)
+        doc.add_heading(f"{wi}.5 Cutover procedure", level=2)
         strategy = (seq.get("sequence") or scen.get("recommended_scenario") or "").lower()
-        proc = ["Open the change window and announce start in the war room; confirm rollback owner is present."]
+        proc = [("Open the change window and announce start in the war room; confirm rollback owner "
+                 "is present.",
+                 "roles confirmed; the rollback decision time in §" + f"{wi}.1 is agreed.")]
         if playbook.get("pre"):
-            proc.append("Preparation: " + playbook["pre"].rstrip(". ") + ".")
+            proc.append(("Preparation: " + playbook["pre"].rstrip(". ") + ".",
+                         "staging complete with no production-facing change."))
         if "make-before-break" in strategy or "parallel" in strategy:
             proc += [
-                "Build the new/target path BESIDE the existing one (do not remove the legacy path yet): "
-                "stage the target device config and bring up the new uplinks <list exact interfaces>.",
-                "Verify the new path forwards in isolation (link up, STP/trunk consistent, gateway "
-                "reachable) before moving any production load.",
-                "Migrate endpoints leg-by-leg / VLAN-by-VLAN onto the new path, validating after each "
-                "increment; keep the legacy leg as the live fallback.",
-                "Once all load is on the new path and validated, decommission the legacy path.",
+                ("Build the new/target path BESIDE the existing one (do not remove the legacy path "
+                 "yet): stage the target device config and bring up the new uplinks per the §"
+                 f"{wi}.4 mapping.",
+                 "target links up; no STP topology change on the legacy path."),
+                ("Verify the new path forwards in isolation (link up, STP/trunk consistent, gateway "
+                 "reachable) before moving any production load.",
+                 "isolation checks pass on the target path before any endpoint moves."),
+                ("Migrate endpoints leg-by-leg / VLAN-by-VLAN onto the new path, validating after "
+                 "each increment; keep the legacy leg as the live fallback.",
+                 "each increment re-homes and passes its checks before the next one moves."),
+                ("Once all load is on the new path and validated, decommission the legacy path.",
+                 "no endpoint remains on the legacy leg (MAC/ARP tables clean)."),
             ]
         else:  # hard cutover
             proc += [
-                "Announce the hard cutover; this wave has a brief outage for the moved endpoints.",
-                "Apply the staged target configuration to <devices>; move the uplinks/endpoints "
-                "<list exact interfaces> from legacy to target.",
-                "Bring up the target links and confirm STP converges and trunks negotiate as expected.",
+                ("Announce the hard cutover; this wave has a brief outage for the moved endpoints.",
+                 "stakeholders acknowledged; the outage clock is started."),
+                ("Apply the staged target configuration and move the uplinks/endpoints per the §"
+                 f"{wi}.4 port mapping from legacy to target.",
+                 "every port in the §" + f"{wi}.4 mapping is re-terminated and up."),
+                ("Bring up the target links and confirm STP converges and trunks negotiate as "
+                 "expected.",
+                 "STP converged; trunk allowed-VLAN checks pass; no err-disabled ports."),
             ]
         if playbook.get("validate"):
-            proc.append("In-window validation: " + playbook["validate"].rstrip(". ") + ".")
-        proc.append("Run §" + f"{wi}.5 post-cutover validation in full before declaring the wave complete.")
+            proc.append(("In-window validation: " + playbook["validate"].rstrip(". ") + ".",
+                         "in-window checks match the §" + f"{wi}.3 baseline."))
+        proc.append(("Run §" + f"{wi}.6 post-cutover validation in full before declaring the wave "
+                     "complete.",
+                     "every check matches its captured baseline."))
         steps(proc)
 
-        # 2.x.5 post-cutover validation (reuse the existing validation plan)
-        doc.add_heading(f"{wi}.5 Post-cutover validation (go/no-go)", level=2)
+        # 2.x.6 post-cutover validation (reuse the existing validation plan)
+        doc.add_heading(f"{wi}.6 Post-cutover validation (go/no-go)", level=2)
         if val_items:
             doc.add_paragraph("Every check must pass. A failure that cannot be corrected in-window "
-                              "triggers the rollback in §" + f"{wi}.6.")
+                              "triggers the rollback in §" + f"{wi}.7.")
             table(["Category", "Device", "Check", "Command", "Expected (good) result"],
                   [(it.get("category"), it.get("device"), it.get("check"),
                     it.get("command"), it.get("expect")) for it in val_items[:40]],
@@ -307,23 +405,28 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                               "adjacencies, STP root, and port-channel membership are unchanged from the "
                               "§" + f"{wi}.3 baseline.")
 
-        # 2.x.6 rollback
-        doc.add_heading(f"{wi}.6 Rollback", level=2)
-        rb = ["Declare rollback in the war room and record the trigger (which validation check failed)."]
+        # 2.x.7 rollback
+        doc.add_heading(f"{wi}.7 Rollback", level=2)
+        rb = [("Declare rollback in the war room and record the trigger (which validation check "
+               "failed).",
+               "the trigger and time are recorded in the change log.")]
         if playbook.get("rollback"):
             rb.append("Strategy-specific: " + playbook["rollback"].rstrip(". ") + ".")
         if "make-before-break" in strategy or "parallel" in strategy:
-            rb.append("Move any migrated endpoints back onto the still-live legacy leg; remove the "
-                      "new path. Because the legacy path was never torn down, this is non-disruptive.")
+            rb.append(("Move any migrated endpoints back onto the still-live legacy leg; remove the "
+                       "new path. Because the legacy path was never torn down, this is non-disruptive.",
+                       "all endpoints re-home onto the legacy leg with no loss."))
         else:
-            rb.append("Re-apply the pre-change configuration captured in §" + f"{wi}.3 to <devices>; "
-                      "move uplinks/endpoints back to the legacy ports.")
-        rb.append("Re-run the §" + f"{wi}.5 checks against the legacy path to confirm service is restored, "
-                  "then close the window as rolled-back and schedule a retro.")
+            rb.append(("Re-apply the pre-change configuration captured in §" + f"{wi}.3 to <devices>; "
+                       "move uplinks/endpoints back to the legacy ports.",
+                       "configuration and cabling match the §" + f"{wi}.3 captured state."))
+        rb.append(("Re-run the §" + f"{wi}.6 checks against the legacy path to confirm service is "
+                   "restored, then close the window as rolled-back and schedule a retro.",
+                   "legacy-path checks match the §" + f"{wi}.3 baseline; window closed as rolled-back."))
         steps(rb)
 
-        # 2.x.7 sign-off
-        doc.add_heading(f"{wi}.7 Sign-off", level=2)
+        # 2.x.8 sign-off
+        doc.add_heading(f"{wi}.8 Sign-off", level=2)
         table(["Role", "Name", "Time", "Result (proceed / rolled-back)"],
               [("Implementing engineer", "", "", ""),
                ("Validation / war-room lead", "", "", ""),
