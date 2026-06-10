@@ -1,7 +1,73 @@
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, bandColor } from "../api";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
+
+const GATE_DECISION_COLOR: Record<string, string> = {
+  go: "var(--ok)", "no-go": "var(--crit)", slipped: "var(--watch)", pending: "var(--text-faint)",
+};
+const NEXT_DECISION: Record<string, string> = { pending: "go", go: "no-go", "no-go": "slipped", slipped: "pending" };
+
+function GateBoard({ id, toast }: { id: number; toast: (m: string) => void }) {
+  const { data, loading, reload } = useAsync(() => api.getGates(id), [id]);
+  const [signer, setSigner] = useState("");
+  if (loading || !data) return null;
+  // union: waves derivable from the latest snapshot + any wave that already has recorded history
+  const waves = Array.from(new Set([...data.waves, ...data.records.map((r) => r.wave)]));
+  if (waves.length === 0) return null;
+  const rec = new Map(data.records.map((r) => [`${r.wave}|${r.gate}`, r]));
+
+  async function cycle(wave: string, gate: string) {
+    const cur = rec.get(`${wave}|${gate}`)?.decision || "pending";
+    const next = NEXT_DECISION[cur] || "go";
+    try { await api.setGate(id, wave, gate, next, signer); reload(); }
+    catch (e: any) { toast(e.message); }
+  }
+
+  return (
+    <div className="panel">
+      <div className="spread" style={{ marginBottom: 6 }}>
+        <h3 style={{ margin: 0 }}>Gate board · T-minus sign-offs</h3>
+        <input value={signer} onChange={(e) => setSigner(e.target.value)} placeholder="signed by…"
+          style={{ width: 140, fontSize: 12 }} />
+      </div>
+      <div className="dim" style={{ fontSize: 12.5, marginBottom: 12 }}>
+        Click a cell to cycle pending → GO → NO-GO → SLIPPED → pending. Decisions are recorded
+        against this campaign and land in the Engagement Workflow &amp; Plan of Record (§4.3 “Gate
+        record (as signed)”) the next time it is downloaded.
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ display: "grid", gridTemplateColumns: `minmax(90px, auto) repeat(${data.cadence.length}, 1fr)`, gap: 6, minWidth: 640 }}>
+          <span />
+          {data.cadence.map((g) => (
+            <div key={g.key} style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700 }}>{g.label}</div>
+              <div className="faint mono" style={{ fontSize: 10.5 }}>{g.when}</div>
+            </div>
+          ))}
+          {waves.map((w) => (
+            <Fragment key={w}>
+              <span className="chip mono" style={{ alignSelf: "center" }}>{w}</span>
+              {data.cadence.map((g) => {
+                const r = rec.get(`${w}|${g.key}`);
+                const d = r?.decision || "pending";
+                const color = GATE_DECISION_COLOR[d] || "var(--text-faint)";
+                const tip = r ? `${d.toUpperCase()} — ${r.signed_by || "unsigned"} · ${new Date(r.decided_at).toLocaleString()}${r.note ? ` · ${r.note}` : ""}` : "pending — click to sign";
+                return (
+                  <span key={`${w}|${g.key}`} role="button" className="chip" onClick={() => cycle(w, g.key)}
+                    data-wave={w} data-gate={g.key} title={tip}
+                    style={{ cursor: "pointer", justifyContent: "center", color, borderColor: color, fontSize: 11 }}>
+                    {d === "pending" ? "—" : d.toUpperCase()}
+                  </span>
+                );
+              })}
+            </Fragment>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const DIR_ICON: Record<string, string> = { improving: "▲", worsening: "▼", flat: "▬" };
 const DIR_COLOR: Record<string, string> = { improving: "var(--ok)", worsening: "var(--crit)", flat: "var(--text-faint)" };
@@ -122,6 +188,7 @@ export default function CampaignPage() {
               </div>
             )}
           </div>
+          {snaps.length > 0 && <GateBoard id={cid} toast={toast} />}
         </div>
 
         <div className="grid" style={{ gap: 16, alignSelf: "start" }}>

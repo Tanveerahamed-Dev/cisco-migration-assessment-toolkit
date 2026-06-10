@@ -43,6 +43,17 @@ CREATE TABLE IF NOT EXISTS executions (
     state_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_executions_snapshot ON executions(snapshot_id, started_at);
+CREATE TABLE IF NOT EXISTS gates (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    wave        TEXT NOT NULL,
+    gate        TEXT NOT NULL,
+    decision    TEXT NOT NULL,
+    signed_by   TEXT NOT NULL DEFAULT '',
+    note        TEXT NOT NULL DEFAULT '',
+    decided_at  TEXT NOT NULL,
+    UNIQUE(campaign_id, wave, gate)
+);
 """
 
 
@@ -222,6 +233,45 @@ class Store:
             cur = self._conn.execute("DELETE FROM executions WHERE id = ?", (execution_id,))
             self._conn.commit()
             return cur.rowcount > 0
+
+    # -- gates ---------------------------------------------------------------
+    # Per-(wave, gate) sign-off dispositions for a campaign's T-minus calendar. An absent row IS
+    # the 'pending' state — clearing a decision deletes the row, so the table only ever holds
+    # decisions someone actually made (and the engagement plan of record only renders real state).
+    def upsert_gate(self, campaign_id: int, wave: str, gate: str, decision: str,
+                    signed_by: str = "", note: str = "") -> Dict[str, Any]:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO gates(campaign_id, wave, gate, decision, signed_by, note, decided_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id, wave, gate) DO UPDATE SET
+                       decision=excluded.decision, signed_by=excluded.signed_by,
+                       note=excluded.note, decided_at=excluded.decided_at""",
+                (campaign_id, wave, gate, decision, signed_by.strip(), note.strip(), _now()),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT wave, gate, decision, signed_by, note, decided_at FROM gates "
+                "WHERE campaign_id=? AND wave=? AND gate=?", (campaign_id, wave, gate),
+            ).fetchone()
+        return dict(row)
+
+    def clear_gate(self, campaign_id: int, wave: str, gate: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM gates WHERE campaign_id=? AND wave=? AND gate=?",
+                (campaign_id, wave, gate))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def list_gates(self, campaign_id: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT wave, gate, decision, signed_by, note, decided_at
+                   FROM gates WHERE campaign_id = ? ORDER BY wave ASC, gate ASC""",
+                (campaign_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # -- helpers -----------------------------------------------------------
     def _meta_row(self, row: sqlite3.Row) -> Dict[str, Any]:

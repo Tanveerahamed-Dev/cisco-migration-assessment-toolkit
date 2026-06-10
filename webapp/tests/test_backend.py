@@ -214,6 +214,67 @@ def test_deliverables(client):
     assert client.get(f"/api/snapshots/{snap_id}/deliverable/nope").status_code == 400
 
 
+def test_gate_board_roundtrip_and_plan_of_record_feedback(client):
+    """V3.23.158: the gate board records T-minus sign-offs per (wave, gate); the engagement plan of
+    record carries them back as §4.3 'Gate record (as signed)'. Pending clears the row, so an
+    untouched board leaves the document without an as-signed section (no invented project state)."""
+    seeded = client.post("/api/demo/seed").json()
+    cid, snap_id = seeded["campaign"]["id"], seeded["snapshot"]["id"]
+
+    board = client.get(f"/api/campaigns/{cid}/gates").json()
+    assert [g["key"] for g in board["cadence"]] == [
+        "commit", "checkpoint", "readiness", "go_no_go", "window", "hypercare_exit"]
+    assert board["records"] == []                        # nothing signed yet
+    wave = (board["waves"] or ["Group 1"])[0]            # demo fleet derives waves; fall back safely
+
+    # sign, then upsert the same gate (one row, latest decision wins)
+    r = client.post(f"/api/campaigns/{cid}/gates",
+                    json={"wave": wave, "gate": "go_no_go", "decision": "no-go",
+                          "signed_by": "A. Engineer", "note": "blocker open"})
+    assert r.status_code == 200
+    r = client.post(f"/api/campaigns/{cid}/gates",
+                    json={"wave": wave, "gate": "go_no_go", "decision": "go",
+                          "signed_by": "A. Engineer", "note": "checks green"})
+    recs = r.json()["records"]
+    assert len(recs) == 1 and recs[0]["decision"] == "go" and recs[0]["signed_by"] == "A. Engineer"
+
+    # validation: unknown gate / unknown decision / missing campaign
+    bad_gate = client.post(f"/api/campaigns/{cid}/gates",
+                           json={"wave": wave, "gate": "bogus", "decision": "go"})
+    assert bad_gate.status_code == 400
+    bad_dec = client.post(f"/api/campaigns/{cid}/gates",
+                          json={"wave": wave, "gate": "commit", "decision": "maybe"})
+    assert bad_dec.status_code == 400
+    assert client.get("/api/campaigns/999999/gates").status_code == 404
+
+    # the feedback loop: the signed decision lands in the engagement DOCX
+    r = client.get(f"/api/snapshots/{snap_id}/deliverable/engagement")
+    if r.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert r.status_code == 200, r.text
+
+    import io
+
+    from docx import Document
+
+    def _text(resp):
+        doc = Document(io.BytesIO(resp.content))
+        parts = [p.text for p in doc.paragraphs]
+        parts += [c.text for t in doc.tables for row in t.rows for c in row.cells]
+        return "\n".join(parts)
+
+    text = _text(r)
+    assert "Gate record (as signed)" in text
+    assert "GO" in text and "A. Engineer" in text and "checks green" in text
+
+    # clearing back to pending removes the row AND the as-signed section
+    r = client.post(f"/api/campaigns/{cid}/gates",
+                    json={"wave": wave, "gate": "go_no_go", "decision": "pending"})
+    assert r.json()["records"] == []
+    r = client.get(f"/api/snapshots/{snap_id}/deliverable/engagement")
+    assert "Gate record (as signed)" not in _text(r)
+
+
 def test_cutover_deliverable_content(client):
     """The Cutover Plan DOCX is the one deliverable with no engine-side test — validate it actually
     renders the plan (headings + tables), not just that it's a >1KB zip."""

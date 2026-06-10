@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import cutover, deliverables, engine, execution, graph, ingest, summary
+from . import cutover, deliverables, engine, execution, gates, graph, ingest, summary
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -93,6 +93,14 @@ class FinishIn(BaseModel):
     status: str  # completed | aborted
     note: str = ""
     operator: str = ""
+
+
+class GateIn(BaseModel):
+    wave: str
+    gate: str       # a cisco_toolkit.engagement.GATE_SEQUENCE key
+    decision: str   # go | no-go | slipped | pending (pending clears the sign-off)
+    signed_by: str = ""
+    note: str = ""
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -176,6 +184,36 @@ def create_app(db_path: str | None = None) -> FastAPI:
         snaps = [store.get_snapshot(s["id"]) for s in c["snapshots"]]
         snaps = [s for s in snaps if s]
         return engine.campaign_trend(snaps)
+
+    # -- gate board (T-minus sign-offs; feeds the engagement plan of record) --
+    @app.get("/api/campaigns/{campaign_id}/gates")
+    def get_gates(campaign_id: int) -> Dict[str, Any]:
+        c = store.get_campaign(campaign_id)
+        if not c:
+            raise HTTPException(404, "Campaign not found")
+        snaps = c["snapshots"] or []
+        latest = store.get_snapshot(snaps[-1]["id"]) if snaps else None
+        return {"cadence": gates.cadence(),
+                "waves": gates.waves_from_snapshot(latest),
+                "records": store.list_gates(campaign_id)}
+
+    @app.post("/api/campaigns/{campaign_id}/gates")
+    def set_gate(campaign_id: int, body: GateIn) -> Dict[str, Any]:
+        if not store.get_campaign(campaign_id):
+            raise HTTPException(404, "Campaign not found")
+        if body.gate not in gates.GATE_KEYS:
+            raise HTTPException(400, f"Unknown gate '{body.gate}' (expected one of {list(gates.GATE_KEYS)})")
+        wave = body.wave.strip()
+        if not wave:
+            raise HTTPException(400, "wave must not be empty")
+        if body.decision == "pending":
+            store.clear_gate(campaign_id, wave, body.gate)  # idempotent: clearing a clear row is fine
+        elif body.decision in gates.DECISIONS:
+            store.upsert_gate(campaign_id, wave, body.gate, body.decision, body.signed_by, body.note)
+        else:
+            raise HTTPException(400, f"Unknown decision '{body.decision}' "
+                                     f"(expected one of {list(gates.DECISIONS)} or 'pending')")
+        return {"records": store.list_gates(campaign_id)}
 
     # -- snapshots ---------------------------------------------------------
     @app.post("/api/campaigns/{campaign_id}/snapshots", status_code=201)
@@ -385,8 +423,12 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         if not deliverables.availability().get(kind):
             raise HTTPException(503, f"{deliverables.SPECS[kind].needs} is not installed on the server")
+        # The feedback loop: the engagement plan of record carries the campaign's recorded gate
+        # sign-offs (§4.3 "as signed"); every other deliverable is a pure snapshot read.
+        gate_rec = (gates.gate_record(store.list_gates(meta["campaign_id"]))
+                    if kind == "engagement" else None)
         try:
-            path = deliverables.generate(kind, snap, meta["label"])
+            path = deliverables.generate(kind, snap, meta["label"], gates=gate_rec)
         except Exception as e:  # generation failure (e.g. a malformed snapshot)
             raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]

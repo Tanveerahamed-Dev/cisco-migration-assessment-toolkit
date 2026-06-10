@@ -65,8 +65,10 @@ def catalogue() -> list:
             for s in SPECS.values()]
 
 
-def generate(kind: str, snap: dict, label: str) -> str:
-    """Write the deliverable to a temp file; return its path. Caller streams it and deletes it."""
+def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None) -> str:
+    """Write the deliverable to a temp file; return its path. Caller streams it and deletes it.
+    `gates` is the campaign's recorded gate sign-offs — consumed only by the engagement plan of
+    record (its §4.3 as-signed trail); every other writer is a pure snapshot read."""
     spec = SPECS[kind]
     if kind == "engagement":
         from cisco_toolkit.engagement import write_engagement_docx as write
@@ -92,7 +94,10 @@ def generate(kind: str, snap: dict, label: str) -> str:
     fd, path = tempfile.mkstemp(suffix="." + spec.ext, prefix=f"assesshub_{kind}_")
     os.close(fd)
     try:
-        write(path, snap, label)
+        if kind == "engagement" and gates:
+            write(path, snap, label, gate_record=gates)
+        else:
+            write(path, snap, label)
     except Exception:
         if os.path.exists(path):
             os.unlink(path)
