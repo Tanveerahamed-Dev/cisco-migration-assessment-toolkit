@@ -88,6 +88,14 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         ["Change manager", "", "", ""],
         ["Customer acceptance", "", "", ""],
     ], widths=[1.8, 2.0, 1.7, 1.0])
+    # Shared family cross-reference (imported here, after the engine sys.path bootstrap).
+    from cisco_toolkit.docmeta import related_rows
+    doc.add_heading("Related documents", level=2)
+    table(["Document", "Role in the set"], [list(r) for r in related_rows(exclude=("nrfu",))],
+          widths=[2.7, 3.8])
+    p = doc.add_paragraph()
+    kv(p, "Intended audience:", "the test lead and network engineers executing the acceptance tests, "
+                                "and the customer signatories accepting the network for production.")
 
     # ---- 1. introduction & scope ----
     doc.add_heading("1. Introduction, scope & test approach", level=1)

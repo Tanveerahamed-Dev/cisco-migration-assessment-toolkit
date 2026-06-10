@@ -114,6 +114,17 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
         ["Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
         ["Engine", engine.ENGINE_SCHEMA_VERSION],
     ], widths=[2.2, 4.3])
+    # Shared family cross-reference (imported here, after the engine sys.path bootstrap).
+    from cisco_toolkit.docmeta import related_rows
+    doc.add_heading("Related documents", level=2)
+    table(["Document", "Role in the set"], [list(r) for r in related_rows(exclude=("deck",))],
+          widths=[2.7, 3.8])
+    aud = doc.add_paragraph()
+    ar = aud.add_run("Intended audience: ")
+    ar.bold = True
+    ar.font.color.rgb = ink(_NAVY)
+    aud.add_run("change management, the service owner, and the customer operations team reviewing "
+                "the executed change.")
 
     # ---- 1. Execution summary ----
     doc.add_heading("1. Execution summary", level=1)

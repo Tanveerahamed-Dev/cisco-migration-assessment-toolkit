@@ -132,6 +132,22 @@ def test_mop_surfaces_blockers_and_rollback(tmp_path):
     assert "2 wave(s)" in text or "sequenced into 2 wave(s)" in text
 
 
+def test_mop_carries_document_furniture(tmp_path):
+    """V3.23.150: AS-style front matter (Document Control with the 'Ready for service' caveat from
+    the Cisco migration-service MOP definition) + the closing signature gate under the existing
+    Post-Migration Acceptance section (no new H1)."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert "Document Control" in h1
+    assert "Document Acceptance" not in h1            # gate renders under Post-Migration Acceptance
+    text = _all_text(d)
+    assert "Ready for service" in text                # MOP-specific acceptance-criteria caveat
+    assert "Customer network owner" in text           # closing signature roles
+    assert "Assessment workbook (.xlsx)" in text      # related-documents cross-reference
+
+
 def test_mop_failsoft_without_python_docx(monkeypatch, tmp_path):
     import builtins, os
     real_import = builtins.__import__

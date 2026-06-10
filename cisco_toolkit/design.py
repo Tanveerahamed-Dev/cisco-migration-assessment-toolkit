@@ -22,6 +22,8 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 
+from cisco_toolkit.docmeta import add_acceptance, add_document_control
+
 logger = logging.getLogger(__name__)
 
 _LC_BAND_RANK = {"Past-LDoS": 0, "Past-EoS": 1, "Near-LDoS": 2, "Active": 3, "Unknown": 4}
@@ -175,6 +177,15 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                "design changes the assessment recommends. Gateway PLACEMENT is Confirmed where an SVI "
                "is configured; the active forwarding owner is Unknown. Inter-switch links are "
                "Inferred-high. Endpoint presence is Confirmed at snapshot time only.", GREY)
+    doc.add_page_break()
+
+    # ---- document control (AS-style front matter; unnumbered so §1–§4 are untouched) ----
+    add_document_control(
+        doc, document="As-Built Network Design Document (HLD + LLD)", label=label,
+        engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        audience="Customer architecture and engineering owners, and the build engineers who derive "
+                 "device configurations from the LLD detail.",
+        exclude=("design",))
     doc.add_page_break()
 
     # ---- table of contents ----
@@ -409,6 +420,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                for i in top], widths=[0.9, 1.3, 3.0, 1.6])
     else:
         doc.add_paragraph("No punch-list items — the as-built design carries no flagged gaps to redesign.")
+
+    # ---- closing acceptance gate (AS-style back matter) ----
+    add_acceptance(
+        doc, scope_note="Acceptance confirms the as-built record as the design baseline for the "
+                        "migration; the §4 target-state items proceed to detailed design under "
+                        "their own approvals.")
 
     n_sections = len([p for p in doc.paragraphs if p.style.name == "Heading 1"])
     doc.save(output_path)
