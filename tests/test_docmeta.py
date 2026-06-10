@@ -42,6 +42,21 @@ def test_document_control_renders_all_furniture():
     assert "unit testers" in text
 
 
+def test_related_documents_block_renders_table_and_audience():
+    """V3.23.152: the shared family cross-reference block (used by NRFU/PIR directly and by
+    add_document_control with intro=True)."""
+    from cisco_toolkit.docmeta import add_related_documents
+
+    doc = Document()
+    add_related_documents(doc, exclude=("nrfu",), audience="unit audience")
+    text = _all_text(doc)
+    assert "Related documents" in text
+    assert "NRFU / Acceptance Test Plan (.docx)" not in text   # self excluded
+    assert "Assessment workbook (.xlsx)" in text
+    assert "Intended audience:" in text and "unit audience" in text
+    assert "one of a set" not in text                          # intro only when intro=True
+
+
 def test_acceptance_renders_roles_and_optional_heading():
     doc = Document()
     add_acceptance(doc, scope_note="unit scope note")

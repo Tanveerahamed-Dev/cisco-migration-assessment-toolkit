@@ -61,9 +61,16 @@ def related_rows(exclude=()):
     return [(name, role) for key, name, role in FAMILY if key not in ex]
 
 
-def _table(doc, headers, rows, widths=None):
-    """House-style banded table (bold header; explicit widths with autofit off, set on both the
-    column and every cell so renderers honour them — the docx_style width fix)."""
+def add_table(doc, headers, rows, widths=None, *, fixed=True):
+    """House-style banded table (bold header). Public: the engine writers (runbook/design/MOP)
+    delegate their local table() closures here so the family has ONE table builder instead of
+    per-writer copies (V3.23.152 review cleanup).
+
+    `fixed=True` (the furniture tables): autofit off + widths on both column and cells so renderers
+    honour them exactly — these widths were authored to fit. `fixed=False` (the writers' content
+    tables): widths are hints on cells only, preserving the writers' historical auto-layout — their
+    width sets predate fixed layout and can exceed the portrait text column, so forcing fixed layout
+    clips the last column (caught in V3.23.152 visual QA)."""
     from docx.shared import Inches
 
     t = doc.add_table(rows=1, cols=len(headers))
@@ -79,11 +86,16 @@ def _table(doc, headers, rows, widths=None):
         for i, v in enumerate(row):
             cells[i].text = "" if v is None else str(v)
     if widths:
-        t.autofit = False
-        for i, w in enumerate(widths):
-            t.columns[i].width = Inches(w)
-            for row in t.rows:
-                row.cells[i].width = Inches(w)
+        if fixed:
+            t.autofit = False
+            for i, w in enumerate(widths):
+                t.columns[i].width = Inches(w)
+                for row in t.rows:
+                    row.cells[i].width = Inches(w)
+        else:
+            for i, w in enumerate(widths):
+                for row in t.rows:
+                    row.cells[i].width = Inches(w)
     doc.add_paragraph()
     return t
 
@@ -100,13 +112,29 @@ def _kv(doc, label, value):
     return p
 
 
+def add_related_documents(doc, *, exclude=(), audience=None, intro=False):
+    """Render the family cross-reference block (level-2 heading + Related-Documents table, with an
+    optional intro paragraph and an optional trailing Intended-audience line). One implementation for
+    the whole set: add_document_control uses it for the engine writers' front matter, and the NRFU /
+    PIR writers (which carry their own control tables) call it directly (V3.23.152 review cleanup)."""
+    doc.add_heading("Related documents", level=2)
+    if intro:
+        doc.add_paragraph(
+            "This document is one of a set generated from the same assessment snapshot — the set is "
+            "internally consistent (every number reconciles) and should travel together with the "
+            "engagement's statement of work and change records.")
+    add_table(doc, ["Document", "Role in the set"], related_rows(exclude), widths=[2.7, 4.0])
+    if audience:
+        _kv(doc, "Intended audience:", audience)
+
+
 def add_document_control(doc, *, document, label, engine_version="", generated_at=None,
                          audience="", exclude=(), extra_assumptions=()):
     """Render the Document Control front matter (control table, revision history, intended audience,
     related documents, assumptions & caveats). Call it between the cover page and the table of
     contents; the heading is deliberately unnumbered so the writers' numbered sections are untouched."""
     doc.add_heading("Document Control", level=1)
-    _table(doc, ["Field", "Value"], [
+    add_table(doc, ["Field", "Value"], [
         ("Document", document),
         ("Subject", label or "—"),
         ("Snapshot captured", generated_at or "—"),
@@ -115,7 +143,7 @@ def add_document_control(doc, *, document, label, engine_version="", generated_a
     ], widths=[1.8, 4.9])
 
     doc.add_heading("Revision history", level=2)
-    _table(doc, ["Version", "Date", "Author", "Notes"], [
+    add_table(doc, ["Version", "Date", "Author", "Notes"], [
         ("0.1", datetime.now().strftime("%Y-%m-%d"), "Generated draft",
          "Initial draft generated from the assessment snapshot"),
         ("", "", "", ""),
@@ -124,12 +152,7 @@ def add_document_control(doc, *, document, label, engine_version="", generated_a
     _kv(doc, "Intended audience:", audience)
     doc.add_paragraph()
 
-    doc.add_heading("Related documents", level=2)
-    doc.add_paragraph(
-        "This document is one of a set generated from the same assessment snapshot — the set is "
-        "internally consistent (every number reconciles) and should travel together with the "
-        "engagement's statement of work and change records.")
-    _table(doc, ["Document", "Role in the set"], related_rows(exclude), widths=[2.7, 4.0])
+    add_related_documents(doc, exclude=exclude, intro=True)
 
     doc.add_heading("Assumptions & caveats", level=2)
     for a in tuple(_ASSUMPTIONS) + tuple(extra_assumptions):
@@ -145,5 +168,5 @@ def add_acceptance(doc, *, heading="Document Acceptance", scope_note="", roles=D
         "By signing below, the signatories confirm that this document has been reviewed, that review "
         "comments have been addressed, and that it is accepted as the working record for this phase "
         "of the engagement." + ((" " + scope_note) if scope_note else ""))
-    _table(doc, ["Role", "Name", "Signature", "Date"],
+    add_table(doc, ["Role", "Name", "Signature", "Date"],
            [(r, "", "", "") for r in roles], widths=[2.2, 1.9, 1.6, 1.0])
