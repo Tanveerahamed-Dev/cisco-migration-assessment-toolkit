@@ -175,14 +175,22 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
             table(["Status", "Check", "Phase / ID", "Note"], gating_rows,
                   widths=[0.9, 2.0, 1.1, 2.5])
 
-        # Run-of-show steps
+        # Run-of-show steps. Manual numbering, not Word's "List Number" style: that style's single
+        # shared numbering definition makes numbers CONTINUE across waves, so wave 2 would start at
+        # the previous wave's count (same defect class fixed in the MOP at e263b6d).
         doc.add_heading("Run-of-show", level=3)
         for i, step in enumerate(w["run_of_show"], start=1):
-            p = doc.add_paragraph(style="List Number")
-            r = p.add_run(f"[{step['phase']}] ")
+            p = doc.add_paragraph()
+            r = p.add_run(f"{i}. [{step['phase']}] ")
             r.bold = True
             r.font.color.rgb = ink(_NAVY)
             p.add_run(step["action"])
+            if step.get("impact"):
+                # Barstow pattern: the outage callout is bolded inline on the step that causes it.
+                imp = p.add_run("  " + step["impact"])
+                imp.bold = True
+                imp.font.color.rgb = ink(_GATE_INK[cutover.GATE_NOGO]
+                                         if step["impact"].startswith("OUTAGE") else _GREY)
 
         # Pre-cutover remediation
         rem = w.get("remediation", [])

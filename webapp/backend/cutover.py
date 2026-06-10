@@ -243,12 +243,16 @@ def _run_of_show(*, mbb: List[str], hard: List[str], hard_ep: int, window: int,
             "phase": "Cutover · make-before-break",
             "action": (f"Stage the parallel target path and migrate the {len(mbb)} dual-homed switch(es) "
                        f"({', '.join(mbb[:6])}{'…' if len(mbb) > 6 else ''}) with no outage window."),
+            # AS convention: the impact rides the step that causes it (additive; writers/UI may render)
+            "impact": "No outage — the legacy leg stays live until the new path is proven.",
         })
     if hard:
         steps.append({
             "phase": "Cutover · hard cutover",
             "action": (f"In the maintenance window (~{_fmt_minutes(window)}), cut the {len(hard)} single-homed "
                        f"switch(es) affecting {hard_ep} endpoint(s). Single-homed = a hard partition during the cut."),
+            "impact": (f"OUTAGE — {hard_ep} endpoint(s) on {len(hard)} switch(es) are hard-down from "
+                       f"the cable pull until validation passes (window ~{_fmt_minutes(window)})."),
         })
     steps.append({
         "phase": "Validation",
