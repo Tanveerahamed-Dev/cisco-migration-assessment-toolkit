@@ -1,0 +1,6 @@
+# Data fixtures, not architecture: keep them out of the knowledge graph.
+# (Graph audit 2026-06-10: fixture JSON owned 8 of the 10 god-node slots and ~40
+# communities, drowning the real engine/webapp structure. Code in these dirs —
+# e.g. webapp/sample_data/build_sample.py — still gets scanned.)
+tests/golden/*.json
+webapp/sample_data/*.json
