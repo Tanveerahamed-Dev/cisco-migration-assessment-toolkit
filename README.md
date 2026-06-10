@@ -106,6 +106,13 @@ offline KB data are read relative to the checkout.
   (current-environment summary, evidence-gated technical-requirement sections,
   REQ-ID capture tables and the traceability skeleton into design and acceptance)
   (unless `--no-crd`; needs `python-docx`).
+- `..._engagement.docx` — the **Engagement Workflow & Plan of Record**: the
+  engagement-management layer over the whole document set — an evidence-led
+  verdict (proceed / proceed-with-conditions / hold), a phase tracker with
+  entry/exit gates, the ordered next-action queue, a per-wave T-minus gate
+  calendar (commit → checkpoint → go/no-go → window → hypercare exit), and a
+  RAID log seeded from the assessment's own findings (unless
+  `--no-engagement`; needs `python-docx`).
 
 ## Usage
 
@@ -126,8 +133,9 @@ python COLLECT_PARSE_V3_23_0.py --help
 ```
 
 Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
-`--no-html` / `--no-docx` / `--no-pptx` / `--no-design` / `--no-mop` / `--no-crd`
-(skip the explorer / runbook / deck / design doc / MOP / CRD),
+`--no-html` / `--no-docx` / `--no-pptx` / `--no-design` / `--no-mop` / `--no-crd` /
+`--no-engagement`
+(skip the explorer / runbook / deck / design doc / MOP / CRD / engagement plan),
 `--output FILE` (override the workbook name), `--golden-config FILE` (a config
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace
