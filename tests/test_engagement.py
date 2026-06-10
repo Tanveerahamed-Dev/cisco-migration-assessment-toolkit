@@ -104,6 +104,9 @@ def test_engagement_verdict_proceeds_on_clean_fleet(tmp_path):
     write_engagement_docx(out, snap, "Unit Test Fleet")
     text = _all_text(Document(out))
     assert "PROCEED" in text and "HOLD" not in text
+    # 'PROCEED' is a substring of the conditioned verdict — pin the UNCONDITIONAL one explicitly
+    assert "PROCEED WITH CONDITIONS" not in text
+    assert "No conditions attached" in text                     # no placeholder dressed as a condition
     assert "No open issues seeded" in text                      # the empty-issues path
 
 
@@ -172,7 +175,7 @@ def test_engagement_gate_record_renders_as_signed_trail(tmp_path):
     text = _all_text(d)
     assert "GO" in text and "SLIPPED" in text and "A. Engineer" in text
     assert "all checks green" in text
-    assert "2026-06-10 21:00" in text                       # ISO stamp rendered human-readable
+    assert "2026-06-10 21:00 UTC" in text                   # ISO stamp labeled, offset never dropped
 
 
 def test_engagement_without_gate_record_has_no_signed_section(tmp_path):
@@ -192,6 +195,85 @@ def test_gate_sequence_is_the_cadence_contract():
         "commit", "checkpoint", "readiness", "go_no_go", "window", "hypercare_exit"]
     for _key, label, when, purpose, criteria in GATE_SEQUENCE:
         assert label and when and purpose and criteria
+
+
+def test_engagement_survives_malformed_snapshot(tmp_path):
+    """V3.23.159: every read is defensive — junk shapes in user-uploaded snapshots degrade to
+    placeholders instead of crashing the writer (the webapp would otherwise 500)."""
+    snap = _snap()
+    snap["punchlist"] = ["orphan note", None,
+                         {"severity": "Critical", "title": "real finding", "category": "L3"}]
+    snap["migration_scenarios"] = ["not", "a", "dict"]      # truthy non-dict block
+    snap["validation_plan"] = "garbage"                     # truthy non-dict block
+    snap["executive_brief"] = 7                             # truthy non-dict block
+    snap["lifecycle_risk"] = {"summary": {"n_past_eos": "two"}}   # non-numeric count
+    snap["migration_readiness"][0]["endpoints"] = "unknown"       # non-numeric endpoints
+    snap["collection_completeness"]["devices"][0]["missing"] = "show cdp neighbors detail"
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")     # must not raise
+    text = _all_text(Document(out))
+    assert "real finding" in text                           # the one valid punch item survives
+    assert "show cdp neighbors detail" in text              # string `missing` is ONE item,
+    assert "s, h, o, w" not in text                         # never char-joined
+
+
+def test_engagement_absent_completeness_is_unknown_not_complete(tmp_path):
+    """V3.23.159: a snapshot with NO collection_completeness block must read UNKNOWN — absence of
+    evidence is not evidence of completeness, and the verdict picks up a condition."""
+    snap = _snap()
+    snap["punchlist"] = []
+    snap["migration_readiness"] = [r for r in snap["migration_readiness"]
+                                   if r["readiness"] == "READY"]
+    snap["lifecycle_risk"] = {"summary": {"n_past_eos": 0}}
+    del snap["collection_completeness"]
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "completeness UNKNOWN" in text                   # §2 Assess status
+    assert "collection is complete" not in text             # the old false claim
+    assert "PROCEED WITH CONDITIONS" in text                # the gap is a verdict condition
+    assert "Collection-completeness evidence is absent" in text
+
+
+def test_engagement_pilot_never_won_by_unknown_endpoints(tmp_path):
+    """V3.23.159: a READY group with endpoints null/non-numeric must not masquerade as the
+    smallest blast radius — and the pilot row never renders 'None endpoint(s)'."""
+    snap = _snap()
+    snap["migration_readiness"] = [
+        {"group": "Group 1", "switches": ["a"], "endpoints": None, "readiness": "READY", "n_fail": 0},
+        {"group": "Group 2", "switches": ["b"], "endpoints": 12, "readiness": "READY", "n_fail": 0},
+    ]
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Group 2 (PILOT)" in text and "Group 1 (PILOT)" not in text
+    assert "None endpoint(s)" not in text
+
+
+def test_engagement_gate_record_calendar_order_and_stray_waves(tmp_path):
+    """V3.23.159: §4.3 follows the §4.2 calendar order (natural-numeric, never lexicographic),
+    and rows signed against waves outside this snapshot's calendar are fenced off, not mixed in."""
+    record = {
+        "Group 2": {"commit": {"decision": "go", "signed_by": "A", "decided_at": "", "note": ""}},
+        "Group 10": {"commit": {"decision": "go", "signed_by": "B", "decided_at": "", "note": ""}},
+    }
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, _snap(), "Unit Test Fleet", gate_record=record)
+    text = _all_text(Document(out))
+    # Group 2 is in the fixture's calendar; Group 10 is not -> stray section with the caveat.
+    # Scope the ordering assertion to the trail itself (the doc mentions Group 2 earlier too).
+    trail = text[text.index("Gate record (as signed)"):]
+    assert "NOT in this snapshot's calendar" in trail
+    assert trail.index("Group 2") < trail.index("Group 10")
+
+
+def test_engagement_phase_tracker_never_claims_generation(tmp_path):
+    """V3.23.159: the tracker must not assert drafts exist that this run cannot evidence."""
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Draft generated" not in text and "Drafts generated" not in text
+    assert "Pending — requirements workshop not yet held" in text
 
 
 def test_engagement_failsoft_without_python_docx(monkeypatch, tmp_path):

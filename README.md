@@ -210,9 +210,13 @@ assessment, AssessHub manages the whole migration *campaign*:
 - **Execution console (war room)** — run the change window live: timestamped step check-off,
   validation PASS/FAIL against captured baselines, wave closeouts, a deviation scribe log, and a
   derived change-management outcome.
-- **Deliverables on demand** — Runbook / Design Document / MOP / Executive Deck via the engine's own
-  writers, plus the Cutover Plan, the NRFU/Acceptance Test Plan, and the **Post-Implementation
-  Review / as-executed record** for any execution run.
+- **Deliverables on demand** — Engagement Workflow & Plan of Record / CRD / Runbook / Design
+  Document / MOP / Executive Deck via the engine's own writers, plus the Cutover Plan, the
+  NRFU/Acceptance Test Plan, and the **Post-Implementation Review / as-executed record** for any
+  execution run.
+- **Gate board** — per-wave T-minus sign-offs (commit → checkpoint → readiness → go/no-go →
+  window → hypercare exit) recorded on the campaign page; decisions feed back into the
+  Engagement Workflow & Plan of Record's "Gate record (as signed)" section.
 
 ```bash
 pip install -r webapp/requirements.txt

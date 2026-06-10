@@ -16,6 +16,11 @@ unchanged.
 """
 from datetime import datetime
 
+# Severity ordering shared by the writer family (V3.23.159: hoisted from per-writer copies so the
+# documents sort findings identically; engagement/crd import it — older writers' private copies
+# migrate as they are next touched).
+SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+
 # The deliverable family, keyed for self-exclusion in the Related-Documents table.
 # Order is the recommended reading order of the set.
 FAMILY = (

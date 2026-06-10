@@ -19,7 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from . import cutover, deliverables, engine, execution, gates, graph, ingest, summary
@@ -96,11 +96,13 @@ class FinishIn(BaseModel):
 
 
 class GateIn(BaseModel):
-    wave: str
-    gate: str       # a cisco_toolkit.engagement.GATE_SEQUENCE key
-    decision: str   # go | no-go | slipped | pending (pending clears the sign-off)
-    signed_by: str = ""
-    note: str = ""
+    # Length caps (V3.23.159): these strings are stored verbatim, echoed by every board fetch and
+    # rendered into a DOCX table cell — unbounded input was a DB/document bloat vector.
+    wave: str = Field(min_length=1, max_length=120)
+    gate: str = Field(max_length=40)      # a cisco_toolkit.engagement.GATE_SEQUENCE key
+    decision: str = Field(max_length=20)  # go | no-go | slipped | pending (pending clears)
+    signed_by: str = Field(default="", max_length=120)
+    note: str = Field(default="", max_length=500)
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -186,33 +188,43 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return engine.campaign_trend(snaps)
 
     # -- gate board (T-minus sign-offs; feeds the engagement plan of record) --
+    def _campaign_waves(campaign_id: int) -> List[str]:
+        """Wave labels for the gate board — section-only read (V3.23.159: this sat on the
+        per-click hot path doing a full multi-MB snapshot parse)."""
+        sid = store.latest_snapshot_id(campaign_id)
+        if sid is None:
+            return []
+        rows = store.get_snapshot_section(sid, "migration_readiness")
+        return gates.waves_from_snapshot({"migration_readiness": rows})
+
     @app.get("/api/campaigns/{campaign_id}/gates")
     def get_gates(campaign_id: int) -> Dict[str, Any]:
-        c = store.get_campaign(campaign_id)
-        if not c:
+        if not store.campaign_exists(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        snaps = c["snapshots"] or []
-        latest = store.get_snapshot(snaps[-1]["id"]) if snaps else None
         return {"cadence": gates.cadence(),
-                "waves": gates.waves_from_snapshot(latest),
+                "waves": _campaign_waves(campaign_id),
                 "records": store.list_gates(campaign_id)}
 
     @app.post("/api/campaigns/{campaign_id}/gates")
     def set_gate(campaign_id: int, body: GateIn) -> Dict[str, Any]:
-        if not store.get_campaign(campaign_id):
+        if not store.campaign_exists(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        if body.gate not in gates.GATE_KEYS:
-            raise HTTPException(400, f"Unknown gate '{body.gate}' (expected one of {list(gates.GATE_KEYS)})")
         wave = body.wave.strip()
         if not wave:
             raise HTTPException(400, "wave must not be empty")
-        if body.decision == "pending":
-            store.clear_gate(campaign_id, wave, body.gate)  # idempotent: clearing a clear row is fine
-        elif body.decision in gates.DECISIONS:
-            store.upsert_gate(campaign_id, wave, body.gate, body.decision, body.signed_by, body.note)
-        else:
-            raise HTTPException(400, f"Unknown decision '{body.decision}' "
-                                     f"(expected one of {list(gates.DECISIONS)} or 'pending')")
+        # Phantom-wave guard (V3.23.159): a decision may only target a wave the latest snapshot
+        # derives, or one that already has recorded history (so legacy rows stay clearable after
+        # the wave set changes) — a typo'd label can no longer mint a permanent row in the
+        # governance trail.
+        allowed = set(_campaign_waves(campaign_id)) | {r["wave"] for r in store.list_gates(campaign_id)}
+        if wave not in allowed:
+            raise HTTPException(400, f"Unknown wave '{wave}' — not in this campaign's calendar "
+                                     f"(known waves: {sorted(allowed) or 'none derivable yet'})")
+        try:
+            gates.apply_decision(store, campaign_id, wave, body.gate, body.decision,
+                                 body.signed_by, body.note)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
         return {"records": store.list_gates(campaign_id)}
 
     # -- snapshots ---------------------------------------------------------
