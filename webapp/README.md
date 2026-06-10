@@ -7,8 +7,14 @@ rendering — it never re-runs analysis, and it does not modify a single line of
 the snapshots it already produces a live surface.
 
 ```
-SSH collection (CLI engine)  →  snapshot.json  →  AssessHub store  →  cockpit + deep explorer
+SSH collection (CLI engine)  →  snapshot.json  ─┐
+                                                ├→  AssessHub store  →  cockpit · planner · war room
+raw show-output ZIP  →  engine runs server-side ─┘
 ```
+
+Two ways in: upload a finished `*.snapshot.json`, **or upload a ZIP of raw show-command outputs**
+(one folder per device — the collector's own layout) and AssessHub runs the real engine pipeline
+server-side and stores the result as a first-class snapshot.
 
 ## What it does
 
@@ -44,6 +50,23 @@ SSH collection (CLI engine)  →  snapshot.json  →  AssessHub store  →  cock
 - **Campaign trajectory** — across ≥2 waves: an IMPROVING / REGRESSING / MIXED verdict plus a
   per-metric trajectory, and a pairwise **compare** (opened/resolved findings, regressed/improved
   health) — both via the engine's `compute_campaign_trend` / `compute_snapshot_delta`.
+- **Execution console (war room)** — the cutover plan, made live for the change window: starting a
+  run **freezes** the gated plan into an execution record, then every run-of-show step is checked
+  off with a timestamp and operator attribution, every validation check records PASS / FAIL / N-A
+  against its captured 'expect' baseline (a FAIL records the *observed* output and auto-scribes a
+  deviation), waves are closed out (Complete / Rolled back / Deferred — a closed wave's record is
+  immutable), and a scribe log keeps the attributed timeline next to a live elapsed-vs-planned-window
+  clock. Finishing derives the standard change-management outcome (`SUCCESSFUL · SUCCESSFUL WITH
+  DEVIATIONS · PARTIALLY IMPLEMENTED · ROLLED BACK · ABORTED`).
+- **Post-Implementation Review (PIR)** — any run (finished or interim) exports an **As-Executed
+  Cutover Record DOCX**: document control, planned-vs-actual per wave (the window-calibration loop
+  the planner's methodology calls for), the per-wave as-executed log, validation results with
+  observed output, the full deviation timeline, and a review-verdict + sign-off section.
+- **Raw-collection ingest** — POST a ZIP of `show`-command outputs and the **real engine pipeline**
+  runs in a sandboxed subprocess (traversal/zip-bomb guards, hard timeout, off the event loop). A
+  bundled `devices.json` is honoured (matched through the engine's own `safe_fs_name`); folders it
+  doesn't cover are synthesized with platform autodetection, and an empty parse is rejected rather
+  than stored.
 
 ## Architecture
 
@@ -51,9 +74,15 @@ SSH collection (CLI engine)  →  snapshot.json  →  AssessHub store  →  cock
 webapp/
   backend/            FastAPI + SQLite (stdlib sqlite3); imports cisco_toolkit
     app.py            REST surface + serves the built SPA (with history fallback)
-    storage.py        campaign / snapshot persistence
+    storage.py        campaign / snapshot / execution-run persistence
     summary.py        read-only KPI projection of a snapshot (re-uses engine._trend_point)
+    graph.py          switch-topology nodes/edges for the force graph
     cutover.py        read-only synthesis of a gated, pilot-first cutover plan (run-of-show)
+    execution.py      live cutover-execution runs (frozen plan, step/check/closeout, outcome)
+    ingest.py         raw-collection ZIP → run the real engine in a subprocess → snapshot
+    deliverables.py   snapshot deliverables (engine writers reused verbatim + web syntheses)
+    cutover_docx.py / nrfu_docx.py / pir_docx.py    web-layer DOCX writers
+    docx_style.py     shared python-docx house style (Calibri body, navy headings, banded tables)
     engine.py         the ONLY coupling to cisco_toolkit (path bootstrap + reused fns)
   frontend/           Vite + React + TypeScript SPA; mirrors the explorer's design tokens
   tests/              end-to-end backend tests (FastAPI TestClient, isolated temp DB)
@@ -100,9 +129,11 @@ cd webapp/frontend && npm run dev          # http://localhost:5173
 ### Sample data
 
 The demo "Open a sample fleet" button loads `webapp/sample_data/sample_fleet.snapshot.json` — a
-richer **2-core + 15-access** fleet (regenerate with `python webapp/sample_data/build_sample.py`,
-which clones the test fixtures and runs the real engine). If that file is absent the backend falls
-back to the small bundled `tests/golden/snapshot.json`.
+**23-device fleet spanning the full health spectrum** (Excellent 2 / Good 3 / Fair 6 / Poor 6 /
+Critical 6: two cores, a redundant HSRP distribution pod, and access archetypes from dual-homed to
+err-disabled). Regenerate with `python webapp/sample_data/build_sample.py`, which clones the test
+fixtures and runs the real engine. If that file is absent the backend falls back to the small
+bundled `tests/golden/snapshot.json`.
 
 ### CI
 
@@ -123,6 +154,7 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/campaigns` | list campaigns (+ latest posture summary) |
 | `POST` | `/api/campaigns` | create a campaign |
 | `POST` | `/api/campaigns/{id}/snapshots` | upload a snapshot `.json` (multipart) |
+| `POST` | `/api/campaigns/{id}/ingest` | upload a raw-collection ZIP — the engine runs server-side and the snapshot is stored |
 | `GET`  | `/api/campaigns/{id}/trend` | campaign trajectory verdict + per-metric trend |
 | `GET`  | `/api/snapshots/{id}` | snapshot meta + derived KPI summary |
 | `GET`  | `/api/snapshots/{id}/section/{name}` | one detail section, sliced from the snapshot |
@@ -131,5 +163,9 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/snapshots/{id}/explorer` | the rendered single-file deep explorer (HTML) |
 | `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`runbook`/`design`/`mop`/`cutover`/`nrfu`/`deck`) |
 | `POST` | `/api/compare` | diff two snapshots (`{old_id, new_id}`) |
+| `POST` | `/api/snapshots/{id}/executions` | start a war-room run (freezes the cutover plan) |
+| `GET`  | `/api/executions/{id}` | run state + derived live progress |
+| `POST` | `/api/executions/{id}/step` · `/check` · `/closeout` · `/event` · `/finish` | record the change window: step check-off, validation results, wave closeouts, scribe entries, finish/abort |
+| `GET`  | `/api/executions/{id}/report` | Post-Implementation Review / as-executed record (DOCX) |
 
 Interactive API docs at `/docs` when the server is running.
