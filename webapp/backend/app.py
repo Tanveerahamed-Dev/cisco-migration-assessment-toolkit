@@ -14,9 +14,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -105,6 +106,15 @@ def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
     return snap
 
 
+def _send_file(path: str, media_type: str, filename_stem: str, suffix: str) -> FileResponse:
+    """Stream a generated temp file and delete it afterwards; filename is sanitized."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename_stem).strip("_") or "file"
+    return FileResponse(
+        path, media_type=media_type, filename=f"{safe}{suffix}",
+        background=BackgroundTask(lambda p=path: os.path.exists(p) and os.unlink(p)),
+    )
+
+
 def create_app(db_path: str | None = None) -> FastAPI:
     store = Store(db_path or DEFAULT_DB)
     app = FastAPI(
@@ -154,7 +164,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def delete_campaign(campaign_id: int):
         if not store.delete_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        return JSONResponse(status_code=204, content=None)
+        # A bare 204 — JSONResponse(content=None) would serialize a "null" body, which uvicorn
+        # rejects on a 204 with an ASGI RuntimeError on every delete.
+        return Response(status_code=204)
 
     @app.get("/api/campaigns/{campaign_id}/trend")
     def campaign_trend(campaign_id: int) -> Dict[str, Any]:
@@ -182,9 +194,21 @@ def create_app(db_path: str | None = None) -> FastAPI:
         runs server-side and the resulting snapshot is stored like an uploaded one."""
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        raw = await file.read()
+        # Read with a hard cap — the uncompressed-size guard inside ingest can only run after the
+        # whole body is in memory, which is too late against a multi-GB upload.
+        chunks: List[bytes] = []
+        received = 0
+        while chunk := await file.read(1024 * 1024):
+            received += len(chunk)
+            if received > ingest.MAX_ARCHIVE_BYTES:
+                raise HTTPException(
+                    413, f"Archive exceeds the {ingest.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB upload limit")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
         try:
-            snap, report = ingest.run_collection_zip(raw)
+            # The engine run blocks for seconds-to-minutes; off the event loop so the rest of the
+            # API (including a live war-room console) stays responsive.
+            snap, report = await run_in_threadpool(ingest.run_collection_zip, raw)
         except ingest.IngestError as e:
             raise HTTPException(400, str(e)) from e
         except ingest.EngineRunError as e:
@@ -242,10 +266,12 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 raise HTTPException(404, f"Unknown wave {e}") from e
             except IndexError as e:
                 raise HTTPException(400, "Step/check index out of range") from e
+            except (execution.RunClosedError, execution.WaveClosedError) as e:
+                raise HTTPException(409, str(e)) from e
             except ValueError as e:
-                code = 409 if "no longer be modified" in str(e) else 400
-                raise HTTPException(code, str(e)) from e
-            store.save_execution(execution_id, rec["state"])
+                raise HTTPException(400, str(e)) from e
+            if not store.save_execution(execution_id, rec["state"]):
+                raise HTTPException(404, "Execution run was deleted")
             return execution.with_progress(execution_id, rec["snapshot_id"], rec["state"])
 
     @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
@@ -254,8 +280,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
         snap = store.get_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, "Snapshot not found")
-        n = len(store.list_executions(snapshot_id)) + 1
-        label = body.label.strip() or f"Cutover run {n}"
+        label = body.label.strip() or f"Cutover run {store.count_executions(snapshot_id) + 1}"
         state = execution.start_run(snap, label, body.operator)
         if not state["waves"]:
             raise HTTPException(400, "No migration waves were derived from this snapshot — nothing to execute")
@@ -314,7 +339,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
         rec = store.get_execution(execution_id)
         if not rec:
             raise HTTPException(404, "Execution run not found")
-        if not deliverables.availability().get("cutover"):  # same python-docx dependency
+        if not deliverables.have_docx():
             raise HTTPException(503, "python-docx is not installed on the server")
         from .pir_docx import write_pir_docx
 
@@ -328,19 +353,18 @@ def create_app(db_path: str | None = None) -> FastAPI:
             if os.path.exists(path):
                 os.unlink(path)
             raise HTTPException(500, f"Failed to generate the PIR: {e}") from e
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", rec["state"].get("label", "run")).strip("_") or "run"
-        return FileResponse(
-            path,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            filename=f"{safe}_pir.docx",
-            background=BackgroundTask(lambda p=path: os.path.exists(p) and os.unlink(p)),
-        )
+        return _send_file(
+            path, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            rec["state"].get("label", "run"), "_pir.docx")
 
     @app.delete("/api/executions/{execution_id}", status_code=204)
     def delete_execution(execution_id: int):
-        if not store.delete_execution(execution_id):
-            raise HTTPException(404, "Execution run not found")
-        return JSONResponse(status_code=204, content=None)
+        # Under the mutation lock so a delete can't land inside another request's
+        # read-modify-write window (whose save would then be a silent no-op).
+        with execution.MUTATION_LOCK:
+            if not store.delete_execution(execution_id):
+                raise HTTPException(404, "Execution run not found")
+        return Response(status_code=204)
 
     @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
     def snapshot_explorer(snapshot_id: int) -> HTMLResponse:
@@ -366,17 +390,13 @@ def create_app(db_path: str | None = None) -> FastAPI:
         except Exception as e:  # generation failure (e.g. a malformed snapshot)
             raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", meta["label"]).strip("_") or "snapshot"
-        return FileResponse(
-            path, media_type=spec.media, filename=f"{safe}_{kind}.{spec.ext}",
-            background=BackgroundTask(lambda p=path: os.path.exists(p) and os.unlink(p)),
-        )
+        return _send_file(path, spec.media, meta["label"], f"_{kind}.{spec.ext}")
 
     @app.delete("/api/snapshots/{snapshot_id}", status_code=204)
     def delete_snapshot(snapshot_id: int):
         if not store.delete_snapshot(snapshot_id):
             raise HTTPException(404, "Snapshot not found")
-        return JSONResponse(status_code=204, content=None)
+        return Response(status_code=204)
 
     @app.post("/api/compare")
     def compare(body: CompareIn) -> Dict[str, Any]:

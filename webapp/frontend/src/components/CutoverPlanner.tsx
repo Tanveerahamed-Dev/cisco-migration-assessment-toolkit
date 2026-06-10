@@ -174,11 +174,13 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
   const navigate = useNavigate();
   const { data: runs, reload } = useAsync(() => api.listExecutions(snapId), [snapId]);
   const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const start = () => {
     setStarting(true);
+    setError(null);
     api.startExecution(snapId)
       .then((ex) => navigate(`/executions/${ex.id}`))
-      .catch(() => reload())
+      .catch((e) => { setError(e.message || String(e)); reload(); })
       .finally(() => setStarting(false));
   };
   const STATUS_COLOR: Record<string, string> = {
@@ -195,6 +197,7 @@ function ExecutionRuns({ snapId }: { snapId: number }) {
           deviations, and export the as-executed PIR record.
         </span>
       </div>
+      {error && <div style={{ color: "var(--crit)", fontSize: 12.5, marginTop: 8 }}>Could not start the run: {error}</div>}
       {(runs || []).length > 0 && (
         <div className="row-flex" style={{ marginTop: 10 }}>
           {(runs || []).map((r) => (

@@ -189,14 +189,24 @@ class Store:
         return {"id": row["id"], "snapshot_id": row["snapshot_id"],
                 "state": json.loads(row["state_json"])}
 
-    def save_execution(self, execution_id: int, state: Dict[str, Any]) -> None:
+    def save_execution(self, execution_id: int, state: Dict[str, Any]) -> bool:
+        """False when the row no longer exists (deleted mid-flight) — a silent 0-row UPDATE would
+        let a mutation report success for state that was never persisted."""
         with self._lock:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "UPDATE executions SET label=?, status=?, ended_at=?, state_json=? WHERE id=?",
                 (state.get("label", ""), state.get("status", "in_progress"),
                  state.get("ended_at"), json.dumps(state, separators=(",", ":")), execution_id),
             )
             self._conn.commit()
+            return cur.rowcount > 0
+
+    def count_executions(self, snapshot_id: int) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM executions WHERE snapshot_id = ?", (snapshot_id,)
+            ).fetchone()
+        return int(row["n"]) if row else 0
 
     def list_executions(self, snapshot_id: int) -> List[Dict[str, Any]]:
         with self._lock:

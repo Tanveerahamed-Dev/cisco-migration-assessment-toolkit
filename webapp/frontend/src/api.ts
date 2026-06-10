@@ -149,6 +149,7 @@ export interface IngestReport {
   n_archive_files: number;
   n_device_dirs: number;
   devices: string[];
+  skipped_dirs: string[];
   devices_json: "bundled" | "synthesized";
   engine_seconds: number;
   engine_log_tail: string;
@@ -202,11 +203,7 @@ export const api = {
   listCampaigns: () => fetch("/api/campaigns").then((r) => j<Campaign[]>(r)),
   getCampaign: (id: number) => fetch(`/api/campaigns/${id}`).then((r) => j<Campaign>(r)),
   createCampaign: (name: string, description = "") =>
-    fetch("/api/campaigns", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name, description }),
-    }).then((r) => j<Campaign>(r)),
+    post<Campaign>("/api/campaigns", { name, description }),
   deleteCampaign: (id: number) => fetch(`/api/campaigns/${id}`, { method: "DELETE" }).then((r) => j<null>(r)),
   trend: (id: number) => fetch(`/api/campaigns/${id}/trend`).then((r) => j<any>(r)),
 
@@ -235,12 +232,7 @@ export const api = {
   cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
-  compare: (oldId: number, newId: number) =>
-    fetch("/api/compare", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ old_id: oldId, new_id: newId }),
-    }).then((r) => j<any>(r)),
+  compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),
 
   seedDemo: () => fetch("/api/demo/seed", { method: "POST" }).then((r) => j<{ campaign: Campaign; snapshot: SnapshotMeta }>(r)),
 
