@@ -3979,5 +3979,497 @@
    "global_only": false
   },
   "risks": []
+ },
+ "architecture_review": {
+  "domains": [
+   {
+    "key": "Hierarchy & modularity",
+    "verdict": "conforms",
+    "score_pct": 100,
+    "checks": [
+     "HIER-1",
+     "HIER-2"
+    ]
+   },
+   {
+    "key": "Resiliency & availability",
+    "verdict": "critical",
+    "score_pct": 35,
+    "checks": [
+     "RES-1",
+     "RES-2",
+     "RES-3",
+     "RES-4"
+    ]
+   },
+   {
+    "key": "Layer-2 design",
+    "verdict": "deviation",
+    "score_pct": 76,
+    "checks": [
+     "L2-1",
+     "L2-2",
+     "L2-3",
+     "L2-4",
+     "L2-5"
+    ]
+   },
+   {
+    "key": "Layer-3 & gateway design",
+    "verdict": "advisory",
+    "score_pct": 80,
+    "checks": [
+     "L3-1",
+     "L3-2",
+     "L3-3",
+     "L3-4"
+    ]
+   },
+   {
+    "key": "Capacity & oversubscription",
+    "verdict": "advisory",
+    "score_pct": 85,
+    "checks": [
+     "CAP-1",
+     "CAP-2"
+    ]
+   },
+   {
+    "key": "Operational readiness & hygiene",
+    "verdict": "advisory",
+    "score_pct": 80,
+    "checks": [
+     "OPS-1",
+     "OPS-2",
+     "OPS-3"
+    ]
+   },
+   {
+    "key": "Security & segmentation",
+    "verdict": "deviation",
+    "score_pct": 52,
+    "checks": [
+     "SEC-1",
+     "SEC-2"
+    ]
+   },
+   {
+    "key": "Lifecycle & software",
+    "verdict": "deviation",
+    "score_pct": 68,
+    "checks": [
+     "LC-1",
+     "LC-2"
+    ]
+   }
+  ],
+  "checks": [
+   {
+    "id": "HIER-1",
+    "domain": "Hierarchy & modularity",
+    "title": "Distribution/core tier present",
+    "verdict": "conforms",
+    "observed": "2 L3 node(s) (gateway SVI or routing adjacency) front 1 L2 access node(s).",
+    "implication": "A defined L3 tier bounds failure domains and gives the migration a stable anchor.",
+    "recommendation": "Carry the tiering into the target design; keep gateway functions at the distribution tier.",
+    "reference": "Cisco campus design \u2014 hierarchical access/distribution/core model",
+    "evidence": [
+     "core1",
+     "core2"
+    ]
+   },
+   {
+    "id": "HIER-2",
+    "domain": "Hierarchy & modularity",
+    "title": "No daisy-chained access switches",
+    "verdict": "conforms",
+    "observed": "Every observed access uplink lands on the L3 tier.",
+    "implication": "Failure domains stay bounded per closet.",
+    "recommendation": "Preserve the star topology in the target design.",
+    "reference": "Cisco campus design \u2014 each access switch homes to the distribution layer",
+    "evidence": []
+   },
+   {
+    "id": "RES-1",
+    "domain": "Resiliency & availability",
+    "title": "Dual-homed access uplinks",
+    "verdict": "deviation",
+    "observed": "1 of 1 access switch(es) reach exactly ONE in-fleet neighbour: access1.",
+    "implication": "A single uplink (or single upstream switch) is a per-closet single point of failure \u2014 one optic, one linecard or one upstream chassis takes the closet down.",
+    "recommendation": "Dual-home each listed switch to two distribution nodes (or at minimum two linecards) as part of the migration build.",
+    "reference": "Cisco campus HA design \u2014 redundant uplinks from every access switch",
+    "evidence": [
+     "access1"
+    ]
+   },
+   {
+    "id": "RES-2",
+    "domain": "Resiliency & availability",
+    "title": "First-hop redundancy on every gateway",
+    "verdict": "critical",
+    "observed": "VLAN(s) 30 are served by a SINGLE gateway with no FHRP peer.",
+    "implication": "Losing that one gateway device black-holes every endpoint on the VLAN \u2014 the highest-impact availability exposure a campus carries, and a migration-readiness FAIL.",
+    "recommendation": "Add an FHRP peer (or move the VLAN behind a redundant gateway pair) BEFORE any migration wave touches these VLANs.",
+    "reference": "Cisco campus HA design \u2014 FHRP (HSRP/VRRP/GLBP) on every shared gateway",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "id": "RES-3",
+    "domain": "Resiliency & availability",
+    "title": "Redundant power supplies",
+    "verdict": "not-assessable",
+    "observed": "Power-supply inventory was not captured for any device.",
+    "implication": "\u2014",
+    "recommendation": "Include 'show environment power' / inventory output in collection.",
+    "reference": "Cisco campus HA design \u2014 N+1 power on aggregation nodes",
+    "evidence": []
+   },
+   {
+    "id": "RES-4",
+    "domain": "Resiliency & availability",
+    "title": "No keystone single point of failure",
+    "verdict": "advisory",
+    "observed": "Losing core1 strands 3 endpoint(s).",
+    "implication": "Endpoint dependency is concentrated \u2014 these devices ARE the availability budget.",
+    "recommendation": "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with the most conservative cutover plan (their waves carry the widest blast radius).",
+    "reference": "Availability analysis \u2014 single-device blast radius",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "id": "L2-1",
+    "domain": "Layer-2 design",
+    "title": "Deterministic STP root at the distribution tier",
+    "verdict": "deviation",
+    "observed": "Access switch(es) hold the STP root: access1 roots 1 VLAN(s).",
+    "implication": "A root on an access closet means the L2 tree converges around the smallest box in the fabric \u2014 default (un-pinned) priorities usually caused it, and any new switch can silently steal the root.",
+    "recommendation": "Pin root primary/secondary priorities on the distribution pair for every VLAN.",
+    "reference": "Cisco campus design \u2014 pin the STP root (priority) at the distribution layer",
+    "evidence": [
+     "access1"
+    ]
+   },
+   {
+    "id": "L2-2",
+    "domain": "Layer-2 design",
+    "title": "Edge protection (BPDU Guard) on access ports",
+    "verdict": "not-assessable",
+    "observed": "BPDU Guard state was not captured for the access ports.",
+    "implication": "\u2014",
+    "recommendation": "Include 'show spanning-tree interface detail' (or run-config) in collection.",
+    "reference": "Cisco campus design \u2014 PortFast + BPDU Guard on every edge port",
+    "evidence": []
+   },
+   {
+    "id": "L2-3",
+    "domain": "Layer-2 design",
+    "title": "VLAN 1 not used for user traffic",
+    "verdict": "advisory",
+    "observed": "Trunks with native VLAN 1 on 2 switch(es): access1, core1.",
+    "implication": "Native VLAN 1 on inter-switch trunks exposes untagged control-plane crosstalk and is flagged by the hardening baseline.",
+    "recommendation": "Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
+    "reference": "Cisco hardening guidance \u2014 keep user traffic and trunk native VLAN off VLAN 1",
+    "evidence": [
+     "access1",
+     "core1"
+    ]
+   },
+   {
+    "id": "L2-4",
+    "domain": "Layer-2 design",
+    "title": "Bounded broadcast domains",
+    "verdict": "conforms",
+    "observed": "Largest observed VLAN carries 3 endpoint(s) \u2014 within the conventional envelope.",
+    "implication": "Broadcast domains are bounded.",
+    "recommendation": "Keep VLAN sizing within a /24-/23 of endpoints in the target design.",
+    "reference": "Campus design guidance \u2014 constrain broadcast domains (\u2248 a /23 of endpoints per VLAN)",
+    "evidence": []
+   },
+   {
+    "id": "L2-5",
+    "domain": "Layer-2 design",
+    "title": "Trunks pruned to required VLANs",
+    "verdict": "conforms",
+    "observed": "All 2 trunk(s) with captured lists are pruned.",
+    "implication": "VLAN scope stays bounded per closet.",
+    "recommendation": "Maintain pruning in the per-wave port maps.",
+    "reference": "Cisco campus design \u2014 prune trunk allowed-VLAN lists to the required set",
+    "evidence": []
+   },
+   {
+    "id": "L3-1",
+    "domain": "Layer-3 & gateway design",
+    "title": "Every access VLAN has a gateway in scope",
+    "verdict": "conforms",
+    "observed": "All 2 access VLAN(s) terminate on an in-scope gateway SVI.",
+    "implication": "The L2/L3 boundary is fully accounted for.",
+    "recommendation": "Keep the gateway register in the LLD as the addressing source of truth.",
+    "reference": "Campus L3 design \u2014 every user VLAN terminates on a known, redundant gateway",
+    "evidence": []
+   },
+   {
+    "id": "L3-2",
+    "domain": "Layer-3 & gateway design",
+    "title": "DHCP relay on endpoint-serving gateways",
+    "verdict": "advisory",
+    "observed": "1 endpoint-carrying VLAN(s) have a gateway with no DHCP relay configured: VLAN(s) 30.",
+    "implication": "If those clients use central DHCP, the missing helper is a silent post-cutover black hole (the classic day-1 failure); if addressing is static/local this is by design.",
+    "recommendation": "Confirm the addressing model per VLAN; add helpers where central DHCP is intended before the carrying wave.",
+    "reference": "Campus L3 design \u2014 ip helper-address on every client-serving SVI",
+    "evidence": []
+   },
+   {
+    "id": "L3-3",
+    "domain": "Layer-3 & gateway design",
+    "title": "Single IGP, controlled redistribution",
+    "verdict": "advisory",
+    "observed": "3 redistribution edge(s) observed.",
+    "implication": "Every extra protocol and redistribution point is a loop/suboptimal-routing risk and a troubleshooting tax; migrations are when undocumented redistribution bites.",
+    "recommendation": "Plan convergence to a single IGP in the target design; until then, document each redistribution edge (route-map, direction, owner) in the LLD.",
+    "reference": "Campus L3 design \u2014 one IGP where possible; document every redistribution boundary",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "id": "L3-4",
+    "domain": "Layer-3 & gateway design",
+    "title": "FHRP active aligned with the STP root",
+    "verdict": "not-assessable",
+    "observed": "No VLAN has both a known FHRP active gateway and an observed root bridge.",
+    "implication": "\u2014",
+    "recommendation": "Collect 'show standby'/'show spanning-tree' together to enable this check.",
+    "reference": "Cisco campus design \u2014 co-locate the FHRP active gateway with the STP root per VLAN",
+    "evidence": []
+   },
+   {
+    "id": "CAP-1",
+    "domain": "Capacity & oversubscription",
+    "title": "Access uplink oversubscription within 20:1",
+    "verdict": "conforms",
+    "observed": "1 access switch(es) measured; worst provisioned ratio 1:1.",
+    "implication": "Uplink capacity is within the conventional envelope.",
+    "recommendation": "Re-validate ratios whenever the target design changes uplink counts or speeds.",
+    "reference": "Cisco campus rule of thumb \u2014 \u226420:1 access\u2192distribution, \u22644:1 distribution\u2192core",
+    "evidence": []
+   },
+   {
+    "id": "CAP-2",
+    "domain": "Capacity & oversubscription",
+    "title": "Port-capacity headroom for growth",
+    "verdict": "advisory",
+    "observed": "access1 at 100.0% port utilisation; core2 at 100.0% port utilisation.",
+    "implication": "A full closet forces ad-hoc daisy-chaining (see HIER-2) the day a port is needed.",
+    "recommendation": "Size replacement hardware with \u226510% spare ports per listed closet.",
+    "reference": "Capacity planning \u2014 keep ~10% port headroom per closet",
+    "evidence": [
+     "access1",
+     "core2"
+    ]
+   },
+   {
+    "id": "OPS-1",
+    "domain": "Operational readiness & hygiene",
+    "title": "No operational drift / false health",
+    "verdict": "advisory",
+    "observed": "1 lower-severity drift finding(s).",
+    "implication": "Low-grade drift compounds; the migration touch is the cheapest moment to clear it.",
+    "recommendation": "Fold the items into the per-wave work orders.",
+    "reference": "Assessment doctrine \u2014 configured is not healthy; up is not healthy",
+    "evidence": []
+   },
+   {
+    "id": "OPS-2",
+    "domain": "Operational readiness & hygiene",
+    "title": "Clean configuration hygiene",
+    "verdict": "advisory",
+    "observed": "2 undefined reference(s) across 1 device(s): core1.",
+    "implication": "A referenced-but-undefined ACL/route-map fails OPEN or CLOSED depending on platform \u2014 either way it is latent surprise during cutover.",
+    "recommendation": "Resolve or remove each undefined reference before its device migrates.",
+    "reference": "Operational hygiene \u2014 no undefined references in running configuration",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "id": "OPS-3",
+    "domain": "Operational readiness & hygiene",
+    "title": "Collection confidence",
+    "verdict": "conforms",
+    "observed": "Collection is complete across the fleet.",
+    "implication": "The review stands on full evidence.",
+    "recommendation": "\u2014",
+    "reference": "Assessment doctrine \u2014 state collection blind spots explicitly",
+    "evidence": []
+   },
+   {
+    "id": "SEC-1",
+    "domain": "Security & segmentation",
+    "title": "Management-plane hardening (CIS baseline)",
+    "verdict": "deviation",
+    "observed": "1 device(s) grade WEAK (a high-severity hardening check fails): core1.",
+    "implication": "A weak management plane (open HTTP/Smart Install, missing AAA, default communities) is the attack surface that turns a migration window into an incident.",
+    "recommendation": "Apply the generated remediation snippets to the WEAK devices first \u2014 before any maintenance window publicises change activity.",
+    "reference": "CIS Cisco IOS Benchmark \u2014 AAA, NTP, logging, SSHv2/VTY, SNMPv3 hardening",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "id": "SEC-2",
+    "domain": "Security & segmentation",
+    "title": "Segmentation enforced at the L3 boundary",
+    "verdict": "advisory",
+    "observed": "1 VRF(s) in use; 2 of 5 gateway SVIs carry an ACL.",
+    "implication": "Partial enforcement leaves unpoliced inter-segment paths.",
+    "recommendation": "Close the unpoliced SVIs (or fold them into a VRF) in the target design.",
+    "reference": "Segmentation guidance \u2014 enforce inter-segment policy at the L3 boundary (VRF / gateway ACL)",
+    "evidence": []
+   },
+   {
+    "id": "LC-1",
+    "domain": "Lifecycle & software",
+    "title": "No hardware past end-of-support",
+    "verdict": "deviation",
+    "observed": "1 device(s) past end-of-sale, 1 approaching LDoS.",
+    "implication": "Support windows are closing; replacement lead times belong in the plan now.",
+    "recommendation": "Schedule the EoS platforms into the early waves of the replacement plan.",
+    "reference": "Cisco EoX policy \u2014 no TAC/software support past last-day-of-support",
+    "evidence": [
+     "access1"
+    ]
+   },
+   {
+    "id": "LC-2",
+    "domain": "Lifecycle & software",
+    "title": "One software image per platform",
+    "verdict": "conforms",
+    "observed": "Every platform runs a single image.",
+    "implication": "Troubleshooting and rollback are uniform per model.",
+    "recommendation": "Pin the images as the minimum-version baseline in the LLD.",
+    "reference": "AS LLD convention \u2014 minimise image variance per platform",
+    "evidence": []
+   }
+  ],
+  "top_actions": [
+   {
+    "rank": 1,
+    "id": "RES-2",
+    "domain": "Resiliency & availability",
+    "verdict": "critical",
+    "action": "Add an FHRP peer (or move the VLAN behind a redundant gateway pair) BEFORE any migration wave touches these VLANs.",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "rank": 2,
+    "id": "L2-1",
+    "domain": "Layer-2 design",
+    "verdict": "deviation",
+    "action": "Pin root primary/secondary priorities on the distribution pair for every VLAN.",
+    "evidence": [
+     "access1"
+    ]
+   },
+   {
+    "rank": 3,
+    "id": "LC-1",
+    "domain": "Lifecycle & software",
+    "verdict": "deviation",
+    "action": "Schedule the EoS platforms into the early waves of the replacement plan.",
+    "evidence": [
+     "access1"
+    ]
+   },
+   {
+    "rank": 4,
+    "id": "RES-1",
+    "domain": "Resiliency & availability",
+    "verdict": "deviation",
+    "action": "Dual-home each listed switch to two distribution nodes (or at minimum two linecards) as part of the migration build.",
+    "evidence": [
+     "access1"
+    ]
+   },
+   {
+    "rank": 5,
+    "id": "SEC-1",
+    "domain": "Security & segmentation",
+    "verdict": "deviation",
+    "action": "Apply the generated remediation snippets to the WEAK devices first \u2014 before any maintenance window publicises change activity.",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "rank": 6,
+    "id": "CAP-2",
+    "domain": "Capacity & oversubscription",
+    "verdict": "advisory",
+    "action": "Size replacement hardware with \u226510% spare ports per listed closet.",
+    "evidence": [
+     "access1",
+     "core2"
+    ]
+   },
+   {
+    "rank": 7,
+    "id": "L2-3",
+    "domain": "Layer-2 design",
+    "verdict": "advisory",
+    "action": "Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
+    "evidence": [
+     "access1",
+     "core1"
+    ]
+   },
+   {
+    "rank": 8,
+    "id": "L3-3",
+    "domain": "Layer-3 & gateway design",
+    "verdict": "advisory",
+    "action": "Plan convergence to a single IGP in the target design; until then, document each redistribution edge (route-map, direction, owner) in the LLD.",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "rank": 9,
+    "id": "OPS-2",
+    "domain": "Operational readiness & hygiene",
+    "verdict": "advisory",
+    "action": "Resolve or remove each undefined reference before its device migrates.",
+    "evidence": [
+     "core1"
+    ]
+   },
+   {
+    "rank": 10,
+    "id": "RES-4",
+    "domain": "Resiliency & availability",
+    "verdict": "advisory",
+    "action": "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with the most conservative cutover plan (their waves carry the widest blast radius).",
+    "evidence": [
+     "core1"
+    ]
+   }
+  ],
+  "summary": {
+   "n_checks": 24,
+   "n_assessable": 21,
+   "n_conforms": 8,
+   "n_advisory": 8,
+   "n_deviation": 4,
+   "n_critical": 1,
+   "n_not_assessable": 3,
+   "score_pct": 71,
+   "grade": "C",
+   "grade_label": "Material deviations",
+   "statement": "Architecture conformance grade C (71%) \u2014 Material deviations. 8 of 21 assessable checks conform to leading practice; 1 critical and 4 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
+  }
  }
 }
