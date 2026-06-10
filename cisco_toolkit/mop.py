@@ -18,7 +18,7 @@ library is a warning + skip, never a crash. Every snapshot read is defensive. De
 import logging
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.oxml.ns import qn
         from docx.oxml import OxmlElement
-        from docx.shared import Pt, RGBColor, Inches
+        from docx.shared import Pt, RGBColor
     except ImportError:
         logger.warning("  MOP (DOCX) skipped: python-docx not installed "
                        "(pip install python-docx to enable the Method-of-Procedure deliverable).")
@@ -66,22 +66,8 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         p.add_run(" " + (str(value) if value not in (None, "") else "—"))
 
     def table(headers, rows, widths=None):
-        t = doc.add_table(rows=1, cols=len(headers)); t.style = "Light Grid Accent 1"
-        for i, hd in enumerate(headers):
-            c = t.rows[0].cells[i]; c.text = str(hd)
-            for para in c.paragraphs:
-                for run in para.runs:
-                    run.bold = True
-        for row in rows:
-            cells = t.add_row().cells
-            for i, v in enumerate(row):
-                cells[i].text = "" if v is None else str(v)
-        if widths:
-            for i, w in enumerate(widths):
-                for row in t.rows:
-                    row.cells[i].width = Inches(w)
-        doc.add_paragraph()
-        return t
+        # Delegates to the family's single table builder (docmeta.add_table) — V3.23.152 dedup.
+        return add_table(doc, headers, rows, widths, fixed=False)
 
     def steps(items):
         # Manual numbering rather than Word's built-in "List Number" style: that style's single shared
@@ -356,6 +342,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         scope_note="Sign-off below closes the change as a whole; each wave's in-window sign-off is "
                    "recorded in its own section.")
 
-    n_sections = len([p for p in doc.paragraphs if p.style.name == "Heading 1"])
+    # numbered sections only — the unnumbered furniture H1s (Contents, Document Control) are not
+    # content sections and inflating the figure made run logs drift across versions (review fix)
+    n_sections = len([p for p in doc.paragraphs
+                      if p.style.name == "Heading 1" and p.text[:1].isdigit()])
     doc.save(output_path)
     logger.info(f"[Phase 34] MOP (DOCX) written: {output_path} ({len(waves)} wave(s), {n_sections} sections)")

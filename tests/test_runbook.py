@@ -138,7 +138,8 @@ def test_runbook_has_12_sections_and_reconciles(tmp_path):
     # numbers reconcile to the snapshot (the workbook-vs-runbook agreement contract).
     # Locate the §1 metric table by its header — the document-control front matter
     # (V3.23.150) inserts tables before it, so index 0 is no longer the exec summary.
-    exec_t = next(t for t in d.tables if t.rows[0].cells[0].text == "Metric")
+    exec_t = next((t for t in d.tables if t.rows[0].cells[0].text == "Metric"), None)
+    assert exec_t is not None, "exec-summary Metric table not found in the runbook"
     exec_rows = {r.cells[0].text: r.cells[1].text for r in exec_t.rows}
     assert exec_rows["Devices in scope"] == "2"
     assert exec_rows["Migration move groups"] == "2"
