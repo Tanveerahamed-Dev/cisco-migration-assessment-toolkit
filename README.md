@@ -181,6 +181,35 @@ switch / IP / MAC; filter by VLAN. The modes:
 The explorer is a single self-contained file (no server, no external assets) and
 runs fully offline — safe to email or open from a USB stick.
 
+## AssessHub — the web platform
+
+[`webapp/`](webapp/README.md) layers a served, full-stack platform over the engine — **purely
+additive** (the engine and its golden test contract are untouched). Where the CLI produces one
+assessment, AssessHub manages the whole migration *campaign*:
+
+- **Campaigns & waves** — snapshots stored in SQLite, tracked over time with trajectory verdicts
+  and pairwise compare; the **risk cockpit**, a native **force-directed fleet topology**, 15+ detail
+  sections, and the deep explorer embedded per snapshot.
+- **Two ways in** — upload a finished `*.snapshot.json`, or upload a **ZIP of raw show-command
+  outputs** and the real engine pipeline runs server-side.
+- **Gated cutover planner** — per-wave Go / Conditional-Go / No-Go gates, pilot-first sequencing,
+  maintenance-window estimates, and a PPDIOO run-of-show per wave.
+- **Execution console (war room)** — run the change window live: timestamped step check-off,
+  validation PASS/FAIL against captured baselines, wave closeouts, a deviation scribe log, and a
+  derived change-management outcome.
+- **Deliverables on demand** — Runbook / Design Document / MOP / Executive Deck via the engine's own
+  writers, plus the Cutover Plan, the NRFU/Acceptance Test Plan, and the **Post-Implementation
+  Review / as-executed record** for any execution run.
+
+```bash
+pip install -r webapp/requirements.txt
+cd webapp/frontend && npm install && npm run build && cd ../..
+python -m uvicorn backend.app:app --app-dir webapp --port 8000   # http://127.0.0.1:8000
+```
+
+Open the page and click **"Open a sample fleet"** — a bundled 23-device demo, no network needed.
+Full docs in [`webapp/README.md`](webapp/README.md).
+
 ## Health score & migration readiness
 
 The score starts at 100 with weighted, **per-category-capped** deductions across
