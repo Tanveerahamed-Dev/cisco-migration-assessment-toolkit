@@ -237,6 +237,25 @@ def test_cutover_deliverable_content(client):
     all_rows = [c.text for t in doc.tables for row in t.rows for c in row.cells]
     assert any("Customer network owner" in c for c in all_rows)   # acceptance roles
     assert len(doc.tables) >= 2                         # summary + sequence tables at minimum
+    # V3.23.154: manual step numbering restarts per wave — Word's "List Number" style would
+    # continue counting across waves (same defect class as the MOP's e263b6d fix)
+    n_ros = sum(1 for p in doc.paragraphs if p.text == "Run-of-show")
+    n_first = sum(1 for p in doc.paragraphs if p.text.startswith("1. [Baseline capture]"))
+    assert n_ros >= 1 and n_first == n_ros
+
+
+def test_run_of_show_carries_impact_on_cutover_steps():
+    """V3.23.154: the outage/impact callout rides the step that causes it (AS/Barstow convention) —
+    an additive `impact` field on the two cutover steps only."""
+    from backend.cutover import _run_of_show
+
+    steps = _run_of_show(mbb=["a"], hard=["b"], hard_ep=7, window=45, n_val=3, n_rem=0, blockers=[])
+    by_phase = {s["phase"]: s for s in steps}
+    assert by_phase["Cutover · make-before-break"]["impact"].startswith("No outage")
+    hard = by_phase["Cutover · hard cutover"]["impact"]
+    assert hard.startswith("OUTAGE") and "7 endpoint(s)" in hard
+    assert "impact" not in by_phase["Baseline capture"]
+    assert "impact" not in by_phase["Validation"]
 
 
 def test_cutover_no_waves_still_carries_acceptance(tmp_path):
