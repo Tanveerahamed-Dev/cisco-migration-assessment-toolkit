@@ -28,6 +28,10 @@ _GATE_INK = {
     cutover.GATE_NOGO: (0xCF, 0x22, 0x2E),
 }
 
+# One acceptance wording for every save path, so the no-waves document carries the same gate.
+_ACCEPTANCE_NOTE = ("Acceptance approves the wave sequence and gates as the plan of record; "
+                    "each window still requires its own change approval.")
+
 
 def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> None:
     """Write the cutover-plan run-of-show to ``output_path`` as a .docx."""
@@ -78,7 +82,7 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
     # ---- document control (AS-style front matter) ----
     add_document_control(
         doc, document="Migration Cutover Plan (Run-of-Show)", label=label,
-        engine_version=str(engine.ENGINE_SCHEMA_VERSION),
+        engine_version=f"V{engine.ENGINE_SCHEMA_VERSION}",  # match the engine writers' display form
         generated_at=snap_dict.get("generated_at"),
         audience="The change advisory board and the war-room participants planning and approving "
                  "the migration windows.",
@@ -86,6 +90,8 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
 
     if not waves:
         doc.add_paragraph("No migration waves were derived from this snapshot.")
+        # Furniture stays complete even for the degenerate document: close with the acceptance gate.
+        add_acceptance(doc, scope_note=_ACCEPTANCE_NOTE)
         doc.save(output_path)
         return
 
@@ -201,8 +207,6 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
                 doc.add_paragraph(f"… {len(val) - 30} more in the Validation-plan section.")
 
     # ---- closing acceptance gate (AS-style back matter) ----
-    add_acceptance(
-        doc, scope_note="Acceptance approves the wave sequence and gates as the plan of record; "
-                        "each window still requires its own change approval.")
+    add_acceptance(doc, scope_note=_ACCEPTANCE_NOTE)
 
     doc.save(output_path)
