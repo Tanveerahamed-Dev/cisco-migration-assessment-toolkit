@@ -389,6 +389,7 @@ from cisco_toolkit.excel import (
     write_golden_drift_sheet,                                    # NEW-V3.23.146 (per-device config drift vs baseline)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
+    write_architecture_review_sheet,                             # NEW-V3.23.161 (leading-practice conformance scorecard)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
@@ -1840,6 +1841,25 @@ def main():
     _run_phase("Trunk Native-VLAN sheet", write_trunk_native_sheet, wb, all_interfaces)
     _run_phase("Link Duplex-Speed sheet", write_link_phy_sheet, wb, all_interfaces)
 
+    # Phase 30f: Architecture Review - NEW-V3.23.161. The senior-engineer design review (V3.23.160)
+    # gets its workbook evidence twin. The review is computed ONCE here, from a snap-shaped view of
+    # the sections already computed above (it reads exactly these keys), then the SAME object is
+    # attached to the snapshot below -- one source of truth: sheet, snapshot JSON and the DOCX
+    # report all carry identical verdicts. capacity_rows is hoisted for the same reason (the
+    # snapshot reuses it instead of recomputing).
+    capacity_rows = compute_capacity(all_device_physical)
+    architecture_review = _run_phase(
+        "Architecture review", compute_architecture_review,
+        {**snapshot_state(all_interfaces, all_device_physical),
+         "l3_forwarding": l3_forwarding, "routing_neighbors": all_routing_neighbors,
+         "stp_roots": all_stp_roots, "fhrp": _l2["fhrp"], "capacity": capacity_rows,
+         "lifecycle_risk": lifecycle_risk, "failure_impact": failure_impact,
+         "security": all_security, "config_hygiene": all_config_hygiene,
+         "operational_drift": _drift, "redistribution": all_redistribution,
+         "collection_completeness": collection_completeness, "punchlist": punchlist},
+        _default={})
+    _run_phase("Architecture Review sheet", write_architecture_review_sheet, wb, architecture_review)
+
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")
     logger.info(f"[OK] Log:   {LOG_FILE}")
@@ -1903,7 +1923,7 @@ def main():
     snap_dict["trunk_native"] = compute_trunk_native_mismatches(all_interfaces)
     snap_dict["link_phy"] = compute_duplex_speed_mismatches(all_interfaces)
     snap_dict["move_groups"] = move_groups                           # NEW-V3.23.86 (Migration Waves mode: the move-group / shared-VLAN-domain structure the readiness verdicts attach to; already computed above for migration_readiness)
-    snap_dict["capacity"] = compute_capacity(all_device_physical)    # NEW-V3.23.87 (port + PoE headroom: same fn that drives the 'Capacity' sheet -> explorer + workbook agree)
+    snap_dict["capacity"] = capacity_rows                            # NEW-V3.23.87 (port + PoE headroom); V3.23.161: reuses the rows computed for the architecture review (Phase 30f)
     snap_dict["endpoint_identity"] = endpoint_identity               # NEW-V3.23.95 (per-endpoint vendor + inferred class; reused from the Phase 15b compute)
     snap_dict["endpoint_dependencies"] = endpoint_dependencies       # NEW-V3.23.96 (clusters / dual-homed / VLAN tiers / per-switch validation; reused from Phase 29b)
     snap_dict["subnet_intelligence"] = subnet_intelligence           # NEW-V3.23.97 (per-device subnet source/destination + move-group reachability; reused from Phase 29c)
@@ -1911,10 +1931,11 @@ def main():
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
-    # NEW-V3.23.160: the senior-engineer design review — synthesizes the ALREADY-ASSEMBLED sections
-    # above into the leading-practice conformance verdicts, so it must be attached last (it reads
-    # snap_dict itself, not the raw interfaces).
-    snap_dict["architecture_review"] = compute_architecture_review(snap_dict)
+    # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
+    # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),
+    # instead of recomputing from the assembled snap_dict (the Phase 30f view carries exactly the
+    # keys the review reads, so the result is identical).
+    snap_dict["architecture_review"] = architecture_review
     if flow_trace is not None:                                       # NEW-V3.19
         snap_dict["flow_trace"] = flow_trace
     if args.redact:                                                  # NEW-V3.23.41

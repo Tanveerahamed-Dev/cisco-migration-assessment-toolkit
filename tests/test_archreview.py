@@ -200,6 +200,44 @@ def test_malformed_sections_degrade_not_crash():
 
 
 # ---------------------------------------------------------------------------
+# Workbook scorecard sheet (V3.23.161) — openpyxl is a hard engine dep, no skip
+# ---------------------------------------------------------------------------
+def _sheet_text(ws):
+    return "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+
+
+def test_workbook_scorecard_sheet_renders_the_review():
+    from openpyxl import Workbook
+
+    from cisco_toolkit.excel import ARCHREVIEW_SHEET_NAME, write_architecture_review_sheet
+
+    wb = Workbook()
+    write_architecture_review_sheet(wb, compute_architecture_review(_snap()))
+    text = _sheet_text(wb[ARCHREVIEW_SHEET_NAME])
+    assert "Conformance grade" in text
+    for cid in ("HIER-1", "RES-2", "CAP-1", "SEC-1", "LC-1"):
+        assert cid in text, cid
+    assert "CRITICAL DEVIATION" in text                       # RES-2 single-gateway verdict
+    assert "By domain" in text and "All checks" in text
+    assert "Priority remediation queue" in text
+
+
+def test_workbook_scorecard_sheet_handles_empty_review_and_rewrites():
+    from openpyxl import Workbook
+
+    from cisco_toolkit.excel import ARCHREVIEW_SHEET_NAME, write_architecture_review_sheet
+
+    wb = Workbook()
+    write_architecture_review_sheet(wb, compute_architecture_review({}))
+    text = _sheet_text(wb[ARCHREVIEW_SHEET_NAME])
+    assert "Conformance grade N/A" in text                    # honest, never a fabricated grade
+    assert "Priority remediation queue" not in text           # nothing to remediate -> no section
+    # idempotent: a re-run replaces the sheet instead of erroring or duplicating
+    write_architecture_review_sheet(wb, compute_architecture_review(_snap()))
+    assert wb.sheetnames.count(ARCHREVIEW_SHEET_NAME) == 1
+
+
+# ---------------------------------------------------------------------------
 # DOCX writer (optional python-docx, exactly like the other deliverables)
 # ---------------------------------------------------------------------------
 docx = pytest.importorskip("docx")

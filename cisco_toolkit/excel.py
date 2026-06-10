@@ -1662,6 +1662,100 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
                 f"{s.get('n_past_ldos', 0)} past-LDoS")
 
 
+ARCHREVIEW_SHEET_NAME = "Architecture Review"   # NEW-V3.23.161 (leading-practice conformance scorecard)
+
+# verdict -> (display label, fill) — the SAME labels the Architecture Review DOCX renders, so the
+# workbook sheet and the report read identically.
+_AR_VERDICTS = {"critical": ("CRITICAL DEVIATION", "F4CCCC"), "deviation": ("DEVIATION", "FCE4D6"),
+                "advisory": ("ADVISORY", "FFF2CC"), "conforms": ("CONFORMS", "D9EAD3"),
+                "not-assessable": ("NOT ASSESSABLE", "EFEFEF")}
+
+
+def write_architecture_review_sheet(wb, ar: dict) -> None:
+    """Write 'Architecture Review' from compute_architecture_review(): the conformance grade, the
+    per-domain rollup, the full leading-practice check scorecard and the priority remediation
+    queue — the workbook (evidence) twin of the Architecture Review & Conformance Report DOCX.
+    Row 1 is a static (date-free) title so the golden sheet schema stays stable."""
+    if ARCHREVIEW_SHEET_NAME in wb.sheetnames:
+        del wb[ARCHREVIEW_SHEET_NAME]
+    ws = wb.create_sheet(ARCHREVIEW_SHEET_NAME)
+    A = ar or {}
+    s = A.get("summary") or {}
+    HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
+    DAT = Font(name="Calibri", size=10)
+    score = s.get("score_pct")
+    ws.cell(1, 1, "Architecture Review — leading-practice conformance scorecard").font = \
+        Font(bold=True, size=11)
+    ws.cell(2, 1, f"Conformance grade {s.get('grade', 'N/A')}"
+                  + (f" ({score}%)" if score is not None else "")
+                  + f" — {s.get('grade_label', '')}: {s.get('n_conforms', 0)} conform · "
+                    f"{s.get('n_advisory', 0)} advisory · {s.get('n_deviation', 0)} deviation · "
+                    f"{s.get('n_critical', 0)} critical · "
+                    f"{s.get('n_not_assessable', 0)} not assessable.").font = Font(size=10)
+    ws.cell(3, 1, s.get("statement", "")).font = Font(size=9, italic=True, color="808080")
+
+    r = 5
+    ws.cell(r, 1, "By domain").font = Font(bold=True); r += 1
+    for i, h in enumerate(["Domain", "Verdict", "Score"], 1):
+        c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
+    r += 1
+    for d in (A.get("domains") or []):
+        d = d if isinstance(d, dict) else {}
+        label, fill = _AR_VERDICTS.get(d.get("verdict"), (str(d.get("verdict") or "—"), "FFFFFF"))
+        sc = d.get("score_pct")
+        for col, v in enumerate([d.get("key"), label, f"{sc}%" if sc is not None else "—"], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            if col == 2:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+
+    r += 1
+    ws.cell(r, 1, "All checks").font = Font(bold=True); r += 1
+    cols = ["Check", "Domain", "Title", "Verdict", "Evidence", "Observed", "Recommendation",
+            "Reference"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(r + 1, 1); r += 1
+    for ck in (A.get("checks") or []):
+        ck = ck if isinstance(ck, dict) else {}
+        label, fill = _AR_VERDICTS.get(ck.get("verdict"), (str(ck.get("verdict") or "—"), "FFFFFF"))
+        vals = [ck.get("id"), ck.get("domain"), ck.get("title"), label,
+                ", ".join(str(x) for x in (ck.get("evidence") or [])) or "—",
+                ck.get("observed"), ck.get("recommendation"), ck.get("reference")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(vertical="top", wrap_text=col >= 5)
+            if col == 4:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+
+    queue = A.get("top_actions") or []
+    if queue:
+        r += 1
+        ws.cell(r, 1, "Priority remediation queue (severity, then blast radius)").font = \
+            Font(bold=True); r += 1
+        for i, h in enumerate(["#", "Check", "Severity", "Action", "Evidence"], 1):
+            c = ws.cell(r, i, h); c.font = HDR; c.fill = HFILL
+        r += 1
+        for a in queue:
+            a = a if isinstance(a, dict) else {}
+            label, fill = _AR_VERDICTS.get(a.get("verdict"), (str(a.get("verdict") or "—"), "FFFFFF"))
+            vals = [a.get("rank"), a.get("id"), label, a.get("action"),
+                    ", ".join(str(x) for x in (a.get("evidence") or [])) or "—"]
+            for col, v in enumerate(vals, 1):
+                c = ws.cell(r, col, v); c.font = DAT
+                c.alignment = Alignment(vertical="top", wrap_text=col == 4)
+                if col == 3:
+                    c.fill = PatternFill("solid", fgColor=fill)
+            r += 1
+
+    for i, w in enumerate([9, 26, 38, 19, 34, 60, 60, 44], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{ARCHREVIEW_SHEET_NAME}' sheet: grade {s.get('grade', 'N/A')}, "
+                f"{s.get('n_checks', 0)} check(s), {s.get('n_critical', 0)} critical")
+
+
 SEGMENTATION_SHEET_NAME = "Segmentation"   # NEW-V3.23.118 (L3 isolation posture)
 
 def write_segmentation_sheet(wb, seg: dict) -> None:
