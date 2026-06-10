@@ -28,6 +28,14 @@ from . import cutover
 # check-offs on the same run would otherwise race the read-modify-write cycle.
 MUTATION_LOCK = threading.Lock()
 
+
+class RunClosedError(ValueError):
+    """The run is finished — mutations are a conflict (409), not a bad request."""
+
+
+class WaveClosedError(ValueError):
+    """The wave is closed out — its steps/checks are part of the signed record (409)."""
+
 STEP_STATUSES = ("pending", "done", "skipped")
 CHECK_RESULTS = ("pending", "pass", "fail", "na")
 CLOSEOUT_DECISIONS = ("COMPLETE", "ROLLED BACK", "DEFERRED")
@@ -54,13 +62,32 @@ def _parse_ts(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _unique_groups(plan_waves: List[Dict[str, Any]]) -> List[str]:
+    """Wave identity keys. Group names come from the snapshot and can be missing or duplicated
+    (e.g. uploaded wave_sequencing rows without 'group' all default to "") — every mutation is
+    addressed by group, so a collision would silently route the second wave's actions to the first."""
+    names: List[str] = []
+    seen: set = set()
+    for w in plan_waves:
+        name = w["group"] or f"Wave {w['order']}"
+        if name in seen:
+            base, n = name, 2
+            while f"{base} ({n})" in seen:
+                n += 1
+            name = f"{base} ({n})"
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def start_run(snap: Dict[str, Any], label: str, operator: str) -> Dict[str, Any]:
     """Materialize the snapshot's cutover plan into a frozen, executable run state."""
     plan = cutover.build_plan(snap)
+    group_names = _unique_groups(plan["waves"])
     waves: List[Dict[str, Any]] = []
-    for w in plan["waves"]:
+    for w, group_name in zip(plan["waves"], group_names):
         waves.append({
-            "group": w["group"],
+            "group": group_name,
             "order": w["order"],
             "gate": w["gate"],
             "strategy": w["strategy"],
@@ -111,7 +138,26 @@ def _wave(state: Dict[str, Any], group: str) -> Dict[str, Any]:
 
 def _require_live(state: Dict[str, Any]) -> None:
     if state["status"] != "in_progress":
-        raise ValueError(f"Run is already {state['status']} — it can no longer be modified.")
+        raise RunClosedError(f"Run is already {state['status']} — it can no longer be modified.")
+
+
+def _live_wave(state: Dict[str, Any], group: str) -> Dict[str, Any]:
+    """The wave, only while it is still open — a closed-out wave is part of the signed record,
+    so a late check-off (stale tab, scripted call) must not rewrite its timestamps."""
+    w = _wave(state, group)
+    decision = w["closeout"]["decision"]
+    if decision:
+        raise WaveClosedError(f"Wave '{group}' is already closed out ({decision}) — "
+                              "its record can no longer be modified.")
+    return w
+
+
+def _item(items: List[Dict[str, Any]], index: int) -> Dict[str, Any]:
+    """Bounds-checked item lookup — a bare list index would let a negative index silently
+    address from the end and corrupt the wrong step's record."""
+    if not 0 <= index < len(items):
+        raise IndexError(index)
+    return items[index]
 
 
 def apply_step(state: Dict[str, Any], group: str, index: int, status: str,
@@ -119,7 +165,7 @@ def apply_step(state: Dict[str, Any], group: str, index: int, status: str,
     _require_live(state)
     if status not in STEP_STATUSES:
         raise ValueError(f"status must be one of {STEP_STATUSES}")
-    step = _wave(state, group)["steps"][index]
+    step = _item(_live_wave(state, group)["steps"], index)
     step["status"] = status
     step["at"] = _now() if status != "pending" else None
     step["by"] = by.strip() if status != "pending" else ""
@@ -134,7 +180,7 @@ def apply_check(state: Dict[str, Any], group: str, index: int, result: str,
     _require_live(state)
     if result not in CHECK_RESULTS:
         raise ValueError(f"result must be one of {CHECK_RESULTS}")
-    check = _wave(state, group)["checks"][index]
+    check = _item(_live_wave(state, group)["checks"], index)
     check["result"] = result
     check["observed"] = observed.strip()
     check["at"] = _now() if result != "pending" else None
@@ -150,7 +196,7 @@ def apply_closeout(state: Dict[str, Any], group: str, decision: str, note: str, 
     _require_live(state)
     if decision not in CLOSEOUT_DECISIONS:
         raise ValueError(f"decision must be one of {CLOSEOUT_DECISIONS}")
-    w = _wave(state, group)
+    w = _live_wave(state, group)
     w["closeout"] = {"decision": decision, "at": _now(), "by": by.strip(), "note": note.strip()}
     kind = "deviation" if decision == "ROLLED BACK" else "gate"
     _log(state, kind, f"Wave closed out: {decision}"
@@ -242,7 +288,10 @@ def progress(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _planned_window(state: Dict[str, Any]) -> int:
-    return cutover._int((state.get("plan_summary") or {}).get("est_window_minutes"))
+    try:
+        return int((state.get("plan_summary") or {}).get("est_window_minutes") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def with_progress(execution_id: int, snapshot_id: int, state: Dict[str, Any]) -> Dict[str, Any]:

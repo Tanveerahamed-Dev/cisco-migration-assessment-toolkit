@@ -25,50 +25,20 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from . import engine
-
-_NAVY = (0x1F, 0x38, 0x64)
-_GREY = (0x59, 0x59, 0x59)
+from .docx_style import GREY as _GREY
+from .docx_style import NAVY as _NAVY
+from .docx_style import add_table, ink, kv, new_document
 
 
 def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> None:
     """Write the NRFU / Acceptance Test Plan to ``output_path`` as a .docx."""
-    from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Pt
 
-    def ink(rgb: tuple) -> "RGBColor":
-        return RGBColor(*rgb)
-
-    doc = Document()
-    normal = doc.styles["Normal"]
-    normal.font.name = "Calibri"
-    normal.font.size = Pt(10.5)
-
-    def kv(p, label_text: str, value: str, color: tuple = _NAVY) -> None:
-        r = p.add_run(label_text)
-        r.bold = True
-        r.font.color.rgb = ink(color)
-        p.add_run(" " + (value if value else "—"))
+    doc = new_document()
 
     def table(headers: List[str], rows: List[List[Any]], widths: List[float] | None = None):
-        t = doc.add_table(rows=1, cols=len(headers))
-        t.style = "Light Grid Accent 1"
-        for i, hd in enumerate(headers):
-            cell = t.rows[0].cells[i]
-            cell.text = str(hd)
-            for para in cell.paragraphs:
-                for run in para.runs:
-                    run.bold = True
-        for row in rows:
-            cells = t.add_row().cells
-            for i, v in enumerate(row):
-                cells[i].text = "" if v is None else str(v)
-        if widths:
-            for i, w in enumerate(widths):
-                for row in t.rows:
-                    row.cells[i].width = Inches(w)
-        doc.add_paragraph()
-        return t
+        return add_table(doc, headers, rows, widths)
 
     devices = snap_dict.get("devices") or {}
     per_device = [d for d in ((snap_dict.get("lifecycle_risk") or {}).get("per_device") or [])

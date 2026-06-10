@@ -12,6 +12,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # make `backend` importable
+_ENGINE_TESTS = str(Path(__file__).resolve().parents[2] / "tests")  # engine fixtures (synthetic collection)
+if _ENGINE_TESTS not in sys.path:
+    sys.path.append(_ENGINE_TESTS)  # append (not insert) so webapp modules keep import priority
 
 from backend.app import create_app  # noqa: E402
 
@@ -341,9 +344,12 @@ def test_execution_outcome_vocabulary(client):
     # a rolled-back wave dominates the verdict, even when every other wave completed
     ex = run()
     eid = ex["id"]
-    ex = close_all(eid, ex, "COMPLETE")
     ex = client.post(f"/api/executions/{eid}/closeout",
                      json={"wave": ex["waves"][0]["group"], "decision": "ROLLED BACK"}).json()
+    for w in ex["waves"]:
+        if not w["closeout"]["decision"]:
+            ex = client.post(f"/api/executions/{eid}/closeout",
+                             json={"wave": w["group"], "decision": "COMPLETE"}).json()
     ex = client.post(f"/api/executions/{eid}/finish", json={"status": "completed"}).json()
     assert ex["outcome"] == "ROLLED BACK"
 
@@ -351,6 +357,50 @@ def test_execution_outcome_vocabulary(client):
     ex = run()
     ex = client.post(f"/api/executions/{ex['id']}/finish", json={"status": "aborted"}).json()
     assert ex["outcome"] == "ABORTED"
+
+
+def test_execution_record_integrity_guards(client):
+    """The as-executed record is an audit artifact: negative indexes must not address from the end,
+    and a closed-out wave's steps/checks are part of the signed record (409, like a finished run)."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    ex = client.post(f"/api/snapshots/{snap_id}/executions", json={}).json()
+    eid, g = ex["id"], ex["waves"][0]["group"]
+
+    # negative index -> 400, and no step was touched
+    r = client.post(f"/api/executions/{eid}/step", json={"wave": g, "index": -1, "status": "done"})
+    assert r.status_code == 400
+    ex = client.get(f"/api/executions/{eid}").json()
+    assert all(s["status"] == "pending" for s in ex["waves"][0]["steps"])
+
+    # close the wave out, then late mutations are conflicts and the record is unchanged
+    client.post(f"/api/executions/{eid}/closeout", json={"wave": g, "decision": "COMPLETE"})
+    r = client.post(f"/api/executions/{eid}/step", json={"wave": g, "index": 0, "status": "done"})
+    assert r.status_code == 409
+    r = client.post(f"/api/executions/{eid}/check", json={"wave": g, "index": 0, "result": "pass"})
+    assert r.status_code == 409
+    r = client.post(f"/api/executions/{eid}/closeout", json={"wave": g, "decision": "ROLLED BACK"})
+    assert r.status_code == 409
+    ex = client.get(f"/api/executions/{eid}").json()
+    assert ex["waves"][0]["closeout"]["decision"] == "COMPLETE"
+    assert all(s["status"] == "pending" for s in ex["waves"][0]["steps"])
+
+
+def test_execution_duplicate_wave_groups_disambiguated():
+    """Uploaded snapshots can carry duplicate/missing wave group names — the run must give every
+    wave a unique address or mutations for the second wave land on the first."""
+    from backend import execution
+
+    snap = {
+        "devices": {"sw1": {}, "sw2": {}},
+        "wave_sequencing": [{"make_before_break": ["sw1"], "hard_cutover": []},
+                            {"make_before_break": ["sw2"], "hard_cutover": []}],
+    }
+    state = execution.start_run(snap, "run", "")
+    groups = [w["group"] for w in state["waves"]]
+    assert len(set(groups)) == len(groups) and all(groups)
+    execution.apply_step(state, groups[1], 0, "done", "", "op")
+    assert state["waves"][1]["steps"][0]["status"] == "done"
+    assert state["waves"][0]["steps"][0]["status"] == "pending"
 
 
 def test_execution_pir_report(client):
@@ -398,7 +448,6 @@ def _fixture_collection_zip(tmp_path, wrap="export/fleet", include_devices_json=
     import io
     import zipfile
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
     import synthetic_fixtures as fx
 
     root = tmp_path / "zipsrc"
@@ -435,6 +484,39 @@ def test_ingest_collection_runs_real_engine(client, tmp_path):
     assert s["n_switches"] == 3 and s["punchlist"]["total"] >= 1
     plan = client.get(f"/api/snapshots/{meta['id']}/cutover").json()
     assert plan["summary"]["n_waves"] >= 1
+
+
+def test_ingest_mismatched_devices_json_falls_back(client, tmp_path):
+    """A bundled devices.json whose hostnames match no folder must not be trusted blindly: the run
+    falls back to folder-name synthesis (assessing what is actually in the archive) instead of
+    pointing the engine at non-existent directories and storing an empty snapshot."""
+    import io
+    import json
+    import zipfile
+
+    import synthetic_fixtures as fx
+
+    root = tmp_path / "zipsrc" / "fleet"
+    fx.write_collection(str(root))
+    # FQDN hostnames that match no folder
+    (root / "devices.json").write_text(json.dumps(
+        [{"hostname": f"{h}.example.net", "platform": "ios"} for h in ("core1", "core2", "access1")]),
+        encoding="utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for p in (tmp_path / "zipsrc").rglob("*"):
+            if p.is_file():
+                zf.write(p, p.relative_to(tmp_path / "zipsrc").as_posix())
+
+    cid = client.post("/api/campaigns", json={"name": "mismatch"}).json()["id"]
+    r = client.post(f"/api/campaigns/{cid}/ingest",
+                    files={"file": ("fleet.zip", buf.getvalue(), "application/zip")})
+    assert r.status_code == 201, r.text
+    meta = r.json()
+    assert meta["ingest"]["devices_json"] == "synthesized"      # the useless file was not trusted
+    assert meta["n_devices"] == 3
+    # the snapshot carries REAL parsed data (the empty-snapshot failure mode)
+    assert meta["summary"]["punchlist"]["total"] >= 1
 
 
 def test_ingest_rejects_bad_archives(client, tmp_path):
