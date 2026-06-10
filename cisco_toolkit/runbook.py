@@ -24,7 +24,7 @@ import logging
 from collections import Counter
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
 
 logger = logging.getLogger(__name__)
 
@@ -121,22 +121,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             p = doc.add_paragraph(); _label_run(p, "Remediation:", remediation)
 
     def table(headers, rows, widths=None):
-        t = doc.add_table(rows=1, cols=len(headers)); t.style = "Light Grid Accent 1"
-        for i, hd in enumerate(headers):
-            c = t.rows[0].cells[i]; c.text = str(hd)
-            for para in c.paragraphs:
-                for run in para.runs:
-                    run.bold = True
-        for row in rows:
-            cells = t.add_row().cells
-            for i, v in enumerate(row):
-                cells[i].text = "" if v is None else str(v)
-        if widths:
-            for i, w in enumerate(widths):
-                for row in t.rows:
-                    row.cells[i].width = Inches(w)
-        doc.add_paragraph()
-        return t
+        # Delegates to the family's single table builder (docmeta.add_table) — V3.23.152 dedup.
+        return add_table(doc, headers, rows, widths, fixed=False)
 
     # ---- snapshot-derived headline numbers (reconciled; all sections cite these) ----
     devices = snap_dict.get("devices") or {}

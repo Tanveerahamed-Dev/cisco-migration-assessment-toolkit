@@ -22,7 +22,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.oxml.ns import qn
         from docx.oxml import OxmlElement
-        from docx.shared import Pt, RGBColor, Inches
+        from docx.shared import Pt, RGBColor
     except ImportError:
         logger.warning("  Design document (DOCX) skipped: python-docx not installed "
                        "(pip install python-docx to enable the HLD/LLD design deliverable).")
@@ -106,22 +106,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         p.add_run(" " + (str(value) if value not in (None, "") else "—"))
 
     def table(headers, rows, widths=None):
-        t = doc.add_table(rows=1, cols=len(headers)); t.style = "Light Grid Accent 1"
-        for i, hd in enumerate(headers):
-            c = t.rows[0].cells[i]; c.text = str(hd)
-            for para in c.paragraphs:
-                for run in para.runs:
-                    run.bold = True
-        for row in rows:
-            cells = t.add_row().cells
-            for i, v in enumerate(row):
-                cells[i].text = "" if v is None else str(v)
-        if widths:
-            for i, w in enumerate(widths):
-                for row in t.rows:
-                    row.cells[i].width = Inches(w)
-        doc.add_paragraph()
-        return t
+        # Delegates to the family's single table builder (docmeta.add_table) — V3.23.152 dedup.
+        return add_table(doc, headers, rows, widths, fixed=False)
 
     # ---- snapshot-derived facts (reconciled to the workbook) ----
     devices = snap.get("devices") or {}
