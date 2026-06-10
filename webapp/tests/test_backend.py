@@ -225,7 +225,10 @@ def test_gate_board_roundtrip_and_plan_of_record_feedback(client):
     assert [g["key"] for g in board["cadence"]] == [
         "commit", "checkpoint", "readiness", "go_no_go", "window", "hypercare_exit"]
     assert board["records"] == []                        # nothing signed yet
-    wave = (board["waves"] or ["Group 1"])[0]            # demo fleet derives waves; fall back safely
+    # V3.23.159: no defensive fallback — if the demo fleet stops deriving waves, FAIL here
+    # (a phantom fallback wave would keep this test green while the board/loop is broken).
+    assert board["waves"], "demo fleet must derive at least one wave"
+    wave = board["waves"][0]
 
     # sign, then upsert the same gate (one row, latest decision wins)
     r = client.post(f"/api/campaigns/{cid}/gates",
@@ -238,14 +241,25 @@ def test_gate_board_roundtrip_and_plan_of_record_feedback(client):
     recs = r.json()["records"]
     assert len(recs) == 1 and recs[0]["decision"] == "go" and recs[0]["signed_by"] == "A. Engineer"
 
-    # validation: unknown gate / unknown decision / missing campaign
+    # validation: unknown gate / unknown decision / unknown wave / size caps / missing campaign
     bad_gate = client.post(f"/api/campaigns/{cid}/gates",
                            json={"wave": wave, "gate": "bogus", "decision": "go"})
     assert bad_gate.status_code == 400
     bad_dec = client.post(f"/api/campaigns/{cid}/gates",
                           json={"wave": wave, "gate": "commit", "decision": "maybe"})
     assert bad_dec.status_code == 400
+    # V3.23.159: a typo'd wave label must not mint a permanent governance row
+    bad_wave = client.post(f"/api/campaigns/{cid}/gates",
+                           json={"wave": "Goup 1 (typo)", "gate": "commit", "decision": "go"})
+    assert bad_wave.status_code == 400 and "Unknown wave" in bad_wave.text
+    # V3.23.159: unbounded strings are rejected by the model, not stored/echoed/rendered
+    too_big = client.post(f"/api/campaigns/{cid}/gates",
+                          json={"wave": wave, "gate": "commit", "decision": "go",
+                                "note": "x" * 10_000})
+    assert too_big.status_code == 422
     assert client.get("/api/campaigns/999999/gates").status_code == 404
+    assert client.post("/api/campaigns/999999/gates",
+                       json={"wave": wave, "gate": "commit", "decision": "go"}).status_code == 404
 
     # the feedback loop: the signed decision lands in the engagement DOCX
     r = client.get(f"/api/snapshots/{snap_id}/deliverable/engagement")
@@ -267,10 +281,13 @@ def test_gate_board_roundtrip_and_plan_of_record_feedback(client):
     assert "Gate record (as signed)" in text
     assert "GO" in text and "A. Engineer" in text and "checks green" in text
 
-    # clearing back to pending removes the row AND the as-signed section
+    # clearing back to pending removes the row AND the as-signed section — and is idempotent
     r = client.post(f"/api/campaigns/{cid}/gates",
                     json={"wave": wave, "gate": "go_no_go", "decision": "pending"})
     assert r.json()["records"] == []
+    r = client.post(f"/api/campaigns/{cid}/gates",
+                    json={"wave": wave, "gate": "go_no_go", "decision": "pending"})
+    assert r.status_code == 200 and r.json()["records"] == []   # clearing a clear cell is a no-op
     r = client.get(f"/api/snapshots/{snap_id}/deliverable/engagement")
     assert "Gate record (as signed)" not in _text(r)
 

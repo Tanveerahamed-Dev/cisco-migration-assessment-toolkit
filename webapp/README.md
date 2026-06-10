@@ -40,14 +40,20 @@ server-side and stores the result as a first-class snapshot.
   rendered through the engine's own `html.write_html_explorer`.
 - **Fleet topology** — a native force-directed graph of the switch fabric (d3-force), nodes coloured by
   health band, single-points-of-failure highlighted, click-a-node to trace its blast radius.
-- **Deliverable downloads** — generate and download narrative outputs for any snapshot: the CRD
-  (Customer Requirements Document, DOCX), Runbook (DOCX), As-Built Design Document (DOCX), per-wave
-  MOP (DOCX), and Executive Deck (PPTX) — each
-  produced by the engine's own writer (`crd`/`runbook`/`design`/`mop`/`deck`), byte-identical to the CLI —
+- **Deliverable downloads** — generate and download narrative outputs for any snapshot: the
+  Engagement Workflow & Plan of Record (DOCX), CRD (Customer Requirements Document, DOCX),
+  Runbook (DOCX), As-Built Design Document (DOCX), per-wave MOP (DOCX), and Executive Deck (PPTX) —
+  each produced by the engine's own writer (`engagement`/`crd`/`runbook`/`design`/`mop`/`deck`),
+  byte-identical to the CLI (the engagement plan additionally carries the campaign's recorded gate
+  sign-offs in its §4.3 "Gate record (as signed)") —
   plus two web-layer syntheses the engine has no CLI writer for: the **Cutover Plan (run-of-show) DOCX**
   (`cutover`) from the planner, and the **Network Ready-For-Use / Acceptance Test Plan DOCX** (`nrfu`) —
   a Cisco-standard NRFU with document-control + sign-off front matter and three test phases (device /
   logical / service) built from the snapshot's lifecycle, `validation_plan`, and service-map data.
+- **Gate board** — on the campaign page: per-wave T-minus sign-offs (commit T-28 → checkpoint T-14 →
+  readiness T-7 → go/no-go T-1 → window T-0 → hypercare exit T+5). Click a cell to cycle
+  pending → GO → NO-GO → SLIPPED → pending; decisions are campaign state and land in the engagement
+  deliverable's as-signed gate record.
 - **Campaign trajectory** — across ≥2 waves: an IMPROVING / REGRESSING / MIXED verdict plus a
   per-metric trajectory, and a pairwise **compare** (opened/resolved findings, regressed/improved
   health) — both via the engine's `compute_campaign_trend` / `compute_snapshot_delta`.
@@ -157,12 +163,14 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `POST` | `/api/campaigns/{id}/snapshots` | upload a snapshot `.json` (multipart) |
 | `POST` | `/api/campaigns/{id}/ingest` | upload a raw-collection ZIP — the engine runs server-side and the snapshot is stored |
 | `GET`  | `/api/campaigns/{id}/trend` | campaign trajectory verdict + per-metric trend |
+| `GET`  | `/api/campaigns/{id}/gates` | gate board: cadence + derivable waves + recorded sign-offs |
+| `POST` | `/api/campaigns/{id}/gates` | record a gate decision (`go`/`no-go`/`slipped`; `pending` clears) |
 | `GET`  | `/api/snapshots/{id}` | snapshot meta + derived KPI summary |
 | `GET`  | `/api/snapshots/{id}/section/{name}` | one detail section, sliced from the snapshot |
 | `GET`  | `/api/snapshots/{id}/graph` | switch-topology nodes + edges (for the force graph) |
 | `GET`  | `/api/snapshots/{id}/cutover` | gated, pilot-first cutover plan (run-of-show) synthesized from the migration model |
 | `GET`  | `/api/snapshots/{id}/explorer` | the rendered single-file deep explorer (HTML) |
-| `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`crd`/`runbook`/`design`/`mop`/`cutover`/`nrfu`/`deck`) |
+| `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`engagement`/`crd`/`runbook`/`design`/`mop`/`cutover`/`nrfu`/`deck`) |
 | `POST` | `/api/compare` | diff two snapshots (`{old_id, new_id}`) |
 | `POST` | `/api/snapshots/{id}/executions` | start a war-room run (freezes the cutover plan) |
 | `GET`  | `/api/executions/{id}` | run state + derived live progress |

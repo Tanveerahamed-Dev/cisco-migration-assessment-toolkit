@@ -19,17 +19,20 @@ python-docx is OPTIONAL: imported inside the function so the package imports wit
 library is a warning + skip, never a crash. Every snapshot read is defensive. Deterministic; no network.
 """
 import logging
+import re
 from datetime import datetime
 
+from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
 
 logger = logging.getLogger(__name__)
 
-_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
-
 # The per-wave T-minus gate cadence — ONE source of truth: §4.1 renders from it, AssessHub's gate
 # board offers exactly these gates (webapp/backend/gates.py imports it), and the recorded
 # dispositions land back in §4.3 keyed by these keys. (key, label, when, purpose, go_criteria).
+# CONTRACT (V3.23.159): the keys are persisted into AssessHub's `gates.gate` column — they are a
+# storage schema. Keys are APPEND-ONLY: never rename or remove one without a webapp data migration,
+# or existing sign-offs orphan (invisible on the board, rendered with a raw key in §4.3).
 GATE_SEQUENCE = (
     ("commit", "Commit", "T-28 days", "Lock scope, owners and window request",
      "Wave scope frozen; change request submitted; rollback owner named"),
@@ -46,74 +49,118 @@ GATE_SEQUENCE = (
 )
 
 
+def _as_dict(v) -> dict:
+    """Snapshot blocks are user-supplied JSON: a truthy non-dict must degrade, not crash."""
+    return v if isinstance(v, dict) else {}
+
+
+def _as_list(v) -> list:
+    return v if isinstance(v, list) else []
+
+
+def _as_int(v, default: int = 0) -> int:
+    """Coerce snapshot counts defensively: None / '' / 'unknown' all degrade to `default`."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _missing_text(d: dict) -> str:
+    """Render a blind-spot row's `missing` commands: a list joins normally, a bare string is one
+    item (never char-joined), anything else degrades to str() — no input shape can crash or
+    garble the issues table."""
+    m = d.get("missing")
+    items = [str(x) for x in m] if isinstance(m, list) else ([str(m)] if m else [])
+    return ", ".join(items)[:80]
+
+
 def _workflow_facts(snap: dict) -> dict:
     """Pull the evidence the workflow synthesizes — all defensive reads of known shapes."""
-    punch = sorted((snap.get("punchlist") or []), key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
+    punch = sorted((i for i in _as_list(snap.get("punchlist")) if isinstance(i, dict)),
+                   key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
     sev_count = {}
     for i in punch:
         s = i.get("severity") or "Info"
         sev_count[s] = sev_count.get(s, 0) + 1
-    mr = [r for r in (snap.get("migration_readiness") or []) if isinstance(r, dict)]
-    ws_by = {w.get("group"): w for w in (snap.get("wave_sequencing") or []) if isinstance(w, dict)}
-    sc = snap.get("migration_scenarios") or {}
-    sc_by = {g.get("group"): g for g in (sc.get("per_group") or []) if isinstance(g, dict)}
-    vp = snap.get("validation_plan") or {}
-    by_wave = vp.get("by_wave") or {}
-    coll = snap.get("collection_completeness") or {}
-    csum = coll.get("summary") or {}
-    blind = [d for d in (coll.get("devices") or []) if isinstance(d, dict)]
-    brief = snap.get("executive_brief") or {}
-    lc = (snap.get("lifecycle_risk") or {}).get("summary") or {}
-    rem = (snap.get("remediation_plan") or {}).get("summary") or {}
+    mr = [r for r in _as_list(snap.get("migration_readiness")) if isinstance(r, dict)]
+    ws_by = {w.get("group"): w for w in _as_list(snap.get("wave_sequencing")) if isinstance(w, dict)}
+    sc = _as_dict(snap.get("migration_scenarios"))
+    sc_by = {g.get("group"): g for g in _as_list(sc.get("per_group")) if isinstance(g, dict)}
+    by_wave = _as_dict(_as_dict(snap.get("validation_plan")).get("by_wave"))
+    coll = _as_dict(snap.get("collection_completeness"))
+    csum = _as_dict(coll.get("summary"))
+    # Tri-state honesty: an ABSENT completeness block means completeness is UNKNOWN — it must
+    # never render as "collection complete" (absence of evidence is not evidence of completeness).
+    coll_present = bool(csum)
+    blind = [d for d in _as_list(coll.get("devices")) if isinstance(d, dict)]
+    brief = _as_dict(snap.get("executive_brief"))
+    lc = _as_dict(_as_dict(snap.get("lifecycle_risk")).get("summary"))
+    rem = _as_dict(_as_dict(snap.get("remediation_plan")).get("summary"))
     notready = [r.get("group") or "?" for r in mr if r.get("readiness") == "NOT READY"]
 
     # Pilot-first doctrine: the recommended pilot is the READY group with the SMALLEST blast radius
     # (fewest endpoints); a CAUTION group only if nothing is READY; never a NOT READY group.
+    # A group with UNKNOWN endpoints (null / non-numeric) sorts LAST — missing data must never
+    # win the pilot slot by masquerading as zero blast radius.
+    def _pilot_key(r):
+        ep = _as_int(r.get("endpoints"), default=-1)
+        return (ep < 0, ep if ep >= 0 else 0, str(r.get("group") or ""))
+
     pilot = None
     for want in ("READY", "CAUTION"):
-        cands = sorted((r for r in mr if r.get("readiness") == want),
-                       key=lambda r: (int(r.get("endpoints") or 0), str(r.get("group") or "")))
+        cands = sorted((r for r in mr if r.get("readiness") == want), key=_pilot_key)
         if cands:
             pilot = cands[0]
             break
 
     return {"punch": punch, "sev_count": sev_count, "mr": mr, "ws_by": ws_by,
-            "sc": sc, "sc_by": sc_by, "by_wave": by_wave, "csum": csum, "blind": blind,
+            "sc": sc, "sc_by": sc_by, "by_wave": by_wave, "csum": csum,
+            "coll_present": coll_present, "blind": blind,
             "brief": brief, "lc": lc, "rem": rem, "notready": notready, "pilot": pilot,
-            "n_devices": len(snap.get("devices") or {})}
+            "n_devices": len(_as_dict(snap.get("devices")))}
 
 
 def _verdict(f: dict) -> tuple:
-    """The senior engineer's call: (verdict, [conditions]) — every condition cites its evidence."""
+    """The senior engineer's call: (verdict, [conditions]) — every condition cites its evidence.
+    An unconditional PROCEED returns an EMPTY conditions list (no placeholder dressed as a
+    condition); the writer renders the no-conditions statement itself."""
     conds = []
     n_crit = f["sev_count"].get("Critical", 0)
     n_high = f["sev_count"].get("High", 0)
-    n_blind = int(f["csum"].get("partial") or 0) + int(f["csum"].get("not_collected") or 0)
+    n_blind = _as_int(f["csum"].get("partial")) + _as_int(f["csum"].get("not_collected"))
     if n_crit:
         conds.append(f"{n_crit} Critical punch-list item(s) must be closed before any wave is scheduled.")
     if f["notready"]:
         conds.append("Readiness gating fails for " + ", ".join(str(g) for g in f["notready"][:4])
                      + " — resolve the failing checks, then re-assess.")
-    if n_blind:
+    if not f["coll_present"]:
+        conds.append("Collection-completeness evidence is absent from this snapshot — completeness "
+                     "is UNKNOWN; re-assess with a current engine collection before relying on the "
+                     "verdicts.")
+    elif n_blind:
         conds.append(f"{n_blind} device(s) have partial or missing collection — every verdict on them "
                      "is provisional until re-collection closes the blind spots.")
     if n_high:
         conds.append(f"{n_high} High punch-list item(s) should be remediated or explicitly "
                      "risk-accepted before the go/no-go gate.")
-    if int(f["lc"].get("n_past_eos") or 0):
+    if _as_int(f["lc"].get("n_past_eos")):
         conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-support — no TAC escalation "
                      "path during the windows; stage spares or replace first.")
     if n_crit or f["notready"]:
         return "HOLD", conds
     if conds:
         return "PROCEED WITH CONDITIONS", conds
-    return "PROCEED", ["No gating evidence found — schedule the pilot wave."]
+    return "PROCEED", []
 
 
 def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                           gate_record: dict | None = None) -> None:
     """Emit the Engagement Workflow & Plan of Record (.docx) to `output_path`. Fail-soft: a missing
-    python-docx is a warning + skip; any unexpected render error is logged, never raised.
+    python-docx is a warning + skip, and every snapshot read is defensive so malformed input degrades
+    to placeholders. A genuine render error still propagates to the caller — the CLI phase wrapper
+    logs-and-continues, AssessHub turns it into a clean 500 (V3.23.159: docstring corrected; the old
+    'never raised' claim was false and the crash class it hid is now guarded at the read sites).
 
     `gate_record` (optional) is engagement state fed back from AssessHub's gate board:
     {wave: {gate_key: {"decision", "signed_by", "note", "decided_at"}}} keyed by GATE_SEQUENCE keys.
@@ -187,7 +234,8 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
         extra_assumptions=(
             "Project state (gate sign-offs, window approvals, RAID dispositions) lives with the "
             "engagement, not the snapshot — generated documents are DRAFTS until signed, and the "
-            "phase tracker records generation status, never approval status.",))
+            "phase tracker describes each phase's pending gate, never generation or approval "
+            "status it cannot evidence.",))
     doc.add_page_break()
 
     # ---- table of contents ----
@@ -210,10 +258,14 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     brief = f["brief"]
     if brief.get("posture_statement"):
         doc.add_paragraph(str(brief["posture_statement"]))
-    doc.add_paragraph("Conditions attached to this verdict (each cites its evidence):")
-    for c in conditions:
-        doc.add_paragraph(c, style="List Bullet")
-    gating = brief.get("top_gating") or []
+    if conditions:
+        doc.add_paragraph("Conditions attached to this verdict (each cites its evidence):")
+        for c in conditions:
+            doc.add_paragraph(c, style="List Bullet")
+    else:
+        doc.add_paragraph("No conditions attached — the evidence shows no gating findings; "
+                          "schedule the pilot wave.")
+    gating = _as_list(brief.get("top_gating"))
     if gating:
         doc.add_paragraph("Cross-axis gating headlines (from the executive brief — full detail in "
                           "the workbook and runbook):")
@@ -224,29 +276,34 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     doc.add_heading("2. Engagement Phase Tracker", level=1)
     doc.add_paragraph(
         "One row per engagement phase, mapped to the instrument that records it and the gate that "
-        "closes it. Status is GENERATION status — a generated draft is not an approved record; the "
-        "gate column says what approval looks like.")
-    coll_ok = not f["blind"]
+        "closes it. Status reflects only what this snapshot evidences — whether a document was "
+        "generated, reviewed or signed lives with the engagement (and, when recorded in AssessHub, "
+        "in the gate record at §4.3); the gate column says what approval looks like.")
+    # Assess status is tri-state: complete / has blind spots / completeness UNKNOWN (no block).
+    if not f["coll_present"]:
+        assess_status = "Evidence collected; completeness UNKNOWN (no collection-completeness block)"
+    elif f["blind"]:
+        assess_status = f"Evidence collected; {len(f['blind'])} device(s) with blind spots"
+    else:
+        assess_status = "Evidence collected (this snapshot)"
     has_waves = bool(f["mr"])
     table(["Phase", "Instrument", "Entry criteria", "Exit gate", "Status"], [
         ("Assess", "Assessment workbook · explorer · runbook",
          "Collection captured for the inventory",
-         "Findings reviewed with the network owner",
-         "Evidence collected (this snapshot)" if coll_ok
-         else f"Evidence collected; {len(f['blind'])} device(s) with blind spots"),
+         "Findings reviewed with the network owner", assess_status),
         ("Plan", "Customer Requirements Document (CRD)",
          "Assessment reviewed", "Requirements workshop held; CRD signed",
-         "Draft generated — workshop pending"),
+         "Pending — requirements workshop not yet held"),
         ("Design", "As-Built Network Design Document (HLD/LLD)",
          "CRD signed", "Design review held; document accepted",
-         "Draft generated — review pending"),
+         "Pending — design review not yet held"),
         ("Implement", "MOP (per wave) · Cutover Plan (run-of-show)",
          "Design accepted; blockers closed", "Per-wave go/no-go passed; window executed",
-         ("Drafts generated — waves derived" if has_waves
-          else "Drafts generated — no waves derivable yet")),
+         ("Waves derived — gate calendar pending" if has_waves
+          else "No waves derivable from this evidence yet")),
         ("Validate", "NRFU / Acceptance Test Plan",
          "Wave executed", "NRFU results at or above baseline; acceptance signed",
-         "Draft generated — runs post-wave"),
+         "Runs after each wave"),
         ("Optimize", "Post-Implementation Review (PIR)",
          "All waves executed; hypercare complete", "PIR held; lessons recorded; project closed",
          "Not started — post-cutover"),
@@ -265,6 +322,10 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                         f"collection completeness: {f['csum'].get('partial', 0)} partial / "
                         f"{f['csum'].get('not_collected', 0)} not collected",
                         "Delivery engineer", "Assess"))
+    elif not f["coll_present"]:
+        actions.append(("Re-collect with a current engine — completeness evidence is absent from "
+                        "this snapshot, so collection state is UNKNOWN",
+                        "collection completeness (block missing)", "Delivery engineer", "Assess"))
     actions.append(("Hold the requirements workshop; confirm, amend or strike every seeded CRD row",
                     "CRD draft (evidence-primed proposals)", "Customer + delivery engineer", "Plan"))
     n_blockers = f["sev_count"].get("Critical", 0) + f["sev_count"].get("High", 0)
@@ -279,9 +340,14 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                     "design document draft", "Customer network owner", "Design"))
     if f["pilot"]:
         p = f["pilot"]
+        # endpoints can be present-but-null/non-numeric in uploaded snapshots: say UNKNOWN, never
+        # render 'None endpoint(s)' (and _pilot_key already keeps unknown groups out of the slot
+        # unless nothing better exists).
+        ep_txt = (f"{_as_int(p.get('endpoints'))} endpoint(s)"
+                  if _as_int(p.get("endpoints"), -1) >= 0 else "endpoint count unknown")
         actions.append((f"Schedule the pilot wave: {p.get('group')} "
-                        f"({len(p.get('switches') or [])} switch(es), "
-                        f"{p.get('endpoints', 0)} endpoint(s)) — smallest blast radius first",
+                        f"({len(_as_list(p.get('switches')))} switch(es), "
+                        f"{ep_txt}) — smallest blast radius first",
                         f"migration readiness: {p.get('readiness')}", "Project manager", "Implement"))
     elif has_waves:
         actions.append(("Re-assess wave readiness after blocker remediation; no group currently "
@@ -317,14 +383,14 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
             g = r.get("group") or "?"
             w = f["ws_by"].get(g, {})
             s = f["sc_by"].get(g, {})
-            hard = len(w.get("hard_cutover") or [])
+            hard = len(_as_list(w.get("hard_cutover")))
             pilot_mark = " (PILOT)" if f["pilot"] and f["pilot"].get("group") == g else ""
-            rows.append((str(g) + pilot_mark, len(r.get("switches") or []),
-                         r.get("endpoints", 0), r.get("readiness") or "—",
+            rows.append((str(g) + pilot_mark, len(_as_list(r.get("switches"))),
+                         _as_int(r.get("endpoints")), r.get("readiness") or "—",
                          s.get("scenario") or "—",
-                         (f"{hard} switch(es) / {w.get('hard_cutover_endpoints', 0)} endpoint(s)"
+                         (f"{hard} switch(es) / {_as_int(w.get('hard_cutover_endpoints'))} endpoint(s)"
                           if hard else "none"),
-                         len(f["by_wave"].get(g) or [])))
+                         len(_as_list(f["by_wave"].get(g)))))
         table(["Wave", "Switches", "Endpoints", "Readiness", "Scenario",
                "Hard-cutover exposure", "Post-checks"], rows,
               widths=[1.1, 0.7, 0.8, 0.9, 0.9, 1.6, 0.7])
@@ -344,26 +410,61 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     # §4.3 — the feedback loop: gate dispositions recorded against the campaign (AssessHub gate
     # board) land back in the plan of record as the as-signed trail. Only rendered when something
     # was actually recorded — an empty record is project state the document must not invent.
-    gr = {w: g for w, g in (gate_record or {}).items() if isinstance(g, dict) and g}
+    gr = {str(w): g for w, g in _as_dict(gate_record).items() if isinstance(g, dict) and g}
     if gr:
         gate_label = {k: lbl for k, lbl, *_rest in GATE_SEQUENCE}
         gate_order = {k: i for i, (k, *_r) in enumerate(GATE_SEQUENCE)}
+        mr_order = {str(r.get("group")): i for i, r in enumerate(f["mr"])}
+
+        def _wave_key(w):
+            # Calendar order (the §4.2 row order) first; anything else falls back to NATURAL
+            # numeric order — 'Group 2' before 'Group 10', never lexicographic.
+            m = re.search(r"(\d+)", w)
+            return (mr_order.get(w, len(mr_order)), int(m.group(1)) if m else 10 ** 9, w)
+
+        def _stamp(ts) -> str:
+            # storage._now() emits ISO-8601 UTC ('…T14:23:01+00:00'); render it labeled, never a
+            # bare wall-clock time that silently dropped its offset.
+            s = str(ts or "")
+            if not s:
+                return "—"
+            base = s[:16].replace("T", " ")
+            if s.endswith("+00:00") or s.endswith("Z"):
+                return base + " UTC"
+            if len(s) > 19 and s[19] in "+-":
+                return base + " UTC" + s[19:]
+            return base
+
+        def _gate_rows(waves):
+            out = []
+            for wave in sorted(waves, key=_wave_key):
+                for key in sorted(gr[wave], key=lambda k: gate_order.get(k, 99)):
+                    d = gr[wave][key] if isinstance(gr[wave][key], dict) else {}
+                    out.append((wave, gate_label.get(key, key),
+                                str(d.get("decision") or "").upper().replace("_", "-") or "—",
+                                d.get("signed_by") or "—", _stamp(d.get("decided_at")),
+                                d.get("note") or "—"))
+            return out
+
         doc.add_heading("4.3 Gate record (as signed)", level=2)
         doc.add_paragraph(
             "Dispositions recorded against this campaign in AssessHub — the as-run trail of the "
-            "calendar above. A NO-GO or SLIPPED row keeps its history here; the calendar shows "
-            "where the wave re-enters.")
-        rows = []
-        for wave in sorted(gr):
-            for key in sorted(gr[wave], key=lambda k: gate_order.get(k, 99)):
-                d = gr[wave][key] or {}
-                rows.append((wave, gate_label.get(key, key),
-                             str(d.get("decision") or "").upper().replace("_", "-") or "—",
-                             d.get("signed_by") or "—",
-                             (str(d.get("decided_at") or "")[:16].replace("T", " ")) or "—",
-                             d.get("note") or "—"))
-        table(["Wave", "Gate", "Decision", "Signed by", "When", "Note"], rows,
-              widths=[0.9, 1.1, 0.9, 1.1, 1.1, 1.6])
+            "calendar above (times are UTC). A NO-GO or SLIPPED row keeps its history here; the "
+            "calendar shows where the wave re-enters.")
+        # Gate records are CAMPAIGN state; this document is a SNAPSHOT view. Rows whose wave label
+        # exists in this snapshot's calendar render as the trail; rows signed against a different
+        # collection's waves are kept (never silently dropped) but clearly fenced off.
+        known = [w for w in gr if w in mr_order] if has_waves else list(gr)
+        stray = [w for w in gr if w not in mr_order] if has_waves else []
+        if known:
+            table(["Wave", "Gate", "Decision", "Signed by", "When", "Note"], _gate_rows(known),
+                  widths=[0.9, 1.1, 0.9, 1.1, 1.1, 1.6])
+        if stray:
+            doc.add_paragraph(
+                "Recorded against waves NOT in this snapshot's calendar — signed against a "
+                "different collection of this campaign; reconcile before relying on them:")
+            table(["Wave", "Gate", "Decision", "Signed by", "When", "Note"], _gate_rows(stray),
+                  widths=[0.9, 1.1, 0.9, 1.1, 1.1, 1.6])
 
     # ===== 5. RAID log (seeded) =====
     doc.add_heading("5. RAID Log (seeded from the assessment)", level=1)
@@ -379,11 +480,11 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
             risks.append((i.get("severity"), i.get("title") or "—",
                           "punch-list: " + (i.get("category") or "—"),
                           "Remediate before the owning wave's T-14 checkpoint"))
-    if int(f["lc"].get("n_past_eos") or 0):
+    if _as_int(f["lc"].get("n_past_eos")):
         risks.append(("High", f"{f['lc']['n_past_eos']} device(s) past end-of-support in the "
                               "migration path", "lifecycle risk",
                       "Stage spares / replace before their wave; no TAC path otherwise"))
-    hard_total = sum(int(w.get("hard_cutover_endpoints") or 0) for w in f["ws_by"].values())
+    hard_total = sum(_as_int(w.get("hard_cutover_endpoints")) for w in f["ws_by"].values())
     if hard_total:
         risks.append(("Medium", f"{hard_total} endpoint(s) take a hard outage during cutover "
                                 "(single-homed switches)", "wave sequencing",
@@ -413,8 +514,12 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                 f"{d.get('host')}: collection {d.get('status')} ({d.get('data_quality')}% of "
                 "essential commands)",
                 "collection completeness",
-                "Re-collect; missing: " + (", ".join(d.get("missing") or [])[:80] or "—"))
+                "Re-collect; missing: " + (_missing_text(d) or "—"))
                for i, d in enumerate(f["blind"][:8], 1)], widths=[0.7, 2.4, 1.3, 2.6])
+    elif not f["coll_present"]:
+        doc.add_paragraph("Collection-completeness evidence is absent from this snapshot — "
+                          "collection state is UNKNOWN. Treat closing that gap as the first open "
+                          "issue; new issues land here as the engagement runs.")
     else:
         doc.add_paragraph("No open issues seeded — collection is complete for the inventory. New "
                           "issues land here as the engagement runs.")

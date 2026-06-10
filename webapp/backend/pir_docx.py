@@ -115,9 +115,12 @@ def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str)
         ["Engine", engine.ENGINE_SCHEMA_VERSION],
     ], widths=[2.2, 4.3])
     # Shared family cross-reference (imported here, after the engine sys.path bootstrap).
+    # V3.23.159 review fix: the PIR has no FAMILY key to self-exclude, so it lists the FULL set —
+    # the old exclude=("deck",) was a copy-paste of a sibling's self-exclusion that silently
+    # dropped the Executive Presentation Deck from the as-executed record's cross-references.
     from cisco_toolkit.docmeta import add_related_documents
     add_related_documents(
-        doc, exclude=("deck",),
+        doc, exclude=(),
         audience="change management, the service owner, and the customer operations team reviewing "
                  "the executed change.")
 

@@ -168,6 +168,38 @@ class Store:
             ).fetchone()
         return json.loads(row["snapshot_json"]) if row else None
 
+    def get_snapshot_section(self, snapshot_id: int, key: str) -> Any:
+        """One top-level section of a snapshot WITHOUT deserializing the whole multi-MB blob —
+        sqlite's json_extract parses in C and returns just the subtree (V3.23.159: the gate board
+        reads this per fetch). `key` comes from our own code, never user input. Falls back to the
+        full parse on a sqlite built without JSON1."""
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    f"SELECT json_extract(snapshot_json, '$.{key}') AS sect "
+                    "FROM snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+        except sqlite3.OperationalError:
+            snap = self.get_snapshot(snapshot_id)
+            return (snap or {}).get(key)
+        if row is None or row["sect"] is None:
+            return None
+        return json.loads(row["sect"])
+
+    def campaign_exists(self, campaign_id: int) -> bool:
+        """Existence check without parsing every snapshot summary (V3.23.159: get_campaign was
+        being used as a boolean on the gate-board hot path)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM campaigns WHERE id = ?", (campaign_id,)).fetchone()
+        return row is not None
+
+    def latest_snapshot_id(self, campaign_id: int) -> Optional[int]:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT id FROM snapshots WHERE campaign_id = ?
+                   ORDER BY uploaded_at DESC, id DESC LIMIT 1""", (campaign_id,)).fetchone()
+        return int(row["id"]) if row else None
+
     def delete_snapshot(self, snapshot_id: int) -> bool:
         with self._lock:
             cur = self._conn.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
@@ -239,7 +271,9 @@ class Store:
     # the 'pending' state — clearing a decision deletes the row, so the table only ever holds
     # decisions someone actually made (and the engagement plan of record only renders real state).
     def upsert_gate(self, campaign_id: int, wave: str, gate: str, decision: str,
-                    signed_by: str = "", note: str = "") -> Dict[str, Any]:
+                    signed_by: str = "", note: str = "") -> None:
+        # V3.23.159: no read-back — the route answers with list_gates, so the old SELECT-after-
+        # INSERT was a dead query held under the lock on every sign-off click.
         with self._lock:
             self._conn.execute(
                 """INSERT INTO gates(campaign_id, wave, gate, decision, signed_by, note, decided_at)
@@ -250,11 +284,6 @@ class Store:
                 (campaign_id, wave, gate, decision, signed_by.strip(), note.strip(), _now()),
             )
             self._conn.commit()
-            row = self._conn.execute(
-                "SELECT wave, gate, decision, signed_by, note, decided_at FROM gates "
-                "WHERE campaign_id=? AND wave=? AND gate=?", (campaign_id, wave, gate),
-            ).fetchone()
-        return dict(row)
 
     def clear_gate(self, campaign_id: int, wave: str, gate: str) -> bool:
         with self._lock:
