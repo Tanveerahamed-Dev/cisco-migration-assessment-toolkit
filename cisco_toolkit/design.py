@@ -390,6 +390,49 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                       key=lambda r: (-r[1], r[0]))
     table(["Model", "Qty", "Worst EoL band"], bom_rows, widths=[3.0, 1.0, 2.0])
 
+    doc.add_heading("3.5 Software plan & recommendations", level=2)
+    doc.add_paragraph(
+        "Per AS low-level-design convention, software versions are recorded as the MINIMUM for the "
+        "solution, and images per platform should vary as little as possible — consistent software "
+        "eases troubleshooting and root-cause analysis. The table reads the observed (as-built) image "
+        "per model; where a model runs mixed versions, the most widely deployed image is the natural "
+        "standardization candidate.")
+    sw_by_model: dict = defaultdict(Counter)
+    for h, d in devices.items():
+        m = (d or {}).get("model") or "Unknown"
+        sw_by_model[m][((d or {}).get("sw_version") or "").strip() or "—"] += 1
+    sw_rows, mixed = [], []
+    for m, cnt in sorted(sw_by_model.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
+        images = ", ".join(f"{v} ×{n}" for v, n in cnt.most_common())
+        known = [v for v, _ in cnt.most_common() if v != "—"]
+        if len(known) > 1:
+            status = f"MIXED — standardize on {known[0]}"
+            mixed.append((m, known[0]))
+        elif known:
+            status = "Consistent"
+        else:
+            status = "No version data"
+        sw_rows.append((m, images, status, by_model[m]["band"]))
+    table(["Model", "Images observed", "Status", "Worst EoL band"],
+          sw_rows[:30], widths=[1.7, 2.2, 1.8, 1.0])
+    recs = []
+    for m, cand in mixed[:8]:
+        recs.append(f"{m}: consolidate to one image. The most widely deployed ({cand}) is the "
+                    "standardization candidate; validate it against Cisco's published recommended "
+                    "release for the platform before adoption.")
+    eol_models = sorted(m for m, v in by_model.items() if v["band"] in ("Past-EoS", "Past-LDoS"))
+    if eol_models:
+        recs.append("Hardware past end-of-support gets replacement, not an image upgrade: "
+                    + ", ".join(eol_models[:8])
+                    + ". Plan these as new-platform builds in the target design (§4).")
+    if recs:
+        for r_ in recs:
+            doc.add_paragraph(r_, style="List Bullet")
+    else:
+        doc.add_paragraph(
+            "Software is consistent per platform and no past-end-of-support hardware was observed — "
+            "carry the current images forward as the minimum-version baseline for the target design.")
+
     # ===== 4. Target-state design recommendations =====
     doc.add_heading("4. Target-State Design Recommendations", level=1)
     doc.add_paragraph(
