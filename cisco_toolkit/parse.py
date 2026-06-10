@@ -2134,3 +2134,30 @@ def _parse_poe_watts(output: str) -> Dict[str, float]:
             except ValueError:
                 pass
     return res
+
+
+# =============================================================================
+# SYSLOG EVENT PARSER (NEW-V3.23.164). Structures already-collected 'show logging'
+# output for the syslog-intelligence axis (the NOS-style operational log analysis).
+# Handles both line shapes: IOS  '000123: *Jun  9 12:00:01.123: %LINK-3-UPDOWN: ...'
+# and             NX-OS  '2026 Jun  9 12:00:01 host %ETHPORT-5-IF_DOWN_LINK_FAILURE: ...'
+# including stacked/module facility prefixes ('%SPANTREE-SP-2-...'). Non-event lines
+# (the 'Syslog logging: enabled ...' header etc.) are skipped, never errors.
+# =============================================================================
+_SYSLOG_EVENT_RE = re.compile(
+    r"%([A-Z][A-Z0-9_]*(?:-[A-Z][A-Z0-9_]*)*)-(\d)-([A-Z0-9_]+)\s*:\s*(.*)")
+
+
+def parse_syslog_events(text: str) -> List[dict]:
+    """Parse 'show logging' output -> [{facility, severity, mnemonic, msg, raw}, ...].
+    `severity` is the numeric syslog level 0-7 (int). Lines without a %FAC-SEV-MNEMONIC
+    event are skipped. Empty/None input -> []. Tolerant; never raises."""
+    events: List[dict] = []
+    for raw in (text or "").splitlines():
+        m = _SYSLOG_EVENT_RE.search(raw)
+        if not m:
+            continue
+        events.append({"facility": m.group(1), "severity": int(m.group(2)),
+                       "mnemonic": m.group(3), "msg": m.group(4).strip(),
+                       "raw": raw.strip()})
+    return events
