@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, ExecCheck, ExecStep, ExecutionState, ExecWave, gateColor, SnapshotMeta } from "../api";
 import { CountUp, ErrorBox, Loading, SevChip, useAsync, useToast } from "../components/ui";
@@ -20,6 +20,10 @@ const OUTCOME_COLOR = (o: string) =>
   o === "SUCCESSFUL" ? "var(--ok)"
     : o === "ROLLED BACK" || o === "ABORTED" ? "var(--crit)"
       : "var(--watch)";
+const EVENT_KIND_COLOR: Record<string, string> = {
+  deviation: "var(--crit)", finish: "var(--accent)", run: "var(--accent)",
+  gate: "var(--ok)", check: "var(--ok)", step: "var(--text-dim)", note: "var(--watch)",
+};
 
 function fmtClock(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -121,7 +125,8 @@ function CheckRow({ c, i, live, onSet }:
       {live && !editing && (
         <div className="row-flex" style={{ gap: 5, flex: "none" }}>
           <button className={`vbtn pass ${c.result === "pass" ? "on" : ""}`} onClick={() => onSet(i, "pass", "")}>PASS</button>
-          <button className={`vbtn fail ${c.result === "fail" ? "on" : ""}`} onClick={() => setEditing(true)}>FAIL</button>
+          <button className={`vbtn fail ${c.result === "fail" ? "on" : ""}`}
+            onClick={() => { setObserved(c.observed); setEditing(true); }}>FAIL</button>
           <button className={`vbtn na ${c.result === "na" ? "on" : ""}`} onClick={() => onSet(i, "na", "")}>N/A</button>
         </div>
       )}
@@ -226,10 +231,7 @@ function EventLog({ ex, live, onLog }:
     onLog(kind, text.trim());
     setText("");
   };
-  const KIND_COLOR: Record<string, string> = {
-    deviation: "var(--crit)", finish: "var(--accent)", run: "var(--accent)",
-    gate: "var(--ok)", check: "var(--ok)", step: "var(--text-dim)", note: "var(--watch)",
-  };
+  const rows = useMemo(() => [...ex.events].reverse(), [ex.events]);
   return (
     <div className="panel">
       <h3>Live log · {ex.events.length} entries</h3>
@@ -245,10 +247,10 @@ function EventLog({ ex, live, onLog }:
         </div>
       )}
       <div className="evlog">
-        {[...ex.events].reverse().map((e, i) => (
+        {rows.map((e, i) => (
           <div className="evrow" key={ex.events.length - i}>
             <span className="t mono">{fmtTime(e.at)}</span>
-            <span className="k mono" style={{ color: KIND_COLOR[e.kind] || "var(--text-dim)" }}>{e.kind}</span>
+            <span className="k mono" style={{ color: EVENT_KIND_COLOR[e.kind] || "var(--text-dim)" }}>{e.kind}</span>
             <span style={{ flex: 1 }}>
               {e.wave && <b className="dim">{e.wave} · </b>}{e.text}
               {e.by && <span className="faint"> — {e.by}</span>}
@@ -265,6 +267,7 @@ export default function ExecutionPage() {
   const eid = Number(id);
   const { data, error, loading } = useAsync(() => api.getExecution(eid), [eid]);
   const [ex, setEx] = useState<ExecutionState | null>(null);
+  const queueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [operator, setOperator] = useState<string>(() => localStorage.getItem("assesshub-operator") || "");
   const { toast, node: toastNode } = useToast();
   const { data: snapMeta } = useAsync<SnapshotMeta | null>(
@@ -280,31 +283,45 @@ export default function ExecutionPage() {
   if (error && !ex) return <div className="container"><ErrorBox msg={error} /></div>;
   if (!ex) return null;
 
-  const apply = (p: Promise<ExecutionState>) =>
-    p.then(setEx).catch((e) => toast(e.message || String(e)));
+  // Mutations are serialized through one promise chain: rapid clicks otherwise race on separate
+  // connections, and an out-of-order response would setEx an older state (reverting ticks and
+  // inviting duplicate timeline entries on re-click).
+  const apply = (fn: () => Promise<ExecutionState>) => {
+    queueRef.current = queueRef.current
+      .then(fn)
+      .then(setEx)
+      .catch((e) => toast(e.message || String(e)));
+  };
 
   const act = {
-    step: (wave: string, index: number, status: string) => apply(api.execStep(eid, wave, index, status, "", operator)),
+    step: (wave: string, index: number, status: string) =>
+      apply(() => api.execStep(eid, wave, index, status, "", operator)),
     check: (wave: string, index: number, result: string, observed: string) =>
-      apply(api.execCheck(eid, wave, index, result, observed, operator)),
+      apply(() => api.execCheck(eid, wave, index, result, observed, operator)),
     closeout: (wave: string, decision: string, note: string) => {
       if (decision !== "COMPLETE" && !window.confirm(`Close out this wave as ${decision}?`)) return;
-      apply(api.execCloseout(eid, wave, decision, note, operator));
+      apply(() => api.execCloseout(eid, wave, decision, note, operator));
     },
   };
   const finish = (status: "completed" | "aborted") => {
     const open = ex.waves.filter((w) => !w.closeout.decision).length;
+    // Predict the verdict the backend will derive: a rolled-back wave dominates PARTIAL.
+    const rolledBack = ex.waves.some((w) => w.closeout.decision === "ROLLED BACK");
+    const predicted = rolledBack ? "ROLLED BACK" : "PARTIALLY IMPLEMENTED";
     const msg = status === "aborted"
       ? "Abort this run? The record is kept and the PIR will show ABORTED."
-      : open ? `${open} wave(s) are not closed out — finishing now derives a PARTIAL outcome. Finish anyway?`
+      : open ? `${open} wave(s) are not closed out — finishing now derives a ${predicted} outcome. Finish anyway?`
         : "Finish this run? It becomes read-only and the outcome is derived for the PIR.";
     if (!window.confirm(msg)) return;
-    apply(api.execFinish(eid, status, "", operator));
+    apply(() => api.execFinish(eid, status, "", operator));
   };
 
   const p = ex.progress;
-  const waveState = (g: string) => p.waves.find((x) => x.group === g)?.state || "pending";
-  const overBudget = p.planned_window_minutes > 0 && p.elapsed_seconds > p.planned_window_minutes * 60;
+  const stateByGroup = new Map(p.waves.map((x) => [x.group, x.state]));
+  const waveState = (g: string) => stateByGroup.get(g) || "pending";
+  // From the live ticking clock, not the server-frozen progress value — otherwise the OVER alarm
+  // can't fire between mutations, exactly when the team is heads-down.
+  const overBudget = p.planned_window_minutes > 0 && elapsed > p.planned_window_minutes * 60;
 
   return (
     <div className="container">
@@ -338,7 +355,7 @@ export default function ExecutionPage() {
       <div className="panel execbar">
         <div>
           <div className="clock mono" style={{ color: overBudget ? "var(--crit)" : "var(--text)" }}>{fmtClock(elapsed)}</div>
-          <div className="lbl">elapsed{p.planned_window_minutes ? ` · planned window ${Math.floor(p.planned_window_minutes / 60)}h${String(p.planned_window_minutes % 60).padStart(2, "0")}m` : ""}{overBudget ? " · OVER" : ""}</div>
+          <div className="lbl">elapsed{p.planned_window_minutes ? ` · planned window ${ex.plan_summary?.est_window_label || ""}` : ""}{overBudget ? " · OVER" : ""}</div>
         </div>
         <div className="execprog">
           <div className="track"><div className="fill" style={{ width: `${p.pct}%` }} /></div>
@@ -372,10 +389,10 @@ export default function ExecutionPage() {
       <div className="grid" style={{ marginTop: 16, gap: 16 }}>
         <div className="wave-list">
           {ex.waves.map((w) => (
-            <WaveRunCard key={w.group} w={w} waveState={waveState(w.group)} live={!!live} act={act} />
+            <WaveRunCard key={w.order} w={w} waveState={waveState(w.group)} live={!!live} act={act} />
           ))}
         </div>
-        <EventLog ex={ex} live={!!live} onLog={(k, t) => apply(api.execEvent(eid, k, t, "", operator))} />
+        <EventLog ex={ex} live={!!live} onLog={(k, t) => apply(() => api.execEvent(eid, k, t, "", operator))} />
       </div>
       {toastNode}
     </div>

@@ -17,9 +17,10 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from . import engine, execution
+from .docx_style import GREY as _GREY
+from .docx_style import NAVY as _NAVY
+from .docx_style import add_table, ink, new_document
 
-_NAVY = (0x1F, 0x38, 0x64)
-_GREY = (0x59, 0x59, 0x59)
 _GREEN = (0x1A, 0x7F, 0x37)
 _AMBER = (0x9A, 0x67, 0x00)
 _RED = (0xCF, 0x22, 0x2E)
@@ -58,41 +59,13 @@ def _fmt_min(m: Any) -> str:
 
 def write_pir_docx(output_path: str, state: Dict[str, Any], snapshot_label: str) -> None:
     """Write the as-executed record / PIR for one execution run to ``output_path``."""
-    from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Pt
 
-    def ink(rgb: tuple) -> "RGBColor":
-        return RGBColor(*rgb)
-
-    doc = Document()
-    normal = doc.styles["Normal"]
-    normal.font.name = "Calibri"
-    normal.font.size = Pt(10.5)
+    doc = new_document()
 
     def table(headers: List[str], rows: List[List[Any]], widths: List[float] | None = None):
-        t = doc.add_table(rows=1, cols=len(headers))
-        t.style = "Light Grid Accent 1"
-        for i, hd in enumerate(headers):
-            cell = t.rows[0].cells[i]
-            cell.text = str(hd)
-            for para in cell.paragraphs:
-                for run in para.runs:
-                    run.bold = True
-        for row in rows:
-            cells = t.add_row().cells
-            for i, v in enumerate(row):
-                cells[i].text = "" if v is None else str(v)
-        if widths:
-            # explicit widths only stick once autofit is off, and renderers respect them most
-            # reliably when set on both the column and every cell
-            t.autofit = False
-            for i, w in enumerate(widths):
-                t.columns[i].width = Inches(w)
-                for row in t.rows:
-                    row.cells[i].width = Inches(w)
-        doc.add_paragraph()
-        return t
+        return add_table(doc, headers, rows, widths)
 
     waves: List[Dict[str, Any]] = state.get("waves") or []
     events: List[Dict[str, Any]] = state.get("events") or []

@@ -51,6 +51,11 @@ def availability() -> Dict[str, bool]:
     return {key: _have(spec.needs) for key, spec in SPECS.items()}
 
 
+def have_docx() -> bool:
+    """Whether python-docx is installed — for docx producers outside SPECS (e.g. the PIR)."""
+    return _have("python-docx")
+
+
 def catalogue() -> list:
     """Spec + availability, for the UI."""
     avail = availability()
