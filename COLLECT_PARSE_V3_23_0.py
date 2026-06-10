@@ -417,6 +417,7 @@ from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
 from cisco_toolkit.mop import write_mop_docx                         # NEW-V3.23.149 (per-wave Method of Procedure)
+from cisco_toolkit.crd import write_crd_docx                         # NEW-V3.23.156 (Plan-phase requirements capture)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -1170,6 +1171,10 @@ def main():
                     help="NEW-V3.23.149: skip the per-wave Method of Procedure (MOP, DOCX) — a "
                          "maintenance-window cutover template per migration wave; needs python-docx "
                          "(a missing library is a warning, not an error).")
+    ap.add_argument("--no-crd",          action="store_true",
+                    help="NEW-V3.23.156: skip the Customer Requirements Document (CRD, DOCX) — the "
+                         "Plan-phase requirements-capture instrument primed with the assessment "
+                         "evidence; needs python-docx (a missing library is a warning, not an error).")
     ap.add_argument("--golden-config",   default=None, metavar="FILE",
                     help="NEW-V3.23.146: a golden-config baseline file (one required directive per line; "
                          "'#' comments and 're:<regex>' supported) for the Golden-Config Drift sheet. "
@@ -1960,6 +1965,17 @@ def main():
             write_mop_docx(mop_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  MOP (DOCX) write failed: {e}")
+
+    # Phase 35: Customer Requirements Document (CRD, DOCX) - NEW-V3.23.156. The Plan-phase
+    # requirements-capture instrument: evidence-primed current-environment summary + REQ-ID capture
+    # tables + traceability skeleton. Optional python-docx; a missing library is a warning, never a crash.
+    if not args.no_crd:
+        crd_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_crd.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_crd_docx(crd_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  CRD (DOCX) write failed: {e}")
 
 
 if __name__ == "__main__":

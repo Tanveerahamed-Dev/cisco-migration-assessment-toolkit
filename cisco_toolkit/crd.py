@@ -1,0 +1,327 @@
+"""Customer Requirements Document (CRD) — the Plan-phase requirements-capture instrument (.docx).
+
+NEW-V3.23.156: the missing first link of the AS document chain (CRD → HLD → LLD → MOP → NRFU → PIR).
+A CRD captures the customer's business / technical / operational requirements as testable, owned,
+traceable statements (REQ-IDs), gathered through a requirements workshop, key-personnel interviews
+and a questionnaire — and it is a LIVING document, revisited when the detailed design surfaces new
+requirements.
+
+Evidence discipline is the whole point of this generator: requirements are the CUSTOMER'S statements,
+so the toolkit cannot invent them. What it CAN do is prime the instrument with the assessment's
+evidence — the current-environment summary is real, the technical-requirement sections are gated by
+what was actually observed (no wireless section for a fleet with no wireless evidence), and each
+seeded technical requirement is a PROPOSAL derived from observed state ("preserve the N production
+VLANs") that the customer must confirm, amend, or strike. Unconfirmed requirements are UNKNOWN, not
+assumed — no confidence theater.
+
+python-docx is OPTIONAL: imported inside the function so the package imports without it; a missing
+library is a warning + skip, never a crash. Every snapshot read is defensive. Deterministic; no network.
+"""
+import logging
+from datetime import datetime
+
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
+
+logger = logging.getLogger(__name__)
+
+_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+
+
+def _evidence_facts(snap: dict) -> dict:
+    """Pull the evidence the CRD primes its sections with — all defensive reads of known shapes."""
+    devices = snap.get("devices") or {}
+    ifaces = snap.get("interfaces") or {}
+    vlans, endpoints, dual = set(), 0, 0
+    vrfs, n_acl_svis = set(), 0
+    for host, ports in ifaces.items():
+        for p, d in (ports or {}).items():
+            d = d or {}
+            v = (d.get("vlan") or "").strip()
+            if v.isdigit():
+                vlans.add(int(v))
+            if (d.get("switchport_mode") or "").lower() == "access" and (d.get("end_host_mac") or "").strip():
+                endpoints += 1
+                if (d.get("dual_connection") or "").strip():
+                    dual += 1
+            vrf = (d.get("vrf") or "").strip()
+            if vrf and vrf.lower() not in ("default", "global"):
+                vrfs.add(vrf)
+            if (d.get("svi_ip") or "") and ((d.get("acl_in") or "").strip() or (d.get("acl_out") or "").strip()):
+                n_acl_svis += 1
+    rn = snap.get("routing_neighbors") or {}
+    protos = sorted({p.upper() for host in rn for p, nbrs in (rn.get(host) or {}).items() if nbrs})
+    l3f = snap.get("l3_forwarding") or []
+    fhrp_vlans = sorted({str(r.get("vlan")) for r in l3f if (r.get("fhrp") or "").strip()})
+    svc = snap.get("service_map") or {}
+    services = [s for s in (svc.get("services") or []) if isinstance(s, dict)]
+    mc = svc.get("multicast") or {}
+    mcast_active = any((
+        int(mc.get("active_interfaces") or 0), int(mc.get("active_switch_count") or 0),
+        len(mc.get("classified_groups") or []), len(mc.get("igmp_queriers") or []),
+        any((v or {}).get("operational") for v in (mc.get("ptp") or {}).values()),
+    ))
+    lc = (snap.get("lifecycle_risk") or {}).get("summary") or {}
+    coll = (snap.get("collection_completeness") or {}).get("summary") or {}
+    punch = sorted((snap.get("punchlist") or []), key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
+    return {
+        "devices": devices, "n_devices": len(devices), "n_vlans": len(vlans),
+        "endpoints": endpoints, "dual": dual, "protos": protos, "fhrp_vlans": fhrp_vlans,
+        "vrfs": sorted(vrfs), "n_acl_svis": n_acl_svis, "services": services,
+        "mcast": mc, "mcast_active": mcast_active, "lifecycle": lc, "coll": coll, "punch": punch,
+        "n_l3": len(l3f),
+    }
+
+
+def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
+    """Emit the Customer Requirements Document (.docx) to `output_path`. Fail-soft: a missing
+    python-docx is a warning + skip; any unexpected render error is logged, never raised."""
+    try:
+        from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        from docx.shared import Pt, RGBColor
+    except ImportError:
+        logger.warning("  CRD (DOCX) skipped: python-docx not installed "
+                       "(pip install python-docx to enable the requirements-capture deliverable).")
+        return
+
+    snap = snap_dict or {}
+    NAVY = RGBColor(0x1F, 0x38, 0x64)
+    GREY = RGBColor(0x59, 0x59, 0x59)
+    RED = RGBColor(0xB0, 0x2A, 0x1E)
+    doc = Document()
+    normal = doc.styles["Normal"]
+    normal.font.name = "Calibri"
+    normal.font.size = Pt(10.5)
+
+    def _label_run(p, label_text, value, color=NAVY):
+        r = p.add_run(label_text); r.bold = True; r.font.color.rgb = color
+        p.add_run(" " + (str(value) if value not in (None, "") else "—"))
+
+    def table(headers, rows, widths=None):
+        # Delegates to the family's single table builder (docmeta.add_table).
+        return add_table(doc, headers, rows, widths, fixed=False)
+
+    ev = _evidence_facts(snap)
+    req_ids: list = []   # (req_id, origin) — feeds the traceability skeleton
+
+    def req_table(rows):
+        """A requirement-capture table; registers every REQ-ID for the traceability section."""
+        for r in rows:
+            req_ids.append(r[0])
+        table(["REQ-ID", "Requirement (testable statement)", "Owner", "Priority", "Confirmed?"],
+              rows, widths=[0.9, 3.2, 1.0, 0.7, 0.9])
+
+    # ---- title page ----
+    title = doc.add_paragraph(); title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    tr = title.add_run("Customer Requirements Document (CRD)"); tr.bold = True
+    tr.font.size = Pt(26); tr.font.color.rgb = NAVY
+    sub2 = doc.add_paragraph(); sub2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    s2 = sub2.add_run("Plan-phase requirements capture — workshop / interview / questionnaire instrument")
+    s2.font.size = Pt(14); s2.font.color.rgb = GREY
+    sub = doc.add_paragraph(); sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
+    meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
+                 f"{ev['n_devices']} devices in evidence scope  ·  script {snap.get('script_version', '')}"
+                 ).font.color.rgb = GREY
+    status = doc.add_paragraph(); status.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    st = status.add_run("DRAFT TEMPLATE — requirements are the customer's statements; confirm, amend or "
+                        "strike every seeded row in the workshop.")
+    st.italic = True; st.font.color.rgb = RED
+    doc.add_paragraph()
+    note = doc.add_paragraph()
+    _label_run(note, "How to use this CRD:",
+               "Run one requirements workshop, interview the key personnel, and leave the questionnaire "
+               "columns with the customer. Every requirement needs a REQ-ID, an owner, and a TESTABLE "
+               "statement ('the network should be fast' is not a requirement; 'voice VLANs tolerate at "
+               "most one 30-minute outage window' is). Seeded technical rows are PROPOSALS derived from "
+               "the observed network — they are not requirements until the customer confirms them. This "
+               "is a living document: revisit it when the detailed design surfaces new requirements.", GREY)
+    doc.add_page_break()
+
+    # ---- document control (AS-style front matter) ----
+    add_document_control(
+        doc, document="Customer Requirements Document (CRD)", label=label,
+        engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        audience="The customer's project sponsor, network owner and operations lead (requirement "
+                 "owners), and the delivery engineer facilitating the requirements workshop.",
+        exclude=("crd",),
+        extra_assumptions=(
+            "Requirements are the customer's statements. The evidence-primed rows below are proposals "
+            "derived from observed state and must be confirmed or corrected by the customer; an "
+            "unconfirmed requirement is recorded as UNKNOWN, never assumed.",))
+    doc.add_page_break()
+
+    # ---- table of contents ----
+    doc.add_heading("Contents", level=1)
+    toc_p = doc.add_paragraph(); run = toc_p.add_run()
+    fb = OxmlElement("w:fldChar"); fb.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText"); instr.set(qn("xml:space"), "preserve"); instr.text = r'TOC \o "1-2" \h \z \u'
+    fs = OxmlElement("w:fldChar"); fs.set(qn("w:fldCharType"), "separate")
+    ft = OxmlElement("w:t"); ft.text = "Right-click → Update Field to build the table of contents."
+    fe = OxmlElement("w:fldChar"); fe.set(qn("w:fldCharType"), "end")
+    for el in (fb, instr, fs, ft, fe):
+        run._r.append(el)
+    doc.add_page_break()
+
+    # ===== 1. Engagement context =====
+    doc.add_heading("1. Engagement Context", level=1)
+    doc.add_paragraph(
+        "Drivers, scope and decision owners — completed with the customer in the workshop. The "
+        "evidence scope below is what the assessment actually observed; the engagement scope may be "
+        "wider (name the gap explicitly if so).")
+    table(["Field", "Value"], [
+        ("Business drivers for the change", "<why now — e.g. EoL exposure, capacity, site move>"),
+        ("Engagement scope (sites / domains)", "<sites and network domains in scope>"),
+        ("Evidence scope (this assessment)", f"{ev['n_devices']} devices, {ev['n_vlans']} VLANs, "
+                                             f"{ev['endpoints']} evidenced endpoints"),
+        ("Project sponsor", "<name, role>"),
+        ("Network owner (requirement owner)", "<name, role>"),
+        ("Operations lead", "<name, role>"),
+        ("Decision process", "<who approves the design, the windows, and the acceptance>"),
+    ], widths=[2.4, 4.3])
+
+    # ===== 2. Current environment summary (evidence) =====
+    doc.add_heading("2. Current Environment Summary (evidence)", level=1)
+    doc.add_paragraph(
+        "What the assessment observed — the factual baseline the requirements are written against. "
+        "Full evidence is in the assessment workbook; every number here reconciles to it.")
+    lc, coll = ev["lifecycle"], ev["coll"]
+    table(["Fact", "Observed"], [
+        ("Devices", ev["n_devices"]),
+        ("VLANs in use", ev["n_vlans"]),
+        ("Evidenced endpoints (access ports with a host MAC)", ev["endpoints"]),
+        ("…of which dual-homed", ev["dual"]),
+        ("Routing protocols observed", ", ".join(ev["protos"]) or "none (pure L2 fleet)"),
+        ("Gateway SVIs / FHRP-protected VLANs", f"{ev['n_l3']} / {len(ev['fhrp_vlans'])}"),
+        ("Non-default VRFs", ", ".join(ev["vrfs"]) or "none"),
+        ("Hardware past end-of-support", lc.get("n_past_eos", "—")),
+        ("Collection completeness", f"{coll.get('complete', '—')} complete / "
+                                    f"{coll.get('partial', '—')} partial / "
+                                    f"{coll.get('not_collected', '—')} not collected"),
+    ], widths=[3.4, 3.3])
+    if ev["punch"]:
+        doc.add_paragraph("Known issues the requirements must take a position on (top of the "
+                          "assessment punch-list):")
+        table(["Severity", "Category", "Issue"],
+              [(i.get("severity"), i.get("category") or "—", i.get("title") or "—")
+               for i in ev["punch"][:8]], widths=[0.9, 1.4, 4.3])
+
+    # ===== 3. Business requirements =====
+    doc.add_heading("3. Business Requirements", level=1)
+    doc.add_paragraph(
+        "Success criteria and constraints, as testable statements with owners. These are pure "
+        "customer inputs — the rows are prompts, not proposals.")
+    req_table([
+        ("REQ-B-001", "Outage tolerance per service class: <e.g. voice VLANs tolerate at most one "
+                      "30-minute window; CCTV tolerates none>", "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ("REQ-B-002", "Timeline and window constraints: <deadline, change-freeze periods, allowed "
+                      "maintenance windows>", "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ("REQ-B-003", "Compliance / policy constraints: <regulatory, security policy, vendor-support "
+                      "requirements>", "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ("REQ-B-004", "Definition of success: <the measurable end-state the sponsor will accept>",
+         "<owner>", "<H/M/L>", "<YES/AMEND>"),
+    ])
+
+    # ===== 4. Technical requirements (per observed discipline) =====
+    doc.add_heading("4. Technical Requirements", level=1)
+    doc.add_paragraph(
+        "One subsection per discipline the evidence shows in use — a discipline with no observed "
+        "footprint gets no section (add one in the workshop if the TARGET state introduces it). "
+        "Seeded rows are evidence-derived proposals.")
+
+    doc.add_heading("4.1 Campus LAN / Layer 2", level=2)
+    req_table([
+        ("REQ-T-LAN-001", f"Preserve the {ev['n_vlans']} production VLAN IDs and names through the "
+                          "migration (observed as-built).", "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ("REQ-T-LAN-002", f"Maintain dual-homing for the {ev['dual']} dual-homed endpoint port(s); "
+                          "no single server NIC pair may have both legs down together.",
+         "<owner>", "<H/M/L>", "<YES/AMEND>"),
+    ])
+
+    if ev["protos"] or ev["n_l3"]:
+        doc.add_heading("4.2 Layer 3 & routing", level=2)
+        req_table([
+            ("REQ-T-L3-001", f"Preserve gateway redundancy on the {len(ev['fhrp_vlans'])} "
+                             "FHRP-protected VLAN(s); single-gateway VLANs are remediated, not "
+                             "carried forward.", "<owner>", "<H/M/L>", "<YES/AMEND>"),
+            ("REQ-T-L3-002", "Maintain the observed routing adjacencies ("
+                             + (", ".join(ev["protos"]) or "static/connected only")
+                             + ") and their policy through the migration.",
+             "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ])
+
+    if ev["mcast_active"]:
+        doc.add_heading("4.3 Multicast & timing", level=2)
+        groups = ev["mcast"].get("classified_groups") or []
+        gname = (groups[0].get("name") or groups[0].get("group")) if groups else "the observed groups"
+        req_table([
+            ("REQ-T-MC-001", f"Preserve multicast delivery for the {len(groups)} classified group(s) "
+                             f"(e.g. {gname}) including snooping/querier behaviour per VLAN.",
+             "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ])
+
+    if ev["vrfs"] or ev["n_acl_svis"]:
+        doc.add_heading("4.4 Segmentation & security", level=2)
+        req_table([
+            ("REQ-T-SEC-001", "Preserve the observed segmentation: VRF(s) "
+                              + (", ".join(ev["vrfs"]) or "—")
+                              + f"; {ev['n_acl_svis']} gateway SVI(s) carry ACLs that must be "
+                              "carried forward or consciously redesigned.",
+             "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ])
+
+    if ev["services"]:
+        doc.add_heading("4.5 Services & applications", level=2)
+        cats = sorted({(s.get("category") or "").strip() for s in ev["services"] if s.get("category")})
+        req_table([
+            ("REQ-T-SVC-001", "End-to-end continuity for the detected service categories ("
+                              + (", ".join(cats[:6]) or "see service map")
+                              + ") — each gets an NRFU end-to-end test.",
+             "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ])
+
+    # ===== 5. Operational requirements =====
+    doc.add_heading("5. Operational Requirements", level=1)
+    req_table([
+        ("REQ-O-001", "Management & monitoring continuity: <SNMP/syslog/flow reach the same "
+                      "collectors throughout; no monitoring blackout longer than X>",
+         "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ("REQ-O-002", "Change windows & freeze calendar: <when work may happen>",
+         "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ("REQ-O-003", "Support model & knowledge transfer: <who operates the target network; what "
+                      "handover/training is required before acceptance>",
+         "<owner>", "<H/M/L>", "<YES/AMEND>"),
+    ])
+
+    # ===== 6. Future plans & growth =====
+    doc.add_heading("6. Future Plans & Growth", level=1)
+    doc.add_paragraph(
+        "Planned initiatives the design must not block — capacity horizon, new sites or services, "
+        "technology directions. Captured in the workshop; each becomes a requirement row or an "
+        "explicit exclusion.")
+    table(["Horizon", "Plan", "Design implication"],
+          [("<12 months>", "<e.g. new building / IP camera expansion>", "<ports, PoE, multicast>"),
+           ("<36 months>", "<e.g. platform refresh, segmentation program>", "<to be assessed>")],
+          widths=[1.1, 3.0, 2.6])
+
+    # ===== 7. Requirement traceability =====
+    doc.add_heading("7. Requirement Traceability", level=1)
+    doc.add_paragraph(
+        "Every requirement lands in design content and an acceptance test — an orphan requirement "
+        "(traced to nothing) or an orphan design choice (tracing to no requirement) is a review "
+        "defect. Complete as the HLD/LLD/NRFU are produced.")
+    table(["REQ-ID", "HLD section", "LLD section", "NRFU test ID"],
+          [(rid, "<HLD §>", "<LLD §>", "<NRFU-…>") for rid in req_ids],
+          widths=[1.1, 1.8, 1.8, 1.8])
+
+    # ---- closing acceptance gate ----
+    add_acceptance(
+        doc, scope_note="Acceptance of this CRD baselines the requirements for the high-level design; "
+                        "changes after acceptance go through change control as requirement amendments.")
+
+    n_req = len(req_ids)
+    doc.save(output_path)
+    logger.info(f"[Phase 35] CRD (DOCX) written: {output_path} ({n_req} requirement rows seeded)")

@@ -40,9 +40,10 @@ server-side and stores the result as a first-class snapshot.
   rendered through the engine's own `html.write_html_explorer`.
 - **Fleet topology** — a native force-directed graph of the switch fabric (d3-force), nodes coloured by
   health band, single-points-of-failure highlighted, click-a-node to trace its blast radius.
-- **Deliverable downloads** — generate and download narrative outputs for any snapshot: the Runbook
-  (DOCX), As-Built Design Document (DOCX), per-wave MOP (DOCX), and Executive Deck (PPTX) — each
-  produced by the engine's own writer (`runbook`/`design`/`mop`/`deck`), byte-identical to the CLI —
+- **Deliverable downloads** — generate and download narrative outputs for any snapshot: the CRD
+  (Customer Requirements Document, DOCX), Runbook (DOCX), As-Built Design Document (DOCX), per-wave
+  MOP (DOCX), and Executive Deck (PPTX) — each
+  produced by the engine's own writer (`crd`/`runbook`/`design`/`mop`/`deck`), byte-identical to the CLI —
   plus two web-layer syntheses the engine has no CLI writer for: the **Cutover Plan (run-of-show) DOCX**
   (`cutover`) from the planner, and the **Network Ready-For-Use / Acceptance Test Plan DOCX** (`nrfu`) —
   a Cisco-standard NRFU with document-control + sign-off front matter and three test phases (device /
@@ -161,7 +162,7 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/snapshots/{id}/graph` | switch-topology nodes + edges (for the force graph) |
 | `GET`  | `/api/snapshots/{id}/cutover` | gated, pilot-first cutover plan (run-of-show) synthesized from the migration model |
 | `GET`  | `/api/snapshots/{id}/explorer` | the rendered single-file deep explorer (HTML) |
-| `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`runbook`/`design`/`mop`/`cutover`/`nrfu`/`deck`) |
+| `GET`  | `/api/snapshots/{id}/deliverable/{kind}` | generate & download a deliverable (`crd`/`runbook`/`design`/`mop`/`cutover`/`nrfu`/`deck`) |
 | `POST` | `/api/compare` | diff two snapshots (`{old_id, new_id}`) |
 | `POST` | `/api/snapshots/{id}/executions` | start a war-room run (freezes the cutover plan) |
 | `GET`  | `/api/executions/{id}` | run state + derived live progress |

@@ -98,9 +98,14 @@ offline KB data are read relative to the checkout.
   resilience, multicast/timing, segmentation, per-device build detail, BoM) plus
   target-state recommendations (unless `--no-design`; needs `python-docx`).
 - `..._mop.docx` — the per-wave **Method of Procedure**: a maintenance-window
-  cutover template per migration wave (scope, blockers, pre-cutover baseline, the
-  procedure, post-cutover validation and rollback) (unless `--no-mop`; needs
-  `python-docx`).
+  cutover template per migration wave (scope, blockers, pre-cutover baseline,
+  port mapping + staged config, the procedure with per-step success criteria,
+  post-cutover validation and rollback) (unless `--no-mop`; needs `python-docx`).
+- `..._crd.docx` — the **Customer Requirements Document**: the Plan-phase
+  requirements-capture instrument, primed with the assessment evidence
+  (current-environment summary, evidence-gated technical-requirement sections,
+  REQ-ID capture tables and the traceability skeleton into design and acceptance)
+  (unless `--no-crd`; needs `python-docx`).
 
 ## Usage
 
@@ -121,8 +126,8 @@ python COLLECT_PARSE_V3_23_0.py --help
 ```
 
 Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
-`--no-html` / `--no-docx` / `--no-pptx` / `--no-design` / `--no-mop` (skip the
-explorer / runbook / deck / design doc / MOP),
+`--no-html` / `--no-docx` / `--no-pptx` / `--no-design` / `--no-mop` / `--no-crd`
+(skip the explorer / runbook / deck / design doc / MOP / CRD),
 `--output FILE` (override the workbook name), `--golden-config FILE` (a config
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace

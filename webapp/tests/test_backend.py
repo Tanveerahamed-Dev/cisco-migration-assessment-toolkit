@@ -200,7 +200,7 @@ def test_cutover_robust_to_malformed_snapshot():
 def test_deliverables(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     cat = client.get("/api/meta").json()["deliverables"]
-    assert {d["key"] for d in cat} == {"runbook", "design", "mop", "cutover", "nrfu", "deck"}
+    assert {d["key"] for d in cat} == {"crd", "runbook", "design", "mop", "cutover", "nrfu", "deck"}
     for d in cat:
         r = client.get(f"/api/snapshots/{snap_id}/deliverable/{d['key']}")
         if d["available"]:

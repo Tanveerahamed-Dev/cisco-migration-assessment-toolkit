@@ -31,6 +31,7 @@ class Spec:
 
 
 SPECS: Dict[str, Spec] = {
+    "crd": Spec("crd", "Customer Requirements Document (CRD)", "docx", _DOCX, "python-docx"),
     "runbook": Spec("runbook", "Assessment & Migration Runbook", "docx", _DOCX, "python-docx"),
     "design": Spec("design", "As-Built Network Design Document", "docx", _DOCX, "python-docx"),
     "mop": Spec("mop", "Per-Wave Method of Procedure", "docx", _DOCX, "python-docx"),
@@ -66,7 +67,9 @@ def catalogue() -> list:
 def generate(kind: str, snap: dict, label: str) -> str:
     """Write the deliverable to a temp file; return its path. Caller streams it and deletes it."""
     spec = SPECS[kind]
-    if kind == "runbook":
+    if kind == "crd":
+        from cisco_toolkit.crd import write_crd_docx as write
+    elif kind == "runbook":
         from cisco_toolkit.runbook import write_runbook_docx as write
     elif kind == "design":
         from cisco_toolkit.design import write_design_doc_docx as write
