@@ -851,6 +851,7 @@
       <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causality</button>
       <button data-mode="waves" aria-pressed="false"><span class="gl" aria-hidden="true">⇉</span>Waves</button>
       <button data-mode="apps" aria-pressed="false"><span class="gl" aria-hidden="true">▦</span>Apps</button>
+      <button data-mode="review" aria-pressed="false"><span class="gl" aria-hidden="true">☑</span>Review</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -1528,7 +1529,106 @@ function demoSnapshot(){
     {perturbation:"L1 -25%",group:"l1_weights",delta_pct:-25,switches_changed_band:0,changed:[],detail:"no band changes"},
     {perturbation:"XL +25%",group:"xl_weights",delta_pct:25,switches_changed_band:0,changed:[],detail:"no band changes"},
     {perturbation:"SEC +50%",group:"sec_weights",delta_pct:50,switches_changed_band:0,changed:[],detail:"no band changes"},
-  ]};
+  ],
+  // V3.23.162: architecture_review mirrors compute_architecture_review (the senior-engineer design
+  // review the Python pipeline embeds) so the bundled demo exercises the Review mode. Content is
+  // CONSISTENT with the demo facts above: the ACC-1–ACC-2 temporary bridge (operational_drift) is the
+  // hierarchy deviation, the native-VLAN-1 trunks are the L2 advisory, the FHRP pairs are healthy,
+  // and the not-assessable rows model evidence the demo deliberately doesn't carry.
+  architecture_review:{
+    domains:[
+      {key:"Hierarchy & modularity",verdict:"deviation",score_pct:68,checks:["HIER-1","HIER-2"]},
+      {key:"Resiliency & availability",verdict:"conforms",score_pct:100,checks:["RES-2","RES-3"]},
+      {key:"Layer-2 design",verdict:"advisory",score_pct:90,checks:["L2-1","L2-2","L2-3","L2-4"]},
+      {key:"Layer-3 & gateway design",verdict:"conforms",score_pct:100,checks:["L3-1"]},
+      {key:"Capacity & oversubscription",verdict:"conforms",score_pct:100,checks:["CAP-2"]},
+      {key:"Operational readiness & hygiene",verdict:"advisory",score_pct:70,checks:["OPS-1"]},
+      {key:"Security & segmentation",verdict:"advisory",score_pct:70,checks:["SEC-1"]},
+      {key:"Lifecycle & software",verdict:"conforms",score_pct:100,checks:["LC-1","LC-2"]},
+    ],
+    checks:[
+      {id:"HIER-1",domain:"Hierarchy & modularity",title:"Distribution/core tier present",verdict:"conforms",
+       observed:"2 L3 node(s) (gateway SVI or routing adjacency) front 4 L2 access node(s).",
+       implication:"A defined L3 tier bounds failure domains and gives the migration a stable anchor.",
+       recommendation:"Carry the tiering into the target design; keep gateway functions at the distribution tier.",
+       reference:"Cisco campus design — hierarchical access/distribution/core model",evidence:["DIST-1","DIST-2"]},
+      {id:"HIER-2",domain:"Hierarchy & modularity",title:"No daisy-chained access switches",verdict:"deviation",
+       observed:"1 access-to-access inter-switch link: ACC-1–ACC-2 (the temporary bridging VLAN the drift detector flagged).",
+       implication:"A daisy-chained closet extends the STP/broadcast domain and rides through a peer access switch — losing the mid-chain switch strands everything behind it.",
+       recommendation:"Re-home the chained switch directly to the distribution tier during the migration.",
+       reference:"Cisco campus design — each access switch homes to the distribution layer",evidence:["ACC-1","ACC-2"]},
+      {id:"RES-2",domain:"Resiliency & availability",title:"First-hop redundancy on every gateway",verdict:"conforms",
+       observed:"2 FHRP group(s) observed (VLAN 10, VLAN 20); no single-gateway VLANs, no consistency issues.",
+       implication:"Gateway failover is in place across the shared VLANs.",
+       recommendation:"Preserve the FHRP design (and its addressing) through the migration.",
+       reference:"Cisco campus HA design — FHRP (HSRP/VRRP/GLBP) on every shared gateway",evidence:["DIST-1","DIST-2"]},
+      {id:"RES-3",domain:"Resiliency & availability",title:"Redundant power supplies",verdict:"not-assessable",
+       observed:"Power-supply inventory was not captured for any device.",implication:"—",
+       recommendation:"Include 'show environment power' / inventory output in collection.",
+       reference:"Cisco campus HA design — N+1 power on aggregation nodes",evidence:[]},
+      {id:"L2-1",domain:"Layer-2 design",title:"Deterministic STP root at the distribution tier",verdict:"conforms",
+       observed:"Every observed root bridge sits on an L3 (distribution) node: DIST-1, DIST-2.",
+       implication:"The L2 tree converges around the aggregation tier as designed.",
+       recommendation:"Carry the pinned priorities into the target design.",
+       reference:"Cisco campus design — pin the STP root (priority) at the distribution layer",evidence:["DIST-1","DIST-2"]},
+      {id:"L2-2",domain:"Layer-2 design",title:"Edge protection (BPDU Guard) on access ports",verdict:"not-assessable",
+       observed:"BPDU Guard state was not captured for the access ports.",implication:"—",
+       recommendation:"Include 'show spanning-tree interface detail' (or run-config) in collection.",
+       reference:"Cisco campus design — PortFast + BPDU Guard on every edge port",evidence:[]},
+      {id:"L2-3",domain:"Layer-2 design",title:"VLAN 1 not used for user traffic",verdict:"advisory",
+       observed:"Trunks with native VLAN 1 on 2 switch(es): ACC-1, DIST-1.",
+       implication:"Native VLAN 1 on inter-switch trunks exposes untagged control-plane crosstalk and is flagged by the hardening baseline.",
+       recommendation:"Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
+       reference:"Cisco hardening guidance — keep user traffic and trunk native VLAN off VLAN 1",evidence:["ACC-1","DIST-1"]},
+      {id:"L2-4",domain:"Layer-2 design",title:"Bounded broadcast domains",verdict:"conforms",
+       observed:"Largest observed VLAN carries 38 endpoint(s) — within the conventional envelope.",
+       implication:"Broadcast domains are bounded.",
+       recommendation:"Keep VLAN sizing within a /24-/23 of endpoints in the target design.",
+       reference:"Campus design guidance — constrain broadcast domains (≈ a /23 of endpoints per VLAN)",evidence:[]},
+      {id:"L3-1",domain:"Layer-3 & gateway design",title:"Every access VLAN has a gateway in scope",verdict:"conforms",
+       observed:"All access VLAN(s) terminate on an in-scope gateway SVI.",
+       implication:"The L2/L3 boundary is fully accounted for.",
+       recommendation:"Keep the gateway register in the LLD as the addressing source of truth.",
+       reference:"Campus L3 design — every user VLAN terminates on a known, redundant gateway",evidence:["DIST-1","DIST-2"]},
+      {id:"CAP-2",domain:"Capacity & oversubscription",title:"Port-capacity headroom for growth",verdict:"conforms",
+       observed:"All device(s) hold port headroom below the 90% line.",
+       implication:"Growth fits without topology workarounds.",
+       recommendation:"Carry the same headroom rule into the BoM for the target build.",
+       reference:"Capacity planning — keep ~10% port headroom per closet",evidence:[]},
+      {id:"OPS-1",domain:"Operational readiness & hygiene",title:"No operational drift / false health",verdict:"advisory",
+       observed:"4 lower-severity drift finding(s): the temporary L2 bridge, a PoE fault on a powered port, native VLAN 1 trunks, multi-year uptime.",
+       implication:"Low-grade drift compounds; the migration touch is the cheapest moment to clear it.",
+       recommendation:"Fold the items into the per-wave work orders.",
+       reference:"Assessment doctrine — configured is not healthy; up is not healthy",evidence:["ACC-1","ACC-2","DIST-2","ACC-4"]},
+      {id:"SEC-1",domain:"Security & segmentation",title:"Management-plane hardening (CIS baseline)",verdict:"advisory",
+       observed:"2 device(s) grade partial; none weak.",
+       implication:"Medium/low hardening gaps remain.",
+       recommendation:"Fold the remaining CIS items into the target configuration standard.",
+       reference:"CIS Cisco IOS Benchmark — AAA, NTP, logging, SSHv2/VTY, SNMPv3 hardening",evidence:["ACC-1","ACC-2"]},
+      {id:"LC-1",domain:"Lifecycle & software",title:"No hardware past end-of-support",verdict:"not-assessable",
+       observed:"Lifecycle analysis is absent from this snapshot.",implication:"—",
+       recommendation:"Re-run the assessment with the current engine (offline EoL KB).",
+       reference:"Cisco EoX policy — no TAC/software support past last-day-of-support",evidence:[]},
+      {id:"LC-2",domain:"Lifecycle & software",title:"One software image per platform",verdict:"conforms",
+       observed:"Every platform runs a single image.",
+       implication:"Troubleshooting and rollback are uniform per model.",
+       recommendation:"Pin the images as the minimum-version baseline in the LLD.",
+       reference:"AS LLD convention — minimise image variance per platform",evidence:[]},
+    ],
+    top_actions:[
+      {rank:1,id:"HIER-2",domain:"Hierarchy & modularity",verdict:"deviation",
+       action:"Re-home the chained switch directly to the distribution tier during the migration.",evidence:["ACC-1","ACC-2"]},
+      {rank:2,id:"OPS-1",domain:"Operational readiness & hygiene",verdict:"advisory",
+       action:"Fold the items into the per-wave work orders.",evidence:["ACC-1","ACC-2","DIST-2","ACC-4"]},
+      {rank:3,id:"L2-3",domain:"Layer-2 design",verdict:"advisory",
+       action:"Set the native VLAN to a dedicated unused VLAN on the listed trunks.",evidence:["ACC-1","DIST-1"]},
+      {rank:4,id:"SEC-1",domain:"Security & segmentation",verdict:"advisory",
+       action:"Fold the remaining CIS items into the target configuration standard.",evidence:["ACC-1","ACC-2"]},
+    ],
+    summary:{n_checks:14,n_assessable:11,n_conforms:7,n_advisory:3,n_deviation:1,n_critical:0,
+      n_not_assessable:3,score_pct:86,grade:"B",grade_label:"Minor deviations",
+      statement:"Architecture conformance grade B (86%) — Minor deviations. 7 of 11 assessable checks conform to leading practice; 0 critical and 1 material deviation(s) require remediation, concentrated in: Hierarchy & modularity. 3 check(s) were not assessable from this snapshot and are listed in the review scope."},
+  }};
 }
 
 /* =====================================================================
@@ -1612,6 +1712,7 @@ let XLSEL=null;   // U1: hosts highlighted by the selected Cross-Layer finding c
 let XL_LAYER_FILTER=null, XL_SEV_FILTER=null;   // V3.23.82: Cross-Layer mode filters (null = all)
 let WAVE_SEL=null;   // V3.23.86: selected migration move-group index (canvas highlight; null = none)
 let APP_SEL=null;    // V3.23.112: selected application-domain index (Apps mode canvas highlight; null = none)
+let AR_SEL=null;     // V3.23.162: selected architecture-review check index (Review mode evidence spotlight; null = none)
 let TIER_FOCUS=null;   // V3.23.72: {name, hosts:Set} — a Risk-cockpit tier highlighted on the topology (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
@@ -1689,7 +1790,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null; APP_SEL=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null; APP_SEL=null; AR_SEL=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -1764,7 +1865,7 @@ function markActiveChip(){
 function setVlan(v){VLAN=v;markActiveChip();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps","review"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -2125,6 +2226,7 @@ function repaint(){
   else if(MODE==="causality")paintCausality();
   else if(MODE==="waves")paintWaves();
   else if(MODE==="apps")paintApps();
+  else if(MODE==="review")paintReview();
   severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   applyVlanFocus();   // per-VLAN isolation: fade switches not on the selected VLAN (after all paints)
@@ -2638,6 +2740,7 @@ function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="xlayer"&&XLSEL){XLSEL=null;repaint();renderDrawer();}
   else if(MODE==="waves"&&WAVE_SEL!=null){WAVE_SEL=null;repaint();renderDrawer();}
   else if(MODE==="apps"&&APP_SEL!=null){APP_SEL=null;repaint();renderDrawer();}
+  else if(MODE==="review"&&AR_SEL!=null){AR_SEL=null;repaint();renderDrawer();}
   else if(MODE==="flow"&&(FLOW_SRC||FLOW_DST)){FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
@@ -2675,6 +2778,9 @@ function modeSummary(m){
     if(m==="waves"){const mg=(SNAP&&SNAP.move_groups)||[]; if(!mg.length)return "";
       const mr=(SNAP&&SNAP.migration_readiness)||[]; const nr=mr.filter(x=>x.readiness==="NOT READY").length;
       return ` ${mg.length} move group${mg.length>1?"s":""}${nr?`, ${nr} not ready`:""}.`;}
+    if(m==="review"){const ar=arReview(); if(!ar)return "";
+      const s=ar.summary||{};
+      return ` Conformance grade ${s.grade||"N/A"}${s.score_pct!=null?` at ${s.score_pct} percent`:""}${s.n_critical?`, ${s.n_critical} critical`:""}${s.n_deviation?`, ${s.n_deviation} deviation${s.n_deviation>1?"s":""}`:""}.`;}
   }catch(e){}
   return "";
 }
@@ -2685,10 +2791,11 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m!=="health")TIER_FOCUS=null;   // V3.23.72: a cockpit tier highlight only lives in Health mode
   if(m!=="waves")WAVE_SEL=null;   // V3.23.86: a move-group highlight only lives in Waves mode
   if(m!=="apps")APP_SEL=null;     // V3.23.112: an application-domain highlight only lives in Apps mode
+  if(m!=="review")AR_SEL=null;    // V3.23.162: a review-check evidence spotlight only lives in Review mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains",waves:"Migration waves"}[m]||m)+" mode."+modeSummary(m));
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains",waves:"Migration waves",apps:"Application domains",review:"Architecture review"}[m]||m)+" mode."+modeSummary(m));
   writeHash();}
 
 /* =====================================================================
@@ -2704,7 +2811,8 @@ function setHint(){const h=document.getElementById("hint");const m={
   xlayer:`Click a finding to <b>highlight the switches it spans</b>`,
   causality:`Select a chain to <b>animate its root-cause flow</b>`,
   waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
-  apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`}[MODE];
+  apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`,
+  review:AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -2716,7 +2824,8 @@ function setModeTag(){const el=document.getElementById("modetag");
     xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
     causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain.",
     waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict.",
-    apps:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk."}[MODE];
+    apps:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk.",
+    review:"The senior-engineer design review: leading-practice conformance verdicts per design domain (A–F grade), each finding citing its evidence, impact and the rule it deviates from."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -2733,6 +2842,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="causality"){h+=bx("var(--crit)","root-cause host","")+`<div class="row faint" style="margin-top:3px">Select a chain in the panel — its host is ringed here and its trigger→mitigation flow animates.</div>`;}
   else if(MODE==="waves"){h+=bx("var(--accent)","switches in the selected group","")+`<div class="row faint" style="margin-top:3px">Click a move-group card to spotlight its shared-VLAN L2 domain.</div>`;}
   else if(MODE==="apps"){h+=bx("var(--accent)","switches in the selected domain","")+`<div class="row faint" style="margin-top:3px">Click an application-domain card to spotlight its switches; tiers run <b>On-air critical</b> → <b>Production</b> → <b>Support</b>.</div>`;}
+  else if(MODE==="review"){h+=bx("var(--crit)","critical deviation","")+bx("var(--risk)","deviation","")+bx("var(--watch)","advisory","")+bx("var(--ok)","conforms","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>worst verdict naming them</b>; click a finding to spotlight its evidence.</div>`;}
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -2857,6 +2967,7 @@ function renderDrawer(){
   else if(MODE==="causality")p.innerHTML=drawCausality();
   else if(MODE==="waves")p.innerHTML=drawWaves();
   else if(MODE==="apps")p.innerHTML=drawApps();
+  else if(MODE==="review")p.innerHTML=drawReview();
   // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
   // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
   p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
@@ -2886,6 +2997,14 @@ function renderDrawer(){
     APP_SEL=(APP_SEL===i)?null:i; repaint(); renderDrawer();
     if(APP_SEL!=null){const d=(((SNAP&&SNAP.application_intelligence)||{}).domains||[])[APP_SEL];
       if(d&&d.switches&&d.switches.length&&POS[d.switches[0]])centerOn(d.switches[0]);}});
+  // V3.23.162: Architecture review — click a finding card to spotlight its evidence hosts (toggle;
+  // keyboard-operable like the causality rows — a11y parity for the newest mode)
+  p.querySelectorAll("[data-arc]").forEach(c=>{const sel=()=>{const i=+c.dataset.arc;
+    AR_SEL=(AR_SEL===i)?null:i; repaint(); renderDrawer();
+    if(AR_SEL!=null){const ck=(((SNAP&&SNAP.architecture_review)||{}).checks||[])[AR_SEL];
+      if(ck&&ck.evidence&&ck.evidence.length&&POS[ck.evidence[0]])centerOn(ck.evidence[0]);}};
+    c.onclick=sel;
+    c.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();sel();}};});
   // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
   const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
     const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
@@ -5414,6 +5533,85 @@ function paintApps(){
   edgeEls.forEach(({e,path})=>{
     const a=set.has(e.a)||nbrSet.has(e.a), b=set.has(e.b)||nbrSet.has(e.b);
     if(!(a&&b))path.classList.add("dim");});
+}
+
+/* =====================================================================
+   V3.23.162: ARCHITECTURE REVIEW mode — renders SNAP.architecture_review (the Python
+   compute_architecture_review judgment layer). ONE SOURCE OF TRUTH: the explorer never
+   re-derives a verdict — it renders the same object the workbook scorecard sheet and the
+   DOCX report carry. Click a finding card to spotlight its evidence hosts; with nothing
+   selected, nodes tint by the worst verdict naming them in any check's evidence.
+   ===================================================================== */
+function arReview(){const ar=SNAP&&SNAP.architecture_review;
+  return (ar&&Array.isArray(ar.checks))?ar:null;}
+function arVerdictTok(v){return v==="critical"?"crit":v==="deviation"?"risk":v==="advisory"?"watch":v==="conforms"?"ok":"neutral";}
+function arVerdictLabel(v){return v==="critical"?"CRITICAL DEVIATION":v==="deviation"?"DEVIATION":v==="advisory"?"ADVISORY":v==="conforms"?"CONFORMS":"NOT ASSESSABLE";}
+function drawReview(){
+  if(!MODEL)return "";
+  const head=`<div class="drawer-head"><div class="eyebrow">Leading-practice design review</div><div class="title">Architecture review</div></div>`;
+  const ar=arReview();
+  if(!ar){
+    return head+`<div class="sec"><div class="empty"><div class="big">☑</div>
+      <p>No <b>architecture_review</b> in this snapshot (pre-V3.23.160). This view renders the
+      senior-engineer design review — leading-practice checks across 8 design domains with an A–F
+      conformance grade, each verdict citing its evidence and the rule it deviates from — re-run the
+      assessment to populate it.</p></div></div>`;
+  }
+  const s=ar.summary||{};
+  const checks=Array.isArray(ar.checks)?ar.checks:[];
+  const domains=Array.isArray(ar.domains)?ar.domains:[];
+  const queue=Array.isArray(ar.top_actions)?ar.top_actions:[];
+  const gradeTok=(s.grade==="A"||s.grade==="B")?"ok":s.grade==="C"?"watch":(s.grade==="D"||s.grade==="F")?"crit":"neutral";
+  const domRows=domains.map(d=>{const tok=arVerdictTok(d&&d.verdict);
+    return `<div class="ln"><span class="pill pl-${tok}">${esc(arVerdictLabel(d&&d.verdict))}</span> ${esc(d&&d.key||"")} <span class="faint">${(d&&d.score_pct!=null)?d.score_pct+"%":"not assessable"}</span></div>`;}).join("");
+  const naChecks=checks.filter(c=>c&&c.verdict==="not-assessable");
+  const okChecks=checks.filter(c=>c&&c.verdict==="conforms");
+  const live=checks.map((c,i)=>({c,i})).filter(x=>x.c&&x.c.verdict!=="conforms"&&x.c.verdict!=="not-assessable");
+  const cards=live.map(({c,i})=>{const tok=arVerdictTok(c.verdict); const sel=AR_SEL===i?" xlactive":"";
+    const ev=Array.isArray(c.evidence)?c.evidence:[];
+    return `<div class="card ${tok} xlcard${sel}" data-arc="${i}" tabindex="0" role="button" style="cursor:pointer"
+        aria-label="${esc(c.id)} ${esc(c.title)} — ${esc(arVerdictLabel(c.verdict))} — click to spotlight its evidence hosts">
+      <div class="ct"><span class="nm">${esc(c.id)} — ${esc(c.title)}</span><span class="pill pl-${tok}">${esc(arVerdictLabel(c.verdict))}</span></div>
+      <div class="ln faint" style="margin-top:3px">${esc(c.observed||"")}</div>
+      <div class="ln" style="margin-top:3px"><b>Why it matters:</b> ${esc(c.implication||"")}</div>
+      <div class="ln" style="margin-top:3px"><b>Fix:</b> ${esc(c.recommendation||"")} <span class="faint">[${esc(c.reference||"")}]</span></div>
+      ${ev.length?`<div class="ln" style="margin-top:4px">${ev.slice(0,10).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${ev.length>10?` <span class="faint">+${ev.length-10}</span>`:""}</div>`:""}
+    </div>`;}).join("");
+  const queueRows=queue.map(a=>a?`<div class="ln"><span class="pill pl-${arVerdictTok(a.verdict)}">#${esc(a.rank)}</span> <span class="mono">${esc(a.id)}</span> ${esc(a.action||"")}</div>`:"").join("");
+  return head+
+    `<div class="sec"><div class="headline">
+      <div class="stat ${gradeTok==="crit"?"crit":""}"><div class="v">${esc(s.grade||"N/A")}</div><div class="k">grade${s.score_pct!=null?` · ${s.score_pct}%`:""}</div></div>
+      <div class="stat ${s.n_critical?"crit":""}"><div class="v"><span class="num" data-to="${s.n_critical||0}">0</span></div><div class="k">critical</div></div>
+      <div class="stat ${s.n_deviation?"risk":""}"><div class="v"><span class="num" data-to="${s.n_deviation||0}">0</span></div><div class="k">deviations</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_advisory||0}">0</span></div><div class="k">advisory</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_conforms||0}">0</span></div><div class="k">conform</div></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0">${esc(s.statement||"")}</p></div>
+    <div class="sec"><h3>By design domain <span class="ct">${domains.length}</span></h3>${domRows}</div>
+    ${cards?`<div class="sec"><h3>Findings <span class="ct">${live.length}</span></h3><p class="sub" style="margin:0 0 8px"><b>Click a finding</b> to spotlight its evidence hosts. Verdicts come from the Python review engine — the SAME object the workbook scorecard sheet and the DOCX report render.</p>${cards}</div>`:`<div class="sec"><div class="ln faint">✓ No deviations — every assessable check conforms to leading practice.</div></div>`}
+    ${queueRows?`<div class="sec"><h3>Priority remediation queue <span class="ct">${queue.length}</span></h3><p class="sub" style="margin:0 0 8px">Severity first, then blast radius — the order a senior engineer would work them.</p>${queueRows}</div>`:""}
+    ${okChecks.length?`<div class="sec"><h3>Conforms <span class="ct">${okChecks.length}</span></h3><div class="ln faint">${okChecks.map(c=>esc(c.id)).join(" · ")}</div></div>`:""}
+    ${naChecks.length?`<div class="sec"><h3>Not assessable from this snapshot <span class="ct">${naChecks.length}</span></h3><p class="sub" style="margin:0 0 8px">Absent evidence is declared, never scored — close the collection gap and regenerate.</p>${naChecks.map(c=>`<div class="ln faint"><span class="mono">${esc(c.id)}</span> ${esc(c.title)} — ${esc(c.observed||"")}</div>`).join("")}</div>`:""}`;
+}
+/* paint hook: with a finding selected, spotlight its evidence hosts (mirror paintApps' xlhl/xldim);
+   with nothing selected, tint each node by the WORST verdict naming it in any check's evidence
+   (mirror paintHealth's body stroke/fill tokens). Unmentioned nodes keep the default skin. */
+function paintReview(){
+  const ar=arReview(); if(!ar||!MODEL)return;
+  const checks=Array.isArray(ar.checks)?ar.checks:[];
+  if(AR_SEL!=null){const c=checks[AR_SEL]; if(!c)return;
+    const set=new Set(Array.isArray(c.evidence)?c.evidence:[]);
+    MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+      if(set.has(h))n.g.classList.add("xlhl"); else n.g.classList.add("xldim");});
+    edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
+    return;}
+  const RANK={critical:0,deviation:1,advisory:2,conforms:3}, TOK=["crit","risk","watch","ok"];
+  const worst={};
+  checks.forEach(c=>{const r=c?RANK[c.verdict]:undefined; if(r==null)return;
+    (Array.isArray(c.evidence)?c.evidence:[]).forEach(h=>{if(worst[h]==null||r<worst[h])worst[h]=r;});});
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n||worst[h]==null)return;
+    const tok=TOK[worst[h]];
+    n.body.style.stroke=`var(--${tok})`; n.body.style.fill=`var(--${tok}-soft)`;});
 }
 
 /* =====================================================================
