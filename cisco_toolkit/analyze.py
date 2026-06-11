@@ -5225,12 +5225,20 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
         phr = ph_by.get(host)
         phb = (phr or {}).get("band", "Unknown")
+        # the band can come from MEMORY alone (low free %) with no CPU sample -- the label
+        # cites every figure that exists, never "CPU None%" and never CPU-only when memory
+        # drove the band.
+        _cpu5 = (phr or {}).get("cpu_5min")
+        _memf = (phr or {}).get("mem_free_pct")
+        ph_parts = ([f"CPU {_cpu5}%"] if _cpu5 is not None else []) \
+            + ([f"memory {_memf}% free"] if _memf is not None else [])
+        ph_why = " · ".join(ph_parts) or "see sample"
         if phr is None or not phr.get("collected"):
             ax("Control plane", "na", "capacity output not collected")
         elif phb == "Hot":
-            ax("Control plane", "risk", f"control plane Hot (CPU {phr.get('cpu_5min', '?')}%)")
+            ax("Control plane", "risk", f"control plane Hot ({ph_why})")
         elif phb == "Elevated":
-            ax("Control plane", "watch", f"control plane Elevated (CPU {phr.get('cpu_5min', '?')}%)")
+            ax("Control plane", "watch", f"control plane Elevated ({ph_why})")
         else:
             ax("Control plane", "ok", "control-plane capacity OK")
 
@@ -5287,6 +5295,8 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif qa_sevs & {"High", "Medium"}:
             # QoS doctrine gaps gate the DESIGN, not the asset's survival -> capped at watch.
             ax("QoS posture", "watch", "QoS doctrine finding(s) on this device")
+        elif qa_sevs:
+            ax("QoS posture", "ok", "minor QoS notes only")
         else:
             ax("QoS posture", "ok", "QoS posture consistent")
 

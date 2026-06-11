@@ -86,6 +86,21 @@ def test_ranking_is_band_then_index_then_host():
     assert dd["per_device"][0]["risk_index"] > dd["per_device"][1]["risk_index"]
 
 
+def test_memory_only_hot_control_plane_label_never_says_cpu_none():
+    """V3.23.175 review fix: a device banded Hot from MEMORY alone (no CPU sample) must cite
+    the memory figure, never render 'CPU None%' -- the label flows into verdict sentences."""
+    dd = compute_device_dossiers(
+        health_scores=[{"switch": "sw1", "score": 90, "band": "Excellent", "role": "access"}],
+        platform_health={"per_device": [{"host": "sw1", "collected": True, "cpu_5min": None,
+                                         "mem_free_pct": 3.2, "band": "Hot"}],
+                         "findings": []})
+    (d,) = dd["per_device"]
+    cp = next(e for e in d["exposures"] if e["axis"] == "Control plane")
+    assert cp["state"] == "risk"
+    assert "None" not in cp["label"]
+    assert "memory 3.2% free" in cp["label"]
+
+
 def test_punchlist_folds_compound_patterns_once():
     dd = _dossiers_severe_core()
     base = ([], {}, {}, [], [], [], {}, [], [])
