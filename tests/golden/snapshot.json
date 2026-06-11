@@ -2461,6 +2461,8 @@
     "kind": "http-server",
     "surface": "Device web UI (ip http server / secure-server)",
     "severity": "High",
+    "label": "Device web UI (ip http server / secure-server)",
+    "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
     "evidence": "ip http server",
     "advisories": [
      {
@@ -2477,6 +2479,8 @@
     "kind": "snmp-v2c-ro",
     "surface": "SNMP v1/v2c read-only community",
     "severity": "Medium",
+    "label": "SNMP v1/v2c read-only community",
+    "detail": "Cleartext community strings leak topology and credentials material, and v1/v2c packets still reach the (historically exploited) SNMP stack.",
     "evidence": "snmp-server community <redacted>",
     "advisories": [
      {
@@ -2493,6 +2497,8 @@
     "kind": "telnet-vty",
     "surface": "Telnet enabled on vty lines",
     "severity": "Medium",
+    "label": "Telnet enabled on vty lines",
+    "detail": "Telnet sends credentials and session content in cleartext -- one capture on any transit segment is a full management compromise.",
     "evidence": "transport input telnet ssh",
     "advisories": [],
     "why": "Telnet sends credentials and session content in cleartext -- one capture on any transit segment is a full management compromise.",

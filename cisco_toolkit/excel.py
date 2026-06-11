@@ -1608,6 +1608,12 @@ def write_golden_drift_sheet(wb, gd: dict) -> None:
                 f"{s.get('n_drifting', 0)} drifting ({mode})")
 
 
+# Shared severity palette for the V3.23.164-.167 axis sheets (V3.23.171). The four writers each
+# carried a private copy whose High had drifted to F4CCCC -- the colour every ESTABLISHED writer
+# (punch-list, remediation, validation, exec summary) reserves for Critical. One constant, and
+# High renders FCE4D6 here exactly as it does everywhere else in the workbook.
+_AXIS_SEV_FILL = {"Critical": "F4CCCC", "High": "FCE4D6", "Medium": "FFF2CC", "Low": "D9EAD3"}
+
 SYSLOG_SHEET_NAME = "Syslog Intelligence"   # NEW-V3.23.164 (NOS-style operational log analysis)
 
 def write_syslog_intelligence_sheet(wb, si: dict) -> None:
@@ -1630,7 +1636,7 @@ def write_syslog_intelligence_sheet(wb, si: dict) -> None:
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, f"{s.get('crit_0_2', 0)} critical (sev 0-2) · {s.get('err_3', 0)} error (sev 3) · "
                   f"{s.get('n_not_collected', 0)} device(s) without 'show logging' output").font = Font(size=10)
-    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC", "Low": "D9EAD3"}
+    SEVFILL = _AXIS_SEV_FILL
     HDRF = Font(bold=True, color="FFFFFF", size=10)
     DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
 
@@ -1714,7 +1720,7 @@ def write_qos_audit_sheet(wb, qa: dict) -> None:
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, f"Posture by mode — {mode_txt} · {s.get('n_voice_ports', 0)} voice-VLAN port(s) "
                   f"· {s.get('n_not_assessable', 0)} not assessable").font = Font(size=10)
-    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC", "Low": "D9EAD3"}
+    SEVFILL = _AXIS_SEV_FILL
     HDRF = Font(bold=True, color="FFFFFF", size=10)
     DAT = Font(name="Calibri", size=10)
 
@@ -1794,7 +1800,7 @@ def write_software_risk_sheet(wb, sr: dict) -> None:
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, f"Software trains — {band_txt} · {s.get('n_version_known', 0)} of "
                   f"{s.get('n_devices', 0)} version(s) captured").font = Font(size=10)
-    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC", "Low": "D9EAD3"}
+    SEVFILL = _AXIS_SEV_FILL
     BANDFILL = {"Replace/Upgrade": "F4CCCC", "Verify EoL": "FFF2CC",
                 "Current-era": "C6EFCE", "Unknown": "EFEFEF"}
     HDRF = Font(bold=True, color="FFFFFF", size=10)
@@ -1879,7 +1885,7 @@ def write_platform_health_sheet(wb, ph: dict) -> None:
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, f"Bands — {band_txt} · {s.get('n_not_collected', 0)} device(s) without capacity "
                   "output").font = Font(size=10)
-    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC"}
+    SEVFILL = _AXIS_SEV_FILL   # V3.23.171: this copy had also dropped the Low entry
     BANDFILL = {"Hot": "F4CCCC", "Elevated": "FFF2CC", "OK": "C6EFCE", "Unknown": "EFEFEF"}
     HDRF = Font(bold=True, color="FFFFFF", size=10)
     DAT = Font(name="Calibri", size=10)

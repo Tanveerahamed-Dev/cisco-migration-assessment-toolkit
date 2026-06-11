@@ -6,7 +6,14 @@ import pytest
 docx = pytest.importorskip("docx")  # skip the file if the optional dep is absent
 from docx import Document  # noqa: E402
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, related_rows  # noqa: E402
+from cisco_toolkit.docmeta import (  # noqa: E402
+    add_acceptance,
+    add_document_control,
+    add_toc,
+    as_dict,
+    as_list,
+    related_rows,
+)
 
 
 def _all_text(doc):
@@ -15,6 +22,29 @@ def _all_text(doc):
         for row in t.rows:
             parts.extend(c.text for c in row.cells)
     return "\n".join(parts)
+
+
+def test_add_toc_renders_field_code_and_placeholder():
+    # V3.23.171: the TOC field-code block was a verbatim copy in all 7 generators; the shared
+    # helper must keep the contract every writer test relies on (the Right-click placeholder).
+    doc = Document()
+    add_toc(doc)
+    assert any("Contents" in p.text for p in doc.paragraphs
+               if p.style.name.startswith("Heading"))
+    assert "Right-click → Update Field" in _all_text(doc)
+    xml = doc.element.xml
+    assert 'TOC \\o "1-2"' in xml and "fldChar" in xml      # the real Word field code
+    deep = Document()
+    add_toc(deep, depth="1-3")
+    assert 'TOC \\o "1-3"' in deep.element.xml              # depth is configurable in ONE place
+
+
+def test_shared_coercers_guard_truthy_non_containers():
+    # the V3.23.159 review's bug class, now importable instead of copied per generator
+    assert as_dict({"a": 1}) == {"a": 1}
+    assert as_dict("truthy-non-dict") == {} and as_dict(None) == {} and as_dict(3) == {}
+    assert as_list([1]) == [1]
+    assert as_list("nope") == [] and as_list(None) == [] and as_list({"a": 1}) == []
 
 
 def test_related_rows_excludes_the_document_being_written():
