@@ -1788,19 +1788,36 @@ def main():
     # PTP is already folded via _ptp_readiness, so exclude the ptp-dormant risk to avoid a duplicate item.
     _media_risks = [r for r in ((multicast_intelligence or {}).get("risks") or [])
                     if r.get("kind") in ("mac-alias", "querier-gap")]
+    # NEW-V3.23.169: the V3.23.164-.167 axes are COMPUTED here (hoisted from their original Phase 30d-*
+    # slots) so the punch-list and the executive brief can consume their findings; their workbook SHEETS
+    # are still written at the original phase slots below (compute-once, sheet-order unchanged).
+    # _dev_platform is hoisted with them (software_risk needs it; the remediation phase reuses it).
+    _dev_platform = {dp.hostname: {"platform": dp.platform} for dp in all_device_physical}
+    syslog_intelligence = _run_phase("Syslog intelligence", compute_syslog_intelligence,
+                                     all_syslogs, _default={})
+    qos_audit = _run_phase("QoS audit", compute_qos_audit,
+                           all_run_configs, sorted(all_syslogs), _default={})
+    software_risk = _run_phase("Software risk screening", compute_software_risk,
+                               all_run_configs, _dev_lifecycle, _dev_platform,
+                               sorted(all_syslogs), _default={})
+    platform_health = _run_phase("Platform health", compute_platform_health,
+                                 all_platform_metrics, _default={})
     # NEW-V3.23.117: lifecycle risk is kept as its OWN axis (sheet / cockpit / runbook §4.1), NOT folded into
     # the punch-list -- its band is date-relative, which would make the frozen golden punch-list date-dependent.
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
                            l2=_l2, hostname_mismatches=_hostname_mismatches, drift=_drift,
-                           ptp_readiness=_ptp_readiness, media_risks=_media_risks, _default=[])
+                           ptp_readiness=_ptp_readiness, media_risks=_media_risks,
+                           syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,           # NEW-V3.23.169
+                           software_risk=software_risk, platform_health=platform_health,           # NEW-V3.23.169
+                           _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
 
     # Phase 30d-ter: Remediation Plan - NEW-V3.23.116. The assess->act layer: turn the SAME structured finding
     # sources into per-device, platform-tagged, copy-pasteable Cisco config snippets (review-only). Reuses
     # the _l2 bundle / _stp_findings / hygiene / security / multicast_intelligence already computed above.
-    _dev_platform = {dp.hostname: {"platform": dp.platform} for dp in all_device_physical}
+    # (_dev_platform is built above the punch-list since V3.23.169.)
     remediation_plan = _run_phase("Remediation plan", compute_remediation_plan,
                                   _dev_platform, _l2, _stp_findings, all_config_hygiene, all_security,
                                   multicast_intelligence, move_groups, _default={})
@@ -1835,19 +1852,17 @@ def main():
     # (Cisco's Network Optimization Service names syslog analysis as an analytic pillar): per-device
     # severity profile + top messages + deterministic detections (MAC flap / err-disable / link flap /
     # environmental / TCAM / crash / login failures) from the already-collected 'show logging' buffers.
-    # Devices without log output are DECLARED not-collected, never scored. Compute once -> sheet + snapshot.
-    syslog_intelligence = _run_phase("Syslog intelligence", compute_syslog_intelligence,
-                                     all_syslogs, _default={})
+    # Devices without log output are DECLARED not-collected, never scored. Computed ABOVE the
+    # punch-list since V3.23.169 (decision-layer fold); the sheet keeps its original slot.
     _run_phase("Syslog Intelligence sheet", write_syslog_intelligence_sheet, wb, syslog_intelligence)
 
     # Phase 30d-septies: QoS audit - NEW-V3.23.165. QoS is a named HLD/LLD design domain (trust
     # boundary at the access edge, per-hop consistency fleet-wide) that had zero coverage. Audits the
     # CONFIGURED posture from the captured running-configs (mechanisms, trust, voice-edge policy,
     # inert/dangling policy, fleet consistency); a device without a full capture is DECLARED not
-    # assessable, never scored. Compute once -> sheet + snapshot. all_syslogs carries EVERY inventory
-    # host (recorded unconditionally in the collection loop), so it doubles as the fleet roster here.
-    qos_audit = _run_phase("QoS audit", compute_qos_audit,
-                           all_run_configs, sorted(all_syslogs), _default={})
+    # assessable, never scored. all_syslogs carries EVERY inventory host (recorded unconditionally in
+    # the collection loop), so it doubles as the fleet roster. Computed ABOVE the punch-list since
+    # V3.23.169 (decision-layer fold); the sheet keeps its original slot.
     _run_phase("QoS Audit sheet", write_qos_audit_sheet, wb, qos_audit)
 
     # Phase 30d-octies: Software risk screening - NEW-V3.23.166. The last NOS analytic pillar
@@ -1855,10 +1870,8 @@ def main():
     # KB (exploited-in-the-wild surfaces first) + cautious software-TRAIN lifecycle bands. SCREENING,
     # not a vulnerability scan -- the note tells the reader to validate releases with the Cisco PSIRT
     # Software Checker. Reuses _dev_lifecycle ({host:{model,sw_version}}, Phase 27c-ter) and
-    # _dev_platform (Phase 30c); all_syslogs doubles as the full fleet roster. Compute once -> sheet + snapshot.
-    software_risk = _run_phase("Software risk screening", compute_software_risk,
-                               all_run_configs, _dev_lifecycle, _dev_platform,
-                               sorted(all_syslogs), _default={})
+    # _dev_platform; all_syslogs doubles as the full fleet roster. Computed ABOVE the punch-list
+    # since V3.23.169 (decision-layer fold); the sheet keeps its original slot.
     _run_phase("Software Risk sheet", write_software_risk_sheet, wb, software_risk)
 
     # Phase 30d-nonies: Platform health - NEW-V3.23.167. The pre-migration control-plane capacity
@@ -1866,9 +1879,8 @@ def main():
     # average + processor-pool memory (IOS) / system resources (NX-OS), banded Hot/Elevated/OK with
     # doctrine findings. SINGLE point-in-time sample (the note says so -- correlate with the syslog
     # axis and re-sample before the window); devices without capacity output are DECLARED not
-    # collected. Compute once -> sheet + snapshot.
-    platform_health = _run_phase("Platform health", compute_platform_health,
-                                 all_platform_metrics, _default={})
+    # collected. Computed ABOVE the punch-list since V3.23.169 (decision-layer fold); the sheet
+    # keeps its original slot.
     _run_phase("Platform Health sheet", write_platform_health_sheet, wb, platform_health)
 
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
@@ -1897,6 +1909,8 @@ def main():
     executive_brief = _run_phase("Executive brief", compute_executive_brief,
                                  health_scores, punchlist, migration_readiness, application_intelligence,
                                  lifecycle_risk, segmentation, multicast_intelligence, remediation_plan,
+                                 syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,      # NEW-V3.23.169
+                                 software_risk=software_risk, platform_health=platform_health,      # NEW-V3.23.169
                                  _default={})
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
                health_scores, punchlist, migration_readiness, failure_impact,   # NEW-V3.23.91: reuse precomputed fi
