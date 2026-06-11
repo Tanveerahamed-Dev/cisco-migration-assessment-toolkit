@@ -303,9 +303,11 @@ Vlan30                 10.0.30.1       YES NVRAM  up                    up
 GigabitEthernet0/0     10.0.99.1       YES NVRAM  up                    up
 """,
     # NEW-V3.23.164 (syslog intelligence): a MAC flap + the err-disable that explains the
-    # quarantined Gi1/0/9, a flapping Gi1/0/9 (6 up/down transitions), the down OSPF
-    # neighbor's ADJCHG, and a config-change audit trail. core2 has NO 'show logging'
-    # fixture on purpose (exercises the declared not-collected path).
+    # quarantined Gi1/0/9, a flapping Gi1/0/9 (3 DOWN transitions -- V3.23.170 counts downs
+    # only, since LINK+LINEPROTO pairs double-count one physical cycle), the down OSPF
+    # neighbor's ADJCHG, and a config-change audit trail. core2 has NO log fixture on
+    # purpose (exercises the declared not-collected path; NX-OS log handling is pinned
+    # by unit tests in test_syslog_intelligence.py).
     "show logging": """\
 Syslog logging: enabled (0 messages dropped, 0 messages rate-limited, 0 flushes, 0 overruns)
     Console logging: level debugging, 14 messages logged
@@ -322,6 +324,8 @@ Log Buffer (8192 bytes):
 *Jun  2 03:17:30.110: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/9, changed state to up
 *Jun  2 03:17:31.220: %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet1/0/9, changed state to up
 *Jun  2 03:18:02.957: %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet1/0/9, changed state to down
+*Jun  2 03:18:40.481: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/9, changed state to down
+*Jun  2 03:19:12.034: %LINK-3-UPDOWN: Interface GigabitEthernet1/0/9, changed state to up
 *Jun  3 11:02:44.901: %OSPF-5-ADJCHG: Process 1, Nbr 10.0.99.2 on Vlan20 from FULL to DOWN, Neighbor Down: Dead timer expired
 *Jun  4 18:30:00.005: %SYS-5-CONFIG_I: Configured from console by svc-audit on vty0 (10.0.99.50)
 """,

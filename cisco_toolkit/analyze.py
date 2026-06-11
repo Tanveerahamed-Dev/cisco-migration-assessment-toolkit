@@ -3028,7 +3028,15 @@ def compute_migration_punchlist(cross_layer: List[dict],
 
     _fold_axis((syslog_intelligence or {}).get("detections"), "Operational logs")
     _fold_axis((qos_audit or {}).get("findings"), "QoS")
-    _fold_axis((software_risk or {}).get("findings"), "Software exposure", label_key="surface")
+    # V3.23.170: the CIS Security fold above already carries rows for telnet-on-vty and v1/v2c
+    # SNMP from the same config lines -- folding software_risk's twins gave one issue two
+    # prioritized rows at two severities (the de-dup contract violation the max review caught).
+    # Those kinds stay on the Software Risk sheet / brief (where the advisory context lives);
+    # the punch-list keeps the single CIS action row.
+    _SWRISK_CIS_TWINS = ("telnet-vty", "snmp-v2c-rw", "snmp-v2c-ro")
+    _fold_axis([f for f in ((software_risk or {}).get("findings") or [])
+                if isinstance(f, dict) and f.get("kind") not in _SWRISK_CIS_TWINS],
+               "Software exposure", label_key="surface")
     _fold_axis((platform_health or {}).get("findings"), "Platform capacity")
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
@@ -3993,7 +4001,14 @@ _SYSLOG_DOCTRINE: Dict[str, tuple] = {
                    "access attempts before the migration window."),
 }
 
-_SYSLOG_LINK_FLAP_MIN = 6        # >= this many UPDOWN events on ONE interface = a flap detection
+# >= this many DOWN transitions on ONE interface = a flap detection. V3.23.170: the counter
+# tallies DOWN transitions only (one physical flap cycle emits up to four UPDOWN lines --
+# LINK down/up + LINEPROTO down/up -- so counting every line both double-counted and rendered
+# an inflated figure in the detection text).
+_SYSLOG_LINK_FLAP_MIN = 3
+# V3.23.170: the interface token in a link event line, precompiled (was an inline re.search
+# per event -- this loop is hottest exactly during the flap storms the axis exists to catch).
+_SYSLOG_IF_RE = re.compile(r"Interface ([A-Za-z0-9/\.\-]+)")
 _SYSLOG_LOGIN_FAIL_MIN = 5       # >= this many login failures = a detection
 
 
@@ -4041,37 +4056,48 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
             else:
                 sev_band["info_5_7"] += 1
             msg_count[f"{ev['facility']}-{sev}-{ev['mnemonic']}"] += 1
-            fac, mn, up = ev["facility"], ev["mnemonic"], ev["raw"].upper()
+            # V3.23.170: facilities carry stacked-module suffixes ('LINK-SP') and NX-OS uses
+            # different facility names entirely (ETHPORT/VSHD/L2FM) -- every check below matches
+            # the facility FAMILY (startswith) and the NX-OS equivalents, never an exact IOS literal.
+            fac, mn = ev["facility"], ev["mnemonic"]
             kind = None
-            if "MACFLAP" in mn:
-                kind = "mac-flap"
+            if "MACFLAP" in mn or "MAC_FLAP" in mn or "MAC_MOVE" in mn:
+                kind = "mac-flap"                      # IOS SW_MATM MACFLAP / NX-OS L2FM MAC_MOVE
             elif "ERR_DISABLE" in mn or "ERRDISABLE" in mn or "ERROR_DISABLED" in mn:
                 kind = "err-disable"
             elif fac.startswith("SPANTREE") and any(t in mn for t in
                                                     ("ROOTGUARD", "LOOPGUARD", "BPDUGUARD", "BLOCK", "PVID")):
                 kind = "stp-guard"
-            elif mn in ("MALLOCFAIL", "CPUHOG") or "TRACEBACK" in up:
-                kind = "stability"
-            elif (("ENV" in fac or "THERMAL" in fac) or
-                  any(t in mn for t in ("FAN", "TEMP", "THERM", "PSU", "POWER"))) and sev <= 3:
-                kind = "environment"
-            elif "TCAM" in up and any(t in up for t in ("EXCEED", "EXHAUST", "FULL", "EXCEPTION")):
-                kind = "resource"
-            elif "DUPLEX_MISMATCH" in mn:
-                kind = "duplex-mismatch"
-            elif "NATIVE_VLAN_MISMATCH" in mn:
-                kind = "native-vlan-mismatch"
-            elif fac.startswith("STORM_CONTROL"):
-                kind = "storm-control"
-            elif mn == "RESTART" or "SYSTEM RESTARTED" in up:
-                kind = "reload"
+            else:
+                up = ev["raw"].upper()                 # built only past the cheap mnemonic branches
+                if mn in ("MALLOCFAIL", "CPUHOG") or "TRACEBACK" in up:
+                    kind = "stability"
+                elif (("ENV" in fac or "THERMAL" in fac) or
+                      any(t in mn for t in ("FAN", "TEMP", "THERM", "PSU", "POWER"))) and sev <= 3:
+                    kind = "environment"
+                elif "TCAM" in up and any(t in up for t in ("EXCEED", "EXHAUST", "FULL", "EXCEPTION")):
+                    kind = "resource"
+                elif "DUPLEX_MISMATCH" in mn:
+                    kind = "duplex-mismatch"
+                elif "NATIVE_VLAN_MISMATCH" in mn:
+                    kind = "native-vlan-mismatch"
+                elif fac.startswith("STORM_CONTROL"):
+                    kind = "storm-control"
+                elif mn == "RESTART" or "SYSTEM RESTARTED" in up:
+                    kind = "reload"
             if kind:
                 kind_events.setdefault(kind, []).append(ev)
-            if mn == "UPDOWN" and fac in ("LINK", "LINEPROTO"):
-                im = re.search(r"Interface ([A-Za-z0-9/\.\-]+)", ev["msg"])
+            # link flap: count DOWN transitions only (LINEPROTO mirrors LINK -- counting both
+            # double-counts one physical cycle). IOS: %LINK[-SP]-3-UPDOWN '... state to down';
+            # NX-OS: %ETHPORT-5-IF_DOWN_<cause>.
+            is_down = ((fac.startswith("LINK") and mn == "UPDOWN" and "to down" in ev["msg"])
+                       or (fac.startswith("ETHPORT") and mn.startswith("IF_DOWN")))
+            if is_down:
+                im = _SYSLOG_IF_RE.search(ev["msg"])
                 if im:
                     updown_by_intf[im.group(1)] += 1
-            if fac == "SYS" and mn == "CONFIG_I":
+            # config-change audit: IOS %SYS[-SP]-5-CONFIG_I / NX-OS %VSHD-5-VSHD_SYSLOG_CONFIG_I
+            if mn.endswith("CONFIG_I"):
                 config_changes += 1
             if "LOGIN" in fac and "FAIL" in mn:
                 login_fails += 1
@@ -4085,7 +4111,7 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
         if flapping:
             head = ", ".join(f"{i} ({updown_by_intf[i]}x)" for i in flapping[:5])
             _det(host, "link-flap", sum(updown_by_intf[i] for i in flapping),
-                 f"{len(flapping)} interface(s) with >= {_SYSLOG_LINK_FLAP_MIN} up/down "
+                 f"{len(flapping)} interface(s) with >= {_SYSLOG_LINK_FLAP_MIN} down "
                  f"transitions: {head}.", "")
         if login_fails >= _SYSLOG_LOGIN_FAIL_MIN:
             _det(host, "login-fail", login_fails,
@@ -4197,14 +4223,26 @@ def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
             mechanisms.append("auto-QoS")
         if q["mls_qos"]:
             mechanisms.append("mls qos")
-        has_qos = bool(mechanisms or trust_if or q["class_maps"])
-        mode = " + ".join(mechanisms) if mechanisms else ("trust-only" if trust_if else "none")
-        if has_qos:
+        # V3.23.170: mode and has_qos use ONE predicate -- a class-maps-only device (config
+        # debris, or the Nexus default class-fcoe maps) previously read has_qos=True yet
+        # mode "none", landing in without_qos and falsifying the best-effort-fleet claim.
+        if mechanisms:
+            mode = " + ".join(mechanisms)
+        elif trust_if:
+            mode = "trust-only"
+        elif q["class_maps"]:
+            mode = "objects-only"
+        else:
+            mode = "none"
+        if mode == "none":
+            posture = "No QoS configuration — all traffic is forwarded best-effort."
+        elif mode == "objects-only":
+            posture = (f"objects-only: {len(q['class_maps'])} class-map(s) defined but no "
+                       "policy attaches anywhere — effectively best-effort.")
+        else:
             posture = (f"{mode}: {len(q['policy_maps'])} policy-map(s), service-policy on "
                        f"{len(attached_if)} interface(s), trust on {len(trust_if)}, "
                        f"auto-QoS on {len(auto_if)}.")
-        else:
-            posture = "No QoS configuration — all traffic is forwarded best-effort."
         per_device.append({"host": host, "assessable": True, "mode": mode,
                            "n_class_maps": len(q["class_maps"]), "n_policy_maps": len(q["policy_maps"]),
                            "n_attached_if": len(attached_if), "n_trust_if": len(trust_if),
@@ -4231,7 +4269,12 @@ def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
         attached_names = sorted({a["policy_in"] for a in ifs.values() if a["policy_in"]}
                                 | {a["policy_out"] for a in ifs.values() if a["policy_out"]}
                                 | set(q["global_attach"]))
-        dangling = [n for n in attached_names if n not in q["policy_maps"]]
+        # V3.23.170: NX-OS system-defined policies (default-nq-*, fcoe-default-*, copp-system-*)
+        # are attached in the plain running-config but DEFINED only in 'show running-config all' --
+        # flagging them as dangling raised a false Medium on every stock Nexus.
+        dangling = [n for n in attached_names
+                    if n not in q["policy_maps"]
+                    and not n.lower().startswith(("default-", "fcoe-default", "copp-system"))]
         if dangling:
             _find(host, "undefined-policy-ref",
                   f"service-policy attaches {', '.join(dangling[:5])} but no such policy-map "
@@ -4239,15 +4282,19 @@ def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
 
     # fleet-level doctrine checks (assessable devices only)
     assessable = [d for d in per_device if d["assessable"]]
-    with_qos = [d["host"] for d in assessable if d["mode"] != "none"]
-    without_qos = [d["host"] for d in assessable if d["mode"] == "none"]
+    # V3.23.170: fleet consistency judges ACTIVE QoS only -- objects-only devices (class-maps
+    # defined, nothing attached) are effectively best-effort, so they sit on the without side
+    # and the best-effort text stays truthful ('no ACTIVE configuration').
+    with_qos = [d["host"] for d in assessable if d["mode"] not in ("none", "objects-only")]
+    without_qos = [d["host"] for d in assessable if d["mode"] in ("none", "objects-only")]
     if with_qos and without_qos:
         _find("(fleet)", "mixed-posture",
-              f"{len(with_qos)} device(s) carry QoS configuration ({', '.join(with_qos[:5])}) "
+              f"{len(with_qos)} device(s) carry active QoS configuration ({', '.join(with_qos[:5])}) "
               f"while {len(without_qos)} carry none ({', '.join(without_qos[:5])}).")
     elif assessable and not with_qos:
         _find("(fleet)", "best-effort-fleet",
-              f"None of the {len(assessable)} assessable device(s) carries any QoS configuration.")
+              f"None of the {len(assessable)} assessable device(s) has any active QoS "
+              "configuration (policies attached, trust, or auto-QoS).")
 
     findings.sort(key=lambda f: (_QOS_FINDING_RANK.get(f["severity"], 9), f["host"], f["kind"]))
     not_assessable = [d["host"] for d in per_device if not d["assessable"]]
@@ -4423,7 +4470,10 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
             out["http-server"] = ("closed", "no ip http server")
         else:
             out["http-server"] = ("verify", "no explicit http-server line in the capture")
-        if has(r"^snmp-server community\s+\S+\s+rw\b"):
+        # V3.23.170: the optional 'view <name>' qualifier sits between the community string and
+        # the rw keyword ('snmp-server community <str> [view <name>] [ro|rw] [acl]') -- without
+        # it a view-restricted READ-WRITE community was misclassified as read-only (High->Medium).
+        if has(r"^snmp-server community\s+\S+(?:\s+view\s+\S+)?\s+rw\b"):
             out["snmp-v2c-rw"] = ("exposed", "snmp-server community <redacted> RW")
         elif has(r"^snmp-server community\s+\S+"):
             out["snmp-v2c-ro"] = ("exposed", "snmp-server community <redacted>")
@@ -4436,7 +4486,9 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
             out["smart-install"] = ("verify",
                                     "no vstack line in the capture -- default-on for older "
                                     "Catalyst; confirm with 'show vstack config'")
-        tl = has(r"^transport input .*telnet")
+        # V3.23.170: 'transport input all' (the legacy form and old default) also permits telnet --
+        # the CIS detector (parse_security) already treats it that way; the two now agree.
+        tl = has(r"^transport input .*\b(?:telnet|all)\b")
         if tl:
             out["telnet-vty"] = ("exposed", tl)
         if has(r"^ip ssh version 1$"):
@@ -4515,6 +4567,11 @@ _PLATHEALTH_DOCTRINE: Dict[str, tuple] = {
                      "A 5-minute CPU at/above 60% is workable but worth explaining before the "
                      "cutover adds protocol churn. Identify the top processes and confirm the "
                      "level is expected for this role."),
+    "cpu-sample-high": ("Control-plane CPU high (instantaneous sample)", "Medium",
+                        "The only CPU figure available is a single-instant reading ('show system "
+                        "resources'), which can spike while the device renders show output. "
+                        "Re-sample with 'show processes cpu' and judge the 5-minute average "
+                        "before treating this device as a blocker."),
     "low-memory": ("Processor memory low", "High",
                    "Free processor memory at/below 10% risks MALLOCFAIL under churn -- routing "
                    "updates and config pushes allocate. Free or upgrade memory before the window."),
@@ -4578,8 +4635,16 @@ def compute_platform_health(metrics: Optional[Dict[str, dict]] = None) -> dict:
         mem_total_mb = round(mem_total / (1024 * 1024)) if mem_total else None
 
         band = "OK"
+        cpu_instantaneous = cpu_source.endswith("(instantaneous)")
         if cpu_5min is not None:
-            if cpu_5min >= _PLATHEALTH_CPU_HOT:
+            if cpu_instantaneous:
+                # V3.23.170: an instantaneous figure must not be banded with the 5-minute
+                # doctrine -- it can spike while the device renders show output. Cap at
+                # Elevated with its own honest doctrine; never Hot off one instant.
+                if cpu_5min >= _PLATHEALTH_CPU_ELEVATED:
+                    band = "Elevated"
+                    _find(host, "cpu-sample-high", f"CPU {cpu_5min}% ({cpu_source}).")
+            elif cpu_5min >= _PLATHEALTH_CPU_HOT:
                 band = "Hot"
                 _find(host, "hot-cpu", f"CPU {cpu_5min}% ({cpu_source}).")
             elif cpu_5min >= _PLATHEALTH_CPU_ELEVATED:
@@ -4935,14 +5000,22 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
             ax("QoS posture", "Info", "not assessable — no full running-config captures", "")
     sr_s = (software_risk or {}).get("summary") or {}
     if sr_s.get("n_devices"):
-        w = _worst((software_risk or {}).get("findings"))
-        tb = sr_s.get("train_bands") or {}
-        lifecycle_pressure = tb.get("Replace/Upgrade") or tb.get("Verify EoL")
-        sev = w or ("Medium" if lifecycle_pressure else "Low")
-        ax("Software risk", sev,
-           f"{sr_s.get('n_findings', 0)} exposed advisory surface(s) · trains "
-           + (", ".join(f"{v}× {k}" for k, v in tb.items()) or "—"),
-           "Screening, not a scan — validate releases with the Cisco PSIRT Software Checker.")
+        # V3.23.170: the same not-assessable honesty gate the sibling axes carry -- with no
+        # config captures AND no versions there is no evidence in EITHER layer, and 'Low'
+        # would be the Low-by-silence this fold exists to prevent.
+        if not (sr_s.get("n_config_assessable") or sr_s.get("n_version_known")):
+            ax("Software risk", "Info",
+               "not assessable — no running-configs or software versions captured",
+               "Absence of evidence is declared, never scored.")
+        else:
+            w = _worst((software_risk or {}).get("findings"))
+            tb = sr_s.get("train_bands") or {}
+            lifecycle_pressure = tb.get("Replace/Upgrade") or tb.get("Verify EoL")
+            sev = w or ("Medium" if lifecycle_pressure else "Low")
+            ax("Software risk", sev,
+               f"{sr_s.get('n_findings', 0)} exposed advisory surface(s) · trains "
+               + (", ".join(f"{v}× {k}" for k, v in tb.items()) or "—"),
+               "Screening, not a scan — validate releases with the Cisco PSIRT Software Checker.")
     ph_s = (platform_health or {}).get("summary") or {}
     if ph_s.get("n_devices"):
         if ph_s.get("n_collected"):

@@ -2185,13 +2185,16 @@ _QOS_IF_ATTR_KEYS = ("voice_vlan", "trust", "auto_qos", "policy_in", "policy_out
 def parse_qos_config(text: str) -> dict:
     """Parse a full running-config -> the device's QoS posture facts:
     {mls_qos, class_maps, policy_maps, interfaces:{if:{voice_vlan,trust,auto_qos,
-    policy_in,policy_out}}, global_attach:[policy names attached outside interfaces]}.
+    policy_in,policy_out}}, global_attach:[policy names attached outside interfaces],
+    child_policies:[policy names referenced INSIDE a policy-map (hierarchical MQC) --
+    definition-time references, NOT live attachments]}.
     Only interfaces with at least one QoS-relevant attribute are listed.
     Empty/None input -> the same shape with empty members. Tolerant; never raises."""
     res: dict = {"mls_qos": False, "class_maps": [], "policy_maps": [],
-                 "interfaces": {}, "global_attach": []}
+                 "interfaces": {}, "global_attach": [], "child_policies": []}
     cur: Optional[str] = None          # current interface block, else None
     in_iface = False
+    in_pmap = False                    # inside a policy-map definition block (HQoS children live here)
     for raw in (text or "").splitlines():
         if raw[:1] not in (" ", "\t"):                     # a new top-level stanza
             line = raw.strip()
@@ -2199,24 +2202,35 @@ def parse_qos_config(text: str) -> dict:
             in_iface = bool(im)
             cur = normalize_ifname(im.group(1)) if im else None
             if line == "mls qos":
+                in_pmap = False
                 res["mls_qos"] = True
                 continue
             cm = _QOS_CLASS_MAP_RE.match(line)
-            if cm and cm.group(2) not in res["class_maps"]:
-                res["class_maps"].append(cm.group(2))
+            if cm:
+                in_pmap = False
+                if cm.group(2) not in res["class_maps"]:
+                    res["class_maps"].append(cm.group(2))
                 continue
             pm = _QOS_POLICY_MAP_RE.match(line)
+            in_pmap = bool(pm)
             if pm and pm.group(2) not in res["policy_maps"]:
                 res["policy_maps"].append(pm.group(2))
             continue
         # indented: an attribute of the enclosing block
         sp = _QOS_SERVICE_POLICY_RE.match(raw)
         if not in_iface:
-            # service-policy under system qos / control-plane / etc. = an attachment in use
-            # (may be directionless, e.g. NX-OS 'service-policy type network-qos NQ-8E')
             ga = _QOS_SERVICE_POLICY_ANY_RE.match(raw)
-            if ga and ga.group(1) not in res["global_attach"]:
-                res["global_attach"].append(ga.group(1))
+            if ga:
+                if in_pmap:
+                    # hierarchical MQC: 'policy-map PARENT / class X / service-policy CHILD' is a
+                    # DEFINITION-TIME reference, not an attachment -- recording it as global_attach
+                    # would suppress the inert-policy / no-trust-boundary doctrine findings.
+                    if ga.group(1) not in res["child_policies"]:
+                        res["child_policies"].append(ga.group(1))
+                # service-policy under system qos / control-plane / line / etc. = attachment in use
+                # (may be directionless, e.g. NX-OS 'service-policy type network-qos NQ-8E')
+                elif ga.group(1) not in res["global_attach"]:
+                    res["global_attach"].append(ga.group(1))
             continue
         line = raw.strip()
         attrs = res["interfaces"].setdefault(
