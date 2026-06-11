@@ -1579,6 +1579,72 @@ function demoSnapshot(){
              bands:{"Elevated":1,"Hot":1,"OK":3,"Unknown":1},n_findings:2,
              by_kind:{"hot-cpu":1,"memory-watch":1}},
     note:"Single point-in-time sample taken at collection — a snapshot, not a trend. Correlate with the syslog axis (CPUHOG / MALLOCFAIL events) and re-sample close to the migration window."},
+  // V3.23.173: the Device Risk Register (compute_device_dossiers) — the per-ASSET synthesis. One dossier
+  // per box: risk_index = topology impact (1–10) × stacked exposure (0–10), compound patterns CR-01..CR-06
+  // where independent risks coincide, and a deterministic engineer's verdict. Pre-ranked riskiest-first.
+  device_dossiers:{
+    per_device:[
+      {host:"DIST-1",model:"WS-C3850-48P",platform:"cat3850",sw_version:"16.6(8)",role:"distribution",wave:"Group A",
+       health_score:58,health_band:"Poor",eol_band:"Past-EoS",train_band:"Verify EoL",platform_band:"OK",
+       vpc_role:"",stp_root_vlans:1,impact_score:10,impact_severity:"High",stranded:120,vlans_impacted:3,
+       exposure_score:6,n_risk:1,n_watch:4,n_na:2,
+       exposures:[{axis:"Health",state:"watch",label:"health Poor (58/100)"},
+                  {axis:"Hardware EoL",state:"watch",label:"hardware past end-of-sale"},
+                  {axis:"Software risk",state:"risk",label:"open advisory surface"},
+                  {axis:"Control plane",state:"ok",label:"control-plane capacity OK"},
+                  {axis:"Operational logs",state:"watch",label:"operational events to review in the logs"},
+                  {axis:"Security posture",state:"watch",label:"2 CIS check(s) failing"},
+                  {axis:"Config hygiene",state:"watch",label:"1 undefined reference(s)"},
+                  {axis:"Golden drift",state:"na",label:"not in the drift baseline"},
+                  {axis:"QoS posture",state:"na",label:"not assessable — full running-config not captured"},
+                  {axis:"Physical",state:"ok",label:"no L1 findings"},
+                  {axis:"Protocol",state:"ok",label:"protocol health clean"}],
+       compound:[{code:"CR-04",title:"Open advisory surface on a high-impact asset",severity:"High",
+                  basis:"Config-evidenced advisory surface is open AND removal strands 120 endpoint(s) across 3 VLAN(s) — validate with the Cisco PSIRT Software Checker before the window."},
+                 {code:"CR-06",title:"Layered config debt on a critical asset",severity:"Medium",
+                  basis:"3 config-truth axes are off-baseline AND removal strands 120 endpoint(s) across 3 VLAN(s) — drift on the box you can least afford to misjudge."}],
+       risk_index:60,risk_band:"Severe",
+       verdict:"Stabilize or replace before migration — open advisory surface; health Poor (58/100); 2 CIS check(s) failing; removal strands 120 endpoint(s) across 3 VLAN(s)."},
+      {host:"DIST-2",model:"WS-C3850-48P",platform:"cat3850",sw_version:"16.6(8)",role:"distribution",wave:"Group A",
+       health_score:81,health_band:"Fair",eol_band:"Past-EoS",train_band:"Verify EoL",platform_band:"Hot",
+       vpc_role:"",stp_root_vlans:0,impact_score:9,impact_severity:"High",stranded:80,vlans_impacted:2,
+       exposure_score:4,n_risk:1,n_watch:2,n_na:1,
+       exposures:[{axis:"Health",state:"ok",label:"health Fair (81/100)"},
+                  {axis:"Hardware EoL",state:"watch",label:"hardware past end-of-sale"},
+                  {axis:"Control plane",state:"risk",label:"control plane Hot (CPU 84%)"},
+                  {axis:"Operational logs",state:"watch",label:"operational events to review in the logs"}],
+       compound:[{code:"CR-05",title:"Stressed control plane at a single point of failure",severity:"High",
+                  basis:"Control plane is already Hot AND removal strands 80 endpoint(s) across 2 VLAN(s) — migration protocol churn lands on a box with no headroom."}],
+       risk_index:36,risk_band:"Elevated",
+       verdict:"Remediate inside the migration plan — control plane Hot (CPU 84%); hardware past end-of-sale; removal strands 80 endpoint(s) across 2 VLAN(s)."},
+      {host:"ACC-3",model:"WS-C2960X-24",platform:"cat2960x",sw_version:"15.2(7)",role:"access",wave:"Group B",
+       health_score:88,health_band:"Good",eol_band:"Active",train_band:"Current-era",platform_band:"Elevated",
+       vpc_role:"",stp_root_vlans:1,impact_score:4,impact_severity:"Low",stranded:0,vlans_impacted:1,
+       exposure_score:3,n_risk:0,n_watch:3,n_na:1,
+       exposures:[{axis:"Control plane",state:"watch",label:"control plane Elevated (CPU 22%)"},
+                  {axis:"Security posture",state:"watch",label:"1 CIS check(s) failing"},
+                  {axis:"Protocol",state:"watch",label:"protocol-health finding(s) to review"}],
+       compound:[],risk_index:12,risk_band:"Guarded",
+       verdict:"Watch items only — control plane Elevated (CPU 22%); 1 CIS check(s) failing; protocol-health finding(s) to review."},
+      {host:"CORE-9K",model:"N9K-C93180YC-EX",platform:"n9k",sw_version:"9.3(8)",role:"distribution",wave:"Group A",
+       health_score:95,health_band:"Excellent",eol_band:"Active",train_band:"Current-era",platform_band:"OK",
+       vpc_role:"primary",stp_root_vlans:0,impact_score:6,impact_severity:"Medium",stranded:0,vlans_impacted:2,
+       exposure_score:0,n_risk:0,n_watch:0,n_na:3,exposures:[],compound:[],risk_index:0,risk_band:"Low",
+       verdict:"No stacked risk — routine migration handling."},
+      {host:"ACC-1",model:"WS-C2960X-48",platform:"cat2960x",sw_version:"15.2(7)",role:"access",wave:"Group B",
+       health_score:92,health_band:"Excellent",eol_band:"Active",train_band:"Current-era",platform_band:"OK",
+       vpc_role:"",stp_root_vlans:0,impact_score:3,impact_severity:"Low",stranded:0,vlans_impacted:1,
+       exposure_score:1,n_risk:0,n_watch:1,n_na:2,
+       exposures:[{axis:"Operational logs",state:"watch",label:"operational events to review in the logs"}],
+       compound:[],risk_index:3,risk_band:"Low",verdict:"No stacked risk — routine migration handling."},
+      {host:"ACC-5",model:"WS-C2960X-24",platform:"cat2960x",sw_version:"15.2(7)",role:"access",wave:"Group B",
+       health_score:90,health_band:"Excellent",eol_band:"Unknown",train_band:"Unknown",platform_band:"Unknown",
+       vpc_role:"",stp_root_vlans:0,impact_score:1,impact_severity:"Info",stranded:0,vlans_impacted:0,
+       exposure_score:0,n_risk:0,n_watch:0,n_na:7,exposures:[],compound:[],risk_index:0,risk_band:"Low",
+       verdict:"No stacked risk — routine migration handling."},
+    ],
+    summary:{n_devices:6,bands:{Severe:1,Elevated:1,Guarded:1,Low:3},n_compound:3,worst:["DIST-1","DIST-2"],avg_risk_index:19},
+    note:"Risk index = topology impact (1-10) x stacked exposure (0-10) per asset, mirroring asset-risk practice (likelihood x impact). Synthesis of already-computed axes only; an axis without evidence is 'not assessed', never red."},
   // V3.23.62: STP root placement. VLAN 10 is rooted at DIST-1 on a deliberate priority and DIST-1 hosts the
   // gateway -> aligned + clean. VLAN 30 is rooted at ACC-3 on the DEFAULT priority (32798 = 32768+30) -> an
   // accidental root, and its gateway lives on DIST-1 (not ACC-3) -> root/gateway misalignment (hairpin).
@@ -3342,7 +3408,22 @@ function deviceIntelSection(host){
   const rem=(((SNAP&&SNAP.remediation_plan&&SNAP.remediation_plan.by_device)||{})[host])||[];   // V3.23.116
   const lc=(((SNAP&&SNAP.lifecycle_risk&&SNAP.lifecycle_risk.per_device)||[]).find(d=>d.host===host))||null;  // V3.23.117
   const lcConcern=lc&&lc.band&&lc.band!=="Active"&&lc.band!=="Unknown";
-  if(!hs&&!phy.length&&!proto.length&&!secFail.length&&!hgUndef.length&&!pl.length&&!rem.length&&!lcConcern)return "";
+  // V3.23.173: the engine's Device Risk Register dossier for this asset — verdict, compound
+  // patterns, impact × exposure. Rendered, never re-derived (one source of truth).
+  const dd=(((SNAP&&SNAP.device_dossiers)||{}).per_device||[]).find(d=>d.host===host)||null;
+  if(!hs&&!phy.length&&!proto.length&&!secFail.length&&!hgUndef.length&&!pl.length&&!rem.length&&!lcConcern&&!dd)return "";
+  let verdictCard="";
+  if(dd){
+    const ctok=dd.risk_band==="Severe"?"crit":(dd.risk_band==="Elevated"||dd.risk_band==="Guarded")?"watch":"";
+    const chips=(dd.compound||[]).map(c=>
+      `<span class="pill ${(c.severity==="Critical"||c.severity==="High")?"pl-crit":"pl-watch"}" title="${esc(c.basis)}">${esc(c.code)} ${esc(c.title)}</span>`).join(" ");
+    verdictCard=`<div class="card ${ctok}" style="margin-bottom:9px">
+      <div class="ct"><span class="nm">Engineer's verdict</span><span class="pill ${_RR_PILL[dd.risk_band]||"pl-ok"}">${esc(dd.risk_band)} · ${dd.risk_index}/100</span></div>
+      <div class="ln" style="margin-top:3px">${esc(dd.verdict)}</div>
+      <div class="ln faint" style="margin-top:2px">impact ${dd.impact_score}/10 × exposure ${dd.exposure_score}/10 · ${dd.n_risk} red / ${dd.n_watch} watch / ${dd.n_na} not-assessed ax${dd.n_na===1?"is":"es"}</div>
+      ${chips?`<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px">${chips}</div>`:""}
+    </div>`;
+  }
   const pills=[];
   if(hs){const t=hs.band?healthBandToken(hs.band):scoreToken(hs.score);
     pills.push(`<span class="pill pl-${t}">health ${esc(hs.score)}/100${hs.band?" · "+esc(hs.band):""}</span>`);}
@@ -3373,6 +3454,7 @@ function deviceIntelSection(host){
     </div>`).join("")+(rem.length>6?`<div class="ln faint">…and ${rem.length-6} more for this device — see the Remediation Plan sheet.</div>`:"");
   return `<div class="sec"><h3>Device intelligence</h3>`+
     `<div class="sub" style="margin-bottom:7px">Everything the collector knows about <span class="mono">${esc(shortName(host))}</span> — health, physical, protocol, security, and the punch-list items naming it.</div>`+
+    verdictCard+
     `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px">${pills.join("")}</div>`+
     (lc&&lc.platform?`<div class="ln" style="margin-bottom:6px"><span class="faint">Hardware:</span> <span class="mono">${esc(lc.model)}</span> (${esc(lc.platform)}) — ${esc(lc.status)}${lc.source?` <span class="faint">[${esc(lc.source)}]</span>`:""}</div>`:"")+
     (phyDetail?`<div class="sub" style="margin:4px 0 3px">Physical (port errors / duplex)</div>${phyDetail}`:"")+
@@ -5097,6 +5179,36 @@ function hygieneCard(){
    most devices). Reads SNAP.golden_drift {mode, baseline, per_device:[{host,compliance_pct,n_missing,
    missing}], summary}. Health-mode card; one source of truth with the workbook's 'Golden-Config Drift'
    sheet. No key / empty baseline (e.g. <3 devices and no golden file) -> no card. */
+/* Device Risk Register (NEW-V3.23.173): the per-ASSET synthesis from compute_device_dossiers —
+   one dossier per box, risk_index = topology impact (1–10) × stacked exposure (0–10), compound
+   patterns CR-01..CR-06 where independent risks coincide, pre-ranked riskiest-first. Reads
+   SNAP.device_dossiers {per_device, summary} straight from the engine — the explorer renders the
+   verdicts, it never re-derives them (one source of truth). Back-compat: no key -> no card. */
+const _RR_PILL={Severe:"pl-crit",Elevated:"pl-risk",Guarded:"pl-watch",Low:"pl-ok"};
+const _RR_TOK={Severe:"crit",Elevated:"risk",Guarded:"watch",Low:"ok"};
+function riskRegisterCard(){
+  const dd=SNAP&&SNAP.device_dossiers; if(!dd)return "";
+  const rows=dd.per_device||[]; const s=dd.summary||{}; if(!rows.length)return "";
+  const bands=s.bands||{};
+  const badge=bands.Severe?`<span class="badge b-crit">${bands.Severe} Severe</span>`
+    :bands.Elevated?`<span class="badge b-warn">${bands.Elevated} Elevated</span>`
+    :`<span class="badge b-ok">no stacked risk</span>`;
+  const top=rows.slice(0,8).map((d,i)=>{
+    const t=_RR_TOK[d.risk_band]||"ok";
+    const chips=(d.compound||[]).map(c=>
+      `<span class="pill ${(c.severity==="Critical"||c.severity==="High")?"pl-crit":"pl-watch"}" title="${esc(c.title)} — ${esc(c.basis)}" style="font-size:10px;padding:0 5px">${esc(c.code)}</span>`).join(" ");
+    const verdict=(i<3&&d.risk_band!=="Low")?`<div class="ln faint" style="margin:1px 0 5px 22px">${esc(d.verdict)}</div>`:"";
+    return `<div class="ln click" data-jump="${esc(d.host)}" style="cursor:pointer;margin-bottom:3px;display:flex;flex-wrap:wrap;align-items:center;gap:6px">`+
+      `<span class="faint" style="width:16px;text-align:right">${i+1}.</span>`+
+      `<span class="pill ${_RR_PILL[d.risk_band]||"pl-ok"}" style="min-width:60px;text-align:center">${esc(d.risk_band)}</span>`+
+      `<span class="mono">${esc(shortName(d.host))}</span>`+
+      `<span class="bar" style="display:inline-block;width:104px"><i style="width:${Math.max(2,+d.risk_index||0)}%;background:var(--${t})"></i></span>`+
+      `<span class="faint" style="font-size:11px;white-space:nowrap">${d.risk_index}/100 · impact ${d.impact_score} × exposure ${d.exposure_score}</span>${chips}</div>`+verdict;
+  }).join("");
+  return `<div class="sec"><h3>Asset risk register ${badge}</h3>`+
+    `<div class="sub" style="margin-bottom:7px">The senior-engineer read: all 11 per-device axes stacked per ASSET — risk index = topology impact × exposure, compound patterns (CR-xx pills, hover for the why) where independent risks coincide on one box. Click a row to jump to the device; the full register is the 'Device Risk Register' workbook sheet.</div>`+
+    top+(rows.length>8?`<div class="ln faint">…and ${rows.length-8} more asset(s) — see the workbook register.</div>`:"")+`</div>`;
+}
 function goldenDriftCard(){
   const gd=SNAP&&SNAP.golden_drift; if(!gd)return "";
   const s=gd.summary||{}; if(!(s.n_baseline>0))return "";
@@ -7075,6 +7187,7 @@ function drawHealth(){
     ${cockpitCard()}
     <div class="sec"><h3>Switches by score <span class="ct">${n}</span></h3>
       <table><thead><tr><th>Switch</th><th>Score</th><th style="text-align:right">/100</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${riskRegisterCard()}
     ${punchlistCard()}
     ${driftCard()}
     ${collectionCard()}
