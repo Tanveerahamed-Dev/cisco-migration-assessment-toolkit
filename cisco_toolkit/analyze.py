@@ -3004,20 +3004,22 @@ def compute_migration_punchlist(cross_layer: List[dict],
     # already aggregates per host; here like findings are GROUPED by kind across devices (the same
     # cry-wolf rule the security fold uses) -- one row + a device list, never one row per device.
     # Fleet-level rows (host '(fleet)') carry no device so they never pollute per-device wave maps.
-    def _fold_axis(findings, category, label_key="label"):
+    def _fold_axis(findings, category):
+        # V3.23.171: every axis now emits the common {label, detail} shape (software_risk
+        # aliases its surface/why into them), so the fold needs no per-axis adapter.
         bykind: Dict[str, dict] = {}
         for f in (findings or []):
             if not isinstance(f, dict):
                 continue
-            k = f.get("kind") or f.get(label_key) or ""
+            k = f.get("kind") or f.get("label") or ""
             g = bykind.setdefault(k, {"severity": f.get("severity", "Medium"),
-                                      "title": f.get(label_key) or f.get("surface") or k,
+                                      "title": f.get("label") or k,
                                       "devices": [], "details": [],
                                       "remediation": f.get("recommendation", "")})
             host = (f.get("host") or "").strip()
             if host and host != "(fleet)":
                 g["devices"].append(host)
-            d = f.get("detail") or f.get("why")          # software-risk rows carry 'why', not 'detail'
+            d = f.get("detail")
             if d:
                 g["details"].append(str(d))
         for k in sorted(bykind):
@@ -3036,7 +3038,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
     _SWRISK_CIS_TWINS = ("telnet-vty", "snmp-v2c-rw", "snmp-v2c-ro")
     _fold_axis([f for f in ((software_risk or {}).get("findings") or [])
                 if isinstance(f, dict) and f.get("kind") not in _SWRISK_CIS_TWINS],
-               "Software exposure", label_key="surface")
+               "Software exposure")
     _fold_axis((platform_health or {}).get("findings"), "Platform capacity")
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
@@ -3958,7 +3960,7 @@ def compute_golden_drift(run_configs: Optional[dict] = None,
 # every one is deterministic on the collected text. A device without 'show logging' output is
 # reported NOT-COLLECTED -- absence of logs is never scored as absence of problems.
 # =============================================================================
-_SYSLOG_DET_RANK = {"High": 0, "Medium": 1, "Low": 2}
+# severity ordering: the module-wide _SEV_RANK (V3.23.171 — was a private copy per axis)
 
 # kind -> (label, severity, recommendation). The senior-engineer doctrine per signature.
 _SYSLOG_DOCTRINE: Dict[str, tuple] = {
@@ -4126,7 +4128,7 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
                              sorted(msg_count.items(), key=lambda kv: (-kv[1], kv[0]))[:6]],
             "config_changes": config_changes})
 
-    detections.sort(key=lambda d: (_SYSLOG_DET_RANK.get(d["severity"], 9), d["host"], d["kind"]))
+    detections.sort(key=lambda d: (_SEV_RANK.get(d["severity"], 9), d["host"], d["kind"]))
     collected = [d for d in per_device if d["collected"]]
     not_collected = [d["host"] for d in per_device if not d["collected"]]
     by_kind = Counter(d["kind"] for d in detections)
@@ -4148,7 +4150,7 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
 # config evidence only (never live queue counters), and a device without a full running-config
 # capture is declared NOT ASSESSABLE, never scored.
 # =============================================================================
-_QOS_FINDING_RANK = {"High": 0, "Medium": 1, "Low": 2}
+# severity ordering: the module-wide _SEV_RANK (V3.23.171 — was a private copy per axis)
 
 _QOS_DOCTRINE: Dict[str, tuple] = {
     "voice-without-qos": ("Voice VLAN without a QoS edge policy", "High",
@@ -4296,7 +4298,7 @@ def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
               f"None of the {len(assessable)} assessable device(s) has any active QoS "
               "configuration (policies attached, trust, or auto-QoS).")
 
-    findings.sort(key=lambda f: (_QOS_FINDING_RANK.get(f["severity"], 9), f["host"], f["kind"]))
+    findings.sort(key=lambda f: (_SEV_RANK.get(f["severity"], 9), f["host"], f["kind"]))
     not_assessable = [d["host"] for d in per_device if not d["assessable"]]
     summary = {"n_devices": len(per_device), "n_assessable": len(assessable),
                "n_not_assessable": len(not_assessable), "hosts_not_assessable": not_assessable[:20],
@@ -4322,7 +4324,7 @@ def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
 #       train (12.x / 15.x / XE 3.x|16.x|17.x / NX-OS 6|7|9|10) into replace / verify / current-era
 #       bands with verify-against-Cisco wording; never an invented per-release EoL date.
 # =============================================================================
-_SWRISK_RANK = {"High": 0, "Medium": 1, "Low": 2}
+# severity ordering: the module-wide _SEV_RANK (V3.23.171 — was a private copy per axis)
 
 # kind -> (surface label, severity, [(advisory id, cve, note)], why, fix)
 _SWRISK_SURFACE_KB: Dict[str, tuple] = {
@@ -4516,6 +4518,10 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
                 label, sev, advs, why, fix = _SWRISK_SURFACE_KB[kind]
                 findings.append({
                     "host": host, "kind": kind, "surface": label, "severity": sev,
+                    # V3.23.171: label/detail ALIASES of surface/why -- the common finding
+                    # shape the other three axes emit, so generic consumers (the punch-list
+                    # fold, any future findings surface) need no per-axis adapter.
+                    "label": label, "detail": why,
                     "evidence": evidence,
                     "advisories": [{"id": a, "cve": c, "note": n} for a, c, n in advs],
                     "why": why, "recommendation": fix})
@@ -4524,7 +4530,7 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
             "train": train, "train_band": band, "train_note": tnote,
             "config_assessable": bool(text), "surfaces": surfaces})
 
-    findings.sort(key=lambda f: (_SWRISK_RANK.get(f["severity"], 9), f["host"], f["kind"]))
+    findings.sort(key=lambda f: (_SEV_RANK.get(f["severity"], 9), f["host"], f["kind"]))
     per_device.sort(key=lambda d: (_SWRISK_BAND_RANK.get(d["train_band"], 9), d["host"]))
     assessable = [d for d in per_device if d["config_assessable"]]
     not_assessable = [d["host"] for d in per_device if not d["config_assessable"]]
@@ -4674,7 +4680,7 @@ def compute_platform_health(metrics: Optional[Dict[str, dict]] = None) -> dict:
                            "mem_total_mb": mem_total_mb, "mem_free_pct": mem_free_pct,
                            "mem_source": mem_source, "band": band, "status": status})
 
-    findings.sort(key=lambda f: ({"High": 0, "Medium": 1}.get(f["severity"], 9), f["host"], f["kind"]))
+    findings.sort(key=lambda f: (_SEV_RANK.get(f["severity"], 9), f["host"], f["kind"]))
     per_device.sort(key=lambda d: (_PLATHEALTH_BAND_RANK.get(d["band"], 9), d["host"]))
     collected = [d for d in per_device if d["collected"]]
     not_collected = sorted(d["host"] for d in per_device if not d["collected"])

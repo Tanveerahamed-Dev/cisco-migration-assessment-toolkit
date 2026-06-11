@@ -47,19 +47,23 @@ def test_qos_fleet_rows_carry_no_devices():
     assert voice["devices"] == ["acc1"] and voice["category"] == "QoS"
 
 
-def test_software_risk_uses_surface_and_why():
+def test_software_risk_folds_via_the_common_label_detail_shape():
+    # V3.23.171: compute_software_risk aliases surface/why into label/detail (the shape the
+    # other three axes emit), so the fold needs no per-axis adapter.
     sr = {"findings": [{
         "host": "dist1", "kind": "http-server",
-        "surface": "Device web UI (ip http server / secure-server)", "severity": "High",
+        "surface": "Device web UI (ip http server / secure-server)",
+        "label": "Device web UI (ip http server / secure-server)", "severity": "High",
         "evidence": "ip http server",
         "why": "The IOS XE web UI was mass-exploited in 2023-24.",
+        "detail": "The IOS XE web UI was mass-exploited in 2023-24.",
         "recommendation": "Disable it; validate with the Software Checker."}]}
     items = _punch(software_risk=sr)
     assert len(items) == 1
     it = items[0]
     assert it["category"] == "Software exposure"
     assert it["title"].startswith("Device web UI")
-    assert "mass-exploited" in it["detail"]                  # 'why' is the detail fallback
+    assert "mass-exploited" in it["detail"]
     assert it["devices"] == ["dist1"]
 
 
@@ -140,12 +144,12 @@ def test_punchlist_skips_swrisk_kinds_the_cis_fold_already_carries():
     # V3.23.170: telnet/snmp software-risk findings duplicate the CIS Security rows for the
     # same config lines — they stay on the Software Risk sheet but not in the punch-list.
     sr = {"findings": [
-        {"host": "sw1", "kind": "telnet-vty", "surface": "Telnet enabled on vty lines",
-         "severity": "Medium", "why": "cleartext", "recommendation": "ssh only"},
-        {"host": "sw1", "kind": "snmp-v2c-rw", "surface": "SNMP v1/v2c with a READ-WRITE community",
-         "severity": "High", "why": "write via cleartext string", "recommendation": "v3"},
-        {"host": "sw1", "kind": "http-server", "surface": "Device web UI (ip http server / secure-server)",
-         "severity": "High", "why": "exploited surface", "recommendation": "disable"},
+        {"host": "sw1", "kind": "telnet-vty", "label": "Telnet enabled on vty lines",
+         "severity": "Medium", "detail": "cleartext", "recommendation": "ssh only"},
+        {"host": "sw1", "kind": "snmp-v2c-rw", "label": "SNMP v1/v2c with a READ-WRITE community",
+         "severity": "High", "detail": "write via cleartext string", "recommendation": "v3"},
+        {"host": "sw1", "kind": "http-server", "label": "Device web UI (ip http server / secure-server)",
+         "severity": "High", "detail": "exploited surface", "recommendation": "disable"},
     ]}
     items = _punch(software_risk=sr)
     titles = [i["title"] for i in items]
