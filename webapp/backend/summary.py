@@ -19,6 +19,7 @@ BANDS = ["Excellent", "Good", "Fair", "Poor", "Critical"]
 # Detail sections the web UI can render as tabs, in display order. (key, human label)
 SECTION_LABELS: List[tuple] = [
     ("punchlist", "Punch-list"),
+    ("device_dossiers", "Risk register"),     # NEW-V3.23.174 (per-asset compound-risk register)
     ("health_scores", "Health scores"),
     ("failure_impact", "Failure impact"),
     ("link_centrality", "Chokepoints"),

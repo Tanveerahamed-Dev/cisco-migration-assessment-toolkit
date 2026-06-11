@@ -862,6 +862,37 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         table(["Switch (remove/migrate)", "Severity", "VLANs", "Stranded eps", "Hard",
                "Backup-covered", "FHRP-covered"], fi_rows, widths=[3.0, 1.0, 0.8, 1.1, 0.8, 1.2, 1.2])
 
+    # NEW-V3.23.174: §10.1 -- the per-asset compound-risk register (compute_device_dossiers).
+    # The structural table above answers "who depends on this box"; the register answers the
+    # senior-engineer question "which boxes scare you most when ALL the risks are stacked".
+    dossiers = snap_dict.get("device_dossiers") or {}
+    dd_rows = dossiers.get("per_device") or []
+    if dd_rows:
+        doc.add_heading("10.1 Per-asset compound risk (the Device Risk Register)", level=2)
+        dsum = dossiers.get("summary") or {}
+        dbands = dsum.get("bands") or {}
+        doc.add_paragraph(
+            f"{dbands.get('Severe', 0)} Severe and {dbands.get('Elevated', 0)} Elevated of "
+            f"{dsum.get('n_devices', 0)} asset(s); {dsum.get('n_compound', 0)} compound pattern(s). "
+            "Risk index = topology impact (1–10) × stacked exposure (0–10) per asset -- "
+            "independent risks coinciding on one box outrank any single finding. An axis without "
+            "evidence is 'not assessed', never scored.")
+        table(["Asset", "Band", "Index", "Impact × exposure", "Compound", "Engineer's verdict"],
+              [[d.get("host"), d.get("risk_band"), d.get("risk_index"),
+                f"{d.get('impact_score')} × {d.get('exposure_score')}",
+                ", ".join(c.get("code", "") for c in (d.get("compound") or [])) or "—",
+                (d.get("verdict") or "")[:220]]
+               for d in dd_rows[:15]],
+              widths=[1.5, 0.9, 0.7, 1.2, 1.1, 3.7])
+        comp = [(d.get("host"), c) for d in dd_rows
+                for c in (d.get("compound") or []) if isinstance(c, dict)]
+        if comp:
+            doc.add_paragraph("Compound patterns (why these assets outrank their single findings):")
+            for host, c in comp[:10]:
+                doc.add_paragraph(
+                    f"{c.get('code', '')} {c.get('title', '')} — {host}: {c.get('basis', '')}",
+                    style="List Bullet")
+
     # ===== 11. Validation & Rollback Logic =====
     doc.add_heading("11. Validation & Rollback Logic", level=1)
     doc.add_paragraph("Per-phase, governed by the false-health rule (a green control plane is not "

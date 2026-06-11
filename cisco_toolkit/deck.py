@@ -218,6 +218,37 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         text(s, 1.85, y, W - 2.6, 0.3,
              [(f"+ {len(pl) - 5} more in the Migration Punch-List workbook sheet.", 11, _MUTED, False, True)])
 
+    # ------------------------------------------------------- 3b. Riskiest assets (NEW-V3.23.174)
+    # The Device Risk Register's worst boxes: per-asset stacked risk (impact x exposure), the
+    # compound patterns, and the engineer's verdict. Skipped when the snapshot has no register.
+    dd = (snap.get("device_dossiers") or {}).get("per_device") or []
+    dd_top = [d for d in dd if d.get("risk_band") in ("Severe", "Elevated", "Guarded")][:5]
+    if dd_top:
+        s = slide()
+        header(s, "Stacked risk per asset", "The assets that worry an engineer most")
+        dsum = (snap.get("device_dossiers") or {}).get("summary") or {}
+        dbands = dsum.get("bands") or {}
+        text(s, 0.7, 1.95, W - 1.4, 0.4,
+             [[(f"{dbands.get('Severe', 0)} Severe · {dbands.get('Elevated', 0)} Elevated  ", 14, _NAVY, True),
+               ("— risk index = topology impact × stacked exposure; compound patterns (CR-xx) mark "
+                "independent risks coinciding on one box.", 13, _MUTED, False)]])
+        _BAND_SEV = {"Severe": "Critical", "Elevated": "High", "Guarded": "Medium", "Low": "Low"}
+        y = 2.6
+        for d in dd_top:
+            band = d.get("risk_band", "Low")
+            chip(s, 0.7, y, _clean(f"{band} {d.get('risk_index', 0)}"),
+                 _SEV_COLOR.get(_BAND_SEV.get(band, "Low"), _MUTED), w=1.45, h=0.34, size=10)
+            crs = " · ".join(c.get("code", "") for c in (d.get("compound") or [])) or ""
+            text(s, 2.35, y - 0.04, W - 3.1, 0.7,
+                 [[(_clean(str(d.get("host", ""))), 14, _INK, True),
+                   (f"   {crs}", 11, _MUTED, False)],
+                  [(_clean((d.get("verdict") or "")[:160]), 11, _MUTED, False)]], space=1)
+            y += 0.78
+        if len(dd) > len(dd_top):
+            text(s, 2.35, y, W - 3.1, 0.3,
+                 [(f"+ {len(dd) - len(dd_top)} more asset(s) in the Device Risk Register workbook sheet.",
+                   11, _MUTED, False, True)])
+
     # ---------------------------------------------------------------- 4. Keystone devices (light)
     s = slide()
     header(s, "Concentrated dependency", "The switches the fleet depends on")

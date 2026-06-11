@@ -71,6 +71,31 @@ def test_deck_has_all_slides_and_key_content(tmp_path):
     assert "Where to start" in txt                                     # 7 recommendation
 
 
+def test_deck_gains_riskiest_assets_slide_with_register(tmp_path):
+    """NEW-V3.23.174: a snapshot carrying the Device Risk Register renders the extra
+    'riskiest assets' slide (8 total); the back-compat 7-slide pin above proves the
+    slide is data-gated, never empty filler."""
+    snap = _rich_snap()
+    snap["device_dossiers"] = {
+        "per_device": [
+            {"host": "core1", "risk_band": "Severe", "risk_index": 60, "impact_score": 10,
+             "exposure_score": 6,
+             "compound": [{"code": "CR-01", "title": "End-of-support keystone", "severity": "Critical",
+                           "basis": "EoL x blast radius"}],
+             "verdict": "Stabilize or replace before migration — open advisory surface."},
+            {"host": "acc1", "risk_band": "Low", "risk_index": 2, "impact_score": 2,
+             "exposure_score": 1, "compound": [], "verdict": "No stacked risk."},
+        ],
+        "summary": {"n_devices": 2, "bands": {"Severe": 1, "Elevated": 0, "Guarded": 0, "Low": 1},
+                    "n_compound": 1, "worst": ["core1"]}}
+    out = tmp_path / "deck_rr.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert n == 8, f"expected 8 slides with the register, got {n}"
+    assert "worry an engineer most" in txt
+    assert "CR-01" in txt and "Stabilize or replace" in txt
+
+
 def test_deck_cleans_mojibake(tmp_path):
     snap = {"executive_brief": {"axes": [{"axis": "X", "severity": "High", "headline": "a Â· b"}],
                                 "top_gating": []}}
