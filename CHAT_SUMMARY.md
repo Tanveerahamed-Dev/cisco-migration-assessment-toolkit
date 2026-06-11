@@ -5,6 +5,19 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-11 — V3.23.173: the register reaches the explorer (visual flagship)
+
+On branch `feat/explorer-risk-register` (after #254 merged). Pure-JS; no engine/golden change.
+
+- Health view: `riskRegisterCard()` leaderboard above the punch-list — ranked rows with band pills,
+  risk-index bars, impact × exposure stats, CR-xx chips (hover = basis), inline verdicts for the top 3.
+- Switch drawer: `deviceIntelSection` leads with the engine's "Engineer's verdict" card from
+  `SNAP.device_dossiers` — rendered, never re-derived.
+- Demo seeds a 6-asset register (incl. the CR-05 band-floor case and a not-assessed device).
+- Verified live in the preview: both surfaces render, click-to-jump works, 0 console errors; 382 tests.
+
+---
+
 ## 2026-06-11 — V3.23.172: the Device Risk Register (per-asset compound-risk synthesis)
 
 On branch `feat/asset-risk-register`. The "automated senior engineer" centerpiece: every existing axis
