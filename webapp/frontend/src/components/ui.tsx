@@ -158,11 +158,11 @@ export function Bars({ data, colorFor }: { data: Record<string, number>; colorFo
 }
 
 /* ---- severity chip ---- */
-export function SevChip({ sev }: { sev: string }) {
+export function SevChip({ sev, label }: { sev: string; label?: string }) {
   const key = sev.replace(/\s+/g, "");
   return (
     <span className="chip sev" style={{ ["--c" as any]: `var(--sev-${key}, var(--text-faint))`, ["--cs" as any]: `var(--sev-${key}-soft, var(--surface-3))` }}>
-      <span className="dot" /> {sev}
+      <span className="dot" /> {label ?? sev}
     </span>
   );
 }

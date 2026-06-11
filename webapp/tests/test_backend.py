@@ -66,6 +66,21 @@ def test_section_slice_and_guard(client):
     assert client.get(f"/api/snapshots/{snap_id}/section/not_a_section").status_code == 400
 
 
+def test_device_risk_register_section(client):
+    """NEW-V3.23.174: the Device Risk Register is a whitelisted section and the demo sample
+    (regenerated through the real pipeline) carries it, pre-ranked riskiest-first."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    meta = client.get(f"/api/snapshots/{snap_id}").json()
+    assert any(sec["key"] == "device_dossiers" for sec in meta["summary"]["sections"])
+    r = client.get(f"/api/snapshots/{snap_id}/section/device_dossiers")
+    assert r.status_code == 200
+    dd = r.json()["data"]
+    rows = dd["per_device"]
+    assert rows and {"host", "risk_band", "risk_index", "verdict"} <= set(rows[0])
+    ranks = {"Severe": 0, "Elevated": 1, "Guarded": 2, "Low": 3}
+    assert [ranks[d["risk_band"]] for d in rows] == sorted(ranks[d["risk_band"]] for d in rows)
+
+
 def test_explorer_render_embeds_snapshot(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/explorer")

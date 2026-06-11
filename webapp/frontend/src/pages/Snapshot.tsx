@@ -88,7 +88,77 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   if (error) return <ErrorBox msg={error} />;
   const d = data!.data;
   if (name === "punchlist" && Array.isArray(d)) return <PunchTable rows={d} />;
+  if (name === "device_dossiers" && d?.per_device) return <RegisterTable rows={d.per_device} note={d.note} />;
   return <GenericTable data={d} />;
+}
+
+/* ---------- Device Risk Register (V3.23.174) ---------- */
+const BAND_COLOR: Record<string, string> = {
+  Severe: "var(--crit)", Elevated: "var(--risk)", Guarded: "var(--watch)", Low: "var(--ok)",
+};
+const BAND_SEV: Record<string, string> = { Severe: "Critical", Elevated: "High", Guarded: "Medium", Low: "Low" };
+
+function RegisterTable({ rows, note }: { rows: any[]; note?: string }) {
+  return (
+    <div style={{ overflow: "auto" }}>
+      <table className="tbl">
+        <thead><tr><th>#</th><th>Band</th><th>Asset</th><th style={{ minWidth: 130 }}>Risk index</th>
+          <th>Impact × exposure</th><th>Compound</th><th>Engineer's verdict</th></tr></thead>
+        <tbody>
+          {rows.map((d, i) => (
+            <tr key={d.host || i}>
+              <td className="dim">{i + 1}</td>
+              <td><SevChip sev={BAND_SEV[d.risk_band] || "Low"} label={d.risk_band} /></td>
+              <td className="mono"><b>{d.host}</b></td>
+              <td>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, height: 7, borderRadius: 4, background: "var(--surface-2)", overflow: "hidden" }}>
+                    <div style={{ width: `${Math.max(2, Number(d.risk_index) || 0)}%`, height: "100%", borderRadius: 4,
+                                  background: BAND_COLOR[d.risk_band] || "var(--ok)" }} />
+                  </div>
+                  <span className="mono" style={{ fontSize: 12, minWidth: 34 }}>{d.risk_index}</span>
+                </div>
+              </td>
+              <td className="mono" style={{ fontSize: 12 }}>{d.impact_score} × {d.exposure_score}</td>
+              <td>
+                {(d.compound || []).map((c: any) => (
+                  <span key={c.code} className="chip" title={`${c.title} — ${c.basis}`}
+                        style={{ marginRight: 4, color: BAND_COLOR[d.risk_band] }}>{c.code}</span>
+                ))}
+                {!(d.compound || []).length && <span className="faint">—</span>}
+              </td>
+              <td className="dim" title={d.verdict} style={{ maxWidth: 380 }}>{truncate(d.verdict || "", 130)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {note && <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>{note}</div>}
+    </div>
+  );
+}
+
+function RiskRegisterPanel({ snapId }: { snapId: number }) {
+  const { data, error } = useAsync(() => api.section(snapId, "device_dossiers").catch(() => null), [snapId]);
+  const dd = data?.data;
+  if (error || !dd?.per_device?.length) return null;   // older snapshots have no register — panel is data-gated
+  const bands = dd.summary?.bands || {};
+  const flagged = dd.per_device.filter((d: any) => d.risk_band !== "Low");
+  const shown = (flagged.length ? flagged : dd.per_device).slice(0, 8);
+  return (
+    <div className="panel">
+      <h3>
+        Device Risk Register · the senior-engineer read
+        <span className="chip" style={{ marginLeft: 10, color: bands.Severe ? "var(--crit)" : bands.Elevated ? "var(--risk)" : "var(--ok)" }}>
+          {bands.Severe ? `${bands.Severe} Severe` : bands.Elevated ? `${bands.Elevated} Elevated` : "no stacked risk"}
+        </span>
+      </h3>
+      <div className="faint" style={{ fontSize: 12, marginBottom: 10 }}>
+        Every per-device axis stacked per asset — risk index = topology impact × exposure; CR-xx chips mark
+        independent risks coinciding on one box (hover for the why). Full ranking in the "Risk register" section below.
+      </div>
+      <RegisterTable rows={shown} />
+    </div>
+  );
 }
 
 function Keystones({ meta }: { meta: SnapshotMeta }) {
@@ -211,6 +281,8 @@ export default function SnapshotPage() {
       </div>
 
       <div className="grid" style={{ marginTop: 16, gap: 16 }}>
+        <RiskRegisterPanel snapId={sid} />
+
         <ArchReviewPanel snapId={sid} />
 
         <CutoverPlanner snapId={sid} />
