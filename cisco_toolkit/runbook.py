@@ -737,6 +737,38 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 f"({', '.join(rsum.get('hosts_config_not_assessable') or [])}) — surface "
                 "screening declared not assessable for them.")
 
+    # 6.13 platform health (NEW-V3.23.167): control-plane CPU/memory capacity screening.
+    ph = snap_dict.get("platform_health") or {}
+    psum = ph.get("summary") or {}
+    if psum.get("n_devices"):
+        doc.add_heading("6.13 Platform health (control-plane capacity)", level=2)
+        if not psum.get("n_collected"):
+            doc.add_paragraph(
+                "No CPU/memory capacity output was collected for this fleet — the control-plane "
+                "capacity axis carries no evidence either way. Re-run the collection (the "
+                "commands are part of the standard set).")
+        else:
+            pbands = psum.get("bands") or {}
+            btxt = ", ".join(f"{v}× {k}" for k, v in pbands.items()) or "—"
+            doc.add_paragraph(
+                f"Control-plane capacity at collection time on {psum.get('n_collected', 0)} of "
+                f"{psum.get('n_devices', 0)} device(s): {btxt}; {psum.get('n_findings', 0)} "
+                "finding(s). This is a SINGLE point-in-time sample — a snapshot, not a trend; "
+                "correlate with §6.10 (syslog CPUHOG/MALLOCFAIL events) and re-sample close to "
+                "the migration window.")
+            prow = [[f.get("host"), f.get("label"), f.get("severity"), f.get("detail"),
+                     f.get("recommendation")]
+                    for f in (ph.get("findings") or [])[:12]]
+            if prow:
+                table(["Device", "Finding", "Severity", "Detail", "Recommendation"],
+                      prow, widths=[1.2, 1.5, 0.7, 1.6, 3.0])
+            else:
+                doc.add_paragraph("No capacity findings — every sampled control plane has headroom.")
+            if psum.get("n_not_collected"):
+                doc.add_paragraph(
+                    f"{psum.get('n_not_collected', 0)} device(s) without capacity output "
+                    f"({', '.join(psum.get('hosts_not_collected') or [])}) — declared, not scored.")
+
     # ===== 7. Endpoint & VLAN Census =====
     doc.add_heading("7. Endpoint & VLAN Census", level=1)
     p = doc.add_paragraph()

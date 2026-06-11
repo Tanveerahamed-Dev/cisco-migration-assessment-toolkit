@@ -343,6 +343,7 @@ from cisco_toolkit.analyze import (
     compute_syslog_intelligence,                       # NEW-V3.23.164 (NOS-style operational log analysis)
     compute_qos_audit,                                 # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     compute_software_risk,                             # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
+    compute_platform_health,                           # NEW-V3.23.167 (control-plane CPU/memory capacity screening)
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
     compute_executive_brief,                           # NEW-V3.23.120 (cross-axis migration brief synthesis)
@@ -393,6 +394,7 @@ from cisco_toolkit.excel import (
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
+    write_platform_health_sheet,                                 # NEW-V3.23.167 (control-plane CPU/memory capacity screening)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_architecture_review_sheet,                             # NEW-V3.23.161 (leading-practice conformance scorecard)
@@ -411,6 +413,7 @@ from cisco_toolkit.build import (
     apply_global_arp, detect_cross_device_dual_connections, build_acls, build_object_groups,
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
+    build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
     build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_routing_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -516,6 +519,8 @@ COMMANDS_NXOS = [
     "show ptp parent",              # NEW-V3.23.102 (PTP grandmaster)
     "show ip access-lists",         # NEW-V3.23.102 (ACL hit-counts = active-traffic evidence)
     "show logging",                 # NEW-V3.23.164 (buffered log = syslog-intelligence evidence)
+    "show processes cpu",           # NEW-V3.23.167 (control-plane CPU sample - platform health)
+    "show system resources",        # NEW-V3.23.167 (NX-OS CPU/memory/load - platform health)
 ]
 
 COMMANDS_IOS = [
@@ -568,6 +573,8 @@ COMMANDS_IOS = [
     "show ptp parent",                # NEW-V3.23.102 (PTP grandmaster)
     "show ip access-lists",           # NEW-V3.23.102 (ACL hit-counts = active-traffic evidence)
     "show logging",                   # NEW-V3.23.164 (buffered log = syslog-intelligence evidence)
+    "show processes cpu",             # NEW-V3.23.167 (control-plane CPU sample - platform health)
+    "show processes memory",          # NEW-V3.23.167 (processor-pool memory - platform health)
 ]
 
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
@@ -1454,11 +1461,13 @@ def main():
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
     all_run_configs: Dict[str, str] = {}                             # NEW-V3.23.146 (raw running-config for golden-config drift)
     all_syslogs: Dict[str, str] = {}                                 # NEW-V3.23.164 (raw 'show logging' for syslog intelligence; '' = not collected)
+    all_platform_metrics: Dict[str, dict] = {}                       # NEW-V3.23.167 (CPU/memory/system facts; all-empty = not collected)
     for hostname, platform, cmd_to_file in all_devices_meta:
         rc_text = read_run_config(cmd_to_file)                       # NEW-V3.23.146
         if rc_text:
             all_run_configs[hostname] = rc_text
         all_syslogs[hostname] = read_syslog_log(cmd_to_file)         # NEW-V3.23.164 (every host recorded so not-collected is declared)
+        all_platform_metrics[hostname] = build_platform_metrics(cmd_to_file)  # NEW-V3.23.167 (all-empty members = not collected)
         acls = build_acls(cmd_to_file)
         if acls:
             all_acls[hostname] = acls
@@ -1846,6 +1855,16 @@ def main():
                                sorted(all_syslogs), _default={})
     _run_phase("Software Risk sheet", write_software_risk_sheet, wb, software_risk)
 
+    # Phase 30d-nonies: Platform health - NEW-V3.23.167. The pre-migration control-plane capacity
+    # question ("is this control plane already stressed before we add protocol churn?"): CPU 5-min
+    # average + processor-pool memory (IOS) / system resources (NX-OS), banded Hot/Elevated/OK with
+    # doctrine findings. SINGLE point-in-time sample (the note says so -- correlate with the syslog
+    # axis and re-sample before the window); devices without capacity output are DECLARED not
+    # collected. Compute once -> sheet + snapshot.
+    platform_health = _run_phase("Platform health", compute_platform_health,
+                                 all_platform_metrics, _default={})
+    _run_phase("Platform Health sheet", write_platform_health_sheet, wb, platform_health)
+
     # Phase 30d-bis: Application Intelligence - NEW-V3.23.112. Synthesize endpoint_identity +
     # endpoint_dependencies + service_map + health_scores + move_groups + punchlist into named
     # application DOMAINS (workloads) with footprint, criticality tier, health rollup, migration-wave
@@ -1928,6 +1947,7 @@ def main():
     snap_dict["syslog_intelligence"] = syslog_intelligence           # NEW-V3.23.164 (NOS-style operational log analysis; reused from Phase 30d-sexies)
     snap_dict["qos_audit"] = qos_audit                               # NEW-V3.23.165 (configured QoS posture + doctrine findings; reused from Phase 30d-septies)
     snap_dict["software_risk"] = software_risk                       # NEW-V3.23.166 (advisory-surface screening + train lifecycle; reused from Phase 30d-octies)
+    snap_dict["platform_health"] = platform_health                   # NEW-V3.23.167 (control-plane CPU/memory capacity screening; reused from Phase 30d-nonies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
