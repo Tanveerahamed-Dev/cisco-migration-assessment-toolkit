@@ -3128,6 +3128,19 @@
   {
    "severity": "Critical",
    "rank": 4,
+   "category": "Compound risk",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "CR-01: End-of-support keystone",
+   "detail": "Hardware is past/near last-day-of-support AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
+   "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "priority": 1
+  },
+  {
+   "severity": "Critical",
+   "rank": 4,
    "category": "Cross-layer",
    "devices": [
     "access1",
@@ -3137,7 +3150,7 @@
    "title": "VLAN 30: single-fiber uplink to a sole gateway",
    "detail": "VLAN 30's only L3 gateway is core1 (no FHRP); access1 Gi0/1 reach the fabric over a single non-redundant fiber.",
    "remediation": "",
-   "priority": 1
+   "priority": 2
   },
   {
    "severity": "Critical",
@@ -3150,7 +3163,46 @@
    "title": "core1: stacked single point of failure across L1, L3",
    "detail": "core1 is implicated at multiple layers at once (L1, L3) - its loss compounds physical, switching, and/or routing failure.",
    "remediation": "",
-   "priority": 2
+   "priority": 3
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Compound risk",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "CR-02: Failing hardware past support",
+   "detail": "Critical health score on hardware that is past/near end-of-support \u2014 no TAC escalation path when it degrades further.",
+   "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "priority": 4
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Compound risk",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "CR-03: Root bridge on degraded hardware",
+   "detail": "STP root for 1 VLAN(s) on a device with Critical health \u2014 a root failure reconverges every VLAN it anchors.",
+   "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "priority": 5
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Compound risk",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "CR-04: Open advisory surface on a high-impact asset",
+   "detail": "Config-evidenced advisory surface is open AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 validate with the Cisco PSIRT Software Checker before the window.",
+   "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "priority": 6
   },
   {
    "severity": "High",
@@ -3163,7 +3215,7 @@
    "title": "Undefined acl '7'",
    "detail": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
-   "priority": 3
+   "priority": 7
   },
   {
    "severity": "High",
@@ -3176,7 +3228,7 @@
    "title": "Undefined route-map 'OSPF_TO_BGP'",
    "detail": "Referenced (router bgp 65001) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
-   "priority": 4
+   "priority": 8
   },
   {
    "severity": "High",
@@ -3189,7 +3241,7 @@
    "title": "VLAN 30: sole gateway core1 with no FHRP",
    "detail": "core1 is the only in-scan L3 gateway for VLAN 30; loss drops the default gateway for every VLAN 30 host.",
    "remediation": "",
-   "priority": 5
+   "priority": 9
   },
   {
    "severity": "High",
@@ -3202,7 +3254,7 @@
    "title": "Critical-health switch",
    "detail": "Health score 3 (Critical band).",
    "remediation": "Resolve the deductions above before migrating this device.",
-   "priority": 6
+   "priority": 10
   },
   {
    "severity": "High",
@@ -3215,7 +3267,7 @@
    "title": "err disabled",
    "detail": "L1 risk 'err-disabled' on 1 switch(es).",
    "remediation": "",
-   "priority": 7
+   "priority": 11
   },
   {
    "severity": "High",
@@ -3228,7 +3280,7 @@
    "title": "single gateway",
    "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
    "remediation": "Add gateway / FHRP redundancy.",
-   "priority": 8
+   "priority": 12
   },
   {
    "severity": "High",
@@ -3241,7 +3293,7 @@
    "title": "MAC address flapping",
    "detail": "2 event(s) in the collected log window.",
    "remediation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window.",
-   "priority": 9
+   "priority": 13
   },
   {
    "severity": "High",
@@ -3254,7 +3306,7 @@
    "title": "Port err-disabled",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port.",
-   "priority": 10
+   "priority": 14
   },
   {
    "severity": "High",
@@ -3267,7 +3319,7 @@
    "title": "OSPF high",
    "detail": "10.0.99.9 EXSTART/DROTHER",
    "remediation": "",
-   "priority": 11
+   "priority": 15
   },
   {
    "severity": "High",
@@ -3280,7 +3332,7 @@
    "title": "Local user password storage",
    "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
    "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
-   "priority": 12
+   "priority": 16
   },
   {
    "severity": "High",
@@ -3293,7 +3345,7 @@
    "title": "SNMP access",
    "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
    "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
-   "priority": 13
+   "priority": 17
   },
   {
    "severity": "High",
@@ -3306,7 +3358,7 @@
    "title": "VTY transport (telnet)",
    "detail": "a VTY line permits telnet (cleartext management).",
    "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
-   "priority": 14
+   "priority": 18
   },
   {
    "severity": "High",
@@ -3319,7 +3371,20 @@
    "title": "Device web UI (ip http server / secure-server)",
    "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
    "remediation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker.",
-   "priority": 15
+   "priority": 19
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Compound risk",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "CR-06: Layered config debt on a critical asset",
+   "detail": "2 config-truth axes are off-baseline AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 drift on the box you can least afford to misjudge.",
+   "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
+   "priority": 20
   },
   {
    "severity": "Medium",
@@ -3332,7 +3397,7 @@
    "title": "core1: L1 fault on an L3 gateway switch",
    "detail": "core1 hosts L3 gateway SVIs and has an err-disabled or high-error port - physical instability at a routing aggregation point.",
    "remediation": "",
-   "priority": 16
+   "priority": 21
   },
   {
    "severity": "Medium",
@@ -3345,7 +3410,7 @@
    "title": "single fiber uplink",
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
-   "priority": 17
+   "priority": 22
   },
   {
    "severity": "Medium",
@@ -3358,7 +3423,7 @@
    "title": "Duplex mismatch",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
-   "priority": 18
+   "priority": 23
   },
   {
    "severity": "Medium",
@@ -3371,7 +3436,7 @@
    "title": "Interface flapping",
    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
-   "priority": 19
+   "priority": 24
   },
   {
    "severity": "Medium",
@@ -3384,7 +3449,7 @@
    "title": "Repeated login failures",
    "detail": "6 failed login(s) in the collected log window.",
    "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
-   "priority": 20
+   "priority": 25
   },
   {
    "severity": "Medium",
@@ -3397,7 +3462,7 @@
    "title": "Control-plane CPU elevated",
    "detail": "CPU 63% (show processes cpu (5-min avg)).",
    "remediation": "A 5-minute CPU at/above 60% is workable but worth explaining before the cutover adds protocol churn. Identify the top processes and confirm the level is expected for this role.",
-   "priority": 21
+   "priority": 26
   },
   {
    "severity": "Medium",
@@ -3411,7 +3476,7 @@
    "title": "STP root != gateway (VLAN 30)",
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
-   "priority": 22
+   "priority": 27
   },
   {
    "severity": "Medium",
@@ -3424,7 +3489,7 @@
    "title": "Unused / risky services",
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
-   "priority": 23
+   "priority": 28
   },
   {
    "severity": "Medium",
@@ -3437,7 +3502,7 @@
    "title": "VTY line hardening",
    "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
-   "priority": 24
+   "priority": 29
   },
   {
    "severity": "Low",
@@ -3451,7 +3516,7 @@
    "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
    "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
-   "priority": 25
+   "priority": 30
   },
   {
    "severity": "Low",
@@ -3462,7 +3527,7 @@
    "title": "No QoS configured anywhere",
    "detail": "None of the 1 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
    "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
-   "priority": 26
+   "priority": 31
   },
   {
    "severity": "Low",
@@ -3475,7 +3540,7 @@
    "title": "Accidental root (VLAN 30)",
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
-   "priority": 27
+   "priority": 32
   },
   {
    "severity": "Low",
@@ -3488,7 +3553,7 @@
    "title": "Login banner",
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
-   "priority": 28
+   "priority": 33
   }
  ],
  "operational_drift": [
@@ -4334,8 +4399,8 @@
      },
      {
       "severity": "Low",
-      "title": "15 High/Critical punch-list item(s) on this domain's switches",
-      "detail": "Open High/Critical items (categories: Config hygiene, Cross-layer, Health, L1, L3) intersect this domain's switches.",
+      "title": "19 High/Critical punch-list item(s) on this domain's switches",
+      "detail": "Open High/Critical items (categories: Compound risk, Config hygiene, Cross-layer, Health, L1) intersect this domain's switches.",
       "remediation": "See the Migration Punch-List for the prioritized, per-device fix order.",
       "standard": ""
      }

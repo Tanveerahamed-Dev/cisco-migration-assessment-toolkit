@@ -5,6 +5,23 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-11 — V3.23.172: the Device Risk Register (per-asset compound-risk synthesis)
+
+On branch `feat/asset-risk-register`. The "automated senior engineer" centerpiece: every existing axis
+slices the fleet by topic; this adds the per-ASSET slice — one dossier per box, ranked by stacked risk.
+
+- `analyze.compute_device_dossiers(...)`: joins the 11 per-device axes per asset; `risk_index =
+  topology impact (1–10) × stacked exposure (0–10)` (the Cyber Vision / CX-Cloud likelihood×impact
+  model); compound patterns CR-01..CR-06 with a Critical-compound band floor; deterministic
+  one-sentence engineer's verdict; `na` axes never count (absence of evidence ≠ health).
+- Surfaces: snapshot `device_dossiers` + 'Device Risk Register' sheet (ranked + compound detail) +
+  punch-list fold (category `Compound risk`) + brief axis 'Asset risk register'.
+- Golden: dossiers stripped like `lifecycle_risk` (date-relative bands); punch-list fold frozen-stable
+  (band-agnostic CR wording, audited against the fixture's future band transitions).
+- 382 engine tests (+8) green; ruff clean; gated-mypy modules clean.
+
+---
+
 ## 2026-06-05 — Redaction feature: opt-in `--redact` (sanitized shareable deliverable)
 
 On branch `redact-snapshot`. Opt-in Python feature; default OFF so the golden + normal runs are byte-unchanged.

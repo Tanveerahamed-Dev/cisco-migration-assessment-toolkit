@@ -1943,6 +1943,94 @@ def write_platform_health_sheet(wb, ph: dict) -> None:
                 f"bands {band_txt}")
 
 
+DEVICE_RISK_SHEET_NAME = "Device Risk Register"   # NEW-V3.23.172 (per-asset compound-risk synthesis)
+
+def write_device_risk_sheet(wb, dd: dict) -> None:
+    """Write 'Device Risk Register' from compute_device_dossiers(): one row per asset with the
+    composite risk index (topology impact x stacked exposure), the per-axis red/watch counts and
+    the engineer's verdict, then the compound-pattern detail table. The rows arrive pre-ranked
+    (riskiest first) -- the sheet preserves that order so row 5 IS the scariest box."""
+    if DEVICE_RISK_SHEET_NAME in wb.sheetnames:
+        del wb[DEVICE_RISK_SHEET_NAME]
+    ws = wb.create_sheet(DEVICE_RISK_SHEET_NAME)
+    d0 = dd or {}
+    pdev = d0.get("per_device") or []
+    s = d0.get("summary") or {}
+    bands = s.get("bands") or {}
+    b = ws.cell(1, 1, f"Device Risk Register: {bands.get('Severe', 0)} Severe, "
+                      f"{bands.get('Elevated', 0)} Elevated of {s.get('n_devices', 0)} asset(s) · "
+                      f"{s.get('n_compound', 0)} compound pattern(s). "
+                      "Risk index = topology impact (1-10) × stacked exposure (0-10) — the senior-"
+                      "engineer read: independent risks coinciding on one box outrank any single finding.")
+    b.font = Font(bold=True, color="9C0006", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, d0.get("note", "")).font = Font(size=9, italic=True, color="808080")
+    BANDFILL = {"Severe": "F4CCCC", "Elevated": "FCE4D6", "Guarded": "FFF2CC", "Low": "D9EAD3"}
+    SEVFILL = _AXIS_SEV_FILL
+    HDRF = Font(bold=True, color="FFFFFF", size=10)
+    DAT = Font(name="Calibri", size=10)
+
+    hdr_row = 4
+    cols = ["Device", "Model", "Software", "Wave", "Risk index", "Band", "Impact", "Exposure",
+            "Red axes", "Watch axes", "Health", "HW EoL", "SW train", "Control plane",
+            "Compound patterns", "Engineer's verdict"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="9C0006")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    r = hdr_row + 1
+    for d in pdev:
+        comp = ", ".join(f"{c.get('code', '')}" for c in (d.get("compound") or [])) or "—"
+        vals = [d.get("host"), d.get("model") or "—", d.get("sw_version") or "—",
+                d.get("wave") or "—", d.get("risk_index"), d.get("risk_band"),
+                d.get("impact_score"), d.get("exposure_score"),
+                d.get("n_risk"), d.get("n_watch"),
+                d.get("health_band") or "—", d.get("eol_band"), d.get("train_band"),
+                d.get("platform_band"), comp, d.get("verdict")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="center" if col in (4, 5, 6, 7, 8, 9, 10) else "left",
+                                    vertical="top", wrap_text=col == 16)
+            if col == 6 and v in BANDFILL:
+                c.fill = PatternFill("solid", fgColor=BANDFILL[v])
+        r += 1
+    if not pdev:
+        ws.cell(r, 1, "No per-device axes were computed -- nothing to register.").font = DAT
+        r += 1
+
+    r += 2
+    ws.cell(r, 1, "Compound patterns (independent risks coinciding on one asset)").font = \
+        Font(bold=True, color="9C0006", size=10)
+    r += 1
+    cols2 = ["Device", "Code", "Pattern", "Severity", "Why it multiplies the concern"]
+    for i, h in enumerate(cols2, 1):
+        c = ws.cell(r, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="9C0006")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    r += 1
+    n_comp = 0
+    for d in pdev:
+        for cp in (d.get("compound") or []):
+            vals = [d.get("host"), cp.get("code"), cp.get("title"), cp.get("severity"),
+                    cp.get("basis")]
+            for col, v in enumerate(vals, 1):
+                c = ws.cell(r, col, v); c.font = DAT
+                c.alignment = Alignment(horizontal="center" if col in (2, 4) else "left",
+                                        vertical="top", wrap_text=col == 5)
+                if col == 4 and v in SEVFILL:
+                    c.fill = PatternFill("solid", fgColor=SEVFILL[v])
+            r += 1
+            n_comp += 1
+    if not n_comp:
+        ws.cell(r, 1, "No compound patterns -- no asset stacks independent risks. "
+                      "Single-axis findings live on their own sheets and the punch-list.").font = DAT
+    for i, w in enumerate([22, 20, 16, 10, 10, 10, 8, 9, 9, 10, 12, 12, 14, 13, 22, 60], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{DEVICE_RISK_SHEET_NAME}' sheet: {len(pdev)} asset(s), "
+                f"{n_comp} compound pattern(s)")
+
+
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
 
 def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
