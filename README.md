@@ -122,6 +122,14 @@ offline KB data are read relative to the checkout.
   priority remediation queue; checks whose evidence was not captured are
   declared not-assessable rather than silently skipped (unless
   `--no-archreview`; needs `python-docx`).
+- `..._ops_handbook.docx` — the **Operations Handbook**: the PPDIOO
+  Operate-phase deliverable — the Day-2 handbook whose baselines are this
+  fleet's own assessed evidence: the alert list is what the syslog analysis
+  actually saw fire, the capacity baseline is each device's own measured
+  normal, plus drift control, software/PSIRT governance cadence, a routine
+  operations calendar and a TAC-readiness evidence pack; sections whose
+  evidence was not collected are declared, never invented (unless
+  `--no-opshandbook`; needs `python-docx`).
 
 ## Usage
 

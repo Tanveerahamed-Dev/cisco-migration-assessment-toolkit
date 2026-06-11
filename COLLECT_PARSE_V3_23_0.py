@@ -432,6 +432,7 @@ from cisco_toolkit.crd import write_crd_docx                         # NEW-V3.23
 from cisco_toolkit.engagement import write_engagement_docx           # NEW-V3.23.157 (engagement workflow / plan of record)
 from cisco_toolkit.archreview import (compute_architecture_review,   # NEW-V3.23.160 (leading-practice design review)
                                       write_archreview_docx)
+from cisco_toolkit.ops import write_ops_handbook_docx                # NEW-V3.23.168 (Operate-phase handbook)
 # FIX-V3.23.8 (P4): scope the warnings filter to DeprecationWarning (netmiko /
 # paramiko / cryptography churn + Netmiko 5.x deprecations) instead of suppressing
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
@@ -1200,6 +1201,11 @@ def main():
                          "phase-gated engagement plan (verdict, gate calendar, RAID log, next actions) "
                          "synthesized from the assessment; needs python-docx (a missing library is a "
                          "warning, not an error).")
+    ap.add_argument("--no-opshandbook",  action="store_true",
+                    help="NEW-V3.23.168: skip the Operations Handbook (DOCX) — the Operate-phase "
+                         "Day-2 handbook (monitoring baseline from the fleet's own logs/capacity, "
+                         "drift control, software governance, escalation pack); needs python-docx "
+                         "(a missing library is a warning, not an error).")
     ap.add_argument("--no-archreview",   action="store_true",
                     help="NEW-V3.23.160: skip the Architecture Review & Conformance Report (DOCX) — "
                          "the leading-practice design review (8-domain conformance scorecard + "
@@ -2102,6 +2108,19 @@ def main():
             write_archreview_docx(ar_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  Architecture review (DOCX) write failed: {e}")
+
+    # Phase 38: Operations Handbook (DOCX) - NEW-V3.23.168. The PPDIOO Operate-phase deliverable:
+    # the Day-2 handbook whose monitoring/capacity baselines, drift standard and software-governance
+    # cadence are derived from THIS fleet's assessed evidence (syslog/platform-health/golden-drift/
+    # software-risk axes), with evidence-gated sections for older snapshots. Optional python-docx;
+    # a missing library is a warning, never a crash.
+    if not args.no_opshandbook:
+        oh_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_ops_handbook.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_ops_handbook_docx(oh_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
 
 
 if __name__ == "__main__":
