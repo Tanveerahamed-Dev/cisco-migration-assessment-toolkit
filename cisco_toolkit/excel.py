@@ -1991,7 +1991,7 @@ def write_device_risk_sheet(wb, dd: dict) -> None:
         for col, v in enumerate(vals, 1):
             c = ws.cell(r, col, v); c.font = DAT
             c.alignment = Alignment(horizontal="center" if col in (4, 5, 6, 7, 8, 9, 10) else "left",
-                                    vertical="top", wrap_text=col == 16)
+                                    vertical="top", wrap_text=col in (15, 16))
             if col == 6 and v in BANDFILL:
                 c.fill = PatternFill("solid", fgColor=BANDFILL[v])
         r += 1

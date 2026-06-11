@@ -5,6 +5,18 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-11 — V3.23.175: register-arc self-review (3 findings fixed)
+
+On branch `review/register-arc-cleanup`. Post-arc max review of my own V3.23.172–.174 diff.
+
+- 'CPU None%': memory-only Hot/Elevated devices now label `CPU x% · memory y% free` (never None,
+  never CPU-only when memory drove the band) — the label flows into verdicts on every surface.
+- QoS Low-findings wording: 'minor QoS notes only' instead of a false 'consistent'.
+- Register sheet Compound column wraps. Cleared: esc()/quotes, (fleet) roster, verdict edge,
+  summary dict-count. Golden byte-identical; 385 engine + 26 webapp tests.
+
+---
+
 ## 2026-06-11 — V3.23.174: the register reaches runbook / deck / AssessHub (arc complete)
 
 On branch `feat/register-docs-webapp` (after #255 merged). One compute → all seven surfaces.
