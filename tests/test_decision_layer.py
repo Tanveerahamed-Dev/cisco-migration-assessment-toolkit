@@ -91,7 +91,8 @@ def test_brief_gains_axis_headlines_with_worst_severity():
         qos_audit={"summary": {"n_devices": 3, "n_assessable": 2, "n_findings": 1,
                                "modes": {"MQC": 2}},
                    "findings": [{"severity": "Medium"}]},
-        software_risk={"summary": {"n_devices": 3, "n_findings": 1,
+        software_risk={"summary": {"n_devices": 3, "n_findings": 1, "n_config_assessable": 3,
+                                   "n_version_known": 3,
                                    "train_bands": {"Verify EoL": 2, "Current-era": 1}},
                        "findings": [{"severity": "High"}]},
         platform_health={"summary": {"n_devices": 3, "n_collected": 3, "n_findings": 0,
@@ -112,12 +113,43 @@ def test_brief_not_collected_is_info_never_low_by_silence():
     brief = compute_executive_brief(
         syslog_intelligence={"summary": {"n_devices": 3, "n_collected": 0}},
         platform_health={"summary": {"n_devices": 3, "n_collected": 0}},
-        qos_audit={"summary": {"n_devices": 3, "n_assessable": 0}})
+        qos_audit={"summary": {"n_devices": 3, "n_assessable": 0}},
+        software_risk={"summary": {"n_devices": 3, "n_config_assessable": 0,
+                                   "n_version_known": 0, "n_findings": 0,
+                                   "train_bands": {"Unknown": 3}},
+                       "findings": []})
     by_axis = {a["axis"]: a for a in brief["axes"]}
     assert by_axis["Operational logs"]["severity"] == "Info"
     assert "not collected" in by_axis["Operational logs"]["headline"]
     assert by_axis["QoS posture"]["severity"] == "Info"
     assert by_axis["Platform capacity"]["severity"] == "Info"
+    # V3.23.170: software risk now carries the same gate — zero evidence is Info, never Low
+    assert by_axis["Software risk"]["severity"] == "Info"
+    assert "not assessable" in by_axis["Software risk"]["headline"]
+    # versions-only evidence still gets a real verdict (the gate needs BOTH layers empty)
+    versions_only = compute_executive_brief(
+        software_risk={"summary": {"n_devices": 2, "n_config_assessable": 0,
+                                   "n_version_known": 2, "n_findings": 0,
+                                   "train_bands": {"Verify EoL": 2}},
+                       "findings": []})
+    sw = next(a for a in versions_only["axes"] if a["axis"] == "Software risk")
+    assert sw["severity"] == "Medium"                  # lifecycle pressure, honestly assessed
+
+
+def test_punchlist_skips_swrisk_kinds_the_cis_fold_already_carries():
+    # V3.23.170: telnet/snmp software-risk findings duplicate the CIS Security rows for the
+    # same config lines — they stay on the Software Risk sheet but not in the punch-list.
+    sr = {"findings": [
+        {"host": "sw1", "kind": "telnet-vty", "surface": "Telnet enabled on vty lines",
+         "severity": "Medium", "why": "cleartext", "recommendation": "ssh only"},
+        {"host": "sw1", "kind": "snmp-v2c-rw", "surface": "SNMP v1/v2c with a READ-WRITE community",
+         "severity": "High", "why": "write via cleartext string", "recommendation": "v3"},
+        {"host": "sw1", "kind": "http-server", "surface": "Device web UI (ip http server / secure-server)",
+         "severity": "High", "why": "exploited surface", "recommendation": "disable"},
+    ]}
+    items = _punch(software_risk=sr)
+    titles = [i["title"] for i in items]
+    assert titles == ["Device web UI (ip http server / secure-server)"]   # twins excluded
 
 
 def test_brief_without_new_axes_unchanged():
@@ -125,7 +157,7 @@ def test_brief_without_new_axes_unchanged():
     assert {a["axis"] for a in base["axes"]} == {"Fleet health", "Migration punch-list"}
     # software-risk axis with no findings but lifecycle pressure reads Medium
     pressured = compute_executive_brief(
-        software_risk={"summary": {"n_devices": 2, "n_findings": 0,
+        software_risk={"summary": {"n_devices": 2, "n_findings": 0, "n_version_known": 2,
                                    "train_bands": {"Replace/Upgrade": 1, "Current-era": 1}},
                        "findings": []})
     sw = next(a for a in pressured["axes"] if a["axis"] == "Software risk")

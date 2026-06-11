@@ -77,7 +77,7 @@ def test_parse_nxos_types_and_global_attach():
 
 def test_parse_empty_and_qos_free_config():
     assert parse_qos_config("") == {"mls_qos": False, "class_maps": [], "policy_maps": [],
-                                    "interfaces": {}, "global_attach": []}
+                                    "interfaces": {}, "global_attach": [], "child_policies": []}
     assert parse_qos_config(None)["interfaces"] == {}
     q = parse_qos_config("hostname sw1\ninterface Gi1/0/1\n ip address 10.0.0.1 255.255.255.0\n")
     assert q["interfaces"] == {}                    # non-QoS interfaces are not listed
@@ -115,6 +115,49 @@ def test_inert_and_dangling_policy():
     qa2 = compute_qos_audit({"sw1": dangling})
     assert "undefined-policy-ref" in _kinds(qa2, "sw1")
     assert "inert-policy" not in _kinds(qa2, "sw1")   # an attachment exists (to GHOST)
+
+
+def test_hierarchical_child_policy_is_not_an_attachment():
+    # V3.23.170: 'policy-map PARENT / class X / service-policy CHILD' is a definition-time
+    # reference; a paper-only HQoS pair must still raise inert-policy.
+    hqos = """\
+policy-map CHILD
+ class class-default
+  priority
+policy-map PARENT
+ class class-default
+  shape average 100000000
+  service-policy CHILD
+"""
+    q = parse_qos_config(hqos)
+    assert q["global_attach"] == [] and q["child_policies"] == ["CHILD"]
+    qa = compute_qos_audit({"sw1": hqos})
+    assert "inert-policy" in _kinds(qa, "sw1")
+    # a real system-target attachment still suppresses it
+    attached = hqos + "system qos\n  service-policy type queuing PARENT\n"
+    assert "inert-policy" not in _kinds(compute_qos_audit({"sw1": attached}), "sw1")
+
+
+def test_nxos_system_default_policies_not_dangling():
+    # V3.23.170: default-nq-*/copp-system-* are defined only in 'show running-config all'.
+    cfg = ("system qos\n  service-policy type network-qos default-nq-3e-policy\n"
+           "control-plane\n service-policy input copp-system-p-policy-strict\n")
+    qa = compute_qos_audit({"nx1": cfg})
+    assert "undefined-policy-ref" not in _kinds(qa, "nx1")
+
+
+def test_objects_only_mode_is_not_counted_as_none_or_active():
+    # V3.23.170: class-maps-only config (Nexus default class-fcoe maps, leftover debris)
+    qa = compute_qos_audit({"sw1": "class-map match-any FOO\n"})
+    d = qa["per_device"][0]
+    assert d["mode"] == "objects-only" and "best-effort" in d["posture"]
+    fleet = [f for f in qa["findings"] if f["host"] == "(fleet)"]
+    assert len(fleet) == 1 and fleet[0]["kind"] == "best-effort-fleet"
+    assert "active QoS" in fleet[0]["detail"]          # truthful wording
+    # objects-only sits on the WITHOUT side of mixed-posture
+    qa2 = compute_qos_audit({"sw1": "class-map match-any FOO\n", "sw2": _IOS_MQC})
+    mixed = next(f for f in qa2["findings"] if f["kind"] == "mixed-posture")
+    assert "sw1" in mixed["detail"].split("while")[1]
 
 
 def test_fleet_mixed_posture_and_best_effort():

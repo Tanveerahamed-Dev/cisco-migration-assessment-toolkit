@@ -2232,17 +2232,17 @@
    {
     "host": "core1",
     "collected": true,
-    "events": 12,
+    "events": 14,
     "by_severity": {
      "crit_0_2": 0,
-     "err_3": 4,
+     "err_3": 6,
      "warn_4": 3,
      "info_5_7": 5
     },
     "top_messages": [
      {
       "msg": "LINK-3-UPDOWN",
-      "count": 4
+      "count": 6
      },
      {
       "msg": "LINEPROTO-5-UPDOWN",
@@ -2322,8 +2322,8 @@
     "kind": "link-flap",
     "label": "Interface flapping",
     "severity": "Medium",
-    "count": 6,
-    "detail": "1 interface(s) with >= 6 up/down transitions: GigabitEthernet1/0/9 (6x).",
+    "count": 3,
+    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
     "example": "",
     "recommendation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines."
    }
@@ -2335,9 +2335,9 @@
    "hosts_not_collected": [
     "core2"
    ],
-   "total_events": 20,
+   "total_events": 22,
    "crit_0_2": 0,
-   "err_3": 4,
+   "err_3": 6,
    "n_detections": 5,
    "by_kind": {
     "duplex-mismatch": 1,
@@ -2394,7 +2394,7 @@
     "kind": "best-effort-fleet",
     "label": "No QoS configured anywhere",
     "severity": "Low",
-    "detail": "None of the 1 assessable device(s) carries any QoS configuration.",
+    "detail": "None of the 1 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
     "recommendation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration."
    }
   ],
@@ -3363,7 +3363,7 @@
    ],
    "wave": "",
    "title": "Interface flapping",
-   "detail": "1 interface(s) with >= 6 up/down transitions: GigabitEthernet1/0/9 (6x).",
+   "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
    "priority": 19
   },
@@ -3434,32 +3434,6 @@
    "priority": 24
   },
   {
-   "severity": "Medium",
-   "rank": 2,
-   "category": "Software exposure",
-   "devices": [
-    "core1"
-   ],
-   "wave": "",
-   "title": "SNMP v1/v2c read-only community",
-   "detail": "Cleartext community strings leak topology and credentials material, and v1/v2c packets still reach the (historically exploited) SNMP stack.",
-   "remediation": "Move to SNMPv3 auth+priv and ACL the SNMP service.",
-   "priority": 25
-  },
-  {
-   "severity": "Medium",
-   "rank": 2,
-   "category": "Software exposure",
-   "devices": [
-    "core1"
-   ],
-   "wave": "",
-   "title": "Telnet enabled on vty lines",
-   "detail": "Telnet sends credentials and session content in cleartext -- one capture on any transit segment is a full management compromise.",
-   "remediation": "Set 'transport input ssh' on all vty lines (and verify SSHv2-only).",
-   "priority": 26
-  },
-  {
    "severity": "Low",
    "rank": 1,
    "category": "False-health",
@@ -3471,7 +3445,7 @@
    "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
    "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
-   "priority": 27
+   "priority": 25
   },
   {
    "severity": "Low",
@@ -3480,9 +3454,9 @@
    "devices": [],
    "wave": "",
    "title": "No QoS configured anywhere",
-   "detail": "None of the 1 assessable device(s) carries any QoS configuration.",
+   "detail": "None of the 1 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
    "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
-   "priority": 28
+   "priority": 26
   },
   {
    "severity": "Low",
@@ -3495,7 +3469,7 @@
    "title": "Accidental root (VLAN 30)",
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
-   "priority": 29
+   "priority": 27
   },
   {
    "severity": "Low",
@@ -3508,7 +3482,7 @@
    "title": "Login banner",
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
-   "priority": 30
+   "priority": 28
   }
  ],
  "operational_drift": [

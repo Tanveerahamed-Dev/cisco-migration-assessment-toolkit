@@ -101,6 +101,69 @@ def test_login_fail_threshold():
 
 
 # --------------------------------------------------------------------------- #
+# platform variants (V3.23.170): NX-OS and stacked-module facilities
+# --------------------------------------------------------------------------- #
+def test_nxos_ethport_flaps_are_counted():
+    cycle = ("2026 Jun  9 12:00:01 nx1 %ETHPORT-5-IF_DOWN_LINK_FAILURE: Interface Ethernet1/1 is down (Link failure)\n"
+             "2026 Jun  9 12:00:05 nx1 %ETHPORT-5-IF_UP: Interface Ethernet1/1 is up in mode trunk\n")
+    si = compute_syslog_intelligence({"nx1": cycle * _SYSLOG_LINK_FLAP_MIN})
+    flaps = [d for d in si["detections"] if d["kind"] == "link-flap"]
+    assert len(flaps) == 1 and "Ethernet1/1" in flaps[0]["detail"]
+    # IF_UP must not count as a transition: MIN-1 full cycles stay quiet
+    below = compute_syslog_intelligence({"nx1": cycle * (_SYSLOG_LINK_FLAP_MIN - 1)})
+    assert "link-flap" not in _kinds(below)
+
+
+def test_link_lineproto_pairs_do_not_double_count():
+    # one physical down/up cycle = 4 lines; only the LINK 'to down' line may count
+    cycle = ("*Jun  2 03:15:03.220: %LINK-3-UPDOWN: Interface Gi1/0/9, changed state to down\n"
+             "*Jun  2 03:15:04.220: %LINEPROTO-5-UPDOWN: Line protocol on Interface Gi1/0/9, changed state to down\n"
+             "*Jun  2 03:16:10.002: %LINK-3-UPDOWN: Interface Gi1/0/9, changed state to up\n"
+             "*Jun  2 03:16:11.002: %LINEPROTO-5-UPDOWN: Line protocol on Interface Gi1/0/9, changed state to up\n")
+    below = compute_syslog_intelligence({"sw1": cycle * (_SYSLOG_LINK_FLAP_MIN - 1)})
+    assert "link-flap" not in _kinds(below)          # 2 physical cycles != flapping
+    at = compute_syslog_intelligence({"sw1": cycle * _SYSLOG_LINK_FLAP_MIN})
+    flaps = [d for d in at["detections"] if d["kind"] == "link-flap"]
+    assert len(flaps) == 1 and flaps[0]["count"] == _SYSLOG_LINK_FLAP_MIN   # downs, not lines
+
+
+def test_stacked_module_facility_counted():
+    down = "*Jun  2 03:15:03.220: %LINK-SP-3-UPDOWN: Interface TenGigabitEthernet1/1, changed state to down\n"
+    si = compute_syslog_intelligence({"sw1": down * _SYSLOG_LINK_FLAP_MIN})
+    assert "link-flap" in _kinds(si)
+
+
+def test_read_syslog_log_prefers_the_nxos_logfile_form(tmp_path):
+    # V3.23.170: NX-OS rejects bare 'show logging' ('% Incomplete command') and some variants
+    # answer it with the logging CONFIGURATION only — the logfile form must win when present.
+    from cisco_toolkit.build import read_syslog_log
+    bare = tmp_path / "show_logging.txt"
+    bare.write_text("Logging console: enabled\nLogging monitor: enabled\n", encoding="utf-8")
+    logfile = tmp_path / "show_logging_logfile.txt"
+    logfile.write_text("2026 Jun  9 12:00:01 nx1 %ETHPORT-5-IF_UP: Interface Ethernet1/1 is up\n",
+                       encoding="utf-8")
+    both = {"show logging": str(bare), "show logging logfile": str(logfile)}
+    assert "ETHPORT" in read_syslog_log(both)
+    # IOS collections only have the bare form — still served
+    assert "Logging console" in read_syslog_log({"show logging": str(bare)})
+    # NX-OS error capture on the bare form falls through to '' (declared not collected)
+    err = tmp_path / "err.txt"
+    err.write_text("% Incomplete command at '^' marker.\n", encoding="utf-8")
+    assert read_syslog_log({"show logging": str(err)}) == ""
+
+
+def test_nxos_config_changes_and_mac_move():
+    log = """\
+2026 Jun  9 12:00:01 nx1 %VSHD-5-VSHD_SYSLOG_CONFIG_I: Configured from vty by admin on 10.0.0.5
+2026 Jun  9 12:00:02 nx1 %VSHD-5-VSHD_SYSLOG_CONFIG_I: Configured from vty by admin on 10.0.0.5
+2026 Jun  9 12:00:03 nx1 %L2FM-4-L2FM_MAC_MOVE: Mac 0011.22aa.0001 in vlan 10 has moved between Po1 and Eth1/5
+"""
+    si = compute_syslog_intelligence({"nx1": log})
+    assert si["per_device"][0]["config_changes"] == 2     # VSHD_SYSLOG_CONFIG_I counted
+    assert "mac-flap" in _kinds(si, "nx1")                # L2FM MAC_MOVE = the NX-OS MAC flap
+
+
+# --------------------------------------------------------------------------- #
 # profile, honesty & empties
 # --------------------------------------------------------------------------- #
 def test_not_collected_is_declared_never_scored():
