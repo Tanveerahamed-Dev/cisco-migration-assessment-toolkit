@@ -1460,7 +1460,7 @@ function demoSnapshot(){
       {host:"DIST-2",collected:true,events:8,by_severity:{crit_0_2:1,err_3:0,warn_4:1,info_5_7:6},
        top_messages:[{msg:"ENVMON-2-SUPPLY",count:1}],config_changes:2},
       {host:"CORE-9K",collected:true,events:3,by_severity:{crit_0_2:0,err_3:0,warn_4:0,info_5_7:3},
-       top_messages:[{msg:"VSHD-5-VSHD_SYSLOG_CONFIG_I",count:3}],config_changes:0},
+       top_messages:[{msg:"VSHD-5-VSHD_SYSLOG_CONFIG_I",count:3}],config_changes:3},
     ],
     summary:{n_devices:6,n_collected:5,n_not_collected:1,hosts_not_collected:["ACC-5"],
              total_events:73,crit_0_2:1,err_3:11,n_detections:4,
@@ -5169,21 +5169,28 @@ function qosCard(){
 function softwareRiskCard(){
   const sr=SNAP&&SNAP.software_risk; if(!sr)return "";
   const s=sr.summary||{}; if(!(s.n_devices>0))return "";
+  // V3.23.170: the same honest not-assessable state the sibling cards have — with no config
+  // captures AND no versions there is no evidence in either layer; a green 'screened' here
+  // was a clean bill derived from nothing.
+  if(!(s.n_config_assessable>0)&&!(s.n_version_known>0))
+    return `<div class="sec"><h3>Software risk <span class="badge b-warn">not assessable</span></h3>`+
+      `<div class="ln faint">No full running-configs or software versions in this collection — neither the advisory-surface layer nor the train-lifecycle layer carries evidence either way.</div></div>`;
   const finds=sr.findings||[];
-  const tb=s.train_bands||{};
+  const confMiss=(s.n_config_assessable>0)?"":
+    `<div class="ln faint">⚠ No full running-config captures — the advisory-surface layer is not assessable (trains screened from versions only).</div>`;
   const lifecycle=(sr.per_device||[]).filter(d=>d.train_band==="Replace/Upgrade"||d.train_band==="Verify EoL");
   const lifeRows=lifecycle.slice(0,6).map(d=>{const tok=d.train_band==="Replace/Upgrade"?"pl-crit":"pl-watch";
     return `<div class="ln"><span class="pill ${tok}">${esc(d.train_band)}</span> <span class="mono">${esc(shortName(d.host))}</span> — ${esc(d.train)} <span class="mono">${esc(d.sw_version)}</span>: <span class="faint">${esc(d.train_note||"")}</span></div>`;}).join("");
   if(!finds.length&&!lifecycle.length)
     return `<div class="sec"><h3>Software risk <span class="badge b-ok">screened</span></h3>`+
-      `<div class="ln faint">✓ No exposed advisory surfaces on ${s.n_config_assessable||0} config-assessable device(s) and no train past/near end of maintenance — still validate exact releases with the Cisco Software Checker (screening, not a scan).</div></div>`;
+      `<div class="ln faint">✓ No exposed advisory surfaces on ${s.n_config_assessable||0} config-assessable device(s) and no train past/near end of maintenance — still validate exact releases with the Cisco Software Checker (screening, not a scan).</div>`+confMiss+`</div>`;
   const rows=finds.slice(0,8).map(f=>{const tok=f.severity==="High"?"pl-crit":(f.severity==="Medium"?"pl-watch":"pl-ok");
     const adv=(f.advisories||[]).map(a=>`${a.cve}`).join(", ");
     return `<div class="ln"><span class="pill ${tok}">${esc(f.severity)}</span> <span class="mono">${esc(shortName(f.host))}</span> — <b>${esc(f.surface)}</b>${adv?` (${esc(adv)})`:""}: <span class="faint">${esc(f.recommendation||"")}</span></div>`;}).join("");
   const n=finds.length+lifecycle.length;
   return `<div class="sec"><h3>Software risk <span class="badge b-crit">${n} item${n===1?"":"s"}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">Attack-surface screening (config evidence × landmark advisories) + software-train lifecycle. SCREENING, not a vulnerability scan — validate releases with the Cisco PSIRT Software Checker. Full detail in the 'Software Risk' workbook sheet.</div>`+
-    rows+lifeRows+`</div>`;
+    rows+lifeRows+confMiss+`</div>`;
 }
 /* Platform health (NEW-V3.23.167): control-plane CPU/memory capacity screening. Reads
    SNAP.platform_health {findings:[{host,label,severity,detail,recommendation}], per_device:

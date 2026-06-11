@@ -421,7 +421,7 @@
   null
  ],
  "Syslog Intelligence": [
-  "Operational log analysis: 20 event(s) parsed on 2 of 3 device(s) -> 5 detection(s). The log buffer is a bounded recent window, so counts are floors; absence of logs is never scored as absence of problems.",
+  "Operational log analysis: 22 event(s) parsed on 2 of 3 device(s) -> 5 detection(s). The log buffer is a bounded recent window, so counts are floors; absence of logs is never scored as absence of problems.",
   null,
   null,
   null,

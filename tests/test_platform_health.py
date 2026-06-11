@@ -90,6 +90,19 @@ def test_nxos_fallback_is_labeled_instantaneous():
     assert "5-min avg" in both["per_device"][0]["cpu_source"]
 
 
+def test_high_instantaneous_sample_never_claims_a_5min_condition():
+    # V3.23.170: a one-instant busy figure (NX-OS fallback) must not band Hot nor carry
+    # the 5-minute doctrine — it gets its own honest 'cpu-sample-high' Medium finding.
+    ph = compute_platform_health({"nx": _m(sysr={"cpu_idle": 15.0})})   # busy 85%
+    d = ph["per_device"][0]
+    assert d["band"] == "Elevated"                    # capped, never Hot off one instant
+    finds = ph["findings"]
+    assert [f["kind"] for f in finds] == ["cpu-sample-high"]
+    assert finds[0]["severity"] == "Medium"
+    assert "Re-sample" in finds[0]["recommendation"]
+    assert "hot-cpu" not in {f["kind"] for f in finds}
+
+
 # --------------------------------------------------------------------------- #
 # honesty & shapes
 # --------------------------------------------------------------------------- #

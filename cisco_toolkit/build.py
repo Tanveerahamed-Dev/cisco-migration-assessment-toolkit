@@ -42,10 +42,13 @@ def read_run_config(cmd_to_file: Dict[str, str]) -> str:
 
 
 def read_syslog_log(cmd_to_file: Dict[str, str]) -> str:
-    """NEW-V3.23.164: return this device's raw 'show logging' text (offline-loaded), or ''
-    when absent / a Cisco error. Used by the syslog-intelligence axis
-    (compute_syslog_intelligence). Fail-soft."""
-    return _load_cmd_output(cmd_to_file, "show logging") or ""
+    """NEW-V3.23.164: return this device's raw log-buffer text (offline-loaded), or ''
+    when absent / a Cisco error. V3.23.170: NX-OS rejects the bare 'show logging'
+    ('% Incomplete command' -- its buffer lives under 'show logging logfile'), so the
+    logfile form is tried FIRST: on platform variants where the bare form prints only
+    the logging CONFIGURATION (no events), preferring it would score the device as
+    collected-but-quiet. Used by the syslog-intelligence axis. Fail-soft."""
+    return _load_cmd_output(cmd_to_file, "show logging logfile", "show logging") or ""
 
 
 def build_platform_metrics(cmd_to_file: Dict[str, str]) -> dict:

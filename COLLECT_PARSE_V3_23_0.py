@@ -520,6 +520,7 @@ COMMANDS_NXOS = [
     "show ptp parent",              # NEW-V3.23.102 (PTP grandmaster)
     "show ip access-lists",         # NEW-V3.23.102 (ACL hit-counts = active-traffic evidence)
     "show logging",                 # NEW-V3.23.164 (buffered log = syslog-intelligence evidence)
+    "show logging logfile",         # NEW-V3.23.170 (NX-OS log buffer -- the bare form is '% Incomplete command' on Nexus)
     "show processes cpu",           # NEW-V3.23.167 (control-plane CPU sample - platform health)
     "show system resources",        # NEW-V3.23.167 (NX-OS CPU/memory/load - platform health)
 ]

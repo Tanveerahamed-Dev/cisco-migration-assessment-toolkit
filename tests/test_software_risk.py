@@ -71,6 +71,21 @@ def test_snmp_rw_takes_precedence_over_ro():
     assert "snmp-v2c-ro" not in _kinds(none) and "snmp-v2c-rw" not in _kinds(none)
 
 
+def test_snmp_view_qualified_rw_is_still_rw():
+    # V3.23.170: 'snmp-server community <str> view <name> rw [acl]' is valid IOS syntax;
+    # the view qualifier must not downgrade a READ-WRITE community to read-only.
+    sr = compute_software_risk({"sw": "snmp-server community s3cret view FULLVIEW rw 10\n"})
+    assert _kinds(sr) == ["snmp-v2c-rw"]
+    assert "s3cret" not in str(sr)
+
+
+def test_transport_input_all_is_telnet_exposure():
+    # V3.23.170: 'transport input all' permits telnet (legacy form / old default) —
+    # the CIS detector already treats it that way; the two must agree.
+    sr = compute_software_risk({"sw": "line vty 0 4\n transport input all\n"})
+    assert "telnet-vty" in _kinds(sr)
+
+
 def test_default_dependent_surfaces_are_verify_not_exposed():
     sr = compute_software_risk({"sw": "hostname sw\n"})
     surf = sr["per_device"][0]["surfaces"]

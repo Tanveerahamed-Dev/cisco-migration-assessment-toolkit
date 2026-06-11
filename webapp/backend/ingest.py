@@ -12,9 +12,11 @@ Design points:
   flags the test-suite uses (``--no-collect --collection-dir … --workers 1``), so an ingested snapshot
   is identical to what the CLI would have produced. A subprocess (not in-process ``main()``) keeps the
   engine's logging/global state out of the server and makes a hard timeout enforceable.
-* **Deliverables are skipped** (``--no-html --no-docx --no-pptx --no-design --no-mop``): AssessHub
-  renders the explorer and generates documents on demand from the stored snapshot, so only the
-  workbook (which the engine always writes) and the snapshot are produced — the fast path.
+* **Deliverables are skipped** (every ``--no-*`` document flag): AssessHub renders the explorer and
+  generates documents on demand from the stored snapshot, so only the workbook (which the engine
+  always writes) and the snapshot are produced — the fast path. V3.23.170: the flag list had gone
+  stale as deliverables accreted (crd/engagement/archreview/opshandbook were rendering on every
+  ingest inside the request path); keep it in lockstep with the engine's argparse.
 * **devices.json is optional.** If the ZIP carries one it is used (credentials are scrubbed — the
   offline path never connects); otherwise one is synthesized from the per-device directory names and
   the engine's own ``detect_platform_from_files`` autodetection does the rest.
@@ -224,6 +226,7 @@ def run_collection_zip(raw: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             "--output", str(out_xlsx),
             "--workers", "1",
             "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+            "--no-crd", "--no-engagement", "--no-archreview", "--no-opshandbook",  # V3.23.170 (stale-list fix)
         ]
         t0 = time.monotonic()
         try:
