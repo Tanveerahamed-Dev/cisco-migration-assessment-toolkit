@@ -452,6 +452,17 @@
   null,
   null
  ],
+ "Platform Health": [
+  "Control-plane capacity screening: 1 finding(s) on 2 of 3 device(s) with capacity output. SINGLE point-in-time sample (a snapshot, not a trend) \u2014 correlate with the Syslog Intelligence sheet and re-sample before the migration window.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Application Intelligence": [
   "Application & network intelligence:",
   "2 domain(s)  \u00b7  0 on-air-critical  \u00b7  0 with High/Critical risk  \u00b7  0 span >1 wave  \u00b7  1 cross-domain risk(s)",

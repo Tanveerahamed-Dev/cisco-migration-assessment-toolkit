@@ -1856,6 +1856,87 @@ def write_software_risk_sheet(wb, sr: dict) -> None:
                 f"bands {band_txt}")
 
 
+PLATFORM_HEALTH_SHEET_NAME = "Platform Health"   # NEW-V3.23.167 (control-plane CPU/memory capacity)
+
+def write_platform_health_sheet(wb, ph: dict) -> None:
+    """Write 'Platform Health' from compute_platform_health(): control-plane capacity
+    findings (hot/elevated CPU, low memory) and the per-device sample table. The banner
+    states the single-sample honesty rule; not-collected devices are declared."""
+    if PLATFORM_HEALTH_SHEET_NAME in wb.sheetnames:
+        del wb[PLATFORM_HEALTH_SHEET_NAME]
+    ws = wb.create_sheet(PLATFORM_HEALTH_SHEET_NAME)
+    p = ph or {}
+    finds = p.get("findings") or []
+    pdev = p.get("per_device") or []
+    s = p.get("summary") or {}
+    bands = s.get("bands") or {}
+    band_txt = ", ".join(f"{k}: {v}" for k, v in bands.items()) or "—"
+    b = ws.cell(1, 1, f"Control-plane capacity screening: {s.get('n_findings', 0)} finding(s) on "
+                      f"{s.get('n_collected', 0)} of {s.get('n_devices', 0)} device(s) with capacity "
+                      "output. SINGLE point-in-time sample (a snapshot, not a trend) — correlate with "
+                      "the Syslog Intelligence sheet and re-sample before the migration window.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"Bands — {band_txt} · {s.get('n_not_collected', 0)} device(s) without capacity "
+                  "output").font = Font(size=10)
+    SEVFILL = {"High": "F4CCCC", "Medium": "FFF2CC"}
+    BANDFILL = {"Hot": "F4CCCC", "Elevated": "FFF2CC", "OK": "C6EFCE", "Unknown": "EFEFEF"}
+    HDRF = Font(bold=True, color="FFFFFF", size=10)
+    DAT = Font(name="Calibri", size=10)
+
+    hdr_row = 4
+    cols = ["Device", "Finding", "Severity", "Detail", "Recommendation"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    r = hdr_row + 1
+    for f in finds:
+        vals = [f.get("host"), f.get("label"), f.get("severity"), f.get("detail"),
+                f.get("recommendation")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="center" if col == 3 else "left",
+                                    vertical="top", wrap_text=col in (4, 5))
+            if col == 3 and v in SEVFILL:
+                c.fill = PatternFill("solid", fgColor=SEVFILL[v])
+        r += 1
+    if not finds:
+        ws.cell(r, 1, "No capacity findings on the sampled devices." if s.get("n_collected")
+                else "No capacity output collected -- platform health not assessable.").font = DAT
+        r += 1
+
+    r += 2
+    ws.cell(r, 1, "Per-device sample (point-in-time)").font = Font(bold=True, color="7030A0", size=10)
+    r += 1
+    cols2 = ["Device", "Collected", "CPU 5-min %", "CPU 1-min %", "CPU 5-sec %",
+             "Mem total (MB)", "Mem free %", "Band", "Status"]
+    for i, h in enumerate(cols2, 1):
+        c = ws.cell(r, i, h); c.font = HDRF
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    r += 1
+    for d in pdev:
+        vals = [d.get("host"), "yes" if d.get("collected") else "NOT COLLECTED",
+                d.get("cpu_5min"), d.get("cpu_1min"), d.get("cpu_5sec"),
+                d.get("mem_total_mb"), d.get("mem_free_pct"), d.get("band"), d.get("status")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v if v is not None else "—"); c.font = DAT
+            c.alignment = Alignment(horizontal="center" if col in (2, 3, 4, 5, 6, 7, 8) else "left",
+                                    vertical="top", wrap_text=col == 9)
+            if col == 8 and v in BANDFILL:
+                c.fill = PatternFill("solid", fgColor=BANDFILL[v])
+            if col == 2 and not d.get("collected"):
+                c.fill = PatternFill("solid", fgColor="EFEFEF")
+        r += 1
+    # shared widths: findings table (A-E) wide prose; sample table spreads A-I.
+    for i, w in enumerate([22, 28, 12, 40, 48, 14, 12, 12, 46], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{PLATFORM_HEALTH_SHEET_NAME}' sheet: {len(finds)} finding(s), "
+                f"bands {band_txt}")
+
+
 LIFECYCLE_RISK_SHEET_NAME = "Lifecycle Risk"   # NEW-V3.23.117 (hardware EoL / end-of-support)
 
 def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
