@@ -2526,6 +2526,77 @@
   },
   "note": "Attack-surface SCREENING from configuration evidence joined to landmark public advisories -- not a vulnerability scan. The offline toolkit carries no live advisory feed: validate every running release with the Cisco PSIRT Software Checker, and read 'exposed' as 'this surface is open', never as 'this release is vulnerable'."
  },
+ "platform_health": {
+  "per_device": [
+   {
+    "host": "core1",
+    "collected": true,
+    "cpu_5min": 63,
+    "cpu_1min": 66,
+    "cpu_5sec": 71,
+    "cpu_source": "show processes cpu (5-min avg)",
+    "mem_total_mb": 659,
+    "mem_free_pct": 75.7,
+    "mem_source": "show processes memory (processor pool)",
+    "band": "Elevated",
+    "status": "CPU 63% \u00b7 memory 75.7% free \u2014 Elevated."
+   },
+   {
+    "host": "core2",
+    "collected": true,
+    "cpu_5min": 7.6,
+    "cpu_1min": null,
+    "cpu_5sec": null,
+    "cpu_source": "show system resources (instantaneous)",
+    "mem_total_mb": 16017,
+    "mem_free_pct": 55.4,
+    "mem_source": "show system resources (system memory)",
+    "band": "OK",
+    "status": "CPU 7.6% \u00b7 memory 55.4% free \u2014 OK."
+   },
+   {
+    "host": "access1",
+    "collected": false,
+    "cpu_5min": null,
+    "cpu_1min": null,
+    "cpu_5sec": null,
+    "cpu_source": "",
+    "mem_total_mb": null,
+    "mem_free_pct": null,
+    "mem_source": "",
+    "band": "Unknown",
+    "status": "Not collected \u2014 capacity commands absent from this collection."
+   }
+  ],
+  "findings": [
+   {
+    "host": "core1",
+    "kind": "elevated-cpu",
+    "label": "Control-plane CPU elevated",
+    "severity": "Medium",
+    "detail": "CPU 63% (show processes cpu (5-min avg)).",
+    "recommendation": "A 5-minute CPU at/above 60% is workable but worth explaining before the cutover adds protocol churn. Identify the top processes and confirm the level is expected for this role."
+   }
+  ],
+  "summary": {
+   "n_devices": 3,
+   "n_collected": 2,
+   "n_not_collected": 1,
+   "hosts_not_collected": [
+    "access1"
+   ],
+   "bands": {
+    "Elevated": 1,
+    "OK": 1,
+    "Unknown": 1
+   },
+   "n_findings": 1,
+   "by_kind": {
+    "elevated-cpu": 1
+   }
+  },
+  "note": "Single point-in-time sample taken at collection \u2014 a snapshot, not a trend. Correlate with the syslog axis (CPUHOG / MALLOCFAIL events) and re-sample close to the migration window before treating a device as healthy."
+ },
  "collection_completeness": {
   "summary": {
    "inventory": 3,

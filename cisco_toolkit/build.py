@@ -24,6 +24,7 @@ from cisco_toolkit.parse import (
     parse_spanning_tree_root, parse_vpc,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
+    parse_cpu_utilization, parse_memory_stats, parse_system_resources,   # NEW-V3.23.167 (platform health)
     parse_ospf_neighbors, parse_eigrp_neighbors, parse_bgp_summary,   # protocol-to-protocol analysis
     parse_redistribution,                                            # protocol-to-protocol analysis (slice 2)
     parse_bgp_table,                                                 # NEW-V3.23.97 (BGP received prefixes)
@@ -45,6 +46,23 @@ def read_syslog_log(cmd_to_file: Dict[str, str]) -> str:
     when absent / a Cisco error. Used by the syslog-intelligence axis
     (compute_syslog_intelligence). Fail-soft."""
     return _load_cmd_output(cmd_to_file, "show logging") or ""
+
+
+def build_platform_metrics(cmd_to_file: Dict[str, str]) -> dict:
+    """NEW-V3.23.167: parse this device's control-plane capacity facts from the
+    already-collected output -> {cpu, memory, system} where cpu =
+    parse_cpu_utilization('show processes cpu'), memory = parse_memory_stats
+    ('show processes memory'), system = parse_system_resources('show system
+    resources', NX-OS). Each member {} when its command is absent; all-{} =
+    not collected. Fail-soft via _safe_parse."""
+    return {
+        "cpu": _safe_parse(parse_cpu_utilization,
+                           _load_cmd_output(cmd_to_file, "show processes cpu")) or {},
+        "memory": _safe_parse(parse_memory_stats,
+                              _load_cmd_output(cmd_to_file, "show processes memory")) or {},
+        "system": _safe_parse(parse_system_resources,
+                              _load_cmd_output(cmd_to_file, "show system resources")) or {},
+    }
 
 
 def build_acls(cmd_to_file: Dict[str, str]) -> Dict[str, List[dict]]:

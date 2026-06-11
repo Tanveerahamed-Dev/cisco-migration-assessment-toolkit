@@ -325,6 +325,20 @@ Log Buffer (8192 bytes):
 *Jun  3 11:02:44.901: %OSPF-5-ADJCHG: Process 1, Nbr 10.0.99.2 on Vlan20 from FULL to DOWN, Neighbor Down: Dead timer expired
 *Jun  4 18:30:00.005: %SYS-5-CONFIG_I: Configured from console by svc-audit on vty0 (10.0.99.50)
 """,
+    # NEW-V3.23.167 (platform health): IOS capacity facts. The 5-min CPU sits in the
+    # ELEVATED band (>= 60%) so the golden pins one Medium capacity finding.
+    "show processes cpu": """\
+CPU utilization for five seconds: 71%/12%; one minute: 66%; five minutes: 63%
+ PID Runtime(ms)     Invoked      uSecs   5Sec   1Min   5Min TTY Process
+   1         152        2776         54  0.00%  0.00%  0.00%   0 Chunk Manager
+""",
+    "show processes memory": """\
+Processor Pool Total:  690885376 Used:  168148848 Free:  522736528
+      I/O Pool Total:   16777216 Used:    6299568 Free:   10477648
+
+ PID  TTY  Allocated      Freed    Holding    Getbufs    Retbufs Process
+   0    0  295427864   95758288  185940776          0          0 *Init*
+""",
 }
 
 # --------------------------------------------------------------------------- #
@@ -459,6 +473,15 @@ Interface            IP Address      Interface Status
 Vlan10               10.0.10.3       protocol-up/link-up/admin-up
 Vlan20               10.0.20.3       protocol-up/link-up/admin-up
 mgmt0                10.0.99.2       protocol-up/link-up/admin-up
+""",
+    # NEW-V3.23.167 (platform health): NX-OS capacity facts via 'show system resources'
+    # (CPU idle + system memory + load). access1 gets NO capacity fixtures on purpose
+    # (exercises the declared not-collected path).
+    "show system resources": """\
+Load average:   1 minute: 0.28   5 minutes: 0.31   15 minutes: 0.32
+Processes   :   720 total, 1 running
+CPU states  :   3.5% user,   4.1% kernel,   92.4% idle
+Memory usage:   16400932K total,   7322120K used,   9078812K free
 """,
 }
 

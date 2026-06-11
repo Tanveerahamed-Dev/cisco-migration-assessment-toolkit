@@ -2234,3 +2234,63 @@ def parse_qos_config(text: str) -> dict:
         if all(attrs[k] in (None, False) for k in _QOS_IF_ATTR_KEYS):
             del res["interfaces"][cur]
     return res
+
+
+# =============================================================================
+# PLATFORM HEALTH PARSERS (NEW-V3.23.167). Control-plane capacity facts for the
+# platform-health axis: CPU utilization ('show processes cpu' header line, IOS and
+# NX-OS share the shape), processor-pool memory ('show processes memory', IOS) and
+# NX-OS 'show system resources' (CPU idle + memory usage + load average). Each
+# returns {} on absent/unrecognized output. Tolerant; never raises.
+# =============================================================================
+_CPU_UTIL_RE = re.compile(
+    r"CPU utilization for five seconds:\s*(\d+)%(?:/(\d+)%)?;\s*"
+    r"one minute:\s*(\d+)%;\s*five minutes:\s*(\d+)%", re.I)
+_MEM_POOL_RE = re.compile(
+    r"(?:Processor\s+Pool\s+)?Total:\s*(\d+)\s+Used:\s*(\d+)\s+Free:\s*(\d+)", re.I)
+_SYSRES_CPU_RE = re.compile(r"CPU states\s*:.*?([\d.]+)%\s*idle", re.I)
+_SYSRES_MEM_RE = re.compile(
+    r"Memory usage\s*:\s*(\d+)K?\s+total,\s*(\d+)K?\s+used,\s*(\d+)K?\s+free", re.I)
+_SYSRES_LOAD_RE = re.compile(r"Load average\s*:\s*1 minute:\s*([\d.]+)", re.I)
+
+
+def parse_cpu_utilization(text: str) -> dict:
+    """Parse the 'CPU utilization for five seconds: A%/B%; one minute: C%; five
+    minutes: D%' header (IOS + NX-OS 'show processes cpu') ->
+    {five_sec, interrupt, one_min, five_min} (ints; interrupt 0 when absent).
+    {} when not found. Tolerant; never raises."""
+    m = _CPU_UTIL_RE.search(text or "")
+    if not m:
+        return {}
+    return {"five_sec": int(m.group(1)), "interrupt": int(m.group(2) or 0),
+            "one_min": int(m.group(3)), "five_min": int(m.group(4))}
+
+
+def parse_memory_stats(text: str) -> dict:
+    """Parse the IOS 'show processes memory' processor-pool header
+    ('Processor Pool Total: N Used: N Free: N') -> {total, used, free} (bytes).
+    {} when not found. Tolerant; never raises."""
+    m = _MEM_POOL_RE.search(text or "")
+    if not m:
+        return {}
+    return {"total": int(m.group(1)), "used": int(m.group(2)), "free": int(m.group(3))}
+
+
+def parse_system_resources(text: str) -> dict:
+    """Parse NX-OS 'show system resources' -> {cpu_idle (float %), mem_total_kb,
+    mem_used_kb, mem_free_kb, load_1m (float)}; keys present only when their line
+    parsed. {} when nothing recognized. Tolerant; never raises."""
+    out: dict = {}
+    t = text or ""
+    m = _SYSRES_CPU_RE.search(t)
+    if m:
+        out["cpu_idle"] = float(m.group(1))
+    m = _SYSRES_MEM_RE.search(t)
+    if m:
+        out["mem_total_kb"] = int(m.group(1))
+        out["mem_used_kb"] = int(m.group(2))
+        out["mem_free_kb"] = int(m.group(3))
+    m = _SYSRES_LOAD_RE.search(t)
+    if m:
+        out["load_1m"] = float(m.group(1))
+    return out

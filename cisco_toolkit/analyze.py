@@ -4457,6 +4457,139 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
 
 
 # =============================================================================
+# Platform health (NEW-V3.23.167). The control-plane capacity question a senior engineer asks
+# BEFORE adding migration load: "is this control plane already stressed?" Evidence = the device's
+# own 'show processes cpu' / 'show processes memory' (IOS) and 'show system resources' (NX-OS),
+# all captured at collection time. HONESTY: this is a single point-in-time sample -- a snapshot,
+# not a trend -- so bands are screening, to be correlated with the syslog axis (CPUHOG/MALLOCFAIL
+# events) and re-sampled before the migration window. A device whose capacity commands were not
+# collected is DECLARED not collected, never scored.
+# =============================================================================
+_PLATHEALTH_CPU_HOT = 80        # 5-min CPU % >= this -> High
+_PLATHEALTH_CPU_ELEVATED = 60   # 5-min CPU % >= this -> Medium
+_PLATHEALTH_MEM_CRIT_PCT = 10   # free memory % <= this -> High
+_PLATHEALTH_MEM_LOW_PCT = 20    # free memory % <= this -> Medium
+_PLATHEALTH_BAND_RANK = {"Hot": 0, "Elevated": 1, "OK": 2, "Unknown": 3}
+
+_PLATHEALTH_DOCTRINE: Dict[str, tuple] = {
+    "hot-cpu": ("Control-plane CPU hot", "High",
+                "A 5-minute CPU at/above 80% leaves no headroom for an STP/IGP reconvergence "
+                "event or a config push. Find the consumer (processes vs interrupts), fix it, "
+                "and re-sample before scheduling this device in a migration window."),
+    "elevated-cpu": ("Control-plane CPU elevated", "Medium",
+                     "A 5-minute CPU at/above 60% is workable but worth explaining before the "
+                     "cutover adds protocol churn. Identify the top processes and confirm the "
+                     "level is expected for this role."),
+    "low-memory": ("Processor memory low", "High",
+                   "Free processor memory at/below 10% risks MALLOCFAIL under churn -- routing "
+                   "updates and config pushes allocate. Free or upgrade memory before the window."),
+    "memory-watch": ("Processor memory tight", "Medium",
+                     "Free processor memory at/below 20% deserves a check: confirm it is stable "
+                     "(not leaking) and budget for the migration's added table churn."),
+}
+
+
+def compute_platform_health(metrics: Optional[Dict[str, dict]] = None) -> dict:
+    """NEW-V3.23.167: per-device control-plane capacity screening from
+    {host: {cpu, memory, system}} (build_platform_metrics; all-empty member dicts =
+    not collected). CPU prefers the 5-minute average ('show processes cpu'); NX-OS
+    falls back to 'show system resources' (instantaneous busy = 100 - idle, flagged
+    as such). Memory prefers the IOS processor pool, else NX-OS system memory.
+    Findings carry the pre-migration doctrine. Single point-in-time sample -- the
+    note says so. Pure on its inputs; deterministic; never raises."""
+    from collections import Counter
+    mx = metrics or {}
+    per_device: List[dict] = []
+    findings: List[dict] = []
+
+    def _find(host: str, kind: str, detail: str) -> None:
+        label, sev, rec = _PLATHEALTH_DOCTRINE[kind]
+        findings.append({"host": host, "kind": kind, "label": label, "severity": sev,
+                         "detail": detail, "recommendation": rec})
+
+    for host in sorted(mx):
+        m = mx[host] or {}
+        cpu = m.get("cpu") or {}
+        mem = m.get("memory") or {}
+        sysr = m.get("system") or {}
+        collected = bool(cpu or mem or sysr)
+        if not collected:
+            per_device.append({"host": host, "collected": False, "cpu_5min": None,
+                               "cpu_1min": None, "cpu_5sec": None, "cpu_source": "",
+                               "mem_total_mb": None, "mem_free_pct": None, "mem_source": "",
+                               "band": "Unknown",
+                               "status": "Not collected — capacity commands absent from this collection."})
+            continue
+
+        # CPU: prefer the 5-min average; else the NX-OS instantaneous busy figure.
+        cpu_5min = cpu.get("five_min")
+        cpu_1min = cpu.get("one_min")
+        cpu_5sec = cpu.get("five_sec")
+        cpu_source = "show processes cpu (5-min avg)" if cpu else ""
+        if cpu_5min is None and "cpu_idle" in sysr:
+            cpu_5min = round(100 - sysr["cpu_idle"], 1)
+            cpu_source = "show system resources (instantaneous)"
+
+        # Memory: prefer the IOS processor pool; else NX-OS system memory.
+        mem_total = mem.get("total")
+        mem_free = mem.get("free")
+        mem_source = "show processes memory (processor pool)" if mem else ""
+        if mem_total is None and sysr.get("mem_total_kb"):
+            mem_total = sysr["mem_total_kb"] * 1024
+            mem_free = (sysr.get("mem_free_kb") or 0) * 1024
+            mem_source = "show system resources (system memory)"
+        mem_free_pct = (round(100 * mem_free / mem_total, 1)
+                        if mem_total and mem_free is not None else None)
+        mem_total_mb = round(mem_total / (1024 * 1024)) if mem_total else None
+
+        band = "OK"
+        if cpu_5min is not None:
+            if cpu_5min >= _PLATHEALTH_CPU_HOT:
+                band = "Hot"
+                _find(host, "hot-cpu", f"CPU {cpu_5min}% ({cpu_source}).")
+            elif cpu_5min >= _PLATHEALTH_CPU_ELEVATED:
+                band = "Elevated"
+                _find(host, "elevated-cpu", f"CPU {cpu_5min}% ({cpu_source}).")
+        if mem_free_pct is not None:
+            if mem_free_pct <= _PLATHEALTH_MEM_CRIT_PCT:
+                band = "Hot"
+                _find(host, "low-memory",
+                      f"{mem_free_pct}% free of {mem_total_mb} MB ({mem_source}).")
+            elif mem_free_pct <= _PLATHEALTH_MEM_LOW_PCT:
+                if band == "OK":
+                    band = "Elevated"
+                _find(host, "memory-watch",
+                      f"{mem_free_pct}% free of {mem_total_mb} MB ({mem_source}).")
+        if cpu_5min is None and mem_free_pct is None:
+            band = "Unknown"
+        bits = []
+        if cpu_5min is not None:
+            bits.append(f"CPU {cpu_5min}%")
+        if mem_free_pct is not None:
+            bits.append(f"memory {mem_free_pct}% free")
+        status = (" · ".join(bits) + f" — {band}.") if bits else \
+            "Output collected but no capacity figures recognized."
+        per_device.append({"host": host, "collected": True, "cpu_5min": cpu_5min,
+                           "cpu_1min": cpu_1min, "cpu_5sec": cpu_5sec, "cpu_source": cpu_source,
+                           "mem_total_mb": mem_total_mb, "mem_free_pct": mem_free_pct,
+                           "mem_source": mem_source, "band": band, "status": status})
+
+    findings.sort(key=lambda f: ({"High": 0, "Medium": 1}.get(f["severity"], 9), f["host"], f["kind"]))
+    per_device.sort(key=lambda d: (_PLATHEALTH_BAND_RANK.get(d["band"], 9), d["host"]))
+    collected = [d for d in per_device if d["collected"]]
+    not_collected = sorted(d["host"] for d in per_device if not d["collected"])
+    summary = {"n_devices": len(per_device), "n_collected": len(collected),
+               "n_not_collected": len(not_collected), "hosts_not_collected": not_collected[:20],
+               "bands": dict(sorted(Counter(d["band"] for d in per_device).items())),
+               "n_findings": len(findings),
+               "by_kind": dict(sorted(Counter(f["kind"] for f in findings).items()))}
+    note = ("Single point-in-time sample taken at collection — a snapshot, not a trend. "
+            "Correlate with the syslog axis (CPUHOG / MALLOCFAIL events) and re-sample close "
+            "to the migration window before treating a device as healthy.")
+    return {"per_device": per_device, "findings": findings, "summary": summary, "note": note}
+
+
+# =============================================================================
 # Hardware lifecycle (EoL / End-of-Support) risk (NEW-V3.23.117). A new assessment AXIS: per-device
 # replacement urgency from the offline `eoldb` knowledge base (a top REASON orgs migrate). Reference
 # dates (curated KB, not device-read); LDoS is often derived = EoS+5yr. The robust output is the BAND
