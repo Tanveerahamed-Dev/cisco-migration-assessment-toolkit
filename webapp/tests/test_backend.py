@@ -66,6 +66,21 @@ def test_section_slice_and_guard(client):
     assert client.get(f"/api/snapshots/{snap_id}/section/not_a_section").status_code == 400
 
 
+def test_nos_quartet_sections_reachable(client):
+    """NEW-V3.23.176: the syslog / QoS / software-risk / platform-health axes (V3.23.164-.167)
+    are tabbed AND fetchable -- the one-source-of-truth audit found them unreachable from the
+    web platform (they landed after SECTION_LABELS was authored)."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    meta = client.get(f"/api/snapshots/{snap_id}").json()
+    keys = {sec["key"] for sec in meta["summary"]["sections"]}
+    quartet = {"syslog_intelligence", "qos_audit", "software_risk", "platform_health"}
+    assert quartet <= keys, f"missing tabs: {quartet - keys}"
+    for name in sorted(quartet):
+        r = client.get(f"/api/snapshots/{snap_id}/section/{name}")
+        assert r.status_code == 200, f"{name}: {r.text}"
+        assert isinstance(r.json()["data"], dict)
+
+
 def test_device_risk_register_section(client):
     """NEW-V3.23.174: the Device Risk Register is a whitelisted section and the demo sample
     (regenerated through the real pipeline) carries it, pre-ranked riskiest-first."""
