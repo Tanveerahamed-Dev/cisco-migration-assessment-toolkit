@@ -156,6 +156,31 @@ def _all_text(doc):
     return "\n".join(parts)
 
 
+def test_runbook_renders_device_risk_register_section(tmp_path):
+    """NEW-V3.23.174: a snapshot carrying the Device Risk Register renders §10.1 with the
+    ranked table + compound bullets; without the key the section is absent (data-gated)."""
+    snap = _snap()
+    out = str(tmp_path / "rb_no_register.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    assert "10.1 Per-asset compound risk" not in _all_text(Document(out))
+
+    snap["device_dossiers"] = {
+        "per_device": [
+            {"host": "sw2", "risk_band": "Severe", "risk_index": 60, "impact_score": 10,
+             "exposure_score": 6,
+             "compound": [{"code": "CR-02", "title": "Failing hardware past support",
+                           "severity": "High", "basis": "Critical health on EoL hardware."}],
+             "verdict": "Stabilize or replace before migration — health Critical."}],
+        "summary": {"n_devices": 1, "bands": {"Severe": 1, "Elevated": 0, "Guarded": 0, "Low": 0},
+                    "n_compound": 1, "worst": ["sw2"]}}
+    out2 = str(tmp_path / "rb_register.docx")
+    write_runbook_docx(out2, snap, "Unit Test Fleet")
+    text = _all_text(Document(out2))
+    assert "10.1 Per-asset compound risk" in text
+    assert "CR-02" in text and "Stabilize or replace" in text
+    assert "not assessed" in text          # the honesty rule is stated in the section intro
+
+
 def test_runbook_is_evidence_disciplined(tmp_path):
     out = str(tmp_path / "rb.docx")
     write_runbook_docx(out, _snap(), "Unit Test Fleet")

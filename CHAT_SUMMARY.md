@@ -5,6 +5,19 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-11 — V3.23.174: the register reaches runbook / deck / AssessHub (arc complete)
+
+On branch `feat/register-docs-webapp` (after #255 merged). One compute → all seven surfaces.
+
+- Runbook §10.1 ranked asset table + compound bullets; deck slide 3b "The assets that worry an
+  engineer most" (data-gated; 7/6/8-slide pins all hold); AssessHub Risk-Register panel + section
+  tab (shared RegisterTable, SevChip gains optional label).
+- Sample fleet regenerated through the real pipeline (23 devices → 7 Severe / 9 Elevated, 22 CRs).
+- Visual QA: LibreOffice renders of the deck slide + §10.1 eyeballed; AssessHub verified live.
+- 384 engine + 26 webapp tests; ruff clean; frontend build green.
+
+---
+
 ## 2026-06-11 — V3.23.173: the register reaches the explorer (visual flagship)
 
 On branch `feat/explorer-risk-register` (after #254 merged). Pure-JS; no engine/golden change.
