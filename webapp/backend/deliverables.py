@@ -40,6 +40,7 @@ SPECS: Dict[str, Spec] = {
     "mop": Spec("mop", "Per-Wave Method of Procedure", "docx", _DOCX, "python-docx"),
     "cutover": Spec("cutover", "Cutover Plan (Run-of-Show)", "docx", _DOCX, "python-docx"),
     "nrfu": Spec("nrfu", "Network Ready-For-Use (NRFU) Test Plan", "docx", _DOCX, "python-docx"),
+    "opshandbook": Spec("opshandbook", "Operations Handbook", "docx", _DOCX, "python-docx"),
     "deck": Spec("deck", "Executive Presentation Deck", "pptx", _PPTX, "python-pptx"),
 }
 
@@ -91,6 +92,8 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None) ->
     elif kind == "nrfu":
         # AssessHub synthesis — NRFU / Acceptance Test Plan in the web layer (see nrfu_docx).
         from .nrfu_docx import write_nrfu_docx as write
+    elif kind == "opshandbook":
+        from cisco_toolkit.ops import write_ops_handbook_docx as write
     elif kind == "deck":
         from cisco_toolkit.deck import write_executive_deck_pptx as write
     else:  # pragma: no cover - guarded by the caller

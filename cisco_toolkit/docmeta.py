@@ -44,6 +44,8 @@ FAMILY = (
      "Pilot-first wave sequence, go/no-go gates and window estimates"),
     ("nrfu", "NRFU / Acceptance Test Plan (.docx)",
      "Production-acceptance test cases with expected baselines"),
+    ("opshandbook", "Operations Handbook (.docx)",
+     "Day-2 monitoring baseline, drift control, software governance and escalation readiness"),
     ("deck", "Executive Presentation Deck (.pptx)",
      "Stakeholder summary of posture, risk and the migration plan"),
 )
