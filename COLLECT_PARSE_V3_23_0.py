@@ -347,6 +347,7 @@ from cisco_toolkit.analyze import (
     compute_lifecycle_risk,                            # NEW-V3.23.117 (hardware EoL / end-of-support band per device)
     compute_segmentation,                              # NEW-V3.23.118 (L3 isolation posture: VRF / gateway-ACL per domain)
     compute_executive_brief,                           # NEW-V3.23.120 (cross-axis migration brief synthesis)
+    compute_device_dossiers,                           # NEW-V3.23.172 (per-asset compound-risk synthesis -- the Device Risk Register)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
@@ -395,6 +396,7 @@ from cisco_toolkit.excel import (
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
     write_platform_health_sheet,                                 # NEW-V3.23.167 (control-plane CPU/memory capacity screening)
+    write_device_risk_sheet,                                     # NEW-V3.23.172 (per-asset compound-risk register)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_architecture_review_sheet,                             # NEW-V3.23.161 (leading-practice conformance scorecard)
@@ -1803,8 +1805,33 @@ def main():
                                sorted(all_syslogs), _default={})
     platform_health = _run_phase("Platform health", compute_platform_health,
                                  all_platform_metrics, _default={})
+    # NEW-V3.23.172: golden-drift is COMPUTED here (hoisted from its Phase 30d-quinquies slot, the
+    # same compute-once hoist V3.23.169 applied to the quartet above) so the Device Risk Register
+    # can join it; its workbook sheet is still written at the original phase slot below.
+    _golden_lines = None
+    if args.golden_config:
+        try:
+            with open(args.golden_config, encoding="utf-8") as f:
+                _golden_lines = f.read().splitlines()
+            logger.info(f"[Phase 30d] Golden-config baseline: {len(_golden_lines)} line(s) from {args.golden_config}")
+        except OSError as e:
+            logger.warning(f"  --golden-config not read ({e}); falling back to the auto-derived majority baseline.")
+    golden_drift = _run_phase("Golden-config drift", compute_golden_drift,
+                              all_run_configs, _golden_lines, _default={})
+    # NEW-V3.23.172: the Device Risk Register -- the per-ASSET synthesis. Joins the 11 per-device
+    # axes already computed above into one dossier per box (risk_index = topology impact x stacked
+    # exposure + named compound patterns CR-01..CR-06), BEFORE the punch-list so the compound
+    # findings fold into the decision layer (and reach every downstream surface via snap["punchlist"]).
+    device_dossiers = _run_phase("Device risk register", compute_device_dossiers,
+                                 health_scores, failure_impact, lifecycle_risk, software_risk,
+                                 platform_health, syslog_intelligence, qos_audit, golden_drift,
+                                 all_security, all_config_hygiene, all_stp_roots, all_vpc,
+                                 physical_health, protocol_health, move_groups, _default={})
     # NEW-V3.23.117: lifecycle risk is kept as its OWN axis (sheet / cockpit / runbook §4.1), NOT folded into
     # the punch-list -- its band is date-relative, which would make the frozen golden punch-list date-dependent.
+    # (The V3.23.172 compound patterns MAY reference the EoL band, but only when stacked with a second
+    # independent risk axis -- the synthetic golden fleet's models are outside the EoL KB, so the frozen
+    # golden punch-list stays date-free.)
     punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
                            cross_layer, all_security, all_config_hygiene, physical_health,
                            l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
@@ -1812,8 +1839,10 @@ def main():
                            ptp_readiness=_ptp_readiness, media_risks=_media_risks,
                            syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,           # NEW-V3.23.169
                            software_risk=software_risk, platform_health=platform_health,           # NEW-V3.23.169
+                           device_dossiers=device_dossiers,                                        # NEW-V3.23.172
                            _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
+    _run_phase("Device Risk Register sheet", write_device_risk_sheet, wb, device_dossiers)
 
     # Phase 30d-ter: Remediation Plan - NEW-V3.23.116. The assess->act layer: turn the SAME structured finding
     # sources into per-device, platform-tagged, copy-pasteable Cisco config snippets (review-only). Reuses
@@ -1837,16 +1866,7 @@ def main():
     # Phase 30d-quinquies: Golden-config DRIFT - NEW-V3.23.146. Per-device running-config drift vs a baseline:
     # the user's --golden-config file (required directives) if supplied, else the fleet's auto-derived MAJORITY
     # baseline (de-facto standard) -> flag the outliers. Compute once -> sheet + snapshot (one source of truth).
-    _golden_lines = None
-    if args.golden_config:
-        try:
-            with open(args.golden_config, encoding="utf-8") as f:
-                _golden_lines = f.read().splitlines()
-            logger.info(f"[Phase 30d] Golden-config baseline: {len(_golden_lines)} line(s) from {args.golden_config}")
-        except OSError as e:
-            logger.warning(f"  --golden-config not read ({e}); falling back to the auto-derived majority baseline.")
-    golden_drift = _run_phase("Golden-config drift", compute_golden_drift,
-                              all_run_configs, _golden_lines, _default={})
+    # Computed ABOVE the punch-list since V3.23.172 (Device Risk Register join); the sheet keeps its slot.
     _run_phase("Golden-Config Drift sheet", write_golden_drift_sheet, wb, golden_drift)
 
     # Phase 30d-sexies: Syslog intelligence - NEW-V3.23.164. The NOS-style operational log analysis
@@ -1912,6 +1932,7 @@ def main():
                                  lifecycle_risk, segmentation, multicast_intelligence, remediation_plan,
                                  syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,      # NEW-V3.23.169
                                  software_risk=software_risk, platform_health=platform_health,      # NEW-V3.23.169
+                                 device_dossiers=device_dossiers,                                   # NEW-V3.23.172
                                  _default={})
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
                health_scores, punchlist, migration_readiness, failure_impact,   # NEW-V3.23.91: reuse precomputed fi
@@ -2016,6 +2037,7 @@ def main():
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
+    snap_dict["device_dossiers"] = device_dossiers                   # NEW-V3.23.172 (per-asset compound-risk register; reused from the Phase 30d synthesis)
     # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
     # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),
     # instead of recomputing from the assembled snap_dict (the Phase 30f view carries exactly the

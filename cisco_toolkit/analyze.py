@@ -2850,7 +2850,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 syslog_intelligence: Optional[dict] = None,
                                 qos_audit: Optional[dict] = None,
                                 software_risk: Optional[dict] = None,
-                                platform_health: Optional[dict] = None) -> List[dict]:
+                                platform_health: Optional[dict] = None,
+                                device_dossiers: Optional[dict] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -3040,6 +3041,20 @@ def compute_migration_punchlist(cross_layer: List[dict],
                 if isinstance(f, dict) and f.get("kind") not in _SWRISK_CIS_TWINS],
                "Software exposure")
     _fold_axis((platform_health or {}).get("findings"), "Platform capacity")
+
+    # NEW-V3.23.172: compound-risk patterns from the Device Risk Register. These are NOT
+    # duplicates of the per-axis rows above -- the finding IS the coincidence (independent
+    # risks stacked on one asset), which no single-axis row carries. CR-coded titles keep
+    # them recognizably distinct from their contributing legs.
+    for d in ((device_dossiers or {}).get("per_device") or []):
+        if not isinstance(d, dict):
+            continue
+        for c in (d.get("compound") or []):
+            if isinstance(c, dict):
+                add(c.get("severity", "Medium"), "Compound risk", [d.get("host")],
+                    f"{c.get('code', '')}: {c.get('title', '')}", c.get("basis", ""),
+                    "Stacked independent risks on one asset — clear at least one leg "
+                    "before this device's migration window.")
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
     for i, it in enumerate(items, 1):
@@ -4902,7 +4917,8 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
                             syslog_intelligence: Optional[dict] = None,
                             qos_audit: Optional[dict] = None,
                             software_risk: Optional[dict] = None,
-                            platform_health: Optional[dict] = None) -> dict:
+                            platform_health: Optional[dict] = None,
+                            device_dossiers: Optional[dict] = None) -> dict:
     """NEW-V3.23.120: cross-axis migration brief -- one headline per assessment axis rolled up into a single
     decision-grade synthesis. Pure read of each layer's already-computed summary; deterministic given inputs.
     V3.23.169: the operational-log / QoS / software-risk / platform-capacity axes joined the synthesis.
@@ -5033,6 +5049,19 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
         else:
             ax("Platform capacity", "Info", "capacity output not collected", "")
 
+    # NEW-V3.23.172: the Device Risk Register reaches the brief -- worst-asset framing
+    # ("a network is only as strong as its weakest link"), not an average.
+    dd_s = (device_dossiers or {}).get("summary") or {}
+    if dd_s.get("n_devices"):
+        dd_b = dd_s.get("bands") or {}
+        n_sevr, n_elev = dd_b.get("Severe", 0), dd_b.get("Elevated", 0)
+        ax("Asset risk register",
+           "Critical" if n_sevr else "High" if n_elev else "Low",
+           f"{n_sevr} Severe, {n_elev} Elevated of {dd_s.get('n_devices', 0)} asset(s)"
+           + (" · worst: " + ", ".join(dd_s.get("worst") or []) if dd_s.get("worst") else ""),
+           f"{dd_s.get('n_compound', 0)} compound pattern(s) — independent risks stacked per asset "
+           "× topology impact.")
+
     axes.sort(key=lambda a: _APP_SEV_RANK.get(a["severity"], 9))
     top_gating = [a["headline"] for a in axes if a["severity"] in ("Critical", "High")]
 
@@ -5057,3 +5086,355 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     return {"scale": {"n_devices": n, "n_domains": asum.get("n_domains", 0), "n_endpoints": n_endpoints},
             "posture": {"avg_health": avg, "n_critical": n_crit, "n_poor": n_poor, "worst_band": worst},
             "axes": axes, "top_gating": top_gating, "posture_statement": posture_statement}
+
+
+# =============================================================================
+# NEW-V3.23.172: the per-ASSET synthesis -- the Device Risk Register. Every axis
+# above slices the fleet by TOPIC (one sheet per concern); a senior engineer's
+# daily question slices it by ASSET: "tell me everything about this one box,
+# and which boxes scare you most when the independent risks are stacked."
+# Model (mirrors Cisco Cyber Vision's asset risk = likelihood x impact, and CX
+# Cloud's asset-360 view): risk_index = IMPACT (topology blast radius + roles)
+# x EXPOSURE (count/severity of independently red assessment axes). Compound
+# patterns (CR-01..CR-06) name the coincidences that multiply concern -- the
+# signature senior-engineer read. Pure synthesis of already-computed records;
+# no new collection; an axis without evidence is 'not assessed', never red.
+# =============================================================================
+_DOSSIER_BANDS = ("Severe", "Elevated", "Guarded", "Low")
+_DOSSIER_BAND_RANK = {b: i for i, b in enumerate(_DOSSIER_BANDS)}
+# risk_index thresholds (impact 1-10 x exposure 0-10 -> 0-100)
+_DOSSIER_SEVERE, _DOSSIER_ELEVATED, _DOSSIER_GUARDED = 50, 25, 10
+
+
+def compute_device_dossiers(health_scores: Optional[list] = None,
+                            failure_impact: Optional[list] = None,
+                            lifecycle_risk: Optional[dict] = None,
+                            software_risk: Optional[dict] = None,
+                            platform_health: Optional[dict] = None,
+                            syslog_intelligence: Optional[dict] = None,
+                            qos_audit: Optional[dict] = None,
+                            golden_drift: Optional[dict] = None,
+                            security: Optional[Dict[str, dict]] = None,
+                            config_hygiene: Optional[Dict[str, dict]] = None,
+                            stp_roots: Optional[Dict[str, dict]] = None,
+                            vpc: Optional[Dict[str, dict]] = None,
+                            physical_health: Optional[list] = None,
+                            protocol_health: Optional[list] = None,
+                            move_groups: Optional[list] = None) -> dict:
+    """NEW-V3.23.172: per-device 360-degree dossier + compound-risk ranking.
+    Joins the 11 per-device-capable axes (health / hardware EoL / software risk /
+    control-plane capacity / operational logs / CIS posture / config hygiene /
+    golden drift / QoS / physical / protocol) per asset, multiplies the stacked
+    exposure by the asset's topology impact (failure_impact blast radius + STP
+    root / gateway roles), and emits named compound patterns where independent
+    risks coincide on one box. Deterministic; tolerant of empty/oddly-typed
+    input; absence of evidence is state 'na' (not assessed) and NEVER counts
+    toward exposure. Returns {per_device, summary, note}."""
+    hs_by = {r.get("switch"): r for r in (health_scores or []) if isinstance(r, dict)}
+    fi_by = {r.get("host"): r for r in (failure_impact or []) if isinstance(r, dict)}
+    lc_by = {r.get("host"): r for r in ((lifecycle_risk or {}).get("per_device") or [])
+             if isinstance(r, dict)}
+    sw = software_risk or {}
+    sw_by = {r.get("host"): r for r in (sw.get("per_device") or []) if isinstance(r, dict)}
+    sw_find: Dict[str, list] = {}
+    for f in (sw.get("findings") or []):
+        if isinstance(f, dict):
+            sw_find.setdefault(f.get("host", ""), []).append(f)
+    ph_by = {r.get("host"): r for r in ((platform_health or {}).get("per_device") or [])
+             if isinstance(r, dict)}
+    si = syslog_intelligence or {}
+    si_by = {r.get("host"): r for r in (si.get("per_device") or []) if isinstance(r, dict)}
+    si_det: Dict[str, list] = {}
+    for d in (si.get("detections") or []):
+        if isinstance(d, dict):
+            si_det.setdefault(d.get("host", ""), []).append(d)
+    qa = qos_audit or {}
+    qa_by = {r.get("host"): r for r in (qa.get("per_device") or []) if isinstance(r, dict)}
+    qa_find: Dict[str, list] = {}
+    for f in (qa.get("findings") or []):
+        if isinstance(f, dict):
+            qa_find.setdefault(f.get("host", ""), []).append(f)
+    gd_by = {r.get("host"): r for r in ((golden_drift or {}).get("per_device") or [])
+             if isinstance(r, dict)}
+    sec = security or {}
+    hyg = config_hygiene or {}
+    roots = stp_roots or {}
+    vpc = vpc or {}
+    phy_by: Dict[str, list] = {}
+    for r in (physical_health or []):
+        if isinstance(r, dict):
+            phy_by.setdefault(r.get("switch", ""), []).append(r)
+    proto_by: Dict[str, list] = {}
+    for r in (protocol_health or []):
+        if isinstance(r, dict):
+            proto_by.setdefault(r.get("switch", ""), []).append(r)
+    wave_of: Dict[str, str] = {}
+    for g in (move_groups or []):
+        if isinstance(g, dict):
+            for h in (g.get("switches") or []):
+                wave_of.setdefault(h, g.get("group", ""))
+
+    hosts = sorted({h for h in (set(hs_by) | set(fi_by) | set(lc_by) | set(sw_by)
+                                | set(ph_by) | set(si_by) | set(qa_by) | set(gd_by)
+                                | set(sec) | set(hyg)) if h})
+    per_device: List[dict] = []
+    for host in hosts:
+        exposures: List[dict] = []
+
+        def ax(axis: str, state: str, label: str) -> None:
+            exposures.append({"axis": axis, "state": state, "label": label})
+
+        # -- the 11 exposure axes (state: risk / watch / ok / na) ------------
+        hsr = hs_by.get(host)
+        band = (hsr or {}).get("band", "")
+        if hsr is None:
+            ax("Health", "na", "not scored")
+        elif band == "Insufficient Data":
+            ax("Health", "na", "not scored — collection gap")
+        elif band == "Critical":
+            ax("Health", "risk", f"health Critical ({hsr.get('score', '')}/100)")
+        elif band == "Poor":
+            ax("Health", "watch", f"health Poor ({hsr.get('score', '')}/100)")
+        else:
+            ax("Health", "ok", f"health {band or '—'} ({hsr.get('score', '')}/100)")
+
+        lcr = lc_by.get(host)
+        lcb = (lcr or {}).get("band", "Unknown")
+        if lcr is None or lcb == "Unknown":
+            ax("Hardware EoL", "na", "model not in the EoL KB")
+        elif lcb in ("Past-LDoS", "Near-LDoS"):
+            ax("Hardware EoL", "risk", f"hardware {lcb.replace('-', ' ')}")
+        elif lcb == "Past-EoS":
+            ax("Hardware EoL", "watch", "hardware past end-of-sale")
+        else:
+            ax("Hardware EoL", "ok", "hardware lifecycle Active")
+
+        swr = sw_by.get(host)
+        sw_sevs = {f.get("severity") for f in sw_find.get(host, [])}
+        swb = (swr or {}).get("train_band", "Unknown")
+        if swr is None or (not swr.get("config_assessable")
+                           and str(swr.get("sw_version", "")).startswith("(not")):
+            ax("Software risk", "na", "not assessable — no config or version evidence")
+        elif "High" in sw_sevs or swb == "Replace/Upgrade":
+            ax("Software risk", "risk",
+               "open advisory surface" if "High" in sw_sevs else "software train end-of-era")
+        elif sw_sevs or swb == "Verify EoL":
+            ax("Software risk", "watch", "advisory surface to validate (PSIRT checker)")
+        else:
+            ax("Software risk", "ok", "no exposed advisory surface flagged")
+
+        phr = ph_by.get(host)
+        phb = (phr or {}).get("band", "Unknown")
+        if phr is None or not phr.get("collected"):
+            ax("Control plane", "na", "capacity output not collected")
+        elif phb == "Hot":
+            ax("Control plane", "risk", f"control plane Hot (CPU {phr.get('cpu_5min', '?')}%)")
+        elif phb == "Elevated":
+            ax("Control plane", "watch", f"control plane Elevated (CPU {phr.get('cpu_5min', '?')}%)")
+        else:
+            ax("Control plane", "ok", "control-plane capacity OK")
+
+        sir = si_by.get(host)
+        si_sevs = {d.get("severity") for d in si_det.get(host, [])}
+        if sir is None or not sir.get("collected"):
+            ax("Operational logs", "na", "log evidence not collected")
+        elif "High" in si_sevs:
+            ax("Operational logs", "risk", "high-severity operational events in the device's own logs")
+        elif "Medium" in si_sevs:
+            ax("Operational logs", "watch", "operational events to review in the logs")
+        else:
+            ax("Operational logs", "ok", "no flagged operational events")
+
+        s = sec.get(host)
+        fails = [f for f in ((s or {}).get("findings") or [])
+                 if isinstance(f, dict) and f.get("status") == "fail"]
+        if s is None:
+            ax("Security posture", "na", "no captured running-config")
+        elif any(str(f.get("severity", "")).lower() == "high" for f in fails):
+            ax("Security posture", "risk", f"{len(fails)} CIS check(s) failing (incl. high)")
+        elif fails:
+            ax("Security posture", "watch", f"{len(fails)} CIS check(s) failing")
+        else:
+            ax("Security posture", "ok", "CIS checks pass")
+
+        hg = hyg.get(host)
+        n_undef = len((hg or {}).get("undefined") or [])
+        if hg is None:
+            ax("Config hygiene", "na", "no captured running-config")
+        elif n_undef >= 5:
+            ax("Config hygiene", "risk", f"{n_undef} undefined reference(s)")
+        elif n_undef:
+            ax("Config hygiene", "watch", f"{n_undef} undefined reference(s)")
+        else:
+            ax("Config hygiene", "ok", "no dangling references")
+
+        gdr = gd_by.get(host)
+        if gdr is None:
+            ax("Golden drift", "na", "not in the drift baseline")
+        elif gdr.get("n_missing", 0) >= 5 or gdr.get("compliance_pct", 100) < 70:
+            ax("Golden drift", "risk",
+               f"{gdr.get('n_missing', 0)} required directive(s) missing "
+               f"({gdr.get('compliance_pct', 0)}% compliant)")
+        elif gdr.get("n_missing", 0):
+            ax("Golden drift", "watch", f"{gdr.get('n_missing', 0)} required directive(s) missing")
+        else:
+            ax("Golden drift", "ok", "matches the config baseline")
+
+        qar = qa_by.get(host)
+        qa_sevs = {f.get("severity") for f in qa_find.get(host, [])}
+        if qar is None or not qar.get("assessable"):
+            ax("QoS posture", "na", "not assessable — full running-config not captured")
+        elif qa_sevs & {"High", "Medium"}:
+            # QoS doctrine gaps gate the DESIGN, not the asset's survival -> capped at watch.
+            ax("QoS posture", "watch", "QoS doctrine finding(s) on this device")
+        else:
+            ax("QoS posture", "ok", "QoS posture consistent")
+
+        # physical/protocol findings derive from the interface scan -- a host the scorer never
+        # saw (in the roster only via EoL / software / log evidence) is 'na', not silently clean.
+        scanned = hsr is not None
+        phys = [r for r in phy_by.get(host, [])
+                if r.get("severity") not in (None, "", "Info", "OK")]
+        hard_phy = [r for r in phys
+                    if any(k in (r.get("risk") or "") for k in ("err-disabled", "error-rate-high"))]
+        if hard_phy:
+            ax("Physical", "risk", f"{len(hard_phy)} port(s) err-disabled / high error rate")
+        elif phys:
+            ax("Physical", "watch", f"{len(phys)} port(s) with L1 findings")
+        elif scanned or host in phy_by:
+            ax("Physical", "ok", "no L1 findings")
+        else:
+            ax("Physical", "na", "device not interface-scanned")
+
+        protos = proto_by.get(host, [])
+        p_sevs = {r.get("severity") for r in protos}
+        if "High" in p_sevs:
+            ax("Protocol", "risk", "high-severity protocol-health finding")
+        elif "Medium" in p_sevs:
+            ax("Protocol", "watch", "protocol-health finding(s) to review")
+        elif scanned or host in proto_by:
+            ax("Protocol", "ok", "protocol health clean")
+        else:
+            ax("Protocol", "na", "device not interface-scanned")
+
+        n_risk = sum(1 for e in exposures if e["state"] == "risk")
+        n_watch = sum(1 for e in exposures if e["state"] == "watch")
+        n_na = sum(1 for e in exposures if e["state"] == "na")
+        exposure_score = min(10, 2 * n_risk + n_watch)
+
+        # -- impact: topology blast radius + control-plane roles -------------
+        fir = fi_by.get(host)
+        fi_sev = (fir or {}).get("severity", "")
+        stranded = int((fir or {}).get("stranded") or 0)
+        vlans_imp = int((fir or {}).get("vlans_impacted") or 0)
+        impact = {"High": 8, "Medium": 5, "Low": 3}.get(fi_sev, 1)
+        if stranded >= 200:
+            impact += 2
+        elif stranded >= 50:
+            impact += 1
+        root_vlans = sum(1 for v in (roots.get(host) or {}).values()
+                         if isinstance(v, dict) and v.get("is_root"))
+        if root_vlans:
+            impact += 1                       # STP control-plane keystone
+        if (hs_by.get(host) or {}).get("role") == "distribution":
+            impact += 1                       # gateway-carrying asset
+        impact = max(1, min(10, impact))
+
+        risk_index = impact * exposure_score
+
+        # -- compound patterns: independent risks coinciding on one asset ----
+        state = {e["axis"]: e["state"] for e in exposures}
+        compound: List[dict] = []
+
+        def cr(code: str, title: str, severity: str, basis: str) -> None:
+            compound.append({"code": code, "title": title, "severity": severity, "basis": basis})
+
+        impact_phrase = (f"removal strands {stranded} endpoint(s) across {vlans_imp} VLAN(s)"
+                         if stranded else f"removal impacts {vlans_imp} VLAN(s)" if vlans_imp
+                         else "no modeled reachability impact")
+        if state.get("Hardware EoL") == "risk" and fi_sev == "High":
+            cr("CR-01", "End-of-support keystone", "Critical",
+               f"Hardware is past/near last-day-of-support AND {impact_phrase} — "
+               "an unsupportable box the network cannot lose.")
+        if state.get("Hardware EoL") == "risk" and state.get("Health") == "risk":
+            cr("CR-02", "Failing hardware past support", "High",
+               "Critical health score on hardware that is past/near end-of-support — "
+               "no TAC escalation path when it degrades further.")
+        if root_vlans and (state.get("Health") == "risk" or state.get("Physical") == "risk"):
+            cr("CR-03", "Root bridge on degraded hardware", "High",
+               f"STP root for {root_vlans} VLAN(s) on a device with "
+               f"{'Critical health' if state.get('Health') == 'risk' else 'hard L1 findings'} — "
+               "a root failure reconverges every VLAN it anchors.")
+        if state.get("Software risk") == "risk" and fi_sev in ("High", "Medium"):
+            cr("CR-04", "Open advisory surface on a high-impact asset", "High",
+               f"Config-evidenced advisory surface is open AND {impact_phrase} — "
+               "validate with the Cisco PSIRT Software Checker before the window.")
+        if state.get("Control plane") == "risk" and fi_sev == "High":
+            cr("CR-05", "Stressed control plane at a single point of failure", "High",
+               f"Control plane is already Hot AND {impact_phrase} — "
+               "migration protocol churn lands on a box with no headroom.")
+        cfg_red = sum(1 for a in ("Security posture", "Config hygiene", "Golden drift")
+                      if state.get(a) in ("risk", "watch"))
+        if cfg_red >= 2 and fi_sev == "High":
+            cr("CR-06", "Layered config debt on a critical asset", "Medium",
+               f"{cfg_red} config-truth axes are off-baseline AND {impact_phrase} — "
+               "drift on the box you can least afford to misjudge.")
+
+        # banding: index thresholds, FLOORED by the worst compound pattern -- a Critical
+        # coincidence IS the multiplied concern, whatever the arithmetic says.
+        risk_band = ("Severe" if risk_index >= _DOSSIER_SEVERE
+                     else "Elevated" if risk_index >= _DOSSIER_ELEVATED
+                     else "Guarded" if risk_index >= _DOSSIER_GUARDED else "Low")
+        comp_sevs = {c["severity"] for c in compound}
+        if "Critical" in comp_sevs:
+            risk_band = "Severe"
+        elif "High" in comp_sevs and risk_band in ("Guarded", "Low"):
+            risk_band = "Elevated"
+
+        # -- the engineer's one-sentence verdict ------------------------------
+        red_labels = [e["label"] for e in exposures if e["state"] == "risk"][:3]
+        watch_labels = [e["label"] for e in exposures if e["state"] == "watch"][:3]
+        if risk_band == "Severe":
+            verdict = ("Stabilize or replace before migration — "
+                       + "; ".join(red_labels or watch_labels) + f"; {impact_phrase}.")
+        elif risk_band == "Elevated":
+            verdict = ("Remediate inside the migration plan — "
+                       + "; ".join(red_labels + watch_labels[:max(0, 3 - len(red_labels))])
+                       + f"; {impact_phrase}.")
+        elif risk_band == "Guarded":
+            verdict = ("Watch items only — " + "; ".join(watch_labels or red_labels or ["minor findings"])
+                       + ".")
+        else:
+            verdict = "No stacked risk — routine migration handling."
+
+        per_device.append({
+            "host": host,
+            "model": (lcr or {}).get("model", ""), "platform": (lcr or {}).get("platform", ""),
+            "sw_version": (lcr or {}).get("sw_version", "") or (swr or {}).get("sw_version", ""),
+            "role": (hsr or {}).get("role", ""), "wave": wave_of.get(host, ""),
+            "health_score": (hsr or {}).get("score"), "health_band": band,
+            "eol_band": lcb if lcr else "Unknown", "train_band": swb if swr else "Unknown",
+            "platform_band": phb if phr else "Unknown",
+            "vpc_role": (vpc.get(host) or {}).get("role", ""),
+            "stp_root_vlans": root_vlans,
+            "impact_score": impact, "impact_severity": fi_sev or "—",
+            "stranded": stranded, "vlans_impacted": vlans_imp,
+            "exposure_score": exposure_score, "exposures": exposures,
+            "n_risk": n_risk, "n_watch": n_watch, "n_na": n_na,
+            "compound": compound,
+            "risk_index": risk_index, "risk_band": risk_band, "verdict": verdict})
+
+    per_device.sort(key=lambda d: (_DOSSIER_BAND_RANK.get(d["risk_band"], 9),
+                                   -d["risk_index"], d["host"]))
+    bands_c = {b: sum(1 for d in per_device if d["risk_band"] == b) for b in _DOSSIER_BANDS}
+    n_compound = sum(len(d["compound"]) for d in per_device)
+    worst = [d["host"] for d in per_device
+             if d["risk_band"] in ("Severe", "Elevated")][:3]
+    summary = {"n_devices": len(per_device), "bands": bands_c, "n_compound": n_compound,
+               "worst": worst,
+               "avg_risk_index": (round(sum(d["risk_index"] for d in per_device)
+                                        / len(per_device)) if per_device else 0)}
+    return {"per_device": per_device, "summary": summary,
+            "note": ("Risk index = topology impact (1-10) x stacked exposure (0-10) per asset, "
+                     "mirroring asset-risk practice (likelihood x impact). Synthesis of already-"
+                     "computed axes only; an axis without evidence is 'not assessed', never red.")}

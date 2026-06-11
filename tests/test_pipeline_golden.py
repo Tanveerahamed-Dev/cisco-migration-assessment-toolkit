@@ -65,6 +65,11 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     # executive_brief rolls up lifecycle (its EoL headline is date-relative) -> exclude too; pinned by
     # tests/test_executive_brief.py with synthetic summaries. (V3.23.120)
     snap.pop("executive_brief", None)
+    # device_dossiers embeds the EoL band per asset (eol_band / exposure labels / risk_band shift as
+    # dates pass) -> exclude like its lifecycle source; pinned by tests/test_device_dossiers.py with
+    # synthetic axes. Its PUNCH-LIST fold stays frozen: the CR basis text is deliberately band-agnostic
+    # ("past/near end-of-support"), so band transitions never reword a folded row. (V3.23.172)
+    snap.pop("device_dossiers", None)
     return snap, str(out_xlsx)
 
 
