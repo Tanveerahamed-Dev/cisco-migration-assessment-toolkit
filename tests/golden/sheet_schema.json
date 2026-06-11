@@ -391,6 +391,24 @@
   "Detail",
   "Remediation"
  ],
+ "Device Risk Register": [
+  "Device Risk Register: 1 Severe, 0 Elevated of 3 asset(s) \u00b7 5 compound pattern(s). Risk index = topology impact (1-10) \u00d7 stacked exposure (0-10) \u2014 the senior-engineer read: independent risks coinciding on one box outrank any single finding.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Remediation Plan": [
   "\u26a0 GENERATED FOR REVIEW \u2014 validate against the device's running-config and your change-control before applying. Snippets are starting points, not a turnkey script.",
   null,
