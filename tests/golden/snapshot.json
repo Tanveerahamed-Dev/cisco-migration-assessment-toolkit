@@ -3227,6 +3227,32 @@
   {
    "severity": "High",
    "rank": 3,
+   "category": "Operational logs",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "MAC address flapping",
+   "detail": "2 event(s) in the collected log window.",
+   "remediation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window.",
+   "priority": 9
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Operational logs",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Port err-disabled",
+   "detail": "1 event(s) in the collected log window.",
+   "remediation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port.",
+   "priority": 10
+  },
+  {
+   "severity": "High",
+   "rank": 3,
    "category": "Protocol",
    "devices": [
     "core1"
@@ -3235,7 +3261,7 @@
    "title": "OSPF high",
    "detail": "10.0.99.9 EXSTART/DROTHER",
    "remediation": "",
-   "priority": 9
+   "priority": 11
   },
   {
    "severity": "High",
@@ -3248,7 +3274,7 @@
    "title": "Local user password storage",
    "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
    "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
-   "priority": 10
+   "priority": 12
   },
   {
    "severity": "High",
@@ -3261,7 +3287,7 @@
    "title": "SNMP access",
    "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
    "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
-   "priority": 11
+   "priority": 13
   },
   {
    "severity": "High",
@@ -3274,7 +3300,20 @@
    "title": "VTY transport (telnet)",
    "detail": "a VTY line permits telnet (cleartext management).",
    "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
-   "priority": 12
+   "priority": 14
+  },
+  {
+   "severity": "High",
+   "rank": 3,
+   "category": "Software exposure",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Device web UI (ip http server / secure-server)",
+   "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
+   "remediation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker.",
+   "priority": 15
   },
   {
    "severity": "Medium",
@@ -3287,7 +3326,7 @@
    "title": "core1: L1 fault on an L3 gateway switch",
    "detail": "core1 hosts L3 gateway SVIs and has an err-disabled or high-error port - physical instability at a routing aggregation point.",
    "remediation": "",
-   "priority": 13
+   "priority": 16
   },
   {
    "severity": "Medium",
@@ -3300,7 +3339,59 @@
    "title": "single fiber uplink",
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
-   "priority": 14
+   "priority": 17
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Operational logs",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "Duplex mismatch",
+   "detail": "1 event(s) in the collected log window.",
+   "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
+   "priority": 18
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Operational logs",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Interface flapping",
+   "detail": "1 interface(s) with >= 6 up/down transitions: GigabitEthernet1/0/9 (6x).",
+   "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
+   "priority": 19
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Operational logs",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "Repeated login failures",
+   "detail": "6 failed login(s) in the collected log window.",
+   "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
+   "priority": 20
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Platform capacity",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Control-plane CPU elevated",
+   "detail": "CPU 63% (show processes cpu (5-min avg)).",
+   "remediation": "A 5-minute CPU at/above 60% is workable but worth explaining before the cutover adds protocol churn. Identify the top processes and confirm the level is expected for this role.",
+   "priority": 21
   },
   {
    "severity": "Medium",
@@ -3314,7 +3405,7 @@
    "title": "STP root != gateway (VLAN 30)",
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
-   "priority": 15
+   "priority": 22
   },
   {
    "severity": "Medium",
@@ -3327,7 +3418,7 @@
    "title": "Unused / risky services",
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
-   "priority": 16
+   "priority": 23
   },
   {
    "severity": "Medium",
@@ -3340,7 +3431,33 @@
    "title": "VTY line hardening",
    "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
-   "priority": 17
+   "priority": 24
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Software exposure",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "SNMP v1/v2c read-only community",
+   "detail": "Cleartext community strings leak topology and credentials material, and v1/v2c packets still reach the (historically exploited) SNMP stack.",
+   "remediation": "Move to SNMPv3 auth+priv and ACL the SNMP service.",
+   "priority": 25
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Software exposure",
+   "devices": [
+    "core1"
+   ],
+   "wave": "",
+   "title": "Telnet enabled on vty lines",
+   "detail": "Telnet sends credentials and session content in cleartext -- one capture on any transit segment is a full management compromise.",
+   "remediation": "Set 'transport input ssh' on all vty lines (and verify SSHv2-only).",
+   "priority": 26
   },
   {
    "severity": "Low",
@@ -3354,7 +3471,18 @@
    "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
    "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
-   "priority": 18
+   "priority": 27
+  },
+  {
+   "severity": "Low",
+   "rank": 1,
+   "category": "QoS",
+   "devices": [],
+   "wave": "",
+   "title": "No QoS configured anywhere",
+   "detail": "None of the 1 assessable device(s) carries any QoS configuration.",
+   "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
+   "priority": 28
   },
   {
    "severity": "Low",
@@ -3367,7 +3495,7 @@
    "title": "Accidental root (VLAN 30)",
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
-   "priority": 19
+   "priority": 29
   },
   {
    "severity": "Low",
@@ -3380,7 +3508,7 @@
    "title": "Login banner",
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
-   "priority": 20
+   "priority": 30
   }
  ],
  "operational_drift": [
@@ -4226,7 +4354,7 @@
      },
      {
       "severity": "Low",
-      "title": "12 High/Critical punch-list item(s) on this domain's switches",
+      "title": "15 High/Critical punch-list item(s) on this domain's switches",
       "detail": "Open High/Critical items (categories: Config hygiene, Cross-layer, Health, L1, L3) intersect this domain's switches.",
       "remediation": "See the Migration Punch-List for the prioritized, per-device fix order.",
       "standard": ""
