@@ -5,6 +5,19 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-11 — V3.23.176: one-source-of-truth audit → NOS quartet reaches AssessHub
+
+On branch `feat/webapp-nos-quartet-sections`. Audited all ~49 snapshot keys × 9 surfaces.
+
+- Verdict: the contract holds by design everywhere except ONE gap — the V3.23.164–.167 quartet
+  (syslog/QoS/software-risk/platform-health) was unreachable from the webapp (absent from both
+  SECTION_LABELS and _ALLOWED_SECTIONS, which were authored before the quartet existed).
+- Fix: quartet joins SECTION_LABELS (tab + whitelist in one move). +1 webapp test (27).
+- By-design non-gaps recorded: reference keys (nat/acls/routes) sheet+explorer-only; punch-list
+  fold carries L1/security/STP into the docs; deck/design/MOP/ops are phase-curated.
+
+---
+
 ## 2026-06-11 — V3.23.175: register-arc self-review (3 findings fixed)
 
 On branch `review/register-arc-cleanup`. Post-arc max review of my own V3.23.172–.174 diff.

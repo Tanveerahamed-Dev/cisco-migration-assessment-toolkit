@@ -34,6 +34,13 @@ SECTION_LABELS: List[tuple] = [
     ("remediation_plan", "Remediation"),
     ("validation_plan", "Validation plan"),
     ("golden_drift", "Config drift"),
+    # NEW-V3.23.176: the V3.23.164-.167 NOS analytic quartet landed after this list was
+    # authored and was unreachable from the web platform (neither tab nor whitelist) --
+    # the one-source-of-truth audit's only real gap.
+    ("syslog_intelligence", "Syslog"),
+    ("qos_audit", "QoS posture"),
+    ("software_risk", "Software risk"),
+    ("platform_health", "Platform health"),
     ("capacity", "Capacity"),
     ("endpoint_identity", "Endpoints"),
     ("lifecycle_risk", "Lifecycle / EoL"),
