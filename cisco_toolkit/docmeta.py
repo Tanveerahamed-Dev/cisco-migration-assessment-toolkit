@@ -183,3 +183,36 @@ def add_acceptance(doc, *, heading="Document Acceptance", scope_note="", roles=D
         "of the engagement." + ((" " + scope_note) if scope_note else ""))
     add_table(doc, ["Role", "Name", "Signature", "Date"],
            [(r, "", "", "") for r in roles], widths=[2.2, 1.9, 1.6, 1.0])
+
+
+def add_toc(doc, *, heading="Contents", depth="1-2"):
+    """Render the 'Contents' heading + the Word TOC field code (V3.23.171 — was a verbatim
+    copy in every generator; one home means one place to change heading depth or the
+    update-field placeholder). Word builds the actual entries on field update."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc.add_heading(heading, level=1)
+    p = doc.add_paragraph()
+    run = p.add_run()
+    fb = OxmlElement("w:fldChar"); fb.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText"); instr.set(qn("xml:space"), "preserve")
+    instr.text = rf'TOC \o "{depth}" \h \z \u'
+    fs = OxmlElement("w:fldChar"); fs.set(qn("w:fldCharType"), "separate")
+    ft = OxmlElement("w:t"); ft.text = "Right-click → Update Field to build the table of contents."
+    fe = OxmlElement("w:fldChar"); fe.set(qn("w:fldCharType"), "end")
+    for el in (fb, instr, fs, ft, fe):
+        run._r.append(el)
+    doc.add_page_break()
+
+
+def as_dict(x) -> dict:
+    """Coerce a possibly-malformed snapshot value to a dict. `snap.get(k) or {}` does NOT
+    guard a truthy non-dict (the V3.23.159 review's recurring bug class) — every deliverable
+    reader should use these shared coercers instead of carrying a private copy."""
+    return x if isinstance(x, dict) else {}
+
+
+def as_list(x) -> list:
+    """Coerce a possibly-malformed snapshot value to a list (see as_dict)."""
+    return x if isinstance(x, list) else []

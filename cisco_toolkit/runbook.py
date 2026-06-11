@@ -24,7 +24,7 @@ import logging
 from collections import Counter
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +81,6 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.enum.section import WD_ORIENT
-        from docx.oxml.ns import qn
-        from docx.oxml import OxmlElement
         from docx.shared import Pt, RGBColor, Inches
     except ImportError:
         logger.warning("  Runbook (DOCX) skipped: python-docx not installed "
@@ -176,19 +174,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         exclude=("runbook",))
     doc.add_page_break()
 
-    # ---- table of contents (auto-updates in Word) ----
-    doc.add_heading("Contents", level=1)
-    toc_p = doc.add_paragraph()
-    run = toc_p.add_run()
-    fld_begin = OxmlElement("w:fldChar"); fld_begin.set(qn("w:fldCharType"), "begin")
-    instr = OxmlElement("w:instrText"); instr.set(qn("xml:space"), "preserve")
-    instr.text = r'TOC \o "1-2" \h \z \u'
-    fld_sep = OxmlElement("w:fldChar"); fld_sep.set(qn("w:fldCharType"), "separate")
-    fld_txt = OxmlElement("w:t"); fld_txt.text = "Right-click → Update Field to build the table of contents."
-    fld_end = OxmlElement("w:fldChar"); fld_end.set(qn("w:fldCharType"), "end")
-    for el in (fld_begin, instr, fld_sep, fld_txt, fld_end):
-        run._r.append(el)
-    doc.add_page_break()
+    # ---- table of contents (shared field-code helper, V3.23.171) ----
+    add_toc(doc)
 
     # ===== 1. Assessment Header & Executive Summary =====
     doc.add_heading("1. Assessment Header & Executive Summary", level=1)

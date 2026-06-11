@@ -22,7 +22,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,6 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     try:
         from docx import Document
         from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.oxml.ns import qn
-        from docx.oxml import OxmlElement
         from docx.shared import Pt, RGBColor
     except ImportError:
         logger.warning("  Design document (DOCX) skipped: python-docx not installed "
@@ -174,17 +172,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         exclude=("design",))
     doc.add_page_break()
 
-    # ---- table of contents ----
-    doc.add_heading("Contents", level=1)
-    toc_p = doc.add_paragraph(); run = toc_p.add_run()
-    fb = OxmlElement("w:fldChar"); fb.set(qn("w:fldCharType"), "begin")
-    instr = OxmlElement("w:instrText"); instr.set(qn("xml:space"), "preserve"); instr.text = r'TOC \o "1-2" \h \z \u'
-    fs = OxmlElement("w:fldChar"); fs.set(qn("w:fldCharType"), "separate")
-    ft = OxmlElement("w:t"); ft.text = "Right-click → Update Field to build the table of contents."
-    fe = OxmlElement("w:fldChar"); fe.set(qn("w:fldCharType"), "end")
-    for el in (fb, instr, fs, ft, fe):
-        run._r.append(el)
-    doc.add_page_break()
+    # ---- table of contents (shared field-code helper, V3.23.171) ----
+    add_toc(doc)
 
     # ===== 1. Executive design summary =====
     doc.add_heading("1. Executive Design Summary", level=1)
