@@ -5,6 +5,16 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-11 — README catch-up (docs only): the register era reaches the front door
+
+On branch `docs/readme-register`. No code change, no version bump.
+
+- 'Reading the results' gains the Device Risk Register paragraph; explorer Health bullet gains
+  the leaderboard + verdict card; AssessHub bullet gains the register panel + quartet tabs.
+- Stale fix: explorer mode list said EIGHT and omitted Waves/Apps/Review — now eleven, all listed.
+
+---
+
 ## 2026-06-11 — V3.23.176: one-source-of-truth audit → NOS quartet reaches AssessHub
 
 On branch `feat/webapp-nos-quartet-sections`. Audited all ~49 snapshot keys × 9 surfaces.

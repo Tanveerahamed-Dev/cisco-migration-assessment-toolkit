@@ -194,19 +194,38 @@ depends on — the prioritisation that still works when every per-switch score
 saturates to Critical), per-group readiness, and a plain-English *"where to
 start."* Each section points to a detail tab for the underlying evidence.
 
-**Explorer — eight modes over one topology.** Pan/zoom the graph; search by
+**Then the Device Risk Register.** The per-**asset** synthesis: the eleven
+per-device axes (health, hardware EoL, software risk, control-plane capacity,
+operational logs, CIS posture, config hygiene, golden drift, QoS, physical,
+protocol) stacked per box and ranked by **risk index = topology impact ×
+exposure**, with named **compound patterns** (CR-01..CR-06) where independent
+risks coincide on one asset — an end-of-support keystone, a root bridge on
+degraded hardware, an open advisory surface on a box whose removal partitions
+the network — and a one-sentence engineer's verdict each. An axis without
+evidence reads *not assessed*, never healthy-by-silence. The top row is the
+scariest box in the fleet; the compound patterns also fold into the punch-list.
+
+**Explorer — eleven modes over one topology.** Pan/zoom the graph; search by
 switch / IP / MAC; filter by VLAN. The modes:
 
 - **Blast radius** — click a switch to simulate its removal and see what it strands.
 - **Path trace** — the L2/L3 path between two switches, with the bridges / articulation points on it.
 - **Compare** — diff two snapshots (pre/post-cutover): what regressed, what improved.
 - **Flow** — an L1→L3 flow trace between two endpoints, with ACL / NAT / MTU / VRF awareness.
-- **Health** — the **Risk cockpit**: a risk-by-tier matrix, the keystone devices, and a
-  punch-list triage up top, then per-switch health, the root-cause SPOF list, and a
-  what-if remediation simulator.
+- **Health** — the **Risk cockpit**: a risk-by-tier matrix, the keystone devices, the
+  **Asset risk register** (the fleet ranked by per-asset compound risk, with CR-pattern
+  chips and inline engineer's verdicts) and a punch-list triage up top, then per-switch
+  health, the root-cause SPOF list, and a what-if remediation simulator. Selecting any
+  switch in any mode opens its dossier, led by the engine's **Engineer's verdict** card.
 - **Protocols** — routing-protocol topology, redistribution boundaries, adjacency health.
 - **Cross-Layer** — findings that compound across layers into one real migration risk.
 - **Causality** — each structural SPOF as a trigger → mechanism → impact → mitigation chain.
+- **Waves** — the migration move-groups in recommended cutover order, each with its readiness
+  verdict, scenario (make-before-break vs hard cutover) and post-cutover validation checks.
+- **Apps** — application domains (workloads) with footprint, criticality tier and inter-domain
+  coupling — the unit the business actually migrates.
+- **Review** — the senior-engineer architecture review: leading-practice checks across eight
+  design domains with an A–F conformance grade and not-assessable honesty.
 
 The explorer is a single self-contained file (no server, no external assets) and
 runs fully offline — safe to email or open from a USB stick.
@@ -218,8 +237,10 @@ additive** (the engine and its golden test contract are untouched). Where the CL
 assessment, AssessHub manages the whole migration *campaign*:
 
 - **Campaigns & waves** — snapshots stored in SQLite, tracked over time with trajectory verdicts
-  and pairwise compare; the **risk cockpit**, a native **force-directed fleet topology**, 15+ detail
-  sections, and the deep explorer embedded per snapshot.
+  and pairwise compare; the **risk cockpit**, the **Device Risk Register** (per-asset compound
+  risk, ranked, with compound-pattern chips), a native **force-directed fleet topology**, 20+
+  detail sections (including the syslog / QoS / software-risk / platform-health axes), and the
+  deep explorer embedded per snapshot.
 - **Two ways in** — upload a finished `*.snapshot.json`, or upload a **ZIP of raw show-command
   outputs** and the real engine pipeline runs server-side.
 - **Gated cutover planner** — per-wave Go / Conditional-Go / No-Go gates, pilot-first sequencing,
