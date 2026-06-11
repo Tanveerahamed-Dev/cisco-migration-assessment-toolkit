@@ -2846,7 +2846,11 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 hostname_mismatches: Optional[list] = None,
                                 drift: Optional[list] = None,
                                 ptp_readiness: Optional[list] = None,
-                                media_risks: Optional[list] = None) -> List[dict]:
+                                media_risks: Optional[list] = None,
+                                syslog_intelligence: Optional[dict] = None,
+                                qos_audit: Optional[dict] = None,
+                                software_risk: Optional[dict] = None,
+                                platform_health: Optional[dict] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -2995,6 +2999,37 @@ def compute_migration_punchlist(cross_layer: List[dict],
     for d in (media_risks or []):
         add(d.get("severity", "Medium"), "Multicast/Media", d.get("devices", []),
             d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
+
+    # NEW-V3.23.169: fold in the V3.23.164-.167 axes so they reach the decision layer. Each axis
+    # already aggregates per host; here like findings are GROUPED by kind across devices (the same
+    # cry-wolf rule the security fold uses) -- one row + a device list, never one row per device.
+    # Fleet-level rows (host '(fleet)') carry no device so they never pollute per-device wave maps.
+    def _fold_axis(findings, category, label_key="label"):
+        bykind: Dict[str, dict] = {}
+        for f in (findings or []):
+            if not isinstance(f, dict):
+                continue
+            k = f.get("kind") or f.get(label_key) or ""
+            g = bykind.setdefault(k, {"severity": f.get("severity", "Medium"),
+                                      "title": f.get(label_key) or f.get("surface") or k,
+                                      "devices": [], "details": [],
+                                      "remediation": f.get("recommendation", "")})
+            host = (f.get("host") or "").strip()
+            if host and host != "(fleet)":
+                g["devices"].append(host)
+            d = f.get("detail") or f.get("why")          # software-risk rows carry 'why', not 'detail'
+            if d:
+                g["details"].append(str(d))
+        for k in sorted(bykind):
+            g = bykind[k]
+            n_dev = len(set(g["devices"]))
+            detail = (f"{n_dev} device(s). " if n_dev > 1 else "") + (g["details"][0] if g["details"] else "")
+            add(g["severity"], category, g["devices"], g["title"], detail, g["remediation"])
+
+    _fold_axis((syslog_intelligence or {}).get("detections"), "Operational logs")
+    _fold_axis((qos_audit or {}).get("findings"), "QoS")
+    _fold_axis((software_risk or {}).get("findings"), "Software exposure", label_key="surface")
+    _fold_axis((platform_health or {}).get("findings"), "Platform capacity")
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
     for i, it in enumerate(items, 1):
@@ -4792,9 +4827,14 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
                             application_intelligence: Optional[dict] = None,
                             lifecycle_risk: Optional[dict] = None, segmentation: Optional[dict] = None,
                             multicast_intelligence: Optional[dict] = None,
-                            remediation_plan: Optional[dict] = None) -> dict:
+                            remediation_plan: Optional[dict] = None,
+                            syslog_intelligence: Optional[dict] = None,
+                            qos_audit: Optional[dict] = None,
+                            software_risk: Optional[dict] = None,
+                            platform_health: Optional[dict] = None) -> dict:
     """NEW-V3.23.120: cross-axis migration brief -- one headline per assessment axis rolled up into a single
     decision-grade synthesis. Pure read of each layer's already-computed summary; deterministic given inputs.
+    V3.23.169: the operational-log / QoS / software-risk / platform-capacity axes joined the synthesis.
     Returns {scale, posture, axes, top_gating, posture_statement}."""
     hs = health_scores or []
     pl = punchlist or []
@@ -4864,6 +4904,55 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
         ax("Remediation", "Info",
            f"{rem.get('n_items', 0)} review-ready config snippet(s) across {rem.get('n_devices', 0)} device(s)",
            "Generated for review (validate before applying).")
+
+    # NEW-V3.23.169: the four V3.23.164-.167 axes reach the brief. Severity = the axis's own worst
+    # finding; an axis whose evidence was not collected reports Info honestly, never Low-by-silence.
+    def _worst(findings):
+        sevs = {f.get("severity") for f in (findings or []) if isinstance(f, dict)}
+        return ("High" if "High" in sevs else "Medium" if "Medium" in sevs
+                else "Low" if sevs else None)
+
+    si_s = (syslog_intelligence or {}).get("summary") or {}
+    if si_s.get("n_devices"):
+        if si_s.get("n_collected"):
+            w = _worst((syslog_intelligence or {}).get("detections")) or "Low"
+            ax("Operational logs", w,
+               f"{si_s.get('n_detections', 0)} detection(s) · {si_s.get('crit_0_2', 0)} critical "
+               f"event(s) on {si_s.get('n_collected', 0)} device(s)",
+               "From the fleet's own buffered logs (bounded window — counts are floors).")
+        else:
+            ax("Operational logs", "Info", "log evidence not collected",
+               "Absence of logs is not scored as absence of problems.")
+    qa_s = (qos_audit or {}).get("summary") or {}
+    if qa_s.get("n_devices"):
+        if qa_s.get("n_assessable"):
+            w = _worst((qos_audit or {}).get("findings")) or "Low"
+            ax("QoS posture", w,
+               f"{qa_s.get('n_findings', 0)} finding(s) · "
+               + (", ".join(f"{v}× {k}" for k, v in (qa_s.get('modes') or {}).items()) or "—"),
+               "Configured posture from the captured running-configs (not live queue state).")
+        else:
+            ax("QoS posture", "Info", "not assessable — no full running-config captures", "")
+    sr_s = (software_risk or {}).get("summary") or {}
+    if sr_s.get("n_devices"):
+        w = _worst((software_risk or {}).get("findings"))
+        tb = sr_s.get("train_bands") or {}
+        lifecycle_pressure = tb.get("Replace/Upgrade") or tb.get("Verify EoL")
+        sev = w or ("Medium" if lifecycle_pressure else "Low")
+        ax("Software risk", sev,
+           f"{sr_s.get('n_findings', 0)} exposed advisory surface(s) · trains "
+           + (", ".join(f"{v}× {k}" for k, v in tb.items()) or "—"),
+           "Screening, not a scan — validate releases with the Cisco PSIRT Software Checker.")
+    ph_s = (platform_health or {}).get("summary") or {}
+    if ph_s.get("n_devices"):
+        if ph_s.get("n_collected"):
+            w = _worst((platform_health or {}).get("findings")) or "Low"
+            ax("Platform capacity", w,
+               f"{ph_s.get('n_findings', 0)} finding(s) · "
+               + (", ".join(f"{v}× {k}" for k, v in (ph_s.get('bands') or {}).items()) or "—"),
+               "Single point-in-time control-plane sample; re-check before the window.")
+        else:
+            ax("Platform capacity", "Info", "capacity output not collected", "")
 
     axes.sort(key=lambda a: _APP_SEV_RANK.get(a["severity"], 9))
     top_gating = [a["headline"] for a in axes if a["severity"] in ("Critical", "High")]
