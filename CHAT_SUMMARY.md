@@ -5,6 +5,78 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-12 — V3.23.180: the 240-question AS engagement interview engine (capstone)
+
+User supplied questionnaire.json (240 questions / 12 domains incl. Catalyst Center + ISE/NAC,
+generated on another AI platform from the prompt we wrote; schema exactly as contracted: id/domain/
+phase/question/rationale/evidence/red_flag/go_no_go, 20 ⛔ gates) with "full authority — make it
+spectacular; last session." Built: embed_qbank.py injects the bank between QBANK sentinels in the
+template (static knowledge ships in the file; rerun after editing the JSON); ABQ interview engine —
+12 evidence auto-answer rules pre-fill whatever the snapshot proves (R&S: 6/20 auto on field data),
+then one-question-at-a-time interview cards (why-a-senior-asks + evidence anchor + red-flag answer +
+⛔ badge) with ✓ Pass / ⚠ Red flag / Skip / Pause; localStorage persistence; per-domain scorecards;
+GO/NO-GO readiness board over the 20 gates; markdown minutes export to clipboard. Bare domain words
+("firewall", "vpn", "ise") open that domain's interview — for evidence-less domains the bank IS the
+answer. 4th commit on PR #263. Engine untouched; 385 tests green; ruff clean; 0 console errors.
+
+---
+
+## 2026-06-12 — V3.23.179: the chat grows a senior-AS brain (conversational + 11 intents + animation)
+
+User: "understand what questions a Cisco AS senior engineer / solution architect asks and update the
+intelligence… normal English… detailed flows, diagrams, animation, interactive, rich UI/UX." Research
+(web + the project's own AS-deliverable standards) reduced to: MOP shape = prep→execute→validate→
+rollback; assessment angles = SPOF/redundancy, STP root placement, FHRP coverage, capacity, CIS
+hardening, architecture conformance, drift, addressing conflicts, exec posture — ALL already computed
+by the engine, so the chat just needed routes to them. Shipped: abNorm() filler-stripping + synonym
+folding onto intent tokens; AB_CTX conversation memory (pronouns + "what about AS64?" re-runs the last
+intent); smalltalk; 11 new handlers incl. the per-device cutover MOP synthesized from the device's own
+facts (endpoint baseline, VLANs, uplinks, STP roots, gateway SVIs) with Copy-plan clipboard action;
+rich cards (typing dots, draw-in SVG, animateMotion packet on paths, animated bars, step reveal,
+details-expanders) — all reduced-motion-gated, base states fully visible. Field-data findings the new
+intents surfaced immediately: 32 VLANs with default-election STP roots, 0 FHRP-covered VLANs, grade-D
+architecture, 43% port utilisation. Bug caught in verification: greeting matcher swallowed "hey, can
+you tell me my SPOFs?" → greet now gated to ≤4-word messages. 3rd commit on PR #263.
+
+---
+
+## 2026-06-12 — V3.23.178: off-scan ghost uplink nodes (the flat-row fix, follow-up chip)
+
+Implements the task chip from the V3.23.177 session: MODEL.offscan (CDP neighbors outside the
+collected set) now dedupes through canonHost() into MODEL.ghosts (attachment-count-sorted, cap 40)
+and a layout-ONLY synthetic model (layoutModel) joins them into the rank/tier computation — the
+51-switch access-only AJ dataset now renders as a proper tree under 11 dashed DS/CS ghosts
+instead of one flat row. Ghosts are pointer-events:none, drawn behind the fabric in #gghosts,
+labeled "via CDP · not collected", no entrance animation (reduced-motion-safe), and live OUTSIDE
+nodeEls/edgeEls so no mode painter, analytics, table view, minimap, or nav order ever sees them;
+ghost edges ride the same updateEdges() refresher so drags stay attached. Census line names the
+ghost count. Committed onto the still-open PR #263 branch (same file, one PR for the user).
+Real collection of the DS/CS tier remains the proper fix — ghosts are honest scaffolding, not data.
+
+---
+
+## 2026-06-12 — V3.23.177: Ask the Engineer (offline chat) + the 1366px layout fix
+
+User field report on the fresh 51-switch AJ run: (a) on their laptop the explorer's right-hand
+detail panel was unreachable — root cause: the header's 11 nowrap mode tabs + 12 tool buttons
+exceed 1366px min-content, the `.app` grid track widens past the viewport, and `body{overflow:hidden}`
+hides the overflow, so the whole 388px aside sat off-screen; fixed with `minmax(0,1fr)` track
+clamping + a ≤1500px wrapped, scrollbar-less scrollable mode row + fluid aside width. (b) "outputs
+feel filler" — diagnosed, NOT a code bug: all 51 collected devices are access switches whose CDP
+uplinks point at 11 uncollected DS*/CS* distribution/core boxes → zero collected-to-collected links
+→ flat one-row topology + thin link-dependent analyses. Real fix = add the DS/CS tier to
+devices.json and re-collect (ghost-node rendering of off-scan neighbors flagged as a follow-up task
+chip). (c) User wants a chat interface over the data — shipped **Ask the Engineer** (✦ Ask, key A):
+offline deterministic Q&A in the explorer — entity recognition + intent scoring → 18 handlers
+(profile/connections incl. off-scan/endpoints/VLANs/VLAN profile/migration briefing/path/fleet/
+risky/EoL/software/apps/waves/whois/license-honesty/help), card answers with inline SVG star+path
+diagrams and action buttons driving the canvas. Verified live at 1366×768 on the real snapshot;
+0 console errors; 385 engine tests + ruff clean. The AUTOFILLED explorer HTML was regenerated from
+the existing snapshot (no re-collection). LLM/BoQ-design tiers deliberately deferred (user: offline
+first, API later).
+
+---
+
 ## 2026-06-11 — README catch-up (docs only): the register era reaches the front door
 
 On branch `docs/readme-register`. No code change, no version bump.
