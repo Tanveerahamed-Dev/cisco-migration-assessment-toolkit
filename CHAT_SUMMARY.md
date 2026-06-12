@@ -5,6 +5,28 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-12 — V3.23.177: Ask the Engineer (offline chat) + the 1366px layout fix
+
+User field report on the fresh 51-switch AJ run: (a) on their laptop the explorer's right-hand
+detail panel was unreachable — root cause: the header's 11 nowrap mode tabs + 12 tool buttons
+exceed 1366px min-content, the `.app` grid track widens past the viewport, and `body{overflow:hidden}`
+hides the overflow, so the whole 388px aside sat off-screen; fixed with `minmax(0,1fr)` track
+clamping + a ≤1500px wrapped, scrollbar-less scrollable mode row + fluid aside width. (b) "outputs
+feel filler" — diagnosed, NOT a code bug: all 51 collected devices are access switches whose CDP
+uplinks point at 11 uncollected DS*/CS* distribution/core boxes → zero collected-to-collected links
+→ flat one-row topology + thin link-dependent analyses. Real fix = add the DS/CS tier to
+devices.json and re-collect (ghost-node rendering of off-scan neighbors flagged as a follow-up task
+chip). (c) User wants a chat interface over the data — shipped **Ask the Engineer** (✦ Ask, key A):
+offline deterministic Q&A in the explorer — entity recognition + intent scoring → 18 handlers
+(profile/connections incl. off-scan/endpoints/VLANs/VLAN profile/migration briefing/path/fleet/
+risky/EoL/software/apps/waves/whois/license-honesty/help), card answers with inline SVG star+path
+diagrams and action buttons driving the canvas. Verified live at 1366×768 on the real snapshot;
+0 console errors; 385 engine tests + ruff clean. The AUTOFILLED explorer HTML was regenerated from
+the existing snapshot (no re-collection). LLM/BoQ-design tiers deliberately deferred (user: offline
+first, API later).
+
+---
+
 ## 2026-06-11 — README catch-up (docs only): the register era reaches the front door
 
 On branch `docs/readme-register`. No code change, no version bump.

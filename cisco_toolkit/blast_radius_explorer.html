@@ -61,12 +61,16 @@
     font-size:13px; line-height:1.45; overflow:hidden; font-variant-numeric:tabular-nums;
     -webkit-font-smoothing:antialiased;
   }
-  .app{display:grid; grid-template-rows:auto 1fr; height:100vh}
+  /* minmax(0,1fr) clamps the single column track to the viewport: without it, a header whose
+     min-content width exceeds the screen (11 nowrap mode tabs + 12 tool buttons on a 1366px
+     laptop) silently widens the whole grid and pushes the right-hand detail panel off-screen —
+     unreachable, because body{overflow:hidden}. */
+  .app{display:grid; grid-template-rows:auto 1fr; grid-template-columns:minmax(0,1fr); height:100vh}
 
   /* ---- header ---- */
   header{
     display:flex; align-items:center; gap:16px; padding:0 16px; height:54px;
-    border-bottom:1px solid var(--border); background:var(--surface);
+    border-bottom:1px solid var(--border); background:var(--surface); min-width:0;
   }
   .brand{display:flex; align-items:baseline; gap:9px; flex-shrink:0}
   .brand b{font-size:14.5px; font-weight:650; letter-spacing:-.2px; color:var(--text)}
@@ -80,7 +84,9 @@
 
   /* ---- segmented mode switcher ---- */
   .modes{display:flex; gap:2px; background:var(--surface-2); padding:3px; border-radius:9px;
-    border:1px solid var(--border)}
+    border:1px solid var(--border); min-width:0; overflow-x:auto; overscroll-behavior-x:contain;
+    scrollbar-width:none}
+  .modes::-webkit-scrollbar{display:none}
   .modes button{
     font:inherit; font-size:12px; font-weight:550; cursor:pointer; color:var(--text-dim);
     background:transparent; border:0; padding:6px 13px; border-radius:6px; display:flex; gap:6px;
@@ -102,7 +108,16 @@
   .btn.primary:hover{background:var(--accent-dim)}
   .iconbtn{padding:6px 9px}
 
-  .main{display:grid; grid-template-columns:1fr 388px; min-height:0}
+  .main{display:grid; grid-template-columns:minmax(0,1fr) 388px; min-height:0}
+
+  /* laptop widths (≤1500px): the mode switcher gets its own full-width scrollable row under the
+     brand/tools row, and the detail panel narrows fluidly instead of forcing overflow */
+  @media (max-width:1500px){
+    header{flex-wrap:wrap; height:auto; min-height:54px; padding:6px 14px; row-gap:6px}
+    .modes{order:10; flex:1 1 100%}
+    .main{grid-template-columns:minmax(0,1fr) clamp(292px, 28vw, 388px)}
+    .src{max-width:170px}
+  }
 
   /* ---- stage / canvas ---- */
   .stage{position:relative; min-height:0; overflow:hidden; background:var(--bg);
@@ -791,7 +806,55 @@
      dashboard flow onto paper, hides interactive chrome, and surfaces
      the screen-reader data table (#srTable) as a printable data table.
      ============================================================ */
+  /* ---- Ask the Engineer — offline Q&A panel (V3.23.177) ---- */
+  #askbot{position:fixed; right:14px; bottom:14px; z-index:44; width:min(432px,calc(100vw - 28px));
+    height:min(74vh,640px); display:flex; flex-direction:column; background:var(--surface);
+    border:1px solid var(--border-strong); border-radius:13px; box-shadow:var(--shadow); overflow:hidden}
+  #askbot[hidden]{display:none}
+  .ab-hd{display:flex; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid var(--border);
+    background:var(--surface-2); flex-shrink:0}
+  .ab-hd b{font-size:13px}
+  .ab-dot{width:9px; height:9px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px var(--ok-soft); flex-shrink:0}
+  .ab-badge{font-size:9.5px; letter-spacing:.6px; font-weight:650; color:var(--text-faint);
+    text-transform:uppercase; border:1px solid var(--border); border-radius:999px; padding:2px 8px; white-space:nowrap}
+  .ab-msgs{flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px}
+  .ab-msgs::-webkit-scrollbar{width:10px}
+  .ab-msgs::-webkit-scrollbar-thumb{background:var(--surface-3); border-radius:10px}
+  .ab-msg{max-width:94%; font-size:12.5px; line-height:1.5}
+  .ab-msg.user{align-self:flex-end; background:var(--accent); color:#fff; padding:7px 11px;
+    border-radius:11px 11px 3px 11px; word-break:break-word}
+  .ab-msg.bot{align-self:flex-start; width:100%}
+  .ab-card{background:var(--surface-2); border:1px solid var(--border); border-radius:11px 11px 11px 3px; padding:10px 12px}
+  .ab-card h4{margin:8px 0 4px; font-size:10px; letter-spacing:.9px; text-transform:uppercase;
+    color:var(--text-faint); font-weight:700}
+  .ab-card h4:first-child{margin-top:0}
+  .ab-card table{width:100%; border-collapse:collapse; font-size:11.5px; margin:4px 0 6px}
+  .ab-card th{color:var(--text-faint); text-align:left; font-weight:600; font-size:10px; text-transform:uppercase;
+    letter-spacing:.4px; padding:3px 6px 3px 0; border-bottom:1px solid var(--border)}
+  .ab-card td{padding:3px 6px 3px 0; border-bottom:1px solid var(--border-faint); color:var(--text-dim); vertical-align:top}
+  .ab-card td b{color:var(--text)}
+  .ab-kv{display:flex; gap:8px; margin:2px 0; font-size:12px}
+  .ab-kv .k{color:var(--text-faint); min-width:122px; flex-shrink:0}
+  .ab-kv .v{color:var(--text); min-width:0}
+  .ab-svg{display:block; margin:8px auto 2px; max-width:100%; height:auto}
+  .ab-acts{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px}
+  .ab-acts .btn{font-size:11px; padding:4px 9px}
+  .ab-link{color:var(--accent); cursor:pointer; text-decoration:underline; text-underline-offset:2px}
+  .ab-note{color:var(--text-faint); font-size:11px; margin-top:5px}
+  .ab-chips{display:flex; gap:6px; flex-wrap:wrap; padding:8px 12px 4px; border-top:1px solid var(--border); flex-shrink:0}
+  .ab-chips .chip{font-size:11px}
+  .ab-input{display:flex; gap:8px; padding:8px 12px 12px; flex-shrink:0}
+  .ab-input input{flex:1; min-width:0; font:inherit; font-size:12.5px; padding:8px 11px; border-radius:9px;
+    border:1px solid var(--border); background:var(--surface-2); color:var(--text); outline:none}
+  .ab-input input:focus{border-color:var(--accent)}
+  .ab-input input::placeholder{color:var(--text-faint)}
+  @media (prefers-reduced-motion: no-preference){
+    #askbot{animation:abIn .16s ease}
+  }
+  @keyframes abIn{from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none}}
+
   @media print{
+    #askbot{display:none !important}
     /* 1. Light palette regardless of current theme (reuse light token values) */
     :root, [data-theme="dark"]{
       --bg:#fff; --surface:#fff; --surface-2:#f3f6fa; --surface-3:#e9eef4;
@@ -855,6 +918,7 @@
     </div>
     <div class="grow"></div>
     <div class="tools">
+      <button class="btn" id="askBtn" title="Ask the Engineer — offline Q&amp;A over this snapshot (A)" aria-label="Open Ask the Engineer chat" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">✦</span> Ask</button>
       <button class="btn" id="loadBtn" aria-label="Load a snapshot file"><span aria-hidden="true">↥</span> Load</button>
       <button class="btn iconbtn" id="tableBtn" title="Toggle table view (G)" aria-label="Show topology as a table" aria-pressed="false"><span aria-hidden="true">▤</span> Table</button>
       <button class="btn iconbtn" id="layoutBtn" title="Toggle layered / radial layout" aria-label="Toggle layered or radial layout">⊞</button>
@@ -908,6 +972,7 @@
   <div class="krow"><span>Clear selection</span><span class="kbd">Esc</span></div>
   <div class="krow"><span>Toggle theme</span><span class="kbd">T</span></div>
   <div class="krow"><span>Toggle table view</span><span class="kbd">G</span></div>
+  <div class="krow"><span>Ask the Engineer (chat)</span><span class="kbd">A</span></div>
   <div class="krow"><span>Toggle mini-map</span><span class="kbd">M</span></div>
   <div class="krow"><span>Pan / zoom</span><span>drag · scroll wheel</span></div>
   <div class="krow"><span>Move a switch</span><span>drag the node (pin persists)</span></div>
@@ -933,6 +998,22 @@
 
 <div id="flowsim" hidden role="dialog" aria-modal="true" aria-label="Flow simulator"></div>
 <div id="flowmatrix" hidden role="dialog" aria-modal="true" aria-label="Reachability matrix"></div>
+
+<section id="askbot" hidden role="dialog" aria-label="Ask the Engineer — offline questions over this snapshot">
+  <div class="ab-hd">
+    <span class="ab-dot" aria-hidden="true"></span><b>Ask the Engineer</b>
+    <span class="ab-badge">offline · this snapshot</span>
+    <div class="grow"></div>
+    <button class="btn iconbtn" id="askClose" aria-label="Close chat">✕</button>
+  </div>
+  <div class="ab-msgs" id="abMsgs" aria-live="polite"></div>
+  <div class="ab-chips" id="abChips" aria-label="Suggested questions"></div>
+  <form class="ab-input" id="abForm">
+    <input id="abInput" placeholder="Ask about a switch, VLAN, path, migration risk…" autocomplete="off"
+      aria-label="Type a question about this network">
+    <button class="btn primary" type="submit">Ask</button>
+  </form>
+</section>
 
 <script>
 /* =====================================================================
@@ -3002,7 +3083,8 @@ function modeSummary(m){
   return "";
 }
 function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
-  document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");});
+  document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");
+    if(on&&b.scrollIntoView)b.scrollIntoView({block:"nearest",inline:"nearest"});});   // the strip scrolls on laptop widths — keep the active tab visible
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
   if(m!=="xlayer"){XLSEL=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null;}   // U1: cross-layer highlight + filters only live in their mode
   if(m!=="health")TIER_FOCUS=null;   // V3.23.72: a cockpit tier highlight only lives in Health mode
@@ -7457,6 +7539,9 @@ const _repaintTip=repaint; repaint=function(){hideTip();return _repaintTip.apply
 function setTheme(t){document.documentElement.setAttribute("data-theme",t);
   try{localStorage.setItem("nme-theme",t);}catch(e){}}
 document.getElementById("modes").addEventListener("click",e=>{const b=e.target.closest("button");if(b)setMode(b.dataset.mode);});
+/* vertical wheel scrolls the (scrollbar-less) mode strip horizontally when it overflows */
+document.getElementById("modes").addEventListener("wheel",e=>{const el=e.currentTarget;
+  if(el.scrollWidth>el.clientWidth&&!e.deltaX){el.scrollLeft+=e.deltaY; e.preventDefault();}},{passive:false});
 document.getElementById("svg").addEventListener("mousedown",onSvgDown);
 document.getElementById("svg").addEventListener("click",e=>{if(!dragMoved&&!dragNode)onBgClick();});
 document.getElementById("stage").addEventListener("wheel",e=>{e.preventDefault();
@@ -7520,6 +7605,7 @@ window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
   else if(k==="g")toggleTableView();
   else if(k==="m")toggleMinimap();
+  else if(k==="a")abToggle();
   else if(k==="r")resetLayout();
   else if(k==="/"){e.preventDefault();document.getElementById("search").focus();}
   else if(k==="escape"){onBgClick();document.getElementById("help").classList.remove("on");}});
@@ -7547,6 +7633,428 @@ window.addEventListener("resize",()=>{if(MODEL)fitView();});
 
 /* ---- URL-hash deep-linking: honor a shared/pasted hash on first paint + on back/forward ---- */
 window.addEventListener("hashchange",readHash);   // genuine user nav (replaceState writes never fire this)
+
+/* =====================================================================
+   ASK THE ENGINEER — offline, deterministic Q&A over the loaded snapshot
+   (V3.23.177). No network, no LLM: a question is parsed with entity
+   recognition (hostname / VLAN / IP / MAC) + keyword-scored intents, and
+   every answer is synthesized from the SAME one-source computes the canvas
+   already renders (MODEL links/endpoints/gateways, failureImpact, SNAP
+   dossiers / punchlist / lifecycle / software / app-domain blocks).
+   Answer cards carry inline mini-diagrams (SVG star / path chain) plus
+   action buttons that drive the main canvas (mode + selection + center),
+   so a chat answer and the big topology stay one click apart. Data that
+   was not collected is named as absent — never invented.
+   ===================================================================== */
+const AB={acts:[],greeted:false};
+const AB_PILL={severe:"pl-crit",critical:"pl-crit","past-ldos":"pl-crit",high:"pl-risk",elevated:"pl-risk",
+  poor:"pl-risk","near-ldos":"pl-risk","replace/upgrade":"pl-risk",risk:"pl-risk",medium:"pl-watch",
+  guarded:"pl-watch",fair:"pl-watch",watch:"pl-watch","verify eol":"pl-watch",low:"pl-ok",good:"pl-ok",
+  excellent:"pl-ok",ok:"pl-ok",info:"pl-ok",active:"pl-ok"};
+function abPill(t){if(t==null||t==="")return"";
+  return `<span class="pill ${AB_PILL[String(t).toLowerCase()]||"pl-watch"}">${esc(String(t))}</span>`;}
+function abShort(h){return String(h||"").split("-")[0]||String(h||"");}
+function abAttr(s){return esc(s).replace(/"/g,"&quot;");}   // esc() covers &<> only; attributes need quotes dead too
+function abKv(k,v){return v==null||v===""?"":`<div class="ab-kv"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;}
+function abHostLink(h){return `<span class="ab-link" data-abq="tell me about ${abAttr(h)}">${esc(h)}</span>`;}
+
+/* ---- entity recognition ------------------------------------------------ */
+function abHostIdx(){return _memo(MODEL,"ab:idx",()=>MODEL.hosts.map(h=>({h,canon:canonHost(h),alias:abShort(h).toLowerCase()})));}
+function abMatchHosts(q){const ql=q.toLowerCase();
+  const toks=ql.split(/[^a-z0-9_/-]+/).filter(t=>t.length>=3&&!/^vlans?$/.test(t));
+  const out=new Map();const add=(h,s,pos)=>{const o=out.get(h);
+    if(!o||s>o.s)out.set(h,{s,pos});else if(s===o.s&&pos<o.pos)o.pos=pos;};
+  for(const {h,canon,alias} of abHostIdx()){
+    if(ql.includes(canon)){add(h,100,ql.indexOf(canon));continue;}
+    for(const t of toks){
+      if(t===canon)add(h,100,ql.indexOf(t));
+      else if(t===alias)add(h,90,ql.indexOf(t));
+      else if(canon.startsWith(t)&&t.length>=4)add(h,60+t.length,ql.indexOf(t));
+      else if(canon.includes(t)&&t.length>=5)add(h,30+t.length,ql.indexOf(t));}}
+  /* equal-score ties resolve by where the name appears in the QUESTION, so "path A to B" keeps A first */
+  return [...out.entries()].sort((a,b)=>b[1].s-a[1].s||a[1].pos-b[1].pos).map(([h,o])=>[h,o.s]);}
+function abEntities(q){const t=q.toLowerCase();
+  const vm=t.match(/\bvlans?\s*#?\s*0*(\d{1,4})\b/);
+  const ips=t.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g)||[];
+  const macs=t.match(/\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b/g)||[];
+  const hm=abMatchHosts(q);
+  return {vlan:vm?+vm[1]:null, ips, macs, matches:hm,
+    host:hm.length&&hm[0][1]>=60?hm[0][0]:null,
+    host2:hm.length>1&&hm[1][1]>=60?hm[1][0]:null,
+    ambiguous:hm.length>1&&hm[0][1]<90&&(hm[0][1]-hm[1][1])<15};}
+
+/* ---- intent ------------------------------------------------------------ */
+function abIntent(q,E){const t=" "+q.toLowerCase()+" ";
+  const has=(...ws)=>ws.some(w=>t.includes(w));
+  if(has("help","what can you","how do i ask"))return "help";
+  if(has("licen"))return "license";
+  if(E.ips.length||E.macs.length)return "whois";
+  if(E.host&&E.host2&&E.host!==E.host2&&has(" path","reach","between"," to ","trace"))return "path";
+  if(has("migrat","cutover","decommission","replace","swap out","what if","remove","impact","field issue","break","go wrong"))
+    return E.host?"migrate":(has("wave","order","sequence")?"waves":"risky");
+  if(has("connect","neighbor","uplink","attached"," link"))return E.host?"neighbors":(E.vlan!=null?"vlanprof":"fleet");
+  if(has("endpoint","camera","server","phone","printer","devices on","hosts on","what is on","connected to"))
+    return E.host?"endpoints":(E.vlan!=null?"vlanprof":"epfleet");
+  if(E.host&&has("vlan","subnet","svi","gateway","network","ip range"))return "hostvlans";
+  if(E.vlan!=null)return "vlanprof";
+  if(has(" eol","end of life","end-of-life","end of support","end-of-support","ldos","lifecycle","obsolete"))return "eol";
+  if(has("software","version"," ios","train","advisor","psirt","vulnerab"," bug"))return "software";
+  if(has("application","domain","dependen","dante","workload","keystone"))return "apps";
+  if(has("wave","sequence","move group","migration order","which order","phase"))return "waves";
+  if(has("risk","worst","riskiest","top ","critical","priorit","danger"))return E.host?"migrate":"risky";
+  if(has("health","score"))return E.host?"profile":"fleet";
+  if(has("overview","summary","fleet","how many","census","posture","total"))return "fleet";
+  if(E.host)return "profile";
+  return "fallback";}
+
+/* ---- data accessors (all tolerant of older / demo snapshots) ----------- */
+function abBy(list,key){const m=new Map();for(const r of (list||[]))if(r&&r[key]!=null)m.set(r[key],r);return m;}
+function abHS(h){return _memo(MODEL,"ab:hs",()=>abBy((SNAP||{}).health_scores,"switch")).get(h);}
+function abDos(h){return _memo(MODEL,"ab:dos",()=>abBy(((SNAP||{}).device_dossiers||{}).per_device,"host")).get(h);}
+function abLR(h){return _memo(MODEL,"ab:lr",()=>abBy(((SNAP||{}).lifecycle_risk||{}).per_device,"host")).get(h);}
+function abSR(h){return _memo(MODEL,"ab:sr",()=>abBy(((SNAP||{}).software_risk||{}).per_device,"host")).get(h);}
+function abCap(h){return _memo(MODEL,"ab:cap",()=>abBy((SNAP||{}).capacity,"hostname")).get(h);}
+function abEps(h){return ((SNAP||{}).endpoint_identity||[]).filter(r=>r.host===h);}
+function abPunch(h){return ((SNAP||{}).punchlist||[]).filter(r=>Array.isArray(r.devices)&&r.devices.includes(h));}
+function abDoms(h){return (((SNAP||{}).application_intelligence||{}).domains||[]).filter(d=>(d.switches||[]).includes(h));}
+function abWave(h){for(const g of ((SNAP||{}).wave_sequencing||[]))
+  if((g.make_before_break||[]).includes(h)||(g.hard_cutover||[]).includes(h))return g.group||"";
+  return (abDos(h)||{}).wave||"";}
+function abNbrs(h){
+  const peers=new Map();
+  for(const li of (MODEL.adj.get(h)||[])){const L=MODEL.links[li];const o=L.a===h?L.b:L.a;
+    const lp=L.a===h?L.aPort:L.bPort, rp=L.a===h?L.bPort:L.aPort;
+    if(!peers.has(o))peers.set(o,{ports:[],pc:false,vl:new Set()});
+    const p=peers.get(o);p.ports.push((lp||"?")+" ↔ "+(rp||"?"));p.pc=p.pc||L.portChannel;
+    for(const v of L.fwd)p.vl.add(v);}
+  const off=new Map();
+  for(const r of MODEL.offscan){if(r.host!==h)continue;const cn=canonHost(r.neighbor);
+    if(!off.has(cn))off.set(cn,{ports:[]});off.get(cn).ports.push(r.port);}
+  return {peers,off};}
+function abBfsPath(a,b){if(a===b)return [a];
+  const prev=new Map([[a,null]]);const q=[a];
+  while(q.length){const cur=q.shift();
+    for(const li of (MODEL.adj.get(cur)||[])){const L=MODEL.links[li];const nx=L.a===cur?L.b:L.a;
+      if(prev.has(nx))continue;prev.set(nx,cur);
+      if(nx===b){const out=[b];let p=cur;while(p!=null){out.push(p);p=prev.get(p);}return out.reverse();}
+      q.push(nx);}}
+  return null;}
+
+/* ---- inline mini-diagrams ---------------------------------------------- */
+function abStarSvg(center,peers){const m=Math.min(peers.length,14);if(!m)return "";
+  const W=372,cx=W/2,R=Math.min(128,76+m*4),H=Math.round(2*R*0.72)+86,cy=H/2;
+  let s=`<svg class="ab-svg" viewBox="0 0 ${W} ${H}" width="${W}" role="img" aria-label="Connections of ${esc(center)}">`;
+  for(let i=0;i<m;i++){const p=peers[i],a=-Math.PI/2+i*2*Math.PI/m;
+    const x=cx+R*Math.cos(a),y=cy+R*0.72*Math.sin(a);
+    s+=`<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border-strong)" stroke-width="1.4"${p.dashed?' stroke-dasharray="5 4"':""}/>`;}
+  for(let i=0;i<m;i++){const p=peers[i],a=-Math.PI/2+i*2*Math.PI/m;
+    const x=cx+R*Math.cos(a),y=cy+R*0.72*Math.sin(a);
+    s+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="var(--surface)" stroke="${p.dashed?"var(--text-faint)":"var(--accent)"}" stroke-width="1.6"${p.dashed?' stroke-dasharray="3 3"':""}/>`+
+       `<text x="${x.toFixed(1)}" y="${(y+(y>=cy?24:-17)).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)">${esc(p.name)}</text>`;}
+  s+=`<circle cx="${cx}" cy="${cy}" r="15" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="2"/>`+
+     `<text x="${cx}" y="${cy+31}" text-anchor="middle" font-size="10" font-weight="700" fill="var(--text)">${esc(abShort(center))}</text></svg>`;
+  return s+(peers.length>m?`<div class="ab-note">+ ${peers.length-m} more not drawn</div>`:"");}
+function abPathSvg(names){const n=names.length;if(n<2)return "";
+  const W=372,seg=Math.min(110,(W-44)/(n-1)),x0=(W-seg*(n-1))/2;
+  let s=`<svg class="ab-svg" viewBox="0 0 ${W} 64" width="${W}" role="img" aria-label="Path diagram">`;
+  names.forEach((nm,i)=>{const x=x0+i*seg;
+    if(i){s+=`<line x1="${(x-seg+12).toFixed(1)}" y1="26" x2="${(x-13).toFixed(1)}" y2="26" stroke="var(--accent)" stroke-width="2"/>`+
+      `<polygon points="${(x-12).toFixed(1)},26 ${(x-19).toFixed(1)},22.5 ${(x-19).toFixed(1)},29.5" fill="var(--accent)"/>`;}
+    s+=`<circle cx="${x.toFixed(1)}" cy="26" r="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.8"/>`+
+       `<text x="${x.toFixed(1)}" y="50" text-anchor="middle" font-size="9" fill="var(--text-dim)">${esc(abShort(nm))}</text>`;});
+  return s+"</svg>";}
+
+/* ---- canvas actions ----------------------------------------------------- */
+function abGoto(h,mode){return ()=>{abToggle(false);if(MODE!==mode)setMode(mode);
+  SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);writeHash();};}
+function abTraceAct(a,b){return ()=>{abToggle(false);TRACE_SRC=a;TRACE_DST=b;
+  if(MODE!=="trace")setMode("trace");else{computeTrace();repaint();renderDrawer();}centerOn(a);};}
+function abAskAct(q){return ()=>abSubmit(q);}
+
+/* ---- intent handlers: each returns {html, acts:[{label,run}]} ----------- */
+function abH_profile(h){const d=((SNAP||{}).devices||{})[h]||{};const hs=abHS(h),dos=abDos(h),lr=abLR(h),sr=abSR(h),cap=abCap(h);
+  let b=`<h4>${esc(h)}</h4>`;
+  b+=abKv("Model / platform",esc([d.model,d.platform].filter(Boolean).join(" · ")||"not collected"));
+  b+=abKv("Software",esc(d.sw_version||(sr||{}).sw_version||"?")+(sr?` ${abPill(sr.train_band)}`:""));
+  b+=abKv("Serial",esc(d.serial_number||d.chassis_serial||""));
+  b+=abKv("Role / uptime",esc([(hs||{}).role,d.uptime].filter(Boolean).join(" · ")));
+  if(cap)b+=abKv("Ports",`${cap.active_ports}/${cap.total_ports} active (${cap.port_util}% used, ${cap.free_ports} free)`);
+  if(hs)b+=abKv("Health",`${abPill(hs.band)} ${hs.score}/100`+(hs.deductions&&hs.deductions.length?` — top issue: ${esc(hs.deductions[0])}`:""));
+  if(dos)b+=abKv("Compound risk",`${abPill(dos.risk_band)} index ${dos.risk_index}/100 — impact ${dos.impact_score}/10 × exposure ${dos.exposure_score}/10`);
+  if(lr)b+=abKv("Hardware lifecycle",`${abPill(lr.band)} ${esc(lr.status||"")}`);
+  const doms=abDoms(h);if(doms.length)b+=abKv("App domain(s)",doms.map(x=>esc(x.domain)+" ("+esc(x.tier)+")").join("; "));
+  const w=abWave(h);if(w)b+=abKv("Migration wave",esc(w));
+  const eps=abEps(h);b+=abKv("Endpoints",String(eps.length));
+  return {html:b,acts:[
+    {label:"Show on canvas",run:abGoto(h,"health")},
+    {label:"Migration impact",run:abAskAct("what if I migrate "+h)},
+    {label:"Connections",run:abAskAct("where is "+h+" connected")}]};}
+function abH_neighbors(h){const {peers,off}=abNbrs(h);
+  let b=`<h4>Connections of ${esc(h)}</h4>`;
+  b+=`<div>${peers.size} collected switch peer(s) · ${off.size} off-scan uplink neighbor(s) seen via CDP but not in this collection.</div>`;
+  if(peers.size){b+=`<table><tr><th>Peer (collected)</th><th>Link(s)</th><th>VLANs</th></tr>`;
+    for(const [o,p] of peers)b+=`<tr><td><b>${abHostLink(o)}</b>${p.pc?" · port-channel":""}</td><td>${esc(p.ports.join(", "))}</td><td>${p.vl.size}</td></tr>`;
+    b+=`</table>`;}
+  if(off.size){b+=`<table><tr><th>Uplink neighbor (NOT collected)</th><th>Local port(s)</th></tr>`;
+    for(const [o,p] of off)b+=`<tr><td><b>${esc(o.toUpperCase())}</b> <span class="pill pl-watch">off-scan</span></td><td>${esc(p.ports.join(", "))}</td></tr>`;
+    b+=`</table><div class="ab-note">Off-scan = this switch's CDP table names them, but they were not in devices.json — collect the DS/CS tier for full fabric analysis.</div>`;}
+  if(!peers.size&&!off.size)b+=`<div class="ab-note">No CDP adjacencies recorded for this switch in the snapshot.</div>`;
+  const pts=[...peers.keys()].map(o=>({name:abShort(o),dashed:false}))
+    .concat([...off.keys()].map(o=>({name:abShort(o).toUpperCase(),dashed:true})));
+  b+=abStarSvg(h,pts);
+  return {html:b,acts:[
+    {label:"Blast radius",run:abGoto(h,"blast")},
+    {label:"Migration impact",run:abAskAct("what if I migrate "+h)}]};}
+function abH_endpoints(h){const eps=abEps(h);
+  let b=`<h4>Endpoints on ${esc(h)}</h4>`;
+  if(!eps.length)return {html:b+`<div class="ab-note">No endpoints recorded on this switch in the snapshot.</div>`,acts:[{label:"Show on canvas",run:abGoto(h,"health")}]};
+  const by=(k)=>{const m=new Map();for(const e of eps){const v=e[k]||"Unknown";m.set(v,(m.get(v)||0)+1);}
+    return [...m.entries()].sort((a,b2)=>b2[1]-a[1]);};
+  b+=`<div><b>${eps.length}</b> endpoint(s) across <b>${new Set(eps.map(e=>e.vlan)).size}</b> VLAN(s).</div>`;
+  b+=`<table><tr><th>Class</th><th>Count</th></tr>`+by("endpoint_class").slice(0,6).map(([k,n])=>`<tr><td>${esc(k)}</td><td><b>${n}</b></td></tr>`).join("")+`</table>`;
+  b+=`<table><tr><th>Top vendors (OUI)</th><th>Count</th></tr>`+by("vendor").slice(0,6).map(([k,n])=>`<tr><td>${esc(k)}</td><td><b>${n}</b></td></tr>`).join("")+`</table>`;
+  b+=`<table><tr><th>VLAN</th><th>Endpoints</th></tr>`+by("vlan").slice(0,8).map(([k,n])=>`<tr><td><span class="ab-link" data-abq="vlan ${abAttr(k)}">${esc(k)}</span></td><td><b>${n}</b></td></tr>`).join("")+`</table>`;
+  return {html:b,acts:[
+    {label:"Show on canvas",run:abGoto(h,"health")},
+    {label:"Migration impact",run:abAskAct("what if I migrate "+h)}]};}
+function abH_hostvlans(h){const em=MODEL.endpoints.get(h)||new Map();
+  const svis=[];const ifs=((SNAP||{}).interfaces||{})[h]||{};
+  for(const port of Object.keys(ifs)){const d=ifs[port];
+    if(isSvi(d)){const vid=sviVid(d);if(vid!=null)svis.push({vid,ip:(d.svi_ip||"").trim(),fhrp:(d.hsrp_behavior||"").trim(),vrf:(d.vrf||"").trim()});}}
+  let b=`<h4>VLANs &amp; gateways on ${esc(h)}</h4>`;
+  b+=`<div>${em.size} VLAN(s) with endpoints · ${svis.length} SVI(s) on this switch.</div>`;
+  if(em.size){b+=`<table><tr><th>VLAN</th><th>Endpoints</th><th>Gateway switch(es)</th></tr>`;
+    for(const [vid,n] of [...em.entries()].sort((a,b2)=>a[0]-b2[0]).slice(0,12)){
+      const gws=[...(MODEL.gateways.get(vid)||[])];
+      b+=`<tr><td><span class="ab-link" data-abq="vlan ${vid}">${vid}</span></td><td><b>${n}</b></td><td>${gws.length?gws.map(g=>esc(abShort(g))).join(", "):'<span class="pill pl-crit">none found</span>'}</td></tr>`;}
+    b+=`</table>`;}
+  if(svis.length){b+=`<table><tr><th>SVI</th><th>IP</th><th>FHRP / VRF</th></tr>`+
+    svis.sort((a,b2)=>a.vid-b2.vid).slice(0,12).map(s=>`<tr><td>Vlan${s.vid}</td><td class="mono">${esc(s.ip||"—")}</td><td>${esc([s.fhrp,s.vrf&&("VRF "+s.vrf)].filter(Boolean).join(" · ")||"—")}</td></tr>`).join("")+`</table>`;}
+  if(!em.size&&!svis.length)b+=`<div class="ab-note">No endpoint VLANs or SVIs recorded for this switch.</div>`;
+  return {html:b,acts:[{label:"Show on canvas",run:abGoto(h,"health")}]};}
+function abH_vlanprof(vid){if(!MODEL.vlans.has(vid))
+    return {html:`<h4>VLAN ${vid}</h4><div class="ab-note">VLAN ${vid} does not appear in this snapshot (no endpoints, trunks, or SVIs reference it).</div>`,acts:[]};
+  const carriers=[];for(const [h,m] of MODEL.endpoints){const n=m.get(vid);if(n)carriers.push([h,n]);}
+  carriers.sort((a,b2)=>b2[1]-a[1]);
+  const gws=[...(MODEL.gateways.get(vid)||[])];const f=MODEL.fhrp.get(vid);
+  const comps=vlanComponents(MODEL,vid,null,false);
+  const total=carriers.reduce((s,c)=>s+c[1],0);
+  let b=`<h4>VLAN ${vid}</h4>`;
+  b+=abKv("Endpoints",`<b>${total}</b> on ${carriers.length} switch(es)`);
+  b+=abKv("L3 gateways",gws.length?gws.map(g=>abHostLink(g)).join(", "):'<span class="pill pl-crit">none found — L2-only VLAN</span>');
+  if(f)b+=abKv("FHRP",`active: ${[...f.active].map(abShort).join(", ")||"—"} · standby: ${[...f.standby].map(abShort).join(", ")||"—"}`);
+  if(gws.length){const sv=[];for(const g of gws){const d=(((SNAP||{}).interfaces||{})[g]||{})["Vlan"+vid];if(d&&d.svi_ip)sv.push(esc(d.svi_ip));}
+    if(sv.length)b+=abKv("Gateway IP(s)",sv.join(", "));}
+  b+=abKv("L2 continuity",comps.length<=1?"single connected segment":`<span class="pill pl-risk">${comps.length} disjoint islands</span> — VLAN is partitioned across the collected topology`);
+  if(carriers.length){b+=`<table><tr><th>Switch</th><th>Endpoints</th></tr>`+
+    carriers.slice(0,10).map(([h,n])=>`<tr><td>${abHostLink(h)}</td><td><b>${n}</b></td></tr>`).join("")+`</table>`;}
+  return {html:b,acts:[{label:`Filter canvas to VLAN ${vid}`,run:()=>{abToggle(false);setVlan(String(vid));fitView();}}]};}
+function abH_migrate(h){const dos=abDos(h),fi=failureImpact(MODEL,h),hs=abHS(h),lr=abLR(h),sr=abSR(h);
+  const {peers,off}=abNbrs(h);const doms=abDoms(h);const pun=abPunch(h);const w=abWave(h);
+  let b=`<h4>Migration briefing — ${esc(h)}</h4>`;
+  if(dos)b+=abKv("Compound risk",`${abPill(dos.risk_band)} index ${dos.risk_index}/100${dos.verdict?" — "+esc(dos.verdict):""}`);
+  if(hs)b+=abKv("Health today",`${abPill(hs.band)} ${hs.score}/100`);
+  if(lr)b+=abKv("Hardware",`${abPill(lr.band)} ${esc(lr.status||lr.band||"")}`);
+  if(sr&&sr.train_band)b+=abKv("Software train",`${abPill(sr.train_band)} ${esc(sr.train||sr.sw_version||"")}`);
+  if(doms.length)b+=abKv("App domain(s)",doms.map(x=>`${esc(x.domain)} ${abPill(x.tier)}`).join(" · "));
+  if(w)b+=abKv("Planned wave",esc(w));
+  b+=`<h4>If this switch goes away</h4>`;
+  if(fi.perVlan.length){
+    b+=`<div>Worst per-VLAN impact: ${abPill(fi.worst)} — <b>${fi.hardStranded}</b> endpoint(s) hard-stranded, <b>${fi.healable}</b> healable via backup links.</div>`;
+    b+=`<table><tr><th>VLAN</th><th>Impact</th><th>Stranded</th></tr>`+
+      fi.perVlan.slice(0,6).map(r=>`<tr><td>${r.vid}</td><td>${abPill(r.sev)} ${esc(r.cls)}</td><td><b>${r.strandedActive}</b>${r.strandedHard?` (${r.strandedHard} hard)`:""}</td></tr>`).join("")+`</table>`;}
+  else b+=`<div class="ab-note">No collateral endpoint impact computed (no other switch shares its VLANs in the collected set).</div>`;
+  if(dos&&Array.isArray(dos.exposures)&&dos.exposures.length){
+    b+=`<h4>Stacked exposures</h4>`+dos.exposures.slice(0,8).map(x=>
+      `<div class="ab-kv"><span class="k">${esc(x.axis||"")}</span><span class="v">${abPill(x.state)} ${esc(x.label||"")}</span></div>`).join("");}
+  if(dos&&Array.isArray(dos.compound)&&dos.compound.length){
+    b+=`<h4>Compound risks on this asset</h4>`+dos.compound.slice(0,5).map(c=>{
+      if(typeof c==="string")return `<div>• ${esc(c)}</div>`;
+      return `<div>• <b>${esc(c.id||c.title||"")}</b> ${esc(c.title&&c.id?c.title:(c.detail||c.label||""))}</div>`;}).join("");}
+  if(pun.length){b+=`<h4>Punch-list items naming this device</h4>`+
+    pun.slice(0,5).map(p=>`<div>• ${abPill(p.severity)} ${esc(p.title||"")}</div>`).join("")+
+    (pun.length>5?`<div class="ab-note">+ ${pun.length-5} more in the workbook punch-list</div>`:"");}
+  b+=`<h4>Uplinks to re-provision on the new switch</h4>`;
+  if(peers.size||off.size){
+    if(peers.size)b+=`<div>Collected peers: ${[...peers.entries()].map(([o,p])=>`<b>${esc(abShort(o))}</b> (${esc(p.ports.join(", "))})`).join(" · ")}</div>`;
+    if(off.size)b+=`<div>Off-scan uplinks: ${[...off.entries()].map(([o,p])=>`<b>${esc(o.toUpperCase())}</b> (${esc(p.ports.join(", "))})`).join(" · ")} <span class="pill pl-watch">not collected</span></div>`;}
+  else b+=`<div class="ab-note">No CDP-visible uplinks recorded.</div>`;
+  const onair=doms.some(d=>/critical/i.test(d.tier||""));
+  b+=`<div class="ab-note">${onair?"This switch serves an on-air-critical domain — schedule inside a broadcast quiet window with rollback staged. ":""}`+
+     `${abEps(h).length} endpoint(s) move with this switch; pre-stage VLANs/trunks and validate gateways before cutover.</div>`;
+  return {html:b,acts:[
+    {label:"Blast radius",run:abGoto(h,"blast")},
+    {label:"Endpoints",run:abAskAct("endpoints on "+h)},
+    {label:"Connections",run:abAskAct("where is "+h+" connected")}]};}
+function abH_path(a,b2){const p=abBfsPath(a,b2);
+  let b=`<h4>Path: ${esc(abShort(a))} → ${esc(abShort(b2))}</h4>`;
+  if(p){b+=`<div><b>${p.length-1}</b> hop(s) across the collected topology.</div>`+abPathSvg(p)+
+    `<div class="ab-note">${p.map(abShort).map(esc).join(" → ")}</div>`;
+    return {html:b,acts:[{label:"Open in Path-trace mode",run:abTraceAct(a,b2)}]};}
+  const offA=new Set([...abNbrs(a).off.keys()]),offB=new Set([...abNbrs(b2).off.keys()]);
+  const shared=[...offA].filter(x=>offB.has(x));
+  b+=`<div>No L2 adjacency path exists <b>within the collected switches</b>.</div>`;
+  b+=shared.length?
+    `<div>But both uplink into <b>${shared.map(s=>esc(s.toUpperCase())).join(", ")}</b> (off-scan, not collected) — traffic almost certainly transits that distribution/core layer.</div>`+
+    abPathSvg([a,shared[0].toUpperCase(),b2]):
+    `<div class="ab-note">They also share no off-scan uplink neighbor, so the interconnect is not visible in this dataset.</div>`;
+  b+=`<div class="ab-note">Add the DS/CS tier to devices.json and re-run collection to make this path analyzable.</div>`;
+  return {html:b,acts:[{label:"Open in Path-trace mode",run:abTraceAct(a,b2)}]};}
+function abH_fleet(){const dd=((SNAP||{}).device_dossiers||{}).summary||{};const eb=(SNAP||{}).executive_brief||{};
+  const lrs=((SNAP||{}).lifecycle_risk||{}).summary||{};const srs=((SNAP||{}).software_risk||{}).summary||{};
+  const hsList=(SNAP||{}).health_scores||[];const bands={};for(const r of hsList)bands[r.band]=(bands[r.band]||0)+1;
+  let b=`<h4>Fleet overview</h4>`;
+  b+=abKv("Scale",`<b>${MODEL.hosts.length}</b> switches · <b>${MODEL.endpointTotal}</b> endpoints · <b>${MODEL.vlans.size}</b> VLANs · ${MODEL.offscan.length} off-scan uplinks`);
+  if(Object.keys(bands).length)b+=abKv("Health bands",Object.entries(bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
+  if(dd.bands)b+=abKv("Risk bands",Object.entries(dd.bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" ")+` · avg index ${dd.avg_risk_index??"?"}`);
+  if(lrs.by_band)b+=abKv("Hardware lifecycle",Object.entries(lrs.by_band).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
+  if(srs.trains)b+=abKv("Software trains",Object.entries(srs.trains).map(([k,n])=>`${esc(k)}: ${n}`).join(" · "));
+  if(eb.posture_statement)b+=`<div class="ab-note">${esc(eb.posture_statement)}</div>`;
+  if(Array.isArray(dd.worst)&&dd.worst.length)b+=abKv("Highest-risk assets",dd.worst.map(abHostLink).join(", "));
+  return {html:b,acts:[
+    {label:"Top risky devices",run:abAskAct("top risky devices")},
+    {label:"EoL status",run:abAskAct("eol status")},
+    {label:"App domains",run:abAskAct("application domains")}]};}
+function abH_risky(){const pd=((SNAP||{}).device_dossiers||{}).per_device||[];
+  if(!pd.length)return {html:`<h4>Top risk</h4><div class="ab-note">This snapshot carries no device risk register — regenerate it with the current collector.</div>`,acts:[]};
+  const top=[...pd].sort((a,b2)=>(b2.risk_index||0)-(a.risk_index||0)).slice(0,10);
+  let b=`<h4>Top 10 by compound risk</h4><table><tr><th>Device</th><th>Band</th><th>Index</th><th>Why</th></tr>`;
+  for(const d of top){const why=(d.exposures||[]).filter(x=>x.state==="risk").slice(0,2).map(x=>x.label).join("; ");
+    b+=`<tr><td>${abHostLink(d.host)}</td><td>${abPill(d.risk_band)}</td><td><b>${d.risk_index}</b></td><td>${esc(why||d.verdict||"")}</td></tr>`;}
+  b+=`</table><div class="ab-note">Risk index = topology impact × stacked exposure (the workbook's Device Risk Register).</div>`;
+  return {html:b,acts:[{label:"Brief me on #1",run:abAskAct("what if I migrate "+top[0].host)}]};}
+function abH_eol(){const lr=(SNAP||{}).lifecycle_risk||{};const sm=lr.summary||{};const pd=lr.per_device||[];
+  if(!pd.length)return {html:`<h4>Hardware lifecycle</h4><div class="ab-note">No lifecycle data in this snapshot.</div>`,acts:[]};
+  let b=`<h4>Hardware lifecycle (${esc(lr.asof||"offline KB")})</h4>`;
+  if(sm.by_band)b+=abKv("Fleet",Object.entries(sm.by_band).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
+  if(Array.isArray(sm.by_platform)&&sm.by_platform.length){
+    b+=`<table><tr><th>Platform</th><th>Count</th><th>Band</th><th>LDoS</th></tr>`+
+      sm.by_platform.slice(0,8).map(p=>`<tr><td>${esc(p.platform)}</td><td><b>${p.count}</b></td><td>${abPill(p.band)}</td><td class="mono">${esc(p.ldos||"")}</td></tr>`).join("")+`</table>`;}
+  const past=pd.filter(r=>/past/i.test(r.band||"")).slice(0,8);
+  if(past.length)b+=abKv("Past end-of-support",past.map(r=>abHostLink(r.host)).join(", "));
+  return {html:b,acts:[{label:"Top risky devices",run:abAskAct("top risky devices")}]};}
+function abH_software(){const sr=(SNAP||{}).software_risk||{};const sm=sr.summary||{};
+  const vers={};for(const [h,d] of Object.entries((SNAP||{}).devices||{}))if(d&&d.sw_version)vers[d.sw_version]=(vers[d.sw_version]||0)+1;
+  let b=`<h4>Software posture</h4>`;
+  if(Object.keys(vers).length)b+=`<table><tr><th>Version</th><th>Devices</th></tr>`+
+    Object.entries(vers).sort((a,b2)=>b2[1]-a[1]).slice(0,8).map(([v,n])=>`<tr><td class="mono">${esc(v)}</td><td><b>${n}</b></td></tr>`).join("")+`</table>`;
+  if(sm.trains)b+=abKv("Trains",Object.entries(sm.trains).map(([k,n])=>`${esc(k)}: ${n}`).join(" · "));
+  if(sm.train_bands)b+=abKv("Train bands",Object.entries(sm.train_bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
+  b+=`<div class="ab-note">Offline screening only: an "advisory surface open" means the release needs a PSIRT check — it does NOT assert the release is vulnerable.</div>`;
+  return {html:b,acts:[{label:"EoL status",run:abAskAct("eol status")}]};}
+function abH_apps(q){const ai=(SNAP||{}).application_intelligence||{};const doms=ai.domains||[];
+  if(!doms.length)return {html:`<h4>Application domains</h4><div class="ab-note">No application-domain analysis in this snapshot.</div>`,acts:[]};
+  const ql=(q||"").toLowerCase();
+  const hit=doms.find(d=>ql.includes((d.id||"").toLowerCase())||ql.includes((d.domain||"").toLowerCase().split(" ")[0]));
+  if(hit){let b=`<h4>${esc(hit.domain)}</h4>`;
+    b+=abKv("Tier",abPill(hit.tier));
+    b+=abKv("Scope",`${hit.switch_count||((hit.switches||[]).length)} switch(es) · ${hit.vlan_count||((hit.vlans||[]).length)} VLAN(s) · ${hit.endpoint_count??"?"} endpoint(s)`);
+    if(hit.classes)b+=abKv("Endpoint classes",Object.entries(hit.classes).map(([k,n])=>`${esc(k)}: ${n}`).join(" · "));
+    b+=abKv("Switches",(hit.switches||[]).slice(0,12).map(abHostLink).join(", ")+((hit.switches||[]).length>12?" …":""));
+    if(hit.ptp_present!=null)b+=abKv("PTP",hit.ptp_present?"present"+(hit.ptp_boundary_clocked?" (boundary-clocked)":""):"not seen");
+    return {html:b,acts:[{label:"Spotlight in Apps mode",run:()=>{abToggle(false);setMode("apps");}}]};}
+  let b=`<h4>Application domains (${doms.length})</h4><table><tr><th>Domain</th><th>Tier</th><th>Sw</th><th>Eps</th></tr>`+
+    doms.map(d=>`<tr><td><span class="ab-link" data-abq="domain ${abAttr(d.id||d.domain)}">${esc(d.domain)}</span></td><td>${abPill(d.tier)}</td><td>${d.switch_count??(d.switches||[]).length}</td><td>${d.endpoint_count??"?"}</td></tr>`).join("")+`</table>`;
+  if(Array.isArray(ai.keystones)&&ai.keystones.length)
+    b+=abKv("Keystone switches",ai.keystones.map(k=>esc(typeof k==="string"?k:(k.host||k.switch||""))).filter(Boolean).join(", "));
+  if(Array.isArray(ai.cutover_order)&&ai.cutover_order.length)
+    b+=abKv("Suggested cutover order",ai.cutover_order.map(c=>esc(typeof c==="string"?c:(c.domain||c.id||""))).filter(Boolean).join(" → "));
+  return {html:b,acts:[{label:"Open Apps mode",run:()=>{abToggle(false);setMode("apps");}}]};}
+function abH_waves(){const ws=(SNAP||{}).wave_sequencing||[];
+  if(!ws.length)return {html:`<h4>Migration waves</h4><div class="ab-note">No wave sequencing in this snapshot.</div>`,acts:[]};
+  let b=`<h4>Migration waves</h4><table><tr><th>Group</th><th>Switches</th><th>Make-before-break</th><th>Hard cutover</th></tr>`+
+    ws.map(g=>{const mbb=(g.make_before_break||[]).length,hc=(g.hard_cutover||[]).length;
+      return `<tr><td><b>${esc(g.group||"")}</b></td><td>${mbb+hc}</td><td>${mbb}</td><td>${hc?`<span class="pill pl-risk">${hc}</span>`:0}</td></tr>`;}).join("")+`</table>`+
+    `<div class="ab-note">Hard cutover = no redundant path during the move; every one of those switches takes its endpoints down for the swap window.</div>`;
+  return {html:b,acts:[{label:"Open Waves mode",run:()=>{abToggle(false);setMode("waves");}}]};}
+function abH_epfleet(){const eps=(SNAP||{}).endpoint_identity||[];
+  if(!eps.length)return {html:`<h4>Endpoints</h4><div class="ab-note">No endpoint identity table in this snapshot.</div>`,acts:[]};
+  const by=(k)=>{const m=new Map();for(const e of eps){const v=e[k]||"Unknown";m.set(v,(m.get(v)||0)+1);}
+    return [...m.entries()].sort((a,b2)=>b2[1]-a[1]);};
+  let b=`<h4>Endpoint census (fleet)</h4><div><b>${eps.length}</b> endpoints observed.</div>`;
+  b+=`<table><tr><th>Class</th><th>Count</th></tr>`+by("endpoint_class").slice(0,8).map(([k,n])=>`<tr><td>${esc(k)}</td><td><b>${n}</b></td></tr>`).join("")+`</table>`;
+  b+=`<table><tr><th>Top vendors</th><th>Count</th></tr>`+by("vendor").slice(0,8).map(([k,n])=>`<tr><td>${esc(k)}</td><td><b>${n}</b></td></tr>`).join("")+`</table>`;
+  return {html:b,acts:[]};}
+function abH_whois(E){const eps=(SNAP||{}).endpoint_identity||[];const needle=E.ips[0]||E.macs[0];
+  const hit=eps.find(e=>(E.ips[0]&&e.ip===E.ips[0])||(E.macs[0]&&(e.mac||"").toLowerCase()===E.macs[0]));
+  let b=`<h4>Endpoint lookup — ${esc(needle||"?")}</h4>`;
+  if(!hit)return {html:b+`<div class="ab-note">Not found in the endpoint identity table. ARP/MAC evidence for it was not collected, or it lives behind a switch outside this collection.</div>`,acts:[]};
+  b+=abKv("Switch / port",`${abHostLink(hit.host)} · <span class="mono">${esc(hit.port||"")}</span>`);
+  b+=abKv("VLAN",`<span class="ab-link" data-abq="vlan ${abAttr(hit.vlan||"")}">${esc(hit.vlan||"?")}</span>`);
+  b+=abKv("MAC / IP",`<span class="mono">${esc(hit.mac||"")}${hit.ip?" · "+esc(hit.ip):""}</span>`);
+  b+=abKv("Vendor (OUI)",esc(hit.vendor||"Unknown"));
+  b+=abKv("Class",`${esc(hit.endpoint_class||"Unknown")} (confidence: ${esc(hit.confidence||"Unknown")})`);
+  return {html:b,acts:[{label:"Show its switch",run:abGoto(hit.host,"health")}]};}
+function abH_license(){return {html:`<h4>Licensing</h4><div>License inventory is <b>not part of this collection</b> — the command set does not include <span class="mono">show license</span>, so I will not guess entitlements. What IS collected per device: model, serial, software version and platform (ask "software posture" or "tell me about &lt;switch&gt;"). Add license commands to a future collection if entitlement data is required.</div>`,acts:[
+  {label:"Software posture",run:abAskAct("software posture")}]};}
+function abH_help(){return {html:`<h4>What you can ask (all offline, all from this snapshot)</h4>
+  <div>• <b>A switch</b> — "tell me about AS65", "where is AS31 connected", "endpoints on AAS12", "vlans on AS03"</div>
+  <div>• <b>Migration</b> — "what if I migrate AS65?", "top risky devices", "migration waves"</div>
+  <div>• <b>L2/L3</b> — "vlan 1000", "path AS64 to AS65", "who is 10.1.20.31"</div>
+  <div>• <b>Fleet</b> — "fleet overview", "eol status", "software posture", "application domains"</div>
+  <div class="ab-note">I answer only from collected evidence — anything absent is named as absent, never invented.</div>`,acts:[
+  {label:"Fleet overview",run:abAskAct("fleet overview")}]};}
+function abH_didyoumean(E,q){const opts=E.matches.slice(0,6).map(([h])=>
+    `<span class="chip" data-abq="${abAttr(q)} ${abAttr(h)}">${esc(abShort(h))}</span>`).join(" ");
+  return {html:`<h4>Which switch did you mean?</h4><div class="ab-acts">${opts}</div>`,acts:[]};}
+function abH_fallback(){return {html:`<h4>I didn't catch that</h4><div>Try naming a switch, a VLAN, an IP/MAC, or a topic (migration, risk, EoL, software, apps, waves). Type <b>help</b> for examples.</div>`,acts:[{label:"help",run:abAskAct("help")}]};}
+
+/* ---- orchestration / UI ------------------------------------------------- */
+function abMsg(cls,html){const el=document.createElement("div");el.className="ab-msg "+cls;el.innerHTML=html;
+  const box=document.getElementById("abMsgs");box.appendChild(el);box.scrollTop=box.scrollHeight;return el;}
+function abRender(res){let acts="";
+  if(res.acts&&res.acts.length){acts=`<div class="ab-acts">`+res.acts.map(a=>{
+    const i=AB.acts.push(a.run)-1;return `<button class="btn" type="button" data-abact="${i}">${esc(a.label)}</button>`;}).join("")+`</div>`;}
+  abMsg("bot",`<div class="ab-card">${res.html}${acts}</div>`);}
+function abAnswer(q){const E=abEntities(q);const intent=abIntent(q,E);
+  const needsHost={migrate:1,neighbors:1,endpoints:1,hostvlans:1,profile:1};
+  if(needsHost[intent]&&!E.host)return abRender(E.matches.length?abH_didyoumean(E,q):abH_fallback());
+  if(needsHost[intent]&&E.ambiguous)return abRender(abH_didyoumean(E,q));
+  switch(intent){
+    case "help":return abRender(abH_help());
+    case "license":return abRender(abH_license());
+    case "whois":return abRender(abH_whois(E));
+    case "path":return abRender(abH_path(E.host,E.host2));
+    case "migrate":return abRender(abH_migrate(E.host));
+    case "neighbors":return abRender(abH_neighbors(E.host));
+    case "endpoints":return abRender(abH_endpoints(E.host));
+    case "hostvlans":return abRender(abH_hostvlans(E.host));
+    case "vlanprof":return abRender(abH_vlanprof(E.vlan));
+    case "fleet":return abRender(abH_fleet());
+    case "risky":return abRender(abH_risky());
+    case "eol":return abRender(abH_eol());
+    case "software":return abRender(abH_software());
+    case "apps":return abRender(abH_apps(q));
+    case "waves":return abRender(abH_waves());
+    case "epfleet":return abRender(abH_epfleet());
+    case "profile":return abRender(abH_profile(E.host));
+    default:return abRender(abH_fallback());}}
+function abSubmit(q){abMsg("user",esc(q));
+  try{abAnswer(q);}catch(err){abMsg("bot",`<div class="ab-card">Hit a snag answering that (${esc(err.message)}). Try rephrasing, or type "help".</div>`);}
+  srAnnounce("Answer added to the chat.");}
+function abChipsRow(){const dd=((SNAP||{}).device_dossiers||{}).summary||{};
+  const star=(Array.isArray(dd.worst)&&dd.worst[0])||MODEL.hosts[0]||"";
+  const sug=["fleet overview","top risky devices","eol status","application domains"];
+  if(star){sug.splice(1,0,"what if I migrate "+star);sug.push("where is "+star+" connected");}
+  document.getElementById("abChips").innerHTML=sug.map(s=>`<span class="chip" role="button" tabindex="0" data-abq="${abAttr(s)}">${esc(s)}</span>`).join("");}
+function abToggle(force){const p=document.getElementById("askbot");
+  const show=force!==undefined?force:p.hidden;
+  p.hidden=!show;document.getElementById("askBtn").setAttribute("aria-expanded",String(show));
+  if(show){if(!AB.greeted){AB.greeted=true;
+      abRender({html:`<h4>Ask the Engineer</h4><div>Offline Q&amp;A over <b>${MODEL.hosts.length} switches</b>, <b>${MODEL.endpointTotal} endpoints</b> and every analysis in this snapshot — connections, VLANs, blast radius, compound risk, EoL, software, app domains, waves. Nothing leaves this file.</div><div class="ab-note">Try a chip below, or type your own question.</div>`,acts:[]});}
+    abChipsRow();document.getElementById("abInput").focus();}}
+document.getElementById("askBtn").onclick=()=>abToggle();
+document.getElementById("askClose").onclick=()=>abToggle(false);
+document.getElementById("abForm").addEventListener("submit",e=>{e.preventDefault();
+  const v=document.getElementById("abInput").value.trim();
+  if(v){document.getElementById("abInput").value="";abSubmit(v);}});
+document.getElementById("askbot").addEventListener("click",e=>{
+  const act=e.target.closest("[data-abact]");
+  if(act){const f=AB.acts[+act.dataset.abact];if(f)f();return;}
+  const qel=e.target.closest("[data-abq]");if(qel)abSubmit(qel.dataset.abq);});
+document.getElementById("askbot").addEventListener("keydown",e=>{
+  if(e.key==="Escape"){e.stopPropagation();abToggle(false);}
+  else if((e.key==="Enter"||e.key===" ")&&e.target.matches(".chip[data-abq]")){e.preventDefault();abSubmit(e.target.dataset.abq);}});
 
 /* ---- boot (demo button onclick + final bootstrap; Python replaces the LAST) ---- */
 load(demoSnapshot(),"DEMO TOPOLOGY",false);
