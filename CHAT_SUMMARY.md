@@ -5,6 +5,25 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-12 — V3.23.179: the chat grows a senior-AS brain (conversational + 11 intents + animation)
+
+User: "understand what questions a Cisco AS senior engineer / solution architect asks and update the
+intelligence… normal English… detailed flows, diagrams, animation, interactive, rich UI/UX." Research
+(web + the project's own AS-deliverable standards) reduced to: MOP shape = prep→execute→validate→
+rollback; assessment angles = SPOF/redundancy, STP root placement, FHRP coverage, capacity, CIS
+hardening, architecture conformance, drift, addressing conflicts, exec posture — ALL already computed
+by the engine, so the chat just needed routes to them. Shipped: abNorm() filler-stripping + synonym
+folding onto intent tokens; AB_CTX conversation memory (pronouns + "what about AS64?" re-runs the last
+intent); smalltalk; 11 new handlers incl. the per-device cutover MOP synthesized from the device's own
+facts (endpoint baseline, VLANs, uplinks, STP roots, gateway SVIs) with Copy-plan clipboard action;
+rich cards (typing dots, draw-in SVG, animateMotion packet on paths, animated bars, step reveal,
+details-expanders) — all reduced-motion-gated, base states fully visible. Field-data findings the new
+intents surfaced immediately: 32 VLANs with default-election STP roots, 0 FHRP-covered VLANs, grade-D
+architecture, 43% port utilisation. Bug caught in verification: greeting matcher swallowed "hey, can
+you tell me my SPOFs?" → greet now gated to ≤4-word messages. 3rd commit on PR #263.
+
+---
+
 ## 2026-06-12 — V3.23.178: off-scan ghost uplink nodes (the flat-row fix, follow-up chip)
 
 Implements the task chip from the V3.23.177 session: MODEL.offscan (CDP neighbors outside the

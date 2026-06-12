@@ -856,10 +856,53 @@
     border:1px solid var(--border); background:var(--surface-2); color:var(--text); outline:none}
   .ab-input input:focus{border-color:var(--accent)}
   .ab-input input::placeholder{color:var(--text-faint)}
+  /* answer-card richness (V3.23.179): bars, steps, flow boxes, expanders, typing, draw-in.
+     Every animation is gated on prefers-reduced-motion:no-preference and the BASE state is
+     the final fully-visible state, so reduced-motion users simply see content instantly. */
+  .ab-typing{display:flex; gap:5px; align-items:center; padding:12px 14px; width:64px}
+  .ab-typing i{width:7px; height:7px; border-radius:50%; background:var(--text-faint); display:inline-block}
+  .ab-bar{display:inline-block; vertical-align:middle; width:86px; height:8px; border-radius:999px;
+    background:var(--surface-3); overflow:hidden; margin-right:7px}
+  .ab-bar i{display:block; height:100%; border-radius:999px; background:var(--accent); width:var(--w,0%)}
+  .ab-bar i.warn{background:var(--watch)} .ab-bar i.bad{background:var(--crit)}
+  .ab-steps{margin:6px 0 2px; padding:0; list-style:none; counter-reset:abstep}
+  .ab-steps li{position:relative; padding:5px 0 5px 30px; border-bottom:1px dashed var(--border-faint);
+    counter-increment:abstep; font-size:12px; color:var(--text-dim)}
+  .ab-steps li b{color:var(--text)}
+  .ab-steps li::before{content:counter(abstep); position:absolute; left:0; top:6px; width:20px; height:20px;
+    border-radius:50%; background:var(--accent-soft); color:var(--accent); font-weight:700; font-size:10.5px;
+    display:flex; align-items:center; justify-content:center}
+  .ab-steps.rb li::before{background:var(--crit-soft); color:var(--crit)}
+  .ab-flow{display:flex; flex-direction:column; gap:3px; margin:7px 0}
+  .ab-fbox{border:1px solid var(--border); border-radius:9px; padding:6px 10px; font-size:11.5px;
+    color:var(--text-dim); background:var(--surface)}
+  .ab-fbox b{color:var(--text)}
+  .ab-fbox.crit{border-color:var(--crit); background:var(--crit-soft)}
+  .ab-fbox.watch{border-color:var(--watch); background:var(--watch-soft)}
+  .ab-farr{text-align:center; color:var(--text-faint); font-size:11px; line-height:1}
+  .ab-x{margin:6px 0}
+  .ab-x summary{cursor:pointer; color:var(--accent); font-size:11.5px; font-weight:600; user-select:none}
+  .ab-x summary:hover{text-decoration:underline}
+  .ab-x[open] summary{margin-bottom:5px}
+  .ab-sec{margin:9px 0 3px; padding-top:8px; border-top:1px solid var(--border-faint)}
   @media (prefers-reduced-motion: no-preference){
     #askbot{animation:abIn .16s ease}
+    .ab-typing i{animation:abTyp 1s ease-in-out infinite}
+    .ab-typing i:nth-child(2){animation-delay:.18s}
+    .ab-typing i:nth-child(3){animation-delay:.36s}
+    .ab-bar i{width:0; animation:abGrow .7s ease-out forwards; animation-delay:.15s}
+    .ab-steps li{opacity:0; transform:translateY(4px); animation:abStep .32s ease-out forwards;
+      animation-delay:calc(var(--i,0)*110ms)}
+    .ab-flow>*{opacity:0; animation:abStep .3s ease-out forwards; animation-delay:calc(var(--i,0)*130ms)}
+    .ab-svg .dw{stroke-dasharray:300; stroke-dashoffset:300; animation:abDraw .55s ease-out forwards;
+      animation-delay:calc(var(--i,0)*70ms)}
+    .ab-svg .fd{opacity:0; animation:abStep .4s ease-out forwards; animation-delay:calc(var(--i,0)*70ms)}
   }
   @keyframes abIn{from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none}}
+  @keyframes abTyp{0%,100%{opacity:.35; transform:translateY(0)} 50%{opacity:1; transform:translateY(-3px)}}
+  @keyframes abGrow{to{width:var(--w,0%)}}
+  @keyframes abStep{to{opacity:1; transform:none}}
+  @keyframes abDraw{to{stroke-dashoffset:0}}
 
   @media print{
     #askbot{display:none !important}
@@ -7712,13 +7755,43 @@ const AB={acts:[],greeted:false};
 const AB_PILL={severe:"pl-crit",critical:"pl-crit","past-ldos":"pl-crit",high:"pl-risk",elevated:"pl-risk",
   poor:"pl-risk","near-ldos":"pl-risk","replace/upgrade":"pl-risk",risk:"pl-risk",medium:"pl-watch",
   guarded:"pl-watch",fair:"pl-watch",watch:"pl-watch","verify eol":"pl-watch",low:"pl-ok",good:"pl-ok",
-  excellent:"pl-ok",ok:"pl-ok",info:"pl-ok",active:"pl-ok"};
+  excellent:"pl-ok",ok:"pl-ok",info:"pl-ok",active:"pl-ok",
+  fail:"pl-risk",pass:"pl-ok",warn:"pl-watch",conforms:"pl-ok",advisory:"pl-watch",deviation:"pl-risk",
+  "not-assessable":"pl-watch","on-air critical":"pl-crit",support:"pl-ok"};
 function abPill(t){if(t==null||t==="")return"";
   return `<span class="pill ${AB_PILL[String(t).toLowerCase()]||"pl-watch"}">${esc(String(t))}</span>`;}
 function abShort(h){return String(h||"").split("-")[0]||String(h||"");}
 function abAttr(s){return esc(s).replace(/"/g,"&quot;");}   // esc() covers &<> only; attributes need quotes dead too
 function abKv(k,v){return v==null||v===""?"":`<div class="ab-kv"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;}
 function abHostLink(h){return `<span class="ab-link" data-abq="tell me about ${abAttr(h)}">${esc(h)}</span>`;}
+
+/* ---- conversational layer (V3.23.179) -----------------------------------
+   Plain-English tolerance: fillers stripped, synonyms folded onto stable
+   keyword tokens, and a tiny conversation memory (last host / VLAN / intent)
+   so follow-ups like "what about AS32?" or "and its endpoints?" just work. */
+const AB_CTX={host:null,vlan:null,intent:null};
+function abNorm(q){let t=" "+String(q).toLowerCase()
+  .replace(/[?!.,;:]+/g," ")
+  .replace(/\b(can|could|would|will)\s+you\b/g," ")
+  .replace(/\b(please|kindly|pls|just|basically|actually|really|maybe|so|umm?|uh)\b/g," ")
+  .replace(/\b(tell|show|give|get|walk|brief)\s+(me|us)( through)?\b/g," ")
+  .replace(/\bi\s+(want|need|would like|wanna|'d like)\s+(to\s+)?(know|see|understand|check|review)\b/g," ")
+  .replace(/\bwhat'?s\b/g," what is ")+" ";
+  /* synonym folding — however the engineer phrases it, the intent keyword stays stable */
+  t=t.replace(/\b(goes? down|dies?|fails?|crash(es)?|falls? over|loses? power|is removed|pull(ed)? out|yank(ed)?)\b/g," impact ")
+     .replace(/\b(firmware|code version|image|release train)\b/g," software ")
+     .replace(/\b(resilien\w*|redundan\w*|single[- ]?points?( of failure)?|spofs?\b|single[- ]?homed|dual[- ]?homed|surviv\w*|fail[- ]?over|high[- ]?availability|ha posture)\b/g," spofword ")
+     .replace(/\b(spanning[- ]?tree\w*|stp\b|root bridge|tcn)\b/g," stpword ")
+     .replace(/\b(hsrp|vrrp|glbp|first[- ]?hop|gateway redundancy|standby gateway)\b/g," fhrpword ")
+     .replace(/\b(port (count|density|util\w*)|free ports|poe\b|head ?room|capacity|oversubscri\w*)\b/g," capword ")
+     .replace(/\b(hardening|cis\b|compliance|security posture|secure (is|are)|lock(ed)? down)\b/g," secword ")
+     .replace(/\b(architecture|design review|best practices?|leading practices?|conformance|grade)\b/g," archword ")
+     .replace(/\b(mop\b|method of procedure|cut ?over plan|migration plan|maintenance window|pre[- ]?checks?|post[- ]?checks?|rollback plan|run ?of ?show)\b/g," mopword ")
+     .replace(/\b(fix (first|list)|priorit\w* list|punch ?list|action plan|remediat\w* plan|to[- ]?do)\b/g," fixword ")
+     .replace(/\b(drift|false health|baseline deviat\w*|golden config)\b/g," driftword ")
+     .replace(/\b(duplicate ips?|overlapping subnets?|address(ing)? conflicts?|dup ip)\b/g," dupword ")
+     .replace(/\b(executive|management summary|c[- ]?level|board ?room|stakeholder|posture statement)\b/g," execword ");
+  return t;}
 
 /* ---- entity recognition ------------------------------------------------ */
 function abHostIdx(){return _memo(MODEL,"ab:idx",()=>MODEL.hosts.map(h=>({h,canon:canonHost(h),alias:abShort(h).toLowerCase()})));}
@@ -7740,18 +7813,38 @@ function abEntities(q){const t=q.toLowerCase();
   const ips=t.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g)||[];
   const macs=t.match(/\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b/g)||[];
   const hm=abMatchHosts(q);
-  return {vlan:vm?+vm[1]:null, ips, macs, matches:hm,
+  const E={vlan:vm?+vm[1]:null, ips, macs, matches:hm,
     host:hm.length&&hm[0][1]>=60?hm[0][0]:null,
     host2:hm.length>1&&hm[1][1]>=60?hm[1][0]:null,
-    ambiguous:hm.length>1&&hm[0][1]<90&&(hm[0][1]-hm[1][1])<15};}
+    ambiguous:hm.length>1&&hm[0][1]<90&&(hm[0][1]-hm[1][1])<15};
+  /* pronoun / follow-up resolution against the conversation memory */
+  if(!E.host&&AB_CTX.host&&/\b(it|its|this|that|the) ?(switch|box|device|one)?\b/.test(t)
+     &&!hm.length)E.host=AB_CTX.host;
+  if(E.vlan==null&&AB_CTX.vlan!=null&&/\b(that|this|the same) vlan\b/.test(t))E.vlan=AB_CTX.vlan;
+  return E;}
 
-/* ---- intent ------------------------------------------------------------ */
-function abIntent(q,E){const t=" "+q.toLowerCase()+" ";
+/* ---- intent (V3.23.179: runs on the NORMALIZED question) ---------------- */
+function abIntent(q,E){const t=abNorm(q);
   const has=(...ws)=>ws.some(w=>t.includes(w));
+  const raw=q.trim().toLowerCase();
+  if(/^(hi|hello|hey|yo|salam|salaam|good (morning|afternoon|evening))\b/.test(raw)&&raw.split(/\s+/).length<=4)return "greet";
+  if(/\b(thanks|thank you|thx|shukran|great|awesome|perfect|nice one|well done)\b/.test(raw)&&raw.split(/\s+/).length<=5)return "thanks";
+  if(/\bwho (are|r) (you|u)\b|\bwhat are you\b/.test(raw))return "who";
   if(has("help","what can you","how do i ask"))return "help";
   if(has("licen"))return "license";
   if(E.ips.length||E.macs.length)return "whois";
   if(E.host&&E.host2&&E.host!==E.host2&&has(" path","reach","between"," to ","trace"))return "path";
+  if(has(" mopword "))return (E.host||AB_CTX.host)?"cutover":"waves";
+  if(has(" spofword "))return "spof";
+  if(has(" stpword "))return "stp";
+  if(has(" fhrpword "))return E.vlan!=null?"vlanprof":"fhrpgaps";
+  if(has(" capword "))return E.host?"profile":"capacity";
+  if(has(" secword "))return "security";
+  if(has(" archword "))return "archgrade";
+  if(has(" fixword "))return "fixfirst";
+  if(has(" driftword "))return "drift";
+  if(has(" dupword "))return "conflicts";
+  if(has(" execword "))return "exec";
   if(has("migrat","cutover","decommission","replace","swap out","what if","remove","impact","field issue","break","go wrong"))
     return E.host?"migrate":(has("wave","order","sequence")?"waves":"risky");
   if(has("connect","neighbor","uplink","attached"," link"))return E.host?"neighbors":(E.vlan!=null?"vlanprof":"fleet");
@@ -7765,7 +7858,7 @@ function abIntent(q,E){const t=" "+q.toLowerCase()+" ";
   if(has("wave","sequence","move group","migration order","which order","phase"))return "waves";
   if(has("risk","worst","riskiest","top ","critical","priorit","danger"))return E.host?"migrate":"risky";
   if(has("health","score"))return E.host?"profile":"fleet";
-  if(has("overview","summary","fleet","how many","census","posture","total"))return "fleet";
+  if(has("overview","summary","fleet","how many","census","total"))return "fleet";
   if(E.host)return "profile";
   return "fallback";}
 
@@ -7808,11 +7901,12 @@ function abStarSvg(center,peers){const m=Math.min(peers.length,14);if(!m)return 
   let s=`<svg class="ab-svg" viewBox="0 0 ${W} ${H}" width="${W}" role="img" aria-label="Connections of ${esc(center)}">`;
   for(let i=0;i<m;i++){const p=peers[i],a=-Math.PI/2+i*2*Math.PI/m;
     const x=cx+R*Math.cos(a),y=cy+R*0.72*Math.sin(a);
-    s+=`<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border-strong)" stroke-width="1.4"${p.dashed?' stroke-dasharray="5 4"':""}/>`;}
+    /* solid links draw themselves in (.dw); dashed off-scan links fade (.fd) so their dash pattern survives */
+    s+=`<line class="${p.dashed?"fd":"dw"}" style="--i:${i}" x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--border-strong)" stroke-width="1.4"${p.dashed?' stroke-dasharray="5 4"':""}/>`;}
   for(let i=0;i<m;i++){const p=peers[i],a=-Math.PI/2+i*2*Math.PI/m;
     const x=cx+R*Math.cos(a),y=cy+R*0.72*Math.sin(a);
-    s+=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="var(--surface)" stroke="${p.dashed?"var(--text-faint)":"var(--accent)"}" stroke-width="1.6"${p.dashed?' stroke-dasharray="3 3"':""}/>`+
-       `<text x="${x.toFixed(1)}" y="${(y+(y>=cy?24:-17)).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)">${esc(p.name)}</text>`;}
+    s+=`<g class="fd" style="--i:${i+2}"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="var(--surface)" stroke="${p.dashed?"var(--text-faint)":"var(--accent)"}" stroke-width="1.6"${p.dashed?' stroke-dasharray="3 3"':""}/>`+
+       `<text x="${x.toFixed(1)}" y="${(y+(y>=cy?24:-17)).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text-dim)">${esc(p.name)}</text></g>`;}
   s+=`<circle cx="${cx}" cy="${cy}" r="15" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="2"/>`+
      `<text x="${cx}" y="${cy+31}" text-anchor="middle" font-size="10" font-weight="700" fill="var(--text)">${esc(abShort(center))}</text></svg>`;
   return s+(peers.length>m?`<div class="ab-note">+ ${peers.length-m} more not drawn</div>`:"");}
@@ -7820,10 +7914,14 @@ function abPathSvg(names){const n=names.length;if(n<2)return "";
   const W=372,seg=Math.min(110,(W-44)/(n-1)),x0=(W-seg*(n-1))/2;
   let s=`<svg class="ab-svg" viewBox="0 0 ${W} 64" width="${W}" role="img" aria-label="Path diagram">`;
   names.forEach((nm,i)=>{const x=x0+i*seg;
-    if(i){s+=`<line x1="${(x-seg+12).toFixed(1)}" y1="26" x2="${(x-13).toFixed(1)}" y2="26" stroke="var(--accent)" stroke-width="2"/>`+
-      `<polygon points="${(x-12).toFixed(1)},26 ${(x-19).toFixed(1)},22.5 ${(x-19).toFixed(1)},29.5" fill="var(--accent)"/>`;}
-    s+=`<circle cx="${x.toFixed(1)}" cy="26" r="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.8"/>`+
-       `<text x="${x.toFixed(1)}" y="50" text-anchor="middle" font-size="9" fill="var(--text-dim)">${esc(abShort(nm))}</text>`;});
+    if(i){s+=`<line class="dw" style="--i:${i}" x1="${(x-seg+12).toFixed(1)}" y1="26" x2="${(x-13).toFixed(1)}" y2="26" stroke="var(--accent)" stroke-width="2"/>`+
+      `<polygon class="fd" style="--i:${i}" points="${(x-12).toFixed(1)},26 ${(x-19).toFixed(1)},22.5 ${(x-19).toFixed(1)},29.5" fill="var(--accent)"/>`;}
+    s+=`<g class="fd" style="--i:${i}"><circle cx="${x.toFixed(1)}" cy="26" r="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.8"/>`+
+       `<text x="${x.toFixed(1)}" y="50" text-anchor="middle" font-size="9" fill="var(--text-dim)">${esc(abShort(nm))}</text></g>`;});
+  /* a packet rides the whole path — only when the user has not asked for reduced motion */
+  if(!(window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches)){
+    const x1=x0.toFixed(1),x2=(x0+seg*(n-1)).toFixed(1);
+    s+=`<circle r="3.5" fill="var(--accent)"><animateMotion dur="${(1.1+0.45*n).toFixed(1)}s" repeatCount="indefinite" path="M ${x1} 26 L ${x2} 26"/></circle>`;}
   return s+"</svg>";}
 
 /* ---- canvas actions ----------------------------------------------------- */
@@ -8051,15 +8149,241 @@ function abH_license(){return {html:`<h4>Licensing</h4><div>License inventory is
   {label:"Software posture",run:abAskAct("software posture")}]};}
 function abH_help(){return {html:`<h4>What you can ask (all offline, all from this snapshot)</h4>
   <div>• <b>A switch</b> — "tell me about AS65", "where is AS31 connected", "endpoints on AAS12", "vlans on AS03"</div>
-  <div>• <b>Migration</b> — "what if I migrate AS65?", "top risky devices", "migration waves"</div>
+  <div>• <b>Migration</b> — "what if I migrate AS65?", "cutover plan for AS31", "migration waves", "top risky devices"</div>
+  <div>• <b>Architecture &amp; risk</b> — "single points of failure", "is my STP root placement sane?", "fhrp coverage", "architecture grade", "what do I fix first?"</div>
+  <div>• <b>Posture</b> — "security posture", "port capacity", "eol status", "software posture", "drift", "duplicate IPs"</div>
   <div>• <b>L2/L3</b> — "vlan 1000", "path AS64 to AS65", "who is 10.1.20.31"</div>
-  <div>• <b>Fleet</b> — "fleet overview", "eol status", "software posture", "application domains"</div>
-  <div class="ab-note">I answer only from collected evidence — anything absent is named as absent, never invented.</div>`,acts:[
-  {label:"Fleet overview",run:abAskAct("fleet overview")}]};}
+  <div>• <b>Fleet</b> — "fleet overview", "executive summary", "application domains"</div>
+  <div class="ab-note">Talk normally — I strip the politeness and fold synonyms ("box that dies" = impact). Follow-ups work too: ask about a switch, then "and its endpoints?" or "what about AS32?". Absent evidence is named absent, never invented.</div>`,acts:[
+  {label:"Fleet overview",run:abAskAct("fleet overview")},
+  {label:"Single points of failure",run:abAskAct("single points of failure")}]};}
 function abH_didyoumean(E,q){const opts=E.matches.slice(0,6).map(([h])=>
     `<span class="chip" data-abq="${abAttr(q)} ${abAttr(h)}">${esc(abShort(h))}</span>`).join(" ");
   return {html:`<h4>Which switch did you mean?</h4><div class="ab-acts">${opts}</div>`,acts:[]};}
 function abH_fallback(){return {html:`<h4>I didn't catch that</h4><div>Try naming a switch, a VLAN, an IP/MAC, or a topic (migration, risk, EoL, software, apps, waves). Type <b>help</b> for examples.</div>`,acts:[{label:"help",run:abAskAct("help")}]};}
+
+/* ---- rich-card helpers (V3.23.179) -------------------------------------- */
+function abBarHtml(pct,cls){const p=Math.max(0,Math.min(100,Math.round(+pct||0)));
+  return `<span class="ab-bar"><i class="${cls||(p>=90?"bad":p>=70?"warn":"")}" style="--w:${p}%"></i></span>${p}%`;}
+function abFlow(boxes){return `<div class="ab-flow">`+boxes.map((x,i)=>
+  (i?`<div class="ab-farr" style="--i:${2*i-1}" aria-hidden="true">▼</div>`:"")+
+  `<div class="ab-fbox ${x.cls||""}" style="--i:${2*i}">${x.txt}</div>`).join("")+`</div>`;}
+function abSteps(items,cls){return `<ol class="ab-steps ${cls||""}">`+
+  items.map((s,i)=>`<li style="--i:${i}">${s}</li>`).join("")+`</ol>`;}
+function abX(label,inner){return `<details class="ab-x"><summary>${esc(label)}</summary>${inner}</details>`;}
+
+/* ---- senior AS-engineer handlers (V3.23.179) ----------------------------- */
+function abH_spof(){const ch=((SNAP||{}).causality)||[];
+  const bySev={};for(const c of ch)bySev[c.severity]=(bySev[c.severity]||0)+1;
+  const single=[],multi=[];
+  for(const h of MODEL.hosts){const nb=abNbrs(h);const n=nb.peers.size+nb.off.size;
+    (n<=1?single:multi).push([h,n]);}
+  let b=`<h4>Resilience &amp; single points of failure</h4>`;
+  b+=abKv("Failure chains",Object.keys(bySev).length?Object.entries(bySev).map(([k,n])=>`${abPill(k)} ${n}`).join(" "):"none computed in this snapshot");
+  b+=abKv("Uplink redundancy",`<b>${single.length}</b> single-homed · <b>${multi.length}</b> with 2+ CDP-visible uplinks`);
+  for(const c of ch.slice(0,2))b+=abFlow([
+    {txt:`<b>Trigger</b> — ${esc(c.trigger||"")}`,cls:"crit"},
+    {txt:`<b>Mechanism</b> — ${esc(c.mechanism||"")}`,cls:"watch"},
+    {txt:`<b>Impact</b> — ${esc(c.impact||"")}`}]);
+  if(ch.length>2)b+=abX(`All ${ch.length} failure chains`,
+    `<table><tr><th>Sev</th><th>Trigger</th></tr>`+ch.slice(0,20).map(c=>
+      `<tr><td>${abPill(c.severity)}</td><td>${esc(c.trigger||"")}</td></tr>`).join("")+`</table>`+
+    (ch.length>20?`<div class="ab-note">+ ${ch.length-20} more in the workbook Causality sheet</div>`:""));
+  if(single.length)b+=abX(`${single.length} single-homed switch(es)`,
+    `<table><tr><th>Switch</th><th>Uplinks</th></tr>`+single.slice(0,15).map(([h,n])=>
+      `<tr><td>${abHostLink(h)}</td><td><b>${n}</b></td></tr>`).join("")+`</table>`);
+  b+=`<div class="ab-note">Off-scan uplinks count as connectivity, not verified redundancy — one CDP neighbor is one failure away from an island. Collect the DS/CS tier to confirm protected paths.</div>`;
+  return {html:b,acts:[
+    {label:"Blast-radius mode",run:()=>{abToggle(false);setMode("blast");}},
+    {label:"STP root placement",run:abAskAct("is my stp root placement sane")},
+    {label:"Gateway redundancy",run:abAskAct("fhrp coverage")}]};}
+function abH_stp(){const sr=(SNAP||{}).stp_roots||{};
+  const rows=[];const defVlans=new Set();
+  for(const [h,vm] of Object.entries(sr)){if(!vm||typeof vm!=="object")continue;
+    const rooted=[],def=[];
+    for(const [v,r] of Object.entries(vm)){if(!r)continue;
+      if(r.root_priority!=null&&+r.root_priority>=32768)defVlans.add(v);
+      if(r.is_root){rooted.push(v);if(r.root_priority!=null&&+r.root_priority>=32768)def.push(v);}}
+    if(rooted.length)rows.push({h,rooted,def});}
+  rows.sort((a,b)=>b.rooted.length-a.rooted.length);
+  let b=`<h4>STP root placement</h4>`;
+  if(!Object.keys(sr).length)return {html:b+`<div class="ab-note">No STP root data in this snapshot.</div>`,acts:[]};
+  b+=abKv("Switches holding a root",String(rows.length));
+  b+=abKv("Default-priority roots",defVlans.size?`<span class="pill pl-watch">${defVlans.size} VLAN(s)</span> won by default election (priority ≥32768) — root placement is accidental, not engineered`:`<span class="pill pl-ok">none</span> — priorities look engineered`);
+  if(rows.length){b+=`<table><tr><th>Switch</th><th>Root for</th><th>By default election</th></tr>`+
+    rows.slice(0,8).map(r=>`<tr><td>${abHostLink(r.h)}</td><td><b>${r.rooted.length}</b> VLAN(s)</td><td>${r.def.length?`<span class="pill pl-watch">${r.def.length}</span>`:"0"}</td></tr>`).join("")+`</table>`;
+    b+=`<div class="ab-note">An ACCESS switch holding root is a classic misplacement — on this access-only collection the true roots may sit on the uncollected DS/CS tier, so treat in-scan roots as findings to verify.</div>`;}
+  return {html:b,acts:[
+    {label:"Protocols mode",run:()=>{abToggle(false);setMode("protocols");}},
+    {label:"SPOF posture",run:abAskAct("single points of failure")}]};}
+function abH_fhrpgaps(){const vids=[...MODEL.vlans].sort((a,b)=>a-b);
+  const single=[],multiNoF=[],covered=[],l2only=[];
+  for(const v of vids){const gws=MODEL.gateways.get(v);
+    const hasEp=[...MODEL.endpoints.values()].some(m=>m.get(v));
+    if(!gws||!gws.size){if(hasEp)l2only.push(v);continue;}
+    if(gws.size===1)single.push(v);
+    else if(!MODEL.fhrp.get(v))multiNoF.push(v);
+    else covered.push(v);}
+  let b=`<h4>First-hop gateway redundancy</h4>`;
+  b+=abKv("FHRP-covered",`<span class="pill pl-ok">${covered.length}</span> VLAN(s)`);
+  b+=abKv("Single gateway",single.length?`<span class="pill pl-risk">${single.length}</span> VLAN(s) — gateway loss strands every host`:`<span class="pill pl-ok">0</span>`);
+  b+=abKv("2+ SVIs, no FHRP",multiNoF.length?`<span class="pill pl-watch">${multiNoF.length}</span> VLAN(s) — duplicate/asymmetric gateway risk`:`<span class="pill pl-ok">0</span>`);
+  b+=abKv("L2-only (no in-scan gateway)",String(l2only.length));
+  if(single.length)b+=abX(`Single-gateway VLANs (${single.length})`,
+    `<table><tr><th>VLAN</th><th>Only gateway</th></tr>`+single.slice(0,15).map(v=>
+      `<tr><td><span class="ab-link" data-abq="vlan ${v}">${v}</span></td><td>${[...MODEL.gateways.get(v)][0]?abHostLink([...MODEL.gateways.get(v)][0]):"?"}</td></tr>`).join("")+`</table>`);
+  if(multiNoF.length)b+=abX(`No-FHRP multi-SVI VLANs (${multiNoF.length})`,
+    `<div>${multiNoF.slice(0,30).map(v=>`<span class="ab-link" data-abq="vlan ${v}">${v}</span>`).join(", ")}</div>`);
+  b+=`<div class="ab-note">In-scan view only: gateways living on the uncollected DS/CS tier are invisible here, so "L2-only" usually means "gateway upstairs".</div>`;
+  return {html:b,acts:[{label:"SPOF posture",run:abAskAct("single points of failure")}]};}
+function abH_capacity(){const cap=(SNAP||{}).capacity||[];
+  if(!cap.length)return {html:`<h4>Capacity</h4><div class="ab-note">No capacity table in this snapshot.</div>`,acts:[]};
+  const tot=cap.reduce((s,r)=>s+(+r.total_ports||0),0),act=cap.reduce((s,r)=>s+(+r.active_ports||0),0);
+  const sorted=[...cap].sort((a,b)=>(+b.port_util||0)-(+a.port_util||0));
+  const poe=cap.some(r=>r.poe_capacity_w!==""&&r.poe_capacity_w!=null);
+  let b=`<h4>Port capacity &amp; headroom</h4>`;
+  b+=abKv("Fleet ports",`<b>${act}</b> active of <b>${tot}</b> (${tot?Math.round(act/tot*100):0}% used · ${tot-act} free for the migration)`);
+  b+=`<table><tr><th>Most utilised</th><th>Utilisation</th><th>Free</th></tr>`+
+    sorted.slice(0,10).map(r=>`<tr><td>${abHostLink(r.hostname)}</td><td>${abBarHtml(r.port_util)}</td><td><b>${r.free_ports}</b></td></tr>`).join("")+`</table>`;
+  b+=poe?"":`<div class="ab-note">PoE budget was not reported by these platforms in collection — size PoE on the new BoM from endpoint classes (phones/APs/cameras) instead.</div>`;
+  return {html:b,acts:[{label:"Fleet overview",run:abAskAct("fleet overview")}]};}
+function abH_security(){const sec=(SNAP||{}).security||{};const hyg=(SNAP||{}).config_hygiene||{};
+  const agg=new Map();let nFail=0;
+  for(const [h,rec] of Object.entries(sec)){for(const f of ((rec||{}).findings||[])){
+    if(!f||f.status==="pass")continue;nFail++;
+    let a=agg.get(f.id);if(!a){a={title:f.title||f.id,sev:f.severity||"info",cis:f.cis_ref||"",hosts:[]};agg.set(f.id,a);}
+    a.hosts.push(h);
+    const rank={critical:4,high:3,medium:2,warn:2,low:1,info:0};
+    if((rank[String(f.severity).toLowerCase()]||0)>(rank[String(a.sev).toLowerCase()]||0))a.sev=f.severity;}}
+  const top=[...agg.values()].sort((a,b)=>b.hosts.length-a.hosts.length);
+  let hu=0,hund=0;for(const r of Object.values(hyg)){hu+=((r||{}).summary||{}).unused||0;hund+=((r||{}).summary||{}).undefined||0;}
+  let b=`<h4>Security &amp; compliance posture (CIS-aligned)</h4>`;
+  if(!Object.keys(sec).length)return {html:b+`<div class="ab-note">No security findings in this snapshot.</div>`,acts:[]};
+  b+=abKv("Open findings",`<b>${nFail}</b> across ${Object.keys(sec).length} devices · ${agg.size} distinct checks`);
+  b+=abKv("Config hygiene",`${hu} unused structure(s) · ${hund} undefined reference(s)`);
+  if(top.length){b+=`<table><tr><th>Check</th><th>Sev</th><th>Devices</th><th>CIS</th></tr>`+
+    top.slice(0,8).map(a=>`<tr><td>${esc(a.title)}</td><td>${abPill(a.sev)}</td><td><b>${a.hosts.length}</b></td><td class="mono">${esc(a.cis)}</td></tr>`).join("")+`</table>`;
+    b+=abX(`Devices failing "${top[0].title}"`,`<div>${top[0].hosts.slice(0,15).map(abHostLink).join(", ")}${top[0].hosts.length>15?" …":""}</div>`);}
+  return {html:b,acts:[
+    {label:"Fix-first list",run:abAskAct("what do I fix first")},
+    {label:"Architecture grade",run:abAskAct("architecture grade")}]};}
+function abH_archgrade(){const ar=(SNAP||{}).architecture_review||{};const sm=ar.summary||{};
+  if(!sm.grade)return {html:`<h4>Architecture review</h4><div class="ab-note">No architecture review in this snapshot.</div>`,acts:[]};
+  let b=`<h4>Architecture conformance — grade ${esc(sm.grade)}</h4>`;
+  b+=abKv("Score",abBarHtml(sm.score_pct));
+  b+=abKv("Checks",`${sm.n_conforms??"?"} conform · ${sm.n_advisory??"?"} advisory · ${(sm.n_deviation??0)+(sm.n_critical??0)} deviations · ${sm.n_not_assessable??0} not assessable`);
+  if(Array.isArray(ar.domains)&&ar.domains.length)
+    b+=`<table><tr><th>Domain</th><th>Verdict</th><th>Score</th></tr>`+ar.domains.map(d=>
+      `<tr><td>${esc(d.key)}</td><td>${abPill(d.verdict)}</td><td>${abBarHtml(d.score_pct)}</td></tr>`).join("")+`</table>`;
+  if(sm.statement)b+=`<div class="ab-note">${esc(sm.statement)}</div>`;
+  if(Array.isArray(ar.top_actions)&&ar.top_actions.length)
+    b+=`<div class="ab-sec"><h4>Top actions</h4>`+abSteps(ar.top_actions.slice(0,4).map(a=>
+      esc(typeof a==="string"?a:(a.action||a.title||a.id||""))))+`</div>`;
+  return {html:b,acts:[
+    {label:"Review mode",run:()=>{abToggle(false);setMode("review");}},
+    {label:"Security posture",run:abAskAct("security posture")}]};}
+function abH_cutover(h){const eps=abEps(h).length;const cap=abCap(h)||{};const nb=abNbrs(h);
+  const em=MODEL.endpoints.get(h)||new Map();const vids=[...em.keys()].sort((a,b)=>a-b);
+  const doms=abDoms(h);const onair=doms.some(d=>/critical/i.test(d.tier||""));
+  const upl=[...nb.peers.entries()].map(([o,p])=>abShort(o)+" ("+p.ports.join(", ")+")")
+    .concat([...nb.off.entries()].map(([o,p])=>o.toUpperCase()+" ("+p.ports.join(", ")+") [off-scan]"));
+  const gwPairs=vids.map(v=>{const g=[...(MODEL.gateways.get(v)||[])][0];let ip="";
+    if(g){const d=(((SNAP||{}).interfaces||{})[g]||{})["Vlan"+v];ip=(d&&d.svi_ip)||"";}
+    return {v,g,ip};}).filter(x=>x.g);
+  const srh=((SNAP||{}).stp_roots||{})[h]||{};
+  const rooted=Object.entries(srh).filter(([,r])=>r&&r.is_root).map(([v])=>v);
+  const pre=[
+    `<b>Freeze the window</b>${onair?" — ON-AIR-CRITICAL domain ("+esc(doms.map(d=>d.domain).join("; "))+"): broadcast quiet window + service-owner sign-off":""}; publish this MOP and the rollback to the NOC.`,
+    `<b>Back up</b> ${esc(h)}: running-config, VLAN database, 'show tech' archived off-box.`,
+    `<b>Baseline</b>: ${eps} endpoint MAC(s) across VLAN(s) ${esc(vids.slice(0,10).join(", "))||"—"}; capture 'show mac address-table', 'show cdp neighbors', interface counters (${cap.active_ports??"?"} active / ${cap.total_ports??"?"} total ports).`,
+    `<b>Label &amp; map</b> every patched port (workbook Interface sheet is the port map); photograph the chassis and patching.`,
+    rooted.length?`<b>STP</b>: ${esc(h)} is ROOT for VLAN(s) ${esc(rooted.join(", "))} — re-home the root first or plan for reconvergence on removal.`
+                 :`<b>STP</b>: confirm it holds no root (clean in this collection).`,
+    `<b>Pre-stage the replacement</b>: VLANs ${esc(vids.join(", "))||"(per workbook)"}, trunks toward ${esc(upl.join(" · "))||"(no CDP-visible uplinks)"}, mgmt IP/AAA, golden-config items.`];
+  const exec=[
+    `Notify the NOC; suppress monitoring for ${esc(h)} only.`,
+    `Gracefully shut access ports, then uplinks — watch STP/FHRP on the neighbors as they age out.`,
+    `Physical swap per port map: <b>uplinks first</b> (verify trunk + CDP on ${esc(upl[0]||"the uplink")}), then access ports in port-map order.`,
+    onair?`Staged service checks with the ${esc(doms[0].domain)} owner between port groups — stop on first anomaly.`:`Spot-check a live endpoint after each port group.`];
+  const val=[
+    `<b>${cap.active_ports??"All previously-active"}</b> interfaces up/up, none err-disabled.`,
+    `CDP shows ${upl.length||"the"} uplink neighbor(s) on the same local ports.`,
+    `MAC table repopulates to ≥ baseline (<b>${eps}</b>); one endpoint verified per VLAN (${esc(vids.slice(0,6).join(", "))}${vids.length>6?"…":""}).`,
+    gwPairs.length?`Gateway reachability: ${gwPairs.slice(0,5).map(x=>"VLAN "+x.v+" → "+esc(x.ip||abShort(x.g))).join(" · ")}.`
+                  :`Gateway reachability validated against the upstream DS/CS tier (no in-scan gateways for its VLANs).`,
+    `STP stable (no TCN storm, root unchanged), error counters clean after a 15-minute soak.`];
+  const rb=[
+    `<b>Triggers</b>: validation unmet inside the window · L2 loop/TCN storm · FHRP flapping${onair?" · ANY on-air impact":""}.`,
+    `Re-cable the old unit per the port map; power up and let STP/CDP settle.`,
+    `Verify the same baselines (MAC count ${eps}, CDP uplinks, gateway pings) — then stand down the change.`,
+    `Capture logs/configs for the PIR; do not retry in the same window.`];
+  const plain=(t)=>t.replace(/<[^>]+>/g,"");
+  const txt=`CUTOVER MOP — ${h}\n\nPRE-CHECKS\n`+pre.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n")+
+    `\n\nEXECUTION\n`+exec.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n")+
+    `\n\nVALIDATION\n`+val.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n")+
+    `\n\nROLLBACK\n`+rb.map((s,i)=>`${i+1}. ${plain(s)}`).join("\n");
+  let b=`<h4>Cutover MOP — ${esc(h)}</h4>`;
+  if(doms.length)b+=abKv("Service tier",doms.map(d=>`${esc(d.domain)} ${abPill(d.tier)}`).join(" · "));
+  b+=`<div class="ab-sec"><h4>1 · Pre-checks</h4>${abSteps(pre)}</div>`;
+  b+=`<div class="ab-sec"><h4>2 · Execution</h4>${abSteps(exec)}</div>`;
+  b+=`<div class="ab-sec"><h4>3 · Validation checkpoints</h4>${abSteps(val)}</div>`;
+  b+=`<div class="ab-sec"><h4>4 · Rollback</h4>${abSteps(rb,"rb")}</div>`;
+  b+=`<div class="ab-note">Synthesized from THIS device's collected facts (ports, VLANs, uplinks, STP, gateways, app tier) on the standard prep → execute → validate → rollback MOP shape. The workbook runbook/MOP DOCX remains the formal deliverable.</div>`;
+  return {html:b,acts:[
+    {label:"Copy plan",run:()=>{try{navigator.clipboard.writeText(txt).then(
+        ()=>srAnnounce("Cutover plan copied to clipboard."),
+        ()=>abMsg("bot",`<div class="ab-card ab-note">Clipboard unavailable — select the plan text and copy manually.</div>`));}
+      catch(e){abMsg("bot",`<div class="ab-card ab-note">Clipboard unavailable — select the plan text and copy manually.</div>`);}}},
+    {label:"Migration impact",run:abAskAct("what if I migrate "+h)},
+    {label:"Blast radius",run:abGoto(h,"blast")}]};}
+function abH_fixfirst(){const pl=(SNAP||{}).punchlist||[];
+  if(!pl.length)return {html:`<h4>Fix-first</h4><div class="ab-note">No punch-list in this snapshot.</div>`,acts:[]};
+  const rank={Critical:4,High:3,Medium:2,Low:1,Info:0};
+  const top=[...pl].sort((a,b)=>(a.priority||9)-(b.priority||9)||(rank[b.severity]||0)-(rank[a.severity]||0)).slice(0,8);
+  let b=`<h4>What to fix first (${pl.length} punch-list items)</h4>`;
+  b+=`<table><tr><th>#</th><th>Sev</th><th>Item</th><th>Where</th></tr>`+top.map((p,i)=>
+    `<tr><td>${i+1}</td><td>${abPill(p.severity)}</td><td>${esc(p.title||"")}</td><td>${(p.devices&&p.devices[0])?abHostLink(p.devices[0]):"fleet"}${(p.devices||[]).length>1?` +${p.devices.length-1}`:""}</td></tr>`).join("")+`</table>`;
+  b+=abX("Remediation guidance for these",abSteps(top.map(p=>`<b>${esc(p.title||"")}</b> — ${esc(p.remediation||p.detail||"")}`)));
+  return {html:b,acts:[
+    {label:"Top risky devices",run:abAskAct("top risky devices")},
+    {label:"Security posture",run:abAskAct("security posture")}]};}
+function abH_drift(){const od=(SNAP||{}).operational_drift||[];const gd=(SNAP||{}).golden_drift||{};
+  let b=`<h4>Drift &amp; false health</h4>`;
+  if(od.length)b+=`<table><tr><th>Sev</th><th>Category</th><th>Devices</th></tr>`+od.map(d=>
+    `<tr><td>${abPill(d.severity)}</td><td>${esc(d.category||"")}</td><td><b>${(d.devices||[]).length}</b></td></tr>`).join("")+`</table>`;
+  else b+=`<div>No operational-drift findings.</div>`;
+  const n=Object.keys(gd.per_device||{}).length;
+  if(n)b+=abKv("Golden-config comparison",`${n} device(s) vs the <b>${esc(gd.mode||"majority")}</b> baseline${gd.baseline?` (${esc(String(gd.baseline))})`:""}`);
+  b+=`<div class="ab-note">"False health" = a device that looks green only because the thing that would page you is itself broken (logging/SNMP/NTP drift). Check before trusting pre-cutover baselines.</div>`;
+  return {html:b,acts:[{label:"Fix-first list",run:abAskAct("what do I fix first")}]};}
+function abH_conflicts(){const ac=(SNAP||{}).addressing_conflicts||{};
+  const di=ac.dup_ip||[],ds=ac.dup_subnet||[];
+  let b=`<h4>Addressing conflicts</h4>`;
+  if(!di.length&&!ds.length)b+=`<div><span class="pill pl-ok">clean</span> No duplicate IPs or overlapping subnets detected in the collected evidence.</div>`;
+  else{if(di.length)b+=abKv("Duplicate IPs",`<span class="pill pl-crit">${di.length}</span>`)+
+      abX("Duplicates",`<div>${di.slice(0,10).map(x=>esc(JSON.stringify(x))).join("<br>")}</div>`);
+    if(ds.length)b+=abKv("Overlapping subnets",`<span class="pill pl-risk">${ds.length}</span>`);}
+  return {html:b,acts:[{label:"Fleet overview",run:abAskAct("fleet overview")}]};}
+function abH_exec(){const eb=(SNAP||{}).executive_brief||{};const sc=eb.scale||{},po=eb.posture||{};
+  let b=`<h4>Executive summary</h4>`;
+  b+=abKv("Estate",`<b>${sc.n_devices??MODEL.hosts.length}</b> switches · <b>${sc.n_endpoints??MODEL.endpointTotal}</b> endpoints · <b>${sc.n_domains??"?"}</b> app domains`);
+  if(po.avg_health!=null)b+=abKv("Average health",abBarHtml(po.avg_health)+` · worst band ${abPill(po.worst_band)} · ${po.n_critical??0} critical / ${po.n_poor??0} poor`);
+  if(eb.posture_statement)b+=`<div class="ab-note">${esc(eb.posture_statement)}</div>`;
+  if(Array.isArray(eb.top_gating)&&eb.top_gating.length)
+    b+=`<div class="ab-sec"><h4>Gating items</h4>`+abSteps(eb.top_gating.slice(0,5).map(g=>
+      esc(typeof g==="string"?g:(g.title||g.finding||g.label||JSON.stringify(g).slice(0,90)))))+`</div>`;
+  return {html:b,acts:[
+    {label:"Architecture grade",run:abAskAct("architecture grade")},
+    {label:"Top risky devices",run:abAskAct("top risky devices")},
+    {label:"EoL status",run:abAskAct("eol status")}]};}
+function abH_greet(){const worst=((((SNAP||{}).device_dossiers||{}).summary||{}).worst||[])[0]||MODEL.hosts[0]||"";
+  return {html:`<h4>Hello! 👋</h4><div>I'm the offline engineer for this snapshot — <b>${MODEL.hosts.length} switches</b>, <b>${MODEL.endpointTotal} endpoints</b>, and every analysis the toolkit computed. Ask in plain English:</div><div class="ab-note">"where are my single points of failure?" · "is my STP root placement sane?" · "cutover plan for ${esc(abShort(worst))}" · "what do I fix first?"</div>`,
+    acts:[{label:"Fleet overview",run:abAskAct("fleet overview")},{label:"What can you do?",run:abAskAct("help")}]};}
+function abH_thanks(){return {html:`<div>Anytime — that's what the window is for. Want me to keep going?</div>`,
+  acts:[{label:"What do I fix first?",run:abAskAct("what do I fix first")},
+        {label:"Executive summary",run:abAskAct("executive summary")}]};}
+function abH_who(){return {html:`<h4>What I am</h4><div>A fully <b>offline, deterministic</b> assistant baked into this HTML file. No cloud, no model, no telemetry — I parse your question, recognise switches/VLANs/IPs, and answer from the same one-source computes the canvas renders. If the evidence wasn't collected, I say so instead of guessing.</div>`,
+  acts:[{label:"What can you do?",run:abAskAct("help")}]};}
 
 /* ---- orchestration / UI ------------------------------------------------- */
 function abMsg(cls,html){const el=document.createElement("div");el.className="ab-msg "+cls;el.innerHTML=html;
@@ -8068,15 +8392,38 @@ function abRender(res){let acts="";
   if(res.acts&&res.acts.length){acts=`<div class="ab-acts">`+res.acts.map(a=>{
     const i=AB.acts.push(a.run)-1;return `<button class="btn" type="button" data-abact="${i}">${esc(a.label)}</button>`;}).join("")+`</div>`;}
   abMsg("bot",`<div class="ab-card">${res.html}${acts}</div>`);}
-function abAnswer(q){const E=abEntities(q);const intent=abIntent(q,E);
-  const needsHost={migrate:1,neighbors:1,endpoints:1,hostvlans:1,profile:1};
+function abAnswer(q){const E=abEntities(q);let intent=abIntent(q,E);
+  const needsHost={migrate:1,neighbors:1,endpoints:1,hostvlans:1,profile:1,cutover:1};
+  /* follow-up remap: "what about AS32?" / a bare host name re-runs the remembered intent */
+  if(intent==="profile"&&E.host&&AB_CTX.intent&&needsHost[AB_CTX.intent]&&AB_CTX.intent!=="profile"
+     &&(/\b(what|how) about\b|\bsame for\b|\band for\b/.test(abNorm(q))||q.trim().split(/\s+/).length<=2))
+    intent=AB_CTX.intent;
+  if(needsHost[intent]&&!E.host&&!E.matches.length&&AB_CTX.host)E.host=AB_CTX.host;
   if(needsHost[intent]&&!E.host)return abRender(E.matches.length?abH_didyoumean(E,q):abH_fallback());
   if(needsHost[intent]&&E.ambiguous)return abRender(abH_didyoumean(E,q));
+  /* remember the thread for pronouns and follow-ups */
+  if(E.host)AB_CTX.host=E.host;
+  if(E.vlan!=null)AB_CTX.vlan=E.vlan;
+  if(needsHost[intent])AB_CTX.intent=intent;
   switch(intent){
+    case "greet":return abRender(abH_greet());
+    case "thanks":return abRender(abH_thanks());
+    case "who":return abRender(abH_who());
     case "help":return abRender(abH_help());
     case "license":return abRender(abH_license());
     case "whois":return abRender(abH_whois(E));
     case "path":return abRender(abH_path(E.host,E.host2));
+    case "cutover":return abRender(abH_cutover(E.host));
+    case "spof":return abRender(abH_spof());
+    case "stp":return abRender(abH_stp());
+    case "fhrpgaps":return abRender(abH_fhrpgaps());
+    case "capacity":return abRender(abH_capacity());
+    case "security":return abRender(abH_security());
+    case "archgrade":return abRender(abH_archgrade());
+    case "fixfirst":return abRender(abH_fixfirst());
+    case "drift":return abRender(abH_drift());
+    case "conflicts":return abRender(abH_conflicts());
+    case "exec":return abRender(abH_exec());
     case "migrate":return abRender(abH_migrate(E.host));
     case "neighbors":return abRender(abH_neighbors(E.host));
     case "endpoints":return abRender(abH_endpoints(E.host));
@@ -8092,12 +8439,16 @@ function abAnswer(q){const E=abEntities(q);const intent=abIntent(q,E);
     case "profile":return abRender(abH_profile(E.host));
     default:return abRender(abH_fallback());}}
 function abSubmit(q){abMsg("user",esc(q));
-  try{abAnswer(q);}catch(err){abMsg("bot",`<div class="ab-card">Hit a snag answering that (${esc(err.message)}). Try rephrasing, or type "help".</div>`);}
-  srAnnounce("Answer added to the chat.");}
+  const reduce=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const typing=abMsg("bot",`<div class="ab-card ab-typing" aria-hidden="true"><i></i><i></i><i></i></div>`);
+  const go=()=>{typing.remove();
+    try{abAnswer(q);}catch(err){abMsg("bot",`<div class="ab-card">Hit a snag answering that (${esc(err.message)}). Try rephrasing, or type "help".</div>`);}
+    srAnnounce("Answer added to the chat.");};
+  if(reduce)go(); else setTimeout(go,260+Math.random()*240);}
 function abChipsRow(){const dd=((SNAP||{}).device_dossiers||{}).summary||{};
   const star=(Array.isArray(dd.worst)&&dd.worst[0])||MODEL.hosts[0]||"";
-  const sug=["fleet overview","top risky devices","eol status","application domains"];
-  if(star){sug.splice(1,0,"what if I migrate "+star);sug.push("where is "+star+" connected");}
+  const sug=["fleet overview","single points of failure","what do I fix first","architecture grade","security posture"];
+  if(star){sug.splice(1,0,"cutover plan for "+star);sug.push("what if I migrate "+star);}
   document.getElementById("abChips").innerHTML=sug.map(s=>`<span class="chip" role="button" tabindex="0" data-abq="${abAttr(s)}">${esc(s)}</span>`).join("");}
 function abToggle(force){const p=document.getElementById("askbot");
   const show=force!==undefined?force:p.hidden;
