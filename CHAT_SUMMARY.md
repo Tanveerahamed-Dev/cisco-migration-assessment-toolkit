@@ -5,6 +5,21 @@ Markdown-first session log for the hardening effort on
 
 ---
 
+## 2026-06-12 — V3.23.178: off-scan ghost uplink nodes (the flat-row fix, follow-up chip)
+
+Implements the task chip from the V3.23.177 session: MODEL.offscan (CDP neighbors outside the
+collected set) now dedupes through canonHost() into MODEL.ghosts (attachment-count-sorted, cap 40)
+and a layout-ONLY synthetic model (layoutModel) joins them into the rank/tier computation — the
+51-switch access-only AJ dataset now renders as a proper tree under 11 dashed DS/CS ghosts
+instead of one flat row. Ghosts are pointer-events:none, drawn behind the fabric in #gghosts,
+labeled "via CDP · not collected", no entrance animation (reduced-motion-safe), and live OUTSIDE
+nodeEls/edgeEls so no mode painter, analytics, table view, minimap, or nav order ever sees them;
+ghost edges ride the same updateEdges() refresher so drags stay attached. Census line names the
+ghost count. Committed onto the still-open PR #263 branch (same file, one PR for the user).
+Real collection of the DS/CS tier remains the proper fix — ghosts are honest scaffolding, not data.
+
+---
+
 ## 2026-06-12 — V3.23.177: Ask the Engineer (offline chat) + the 1366px layout fix
 
 User field report on the fresh 51-switch AJ run: (a) on their laptop the explorer's right-hand

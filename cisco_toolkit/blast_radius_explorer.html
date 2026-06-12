@@ -806,6 +806,14 @@
      dashboard flow onto paper, hides interactive chrome, and surfaces
      the screen-reader data table (#srTable) as a printable data table.
      ============================================================ */
+  /* ---- off-scan ghost uplinks (V3.23.178): observed via CDP, not collected ---- */
+  #gghosts{pointer-events:none}
+  .glink{stroke:var(--text-faint); stroke-width:1.3; stroke-dasharray:5 5; opacity:.45; fill:none}
+  .gnode .gbody{fill:var(--surface); stroke:var(--text-faint); stroke-width:1.3; stroke-dasharray:6 4; opacity:.8}
+  .gnode .gname{font:650 11px var(--sans); fill:var(--text-dim); text-anchor:middle; opacity:.85}
+  .gnode .gsub{font:550 9px var(--sans); fill:var(--text-faint); text-anchor:middle; letter-spacing:.3px}
+  .lod-far .gnode .gsub{display:none}
+
   /* ---- Ask the Engineer — offline Q&A panel (V3.23.177) ---- */
   #askbot{position:fixed; right:14px; bottom:14px; z-index:44; width:min(432px,calc(100vw - 28px));
     height:min(74vh,640px); display:flex; flex-direction:column; background:var(--surface);
@@ -1081,7 +1089,19 @@ function buildModel(snap){
     if(isAccessEndpoint(d)){const vid=(d.vlan&&/^\d+$/.test(d.vlan))?+d.vlan:null;if(vid!=null)addEp(host,vid,1);}}
   const adj=new Map(hosts.map(h=>[h,[]]));
   links.forEach((L,i)=>{adj.get(L.a).push(i);adj.get(L.b).push(i);});
-  return {hosts,links,adj,gateways,fhrp,endpoints,endpointTotal,vlans,offscan,svuAcl,svuVrf,svuFhrp};
+  /* V3.23.178: dedupe off-scan CDP neighbors into GHOST nodes (layout + paint only — every
+     analytic structure above stays exactly as computed, so blast/causality/waves/health/apps
+     never see them). canonHost() collapses "(serial)"- and FQDN-suffixed duplicates of the
+     same box. Sorted by distinct-attachment count and capped so a CDP-speaking phone or AP
+     can't flood the canvas — a real distribution switch attaches to many collected hosts. */
+  const gmap=new Map();
+  for(const o of offscan){const cn=canonHost(o.neighbor); if(!cn)continue;
+    let g=gmap.get(cn); if(!g){g={id:"~"+cn,name:cn,links:new Map()}; gmap.set(cn,g);}
+    if(!g.links.has(o.host))g.links.set(o.host,[]);
+    g.links.get(o.host).push(o.port);}
+  const ghosts=[...gmap.values()]
+    .sort((a,b)=>b.links.size-a.links.size||a.name.localeCompare(b.name)).slice(0,40);
+  return {hosts,links,adj,gateways,fhrp,endpoints,endpointTotal,vlans,offscan,ghosts,svuAcl,svuVrf,svuFhrp};
 }
 function linkCarries(L,vid){
   // A VLAN crosses a trunk only if BOTH ends permit it. An explicit allowed-list that excludes vid on
@@ -2013,7 +2033,7 @@ let APP_SEL=null;    // V3.23.112: selected application-domain index (Apps mode 
 let AR_SEL=null;     // V3.23.162: selected architecture-review check index (Review mode evidence spotlight; null = none)
 let TIER_FOCUS=null;   // V3.23.72: {name, hosts:Set} — a Risk-cockpit tier highlighted on the topology (null = none)
 let view={tx:0,ty:0,k:1};
-let nodeEls={}, edgeEls=[], visEdges=[], NAV=[], NAVI=0;
+let nodeEls={}, edgeEls=[], visEdges=[], ghostEls=[], NAV=[], NAVI=0;
 let _lastBlastSel=null, _blastTimers=[];   // blast-ripple wave: replay only on a NEW selection; cancel pending stagger timers
 
 /* ---- path/flow draw-on + traveling packet (animation) ----------------------
@@ -2096,8 +2116,22 @@ function load(snap,label,live){
   computeLayout(); buildChips(); renderSrTable(); fitView(); repaint(); renderDrawer();
   if(tableShown())renderTable();
 }
+/* Layout-only view of the model: real hosts + ghost uplink nodes. Ghosts join the rank/tier
+   computation — an access-only collection whose uplinks are all off-scan still forms a proper
+   tree (ghost DS/CS on top, access fanned out below) instead of one flat unranked row. NOTHING
+   else ever reads this synthetic model; analytics keep consuming the pure MODEL. */
+function layoutModel(){
+  const gs=MODEL.ghosts||[]; if(!gs.length)return MODEL;
+  const hosts=MODEL.hosts.concat(gs.map(g=>g.id));
+  const links=MODEL.links.slice();
+  for(const g of gs)for(const h of g.links.keys())links.push({a:g.id,b:h});
+  const adj=new Map(hosts.map(x=>[x,[]]));
+  links.forEach((L,i)=>{adj.get(L.a).push(i);adj.get(L.b).push(i);});
+  return {hosts,links,adj};
+}
 function computeLayout(){
-  const r = LAYOUT==="radial"? radialLayout(MODEL) : layeredLayout(MODEL);
+  const lm=layoutModel();
+  const r = LAYOUT==="radial"? radialLayout(lm) : layeredLayout(lm);
   POS=r.pos; LOGICAL={w:r.logicalW,h:r.logicalH};
   // Overlay hand-pinned positions so a dragged node survives layout/mode/reload.
   // Drop pins for hosts no longer in this MODEL so stale entries don't linger.
@@ -2221,8 +2255,9 @@ function buildSvg(){
     <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>`;
   s.appendChild(defs);
   const vp=el("g",{id:"vp"}); s.appendChild(vp);
+  const gghosts=el("g",{id:"gghosts"});   // off-scan ghost uplinks render BEHIND the real fabric
   const glinks=el("g",{id:"glinks"}); const gnodes=el("g",{id:"gnodes"});
-  vp.appendChild(glinks); vp.appendChild(gnodes);
+  vp.appendChild(gghosts); vp.appendChild(glinks); vp.appendChild(gnodes);
 
   visEdges=aggregateEdges(); edgeEls=[];
   // staggered entrance: cap total stagger so big fabrics don't crawl in (≤350ms)
@@ -2275,6 +2310,27 @@ function buildSvg(){
     gnodes.appendChild(g);
     nodeEls[h]={g,body,halo,nm,sub,tag,score,w,ht,core,roleTag};});
 
+  /* off-scan ghost uplinks (V3.23.178): dashed, faint, NON-interactive (#gghosts has
+     pointer-events:none) — informational scaffolding only. No entrance animation, so
+     they're reduced-motion-safe by construction. Excluded from nodeEls/edgeEls so no
+     mode painter, nav order, table view, or minimap ever touches them. */
+  ghostEls=[];
+  for(const gh of (MODEL.ghosts||[])){
+    if(!POS[gh.id])continue;
+    for(const [h,ports] of gh.links){
+      const ln=el("line",{class:"glink"});
+      gghosts.appendChild(ln);
+      ghostEls.push({kind:"edge",el:ln,a:gh.id,b:h,n:ports.length});}
+    const gw=150, ght=44;
+    const g=el("g",{class:"gnode",transform:`translate(${POS[gh.id].x},${POS[gh.id].y})`});
+    g.appendChild(el("rect",{class:"gbody",x:-gw/2,y:-ght/2,rx:10,width:gw,height:ght}));
+    const gn=el("text",{class:"gname",x:0,y:-1}); gn.textContent=shortName(gh.name.toUpperCase()); g.appendChild(gn);
+    const gs2=el("text",{class:"gsub",x:0,y:13}); gs2.textContent="via CDP · not collected"; g.appendChild(gs2);
+    g.setAttribute("role","img");
+    g.setAttribute("aria-label",`${gh.name}, uplink neighbor observed via CDP, not collected in this snapshot`);
+    gghosts.appendChild(g);
+    ghostEls.push({kind:"node",el:g,id:gh.id});}
+
   buildNavOrder();
   applyTransform(); positionAll();
   // LAYER LENS (U9): this rebuild discarded the old band/defs-gradient and made fresh
@@ -2304,6 +2360,12 @@ function updateEdges(){
     } else path.setAttribute("d",`M${a.x},${a.y} L${b.x},${b.y}`);
     if(badge){badge.setAttribute("x",bx2-13);badge.setAttribute("y",by2-7);
       btext.setAttribute("x",bx2);btext.setAttribute("y",by2+3);}});
+  // ghost uplinks track their (draggable) real endpoint through the same single refresher
+  for(const ge of ghostEls){
+    if(ge.kind==="edge"){const a=POS[ge.a],b=POS[ge.b]; if(!a||!b)continue;
+      ge.el.setAttribute("x1",a.x); ge.el.setAttribute("y1",a.y);
+      ge.el.setAttribute("x2",b.x); ge.el.setAttribute("y2",b.y);}
+    else{const p=POS[ge.id]; if(p)ge.el.setAttribute("transform",`translate(${p.x},${p.y})`);}}
 }
 
 /* ---- pan / zoom (viewBox-free: transform the viewport group) ---- */
@@ -3377,7 +3439,7 @@ function censusSec(){
     </div>
     <div class="kv" style="margin-top:11px"><span class="k">L3 gateways</span><span class="v">${gw}</span></div>
     <div class="kv"><span class="k">Structural SPOFs (chains)</span><span class="v">${structChains().length}</span></div>
-    ${off?`<div class="kv"><span class="k faint">Off-scan uplinks</span><span class="v faint">${off} (impact is a floor)</span></div>`:""}
+    ${off?`<div class="kv"><span class="k faint">Off-scan uplinks</span><span class="v faint">${off} port(s) → ${(MODEL.ghosts||[]).length} ghost node(s) on the canvas (impact is a floor)</span></div>`:""}
     </div>`;
 }
 /* V3.23.142: structural-SPOF list as ONE source of truth. Prefer the Python-computed SNAP.causality —
