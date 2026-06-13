@@ -5,6 +5,10 @@ import react from "@vitejs/plugin-react";
 // Build: emits to dist/, which the backend mounts as static in production.
 export default defineConfig({
   plugins: [react()],
+  // NOTE: do NOT `resolve.dedupe: ["three"]` here. react-force-graph-3d's sub-deps
+  // (three-render-objects) import three APIs (e.g. `Timer`) pinned to their own bundled three
+  // version; forcing a single top-level three breaks the build. The benign "Multiple instances of
+  // Three.js" console warning is expected and harmless — only the library's three is used at runtime. (V3.23.181)
   server: {
     port: 5173,
     proxy: {

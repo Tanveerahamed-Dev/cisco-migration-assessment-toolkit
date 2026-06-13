@@ -303,6 +303,24 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
   .wave-card { transition: border-color var(--motion) var(--ease), box-shadow var(--motion) var(--ease); }
 }
 
+/* V3.23.181 — depth & glass refresh. Additive layer (token-driven) that frosts the chrome and adds
+   layered elevation + accent glow, matching the explorer. No transitions added here, so the
+   reduced-motion strip below still governs all motion. */
+.topbar {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(var(--blur)) saturate(1.3); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.3);
+  box-shadow: var(--elev-1);
+}
+.panel {
+  background: var(--glass); border-color: var(--glass-border);
+  backdrop-filter: blur(var(--blur)) saturate(1.15); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.15);
+  box-shadow: var(--elev-1);
+}
+.panel:hover { box-shadow: var(--elev-2); }
+.tabs button.on { background: var(--accent-grad); color: #fff; box-shadow: 0 6px 18px -6px var(--glow); }
+.btn.primary { background: var(--accent-grad); box-shadow: 0 6px 18px -6px var(--glow), var(--elev-1); }
+.brand .mark { box-shadow: 0 0 0 4px var(--accent-soft), 0 0 16px -2px var(--glow); }
+
 /* Belt-and-suspenders: if the user prefers reduced motion, strip all motion. Safe because every
    resting state above is already the final visible state — nothing is left mid-animation or hidden. */
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
