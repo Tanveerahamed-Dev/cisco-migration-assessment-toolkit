@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json,os,sys; p=os.path.join(os.environ.get('CLAUDE_PROJECT_DIR','') or '.','.claude/fullpower-max-default.md'); sys.stdout.write(json.dumps({'hookSpecificOutput':{'hookEventName':'UserPromptSubmit','additionalContext':open(p,encoding='utf-8').read()}}))\" 2>/dev/null || true",
+            "statusMessage": "Applying full-power-max protocol"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",

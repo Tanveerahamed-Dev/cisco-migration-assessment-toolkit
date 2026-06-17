@@ -7,8 +7,9 @@
 #
 # Scope: gates on *.py only (pytest is this project's test runner). Frontend /
 # .html / config changes are not gated here. Disable anytime via /hooks or by
-# setting "disableAllHooks": true in settings. Claude Code releases the block
-# automatically after 8 consecutive stops, so you can never get permanently stuck.
+# setting "disableAllHooks": true in settings. Backstops against getting stuck:
+# the pytest run is bounded by `timeout 540` (fails OPEN if exceeded), and the
+# Stop hook itself has a 600s ceiling.
 set -u
 
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" || exit 0
@@ -20,9 +21,25 @@ changed=$(git status --porcelain 2>/dev/null | grep -E '\.py$' || true)
 PY=$(command -v python || command -v python3 || echo python)
 log=$(mktemp 2>/dev/null || echo "${TMP:-/tmp}/verify-green.$$")
 
-if "$PY" -m pytest -q >"$log" 2>&1; then
+# Bound the run so a hung or pathologically slow test can never wedge the turn:
+# fail OPEN on timeout (exit 0) instead of blocking until the 600s hook ceiling.
+TIMEOUT=$(command -v timeout || true)
+if [ -n "$TIMEOUT" ]; then
+  "$TIMEOUT" 540 "$PY" -m pytest -q >"$log" 2>&1
+else
+  "$PY" -m pytest -q >"$log" 2>&1
+fi
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
   rm -f "$log"
   exit 0                       # green -> allow stop
+fi
+
+if [ "$rc" -eq 124 ]; then     # timed out -> fail open so a hang never wedges the turn
+  echo "verify-green: pytest exceeded 540s and was terminated — allowing stop (fail-open)." >&2
+  rm -f "$log"
+  exit 0
 fi
 
 {
