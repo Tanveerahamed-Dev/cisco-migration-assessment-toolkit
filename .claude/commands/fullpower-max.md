@@ -1,7 +1,7 @@
 ---
 description: Absolute-full-power mode — unconstrained effort, dynamic agentic loop, mandatory web research, context-isolated fan-out, test-first, self-refuting verification, iterate until proven.
 argument-hint: [the hard task to attack at absolute full power]
-model: opus
+model: fable
 ---
 ultrathink.
 
