@@ -22,6 +22,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 
+from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 
 logger = logging.getLogger(__name__)
@@ -40,23 +41,9 @@ def _is_l3(host: str, l3_forwarding, routing_neighbors) -> bool:
 
 
 def _vlan_inventory(snap: dict):
-    """Distinct VLAN ids in use across all access/trunk ports + SVIs, with the best-known name.
-    Returns an ordered list of (vid:int, name:str). Pure read of the interfaces + l3_forwarding."""
-    names: dict = {}
-    vids: set = set()
-    for host, ports in (snap.get("interfaces") or {}).items():
-        for d in (ports or {}).values():
-            v = (d.get("vlan") or "").strip()
-            if v.isdigit():
-                vids.add(int(v))
-                nm = (d.get("vlan_name") or "").strip()
-                if nm and int(v) not in names:
-                    names[int(v)] = nm
-    for r in (snap.get("l3_forwarding") or []):
-        v = str(r.get("vlan") or "").strip()
-        if v.isdigit():
-            vids.add(int(v))
-    return [(v, names.get(v, "")) for v in sorted(vids)]
+    """Canonical VLAN inventory — delegates to analyze.vlan_inventory so the design doc and the CRD
+    (and any other reader) share ONE derivation and cannot drift. Returns (vid:int, name:str) list."""
+    return vlan_inventory(snap)
 
 
 def _segmentation_facts(snap: dict):

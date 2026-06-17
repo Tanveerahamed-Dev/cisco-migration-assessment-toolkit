@@ -122,3 +122,26 @@ def test_crd_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "c.docx")
     write_crd_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_crd_vlan_count_is_canonical_single_source(tmp_path):
+    """Single source of truth: the CRD VLAN count must equal the canonical vlan_inventory (all
+    distinct VLAN IDs, incl. SVI/L3 gateways), so it agrees with the design doc — not just the
+    access-port VLANs (which omit L3-only VLANs)."""
+    from cisco_toolkit.analyze import vlan_inventory
+    from cisco_toolkit.crd import _evidence_facts
+    snap = {
+        "script_version": "V3.23.0",
+        "devices": {"core1": {"model": "N9K"}, "acc1": {"model": "C2960"}},
+        "interfaces": {
+            "acc1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10",
+                                 "end_host_mac": "aaaa.0000.0001"}},
+            "core1": {"Vlan99": {"svi_ip": "10.0.99.1"}},   # SVI carries no 'vlan' field
+        },
+        # VLAN 50 has an L3 gateway but sits on NO access port -> only the canonical inventory sees it
+        "l3_forwarding": [{"switch": "core1", "vlan": "50", "svi_ip": "10.0.50.1"},
+                          {"switch": "core1", "vlan": "99", "svi_ip": "10.0.99.1"}],
+    }
+    canonical = {v for v, _ in vlan_inventory(snap)}
+    assert canonical == {10, 50, 99}                        # access 10 + L3 50/99
+    assert _evidence_facts(snap)["n_vlans"] == len(canonical) == 3

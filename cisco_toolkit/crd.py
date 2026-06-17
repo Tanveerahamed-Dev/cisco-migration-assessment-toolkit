@@ -20,6 +20,7 @@ library is a warning + skip, never a crash. Every snapshot read is defensive. De
 import logging
 from datetime import datetime
 
+from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 
@@ -30,14 +31,11 @@ def _evidence_facts(snap: dict) -> dict:
     """Pull the evidence the CRD primes its sections with — all defensive reads of known shapes."""
     devices = snap.get("devices") or {}
     ifaces = snap.get("interfaces") or {}
-    vlans, endpoints, dual = set(), 0, 0
+    endpoints, dual = 0, 0
     vrfs, n_acl_svis = set(), 0
     for host, ports in ifaces.items():
         for p, d in (ports or {}).items():
             d = d or {}
-            v = (d.get("vlan") or "").strip()
-            if v.isdigit():
-                vlans.add(int(v))
             if (d.get("switchport_mode") or "").lower() == "access" and (d.get("end_host_mac") or "").strip():
                 endpoints += 1
                 if (d.get("dual_connection") or "").strip():
@@ -63,7 +61,7 @@ def _evidence_facts(snap: dict) -> dict:
     coll = (snap.get("collection_completeness") or {}).get("summary") or {}
     punch = sorted((snap.get("punchlist") or []), key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
     return {
-        "devices": devices, "n_devices": len(devices), "n_vlans": len(vlans),
+        "devices": devices, "n_devices": len(devices), "n_vlans": len(vlan_inventory(snap)),
         "endpoints": endpoints, "dual": dual, "protos": protos, "fhrp_vlans": fhrp_vlans,
         "vrfs": sorted(vrfs), "n_acl_svis": n_acl_svis, "services": services,
         "mcast": mc, "mcast_active": mcast_active, "lifecycle": lc, "coll": coll, "punch": punch,
