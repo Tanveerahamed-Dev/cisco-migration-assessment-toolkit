@@ -763,12 +763,18 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                "endpoints = access ports carrying at least one learned host MAC. Trunk/uplink MAC-table "
                f"entries are excluded. Presence is {_CONF_CONFIRMED} at snapshot time; absence is "
                f"{_CONF_UNKNOWN} (MAC aging).")
-    doc.add_paragraph(f"Total endpoints: {ep_total} across {len(ep_per_vlan)} VLAN(s) and "
-                      f"{len(ep_per_switch)} switch(es).")
-    doc.add_paragraph("Top VLANs by endpoint count:")
-    table(["VLAN", "Endpoints"], [[v, c] for v, c in ep_per_vlan.most_common(12)], widths=[1.5, 1.5])
-    doc.add_paragraph("Top switches by endpoint count:")
-    table(["Switch", "Endpoints"], [[s, c] for s, c in ep_per_switch.most_common(12)], widths=[4.5, 1.5])
+    ep_canon = ((snap_dict.get("executive_brief") or {}).get("scale") or {}).get("n_endpoints")
+    if ep_canon is not None:
+        doc.add_paragraph(f"Evidenced endpoints: {ep_canon} (canonical, from the assessment scale). "
+                          f"Access-port host MACs: {ep_total} across {len(ep_per_vlan)} VLAN(s) and "
+                          f"{len(ep_per_switch)} switch(es) — one endpoint may present more than one MAC.")
+    else:
+        doc.add_paragraph(f"Access-port host MACs: {ep_total} across {len(ep_per_vlan)} VLAN(s) and "
+                          f"{len(ep_per_switch)} switch(es).")
+    doc.add_paragraph("Top VLANs by access-port MAC count:")
+    table(["VLAN", "MACs"], [[v, c] for v, c in ep_per_vlan.most_common(12)], widths=[1.5, 1.5])
+    doc.add_paragraph("Top switches by access-port MAC count:")
+    table(["Switch", "MACs"], [[s, c] for s, c in ep_per_switch.most_common(12)], widths=[4.5, 1.5])
 
     # vendor + endpoint-type grouping with confidence (a skill first-class output). NEW-V3.23.95.
     ident = snap_dict.get("endpoint_identity") or []

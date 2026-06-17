@@ -253,3 +253,18 @@ def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):
     write_runbook_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     import os
     assert not os.path.exists(out)                          # nothing written, no crash
+
+
+def test_runbook_endpoint_census_uses_canonical_not_mac_sum(tmp_path):
+    """Single source of truth: §7 surfaces the canonical evidenced-endpoint count
+    (executive_brief.scale.n_endpoints) labeled as endpoints, and labels the access-port MAC sum as
+    MACs -- it must NOT publish the MAC sum under the bare word 'Total endpoints' (which diverges from
+    the family-wide endpoint count)."""
+    snap = _snap()
+    snap["executive_brief"] = {"scale": {"n_devices": 2, "n_endpoints": 99, "n_domains": 1}}
+    out = str(tmp_path / "rb_ep.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Evidenced endpoints: 99" in text          # canonical, labeled as endpoints
+    assert "Access-port host MACs:" in text           # the MAC sum, labeled as MACs
+    assert "Total endpoints:" not in text             # the old bare mislabel is gone

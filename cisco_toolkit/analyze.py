@@ -935,6 +935,29 @@ def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[st
     return out
 
 
+def vlan_inventory(snap: dict):
+    """Canonical VLAN inventory: distinct VLAN ids in use across all access/trunk ports + SVIs + L3
+    gateways, with the best-known name. Returns an ordered list of (vid:int, name:str). Pure read of
+    the interfaces + l3_forwarding. SINGLE SOURCE OF TRUTH: every deliverable that reports a "VLANs in
+    use" count (design doc, CRD, …) derives it from THIS, so they cannot drift (an access-port-only
+    derivation omits L3-only VLANs and disagrees with the all-VLAN-id derivation)."""
+    names: dict = {}
+    vids: set = set()
+    for host, ports in (snap.get("interfaces") or {}).items():
+        for d in (ports or {}).values():
+            v = (d.get("vlan") or "").strip()
+            if v.isdigit():
+                vids.add(int(v))
+                nm = (d.get("vlan_name") or "").strip()
+                if nm and int(v) not in names:
+                    names[int(v)] = nm
+    for r in (snap.get("l3_forwarding") or []):
+        v = str(r.get("vlan") or "").strip()
+        if v.isdigit():
+            vids.add(int(v))
+    return [(v, names.get(v, "")) for v in sorted(vids)]
+
+
 def compute_collection_completeness(inventory_hosts: List[str],
                                     all_cmd_to_files: Dict[str, Dict[str, str]]) -> dict:
     """NEW-V3.23.109: pre-assessment BLIND-SPOT report. Every assessment finding is only as trustworthy
