@@ -41,7 +41,34 @@
             "statusMessage": "Verifying tests are green before stopping"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/graph-refresh.sh",
+            "timeout": 200,
+            "statusMessage": "Refreshing the graphify knowledge graph"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/session-brief.sh"
+          }
+        ]
       }
     ]
+  },
+  "env": {
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash .claude/hooks/statusline.sh"
   }
 }

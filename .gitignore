@@ -35,6 +35,9 @@ Migration_Diff_*.xlsx
 topology.mmd
 topology.dot
 
+# Real device inventory with SSH credentials — NEVER commit
+devices.json
+
 # Claude Code local settings
 .claude/settings.local.json
 
