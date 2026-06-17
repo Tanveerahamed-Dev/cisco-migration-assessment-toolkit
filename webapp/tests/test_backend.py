@@ -732,3 +732,61 @@ def test_bad_upload_rejected(client):
                     files={"file": ("bad.json", b"not json", "application/json")},
                     data={"label": "bad"})
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Single-source-of-truth: the dashboard reader must trust the engine's canonical
+# executive_brief.scale / .posture, NOT re-derive the headline numbers from the raw
+# arrays. These fixtures make canonical DISAGREE with what a recompute would yield,
+# so the asserted values can only come from the canonical block — any regression to
+# a client-side recount turns them red. (Engine side is locked by
+# tests/test_pipeline_inprocess.py; this is the webapp half of the contract.)
+# ---------------------------------------------------------------------------
+
+def _divergent_snap():
+    """A snapshot whose canonical brief deliberately disagrees with the raw arrays:
+    len(devices)=3 / avg(scores)=80.0 / Critical-band tally=1, but the brief says
+    42 / 63.4 / 5. A canonical-first reader returns the brief's numbers."""
+    return {
+        "script_version": "V3.23.0",
+        "generated_at": "2026-06-18T00:00:00",
+        "devices": {"a": {}, "b": {}, "c": {}},                       # fallback n_switches == 3
+        "health_scores": [                                            # fallback avg == 80.0, Critical tally == 1
+            {"host": "a", "score": 90, "band": "Good"},
+            {"host": "b", "score": 80, "band": "Fair"},
+            {"host": "c", "score": 70, "band": "Critical"},
+        ],
+        "punchlist": [{"severity": "High", "category": "L2"},
+                      {"severity": "Low", "category": "Hygiene"}],
+        "executive_brief": {                                         # the canonical source of truth
+            "scale": {"n_devices": 42, "n_domains": 9, "n_endpoints": 5127, "n_vlans": 172},
+            "posture": {"avg_health": 63.4, "n_critical": 5, "n_poor": 2, "worst_band": "Poor"},
+            "axes": [], "top_gating": [], "posture_statement": "—",
+        },
+    }
+
+
+def test_trend_point_honors_canonical_scale_posture_over_recompute():
+    """SSOT: trend_point must read executive_brief.scale/.posture, not recount the raw arrays."""
+    from backend import engine
+    tp = engine.trend_point(_divergent_snap())
+    assert tp["n_switches"] == 42, "n_switches must be scale.n_devices (canonical), not len(devices)=3"
+    assert tp["avg_health"] == 63.4, "avg_health must be posture.avg_health, not avg(scores)=80.0"
+    assert tp["n_critical"] == 5, "n_critical must be posture.n_critical, not the Critical-band tally=1"
+
+
+def test_summarize_projects_the_canonical_headline():
+    """SSOT: the API-facing summary projection inherits the canonical headline (it re-uses trend_point)."""
+    from backend.summary import summarize
+    s = summarize(_divergent_snap())
+    assert s["n_switches"] == 42 and s["avg_health"] == 63.4 and s["n_critical"] == 5
+
+
+def test_trend_point_falls_back_when_brief_absent():
+    """Back-compat: a pre-brief snapshot (no executive_brief) still resolves via the local recompute,
+    so the canonical-first read degrades gracefully instead of returning blanks."""
+    from backend import engine
+    snap = _divergent_snap()
+    snap.pop("executive_brief")
+    tp = engine.trend_point(snap)
+    assert tp["n_switches"] == 3 and tp["avg_health"] == 80.0 and tp["n_critical"] == 1

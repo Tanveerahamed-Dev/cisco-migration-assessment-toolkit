@@ -226,3 +226,22 @@ def test_design_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "d.docx")
     write_design_doc_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_design_vlan_inventory_is_canonical_single_source():
+    """Single source of truth: the design doc's VLAN inventory must BE analyze.vlan_inventory — the
+    same derivation the CRD reads — so 'VLANs in use' agrees across deliverables, and an L3-only VLAN
+    (a gateway SVI with no access port) is counted, not silently dropped by an access-port-only tally."""
+    from cisco_toolkit.analyze import vlan_inventory
+    from cisco_toolkit.design import _vlan_inventory
+    snap = {
+        "interfaces": {
+            "acc1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10",
+                                 "end_host_mac": "aaaa.0000.0001"}},
+        },
+        # VLAN 40 has an L3 gateway but sits on NO access port -> only the canonical inventory sees it
+        "l3_forwarding": [{"switch": "core1", "vlan": "40", "svi_ip": "10.0.40.1"}],
+    }
+    canonical = vlan_inventory(snap)
+    assert {v for v, _ in canonical} == {10, 40}        # access 10 + L3-only 40
+    assert _vlan_inventory(snap) == canonical           # design delegates to the ONE derivation (no drift)
