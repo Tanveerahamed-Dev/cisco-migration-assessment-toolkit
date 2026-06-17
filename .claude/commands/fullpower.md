@@ -1,7 +1,7 @@
 ---
 description: Maximum-rigor mode — escalated thinking, research-first, persist until verified.
 argument-hint: [the task to do at full power]
-model: opus
+model: fable
 ---
 ultrathink.
 
