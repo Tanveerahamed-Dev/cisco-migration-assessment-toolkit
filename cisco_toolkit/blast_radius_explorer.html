@@ -3474,7 +3474,8 @@ function centerOn(h){if(!POS[h])return;const st=document.getElementById("stage")
   view.tx=st.clientWidth/2-POS[h].x*view.k; view.ty=st.clientHeight/2-POS[h].y*view.k; applyTransform();}
 
 function censusSec(){
-  const sw=MODEL.hosts.length, ep=MODEL.endpointTotal, vl=MODEL.vlans.size, gw=MODEL.hosts.filter(isGateway).length;
+  const _sc=((SNAP||{}).executive_brief||{}).scale||{};   // SSOT: read the engine's canonical scale; MODEL re-derivation only as fallback (older snapshots)
+  const sw=_sc.n_devices??MODEL.hosts.length, ep=_sc.n_endpoints??MODEL.endpointTotal, vl=_sc.n_vlans??MODEL.vlans.size, gw=MODEL.hosts.filter(isGateway).length;
   const off=MODEL.offscan.length;
   return `<div class="sec"><h3>Topology census</h3>
     <div class="headline">
@@ -7051,7 +7052,8 @@ function buildNarrative(model){
   // ---- fleet posture: worst switch + average, from health_scores ----
   const hs=(typeof healthList==="function")?healthList():[];
   if(hs.length){
-    const n=hs.length, avg=Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
+    const _po=((SNAP||{}).executive_brief||{}).posture||{};   // SSOT: prefer the engine's canonical posture.avg_health
+    const n=hs.length, avg=_po.avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
     const worst=hs.slice().sort((a,b)=>(a.score||0)-(b.score||0))[0];
     const wtok=worst.band?healthBandToken(worst.band):scoreToken(worst.score);
     const sev=wtok==="crit"?"crit":wtok==="risk"?"risk":wtok==="watch"?"watch":"ok";
@@ -8073,7 +8075,8 @@ function abH_fleet(){const dd=((SNAP||{}).device_dossiers||{}).summary||{};const
   const lrs=((SNAP||{}).lifecycle_risk||{}).summary||{};const srs=((SNAP||{}).software_risk||{}).summary||{};
   const hsList=(SNAP||{}).health_scores||[];const bands={};for(const r of hsList)bands[r.band]=(bands[r.band]||0)+1;
   let b=`<h4>Fleet overview</h4>`;
-  b+=abKv("Scale",`<b>${MODEL.hosts.length}</b> switches · <b>${MODEL.endpointTotal}</b> endpoints · <b>${MODEL.vlans.size}</b> VLANs · ${MODEL.offscan.length} off-scan uplinks`);
+  const sc=eb.scale||{};   // SSOT: canonical scale; MODEL only as fallback
+  b+=abKv("Scale",`<b>${sc.n_devices??MODEL.hosts.length}</b> switches · <b>${sc.n_endpoints??MODEL.endpointTotal}</b> endpoints · <b>${sc.n_vlans??MODEL.vlans.size}</b> VLANs · ${MODEL.offscan.length} off-scan uplinks`);
   if(Object.keys(bands).length)b+=abKv("Health bands",Object.entries(bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
   if(dd.bands)b+=abKv("Risk bands",Object.entries(dd.bands).map(([k,n])=>`${abPill(k)} ${n}`).join(" ")+` · avg index ${dd.avg_risk_index??"?"}`);
   if(lrs.by_band)b+=abKv("Hardware lifecycle",Object.entries(lrs.by_band).map(([k,n])=>`${abPill(k)} ${n}`).join(" "));
@@ -8387,7 +8390,8 @@ function abH_exec(){const eb=(SNAP||{}).executive_brief||{};const sc=eb.scale||{
     {label:"Top risky devices",run:abAskAct("top risky devices")},
     {label:"EoL status",run:abAskAct("eol status")}]};}
 function abH_greet(){const worst=((((SNAP||{}).device_dossiers||{}).summary||{}).worst||[])[0]||MODEL.hosts[0]||"";
-  return {html:`<h4>Hello! 👋</h4><div>I'm the offline engineer for this snapshot — <b>${MODEL.hosts.length} switches</b>, <b>${MODEL.endpointTotal} endpoints</b>, and every analysis the toolkit computed. Ask in plain English:</div><div class="ab-note">"where are my single points of failure?" · "is my STP root placement sane?" · "cutover plan for ${esc(abShort(worst))}" · "what do I fix first?"</div>`,
+  const _sc=((SNAP||{}).executive_brief||{}).scale||{};   // SSOT: canonical scale; MODEL fallback
+  return {html:`<h4>Hello! 👋</h4><div>I'm the offline engineer for this snapshot — <b>${_sc.n_devices??MODEL.hosts.length} switches</b>, <b>${_sc.n_endpoints??MODEL.endpointTotal} endpoints</b>, and every analysis the toolkit computed. Ask in plain English:</div><div class="ab-note">"where are my single points of failure?" · "is my STP root placement sane?" · "cutover plan for ${esc(abShort(worst))}" · "what do I fix first?"</div>`,
     acts:[{label:"Fleet overview",run:abAskAct("fleet overview")},{label:"What can you do?",run:abAskAct("help")}]};}
 function abH_thanks(){return {html:`<div>Anytime — that's what the window is for. Want me to keep going?</div>`,
   acts:[{label:"What do I fix first?",run:abAskAct("what do I fix first")},
@@ -8591,7 +8595,8 @@ function abToggle(force){const p=document.getElementById("askbot");
   const show=force!==undefined?force:p.hidden;
   p.hidden=!show;document.getElementById("askBtn").setAttribute("aria-expanded",String(show));
   if(show){if(!AB.greeted){AB.greeted=true;
-      abRender({html:`<h4>Ask the Engineer</h4><div>Offline Q&amp;A over <b>${MODEL.hosts.length} switches</b>, <b>${MODEL.endpointTotal} endpoints</b> and every analysis in this snapshot — connections, VLANs, blast radius, compound risk, EoL, software, app domains, waves. Nothing leaves this file.</div><div class="ab-note">Try a chip below, or type your own question.</div>`,acts:[]});}
+      const _sc=((SNAP||{}).executive_brief||{}).scale||{};   // SSOT: canonical scale; MODEL fallback
+      abRender({html:`<h4>Ask the Engineer</h4><div>Offline Q&amp;A over <b>${_sc.n_devices??MODEL.hosts.length} switches</b>, <b>${_sc.n_endpoints??MODEL.endpointTotal} endpoints</b> and every analysis in this snapshot — connections, VLANs, blast radius, compound risk, EoL, software, app domains, waves. Nothing leaves this file.</div><div class="ab-note">Try a chip below, or type your own question.</div>`,acts:[]});}
     abChipsRow();document.getElementById("abInput").focus();}}
 document.getElementById("askBtn").onclick=()=>abToggle();
 document.getElementById("askClose").onclick=()=>abToggle(false);

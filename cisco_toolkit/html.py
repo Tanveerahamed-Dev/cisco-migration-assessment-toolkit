@@ -294,15 +294,19 @@ def _trend_point(snap: dict) -> dict:
         if r.get("readiness") in readiness:
             readiness[r["readiness"]] += 1
     lr = (snap.get("lifecycle_risk") or {}).get("summary") or {}
-    avg = ((snap.get("executive_brief") or {}).get("posture") or {}).get("avg_health")
+    _eb = snap.get("executive_brief") or {}
+    _scale = _eb.get("scale") or {}
+    _posture = _eb.get("posture") or {}
+    avg = _posture.get("avg_health")
     if avg is None and scores:
         avg = round(sum(scores) / len(scores), 1)
     ts = snap.get("generated_at") or ""
     return {
         "date": ts[:10], "generated_at": ts, "version": snap.get("script_version", ""),
-        "n_switches": len(snap.get("devices") or {}),
+        # SSOT: prefer the engine's canonical scale / posture; the local len()/band-tally is a fallback only.
+        "n_switches": _scale.get("n_devices") if _scale.get("n_devices") is not None else len(snap.get("devices") or {}),
         "avg_health": avg if avg is not None else "",
-        "n_critical": bands.get("Critical", 0),
+        "n_critical": _posture.get("n_critical") if _posture.get("n_critical") is not None else bands.get("Critical", 0),
         "n_punchlist": len(pl),
         "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")),
         "n_not_ready": readiness["NOT READY"],

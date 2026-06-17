@@ -315,6 +315,7 @@ from cisco_toolkit import __version__
 # ScoringConfig / SCORING / _host_role are NOT re-exported anymore (step 15 moved their last
 # monolith users, the scoring compute_*); _health_band stays (write_health_scores_sheet uses it).
 from cisco_toolkit.analyze import (
+    vlan_inventory,        # NEW: canonical VLAN inventory — single source of truth for the dashboards' VLAN count
     compute_move_groups,   # _health_band dropped (step 23): write_health_scores_sheet moved to excel
     # compute_topology_links / compute_findings dropped (step 22): their last monolith users
     # (write_topology_sheet / write_findings_sheet) moved to excel.
@@ -2037,6 +2038,12 @@ def main():
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
+    # Single source of truth: publish the canonical VLAN count (the same `vlan_inventory` derivation the
+    # design / CRD deliverables read) into the brief's scale block, so every consumer — workbook, explorer,
+    # webapp — reads ONE value instead of re-counting VLANs in JS/TS (which drifts: explorer ~176 vs 172).
+    _ebscale = snap_dict["executive_brief"].get("scale") if isinstance(snap_dict.get("executive_brief"), dict) else None
+    if isinstance(_ebscale, dict):
+        _ebscale["n_vlans"] = len(vlan_inventory(snap_dict))
     snap_dict["device_dossiers"] = device_dossiers                   # NEW-V3.23.172 (per-asset compound-risk register; reused from the Phase 30d synthesis)
     # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
     # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),

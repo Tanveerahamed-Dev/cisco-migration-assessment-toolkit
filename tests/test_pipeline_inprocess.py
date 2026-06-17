@@ -73,6 +73,12 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     snap = json.loads(open(snap_path, encoding="utf-8").read())
     for key in ("devices", "interfaces", "health_scores", "punchlist", "causality", "executive_brief"):
         assert key in snap, f"snapshot missing computed key {key!r}"
+    # SSOT: the brief's scale block publishes the canonical VLAN count, equal to the vlan_inventory
+    # derivation the deliverables + dashboards read (one source — no JS/TS recount drift).
+    from cisco_toolkit.analyze import vlan_inventory
+    _scale = snap["executive_brief"]["scale"]
+    assert "n_vlans" in _scale, "scale.n_vlans (canonical VLAN count) missing from the brief"
+    assert _scale["n_vlans"] == len(vlan_inventory(snap)), "scale.n_vlans must equal canonical vlan_inventory"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"
