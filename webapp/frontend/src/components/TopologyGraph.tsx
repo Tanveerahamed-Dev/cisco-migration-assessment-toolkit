@@ -130,7 +130,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
         )}
       </div>
       <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
-        {view.nodes.length} switches · {view.links.length} links · click a node to trace its blast radius · scroll to zoom, drag to pan.
+        {view.nodes.length} nodes · {view.links.length} links · click a node to trace its blast radius · scroll to zoom, drag to pan.
       </div>
     </div>
   );
