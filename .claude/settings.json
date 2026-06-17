@@ -19,6 +19,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/verify-green.sh",
+            "timeout": 600,
+            "statusMessage": "Verifying tests are green before stopping"
+          }
+        ]
+      }
     ]
   }
 }
