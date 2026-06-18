@@ -164,3 +164,35 @@ def test_crd_fhrp_count_excludes_none_sentinel_no_false_redundancy():
     # a fleet with zero real FHRP must report an EMPTY set (not every gateway VLAN)
     none_snap = {"l3_forwarding": [{"switch": "c1", "vlan": str(v), "fhrp": "none"} for v in (10, 20, 30)]}
     assert _evidence_facts(none_snap)["fhrp_vlans"] == []
+
+
+def test_crd_gains_design_driven_requirements_section(tmp_path):
+    """A snapshot carrying the canonical design_blueprint renders §8 — the target-state design decisions
+    read as requirement candidates (REQ-D-…), each citing a CCDE principle, plus the open design
+    questions. It is data-gated: the other CRD tests (no design_blueprint) never see §8, proving it is
+    never empty filler. One source of truth: the SAME design_blueprint behind the HLD/LLD and dashboards."""
+    snap = _snap()
+    snap["design_blueprint"] = {
+        "summary": {"n_recommended": 1, "n_needs_requirement": 1, "n_critical": 1},
+        "decisions": [
+            {"title": "Introduce first-hop redundancy", "status": "recommended", "priority": "Critical",
+             "recommended_action": "Deploy HSRP/VRRP across dual gateways", "driver": "Gateway resilience",
+             "evidence": {"summary": "52 VLAN(s) without FHRP"}, "principle": {"citation": "CCDE In Depth — HA"}},
+            {"title": "Right-size availability per tier", "status": "needs-requirement", "priority": "High",
+             "evidence": {"summary": ""}, "principle": {"citation": "CCDE"},
+             "requirements_needed": ["availability_tier"]},
+        ],
+        "coverage": {"caveat": "grounded only in collected evidence"},
+    }
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any("8. Design-Driven Requirements" in t for t in h1), f"missing §8; have {h1}"
+    text = _all_text(d)
+    assert "REQ-D-001" in text
+    assert "Introduce first-hop redundancy" in text and "CCDE In Depth — HA" in text
+    assert "Right-size availability per tier" in text          # open design question surfaced
+    # gated off when there is no blueprint (the other tests rely on this)
+    d2 = Document(out)  # sanity: §8 only here
+    assert any("8. Design-Driven Requirements" in p.text for p in d2.paragraphs)

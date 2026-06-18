@@ -109,6 +109,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     subnet_intel = snap.get("subnet_intelligence") or {}
     svc = snap.get("service_map") or {}
     eb = snap.get("executive_brief") or {}
+    bp = snap.get("design_blueprint") or {}            # NEW: canonical CCDE-grounded design blueprint (read, never recompute)
 
     lc_by_host = {}
     for r in (lifecycle.get("per_device") or []):
@@ -167,6 +168,16 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     posture = eb.get("posture_statement") or (
         f"{len(devices)} devices, {len(vlans)} VLANs and {n_svis} gateway SVIs across the assessed fabric.")
     doc.add_paragraph(posture)
+    if bp.get("summary", {}).get("headline"):
+        _label_run(doc.add_paragraph(), "Design headline:", bp["summary"]["headline"])
+        mp = doc.add_paragraph()
+        mr = mp.add_run(
+            "Design method: this design reasons top-down from requirements (the WHY) and manages the "
+            "trade-offs between availability, convergence, scalability, modularity, security, simplicity, "
+            "optimal routing, load-balancing, manageability and cost. §4 carries the evidence-grounded "
+            "target-state decisions, their CCDE basis, the trade-off scorecard, and the open requirement "
+            "questions the design still needs answered.")
+        mr.italic = True; mr.font.color.rgb = GREY
     table(["Design attribute", "As-built value"], [
         ("Devices in scope", len(devices)),
         ("L3 nodes (own an SVI or a routing adjacency)", len(l3_hosts)),
@@ -440,20 +451,72 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
 
     # ===== 4. Target-state design recommendations =====
     doc.add_heading("4. Target-State Design Recommendations", level=1)
-    doc.add_paragraph(
-        "The assessment's consolidated punch-list, read as design intent: the changes the target design "
-        "should adopt so the rebuilt fabric does not inherit the current gaps. Severity-ranked; full "
-        "evidence and per-device scope are in the runbook and the Migration Punch-List workbook sheet.")
-    sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
-    top = sorted(punchlist, key=lambda i: sev_rank.get(i.get("severity"), 5))[:12]
-    if top:
-        table(["Severity", "Category", "Design recommendation", "Devices"],
-              [(i.get("severity"), i.get("category") or "—", i.get("title") or "—",
-                ", ".join(str(x) for x in (i.get("devices") or [])[:4]) +
-                ("" if len(i.get("devices") or []) <= 4 else f" +{len(i['devices']) - 4}"))
-               for i in top], widths=[0.9, 1.3, 3.0, 1.6])
+    decisions = bp.get("decisions") or []
+    if decisions:
+        doc.add_paragraph(
+            "The senior-design view: each target-state decision below is gated on collected evidence and "
+            "traced to a network-design principle (CCDE doctrine) plus the trade-off axes it serves. This is "
+            "design INTENT — the prescriptive changes the rebuilt fabric should adopt — distinct from the "
+            "as-built punch-list (full per-device evidence remains in the runbook and the workbook).")
+
+        doc.add_heading("4.1 Design trade-off scorecard", level=2)
+        doc.add_paragraph(
+            "Where the current fabric stands on each axis a senior designer balances (0 = weak, 4 = strong). "
+            "The target design raises the weak axes without overspending the others.")
+        sc = bp.get("tradeoff_scorecard") or []
+        table(["Trade-off axis", "Score", "Posture", "Current-state evidence"],
+              [(s.get("label", ""), f"{s.get('score')}/4", s.get("posture", ""), s.get("evidence", ""))
+               for s in sc], widths=[1.7, 0.7, 1.1, 3.3])
+
+        rec = [d for d in decisions if d.get("status") == "recommended"]
+        doc.add_heading("4.2 Recommended target-state design decisions", level=2)
+        if rec:
+            table(["Priority", "Domain", "Design decision", "Why (driver)", "Evidence", "CCDE basis"],
+                  [(d.get("priority"), d.get("domain"), d.get("title"), d.get("driver"),
+                    (d.get("evidence") or {}).get("summary", ""), (d.get("principle") or {}).get("citation", ""))
+                   for d in rec], widths=[0.75, 0.85, 1.55, 1.6, 1.7, 1.3])
+            for d in rec[:10]:
+                _label_run(doc.add_paragraph(), f"{d.get('title')}",
+                           f"[{d.get('priority')} · {d.get('domain')}]")
+                _label_run(doc.add_paragraph(), "Recommended pattern:", d.get("recommended_action"))
+                _label_run(doc.add_paragraph(), "Alternatives weighed:", d.get("alternatives"))
+                _label_run(doc.add_paragraph(), "Trade-offs:", d.get("tradeoffs"))
+                _label_run(doc.add_paragraph(), "Evidence:", (d.get("evidence") or {}).get("summary"))
+                _label_run(doc.add_paragraph(), "CCDE principle:",
+                           (d.get("principle") or {}).get("citation"), GREY)
+        else:
+            doc.add_paragraph("No evidence-grounded target-state changes — the as-built design carries no "
+                              "flagged gaps to redesign.")
+
+        needs = [d for d in decisions if d.get("status") == "needs-requirement"]
+        if needs:
+            doc.add_heading("4.3 Open design questions (requirements to confirm)", level=2)
+            doc.add_paragraph(
+                "Design top-down from the WHY: these decisions depend on requirements the assessment cannot "
+                "observe. Confirm them and the target design right-sizes accordingly — the engine never "
+                "assumes an answer.")
+            table(["Open design question", "Requirement needed", "Trade-off axes"],
+                  [(d.get("title"), ", ".join(d.get("requirements_needed") or []) or "—",
+                    ", ".join(d.get("axes") or []) or "—") for d in needs], widths=[3.0, 2.0, 1.8])
+
+        cov = bp.get("coverage") or {}
+        if cov.get("caveat"):
+            _label_run(doc.add_paragraph(), "Coverage:", cov.get("caveat"), GREY)
     else:
-        doc.add_paragraph("No punch-list items — the as-built design carries no flagged gaps to redesign.")
+        doc.add_paragraph(
+            "The assessment's consolidated punch-list, read as design intent: the changes the target design "
+            "should adopt so the rebuilt fabric does not inherit the current gaps. Severity-ranked; full "
+            "evidence and per-device scope are in the runbook and the Migration Punch-List workbook sheet.")
+        sev_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+        top = sorted(punchlist, key=lambda i: sev_rank.get(i.get("severity"), 5))[:12]
+        if top:
+            table(["Severity", "Category", "Design recommendation", "Devices"],
+                  [(i.get("severity"), i.get("category") or "—", i.get("title") or "—",
+                    ", ".join(str(x) for x in (i.get("devices") or [])[:4]) +
+                    ("" if len(i.get("devices") or []) <= 4 else f" +{len(i['devices']) - 4}"))
+                   for i in top], widths=[0.9, 1.3, 3.0, 1.6])
+        else:
+            doc.add_paragraph("No punch-list items — the as-built design carries no flagged gaps to redesign.")
 
     # ---- closing acceptance gate (AS-style back matter) ----
     add_acceptance(

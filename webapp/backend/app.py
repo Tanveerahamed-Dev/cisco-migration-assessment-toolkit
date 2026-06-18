@@ -41,6 +41,7 @@ _ALLOWED_SECTIONS = {k for k, _ in summary.SECTION_LABELS} | {
     "devices", "interfaces", "stp_roots", "routing_neighbors", "subnet_intelligence",
     "endpoint_dependencies", "migration_scenarios", "operational_drift", "security",
     "config_hygiene", "service_map", "addressing_conflicts", "calibration", "score_sensitivity",
+    "design_blueprint",
 }
 
 
@@ -319,6 +320,34 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 raise HTTPException(404, "Snapshot not found")
             ar = compute_architecture_review(snap)
         return ar
+
+    @app.get("/api/snapshots/{snapshot_id}/design")
+    def snapshot_design(snapshot_id: int) -> Dict[str, Any]:
+        """The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint) — the SAME
+        object the HLD/LLD DOCX and the explorer Design mode read. Prefers the stored design_blueprint
+        section; computes server-side with the same engine function otherwise (one source of truth)."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        bp = store.get_snapshot_section(snapshot_id, "design_blueprint")
+        if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
+            from cisco_toolkit.design_advisor import compute_design_blueprint
+            snap = store.get_snapshot(snapshot_id)
+            if snap is None:
+                raise HTTPException(404, "Snapshot not found")
+            bp = compute_design_blueprint(snap)
+        return bp
+
+    @app.post("/api/snapshots/{snapshot_id}/design")
+    def design_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """Interactive requirements overlay: recompute the blueprint right-sized to a requirements
+        register (availability_tier / critical_apps / convergence_budget_ms / growth_horizon /
+        constraints / data_classification). The right-sizing logic lives ONLY here (Python, the same
+        compute_design_blueprint the CLI runs) — the dashboard never re-derives design intent."""
+        from cisco_toolkit.design_advisor import compute_design_blueprint
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        return compute_design_blueprint(snap, requirements or {})
 
     # -- execution runs (war room) ------------------------------------------
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:

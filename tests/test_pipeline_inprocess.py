@@ -80,6 +80,15 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert "n_vlans" in _scale, "scale.n_vlans (canonical VLAN count) missing from the brief"
     assert _scale["n_vlans"] == len(vlan_inventory(snap)), "scale.n_vlans must equal canonical vlan_inventory"
 
+    # SSOT: the canonical CCDE-grounded design blueprint is PUBLISHED into the snapshot (the one source the
+    # design DOCX / explorer / webapp all read), and equals a fresh compute over the same snapshot — no
+    # surface recomputes design intent.
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    assert "design_blueprint" in snap, "snapshot must publish the canonical design_blueprint"
+    _bp = snap["design_blueprint"]
+    assert isinstance(_bp.get("decisions"), list) and "tradeoff_scorecard" in _bp and "summary" in _bp
+    assert _bp == compute_design_blueprint(snap), "published design_blueprint must equal the canonical recompute"
+
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"
     assert os.path.isfile(explorer), "explorer HTML was not written"

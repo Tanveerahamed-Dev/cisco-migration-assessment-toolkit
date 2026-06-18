@@ -103,6 +103,7 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         return add_table(doc, headers, rows, widths, fixed=False)
 
     ev = _evidence_facts(snap)
+    bp = snap.get("design_blueprint") or {}   # NEW: canonical CCDE design blueprint (read, never recompute)
     req_ids: list = []   # (req_id, origin) — feeds the traceability skeleton
 
     def req_table(rows):
@@ -310,6 +311,39 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     table(["REQ-ID", "HLD section", "LLD section", "NRFU test ID"],
           [(rid, "<HLD §>", "<LLD §>", "<NRFU-…>") for rid in req_ids],
           widths=[1.1, 1.8, 1.8, 1.8])
+
+    # ===== 8. Design-driven requirements (target-state blueprint) — evidence-gated =====
+    bp_decisions = [d for d in (bp.get("decisions") or []) if isinstance(d, dict)]
+    if bp_decisions:
+        doc.add_heading("8. Design-Driven Requirements (Target-State Blueprint)", level=1)
+        doc.add_paragraph(
+            "Requirements the assessment itself derives: the CCDE-grounded target-state design blueprint "
+            "(the SAME design_blueprint behind the HLD/LLD §4 and the explorer Design mode), read as "
+            "requirement candidates. Each is gated on observed evidence and cites a network-design "
+            "principle — confirm, amend or strike it like any workshop requirement; each traces forward to "
+            "an HLD §4 design decision.")
+        rec = [d for d in bp_decisions if d.get("status") == "recommended"]
+        if rec:
+            table(["REQ-D", "Design requirement (recommended target pattern)", "Driver / evidence",
+                   "CCDE basis", "Confirmed?"],
+                  [(f"REQ-D-{i:03d}",
+                    f"{d.get('title')}: {d.get('recommended_action') or ''}".strip().rstrip(":"),
+                    (d.get("evidence") or {}).get("summary") or d.get("driver") or "—",
+                    (d.get("principle") or {}).get("citation") or "—", "<YES/AMEND>")
+                   for i, d in enumerate(rec, 1)],
+                  widths=[0.8, 2.7, 2.0, 1.4, 0.8])
+        needs = [d for d in bp_decisions if d.get("status") == "needs-requirement"]
+        if needs:
+            doc.add_paragraph(
+                "Open design questions — these decisions depend on requirements the assessment cannot "
+                "observe; answer them in the workshop and the target design right-sizes (the engine never "
+                "assumes an answer):")
+            for d in needs:
+                _label_run(doc.add_paragraph(), f"{d.get('title')} —",
+                           ", ".join(d.get("requirements_needed") or []) or "requirement to confirm", GREY)
+        cov = bp.get("coverage") or {}
+        if cov.get("caveat"):
+            _label_run(doc.add_paragraph(), "Coverage:", cov.get("caveat"), GREY)
 
     # ---- closing acceptance gate ----
     add_acceptance(

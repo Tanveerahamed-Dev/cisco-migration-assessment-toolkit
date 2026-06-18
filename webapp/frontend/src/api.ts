@@ -248,6 +248,56 @@ export interface ArchReview {
   };
 }
 
+// The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint — the SAME object the
+// HLD/LLD DOCX and the explorer ✎ Design mode carry). POST /design with a requirements register re-scores.
+export interface DesignDecision {
+  id: string;
+  title: string;
+  domain: string;
+  priority: string;
+  status: string;
+  confidence: string;
+  driver: string;
+  evidence: { summary: string; count: number; devices: string[]; fields: string[] };
+  principle: { id: string; title: string; citation: string };
+  recommended_action: string;
+  alternatives: string;
+  tradeoffs: string;
+  axes: string[];
+  requirements_needed: string[];
+  effective_priority?: number;
+}
+export interface DesignAxisScore {
+  axis: string;
+  label: string;
+  score: number | null;
+  posture: string;
+  evidence: string;
+  target_weight?: number;
+}
+export interface DesignBlueprint {
+  decisions: DesignDecision[];
+  tradeoff_scorecard: DesignAxisScore[];
+  requirements_model: {
+    fields: { key: string; label: string; options?: string[]; example?: unknown; value: unknown }[];
+    open_questions: { id: string; title: string; needs: string[] }[];
+    provided: boolean;
+    note: string;
+  };
+  methodology: string;
+  axes: { key: string; label: string; intent: string }[];
+  summary: {
+    n_decisions: number;
+    n_recommended: number;
+    n_needs_requirement: number;
+    n_critical: number;
+    by_domain: Record<string, number>;
+    requirements_provided: boolean;
+    headline: string;
+  };
+  coverage: { inventory: number; collected: number; not_collected: number; caveat: string };
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
@@ -300,6 +350,9 @@ export const api = {
     fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
   cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
   archreview: (id: number) => fetch(`/api/snapshots/${id}/archreview`).then((r) => j<ArchReview>(r)),
+  design: (id: number) => fetch(`/api/snapshots/${id}/design`).then((r) => j<DesignBlueprint>(r)),
+  designOverlay: (id: number, requirements: Record<string, unknown>) =>
+    post<DesignBlueprint>(`/api/snapshots/${id}/design`, requirements),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),
