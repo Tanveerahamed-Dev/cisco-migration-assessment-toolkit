@@ -231,7 +231,88 @@ def test_design_renders_canonical_blueprint_section(tmp_path):
     assert "Per-Wave Method of Procedure (.docx)" in text        # related-documents cross-reference
 
 
-def test_design_software_plan_flags_mixed_versions_and_eol(tmp_path):
+def test_design_renders_full_doctrine_catalogue(tmp_path):
+    """§4.4 surfaces the FULL CCDE doctrine reference (incl. non-actionable domains the L1-L4 assessment
+    cannot trigger, e.g. firewall), so the HLD reasons with the whole knowledge base, not only the
+    auto-emitted decisions -- proving the 51 'dark' principles reach the page."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["design_blueprint"] = compute_design_blueprint(snap)        # real blueprint -> carries the doctrine catalogue
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert "4.4 Design doctrine applied (CCDE-grounded reference)" in h2, f"missing §4.4; have {h2}"
+    text = _all_text(d)
+    assert ("screened-subnet" in text) or ("DMZ" in text), "firewall doctrine must surface in the HLD §4.4"
+
+
+def test_design_renders_target_state_architecture(tmp_path):
+    """C: §5 renders the generated CANDIDATE target-state architecture (tier model, L2/L3 boundary,
+    resilience, lifecycle disposition, migration), each row current->target with its rationale."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["design_blueprint"] = compute_design_blueprint(snap)
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any("proposed target-state architecture" in t.lower() for t in h1), f"missing §5; have {h1}"
+    text = _all_text(d)
+    assert "Topology / tier model" in text                       # a target-state dimension
+    assert "candidate" in text.lower()                            # honest framing
+
+
+def test_design_renders_replacement_bom(tmp_path):
+    """C next-layer: §5 surfaces the target-state replacement BoM (EoL gear to procure), grounded in
+    lifecycle evidence — the target-procurement detail the as-built §3.4 BoM does not give."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["lifecycle_risk"] = {"per_device": [
+        {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "b", "band": "Past-LDoS", "model": "WS-C4948E"}]}
+    snap["design_blueprint"] = compute_design_blueprint(snap)
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Replacement" in text and "WS-C4948E" in text         # target procurement surfaced in §5
+
+
+def test_design_renders_addressing_plan_when_supernet_supplied(tmp_path):
+    """F1: with an address_space requirement, §5.3 renders a candidate per-VLAN IP allocation from it."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["design_blueprint"] = compute_design_blueprint(snap, {"address_space": "10.50.0.0/16"})
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Net-new IP addressing plan" in text and "10.50." in text
+
+
+def test_design_renders_wave_plan(tmp_path):
+    """F2: §5.4 renders the candidate migration wave plan derived from move-groups."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["move_groups"] = [{"switches": [f"SW{i:03d}" for i in range(95)], "spanning_vlans": [[124, "X", 95]]}]
+    snap["design_blueprint"] = compute_design_blueprint(snap)
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Candidate migration wave plan" in text and "coupled-subwave" in text
+
+
+def test_design_renders_zone_aware_ip_plan(tmp_path):
+    """AUDIT: §5.3 renders the per-zone summary table when the IP plan is zone-aware (vlan_zones supplied)."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["l3_forwarding"] = [{"switch": "d", "vlan": "10", "svi_ip": "10.0.10.1"},
+                             {"switch": "d", "vlan": "20", "svi_ip": "10.0.20.1"}]
+    snap["design_blueprint"] = compute_design_blueprint(
+        snap, {"address_space": "10.20.0.0/16", "vlan_zones": {10: "PCI", 20: "corp"}})
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Per-zone summarization" in text and "PCI" in text
     """V3.23.153: LLD §3.5 — version sprawl per model is flagged with the most widely deployed
     image as the standardization candidate, and past-EoS hardware gets a replace-not-upgrade rec."""
     snap = _snap()

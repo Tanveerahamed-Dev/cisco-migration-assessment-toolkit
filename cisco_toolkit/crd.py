@@ -188,7 +188,7 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("Routing protocols observed", ", ".join(ev["protos"]) or "none (pure L2 fleet)"),
         ("Gateway SVIs / FHRP-protected VLANs", f"{ev['n_l3']} / {len(ev['fhrp_vlans'])}"),
         ("Non-default VRFs", ", ".join(ev["vrfs"]) or "none"),
-        ("Hardware past end-of-support", lc.get("n_past_eos", "—")),
+        ("Hardware past last-day-of-support (LDoS)", lc.get("n_past_ldos", "—")),
         ("Collection completeness", f"{coll.get('complete', '—')} complete / "
                                     f"{coll.get('partial', '—')} partial / "
                                     f"{coll.get('not_collected', '—')} not collected"),
