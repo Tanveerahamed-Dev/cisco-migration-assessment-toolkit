@@ -145,3 +145,22 @@ def test_crd_vlan_count_is_canonical_single_source(tmp_path):
     canonical = {v for v, _ in vlan_inventory(snap)}
     assert canonical == {10, 50, 99}                        # access 10 + L3 50/99
     assert _evidence_facts(snap)["n_vlans"] == len(canonical) == 3
+
+
+def test_crd_fhrp_count_excludes_none_sentinel_no_false_redundancy():
+    """False-health guard (the 'none'-is-truthy bug class): l3_forwarding rows carry fhrp='none' when
+    no FHRP is configured, and 'none'.strip() is truthy — so the CRD was counting EVERY gateway VLAN as
+    'FHRP-protected', a customer-facing claim of redundancy that does not exist and that contradicts the
+    workbook's FHRP Consistency sheet (0). Mirror the engine's canonical (fhrp or 'none') != 'none'
+    check so only a real HSRP/VRRP/GLBP token counts."""
+    from cisco_toolkit.crd import _evidence_facts
+    snap = {"l3_forwarding": [
+        {"switch": "c1", "vlan": "10", "fhrp": "none"},         # no FHRP -> must NOT count
+        {"switch": "c1", "vlan": "20", "fhrp": ""},             # blank -> must NOT count
+        {"switch": "c1", "vlan": "30", "fhrp": "HSRP active"},  # real FHRP -> counts
+        {"switch": "c2", "vlan": "30", "fhrp": "HSRP standby"}, # same VLAN, real -> dedups to one
+    ]}
+    assert _evidence_facts(snap)["fhrp_vlans"] == ["30"]
+    # a fleet with zero real FHRP must report an EMPTY set (not every gateway VLAN)
+    none_snap = {"l3_forwarding": [{"switch": "c1", "vlan": str(v), "fhrp": "none"} for v in (10, 20, 30)]}
+    assert _evidence_facts(none_snap)["fhrp_vlans"] == []
