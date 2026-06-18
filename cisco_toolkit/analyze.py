@@ -936,11 +936,18 @@ def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[st
 
 
 def vlan_inventory(snap: dict):
-    """Canonical VLAN inventory: distinct VLAN ids in use across all access/trunk ports + SVIs + L3
-    gateways, with the best-known name. Returns an ordered list of (vid:int, name:str). Pure read of
-    the interfaces + l3_forwarding. SINGLE SOURCE OF TRUTH: every deliverable that reports a "VLANs in
-    use" count (design doc, CRD, …) derives it from THIS, so they cannot drift (an access-port-only
-    derivation omits L3-only VLANs and disagrees with the all-VLAN-id derivation)."""
+    """Canonical VLAN inventory: distinct VLAN ids evidenced as IN USE, with the best-known name.
+    Returns an ordered list of (vid:int, name:str). Three independent evidence sources, unioned:
+      1. access-port `.vlan`         — a host-facing port assigned to the VLAN,
+      2. `l3_forwarding[].vlan`      — a collected SVI / L3 gateway for the VLAN,
+      3. IGMP-querier-evidenced VLANs — an active IGMP querier observed FIRST-HAND by a collected
+         switch. Per Cisco, exactly one querier (normally the L3 default gateway) exists per active
+         VLAN/L2 segment, so a querier proves the VLAN is live and trunk-carried even when its SVI /
+         gateway sits on a device that was NOT collected (e.g. an uncollected core). Omitting these
+         undercounts migration scope and risks stranded multicast at cutover.
+    Pure read. SINGLE SOURCE OF TRUTH: every deliverable that reports a "VLANs in use" count (design
+    doc, CRD, executive_brief.scale.n_vlans -> explorer + webapp) derives it from THIS, so they cannot
+    drift, and a narrower access-port-only derivation is only ever an explicitly-labelled subset."""
     names: dict = {}
     vids: set = set()
     for host, ports in (snap.get("interfaces") or {}).items():
@@ -953,6 +960,11 @@ def vlan_inventory(snap: dict):
                     names[int(v)] = nm
     for r in (snap.get("l3_forwarding") or []):
         v = str(r.get("vlan") or "").strip()
+        if v.isdigit():
+            vids.add(int(v))
+    # IGMP-querier-evidenced active VLANs (gateway may be on an uncollected device) -- see docstring.
+    for q in ((((snap.get("service_map") or {}).get("multicast") or {}).get("igmp_queriers")) or []):
+        v = str((q or {}).get("vlan") or "").strip()
         if v.isdigit():
             vids.add(int(v))
     return [(v, names.get(v, "")) for v in sorted(vids)]
