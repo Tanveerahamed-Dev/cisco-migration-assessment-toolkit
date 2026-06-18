@@ -502,6 +502,25 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         cov = bp.get("coverage") or {}
         if cov.get("caveat"):
             _label_run(doc.add_paragraph(), "Coverage:", cov.get("caveat"), GREY)
+
+        doctrine = bp.get("doctrine") or {}
+        if doctrine:
+            doc.add_heading("4.4 Design doctrine applied (CCDE-grounded reference)", level=2)
+            n_tot = sum(len(v) for v in doctrine.values())
+            n_act = sum(1 for v in doctrine.values() for it in v if it.get("engine_actionable"))
+            doc.add_paragraph(
+                f"The full body of design doctrine this engine reasons from — {n_tot} principles across "
+                f"{len(doctrine)} domains, each an original re-expression of leading-practice design with a "
+                f"source citation. {n_act} are evidence-actionable (the engine auto-detects their trigger and, "
+                f"when the evidence is present, surfaces them as decisions in §4.2/4.3); the remainder are "
+                f"reference doctrine for design areas the L1–L4 assessment does not collect (firewall, BGP, "
+                f"MPLS-TE, IPv6, …) — they inform the design narrative and are never asserted from absent evidence.")
+            for dom in sorted(doctrine):
+                items = doctrine[dom]
+                doc.add_heading(f"{dom} ({len(items)})", level=3)
+                table(["Design principle", "Recommended pattern", "Source"],
+                      [(it.get("title"), it.get("recommended_action"), it.get("citation")) for it in items],
+                      widths=[1.9, 3.0, 1.9])
     else:
         doc.add_paragraph(
             "The assessment's consolidated punch-list, read as design intent: the changes the target design "
@@ -517,6 +536,81 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                    for i in top], widths=[0.9, 1.3, 3.0, 1.6])
         else:
             doc.add_paragraph("No punch-list items — the as-built design carries no flagged gaps to redesign.")
+
+    # ---- §5: generated candidate target-state architecture (synthesised from evidence + requirements) ----
+    ts = bp.get("target_state") or {}
+    ts_dims = ts.get("dimensions") or []
+    if ts_dims:
+        doc.add_heading("5. Proposed Target-State Architecture (candidate)", level=1)
+        if (ts.get("summary") or {}).get("headline"):
+            _label_run(doc.add_paragraph(), "Synthesis:", ts["summary"]["headline"])
+        doc.add_paragraph(
+            "A candidate target architecture synthesised from the collected evidence, the requirements "
+            "register and the design doctrine — a proposal to validate, not a final design. Each dimension "
+            "traces current state to a recommended target with its rationale; scale-driven choices are "
+            "requirement-gated (resolve them and the target firms up), and uncollected devices remain an "
+            "explicit unknown.")
+        table(["Design area", "Current (observed)", "Recommended target", "Rationale", "Confidence"],
+              [(d.get("area"), d.get("current"), d.get("target"), d.get("rationale"), d.get("confidence"))
+               for d in ts_dims], widths=[1.2, 1.55, 1.95, 1.7, 0.9])
+
+        bom = ts.get("replacement_bom") or {}
+        if bom.get("n_replace") or bom.get("n_refresh"):
+            doc.add_heading("5.1 Replacement Bill of Materials (target procurement)", level=2)
+            doc.add_paragraph(
+                f"{bom.get('n_replace', 0)} asset(s) at end-of-support to replace and "
+                f"{bom.get('n_refresh', 0)} approaching it to refresh, grouped by current model — the "
+                "procurement the target build requires. " + (bom.get("note") or ""))
+            rows = ([("Replace (past-LDoS)", m, q) for m, q in bom.get("replace_now", [])]
+                    + [("Refresh (near-LDoS)", m, q) for m, q in bom.get("refresh_soon", [])])
+            if rows:
+                table(["Disposition", "Current model", "Qty"], rows, widths=[1.9, 3.0, 0.9])
+
+        segp = ts.get("segmentation_plan") or {}
+        if segp.get("observed"):
+            doc.add_heading("5.2 Target segmentation", level=2)
+            _label_run(doc.add_paragraph(), "Observed:", segp.get("observed"))
+            _label_run(doc.add_paragraph(), "Target:", segp.get("target"))
+            if segp.get("requirement_needed"):
+                _label_run(doc.add_paragraph(), "Requirement needed:", segp.get("requirement_needed"), GREY)
+
+        ap = ts.get("addressing_plan") or {}
+        if ap.get("status") == "candidate" and ap.get("subnets"):
+            doc.add_heading("5.3 Net-new IP addressing plan (candidate)", level=2)
+            doc.add_paragraph(
+                f"Candidate per-VLAN allocation from {ap.get('supernet')} ({ap.get('n_allocated')} subnet(s)). "
+                + (ap.get("note") or ""))
+            if ap.get("mode") == "zone-aware" and ap.get("zones"):
+                _label_run(doc.add_paragraph(), "Per-zone summarization:",
+                           "each zone is one contiguous prefix toward the core.")
+                table(["Security zone", "Summary prefix", "VLANs"],
+                      [(z.get("zone"), z.get("summary"), z.get("n_vlans")) for z in ap["zones"]],
+                      widths=[2.2, 2.0, 0.9])
+            table(["VLAN", "Hosts (obs.)", "Target subnet", "Note"],
+                  [(s.get("vlan"), s.get("hosts"), s.get("subnet"), s.get("note", "")) for s in ap["subnets"][:60]],
+                  widths=[0.8, 1.3, 1.7, 2.7])
+            if len(ap["subnets"]) > 60:
+                doc.add_paragraph(f"… and {len(ap['subnets']) - 60} more; full plan in the workbook.")
+        elif ap.get("requirement_needed"):
+            doc.add_heading("5.3 Net-new IP addressing plan", level=2)
+            _label_run(doc.add_paragraph(), "Requirement needed:", ap.get("requirement_needed"), GREY)
+            doc.add_paragraph(ap.get("note") or "")
+
+        wp = ts.get("wave_plan") or {}
+        if wp.get("waves"):
+            doc.add_heading("5.4 Candidate migration wave plan", level=2)
+            doc.add_paragraph(
+                f"{wp.get('n_move_groups')} L2-coupling move-group(s) (largest {wp.get('largest_group')} "
+                f"switches) → {wp.get('n_waves')} candidate wave(s) of ≤ {wp.get('wave_cap')}. "
+                + (wp.get("note") or ""))
+            table(["Wave", "Kind", "Switches"],
+                  [(w.get("wave"), w.get("kind"), w.get("n_switches")) for w in wp["waves"][:40]],
+                  widths=[0.8, 2.4, 1.0])
+
+        if ts.get("scope_note"):
+            _label_run(doc.add_paragraph(), "Scope:", ts["scope_note"], GREY)
+        if (ts.get("coverage") or {}).get("caveat"):
+            _label_run(doc.add_paragraph(), "Coverage:", ts["coverage"]["caveat"], GREY)
 
     # ---- closing acceptance gate (AS-style back matter) ----
     add_acceptance(

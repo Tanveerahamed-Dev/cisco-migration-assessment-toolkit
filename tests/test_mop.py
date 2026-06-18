@@ -195,3 +195,74 @@ def test_mop_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_mop_join_apportions_endpoints_to_subwave():
+    """AUDIT FIX: a coupled sub-wave (a SLICE of a larger move-group) must NOT inherit the parent group's
+    full endpoint total — apportion by the sub-wave's switch share. A full-coverage wave keeps the total."""
+    from cisco_toolkit.mop import _join_group_records
+    rbg = {"Group 1": {"group": "Group 1", "switches": ["a", "b", "c", "d"], "endpoints": 400,
+                       "n_fail": 0, "n_warn": 2, "readiness": "CAUTION"}}
+    r1, *_ = _join_group_records(["Group 1"], ["a"], rbg, {}, {}, {})       # 1 of 4 switches
+    assert r1["endpoints"] == 100                                          # 400 * 1/4, NOT 400
+    r4, *_ = _join_group_records(["Group 1"], ["a", "b", "c", "d"], rbg, {}, {}, {})
+    assert r4["endpoints"] == 400                                          # full coverage -> full total
+
+
+def _snap_waves():
+    """_snap() + a canonical wave_plan: Group 1 (distA,distB) sliced into 2 coupled-subwaves; Group 2
+    (acc1) as an independent-batch — 3 waves."""
+    snap = _snap()
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "waves": [
+            {"wave": 1, "kind": "coupled-subwave", "n_switches": 1, "switches": ["distA"], "source_groups": [0]},
+            {"wave": 2, "kind": "coupled-subwave", "n_switches": 1, "switches": ["distB"], "source_groups": [0]},
+            {"wave": 3, "kind": "independent-batch", "n_switches": 1, "switches": ["acc1"], "source_groups": [1]},
+        ],
+        "n_waves": 3, "wave_cap": 40, "n_move_groups": 2, "largest_group": 2, "n_subdivided_groups": 1,
+        "note": "candidate waves"}}}
+    return snap
+
+
+def test_mop_sections_keyed_to_wave_plan(tmp_path):
+    """F2: with a canonical wave_plan the MOP emits one section per WAVE (wave-keyed title), not one per
+    move-group/readiness row."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap_waves(), "Unit Test Fleet")
+    h1 = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 1"]
+    assert any(t == "3. MOP — Wave 1 (coupled-subwave)" for t in h1), h1
+    assert any(t == "4. MOP — Wave 2 (coupled-subwave)" for t in h1), h1
+    assert any(t == "5. MOP — Wave 3 (independent-batch)" for t in h1), h1
+    assert not any("MOP — Group 1" in t for t in h1)             # NOT keyed on move-groups when wave_plan present
+
+
+def test_mop_coupled_subwave_surfaces_shared_vlan_caveat(tmp_path):
+    """F2 honesty: coupled-subwave sections carry the shared-L2/VLAN SEQUENCE caveat; an independent-batch
+    wave does not."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap_waves(), "Unit Test Fleet")
+    d = Document(out)
+    paras = [p.text for p in d.paragraphs]
+    # the caveat appears (coupled sub-wave shares VLANs, is a SEQUENCE)
+    assert any("coupled sub-wave" in t.lower() and "SEQUENCE" in t for t in paras), paras[:0] or "no caveat"
+    assert sum(1 for t in paras if "Shared-L2 coordination" in t) >= 2   # one per coupled-subwave (waves 1 & 2)
+
+
+def test_mop_reads_wave_plan_not_recompute(tmp_path):
+    """F2 REFUTATION / SSOT mutation guard: a wave_plan grouping move_groups would NEVER produce
+    (distA + acc1 together) must render verbatim — proving the MOP reads wave_plan, not a re-slice of
+    move_groups."""
+    snap = _snap()
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "waves": [
+            {"wave": 1, "kind": "independent-batch", "n_switches": 2, "switches": ["distA", "acc1"], "source_groups": [0, 1]},
+            {"wave": 2, "kind": "coupled-subwave", "n_switches": 1, "switches": ["distB"], "source_groups": [0]},
+        ],
+        "n_waves": 2, "wave_cap": 40, "n_move_groups": 2, "largest_group": 2, "n_subdivided_groups": 0, "note": "x"}}}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any("Wave 1 (independent-batch)" in t for t in h1) and any("Wave 2 (coupled-subwave)" in t for t in h1)
+    assert not any("MOP — Group 1" in t for t in h1)             # not recomputed from move_groups
+    assert "distA, acc1" in _all_text(d)                          # wave 1 co-locates distA+acc1 (impossible from a move-group recompute)

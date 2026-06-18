@@ -38,6 +38,75 @@ def _waves(snap: dict):
             for i, g in enumerate(snap.get("move_groups") or [])]
 
 
+def _wave_sections(snap: dict):
+    """Per-WAVE section descriptors keyed on the canonical design_blueprint.target_state.wave_plan (one
+    MOP section per candidate wave). Each wave resolves its per-group records by SWITCH-MEMBERSHIP, never
+    by index (wave_plan.source_groups is a filtered/0-based index while the readiness groups are raw/
+    1-based -- joining by index would misattribute checks). Falls back to _waves() (one section per
+    move-group) when wave_plan is absent, so older/minimal snapshots still render unchanged.
+    Returns (name, switches, kind, group_names)."""
+    wp = (((snap.get("design_blueprint") or {}).get("target_state") or {}).get("wave_plan") or {})
+    waves = wp.get("waves") or []
+    if not waves:
+        return [(name, switches, "move-group", [name]) for name, switches in _waves(snap)]
+    sw2grp = {}
+    for r in (snap.get("migration_readiness") or []):
+        g = r.get("group")
+        for s in (r.get("switches") or []):
+            sw2grp.setdefault(s, g)
+    out = []
+    for w in waves:
+        switches = list(w.get("switches") or [])
+        kind = w.get("kind") or "wave"
+        gnames = []
+        for s in switches:
+            g = sw2grp.get(s)
+            if g and g not in gnames:
+                gnames.append(g)
+        out.append((f"Wave {w.get('wave')} ({kind})", switches, kind, gnames))
+    return out
+
+
+def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group, scen_by_group, val_by_wave):
+    """Union the per-group records across the groups a wave's switches belong to (a coupled-subwave maps to
+    one group; an independent-batch maps to many): worst readiness verdict, fail/warn checks, first
+    non-empty sequencing/scenario, deduped validation checks. Endpoints are APPORTIONED to this wave's
+    switch-share of each group -- a sub-wave is a SLICE, so it must not inherit the parent group's full
+    endpoint total. Single source of truth -- reads the engine's records, never recomputes them."""
+    rank = {"blocked": 0, "at-risk": 1, "caution": 1, "ready-with-actions": 2, "ready": 3}
+
+    def _i(x):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return 0
+
+    r = {"endpoints": 0, "n_fail": 0, "n_warn": 0, "readiness": None}
+    seq, scen, val_items, worst, seen = {}, {}, [], None, set()
+    wsw = set(wave_switches or [])
+    for g in gnames:
+        rr = readiness_by_group.get(g) or {}
+        gsw = rr.get("switches") or []
+        share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
+        r["endpoints"] += round(_i(rr.get("endpoints")) * share)
+        r["n_fail"] += _i(rr.get("n_fail"))
+        r["n_warn"] += _i(rr.get("n_warn"))
+        rd = rr.get("readiness")
+        if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
+            worst = rd
+        if not seq:
+            seq = seq_by_group.get(g) or {}
+        if not scen:
+            scen = scen_by_group.get(g) or {}
+        for v in (val_by_wave.get(g) or []):
+            key = (v.get("device"), v.get("command")) if isinstance(v, dict) else str(v)
+            if key not in seen:
+                seen.add(key)
+                val_items.append(v)
+    r["readiness"] = worst or "—"
+    return r, seq, scen, val_items
+
+
 def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     """Emit the per-wave Method of Procedure (.docx) to `output_path`. Fail-soft: a missing python-docx
     is a warning + skip; any unexpected render error is logged, never raised."""
@@ -87,7 +156,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
     # ---- snapshot-derived facts ----
     devices = snap.get("devices") or {}
-    waves = _waves(snap)
+    waves = _wave_sections(snap)
     readiness_by_group = {r.get("group"): r for r in (snap.get("migration_readiness") or [])}
     seq_by_group = {r.get("group"): r for r in (snap.get("wave_sequencing") or [])}
     scen_by_group = {r.get("group"): r
@@ -154,13 +223,14 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     # ===== 1. Change overview =====
     doc.add_heading("1. Change Overview", level=1)
     doc.add_paragraph(
-        f"This migration is sequenced into {len(waves)} wave(s) (move groups), each cut over in its own "
-        "maintenance window. The recommended order is: clear all blocking items first, then cut the "
-        "lower-risk waves to build confidence, protecting the highest-blast-radius (keystone) devices.")
+        f"This migration is sequenced into {len(waves)} candidate wave(s) (right-sized from the L2-coupling "
+        "move-groups), each cut over in its own maintenance window. The recommended order is: clear all "
+        "blocking items first, then cut the lower-risk waves to build confidence, protecting the "
+        "highest-blast-radius (keystone) devices.")
     ov_rows = []
-    for name, switches in waves:
-        r = readiness_by_group.get(name, {})
-        seq = seq_by_group.get(name, {})
+    for name, switches, _kind, _gnames in waves:
+        r, seq, _scen, _vi = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
+                                                 scen_by_group, val_by_wave)
         blast = max((int(fi_by_host.get(s, {}).get("stranded") or 0) for s in switches), default=0)
         rem, pl = _blockers_for(switches)
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
@@ -216,10 +286,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     ], widths=[2.6, 2.0, 2.2])
 
     # ===== per-wave sections =====
-    for wi, (name, switches) in enumerate(waves, start=3):
-        r = readiness_by_group.get(name, {})
-        seq = seq_by_group.get(name, {})
-        scen = scen_by_group.get(name, {})
+    for wi, (name, switches, _kind, _gnames) in enumerate(waves, start=3):
+        r, seq, scen, _val_items = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
+                                                       scen_by_group, val_by_wave)
         playbook = scen.get("playbook") or {}
         rem, pl = _blockers_for(switches)
         blast = max((int(fi_by_host.get(s, {}).get("stranded") or 0) for s in switches), default=0)
@@ -241,6 +310,13 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ], widths=[2.6, 4.2])
         if scen.get("rationale"):
             _label_run(doc.add_paragraph(), "Why this strategy:", scen.get("rationale"))
+        if _kind == "coupled-subwave":
+            _label_run(doc.add_paragraph(), "Shared-L2 coordination (coupled sub-wave):",
+                       "this wave is one slice of an oversized L2-coupled move-group; the sub-waves SHARE "
+                       "VLANs, so they are a SEQUENCE (order matters), not independent cutovers. Keep the "
+                       "shared VLANs trunked/extended across the sibling sub-waves until the whole group "
+                       "is migrated; STP root, FHRP active and trunk allowed-VLAN lists are NOT independent "
+                       "of the siblings.", RED)
 
         # 2.x.2 blockers to clear first
         doc.add_heading(f"{wi}.2 Blockers to clear before this window", level=2)
@@ -266,7 +342,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         doc.add_paragraph(
             "Capture and SAVE the output of these commands before any change, so 'good' is defined by "
             "the pre-change state and the post-cutover checks have a baseline to compare against.")
-        val_items = val_by_wave.get(name) or []
+        val_items = _val_items
         cap_cmds = []
         seen_cap = set()
         for it in val_items:
@@ -401,6 +477,11 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                "the trigger and time are recorded in the change log.")]
         if playbook.get("rollback"):
             rb.append("Strategy-specific: " + playbook["rollback"].rstrip(". ") + ".")
+        if _kind == "coupled-subwave":
+            rb.append(("Coupled sub-wave: rolling back this sub-wave must NOT strand a sibling sub-wave's "
+                       "shared VLAN — keep the shared VLANs extended on the legacy path and coordinate with "
+                       "any sibling sub-waves already cut over before withdrawing anything.",
+                       "no sibling sub-wave loses a shared VLAN as a result of this rollback."))
         if "make-before-break" in strategy or "parallel" in strategy:
             rb.append(("Move any migrated endpoints back onto the still-live legacy leg; remove the "
                        "new path. Because the legacy path was never torn down, this is non-disruptive.",
