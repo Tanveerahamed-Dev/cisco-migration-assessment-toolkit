@@ -275,9 +275,29 @@ export interface DesignAxisScore {
   evidence: string;
   target_weight?: number;
 }
+export interface DesignDimension {
+  area: string; current: string; target: string; rationale: string; confidence: string;
+  drivers?: string[]; requirement_needed?: string;
+}
+export interface DesignTargetState {
+  dimensions: DesignDimension[];
+  replacement_bom: { replace_now: [string, number][]; refresh_soon: [string, number][]; n_replace: number; n_refresh: number; note: string };
+  addressing_plan: {
+    status: string; mode?: string; observed_vlans?: number; requirement_needed?: string; note: string;
+    supernet?: string; subnets?: { vlan: number; hosts: number; subnet: string; note?: string; zone?: string }[];
+    zones?: { zone: string; summary: string; n_vlans: number }[]; n_allocated?: number; n_overflow?: number;
+  };
+  wave_plan: {
+    waves: { wave: number; kind: string; n_switches: number; switches: string[]; source_groups: number[] }[];
+    n_waves: number; wave_cap: number; n_move_groups: number; largest_group: number; n_subdivided_groups: number; note: string;
+  };
+  segmentation_plan?: Record<string, unknown>;
+  scope_note?: string;
+}
 export interface DesignBlueprint {
   decisions: DesignDecision[];
   tradeoff_scorecard: DesignAxisScore[];
+  target_state?: DesignTargetState;
   requirements_model: {
     fields: { key: string; label: string; options?: string[]; example?: unknown; value: unknown }[];
     open_questions: { id: string; title: string; needs: string[] }[];

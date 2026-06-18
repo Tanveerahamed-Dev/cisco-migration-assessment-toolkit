@@ -3,7 +3,7 @@
    overlay POSTs a register to /design and the SERVER (compute_design_blueprint) right-sizes every
    decision — the UI never re-derives design intent, so the dashboard and the script stay one source. */
 import { useState } from "react";
-import { api, DesignBlueprint, DesignDecision } from "../api";
+import { api, DesignBlueprint, DesignDecision, DesignTargetState } from "../api";
 import { ErrorBox, Loading, useAsync } from "./ui";
 
 const P_COLOR = (p: string) =>
@@ -46,6 +46,70 @@ function DecisionCard({ d }: { d: DesignDecision }) {
         )}
         {d.principle.citation}
       </div>
+    </div>
+  );
+}
+
+function TargetState({ ts }: { ts: DesignTargetState }) {
+  const bom = ts.replacement_bom, ap = ts.addressing_plan, wp = ts.wave_plan;
+  return (
+    <div style={{ marginTop: 14 }}>
+      {ts.dimensions && ts.dimensions.length > 0 && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Proposed target-state architecture · {ts.dimensions.length}</div>
+          {ts.dimensions.map((d) => {
+            const col = d.requirement_needed ? "var(--watch)" : d.confidence === "Recommended" ? "var(--risk)" : "var(--ok)";
+            return (
+              <div key={d.area} className="panel" style={{ padding: 10, borderLeft: `3px solid ${col}`, marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <b style={{ fontSize: 13 }}>{d.area}</b><span style={{ flex: 1 }} />
+                  <span className="chip" style={{ fontSize: 10, color: col, borderColor: col }}>{d.requirement_needed ? `needs ${d.requirement_needed}` : d.confidence}</span>
+                </div>
+                <div className="dim" style={{ fontSize: 12, marginTop: 4 }}><b>Current:</b> {d.current}</div>
+                <div style={{ fontSize: 12, marginTop: 4 }}><b>Target:</b> <span className="dim">{d.target}</span></div>
+                <div style={{ fontSize: 12, marginTop: 4 }}><b>Why:</b> <span className="dim">{d.rationale}</span></div>
+              </div>
+            );
+          })}
+        </>
+      )}
+      {bom && (bom.n_replace > 0 || bom.n_refresh > 0) && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Replacement BoM · {bom.n_replace} replace / {bom.n_refresh} refresh</div>
+          <table className="tbl"><thead><tr><th>Current model</th><th>Disposition</th><th className="num">Qty</th></tr></thead>
+            <tbody>
+              {bom.replace_now.map(([m, q]) => <tr key={"r" + m}><td className="mono">{m}</td><td style={{ color: "var(--crit)" }}>Replace</td><td className="num">{q}</td></tr>)}
+              {bom.refresh_soon.map(([m, q]) => <tr key={"f" + m}><td className="mono">{m}</td><td style={{ color: "var(--watch)" }}>Refresh</td><td className="num">{q}</td></tr>)}
+            </tbody></table>
+          <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>{bom.note}</div>
+        </>
+      )}
+      {ap && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Net-new IP plan</div>
+          {ap.status === "candidate" && ap.subnets ? (
+            <>
+              {ap.zones && ap.zones.length > 0 && (
+                <table className="tbl"><thead><tr><th>Zone</th><th>Summary prefix</th><th className="num">VLANs</th></tr></thead>
+                  <tbody>{ap.zones.map((z) => <tr key={z.zone}><td>{z.zone}</td><td className="mono">{z.summary}</td><td className="num">{z.n_vlans}</td></tr>)}</tbody></table>
+              )}
+              <table className="tbl" style={{ marginTop: 6 }}><thead><tr><th className="num">VLAN</th><th className="num">Hosts</th><th>Subnet</th></tr></thead>
+                <tbody>{ap.subnets.slice(0, 40).map((sn) => <tr key={sn.vlan}><td className="num">{sn.vlan}</td><td className="num">{sn.hosts}</td><td className="mono">{sn.subnet}{sn.note ? ` · ${sn.note}` : ""}</td></tr>)}</tbody></table>
+              <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>{ap.note}</div>
+            </>
+          ) : (
+            <div className="dim" style={{ fontSize: 12 }}>Needs <b>{ap.requirement_needed}</b>{ap.observed_vlans != null ? ` (${ap.observed_vlans} VLAN(s) observed)` : ""}. {ap.note}</div>
+          )}
+        </>
+      )}
+      {wp && wp.waves && wp.waves.length > 0 && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Migration waves · {wp.n_waves}</div>
+          <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>{wp.n_move_groups} move-group(s), largest {wp.largest_group} · cap {wp.wave_cap}. {wp.note}</div>
+          <table className="tbl"><thead><tr><th className="num">Wave</th><th>Kind</th><th className="num">Switches</th></tr></thead>
+            <tbody>{wp.waves.slice(0, 40).map((w) => <tr key={w.wave}><td className="num">{w.wave}</td><td>{w.kind}</td><td className="num">{w.n_switches}</td></tr>)}</tbody></table>
+        </>
+      )}
     </div>
   );
 }
@@ -141,6 +205,8 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
           ? rec.map((d) => <DecisionCard key={d.id} d={d} />)
           : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
       </div>
+
+      {bp.target_state && <TargetState ts={bp.target_state} />}
 
       {needs.length > 0 && (
         <div style={{ marginTop: 10 }}>

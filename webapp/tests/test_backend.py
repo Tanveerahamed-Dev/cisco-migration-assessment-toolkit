@@ -360,12 +360,21 @@ def test_design_blueprint_endpoint_and_requirements_overlay(client):
         for k in ("id", "title", "priority", "status", "evidence", "principle", "axes"):
             assert k in d, (d.get("id"), k)
         assert d["principle"]["citation"], d.get("id")    # every decision cites a CCDE source
+    # NEW (target_state surfaces the dashboards render — SAME object the HLD §5 reads, no client recompute)
+    ts = bp["target_state"]
+    for k in ("dimensions", "replacement_bom", "addressing_plan", "wave_plan"):
+        assert k in ts, k
+    assert isinstance(ts["dimensions"], list)
+    assert {"n_replace", "n_refresh", "replace_now", "refresh_soon"} <= set(ts["replacement_bom"])
+    assert ts["addressing_plan"].get("status") in ("candidate", "needs-requirement")
+    assert {"waves", "n_waves", "wave_cap"} <= set(ts["wave_plan"])
     # requirements overlay: supplying a register re-scores (effective_priority) every decision
     r2 = client.post(f"/api/snapshots/{snap_id}/design",
                      json={"availability_tier": "gold", "critical_apps": ["voice"], "growth_horizon": "3y"})
     assert r2.status_code == 200, r2.text
     bp2 = r2.json()
     assert all("effective_priority" in d for d in bp2["decisions"])
+    assert "target_state" in bp2                          # the overlay (server-computed) carries target_state too
     # the stored section is also reachable through the generic section reader (SSOT)
     assert client.get(f"/api/snapshots/{snap_id}/section/design_blueprint").status_code in (200, 404)
     assert client.get("/api/snapshots/999999/design").status_code == 404
