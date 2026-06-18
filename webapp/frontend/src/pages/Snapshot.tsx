@@ -5,6 +5,7 @@ import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, useAsync } fr
 import TopologyGraph from "../components/TopologyGraph";
 import CutoverPlanner from "../components/CutoverPlanner";
 import ArchReviewPanel from "../components/ArchReview";
+import DesignBlueprintPanel from "../components/DesignBlueprint";
 
 const HEALTH_TONE = (n: number) => (n >= 80 ? "ok" : n >= 60 ? "watch" : n >= 35 ? "risk" : "crit");
 const GAUGE_COLOR = (n: number) => (n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
@@ -284,6 +285,8 @@ export default function SnapshotPage() {
         <RiskRegisterPanel snapId={sid} />
 
         <ArchReviewPanel snapId={sid} />
+
+        <DesignBlueprintPanel snapId={sid} />
 
         <CutoverPlanner snapId={sid} />
 

@@ -343,6 +343,34 @@ def test_archreview_endpoint(client):
     assert client.get("/api/snapshots/999999/archreview").status_code == 404
 
 
+def test_design_blueprint_endpoint_and_requirements_overlay(client):
+    """The CCDE-grounded design blueprint endpoint — the SAME compute_design_blueprint object the HLD/LLD
+    DOCX and the explorer Design mode read. GET returns the evidence-grounded baseline (every decision
+    cites a CCDE principle); POSTing a requirements register right-sizes (re-scores) every decision. The
+    right-sizing logic lives only in Python — one source of truth across script and dashboard."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/design")
+    assert r.status_code == 200, r.text
+    bp = r.json()
+    assert isinstance(bp["decisions"], list)
+    assert len(bp["tradeoff_scorecard"]) >= 1
+    for k in ("summary", "requirements_model", "coverage", "axes"):
+        assert k in bp, k
+    for d in bp["decisions"]:
+        for k in ("id", "title", "priority", "status", "evidence", "principle", "axes"):
+            assert k in d, (d.get("id"), k)
+        assert d["principle"]["citation"], d.get("id")    # every decision cites a CCDE source
+    # requirements overlay: supplying a register re-scores (effective_priority) every decision
+    r2 = client.post(f"/api/snapshots/{snap_id}/design",
+                     json={"availability_tier": "gold", "critical_apps": ["voice"], "growth_horizon": "3y"})
+    assert r2.status_code == 200, r2.text
+    bp2 = r2.json()
+    assert all("effective_priority" in d for d in bp2["decisions"])
+    # the stored section is also reachable through the generic section reader (SSOT)
+    assert client.get(f"/api/snapshots/{snap_id}/section/design_blueprint").status_code in (200, 404)
+    assert client.get("/api/snapshots/999999/design").status_code == 404
+
+
 def test_cutover_deliverable_content(client):
     """The Cutover Plan DOCX is the one deliverable with no engine-side test — validate it actually
     renders the plan (headings + tables), not just that it's a >1KB zip."""

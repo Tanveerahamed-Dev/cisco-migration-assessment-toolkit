@@ -96,6 +96,34 @@ def test_deck_gains_riskiest_assets_slide_with_register(tmp_path):
     assert "CR-01" in txt and "Stabilize or replace" in txt
 
 
+def test_deck_gains_target_state_design_slide(tmp_path):
+    """NEW: a snapshot carrying the design_blueprint renders the extra 'target-state design' slide (8
+    total); the back-compat 7-slide pin above proves the slide is data-gated (the design engine's
+    compute_design_blueprint), never empty filler — the SAME blueprint behind the HLD/LLD and dashboards."""
+    snap = _rich_snap()
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 2, "n_recommended": 2, "n_needs_requirement": 1, "n_critical": 1,
+                    "headline": "2 design decisions."},
+        "tradeoff_scorecard": [{"axis": "availability", "label": "High availability", "score": 0,
+                                "posture": "Weak", "evidence": "no FHRP"}],
+        "decisions": [
+            {"id": "fhrp-first-hop-gateway-redundancy", "title": "Introduce first-hop redundancy",
+             "priority": "Critical", "status": "recommended", "evidence": {"summary": "52 VLANs without FHRP"},
+             "principle": {"citation": "CCDE In Depth — HA"}, "recommended_action": "HSRP/VRRP"},
+            {"id": "x", "title": "Right-size availability", "priority": "High", "status": "needs-requirement",
+             "evidence": {"summary": ""}, "principle": {"citation": "CCDE"},
+             "requirements_needed": ["availability_tier"]},
+        ],
+        "coverage": {"caveat": "grounded only in collected evidence"},
+    }
+    out = tmp_path / "deck_design.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert n == 8, f"expected 8 slides with the design blueprint, got {n}"
+    assert "design the migration should adopt" in txt.lower() or "target state" in txt.lower()
+    assert "Introduce first-hop redundancy" in txt
+
+
 def test_deck_cleans_mojibake(tmp_path):
     snap = {"executive_brief": {"axes": [{"axis": "X", "severity": "High", "headline": "a Â· b"}],
                                 "top_gating": []}}

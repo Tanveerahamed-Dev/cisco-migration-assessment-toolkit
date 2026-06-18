@@ -352,6 +352,7 @@ from cisco_toolkit.analyze import (
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
+from cisco_toolkit.design_advisor import compute_design_blueprint   # NEW: CCDE-grounded target-state design blueprint (single source of truth for design intent)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
 # build); only _CISCO_ERRORS stays (platform detection reuses it).
@@ -2055,6 +2056,15 @@ def main():
     if args.redact:                                                  # NEW-V3.23.41
         snap_dict = redact_snapshot(snap_dict)
         logger.info("  [redact] snapshot IPs / MACs / serials pseudonymized (--redact)")
+    # NEW: the canonical CCDE-grounded target-state DESIGN BLUEPRINT (the senior-network-design-engineer
+    # layer). Computed LAST, from the fully-assembled (and, under --redact, already-redacted) snap_dict, so
+    # the design DOCX / explorer / webapp all read ONE blueprint instead of re-deriving design intent. It
+    # folds the date-relative lifecycle/EoL evidence, so it is excluded from the frozen golden like
+    # executive_brief / device_dossiers; the SSOT publish is locked by tests/test_pipeline_inprocess.py.
+    try:
+        snap_dict["design_blueprint"] = compute_design_blueprint(snap_dict)
+    except Exception as e:                                            # fail-soft: never break the snapshot write
+        logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
     try:
         write_json_file(snap_path, snap_dict)
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")

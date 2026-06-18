@@ -327,6 +327,38 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
          [("Clear the NOT-READY blockers first, biggest blast radius first — then verify each wave with the "
            "Cutover Validation plan.", 12, _MUTED, False, True)])
 
+    # ------------------------------------------------------- 6b. Target-state design (NEW — design engine)
+    # The CCDE-grounded design blueprint: the recommended target-state decisions + the weakest trade-off
+    # axes. Data-gated — skipped when the snapshot carries no design_blueprint (the SAME object the HLD/LLD
+    # and the dashboards read; one source of truth).
+    bp = snap.get("design_blueprint") or {}
+    bp_rec = [d for d in (bp.get("decisions") or []) if isinstance(d, dict) and d.get("status") == "recommended"]
+    if bp_rec:
+        s = slide()
+        header(s, "CCDE-grounded target state", "The design the migration should adopt")
+        bsum = bp.get("summary") or {}
+        text(s, 0.7, 1.9, W - 1.4, 0.4,
+             [[(f"{bsum.get('n_recommended', len(bp_rec))} design decision(s)  ", 14, _NAVY, True),
+               (f"· {bsum.get('n_critical', 0)} critical · {bsum.get('n_needs_requirement', 0)} need a "
+                "requirement — each traced to a design principle and the trade-off axes it serves.",
+                13, _MUTED, False)]])
+        sc = [a for a in (bp.get("tradeoff_scorecard") or []) if isinstance(a, dict)]
+        weak = [a for a in sc if isinstance(a.get("score"), int) and a.get("score") <= 1][:5]
+        if weak:
+            text(s, 0.7, 2.5, W - 1.4, 0.3, [("WEAKEST TRADE-OFF AXES (0–1 / 4)", 12, _HIGH, True)])
+            x = 0.7
+            for a in weak:
+                chip(s, x, 2.9, _clean(f"{a.get('axis', '')} {a.get('score')}/4"), _CRIT, w=2.0, h=0.32, size=10)
+                x += 2.1
+        y = 3.65
+        for d in bp_rec[:5]:
+            sev = d.get("priority", "Info")
+            chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.34, size=10)
+            text(s, 1.85, y - 0.04, W - 2.6, 0.7,
+                 [[(_clean(d.get("title", "")), 14, _INK, True)],
+                  [(_clean(((d.get("evidence") or {}).get("summary") or "")[:120]), 11, _MUTED, False)]], space=1)
+            y += 0.78
+
     # ---------------------------------------------------------------- 7. Where to start (dark)
     s = slide(dark=True)
     header(s, "Recommendation", "Where to start", dark=True)

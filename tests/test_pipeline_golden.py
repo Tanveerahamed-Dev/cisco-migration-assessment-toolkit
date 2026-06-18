@@ -70,6 +70,10 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     # synthetic axes. Its PUNCH-LIST fold stays frozen: the CR basis text is deliberately band-agnostic
     # ("past/near end-of-support"), so band transitions never reword a folded row. (V3.23.172)
     snap.pop("device_dossiers", None)
+    # design_blueprint folds the date-relative lifecycle/EoL bands (its EoL decision count shifts as dates
+    # pass) -> exclude like its lifecycle source; the blueprint logic is pinned deterministically by
+    # tests/test_design_blueprint.py and its SSOT publish by tests/test_pipeline_inprocess.py. (design engine)
+    snap.pop("design_blueprint", None)
     return snap, str(out_xlsx)
 
 

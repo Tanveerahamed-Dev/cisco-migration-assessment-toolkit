@@ -177,6 +177,54 @@ def test_design_carries_document_furniture(tmp_path):
     d = Document(out)
     h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
     assert "Document Control" in h1 and "Document Acceptance" in h1
+
+
+def test_design_renders_canonical_blueprint_section(tmp_path):
+    """When the snapshot carries the canonical design_blueprint, §4 renders the CCDE-grounded decisions,
+    the trade-off scorecard and the open requirement questions (not the punch-list fallback) — proving the
+    design DOCX reads the single source of truth rather than re-deriving design intent."""
+    snap = _snap()
+    snap["design_blueprint"] = {
+        "summary": {"headline": "1 critical target-state design decision(s); leading: introduce FHRP.",
+                    "n_decisions": 2, "n_recommended": 1, "n_needs_requirement": 1, "n_critical": 1,
+                    "by_domain": {}, "requirements_provided": False},
+        "tradeoff_scorecard": [{"axis": "availability", "label": "High availability & resiliency",
+                                "score": 0, "posture": "Weak", "evidence": "no FHRP; SPOFs present"}],
+        "decisions": [
+            {"id": "fhrp-first-hop-gateway-redundancy", "title": "Introduce first-hop redundancy",
+             "domain": "methodology", "priority": "Critical", "status": "recommended",
+             "confidence": "Observed", "driver": "Gateway resilience",
+             "evidence": {"summary": "52 VLAN(s) without FHRP", "count": 52, "devices": []},
+             "principle": {"id": "fhrp-first-hop-gateway-redundancy", "title": "First-hop redundancy",
+                           "citation": "CCDE In Depth — High Availability"},
+             "recommended_action": "Deploy HSRP/VRRP across dual gateways", "alternatives": "GLBP; anycast gateway",
+             "tradeoffs": "HA vs simplicity", "axes": ["availability", "convergence"], "requirements_needed": []},
+            {"id": "availability-right-sized-per-tier", "title": "Right-size availability per tier",
+             "domain": "methodology", "priority": "High", "status": "needs-requirement",
+             "confidence": "Requirement-needed", "driver": "WHY-first",
+             "evidence": {"summary": "redundancy posture varies by tier", "count": 0, "devices": []},
+             "principle": {"id": "availability-right-sized-per-tier", "title": "Right-size availability",
+                           "citation": "CCDE In Depth — Fundamentals"},
+             "recommended_action": "Assign an availability target per class", "alternatives": "uniform SLA fleet-wide",
+             "tradeoffs": "HA vs cost", "axes": ["availability", "cost"], "requirements_needed": ["availability_tier"]},
+        ],
+        "requirements_model": {"fields": [], "open_questions": [], "provided": False, "note": ""},
+        "coverage": {"inventory": 3, "collected": 3, "not_collected": 0,
+                     "caveat": "grounded only in collected evidence"},
+        "methodology": "WHY-first.", "axes": [],
+    }
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    for token in ("4.1 Design trade-off scorecard", "4.2 Recommended target-state design decisions",
+                  "4.3 Open design questions (requirements to confirm)"):
+        assert token in h2, f"missing §4 subsection: {token}; have {h2}"
+    text = _all_text(d)
+    assert "Introduce first-hop redundancy" in text                 # the recommended decision
+    assert "CCDE In Depth — High Availability" in text              # traced to its CCDE basis
+    assert "Right-size availability per tier" in text               # the open requirement question
+    assert "availability_tier" in text
     text = _all_text(d)
     assert "Revision history" in text and "Assumptions & caveats" in text
     assert "Customer network owner" in text                      # acceptance signature roles

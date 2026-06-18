@@ -968,6 +968,7 @@
       <button data-mode="waves" aria-pressed="false"><span class="gl" aria-hidden="true">⇉</span>Waves</button>
       <button data-mode="apps" aria-pressed="false"><span class="gl" aria-hidden="true">▦</span>Apps</button>
       <button data-mode="review" aria-pressed="false"><span class="gl" aria-hidden="true">☑</span>Review</button>
+      <button data-mode="design" aria-pressed="false"><span class="gl" aria-hidden="true">✎</span>Design</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -2076,6 +2077,7 @@ let XL_LAYER_FILTER=null, XL_SEV_FILTER=null;   // V3.23.82: Cross-Layer mode fi
 let WAVE_SEL=null;   // V3.23.86: selected migration move-group index (canvas highlight; null = none)
 let APP_SEL=null;    // V3.23.112: selected application-domain index (Apps mode canvas highlight; null = none)
 let AR_SEL=null;     // V3.23.162: selected architecture-review check index (Review mode evidence spotlight; null = none)
+let DES_SEL=null;    // selected design-decision index (Design mode evidence spotlight; null = none)
 let TIER_FOCUS=null;   // V3.23.72: {name, hosts:Set} — a Risk-cockpit tier highlighted on the topology (null = none)
 let view={tx:0,ty:0,k:1};
 let nodeEls={}, edgeEls=[], visEdges=[], ghostEls=[], NAV=[], NAVI=0;
@@ -2153,7 +2155,7 @@ function load(snap,label,live){
     `Network topology graph: ${MODEL.hosts.length} switches, ${MODEL.links.length} links. `+
     `Tab into the graph, then use the arrow keys to move between switches in the direction you press, and Enter to select. `+
     `The side panel lists the same switches and findings as text.`);
-  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null; APP_SEL=null; AR_SEL=null;
+  SEL=null; EPSEL=null; FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null; VLAN="all"; TRACE_SRC=TRACE_DST=TRACE=null; MODEL_B=null; CMP=null; TIER_FOCUS=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null; WAVE_SEL=null; APP_SEL=null; AR_SEL=null; DES_SEL=null;
   buildEndpointIndex();
   const src=document.getElementById("src");
   src.textContent=label; src.classList.toggle("live",!!live);
@@ -2242,7 +2244,7 @@ function markActiveChip(){
 function setVlan(v){VLAN=v;markActiveChip();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps","review"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps","review","design"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -2632,6 +2634,7 @@ function repaint(){
   else if(MODE==="waves")paintWaves();
   else if(MODE==="apps")paintApps();
   else if(MODE==="review")paintReview();
+  else if(MODE==="design")paintDesign();
   severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   applyVlanFocus();   // per-VLAN isolation: fade switches not on the selected VLAN (after all paints)
@@ -3146,6 +3149,7 @@ function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="waves"&&WAVE_SEL!=null){WAVE_SEL=null;repaint();renderDrawer();}
   else if(MODE==="apps"&&APP_SEL!=null){APP_SEL=null;repaint();renderDrawer();}
   else if(MODE==="review"&&AR_SEL!=null){AR_SEL=null;repaint();renderDrawer();}
+  else if(MODE==="design"&&DES_SEL!=null){DES_SEL=null;repaint();renderDrawer();}
   else if(MODE==="flow"&&(FLOW_SRC||FLOW_DST)){FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
@@ -3186,6 +3190,9 @@ function modeSummary(m){
     if(m==="review"){const ar=arReview(); if(!ar)return "";
       const s=ar.summary||{};
       return ` Conformance grade ${s.grade||"N/A"}${s.score_pct!=null?` at ${s.score_pct} percent`:""}${s.n_critical?`, ${s.n_critical} critical`:""}${s.n_deviation?`, ${s.n_deviation} deviation${s.n_deviation>1?"s":""}`:""}.`;}
+    if(m==="design"){const bp=designBlueprint(); if(!bp)return "";
+      const s=bp.summary||{};
+      return ` ${s.n_decisions||0} design decision${(s.n_decisions||0)===1?"":"s"}${s.n_critical?`, ${s.n_critical} critical`:""}${s.n_needs_requirement?`, ${s.n_needs_requirement} need a requirement`:""}.`;}
   }catch(e){}
   return "";
 }
@@ -3198,10 +3205,11 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m!=="waves")WAVE_SEL=null;   // V3.23.86: a move-group highlight only lives in Waves mode
   if(m!=="apps")APP_SEL=null;     // V3.23.112: an application-domain highlight only lives in Apps mode
   if(m!=="review")AR_SEL=null;    // V3.23.162: a review-check evidence spotlight only lives in Review mode
+  if(m!=="design")DES_SEL=null;   // a design-decision evidence spotlight only lives in Design mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains",waves:"Migration waves",apps:"Application domains",review:"Architecture review"}[m]||m)+" mode."+modeSummary(m));
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains",waves:"Migration waves",apps:"Application domains",review:"Architecture review",design:"Design blueprint"}[m]||m)+" mode."+modeSummary(m));
   writeHash();}
 
 /* =====================================================================
@@ -3218,7 +3226,8 @@ function setHint(){const h=document.getElementById("hint");const m={
   causality:`Select a chain to <b>animate its root-cause flow</b>`,
   waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
   apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`,
-  review:AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`}[MODE];
+  review:AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`,
+  design:DES_SEL!=null?`Affected devices highlighted — click the decision again or the background to clear`:`Click a design decision to <b>spotlight the devices it affects</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -3231,7 +3240,8 @@ function setModeTag(){const el=document.getElementById("modetag");
     causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain.",
     waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict.",
     apps:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk.",
-    review:"The senior-engineer design review: leading-practice conformance verdicts per design domain (A–F grade), each finding citing its evidence, impact and the rule it deviates from."}[MODE];
+    review:"The senior-engineer design review: leading-practice conformance verdicts per design domain (A–F grade), each finding citing its evidence, impact and the rule it deviates from.",
+    design:"The CCDE-grounded target-state design blueprint: evidence-gated design decisions traced to a design principle and the trade-off axes they serve, a trade-off scorecard, and the open requirement questions — the same design_blueprint the HLD/LLD reads."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -3249,6 +3259,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="waves"){h+=bx("var(--accent)","switches in the selected group","")+`<div class="row faint" style="margin-top:3px">Click a move-group card to spotlight its shared-VLAN L2 domain.</div>`;}
   else if(MODE==="apps"){h+=bx("var(--accent)","switches in the selected domain","")+`<div class="row faint" style="margin-top:3px">Click an application-domain card to spotlight its switches; tiers run <b>On-air critical</b> → <b>Production</b> → <b>Support</b>.</div>`;}
   else if(MODE==="review"){h+=bx("var(--crit)","critical deviation","")+bx("var(--risk)","deviation","")+bx("var(--watch)","advisory","")+bx("var(--ok)","conforms","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>worst verdict naming them</b>; click a finding to spotlight its evidence.</div>`;}
+  else if(MODE==="design"){h+=bx("var(--crit)","critical decision","")+bx("var(--risk)","high","")+bx("var(--watch)","medium","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>highest-priority decision naming them</b>; click a decision to spotlight the devices it affects.</div>`;}
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -3374,6 +3385,7 @@ function renderDrawer(){
   else if(MODE==="waves")p.innerHTML=drawWaves();
   else if(MODE==="apps")p.innerHTML=drawApps();
   else if(MODE==="review")p.innerHTML=drawReview();
+  else if(MODE==="design")p.innerHTML=drawDesign();
   // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
   // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
   p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
@@ -3409,6 +3421,14 @@ function renderDrawer(){
     AR_SEL=(AR_SEL===i)?null:i; repaint(); renderDrawer();
     if(AR_SEL!=null){const ck=(((SNAP&&SNAP.architecture_review)||{}).checks||[])[AR_SEL];
       if(ck&&ck.evidence&&ck.evidence.length&&POS[ck.evidence[0]])centerOn(ck.evidence[0]);}};
+    c.onclick=sel;
+    c.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();sel();}};});
+  // Design — click a decision card to spotlight the devices it affects (toggle; keyboard-operable)
+  p.querySelectorAll("[data-dec]").forEach(c=>{const sel=()=>{const i=+c.dataset.dec;
+    DES_SEL=(DES_SEL===i)?null:i; repaint(); renderDrawer();
+    if(DES_SEL!=null){const bp=designBlueprint(); const d=bp&&bp.decisions&&bp.decisions[DES_SEL];
+      const ev=(d&&d.evidence&&d.evidence.devices)||[];
+      if(ev.length&&POS[ev[0]])centerOn(ev[0]);}};
     c.onclick=sel;
     c.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();sel();}};});
   // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
@@ -6171,6 +6191,82 @@ function paintReview(){
 }
 
 /* =====================================================================
+   DESIGN BLUEPRINT mode — renders SNAP.design_blueprint (the Python
+   compute_design_blueprint senior-network-DESIGN-engineer layer). ONE
+   SOURCE OF TRUTH: the explorer never re-derives a design decision — it
+   renders the same object the HLD/LLD DOCX reads. Click a decision card to
+   spotlight the devices it affects; with nothing selected, nodes tint by
+   the highest-priority decision naming them.
+   ===================================================================== */
+function designBlueprint(){const bp=SNAP&&SNAP.design_blueprint;
+  return (bp&&Array.isArray(bp.decisions))?bp:null;}
+function dPrioTok(p){return p==="Critical"?"crit":p==="High"?"risk":p==="Medium"?"watch":"ok";}
+function drawDesign(){
+  if(!MODEL)return "";
+  const head=`<div class="drawer-head"><div class="eyebrow">CCDE-grounded target-state design</div><div class="title">Design blueprint</div></div>`;
+  const bp=designBlueprint();
+  if(!bp){
+    return head+`<div class="sec"><div class="empty"><div class="big">✎</div>
+      <p>No <b>design_blueprint</b> in this snapshot (pre-design-engine). This view renders the senior
+      network-design-engineer layer — evidence-gated target-state decisions traced to a CCDE design
+      principle and the trade-off axes they serve — re-run the assessment to populate it.</p></div></div>`;
+  }
+  const s=bp.summary||{};
+  const decs=Array.isArray(bp.decisions)?bp.decisions:[];
+  const rec=decs.map((d,i)=>({d,i})).filter(x=>x.d&&x.d.status==="recommended");
+  const needs=decs.filter(d=>d&&d.status==="needs-requirement");
+  const sc=Array.isArray(bp.tradeoff_scorecard)?bp.tradeoff_scorecard:[];
+  const cov=bp.coverage||{};
+  const scoreTok=v=>v==null?"neutral":v<=1?"crit":v<=2?"risk":v<=3?"watch":"ok";
+  const scRows=sc.map(a=>`<div class="ln"><span class="pill pl-${scoreTok(a.score)}">${a.score==null?"n/a":a.score+"/4"}</span> ${esc(a.label||a.axis||"")} <span class="faint">${esc(a.posture||"")}</span></div>`).join("");
+  const cards=rec.map(({d,i})=>{const tok=dPrioTok(d.priority); const selc=DES_SEL===i?" xlactive":"";
+    const ev=(d.evidence&&d.evidence.devices)||[]; const axes=Array.isArray(d.axes)?d.axes:[];
+    return `<div class="card ${tok} xlcard${selc}" data-dec="${i}" tabindex="0" role="button" style="cursor:pointer"
+        aria-label="${esc(d.title)} — ${esc(d.priority)} — click to spotlight the devices it affects">
+      <div class="ct"><span class="nm">${esc(d.title)}</span><span class="pill pl-${tok}">${esc(d.priority)}</span></div>
+      <div class="ln faint" style="margin-top:3px">${esc((d.evidence&&d.evidence.summary)||"")}</div>
+      <div class="ln" style="margin-top:3px"><b>Why:</b> ${esc(d.driver||"")}</div>
+      <div class="ln" style="margin-top:3px"><b>Target pattern:</b> ${esc(d.recommended_action||"")}</div>
+      <div class="ln" style="margin-top:3px"><b>Trade-offs:</b> ${esc(d.tradeoffs||"")}</div>
+      <div class="ln" style="margin-top:3px"><b>CCDE basis:</b> <span class="faint">${esc(((d.principle||{}).citation)||"")}</span></div>
+      ${axes.length?`<div class="ln" style="margin-top:4px">${axes.map(a=>`<span class="pill pl-neutral">${esc(a)}</span>`).join(" ")}</div>`:""}
+      ${ev.length?`<div class="ln" style="margin-top:4px">${ev.slice(0,10).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${ev.length>10?` <span class="faint">+${ev.length-10}</span>`:""}</div>`:""}
+    </div>`;}).join("");
+  const needRows=needs.map(d=>`<div class="ln"><span class="pill pl-neutral">needs</span> ${esc(d.title)} <span class="faint">— ${esc((d.requirements_needed||[]).join(", "))}</span></div>`).join("");
+  return head+
+    `<div class="sec"><div class="headline">
+      <div class="stat ${s.n_critical?"crit":""}"><div class="v"><span class="num" data-to="${s.n_decisions||0}">0</span></div><div class="k">decisions</div></div>
+      <div class="stat ${s.n_critical?"crit":""}"><div class="v"><span class="num" data-to="${s.n_critical||0}">0</span></div><div class="k">critical</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_recommended||0}">0</span></div><div class="k">recommended</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_needs_requirement||0}">0</span></div><div class="k">need a req</div></div>
+    </div>
+    <p class="sub" style="margin:10px 0 0">${esc(s.headline||"")}</p></div>
+    <div class="sec"><h3>Trade-off scorecard <span class="ct">${sc.length}</span></h3><p class="sub" style="margin:0 0 8px">Where the fabric stands on each axis a senior designer balances (0 weak → 4 strong).</p>${scRows}</div>
+    ${cards?`<div class="sec"><h3>Target-state design decisions <span class="ct">${rec.length}</span></h3><p class="sub" style="margin:0 0 8px"><b>Click a decision</b> to spotlight the devices it affects. Decisions come from the Python design engine — the SAME design_blueprint the HLD/LLD reads.</p>${cards}</div>`:`<div class="sec"><div class="ln faint">No evidence-grounded design decisions in this snapshot.</div></div>`}
+    ${needRows?`<div class="sec"><h3>Open design questions <span class="ct">${needs.length}</span></h3><p class="sub" style="margin:0 0 8px">Design top-down from the WHY: these depend on requirements the assessment cannot observe — the engine surfaces the question, it does not assume.</p>${needRows}</div>`:""}
+    ${cov.caveat?`<div class="sec"><div class="ln faint"><b>Coverage:</b> ${esc(cov.caveat)}</div></div>`:""}`;
+}
+/* paint hook: with a decision selected, spotlight the devices it affects; with nothing selected, tint
+   each node by the HIGHEST-priority decision naming it in any decision's evidence.devices. */
+function paintDesign(){
+  const bp=designBlueprint(); if(!bp||!MODEL)return;
+  const decs=Array.isArray(bp.decisions)?bp.decisions:[];
+  if(DES_SEL!=null){const d=decs[DES_SEL]; if(!d)return;
+    const set=new Set((d.evidence&&d.evidence.devices)||[]);
+    MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
+      if(set.has(h))n.g.classList.add("xlhl"); else n.g.classList.add("xldim");});
+    edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});
+    return;}
+  const RANK={Critical:0,High:1,Medium:2,Low:3}, TOK=["crit","risk","watch","ok"];
+  const worst={};
+  decs.forEach(d=>{const r=d?RANK[d.priority]:undefined; if(r==null)return;
+    (((d.evidence||{}).devices)||[]).forEach(h=>{if(worst[h]==null||r<worst[h])worst[h]=r;});});
+  MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n||worst[h]==null)return;
+    const tok=TOK[worst[h]];
+    n.body.style.stroke=`var(--${tok})`; n.body.style.fill=`var(--${tok}-soft)`;});
+}
+
+/* =====================================================================
    U5: CROSS-LAYER SEVERITY HEATMAP (devices × L1-L4)
    A single devices×layers grid that folds every per-layer detector into one
    at-a-glance matrix: rows = MODEL.hosts, cols = L1/L2/L3/L4. Each cell is a
@@ -7848,6 +7944,7 @@ function abIntent(q,E){const t=abNorm(q);
   if(has(" capword "))return E.host?"profile":"capacity";
   if(has(" secword "))return "security";
   if(has(" archword "))return "archgrade";
+  if(has("design blueprint","blueprint","target state","target-state","design decision","design intent","design recommend","what should the design","how should we design"))return "designblueprint";
   if(has(" fixword "))return "fixfirst";
   if(has(" driftword "))return "drift";
   if(has(" dupword "))return "conflicts";
@@ -8295,6 +8392,23 @@ function abH_archgrade(){const ar=(SNAP||{}).architecture_review||{};const sm=ar
   return {html:b,acts:[
     {label:"Review mode",run:()=>{abToggle(false);setMode("review");}},
     {label:"Security posture",run:abAskAct("security posture")}]};}
+function abH_designblueprint(){const bp=(SNAP||{}).design_blueprint||{};const sm=bp.summary||{};
+  if(!Array.isArray(bp.decisions)||!bp.decisions.length)
+    return {html:`<h4>Design blueprint</h4><div class="ab-note">No design blueprint in this snapshot (pre-design-engine). Re-run the assessment to populate the CCDE-grounded target-state design.</div>`,acts:[]};
+  let b=`<h4>Target-state design blueprint</h4>`;
+  if(sm.headline)b+=`<div class="ab-note">${esc(sm.headline)}</div>`;
+  b+=abKv("Decisions",`${sm.n_recommended??"?"} recommended · ${sm.n_needs_requirement??0} need a requirement · ${sm.n_critical??0} critical`);
+  const sc=Array.isArray(bp.tradeoff_scorecard)?bp.tradeoff_scorecard:[];
+  if(sc.length)b+=`<table><tr><th>Trade-off axis</th><th>Score</th><th>Posture</th></tr>`+
+    sc.map(a=>`<tr><td>${esc(a.label||a.axis||"")}</td><td>${a.score==null?"—":a.score+"/4"}</td><td>${esc(a.posture||"")}</td></tr>`).join("")+`</table>`;
+  const rec=bp.decisions.filter(d=>d&&d.status==="recommended");
+  if(rec.length)b+=`<div class="ab-sec"><h4>Top design decisions</h4>`+abSteps(rec.slice(0,5).map(d=>esc(d.title)+(d.principle&&d.principle.citation?` — ${esc(d.principle.citation)}`:"")))+`</div>`;
+  const needs=bp.decisions.filter(d=>d&&d.status==="needs-requirement");
+  if(needs.length)b+=abX(`Open design questions (${needs.length})`,`<div>${needs.map(d=>esc(d.title)).join(" · ")}</div>`);
+  const cov=bp.coverage||{};if(cov.caveat)b+=`<div class="ab-note">${esc(cov.caveat)}</div>`;
+  return {html:b,acts:[
+    {label:"Design mode",run:()=>{abToggle(false);setMode("design");}},
+    {label:"Architecture grade",run:abAskAct("architecture grade")}]};}
 function abH_cutover(h){const eps=abEps(h).length;const cap=abCap(h)||{};const nb=abNbrs(h);
   const em=MODEL.endpoints.get(h)||new Map();const vids=[...em.keys()].sort((a,b)=>a-b);
   const doms=abDoms(h);const onair=doms.some(d=>/critical/i.test(d.tier||""));
@@ -8561,6 +8675,7 @@ function abAnswer(q){const E=abEntities(q);let intent=abIntent(q,E);
     case "capacity":return abRender(abH_capacity());
     case "security":return abRender(abH_security());
     case "archgrade":return abRender(abH_archgrade());
+    case "designblueprint":return abRender(abH_designblueprint());
     case "fixfirst":return abRender(abH_fixfirst());
     case "drift":return abRender(abH_drift());
     case "conflicts":return abRender(abH_conflicts());
@@ -8588,7 +8703,7 @@ function abSubmit(q){abMsg("user",esc(q));
   if(reduce)go(); else setTimeout(go,260+Math.random()*240);}
 function abChipsRow(){const dd=((SNAP||{}).device_dossiers||{}).summary||{};
   const star=(Array.isArray(dd.worst)&&dd.worst[0])||MODEL.hosts[0]||"";
-  const sug=["fleet overview","single points of failure","what do I fix first","question bank","go/no-go board","architecture grade"];
+  const sug=["fleet overview","single points of failure","what do I fix first","design blueprint","question bank","go/no-go board","architecture grade"];
   if(star){sug.splice(1,0,"cutover plan for "+star);sug.push("what if I migrate "+star);}
   document.getElementById("abChips").innerHTML=sug.map(s=>`<span class="chip" role="button" tabindex="0" data-abq="${abAttr(s)}">${esc(s)}</span>`).join("");}
 function abToggle(force){const p=document.getElementById("askbot");
