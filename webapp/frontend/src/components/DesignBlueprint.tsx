@@ -122,6 +122,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const [apps, setApps] = useState("");
   const [conv, setConv] = useState("");
   const [growth, setGrowth] = useState("");
+  const [dataClass, setDataClass] = useState("");
   const [budget, setBudget] = useState(false);
 
   if (loading) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><Loading /></div>;
@@ -137,6 +138,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     if (apps.trim()) req.critical_apps = apps.split(",").map((x) => x.trim()).filter(Boolean);
     if (conv.trim()) req.convergence_budget_ms = Number(conv) || conv;
     if (growth.trim()) req.growth_horizon = growth.trim();
+    if (dataClass.trim()) req.data_classification = dataClass.split(",").map((x) => x.trim()).filter(Boolean);
     if (budget) req.constraints = ["budget-limited"];
     setBusy(true);
     try {
@@ -148,7 +150,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     }
   };
   const clearReqs = () => {
-    setOver(null); setTier(""); setApps(""); setConv(""); setGrowth(""); setBudget(false);
+    setOver(null); setTier(""); setApps(""); setConv(""); setGrowth(""); setDataClass(""); setBudget(false);
   };
 
   return (
@@ -186,6 +188,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
           <input placeholder="critical apps (voice,video)" value={apps} onChange={(e) => setApps(e.target.value)} />
           <input placeholder="convergence ms" value={conv} onChange={(e) => setConv(e.target.value)} style={{ width: 120 }} />
           <input placeholder="growth horizon" value={growth} onChange={(e) => setGrowth(e.target.value)} style={{ width: 140 }} />
+          <input placeholder="data classification (PCI,corp)" value={dataClass} onChange={(e) => setDataClass(e.target.value)} style={{ width: 180 }} aria-label="data classification" />
           <label style={{ fontSize: 12 }}>
             <input type="checkbox" checked={budget} onChange={(e) => setBudget(e.target.checked)} /> budget-limited
           </label>

@@ -124,6 +124,33 @@ def test_deck_gains_target_state_design_slide(tmp_path):
     assert "Introduce first-hop redundancy" in txt
 
 
+def test_deck_migration_slide_surfaces_honest_wave_count(tmp_path):
+    """B1 (audit fix): when the snapshot carries the design wave_plan, the 'How it sequences' slide must
+    headline the honest SEQUENCED wave count (design_blueprint.target_state.wave_plan.n_waves) -- not the
+    raw move-group count presented as if it were parallelizable waves. A 60-switch L2-coupled domain is
+    ONE set sliced into sequenced sub-waves, not 6 parallel waves; the slide must say so."""
+    snap = _rich_snap()
+    snap["move_groups"] = ([{"switches": [f"s{i}" for i in range(60)]}]
+                           + [{"switches": [f"t{j}"]} for j in range(5)])   # 1x60 + 5 singletons = 6 groups
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 1, "n_recommended": 1, "n_needs_requirement": 0, "n_critical": 1,
+                    "headline": "1 critical recommended."},
+        "tradeoff_scorecard": [], "coverage": {},
+        "decisions": [{"id": "fhrp-first-hop-gateway-redundancy", "title": "Introduce FHRP",
+                       "priority": "Critical", "status": "recommended",
+                       "evidence": {"summary": "x"}, "principle": {"citation": "CCDE"}}],
+        "target_state": {"wave_plan": {"n_waves": 3, "n_move_groups": 6, "largest_group": 60,
+                                       "wave_cap": 40, "waves": [], "note": "n"}},
+    }
+    out = tmp_path / "deck_waves.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    low = txt.lower()
+    assert "candidate wave" in low, "slide must surface the honest sequenced wave count label"
+    # the honest relationship (move-groups -> sequenced waves) must be disclosed, not just the raw 6
+    assert "sequence" in low and "60" in txt, "must disclose the largest L2 domain sequences into waves"
+
+
 def test_deck_cleans_mojibake(tmp_path):
     snap = {"executive_brief": {"axes": [{"axis": "X", "severity": "High", "headline": "a Â· b"}],
                                 "top_gating": []}}

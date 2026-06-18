@@ -341,13 +341,23 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def design_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
         """Interactive requirements overlay: recompute the blueprint right-sized to a requirements
         register (availability_tier / critical_apps / convergence_budget_ms / growth_horizon /
-        constraints / data_classification). The right-sizing logic lives ONLY here (Python, the same
-        compute_design_blueprint the CLI runs) — the dashboard never re-derives design intent."""
-        from cisco_toolkit.design_advisor import compute_design_blueprint
+        constraints / data_classification / address_space / vlan_zones). The right-sizing logic lives
+        ONLY here (Python, the same compute_design_blueprint the CLI runs) — the dashboard never
+        re-derives design intent.
+
+        The body is EITHER a typed requirements register OR the engagement interview's tagged answers
+        wrapped as {"interview_answers": {...}} — the latter mapped through the SAME
+        requirements_from_interview bridge the CLI uses, so interview output closes the requirements loop
+        here too (one normalisation path, no second mapper)."""
+        from cisco_toolkit.design_advisor import (compute_design_blueprint,
+                                                  requirements_from_interview)
         snap = store.get_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, "Snapshot not found")
-        return compute_design_blueprint(snap, requirements or {})
+        body = requirements or {}
+        register = (requirements_from_interview(body["interview_answers"])
+                    if isinstance(body.get("interview_answers"), dict) else body)
+        return compute_design_blueprint(snap, register or {})
 
     # -- execution runs (war room) ------------------------------------------
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
