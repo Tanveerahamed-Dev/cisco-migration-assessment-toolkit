@@ -380,6 +380,29 @@ def test_design_blueprint_endpoint_and_requirements_overlay(client):
     assert client.get("/api/snapshots/999999/design").status_code == 404
 
 
+def test_design_overlay_accepts_interview_answers(client):
+    """C1 (audit fix): the requirements loop closes from the engagement INTERVIEW too. POSTing
+    {"interview_answers": {...}} maps the typed answers through the SAME requirements_from_interview
+    bridge the CLI references, then recomputes server-side — so interview output is no longer a dead path
+    (the bridge previously had no production caller). One right-sizing source: Python."""
+    def _status(bp, did):
+        return next((d["status"] for d in bp["decisions"] if d["id"] == did), None)
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    base = client.get(f"/api/snapshots/{snap_id}/design").json()
+    # the defense-in-depth decision is an OPEN question until a data_classification requirement is supplied
+    assert _status(base, "security-defense-in-depth-segmentation") == "needs-requirement"
+    r = client.post(f"/api/snapshots/{snap_id}/design", json={"interview_answers": {
+        "availability_tier": "Gold", "critical_apps": "voice, video", "growth_horizon": "double in 3y",
+        "data_classification": ["restricted", "internal"], "convergence_budget_ms": "200"}})
+    assert r.status_code == 200, r.text
+    bp = r.json()
+    assert all("effective_priority" in d for d in bp["decisions"]), "answers must be applied (re-scored)"
+    # discriminating check: this only flips if data_classification was genuinely EXTRACTED from the
+    # interview answers (a raw {"interview_answers": {...}} register would leave it needs-requirement)
+    assert _status(bp, "security-defense-in-depth-segmentation") == "recommended", \
+        "interview answers must be mapped via requirements_from_interview, not treated as a raw register"
+
+
 def test_cutover_deliverable_content(client):
     """The Cutover Plan DOCX is the one deliverable with no engine-side test — validate it actually
     renders the plan (headings + tables), not just that it's a >1KB zip."""

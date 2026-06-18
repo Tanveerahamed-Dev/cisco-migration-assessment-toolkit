@@ -453,9 +453,9 @@ _NEEDS = [
     ("security-defense-in-depth-segmentation", ["security", "modularity"], ["data_classification"],
      "A flat L2 / single-VRF posture is observable, but the target zoning needs a data-security "
      "classification (which assets must be isolated from which)."),
-    ("qos-class-model-from-app-profile", ["manageability"], ["application_matrix", "critical_apps"],
+    ("qos-class-model-from-app-profile", ["manageability"], ["critical_apps"],
      "Absent/ad-hoc QoS marking is observable, but the target class model needs the application traffic "
-     "matrix (which apps, which delay/loss budgets)."),
+     "profile (which apps, which delay/loss budgets) -- supplied via the critical_apps requirement."),
     # Target-state TOPOLOGY/FABRIC choices: the current collapse is observable, but the choice is
     # scale/growth/traffic-driven (not an observation) -- so design top-down from the WHY, don't assume.
     ("dc-three-tier-vs-collapsed-core", ["scalability", "modularity", "cost"], ["growth_horizon"],
@@ -1014,8 +1014,9 @@ def _wave_plan(snap, cap=_WAVE_CAP):
         "note": (f"Candidate migration waves (<= {cap} switches each). 'coupled-subwave' = a slice of one "
                  "oversized L2-coupled move-group -- these share VLANs, so they are a SEQUENCE and the shared "
                  "VLANs must be extended/coordinated across sub-waves until the group fully migrates. "
-                 "'independent-batch' = unrelated small groups packed together (parallelizable). Full "
-                 "per-wave switch lists are in the workbook."),
+                 "'independent-batch' = unrelated small groups packed together (parallelizable). The full "
+                 "per-wave member switch lists and ordered cutover steps are in the per-wave MOP (one "
+                 "section per candidate wave)."),
     }
 
 
@@ -1175,7 +1176,12 @@ def compute_design_blueprint(snap, requirements=None):
         "n_decisions": len(decisions),
         "n_recommended": sum(1 for d in decisions if d["status"] == "recommended"),
         "n_needs_requirement": sum(1 for d in decisions if d["status"] == "needs-requirement"),
-        "n_critical": sum(1 for d in decisions if d["priority"] == "Critical"),
+        # SSOT: the user-facing "critical" count is Critical AND recommended -- the same population the
+        # headline (_headline) and every surface's decision cards render (HLD §4.2 / deck / explorer /
+        # webapp). Counting ALL Critical (incl. requirement-gated open questions) made the deck/explorer/
+        # webapp show 5 while the HLD headline showed 4 for the same design (a cross-surface drift). The
+        # requirement-gated Critical decisions are surfaced as open questions, not as recommended critical.
+        "n_critical": sum(1 for d in decisions if d["priority"] == "Critical" and d["status"] == "recommended"),
         "by_domain": by_domain,
         "requirements_provided": bool(req),
         "headline": _headline(decisions),

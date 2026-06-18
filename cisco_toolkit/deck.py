@@ -304,12 +304,19 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     header(s, "How it sequences", "Migration waves & readiness")
     mr = snap.get("migration_readiness") or []
     mg = snap.get("move_groups") or []
+    # SSOT: the honest, actionable headline is the SEQUENCED wave count from the design blueprint's
+    # wave_plan -- the raw move-group count is the L2 blast-radius partition (one big coupled domain +
+    # singletons), which read as a wave count overstates parallelism (the audit's coverage-honesty fix).
+    wp = (((snap.get("design_blueprint") or {}).get("target_state") or {}).get("wave_plan")) or {}
     tally = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
     for r in mr:
         v = r.get("readiness")
         if v in tally:
             tally[v] += 1
-    stat(s, 0.7, 2.1, len(mg) or len(mr), "move groups", _NAVY)
+    if wp.get("n_waves"):
+        stat(s, 0.7, 2.1, wp["n_waves"], "candidate waves", _NAVY)
+    else:
+        stat(s, 0.7, 2.1, len(mg) or len(mr), "move groups", _NAVY)
     stat(s, 3.3, 2.1, tally["NOT READY"], "NOT READY", _CRIT)
     stat(s, 5.9, 2.1, tally["CAUTION"], "CAUTION", _MED)
     stat(s, 8.5, 2.1, tally["READY"], "READY", _OK)
@@ -323,9 +330,17 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
              [[(_clean(r.get("group", "")) + "  ", 13, _NAVY, True),
                (f"{r.get('n_fail', 0)} blocking · {r.get('n_warn', 0)} warning check(s)", 12, _INK, False)]])
         y += 0.5
-    text(s, 0.7, 6.7, W - 1.4, 0.4,
-         [("Clear the NOT-READY blockers first, biggest blast radius first — then verify each wave with the "
-           "Cutover Validation plan.", 12, _MUTED, False, True)])
+    if wp.get("n_waves"):
+        text(s, 0.7, 6.5, W - 1.4, 0.7,
+             [(f"{wp.get('n_move_groups', len(mg))} L2-coupled move-group(s) — largest a "
+               f"{wp.get('largest_group', 0)}-switch broadcast domain — sequence into {wp['n_waves']} "
+               f"candidate wave(s) of ≤ {wp.get('wave_cap', 40)} switches. Clear the NOT-READY blockers "
+               "first, biggest blast radius first; verify each wave with the Cutover Validation plan.",
+               12, _MUTED, False, True)])
+    else:
+        text(s, 0.7, 6.7, W - 1.4, 0.4,
+             [("Clear the NOT-READY blockers first, biggest blast radius first — then verify each wave with the "
+               "Cutover Validation plan.", 12, _MUTED, False, True)])
 
     # ------------------------------------------------------- 6b. Target-state design (NEW — design engine)
     # The CCDE-grounded design blueprint: the recommended target-state decisions + the weakest trade-off

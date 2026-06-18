@@ -564,3 +564,36 @@ def test_questionnaire_requirement_tags_are_valid():
     assert tagged, "interview must tag its requirement-bearing questions"
     assert all(v in REQUIREMENTS_KEYS for v in tagged.values()), f"invalid requirement_key tag(s): {tagged}"
     assert {"availability_tier", "critical_apps", "growth_horizon", "data_classification"} <= set(tagged.values())
+
+
+def test_summary_n_critical_counts_recommended_only_single_source():
+    """SSOT: `summary.n_critical` counts Critical decisions that are ALSO `recommended` -- the exact
+    population the headline and every surface (HLD §4.2 table, deck cards, explorer/webapp stat) render.
+    Refutes the dual-encoding drift the audit found: previously n_critical counted ALL Critical (incl.
+    requirement-gated ones), so the deck/explorer/webapp showed 5 while the HLD headline showed 4 for the
+    same design. There must be ONE canonical 'critical design-decision' number."""
+    bp = compute_design_blueprint(_snap())
+    dec = bp["decisions"]
+    rec_crit = [d for d in dec if d["priority"] == "Critical" and d["status"] == "recommended"]
+    needs_crit = [d for d in dec if d["priority"] == "Critical" and d["status"] == "needs-requirement"]
+    # the fixture surfaces a Critical *needs-requirement* decision (defense-in-depth segmentation), so the
+    # recommended-critical population genuinely differs from the all-status total -- this is what makes the
+    # assertion a real refutation rather than a tautology.
+    assert needs_crit, "fixture must surface a Critical needs-requirement decision to prove the distinction"
+    assert bp["summary"]["n_critical"] == len(rec_crit)
+    assert bp["summary"]["n_critical"] != len(rec_crit) + len(needs_crit)  # the OLD buggy all-status total
+    # the headline embeds the SAME number -> no surface can disagree with another
+    assert f"{len(rec_crit)} critical recommended" in bp["summary"]["headline"]
+
+
+def test_no_decision_cites_an_unloadable_requirement_key():
+    """Every `requirements_needed` key a decision cites must be a key some register loader can actually
+    supply (it must live in REQUIREMENTS_KEYS). Refutes the dead requirement_key class the audit found:
+    `application_matrix` was cited by qos-class-model-from-app-profile but absent from REQUIREMENTS_KEYS,
+    so no file/CLI/interview path could supply it -- dead interactive surface."""
+    from cisco_toolkit.design_advisor import REQUIREMENTS_KEYS
+    bp = compute_design_blueprint(_snap())
+    for d in bp["decisions"]:
+        for k in d.get("requirements_needed", []):
+            assert k in REQUIREMENTS_KEYS, \
+                f"decision {d['id']} cites requirement '{k}' absent from REQUIREMENTS_KEYS (unsupply-able)"
