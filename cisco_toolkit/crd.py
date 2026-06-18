@@ -48,7 +48,11 @@ def _evidence_facts(snap: dict) -> dict:
     rn = snap.get("routing_neighbors") or {}
     protos = sorted({p.upper() for host in rn for p, nbrs in (rn.get(host) or {}).items() if nbrs})
     l3f = snap.get("l3_forwarding") or []
-    fhrp_vlans = sorted({str(r.get("vlan")) for r in l3f if (r.get("fhrp") or "").strip()})
+    # Real FHRP only. The parser writes the literal string "none" when no HSRP/VRRP/GLBP is present,
+    # and "none".strip() is truthy — so a bare truthiness test mislabels EVERY gateway VLAN as
+    # FHRP-protected (a false-redundancy claim). Mirror the engine's canonical gate
+    # `(fhrp or "none") != "none"` (analyze.py) so the CRD agrees with the FHRP Consistency sheet.
+    fhrp_vlans = sorted({str(r.get("vlan")) for r in l3f if (r.get("fhrp", "none") or "none") != "none"})
     svc = snap.get("service_map") or {}
     services = [s for s in (svc.get("services") or []) if isinstance(s, dict)]
     mc = svc.get("multicast") or {}
@@ -230,9 +234,13 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     if ev["protos"] or ev["n_l3"]:
         doc.add_heading("4.2 Layer 3 & routing", level=2)
         req_table([
-            ("REQ-T-L3-001", f"Preserve gateway redundancy on the {len(ev['fhrp_vlans'])} "
-                             "FHRP-protected VLAN(s); single-gateway VLANs are remediated, not "
-                             "carried forward.", "<owner>", "<H/M/L>", "<YES/AMEND>"),
+            ("REQ-T-L3-001",
+             (f"Preserve gateway redundancy on the {len(ev['fhrp_vlans'])} FHRP-protected VLAN(s); "
+              "single-gateway VLANs are remediated, not carried forward." if ev["fhrp_vlans"]
+              else f"No first-hop redundancy (HSRP/VRRP/GLBP) was observed on any of the {ev['n_l3']} "
+                   "gateway VLAN(s) — every gateway is single-homed; evaluate introducing FHRP so VLANs "
+                   "are not carried forward without gateway redundancy."),
+             "<owner>", "<H/M/L>", "<YES/AMEND>"),
             ("REQ-T-L3-002", "Maintain the observed routing adjacencies ("
                              + (", ".join(ev["protos"]) or "static/connected only")
                              + ") and their policy through the migration.",

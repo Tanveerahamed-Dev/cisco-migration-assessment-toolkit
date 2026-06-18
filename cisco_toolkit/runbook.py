@@ -333,7 +333,10 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     if gw_rows:
         table(["VLAN", "SVI IP (Confirmed)", "Owner (Confirmed)", "FHRP (Inferred-high)", "L3 risk"],
               gw_rows, widths=[0.8, 1.8, 2.6, 1.5, 1.5])
-    n_no_fhrp = sum(1 for g in gw if not (g["fhrp"] or "").strip())
+    # No real FHRP. The parser writes the literal "none" (truthy) when no HSRP/VRRP/GLBP exists, so a
+    # bare `not fhrp.strip()` counted ZERO single-gateway gateways for an all-"none" fleet — the inverse
+    # of the truth. Mirror the engine's canonical `(fhrp or "none") == "none"` no-FHRP gate.
+    n_no_fhrp = sum(1 for g in gw if (g.get("fhrp", "none") or "none") == "none")
     doc.add_paragraph(
         f"{n_no_fhrp} of {len(gw)} gateways have no FHRP peer in scope — single-gateway exposure. "
         "Any VLAN whose gateway is off-scan is gated as Unknown in §12.")

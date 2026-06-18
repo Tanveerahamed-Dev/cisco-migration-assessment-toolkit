@@ -268,3 +268,21 @@ def test_runbook_endpoint_census_uses_canonical_not_mac_sum(tmp_path):
     assert "Evidenced endpoints: 99" in text          # canonical, labeled as endpoints
     assert "Access-port host MACs:" in text           # the MAC sum, labeled as MACs
     assert "Total endpoints:" not in text             # the old bare mislabel is gone
+
+
+def test_runbook_no_fhrp_count_excludes_none_sentinel(tmp_path):
+    """False-health guard (the 'none'-is-truthy bug class): gateways carry fhrp='none' when no FHRP is
+    configured, and 'none'.strip() is truthy — so the §6 'N of M gateways have no FHRP peer' line
+    counted ZERO single-gateway gateways for an all-'none' fleet, the exact inverse of the truth (every
+    gateway single-homed). The no-FHRP test must treat 'none' as no-FHRP."""
+    snap = _snap()
+    snap["l3_forwarding"] = [
+        {"switch": "sw1", "vlan": "10", "svi_ip": "10.0.10.1", "fhrp": "none"},        # no FHRP
+        {"switch": "sw1", "vlan": "20", "svi_ip": "10.0.20.1", "fhrp": "none"},        # no FHRP
+        {"switch": "sw1", "vlan": "30", "svi_ip": "10.0.30.1", "fhrp": "HSRP active"}, # real FHRP
+    ]
+    out = str(tmp_path / "rb_fhrp.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "2 of 3 gateways have no FHRP peer" in text   # the two 'none' gateways, not hidden
+    assert "0 of 3 gateways have no FHRP peer" not in text
