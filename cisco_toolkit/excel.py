@@ -372,8 +372,11 @@ VLAN_CENSUS_SHEET_NAME = "VLAN Census"
 ENDPOINT_CENSUS_SHEET_NAME = "Endpoint Census"
 
 def write_vlan_census_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """One row per in-use VLAN (has access ports and/or an SVI), aggregated across all
-    devices: where it lives, access-port and endpoint (MAC) counts, and its gateway/SVI."""
+    """One row per access/SVI VLAN -- the subset of the in-use VLANs that have an access port and/or a
+    collected SVI, aggregated across all devices: where it lives, access-port and endpoint (MAC) counts,
+    and its gateway/SVI. NOTE: this is a labelled SUBSET, not the in-use total -- the canonical "VLANs in
+    use" count (executive_brief.scale.n_vlans, from analyze.vlan_inventory) also includes querier-only
+    VLANs whose gateway sits on an uncollected device, which cannot populate a per-VLAN row here."""
     cols = ["VLAN ID", "Name", "# Switches", "Switches", "# Access Ports", "# Endpoints",
             "Gateway Switch(es)", "Gateway IP", "Subnet", "FHRP"]
     if VLAN_CENSUS_SHEET_NAME in wb.sheetnames:
