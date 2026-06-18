@@ -87,7 +87,10 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert "design_blueprint" in snap, "snapshot must publish the canonical design_blueprint"
     _bp = snap["design_blueprint"]
     assert isinstance(_bp.get("decisions"), list) and "tradeoff_scorecard" in _bp and "summary" in _bp
-    assert _bp == compute_design_blueprint(snap), "published design_blueprint must equal the canonical recompute"
+    # SSOT: equals a fresh compute over the snapshot WITH the same requirements register (if one was
+    # supplied via --requirements, it is stored in the snapshot so the blueprint stays reproducible).
+    assert _bp == compute_design_blueprint(snap, snap.get("requirements_register")), \
+        "published design_blueprint must equal the canonical recompute (with the same requirements register)"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"

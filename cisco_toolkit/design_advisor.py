@@ -26,9 +26,15 @@ _SCORE = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1, "Info": 0}
 # device hardening -- kept aligned with the auditor's emitted ids.
 _MGMT_FAIL_IDS = {"vty-hardening", "insecure-snmp", "no-aaa", "telnet-enabled",
                   "weak-user-pw", "weak-enable", "password-encryption"}
-_HARDEN_FAIL_IDS = {"risky-services", "no-banner", "no-logging", "no-ntp"}
+_HARDEN_FAIL_IDS = {"risky-services", "no-banner"}
+# Time-sync + centralised-logging operational baseline: NTP-disciplined, correlated timestamps for
+# troubleshooting and forensic reconstruction across devices -- a distinct design concern from
+# attack-surface hardening (Cisco IOS/NX-OS/IOS-XE hardening guides; RFC 5905 NTP authentication).
+_TIMESYNC_FAIL_IDS = {"no-ntp", "no-logging"}
 
 _LARGE_L2_VLANS = 12  # a flat estate carrying this many VLANs in one (global) VRF is an oversized fault domain
+_L2_SPAN_SWITCHES = 8  # a single user VLAN touching this many switches is an oversized L2 failure (bridging) domain
+_WAVE_CAP = 40  # max switches per candidate migration wave (a maintenance-window-sized batch)
 
 
 # ----------------------------------------------------------------------------- defensive coercers
@@ -103,6 +109,10 @@ def _signals(snap):
     sig["qos_assessable"] = sum(1 for d in qos if d.get("assessable"))
     sig["qos_none"] = sum(1 for d in qos if d.get("assessable") and d.get("mode") == "none")
     sig["qos_none_hosts"] = [d.get("host") for d in qos if d.get("assessable") and d.get("mode") == "none"]
+    # voice / real-time edge ports present but no QoS policy => no bounded low-delay (priority) queue
+    sig["voice_noqos_hosts"] = [d.get("host") for d in qos if d.get("assessable")
+                                and _as_int(d.get("n_voice_if")) > 0 and d.get("mode") == "none"]
+    sig["voice_noqos"] = len(sig["voice_noqos_hosts"])
 
     fail_hosts = {}
     for host, v in _as_dict(snap.get("security")).items():
@@ -118,6 +128,8 @@ def _signals(snap):
             harden.add(host)
     sig["harden_devices"] = len(harden)
     sig["mgmt_fail_ids"] = sorted(fid for fid in _MGMT_FAIL_IDS if fail_hosts.get(fid))
+    sig["timesync_hosts"] = sorted({h for fid in _TIMESYNC_FAIL_IDS for h in fail_hosts.get(fid, set())})
+    sig["timesync_devices"] = len(sig["timesync_hosts"])
 
     sig["vlans"] = _vlan_count(snap)
     vrfs = _as_list(_as_dict(snap.get("segmentation")).get("vrfs"))
@@ -145,6 +157,29 @@ def _signals(snap):
     sig["not_collected"] = _as_int(cc.get("not_collected"))
     sig["inventory"] = _as_int(cc.get("inventory"))
     sig["collected"] = _as_int(cc.get("complete"))
+
+    mg = _as_list(snap.get("move_groups"))
+    sig["move_groups"] = len(mg)
+    sig["move_switches"] = sum(len(_as_list(g.get("switches"))) for g in mg if isinstance(g, dict))
+
+    # per-VLAN L2 failure-domain breadth (canonical: move_groups[].spanning_vlans = [vid, name, nswitches])
+    wide = {}
+    vlan1_spans = False
+    for g in mg:
+        if not isinstance(g, dict):
+            continue
+        vlan1_spans = vlan1_spans or bool(g.get("vlan1_spans"))
+        for entry in _as_list(g.get("spanning_vlans")):
+            try:
+                vid, name, n = entry[0], entry[1], _as_int(entry[2])
+            except (IndexError, TypeError, KeyError):
+                continue
+            if isinstance(vid, int) and vid > 1 and n >= _L2_SPAN_SWITCHES:
+                if vid not in wide or n > wide[vid][1]:
+                    wide[vid] = (name, n)
+    sig["l2_wide_vlans"] = len(wide)
+    sig["l2_vlan1_spans"] = vlan1_spans
+    sig["l2_widest"] = sorted(([vid, nm, n] for vid, (nm, n) in wide.items()), key=lambda t: -t[2])[:5]
     return sig
 
 
@@ -309,7 +344,7 @@ def _d_stp_det(snap, sig):
     return _decision(
         "dc-stp-determinism-edge-protection",
         "; ".join(bits) + " -- L2 control is not deterministic.",
-        sig["stp_legacy"], ["availability", "manageability", "convergence"],
+        sig["stp_legacy"] + (1 if sig["vtp_server"] else 0), ["availability", "manageability", "convergence"],
         ["protocol_health[STP].summary", "protocol_health[VTP].summary"],
         priority="High", driver="Deterministic L2: rapid-PVST/MST, aligned roots, edge protection, VTP off/transparent.")
 
@@ -338,8 +373,72 @@ def _d_mcast(snap, sig):
         priority="High", driver="L2 multicast hygiene: snooping + a querier per active VLAN, and an edge boundary.")
 
 
+def _d_timesync(snap, sig):
+    if sig["timesync_devices"] <= 0:
+        return None
+    return _decision(
+        "mgmt-time-sync-logging-baseline",
+        f"{sig['timesync_devices']} device(s) lack authenticated time sync and/or centralised logging "
+        f"(no-ntp/no-logging) -- without NTP-disciplined, correlated timestamps the fleet cannot be "
+        f"reliably troubleshot or forensically reconstructed across devices.",
+        sig["timesync_devices"], ["manageability", "security"],
+        ["security[host].findings[id in {no-ntp,no-logging}]"],
+        priority="High", driver="Operational baseline: NTP-authenticated time + centralised syslog for correlation/forensics.",
+        devices=sig["timesync_hosts"])
+
+
+def _d_voice_qos(snap, sig):
+    if sig["voice_noqos"] <= 0:
+        return None
+    return _decision(
+        "qos-voice-priority-bounded",
+        f"{sig['voice_noqos']} device(s) carry voice/real-time edge ports but no QoS policy -- real-time "
+        f"traffic gets no low-delay priority queue, and (RFC 4594) an unbounded priority class can starve "
+        f"other traffic; it needs a bounded LLQ with a policer/admission.",
+        sig["voice_noqos"], ["availability", "convergence"],
+        ["qos_audit.per_device[].n_voice_if", "qos_audit.per_device[].mode"],
+        priority="High", driver="Real-time performance: voice needs a bounded priority (LLQ) queue, policed against starvation.",
+        devices=sig["voice_noqos_hosts"])
+
+
+def _d_phased(snap, sig):
+    if sig["move_groups"] <= 0:
+        return None
+    return _decision(
+        "scenario-build-before-break-phased-cutover",
+        f"{sig['move_groups']} migration move-group(s) span {sig['move_switches']} switch(es) -- the "
+        f"cutover must be phased build-before-break (stand the target up in parallel, validate per wave, "
+        f"then cut over and decommission), never a single big-bang change, to preserve rollback.",
+        sig["move_groups"], ["availability", "manageability"],
+        ["move_groups[].switches"],
+        priority="Medium", confidence="Planning",
+        driver="Migration safety: a parallel target + per-wave validation + rollback beats a big-bang cutover.")
+
+
+def _d_l2_faildomain(snap, sig):
+    if sig["l2_wide_vlans"] <= 0 and not sig["l2_vlan1_spans"]:
+        return None
+    lead = ""
+    if sig["l2_widest"]:
+        vid, nm, n = sig["l2_widest"][0]
+        lead = f" widest: VLAN {vid}{(' ' + nm) if nm else ''} across {n} switches;"
+    v1 = " VLAN 1 (the default) spans the fabric;" if sig["l2_vlan1_spans"] else ""
+    return _decision(
+        "dc-bound-layer2-failure-domain",
+        f"{sig['l2_wide_vlans']} user VLAN(s) each span >= {_L2_SPAN_SWITCHES} switches "
+        f"({lead.strip() or 'see spanning_vlans'}{v1}) -- a transparently-bridged VLAN is a single failure "
+        f"domain, so a broadcast storm, STP topology change or flood on any of these reaches every switch "
+        f"and endpoint in its span.",
+        sig["l2_wide_vlans"], ["availability", "scalability", "convergence", "modularity"],
+        ["move_groups[].spanning_vlans", "move_groups[].vlan1_spans"],
+        priority="High",
+        driver="Bound the L2 blast radius: a bridged VLAN is one fault domain -- confine VLAN span, route "
+               "between blocks, isolate any required stretch.")
+
+
 _DETECTORS = [_d_fhrp, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
-              _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast]
+              _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
+              _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain]
 
 
 # ----------------------------------------------------------------------------- requirement-gated decisions
@@ -357,6 +456,19 @@ _NEEDS = [
     ("qos-class-model-from-app-profile", ["manageability"], ["application_matrix", "critical_apps"],
      "Absent/ad-hoc QoS marking is observable, but the target class model needs the application traffic "
      "matrix (which apps, which delay/loss budgets)."),
+    # Target-state TOPOLOGY/FABRIC choices: the current collapse is observable, but the choice is
+    # scale/growth/traffic-driven (not an observation) -- so design top-down from the WHY, don't assume.
+    ("dc-three-tier-vs-collapsed-core", ["scalability", "modularity", "cost"], ["growth_horizon"],
+     "The current core/distribution collapse is observable, but a dedicated core vs a collapsed core is a "
+     "SCALE choice: a dedicated core earns its cost past ~3 distribution blocks, multi-building reach, or "
+     "tighter fault-isolation; collapsed core suits a small, single-site, low-growth footprint. Needs the "
+     "growth horizon + closet/block count to right-size."),
+    ("dc-spine-leaf-evpn-vs-collapsed", ["scalability", "modularity", "load_balancing"],
+     ["growth_horizon", "data_classification"],
+     "Whether the target DC becomes a spine-leaf VXLAN-EVPN fabric or stays collapsed-core + vPC is an "
+     "east-west-scale / multi-tenancy choice, not an observable: spine-leaf earns its complexity with "
+     "east-west growth and segmentation; a small/static footprint should not take on EVPN it does not need. "
+     "Needs the growth horizon + traffic/tenancy profile."),
 ]
 
 
@@ -536,8 +648,486 @@ def _headline(decisions):
     n = len(crit)
     lead = decisions[0]["title"]
     if n:
-        return f"{n} critical target-state design decision(s); leading: {lead}."
+        return f"{n} critical recommended target-state design decision(s); leading: {lead}."
     return f"Leading target-state design decision: {lead}."
+
+
+# ----------------------------------------------------------------- full doctrine catalogue (surfacing)
+def _doctrine_catalog():
+    """The full design KB as a compact reference catalogue grouped by domain. Published in the blueprint
+    so every surface can reason with ALL doctrine -- including the principles the L1-L4 assessment cannot
+    auto-trigger (firewall, BGP, MPLS-TE, IPv6, ...) -- not just the evidence-emitted decisions. Stable
+    order => deterministic."""
+    by_dom = {}
+    for p in design_kb.all_principles():
+        by_dom.setdefault(p.get("domain", "other"), []).append({
+            "id": p.get("id", ""),
+            "title": p.get("title", ""),
+            "priority": p.get("priority", "Medium"),
+            "engine_actionable": bool(p.get("engine_actionable")),
+            "recommended_action": p.get("recommended_action", ""),
+            "citation": p.get("citation", ""),
+        })
+    return {dom: sorted(by_dom[dom], key=lambda x: (PRANK.get(x["priority"], 9), x["id"]))
+            for dom in sorted(by_dom)}
+
+
+# ----------------------------------------------------------------------- requirements register (the WHY)
+REQUIREMENTS_KEYS = ("availability_tier", "critical_apps", "convergence_budget_ms",
+                     "growth_horizon", "constraints", "data_classification", "address_space",
+                     "vlan_zones")
+
+
+def load_requirements(path):
+    """Load a design REQUIREMENTS REGISTER (the WHY) from a JSON file into the recognised keys.
+
+    Accepts a flat dict or a {"requirements": {...}} wrapper; keeps only REQUIREMENTS_KEYS that carry a
+    non-empty value. Returns {} on missing/unreadable/malformed input -- non-fatal, mirroring the engine's
+    coverage-honesty discipline: absence of a requirement stays an explicit open question (surfaced by
+    compute_design_blueprint), never a silent guess.
+    """
+    if not path:
+        return {}
+    import json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if isinstance(_as_dict(raw).get("requirements"), dict):
+        raw = raw["requirements"]
+    raw = _as_dict(raw)
+    reg = {k: raw[k] for k in REQUIREMENTS_KEYS if raw.get(k) not in (None, "", [], {})}
+    if "vlan_zones" in reg:                                          # normalise the explicit VLAN->zone map (or drop if unusable)
+        nz = _norm_vlan_zones(reg["vlan_zones"])
+        if nz:
+            reg["vlan_zones"] = nz
+        else:
+            reg.pop("vlan_zones", None)
+    return reg
+
+
+def requirements_from_interview(answers):
+    """Bridge the engagement interview to the design WHY: normalise a TYPED answers dict (keyed by the
+    requirement keys -- the same keys `requirements_model.fields` / questionnaire `requirement_key` tags
+    expose) into the requirements register, coercing list/int/tier shapes. Unknown keys ignored, empty
+    dropped, non-dict -> {}. It maps the requirement answers the interview captures; it never invents a
+    requirement from a qualitative go/no-go answer. One normalisation path: the result drives
+    compute_design_blueprint exactly like a file/CLI register.
+
+    PUBLIC integration entry point (no internal caller by design): a UI/CLI that captures the interview's
+    requirement answers calls this, then passes the result as `requirements` to compute_design_blueprint
+    (mirrors how COLLECT_PARSE uses load_requirements for the --requirements file path)."""
+    a = _as_dict(answers)
+
+    def _to_list(v):
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return [p.strip() for p in str(v).split(",") if p.strip()]
+
+    out = {}
+    for k in REQUIREMENTS_KEYS:
+        v = a.get(k)
+        if v in (None, "", [], {}):
+            continue
+        if k == "availability_tier":
+            out[k] = str(v).strip().lower()
+        elif k in ("critical_apps", "constraints", "data_classification"):
+            out[k] = _to_list(v)
+        elif k == "convergence_budget_ms":
+            out[k] = _as_int(v) or v
+        elif k == "vlan_zones":
+            nz = _norm_vlan_zones(v)
+            if nz:
+                out[k] = nz
+        else:                                                    # growth_horizon, address_space
+            out[k] = str(v).strip()
+    return out
+
+
+# ---------------------------------------------------------------- candidate target-state architecture
+def _role_counts(snap):
+    roles = {}
+    for r in _as_list(snap.get("health_scores")):
+        role = str(r.get("role") or "").lower() or "unknown"
+        roles[role] = roles.get(role, 0) + 1
+    return roles
+
+
+def _ts_dim(area, current, target, rationale, confidence, drivers=None, requirement_needed=None):
+    d = {"area": area, "current": current, "target": target, "rationale": rationale,
+         "confidence": confidence, "drivers": list(drivers or [])}
+    if requirement_needed:
+        d["requirement_needed"] = requirement_needed
+    return d
+
+
+def _replacement_bom(snap):
+    """Target procurement: assets at/near end-of-support that must be replaced/refreshed, grouped by their
+    CURRENT model. Read straight from lifecycle_risk.per_device (band + model). A supported successor SKU
+    is chosen at detailed design -- not invented here. Supportable assets carry forward."""
+    life = _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
+    replace, refresh = {}, {}
+    for d in life:
+        band = str(d.get("band", "")).lower()
+        model = d.get("model") or "Unknown"
+        if band.startswith("past"):
+            replace[model] = replace.get(model, 0) + 1
+        elif "near" in band:
+            refresh[model] = refresh.get(model, 0) + 1
+    def _rows(m):
+        return sorted(([model, qty] for model, qty in m.items()), key=lambda r: (-r[1], r[0]))
+    return {
+        "replace_now": _rows(replace),
+        "refresh_soon": _rows(refresh),
+        "n_replace": sum(replace.values()),
+        "n_refresh": sum(refresh.values()),
+        "note": "Quantities are the current models at/near end-of-support; a supported successor SKU is "
+                "selected at detailed design (not auto-chosen here). Supportable assets carry forward.",
+    }
+
+
+def _segmentation_plan(snap, req):
+    """Target L3 segmentation intent. The observed VRF/VLAN state is grounded; the zone DEFINITIONS need a
+    data classification -- absent it this stays an open question (zones are never fabricated)."""
+    seg = _as_dict(snap.get("segmentation"))
+    vrfs = _as_list(seg.get("vrfs"))
+    n_vlans = _vlan_count(snap)
+    dc = _as_list(req.get("data_classification")) if req else []
+    plan = {
+        "observed": (f"{n_vlans} VLAN(s) across "
+                     + (f"{len(vrfs)} VRFs -- partially segmented." if len(vrfs) > 1
+                        else "a single global VRF -- L3-unsegmented.")),
+        "principle": "security-defense-in-depth-segmentation",
+    }
+    if dc:
+        plan["status"] = "candidate"
+        plan["target_zones"] = list(dc)
+        plan["target"] = (f"Map VLANs to the {len(dc)} declared zone(s) ({', '.join(map(str, dc))}); enforce "
+                          "inter-zone policy at a firewall/VRF boundary, default-deny between zones (confirm "
+                          "the per-VLAN assignment with the customer).")
+    else:
+        plan["status"] = "needs-requirement"
+        plan["requirement_needed"] = "data_classification"
+        plan["target"] = ("Segment into security zones aligned to a data classification (which assets must be "
+                          "isolated from which); supply data_classification to propose the VLAN->zone map -- "
+                          "zones are not assumed here.")
+    return plan
+
+
+def _vlan_host_counts(snap):
+    counts = {}
+    for _host, ports in _as_dict(snap.get("interfaces")).items():
+        if not isinstance(ports, dict):
+            continue
+        for _p, a in ports.items():
+            if isinstance(a, dict) and (a.get("switchport_mode") or "") == "Access" and str(a.get("vlan") or "").isdigit():
+                vid = int(a["vlan"])
+                counts[vid] = counts.get(vid, 0) + 1
+    return counts
+
+
+def _norm_vlan_zones(v):
+    """Normalise an explicit VLAN->zone map to {int(vid): str(zone)}. Accepts {vid: zone} or {zone: [vids]};
+    drops non-numeric VIDs and malformed entries. Returns {} for anything unusable -- the ONLY gate for
+    zone-aware allocation, so a bad/absent map degrades safely to non-zone-aware (never fabricated)."""
+    if not isinstance(v, dict) or not v:
+        return {}
+    out = {}
+    if any(isinstance(val, (list, tuple)) for val in v.values()):    # {zone: [vids]}
+        for zone, vids in v.items():
+            for vid in (vids if isinstance(vids, (list, tuple)) else [vids]):
+                if str(vid).strip().isdigit():
+                    out[int(vid)] = str(zone)
+    else:                                                            # {vid: zone}
+        for vid, zone in v.items():
+            if str(vid).strip().isdigit():
+                out[int(vid)] = str(zone)
+    return out
+
+
+def _target_vids(snap):
+    counts = _vlan_host_counts(snap)
+    vids = {v for v in counts if v and v != 1}
+    for r in _as_list(snap.get("l3_forwarding")):
+        v = r.get("vlan")
+        if str(v).isdigit() and int(v) != 1:
+            vids.add(int(v))
+    return sorted(vids), counts
+
+
+def _alloc_flat(supernet, vids, counts):
+    """Mode A: a flat /24 per VLAN, sequentially from the supernet (the whole plan summarises to the
+    supernet). Sized from observed access-port counts; oversized (>254) and overflow are reported."""
+    pool = supernet.subnets(new_prefix=24) if supernet.prefixlen <= 24 else iter([supernet])
+    subnets, overflow, oversized = [], 0, []
+    for vid in vids:
+        hosts = counts.get(vid, 0)
+        try:
+            block = next(pool)
+        except StopIteration:
+            overflow += 1
+            continue
+        rec = {"vlan": vid, "hosts": hosts, "subnet": str(block)}
+        if hosts > 254:
+            rec["note"] = "needs >/24 — allocate a larger block manually"
+            oversized.append(vid)
+        subnets.append(rec)
+    return {
+        "status": "candidate", "mode": "flat", "supernet": str(supernet), "subnets": subnets,
+        "n_allocated": len(subnets), "n_overflow": overflow, "oversized_vlans": oversized,
+        "note": "Candidate /24-per-VLAN allocation, each VLAN a contiguous /24 allocated sequentially "
+                "within the supplied supernet, sized from observed access-port counts; confirm growth "
+                "headroom and reconcile with any retained addressing. "
+                + (f"{overflow} VLAN(s) did not fit the supernet (enlarge it). " if overflow else "")
+                + (f"{len(oversized)} VLAN(s) exceed a /24 and need a larger block. " if oversized else ""),
+    }
+
+
+def _alloc_zone_aware(supernet, vids, counts, vlan_zones):
+    """Mode B: one CONTIGUOUS, summarisable block per zone (equal aligned subnets of the supernet via
+    ipaddress -> non-overlapping by construction), per-VLAN /24 within the owning zone's block. VLANs with
+    no mapping go to a residual '(unzoned)' block AND are listed in unmapped_vlans -- never force-fit into
+    a real zone. Each zone summarises to ONE prefix."""
+    import math
+    zones, unmapped = {}, []
+    for vid in vids:
+        z = vlan_zones.get(vid)
+        (zones.setdefault(z, []).append(vid) if z is not None else unmapped.append(vid))
+    order = sorted(zones)
+    if unmapped:
+        zones["(unzoned)"] = sorted(unmapped)
+        order = order + ["(unzoned)"]
+    real_zones = [z for z in order if z != "(unzoned)"]
+    n_blocks = max(1, len(order))
+    block_prefix = supernet.prefixlen + (math.ceil(math.log2(n_blocks)) if n_blocks > 1 else 0)
+    base = {"status": "candidate", "mode": "zone-aware", "supernet": str(supernet),
+            "n_zones": len(real_zones), "unmapped_vlans": sorted(unmapped)}
+    if block_prefix > 24:                                            # supernet too small for a /24-capable block per zone
+        return {**base, "subnets": [], "zones": [], "n_allocated": 0, "n_overflow": len(vids),
+                "oversized_vlans": [],
+                "note": f"address_space {supernet} too small for {n_blocks} zone block(s) -- enlarge it."}
+    blocks = list(supernet.subnets(new_prefix=block_prefix))
+    subnets, zone_recs, overflow, oversized = [], [], 0, []
+    for i, zname in enumerate(order):
+        if i >= len(blocks):
+            overflow += len(zones[zname])
+            continue
+        zblock = blocks[i]
+        zone_recs.append({"zone": zname, "summary": str(zblock), "n_vlans": len(zones[zname])})
+        pool = zblock.subnets(new_prefix=24) if zblock.prefixlen <= 24 else iter([zblock])
+        for vid in zones[zname]:
+            hosts = counts.get(vid, 0)
+            try:
+                sub = next(pool)
+            except StopIteration:
+                overflow += 1
+                continue
+            rec = {"vlan": vid, "hosts": hosts, "subnet": str(sub), "zone": zname}
+            if hosts > 254:
+                rec["note"] = "needs >/24 — allocate a larger block manually"
+                oversized.append(vid)
+            subnets.append(rec)
+    return {**base, "subnets": subnets, "zones": zone_recs, "n_allocated": len(subnets),
+            "n_overflow": overflow, "oversized_vlans": oversized,
+            "note": "Zone-aware candidate: each zone is one contiguous, summarisable block (one prefix), "
+                    "per-VLAN /24 within it. Unmapped VLANs sit in a residual '(unzoned)' block -- assign "
+                    "them explicitly. Sized from observed access-port counts; confirm growth headroom."
+                    + (f" {overflow} VLAN(s) overflowed the supernet (enlarge it)." if overflow else "")}
+
+
+def _addressing_plan(snap, req):
+    """Net-new IP plan. REQUIREMENT-GATED on address_space -- absent/invalid it returns needs-requirement
+    and fabricates NO subnets. Supplied + an explicit vlan_zones map -> ZONE-AWARE allocation (one
+    summarisable block per zone); supplied alone -> flat /24-per-VLAN (Mode A). data_classification NAMES
+    alone NEVER infer a VLAN->zone map (that would fabricate a security assignment) -- they only set a
+    caveat pointing to vlan_zones."""
+    space = (req or {}).get("address_space")
+    vids, counts = _target_vids(snap)
+    if not space:
+        return {"status": "needs-requirement", "requirement_needed": "address_space",
+                "observed_vlans": len(vids),
+                "note": "Supply an address_space (supernet, e.g. 10.0.0.0/16) to allocate target subnets; "
+                        "a net-new IP plan is not fabricated without one."}
+    import ipaddress
+    try:
+        supernet = ipaddress.ip_network(str(space).split(",")[0].strip(), strict=False)
+    except ValueError:
+        return {"status": "needs-requirement", "requirement_needed": "address_space",
+                "note": f"address_space '{space}' is not a valid network; supply e.g. 10.0.0.0/16."}
+    vlan_zones = _norm_vlan_zones((req or {}).get("vlan_zones"))
+    if vlan_zones:
+        plan = _alloc_zone_aware(supernet, vids, counts, vlan_zones)
+    else:
+        plan = _alloc_flat(supernet, vids, counts)
+        if (req or {}).get("data_classification"):
+            plan["zone_caveat"] = ("zone blocks need an explicit VLAN->zone map (supply vlan_zones); zones are "
+                                   "NOT inferred from VLAN IDs or data_classification names")
+    # Reconcile against the canonical VLAN census (vlan_inventory, the count §5.2 prints): disclose the
+    # delta so 202-vs-N is never a silent drop. Only VLANs with an observed access port or L3 SVI can be
+    # sized; VLAN 1 + querier-only VLANs whose SVI sits on an uncollected core have nothing to size from.
+    census = _vlan_count(snap)
+    plan["n_census_vlans"] = census
+    plan["n_unsizable"] = max(0, census - len(vids))
+    if plan["n_unsizable"]:
+        plan["note"] += (f" Sized for the {len(vids)} VLAN(s) with an observed access port or L3 SVI; "
+                         f"{plan['n_unsizable']} further census VLAN(s) (VLAN 1 + querier-only VLANs whose SVI "
+                         f"is on an uncollected core) carry no auto-sized subnet -- confirm at detailed design.")
+    return plan
+
+
+def _wave_plan(snap, cap=_WAVE_CAP):
+    """Turn raw move-groups (L2-coupling connected-components) into realistic migration WAVES. An oversized
+    coupled group is sliced into <=cap name-clustered SEQUENCED sub-waves (they share VLANs, so the shared
+    VLANs must be coordinated across sub-waves); independent small groups are bin-packed into combined
+    waves (parallelizable). Additive -- compute_move_groups (the coupling) is unchanged; every switch is
+    placed exactly once."""
+    groups = [g for g in _as_list(snap.get("move_groups"))
+              if isinstance(g, dict) and _as_list(g.get("switches"))]
+    big_subwaves, small = [], []
+    n_subdivided = 0
+    for gi, g in enumerate(groups):
+        sw = sorted(_as_list(g.get("switches")))                     # alpha sort clusters by site/building/rack
+        if len(sw) > cap:
+            n_subdivided += 1
+            for i in range(0, len(sw), cap):
+                big_subwaves.append({"switches": sw[i:i + cap], "kind": "coupled-subwave", "source_groups": [gi]})
+        else:
+            small.append((gi, sw))
+    packed, cur, cur_n = [], [], 0                                   # bin-pack independent small groups
+    for gi, sw in sorted(small, key=lambda t: (-len(t[1]), t[1][0])):
+        if cur and cur_n + len(sw) > cap:
+            packed.append(cur); cur, cur_n = [], 0
+        cur.append((gi, sw)); cur_n += len(sw)
+    if cur:
+        packed.append(cur)
+    small_waves = [{"switches": [h for _, s in grp for h in s], "kind": "independent-batch",
+                    "source_groups": [gi for gi, _ in grp]} for grp in packed]
+    waves = big_subwaves + small_waves
+    for n, w in enumerate(waves, 1):
+        w["wave"] = n
+        w["n_switches"] = len(w["switches"])
+    largest = max((len(_as_list(g.get("switches"))) for g in groups), default=0)
+    return {
+        "waves": waves, "n_waves": len(waves), "wave_cap": cap,
+        "n_move_groups": len(groups), "largest_group": largest, "n_subdivided_groups": n_subdivided,
+        "note": (f"Candidate migration waves (<= {cap} switches each). 'coupled-subwave' = a slice of one "
+                 "oversized L2-coupled move-group -- these share VLANs, so they are a SEQUENCE and the shared "
+                 "VLANs must be extended/coordinated across sub-waves until the group fully migrates. "
+                 "'independent-batch' = unrelated small groups packed together (parallelizable). Full "
+                 "per-wave switch lists are in the workbook."),
+    }
+
+
+def compute_target_state(snap, requirements=None):
+    """A CANDIDATE target-state architecture synthesised from current-state evidence + the requirements
+    register + doctrine. Dimension-by-dimension (current -> target -> rationale -> confidence), each
+    traceable to a principle; the tier-model CHOICE is requirement-gated on growth (never asserted from
+    absent evidence), and uncollected devices stay an explicit unknown. This is architecture-level only --
+    a full IP / VLAN-VRF addressing plan and BoM are the next design layer, deliberately not fabricated.
+    """
+    snap = _as_dict(snap)
+    req = _as_dict(requirements) if requirements else {}
+    sig = _signals(snap)
+    roles = _role_counts(snap)
+    wp = _wave_plan(snap)
+    dims = []
+
+    # 1. Topology / tier model -- a scale/growth-driven CHOICE -> requirement-gated on growth
+    scale_note = (f"{sig['inventory']} inventoried / {sig['collected']} collected device(s); "
+                  f"roles {', '.join(f'{k}:{v}' for k, v in sorted(roles.items())) or 'n/a'}; "
+                  f"{sig['l2_wide_vlans']} VLAN(s) span >= {_L2_SPAN_SWITCHES} switches; "
+                  f"{'single global VRF' if sig['single_vrf'] else 'multiple VRFs'}.")
+    if not req.get("growth_horizon"):
+        dims.append(_ts_dim(
+            "Topology / tier model", scale_note,
+            "(needs growth horizon) -- collapsed-core vs 3-tier vs spine-leaf is a scale/growth CHOICE",
+            "Collapsed core suits a small, single-site, low-growth footprint; a dedicated core / 3-tier "
+            "earns its cost past ~3 distribution blocks or multi-building growth; spine-leaf (VXLAN-EVPN) "
+            "for east-west DC scale. The L1-L4 evidence shows current scale, not the growth intent.",
+            "Requirement-needed",
+            drivers=["dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed"],
+            requirement_needed="growth_horizon"))
+    else:
+        big = (sig["inventory"] >= 60 or sig["l2_wide_vlans"] >= 8
+               or (roles.get("core", 0) + roles.get("distribution", 0)) >= 6)
+        target = (("3-tier hierarchy (core / distribution / access) with routed access -- distribution/core "
+                   "on L3, access VLANs bounded per switch; add a spine-leaf VXLAN-EVPN block for the data "
+                   "centre if east-west growth warrants it") if big else
+                  ("collapsed core + multi-chassis LAG (vPC/SVL) -- distribution doubles as core for a small/"
+                   "static footprint, fully meshed with STP root + FHRP co-located there"))
+        dims.append(_ts_dim(
+            "Topology / tier model", scale_note, target,
+            f"Right-sized to the stated growth ('{str(req.get('growth_horizon'))[:60]}') and observed scale; "
+            "bounds L2 failure domains and scales by adding blocks.",
+            "Candidate", drivers=["dc-three-tier-vs-collapsed-core", "dc-bound-layer2-failure-domain"]))
+
+    # 2. Layer-2 / Layer-3 boundary & failure domains -- strong evidence
+    if sig["l2_wide_vlans"] or sig["vlans"] >= _LARGE_L2_VLANS or sig["single_vrf"]:
+        dims.append(_ts_dim(
+            "Layer-2 / Layer-3 boundary",
+            f"{sig['l2_wide_vlans']} oversized bridging domain(s); {sig['vlans']} VLAN(s) in "
+            f"{'one global VRF' if sig['single_vrf'] else 'multiple VRFs'}.",
+            "Push the L3 boundary toward the edge (routed access, or a per-block distribution SVI); confine "
+            "each VLAN to one access switch/block; segment into VRFs/zones so a broadcast or STP event stays local.",
+            "A transparently-bridged VLAN is one failure domain; bounding its span limits blast radius and "
+            "improves convergence and scale.",
+            "Recommended", drivers=["dc-bound-layer2-failure-domain", "dc-restrict-vlan-span-routed-access"]))
+
+    # 3. Gateway / first-hop resilience -- strong evidence
+    if sig["no_fhrp"]:
+        dims.append(_ts_dim(
+            "Gateway / first-hop resilience",
+            f"{sig['no_fhrp']} gateway VLAN(s) single-homed, no FHRP.",
+            "Dual gateways with FHRP (HSRP/VRRP) or an anycast gateway on an MLAG pair, so each VLAN survives "
+            "loss of its distribution switch; co-locate the STP root with the active gateway.",
+            "First-hop redundancy is structural HA; a single gateway is a per-VLAN single point of failure.",
+            "Recommended", drivers=["fhrp-first-hop-gateway-redundancy", "stp-root-fhrp-active-colocation"]))
+
+    # 4. Hardware lifecycle disposition -- strong evidence
+    if sig["eol"] or sig["near"] or sig["not_collected"]:
+        retain = max(0, sig["collected"] - sig["eol"])
+        dims.append(_ts_dim(
+            "Hardware lifecycle disposition",
+            f"{sig['eol']} past-LDoS, {sig['near']} approaching-LDoS, {sig['not_collected']} not-collected "
+            f"of {sig['inventory']} inventoried.",
+            f"Replace the {sig['eol']} past-LDoS asset(s); plan refresh for the {sig['near']} approaching LDoS; "
+            f"carry ~{retain} supportable asset(s) forward; collect the {sig['not_collected']} un-assessed "
+            f"device(s) before finalising -- do not design resilience on unseen gear.",
+            "The target fabric must not inherit end-of-support hardware; coverage gaps are unknowns, not health.",
+            "Recommended", drivers=["lifecycle-eol-out-of-critical-roles", "fhrp-not-observed-is-not-healthy"]))
+
+    # 5. Migration approach -- planning, from move-groups + the derived wave plan
+    if sig["move_groups"]:
+        dims.append(_ts_dim(
+            "Migration approach",
+            f"{wp['n_move_groups']} move-group(s) (largest is a {wp['largest_group']}-switch L2-coupled group) "
+            f"across {sig['move_switches']} switch(es).",
+            f"Phased build-before-break in {wp['n_waves']} candidate wave(s) of <= {wp['wave_cap']} switches "
+            f"({wp['n_subdivided_groups']} oversized group(s) sliced into sequenced sub-waves, the rest "
+            "batched); stand the target up in parallel, validate (NRFU) per wave, cut over, then decommission "
+            "-- preserving rollback at each wave.",
+            "A parallel target with right-sized, per-wave-validated waves beats both a big-bang cutover and "
+            "an unmanageable single 251-switch 'wave'.",
+            "Planning", drivers=["scenario-build-before-break-phased-cutover"]))
+
+    n_gated = sum(1 for d in dims if d.get("requirement_needed"))
+    headline = (f"Candidate target-state across {len(dims)} dimension(s)"
+                + (f"; {n_gated} await a requirement" if n_gated else "")
+                + " -- a proposal to validate, not a final design.")
+    return {
+        "dimensions": dims,
+        "replacement_bom": _replacement_bom(snap),
+        "segmentation_plan": _segmentation_plan(snap, req),
+        "addressing_plan": _addressing_plan(snap, req),
+        "wave_plan": wp,
+        "coverage": _coverage(snap),
+        "summary": {"n_dimensions": len(dims), "n_requirement_gated": n_gated, "headline": headline},
+        "scope_note": "Architecture + LLD detail (tier model, L2/L3 boundary, resilience, lifecycle "
+                      "disposition + replacement BoM, target segmentation, net-new IP plan, migration). "
+                      "The IP plan and zone map are requirement-gated (address_space / data_classification) "
+                      "so nothing is fabricated; supply those to firm them up.",
+    }
 
 
 # ----------------------------------------------------------------------------- public entrypoint
@@ -546,7 +1136,8 @@ def compute_design_blueprint(snap, requirements=None):
 
     Reads only already-computed evidence; every decision is evidence-gated and cites a `design_kb`
     principle. `requirements` (optional dict: availability_tier, critical_apps, convergence_budget_ms,
-    growth_horizon, constraints, data_classification) right-sizes the decisions when supplied.
+    growth_horizon, constraints, data_classification, address_space, vlan_zones) right-sizes the decisions
+    and the target-state (IP plan / zones) when supplied.
     """
     snap = _as_dict(snap)
     req = _as_dict(requirements) if requirements else None
@@ -597,4 +1188,6 @@ def compute_design_blueprint(snap, requirements=None):
         "axes": design_kb.TRADEOFF_AXES,
         "summary": summary,
         "coverage": _coverage(snap),
+        "doctrine": _doctrine_catalog(),
+        "target_state": compute_target_state(snap, req),
     }

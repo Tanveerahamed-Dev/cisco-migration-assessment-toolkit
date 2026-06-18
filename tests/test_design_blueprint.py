@@ -151,3 +151,416 @@ def test_empty_snapshot_is_safe():
     assert isinstance(bp["decisions"], list)
     assert bp["summary"]["n_decisions"] == len(bp["decisions"])
     assert len(bp["tradeoff_scorecard"]) == len(design_kb.TRADEOFF_AXES)
+
+
+# --------------------------------------------------------------------------- newly-wired detectors
+def test_timesync_logging_detector_evidence_gated():
+    """no-ntp / no-logging => an operational time-sync + centralised-logging baseline decision,
+    distinct from attack-surface hardening; absent the finding the decision must disappear."""
+    snap = _snap(security={
+        "d0": {"findings": [{"id": "no-ntp", "status": "fail"}]},
+        "d1": {"findings": [{"id": "no-logging", "status": "fail"}, {"id": "no-ntp", "status": "fail"}]},
+    })
+    by = {d["id"]: d for d in compute_design_blueprint(snap)["decisions"]}
+    assert "mgmt-time-sync-logging-baseline" in by
+    d = by["mgmt-time-sync-logging-baseline"]
+    assert d["evidence"]["count"] == 2 and {"d0", "d1"} == set(d["evidence"]["devices"])
+    # REFUTATION: NTP+logging healthy everywhere -> no time-sync decision.
+    healthy = compute_design_blueprint(_snap(security={
+        "d0": {"findings": [{"id": "no-ntp", "status": "pass"}, {"id": "no-logging", "status": "pass"}]}}))
+    assert "mgmt-time-sync-logging-baseline" not in {d["id"] for d in healthy["decisions"]}
+
+
+def test_voice_qos_detector_evidence_gated():
+    """A device with voice/real-time edge ports but no QoS policy => no bounded priority queue
+    (RFC 4594). Gated on n_voice_if>0 AND mode 'none'; otherwise silent (coverage honesty)."""
+    snap = _snap(qos_audit={"per_device": [
+        {"host": "d0", "assessable": True, "mode": "none", "n_voice_if": 4},
+        {"host": "d1", "assessable": True, "mode": "none", "n_voice_if": 0},   # no voice -> not voice-gated
+        {"host": "d2", "assessable": True, "mode": "MQC", "n_voice_if": 8},    # has QoS -> bounded
+    ]})
+    by = {d["id"]: d for d in compute_design_blueprint(snap)["decisions"]}
+    assert "qos-voice-priority-bounded" in by
+    assert by["qos-voice-priority-bounded"]["evidence"]["count"] == 1            # only d0
+    assert by["qos-voice-priority-bounded"]["evidence"]["devices"] == ["d0"]
+    # REFUTATION: no voice edge ports anywhere -> no voice-priority decision (even with mode none).
+    novoice = compute_design_blueprint(_snap(qos_audit={"per_device": [
+        {"host": "d0", "assessable": True, "mode": "none", "n_voice_if": 0}]}))
+    assert "qos-voice-priority-bounded" not in {d["id"] for d in novoice["decisions"]}
+
+
+def test_phased_cutover_detector_evidence_gated():
+    """Computed move-groups => the cutover must be phased build-before-break, not big-bang;
+    no move-groups (e.g. nothing collected) => no planning claim."""
+    snap = _snap(move_groups=[{"switches": ["d0", "d1"]}, {"switches": ["d2"]}])
+    by = {d["id"]: d for d in compute_design_blueprint(snap)["decisions"]}
+    assert "scenario-build-before-break-phased-cutover" in by
+    assert by["scenario-build-before-break-phased-cutover"]["evidence"]["count"] == 2
+    # REFUTATION: no move-groups -> no phased-cutover decision.
+    nomg = compute_design_blueprint(_snap(move_groups=[]))
+    assert "scenario-build-before-break-phased-cutover" not in {d["id"] for d in nomg["decisions"]}
+
+
+def test_l2_failure_domain_detector_evidence_gated():
+    """A user VLAN spanning many switches => an oversized Layer-2 failure domain (a bridged VLAN is a
+    single failure domain -- ipSpace/Pepelnjak; Cisco CCDA). Read from the engine's canonical
+    move_groups[].spanning_vlans; remove the wide span and the decision disappears."""
+    snap = _snap(move_groups=[{"switches": ["a", "b", "c"],
+                               "spanning_vlans": [[124, "BC_ENG", 11], [200, "OOB", 4]],
+                               "vlan1_spans": True}])
+    by = {d["id"]: d for d in compute_design_blueprint(snap)["decisions"]}
+    assert "dc-bound-layer2-failure-domain" in by
+    d = by["dc-bound-layer2-failure-domain"]
+    assert d["evidence"]["count"] == 1            # only VLAN 124 (11>=8); VLAN 200 (4) is below threshold
+    assert "124" in d["evidence"]["summary"]
+    # REFUTATION: no wide span and no VLAN-1 spread -> no failure-domain decision
+    narrow = compute_design_blueprint(_snap(move_groups=[
+        {"switches": ["a"], "spanning_vlans": [[50, "X", 3]], "vlan1_spans": False}]))
+    assert "dc-bound-layer2-failure-domain" not in {x["id"] for x in narrow["decisions"]}
+
+
+def test_public_sourced_principles_present_and_honest():
+    """The two public-sourced additions (B) exist, carry a citation, and declare actionability honestly:
+    the L2-failure-domain principle is wired (engine_actionable); the minimize-complexity doctrine is not."""
+    fd = design_kb.by_id("dc-bound-layer2-failure-domain")
+    cx = design_kb.by_id("methodology-minimize-accidental-complexity")
+    assert fd and cx, "both public-sourced principles must exist in the KB"
+    assert fd.get("citation") and cx.get("citation"), "every principle must cite its source"
+    assert fd.get("engine_actionable") is True       # emitted by _d_l2_faildomain
+    assert cx.get("engine_actionable") is False       # doctrine; no clean auto-trigger -> honest
+
+
+def test_firewall_design_principles_present_and_honest():
+    """Firewall-in-different-designs doctrine (perimeter/DMZ topology, DC east-west microsegmentation,
+    stateful flow-symmetry/insertion) is in the KB, cited, carries a recommended action, and is honestly
+    NON-actionable -- the L1-L4 switch/router assessment does not collect firewall state, so these inform
+    the HLD/design narrative and the design chat, not auto-emitted decisions."""
+    fw = ["security-firewall-perimeter-dmz-topology",
+          "security-firewall-dc-eastwest-microsegmentation",
+          "security-firewall-flow-symmetry-insertion"]
+    for pid in fw:
+        p = design_kb.by_id(pid)
+        assert p, f"missing firewall principle {pid}"
+        assert p.get("citation"), f"{pid} must cite its source"
+        assert p.get("recommended_action"), f"{pid} must carry a recommended action"
+        assert p.get("engine_actionable") is False, f"{pid} honest non-actionable (no firewall evidence collected)"
+    assert set(fw) <= {p["id"] for p in design_kb.by_domain("security")}, "firewall principles are security-domain"
+
+
+def _maximal_snap():
+    """A snapshot seeded to trigger EVERY evidence-gated detector at once (no requirements supplied,
+    so the requirement-gated open questions also surface)."""
+    return _snap(
+        security={
+            "d0": {"findings": [{"id": "vty-hardening", "status": "fail"},
+                                {"id": "insecure-snmp", "status": "fail"},
+                                {"id": "no-aaa", "status": "fail"},
+                                {"id": "no-ntp", "status": "fail"},
+                                {"id": "risky-services", "status": "fail"}]},
+            "d1": {"findings": [{"id": "no-logging", "status": "fail"},
+                                {"id": "no-banner", "status": "fail"}]},
+        },
+        qos_audit={"per_device": [
+            {"host": "d0", "assessable": True, "mode": "none", "n_voice_if": 4},
+            {"host": "d1", "assessable": True, "mode": "none", "n_voice_if": 0},
+        ]},
+        move_groups=[{"switches": ["d0", "d1"], "spanning_vlans": [[124, "BC_ENG", 9]],
+                      "vlan1_spans": True}, {"switches": ["d2"]}],
+        multicast_intelligence={"querier": {"n_querier_vlans": 5, "gap_vlans": [148, 611]},
+                                "risks": [{"kind": "no-querier"}]},
+        l3_forwarding=[{"switch": "dist1", "vlan": str(v), "svi_ip": f"10.0.{v}.1",
+                        "fhrp": "none", "risk": "no-FHRP"} for v in range(10, 32)],
+        interfaces={f"acc{v}": {f"Gi1/0/{v}": {"switchport_mode": "Access", "vlan": str(v)}}
+                    for v in range(10, 32)},
+        segmentation={"vrfs": [{"vrf": "(global)", "gateway_count": 22}]},
+    )
+
+
+def test_dc_fabric_choices_are_requirement_gated():
+    """Collapsed-core vs three-tier, and spine-leaf/EVPN vs collapsed-core, are scale/growth/east-west
+    CHOICES the engine cannot OBSERVE (only a requirements register can decide). So they surface as open
+    design questions, and flip to recommended once a growth horizon is supplied -- design top-down from
+    the WHY, never assume the fabric. (Grounded in Cisco campus/DC CVD + leaf-spine design guidance.)"""
+    base = compute_design_blueprint(_snap())
+    open_ids = {d["id"] for d in base["decisions"] if d["status"] == "needs-requirement"}
+    assert {"dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed"} <= open_ids
+    bp = compute_design_blueprint(_snap(), requirements={"growth_horizon": "3y +60% east-west"})
+    by = {d["id"]: d for d in bp["decisions"]}
+    for pid in ("dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed"):
+        assert by[pid]["status"] == "recommended", f"{pid} must flip to recommended once growth is given"
+    # re-promoted: both are once again engine_actionable principles (and now honestly emitted)
+    ea = {p["id"] for p in design_kb.engine_actionable()}
+    assert {"dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed"} <= ea
+
+
+def test_every_engine_actionable_principle_is_emitted():
+    """COVERAGE-HONESTY LOCK: `engine_actionable` must mean the advisor actually emits a decision for
+    that principle's trigger. If a principle claims engine-actionability the advisor can't deliver
+    (or a new detector goes un-wired), this fails -- the design brain may not overstate its coverage."""
+    bp = compute_design_blueprint(_maximal_snap())            # no requirements -> needs-requirement decisions too
+    emitted = {d["id"] for d in bp["decisions"]}
+    ea = {p["id"] for p in design_kb.engine_actionable()}
+    missing = ea - emitted
+    assert not missing, f"engine_actionable principles never emitted by the advisor: {sorted(missing)}"
+    # and conversely every emitted, evidence-grounded decision must be a known KB principle
+    assert emitted <= _KB_IDS
+
+
+# ----------------------------------------------------------- A: requirements register input (the WHY)
+def test_load_requirements_parses_register_and_is_defensive(tmp_path):
+    """`load_requirements` reads a design requirements register (JSON) into the recognised keys, accepts
+    a {"requirements": {...}} wrapper, drops unknown/empty keys, and degrades to {} on missing/malformed
+    input (non-fatal -- the design then surfaces the open questions rather than assuming)."""
+    import json
+    from cisco_toolkit.design_advisor import load_requirements, REQUIREMENTS_KEYS
+    assert set(REQUIREMENTS_KEYS) == {"availability_tier", "critical_apps", "convergence_budget_ms",
+                                      "growth_horizon", "constraints", "data_classification", "address_space",
+                                      "vlan_zones"}
+    p = tmp_path / "req.json"
+    p.write_text(json.dumps({"availability_tier": "gold", "critical_apps": ["voice"],
+                             "growth_horizon": "3y +50%", "junk": "ignored", "constraints": []}), encoding="utf-8")
+    req = load_requirements(str(p))
+    assert req["availability_tier"] == "gold" and req["critical_apps"] == ["voice"]
+    assert "junk" not in req and "constraints" not in req            # unknown + empty dropped
+    wrap = tmp_path / "w.json"
+    wrap.write_text(json.dumps({"requirements": {"availability_tier": "silver"}}), encoding="utf-8")
+    assert load_requirements(str(wrap)) == {"availability_tier": "silver"}
+    assert load_requirements(None) == {}                              # defensive
+    assert load_requirements(str(tmp_path / "nope.json")) == {}
+    bad = tmp_path / "bad.json"; bad.write_text("{not json", encoding="utf-8")
+    assert load_requirements(str(bad)) == {}
+
+
+def test_requirements_register_closes_the_loop():
+    """The whole point of A: a supplied register right-sizes the blueprint -- effective_priority on every
+    decision, and the growth-gated DC-fabric choices flip from open-question to recommended."""
+    snap = _snap()
+    base = compute_design_blueprint(snap)
+    assert not any("effective_priority" in d for d in base["decisions"])   # no register -> no right-sizing
+    bp = compute_design_blueprint(snap, {"growth_horizon": "3y +60%", "availability_tier": "gold"})
+    assert all("effective_priority" in d for d in bp["decisions"])
+    by = {d["id"]: d for d in bp["decisions"]}
+    assert by["dc-three-tier-vs-collapsed-core"]["status"] == "recommended"
+    assert bp["requirements_model"]["provided"] is True
+
+
+# ------------------------------------------------------- B: full doctrine surfaced (not just decisions)
+def test_blueprint_carries_full_doctrine_catalogue():
+    """B: the blueprint publishes the FULL design doctrine grouped by domain -- so every surface can
+    reason with all principles, not only the ~23 the collected evidence happens to trigger. Each entry
+    carries a citation + recommended action + its honest engine_actionable flag."""
+    bp = compute_design_blueprint(_snap())
+    doc = bp.get("doctrine")
+    assert isinstance(doc, dict) and doc, "blueprint must carry a doctrine catalogue"
+    flat = [p for items in doc.values() for p in items]
+    assert len(flat) == len(design_kb.all_principles()), "doctrine must surface EVERY KB principle"
+    for p in flat:
+        assert p.get("title") and p.get("citation") and "engine_actionable" in p
+    # the firewall doctrine (non-actionable -> never a decision) is still surfaced as reference doctrine
+    titles = {p["title"] for p in flat}
+    assert any("screened-subnet" in t or "DMZ" in t for t in titles), "firewall doctrine must be surfaced"
+    # determinism (doctrine is a stable projection of the KB)
+    import json
+    assert json.dumps(compute_design_blueprint(_snap()).get("doctrine"), sort_keys=True) == json.dumps(doc, sort_keys=True)
+
+
+# ----------------------------------------------- C: generated candidate target-state architecture
+def test_target_state_is_evidence_grounded_and_requirement_gated():
+    """C: the blueprint proposes a CANDIDATE target-state architecture, dimension by dimension, each
+    tracing to evidence + a principle. The tier-model dimension is requirement-gated on growth (honest:
+    a scale-driven CHOICE the L1-L4 evidence can't settle); supplying growth resolves it to a concrete
+    recommendation. Evidence-backed dimensions (resilience/lifecycle/migration) are stated outright."""
+    snap = _snap(move_groups=[{"switches": ["a", "b"], "spanning_vlans": [[124, "X", 9]], "vlan1_spans": True}])
+    ts = compute_design_blueprint(snap)["target_state"]
+    assert ts and isinstance(ts.get("dimensions"), list) and ts["dimensions"]
+    areas = {d["area"]: d for d in ts["dimensions"]}
+    assert "Topology / tier model" in areas
+    assert areas["Topology / tier model"].get("requirement_needed") == "growth_horizon"   # gated w/o growth
+    assert areas["Topology / tier model"]["confidence"] == "Requirement-needed"
+    for d in ts["dimensions"]:                                                              # every dim is traceable
+        assert d.get("area") and d.get("target") and d.get("rationale") and d.get("confidence")
+    assert any("FHRP" in (d.get("current", "") + d.get("target", "")) for d in ts["dimensions"])  # no-FHRP evidence
+    assert any("phase" in d.get("target", "").lower() for d in ts["dimensions"])           # migration waves
+    # REFUTATION / requirement resolution: supply growth -> tier model resolves to a concrete target
+    ts2 = compute_design_blueprint(snap, {"growth_horizon": "3y +50%"})["target_state"]
+    tier2 = {d["area"]: d for d in ts2["dimensions"]}["Topology / tier model"]
+    assert not tier2.get("requirement_needed") and tier2.get("target")
+    assert tier2["confidence"] != "Requirement-needed"
+    # coverage honesty: uncollected devices are surfaced, never assumed designed
+    assert ts.get("coverage")
+
+
+def test_target_state_replacement_bom_and_segmentation_plan():
+    """C next-layer: the target-state carries a REPLACEMENT BoM (past/near-LDoS by current model, grounded
+    in lifecycle_risk -- a successor SKU is chosen at detailed design, not invented) and a segmentation
+    plan (observed VRF/VLAN state + a zone map that is REQUIREMENT-GATED on data_classification -- zones
+    are never fabricated)."""
+    snap = _snap(lifecycle_risk={"per_device": [
+        {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "b", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "c", "band": "Near-LDoS", "model": "N5K-C56128P"},
+        {"host": "d", "band": "Active", "model": "C9300"}]})
+    ts = compute_design_blueprint(snap)["target_state"]
+    bom = ts["replacement_bom"]
+    assert bom["n_replace"] == 2 and ["WS-C4948E", 2] in bom["replace_now"]
+    assert bom["n_refresh"] == 1 and ["N5K-C56128P", 1] in bom["refresh_soon"]
+    seg = ts["segmentation_plan"]
+    assert seg["status"] == "needs-requirement" and seg["requirement_needed"] == "data_classification"
+    assert "target_zones" not in seg                                 # zones NOT invented absent the requirement
+    # supply data_classification -> candidate zone map (no longer gated)
+    ts2 = compute_design_blueprint(snap, {"data_classification": ["PCI", "corp", "OT"]})["target_state"]
+    seg2 = ts2["segmentation_plan"]
+    assert seg2["status"] == "candidate" and seg2["target_zones"] == ["PCI", "corp", "OT"]
+    # REFUTATION: an all-active fleet yields an empty replacement BoM
+    ts3 = compute_design_blueprint(_snap(lifecycle_risk={"per_device": [
+        {"host": "x", "band": "Active", "model": "C9300"}]}))["target_state"]
+    assert ts3["replacement_bom"]["n_replace"] == 0 and ts3["replacement_bom"]["replace_now"] == []
+
+
+def test_addressing_plan_requirement_gated_and_allocates():
+    """F1: the net-new IP plan is REQUIREMENT-GATED on address_space (never fabricates subnets); supply a
+    supernet and it allocates a candidate per-VLAN /24 from within it, sized/flagged by observed host count."""
+    import ipaddress
+    snap = _snap()                                                   # vlans 10 (+access) and 20
+    ap = compute_design_blueprint(snap)["target_state"]["addressing_plan"]
+    assert ap["status"] == "needs-requirement" and ap["requirement_needed"] == "address_space"
+    assert "subnets" not in ap                                       # no fabricated subnets absent the supernet
+    ts2 = compute_design_blueprint(snap, {"address_space": "10.0.0.0/16"})["target_state"]
+    ap2 = ts2["addressing_plan"]
+    assert ap2["status"] == "candidate" and ap2["subnets"]
+    net = ipaddress.ip_network("10.0.0.0/16")
+    for s in ap2["subnets"]:
+        assert ipaddress.ip_network(s["subnet"]).subnet_of(net)      # every allocation is from the supernet
+        assert "vlan" in s and "subnet" in s
+    # distinct allocations (no overlap collisions for the seeded small fleet)
+    assert len({s["subnet"] for s in ap2["subnets"]}) == len(ap2["subnets"])
+
+
+def test_addressing_zone_aware_summarizes_per_zone():
+    """F1 (Mode B): an explicit vlan_zones map -> each zone gets ONE contiguous summarizable block; every
+    VLAN's subnet sits inside its zone's block, zone blocks do NOT overlap, and a zone's summary is one prefix."""
+    import ipaddress
+    snap = _snap(l3_forwarding=[{"switch": "d", "vlan": str(v), "svi_ip": f"10.0.{v}.1"} for v in (10, 20, 30)])
+    ts = compute_design_blueprint(snap, {"address_space": "10.80.0.0/16",
+                                         "vlan_zones": {10: "PCI", 20: "corp", 30: "PCI"}})["target_state"]
+    ap = ts["addressing_plan"]
+    assert ap["status"] == "candidate" and ap["mode"] == "zone-aware"
+    zones = {z["zone"]: z for z in ap["zones"]}
+    assert set(zones) == {"PCI", "corp"} and ap["n_zones"] == 2
+    blk = {z: ipaddress.ip_network(zones[z]["summary"]) for z in zones}
+    assert not blk["PCI"].overlaps(blk["corp"])                       # zone blocks disjoint
+    for s in ap["subnets"]:
+        assert ipaddress.ip_network(s["subnet"]).subnet_of(blk[s["zone"]])   # subnet inside its zone block
+    assert {s["vlan"] for s in ap["subnets"] if s["zone"] == "PCI"} == {10, 30}
+
+
+def test_addressing_zone_gating_no_fabrication():
+    """F1 HONESTY refutation: data_classification (zone NAMES) but NO vlan_zones -> the engine must NOT
+    fabricate a zone assignment; it stays non-zone-aware and surfaces that an explicit map is needed."""
+    snap = _snap()
+    ap = compute_design_blueprint(snap, {"address_space": "10.0.0.0/16",
+                                         "data_classification": ["PCI", "corp", "OT"]})["target_state"]["addressing_plan"]
+    assert ap["status"] == "candidate" and ap["mode"] != "zone-aware"
+    assert all("zone" not in s for s in ap["subnets"])                # no fabricated zone on any row
+    assert "vlan_zones" in (ap.get("zone_caveat") or "")              # tells the user what's needed
+
+
+def test_addressing_unmapped_vlans_surfaced():
+    """F1 coverage-honesty: a partial vlan_zones map -> unmapped VLANs are listed and placed in a residual
+    block, never silently dropped nor force-assigned to a real zone."""
+    snap = _snap(l3_forwarding=[{"switch": "d", "vlan": str(v), "svi_ip": f"10.0.{v}.1"} for v in (10, 20, 30)])
+    ap = compute_design_blueprint(snap, {"address_space": "10.90.0.0/16",
+                                         "vlan_zones": {10: "PCI"}})["target_state"]["addressing_plan"]
+    assert ap["mode"] == "zone-aware"
+    assert 20 in ap["unmapped_vlans"] and 30 in ap["unmapped_vlans"] and 10 not in ap["unmapped_vlans"]
+    placed = {s["vlan"] for s in ap["subnets"]}
+    assert {10, 20, 30} <= placed                                     # unmapped still allocated (residual), not dropped
+
+
+def test_requirements_vlan_zones_roundtrip(tmp_path):
+    """F1: vlan_zones round-trips through both register loaders, normalised to {int(vid): str(zone)};
+    empty/absent is dropped (stays non-zone-aware)."""
+    import json
+    from cisco_toolkit.design_advisor import load_requirements, requirements_from_interview
+    p = tmp_path / "r.json"
+    p.write_text(json.dumps({"address_space": "10.0.0.0/16", "vlan_zones": {"10": "PCI", "20": "corp"}}), encoding="utf-8")
+    assert load_requirements(str(p))["vlan_zones"] == {10: "PCI", 20: "corp"}
+    assert requirements_from_interview({"vlan_zones": {"30": "OT"}})["vlan_zones"] == {30: "OT"}
+    assert "vlan_zones" not in requirements_from_interview({"vlan_zones": {}})
+
+
+def test_addressing_too_small_supernet_overflows_without_crash():
+    """AUDIT: an undersized supernet overflows gracefully — VLANs reported in n_overflow, never dropped
+    silently nor crashing; the zone-aware too-small guard returns no subnets + full overflow."""
+    snap = _snap(l3_forwarding=[{"switch": "d", "vlan": str(v), "svi_ip": f"10.0.{v}.1"} for v in (10, 20, 30)])
+    flat = compute_design_blueprint(snap, {"address_space": "10.0.0.0/30"})["target_state"]["addressing_plan"]
+    assert flat["status"] == "candidate" and flat["n_overflow"] > 0          # didn't fit, reported
+    zone = compute_design_blueprint(snap, {"address_space": "10.0.0.0/28",
+                                           "vlan_zones": {10: "A", 20: "B", 30: "C"}})["target_state"]["addressing_plan"]
+    assert zone["mode"] == "zone-aware" and zone["subnets"] == [] and zone["n_overflow"] == 3
+
+
+def test_addressing_reconciliation_fields_present():
+    """AUDIT FIX: the IP plan discloses the census-vs-sized delta (n_census_vlans / n_unsizable) so §5.3's
+    count reconciles with §5.2's VLAN census instead of a silent drop."""
+    from cisco_toolkit.analyze import vlan_inventory
+    snap = _snap(l3_forwarding=[{"switch": "d", "vlan": str(v), "svi_ip": f"10.0.{v}.1"} for v in (10, 20, 30)])
+    ap = compute_design_blueprint(snap, {"address_space": "10.0.0.0/16"})["target_state"]["addressing_plan"]
+    assert ap["n_census_vlans"] == len(vlan_inventory(snap))
+    assert ap["n_unsizable"] == max(0, ap["n_census_vlans"] - ap["n_allocated"])
+    if ap["n_unsizable"]:
+        assert "carry no auto-sized subnet" in ap["note"]                    # disclosed, never silent
+
+
+def test_wave_plan_subdivides_oversized_groups_and_batches_small():
+    """F2: the wave plan turns raw move-groups into realistic waves -- an oversized L2-coupled group is
+    sliced into <=cap SEQUENCED sub-waves; independent small groups are BATCHED. compute_move_groups is
+    NOT touched (the coupling is still reported); this is an additive planning layer. Every switch placed once."""
+    big = [f"SW{i:03d}" for i in range(95)]                       # one 95-switch coupled group
+    smalls = [{"switches": [f"X{j}"]} for j in range(10)]         # 10 standalone singletons
+    snap = _snap(move_groups=[{"switches": big, "spanning_vlans": [[124, "X", 95]]}] + smalls)
+    wp = compute_design_blueprint(snap)["target_state"]["wave_plan"]
+    assert wp["largest_group"] == 95 and wp["n_subdivided_groups"] == 1
+    coupled = [w for w in wp["waves"] if w["kind"] == "coupled-subwave"]
+    batched = [w for w in wp["waves"] if w["kind"] == "independent-batch"]
+    assert len(coupled) == 3                                       # 95 / 40 -> 3 sub-waves
+    assert all(w["n_switches"] <= wp["wave_cap"] for w in wp["waves"])
+    assert sum(w["n_switches"] for w in batched) == 10            # all singletons placed (batched)
+    placed = [h for w in wp["waves"] for h in w["switches"]]
+    assert len(placed) == 105 and len(set(placed)) == 105        # every switch placed exactly once
+
+
+def test_requirements_from_interview_maps_and_normalises():
+    """F3: the interview->requirements bridge normalises a TYPED answers dict into the register (coercing
+    list/int/tier shapes), drops unknown/empty keys, and ignores non-dict input -- it maps typed
+    requirement answers, never inventing a requirement from a qualitative go/no-go. One normalisation path:
+    the produced register drives the blueprint exactly like a file/CLI register."""
+    from cisco_toolkit.design_advisor import requirements_from_interview
+    ans = {"availability_tier": "Gold", "critical_apps": "voice, video , ERP",
+           "convergence_budget_ms": "200", "data_classification": ["PCI", "corp"],
+           "growth_horizon": " 3y +50% ", "address_space": "10.0.0.0/14",
+           "unknown_key": "ignored", "constraints": ""}
+    reg = requirements_from_interview(ans)
+    assert reg["availability_tier"] == "gold"
+    assert reg["critical_apps"] == ["voice", "video", "ERP"]      # comma-split + trimmed
+    assert reg["convergence_budget_ms"] == 200                    # coerced to int
+    assert reg["data_classification"] == ["PCI", "corp"]
+    assert reg["growth_horizon"] == "3y +50%" and reg["address_space"] == "10.0.0.0/14"
+    assert "unknown_key" not in reg and "constraints" not in reg  # unknown + empty dropped
+    assert requirements_from_interview("nope") == {} and requirements_from_interview(None) == {}
+    bp = compute_design_blueprint(_snap(), reg)
+    assert bp["requirements_model"]["provided"] is True and all("effective_priority" in d for d in bp["decisions"])
+
+
+def test_questionnaire_requirement_tags_are_valid():
+    """F3: the engagement interview is requirements-aware -- the requirement-bearing questions are tagged
+    with a `requirement_key` that resolves to a real register key, so an interview answer can flow through
+    requirements_from_interview into the blueprint. (Tags are hints; only genuinely-typed answers map.)"""
+    import os, json
+    from cisco_toolkit.design_advisor import REQUIREMENTS_KEYS
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    q = json.load(open(os.path.join(root, "questionnaire.json"), encoding="utf-8"))
+    tagged = {it["id"]: it["requirement_key"] for it in q if it.get("requirement_key")}
+    assert tagged, "interview must tag its requirement-bearing questions"
+    assert all(v in REQUIREMENTS_KEYS for v in tagged.values()), f"invalid requirement_key tag(s): {tagged}"
+    assert {"availability_tier", "critical_apps", "growth_horizon", "data_classification"} <= set(tagged.values())

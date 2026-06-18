@@ -1168,6 +1168,11 @@ def main():
     ap.add_argument("--output",          default="")
     ap.add_argument("--no-collect",      action="store_true")
     ap.add_argument("--collection-dir",  default="")
+    ap.add_argument("--requirements",    default="",
+                    help="Path to a design requirements register (JSON: availability_tier, critical_apps, "
+                         "convergence_budget_ms, growth_horizon, constraints, data_classification). Supplied, "
+                         "it right-sizes the published design_blueprint (the WHY) so every deliverable reflects "
+                         "the requirements; absent, the blueprint surfaces the open requirement questions.")
     ap.add_argument("--debug-headers",   action="store_true")
     ap.add_argument("--workers",         type=int, default=5,
                     help="Parallel SSH workers (default 5; use 1 for sequential)")
@@ -2062,7 +2067,12 @@ def main():
     # folds the date-relative lifecycle/EoL evidence, so it is excluded from the frozen golden like
     # executive_brief / device_dossiers; the SSOT publish is locked by tests/test_pipeline_inprocess.py.
     try:
-        snap_dict["design_blueprint"] = compute_design_blueprint(snap_dict)
+        from cisco_toolkit.design_advisor import load_requirements
+        _req = load_requirements(getattr(args, "requirements", "") or "")
+        if _req:
+            snap_dict["requirements_register"] = _req                 # stored so the blueprint stays reproducible from the snapshot alone
+            logger.info(f"  [design] requirements register supplied ({', '.join(sorted(_req))}) -> blueprint right-sized")
+        snap_dict["design_blueprint"] = compute_design_blueprint(snap_dict, _req or None)
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
     try:
