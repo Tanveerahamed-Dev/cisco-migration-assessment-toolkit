@@ -78,6 +78,176 @@ _DOCTRINE_JSON = "[\n {\n  \"id\": \"dc-restrict-vlan-span-routed-access\",\n  \
 DOCTRINE = json.loads(_DOCTRINE_JSON)
 
 
+# --------------------------------------------------------------------------- public-sourced addendum
+# Distilled (original wording -- no verbatim text reproduced) from authoritative PUBLIC sources, to
+# deepen the design brain at the user's request without using any paywalled/credentialed content:
+#   * ipSpace.net (Ivan Pepelnjak), public blog: "A Layer-2 Network Is a Single Failure Domain",
+#     "The Need for Stretched VLANs", "Complexity Belongs to the Network Edge".
+#   * Cisco CCDA / campus hierarchical-design best practice (a VLAN should not span multiple access switches).
+# Citations are for traceability only.
+_PUBLIC_SOURCED_ADDENDUM = [
+    {
+        "id": "dc-bound-layer2-failure-domain",
+        "title": "Bound the Layer-2 failure domain: a bridged VLAN is one fault domain",
+        "domain": "dc-switching",
+        "priority": "High",
+        "design_intent": "A transparently-bridged Ethernet segment (a VLAN) is a single failure domain: "
+        "broadcast/unknown-unicast flooding, a spanning-tree topology change, or a loop is felt by every "
+        "switch and endpoint the VLAN reaches. The wider a VLAN spans, the larger the blast radius of any "
+        "one L2 event -- so failure-domain SIZE, not just loop-freeness, is a first-class design constraint.",
+        "observable": "Per-VLAN switch span (how many switches each VLAN touches) and whether the default "
+        "VLAN 1 spans the estate -- both already computed by the engine (move_groups[].spanning_vlans).",
+        "trigger": "A user VLAN spans many access/distribution switches, or VLAN 1 spans the fabric -- an "
+        "oversized bridging (failure) domain.",
+        "recommended_action": "Confine each VLAN to the smallest practical span (ideally one access switch / "
+        "one block); route between blocks at L3 (routed access or a distribution boundary) so an L2 event "
+        "stays local; prune VLAN 1 and unused VLANs off trunks; where a stretch is unavoidable, isolate it "
+        "(e.g. a controlled VXLAN/overlay segment with storm-control) rather than raw end-to-end bridging.",
+        "alternatives": "Keep wide L2 with aggressive storm-control/BPDU-guard and rapid-PVST/MST hardening "
+        "(accepts a large blast radius); overlay (VXLAN/EVPN) to contain bridging to the edge.",
+        "tradeoffs": "Smaller failure domains add L3 boundaries/addressing and can complicate workload "
+        "mobility, but bound the blast radius and improve convergence and scale.",
+        "citation": "ipSpace.net (Pepelnjak) 'A Layer-2 Network Is a Single Failure Domain' / 'The Need for "
+        "Stretched VLANs'; Cisco CCDA hierarchical-design best practice (no VLAN across multiple access switches)",
+        "engine_actionable": True,
+    },
+    {
+        "id": "methodology-minimize-accidental-complexity",
+        "title": "Minimize accidental complexity: every feature is one you must operate",
+        "domain": "methodology",
+        "priority": "High",
+        "design_intent": "Complexity is the dominant long-run cost and failure source in networks. Every "
+        "protocol, feature, platform and exception added is something to configure, secure, monitor, "
+        "troubleshoot and upgrade for the life of the network. Senior design asks 'do we really need it?' "
+        "before adding, consolidates on the fewest platforms that meet the requirements, and pushes any "
+        "unavoidable complexity to the network EDGE where its blast radius is smallest -- keeping the core "
+        "simple and fast.",
+        "observable": "Not directly auto-detected: needs a feature/platform inventory judged against "
+        "requirements (the engine surfaces the related evidence -- mixed IGPs, VTP, idle features -- but "
+        "the 'is it justified' judgement is human).",
+        "trigger": "(Judgement) protocols/features/platforms present without a requirement that justifies "
+        "them; complexity concentrated in the core rather than at the edge.",
+        "recommended_action": "Trace every protocol/feature/platform to a requirement; remove or avoid those "
+        "without one. Consolidate on the fewest platforms that meet the needs; keep the core a simple, fast "
+        "transport and concentrate policy/intelligence at the edge.",
+        "alternatives": "Best-of-breed per function (more capability, more integration/operational "
+        "complexity); single-stack consolidation (simpler ops, possible feature gaps).",
+        "tradeoffs": "Simplicity trades some peak capability/optimization for operability, reliability and "
+        "lower OpEx -- usually the right trade for an enterprise.",
+        "citation": "ipSpace.net (Pepelnjak) 'Complexity Belongs to the Network Edge' / 'The Road to Complex "
+        "Designs Is Paved with Great Recipes'",
+        "engine_actionable": False,
+    },
+]
+DOCTRINE.extend(_PUBLIC_SOURCED_ADDENDUM)
+
+# --------------------------------------------------------------------- firewall-in-different-designs
+# Firewall placement/insertion across the canonical design contexts (public sources, original wording):
+#   * Cisco SAFE (Secure Edge / Secure Data Center) + Cisco Firewall-and-IPS CVD (perimeter/DMZ tiers).
+#   * NIST SP 800-207 Zero Trust Architecture (micro-segmentation limits east-west lateral movement).
+#   * Cisco Secure Firewall routed-vs-transparent & failover docs; ipSpace.net (Pepelnjak) "Stateful
+#     Firewall Cluster High Availability Theater" (flow symmetry; HA is not free).
+# All NON-actionable: the L1-L4 switch/router assessment does not collect firewall state, so these are
+# design doctrine for the HLD security narrative / design chat -- not auto-emitted decisions (honest).
+_FIREWALL_DESIGN_ADDENDUM = [
+    {
+        "id": "security-firewall-perimeter-dmz-topology",
+        "title": "Segregate public services in a DMZ; use a screened-subnet (dual-firewall) edge for high assurance",
+        "domain": "security",
+        "priority": "High",
+        "design_intent": "At the Internet/WAN edge the job is to keep publicly-reachable services off the "
+        "trusted inside. Two canonical topologies: a single firewall with a third 'DMZ' leg (three-legged "
+        "-- cheaper, but one device is the whole boundary), or a dual-firewall SCREENED SUBNET / 'sandwich' "
+        "(an outer firewall facing untrusted, an inner firewall facing trusted, the DMZ between) for higher "
+        "assurance and separation of duties. Public-facing systems live in the DMZ, never on the inside.",
+        "observable": "Not collected by the L1-L4 assessment (firewall/edge state is out of scope) -- design doctrine.",
+        "trigger": "(Design) an Internet/partner edge that publishes services, or a flat edge with public hosts inside.",
+        "recommended_action": "Place public-facing services in a DMZ behind the edge firewall; for a "
+        "high-assurance edge use a dual-firewall screened subnet (ideally different vendors/OSes so a single "
+        "advisory can't breach both); permit only required DMZ<->inside flows; terminate remote-access VPN in "
+        "its own zone, not straight onto the inside.",
+        "alternatives": "Single three-legged firewall (lower cost/ops, single breach point); host public "
+        "services in cloud/SaaS (moves the boundary).",
+        "tradeoffs": "A dual-firewall edge costs more and adds operational surface, but bounds blast radius "
+        "and separates duties between the outer and inner control.",
+        "citation": "Cisco SAFE Secure Edge; Cisco Firewall-and-IPS CVD; standard DMZ / screened-subnet design practice",
+        "engine_actionable": False,
+    },
+    {
+        "id": "security-firewall-dc-eastwest-microsegmentation",
+        "title": "In the data center, add east-west micro-segmentation -- a north-south perimeter is necessary but not sufficient",
+        "domain": "security",
+        "priority": "High",
+        "design_intent": "Most data-center breaches spread EAST-WEST (server-to-server lateral movement) and "
+        "never re-cross the north-south perimeter, so a perimeter firewall alone leaves the interior flat to "
+        "an attacker. Modern DC security enforces policy between workloads -- micro-segmentation -- so a "
+        "compromised workload cannot freely reach its neighbours (the zero-trust 'assume breach' posture).",
+        "observable": "Not collected by the L1-L4 assessment (workload/firewall policy is out of scope) -- design doctrine.",
+        "trigger": "(Design) a data centre whose security is perimeter-only, with unrestricted intra-tier / "
+        "intra-VLAN server-to-server reachability.",
+        "recommended_action": "Pair the north-south edge firewall with EAST-WEST enforcement: micro-segment "
+        "with distributed/host-based firewalling, hypervisor (e.g. NSX) or fabric policy (e.g. ACI contracts), "
+        "or steer inter-zone traffic through a firewall; default-deny intra-tier where feasible; drive policy "
+        "from workload identity, not IP, under a least-privilege / zero-trust model.",
+        "alternatives": "Perimeter-only (cheapest, large lateral blast radius); coarse VLAN/VRF ACL "
+        "segmentation (simpler than per-workload micro-seg, but blunter).",
+        "tradeoffs": "Micro-segmentation adds policy-authoring and lifecycle overhead, but contains lateral "
+        "movement and shrinks the internal attack surface.",
+        "citation": "NIST SP 800-207 Zero Trust Architecture (micro-segmentation limits lateral movement); Cisco SAFE Secure Data Center",
+        "engine_actionable": False,
+    },
+    {
+        "id": "security-firewall-flow-symmetry-insertion",
+        "title": "Insert stateful firewalls on a SYMMETRIC path -- asymmetric routing breaks state, and HA is not free",
+        "domain": "security",
+        "priority": "High",
+        "design_intent": "A stateful firewall must see BOTH directions of every flow or it drops the return "
+        "packets it has no state for. So insertion and routing must guarantee flow symmetry: forward and "
+        "return paths must traverse the SAME firewall (or the same active unit of an HA pair). Asymmetric "
+        "routing is the classic stateful-firewall killer, and active/active clustering does not deliver "
+        "'free' stateful HA -- state sync and flow pinning have real limits. Complements "
+        "security-firewall-ips-placement (mode/HA): even a correctly-moded HA pair fails on an asymmetric path.",
+        "observable": "Not collected by the L1-L4 assessment (firewall/path-symmetry state is out of scope) -- design doctrine.",
+        "trigger": "(Design) equal-cost or multi-homed paths around a stateful firewall; an HA pair assumed "
+        "to give stateful failover without state-sync/symmetry analysis.",
+        "recommended_action": "Insert the firewall on the symmetric path (inline routed/transparent, or "
+        "one-arm with PBR/VRF that forces both directions through it); avoid ECMP that lets return traffic "
+        "bypass it; on HA pairs verify connection-state sync and divert/pin asymmetric flows to the active "
+        "unit; test that failover preserves or gracefully re-establishes state.",
+        "alternatives": "Stateless ACLs where statefulness isn't required (tolerate asymmetry); explicit "
+        "per-flow steering / service-chaining to force symmetry.",
+        "tradeoffs": "Enforcing symmetry constrains routing/load-balancing freedom, but stateful inspection "
+        "is unreliable -- silently dropping flows -- without it.",
+        "citation": "Cisco Secure Firewall routed/transparent & failover docs; ipSpace.net (Pepelnjak) 'Stateful Firewall Cluster High Availability Theater'; asymmetric-routing design guidance",
+        "engine_actionable": False,
+    },
+]
+DOCTRINE.extend(_FIREWALL_DESIGN_ADDENDUM)
+
+
+# ---------------------------------------------------------------------------- coverage honesty
+# `engine_actionable` MUST mean "design_advisor.compute_design_blueprint emits a decision for this
+# principle's observed trigger". The following are valuable doctrine the HLD / chat can still cite,
+# but the advisor does NOT auto-detect their trigger from collected evidence today -- either the
+# trigger needs a requirements register (a target-state CHOICE, not an observation), or it shares
+# evidence already owned by another detector, or no dedicated finding is collected. So they must not
+# CLAIM auto-detection. Demoting here keeps the design brain coverage-honest about its own reach.
+# Locked by tests/test_design_blueprint.py::test_every_engine_actionable_principle_is_emitted.
+# (The two DC-fabric CHOICES -- dc-three-tier-vs-collapsed-core and dc-spine-leaf-evpn-vs-collapsed --
+# ARE engine-actionable, but as REQUIREMENT-GATED decisions: design_advisor._NEEDS surfaces them as open
+# design questions and flips them to recommended once a growth horizon is supplied. They are not listed
+# below because the advisor does emit them.)
+_NOT_YET_AUTO_DETECTED = {
+    "dc-igmp-snooping-and-app-delivery",            # same multicast evidence drives multicast-security-and-l2-edge
+    "modularity-fault-domains-replicable-blocks",   # same flat-L2 evidence drives dc-restrict-vlan-span
+    "security-aaa-routing-auth-antispoof",          # AAA drives mgmt-secure-protocols; routing-auth/uRPF not collected
+    "security-l2-access-edge-suite",                # no port-security / BPDU-guard / DHCP-snooping finding collected
+}
+for _p in DOCTRINE:
+    if _p.get("id") in _NOT_YET_AUTO_DETECTED and _p.get("engine_actionable"):
+        _p["engine_actionable"] = False
+
+
 def all_principles():
     """Every doctrine principle (list of dicts)."""
     return list(DOCTRINE)
