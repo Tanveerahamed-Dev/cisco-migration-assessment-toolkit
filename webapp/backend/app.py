@@ -359,6 +359,22 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     if isinstance(body.get("interview_answers"), dict) else body)
         return compute_design_blueprint(snap, register or {})
 
+    @app.get("/api/snapshots/{snapshot_id}/design/nrfu")
+    def design_nrfu(snapshot_id: int) -> Dict[str, Any]:
+        """Design-driven NRFU/ATP acceptance-test checklist derived from the recommended design
+        decisions. One structured item per decision, traceable to the CCDE principle, the evidence
+        that triggered it, and the specific devices the NRFU engineer must verify. Items are phased
+        across three cutover stages: pre-cutover → post-cutover-functional → post-cutover-operational.
+        The right-sizing logic lives only in Python — the dashboard never re-derives test items."""
+        from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu
+        bp = store.get_snapshot_section(snapshot_id, "design_blueprint")
+        if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
+            snap = store.get_snapshot(snapshot_id)
+            if snap is None:
+                raise HTTPException(404, "Snapshot not found")
+            bp = compute_design_blueprint(snap)
+        return compute_design_nrfu(bp)
+
     # -- execution runs (war room) ------------------------------------------
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
         """Atomic read-modify-write on one run's state; returns the updated derived state."""

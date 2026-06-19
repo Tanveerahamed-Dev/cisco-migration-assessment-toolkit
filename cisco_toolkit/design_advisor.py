@@ -616,6 +616,12 @@ def _requirements_model(decisions, req):
          "value": req.get("constraints")},
         {"key": "data_classification", "label": "Data-security classification / zones",
          "value": req.get("data_classification")},
+        # IP plan requirements — gated by _addressing_plan but must be surfaced here so every
+        # interactive path (webapp form / interview / explorer CLI hint) knows to prompt for them.
+        {"key": "address_space", "label": "Target address space (supernet, e.g. 10.0.0.0/16)",
+         "value": req.get("address_space")},
+        {"key": "vlan_zones", "label": "VLAN-to-zone map ({zone: [vlan_ids]}) for zone-aware IP allocation",
+         "value": req.get("vlan_zones")},
     ]
     open_q = [{"id": d["id"], "title": d["title"], "needs": d.get("requirements_needed", [])}
               for d in decisions if d.get("status") == "needs-requirement"]
@@ -944,9 +950,16 @@ def _addressing_plan(snap, req):
     caveat pointing to vlan_zones."""
     space = (req or {}).get("address_space")
     vids, counts = _target_vids(snap)
+    # Always compute the full census and the unsizable delta — needed for honest disclosure on ALL paths
+    # (including the needs-requirement early returns) so every surface can show the context note
+    # "N census VLANs; M have no access port/SVI" before an address_space is even supplied.
+    census = _vlan_count(snap)
+    n_unsizable = max(0, census - len(vids))
     if not space:
         return {"status": "needs-requirement", "requirement_needed": "address_space",
                 "observed_vlans": len(vids),
+                "n_census_vlans": census,
+                "n_unsizable": n_unsizable,
                 "note": "Supply an address_space (supernet, e.g. 10.0.0.0/16) to allocate target subnets; "
                         "a net-new IP plan is not fabricated without one."}
     import ipaddress
@@ -954,6 +967,9 @@ def _addressing_plan(snap, req):
         supernet = ipaddress.ip_network(str(space).split(",")[0].strip(), strict=False)
     except ValueError:
         return {"status": "needs-requirement", "requirement_needed": "address_space",
+                "observed_vlans": len(vids),
+                "n_census_vlans": census,
+                "n_unsizable": n_unsizable,
                 "note": f"address_space '{space}' is not a valid network; supply e.g. 10.0.0.0/16."}
     vlan_zones = _norm_vlan_zones((req or {}).get("vlan_zones"))
     if vlan_zones:
@@ -966,7 +982,7 @@ def _addressing_plan(snap, req):
     # Reconcile against the canonical VLAN census (vlan_inventory, the count §5.2 prints): disclose the
     # delta so 202-vs-N is never a silent drop. Only VLANs with an observed access port or L3 SVI can be
     # sized; VLAN 1 + querier-only VLANs whose SVI sits on an uncollected core have nothing to size from.
-    census = _vlan_count(snap)
+    # census / n_unsizable are already computed at function entry for the needs-requirement paths; reuse them.
     plan["n_census_vlans"] = census
     plan["n_unsizable"] = max(0, census - len(vids))
     if plan["n_unsizable"]:
@@ -1196,4 +1212,176 @@ def compute_design_blueprint(snap, requirements=None):
         "coverage": _coverage(snap),
         "doctrine": _doctrine_catalog(),
         "target_state": compute_target_state(snap, req),
+    }
+
+
+# ----------------------------------------------------------------------------- design-driven NRFU
+# Per-decision NRFU descriptions: what to verify after the decision's recommended action is applied.
+# Grounded in Cisco IOS/IOS-XE/NX-OS verification commands; not invented from thin air.
+_NRFU_DESC = {
+    "fhrp-first-hop-gateway-redundancy":
+        "Verify HSRP/VRRP/GLBP or an anycast gateway is configured and active on EVERY gateway VLAN "
+        "— no VLAN should have a single active gateway after the migration.",
+    "topology-triangles-not-squares-rings":
+        "Verify all physical redundant uplinks are ACTIVE (not STP-blocked); confirm multi-chassis LAG "
+        "(vPC/VSS/SVL/MLAG) is in service on every dual-homed device pair.",
+    "lifecycle-eol-out-of-critical-roles":
+        "Verify every past-LDoS device has been replaced with a supported successor and is NOT in the "
+        "forwarding path; 'show version' must confirm supported model and active SW contract.",
+    "qos-trust-boundary-end-to-end":
+        "Verify a QoS trust boundary (DSCP/CoS mark-and-trust) is applied at the access edge on ALL "
+        "access switches; confirm class-based forwarding end-to-end — no traffic should be best-effort.",
+    "mgmt-secure-protocols-and-rbac":
+        "Verify SSHv2 on ALL VTYs (no telnet); SNMPv3 auth/priv configured (no SNMPv1/v2c community "
+        "strings in service); AAA/TACACS+/RADIUS configured and server reachable.",
+    "security-device-hardening-baseline":
+        "Verify CIS/Cisco hardening baseline on all devices: no risky services (TCP small-servers, "
+        "finger, BOOTP, MOP); MOTD login banner present; syslog host configured and receiving.",
+    "fhrp-not-observed-is-not-healthy":
+        "Verify ALL previously-uncollected devices are now reachable, collected, and their roles and "
+        "redundancy are documented — 'unreachable' must not be accepted as a healthy state.",
+    "dc-restrict-vlan-span-routed-access":
+        "Verify each user VLAN is confined to ONE access/distribution block; 'show vlan' on distribution "
+        "switches should list only VLANs local to that building/block (no fleet-wide VLAN sprawl).",
+    "dc-multichassis-lag-over-stp":
+        "Verify NO STP-blocked redundant uplinks remain on any device; 'show etherchannel summary' must "
+        "show all bundled ports in P (in-port-channel) state; no uplink in STP Blocking/Discarding.",
+    "dc-stp-determinism-edge-protection":
+        "Verify rapid-PVST or MST is running on ALL devices ('show spanning-tree summary'); confirm "
+        "STP root is pinned at the distribution tier (priority ≤ 4096); PortFast + BPDU Guard on all "
+        "edge/access ports ('show spanning-tree interface detail').",
+    "igp-link-state-default":
+        "Verify a SINGLE IGP (OSPF or EIGRP) carries all prefixes; 'show ip route' must show no "
+        "redistribution from a second protocol; 'show ip ospf neighbor'/'show ip eigrp neighbor' shows "
+        "Full/UP adjacencies on all routed links.",
+    "multicast-security-and-l2-edge":
+        "Verify IGMP snooping enabled on all multicast VLANs; 'show ip igmp snooping querier' confirms "
+        "a querier on every active multicast VLAN; no unexplained multicast flooding on access links.",
+    "mgmt-time-sync-logging-baseline":
+        "Verify authenticated NTP is configured and SYNCHRONISED on all devices ('show ntp status' → "
+        "clock synchronized); centralised syslog server receives messages from all devices.",
+    "qos-voice-priority-bounded":
+        "Verify a QoS policy with a BOUNDED LLQ (EF/CS3 class) AND a policer is applied on ALL access "
+        "switch interfaces with voice/real-time ports; 'show policy-map interface' confirms the queue.",
+    "scenario-build-before-break-phased-cutover":
+        "Verify each migration wave was executed build-before-break: target gear operational + NRFU "
+        "passed BEFORE the legacy decommission; rollback plan remained available and was NOT invoked; "
+        "per-wave NRFU sign-off recorded.",
+    "dc-bound-layer2-failure-domain":
+        "Verify no user VLAN spans more switches than the approved maximum; 'show mac address-table "
+        "count vlan <N>' on each switch should show only local MACs for each bounded VLAN.",
+}
+
+_NRFU_PASS = {
+    "fhrp-first-hop-gateway-redundancy":
+        "'show standby brief' / 'show vrrp brief' / 'show glbp brief' on distribution switches shows "
+        "Active + Standby pairs on EVERY gateway VLAN — no VLAN has a single active forwarder.",
+    "topology-triangles-not-squares-rings":
+        "'show etherchannel summary' shows all uplink bundle members in P state; 'show spanning-tree "
+        "active' shows zero Blocking/Discarding uplinks; failover test passes within the SLA window.",
+    "lifecycle-eol-out-of-critical-roles":
+        "'show version' on every replacement confirms a Cisco model with an active support contract; "
+        "no past-LDoS device appears in 'show cdp neighbors' or the management inventory.",
+    "qos-trust-boundary-end-to-end":
+        "'show policy-map interface <access-port>' shows DSCP trust and class queuing applied; a DSCP "
+        "EF-marked packet traverses the campus and exits at the same DSCP value.",
+    "mgmt-secure-protocols-and-rbac":
+        "'show line vty 0 15' shows only SSH transport; 'show snmp user' shows SNMPv3 auth/priv users "
+        "only; 'aaa test' confirms RADIUS/TACACS+ authentication succeeds.",
+    "security-device-hardening-baseline":
+        "CIS scan or 'show running-config | include service' confirms no risky services; 'show banner "
+        "login' shows MOTD; 'show logging' confirms syslog host is configured.",
+    "fhrp-not-observed-is-not-healthy":
+        "All devices respond to ICMP/SSH and appear in 'show cdp neighbors'; the assessment re-run "
+        "collection-completeness.summary.not_collected == 0.",
+    "dc-restrict-vlan-span-routed-access":
+        "'show vlan brief' on each distribution switch lists ONLY VLANs for that access block; no VLAN "
+        "bridges between buildings without an explicit documented justification.",
+    "dc-multichassis-lag-over-stp":
+        "'show vpc' / 'show etherchannel summary' shows all peer-links active; 'show spanning-tree' "
+        "shows zero uplinks in Blocking/Discarding state across the entire fabric.",
+    "dc-stp-determinism-edge-protection":
+        "'show spanning-tree summary' shows Mode RSTP or MST; 'show spanning-tree root' on all "
+        "distribution switches shows they are root for their local VLANs; 'show spanning-tree "
+        "interface <edge-port> detail' shows PortFast + BPDU Guard Enabled.",
+    "igp-link-state-default":
+        "'show ip route summary' shows a single routing protocol prefix; no 'R' (RIP) or dual 'D'+'O' "
+        "redistribution; all L3 links show OSPF Full / EIGRP Up adjacencies.",
+    "multicast-security-and-l2-edge":
+        "'show ip igmp snooping querier' lists a querier IP on every active multicast VLAN; "
+        "'show ip igmp snooping groups' shows learnt group memberships (no flood entries).",
+    "mgmt-time-sync-logging-baseline":
+        "'show ntp associations' shows '*' (synced) stratum; syslog server receives a test log "
+        "message from each device within 60 seconds of the 'logging on' verification check.",
+    "qos-voice-priority-bounded":
+        "'show policy-map interface <voice-port>' shows EF/CS3 class with a bandwidth guarantee AND a "
+        "policer rate; MOS score for a test call meets the configured threshold.",
+    "scenario-build-before-break-phased-cutover":
+        "All per-wave NRFU checklists are signed off and archived; change management system shows "
+        "each wave's change request closed with 'implemented successfully'; no emergency rollback "
+        "was triggered.",
+    "dc-bound-layer2-failure-domain":
+        "'show spanning-tree vlan <N> detail' confirms each bounded VLAN bridges across fewer than the "
+        "approved maximum number of switches; a synthetic broadcast test stays within the block.",
+}
+
+# Phase assignment: where in the cutover sequence this acceptance test runs
+_NRFU_PHASE = {
+    "fhrp-not-observed-is-not-healthy": "pre-cutover",          # must verify BEFORE wave executes
+    "lifecycle-eol-out-of-critical-roles": "pre-cutover",
+    "scenario-build-before-break-phased-cutover": "post-cutover-operational",
+    "mgmt-time-sync-logging-baseline": "post-cutover-operational",
+    "security-device-hardening-baseline": "post-cutover-operational",
+    "mgmt-secure-protocols-and-rbac": "post-cutover-operational",
+}
+_NRFU_PHASE_DEFAULT = "post-cutover-functional"
+
+
+def compute_design_nrfu(design_blueprint):
+    """Bridge the design blueprint to a design-driven NRFU/ATP acceptance test checklist.
+
+    Generates one structured acceptance-test item for every RECOMMENDED design decision in the
+    blueprint. Each item is traceable to:
+      - the design decision ID (and through it the CCDE principle and the evidence that triggered it)
+      - the specific devices the NRFU engineer must verify (from decision.evidence.devices)
+      - a human-readable description of what to verify and the concrete pass criteria
+
+    Items are phased into three cutover stages:
+      pre-cutover         — must pass BEFORE the wave executes (collection coverage, EoL inventory)
+      post-cutover-functional — the core functional acceptance (FHRP, QoS, L2, routing, multicast)
+      post-cutover-operational — operational baseline (hardening, time, logging, MOP governance)
+
+    Only RECOMMENDED decisions generate items; needs-requirement decisions are not included (they are
+    not testable until the requirement is supplied). Coverage-honest: the count reflects only what the
+    assessment observed. The returned structure is deterministic (stable sort by phase priority then ID).
+    """
+    _PHASE_ORDER = {"pre-cutover": 0, "post-cutover-functional": 1, "post-cutover-operational": 2}
+    decs = [d for d in _as_list(design_blueprint.get("decisions"))
+            if isinstance(d, dict) and d.get("status") == "recommended"]
+    items = []
+    for d in decs:
+        pid = d.get("id", "")
+        phase = _NRFU_PHASE.get(pid, _NRFU_PHASE_DEFAULT)
+        items.append({
+            "decision_id": pid,
+            "title": d.get("title", pid),
+            "priority": d.get("priority", "Medium"),
+            "phase": phase,
+            "description": _NRFU_DESC.get(pid, d.get("recommended_action", d.get("driver", ""))[:400]),
+            "pass_criteria": _NRFU_PASS.get(pid,
+                "Verify the recommended pattern is operational as described in the design blueprint."),
+            "devices": _as_list(_as_dict(d.get("evidence")).get("devices")),
+            "principle_citation": _as_dict(d.get("principle")).get("citation", ""),
+        })
+    items.sort(key=lambda x: (_PHASE_ORDER.get(x["phase"], 9), PRANK.get(x["priority"], 9), x["decision_id"]))
+    return {
+        "items": items,
+        "n_items": len(items),
+        "note": (
+            f"Design-driven NRFU/ATP checklist: {len(items)} acceptance-test item(s), one per recommended "
+            "design decision, each traceable to the CCDE principle and the evidence that triggered it. "
+            "Run after each migration wave; the pass/fail verdict for each item is independent of the "
+            "design authors (proposer ≠ verifier). Items phased: pre-cutover → post-cutover-functional "
+            "→ post-cutover-operational."
+        ),
     }

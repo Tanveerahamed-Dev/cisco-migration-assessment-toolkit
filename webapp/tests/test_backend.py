@@ -403,6 +403,64 @@ def test_design_overlay_accepts_interview_answers(client):
         "interview answers must be mapped via requirements_from_interview, not treated as a raw register"
 
 
+def test_design_nrfu_endpoint(client):
+    """Design-driven NRFU/ATP endpoint: GET /api/snapshots/{id}/design/nrfu returns a structured
+    acceptance-test checklist derived from the recommended design decisions — one item per decision,
+    phased across pre-cutover / post-cutover-functional / post-cutover-operational. Every item must
+    carry decision_id, title, priority, phase, description, pass_criteria, devices, principle_citation
+    and trace back to a recommended decision from the baseline blueprint (SSOT: Python only)."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/design/nrfu")
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert "items" in result and "n_items" in result and "note" in result
+    assert result["n_items"] == len(result["items"])
+    required = {"decision_id", "title", "priority", "phase", "description",
+                "pass_criteria", "devices", "principle_citation"}
+    for item in result["items"]:
+        missing = required - set(item)
+        assert not missing, f"NRFU item {item.get('decision_id')} missing keys: {missing}"
+    # all items trace to recommended decisions from the same blueprint
+    bp = client.get(f"/api/snapshots/{snap_id}/design").json()
+    rec_ids = {d["id"] for d in bp["decisions"] if d["status"] == "recommended"}
+    for item in result["items"]:
+        assert item["decision_id"] in rec_ids, (
+            f"NRFU item {item['decision_id']} does not trace to a recommended decision"
+        )
+    # phases are the expected values
+    valid_phases = {"pre-cutover", "post-cutover-functional", "post-cutover-operational"}
+    for item in result["items"]:
+        assert item["phase"] in valid_phases, f"unknown phase: {item['phase']}"
+    # 404 on unknown snapshot
+    assert client.get("/api/snapshots/999999/design/nrfu").status_code == 404
+
+
+def test_design_overlay_address_space_unlocks_ip_plan(client):
+    """SSOT fix: POSTing address_space to /design recomputes the blueprint with a CANDIDATE
+    addressing_plan (status='candidate') — the IP plan must go from needs-requirement to a live
+    candidate allocation. Verifies the webapp requirements form can now supply address_space
+    (previously missing from the DesignBlueprint.tsx form, so the IP plan stayed permanently gated).
+    Also confirms n_census_vlans and n_unsizable are present on both the needs-requirement and
+    candidate paths."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    # baseline: no address_space -> needs-requirement
+    base = client.get(f"/api/snapshots/{snap_id}/design").json()
+    ap_base = base["target_state"]["addressing_plan"]
+    assert ap_base["status"] == "needs-requirement"
+    assert "n_census_vlans" in ap_base and "n_unsizable" in ap_base, (
+        "n_census_vlans / n_unsizable must be present even when needs-requirement"
+    )
+    # with address_space -> candidate
+    r = client.post(f"/api/snapshots/{snap_id}/design",
+                    json={"address_space": "10.0.0.0/16"})
+    assert r.status_code == 200, r.text
+    bp2 = r.json()
+    ap2 = bp2["target_state"]["addressing_plan"]
+    assert ap2["status"] == "candidate", "address_space must unlock the IP plan to candidate"
+    assert isinstance(ap2.get("subnets"), list) and len(ap2["subnets"]) > 0, "candidate plan must have subnets"
+    assert "n_census_vlans" in ap2 and "n_unsizable" in ap2
+
+
 def test_cutover_deliverable_content(client):
     """The Cutover Plan DOCX is the one deliverable with no engine-side test — validate it actually
     renders the plan (headings + tables), not just that it's a >1KB zip."""

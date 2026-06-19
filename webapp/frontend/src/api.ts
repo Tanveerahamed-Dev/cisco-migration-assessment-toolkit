@@ -284,6 +284,7 @@ export interface DesignTargetState {
   replacement_bom: { replace_now: [string, number][]; refresh_soon: [string, number][]; n_replace: number; n_refresh: number; note: string };
   addressing_plan: {
     status: string; mode?: string; observed_vlans?: number; requirement_needed?: string; note: string;
+    n_census_vlans?: number; n_unsizable?: number;
     supernet?: string; subnets?: { vlan: number; hosts: number; subnet: string; note?: string; zone?: string }[];
     zones?: { zone: string; summary: string; n_vlans: number }[]; n_allocated?: number; n_overflow?: number;
   };
@@ -316,6 +317,24 @@ export interface DesignBlueprint {
     headline: string;
   };
   coverage: { inventory: number; collected: number; not_collected: number; caveat: string };
+}
+
+// Design-driven NRFU/ATP acceptance-test checklist (GET /api/snapshots/{id}/design/nrfu).
+// One item per recommended design decision; traceable to the CCDE principle + affected devices.
+export interface DesignNrfuItem {
+  decision_id: string;
+  title: string;
+  priority: string;
+  phase: "pre-cutover" | "post-cutover-functional" | "post-cutover-operational";
+  description: string;
+  pass_criteria: string;
+  devices: string[];
+  principle_citation: string;
+}
+export interface DesignNrfu {
+  items: DesignNrfuItem[];
+  n_items: number;
+  note: string;
 }
 
 async function j<T>(r: Response): Promise<T> {
@@ -373,6 +392,7 @@ export const api = {
   design: (id: number) => fetch(`/api/snapshots/${id}/design`).then((r) => j<DesignBlueprint>(r)),
   designOverlay: (id: number, requirements: Record<string, unknown>) =>
     post<DesignBlueprint>(`/api/snapshots/${id}/design`, requirements),
+  designNrfu: (id: number) => fetch(`/api/snapshots/${id}/design/nrfu`).then((r) => j<DesignNrfu>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),
