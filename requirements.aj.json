@@ -1,10 +1,11 @@
 {
   "_comment": "AJMN ENGAGEMENT requirements register (the WHY), DERIVED FROM the customer's own human-authored Solution Design Document (AJMN SDD, 18 May) + NRFU. Pass with --requirements requirements.aj.json so the published design_blueprint right-sizes to the real AJMN target (Cisco Nexus 9000 VXLAN BGP-EVPN Multi-Site fabric). Grounded, not invented: keys the SDD does NOT state (a numeric convergence budget, a target supernet, an explicit VLAN-to-zone map) are deliberately OMITTED so the blueprint surfaces them as honest open questions rather than fabricating them.",
-  "_provenance": "SDD sections: 'Design Overview / Multi-Site Design', 'AJMN Physical Architecture' (seven CARs), 'Current AJMN Core and Critical Network Architecture' (IPTV/MSN/DMZ/IE/WE segments), 'Shared Border' (Firewall + Load Balancer), 'Out-of-Band Management', 'Migration Approach - High Level'.",
+  "_provenance": "SDD sections: 'Design Overview / Multi-Site Design', 'AJMN Physical Architecture' (seven CARs), 'Current AJMN Core and Critical Network Architecture' (IPTV/MSN/DMZ/IE/WE segments), 'Shared Border' (Firewall + Load Balancer), 'Out-of-Band Management', 'Migration Approach - High Level'. fabric_operating_model='nxos-evpn' is grounded in the SDD constraint 'Standardize on Cisco Nexus 9000 / NX-OS, managed by Nexus Dashboard (NDFC + NDI)' -- AJMN evaluated and chose a STANDALONE NX-OS VXLAN-EVPN fabric (NDFC-managed), NOT a Cisco ACI / APIC policy fabric; this also fits AJMN's broadcast/media estate via NDFC IP Fabric for Media (IPFM).",
   "requirements": {
     "availability_tier": "gold",
     "critical_apps": ["broadcast video / IPTV", "MSN media streaming", "voice", "real-time multicast media feeds"],
     "growth_horizon": "Multi-Site VXLAN BGP-EVPN fabric across seven sites (CARs) in one campus; scale-out east-west by adding spines/leaves; replaces the legacy 3-tier Catalyst 6807-XL core + 4500X/4948 aggregation/access",
+    "fabric_operating_model": "nxos-evpn",
     "constraints": [
       "Standardize on Cisco Nexus 9000 / NX-OS, managed by Nexus Dashboard (NDFC + NDI)",
       "Overlapping DC/BC VLAN IDs require port-VLAN translation to a new fabric VLAN/VNI",

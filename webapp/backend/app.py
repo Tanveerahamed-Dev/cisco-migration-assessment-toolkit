@@ -343,9 +343,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def design_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
         """Interactive requirements overlay: recompute the blueprint right-sized to a requirements
         register (availability_tier / critical_apps / convergence_budget_ms / growth_horizon /
-        constraints / data_classification / address_space / vlan_zones). The right-sizing logic lives
-        ONLY here (Python, the same compute_design_blueprint the CLI runs) — the dashboard never
-        re-derives design intent.
+        fabric_operating_model / constraints / data_classification / address_space / vlan_zones). The
+        right-sizing logic lives ONLY here (Python, the same compute_design_blueprint the CLI runs) —
+        the dashboard never re-derives design intent.
 
         The body is EITHER a typed requirements register OR the engagement interview's tagged answers
         wrapped as {"interview_answers": {...}} — the latter mapped through the SAME

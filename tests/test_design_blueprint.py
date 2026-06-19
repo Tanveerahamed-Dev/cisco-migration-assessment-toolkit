@@ -318,7 +318,7 @@ def test_load_requirements_parses_register_and_is_defensive(tmp_path):
     from cisco_toolkit.design_advisor import load_requirements, REQUIREMENTS_KEYS
     assert set(REQUIREMENTS_KEYS) == {"availability_tier", "critical_apps", "convergence_budget_ms",
                                       "growth_horizon", "constraints", "data_classification", "address_space",
-                                      "vlan_zones"}
+                                      "vlan_zones", "fabric_operating_model"}
     p = tmp_path / "req.json"
     p.write_text(json.dumps({"availability_tier": "gold", "critical_apps": ["voice"],
                              "growth_horizon": "3y +50%", "junk": "ignored", "constraints": []}), encoding="utf-8")
@@ -833,11 +833,15 @@ def test_dc_corpus_doctrine_present_cited_and_honest():
         should_act = pid == _DC_CORPUS_ACTIONABLE
         assert bool(p.get("engine_actionable")) is should_act, \
             f"{pid} actionability must be {should_act} (doctrine unless it is the requirement-gated Multi-Site choice)"
-    # the 4 NEW domains exist with the expected membership (by_domain surfaces them automatically)
+    # the 4 NEW domains exist with the expected membership (by_domain surfaces them automatically). dc-fabric is
+    # now SHARED: the ACI-corpus addendum adds the fabric operating-model CHOICE to it -- allow that one
+    # documented extra, but nothing else may creep into a DC-corpus domain undetected.
+    _ACI_ADDENDUM_EXTRA = {"dc-fabric": {"dc-fabric-aci-vs-nxos-evpn-operating-model"}}
     for dom, ids in _DC_CORPUS_IDS.items():
         got = {p["id"] for p in design_kb.by_domain(dom)}
         assert set(ids) <= got, f"domain {dom} must contain {set(ids) - got}"
-        assert len(got) == len(ids), f"domain {dom}: expected {len(ids)} principles, got {len(got)}"
+        unexpected = got - set(ids) - _ACI_ADDENDUM_EXTRA.get(dom, set())
+        assert not unexpected, f"domain {dom}: unexpected principles {unexpected}"
     # citation ACCURACY (the adversarial standards pass): EVPN ctrl-plane is MPLS-EVPN(7432) over VXLAN/NVO
     # (8365) with IP-prefix RT-5 (9136); anycast GW is EVPN-IRB (9135); TRM routed-multicast is ngMVPN (6513)
     cp = design_kb.by_id("dc-fabric-vxlan-evpn-control-plane")["citation"]
@@ -943,3 +947,151 @@ def test_oncritical_segmentation_exposure_detector_evidence_gated():
     # refutation: no observed exposure -> no decision
     none = {x["id"] for x in compute_design_blueprint(_snap())["decisions"]}
     assert "security-isolate-oncritical-application-tier" not in none
+
+
+# ----------------------------------------- ACI vs standalone NX-OS VXLAN-EVPN fabric operating-model choice
+def _dc_scale_snap(**over):
+    """A DC-scale snapshot (>= _LARGE_L2_VLANS VLANs in one VRF, large inventory) so a spine-leaf fabric is
+    genuinely a candidate target and the operating-model realisation choice is in scope."""
+    base = {
+        "l3_forwarding": [{"switch": "dist1", "vlan": str(v), "svi_ip": f"10.0.{v}.1",
+                           "fhrp": "none", "risk": "no-FHRP"} for v in range(10, 26)],   # 16 VLANs
+        "collection_completeness": {"summary": {"inventory": 40, "complete": 35, "not_collected": 5}},
+    }
+    base.update(over)
+    return _snap(**base)
+
+
+def test_fabric_operating_model_is_a_recognised_requirement_key():
+    """The new fabric_operating_model WHY-key is recognised on every register path and canonicalised to one
+    of {'aci','nxos-evpn'} (free text in, two stable values out); nonsense is dropped, not guessed."""
+    from cisco_toolkit.design_advisor import (REQUIREMENTS_KEYS, requirements_from_interview,
+                                              load_requirements)
+    import json
+    assert "fabric_operating_model" in REQUIREMENTS_KEYS
+    for raw, want in [("ACI", "aci"), ("apic", "aci"), ("NX-OS EVPN", "nxos-evpn"),
+                      ("vxlan-evpn", "nxos-evpn"), ("NDFC", "nxos-evpn"), ("nonsense", None)]:
+        got = requirements_from_interview({"fabric_operating_model": raw}).get("fabric_operating_model")
+        assert got == want, f"interview {raw!r} -> {got!r} (want {want!r})"
+
+
+def test_fabric_operating_model_choice_is_requirement_gated_and_resolves():
+    """The DC fabric OPERATING-MODEL realisation (Cisco ACI vs standalone NX-OS VXLAN-EVPN) is a top-down
+    CHOICE, never assumed from brownfield evidence. Absent the requirement it is an open question that
+    presents BOTH and assumes NEITHER; supplied, the target-state dimension resolves to the chosen model
+    and the gated decision flips to recommended. (Refutation of a silent default.)"""
+    from cisco_toolkit.design_advisor import compute_target_state, compute_design_blueprint
+    from cisco_toolkit import design_kb
+    snap = _dc_scale_snap()
+
+    ts0 = compute_target_state(snap)                                      # no requirements
+    dim = next((d for d in ts0["dimensions"] if d.get("requirement_needed") == "fabric_operating_model"), None)
+    assert dim is not None and "operating model" in dim["area"].lower()
+    low = dim["target"].lower()
+    assert "aci" in low and "evpn" in low                                # presents both, picks neither
+
+    ev = compute_target_state(snap, {"fabric_operating_model": "nxos-evpn"})
+    de = next(d for d in ev["dimensions"] if "operating model" in d["area"].lower())
+    assert not de.get("requirement_needed") and de["confidence"] == "Candidate"
+    assert "evpn" in de["target"].lower()                                # resolved to standalone NX-OS-EVPN
+
+    ac = compute_target_state(snap, {"fabric_operating_model": "aci"})
+    da = next(d for d in ac["dimensions"] if "operating model" in d["area"].lower())
+    assert not da.get("requirement_needed") and "aci" in da["target"].lower()
+
+    pid = "dc-fabric-aci-vs-nxos-evpn-operating-model"
+    d0 = {d["id"]: d for d in compute_design_blueprint(snap)["decisions"]}
+    d1 = {d["id"]: d for d in compute_design_blueprint(snap, {"fabric_operating_model": "aci"})["decisions"]}
+    assert d0[pid]["status"] == "needs-requirement" and d1[pid]["status"] == "recommended"
+    # the driver principle exists and is traceable; emitted via _NEEDS => engine_actionable like its siblings
+    p = design_kb.by_id(pid)
+    assert p and p["engine_actionable"] is True and p["domain"] == "dc-fabric"
+
+
+def test_fabric_operating_model_dimension_absent_for_small_non_dc_estate():
+    """Coverage-honesty: the operating-model TARGET-STATE dimension must not present a fabric realisation for
+    a small estate where no spine-leaf fabric is a candidate -- that would be noise, not a recommendation."""
+    from cisco_toolkit.design_advisor import compute_target_state
+    small = _snap(collection_completeness={"summary": {"inventory": 6, "complete": 6, "not_collected": 0}},
+                  l3_forwarding=[{"switch": "d", "vlan": "10", "svi_ip": "10.0.0.1", "fhrp": "hsrp"}])
+    ts = compute_target_state(small)
+    assert not any("operating model" in d["area"].lower() for d in ts["dimensions"])
+
+
+def test_target_state_dimension_drivers_are_real_kb_principles():
+    """Every principle id a target-state dimension cites as a 'driver' must exist in the KB -- a dangling
+    driver would render as an un-tooltipped id in the HLD/explorer and break decision->doctrine traceability."""
+    from cisco_toolkit.design_advisor import compute_target_state
+    kb_ids = {p["id"] for p in design_kb.DOCTRINE}
+    for req in (None, {"fabric_operating_model": "aci"},
+                {"fabric_operating_model": "nxos-evpn", "growth_horizon": "3y +60%"}):
+        ts = compute_target_state(_dc_scale_snap(), req)
+        for d in ts["dimensions"]:
+            for drv in d.get("drivers", []):
+                assert drv in kb_ids, f"dimension {d['area']!r} cites unknown driver principle {drv!r}"
+
+
+def test_aci_corpus_addendum_cited_complete_and_coverage_honest():
+    """COVERAGE-HONESTY LOCK for the ACI/EVPN/SP design-corpus addendum (mined from the real ACI HLD/LLD/NIP
+    + EVPN/SP deep-dives). Iterates the addendum GENERICALLY so it validates whatever is appended: every
+    principle is complete + cites its source, ids are unique, and -- since the L1-L4 assessment collects NO
+    ACI/APIC/controller/EPG/contract/policy state -- the ONLY principle that may claim engine_actionable is
+    the requirement-gated fabric operating-model CHOICE (emitted via _NEEDS). Everything else is doctrine."""
+    add = design_kb._ACI_CORPUS_ADDENDUM
+    assert isinstance(add, list) and add, "the ACI corpus addendum must exist and be non-empty"
+    ids = [p["id"] for p in add]
+    assert len(ids) == len(set(ids)), f"duplicate ids in the ACI addendum: {ids}"
+    _FIELDS = ("id", "domain", "title", "priority", "engine_actionable", "design_intent",
+               "tradeoffs", "trigger", "observable", "recommended_action", "alternatives", "citation")
+    for p in add:
+        for f in _FIELDS:
+            assert p.get(f) not in (None, ""), f"{p.get('id')} missing/empty field {f!r}"
+        if p["engine_actionable"]:
+            assert p["id"] == "dc-fabric-aci-vs-nxos-evpn-operating-model", \
+                f"{p['id']} claims engine_actionable, but only the requirement-gated fabric operating-model " \
+                "CHOICE may -- ACI/controller state is not collected, so the rest must be honest doctrine"
+            # and an actionable addendum principle must actually be EMITTED (no overstated coverage)
+            emitted = {d["id"] for d in compute_design_blueprint(_maximal_snap())["decisions"]}
+            assert p["id"] in emitted, f"{p['id']} is engine_actionable but the advisor never emits it"
+
+
+def test_sp_corpus_addendum_cited_complete_and_coverage_honest():
+    """COVERAGE-HONESTY LOCK for the Service-Provider / Segment-Routing addendum (mined from the D:\\ SP
+    corpus: SR-MPLS/SRv6, inter-AS L3VPN, L2VPN, ngMVPN, MPLS-QoS, transport hygiene). Iterates generically:
+    every principle complete + cited + unique id, and -- because an L1-L4 ENTERPRISE brownfield assessment
+    collects NO SR/LDP/RSVP/MP-BGP-VPN/MVPN/L2VPN control-plane state -- EVERY SP principle is doctrine
+    (engine_actionable=False), with NO exception. The new SP domains are registered + surface via by_domain."""
+    add = design_kb._SP_CORPUS_ADDENDUM
+    assert isinstance(add, list) and len(add) >= 12, "the SP-transport corpus addendum must exist and be substantial"
+    ids = [p["id"] for p in add]
+    assert len(ids) == len(set(ids)), f"duplicate ids in the SP addendum: {ids}"
+    _FIELDS = ("id", "domain", "title", "priority", "engine_actionable", "design_intent",
+               "tradeoffs", "trigger", "observable", "recommended_action", "alternatives", "citation")
+    for p in add:
+        for f in _FIELDS:
+            assert p.get(f) not in (None, ""), f"{p.get('id')} missing/empty field {f!r}"
+        assert p["engine_actionable"] is False, \
+            f"{p['id']} must be doctrine (engine_actionable=False) -- no SR/MPLS-VPN/MVPN core state is collected"
+    # the new SP domains exist and surface generically (so HLD §4.4 / explorer / chat reason with them)
+    for dom in ("segment-routing", "sp-transport", "sp-l2vpn", "sp-mvpn"):
+        assert design_kb.by_domain(dom), f"new SP domain {dom!r} must contain principles"
+
+
+def test_sdwan_corpus_addendum_cited_complete_and_coverage_honest():
+    """COVERAGE-HONESTY LOCK for the SD-WAN / modern-WAN addendum (Catalyst SD-WAN: 4-plane controller fabric,
+    OMP, TLOC/transport-independence, app-aware SLA, centralized policy, segmentation, SASE/SIG, multi-region).
+    Iterates generically: complete + cited + unique id, and -- because an L1-L4 enterprise assessment collects
+    NO SD-WAN overlay/controller/OMP/policy state -- EVERY SD-WAN principle is doctrine (engine_actionable=False),
+    no exception. The sd-wan domain is registered + surfaces via by_domain."""
+    add = design_kb._SDWAN_CORPUS_ADDENDUM
+    assert isinstance(add, list) and len(add) >= 10, "the SD-WAN corpus addendum must exist and be substantial"
+    ids = [p["id"] for p in add]
+    assert len(ids) == len(set(ids)), f"duplicate ids in the SD-WAN addendum: {ids}"
+    _FIELDS = ("id", "domain", "title", "priority", "engine_actionable", "design_intent",
+               "tradeoffs", "trigger", "observable", "recommended_action", "alternatives", "citation")
+    for p in add:
+        for f in _FIELDS:
+            assert p.get(f) not in (None, ""), f"{p.get('id')} missing/empty field {f!r}"
+        assert p["engine_actionable"] is False, \
+            f"{p['id']} must be doctrine (engine_actionable=False) -- no SD-WAN overlay/controller state is collected"
+    assert design_kb.by_domain("sd-wan"), "the sd-wan domain must contain principles"
