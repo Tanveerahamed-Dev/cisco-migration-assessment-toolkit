@@ -1,15 +1,24 @@
 /* The CCDE-grounded target-state DESIGN BLUEPRINT, interactive. Renders the SAME design_blueprint the
    HLD/LLD DOCX and the explorer ✎ Design mode carry (GET /api/snapshots/{id}/design). The requirements
    overlay POSTs a register to /design and the SERVER (compute_design_blueprint) right-sizes every
-   decision — the UI never re-derives design intent, so the dashboard and the script stay one source. */
+   decision — the UI never re-derives design intent, so the dashboard and the script stay one source.
+
+   Includes:
+   - Requirements form: all 8 REQUIREMENTS_KEYS (tier/apps/convergence/growth/classification/constraints
+     /address_space/vlan_zones) → unlocks the live IP addressing plan on the server side.
+   - Design-driven NRFU panel: GET /design/nrfu → phased acceptance-test checklist from recommended
+     decisions, each traceable to the CCDE principle and the specific devices to verify.
+   - n_census_vlans disclosure when the IP plan is in needs-requirement state. */
 import { useState } from "react";
-import { api, DesignBlueprint, DesignDecision, DesignTargetState } from "../api";
+import { api, DesignBlueprint, DesignDecision, DesignNrfu, DesignNrfuItem, DesignTargetState } from "../api";
 import { ErrorBox, Loading, useAsync } from "./ui";
 
 const P_COLOR = (p: string) =>
   p === "Critical" ? "var(--crit)" : p === "High" ? "var(--risk)" : p === "Medium" ? "var(--watch)" : "var(--ok)";
 const scoreColor = (v: number | null) =>
   v == null ? "var(--text-faint)" : v <= 1 ? "var(--crit)" : v <= 2 ? "var(--risk)" : v <= 3 ? "var(--watch)" : "var(--ok)";
+const phaseColor = (ph: string) =>
+  ph === "pre-cutover" ? "var(--crit)" : ph === "post-cutover-functional" ? "var(--risk)" : "var(--watch)";
 
 function DecisionCard({ d }: { d: DesignDecision }) {
   return (
@@ -46,6 +55,67 @@ function DecisionCard({ d }: { d: DesignDecision }) {
         )}
         {d.principle.citation}
       </div>
+    </div>
+  );
+}
+
+function NrfuItem({ item }: { item: DesignNrfuItem }) {
+  const [open, setOpen] = useState(false);
+  const col = phaseColor(item.phase);
+  return (
+    <div className="panel" style={{ padding: 10, borderLeft: `3px solid ${col}`, marginBottom: 6 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", cursor: "pointer" }}
+           onClick={() => setOpen(!open)} role="button" aria-expanded={open}>
+        <span className="chip" style={{ fontSize: 9, color: col, borderColor: col, flexShrink: 0 }}>{item.phase}</span>
+        <span className="chip" style={{ fontSize: 9, color: P_COLOR(item.priority), borderColor: P_COLOR(item.priority), flexShrink: 0 }}>{item.priority}</span>
+        <b style={{ fontSize: 12, flex: 1 }}>{item.title}</b>
+        <span className="faint" style={{ fontSize: 11 }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 12, marginBottom: 4 }}><b>Verify:</b> <span className="dim">{item.description}</span></div>
+          <div style={{ fontSize: 12, marginBottom: 4 }}><b>Pass criteria:</b> <span className="dim">{item.pass_criteria}</span></div>
+          {item.devices.length > 0 && (
+            <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>
+              <b>Devices ({item.devices.length}):</b>{" "}
+              <span className="mono">{item.devices.slice(0, 10).join(", ")}{item.devices.length > 10 ? ` +${item.devices.length - 10}` : ""}</span>
+            </div>
+          )}
+          <div className="faint" style={{ fontSize: 10 }}>{item.principle_citation}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NrfuPanel({ snapId }: { snapId: number }) {
+  const { data, error, loading } = useAsync(() => api.designNrfu(snapId), [snapId]);
+  if (loading) return <Loading />;
+  if (error) return <ErrorBox msg={error} />;
+  const nrfu = data as DesignNrfu;
+  const byPhase: Record<string, DesignNrfuItem[]> = {};
+  for (const it of nrfu.items) {
+    (byPhase[it.phase] = byPhase[it.phase] || []).push(it);
+  }
+  const phases = ["pre-cutover", "post-cutover-functional", "post-cutover-operational"] as const;
+  const phaseLabel: Record<string, string> = {
+    "pre-cutover": "Pre-cutover (before wave executes)",
+    "post-cutover-functional": "Post-cutover functional (core acceptance)",
+    "post-cutover-operational": "Post-cutover operational (baseline)",
+  };
+  return (
+    <div>
+      <div className="faint" style={{ fontSize: 11, marginBottom: 10 }}>{nrfu.note}</div>
+      {phases.map((ph) =>
+        (byPhase[ph] || []).length > 0 ? (
+          <div key={ph} style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: phaseColor(ph), marginBottom: 6 }}>
+              {phaseLabel[ph]} · {(byPhase[ph] || []).length}
+            </div>
+            {(byPhase[ph] || []).map((it) => <NrfuItem key={it.decision_id} item={it} />)}
+          </div>
+        ) : null
+      )}
     </div>
   );
 }
@@ -98,7 +168,26 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
               <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>{ap.note}</div>
             </>
           ) : (
-            <div className="dim" style={{ fontSize: 12 }}>Needs <b>{ap.requirement_needed}</b>{ap.observed_vlans != null ? ` (${ap.observed_vlans} VLAN(s) observed)` : ""}. {ap.note}</div>
+            <div className="dim" style={{ fontSize: 12 }}>
+              Needs <b>{ap.requirement_needed}</b>
+              {ap.n_census_vlans != null ? (
+                <> — {ap.n_census_vlans} census VLAN(s) total
+                {ap.n_unsizable != null && ap.n_unsizable > 0 && (
+                  <>, {ap.n_unsizable} querier-only / VLAN-1 with no auto-sized subnet</>
+                )}
+                {ap.observed_vlans != null && (
+                  <>, {ap.observed_vlans} with observed access port or L3 SVI (sizeable).</>
+                )}
+                </>
+              ) : ap.observed_vlans != null ? (
+                <> ({ap.observed_vlans} VLAN(s) observed)</>
+              ) : null}
+              {". "}{ap.note}
+              <div style={{ marginTop: 6, fontSize: 11, color: "var(--watch)" }}>
+                Supply <b>address_space</b> (e.g. 10.0.0.0/16) in the requirements form above to generate the candidate IP plan.
+                Optionally add <b>vlan_zones</b> (JSON: {"{"}zone: [vlan_ids]{"}"}") for zone-aware allocation with one summarisable block per zone.
+              </div>
+            </div>
           )}
         </>
       )}
@@ -114,16 +203,23 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
   );
 }
 
+type Tab = "blueprint" | "nrfu";
+
 export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const { data, error, loading } = useAsync(() => api.design(snapId), [snapId]);
   const [over, setOver] = useState<DesignBlueprint | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<Tab>("blueprint");
+  // Requirements form — all 8 REQUIREMENTS_KEYS
   const [tier, setTier] = useState("");
   const [apps, setApps] = useState("");
   const [conv, setConv] = useState("");
   const [growth, setGrowth] = useState("");
   const [dataClass, setDataClass] = useState("");
   const [budget, setBudget] = useState(false);
+  const [addrSpace, setAddrSpace] = useState("");
+  const [vlanZones, setVlanZones] = useState("");
+  const [zonesErr, setZonesErr] = useState("");
 
   if (loading) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><Loading /></div>;
   if (error) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><ErrorBox msg={error} /></div>;
@@ -133,6 +229,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const needs = bp.decisions.filter((d) => d.status === "needs-requirement");
 
   const applyReqs = async () => {
+    setZonesErr("");
     const req: Record<string, unknown> = {};
     if (tier) req.availability_tier = tier;
     if (apps.trim()) req.critical_apps = apps.split(",").map((x) => x.trim()).filter(Boolean);
@@ -140,6 +237,15 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     if (growth.trim()) req.growth_horizon = growth.trim();
     if (dataClass.trim()) req.data_classification = dataClass.split(",").map((x) => x.trim()).filter(Boolean);
     if (budget) req.constraints = ["budget-limited"];
+    if (addrSpace.trim()) req.address_space = addrSpace.trim();
+    if (vlanZones.trim()) {
+      try {
+        req.vlan_zones = JSON.parse(vlanZones.trim());
+      } catch {
+        setZonesErr("vlan_zones must be valid JSON, e.g. {\"PCI\": [10, 20], \"corp\": [30]}");
+        return;
+      }
+    }
     setBusy(true);
     try {
       setOver(await api.designOverlay(snapId, req));
@@ -150,7 +256,8 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     }
   };
   const clearReqs = () => {
-    setOver(null); setTier(""); setApps(""); setConv(""); setGrowth(""); setDataClass(""); setBudget(false);
+    setOver(null); setTier(""); setApps(""); setConv(""); setGrowth("");
+    setDataClass(""); setBudget(false); setAddrSpace(""); setVlanZones(""); setZonesErr("");
   };
 
   return (
@@ -162,71 +269,115 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
         {" — "}the same CCDE-grounded design_blueprint behind the HLD/LLD DOCX and the explorer ✎ Design mode.
       </div>
 
-      <table className="tbl" style={{ marginTop: 12 }}>
-        <thead><tr><th>Trade-off axis</th><th className="num">Score</th><th>Posture</th></tr></thead>
-        <tbody>
-          {bp.tradeoff_scorecard.map((a) => (
-            <tr key={a.axis}>
-              <td><b>{a.label}</b></td>
-              <td className="num" style={{ color: scoreColor(a.score), fontWeight: 700 }}>{a.score == null ? "—" : `${a.score}/4`}</td>
-              <td className="dim">{a.posture}{a.target_weight && a.target_weight !== 1 ? ` · ×${a.target_weight}` : ""}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <div className="panel" style={{ padding: 12, marginTop: 12, background: "var(--surface-2)" }}>
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Right-size to requirements (the WHY)</div>
-        <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>{bp.requirements_model.note}</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-          <select value={tier} onChange={(e) => setTier(e.target.value)} aria-label="availability tier">
-            <option value="">availability tier…</option>
-            <option value="gold">gold</option>
-            <option value="silver">silver</option>
-            <option value="bronze">bronze</option>
-          </select>
-          <input placeholder="critical apps (voice,video)" value={apps} onChange={(e) => setApps(e.target.value)} />
-          <input placeholder="convergence ms" value={conv} onChange={(e) => setConv(e.target.value)} style={{ width: 120 }} />
-          <input placeholder="growth horizon" value={growth} onChange={(e) => setGrowth(e.target.value)} style={{ width: 140 }} />
-          <input placeholder="data classification (PCI,corp)" value={dataClass} onChange={(e) => setDataClass(e.target.value)} style={{ width: 180 }} aria-label="data classification" />
-          <label style={{ fontSize: 12 }}>
-            <input type="checkbox" checked={budget} onChange={(e) => setBudget(e.target.checked)} /> budget-limited
-          </label>
-          <button onClick={applyReqs} disabled={busy}>{busy ? "…" : "Right-size"}</button>
-          {over && <button onClick={clearReqs}>Reset</button>}
-        </div>
-        {over && (
-          <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
-            Decisions re-ranked by effective priority for the supplied requirements (computed server-side).
-          </div>
-        )}
+      {/* Tab bar */}
+      <div style={{ display: "flex", gap: 4, marginTop: 12, borderBottom: "1px solid var(--border)" }}>
+        {([["blueprint", "Design blueprint"], ["nrfu", `NRFU checklist`]] as [Tab, string][]).map(([t, label]) => (
+          <button key={t} onClick={() => setTab(t)}
+            style={{ background: tab === t ? "var(--accent)" : "transparent",
+                     color: tab === t ? "#fff" : "var(--text)", border: "none",
+                     borderRadius: "4px 4px 0 0", padding: "4px 12px", cursor: "pointer", fontSize: 12, fontWeight: tab === t ? 700 : 400 }}>
+            {label}
+          </button>
+        ))}
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Target-state design decisions · {rec.length}</div>
-        {rec.length
-          ? rec.map((d) => <DecisionCard key={d.id} d={d} />)
-          : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
-      </div>
+      {tab === "blueprint" && (
+        <>
+          <table className="tbl" style={{ marginTop: 12 }}>
+            <thead><tr><th>Trade-off axis</th><th className="num">Score</th><th>Posture</th></tr></thead>
+            <tbody>
+              {bp.tradeoff_scorecard.map((a) => (
+                <tr key={a.axis}>
+                  <td><b>{a.label}</b></td>
+                  <td className="num" style={{ color: scoreColor(a.score), fontWeight: 700 }}>{a.score == null ? "—" : `${a.score}/4`}</td>
+                  <td className="dim">{a.posture}{a.target_weight && a.target_weight !== 1 ? ` · ×${a.target_weight}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
 
-      {bp.target_state && <TargetState ts={bp.target_state} />}
-
-      {needs.length > 0 && (
-        <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Open design questions · {needs.length}</div>
-          <div className="faint" style={{ fontSize: 11, marginBottom: 6 }}>
-            Design top-down from the WHY: these depend on requirements the assessment cannot observe — the
-            engine surfaces the question, it never assumes the answer.
-          </div>
-          {needs.map((d) => (
-            <div key={d.id} style={{ fontSize: 12, padding: "5px 0", borderBottom: "1px solid var(--border)" }}>
-              <b>{d.title}</b> <span className="faint">— needs {d.requirements_needed.join(", ")}</span>
+          {/* Requirements form — all 8 REQUIREMENTS_KEYS */}
+          <div className="panel" style={{ padding: 12, marginTop: 12, background: "var(--surface-2)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>Right-size to requirements (the WHY)</div>
+            <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>{bp.requirements_model.note}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, alignItems: "flex-start" }}>
+              <select value={tier} onChange={(e) => setTier(e.target.value)} aria-label="availability tier">
+                <option value="">availability tier…</option>
+                <option value="gold">gold</option>
+                <option value="silver">silver</option>
+                <option value="bronze">bronze</option>
+              </select>
+              <input placeholder="critical apps (voice,video)" value={apps} onChange={(e) => setApps(e.target.value)} />
+              <input placeholder="convergence ms" value={conv} onChange={(e) => setConv(e.target.value)} style={{ width: 120 }} />
+              <input placeholder="growth horizon" value={growth} onChange={(e) => setGrowth(e.target.value)} style={{ width: 140 }} />
+              <input placeholder="data classification (PCI,corp)" value={dataClass} onChange={(e) => setDataClass(e.target.value)} style={{ width: 180 }} aria-label="data classification" />
+              <label style={{ fontSize: 12, alignSelf: "center" }}>
+                <input type="checkbox" checked={budget} onChange={(e) => setBudget(e.target.checked)} /> budget-limited
+              </label>
             </div>
-          ))}
-        </div>
+            {/* IP plan requirements — unlock the addressing_plan */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, alignItems: "flex-start" }}>
+              <input placeholder="address space (e.g. 10.0.0.0/16)" value={addrSpace}
+                     onChange={(e) => setAddrSpace(e.target.value)} style={{ width: 200 }}
+                     aria-label="target address space" title="Supply to generate the net-new IP addressing plan" />
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1 }}>
+                <textarea placeholder={'vlan_zones JSON (optional) — e.g. {"PCI":[10,20],"corp":[30]} for zone-aware allocation'}
+                          value={vlanZones} onChange={(e) => setVlanZones(e.target.value)}
+                          rows={2} style={{ width: "100%", fontFamily: "monospace", fontSize: 11, resize: "vertical" }}
+                          aria-label="VLAN zones" />
+                {zonesErr && <div style={{ color: "var(--crit)", fontSize: 11 }}>{zonesErr}</div>}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+              <button onClick={applyReqs} disabled={busy}>{busy ? "…" : "Right-size"}</button>
+              {over && <button onClick={clearReqs}>Reset</button>}
+              {over && (
+                <span className="faint" style={{ fontSize: 11 }}>
+                  Decisions re-ranked by effective priority for the supplied requirements (computed server-side).
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Target-state design decisions · {rec.length}</div>
+            {rec.length
+              ? rec.map((d) => <DecisionCard key={d.id} d={d} />)
+              : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
+          </div>
+
+          {bp.target_state && <TargetState ts={bp.target_state} />}
+
+          {needs.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Open design questions · {needs.length}</div>
+              <div className="faint" style={{ fontSize: 11, marginBottom: 6 }}>
+                Design top-down from the WHY: these depend on requirements the assessment cannot observe — the
+                engine surfaces the question, it never assumes the answer. Supply the requirement above to resolve.
+              </div>
+              {needs.map((d) => (
+                <div key={d.id} style={{ fontSize: 12, padding: "5px 0", borderBottom: "1px solid var(--border)" }}>
+                  <b>{d.title}</b> <span className="faint">— needs {d.requirements_needed.join(", ")}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="faint" style={{ fontSize: 11, marginTop: 12 }}>{bp.coverage.caveat}</div>
+        </>
       )}
 
-      <div className="faint" style={{ fontSize: 11, marginTop: 12 }}>{bp.coverage.caveat}</div>
+      {tab === "nrfu" && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Design-driven NRFU/ATP checklist</div>
+          <div className="faint" style={{ fontSize: 11, marginBottom: 10 }}>
+            One acceptance-test item per recommended design decision, phased across pre-cutover →
+            post-cutover-functional → post-cutover-operational. Each item is traceable to the CCDE principle
+            and the specific devices to verify. Independent of the design authors (proposer ≠ verifier).
+          </div>
+          <NrfuPanel snapId={snapId} />
+        </div>
+      )}
     </div>
   );
 }

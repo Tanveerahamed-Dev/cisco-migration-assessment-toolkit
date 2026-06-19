@@ -597,3 +597,98 @@ def test_no_decision_cites_an_unloadable_requirement_key():
         for k in d.get("requirements_needed", []):
             assert k in REQUIREMENTS_KEYS, \
                 f"decision {d['id']} cites requirement '{k}' absent from REQUIREMENTS_KEYS (unsupply-able)"
+
+
+def test_compute_design_nrfu_generates_acceptance_items_from_decisions():
+    """NRFU FRONTIER: compute_design_nrfu() bridges design intent to acceptance tests — one structured
+    NRFU item per recommended design decision, each traceable to the decision ID / CCDE principle /
+    affected devices. Only recommended decisions generate items (needs-requirement decisions are not
+    testable until the requirement is supplied). Items must carry: decision_id, title, priority, phase,
+    description, pass_criteria, devices, principle_citation. A design with no recommended decisions
+    yields an empty but structurally valid result (no crash). The function is deterministic."""
+    from cisco_toolkit.design_advisor import compute_design_nrfu
+    bp = compute_design_blueprint(_snap())
+    result = compute_design_nrfu(bp)
+
+    # structural contract
+    assert isinstance(result, dict)
+    for k in ("items", "n_items", "note"):
+        assert k in result, f"compute_design_nrfu result missing '{k}'"
+    assert result["n_items"] == len(result["items"])
+
+    # every item has the required keys
+    required_keys = {"decision_id", "title", "priority", "phase", "description",
+                     "pass_criteria", "devices", "principle_citation"}
+    for item in result["items"]:
+        missing = required_keys - set(item)
+        assert not missing, f"NRFU item {item.get('decision_id')} missing keys: {missing}"
+
+    # only recommended decisions produce items (needs-requirement are not testable yet)
+    rec_ids = {d["id"] for d in bp["decisions"] if d["status"] == "recommended"}
+    nrfu_ids = {it["decision_id"] for it in result["items"]}
+    assert nrfu_ids <= rec_ids, (
+        f"NRFU items must trace only to recommended decisions; unexpected: {nrfu_ids - rec_ids}"
+    )
+    # every recommended decision must produce exactly one item
+    assert nrfu_ids == rec_ids, (
+        f"every recommended decision must map to an NRFU item; missing: {rec_ids - nrfu_ids}"
+    )
+
+    # devices on each item match the decision's evidence.devices
+    by_id = {d["id"]: d for d in bp["decisions"]}
+    for item in result["items"]:
+        dec = by_id[item["decision_id"]]
+        assert item["devices"] == (dec.get("evidence") or {}).get("devices", []), (
+            f"NRFU item {item['decision_id']} devices must match decision evidence.devices"
+        )
+
+    # determinism
+    import json
+    assert json.dumps(compute_design_nrfu(bp), sort_keys=True) == json.dumps(result, sort_keys=True)
+
+    # empty blueprint yields empty, valid result (no crash)
+    empty = compute_design_nrfu(compute_design_blueprint({}))
+    assert isinstance(empty["items"], list)
+
+
+def test_requirements_model_surfaces_all_requirement_keys():
+    """SSOT gap fix: requirements_model.fields must surface EVERY REQUIREMENTS_KEY — including
+    address_space and vlan_zones, which are the two keys that unlock the net-new IP addressing plan
+    (target_state.addressing_plan). Absent them, no UI or API caller knows to prompt for them, so
+    the addressing plan stays permanently in the needs-requirement state with no actionable path to
+    resolve it. Refutes the regression where 6 of 8 keys were exposed and the IP-plan requirements
+    were invisible to every interactive surface."""
+    from cisco_toolkit.design_advisor import REQUIREMENTS_KEYS
+    bp = compute_design_blueprint(_snap())
+    field_keys = {f["key"] for f in bp["requirements_model"]["fields"]}
+    missing = set(REQUIREMENTS_KEYS) - field_keys
+    assert not missing, (
+        f"requirements_model.fields is missing REQUIREMENTS_KEYS: {sorted(missing)} "
+        f"— these cannot be supplied by any interactive surface (webapp form / interview / CLI hint)"
+    )
+
+
+def test_addressing_plan_has_census_vlans_when_needs_requirement():
+    """SSOT gap fix: n_census_vlans and n_unsizable must be present in the addressing_plan even
+    when status='needs-requirement' (no address_space supplied) — not only in the candidate path.
+    Every surface (explorer needs-requirement block, webapp IP plan section) should be able to
+    display 'N census VLANs total; M have no access port/SVI and will need manual sizing' as a
+    context-setting disclosure, even before the engineer provides an address space. Refutes the
+    early-return bug that omitted both fields and caused the live AJ addressing_plan to show
+    n_census_vlans: None and n_unsizable: None."""
+    snap = _snap()
+    ap = compute_design_blueprint(snap)["target_state"]["addressing_plan"]
+    assert ap["status"] == "needs-requirement", "pre-condition: no address_space -> needs-requirement"
+    assert "n_census_vlans" in ap, (
+        "n_census_vlans must be present in the needs-requirement addressing_plan so surfaces can "
+        "disclose the full VLAN census count before the IP plan is requested"
+    )
+    assert "n_unsizable" in ap, (
+        "n_unsizable must be present in the needs-requirement addressing_plan"
+    )
+    assert isinstance(ap["n_census_vlans"], int) and ap["n_census_vlans"] >= 0
+    assert isinstance(ap["n_unsizable"], int) and ap["n_unsizable"] >= 0
+    # Refutation: with address_space supplied both fields must still be present (they were already)
+    ap2 = compute_design_blueprint(snap, {"address_space": "10.0.0.0/16"})["target_state"]["addressing_plan"]
+    assert ap2["status"] == "candidate"
+    assert "n_census_vlans" in ap2 and "n_unsizable" in ap2

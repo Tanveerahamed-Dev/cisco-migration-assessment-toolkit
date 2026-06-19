@@ -106,6 +106,9 @@
   .btn:hover{border-color:var(--border-strong); color:var(--text); background:var(--surface-3)}
   .btn.primary{color:#fff; background:var(--accent); border-color:var(--accent)}
   .btn.primary:hover{background:var(--accent-dim)}
+  .xpbtn{font:inherit;font-size:11px;cursor:pointer;color:var(--text-dim);background:transparent;
+    border:1px solid var(--border);padding:3px 9px;border-radius:5px;transition:.1s}
+  .xpbtn:hover{border-color:var(--border-strong);color:var(--text)}
   .iconbtn{padding:6px 9px}
 
   .main{display:grid; grid-template-columns:minmax(0,1fr) 388px; min-height:0}
@@ -3334,6 +3337,7 @@ function wireLegendHover(){
    DRAWER — single right panel, re-skinned per mode
    ===================================================================== */
 function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function toggleEl(id){const el=document.getElementById(id);if(el)el.style.display=el.style.display==="none"?"":"none";}
 
 /* rAF-tween el.textContent 0→target over ~500ms ease-out. Cancels any prior tween on the
    same element, clamps to target, and snaps instantly under prefers-reduced-motion. */
@@ -6234,7 +6238,11 @@ function drawDesign(){
     const subRows=ap.subnets.slice(0,40).map(sn=>`<div class="ln"><span class="mono">VLAN ${sn.vlan}</span> → <span class="mono">${esc(sn.subnet)}</span> <span class="faint">${sn.hosts} host(s)${sn.note?(" — "+esc(sn.note)):""}</span></div>`).join("");
     apHtml=`<p class="sub" style="margin:0 0 8px">${esc(ap.note||"")}</p>${zoneRows}${subRows}${ap.subnets.length>40?`<div class="ln faint">… and ${ap.subnets.length-40} more; full plan in the workbook.</div>`:""}`;
   }else if(ap.requirement_needed){
-    apHtml=`<div class="ln faint">Net-new IP plan — needs <b>${esc(ap.requirement_needed)}</b>${ap.observed_vlans!=null?` (${ap.observed_vlans} user VLAN(s) observed)`:""}. ${esc(ap.note||"")}</div>`;
+    const censusTxt=ap.n_census_vlans!=null
+      ?` — ${ap.n_census_vlans} census VLAN(s) total${ap.n_unsizable>0?`, ${ap.n_unsizable} querier-only/VLAN-1 with no auto-sized subnet`:""}; ${ap.observed_vlans!=null?ap.observed_vlans:0} with observed access port or L3 SVI (sizeable)`
+      :(ap.observed_vlans!=null?` (${ap.observed_vlans} user VLAN(s) observed)`:"");
+    apHtml=`<div class="ln faint">Net-new IP plan — needs <b>${esc(ap.requirement_needed)}</b>${censusTxt}. ${esc(ap.note||"")}</div>
+      <div class="ln" style="margin-top:4px;font-size:11px;color:var(--watch)">Supply <b>--requirements</b> with <code>address_space</code> (e.g. 10.0.0.0/16) when re-running the assessment to generate the candidate IP plan; add <code>vlan_zones</code> for zone-aware allocation. Interactive right-sizing is available in the AssessHub web platform&#x2019;s Design panel.</div>`;
   }
   const wp=ts.wave_plan||{}; const wv=Array.isArray(wp.waves)?wp.waves:[];
   const waveRows=wv.slice(0,40).map(w=>`<div class="ln"><span class="pill pl-${w.kind==="coupled-subwave"?"watch":"neutral"}">wave ${w.wave}</span> ${esc(w.kind||"")} <span class="faint">${w.n_switches} switch(es)</span></div>`).join("");
@@ -6269,7 +6277,70 @@ function drawDesign(){
     ${apHtml?`<div class="sec"><h3>Target IP plan</h3>${apHtml}</div>`:""}
     ${waveRows?`<div class="sec"><h3>Migration waves</h3><div class="headline"><div class="stat"><div class="v"><span class="num" data-to="${wp.n_waves||0}">0</span></div><div class="k">waves</div></div><div class="stat"><div class="v"><span class="num" data-to="${wp.wave_cap||0}">0</span></div><div class="k">cap</div></div><div class="stat ${(wp.largest_group||0)>(wp.wave_cap||40)?"crit":""}"><div class="v"><span class="num" data-to="${wp.largest_group||0}">0</span></div><div class="k">largest group</div></div></div><p class="sub" style="margin:6px 0 8px">${esc(wp.note||"")}</p>${waveRows}</div>`:""}
     ${needRows?`<div class="sec"><h3>Open design questions <span class="ct">${needs.length}</span></h3><p class="sub" style="margin:0 0 8px">Design top-down from the WHY: these depend on requirements the assessment cannot observe — the engine surfaces the question, it does not assume. This offline explorer is the read-only design view; right-sizing (re-scoring the decisions against a supplied requirements register) is interactive in the AssessHub web platform's Design panel.</p>${needRows}</div>`:""}
-    ${cov.caveat?`<div class="sec"><div class="ln faint"><b>Coverage:</b> ${esc(cov.caveat)}</div></div>`:""}`;
+    ${cov.caveat?`<div class="sec"><div class="ln faint"><b>Coverage:</b> ${esc(cov.caveat)}</div></div>`:""}
+    ${drawDesignNrfu(bp)}
+    ${drawDesignDoctrine(bp)}`;
+}
+/* ---- Design-driven NRFU checklist (derived from recommended decisions) ---- */
+function drawDesignNrfu(bp){
+  const decs=Array.isArray(bp.decisions)?bp.decisions:[];
+  const rec=decs.filter(d=>d&&d.status==="recommended");
+  if(!rec.length)return"";
+  const _PHASE={
+    "fhrp-not-observed-is-not-healthy":"pre-cutover",
+    "lifecycle-eol-out-of-critical-roles":"pre-cutover",
+    "scenario-build-before-break-phased-cutover":"post-cutover-operational",
+    "mgmt-time-sync-logging-baseline":"post-cutover-operational",
+    "security-device-hardening-baseline":"post-cutover-operational",
+    "mgmt-secure-protocols-and-rbac":"post-cutover-operational",
+  };
+  const phaseLabel={"pre-cutover":"Pre-cutover","post-cutover-functional":"Post-cutover functional","post-cutover-operational":"Post-cutover operational"};
+  const phaseOrder=["pre-cutover","post-cutover-functional","post-cutover-operational"];
+  const phaseColor={"pre-cutover":"var(--crit)","post-cutover-functional":"var(--risk)","post-cutover-operational":"var(--watch)"};
+  const byPhase={};
+  rec.forEach(d=>{const ph=_PHASE[d.id]||"post-cutover-functional";(byPhase[ph]=byPhase[ph]||[]).push(d);});
+  const phaseRows=phaseOrder.map(ph=>{
+    if(!(byPhase[ph]||[]).length)return"";
+    const col=phaseColor[ph]||"var(--text)";
+    const rows=(byPhase[ph]||[]).map(d=>{
+      const devs=((d.evidence||{}).devices||[]);
+      return `<div class="card neutral" style="margin-bottom:6px;padding:8px 10px">
+        <div class="ct"><span class="nm" style="font-size:12px">${esc(d.title)}</span><span class="pill pl-${dPrioTok(d.priority)}">${esc(d.priority)}</span></div>
+        <div class="ln faint" style="font-size:11px;margin-top:3px">${devs.length?`<span class="mono">${devs.slice(0,6).map(esc).join(", ")}${devs.length>6?` +${devs.length-6}`:""}</span> · `:""}${esc(((d.principle||{}).citation)||"")}</div>
+      </div>`;}).join("");
+    return `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:700;color:${col};margin-bottom:4px">${esc(phaseLabel[ph]||ph)} · ${(byPhase[ph]||[]).length}</div>${rows}</div>`;
+  }).join("");
+  const id="des-nrfu-"+Math.random().toString(36).slice(2,6);
+  return `<div class="sec"><h3>Design-driven NRFU checklist <span class="ct">${rec.length}</span></h3>
+    <p class="sub" style="margin:0 0 8px">One acceptance-test per recommended decision, phased pre-cutover → functional → operational. Each item traces to the CCDE principle + affected devices. Independent of the design authors (proposer ≠ verifier).</p>
+    <button class="xpbtn" onclick="toggleEl('${id}')" style="margin-bottom:8px">Show / hide items</button>
+    <div id="${id}" style="display:none">${phaseRows}</div></div>`;
+}
+/* ---- Design knowledge base — full 74-principle doctrine catalogue ---- */
+function drawDesignDoctrine(bp){
+  const doc=bp.doctrine||{};
+  const doms=Object.keys(doc);
+  if(!doms.length)return"";
+  const total=doms.reduce((n,d)=>n+(doc[d]||[]).length,0);
+  const domHtml=doms.map(dom=>{
+    const ps=doc[dom]||[];
+    const pid="doc-"+dom.replace(/[^a-z0-9]/g,"-")+"-"+Math.random().toString(36).slice(2,5);
+    const rows=ps.map(p=>{
+      const ea=p.engine_actionable;
+      return `<div class="ln" style="padding:3px 0;border-bottom:1px solid var(--border-faint)">
+        <span class="pill pl-${ea?"risk":"neutral"}" style="font-size:9px">${ea?"auto-detects":"doctrine"}</span>
+        <span style="font-size:11px;margin-left:4px"><b>${esc(p.title)}</b></span>
+        <span class="faint" style="font-size:10px;margin-left:4px">${esc((p.citation||"").slice(0,80))}</span>
+      </div>`;}).join("");
+    return `<div style="margin-bottom:8px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);margin-bottom:2px;cursor:pointer" onclick="toggleEl('${pid}')">${esc(dom)} <span class="ct">${ps.length}</span></div>
+      <div id="${pid}" style="display:none">${rows}</div>
+    </div>`;}).join("");
+  const outerid="des-doc-"+Math.random().toString(36).slice(2,6);
+  return `<div class="sec"><h3>Design knowledge base <span class="ct">${total}</span></h3>
+    <p class="sub" style="margin:0 0 8px">The full CCDE-grounded doctrine across ${doms.length} domain(s) — including the ~23 auto-detected principles plus the broader KB the HLD/chat reasoning draws from (firewall, BGP, MPLS, IPv6…). Each domain is click-to-expand.</p>
+    <button class="xpbtn" onclick="toggleEl('${outerid}')" style="margin-bottom:8px">Show / hide doctrine</button>
+    <div id="${outerid}" style="display:none">${domHtml}</div></div>`;
 }
 /* paint hook: with a decision selected, spotlight the devices it affects; with nothing selected, tint
    each node by the HIGHEST-priority decision naming it in any decision's evidence.devices. */
