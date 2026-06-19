@@ -594,6 +594,80 @@ _DC_CORPUS_ADDENDUM = json.loads(r"""
 """)
 DOCTRINE.extend(_DC_CORPUS_ADDENDUM)
 
+# ------------------------------------------------- evidence-grounded actionable detectors (follow-up)
+# These two principles are engine_actionable=True because design_advisor wires a dedicated detector that
+# reads ALREADY-COLLECTED evidence for each (so the coverage-honesty invariant
+# test_every_engine_actionable_principle_is_emitted holds). Grounded + refutation-verified against the
+# real AJ snapshot: (1) rapid-PVST per-VLAN STP at high VLAN scale -> MST (reads protocol_health STP mode
+# + n_vlans; scoped to rapid-PVST so it does NOT double-count the legacy-PVST switches owned by
+# _d_stp_det); (2) on-air-critical application tiers left L3-exposed -> macro-segment (reads the
+# segmentation axis's own tier classification + gateway-ACL coverage). Standards/refs are public.
+_ACTIONABLE_DETECTOR_ADDENDUM = [
+    {
+        "id": "dc-stp-mst-instance-scale",
+        "title": "Move per-VLAN spanning tree (Rapid-PVST) to MST at high VLAN scale -- one STP instance per VLAN does not scale",
+        "domain": "dc-switching",
+        "priority": "Medium",
+        "design_intent": "Per-VLAN spanning tree (PVST+/Rapid-PVST) runs an independent STP state machine "
+        "for every VLAN on every trunk, so an estate with many VLANs across many switches carries up to "
+        "(VLANs x switches) STP instances -- each consuming CPU, BPDU bandwidth, topology-change processing "
+        "and a per-VLAN root-placement chore. Rapid-PVST is fine at small scale, but the instance count "
+        "grows linearly with VLANs and becomes a control-plane burden (and a mis-rooted or storming VLAN is "
+        "multiplied across every instance). MST (IEEE 802.1s) maps many VLANs onto a small set of instances "
+        "(often 1-16), collapsing the instance count and the root-placement surface while keeping per-region "
+        "load distribution.",
+        "observable": "STP mode per switch is parsed into protocol_health[].summary ('mode rapid-pvst|pvst|"
+        "mst; N blocked, ...'); the VLAN count is the canonical executive_brief.scale.n_vlans / vlan_inventory.",
+        "trigger": "Many switches run Rapid-PVST (per-VLAN STP) across a high VLAN count -- the per-VLAN STP "
+        "instance count is an unmanaged control-plane scale problem.",
+        "recommended_action": "Migrate the per-VLAN STP estate to MST: define a small set of MST instances "
+        "with an explicit VLAN-to-instance map, align the region name/revision/map fleet-wide (a mismatched "
+        "region silently splits the domain), place per-instance roots deterministically at the distribution, "
+        "and keep edge protection (BPDU guard / PortFast). In the EVPN/VXLAN target this concern disappears "
+        "at the fabric (L2 is bounded to the leaf) -- MST is the interim remedy for the brownfield tier.",
+        "alternatives": "Stay on Rapid-PVST (simplest, per-VLAN load distribution, but O(VLANs) instances and "
+        "a per-VLAN root chore); bound the VLAN span so per-switch instance counts stay low; move to a routed "
+        "/ EVPN fabric so spanning tree is edge-only.",
+        "tradeoffs": "MST adds a region/instance-map design and a fleet-wide config-consistency requirement "
+        "(a mismatched region silently splits), but collapses the STP instance count, CPU/BPDU load and "
+        "root-placement surface at scale.",
+        "citation": "IEEE 802.1s (Multiple Spanning Tree) / 802.1Q-2014; Cisco campus STP design guidance (Rapid-PVST vs MST at VLAN scale)",
+        "engine_actionable": True,
+    },
+    {
+        "id": "security-isolate-oncritical-application-tier",
+        "title": "Isolate the on-air-critical / high-value application tier -- do not leave it L3-reachable on the flat estate",
+        "domain": "security",
+        "priority": "High",
+        "design_intent": "A network's highest-value tiers must not share a flat Layer-3 reachability domain "
+        "with general IT. In a broadcast plant the on-air-critical media fabric (SMPTE ST 2110 uncompressed "
+        "video, AES67/Dante audio, camera/robotics control) carries the live signal; if those tiers sit in "
+        "the global VRF with no gateway ACLs, any compromised or misconfigured host anywhere on the estate "
+        "can reach the on-air path -- a single fault then has plant-wide, on-air blast radius. "
+        "Macro-segmentation places each critical tier in its own VRF/zone with enforced inter-zone policy, so "
+        "the on-air fabric is reachable only by what must reach it.",
+        "observable": "The segmentation axis classifies each application domain's tier (On-air critical / ...) "
+        "and whether it is isolated, and measures gateway-ACL coverage (segmentation.summary.n_oncrit_exposed, "
+        "gateway_acl.coverage_pct, domains[].tier/isolated) -- all already computed by the engine.",
+        "trigger": "One or more on-air-critical (or otherwise high-value) application domains are L3-reachable "
+        "(isolated=false) and/or gateway-ACL coverage is ~0 across the gateways -- an observed, un-bounded "
+        "exposure of the most critical tier.",
+        "recommended_action": "Macro-segment the on-air-critical tiers into dedicated VRFs/zones (or a "
+        "separate fabric segment) with enforced inter-zone policy -- gateway ACLs at minimum, a stateful "
+        "firewall for IT<->broadcast flows, default-deny into the on-air path. In the EVPN target, a "
+        "per-tenant VRF + L3VNI per critical tier with selective route leaking; keep PTP/ST-2110 multicast "
+        "scoped within the tier.",
+        "alternatives": "A single flat VRF with per-gateway ACLs (cheaper, blunter, ACL sprawl); air-gap the "
+        "on-air fabric (strongest isolation, hardest to operate / share services); per-workload "
+        "micro-segmentation (finest control, highest lifecycle overhead).",
+        "tradeoffs": "Macro-segmentation adds VRF/zone design and inter-zone policy lifecycle, but bounds the "
+        "blast radius of any IT-side compromise or misconfiguration away from the live on-air signal path.",
+        "citation": "Cisco IP Fabric for Media (SMPTE ST 2110) design guide; Cisco SAFE secure segmentation; NIST SP 800-207 (segment high-value assets)",
+        "engine_actionable": True,
+    },
+]
+DOCTRINE.extend(_ACTIONABLE_DETECTOR_ADDENDUM)
+
 
 # ---------------------------------------------------------------------------- coverage honesty
 # `engine_actionable` MUST mean "design_advisor.compute_design_blueprint emits a decision for this
