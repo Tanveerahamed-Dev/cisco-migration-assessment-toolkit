@@ -471,6 +471,13 @@ _NEEDS = [
      "east-west-scale / multi-tenancy choice, not an observable: spine-leaf earns its complexity with "
      "east-west growth and segmentation; a small/static footprint should not take on EVPN it does not need. "
      "Needs the growth horizon + traffic/tenancy profile."),
+    ("dc-multisite-interconnect-fabrics-as-isolated-sites", ["availability", "scalability", "modularity"],
+     ["growth_horizon"],
+     "Once the estate spans multiple rooms/buildings/fabrics, whether to interconnect them as ISOLATED "
+     "Multi-Site domains (a Border Gateway per site re-originates the overlay, eBGP between sites, per-site "
+     "BUM/storm-control -- a fault, storm or gray failure is contained to one site) or stretch one fabric "
+     "(Multi-Pod -- simpler, but one shared failure domain) is a scale/containment CHOICE, not an observable. "
+     "Needs the growth horizon (site count / multi-building reach / fault-containment intent) to decide."),
 ]
 
 
@@ -1110,15 +1117,19 @@ def compute_target_state(snap, requirements=None, sig=None):
         big = (sig["inventory"] >= 60 or sig["l2_wide_vlans"] >= 8
                or (roles.get("core", 0) + roles.get("distribution", 0)) >= 6)
         target = (("3-tier hierarchy (core / distribution / access) with routed access -- distribution/core "
-                   "on L3, access VLANs bounded per switch; add a spine-leaf VXLAN-EVPN block for the data "
-                   "centre if east-west growth warrants it") if big else
+                   "on L3, access VLANs bounded per switch; for the data centre, a routed leaf-spine "
+                   "(folded-Clos) VXLAN BGP-EVPN fabric sized by oversubscription, and where the estate spans "
+                   "multiple rooms/sites interconnect them as isolated Multi-Site domains (Border Gateway per "
+                   "site) rather than one stretched fabric") if big else
                   ("collapsed core + multi-chassis LAG (vPC/SVL) -- distribution doubles as core for a small/"
                    "static footprint, fully meshed with STP root + FHRP co-located there"))
         dims.append(_ts_dim(
             "Topology / tier model", scale_note, target,
             f"Right-sized to the stated growth ('{str(req.get('growth_horizon'))[:60]}') and observed scale; "
-            "bounds L2 failure domains and scales by adding blocks.",
-            "Candidate", drivers=["dc-three-tier-vs-collapsed-core", "dc-bound-layer2-failure-domain"]))
+            "bounds L2 failure domains and scales by adding blocks (or spines/leaves + sites).",
+            "Candidate", drivers=["dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed",
+                                  "dc-fabric-clos-sizing-oversubscription-ecmp",
+                                  "dc-multisite-interconnect-fabrics-as-isolated-sites"]))
 
     # 2. Layer-2 / Layer-3 boundary & failure domains -- strong evidence
     if sig["l2_wide_vlans"] or sig["vlans"] >= _LARGE_L2_VLANS or sig["single_vrf"]:
@@ -1126,21 +1137,28 @@ def compute_target_state(snap, requirements=None, sig=None):
             "Layer-2 / Layer-3 boundary",
             f"{sig['l2_wide_vlans']} oversized bridging domain(s); {sig['vlans']} VLAN(s) in "
             f"{'one global VRF' if sig['single_vrf'] else 'multiple VRFs'}.",
-            "Push the L3 boundary toward the edge (routed access, or a per-block distribution SVI); confine "
-            "each VLAN to one access switch/block; segment into VRFs/zones so a broadcast or STP event stays local.",
+            "Push the L3 boundary toward the edge (routed access, or a per-block distribution SVI) and confine "
+            "each VLAN to one access switch/block; in the target VXLAN-EVPN fabric, Layer-2 is bounded to the "
+            "leaf edge with a BGP-EVPN control plane (control-plane MAC/IP learning, not flood-and-learn); "
+            "segment into VRFs/zones so a broadcast or STP event stays local.",
             "A transparently-bridged VLAN is one failure domain; bounding its span limits blast radius and "
             "improves convergence and scale.",
-            "Recommended", drivers=["dc-bound-layer2-failure-domain", "dc-restrict-vlan-span-routed-access"]))
+            "Recommended", drivers=["dc-bound-layer2-failure-domain", "dc-restrict-vlan-span-routed-access",
+                                    "dc-fabric-vxlan-evpn-control-plane"]))
 
     # 3. Gateway / first-hop resilience -- strong evidence
     if sig["no_fhrp"]:
         dims.append(_ts_dim(
             "Gateway / first-hop resilience",
             f"{sig['no_fhrp']} gateway VLAN(s) single-homed, no FHRP.",
-            "Dual gateways with FHRP (HSRP/VRRP) or an anycast gateway on an MLAG pair, so each VLAN survives "
-            "loss of its distribution switch; co-locate the STP root with the active gateway.",
+            "Provide first-hop redundancy: in a classic distribution, dual gateways with FHRP (HSRP/VRRP) and "
+            "the STP root co-located with the active gateway; in the target VXLAN-EVPN fabric, a DISTRIBUTED "
+            "ANYCAST GATEWAY -- the same gateway IP/MAC on every leaf, so first-hop routing is local at the "
+            "ingress leaf and survives any single node (the EVPN replacement for centralized FHRP, seamless on "
+            "host mobility).",
             "First-hop redundancy is structural HA; a single gateway is a per-VLAN single point of failure.",
-            "Recommended", drivers=["fhrp-first-hop-gateway-redundancy", "stp-root-fhrp-active-colocation"]))
+            "Recommended", drivers=["fhrp-first-hop-gateway-redundancy", "dc-fabric-distributed-anycast-gateway-irb",
+                                    "stp-root-fhrp-active-colocation"]))
 
     # 4. Hardware lifecycle disposition -- strong evidence
     if sig["eol"] or sig["near"] or sig["not_collected"]:
@@ -1164,10 +1182,13 @@ def compute_target_state(snap, requirements=None, sig=None):
             f"Phased build-before-break in {wp['n_waves']} candidate wave(s) of <= {wp['wave_cap']} switches "
             f"({wp['n_subdivided_groups']} oversized group(s) sliced into sequenced sub-waves, the rest "
             "batched); stand the target up in parallel, validate (NRFU) per wave, cut over, then decommission "
-            "-- preserving rollback at each wave.",
+            "-- preserving rollback at each wave. Bridge legacy<->fabric with a SINGLE logical L2 link per VLAN "
+            "(the EVPN fabric does not forward STP BPDUs) and move each VLAN's default gateway to the fabric "
+            "anycast gateway once its endpoints are migrated, then shut the legacy SVI.",
             "A parallel target with right-sized, per-wave-validated waves beats both a big-bang cutover and "
             "an unmanageable single 251-switch 'wave'.",
-            "Planning", drivers=["scenario-build-before-break-phased-cutover"]))
+            "Planning", drivers=["scenario-build-before-break-phased-cutover",
+                                 "dc-fabric-fabric-drops-bpdu-single-l2-handoff"]))
 
     n_gated = sum(1 for d in dims if d.get("requirement_needed"))
     headline = (f"Candidate target-state across {len(dims)} dimension(s)"
