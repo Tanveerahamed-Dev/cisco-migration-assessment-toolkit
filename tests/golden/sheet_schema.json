@@ -103,7 +103,7 @@
   "Switches",
   "# Spanning VLANs",
   "Spanning VLANs",
-  "# Endpoints",
+  "# Endpoint MACs (per-switch sum)",
   "Gateways",
   "Redundant (STP-blocked) Paths",
   "Notes"

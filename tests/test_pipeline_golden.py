@@ -125,6 +125,28 @@ def test_excel_sheet_schema_matches_golden(tmp_path):
         assert schema[sheet] == header, f"header row of sheet '{sheet}' changed"
 
 
+def test_move_group_endpoint_label_is_honest_per_switch_mac_sum(tmp_path):
+    """B3 (audit fix): move_groups[].endpoints is the per-SWITCH sum of learned MACs (an endpoint seen on
+    N of the group's switches counts N times), so a large L2-coupled group can EXCEED the distinct fleet
+    endpoint total (executive_brief.scale.n_endpoints / Endpoint Census). The workbook must label it as a
+    per-switch MAC sum -- never the bare 'Endpoints'/'endpoint(s)' -- so it cannot be misread as a
+    competing fleet endpoint total. Refutes the relabel silently reverting."""
+    _snap, xlsx = _run_pipeline(tmp_path)
+    wb = load_workbook(xlsx, read_only=True)
+    try:
+        mg_hdr = [c.value for c in next(wb["Move Groups"].iter_rows(min_row=1, max_row=1))]
+        assert "# Endpoint MACs (per-switch sum)" in mg_hdr, f"Move Groups header not relabeled: {mg_hdr}"
+        assert "# Endpoints" not in mg_hdr, "bare '# Endpoints' must not return (misreads as fleet total)"
+        # Migration Scenarios carries the same per-group figure; its column header is row 2 (row 1 is the
+        # fleet-recommendation banner), so scan the top rows for the honest label.
+        ms_top = [str(v) for row in wb["Migration Scenarios"].iter_rows(min_row=1, max_row=3, values_only=True)
+                  for v in row if v]
+        assert any("Endpoint MACs (per-switch sum)" in v for v in ms_top), \
+            f"Migration Scenarios endpoint column not relabeled: {ms_top}"
+    finally:
+        wb.close()
+
+
 def test_missing_output_directory_is_created(tmp_path):
     """FIX-V3.23.103: a non-existent --output directory must be created up-front,
     not crash openpyxl's save() AFTER all the heavy compute. Point --output at a
