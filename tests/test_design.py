@@ -289,6 +289,31 @@ def test_design_renders_addressing_plan_when_supernet_supplied(tmp_path):
     assert "Net-new IP addressing plan" in text and "10.50." in text
 
 
+def test_design_addressing_plan_needs_requirement_discloses_census(tmp_path):
+    """SSOT + coverage-honesty: with NO address_space, HLD §5.3 still discloses the VLAN census
+    context (total / sizeable-observed / querier-only un-sizable) the snapshot carries — not just
+    'requirement needed'. Mirrors the explorer's addressing-plan block so the deliverable matches the
+    canonical addressing_plan instead of silently dropping the census the engine computed."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    # a querier-only VLAN (live per IGMP, no access port / SVI) -> census(3) > sizeable(2), 1 un-sizable
+    snap["service_map"]["multicast"]["igmp_queriers"].append(
+        {"switch": "core1", "vlan": "777", "querier": "10.0.77.1"})
+    bp = compute_design_blueprint(snap)  # no address_space -> needs-requirement path
+    snap["design_blueprint"] = bp
+    ap = bp["target_state"]["addressing_plan"]
+    assert ap["status"] == "needs-requirement"
+    assert (ap["n_census_vlans"], ap["observed_vlans"], ap["n_unsizable"]) == (3, 2, 1)
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    paras = [p.text for p in Document(out).paragraphs]
+    assert any("Net-new IP addressing plan" in p for p in paras)
+    census_line = next((p for p in paras if "census" in p.lower()), None)
+    assert census_line is not None, "§5.3 must disclose the VLAN census on the needs-requirement path"
+    # the disclosed sentence carries all three canonical counts
+    assert "3" in census_line and "2" in census_line and "1" in census_line, census_line
+
+
 def test_design_renders_wave_plan(tmp_path):
     """F2: §5.4 renders the candidate migration wave plan derived from move-groups."""
     from cisco_toolkit.design_advisor import compute_design_blueprint
