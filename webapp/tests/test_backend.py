@@ -403,6 +403,22 @@ def test_design_overlay_accepts_interview_answers(client):
         "interview answers must be mapped via requirements_from_interview, not treated as a raw register"
 
 
+def test_design_overlay_resolves_fabric_operating_model_choice(client):
+    """SSOT interactivity: the DC fabric operating-model CHOICE (Cisco ACI vs standalone NX-OS VXLAN-EVPN)
+    is requirement-gated. POSTing fabric_operating_model flips it from open-question to recommended through
+    the SAME compute_design_blueprint the CLI/HLD run — the dashboard never re-derives the choice (and free
+    text like 'ACI' is canonicalised server-side, not in the browser)."""
+    def _status(bp, did):
+        return next((d["status"] for d in bp["decisions"] if d["id"] == did), None)
+    pid = "dc-fabric-aci-vs-nxos-evpn-operating-model"
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    base = client.get(f"/api/snapshots/{snap_id}/design").json()
+    assert _status(base, pid) == "needs-requirement"          # open question until the WHY is supplied
+    r = client.post(f"/api/snapshots/{snap_id}/design", json={"fabric_operating_model": "ACI"})
+    assert r.status_code == 200, r.text
+    assert _status(r.json(), pid) == "recommended"            # resolved server-side via the same engine
+
+
 def test_design_nrfu_endpoint(client):
     """Design-driven NRFU/ATP endpoint: GET /api/snapshots/{id}/design/nrfu returns a structured
     acceptance-test checklist derived from the recommended design decisions — one item per decision,

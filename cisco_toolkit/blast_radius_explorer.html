@@ -6331,7 +6331,7 @@ function drawDesignNrfu(bp){
     <button class="xpbtn" onclick="toggleEl('${id}')" style="margin-bottom:8px">Show / hide items</button>
     <div id="${id}" style="display:none">${phaseRows}</div></div>`;
 }
-/* ---- Design knowledge base — full 74-principle doctrine catalogue ---- */
+/* ---- Design knowledge base — full doctrine catalogue (principle/domain counts rendered dynamically) ---- */
 function drawDesignDoctrine(bp){
   const doc=bp.doctrine||{};
   const doms=Object.keys(doc);

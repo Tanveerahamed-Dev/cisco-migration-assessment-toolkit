@@ -1170,9 +1170,10 @@ def main():
     ap.add_argument("--collection-dir",  default="")
     ap.add_argument("--requirements",    default="",
                     help="Path to a design requirements register (JSON: availability_tier, critical_apps, "
-                         "convergence_budget_ms, growth_horizon, constraints, data_classification). Supplied, "
-                         "it right-sizes the published design_blueprint (the WHY) so every deliverable reflects "
-                         "the requirements; absent, the blueprint surfaces the open requirement questions.")
+                         "convergence_budget_ms, growth_horizon, fabric_operating_model, constraints, "
+                         "data_classification, address_space, vlan_zones). Supplied, it right-sizes the "
+                         "published design_blueprint (the WHY) so every deliverable reflects the requirements; "
+                         "absent, the blueprint surfaces the open requirement questions.")
     ap.add_argument("--debug-headers",   action="store_true")
     ap.add_argument("--workers",         type=int, default=5,
                     help="Parallel SSH workers (default 5; use 1 for sequential)")

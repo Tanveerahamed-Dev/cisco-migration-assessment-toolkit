@@ -526,6 +526,14 @@ _NEEDS = [
      "BUM/storm-control -- a fault, storm or gray failure is contained to one site) or stretch one fabric "
      "(Multi-Pod -- simpler, but one shared failure domain) is a scale/containment CHOICE, not an observable. "
      "Needs the growth horizon (site count / multi-building reach / fault-containment intent) to decide."),
+    ("dc-fabric-aci-vs-nxos-evpn-operating-model", ["manageability", "security", "scalability"],
+     ["fabric_operating_model"],
+     "Once a DC spine-leaf fabric is the target, its OPERATING MODEL -- standalone NX-OS VXLAN BGP-EVPN "
+     "(controller-less, open-standards, Nexus Dashboard/NDFC-managed; the 2026 default for new builds) vs "
+     "Cisco ACI (APIC-controlled, application-centric EPG/contract policy fabric) -- is a top-down "
+     "operating-model CHOICE, not a brownfield observable. Both deliver the same distributed-anycast-gateway "
+     "VXLAN outcome; the difference is how the fabric is policed and operated. Needs the fabric_operating_model "
+     "requirement (plus any existing-ACI-estate / identity-micro-segmentation mandate)."),
 ]
 
 
@@ -635,6 +643,13 @@ def _req_axis_weights(req):
         w["security"] = max(w["security"], 1.7)
     if req.get("data_classification"):
         w["security"] = max(w["security"], 1.6)
+    fm = _norm_fabric_model(req.get("fabric_operating_model"))
+    if fm == "aci":
+        w["manageability"] = max(w["manageability"], 1.5)   # single declarative policy controller (intent)
+        w["security"] = max(w["security"], 1.5)             # controller-native identity micro-segmentation
+    elif fm == "nxos-evpn":
+        w["simplicity"] = max(w["simplicity"], 1.3)         # open standards, no controller dependency
+        w["scalability"] = max(w["scalability"], 1.4)       # east-west scale-out on open EVPN
     return w
 
 
@@ -669,6 +684,9 @@ def _requirements_model(decisions, req):
         {"key": "convergence_budget_ms", "label": "Max tolerable convergence (ms)",
          "value": req.get("convergence_budget_ms")},
         {"key": "growth_horizon", "label": "Growth horizon / forecast", "value": req.get("growth_horizon")},
+        {"key": "fabric_operating_model",
+         "label": "DC fabric operating model (standalone NX-OS VXLAN-EVPN vs Cisco ACI)",
+         "options": ["nxos-evpn", "aci"], "value": req.get("fabric_operating_model")},
         {"key": "constraints", "label": "Fixed constraints (budget / installed-base / regulatory)",
          "value": req.get("constraints")},
         {"key": "data_classification", "label": "Data-security classification / zones",
@@ -738,7 +756,24 @@ def _doctrine_catalog():
 # ----------------------------------------------------------------------- requirements register (the WHY)
 REQUIREMENTS_KEYS = ("availability_tier", "critical_apps", "convergence_budget_ms",
                      "growth_horizon", "constraints", "data_classification", "address_space",
-                     "vlan_zones")
+                     "vlan_zones", "fabric_operating_model")
+
+
+def _norm_fabric_model(v):
+    """Canonicalise the fabric_operating_model WHY-key to one of {'aci', 'nxos-evpn'} or '' (unknown).
+
+    'aci' = Cisco ACI (APIC-controlled, application-centric policy fabric); 'nxos-evpn' = standalone
+    NX-OS VXLAN BGP-EVPN (controller-less, Nexus Dashboard / NDFC-managed). Free text in, two stable
+    values out; anything unrecognised is '' so the design surfaces the choice as an open question rather
+    than guessing a fabric operating model the customer never stated."""
+    s = str(v or "").strip().lower()
+    if not s:
+        return ""
+    if "aci" in s or "apic" in s:
+        return "aci"
+    if any(t in s for t in ("evpn", "vxlan", "nxos", "nx-os", "ndfc", "standalone", "nexus")):
+        return "nxos-evpn"
+    return ""
 
 
 def load_requirements(path):
@@ -767,6 +802,12 @@ def load_requirements(path):
             reg["vlan_zones"] = nz
         else:
             reg.pop("vlan_zones", None)
+    if "fabric_operating_model" in reg:                             # canonicalise to {'aci','nxos-evpn'} or drop
+        nm = _norm_fabric_model(reg["fabric_operating_model"])
+        if nm:
+            reg["fabric_operating_model"] = nm
+        else:
+            reg.pop("fabric_operating_model", None)
     return reg
 
 
@@ -804,6 +845,10 @@ def requirements_from_interview(answers):
             nz = _norm_vlan_zones(v)
             if nz:
                 out[k] = nz
+        elif k == "fabric_operating_model":
+            nm = _norm_fabric_model(v)
+            if nm:
+                out[k] = nm
         else:                                                    # growth_horizon, address_space
             out[k] = str(v).strip()
     return out
@@ -1178,6 +1223,61 @@ def compute_target_state(snap, requirements=None, sig=None):
             "Candidate", drivers=["dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed",
                                   "dc-fabric-clos-sizing-oversubscription-ecmp",
                                   "dc-multisite-interconnect-fabrics-as-isolated-sites"]))
+
+    # 1b. DC fabric OPERATING MODEL / realisation -- a top-down CHOICE (controller-based Cisco ACI vs standalone
+    # NX-OS VXLAN-EVPN), requirement-gated on fabric_operating_model. Only in scope when a spine-leaf fabric is
+    # genuinely a candidate target (scale / wide-L2 / many VLANs, or the customer has stated a model) -- never
+    # noise for a small non-DC estate. Same forwarding outcome either way; the choice is how the fabric is operated.
+    fm = _norm_fabric_model(req.get("fabric_operating_model"))
+    fabric_candidate = (sig["l2_wide_vlans"] or sig["vlans"] >= _LARGE_L2_VLANS
+                        or sig["inventory"] >= 30 or bool(fm))
+    if fabric_candidate:
+        if not fm:
+            dims.append(_ts_dim(
+                "DC fabric operating model", scale_note,
+                "(needs fabric_operating_model) -- Cisco ACI (APIC-controlled, application-centric EPG/contract "
+                "policy fabric) vs standalone NX-OS VXLAN BGP-EVPN (controller-less, Nexus Dashboard/NDFC-managed). "
+                "Both realise the same spine-leaf + distributed-anycast-gateway VXLAN outcome; the difference is "
+                "the OPERATING MODEL.",
+                "A top-down operating-model decision, not a brownfield observable: default to NX-OS VXLAN-EVPN for "
+                "new builds (open RFC 7432/8365 standards, portable multivendor skills, Nexus Dashboard/NDFC ops "
+                "incl. IP Fabric for Media) unless an existing ACI estate or an application-centric end-to-end "
+                "identity micro-segmentation mandate justifies ACI's single declarative policy controller. Supply "
+                "fabric_operating_model to resolve it.",
+                "Requirement-needed",
+                drivers=["dc-fabric-aci-vs-nxos-evpn-operating-model", "dc-fabric-vxlan-evpn-control-plane",
+                         "aci-policy-epg-contract-whitelist-default-deny", "evpn-esi-all-active-multihoming"],
+                requirement_needed="fabric_operating_model"))
+        elif fm == "aci":
+            dims.append(_ts_dim(
+                "DC fabric operating model", scale_note + " fabric_operating_model = Cisco ACI.",
+                "Cisco ACI: an APIC-controlled spine-leaf fabric (3-node controller cluster, quorum 2-of-3, "
+                "sharded config DB) with a declarative application-centric policy model -- tenants / application "
+                "profiles / EPGs / contracts as a whitelist, a pervasive (distributed anycast) gateway, and a "
+                "service graph + PBR for L4-L7 insertion; micro-segmentation by EPG identity end-to-end.",
+                "Chosen for a single declarative policy controller and identity-based micro-segmentation at scale "
+                "(or to extend an existing ACI estate); the trade-off is product-coupled skills + a controller "
+                "dependency against open-standards portability.",
+                "Candidate", drivers=["dc-fabric-aci-vs-nxos-evpn-operating-model",
+                                      "dc-fabric-distributed-anycast-gateway-irb",
+                                      "aci-policy-network-centric-onramp-then-application-centric",
+                                      "aci-policy-epg-contract-whitelist-default-deny",
+                                      "aci-fabric-controller-cluster-odd-quorum-sharding",
+                                      "aci-services-servicegraph-pbr-symmetric-insertion"]))
+        else:  # nxos-evpn
+            dims.append(_ts_dim(
+                "DC fabric operating model", scale_note + " fabric_operating_model = NX-OS VXLAN-EVPN.",
+                "Standalone NX-OS VXLAN BGP-EVPN: a controller-less, open-standards (RFC 7432 EVPN / RFC 8365 "
+                "VXLAN / RFC 9135 IRB) spine-leaf fabric managed by Nexus Dashboard (NDFC), with a distributed "
+                "anycast gateway and a BGP-EVPN control plane -- and, for broadcast/media estates, IP Fabric for "
+                "Media (IPFM). Segmentation via VRF/VNI plus VXLAN GPO group policy where micro-segmentation is "
+                "required.",
+                "The 2026 default for new builds: open standards, portable multivendor operations and no single-"
+                "controller dependency; the trade-off vs ACI is decentralised policy for operational familiarity "
+                "and standards-portability.",
+                "Candidate", drivers=["dc-fabric-aci-vs-nxos-evpn-operating-model",
+                                      "dc-fabric-vxlan-evpn-control-plane", "dc-fabric-distributed-anycast-gateway-irb",
+                                      "evpn-esi-all-active-multihoming", "evpn-bum-df-election-split-horizon"]))
 
     # 2. Layer-2 / Layer-3 boundary & failure domains -- strong evidence
     if sig["l2_wide_vlans"] or sig["vlans"] >= _LARGE_L2_VLANS or sig["single_vrf"]:

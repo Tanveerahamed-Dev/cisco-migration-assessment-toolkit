@@ -669,6 +669,1313 @@ _ACTIONABLE_DETECTOR_ADDENDUM = [
 DOCTRINE.extend(_ACTIONABLE_DETECTOR_ADDENDUM)
 
 
+# --------------------------------------------------------- ACI / EVPN / SP design-corpus addendum
+# Mined from the real Cisco DC design corpus (ACI HLD/LLD/NIP -- NRG DC, EXPO2020 -- Cisco AS ACI
+# Design & Deployment, Stretched Active-Active ACI, Transit Routing, ACI lessons-learned; native
+# BGP-EVPN + PBB-EVPN deep-dives; SP BGP-LU; multicast snooping case studies), cross-checked with the
+# CURRENT Cisco Nexus 9000 VXLAN BGP-EVPN design guidance + Nexus Dashboard (2026). The L1-L4 assessment
+# collects NO ACI/APIC/controller/EPG/contract/policy state -> these are DOCTRINE the HLD narrative / chat
+# / target-state reasoning cites (engine_actionable=False), NOT auto-detected claims. THE ONE EXCEPTION is
+# the fabric OPERATING-MODEL choice below: like its sibling DC-fabric CHOICES (dc-three-tier-vs-collapsed,
+# dc-spine-leaf-evpn-vs-collapsed) it is a REQUIREMENT-GATED decision the advisor DOES emit (via _NEEDS),
+# so it is engine_actionable=True -- emitted as an open question, flipped to recommended once the
+# fabric_operating_model requirement is supplied. Provenance: ORIGINAL re-expression of design FACTS /
+# engineering doctrine; no verbatim source text is reproduced. Citations are for traceability only.
+_ACI_CORPUS_ADDENDUM = [
+ {
+  "id": "dc-fabric-aci-vs-nxos-evpn-operating-model",
+  "domain": "dc-fabric",
+  "title": "Choose the DC fabric operating model: standalone NX-OS VXLAN-EVPN (default) vs Cisco ACI policy fabric",
+  "priority": "High",
+  "engine_actionable": True,
+  "design_intent": "Migrating a flat, STP-bound L2 estate to a spine-leaf fabric with a distributed anycast "
+    "gateway over a VXLAN data plane is one decision; HOW that fabric is operated and policed is a separate, "
+    "top-down one. Cisco ACI realises it as an APIC-controlled, application-centric policy fabric (tenants / "
+    "application-profiles / EPGs / contracts as a whitelist, service graph + PBR, identity micro-segmentation "
+    "from a single declarative controller). Standalone NX-OS VXLAN BGP-EVPN realises the SAME forwarding "
+    "outcome controller-less, on open standards, managed by Nexus Dashboard (NDFC). The choice is an "
+    "operating-model decision -- not a forwarding one -- and must be driven by requirements, not assumed.",
+  "tradeoffs": "manageability (single declarative controller + intent-based policy) vs simplicity & portability "
+    "(open standards, no controller dependency, multivendor-transferable EVPN skills); security (controller-"
+    "native identity micro-segmentation) vs operational familiarity; capex/opex and existing-investment lock-in.",
+  "trigger": "A brownfield DC (or campus-DC) being migrated to a spine-leaf fabric, when the team must decide "
+    "how the fabric is operated and segmented.",
+  "observable": "Flat L2 / single global VRF / VLANs spanning many switches with a fabric refresh on the table "
+    "-- the assessment sees the current state; the target operating model is a requirement, not an observable.",
+  "recommended_action": "Default to standalone NX-OS VXLAN BGP-EVPN for new builds (open RFC 7432 EVPN / RFC "
+    "8365 VXLAN / RFC 9135 IRB standards, portable multivendor skills, Nexus Dashboard / NDFC operations "
+    "including IP Fabric for Media for broadcast/media estates, BGP-EVPN policy + VXLAN GPO group policy for "
+    "segmentation). Choose Cisco ACI when an existing ACI estate, or an application-centric end-to-end identity "
+    "micro-segmentation operating model, justifies a single declarative APIC controller. Note the 2026 "
+    "trajectory: ACI is converging into the unified Nexus Dashboard / open-VXLAN-EVPN model (APIC federation + "
+    "VXLAN GPO), which narrows ACI's once-unique segmentation advantage.",
+  "alternatives": "A hybrid managed by Nexus Dashboard (NDO / NDFC) that federates ACI and NX-OS-EVPN domains "
+    "where both already exist, presenting one policy and segmentation model across them.",
+  "citation": "Cisco AS ACI Design & Deployment (Telco DC) + NRG / EXPO2020 ACI HLD/LLD operating model, "
+    "cross-checked with the current Cisco Nexus 9000 VXLAN BGP-EVPN design guide + Nexus Dashboard (2026).",
+ },
+ # ---- ACI policy model (how a controller fabric segments + migrates) ----
+ {
+  "id": "aci-policy-network-centric-onramp-then-application-centric",
+  "domain": "aci-policy",
+  "title": "Migrate to ACI network-centric first (1 VLAN = 1 BD = 1 EPG), then evolve to application-centric",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "An ACI migration can model policy two ways. Network-centric maps each legacy VLAN almost "
+    "one-to-one onto a Bridge Domain + EPG (often keeping gateways on external firewalls/routers and a permit-"
+    "any contract), so the fabric reproduces today's L2 segments verbatim and the cutover is a low-risk like-"
+    "for-like lift-and-shift. Application-centric groups endpoints into EPGs by application tier with allow-list "
+    "contracts between them -- the real ACI value, but it needs a trustworthy application-dependency map.",
+  "tradeoffs": "simplicity & convergence (reversible like-for-like cutover) vs security & manageability "
+    "(the zero-trust micro-segmentation benefit is deferred); modularity comes only at the application-centric phase.",
+  "trigger": "Planning the policy model for a brownfield-to-ACI migration.",
+  "observable": "Flat L2 / per-VLAN segments with no documented application-flow map (the assessment sees VLANs, not app tiers).",
+  "recommended_action": "Phase 1: instantiate a 1:1:1 VLAN-to-BD-to-EPG mapping (pervasive anycast gateway on "
+    "the BD, or external gateways with permit-any) so endpoints move 1:1 and forwarding is proven. Phase 2: "
+    "regroup EPGs into Application Profiles by tier and replace permit-any with least-privilege contracts as the "
+    "application dependencies are documented post-cutover.",
+  "alternatives": "Go straight to application-centric only when a reliable app-dependency map exists and downtime "
+    "tolerance is high; stay permanently network-centric where the fabric is only ever a high-speed L2 transport.",
+  "citation": "EXPO2020 ACI NIP/LLD (network-centric 1:1:1 VLAN-EPG-BD) + Cisco AS Secure Multi-Tenant ACI "
+    "Design (Application-Centric vs Network-Centric), cross-checked with Cisco 'Migrating Existing Networks to ACI'.",
+ },
+ {
+  "id": "aci-policy-epg-contract-whitelist-default-deny",
+  "domain": "aci-policy",
+  "title": "Segment with the EPG/contract whitelist (default-deny inter-EPG), seeded from the existing firewall policy",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "An application-centric fabric inverts the classic permit-by-default model: endpoints are "
+    "grouped into EPGs by role (decoupled from VLAN/subnet), and NO EPG-to-EPG traffic flows until an explicit "
+    "provider/consumer contract permits it -- a default-deny whitelist that IS the segmentation engine. Intra-EPG "
+    "is open by default (tighten with intra-EPG isolation/micro-EPG for high-value tiers); vzAny binds a VRF-wide "
+    "policy once. The network itself becomes the distributed enforcement point, not inline firewalls.",
+  "tradeoffs": "security (explicit least-privilege, identity-follows-endpoint) vs manageability (contract sprawl; "
+    "vzAny over-broadens if misused) and finite leaf policy-TCAM at scale.",
+  "trigger": "Adopting ACI as the segmentation enforcement layer for an estate that needs east-west micro-segmentation.",
+  "observable": "A flat estate where segmentation is by VLAN/subnet + inline firewall, with an existing firewall rule-base.",
+  "recommended_action": "Model tenant -> VRF -> Application-Profile -> EPG with provider/consumer contracts as the "
+    "segmentation layer (default-deny inter-EPG, contracts only where flows are required); seed the initial "
+    "contract catalogue from the current firewall policy and bind a change process that updates contracts whenever "
+    "firewall rules change; use vzAny for VRF-wide common policy and micro-EPG/intra-EPG isolation for high-value tiers.",
+  "alternatives": "A documented permit-any (Preferred-Group / unenforced VRF) as a temporary cutover bridge, then "
+    "tighten; standalone NX-OS VXLAN-EVPN with VXLAN GPO / SGT-ACL segmentation where no controller is adopted.",
+  "citation": "EXPO2020 ACI LLD4 (Tenants/VRFs/EPGs/Contracts/vzAny) + ACI Network Implementation Plan (Contracts) "
+    "+ ACI Security & Service Integration; web-verified against Cisco ACI Policy Model + Contract guides.",
+ },
+ {
+  "id": "aci-policy-contract-route-is-not-reachability",
+  "domain": "aci-policy",
+  "title": "In a contract fabric, a route is not reachability: validate the programmed contract, not just the RIB",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "In an EPG/contract (whitelist) fabric, control-plane reachability and data-plane permission "
+    "are decoupled by design. Two networks can each have a valid route in the RIB and still have ALL traffic "
+    "dropped, because the default zoning rule is deny and no contract has been authored between their groups. This "
+    "is the #1 ACI troubleshooting trap and a critical NRFU check -- 'the route is there' proves nothing.",
+  "tradeoffs": "zero-trust default-deny security + explicit intent vs the operational burden of authoring a "
+    "contract for every permitted relationship (and validating the programmed permit/deny, not just the route).",
+  "trigger": "Validating connectivity (NRFU / troubleshooting) on a contract-based fabric.",
+  "observable": "Two external/internal groups have routes but no contract between them.",
+  "recommended_action": "Treat connectivity as route PLUS contract: enumerate the required inter-group flows as "
+    "explicit contracts and validate the programmed deny/permit zoning rules, not route presence alone; make this "
+    "an explicit NRFU acceptance item for any whitelist fabric.",
+  "alternatives": "A traditional any-to-any L3 domain with ACLs trades segmentation for simplicity -- only where "
+    "micro-segmentation is not required.",
+  "citation": "Cisco ACI Contract Guide (implicit-deny drops a flow even with a route present; two L3Out external "
+    "EPGs need a contract); web-verified.",
+ },
+ {
+  "id": "aci-policy-vrf-scale-ceiling-legacy-l2-tradeoff",
+  "domain": "aci-policy",
+  "title": "At extreme overlapping-tenant scale, the VRF ceiling forces legacy-L2 BD mode -- and the loss of fabric policy",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "For massive multi-tenant 'bring-your-own-IP' scale there are two ways to host overlapping "
+    "address space. VRF separation (one VRF per tenant) lets the fabric be the gateway with full routing / optimized-"
+    "ARP / contract function, but the per-fabric VRF count is bounded. Beyond that ceiling the design must fall back "
+    "to legacy L2-only BD mode (unicast routing off, flood mode) -- which buys very high segment density and "
+    "overlapping-IP support but surrenders every value-added fabric feature (gateway, policy, optimized forwarding).",
+  "tradeoffs": "a direct scalability-vs-capability axis: legacy L2 mode buys segment density + overlapping-IP at "
+    "the cost of fabric routing, distributed gateway and contract policy (relocated to external routers).",
+  "trigger": "Sizing a multi-tenant ACI fabric where tenant/VRF count may exceed the platform ceiling.",
+  "observable": "A bring-your-own-IP / very-high-tenant-count requirement on a single fabric.",
+  "recommended_action": "Stay VRF-per-tenant while tenant count fits the VRF budget and the fabric gateway/policy "
+    "is wanted; switch a BD to legacy L2 mode only when segment scale demands it, and explicitly relocate gateway/"
+    "routing/security to external devices; or partition tenants across multiple fabrics/pods to stay under the ceiling.",
+  "alternatives": "Standalone NX-OS VXLAN/EVPN, where L2 scale and routing coexist differently; multiple fabrics/pods.",
+  "citation": "Cisco AS ACI Practice (Service-Provider Cloud) -- overlapping networks / legacy BD mode / Tenant-"
+    "Context-BD scale; web-confirmed against Cisco APIC scale docs.",
+ },
+ # ---- ACI L4-7 services (policy-driven insertion) ----
+ {
+  "id": "aci-services-servicegraph-pbr-symmetric-insertion",
+  "domain": "aci-services",
+  "title": "Insert L4-7 services via service-graph PBR (redirect BD, symmetric hashing, health-tracking, N+M), not by VLAN stitching",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Rather than hard-wiring firewalls/load-balancers into the topology by VLAN stitching and "
+    "default-gateway tricks, ACI attaches L4-7 functions to the CONTRACT between groups as a service graph: a "
+    "redirect (PBR) action steers only the flows a contract selects through an ordered appliance chain, while the "
+    "fabric stays every endpoint's gateway -- so an appliance can be inserted or removed with no readdressing or "
+    "routing change. Correctness hinges on keeping both directions of a stateful flow on the same node.",
+  "tradeoffs": "security & manageability (transparent, policy-driven, auditable insertion; no topology surgery) vs "
+    "complexity (redirect BD with data-plane learning disabled, symmetric-hash, health groups, location awareness).",
+  "trigger": "Inserting stateful firewalls/load-balancers into a policy fabric, especially a scaled appliance pool.",
+  "observable": "Stateful services that today sit inline via VLAN stitching / as the default gateway.",
+  "recommended_action": "Use service-graph + PBR with a dedicated redirect BD (endpoint data-plane learning off), "
+    "symmetric sip-dip-protocol hashing so a flow pins to one node, health-group tracking that withdraws a node in "
+    "BOTH directions on any leg failure, resilient hashing so only the failed node's flows rehash, and N+M backup "
+    "sized so survivors are not overloaded; in Multi-Pod add location-based PBR awareness.",
+  "alternatives": "Routed/inline firewall as the gateway (loses fabric-as-gateway and flexible steering) when "
+    "readdressing is acceptable; a single active/standby appliance pair when throughput fits one node.",
+  "citation": "EXPO2020 ACI LLD4 (PBR / Firewall integration / Anycast service) + ACI Security & Service "
+    "Integration (Symmetric PBR, Tracking, Resilient-Hash, N+M); web-verified against Cisco PBR Service-Graph docs.",
+ },
+ # ---- ACI fabric structure / controller / external connectivity ----
+ {
+  "id": "aci-fabric-controller-cluster-odd-quorum-sharding",
+  "domain": "aci-fabric",
+  "title": "Size the policy-controller (APIC) cluster for quorum: odd >=3, sharded/replicated, minority degrades read-only -- never split-brain",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "A controller-managed fabric separates the clustered controllers (control/management plane) from "
+    "the switches (data plane), so the fabric keeps forwarding even if the whole cluster is down -- but the cluster's "
+    "OWN availability must be designed on quorum, not appliance count. Config is sharded across active-active "
+    "controllers, each shard replicated (typically threefold) with one elected leader taking writes; a partitioned "
+    "minority is read-only BY DESIGN (no split-brain writes) and reconciles by timestamp when quorum heals. Adding "
+    "controllers scales fabric size, not resiliency.",
+  "tradeoffs": "predictable management-plane availability + graceful read-only degradation vs cost/rigor (>=3 "
+    "controllers, odd count, site spread, ordered add/remove, shard rebalancing on expansion).",
+  "trigger": "Designing the controller-cluster placement/sizing for any SDN/controller-based fabric (e.g. ACI).",
+  "observable": "A controller-based target where a partition could otherwise produce two writers.",
+  "recommended_action": "Deploy an odd cluster of at least three controllers; rely on shard replication + per-shard "
+    "leader election; spread members across pods/rooms/power and off the forwarding path; document that a minority "
+    "is read-only-but-forwarding and freeze policy changes until majority recovers; scale the cluster for fabric "
+    "size, not for HA.",
+  "alternatives": "Larger odd clusters (5/7) when leaf scale demands it; for a non-controller fabric (NX-OS EVPN) "
+    "this quorum concern disappears entirely -- there is no central controller.",
+  "citation": "EXPO2020 ACI LLD4 + NRG ACI HLD + ACI Architecture (APIC clustering / sharding / leader election / "
+    "minority behavior); web-verified against Cisco APIC Cluster Management (3-node quorum 2/3, 3-replica shards).",
+ },
+ {
+  "id": "aci-fabric-access-policy-chain-ssot",
+  "domain": "aci-fabric",
+  "title": "Treat the APIC cluster + the VLAN-pool -> domain -> AEP -> EPG access-policy chain as the fabric's single source of truth",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "A controller-driven fabric centralises state in the APIC cluster and reaches the wire only "
+    "through a disciplined access-policy chain: VLAN pool -> physical/external-routed domain -> Attachable Access "
+    "Entity Profile (AEP) -> interface/switch profile -> EPG static binding. Skipping the discipline (GUI-wizard "
+    "per-vPC config) yields duplicate-profile sprawl that defeats automation and audit. A clean, named, non-"
+    "overlapping chain is what makes the fabric a true automatable single source of truth.",
+  "tradeoffs": "a steeper modelling discipline up front vs manageability, scale and a genuine SSOT (clean pools/"
+    "domains/AEPs make the fabric automatable and auditable).",
+  "trigger": "Standing up an ACI fabric's access-policy model and naming conventions before scale-out.",
+  "observable": "Greenfield fabric build, or an existing fabric configured ad hoc via per-object GUI wizards.",
+  "recommended_action": "Define non-overlapping static VLAN pools per function, bind each to one domain and AEP, "
+    "reuse named switch/interface profiles, and freeze a naming convention before scale-out; deploy an odd "
+    "(three-node) APIC cluster as the policy SSOT.",
+  "alternatives": "GUI-wizard-driven per-vPC configuration is faster initially but breeds duplicate-profile sprawl; "
+    "single/dual controllers only in non-production where quorum loss is tolerable.",
+  "citation": "Cisco AS Secure Multi-Tenant ACI Design (APIC Connectivity; Naming Conventions; Pools/Domains/AEPs); "
+    "web-verified against Cisco APIC access-policy documentation.",
+ },
+ {
+  "id": "aci-fabric-l3out-external-epg-classifies-not-filters",
+  "domain": "aci-fabric",
+  "title": "An L3Out external-EPG subnet is a security CLASSIFIER, not a route filter -- scope each flag to one purpose, never 0.0.0.0/0 to classify",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "On an ACI L3Out the external-subnet scopes each do exactly one job -- classify external traffic "
+    "into an external EPG for contract enforcement, advertise a prefix outbound, gate a prefix inbound, or leak "
+    "across a VRF. Conflating them (the 'tick every box until it works' anti-pattern) is a top field error: using "
+    "0.0.0.0/0 as the classifier makes the policy tag non-unique and silently couples external networks.",
+  "tradeoffs": "simplicity/manageability + security (a unique, prefix-scoped policy tag) vs the convenience of one "
+    "catch-all 0/0 entry (which trades away classification precision and invites collisions).",
+  "trigger": "Designing external (north-south) connectivity and its security policy on an ACI fabric.",
+  "observable": "One L3Out serving multiple external peers/policies, or 0.0.0.0/0 used as a classification subnet.",
+  "recommended_action": "Scope each external-subnet flag to its single purpose: a specific classification prefix "
+    "per external EPG (avoid 0/0 so the policy tag stays unique), Export/Import Route Control only to advertise/gate "
+    "routes, Shared Route-Control + Shared-Security for deliberate inter-VRF leaks; advertise BD subnets explicitly, "
+    "never by default; isolate a peer needing a default classification on its own dedicated L3Out.",
+  "alternatives": "A single 0/0 external EPG only where all external traffic is genuinely treated identically (a "
+    "true single-exit stub).",
+  "citation": "ACI Best Practices: Lessons from the Front Lines (Cisco SEVT) + ACI NIP (External EPGs / BD Subnet "
+    "Advertisement) + ACI Transit Routing; web-verified against Cisco APIC L3 Networking guide.",
+ },
+ {
+  "id": "aci-fabric-l3out-one-uniform-policy-split-into-l3outs",
+  "domain": "aci-fabric",
+  "title": "An ACI L3Out applies ONE uniform routing+security policy to all its peers -- split into separate L3Outs for per-exit policy, don't toggle flags on one",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "The L3Out is ACI's unit of policy granularity: every route and peer under a single L3Out gets "
+    "the SAME routing policy and the same security policy. Requirements like 'Prod may use only WAN1' or 'prefer "
+    "WAN1, fail to WAN2' cannot be met by toggling flags on one stretched L3Out; they need separate L3Outs (or, for "
+    "security alone, separate external EPGs). The fabric is a stub by default -- transit between two L3Outs is an "
+    "explicit act (export only the required prefixes; never a 0/0 default as the coupling mechanism).",
+  "tradeoffs": "per-exit routing/security precision vs more configuration objects and state; centralised inter-VRF "
+    "leak (via a fusion router) vs an extra external routing hop.",
+  "trigger": "Designing multi-exit external routing or differentiated north-south policy on ACI.",
+  "observable": "A single L3Out asked to carry differentiated per-exit routing or security policy.",
+  "recommended_action": "Provision one L3Out per distinct routing-or-security policy domain; bind contracts between "
+    "the specific source EPG and the intended external EPG; enable transit explicitly (export only required "
+    "prefixes); leak inter-VRF/transit routes via an external fusion router (matching VRF per fabric VRF) where "
+    "native shared-L3Out scale does not fit.",
+  "alternatives": "Keep one L3Out and shift differentiation onto the external router (metrics/attributes) when ACI-"
+    "side per-exit policy is not required; native shared-L3Out / inter-VRF contract leaking where scale permits.",
+  "citation": "ACI Best Practices: Lessons from the Front Lines (Cisco SEVT) + ACI Transit Routing + EXPO2020 ACI "
+    "LLD4 (L3Out / external EPG / fusion route-leak); web-verified against Cisco APIC L3 guide.",
+ },
+ {
+  "id": "aci-fabric-gateway-anchor-firewall-vs-fabric",
+  "domain": "aci-fabric",
+  "title": "Choose the default-gateway anchor deliberately per tier (firewall vs fabric); an external-service gateway forces that BD into L2-transport mode",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "In a policy fabric the first-hop gateway can live in three places, each forcing a different "
+    "traffic pattern: firewall-as-gateway (fabric is pure L2 transit; every flow is inspected), fabric-as-gateway "
+    "with a default-route-to-firewall (only internet traffic is inspected; intranet is fabric-routed), or fabric-as-"
+    "gateway with iBGP to a border router. Critically, if an external service device IS the gateway, the fabric's "
+    "optimisations (IP routing, ARP suppression, IP+MAC learning) BREAK that BD -- it must be set to L2-transport "
+    "(unicast routing off, ARP/unknown-unicast flood, MAC forwarding) or traffic black-holes.",
+  "tradeoffs": "security/inspection coverage vs path efficiency/convergence (firewall-anchored maximises inspection "
+    "but makes the firewall a chokepoint); correctness (dumb-L2 transport forwards reliably) vs giving up fabric "
+    "routing efficiency and the distributed anycast gateway.",
+  "trigger": "Deciding where each tier's first-hop gateway lives on a policy fabric.",
+  "observable": "A tier whose gateway is (or must remain) an external firewall/router, vs one the fabric can own.",
+  "recommended_action": "Anchor untrusted/regulated tiers on the firewall for full inspection; for tiers needing "
+    "efficient intranet reach, place the gateway on the fabric with default-route-to-firewall + more-specific "
+    "intranet routes; for every BD whose gateway is an external service device, explicitly set the fabric to L2-"
+    "transport mode (no unicast routing, ARP flood, MAC forwarding) and run device-to-router dynamic routing "
+    "directly between the appliances.",
+  "alternatives": "Uniform firewall-as-gateway for a strict inspect-everything posture; uniform fabric distributed-"
+    "anycast gateway with selective service-graph/PBR redirection where no requirement forces an external gateway.",
+  "citation": "Cisco AS ACI Design & Deployment (Telco DC) -- Firewall-as-Gateway / Fabric-as-Gateway / iBGP-to-ASR "
+    "+ ACI Architecture (Traditional Services Insertion, MAC forwarding); web-verified against Cisco ACI L3Out/BD docs.",
+ },
+ {
+  "id": "aci-fabric-bpdu-transparency-edge-loop-protection",
+  "domain": "aci-fabric",
+  "title": "An ACI access edge is STP-transparent: flood external BPDUs within the EPG so outside STP breaks loops, and add MCP / Rogue-EP / port-tracking as the fabric's own safeguards",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "An ACI fabric runs no spanning tree. On an access port it floods received BPDUs to the other "
+    "ports of the same EPG, so to an external switch the fabric looks like a wire and the EXTERNAL switches' STP "
+    "elects roots and blocks the loop-causing port. The design consequence: during coexistence you must NOT filter/"
+    "guard those external BPDUs (or you blind the only loop-breaker), and you must add the fabric's own intrinsic "
+    "safeguards -- MisCabling Protocol (MCP), Rogue-EP control, uplink port-tracking -- to catch what external STP cannot.",
+  "tradeoffs": "availability (external STP still protects against L2 loops during coexistence; MCP/Rogue-EP catch "
+    "mobility/miscabling faults) vs simplicity (guard/filter placement must be exactly right).",
+  "trigger": "Connecting an ACI fabric to a legacy STP L2 domain during migration coexistence.",
+  "observable": "External switches/blade chassis attached to the fabric while the legacy STP domain still exists.",
+  "recommended_action": "Leave BPDU filter/guard DISABLED on ports toward external switches/blade chassis so their "
+    "STP keeps converging; enable BPDU guard only on host ports; enable MCP (with a key), Rogue-EP control and "
+    "uplink port-tracking as the fabric's intrinsic loop/mobility safeguards. A clean single L2 handoff that drops "
+    "BPDUs is appropriate only once the legacy STP domain is retired.",
+  "alternatives": "A single clean L2 handoff that drops external BPDUs entirely -- only after the legacy STP domain "
+    "is decommissioned.",
+  "citation": "Cisco ACI design doctrine (NIP STP BPDU Filter/Guard + Global Policies / MCP / Rogue-EP), grounded in "
+    "the D:\\ ACI corpus; web-verified that ACI runs no STP and floods BPDUs within the EPG.",
+ },
+ # ---- ACI multi-pod / multi-site (geo extension of a controller fabric) ----
+ {
+  "id": "aci-multisite-multipod-vs-multisite-choice",
+  "domain": "aci-multisite",
+  "title": "Multi-Pod (one stretched policy domain) vs Multi-Site (isolated domains) is a failure-isolation choice -- and Multi-Pod needs a witness pod for cluster quorum on a site loss",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Extending a policy fabric across rooms/sites is a spectrum. Multi-Pod keeps a SINGLE controller/"
+    "policy domain spanning all pods (one change applies everywhere; controllers spread across pods for resiliency) "
+    "with per-pod control-plane fault isolation -- seamless workload mobility, but one shared change/blast domain. "
+    "Multi-Site federates INDEPENDENT fabrics/APIC-clusters with templated policy -- stronger fault and config "
+    "isolation, independent upgrade cadence, at the cost of single-pane simplicity. Because Multi-Pod is one "
+    "controller cluster, a two-site split needs a third (witness) pod or the cluster loses quorum on a site loss.",
+  "tradeoffs": "single-domain simplicity + seamless mobility (Multi-Pod) vs strong failure/config isolation + "
+    "independent change windows (Multi-Site); plus the controller-quorum constraint across sites.",
+  "trigger": "Extending an ACI fabric across multiple rooms, buildings or data centres.",
+  "observable": "A multi-room/multi-site estate with a stated fault-containment / DR-isolation requirement (or lack of one).",
+  "recommended_action": "Select Multi-Pod for one stretched policy domain with per-pod fault isolation (and place a "
+    "third/witness pod to preserve APIC quorum on a site loss, degrading to read-only -- never two writers); select "
+    "Multi-Site for independently-failing domains with templated policy and independent upgrades.",
+  "alternatives": "Stretched-fabric or standalone NX-OS EVPN multi-site for non-controller designs; per-site "
+    "independent fabrics where no third location exists.",
+  "citation": "EXPO2020 ACI NIP/LLD4 (Multi-Pod over IPN, 3-node APIC quorum + Witness pod) + ACI Stretched Active-"
+    "Active WP; web-verified against Cisco ACI Multi-Pod / Multi-Site white papers (c11-737855 / c11-739714).",
+ },
+ {
+  "id": "aci-multisite-ipn-underlay-is-a-first-class-dependency",
+  "domain": "aci-multisite",
+  "title": "ACI Multi-Pod hinges on a qualified IPN underlay (PIM-Bidir + phantom-RP, jumbo MTU, OSPF, DHCP-relay); a stretched subnet needs host-route advertisement to avoid asymmetric egress",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "ACI Multi-Pod is one fabric stretched over an Inter-Pod Network, so the IPN is a hard-"
+    "requirement transit, not an afterthought: it must carry PIM-Bidir for BUM (with a phantom-RP for redundancy, "
+    "since anycast-RP is unsupported), jumbo MTU (9000+) for VXLAN, DHCP-relay for cross-pod node discovery, and "
+    "OSPF for TEP-pool reachability with the RP path engineered OFF the spines. A subnet stretched across pods needs "
+    "host-route advertisement (or GOLF) or ingress traffic egresses asymmetrically.",
+  "tradeoffs": "availability/operational-simplicity (one fabric, one APIC cluster, stretched L3Outs) vs a shared "
+    "failure domain AND a strict, multicast-capable underlay that becomes a first-class design dependency.",
+  "trigger": "Committing to ACI Multi-Pod over an inter-pod/inter-room transport.",
+  "observable": "A metro/multi-room estate proposed as one stretched ACI fabric, with an inter-pod L3 transport.",
+  "recommended_action": "Qualify the IPN for PIM-Bidir (phantom-RP, hardware Bidir support, P2P OSPF loopbacks), "
+    "jumbo MTU, DHCP-relay and routed subinterfaces BEFORE committing to Multi-Pod; raise OSPF cost on spine-IPN "
+    "links so the RP path avoids spines; assign an anycast TEP/ETEP per pod as the next-hop; use spine route-"
+    "reflector peering for pod scale; and for any cross-pod subnet plan host-route advertisement.",
+  "alternatives": "ACI Multi-Site (separate fabrics, separate APIC clusters, no IPN multicast, latency-tolerant) "
+    "where DR-grade fault containment outweighs stretched-L3Out simplicity.",
+  "citation": "ACI NIP (Multi-Pod / IPN) + ACI Best Practices: Lessons from the Front Lines (Inter-Pod Network "
+    "Requirements) + EXPO2020 ACI LLD4; web-verified against Cisco ACI Multi-Pod white papers.",
+ },
+ # ---- standards-based EVPN (the standalone NX-OS alternative's control plane) ----
+ {
+  "id": "evpn-esi-all-active-multihoming",
+  "domain": "evpn",
+  "title": "Use standards-based EVPN ESI all-active multihoming, not proprietary MC-LAG/vPC, to drop the peer-link and the two-chassis ceiling",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Legacy multihoming (vPC/VSS/cluster) bonds exactly two boxes through a dedicated inter-chassis "
+    "link that carries synchronisation state and orphan traffic -- capping redundancy at a dual-homed pair and "
+    "coupling the two chassis. EVPN signals a shared Ethernet Segment Identifier (ESI) in the BGP control plane "
+    "(Type-4 Ethernet-Segment + Type-1 Ethernet A-D routes) so MORE than two PEs can forward all-active for the same "
+    "segment with no inter-chassis link, using aliasing for load-balancing -- a standards-based, multivendor design.",
+  "tradeoffs": "removes the inter-chassis link as a shared-fate component and lifts the two-box ceiling, at the cost "
+    "of a BGP-EVPN control-plane dependency (and the operational familiarity of a simple MC-LAG peer-link).",
+  "trigger": "Designing redundant host/switch attachment on a VXLAN-EVPN fabric.",
+  "observable": "Dual-homed endpoints today served by vPC/VSS/MC-LAG with a peer-link.",
+  "recommended_action": "Specify EVPN ESI-based all-active multihoming (auto-derived or manual ESI, advertised via "
+    "the Ethernet-Segment route) for dual/multi-attached endpoints; reserve single-active per-service mode for cases "
+    "where the CE cannot run a single LACP bundle across PEs.",
+  "alternatives": "Proprietary MC-LAG (vPC/VSS/StackWise-Virtual) where two-box dual-homing + a peer-link are "
+    "acceptable and EVPN skills are absent; single-active per-service where a simpler failure model suffices.",
+  "citation": "RFC 7432 (BGP-MPLS-Based EVPN) §8 Multi-Homing Functions -- Type-4 Ethernet-Segment + Type-1 Ethernet "
+    "A-D routes, ESI, aliasing, DF election; web-verified against RFC 7432.",
+ },
+ {
+  "id": "evpn-bum-df-election-split-horizon",
+  "domain": "evpn",
+  "title": "Make all-active multihoming loop-free and duplicate-free with designated-forwarder election plus a split-horizon segment label",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "When several PEs forward all-active for the same Ethernet Segment, naive flooding would loop "
+    "BUM frames back to the originating site and deliver duplicate copies to a multihomed receiver -- the exact "
+    "pathologies that sank flat VPLS. EVPN closes both: per-segment split-horizon filtering (an ESI label) stops a "
+    "PE forwarding BUM back onto the segment it arrived from, and per-EVI Designated-Forwarder election (from the "
+    "Type-4 Ethernet-Segment route) ensures exactly one PE delivers BUM to a multihomed CE.",
+  "tradeoffs": "a loop-free, duplicate-free all-active L2 service vs extra control-plane state (segment routes, "
+    "per-EVI DF state, split-horizon labels) and a DF-failover convergence event to engineer.",
+  "trigger": "Deploying EVPN all-active multihoming (the loop/duplicate-prevention design that makes it safe).",
+  "observable": "Multiple PEs forwarding for the same Ethernet Segment (the all-active multihoming design).",
+  "recommended_action": "Specify per-EVI DF election and per-segment split-horizon filtering for every multihomed "
+    "Ethernet Segment; rely on segment auto-discovery (ES-import-filtered) for peer agreement; and explicitly set/"
+    "justify the peering and recovery timers that govern BUM forwarding during failover.",
+  "alternatives": "Single-active multihoming (one forwarder per service) where the simpler failure model is "
+    "acceptable and per-flow load-balancing is not needed.",
+  "citation": "RFC 7432 (Route-Type 4 Ethernet-Segment = DF election; split-horizon/ESI label) + native EVPN "
+    "deep-dive (DF Election / Split-Horizon / Aliasing); web-verified against RFC 7432.",
+ },
+ # ---- service-provider transport (seamless MPLS) ----
+ {
+  "id": "sp-mpls-bgp-lu-seamless-unified-transport",
+  "domain": "sp-mpls",
+  "title": "Use BGP labeled-unicast to stitch one end-to-end LSP across a domain/AS boundary with no shared IGP/LDP",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "When an MPLS service must cross a boundary where the two sides share no IGP and no LDP adjacency "
+    "(access/aggregation vs core, or two ASes), there is a gap in the label-switched path and any service that "
+    "relies on an end-to-end LSP (a pseudowire or L3VPN) cannot form. BGP labeled-unicast advertises the transport/"
+    "service endpoints WITH labels across the seam (eBGP between border nodes and the remote PE), yielding one "
+    "contiguous LSP -- 'seamless / unified MPLS' -- while each domain keeps its own small IGP+LDP.",
+  "tradeoffs": "scalability + modularity (each domain keeps a small IGP/LDP and AS independence; no flat merged "
+    "label domain) and a single federated transport vs an extra BGP control-plane layer to operate.",
+  "trigger": "Carrying an MPLS service (pseudowire / L3VPN) across an IGP/LDP or AS boundary.",
+  "observable": "Two MPLS domains/ASes that must carry an end-to-end LSP but share no IGP/LDP adjacency.",
+  "recommended_action": "Scope IGP+LDP inside each domain; add a BGP labeled-unicast session across the seam (eBGP "
+    "between border nodes and the remote PE) advertising only the service/transport endpoints with labels for a "
+    "contiguous end-to-end LSP; carry the customer service as a pseudowire/VPN over it.",
+  "alternatives": "A single flat IGP+LDP domain end to end (simplest control plane, but largest fault/label domain "
+    "and no AS independence); inter-domain MPLS-TE tunnels stitched across the seam.",
+  "citation": "BGP-LU on the TIM OPM network (Overview / Topology / Packet forwarding); web-verified against RFC "
+    "8277 (Using BGP to Bind MPLS Labels to Address Prefixes, obsoletes RFC 3107).",
+ },
+ # ---- enrichments to existing domains (security / multicast) ----
+ {
+  "id": "security-management-plane-source-allowlist",
+  "domain": "security",
+  "title": "Filter the management plane (VTY/SNMP) to an explicit allowlist of NMS/NOC/VPN source prefixes -- not just SSH-only",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "SSH and AAA authenticate WHO connects; they do not constrain WHERE connections may originate. "
+    "Binding a per-line VTY access-class and an SNMP-server ACL that permit ONLY the known management source "
+    "networks (jump hosts, NMS/monitoring, management VPN, NOC out-of-band) shrinks the management attack surface to "
+    "a handful of prefixes -- a distinct hardening layer beyond protocol security and RBAC. On a device with a "
+    "management VRF, the access-class must include the VRF path ('in vrf-also').",
+  "tradeoffs": "hardens the management plane (security) vs an ACL to maintain and a lock-out risk if management "
+    "source ranges change without updating it.",
+  "trigger": "Hardening the management plane of routers/switches beyond protocol security.",
+  "observable": "Devices reachable for management from anywhere (SSH/SNMP open to all sources), no source allowlist.",
+  "recommended_action": "Define a management source allowlist (NMS, monitoring, management VPN, NOC OOB) and enforce "
+    "it with a per-line VTY access-class plus an SNMP-server ACL on every device tier; include the management-VRF "
+    "path ('in vrf-also'); pair with SSH-only, exec-timeout and a legal login banner.",
+  "alternatives": "SSH-only + AAA with no source filter (authenticated but reachable from everywhere -- larger "
+    "surface); push all management onto a physically separate OOB network.",
+  "citation": "EXPO2020 PSN Infra Hardening MOP (VTY access-class 'in vrf-also'; SNMP-server use-ipv4acl; exec-"
+    "timeout); web-verified against Cisco IOS/IOS-XE management-plane hardening guidance.",
+ },
+ {
+  "id": "multicast-snooping-without-querier-is-platform-dependent-not-fail-open",
+  "domain": "multicast",
+  "title": "Never assume a missing IGMP querier fails open: snooping-without-querier floods on some platforms and black-holes on others -- guarantee a querier",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "When IGMP snooping is enabled but no querier (router or configured switch) exists on a VLAN, the "
+    "snooping state is never primed and the resulting behaviour is PLATFORM-DEPENDENT: some switch families fall "
+    "back to flooding the multicast VLAN-wide (degraded but delivering), while others prune and BLACK-HOLE the "
+    "groups. 'Snooping with no querier is harmless flooding' is a false-health assumption that silently breaks media "
+    "delivery on the wrong platform -- and a stranded-multicast trap at cutover.",
+  "tradeoffs": "guaranteed delivery vs the operational cost of explicitly owning a querier per active multicast VLAN "
+    "(availability/correctness over an assumed-safe default).",
+  "trigger": "Designing or validating L2 multicast (IGMP snooping) for a media/broadcast estate.",
+  "observable": "An active multicast VLAN with snooping enabled but no confirmed querier (router or designated switch).",
+  "recommended_action": "Require a confirmed IGMP querier on every active multicast VLAN (a router by default, else "
+    "the designated lowest-IP snooping switch); do not depend on the snooping-flood fallback as a safety net; in "
+    "mixed fleets explicitly verify the no-querier behaviour of the receiver-hosting platforms before cutover.",
+  "alternatives": "Designate a snooping switch as querier where no router exists; disable snooping on a VLAN only "
+    "where intentional VLAN-wide flooding is acceptable.",
+  "citation": "Cisco IGMP-snooping case study (no-mrouter/querier behaviour differs across Catalyst families -- some "
+    "flood, some prune); web-verified that no-querier snooping behaviour is implementation-specific, not standardised.",
+ },
+ # ---- change-execution rigor (distinct from the config-automation TOOLING principle) ----
+ {
+  "id": "methodology-tested-rollback-restores-exact-prior-state",
+  "domain": "methodology",
+  "title": "Pair every change step with a defined, TESTED rollback that restores the exact prior state, then verify the rollback",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "A change is only as safe as its reversibility, and 'we have a rollback plan' is not the same as "
+    "a rollback that has been proven to work. Each block of applied commands must have a matching undo that returns "
+    "the device to its captured pre-change configuration, the undo itself must be dry-run, and the rollback must end "
+    "with explicit post-rollback verification against the pre-change baseline -- because an unverified rollback can "
+    "leave the device in a third, worse state. This is change-EXECUTION rigor, distinct from config-management "
+    "tooling (version control / drift detection): it governs how a single maintenance-window step is made reversible.",
+  "tradeoffs": "manageability/cost (authoring and dry-running the undo doubles the effort and adds verification "
+    "steps) vs a bounded worst-case blast radius and a recovery the team has actually tested, not assumed.",
+  "trigger": "Authoring a MOP / cutover change step for a production maintenance window.",
+  "observable": "Change steps with a forward procedure but no tested, state-restoring undo and no post-rollback check.",
+  "recommended_action": "For every change block, author the exact reverse commands, dry-run them, and add explicit "
+    "post-rollback verification that the device matches its captured pre-change baseline; keep each step "
+    "independently reversible and capture the pre-change state before touching the device.",
+  "alternatives": "Forward-only change with 'reimage/reload from backup' as the only recovery (simpler to write, "
+    "slower and riskier to execute); staged build-before-break, where the legacy path itself is the rollback.",
+  "citation": "EXPO2020 PSN Infra Hardening MOP §5 Rollback plan (§5.1 Undo the changes / §5.1.1 Post-Rollback "
+    "checks); aligns with Cisco change-management leading practice. Distinct from mgmt-change-config-mgmt-automation.",
+ },
+]
+DOCTRINE.extend(_ACI_CORPUS_ADDENDUM)
+
+
+# ------------------------------------------------------- Service-Provider / Segment-Routing addendum
+# Mined from the D:\\ SP/transport design corpus (Orhan Ergun CCIE-SP design-comparison charts + inter-AS
+# L3VPN workbooks, a real Segment-Routing Phase-2 test report, Cisco MPLS L2/L3-VPN troubleshooting course,
+# Nick Russo CCIE-SP comp guide) and a dedicated SR/SRv6 + ngMVPN web-research pass. EVERY principle here is
+# DOCTRINE (engine_actionable=False) with NO exception: an L1-L4 ENTERPRISE brownfield assessment collects no
+# SR/LDP/RSVP/MP-BGP-VPN/MVPN/L2VPN control-plane state, so the design brain cites these for SP-flavoured
+# engagements + the HLD narrative + chat, never as auto-detected findings. (The VPLS-flood-domain and no-PE-
+# loopback-summarization rules have a plausible FUTURE evidence trigger -- spanning_vlans / IGP summarization
+# -- but stay doctrine until a detector is actually wired and locked by test_every_engine_actionable_principle
+# _is_emitted.) Standards are web-verified (note: TI-LFA is now RFC 9855, Oct 2025 -- no longer a draft).
+# Provenance: ORIGINAL re-expression of design facts/doctrine; no verbatim source text.
+_SP_CORPUS_ADDENDUM = [
+ # ---- Segment Routing (SR-MPLS / SRv6): control-plane collapse + resilience ----
+ {
+  "id": "sp-sr-mpls-collapse-ldp-rsvp-to-igp-sid",
+  "domain": "segment-routing",
+  "title": "Collapse LDP + RSVP-TE onto one IGP-distributed SID plane (SR-MPLS) to delete transport control-plane state",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Classic MPLS runs three transport control planes in lockstep -- the IGP for reachability, "
+    "LDP for label binding, and RSVP-TE for engineered tunnels -- each with its own adjacency, state machine, "
+    "soft-state refresh and failure mode (LDP-IGP synchronization exists only to paper over the seam between two "
+    "of them). Segment Routing carries the labels IN the link-state IGP itself: a global prefix-SID per node "
+    "loopback and a local adjacency-SID per link, so LDP and RSVP-TE can be retired and forwarding state lives "
+    "only at the edge.",
+  "tradeoffs": "simplicity & manageability (one control plane, no LDP/RSVP soft-state or LDP-IGP-sync) and "
+    "scalability vs a one-time forklift of doctrine + platform SR-capability + label-planning discipline (a "
+    "managed, contiguous, fleet-consistent SRGB).",
+  "trigger": "Designing or modernising an MPLS transport core where the platform supports SR.",
+  "observable": "Not collected by an L1-L4 enterprise assessment (no LDP/RSVP/SR core state); applies to an "
+    "SP/MPLS transport design engagement.",
+  "recommended_action": "On an SR-capable target, run SR-MPLS over a single link-state IGP (IS-IS preferred for "
+    "SP-scale multi-level + wide metrics; OSPF acceptable), advertise a prefix-SID per node loopback from a "
+    "domain-wide consistent SRGB plus adjacency-SIDs per link, then decommission LDP and RSVP-TE once SR "
+    "forwarding is verified end-to-end.",
+  "alternatives": "Keep LDP where the core is pure best-effort IP-VPN transport with no TE need and the platform "
+    "will never gain SR (LDP is simpler to adopt incrementally on a legacy base); SRv6 (RFC 8986) where an "
+    "MPLS-free IPv6 data plane + network programming is wanted.",
+  "citation": "RFC 8402 (Segment Routing Architecture) + RFC 8660 (SR-MPLS data plane) + Nick Russo CCIE-SP SR "
+    "chapter; web-verified.",
+ },
+ {
+  "id": "sp-sr-srgb-homogeneous-non-overlapping-global-block",
+  "domain": "segment-routing",
+  "title": "Reserve one non-overlapping SRGB and make it identical fleet-wide for deterministic end-to-end SR labels",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "The Segment Routing Global Block (SRGB) is the label range a router derives prefix-SID labels "
+    "from -- a node computes a prefix's local label as its own SRGB lower bound plus the advertised prefix-SID "
+    "index. Two rules follow: the SRGB must NOT overlap the platform's dynamic global MPLS label pool, and "
+    "making it identical on every node means a prefix-SID index yields the SAME absolute label everywhere -- one "
+    "global label identifies a destination across the whole domain, so traces and troubleshooting are readable.",
+  "tradeoffs": "manageability/operability (one label identifies a destination everywhere; deterministic traces) "
+    "vs label-space planning discipline (a reserved, documented, domain-wide constant block).",
+  "trigger": "Planning the SR label scheme for an SR-MPLS domain.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SR-MPLS design.",
+  "recommended_action": "Allocate one reserved SRGB that is identical on all SR nodes and provably disjoint from "
+    "the dynamic MPLS label pool; document its lower bound and size as a domain-wide constant so prefix-SID "
+    "indices map to the same absolute label on every hop.",
+  "alternatives": "Per-node heterogeneous SRGBs are tolerable for small labs or where vendors disagree on default "
+    "ranges -- accepting that label values differ per hop and complicate operational tooling.",
+  "citation": "RFC 8402 + RFC 8660 (SR-MPLS data plane / SRGB) + Nick Russo CCIE-SP SR chapter; web-verified.",
+ },
+ {
+  "id": "sp-sr-ti-lfa-guaranteed-postconvergence-repair",
+  "domain": "segment-routing",
+  "title": "Use TI-LFA for 100% single-failure coverage on the actual post-convergence path, not best-effort LFA",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Classic LFA / remote-LFA give a backup only where a loop-free neighbour happens to exist, so "
+    "coverage is topology-dependent (ring and square topologies leave protection holes) and the repair path often "
+    "differs from where the IGP will actually settle -- causing a second, disruptive reroute. TI-LFA uses an SR "
+    "repair SID-list to steer traffic down the EXACT post-convergence path, giving near-100% link/node/SRLG "
+    "coverage in any two-connected topology with no transient micro-loop.",
+  "tradeoffs": "availability + fast convergence + determinism (guaranteed coverage on the settled path) vs deeper "
+    "repair label stacks (verify platform push limits) and the SR prerequisite.",
+  "trigger": "Engineering fast-reroute on an SR IGP, especially over rings/spoke topologies with thin protection.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SR-MPLS/SRv6 FRR design.",
+  "recommended_action": "Enable TI-LFA for link, node and SRLG protection across the SR IGP so every destination "
+    "has a precomputed post-convergence repair SID-list; define SRLGs so fate-shared fibres/conduits are not each "
+    "other's backup; verify the repair label-stack depth is within platform push limits before commit; pair with "
+    "IGP micro-loop avoidance.",
+  "alternatives": "Plain LFA/remote-LFA only on rich-mesh topologies where coverage is already ~100%; RSVP-TE FRR "
+    "(facility/one-to-one backup) where an existing mature RSVP deployment dominates.",
+  "citation": "RFC 9855 (Topology Independent Fast Reroute Using Segment Routing -- Standards Track, Oct 2025; "
+    "supersedes the long-running draft) + RFC 8402; web-verified.",
+ },
+ {
+  "id": "sp-sr-ldp-interworking-mapping-server-for-migration",
+  "domain": "segment-routing",
+  "title": "Migrate LDP to SR incrementally with an SR Mapping Server (SRMS) and contiguous loopback blocks",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "A brownfield core cannot flip to SR atomically -- some nodes lag in hardware/NOS support. The "
+    "SR Mapping Server advertises prefix-SID bindings ON BEHALF OF LDP-only routers so SR and LDP islands "
+    "interwork during a phased cutover -- a build-before-break migration, not a flag-day. Pre-planning loopbacks "
+    "as contiguous /32 blocks lets one mapping range cover many nodes and keeps the interworking footprint small.",
+  "tradeoffs": "migration safety + continuity (incremental coexistence, reversible per node) vs transitional "
+    "complexity (a temporary dual control plane + label-preference rules during the overlap).",
+  "trigger": "Cutting a brownfield LDP core over to SR-MPLS.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to an SR migration.",
+  "recommended_action": "Stage the LDP->SR migration through an SRMS (advertise-local on the server, receive on "
+    "clients) so SR and LDP islands coexist; carve the SRGB clear of LDP's dynamic labels and set SR-preferred "
+    "label preference; pre-plan loopbacks as contiguous /32 blocks so a single mapping range covers many nodes.",
+  "alternatives": "A flag-day cutover only on a small, fully SR-capable core in a maintenance window; per-node "
+    "ships-in-the-night LDP+SR without an SRMS where every node is already SR-capable.",
+  "citation": "RFC 8661 (Segment Routing MPLS Interworking with LDP -- defines the SR Mapping Server) + Nick "
+    "Russo CCIE-SP SR chapter; web-verified.",
+ },
+ {
+  "id": "sp-srte-prefix-sid-vs-adjacency-sid-and-explicit-path-validation",
+  "domain": "segment-routing",
+  "title": "Encode SR-TE paths with prefix-SIDs for resilience; reserve adjacency-SID explicit paths for strict steering, and guard the no-validation blackhole",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "An SR-TE path is a resilience-vs-precision trade. A prefix-SID (node-SID) path is interface-"
+    "independent -- it survives local link failures and pushes the fewest labels, and an anycast prefix-SID adds "
+    "node redundancy. An adjacency-SID / strict-label path pins the LSP to specific interfaces (exact steering) "
+    "but breaks if one of those links fails. Critically, a head-end does NOT validate a label-explicit path, so a "
+    "stale or wrong SID-list silently blackholes -- explicit paths need independent monitoring.",
+  "tradeoffs": "availability/resilience + simplicity (prefix-SID paths reroute around local failures, shorter "
+    "stacks) vs path precision/steerability (adjacency-SID exact-hop control).",
+  "trigger": "Choosing how to express an SR-TE policy's segment list.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SR-TE design.",
+  "recommended_action": "Default SR-TE forwarding to prefix-SID (node) paths for resilience and minimal stack "
+    "depth; use adjacency-SID/strict-label paths only where exact link steering is required, and wherever label-"
+    "explicit paths are used add active path validation/probing because the head-end will not detect a broken "
+    "explicit path itself.",
+  "alternatives": "Dynamic CSPF/min-fill computation when no strict constraint exists; retain RSVP-TE alongside "
+    "during transition where its admission control is required.",
+  "citation": "RFC 9256 (SR Policy Architecture, updates RFC 8402) + the Cisco SR Phase-2 Solution Test Report "
+    "(SR-TE caveats); web-verified.",
+ },
+ # ---- SP transport TE / hygiene / topology ----
+ {
+  "id": "sp-sr-te-stateless-source-routing-vs-rsvp",
+  "domain": "sp-transport",
+  "title": "Prefer SR-TE stateless source-routed policies over RSVP-TE soft-state for scalable traffic engineering",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "Traffic engineering can be expressed two ways. RSVP-TE signals an explicit LSP hop-by-hop and "
+    "holds soft-state (PATH/RESV refresh) at the head-end AND every midpoint, so tunnel count drives state and "
+    "refresh load across the core. SR-TE encodes the engineered path as a segment list imposed only at the head-"
+    "end; midpoints are stateless, so the core scales with links, not tunnels.",
+  "tradeoffs": "scalability + simplicity (no midpoint/soft-state; policies live at the edge) vs guaranteed-"
+    "bandwidth admission control (the stateless model has no per-LSP reservation).",
+  "trigger": "Selecting the TE mechanism for a new or scaling transport core.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SP TE design.",
+  "recommended_action": "Default new TE to SR-TE (head-end-imposed segment lists, stateless midpoints) for scale "
+    "and operational simplicity; retain or overlay RSVP-TE only on the specific paths that need bandwidth "
+    "admission / guaranteed reservations the stateless model cannot provide.",
+  "alternatives": "Stay on RSVP-TE where hard bandwidth guarantees, auto-bandwidth with admission, or a mature "
+    "RSVP-FRR deployment dominate; use a PCE/controller to compute SR-TE policies at scale.",
+  "citation": "RFC 9256 (SR Policy = ordered segment list, source-routed) + Nick Russo CCIE-SP; web-verified.",
+ },
+ {
+  "id": "sp-srte-pce-pcep-bgpls-centralized-controller-maturity-gate",
+  "domain": "sp-transport",
+  "title": "Centralise SR-TE with a stateful PCE over PCEP + BGP-LS, but gate the controller on feature maturity and validate paths yourself",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "SR-TE's strength is application-aware, centrally-optimised paths: a stateful PCE learns the "
+    "topology via BGP-LS and initiates/updates/deletes SR LSPs on the PCC over PCEP. But the controller becomes a "
+    "first-class dependency that must be chosen on PROVEN feature completeness, not roadmap -- and PCE/head-end "
+    "state can read 'up' across a failed midpoint or inter-AS hop, so the design must add its own liveness check.",
+  "tradeoffs": "optimality + agility + manageability (central programmatic WAN orchestration) vs availability/"
+    "correctness risk (a controller SPOF + stale 'up' state masking a black hole).",
+  "trigger": "Architecting centralised/SDN traffic engineering for an SR transport network.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SR-TE/SDN design.",
+  "recommended_action": "Architect SR-TE with a stateful PCE (PCE-initiated LSPs over PCEP) fed by BGP-LS, "
+    "selecting only a controller whose required SR-TE features are GA; add active liveness/path validation "
+    "(independent probing) because PCE/head-end state can show 'up' across a failed hop; design controller "
+    "redundancy so it is not a single point of failure.",
+  "alternatives": "Distributed (router-local) SR-TE or static SID-list policies where a controller is unjustified "
+    "or immature; keep RSVP-TE where its existing path-validation/admission dominates.",
+  "citation": "RFC 8664 (PCEP extensions for SR) + RFC 9552 (BGP-LS, obsoletes RFC 7752) + RFC 9256 + the Cisco "
+    "SR Phase-2 Test Report (SDN/PCE defects); web-verified.",
+ },
+ {
+  "id": "sp-transport-keep-pe-loopbacks-as-host-routes-no-core-summarization",
+  "domain": "sp-transport",
+  "title": "Never summarize PE BGP-next-hop loopbacks in the core IGP -- VPN/LSP label resolution needs the exact /32",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "In an MPLS-VPN core, every VPNv4/L2VPN service rides a two-label stack whose OUTER label is "
+    "the transport label bound to the egress PE's BGP next-hop -- its loopback. That binding and the LSP exist "
+    "only if the PE loopback is present in the core IGP as an EXACT host route; an aggregate that hides the /32 "
+    "leaves the next-hop label unresolved and silently black-holes every VPN service riding that PE -- one of the "
+    "most common MPLS-VPN design failures.",
+  "tradeoffs": "correctness/reachability of VPN services (host-route loopbacks make LSPs resolvable) vs core "
+    "routing-table scale (you give up aggressive summarization of the PE loopback range).",
+  "trigger": "Designing core IGP summarization / address aggregation in an MPLS-VPN backbone.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to MPLS-VPN core design (but the same "
+    "anti-pattern -- summarizing a next-hop a label binds to -- is worth checking in any labelled core).",
+  "recommended_action": "Exclude PE / PE-next-hop loopbacks from any core IGP summarization or filtering; carry "
+    "them as exact host routes end-to-end (or stitch summarized domains with BGP-LU); summarize only customer / "
+    "infrastructure prefixes, and verify label/LSP resolution to each PE loopback in the design's NRFU plan.",
+  "alternatives": "Aggressive core summarization is fine in a pure IP core; in an MPLS-VPN core the only safe "
+    "pattern is host-route loopbacks (or BGP-LU across summarization boundaries).",
+  "citation": "RFC 4364 (BGP/MPLS IP VPNs -- backbone IGP must carry a host route to each LSP egress PE) + Cisco "
+    "MPLS L2/L3-VPN troubleshooting course; web-verified.",
+ },
+ {
+  "id": "sp-transport-physical-topology-selection-matrix",
+  "domain": "sp-transport",
+  "title": "Select the physical transport topology (ring / hub-spoke / partial-mesh / full-mesh) from the role each layer serves",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "There is no single best physical topology: ring, hub-and-spoke, partial-mesh and full-mesh "
+    "trade cost, optimal forwarding, convergence, FRR-friendliness and resource consumption against each other, "
+    "and each wins in a different layer. Choose deliberately per role -- rings for cost-driven SP access/"
+    "collection (accepting worst-case convergence, which is exactly why a ring needs engineered TI-LFA), hub-and-"
+    "spoke where a clear concentration point exists (mitigate the hub SPOF), partial-mesh for core/aggregation "
+    "diversity at bounded cost, full-mesh only where latency + diversity justify the O(n^2) cost.",
+  "tradeoffs": "cost vs availability vs convergence vs scalability vs simplicity -- ring minimizes ports/cost but "
+    "worsens convergence + optimal forwarding; full-mesh maximizes diversity at quadratic cost.",
+  "trigger": "Choosing the physical/logical topology for a transport or WAN layer.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; a design-selection concept, complements the "
+    "convergence-geometry rule (redundancy as triangles, not squares/rings).",
+  "recommended_action": "Map each transport layer to a topology by its dominant requirement (cost-sensitive "
+    "collection -> ring + engineered FRR; concentration point -> hub-and-spoke + SPOF mitigation; "
+    "core/aggregation -> partial-mesh; latency/diversity-critical -> full-mesh); never apply one topology "
+    "uniformly across all layers.",
+  "alternatives": "A flat single-topology choice is simpler to operate but is almost always wrong at one end (a "
+    "full-mesh access wastes capex; a hub-and-spoke core strands diversity).",
+  "citation": "Orhan Ergun CCIE-SP design-comparison chart (ring vs hub-spoke vs partial-mesh vs full-mesh); "
+    "complements topology-triangles-not-squares-rings (the convergence-geometry rule).",
+ },
+ # ---- inter-AS / L3VPN identity + topology (sp-mpls, sibling of sp-mpls-bgp-lu) ----
+ {
+  "id": "sp-interas-l3vpn-options-abc-csc-scale-vs-trust",
+  "domain": "sp-mpls",
+  "title": "Choose the inter-AS L3VPN handoff (Option A/B/C, plus CsC) by the ASBR-state vs scale vs trust tradeoff",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Inter-AS MPLS L3VPN is not one design but a spectrum trading control-plane state at the "
+    "border against scale and inter-provider trust. Option A (back-to-back VRF) keeps each AS fully isolated and "
+    "is simplest to secure, but per-VPN sub-interfaces + IP forwarding at the ASBR do not scale. Option B (ASBR-"
+    "to-ASBR VPNv4, retain-RT) scales further but puts VPN state on the border. Option C (multihop MP-eBGP RR-to-"
+    "RR with PE next-hops preserved + BGP-LU between ASBRs) scales furthest but couples the providers' label "
+    "paths. CsC is the hierarchical-carrier case -- a customer carrier rides a backbone carrier, exchanging "
+    "labels (BGP-LU) at the CsC boundary.",
+  "tradeoffs": "scalability (Option-C/CsC scale far past Option A's per-VPN sub-interfaces) + manageability vs "
+    "security/isolation (Option A's hard per-AS boundary) and inter-provider coordination cost.",
+  "trigger": "Handing an L3VPN off across an AS / inter-provider boundary.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to inter-provider MPLS-VPN design.",
+  "recommended_action": "Select by requirement: Option A when isolation/simplicity dominate and VPN count is low; "
+    "Option B for moderate scale with VPN state acceptable at the border (retain route-targets across the ASBR); "
+    "Option C / CsC when many VPNs + a provider hierarchy demand loopback-to-loopback label paths and the "
+    "providers accept the coordination (Option C preserves the originating PE next-hop; CsC exchanges labels via "
+    "BGP-LU at the boundary).",
+  "alternatives": "Stay intra-AS where no real administrative boundary exists; a non-MPLS overlay handoff "
+    "(IPsec/SD-WAN between domains) where label-path coupling is unacceptable.",
+  "citation": "RFC 4364 §10 (inter-AS L3VPN Options a/b/c) + Orhan Ergun CCIE-SP inter-AS / CsC workbooks; web-verified.",
+ },
+ {
+  "id": "sp-l3vpn-interas-edge-explicit-route-policy",
+  "domain": "sp-mpls",
+  "title": "Treat the inter-AS / inter-provider edge as untrusted: explicit inbound + outbound route-policy, never pass-all",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "An ASBR forming eBGP with another autonomous system is the boundary where one operator's "
+    "routing trust ends. IOS-XR makes this safe-by-default -- an eBGP neighbour advertises and accepts nothing "
+    "until an explicit route-policy is bound in each direction -- and that default should be honoured, never "
+    "bypassed with a permit-any. A pass-all inter-AS policy is a prefix-leak / hijack surface.",
+  "tradeoffs": "security (explicit per-direction filtering + RT scoping contain leaks/hijacks) vs simplicity/"
+    "manageability (the policies + RT allowlists cost configuration + review effort).",
+  "trigger": "Configuring any inter-AS / inter-provider eBGP edge (especially a VPNv4 hand-off).",
+  "observable": "Not collected by an L1-L4 enterprise assessment of an enterprise estate; a security-grade rule "
+    "for SP/inter-provider edges (a pass-all policy found in review is a finding).",
+  "recommended_action": "At every inter-AS edge bind explicit, named inbound AND outbound route-policies that "
+    "permit only the intended prefixes/loopbacks and (for VPNv4) only the intended route-targets; never ship a "
+    "permit-any; pair the filter with prefix-count limits / max-prefix on the neighbour.",
+  "alternatives": "A tightly-scoped prefix-list / route-target allowlist is the norm; a deliberately wider policy "
+    "only inside a single administrative domain you fully control, never toward another AS.",
+  "citation": "RFC 4364 §10 (inter-provider) + Orhan Ergun CCIE-SP inter-AS lab (IOS-XR sends/accepts nothing "
+    "until a route-policy is applied); web-verified.",
+ },
+ {
+  "id": "sp-l3vpn-rd-disambiguates-overlapping-vpn-address-space",
+  "domain": "sp-mpls",
+  "title": "Plan the Route Distinguisher to keep overlapping customer prefixes distinct (and per-PE-unique where VPN path diversity is needed)",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "The Route Distinguisher is the 8-byte value prepended to a customer IPv4 prefix to form a "
+    "globally-unique 12-byte VPNv4 NLRI; its job is to keep two customers' overlapping address space (both using "
+    "10.1.1.0/24) from colliding in one MP-BGP table. The RD is a field, not a BGP attribute -- it does not by "
+    "itself build VPN topology (that is the Route-Target's job). A secondary consequence: a UNIQUE RD per VRF per "
+    "PE makes a dual-homed site's two PE paths distinct NLRI, so a route reflector relays both (path diversity).",
+  "tradeoffs": "correctness (overlap disambiguation) + convergence/availability (per-PE-unique RD preserves "
+    "backup VPN paths through an RR) vs simplicity (one RD per VRF reads more cleanly).",
+  "trigger": "Designing the VPNv4/v6 RD allocation for an MPLS L3VPN.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to MPLS-VPN design.",
+  "recommended_action": "Assign each VRF an explicit, planned RD (do not rely on the auto/default RD); keep RD "
+    "allocation in an addressing/RD plan; where a VRF is anchored on two+ PEs and VPN path redundancy/multipath "
+    "is required, allocate a distinct RD per PE (or use BGP Add-Path on the RR) so the RR retains all paths.",
+  "alternatives": "A shared RD per VRF when paths should be deliberately de-duplicated and the topology is single-"
+    "homed; per-PE-unique RD (or RR Add-Path) when dual-homed sites need their backup VPN path preserved.",
+  "citation": "RFC 4364 (VPN-IPv4 = 8-byte RD + 4-byte IPv4) + Cisco MPLS L2/L3-VPN course; web-verified.",
+ },
+ {
+  "id": "sp-l3vpn-rt-import-export-builds-the-vpn-topology",
+  "domain": "sp-mpls",
+  "title": "Engineer L3VPN connectivity topology with Route-Target import/export, not with the RD",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "The Route-Target -- an 8-byte extended community -- is what actually decides which VRFs "
+    "receive which VPNv4 prefixes: a PE exports its VRF routes tagged with an export-RT, and any remote VRF whose "
+    "import-RT matches installs them. Because import and export RT sets are independent and can be asymmetric, "
+    "the RT scheme IS the VPN connectivity matrix -- any-to-any, hub-and-spoke, or controlled extranet are all "
+    "just RT patterns.",
+  "tradeoffs": "security & policy (asymmetric RTs enforce hub-and-spoke / central inspection) vs reachability/"
+    "simplicity (full-mesh RT is simplest but allows any-to-any).",
+  "trigger": "Designing the connectivity topology of one or more MPLS L3VPNs.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to MPLS-VPN design.",
+  "recommended_action": "Design the VPN connectivity matrix explicitly as an RT import/export plan -- symmetric "
+    "RTs for any-to-any, hub-exports/spoke-imports (and the inverse) for hub-and-spoke, a dedicated shared-"
+    "services RT for controlled extranet -- and document the intended topology alongside the RT scheme so "
+    "membership cannot drift.",
+  "alternatives": "Full-mesh RT for simple any-to-any enterprise VPNs; asymmetric hub-and-spoke RT where policy/"
+    "inspection must sit between sites; a per-service extranet RT for shared services.",
+  "citation": "RFC 4364 (Route-Target extended community governs VRF import/export) + Cisco MPLS L2/L3-VPN course; web-verified.",
+ },
+ # ---- L2VPN ----
+ {
+  "id": "sp-l2vpn-vpls-is-one-stretched-flood-domain-cap-it",
+  "domain": "sp-l2vpn",
+  "title": "Treat a VPLS instance as one WAN-wide flood / MAC-learning domain and bound it with limits + snooping",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Because VPLS presents the interconnected PEs as ONE emulated LAN, it inherits every Ethernet "
+    "broadcast-domain hazard but stretches it across the WAN: unknown-unicast/multicast/broadcast flood to all "
+    "attachment circuits, PEs learn MACs dynamically per VFI, and a single mis-stated MTU, loop or MAC storm "
+    "becomes a WAN-wide failure. A VPLS instance is a failure domain the size of the whole emulated LAN.",
+  "tradeoffs": "availability + blast-radius containment (MAC limits + snooping bound the flood domain) vs "
+    "reachability/transparency (a hard MAC cap can drop endpoints if undersized).",
+  "trigger": "Designing or sizing a VPLS (multipoint L2VPN) service.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to L2VPN design (the same bounded-flood-"
+    "domain discipline mirrors the engine's bounded-L2-failure-domain rule for campus/DC VLANs).",
+  "recommended_action": "Right-size the emulated LAN: set per-VFI MAC-address-table limits with an explicit "
+    "unknown-MAC action, enable IGMP/PIM snooping to constrain multicast flooding, control BPDUs at the access "
+    "edge, and prefer L3VPN or point-to-point VPWS where multipoint L2 reach is not actually required.",
+  "alternatives": "Bounded VPLS (limits + snooping) when multipoint L2 is mandatory; routed L3VPN when the "
+    "customer only needs IP reachability (smaller failure domain); VPWS for a simple point-to-point pseudowire; "
+    "EVPN where control-plane MAC learning + all-active multihoming are wanted.",
+  "citation": "RFC 4761 (VPLS using BGP) / RFC 4762 (VPLS using LDP) + Cisco MPLS L2/L3-VPN course; web-verified.",
+ },
+ # ---- Multicast VPN (ngMVPN) ----
+ {
+  "id": "sp-mvpn-decouple-provider-tunnel-from-customer-signalling",
+  "domain": "sp-mvpn",
+  "title": "Choose the provider tunnel and the C-multicast signalling plane as two independent decisions",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Next-gen MVPN's central gain over draft-Rosen is splitting one monolithic choice into two "
+    "orthogonal axes: how the core REPLICATES traffic (the P-tunnel: PIM-GRE, mLDP P2MP/MP2MP, or P2MP-TE) and "
+    "how PEs LEARN which customer (S,G)/(*,G) lives where (the C-multicast plane: overlay PIM vs BGP MCAST-VPN "
+    "auto-discovery + C-multicast routes). A 'profile number' bundles a specific pair, but the design decision is "
+    "the two axes, each sized to its own driver.",
+  "tradeoffs": "manageability + scalability (each plane sized to its own constraint -- core protection/state for "
+    "the tunnel, PE/adjacency scale for the signalling) vs simplicity (two planes = more moving parts).",
+  "trigger": "Designing multicast over an MPLS/BGP IP-VPN (MVPN).",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SP MVPN design.",
+  "recommended_action": "State the P-tunnel and the C-multicast signalling as SEPARATE selections in the HLD, each "
+    "justified against its own driver (core protection/state for the tunnel; PE/adjacency scale for the "
+    "signalling) -- never adopt a profile number as a bundle.",
+  "alternatives": "Keep them coupled (classic draft-Rosen, profile 0) only for a tiny deployment where the core "
+    "already runs PIM and operational familiarity outweighs scale.",
+  "citation": "RFC 6513 (Multicast in MPLS/BGP IP VPNs framework) + RFC 6514 (BGP encodings / MCAST-VPN A-D + "
+    "C-multicast routes); web-verified.",
+ },
+ {
+  "id": "sp-mvpn-prefer-mldp-over-pim-gre-in-the-core",
+  "domain": "sp-mvpn",
+  "title": "Prefer mLDP (label-switched P-tunnels) over PIM-GRE to keep PIM and per-VPN state out of the core",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "PIM-GRE (profile 0 / draft-Rosen) requires PIM enabled across the whole P-network and builds "
+    "a per-VPN NBMA default-MDT on which every PE becomes a PIM neighbour of every other PE -- so adjacency + "
+    "mroute state grow with PEs x VPNs and ride a separate GRE/PIM plane the core's unicast LSPs never see. mLDP "
+    "builds the multicast distribution tree as label-switched P2MP/MP2MP LSPs over the SAME MPLS data plane, "
+    "removing core PIM and getting MPLS-grade protection (TI-LFA), and constrains high-rate streams onto a data-"
+    "MDT.",
+  "tradeoffs": "scalability + convergence (mLDP slashes core control-plane state, reuses MPLS forwarding + FRR) "
+    "vs simplicity/compatibility (mLDP assumes an MPLS core; PIM-GRE interops with legacy/IP cores).",
+  "trigger": "Selecting the MVPN provider-tunnel (core replication) technology.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SP MVPN design.",
+  "recommended_action": "Specify mLDP P2MP (and MP2MP where a shared tree fits) as the default P-tunnel; use a "
+    "data-MDT to move high-rate streams off the default tree; reserve PIM-GRE for interop with legacy PEs or a "
+    "non-MPLS core, documenting the core-state + protection consequences if it is retained.",
+  "alternatives": "PIM-GRE only for backward compatibility with gear that cannot do mLDP or a non-MPLS core; "
+    "P2MP-TE instead of mLDP where per-tree bandwidth admission / explicit-path is required.",
+  "citation": "RFC 6388 (mLDP -- LDP extensions for P2MP/MP2MP LSPs) + RFC 6037 (Cisco draft-Rosen MVPN, "
+    "informational); web-verified.",
+ },
+ # ---- BGP route-reflection path diversity (the problem the existing RR principle's remedy list assumes) ----
+ {
+  "id": "bgp-rr-best-path-hiding-diversity-remedy",
+  "domain": "bgp",
+  "title": "Restore the path diversity a route reflector hides before relying on it for PE redundancy or fast reroute",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "A vanilla route reflector re-advertises only its single best path to clients, so all the "
+    "alternate exit PEs a full mesh would have exposed are silently hidden. That collapse is invisible until a "
+    "client needs a backup it never received: BGP PIC, multipath load-sharing and dual-homed PE redundancy all "
+    "fail quietly because the backup path was never relayed. (This is the WHY behind the remedy list the "
+    "enterprise RR principle names -- here scoped to the SP/MPLS-VPN case and made a deliberate design check.)",
+  "tradeoffs": "scalability + simplicity (RR clustering) vs availability + convergence (RR clustering trades away "
+    "the very path diversity PIC/multipath/dual-homing depend on).",
+  "trigger": "Introducing or relying on route reflectors where clients need redundancy / fast reroute.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to BGP RR design (the existing "
+    "ibgp-full-mesh-to-route-reflector principle lists the remedies; this one explains the failure mode + how to "
+    "choose among them).",
+  "recommended_action": "Where RRs serve clients that need redundancy, deliberately restore diversity and size "
+    "the remedy against four axes (MPLS-VPN fitness / extra session+RR cost / migration disruption / operational "
+    "familiarity): BGP Add-Path (RFC 7911) for standards-based per-next-hop diversity, unique-RD-per-PE for "
+    "MPLS L3VPN, shadow-RR or shadow-session where Add-Path is unavailable; pair with BGP PIC for sub-second reconverge.",
+  "alternatives": "A full iBGP mesh restores diversity natively but does not scale; BGP best-external advertises a "
+    "backup at the originating PE but does not by itself make a remote dual-homed path visible through an RR.",
+  "citation": "RFC 7911 (Advertisement of Multiple Paths in BGP / Add-Path) + Orhan Ergun CCIE-SP path-diversity "
+    "comparison (Add-Path vs Shadow-RR vs Shadow-Session vs Unique-RD); complements ibgp-full-mesh-to-route-reflector.",
+ },
+]
+DOCTRINE.extend(_SP_CORPUS_ADDENDUM)
+
+
+# --------------------------------------------------------------- SD-WAN / modern-WAN addendum
+# Mined from the D:\\ SD-WAN corpus (Orhan Ergun "Evolving Technology: SD-WAN" deck + CCIE-EI SD-WAN lab
+# workbooks) anchored + a dedicated Cisco Catalyst SD-WAN web-research pass (Catalyst SD-WAN Design Guide /
+# CVD). The KB's WAN doctrine stopped at DMVPN/GETVPN/overlay-routing; this adds the CONTROLLER-based fabric.
+# EVERY principle is DOCTRINE (engine_actionable=False): an L1-L4 enterprise assessment collects no SD-WAN
+# overlay / controller / OMP / policy / TLOC state, so the design brain cites these for WAN-modernization
+# engagements + the HLD narrative + chat, never as auto-detected findings. Current naming web-verified:
+# Cisco rebranded Viptela -> Cisco Catalyst SD-WAN (Manager=vManage / Controller=vSmart / Validator=vBond);
+# OMP is Cisco-PROPRIETARY (BGP-structured), not an IETF/RFC standard. Original re-expression; no verbatim.
+_SDWAN_CORPUS_ADDENDUM = [
+ {
+  "id": "sdwan-four-plane-controller-fabric-separation",
+  "domain": "sd-wan",
+  "title": "Adopt SD-WAN as a four-plane controller fabric (Manager/Controller/Validator/WAN-Edge); only the data plane forwards, and it survives the control plane",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "SD-WAN's net-new value over a router-built tunnel overlay (DMVPN/GETVPN/FlexVPN) is "
+    "architectural: it decomposes the WAN into four independent planes that scale, fail and are secured on "
+    "their own axes -- Manager (vManage: GUI/API/config/telemetry), Controller (vSmart: OMP control + policy), "
+    "Validator (vBond: zero-touch orchestration/onboarding, the only publicly-reachable role), and WAN Edge "
+    "(cEdge/vEdge: IPsec data). Critically the controllers are OFF the user data path -- edges build IPsec "
+    "tunnels directly to each other -- so OMP graceful restart lets the data plane keep forwarding on cached "
+    "routes/TLOCs/keys through a full controller outage (default ~12h). The control plane's loss is non-fatal.",
+  "tradeoffs": "manageability + scalability + security (each plane independent; fleet-scale central ops) and "
+    "availability (data plane survives control-plane loss) vs a controller dependency + licensing + the skills "
+    "to operate a controller fabric.",
+  "trigger": "Designing a modern enterprise WAN where centralized policy, transport-independence and fleet-scale "
+    "operations are required.",
+  "observable": "Not collected by an L1-L4 enterprise assessment (no SD-WAN controller/overlay state); applies "
+    "to a WAN-modernization design engagement.",
+  "recommended_action": "Target four explicitly-separated planes (Manager cluster / redundant Controllers / "
+    "redundant Validators / thin WAN edges); keep edges thin and policy central; rely on (and verify) OMP "
+    "graceful restart so a controller outage never drops forwarding, and size the IPsec rekey timer to span the "
+    "GR window.",
+  "alternatives": "A router-resident overlay (DMVPN phase-3 + IGP/BGP, GETVPN for any-to-any private-core "
+    "encryption -- the KB's vpn-scale-dmvpn-getvpn-selection) wins for a small, stable, few-site estate that "
+    "values no-controller autonomy and per-box control.",
+  "citation": "Orhan Ergun 'Evolving Technology: SD-WAN' deck + Cisco Catalyst SD-WAN Design Guide; web-verified "
+    "(Viptela -> Catalyst SD-WAN: Manager/Controller/Validator).",
+ },
+ {
+  "id": "sdwan-omp-bgp-style-overlay-control-plane",
+  "domain": "sd-wan",
+  "title": "Let OMP to the Controller be the BGP-style overlay control plane -- routes, TLOCs and policy over one controller-rooted session, not a routing full-mesh",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "In a controller-based fabric every WAN Edge forms an OMP (Overlay Management Protocol) "
+    "session only to the Controller (route-reflector-like), never edge-to-edge for routing. OMP -- a Cisco-"
+    "PROPRIETARY, BGP-structured protocol (NOT an IETF/RFC standard) -- advertises OMP routes (prefix + TLOC), "
+    "TLOC routes (TLOC -> WAN-IP) and service routes, and the Controller can rewrite attributes to reshape the "
+    "fabric centrally. This decouples control-plane peering from data-plane topology, and runs a BGP-like "
+    "best-path (prefer active over stale/graceful-restart, then route/TLOC preference).",
+  "tradeoffs": "scalability + manageability (one controller-rooted session carries routing AND policy; central "
+    "attribute rewrite) vs a proprietary control plane (no RFC portability) and a controller dependency.",
+  "trigger": "Designing the overlay routing/control plane of an SD-WAN fabric.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Place overlay routing under OMP to a redundant Controller cluster sited OUT of the data "
+    "path; keep edges free of per-pair routing config; express path bias as OMP route-preference / TLOC-"
+    "preference; keep site-local underlay routing (BGP/OSPF/connected) separate and redistribute into OMP "
+    "deliberately.",
+  "alternatives": "A classic iBGP route-reflector / IGP overlay (the KB's ibgp-full-mesh-to-route-reflector / "
+    "bgp-rr-best-path-hiding-diversity-remedy) centralizes routing without a controller, but lacks the "
+    "integrated TLOC/policy/zero-touch model.",
+  "citation": "Cisco Catalyst SD-WAN Design Guide (OMP) + SD-WAN labs; web-verified that OMP is Cisco-proprietary, "
+    "BGP-style, controller-rooted.",
+ },
+ {
+  "id": "sdwan-tloc-transport-independence",
+  "domain": "sd-wan",
+  "title": "Model every WAN uplink as a TLOC (system-IP + color + encap) so one overlay rides MPLS, Internet and LTE/5G simultaneously and transport-agnostically",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Transport-independence -- SD-WAN's core property -- comes from abstracting each physical WAN "
+    "attachment into a TLOC (Transport Locator = system-IP + color + encapsulation). The 'color' (mpls, biz-"
+    "internet, public-internet, lte, private1-6, metro-ethernet, ...) labels the transport and governs which "
+    "TLOCs mesh (private colors use the carrier-private IP, public colors use the post-NAT public IP). The same "
+    "IPsec overlay is built over every colored transport at once -- active/active ECMP across equal-preference "
+    "TLOCs -- so transport choice becomes a price/capacity decision, not a topology one.",
+  "tradeoffs": "availability + cost (blend cheap Internet + LTE with MPLS, active/active, sub-second failover) vs "
+    "the discipline of a consistent color taxonomy + tight allow-service on Internet-facing TLOCs.",
+  "trigger": "Designing the WAN transport / uplink model for multi-circuit sites.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Define each uplink as a TLOC with a deliberate, consistent color taxonomy (private "
+    "colors for MPLS/private, public colors for Internet/LTE/5G), default to IPsec encapsulation, BFD-track "
+    "every transport, and use color + preference to express active/active vs active/standby; scope allow-service "
+    "tightly on Internet TLOCs.",
+  "alternatives": "A single-transport design (MPLS-only, or Internet-only with a device-built IPsec overlay) "
+    "wins where only one circuit type exists or simplicity dominates -- but ties the design to the underlay.",
+  "citation": "Cisco Catalyst SD-WAN Design Guide (TLOC, colors, transport-independence) + SD-WAN labs; web-verified.",
+ },
+ {
+  "id": "sdwan-application-aware-sla-routing",
+  "domain": "sd-wan",
+  "title": "Steer each application to a transport meeting its measured SLA class (loss/latency/jitter), and decide the no-path-meets-SLA behaviour per class",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Legacy WAN routing picks a path on reachability + a coarse metric and keeps forwarding there "
+    "until the link is hard-down, so a 'brown' transport (degraded loss/latency/jitter but still up) keeps "
+    "carrying voice/video. SD-WAN closes this: per-tunnel BFD probes measure liveness AND circuit quality, and "
+    "application-aware routing steers each app to any transport currently meeting its SLA class, re-steering on "
+    "breach. Two BFD timescales must be kept distinct -- fast hellos (~1s) for liveness, aggregated app-route "
+    "probes (~10s poll) for the SLA decision -- or you get flapping or sluggish steering. And the all-out-of-SLA "
+    "behaviour is application-specific: strict (drop) for integrity-critical classes vs backup/best-of-worst for "
+    "availability-first classes.",
+  "tradeoffs": "performance + availability (apps follow live path quality, not stale routes) vs configuration "
+    "complexity (SLA classes, app classification, probe tuning) and the per-class strict-vs-backup decision.",
+  "trigger": "Designing WAN forwarding for an estate with differentiated, SLA-sensitive applications (voice/video/SaaS).",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Define a lean set of SLA classes (max loss/latency/jitter), map apps to classes via "
+    "DSCP/application classification, bind them in app-aware-routing policy; tune the BFD hello-interval for "
+    "liveness and the app-route poll-interval/multiplier for SLA responsiveness separately; and explicitly "
+    "choose strict (drop) vs loose/backup fallback per class and document it.",
+  "alternatives": "Classic DiffServ marking + queuing (qos-class-model-from-app-profile) protects an app WITHIN "
+    "a link's queues but cannot MOVE it off a brown transport; PfR/IWAN-style performance routing is a coarser "
+    "non-SD-WAN approximation.",
+  "citation": "Cisco SD-WAN Application-Aware Routing deploy guide + SD-WAN labs; web-verified (BFD probes, SLA "
+    "classes, strict vs backup-sla).",
+ },
+ {
+  "id": "sdwan-centralized-control-vs-localized-data-policy",
+  "domain": "sd-wan",
+  "title": "Split policy by plane: centralized CONTROL policy moves routes/TLOCs/topology on the Controller; LOCALIZED data policy acts on packets at the edge",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Catalyst SD-WAN intentionally separates policy along two axes, and a clean design keeps each "
+    "concern where it belongs. Centralized CONTROL policy runs on the Controller and manipulates the OMP control "
+    "plane (routes/TLOCs/topology) for the whole fabric -- it never touches a packet. Centralized DATA policy "
+    "(also on the Controller) and LOCALIZED policy (on the edge: ACL/QoS/policer/mirror) act on packets. Moving "
+    "intent off the boxes into the Controller -- and driving edge config from centralized device/feature "
+    "templates with only per-device values externalized as variables -- makes the Controller/Manager the single "
+    "source of intent and kills configuration drift.",
+  "tradeoffs": "manageability + consistency (one source of intent, no drift, fabric-wide change) vs the modelling "
+    "discipline of templates + the centralized-vs-localized placement decision.",
+  "trigger": "Designing how WAN policy and edge configuration are authored and maintained at fleet scale.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Author fabric-wide steering/segmentation/app-route as centralized control + data policy "
+    "on the Controller (site-list/VPN-list scoped, directional); reserve localized policy for genuinely "
+    "interface-scoped ACL/QoS; standardize edges on centralized device/feature templates with per-device "
+    "divergence as keyed variables, and route all fleet change through template edits.",
+  "alternatives": "Per-device route-maps/ACLs/golden-config (the traditional model) keeps config local but drifts "
+    "across a large estate and offers no fabric-wide intent.",
+  "citation": "Cisco Catalyst SD-WAN Policy + Templates design guidance + SD-WAN labs; web-verified.",
+ },
+ {
+  "id": "sdwan-topology-by-controller-policy-not-physical",
+  "domain": "sd-wan",
+  "title": "Choose full-mesh vs hub-spoke vs regional topology by Controller policy, decoupled from physical transport",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "A Catalyst SD-WAN fabric is full-mesh by default (every edge can tunnel to every other), and "
+    "the logical topology is then a DESIGN CHOICE expressed as centralized control policy -- independent of how "
+    "sites are physically cabled. Hub-and-spoke, partial-mesh or a regional topology is built by selectively "
+    "advertising/rewriting TLOCs and routes on the Controller, so topology becomes a policy artifact you can "
+    "change without touching a single edge.",
+  "tradeoffs": "scalability + manageability (topology as policy; change without re-cabling) vs the tunnel/OMP "
+    "scale of a full mesh (which only suits small or latency-critical any-to-any estates).",
+  "trigger": "Deciding the logical overlay topology of an SD-WAN fabric.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Use the default full-mesh only where direct any-to-any is justified and tunnel/OMP scale "
+    "is acceptable (e.g. latency-critical inter-branch voice); otherwise express hub-and-spoke or a regional "
+    "topology as centralized control policy (selective TLOC/route advertisement), and revisit it as the estate "
+    "grows.",
+  "alternatives": "Full-mesh for small or latency-critical any-to-any; hub-spoke at scale where spoke-to-spoke is "
+    "rare; Multi-Region Fabric for a large multi-region estate (see sdwan-multi-region-fabric-hierarchical-scale).",
+  "citation": "Cisco Catalyst SD-WAN Design Guide (centralized control policy / topology) + SD-WAN labs; web-verified.",
+ },
+ {
+  "id": "sdwan-end-to-end-segmentation-vpn-segments",
+  "domain": "sd-wan",
+  "title": "Segment the WAN end-to-end with service VPNs carried in one tunnel; reserve VPN 0 for transport and VPN 512 for OOB management",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "SD-WAN delivers multi-tenant segmentation natively: a service VPN is a VRF on the WAN Edge "
+    "with its own forwarding table, and an interface lives in exactly one VPN. Traffic from any service VPN "
+    "crosses the SAME IPsec tunnel between edges carrying a VPN tag that lands it in the correct VPN at the far "
+    "end, and OMP propagates VPN-ID membership fabric-wide. Two VPNs are structural and reserved -- VPN 0 is the "
+    "transport VPN (WAN interfaces/TLOCs/OMP/BFD, the front-door) and VPN 512 is out-of-band management -- so "
+    "the transport network cannot reach the services by default.",
+  "tradeoffs": "security + isolation (per-LoB/compliance/partner segmentation end-to-end, transport fenced from "
+    "services) vs the planning to map zones to VPNs and make inter-VPN reachability explicit (route-leak/service-chain).",
+  "trigger": "Designing WAN segmentation for lines-of-business / compliance zones / partners.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design (mirrors the engine's "
+    "bounded-segmentation discipline for campus/DC).",
+  "recommended_action": "Map each isolation domain to one service VPN before build; keep all WAN/TLOC interfaces "
+    "in transport VPN 0 and device management in VPN 512; map each LAN segment into exactly one service VPN; make "
+    "all inter-VPN reachability explicit (route-leak or service insertion), never implicit.",
+  "alternatives": "A single flat VPN is simplest but offers no isolation; per-segment separate tunnels/overlays "
+    "isolate but multiply state -- the in-tunnel VPN-tag model gives isolation without extra tunnels.",
+  "citation": "Cisco Catalyst SD-WAN segmentation design (service VPNs, VPN 0 / VPN 512) + SD-WAN labs; web-verified.",
+ },
+ {
+  "id": "sdwan-branch-dia-security-onbox-vs-cloud-sig",
+  "domain": "sd-wan",
+  "title": "Break out SaaS/Internet locally (DIA) instead of backhauling, and place branch security per site: on-box ZBFW/IPS/URL/AMP vs cloud SIG",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "The legacy WAN trombones every Internet/SaaS packet from the branch to a regional DC, inspects "
+    "it centrally, and sends it back -- two extra WAN hops of latency burning the private circuit for traffic "
+    "that never needed the DC. SD-WAN enables local Direct-Internet-Access, but once a branch breaks out it "
+    "becomes its own Internet edge and must enforce a full threat stack -- placed per site, two ways for the "
+    "SAME controls: ON-BOX (the WAN edge's Catalyst SD-WAN security stack: ZBFW, IPS/IDS, URL-filtering, "
+    "AMP/TLS-proxy) or CLOUD-delivered via a Secure Internet Gateway (Cisco Umbrella SIG).",
+  "tradeoffs": "performance + cost (local breakout removes the trombone, frees the private circuit) and security "
+    "(full inspection at the edge) vs the platform/licensing for on-box inspection or the dependency on a cloud "
+    "SIG; data-sovereignty may force one or the other.",
+  "trigger": "Designing branch Internet/SaaS access + branch security for an SD-WAN estate.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Steer trusted SaaS/web/IaaS to local DIA, reserving backhaul only for traffic that must "
+    "transit the core (regulated/legacy-central); choose security placement per site -- on-box ZBFW+IPS+URL+AMP "
+    "where the branch is large, latency/compliance-sensitive, or must inspect during a cloud outage; cloud SIG "
+    "where light branches favour a thin edge; commonly a hybrid (on-box as the SIG-down fallback).",
+  "alternatives": "Full backhaul-and-inspect still wins where regulation forbids branch egress or mandates one "
+    "audited choke point; all-on-box wins under strict air-gap/sovereignty.",
+  "citation": "Cisco Catalyst SD-WAN security design (on-box stack vs Umbrella SIG; DIA) + SD-WAN labs; web-verified.",
+ },
+ {
+  "id": "sdwan-sase-convergence-and-sig-high-availability",
+  "domain": "sd-wan",
+  "title": "Design SD-WAN and cloud security (SASE/SSE) as one converged fabric, and make the SIG breakout highly available",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "SASE is the convergence of WAN networking (SD-WAN) and cloud-delivered security (SSE -- Cisco "
+    "Umbrella / Secure Access) into one operating model, and the payoff only lands if they are architected "
+    "TOGETHER: express security + steering intent once, and let app-aware routing pick SIG vs on-box vs backhaul "
+    "per application. But offloading security to a cloud SIG makes that tunnel the branch's security lifeline -- "
+    "if it is the only path and fails, the branch loses Internet or, worse, egresses uninspected -- so SIG HA is "
+    "non-negotiable.",
+  "tradeoffs": "manageability + consistency (one converged network+security fabric, intent authored once) vs "
+    "single-vendor coupling; and SIG availability (redundant tunnels + health-tracking) vs the cost/complexity "
+    "of multi-DC SIG redundancy.",
+  "trigger": "Converging WAN and cloud security (SASE) and designing cloud-SIG breakout.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN + SASE design.",
+  "recommended_action": "Design SD-WAN and the SSE (Umbrella SIG / Secure Access) as one fabric with intent "
+    "authored once; provision at least two SIG tunnels per breakout site across multiple Umbrella data centres "
+    "(active + backup), bind a layer-7 health tracker so failover follows real cloud reachability (not interface "
+    "state), and define an explicit SIG-down fallback (on-box stack or controlled drop -- never silent "
+    "uninspected egress).",
+  "alternatives": "Keeping SD-WAN and an independent/third-party SSE as decoupled layers avoids single-vendor "
+    "lock-in or reuses an incumbent security cloud, at the cost of two operating models; a single SIG tunnel with "
+    "no fallback only for low-criticality guest breakout.",
+  "citation": "Cisco SASE / Umbrella SIG + Catalyst SD-WAN security design; web-verified.",
+ },
+ {
+  "id": "sdwan-zero-trust-ztp-onboarding-and-pki",
+  "domain": "sd-wan",
+  "title": "Onboard WAN edges zero-touch on a mutual-trust chain -- allow-listed serial/chassis + a shared root CA + per-device certs, brokered by the Validator -- and encrypt by default",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Catalyst SD-WAN is zero-trust by construction and the design must preserve it. Every element "
+    "-- Manager, Controller, Validator and every edge -- proves identity with an X.509 certificate (SUDI/TAm on "
+    "hardware, CA-signed on controllers) chained to a common root CA and a consistent organization-name before "
+    "anything is trusted. A new edge needs only IP reachability to the Validator (vBond), which validates its "
+    "serial/chassis against the uploaded allow-list AND the mutual certificate chain before introducing it. The "
+    "control plane runs on authenticated DTLS/TLS and the data plane is IPsec, keyed per-TLOC and distributed "
+    "INSIDE OMP -- so the fabric is encrypted-and-authenticated by default, not via a separate IKE control plane.",
+  "tradeoffs": "security (per-device cryptographic identity, zero-touch at scale, encrypted-by-default) vs the "
+    "PKI/allow-list discipline (root-CA choice, cert lifecycle, reliable NTP for cert validity).",
+  "trigger": "Designing WAN-edge onboarding and fabric trust for an SD-WAN deployment.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Choose the root-CA model deliberately (enterprise CA where internal PKI control is "
+    "required, else Cisco PKI), distribute the root chain to every controller and edge, enforce one consistent "
+    "organization-name, drive CSR/sign/install through the Manager, maintain the serial/chassis allow-list as a "
+    "change-controlled artifact, and guarantee reliable NTP; treat the fabric as encrypted/authenticated by "
+    "default and write transport firewall rules around the control-plane ports.",
+  "alternatives": "Manual pre-staging / pre-shared trust per device gives full control but no zero-touch and does "
+    "not scale; a lighter cert posture is for lab/PoC only, never production.",
+  "citation": "Cisco Catalyst SD-WAN onboarding / certificate trust (Validator allow-list + PKI; OMP-keyed IPsec) "
+    "+ SD-WAN labs; web-verified.",
+ },
+ {
+  "id": "sdwan-controller-redundancy-placement-and-scale",
+  "domain": "sd-wan",
+  "title": "Size a redundant, identical-policy Controller cluster off the data path, and bound fan-out by controller affinity",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "The control plane is the scaling pivot and a potential SPOF, so the design must make it "
+    "redundant AND ensure its loss is non-fatal. A Controller terminates a large but finite number of control "
+    "connections (~5000 per instance, up to ~12 Controllers in a production deployment), so growth to thousands "
+    "of edges is handled by adding identical-policy Controllers and bounding each edge's fan-out with controller-"
+    "groups + max-controllers (affinity). Because controllers are off the user data path, their placement "
+    "(Cisco-cloud-hosted vs on-prem) is an operations/availability/sovereignty decision, not a throughput one.",
+  "tradeoffs": "availability + scalability (redundant, geographically/cloud-diverse controllers; affinity bounds "
+    "fan-out) vs cost/operational footprint; cloud-hosted offloads undifferentiated heavy lifting but cedes "
+    "control; on-prem gives sovereignty at the cost of operating the controllers.",
+  "trigger": "Sizing and placing the SD-WAN controller cluster for a given estate scale.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to SD-WAN design.",
+  "recommended_action": "Deploy at least two geographically/cloud-diverse Controllers with byte-identical policy; "
+    "configure each edge with redundant control connections; add Controllers toward the ~12 ceiling as edges "
+    "grow past a single Controller's ~5000-connection limit; use controller-groups + per-edge max-controllers to "
+    "bound fan-out; default to Cisco-cloud-hosted controllers unless sovereignty/air-gap/regulatory or a "
+    "committed DC investment dictates on-prem.",
+  "alternatives": "A single Controller pair with no affinity wins for small fabrics (hundreds of edges); a single "
+    "controller only for a lab/pilot where an outage of all overlay control + policy change is tolerable.",
+  "citation": "Cisco Catalyst SD-WAN controller scale/redundancy/affinity design; web-verified (~5000 conn/"
+    "controller, controller groups, cloud-hosted vs on-prem).",
+ },
+ {
+  "id": "sdwan-vs-traditional-wan-target-decision",
+  "domain": "sd-wan",
+  "title": "Choose controller-based SD-WAN vs DMVPN/GETVPN/MPLS by whether transport-independence, app-aware SLA and central policy justify a controller",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "The headline modern-WAN decision is whether to keep a router-managed overlay (DMVPN/GETVPN) "
+    "or traditional MPLS, or adopt a controller-based fabric (Cisco Catalyst SD-WAN). SD-WAN's value is "
+    "transport-independent multi-transport blending, per-application SLA path selection, central zero-touch "
+    "policy, integrated branch security (DIA + SIG), and cloud/SaaS optimization (Cloud OnRamp) -- but it brings "
+    "a controller dependency, licensing, and a new operating model. The choice is requirement-driven, not a "
+    "fashion.",
+  "tradeoffs": "manageability + performance + security + agility (central policy, app-SLA, transport-independence, "
+    "integrated security) vs simplicity + cost + autonomy (no controller dependency, per-box control, lower "
+    "licensing).",
+  "trigger": "Modernising an enterprise WAN -- deciding the target WAN architecture.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to a WAN-modernization design engagement.",
+  "recommended_action": "Adopt controller-based Cisco Catalyst SD-WAN when the estate needs transport-independent "
+    "multi-transport blending, per-application SLA steering, central zero-touch policy at fleet scale, integrated "
+    "branch security/DIA, or cloud/SaaS optimization; otherwise keep DMVPN/GETVPN where a simple, stable, few-"
+    "site overlay with no-controller autonomy and lower cost suffices.",
+  "alternatives": "DMVPN wins for a simple, stable, few-site estate valuing no-controller autonomy + per-box "
+    "control; GETVPN for any-to-any encryption over a trusted private MPLS core; traditional MPLS where the "
+    "provider owns SLA and no overlay intelligence is needed.",
+  "citation": "Cisco Catalyst SD-WAN Design Guide + Orhan Ergun 'Evolving Technology: SD-WAN'; complements the "
+    "KB's vpn-scale-dmvpn-getvpn-selection / wan-vpn-make-vs-buy; web-verified.",
+ },
+ {
+  "id": "sdwan-multi-region-fabric-hierarchical-scale",
+  "domain": "sd-wan",
+  "title": "Scale a large SD-WAN estate with Multi-Region Fabric (regions + border routers + core region 0), not one flat global full-mesh",
+  "priority": "Medium",
+  "engine_actionable": False,
+  "design_intent": "A single flat SD-WAN fabric tries to build a global tunnel mesh and propagate OMP routing "
+    "across every edge worldwide, which does not scale operationally or in control-plane state for a large, "
+    "geographically distributed estate. Multi-Region Fabric (formerly Hierarchical SD-WAN) partitions edges into "
+    "regions with intra-region direct tunnels, deploys regional hubs as Border Routers that form a core region 0, "
+    "and routes inter-region traffic via the border routers -- bounding tunnel mesh and OMP scope per region.",
+  "tradeoffs": "scalability + manageability (bounded per-region mesh/OMP, regional fault/scope isolation) vs the "
+    "extra roles (border routers, core region) and complexity -- unjustified below large/multi-region scale.",
+  "trigger": "Designing a large, geographically distributed (multi-region) SD-WAN estate.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to large-scale SD-WAN design.",
+  "recommended_action": "For a large multi-region estate, design the overlay as Multi-Region Fabric: assign edges "
+    "to regions (intra-region direct tunnels), deploy regional hubs as border routers forming core region 0, "
+    "route inter-region traffic via border routers, and keep OMP/topology scope per region; avoid the extra "
+    "roles until scale/geography/control-plane state actually demand them.",
+  "alternatives": "A small-to-mid single-region estate is simpler as one flat fabric (full/partial mesh, no "
+    "regions); hub-and-spoke by policy handles moderate scale without the Multi-Region roles.",
+  "citation": "Cisco Catalyst SD-WAN Multi-Region Fabric design; web-verified.",
+ },
+ {
+  "id": "sdwan-phased-mpls-to-sdwan-migration-coexistence",
+  "domain": "sd-wan",
+  "title": "Migrate MPLS-to-SD-WAN per-site over a deliberate hybrid-coexistence period, with an explicit interworking point -- never a flag-day swap",
+  "priority": "High",
+  "engine_actionable": False,
+  "design_intent": "Converting a brownfield MPLS WAN to SD-WAN is a long-lived coexistence exercise, not a "
+    "cutover. The durable design stands the SD-WAN fabric up ALONGSIDE the live MPLS network and migrates sites "
+    "in waves, keeping migrated and not-yet-migrated sites mutually reachable throughout via an explicit "
+    "MPLS<->SD-WAN transit/interworking point (a router in both worlds), with rollback preserved per wave -- the "
+    "WAN echo of the build-before-break discipline.",
+  "tradeoffs": "availability + risk-containment (parallel run, per-wave validation + rollback, no big-bang) vs a "
+    "longer dual-run period (two WANs + an interworking point to operate during coexistence).",
+  "trigger": "Planning a brownfield MPLS-to-SD-WAN migration.",
+  "observable": "Not collected by an L1-L4 enterprise assessment; applies to WAN-migration planning (mirrors the "
+    "engine's build-before-break phased-cutover principle).",
+  "recommended_action": "Stand SD-WAN up in parallel with the live MPLS WAN; migrate sites in waves; retain the "
+    "regional MPLS CEs/circuits and define an explicit MPLS<->SD-WAN transit/interworking point so all sites stay "
+    "reachable throughout; validate (NRFU) and preserve rollback per wave; decommission MPLS only once the last "
+    "wave is proven.",
+  "alternatives": "For a very small estate with a single maintenance window and tolerant business, a coordinated "
+    "all-at-once swap may be acceptable -- but only with full rollback staged.",
+  "citation": "Cisco Catalyst SD-WAN migration guidance + SD-WAN labs; complements scenario-build-before-break-"
+    "phased-cutover; web-verified.",
+ },
+]
+DOCTRINE.extend(_SDWAN_CORPUS_ADDENDUM)
+
+
 # ---------------------------------------------------------------------------- coverage honesty
 # `engine_actionable` MUST mean "design_advisor.compute_design_blueprint emits a decision for this
 # principle's observed trigger". The following are valuable doctrine the HLD / chat can still cite,
