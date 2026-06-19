@@ -2683,6 +2683,136 @@ _MEGA_CORPUS_ADDENDUM = [
     "fusion pattern); keep services per-VRF where sharing isn't required.",
   "citation": "Cisco ACI shared-services / inter-VRF route-leaking design; web-verified.",
  },
+ # ---- additive depth surfaced by the mega-wave synth's diff vs the live KB (6 net-new; 6 of its 12
+ #      recommendations were dropped as already subsumed by the principles above) ----
+ {
+  "id": "campus-sda-fabric-roles-and-availability-placement",
+  "domain": "campus-fabric", "priority": "Medium", "engine_actionable": False,
+  "title": "Place SD-Access fabric roles (edge / border / control-plane / intermediate) by site size: separate for HA, collapse to Fabric-in-a-Box only for the smallest sites",
+  "design_intent": "An SD-Access fabric site needs at least an edge node, a control-plane node and a border node. "
+    "Edge nodes are the LISP xTRs where endpoints attach (the access layer); border nodes are the fabric's gateway "
+    "to everything outside it; control-plane nodes hold the map-server/map-resolver. On medium/large or critical "
+    "sites these roles must be distributed onto separate, redundant devices so no single box is edge + border + "
+    "control-plane (a single failure then loses the whole site). Only the smallest sites should collapse the roles "
+    "(Fabric-in-a-Box), accepting no redundancy.",
+  "tradeoffs": "availability (separate, redundant roles survive a single device loss) vs cost/footprint (collapsed "
+    "Fabric-in-a-Box is cheapest but a single point of failure).",
+  "trigger": "Sizing the SD-Access fabric role placement for a site.",
+  "observable": "Not collected by an L1-L4 assessment; an SD-Access design.",
+  "recommended_action": "For medium/large/critical sites, distribute edge, border and control-plane onto separate "
+    "(and redundant) devices; reserve Fabric-in-a-Box (collapsed roles) for small sites that accept no redundancy; "
+    "use a stack/SVL where chassis redundancy at a collapsed role is wanted.",
+  "alternatives": "Fabric-in-a-Box for the smallest sites; a redundant control-plane-node pair + dual borders for "
+    "the largest, with edges scaled horizontally.",
+  "citation": "Cisco SD-Access Design Guide (fabric roles, Fabric-in-a-Box, HA placement); web-verified.",
+ },
+ {
+  "id": "campus-sda-multisite-sdaccess-transit-vs-ip-transit",
+  "domain": "campus-fabric", "priority": "High", "engine_actionable": False,
+  "title": "For multi-site SD-Access, prefer SD-Access transit to keep VN+SGT intact end-to-end; use IP transit only to hand off to a non-fabric WAN",
+  "design_intent": "Connecting fabric sites is a transit choice. SD-Access transit carries traffic between sites "
+    "natively in LISP/VXLAN through a dedicated transit control-plane node (which has no edge/border of its own), "
+    "so the Virtual Network AND the SGT stay intact end-to-end and multi-exit/HA is native -- the policy follows "
+    "the packet across sites. IP transit instead hands off at the border to a regular routed WAN (MPLS/SD-WAN/"
+    "Internet), which means the VN must be re-mapped (VRF-lite/option-A) and the SGT must be re-carried "
+    "(SXP/inline) or it is lost at the boundary.",
+  "tradeoffs": "policy continuity + simplicity (SD-Access transit keeps VN+SGT) vs transport flexibility (IP "
+    "transit rides any WAN but loses native VN/SGT continuity and needs re-mapping).",
+  "trigger": "Interconnecting two or more SD-Access fabric sites.",
+  "observable": "Not collected by an L1-L4 assessment; a multi-site SD-Access design.",
+  "recommended_action": "Where the inter-site path can carry LISP/VXLAN and meet RTT/MTU, use SD-Access transit "
+    "(dedicated transit control-plane node, no edge/border) so VN + SGT stay intact end-to-end; use IP transit "
+    "when you must hand off to a non-fabric WAN, and then explicitly re-map the VN (VRF-lite) and re-carry the SGT "
+    "(SXP/inline tagging) across the boundary.",
+  "alternatives": "IP transit (border hand-off to MPLS/SD-WAN) where the WAN can't carry VXLAN or fabric doesn't "
+    "extend; a single large fabric where sites are close enough to be one fabric.",
+  "citation": "Cisco SD-Access multi-site design (SD-Access transit vs IP transit); web-verified.",
+ },
+ {
+  "id": "aci-fabric-l3out-route-control-import-export-asymmetry",
+  "domain": "aci-fabric", "priority": "Medium", "engine_actionable": False,
+  "title": "Design ACI L3Out route-control around its default asymmetry: inbound import is permit-all (tighten on BGP only), outbound export is deny-all and exact-mask",
+  "design_intent": "ACI L3Out route filtering is deliberately ASYMMETRIC and must be designed to, not assumed. "
+    "INBOUND: import route-control is DISABLED by default -- a 'permit-all' admits every external prefix into "
+    "MP-BGP, and it can be tightened (enumerate permitted prefixes) only on a BGP L3Out. OUTBOUND: export is "
+    "DENY-ALL by default -- nothing is advertised until you explicitly add each BD/transit subnet, and matches are "
+    "exact-mask only (no implicit longest-prefix). Getting this backwards leaks every external prefix inbound or "
+    "silently advertises nothing outbound.",
+  "tradeoffs": "control + safety (explicit per-prefix export, tightened BGP import) vs the configuration discipline "
+    "(enumerate every advertised subnet; remember import is open by default on non-BGP L3Outs).",
+  "trigger": "Designing route advertisement/admission on an ACI L3Out.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI L3Out design (depth beyond the wave-1 L3Out principles).",
+  "recommended_action": "Enable import route-control only on BGP L3Outs and enumerate every permitted inbound "
+    "prefix; rely on the export deny-all default and explicitly add each BD/transit subnet to be advertised "
+    "(exact-mask); document the L3Out route policy rather than assuming a symmetric filter.",
+  "alternatives": "Leave import permit-all only where the external peer is fully trusted and prefix-bounded; use a "
+    "dedicated L3Out per route-policy domain (the wave-1 granularity principle).",
+  "citation": "Cisco ACI L3Out route-control design (import permit-all / export deny-all asymmetry); web-verified.",
+ },
+ {
+  "id": "aci-fabric-overlay-to-vswitch-confines-vlan-sprawl",
+  "domain": "aci-fabric", "priority": "Medium", "engine_actionable": False,
+  "title": "Run the EPG overlay from the ACI leaf to the virtual switch so an intermediate L2 / blade fabric-interconnect carries only the infra VLAN, not per-EPG VLAN sprawl",
+  "design_intent": "When workloads sit behind an intermediate Layer-2 network -- a blade-chassis fabric-"
+    "interconnect estate, or a legacy Nexus L2 cloud between the ACI leaf and the host -- you can either trunk "
+    "every per-EPG VLAN across that intermediate fabric (VLAN sprawl, a scaling + management burden, and the "
+    "intermediate gear must learn every EPG VLAN) or extend the EPG overlay (VXLAN) all the way to the virtual "
+    "switch so the intermediate fabric and the FI carry only the single infra VLAN. The latter confines VLAN "
+    "sprawl and keeps the policy edge at the vSwitch.",
+  "tradeoffs": "scalability + manageability (intermediate gear carries one infra VLAN, not N EPG VLANs) vs "
+    "requiring a VMM/AVE-style overlay-to-vSwitch integration through the intermediate fabric.",
+  "trigger": "Designing ACI attachment where an unmanaged intermediate L2 / blade FI sits between leaf and host.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI attachment design.",
+  "recommended_action": "Where an intermediate L2 / blade-FI sits between the ACI leaf and virtualized hosts, "
+    "extend the EPG overlay (VXLAN) to the virtual switch so the intermediate fabric and FI carry only the infra "
+    "VLAN, rather than trunking every per-EPG VLAN across it.",
+  "alternatives": "Trunk per-EPG VLANs across the intermediate fabric where the EPG count is small and overlay-to-"
+    "vSwitch integration is unavailable; collapse the intermediate L2 by attaching hosts directly to the leaf.",
+  "citation": "Cisco ACI virtualization / blade-FI integration design; web-verified.",
+ },
+ {
+  "id": "aci-services-pbr-redirect-bd-and-dataplane-learning-discipline",
+  "domain": "aci-services", "priority": "Medium", "engine_actionable": False,
+  "title": "Give a PBR service node its own routed BD and disable remote-leaf source-VTEP learning to stop endpoint flapping",
+  "design_intent": "ACI Policy-Based Redirect rewrites the destination MAC to the service node's VMAC while "
+    "keeping the real source/destination IPs -- which makes the same endpoint IP appear behind multiple leaves and "
+    "causes endpoint flapping unless data-plane learning is handled. The discipline: allocate a dedicated routed "
+    "service BD per PBR node, disable remote-leaf source-VTEP learning on it (both directions if the return is "
+    "also redirected), register the node IP+VMAC in the redirect policy, and meet the platform's PBR requirements "
+    "-- so the redirect is stable and does not corrupt the endpoint table.",
+  "tradeoffs": "correctness/stability (no endpoint flapping; clean redirect) vs the configuration discipline "
+    "(dedicated redirect BD + learning-disable per node, both directions for symmetric redirect).",
+  "trigger": "Inserting a service node via PBR redirect on an ACI fabric.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI service-insertion design (depth beyond the wave-1 "
+    "service-graph principle).",
+  "recommended_action": "Allocate a dedicated routed service BD per PBR node, disable remote-leaf source-VTEP "
+    "learning on it (both directions if return is redirected), register the node IP+VMAC in the redirect policy, "
+    "and confirm the leaf platform supports the redirect; validate the endpoint table stays stable after insertion.",
+  "alternatives": "Inline/routed service insertion (service as a routed hop) where PBR's data-plane-learning "
+    "subtleties are unwanted; a copy service for passive taps off the data path.",
+  "citation": "Cisco ACI PBR service-graph design (redirect BD, data-plane learning); web-verified.",
+ },
+ {
+  "id": "wireless-capwap-control-data-split-latency-budget",
+  "domain": "wireless", "priority": "Medium", "engine_actionable": False,
+  "title": "Treat CAPWAP as a split control/data plane with a hard AP-to-WLC latency budget and a mandatory DTLS control channel",
+  "design_intent": "Lightweight APs reach the WLC over CAPWAP, which is deliberately two planes: a DTLS-encrypted "
+    "CONTROL channel (UDP 5246, mandatory) for join/config/RRM/mobility, and a DATA channel (UDP 5247, DTLS "
+    "optional) that in local-mode tunnels every client frame back to the WLC. Because control is real-time and "
+    "centralized, AP-to-WLC RTT has a hard budget (Cisco's ~300ms limit; aim < ~100ms for centralized designs) "
+    "and the control channel should be priority-queued across the path -- exceed the budget and APs disjoin/flap. "
+    "(This is also why high-latency branches favour FlexConnect local-switching -- see the WLC-deployment principle.)",
+  "tradeoffs": "central control + policy (CAPWAP tunneling) vs the WAN latency budget + WLC/uplink sizing for "
+    "aggregate tunneled data (local-mode hairpins all client data to the WLC).",
+  "trigger": "Designing AP-to-WLC connectivity / WAN paths for centralized wireless.",
+  "observable": "Not collected by an L1-L4 assessment; a wireless transport design.",
+  "recommended_action": "Keep AP-to-WLC RTT inside ~300ms (aim < ~100ms for centralized); priority-queue CAPWAP "
+    "control (UDP 5246) across the path; size the WLC + its uplink for the aggregate local-mode data tunnel; move "
+    "high-latency/unreliable branches to FlexConnect local-switching rather than stretching CAPWAP.",
+  "alternatives": "FlexConnect local-switching (data drops locally, control over CAPWAP) for high-latency branches; "
+    "cloud-managed (Meraki) where a controller-less model is preferred.",
+  "citation": "Cisco CAPWAP / Catalyst 9800 design (control UDP 5246 DTLS, data 5247, RTT budget); web-verified.",
+ },
 ]
 DOCTRINE.extend(_MEGA_CORPUS_ADDENDUM)
 
