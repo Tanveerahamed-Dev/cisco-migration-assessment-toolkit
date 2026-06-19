@@ -594,6 +594,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         elif ap.get("requirement_needed"):
             doc.add_heading("5.3 Net-new IP addressing plan", level=2)
             _label_run(doc.add_paragraph(), "Requirement needed:", ap.get("requirement_needed"), GREY)
+            if ap.get("n_census_vlans") is not None:
+                nq = ap.get("n_unsizable") or 0
+                _label_run(
+                    doc.add_paragraph(), "VLAN census:",
+                    f"{ap.get('n_census_vlans')} VLAN(s) total — "
+                    f"{ap.get('observed_vlans')} sizeable (observed access port or L3 SVI)"
+                    + (f", {nq} querier-only/VLAN-1 with no auto-sized subnet" if nq else "")
+                    + ". The full census is sized once an address_space is supplied.")
             doc.add_paragraph(ap.get("note") or "")
 
         wp = ts.get("wave_plan") or {}
