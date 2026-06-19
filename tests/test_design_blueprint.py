@@ -1095,3 +1095,24 @@ def test_sdwan_corpus_addendum_cited_complete_and_coverage_honest():
         assert p["engine_actionable"] is False, \
             f"{p['id']} must be doctrine (engine_actionable=False) -- no SD-WAN overlay/controller state is collected"
     assert design_kb.by_domain("sd-wan"), "the sd-wan domain must contain principles"
+
+
+def test_mega_corpus_addendum_cited_complete_and_coverage_honest():
+    """COVERAGE-HONESTY LOCK for the multi-domain mega addendum (SD-Access/campus-fabric, wireless, network
+    automation/telemetry, DC-compute/storage, cloud-native/container, IPv6 depth, ACI-advanced). Iterates
+    generically: complete + cited + unique id, and -- because an L1-L4 IOS/NX-OS assessment collects no
+    wireless / SD-Access / automation-controller / container / UCS / cloud / ACI-controller state -- EVERY
+    principle is doctrine (engine_actionable=False), no exception. New domains registered + surface via by_domain."""
+    add = design_kb._MEGA_CORPUS_ADDENDUM
+    assert isinstance(add, list) and len(add) >= 24, "the mega addendum must exist and be substantial"
+    ids = [p["id"] for p in add]
+    assert len(ids) == len(set(ids)), f"duplicate ids in the mega addendum: {ids}"
+    _FIELDS = ("id", "domain", "title", "priority", "engine_actionable", "design_intent",
+               "tradeoffs", "trigger", "observable", "recommended_action", "alternatives", "citation")
+    for p in add:
+        for f in _FIELDS:
+            assert p.get(f) not in (None, ""), f"{p.get('id')} missing/empty field {f!r}"
+        assert p["engine_actionable"] is False, \
+            f"{p['id']} must be doctrine (engine_actionable=False) -- none of this state is collected"
+    for dom in ("campus-fabric", "wireless", "automation", "dc-compute", "cloud-native"):
+        assert design_kb.by_domain(dom), f"new domain {dom!r} must contain principles"
