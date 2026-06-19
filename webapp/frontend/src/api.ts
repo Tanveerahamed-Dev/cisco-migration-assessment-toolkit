@@ -393,6 +393,8 @@ export const api = {
   designOverlay: (id: number, requirements: Record<string, unknown>) =>
     post<DesignBlueprint>(`/api/snapshots/${id}/design`, requirements),
   designNrfu: (id: number) => fetch(`/api/snapshots/${id}/design/nrfu`).then((r) => j<DesignNrfu>(r)),
+  designNrfuOverlay: (id: number, requirements: Record<string, unknown>) =>
+    post<DesignNrfu>(`/api/snapshots/${id}/design/nrfu`, requirements),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),

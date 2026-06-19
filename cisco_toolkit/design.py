@@ -562,7 +562,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 f"{bom.get('n_refresh', 0)} approaching it to refresh, grouped by current model — the "
                 "procurement the target build requires. " + (bom.get("note") or ""))
             rows = ([("Replace (past-LDoS)", m, q) for m, q in bom.get("replace_now", [])]
-                    + [("Refresh (near-LDoS)", m, q) for m, q in bom.get("refresh_soon", [])])
+                    + [("Refresh (near-LDoS / past-EoS)", m, q) for m, q in bom.get("refresh_soon", [])])
             if rows:
                 table(["Disposition", "Current model", "Qty"], rows, widths=[1.9, 3.0, 0.9])
 
@@ -591,6 +591,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                   widths=[0.8, 1.3, 1.7, 2.7])
             if len(ap["subnets"]) > 60:
                 doc.add_paragraph(f"… and {len(ap['subnets']) - 60} more; full plan in the workbook.")
+        elif ap.get("status") == "candidate":
+            # candidate plan that allocated NO subnets (supernet too small / fully overflowed) — render the
+            # section + its note so the "enlarge the address_space" disclosure is never silently dropped.
+            doc.add_heading("5.3 Net-new IP addressing plan", level=2)
+            doc.add_paragraph(ap.get("note")
+                              or "The supplied address_space could not accommodate the candidate plan; enlarge it.")
         elif ap.get("requirement_needed"):
             doc.add_heading("5.3 Net-new IP addressing plan", level=2)
             _label_run(doc.add_paragraph(), "Requirement needed:", ap.get("requirement_needed"), GREY)

@@ -692,3 +692,93 @@ def test_addressing_plan_has_census_vlans_when_needs_requirement():
     ap2 = compute_design_blueprint(snap, {"address_space": "10.0.0.0/16"})["target_state"]["addressing_plan"]
     assert ap2["status"] == "candidate"
     assert "n_census_vlans" in ap2 and "n_unsizable" in ap2
+
+
+def test_eol_signal_and_bom_separate_past_ldos_from_supported_past_eos():
+    """REVIEW #3: still-supported Past-EoS devices (past end-of-SALE, in support until LDoS -- the engine
+    emits this band, see test_lifecycle) must NOT be counted/labelled as past-LDoS/unsupported nor placed
+    in the replace-now BoM. sig['eol'] / the EoL decision / dim-4 label count Past-LDoS only; Past-EoS is
+    refresh-class."""
+    snap = _snap(lifecycle_risk={"per_device": [
+        {"host": "a", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "b", "band": "Past-LDoS", "model": "WS-C4948E"},
+        {"host": "e", "band": "Past-EoS", "model": "WS-C2960X-48FPD-L"},   # supported -> NOT replace, NOT eol
+        {"host": "c", "band": "Near-LDoS", "model": "N5K-C56128P"},
+        {"host": "d", "band": "Active", "model": "C9300"}]})
+    bp = compute_design_blueprint(snap)
+    eol = next(d for d in bp["decisions"] if d["id"] == "lifecycle-eol-out-of-critical-roles")
+    assert eol["evidence"]["count"] == 2, eol["evidence"]["count"]              # the 2 Past-LDoS, NOT 3
+    assert "2 device(s) are past last-day-of-support" in eol["evidence"]["summary"]
+    bom = bp["target_state"]["replacement_bom"]
+    assert bom["n_replace"] == 2 and ["WS-C4948E", 2] in bom["replace_now"]
+    assert ["WS-C2960X-48FPD-L", 1] not in bom["replace_now"]                   # Past-EoS is NOT replace-now
+    assert ["WS-C2960X-48FPD-L", 1] in bom["refresh_soon"]                      # ...it is refresh
+    assert bom["n_refresh"] == 2                                                # Near-LDoS + Past-EoS
+    dim = next(d for d in bp["target_state"]["dimensions"] if d.get("area") == "Hardware lifecycle disposition")
+    assert "2 past-LDoS" in dim["current"], dim["current"]
+
+
+def test_alloc_zone_aware_sizes_blocks_by_demand_not_uniformly():
+    """REVIEW #5: zone blocks must be sized to EACH zone's VLAN demand, not uniformly by zone count. An
+    uneven zone must not overflow when the supernet has ample room; uniform sizing overflowed zone A."""
+    import ipaddress
+    from cisco_toolkit.design_advisor import _alloc_zone_aware
+    supernet = ipaddress.ip_network("10.0.0.0/20")                 # 16 /24s
+    vids = list(range(10, 21))                                     # 11 vlans (10..20)
+    counts = {v: 5 for v in vids}
+    vlan_zones = {v: ("A" if v <= 16 else ("B" if v <= 18 else "C")) for v in vids}  # A:7  B:2  C:2
+    plan = _alloc_zone_aware(supernet, vids, counts, vlan_zones)
+    assert plan["n_overflow"] == 0, plan["n_overflow"]            # uniform-by-count sizing overflows zone A
+    assert plan["n_allocated"] == 11
+    nets = [ipaddress.ip_network(z["summary"]) for z in plan["zones"]]
+    for i in range(len(nets)):                                     # every zone summarises to ONE disjoint prefix
+        for j in range(i + 1, len(nets)):
+            assert not nets[i].overlaps(nets[j]), (nets[i], nets[j])
+    by_zone = {z["zone"]: ipaddress.ip_network(z["summary"]) for z in plan["zones"]}
+    assert by_zone["A"].prefixlen < by_zone["B"].prefixlen        # A (7 VLANs) gets a bigger block than B (2)
+
+
+def test_alloc_flat_supernet_smaller_than_24_is_honest():
+    """REVIEW #10: a supernet smaller than /24 cannot give a /24 per VLAN; report honest overflow and do
+    NOT emit the supernet itself as a bogus '/24' subnet."""
+    import ipaddress
+    from cisco_toolkit.design_advisor import _alloc_flat
+    plan = _alloc_flat(ipaddress.ip_network("10.0.0.0/25"), [10, 20], {10: 5, 20: 5})
+    assert plan["n_allocated"] == 0 and plan["n_overflow"] == 2
+    assert all(s.get("subnet") != "10.0.0.0/25" for s in plan["subnets"])
+
+
+def test_addressing_plan_ipv6_address_space_is_honest():
+    """REVIEW #10: an IPv6 address_space is not handled by the IPv4 /24-per-VLAN allocator; surface that
+    honestly (no fabricated subnets), not a single degraded block."""
+    ap = compute_design_blueprint(_snap(), {"address_space": "2001:db8::/48"})["target_state"]["addressing_plan"]
+    assert ap["status"] == "needs-requirement"
+    assert "ipv6" in (ap.get("note") or "").lower()
+    assert not ap.get("subnets")
+
+
+def test_requirements_from_interview_preserves_zero_convergence():
+    """REVIEW #11: convergence_budget_ms of 0 must coerce to int 0, not be clobbered to the raw value by
+    `_as_int(v) or v`; an unparseable value still falls back to the raw string."""
+    from cisco_toolkit.design_advisor import requirements_from_interview
+    assert requirements_from_interview({"convergence_budget_ms": "0"}).get("convergence_budget_ms") == 0
+    assert requirements_from_interview({"convergence_budget_ms": 250}).get("convergence_budget_ms") == 250
+    assert requirements_from_interview({"convergence_budget_ms": "fast"}).get("convergence_budget_ms") == "fast"
+
+
+def test_signals_computed_once_and_no_dead_fields(monkeypatch):
+    """REVIEW #15: _signals must be computed ONCE per blueprint (compute_target_state must not recompute it
+    when the caller already built it), and dead signal fields (bridge_links/gw_count -- no readers) are gone."""
+    import cisco_toolkit.design_advisor as da
+    sig = da._signals(_snap())
+    assert "bridge_links" not in sig and "gw_count" not in sig
+    calls = {"n": 0}
+    real = da._signals
+
+    def _counting(snap, *a, **k):
+        calls["n"] += 1
+        return real(snap, *a, **k)
+
+    monkeypatch.setattr(da, "_signals", _counting)
+    da.compute_design_blueprint(_snap())
+    assert calls["n"] == 1, calls["n"]                            # was 2 (blueprint + target_state)

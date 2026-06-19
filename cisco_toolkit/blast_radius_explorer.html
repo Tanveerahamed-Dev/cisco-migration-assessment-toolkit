@@ -643,6 +643,7 @@
   .card.crit{border-left-color:var(--crit)} .card.risk{border-left-color:var(--risk)}
   .card.watch{border-left-color:var(--watch)} .card.ok{border-left-color:var(--ok)}
   .card.accent{border-left-color:var(--accent)}
+  .card.neutral{border-left-color:var(--border)}   /* default-weight left rule for non-severity cards (NRFU/dims) */
   .card .ct{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px}
   .card .nm{font-weight:650; font-size:12.5px; color:var(--text)}
   .card .ln{font-size:11.5px; color:var(--text-dim); margin:3px 0; line-height:1.5}
@@ -6204,6 +6205,8 @@ function paintReview(){
    ===================================================================== */
 function designBlueprint(){const bp=SNAP&&SNAP.design_blueprint;
   return (bp&&Array.isArray(bp.decisions))?bp:null;}
+function designNrfu(){const n=SNAP&&SNAP.design_nrfu;   /* canonical, engine-published (items carry phases) */
+  return (n&&Array.isArray(n.items))?n:null;}
 function dPrioTok(p){return p==="Critical"?"crit":p==="High"?"risk":p==="Medium"?"watch":"ok";}
 function drawDesign(){
   if(!MODEL)return "";
@@ -6283,35 +6286,47 @@ function drawDesign(){
 }
 /* ---- Design-driven NRFU checklist (derived from recommended decisions) ---- */
 function drawDesignNrfu(bp){
-  const decs=Array.isArray(bp.decisions)?bp.decisions:[];
-  const rec=decs.filter(d=>d&&d.status==="recommended");
-  if(!rec.length)return"";
-  const _PHASE={
-    "fhrp-not-observed-is-not-healthy":"pre-cutover",
-    "lifecycle-eol-out-of-critical-roles":"pre-cutover",
-    "scenario-build-before-break-phased-cutover":"post-cutover-operational",
-    "mgmt-time-sync-logging-baseline":"post-cutover-operational",
-    "security-device-hardening-baseline":"post-cutover-operational",
-    "mgmt-secure-protocols-and-rbac":"post-cutover-operational",
-  };
+  // SSOT: prefer the engine-published design_nrfu (each item already carries its phase) so the explorer
+  // never re-derives the phase mapping. Fall back to deriving from the blueprint ONLY for older snapshots
+  // that predate the published design_nrfu field.
   const phaseLabel={"pre-cutover":"Pre-cutover","post-cutover-functional":"Post-cutover functional","post-cutover-operational":"Post-cutover operational"};
   const phaseOrder=["pre-cutover","post-cutover-functional","post-cutover-operational"];
   const phaseColor={"pre-cutover":"var(--crit)","post-cutover-functional":"var(--risk)","post-cutover-operational":"var(--watch)"};
+  let items;
+  const canon=designNrfu();
+  if(canon){
+    items=canon.items.map(it=>({title:it.title,priority:it.priority,phase:it.phase,
+      devices:Array.isArray(it.devices)?it.devices:[],citation:it.principle_citation||""}));
+  }else{
+    const rec=(Array.isArray(bp.decisions)?bp.decisions:[]).filter(d=>d&&d.status==="recommended");
+    if(!rec.length)return"";
+    const _PHASE={        /* legacy fallback only — the engine's design_nrfu is the source when published */
+      "fhrp-not-observed-is-not-healthy":"pre-cutover",
+      "lifecycle-eol-out-of-critical-roles":"pre-cutover",
+      "scenario-build-before-break-phased-cutover":"post-cutover-operational",
+      "mgmt-time-sync-logging-baseline":"post-cutover-operational",
+      "security-device-hardening-baseline":"post-cutover-operational",
+      "mgmt-secure-protocols-and-rbac":"post-cutover-operational",
+    };
+    items=rec.map(d=>({title:d.title,priority:d.priority,phase:_PHASE[d.id]||"post-cutover-functional",
+      devices:((d.evidence||{}).devices||[]),citation:((d.principle||{}).citation)||""}));
+  }
+  if(!items.length)return"";
   const byPhase={};
-  rec.forEach(d=>{const ph=_PHASE[d.id]||"post-cutover-functional";(byPhase[ph]=byPhase[ph]||[]).push(d);});
+  items.forEach(it=>{(byPhase[it.phase]=byPhase[it.phase]||[]).push(it);});
   const phaseRows=phaseOrder.map(ph=>{
     if(!(byPhase[ph]||[]).length)return"";
     const col=phaseColor[ph]||"var(--text)";
-    const rows=(byPhase[ph]||[]).map(d=>{
-      const devs=((d.evidence||{}).devices||[]);
+    const rows=(byPhase[ph]||[]).map(it=>{
+      const devs=it.devices||[];
       return `<div class="card neutral" style="margin-bottom:6px;padding:8px 10px">
-        <div class="ct"><span class="nm" style="font-size:12px">${esc(d.title)}</span><span class="pill pl-${dPrioTok(d.priority)}">${esc(d.priority)}</span></div>
-        <div class="ln faint" style="font-size:11px;margin-top:3px">${devs.length?`<span class="mono">${devs.slice(0,6).map(esc).join(", ")}${devs.length>6?` +${devs.length-6}`:""}</span> · `:""}${esc(((d.principle||{}).citation)||"")}</div>
+        <div class="ct"><span class="nm" style="font-size:12px">${esc(it.title)}</span><span class="pill pl-${dPrioTok(it.priority)}">${esc(it.priority)}</span></div>
+        <div class="ln faint" style="font-size:11px;margin-top:3px">${devs.length?`<span class="mono">${devs.slice(0,6).map(esc).join(", ")}${devs.length>6?` +${devs.length-6}`:""}</span> · `:""}${esc(it.citation)}</div>
       </div>`;}).join("");
     return `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:700;color:${col};margin-bottom:4px">${esc(phaseLabel[ph]||ph)} · ${(byPhase[ph]||[]).length}</div>${rows}</div>`;
   }).join("");
   const id="des-nrfu-"+Math.random().toString(36).slice(2,6);
-  return `<div class="sec"><h3>Design-driven NRFU checklist <span class="ct">${rec.length}</span></h3>
+  return `<div class="sec"><h3>Design-driven NRFU checklist <span class="ct">${items.length}</span></h3>
     <p class="sub" style="margin:0 0 8px">One acceptance-test per recommended decision, phased pre-cutover → functional → operational. Each item traces to the CCDE principle + affected devices. Independent of the design authors (proposer ≠ verifier).</p>
     <button class="xpbtn" onclick="toggleEl('${id}')" style="margin-bottom:8px">Show / hide items</button>
     <div id="${id}" style="display:none">${phaseRows}</div></div>`;

@@ -435,6 +435,36 @@ def test_design_nrfu_endpoint(client):
     assert client.get("/api/snapshots/999999/design/nrfu").status_code == 404
 
 
+def test_design_nrfu_overlay_reflects_requirements(client):
+    """REVIEW #13: POST /api/snapshots/{id}/design/nrfu right-sizes the NRFU checklist to a requirements
+    register — a design decision that flips needs-requirement -> recommended under the overlay appears as a
+    NEW NRFU item, so the dashboard NRFU tab reflects right-sizing (not the stale baseline). SSOT: the NRFU
+    is derived (server-side) from the SAME overlay blueprint POST /design returns, never re-derived in JS."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    base_nrfu = client.get(f"/api/snapshots/{snap_id}/design/nrfu").json()
+    base_ids = {it["decision_id"] for it in base_nrfu["items"]}
+    reg = {"availability_tier": "gold", "growth_horizon": "double the campus in 3 years",
+           "data_classification": ["PCI", "corp"], "critical_apps": ["voice"]}
+    r = client.post(f"/api/snapshots/{snap_id}/design/nrfu", json=reg)
+    assert r.status_code == 200, r.text
+    over = r.json()
+    assert "items" in over and over["n_items"] == len(over["items"])
+    over_ids = {it["decision_id"] for it in over["items"]}
+    # SSOT: every overlay NRFU item traces to a recommended decision of the OVERLAY blueprint
+    rec_over = {d["id"] for d in client.post(f"/api/snapshots/{snap_id}/design", json=reg).json()["decisions"]
+                if d["status"] == "recommended"}
+    assert over_ids <= rec_over
+    # right-sizing had an effect: the overlay flipped at least one decision, and the NRFU reflects it
+    rec_base = {d["id"] for d in client.get(f"/api/snapshots/{snap_id}/design").json()["decisions"]
+                if d["status"] == "recommended"}
+    assert rec_over != rec_base, "requirements should flip at least one open design question"
+    assert over_ids != base_ids, "the NRFU checklist must reflect right-sizing, not the baseline"
+    # also accepts the interview-answers wrapper (same bridge as POST /design)
+    assert client.post(f"/api/snapshots/{snap_id}/design/nrfu",
+                       json={"interview_answers": {"availability_tier": "gold"}}).status_code == 200
+    assert client.post("/api/snapshots/999999/design/nrfu", json=reg).status_code == 404
+
+
 def test_design_overlay_address_space_unlocks_ip_plan(client):
     """SSOT fix: POSTing address_space to /design recomputes the blueprint with a CANDIDATE
     addressing_plan (status='candidate') — the IP plan must go from needs-requirement to a live

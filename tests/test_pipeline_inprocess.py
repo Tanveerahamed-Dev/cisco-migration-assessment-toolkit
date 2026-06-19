@@ -91,6 +91,13 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # supplied via --requirements, it is stored in the snapshot so the blueprint stays reproducible).
     assert _bp == compute_design_blueprint(snap, snap.get("requirements_register")), \
         "published design_blueprint must equal the canonical recompute (with the same requirements register)"
+    # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
+    # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
+    from cisco_toolkit.design_advisor import compute_design_nrfu
+    assert "design_nrfu" in snap, "snapshot must publish the canonical design_nrfu"
+    assert isinstance(snap["design_nrfu"].get("items"), list)
+    assert snap["design_nrfu"] == compute_design_nrfu(_bp), \
+        "published design_nrfu must equal the canonical recompute from the published blueprint"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"

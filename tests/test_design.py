@@ -399,3 +399,31 @@ def test_design_vlan_inventory_is_canonical_single_source():
     canonical = vlan_inventory(snap)
     assert {v for v, _ in canonical} == {10, 40}        # access 10 + L3-only 40
     assert _vlan_inventory(snap) == canonical           # design delegates to the ONE derivation (no drift)
+
+
+def test_design_bom_labels_past_eos_as_refresh_not_replace(tmp_path):
+    """REVIEW #3: a still-supported Past-EoS device must appear under REFRESH (label names past-EoS), never
+    in a 'Replace (past-LDoS)' row -- the §5.1 BoM must not call supported gear past-LDoS/replace-now."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()                                       # acc1 is Past-EoS WS-C2960X-48FPD-L; no Past-LDoS
+    snap["design_blueprint"] = compute_design_blueprint(snap)   # §5.1 reads the canonical blueprint
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Refresh (near-LDoS / past-EoS)" in text     # refresh label now names past-EoS
+    assert "Replace (past-LDoS)" not in text            # no replace row (the fleet has 0 Past-LDoS)
+
+
+def test_design_53_renders_when_candidate_but_no_subnets(tmp_path):
+    """REVIEW #9: a candidate addressing plan that allocated NO subnets (supernet too small / overflow) must
+    still render §5.3 with its 'enlarge the address_space' note, not be silently dropped."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    snap["design_blueprint"] = compute_design_blueprint(snap, {"address_space": "10.0.0.0/30"})
+    ap = snap["design_blueprint"]["target_state"]["addressing_plan"]
+    assert ap["status"] == "candidate" and not ap.get("subnets") and not ap.get("requirement_needed")
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    paras = [p.text for p in Document(out).paragraphs]
+    assert any("Net-new IP addressing plan" in p for p in paras)
+    assert any("smaller than a /24" in p or "enlarge" in p.lower() for p in paras)
