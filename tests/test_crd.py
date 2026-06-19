@@ -196,3 +196,32 @@ def test_crd_gains_design_driven_requirements_section(tmp_path):
     # gated off when there is no blueprint (the other tests rely on this)
     d2 = Document(out)  # sanity: §8 only here
     assert any("8. Design-Driven Requirements" in p.text for p in d2.paragraphs)
+
+
+def test_crd_design_requirements_enter_traceability_matrix(tmp_path):
+    """REVIEW #8: the §8 design-driven REQ-D requirements must ALSO be registered in req_ids so they land
+    in the §7 Requirement Traceability matrix (and the seeded-requirement count) — a requirement that
+    traces to nothing is the exact 'orphan requirement' §7 forbids. The §7 row for a REQ-D pre-fills the
+    KNOWN HLD §4 trace (the design blueprint)."""
+    snap = _snap()
+    snap["design_blueprint"] = {
+        "summary": {"n_recommended": 1, "n_needs_requirement": 0, "n_critical": 1},
+        "decisions": [
+            {"title": "Introduce first-hop redundancy", "status": "recommended", "priority": "Critical",
+             "recommended_action": "Deploy HSRP/VRRP", "driver": "Gateway resilience",
+             "evidence": {"summary": "52 VLAN(s) without FHRP"}, "principle": {"citation": "CCDE — HA"}},
+        ],
+        "coverage": {},
+    }
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    # locate the §7 traceability matrix by its header (distinct from the §2-6 capture tables and §8 detail)
+    matrix = next((t for t in d.tables
+                   if [c.text for c in t.rows[0].cells][:1] == ["REQ-ID"]
+                   and "HLD section" in [c.text for c in t.rows[0].cells]), None)
+    assert matrix is not None, "no §7 traceability matrix found"
+    rids = [r.cells[0].text for r in matrix.rows[1:]]
+    assert "REQ-D-001" in rids, f"REQ-D requirement is orphaned from the §7 matrix; have {rids}"
+    row = next(r for r in matrix.rows[1:] if r.cells[0].text == "REQ-D-001")
+    assert "§4" in " ".join(c.text for c in row.cells)          # traces to the known HLD §4 design blueprint

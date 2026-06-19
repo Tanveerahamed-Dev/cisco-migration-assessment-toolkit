@@ -302,18 +302,31 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
            ("<36 months>", "<e.g. platform refresh, segmentation program>", "<to be assessed>")],
           widths=[1.1, 3.0, 2.6])
 
+    # Design-driven requirements (REQ-D) are derived from the canonical blueprint; register their IDs in
+    # the traceability set BEFORE §7 renders so they are NOT orphaned from the matrix (a requirement that
+    # traces to nothing is the exact review defect §7 forbids). Their detail table is §8.
+    bp_decisions = [d for d in (bp.get("decisions") or []) if isinstance(d, dict)]
+    rec = [d for d in bp_decisions if d.get("status") == "recommended"]
+    req_d = [(f"REQ-D-{i:03d}", d) for i, d in enumerate(rec, 1)]
+    req_ids.extend(rid for rid, _ in req_d)
+
     # ===== 7. Requirement traceability =====
     doc.add_heading("7. Requirement Traceability", level=1)
     doc.add_paragraph(
         "Every requirement lands in design content and an acceptance test — an orphan requirement "
         "(traced to nothing) or an orphan design choice (tracing to no requirement) is a review "
         "defect. Complete as the HLD/LLD/NRFU are produced.")
+
+    def _trace_row(rid):
+        # REQ-D requirements trace to the HLD §4 design blueprint (known) + the design-driven NRFU; the
+        # rest stay placeholders to complete as the HLD/LLD/NRFU are produced.
+        if rid.startswith("REQ-D"):
+            return (rid, "HLD §4 (design blueprint)", "<LLD §>", "design-driven NRFU")
+        return (rid, "<HLD §>", "<LLD §>", "<NRFU-…>")
     table(["REQ-ID", "HLD section", "LLD section", "NRFU test ID"],
-          [(rid, "<HLD §>", "<LLD §>", "<NRFU-…>") for rid in req_ids],
-          widths=[1.1, 1.8, 1.8, 1.8])
+          [_trace_row(rid) for rid in req_ids], widths=[1.1, 1.8, 1.8, 1.8])
 
     # ===== 8. Design-driven requirements (target-state blueprint) — evidence-gated =====
-    bp_decisions = [d for d in (bp.get("decisions") or []) if isinstance(d, dict)]
     if bp_decisions:
         doc.add_heading("8. Design-Driven Requirements (Target-State Blueprint)", level=1)
         doc.add_paragraph(
@@ -321,16 +334,15 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
             "(the SAME design_blueprint behind the HLD/LLD §4 and the explorer Design mode), read as "
             "requirement candidates. Each is gated on observed evidence and cites a network-design "
             "principle — confirm, amend or strike it like any workshop requirement; each traces forward to "
-            "an HLD §4 design decision.")
-        rec = [d for d in bp_decisions if d.get("status") == "recommended"]
+            "an HLD §4 design decision (and appears in the §7 traceability matrix).")
         if rec:
             table(["REQ-D", "Design requirement (recommended target pattern)", "Driver / evidence",
                    "CCDE basis", "Confirmed?"],
-                  [(f"REQ-D-{i:03d}",
+                  [(rid,
                     f"{d.get('title')}: {d.get('recommended_action') or ''}".strip().rstrip(":"),
                     (d.get("evidence") or {}).get("summary") or d.get("driver") or "—",
                     (d.get("principle") or {}).get("citation") or "—", "<YES/AMEND>")
-                   for i, d in enumerate(rec, 1)],
+                   for rid, d in req_d],
                   widths=[0.8, 2.7, 2.0, 1.4, 0.8])
         needs = [d for d in bp_decisions if d.get("status") == "needs-requirement"]
         if needs:
