@@ -272,7 +272,10 @@ def _maximal_snap():
                         "fhrp": "none", "risk": "no-FHRP"} for v in range(10, 32)],
         interfaces={f"acc{v}": {f"Gi1/0/{v}": {"switchport_mode": "Access", "vlan": str(v)}}
                     for v in range(10, 32)},
-        segmentation={"vrfs": [{"vrf": "(global)", "gateway_count": 22}]},
+        segmentation={"vrfs": [{"vrf": "(global)", "gateway_count": 22}],
+                      "summary": {"n_oncrit_exposed": 1, "gateway_acl_coverage": 0.0, "n_gateways": 22},
+                      "domains": [{"domain": "Media Fabric (SMPTE ST 2110)", "tier": "On-air critical",
+                                   "isolated": False, "gateways": 22}]},
     )
 
 
@@ -875,3 +878,68 @@ def test_[HISTORY-REDACTED]_engagement_profile_rightsizes_to_the_real_target():
         assert by[pid]["status"] == "recommended", f"{pid} must flip to recommended under the [HISTORY-REDACTED] register"
     assert all("effective_priority" in d for d in bp["decisions"])
     assert bp["requirements_model"]["provided"] is True
+
+
+# ============================================================ evidence-grounded actionable detectors
+# Two NEW actionable detectors over already-collected evidence (a follow-up to the doctrine enrichment),
+# grounded + refutation-verified against the real [HISTORY-REDACTED] snapshot: (1) rapid-PVST at high VLAN scale -> MST,
+# (2) on-air-critical application tiers left L3-exposed -> macro-segment. Both must stay coverage-honest.
+_ACTIONABLE_NEW = {
+    "dc-stp-mst-instance-scale": "dc-switching",
+    "security-isolate-oncritical-application-tier": "security",
+}
+
+
+def test_new_actionable_detector_principles_present_and_honest():
+    """Both new detector principles exist, are cited, carry a recommended action, live in their domain,
+    and are engine_actionable=True -- which the emit-invariant separately proves they actually deliver."""
+    for pid, dom in _ACTIONABLE_NEW.items():
+        p = design_kb.by_id(pid)
+        assert p, f"missing actionable principle {pid}"
+        assert p.get("citation") and p.get("recommended_action") and p.get("design_intent")
+        assert p.get("engine_actionable") is True, f"{pid} is wired to a detector -> must be actionable"
+        assert pid in {x["id"] for x in design_kb.by_domain(dom)}, f"{pid} must be in domain {dom}"
+
+
+def test_stp_mst_scale_detector_is_rapid_pvst_scoped():
+    """Rapid-PVST across a high VLAN count is flagged for MST (control-plane instance scale) -- but the
+    detector is RAPID-PVST-scoped: the legacy (non-rapid) PVST switches belong exclusively to
+    _d_stp_det (dc-stp-determinism-edge-protection), so counting them here would be a double-count.
+    Refutation: legacy-pvst-only must NOT emit it; below the VLAN threshold must NOT emit it."""
+    fires = {d["id"] for d in compute_design_blueprint(_maximal_snap())["decisions"]}
+    assert "dc-stp-mst-instance-scale" in fires, "rapid-PVST + 22 VLANs (>= threshold) must emit it"
+    # below threshold: base _snap has rapid-PVST but only 2 VLANs -> must NOT fire
+    base = {d["id"] for d in compute_design_blueprint(_snap())["decisions"]}
+    assert "dc-stp-mst-instance-scale" not in base, "must not fire below the VLAN-count threshold"
+    # legacy-pvst-ONLY at high VLAN count -> determinism fires, MST-scale must NOT (no double-count)
+    legacy = _snap(
+        protocol_health=[{"switch": "d0", "protocol": "STP",
+                          "summary": "mode pvst; 0 blocked, 0 inconsistent; max TCN 1"}],
+        l3_forwarding=[{"switch": "dist1", "vlan": str(v), "svi_ip": f"10.0.{v}.1",
+                        "fhrp": "none", "risk": "no-FHRP"} for v in range(10, 32)],
+        interfaces={f"acc{v}": {f"Gi1/0/{v}": {"switchport_mode": "Access", "vlan": str(v)}}
+                    for v in range(10, 32)})
+    leg_ids = {d["id"] for d in compute_design_blueprint(legacy)["decisions"]}
+    assert "dc-stp-determinism-edge-protection" in leg_ids, "legacy PVST must still trigger determinism"
+    assert "dc-stp-mst-instance-scale" not in leg_ids, "legacy PVST must NOT be double-counted as MST-scale"
+
+
+def test_oncritical_segmentation_exposure_detector_evidence_gated():
+    """When the segmentation axis observes on-air-critical application tiers left L3-reachable
+    (summary.n_oncrit_exposed > 0), a macro-segmentation decision is emitted naming them; remove the
+    observation and it disappears (it is grounded, never assumed)."""
+    snap = _snap(segmentation={
+        "summary": {"n_oncrit_exposed": 2, "gateway_acl_coverage": 0.0, "n_gateways": 50, "n_vrfs": 1},
+        "gateway_acl": {"n_gateways": 50, "n_with_acl": 0, "coverage_pct": 0.0},
+        "domains": [{"domain": "Media Fabric (SMPTE ST 2110)", "tier": "On-air critical",
+                     "isolated": False, "gateways": 40},
+                    {"domain": "Audio over IP (Dante / AES67)", "tier": "On-air critical",
+                     "isolated": False, "gateways": 10}],
+        "vrfs": [{"vrf": "(global)"}]})
+    d = next((x for x in compute_design_blueprint(snap)["decisions"]
+              if x["id"] == "security-isolate-oncritical-application-tier"), None)
+    assert d, "exposed on-air-critical tiers must emit the macro-segmentation decision"
+    assert "Media Fabric" in d["evidence"]["summary"], "decision must name the observed exposed tier(s)"
+    # refutation: no observed exposure -> no decision
+    none = {x["id"] for x in compute_design_blueprint(_snap())["decisions"]}
+    assert "security-isolate-oncritical-application-tier" not in none

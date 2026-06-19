@@ -135,12 +135,26 @@ def _signals(snap):
     sig["timesync_devices"] = len(sig["timesync_hosts"])
 
     sig["vlans"] = _vlan_count(snap)
-    vrfs = _as_list(_as_dict(snap.get("segmentation")).get("vrfs"))
+    seg = _as_dict(snap.get("segmentation"))
+    vrfs = _as_list(seg.get("vrfs"))
     sig["single_vrf"] = len(vrfs) <= 1
+    # on-air-critical / high-value tiers the segmentation axis already classified as L3-exposed
+    seg_sum = _as_dict(seg.get("summary"))
+    sig["oncrit_exposed"] = _as_int(seg_sum.get("n_oncrit_exposed"))
+    sig["gw_acl_cov"] = float(seg_sum.get("gateway_acl_coverage") or 0.0)
+    sig["n_gateways"] = _as_int(seg_sum.get("n_gateways"))
+    sig["oncrit_domains"] = [d.get("domain") for d in _as_list(seg.get("domains"))
+                             if d.get("tier") == "On-air critical" and not d.get("isolated")
+                             and _as_int(d.get("gateways")) > 0][:6]
 
     stp = [x for x in _as_list(snap.get("protocol_health")) if x.get("protocol") == "STP"]
     sig["stp_blocked"] = sum(1 for x in stp if _stp_blocked(x))
     sig["stp_legacy"] = sum(1 for x in stp if _stp_legacy(x))
+    # Rapid-PVST switches ONLY (mode 'rapid-pvst'): the per-VLAN-STP instance-scale population, scoped to
+    # EXCLUDE the legacy (non-rapid) PVST switches already owned by _d_stp_det (no double-count).
+    sig["stp_pvst"] = sum(1 for x in stp if "rapid-pvst" in str(x.get("summary", "")).lower())
+    sig["stp_pvst_hosts"] = [x.get("switch") for x in stp
+                             if "rapid-pvst" in str(x.get("summary", "")).lower()][:12]
     sig["vtp_server"] = any(x.get("protocol") == "VTP" and "server" in str(x.get("summary", "")).lower()
                             for x in _as_list(snap.get("protocol_health")))
 
@@ -438,9 +452,43 @@ def _d_l2_faildomain(snap, sig):
                "between blocks, isolate any required stretch.")
 
 
+def _d_stp_mst_scale(snap, sig):
+    # Rapid-PVST-scoped (sig["stp_pvst"] excludes the legacy PVST owned by _d_stp_det -> no double-count).
+    if sig["stp_pvst"] <= 0 or sig["vlans"] < _LARGE_L2_VLANS:
+        return None
+    return _decision(
+        "dc-stp-mst-instance-scale",
+        f"{sig['stp_pvst']} switch(es) run Rapid-PVST (per-VLAN spanning tree) across {sig['vlans']} VLANs "
+        f"-- up to one STP instance per VLAN multiplies CPU, BPDU and topology-change load and the per-VLAN "
+        f"root-placement chore; MST collapses them onto a few instances.",
+        sig["stp_pvst"], ["scalability", "convergence", "manageability"],
+        ["protocol_health[STP].summary (mode)", "executive_brief.scale.n_vlans"],
+        priority="Medium",
+        driver="Control-plane scale: one STP instance per VLAN does not scale -- map VLANs to a few MST instances.",
+        devices=sig["stp_pvst_hosts"])
+
+
+def _d_oncrit_seg(snap, sig):
+    if sig["oncrit_exposed"] <= 0:
+        return None
+    names = ", ".join(sig["oncrit_domains"][:3]) or "named on-air-critical domain(s)"
+    return _decision(
+        "security-isolate-oncritical-application-tier",
+        f"{sig['oncrit_exposed']} on-air-critical broadcast domain(s) ({names}) are L3-reachable (not "
+        f"isolated) and gateway-ACL coverage is {sig['gw_acl_cov']:.0f}% across {sig['n_gateways']} "
+        f"gateway(s) -- a compromise or misconfiguration anywhere on the flat L3 can reach the on-air media fabric.",
+        sig["oncrit_exposed"], ["security", "modularity", "availability"],
+        ["segmentation.summary.n_oncrit_exposed", "segmentation.gateway_acl.coverage_pct",
+         "segmentation.domains[].tier"],
+        priority="High",
+        driver="Macro-segment the on-air-critical tiers: a dedicated VRF/zone behind enforced gateway ACLs, off the flat global L3.",
+        devices=sig["oncrit_domains"])
+
+
 _DETECTORS = [_d_fhrp, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
-              _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain]
+              _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
+              _d_stp_mst_scale, _d_oncrit_seg]
 
 
 # ----------------------------------------------------------------------------- requirement-gated decisions
