@@ -1976,6 +1976,717 @@ _SDWAN_CORPUS_ADDENDUM = [
 DOCTRINE.extend(_SDWAN_CORPUS_ADDENDUM)
 
 
+# ------------------------------------------------- multi-domain mega addendum (breadth waves)
+# A 60-agent multi-domain mining wave (4 ACI-advanced disk-miners over Advance-Services-DC decks + 11
+# web-research miners) covering the modern net-new design domains the KB still lacked: SD-Access/campus-
+# fabric, enterprise wireless, network automation/telemetry, DC compute+storage (UCS/FCoE/OTV), cloud-native/
+# container + cloud connectivity, IPv6 depth, and ACI-advanced (GOLF / uSeg / service-graph modes / VMM).
+# EVERY principle is DOCTRINE (engine_actionable=False): an L1-L4 IOS/NX-OS assessment collects none of this
+# state (wireless RF / SD-Access fabric / automation-controller / K8s / cloud / UCS / ACI-controller), so the
+# design brain cites these for design narrative + chat, never as auto-detected findings. Current naming/
+# standards web-verified: DNA Center -> Cisco Catalyst Center; Wi-Fi 6E/7 = 802.11ax/be (Wi-Fi 7 MLO/320MHz/
+# 4K-QAM); Istio Ambient (ztunnel+waypoint) / Cilium eBPF sidecarless mesh; NVMe-oF (FC/TCP/RoCE); gNMI/
+# OpenConfig; SGT carried in the VXLAN-GPO header. Original re-expression; no verbatim source text.
+_MEGA_CORPUS_ADDENDUM = [
+ # ---- SD-Access / campus fabric ----
+ {
+  "id": "campus-sda-vs-routed-access-target-decision",
+  "domain": "campus-fabric", "priority": "High", "engine_actionable": False,
+  "title": "Adopt SD-Access only for a concrete driver (identity-segmentation / automation / mobility); else keep routed-access -- and design the border/fusion handoff",
+  "design_intent": "Cisco SD-Access (a controller-based campus fabric: Catalyst Center management, LISP control, "
+    "VXLAN data, TrustSec policy) is justified by a NAMED driver -- identity-based micro-segmentation, controller "
+    "automation/assurance at scale, or location-independent endpoint mobility -- not by default. Absent such a "
+    "driver, a traditional routed-access / collapsed-core campus is simpler and cheaper. And where fabric IS "
+    "chosen, the segmentation only holds inside it: the border + fusion-device handoff to the rest of the network "
+    "is where VRFs/SGTs must be deliberately stitched or terminated.",
+  "tradeoffs": "security + manageability + mobility (identity segmentation, central automation/assurance) vs "
+    "simplicity + cost (a controller fabric is more moving parts than routed-access).",
+  "trigger": "Choosing the campus access architecture for a refresh.",
+  "observable": "Not collected by an L1-L4 assessment (no fabric/LISP/Catalyst-Center state); a campus design choice.",
+  "recommended_action": "Adopt SD-Access only when a named driver (segmentation / automation / mobility) earns "
+    "the complexity; otherwise keep routed-access. If fabric is chosen, explicitly design the border node + "
+    "fusion device that leaks/terminates VNs and propagates SGTs to the non-fabric world.",
+  "alternatives": "Traditional routed-access / collapsed-core (the KB's dc-three-tier / routed-access doctrine) "
+    "where no segmentation/automation/mobility driver exists; NX-OS VXLAN-EVPN for the DC, not the campus.",
+  "citation": "Cisco SD-Access (Software-Defined Access) Design Guide; web-verified (Catalyst Center, ex-DNA Center).",
+ },
+ {
+  "id": "campus-sda-four-plane-fabric-lisp-vxlan-trustsec",
+  "domain": "campus-fabric", "priority": "Medium", "engine_actionable": False,
+  "title": "Treat SD-Access as four decoupled planes (Catalyst Center / LISP / VXLAN / TrustSec) on a routed underlay; kill flood-and-learn",
+  "design_intent": "SD-Access splits the campus into four independent planes: Catalyst Center owns management/"
+    "automation/assurance, LISP owns the control plane (an endpoint-ID-to-RLOC map-server, replacing L2 flood-"
+    "and-learn -- edges register endpoints and query on cache-miss), VXLAN owns the data plane (carrying the VN "
+    "and SGT), and TrustSec owns policy. The overlay rides a stable, fully-routed L3 underlay (loopbacks + P2P "
+    "links only, jumbo MTU >= 9100) -- keep underlay and overlay separate. New fabrics should use LISP Pub/Sub "
+    "(drops the in-fabric iBGP dependency).",
+  "tradeoffs": "scalability + manageability (no flood-and-learn; controller automation; planes evolve "
+    "independently) vs the LISP/VXLAN/controller skill set and a redundant control-plane-node requirement.",
+  "trigger": "Designing the SD-Access fabric architecture + underlay.",
+  "observable": "Not collected by an L1-L4 assessment; an SD-Access design.",
+  "recommended_action": "Document four named planes with owners/failure-modes; build a routed L3 underlay (LAN "
+    "Automation / IS-IS, MTU >= 9100, loopbacks + transit only); deploy >= 2 control-plane nodes per site (their "
+    "own devices on medium/large sites); standardize on LISP Pub/Sub for new fabrics (image 17.6+).",
+  "alternatives": "Legacy LISP-with-BGP control plane on older images; a traditional STP/flood-and-learn campus "
+    "where a fabric is not adopted.",
+  "citation": "Cisco SD-Access Design Guide (LISP control plane, VXLAN, LAN Automation, Pub/Sub); web-verified.",
+ },
+ {
+  "id": "campus-sda-macro-vn-then-micro-sgt-segmentation",
+  "domain": "campus-fabric", "priority": "High", "engine_actionable": False,
+  "title": "Layer SD-Access segmentation: macro-isolate with Virtual Networks (VRF), micro-segment inside with SGTs, ISE as the single policy source",
+  "design_intent": "SD-Access offers two orthogonal segmentation tiers. A Virtual Network is exactly a VRF / LISP "
+    "Instance-ID giving complete L3 isolation between large domains (employee / IoT / guest / OT), default no "
+    "inter-VN traffic (bridge only via an explicit fusion). Inside a VN, the Scalable Group Tag -- carried inline "
+    "in the VXLAN-GPO 16-bit Group-Policy-ID (~64K groups) -- enforces group-to-group policy decoupled from IP/"
+    "topology via SGACLs. ISE is the policy single-source-of-truth that classifies endpoints (802.1X/MAB) and "
+    "returns the VN + SGT, so identity, not the patch port, decides placement -- and ISE's failure must be designed for.",
+  "tradeoffs": "security (identity-based macro+micro isolation that follows the endpoint) vs the ISE/TrustSec "
+    "operating model + SGT-propagation design (inline tagging vs SXP) across every fabric boundary.",
+  "trigger": "Designing campus segmentation on an SD-Access fabric.",
+  "observable": "Not collected by an L1-L4 assessment; an SD-Access policy design.",
+  "recommended_action": "Define a deliberately small set of VNs aligned to hard trust boundaries; micro-segment "
+    "inside each with SGTs/SGACLs; onboard endpoints closed-loop with ISE (802.1X/MAB -> VN+SGT via RADIUS, CoA "
+    "for re-auth); design SGT propagation (inline where supported, SXP where not) and ISE redundancy.",
+  "alternatives": "VLAN/subnet ACL segmentation (drift-prone, topology-bound) where TrustSec is not adopted; "
+    "macro-only VN isolation where micro-segmentation is not required.",
+  "citation": "Cisco SD-Access / TrustSec Design Guide (VN=VRF, SGT in VXLAN-GPO ~64K, ISE/SGACL); web-verified.",
+ },
+ {
+  "id": "campus-sda-fabric-enabled-wireless-distributed-data-plane",
+  "domain": "campus-fabric", "priority": "High", "engine_actionable": False,
+  "title": "Put wireless on the fabric: WLC keeps the CAPWAP control plane, but distribute the data plane via VXLAN at the fabric APs",
+  "design_intent": "In SD-Access fabric-enabled wireless the WLC is 'fabric-enabled': it still terminates the "
+    "CAPWAP CONTROL plane (AP join, RRM, mobility, config) and registers wireless clients into the LISP control "
+    "plane, but it does NOT tunnel client DATA back centrally. Instead the fabric APs VXLAN-encapsulate client "
+    "traffic directly to the first-hop fabric edge -- so wired and wireless share one anycast gateway and one "
+    "SGT/VN policy, the data path is distributed (no CAPWAP data hairpin to the WLC), and segmentation is "
+    "consistent across both media.",
+  "tradeoffs": "performance + policy-consistency (distributed data plane, one wired+wireless gateway/policy) vs "
+    "requiring fabric-capable WLC/APs and the SD-Access fabric itself.",
+  "trigger": "Integrating wireless into an SD-Access campus fabric.",
+  "observable": "Not collected by an L1-L4 assessment; an SD-Access wireless design.",
+  "recommended_action": "Use fabric-enabled wireless so APs VXLAN-encapsulate client data to the local fabric "
+    "edge (shared anycast gateway + SGT for wired/wireless), keeping the WLC on the CAPWAP control plane; size "
+    "WLC/edge for the distributed model.",
+  "alternatives": "Traditional centralized CAPWAP (local-mode, all client data tunneled to the WLC) outside a "
+    "fabric, or FlexConnect for branches -- see the wireless WLC-deployment principle.",
+  "citation": "Cisco SD-Access Fabric Wireless Design Guide; web-verified.",
+ },
+ # ---- enterprise wireless ----
+ {
+  "id": "wireless-wlc-deployment-model-by-survivability-and-wan",
+  "domain": "wireless", "priority": "High", "engine_actionable": False,
+  "title": "Pick the WLC deployment model (centralized local-mode / FlexConnect / embedded / cloud) from branch survivability and WAN latency",
+  "design_intent": "The controller deployment model is the load-bearing wireless decision -- it sets what "
+    "survives a WAN/controller outage and where client traffic egresses. Centralized local-mode tunnels all "
+    "client data in CAPWAP back to the WLC (clean policy, but a WAN cut kills the branch and hairpins traffic). "
+    "FlexConnect local-switching drops client data locally at the AP (with local auth, users survive Standalone "
+    "mode on a WAN cut). Embedded (EWC) and cloud-managed (Meraki) suit small/distributed estates.",
+  "tradeoffs": "survivability + path-efficiency (local switching survives WAN loss, avoids hairpin) vs policy "
+    "centralization/simplicity (centralized local-mode is cleanest where the WAN is reliable).",
+  "trigger": "Choosing the wireless controller architecture for campus + branches.",
+  "observable": "Not collected by an L1-L4 assessment; a wireless design.",
+  "recommended_action": "Keep campus on centralized local-mode within a low-latency LAN; default branches with "
+    "unreliable or >100ms WAN to FlexConnect local-switching + local authentication (survive Standalone); use "
+    "embedded EWC / cloud-managed for small or highly-distributed sites.",
+  "alternatives": "All-centralized where every site has a reliable low-latency path to the WLC; all-cloud "
+    "(Meraki) where a controller-less SaaS operating model is preferred.",
+  "citation": "Cisco Enterprise Wireless / Catalyst 9800 Design Guide (local-mode vs FlexConnect, CAPWAP); web-verified.",
+ },
+ {
+  "id": "wireless-rf-capacity-not-coverage-cell-sizing-rrm",
+  "domain": "wireless", "priority": "High", "engine_actionable": False,
+  "title": "Design RF for capacity by shrinking cells (not coverage by raising power); let RRM own channel/power and validate with a survey chain",
+  "design_intent": "The foundational RF trade-off is coverage-oriented vs capacity-oriented design, and dense "
+    "spaces demand capacity. Coverage design (high power, wide cells, few APs) suits sparse areas but collapses "
+    "under density (co-channel contention, one big shared cell). Capacity design lowers AP power and adds APs to "
+    "SHRINK cells, raises RX-SOP, disables the lowest legacy data rates, and targets ~15-20% overlap for roaming. "
+    "Manual channel/power planning cannot survive a live RF environment -- delegate it to RRM (DCA/TPC/FRA) -- and "
+    "a modeled design is only a hypothesis until validated by a predictive -> passive -> active survey chain.",
+  "tradeoffs": "capacity + roaming (small cells, RRM-managed, narrow channels) vs AP count/cost; channel-width "
+    "(wider = more throughput per client but fewer non-overlapping channels = more contention in density).",
+  "trigger": "Designing RF coverage/capacity + validating a WLAN.",
+  "observable": "Not collected by an L1-L4 assessment; a wireless RF design.",
+  "recommended_action": "For high density, lower AP power + add APs to shrink cells, raise RX-SOP, disable lowest "
+    "legacy rates, target ~15-20% overlap, keep placement uniform; enable DCA/TPC/coverage-hole + FRA on XOR "
+    "radios; choose narrow (20/40MHz) channel width in density; run predictive -> passive -> active surveys + a "
+    "post-install validation.",
+  "alternatives": "Coverage-oriented design (high power, wide cells) for warehouses/low-density; wider channels "
+    "only where spectrum is clean and client count low.",
+  "citation": "Cisco High-Density Wi-Fi / RRM design guidance; web-verified.",
+ },
+ {
+  "id": "wireless-fast-roaming-stack-11r-11k-11v",
+  "domain": "wireless", "priority": "High", "engine_actionable": False,
+  "title": "Engineer the roam, not just the cell: combine 802.11k/v steering with 802.11r Fast Transition (or OKC) to hold the handoff under the real-time budget",
+  "design_intent": "For voice-over-WLAN and real-time apps the failure mode is the ROAM, not the cell: a full "
+    "re-authentication on every AP change adds handshake delay that drops calls. The fix is a layered roaming "
+    "stack -- 802.11k gives the client a neighbor list (roam to the right AP), 802.11v steers it (BSS-transition), "
+    "and 802.11r Fast Transition pre-authenticates so the handoff skips the full EAP/4-way exchange (use OKC for "
+    "non-11r clients, adaptive-11r for mixed fleets).",
+  "tradeoffs": "convergence/availability for real-time apps (sub-budget handoff) vs client-compatibility care "
+    "(11r support varies; adaptive-11r / OKC handle mixed fleets).",
+  "trigger": "Designing WLAN for voice/video/real-time roaming-sensitive clients.",
+  "observable": "Not collected by an L1-L4 assessment; a wireless roaming design.",
+  "recommended_action": "On roam-sensitive SSIDs enable 802.11k neighbor lists + 802.11v BSS-transition steering, "
+    "add 802.11r FT (or OKC / adaptive-11r for mixed fleets) to pre-authenticate; keep the roam within an L2 "
+    "domain or design L3 roaming via the WLC/fabric.",
+  "alternatives": "Plain WPA2/3 re-auth roaming where no real-time apps exist; OKC where the client fleet lacks 11r.",
+  "citation": "Cisco wireless roaming design (802.11r/k/v, OKC); web-verified.",
+ },
+ {
+  "id": "wireless-wpa3-owe-8021x-eaptls-security-baseline",
+  "domain": "wireless", "priority": "High", "engine_actionable": False,
+  "title": "Make WPA3 + PMF the WLAN baseline (OWE for guest, 6GHz WPA3-only with SAE H2E); authenticate corporate with 802.1X/EAP-TLS to ISE",
+  "design_intent": "WPA2's structural weaknesses (PSK offline-dictionary attacks, unprotected management frames "
+    "enabling deauth) are fixed by WPA3: SAE replaces the 4-way-handshake PSK exchange with a dictionary-attack-"
+    "resistant one, and Protected Management Frames stop deauth attacks. 6GHz is WPA3-only (SAE H2E, no WPA2/open). "
+    "Corporate WLAN should be identity-based, not a shared secret: 802.1X/EAP to a redundant RADIUS/ISE plane, "
+    "preferring certificate-based EAP-TLS (no shared WLAN passwords), with ISE driving dynamic VLAN/SGT/posture.",
+  "tradeoffs": "security (dictionary-resistant auth, protected frames, per-identity policy, no shared secrets) vs "
+    "client-compatibility (transition-mode SSIDs for WPA2 legacy must be a deliberate, time-boxed choice).",
+  "trigger": "Designing WLAN authentication + encryption.",
+  "observable": "Not collected by an L1-L4 assessment; a WLAN security design.",
+  "recommended_action": "Adopt WPA3 + mandatory PMF as the personal/enterprise baseline, Enhanced-Open (OWE) for "
+    "guest, 6GHz strictly WPA3-only with SAE H2E; authenticate managed WLAN with 802.1X to a redundant ISE plane, "
+    "prefer EAP-TLS; scope WPA3-Enterprise 192-bit to CNSA-required networks; treat transition-mode SSIDs as "
+    "temporary.",
+  "alternatives": "WPA2-PSK only for isolated IoT that cannot do WPA3/802.1X (segment it); PSK + ISE for "
+    "headless devices via MAB.",
+  "citation": "Wi-Fi Alliance WPA3 + Cisco WLAN security design (OWE, SAE H2E, 802.1X/EAP-TLS, ISE); web-verified.",
+ },
+ {
+  "id": "wireless-wifi6e-wifi7-phy-airtime-efficiency-mlo",
+  "domain": "wireless", "priority": "Medium", "engine_actionable": False,
+  "title": "Exploit Wi-Fi 6/6E airtime efficiency (OFDMA/MU-MIMO/BSS-color/TWT) in dense cells; treat Wi-Fi 7 (802.11be) as a 6GHz-anchored MLO capacity play",
+  "design_intent": "802.11ax (Wi-Fi 6/6E) is an EFFICIENCY standard: OFDMA packs many small flows into one "
+    "transmit opportunity (Resource Units), MU-MIMO serves spatial-stream-rich high-rate clients in parallel, BSS "
+    "Coloring reclaims the medium under co-channel reuse, and TWT schedules battery/IoT wake-ups. Wi-Fi 7 "
+    "(802.11be) adds Multi-Link Operation (one association across bands for latency/reliability), 320MHz channels "
+    "and 4096-QAM (4K-QAM) -- gains realizable mainly in 6GHz, the only band with contiguous clean spectrum wide "
+    "enough; reserve 320MHz for the few cells with clean spectrum + capable clients.",
+  "tradeoffs": "throughput + latency + density (efficiency features, MLO reliability) vs client-capability/"
+    "spectrum reality (320MHz/4K-QAM only pay off in clean 6GHz with capable clients).",
+  "trigger": "Designing for high-density or latency-critical WLAN with modern client mixes.",
+  "observable": "Not collected by an L1-L4 assessment; a wireless RF/standards design.",
+  "recommended_action": "Enable OFDMA + BSS-Coloring for dense low-rate populations, reserve MU-MIMO for high-rate "
+    "clients, apply TWT to IoT/battery; anchor Wi-Fi 7 value in 6GHz with MLO for latency/reliability-critical "
+    "SSIDs and 320MHz only where spectrum + clients allow.",
+  "alternatives": "Stay on Wi-Fi 5/6 where client fleet and density do not justify 6E/7; 5GHz where 6GHz clients "
+    "are absent.",
+  "citation": "IEEE 802.11ax / 802.11be + Cisco/Meraki Wi-Fi 6E/7 design; web-verified (Wi-Fi 7 MLO/320MHz/4K-QAM).",
+ },
+ # ---- network automation / telemetry ----
+ {
+  "id": "automation-model-driven-config-over-screen-scraped-cli",
+  "domain": "automation", "priority": "High", "engine_actionable": False,
+  "title": "Drive config through model-based interfaces (NETCONF/RESTCONF/gNMI over YANG) applied transactionally -- not screen-scraped CLI",
+  "design_intent": "CLI was authored for humans (per-platform prompts, free-text, no schema), so screen-scraping "
+    "is brittle and offers no transactional/validation guarantees. Model-driven interfaces bind to YANG: NETCONF/"
+    "RESTCONF/gNMI carry structured config a tool can validate against schema and apply ATOMICALLY (NETCONF "
+    "candidate datastore: stage -> validate -> confirmed-commit with an auto-revert timer so a change that severs "
+    "your own management path rolls back). The data-model is itself a choice: OpenConfig/IETF for multivendor "
+    "portability, native YANG (contained) for full feature fidelity -- expect to mix both.",
+  "tradeoffs": "reliability + multivendor portability + transactional safety vs the tooling/skills shift off CLI "
+    "and uneven YANG-path/feature coverage per platform.",
+  "trigger": "Designing how device configuration is rendered and applied.",
+  "observable": "Not collected by an L1-L4 assessment; an automation operating-model design.",
+  "recommended_action": "Standardize on a model-driven transport (NETCONF/gNMI for config, RESTCONF where a REST/"
+    "JSON toolchain fits) bound to YANG; apply via candidate-commit with confirmed-commit/auto-revert for risky "
+    "in-band changes; default to OpenConfig/IETF models for the portable surface, native YANG only where features demand.",
+  "alternatives": "Templated CLI push (Netmiko/Jinja) as a transitional bridge on platforms lacking model support; "
+    "vendor controllers (NSO/Catalyst Center) abstracting the model.",
+  "citation": "NETCONF/RESTCONF (RFC 6241/8040) + YANG (RFC 7950) + OpenConfig + gNMI; web-verified.",
+ },
+ {
+  "id": "automation-network-source-of-truth-declarative-idempotent",
+  "domain": "automation", "priority": "High", "engine_actionable": False,
+  "title": "Anchor automation on a Network Source of Truth holding intended state; render config from it declaratively and idempotently, never the reverse",
+  "design_intent": "Automation without a single authoritative model of intent just scales inconsistency. A Network "
+    "Source of Truth (e.g. NetBox) holds the INTENDED state; device configuration is rendered as a deterministic "
+    "function of SoT data + templates, so 'what should this network be' has a canonical answer and drift is "
+    "detectable as SoT-vs-device diff. Express change as DECLARATIVE desired-state (Terraform/OpenTofu, NSO "
+    "service intent, idempotent Ansible) so the engine computes and applies the delta -- imperative step-scripts "
+    "re-encode 'how' for every change and compound damage on a half-applied retry.",
+  "tradeoffs": "consistency + drift-detection + safe re-runs (idempotent declarative + SoT) vs the up-front "
+    "modelling discipline (populate + govern the SoT; design the render pipeline).",
+  "trigger": "Establishing the automation architecture / operating model.",
+  "observable": "Not collected by an L1-L4 assessment; an automation design.",
+  "recommended_action": "Stand up a Network Source of Truth as the authoritative intended-state store; render "
+    "device config from SoT + templates (config = function of intent); model change as declarative idempotent "
+    "desired-state (Terraform/NSO/idempotent Ansible) so the tool reconciles the delta; detect drift as SoT-vs-device diff.",
+  "alternatives": "Imperative runbooks/scripts for one-off tactical changes; spreadsheet+CLI for tiny static "
+    "estates (accepting drift).",
+  "citation": "Network Source of Truth (NetBox) + IaC (Terraform/Ansible/NSO) design practice; web-verified.",
+ },
+ {
+  "id": "automation-gitops-cicd-pre-post-validation-pipeline",
+  "domain": "automation", "priority": "High", "engine_actionable": False,
+  "title": "Make network change a Git-reviewed CI/CD pipeline with offline pre-change and post-change validation",
+  "design_intent": "Treating network change as code (GitOps) gives governance ad-hoc device edits cannot: every "
+    "change is a peer-reviewed merge request against the Git repo that is the source of truth, so branch-"
+    "protection + CODEOWNERS enforce review, CI runs pre-change validation (lint/schema, and ideally a virtual "
+    "twin / batfish-style what-if), the merge triggers deploy, and post-change validation confirms the intended "
+    "state and triggers rollback on failure. The repo is the audit trail and the rollback source.",
+  "tradeoffs": "change safety + governance + auditability vs the pipeline/CI build-out + the cultural shift to "
+    "review-before-merge.",
+  "trigger": "Designing the network change-management / deployment workflow.",
+  "observable": "Not collected by an L1-L4 assessment; a change-pipeline design.",
+  "recommended_action": "Adopt a GitOps pipeline: intent/config in Git (source of truth), every change a reviewed "
+    "MR with branch-protection + CODEOWNERS; CI runs offline pre-change validation; deploy on merge; run post-"
+    "change validation and auto-rollback on failure; keep the repo as the audit + rollback source.",
+  "alternatives": "A lighter reviewed-change lifecycle (the KB's mgmt-change-config-automation) where a full CI/CD "
+    "pipeline is unjustified; ticket-gated manual change for tiny estates.",
+  "citation": "NetDevOps / GitOps for network automation (CI/CD, pre/post validation); web-verified.",
+ },
+ {
+  "id": "automation-streaming-telemetry-subscriptions-what-and-cadence",
+  "domain": "automation", "priority": "High", "engine_actionable": False,
+  "title": "Replace SNMP polling with model-driven streaming telemetry: named YANG-path subscriptions, on-change for state and tiered periodic for counters, dial-out by default",
+  "design_intent": "SNMP poll/trap forces the collector to ask, on a fixed interval, for a flattened MIB -- it "
+    "cannot say 'tell me only when this changes', cannot subscribe to a precise sub-tree, and scales poorly. "
+    "Model-driven telemetry (gNMI/gRPC subscriptions on explicit YANG xpaths) pushes data: on-change for "
+    "operational STATE/events (interface/protocol/neighbor state, alarms, config commits) so faults arrive as "
+    "they happen, and tiered periodic for counters -- never one global short interval ('SNMP but faster' destroys "
+    "the value). Default to dial-out gRPC for large/zero-touch fleets; size a redundant collector->TSDB pipeline.",
+  "tradeoffs": "fault-detection speed + fidelity + scale (push, sub-tree, on-change) vs designing the "
+    "subscription plan + a sized, redundant collector/TSDB pipeline (cardinality matters).",
+  "trigger": "Designing network observability / telemetry collection.",
+  "observable": "Not collected by an L1-L4 assessment; a telemetry design.",
+  "recommended_action": "Specify telemetry as named subscriptions on explicit YANG paths: on-change for state/"
+    "events, tiered periodic for counters; default dial-out gRPC for fleets; verify path mode via the device's "
+    "mdt-capabilities; size a redundant collector + time-series store to the stream rate/cardinality; add flow "
+    "telemetry (full NetFlow/IPFIX for security, sampled for capacity) for the traffic matrix.",
+  "alternatives": "SNMPv3 retained only as a fallback for un-instrumented gear; dial-in gRPC where the device "
+    "must initiate to a fixed collector.",
+  "citation": "gNMI/gRPC model-driven telemetry + NetFlow/IPFIX design; web-verified (beyond the KB's modern-telemetry principle).",
+ },
+ {
+  "id": "automation-assurance-active-synthetic-closed-loop",
+  "domain": "automation", "priority": "Medium", "engine_actionable": False,
+  "title": "Add active/synthetic assurance for paths you don't own, baseline per-network with AI analytics, and close the loop only on verified telemetry + safe rollback",
+  "design_intent": "Device telemetry describes the network you own -- but user experience increasingly traverses "
+    "the Internet, SaaS and clouds you do NOT own, where there is no device to stream from. Active/synthetic "
+    "assurance (enterprise/endpoint/cloud agents probing real user paths, e.g. ThousandEyes) measures those off-"
+    "net paths. An assurance platform (Catalyst Center Assurance / AI Network Analytics) learns each network's own "
+    "adaptive baseline and flags anomalies -- but health scores are DERIVED telemetry whose inputs/thresholds you "
+    "must own. Closed-loop remediation is safe only when driven by verified telemetry with a tested rollback.",
+  "tradeoffs": "end-to-end visibility + faster anomaly detection (off-net + AI baselines) vs trusting derived "
+    "scores (own the inputs) and the risk of closed-loop action (gate on verification + rollback).",
+  "trigger": "Designing assurance / closed-loop operations for an estate with SaaS/cloud/Internet dependence.",
+  "observable": "Not collected by an L1-L4 assessment; an assurance design.",
+  "recommended_action": "Place active/synthetic agents at user-representative vantage points (branch/DC/cloud) to "
+    "measure off-net paths; use AI analytics for adaptive per-site baselines/anomaly ranking rather than static "
+    "global thresholds, owning the inputs; gate any closed-loop remediation on verified telemetry + a tested rollback.",
+  "alternatives": "Passive device telemetry only where all critical paths are on-net; manual NOC triage where "
+    "closed-loop automation is not yet trusted.",
+  "citation": "ThousandEyes / Catalyst Center Assurance + closed-loop automation design; web-verified.",
+ },
+ # ---- DC compute + storage + DCI ----
+ {
+  "id": "dc-compute-ucs-fabric-interconnect-end-host-mode-default",
+  "domain": "dc-compute", "priority": "High", "engine_actionable": False,
+  "title": "Run UCS Fabric Interconnects in end-host mode by default; carry disjoint upstream L2 by VLAN-to-uplink pinning, not switch mode",
+  "design_intent": "A UCS Fabric Interconnect terminating dozens-to-hundreds of blades is a giant aggregation "
+    "point. End-host mode presents its uplinks to the upstream LAN as if it were a big multi-homed server -- it "
+    "runs no STP and creates no loops upstream, pinning server vNICs to uplinks (MAC-pinning). When blades must "
+    "reach multiple separate upstream L2 domains (prod / backup / DMZ / OOB that are intentionally NOT bridged), "
+    "the wrong reflex is FI switch mode (which bridges them + reintroduces STP); the right design is disjoint L2 "
+    "by non-overlapping VLAN-to-uplink pinning with one vNIC per domain.",
+  "tradeoffs": "simplicity + loop-freedom + upstream-scale (end-host mode, no STP) vs the rare case needing the FI "
+    "to switch (switch mode) -- which reintroduces STP and is a last resort.",
+  "trigger": "Designing UCS Fabric Interconnect upstream connectivity.",
+  "observable": "Not collected by an L1-L4 assessment; a UCS compute-network design.",
+  "recommended_action": "Default the FI pair to end-host mode, bundle uplinks to the upstream (vPC) pair as port-"
+    "channels; for multiple disjoint upstream L2 domains use non-overlapping VLAN-to-uplink pinning with one vNIC "
+    "per domain; reserve switch mode for genuinely upstream-incapable cases.",
+  "alternatives": "FI switch mode only where the FI must actively switch between upstreams that cannot do it; "
+    "rack servers direct to ToR where UCS-managed compute is not used.",
+  "citation": "Cisco UCS Design Guide (end-host mode, disjoint L2, uplink pinning); web-verified.",
+ },
+ {
+  "id": "dc-compute-ucs-stateless-service-profiles-and-fcoe-edge",
+  "domain": "dc-compute", "priority": "High", "engine_actionable": False,
+  "title": "Abstract server identity into stateless service profiles from pools/templates (UCS Manager per-domain vs Intersight), and engineer a lossless no-drop class if converging FCoE",
+  "design_intent": "In UCS a server's personality (UUID, every vNIC MAC, every vHBA WWNN/WWPN, BIOS/boot/firmware "
+    "policy, VLAN/VSAN/QoS bindings) is abstracted out of the physical blade into a logical service profile built "
+    "from non-overlapping POOLS and stamped from TEMPLATES -- so compute is stateless and a profile can move to a "
+    "spare blade in minutes. Operate the fleet through this policy/profile/template hierarchy (embedded UCS "
+    "Manager per single domain; Intersight for multi-domain/cloud). If converging SAN onto the same fabric with "
+    "FCoE, FC's lossless assumption must be recreated in ONE no-drop class engineered end-to-end (PFC + ETS + DCBX).",
+  "tradeoffs": "agility + consistency (stateless, pool/template-driven, fast re-provision) vs the modelling "
+    "discipline (pools/templates/policies) -- and FCoE convergence adds a strict lossless-class requirement.",
+  "trigger": "Designing UCS compute provisioning (and optional FCoE convergence).",
+  "observable": "Not collected by an L1-L4 assessment; a UCS design.",
+  "recommended_action": "Derive every identity from non-overlapping pools, stamp service profiles from templates "
+    "(updating templates for fleet change); operate via UCS Manager (single domain) or Intersight (multi-domain); "
+    "if converging FCoE, define one no-drop CoS engineered end-to-end (PFC on the FCoE priority, ETS bandwidth, "
+    "DCBX auto-negotiation), keeping the storage VLAN distinct from LAN.",
+  "alternatives": "Per-server manual config (no statelessness) for tiny estates; keep LAN and SAN on separate "
+    "adapters/fabrics where convergence isn't justified (the KB's unified-fabric principle).",
+  "citation": "Cisco UCS / Intersight + FCoE DCB design; web-verified.",
+ },
+ {
+  "id": "dc-compute-san-dual-fabric-air-gap-and-storage-transport",
+  "domain": "dc-compute", "priority": "Medium", "engine_actionable": False,
+  "title": "Build two air-gapped SAN fabrics (A/B) that never merge with single-initiator zoning; pick the storage transport (NVMe/FC or NVMe/TCP before RoCE; iSCSI as legacy) by loss-sensitivity",
+  "design_intent": "Storage availability comes from two COMPLETELY independent fabrics, not redundancy inside one: "
+    "each host and array dual-attaches one port to SAN A and one to SAN B, host multipathing rides the survivor, "
+    "and A is NEVER connected to B (a merge or a fabric-wide event then can't take both). Zone single-initiator-"
+    "to-target by pWWN, with NPV/NPIV at the edge. The transport choice is really how much lossless discipline "
+    "operations must carry: NVMe/FC keeps the proven FC model (built-in flow control, A/B, no Ethernet DCB "
+    "tuning); NVMe/TCP suits standard-Ethernet/cloud-native; NVMe/RoCEv2 only when the latency budget justifies a "
+    "verified end-to-end lossless build; iSCSI is the legacy IP-storage option.",
+  "tradeoffs": "availability + integrity (independent A/B, single-initiator zoning) vs cost/operational-model; "
+    "transport: FC-grade determinism vs Ethernet simplicity vs RoCE latency-at-lossless-complexity.",
+  "trigger": "Designing SAN/storage networking for a DC.",
+  "observable": "Not collected by an L1-L4 assessment; a storage-network design.",
+  "recommended_action": "Provision two physically+logically separate fabrics; dual-attach every host/array (one "
+    "port per fabric) with multipathing; never connect A to B; zone single-initiator-to-target by pWWN; NPV/NPIV "
+    "at the edge; default the transport to NVMe/FC where FC exists or NVMe/TCP for standard Ethernet, RoCEv2 only "
+    "with a verified lossless fabric.",
+  "alternatives": "Single converged FCoE fabric (the unified-fabric principle) where adapter/port reduction "
+    "dominates and dual-fabric SAN isolation is not required; iSCSI for cost-sensitive IP storage.",
+  "citation": "Cisco MDS / SAN design + NVMe-oF (NVMe/FC, NVMe/TCP, NVMe/RoCE) guidance; web-verified.",
+ },
+ {
+  "id": "dc-compute-otv-control-plane-dci-mac-routing-aed",
+  "domain": "dc-compute", "priority": "Medium", "engine_actionable": False,
+  "title": "Extend L2 between DCs with a control-plane DCI (OTV-style): advertise MACs, suppress unknown-unicast/ARP across the interconnect, and multihome with per-VLAN AED",
+  "design_intent": "When two-three DCs must share L2 subnets, the danger is fate-sharing the failure domain across "
+    "the WAN. OTV contains it by treating MAC reachability as ROUTING: an IS-IS overlay control plane advertises "
+    "which MACs live at which site, suppresses unknown-unicast flooding and ARP across the overlay, and filters "
+    "BPDUs/FHRP so each site keeps its own STP root and gateway -- only the VLANs that truly need stretching are "
+    "extended. Multihoming is made loop-free by the Authoritative Edge Device role: a deterministic per-VLAN split "
+    "(plus a site-VLAN and site-ID) keeps dual edges active/active without a loop.",
+  "tradeoffs": "L2 extension WITH failure-domain containment (MAC-routing, no flood, per-site STP/FHRP) vs the "
+    "preference to avoid stretched L2 at all (L3 DCI is safer where the app allows).",
+  "trigger": "Designing DC interconnect where some VLANs must be L2-extended.",
+  "observable": "Not collected by an L1-L4 assessment; a DCI design.",
+  "recommended_action": "Extend only the VLANs that truly need it over a control-plane DCI (OTV or equivalent) "
+    "that advertises MACs, suppresses unknown-unicast + ARP, and filters BPDU/FHRP per site; deploy >= 2 edge "
+    "devices per site with per-VLAN AED election + a dedicated site-VLAN and unique site-ID.",
+  "alternatives": "VXLAN-EVPN Multi-Site (the KB's dc-multisite principle) for modern fabric DCI; prefer L3 DCI "
+    "(the KB's prefer-L3-DCI principle) wherever the application does not require stretched L2.",
+  "citation": "Cisco OTV DCI design (IS-IS overlay, AED, unknown-unicast suppression); web-verified.",
+ },
+ # ---- cloud-native / container / cloud connectivity ----
+ {
+  "id": "cloud-native-cni-overlay-vs-bgp-native-and-dataplane",
+  "domain": "cloud-native", "priority": "Medium", "engine_actionable": False,
+  "title": "Make pod-network reachability a deliberate overlay-vs-BGP-native choice with a managed IPAM plan, and pick the CNI data plane (eBPF vs iptables) by scale",
+  "design_intent": "Pods need an IP and a path off the node, and a Kubernetes cluster is an address SINK (a node "
+    "CIDR + large pod and Service CIDRs, often a /24 of pod space per node) that can exhaust enterprise RFC1918 "
+    "and overlap on-prem. The CNI offers an encapsulated OVERLAY (VXLAN / Calico IP-in-IP -- underlay sees only "
+    "node IPs) vs non-overlay BGP-NATIVE routing (pod IPs routable + inspectable, each node BGP-peers its ToR). "
+    "And the data plane (legacy kube-proxy iptables/IPVS rule chains vs an eBPF data plane like Cilium) decides "
+    "forwarding/Service-LB scale. Treat pod/Service CIDRs as managed, non-overlapping enterprise prefixes.",
+  "tradeoffs": "routability + visibility + scale (BGP-native + eBPF) vs simplicity/underlay-independence (overlay) "
+    "and the IPAM cost of routable pod space; eBPF scale vs kube-proxy familiarity.",
+  "trigger": "Designing Kubernetes cluster networking + pod IPAM.",
+  "observable": "Not collected by an L1-L4 assessment; a container-network design.",
+  "recommended_action": "Plan pod/Service CIDRs as coordinated, non-overlapping enterprise prefixes sized for "
+    "real scale; on a BGP-capable fabric prefer non-overlay BGP-native routing (peer each node to its ToR) so pod "
+    "IPs are routable/inspectable; default to an eBPF data plane (Cilium kube-proxy replacement) past a few "
+    "hundred Services or where DSR/socket-LB/identity policy is needed.",
+  "alternatives": "Encapsulated overlay (VXLAN/IP-in-IP) where the underlay cannot route pod space or "
+    "underlay-independence is wanted; kube-proxy/iptables for small clusters.",
+  "citation": "Kubernetes CNI design (Calico/Cilium, overlay vs BGP, eBPF vs iptables, IPAM); web-verified.",
+ },
+ {
+  "id": "cloud-native-identity-microsegmentation-networkpolicy",
+  "domain": "cloud-native", "priority": "Medium", "engine_actionable": False,
+  "title": "Segment pods by workload identity (labels), default-deny -- never by ephemeral pod IP/CIDR -- and front north-south with stable ingress/egress gateways",
+  "design_intent": "Pod IPs are ephemeral and reused, so an IP/CIDR ACL is stale the moment a pod reschedules. "
+    "Kubernetes NetworkPolicy (and CiliumNetworkPolicy) express allow rules in terms of pod/namespace LABELS "
+    "(workload identity), which the CNI resolves to current endpoints -- so segmentation follows the workload, not "
+    "the address. Default-deny per namespace and allow by identity. And because pod/node IPs churn, the rest of "
+    "the enterprise (firewalls, partners, DNS) must never depend on one: funnel north-south through stable ingress/"
+    "Gateway-API entry points and a pinned egress gateway.",
+  "tradeoffs": "security + stability (identity policy that follows the workload; stable N-S edges) vs the labelling/"
+    "policy discipline and CNI feature dependency.",
+  "trigger": "Designing east-west segmentation + north-south edges for a cluster.",
+  "observable": "Not collected by an L1-L4 assessment; a container-security design.",
+  "recommended_action": "Adopt namespace default-deny; author NetworkPolicy/CiliumNetworkPolicy by pod/namespace "
+    "labels (identity), reserving CIDR selectors only for genuinely external endpoints; expose inbound only via an "
+    "HA ingress/Gateway-API gateway and route compliance-sensitive egress through a pinned egress gateway.",
+  "alternatives": "Perimeter firewalling at the cluster edge only (no in-cluster micro-seg) for low-sensitivity "
+    "clusters; service-mesh authz (below) for L7 identity policy.",
+  "citation": "Kubernetes NetworkPolicy + CiliumNetworkPolicy + Gateway-API design; web-verified.",
+ },
+ {
+  "id": "cloud-native-service-mesh-ambient-vs-sidecar",
+  "domain": "cloud-native", "priority": "Medium", "engine_actionable": False,
+  "title": "Split the service mesh into always-on L4 mTLS and opt-in L7 (ambient ztunnel + waypoint), rather than an Envoy sidecar in every pod",
+  "design_intent": "A service mesh provides east-west mTLS identity, L7 traffic management and observability. The "
+    "classic model injects an Envoy SIDECAR into every pod -- per-pod CPU/memory, lifecycle coupling, restart-to-"
+    "enroll, a double hop. The 2024-25 shift is sidecarless: Istio AMBIENT mode separates a per-NODE ztunnel "
+    "(cluster-wide L4 identity/mTLS) from namespace-scoped WAYPOINT proxies added only where L7 is needed; Cilium's "
+    "eBPF mesh pushes identity-aware policy into the kernel and uses Envoy only when necessary -- both cut the "
+    "per-pod overhead and the operational coupling of sidecars.",
+  "tradeoffs": "lower overhead + simpler lifecycle (no per-pod proxy; L4 always-on, L7 opt-in) vs a newer "
+    "operating model and the need to scope waypoints deliberately.",
+  "trigger": "Adding a service mesh for east-west mTLS / L7 / observability.",
+  "observable": "Not collected by an L1-L4 assessment; a container-mesh design.",
+  "recommended_action": "Default new meshes to ambient: per-node ztunnel for cluster-wide L4 mTLS/identity, add "
+    "namespace-scoped waypoint proxies only for services needing L7 routing/retries/authz; or a Cilium eBPF mesh "
+    "where the CNI already provides it -- reserving sidecars for cases that genuinely require per-pod Envoy.",
+  "alternatives": "Sidecar mesh where mature tooling/per-pod isolation is required and the overhead is acceptable; "
+    "no mesh (NetworkPolicy + ingress) where L7 identity/observability is not needed.",
+  "citation": "Istio Ambient (ztunnel/waypoint) + Cilium Service Mesh (eBPF, sidecarless) design; web-verified.",
+ },
+ {
+  "id": "cloud-vpc-az-striped-tiers-transit-hub-and-central-egress",
+  "domain": "cloud-native", "priority": "Medium", "engine_actionable": False,
+  "title": "Design cloud VPC/VNet as AZ-striped subnet tiers, interconnect via a transit hub (not full-mesh peering), and centralize egress/inspection per-AZ",
+  "design_intent": "A cloud subnet is NOT an on-prem broadcast domain: it is Availability-Zone-scoped and purely a "
+    "routing+policy construct, so each functional tier (public/app/data) is replicated and STRIPED across >= 2-3 "
+    "AZs from a hierarchical, summarizable, non-overlapping IP plan (distinct CIDRs per on-prem/region/account). "
+    "VPC/VNet peering is non-transitive and O(n^2), so beyond a handful of networks interconnect via a TRANSIT "
+    "hub (Transit Gateway / Virtual WAN / hub-VNet) for transitive routing + segmentation. And rather than a "
+    "NAT+IGW + firewall in every spoke, centralize internet egress and inspection in a shared-services hub "
+    "deployed per-AZ -- one policy/logging chokepoint.",
+  "tradeoffs": "scalability + segmentation + single-inspection-point (transit hub, central egress) vs hub cost/"
+    "bandwidth + a deliberate per-AZ HA build; layered stateless-subnet-ACL under stateful-instance rules.",
+  "trigger": "Designing cloud (VPC/VNet) connectivity + segmentation + egress.",
+  "observable": "Not collected by an L1-L4 assessment; a cloud-network design.",
+  "recommended_action": "Draw a hierarchical non-overlapping IP plan first (distinct CIDRs per on-prem/region/"
+    "account); stripe each tier across >= 2-3 AZs; layer stateful instance rules under stateless subnet ACLs; "
+    "interconnect via a transit hub once VPC count/transitive needs appear; route spoke egress through a shared "
+    "egress/inspection VPC instantiated in every AZ; resolve hybrid private DNS via hub resolver endpoints.",
+  "alternatives": "Direct VPC peering for a handful of stable networks; per-spoke egress only for tiny isolated "
+    "workloads (accepting scattered policy/cost).",
+  "citation": "AWS/Azure cloud network design (Transit Gateway / vWAN, AZ subnets, centralized egress, Route 53/"
+    "DNS); web-verified.",
+ },
+ {
+  "id": "cloud-hybrid-dedicated-circuit-primary-vpn-backup-and-onramp",
+  "domain": "cloud-native", "priority": "High", "engine_actionable": False,
+  "title": "Connect on-prem to cloud over a dedicated circuit (Direct Connect/ExpressRoute) as primary with a diverse second path + BGP, IPsec VPN as backup; extend an existing SD-WAN via Cloud OnRamp",
+  "design_intent": "Internet IPsec VPN to the cloud is cheap and fast to stand up but inherits public-internet "
+    "jitter/loss and a throughput ceiling; a dedicated private circuit (AWS Direct Connect / Azure ExpressRoute) "
+    "gives predictable latency and higher, more consistent bandwidth -- but a single circuit/router/location is a "
+    "SPOF, so a production hybrid path needs a diverse second circuit (separate path/location, redundant edges, "
+    "dual VIFs) with BGP for automatic failover, and an IPsec VPN as cheap backup. And an enterprise that already "
+    "runs SD-WAN should extend it with Cloud OnRamp (automated peering to TGW/vWAN/GCP) rather than hand-build a "
+    "different connectivity+security model in each cloud.",
+  "tradeoffs": "availability + predictability (dedicated + diverse second path + BGP) vs cost (two circuits) -- and "
+    "reuse-of-fabric (SD-WAN Cloud OnRamp) vs per-cloud bespoke builds.",
+  "trigger": "Designing on-prem-to-cloud / hybrid connectivity.",
+  "observable": "Not collected by an L1-L4 assessment; a hybrid-cloud design.",
+  "recommended_action": "Make a dedicated private circuit the primary hybrid path, provision a second on diverse "
+    "paths/locations (redundant edges, dual VIFs) with BGP for failover, keep an IPsec VPN as backup; where an "
+    "SD-WAN fabric exists, extend it with Cloud OnRamp for Multicloud so segmentation + app-aware policy reach the "
+    "cloud uniformly.",
+  "alternatives": "IPsec VPN only for non-critical/low-bandwidth or rapid-standup; single circuit only for "
+    "dev/test where an outage is tolerable.",
+  "citation": "AWS Direct Connect / Azure ExpressRoute resiliency + Cisco SD-WAN Cloud OnRamp design; web-verified.",
+ },
+ # ---- IPv6 depth ----
+ {
+  "id": "ipv6-addressing-plan-nibble-hierarchy-64-boundary",
+  "domain": "ipv6", "priority": "High", "engine_actionable": False,
+  "title": "Build a deterministic nibble-aligned IPv6 plan from a /48, hold every host subnet at /64, and delegate downstream with DHCPv6-PD",
+  "design_intent": "An IPv6 plan is not a scarcity exercise -- with a /48 (65,536 /64s) per site you stop "
+    "conserving and instead encode TOPOLOGY into the address so the prefix is self-documenting and summarizable. "
+    "Fix every host/access subnet at /64 (SLAAC and many features require it), reserve nibble-aligned blocks per "
+    "region -> site -> role -> VLAN, and align summary boundaries to aggregation points. For automated downstream "
+    "hierarchy, DHCPv6 Prefix Delegation (RFC 8415) hands a sub-prefix (e.g. /56 or /60 from the site /48) to "
+    "downstream routers, keeping delegation boundaries nibble-aligned.",
+  "tradeoffs": "manageability + summarizability (self-documenting, hierarchical, /64-uniform) vs the discipline of "
+    "designing the hierarchy up front (and not 'sub-/64' to save space, which breaks SLAAC).",
+  "trigger": "Designing the IPv6 addressing plan.",
+  "observable": "Not collected by an L1-L4 assessment; an IPv6 design (the KB's single ipv6 principle covers "
+    "transition, not the addressing plan).",
+  "recommended_action": "Obtain a /48 per site (/44-/40 for large multi-region orgs); reserve nibble-aligned "
+    "blocks per region->site->role->VLAN; allocate host/access subnets as /64 only; align summary boundaries to "
+    "aggregation; use DHCPv6-PD for downstream sub-prefix delegation.",
+  "alternatives": "Provider-assigned addressing where PI space isn't available (design for renumbering); ULA as a "
+    "stable internal adjunct (below), never as IPv6 'private NAT'.",
+  "citation": "IPv6 addressing architecture (RFC 4291) + DHCPv6-PD (RFC 8415); web-verified.",
+ },
+ {
+  "id": "ipv6-host-config-slaac-vs-dhcpv6-and-gua-not-nat",
+  "domain": "ipv6", "priority": "High", "engine_actionable": False,
+  "title": "Pick the host-config model per RA M/O flags (design for the Android no-DHCPv6 reality); default to GUA end-to-end, ULA only as a stable adjunct -- never NAT",
+  "design_intent": "How hosts get addresses is governed by the RA M (managed) and O (other-config) flags plus the "
+    "per-prefix A (autonomous) flag. SLAAC (A=1, M=0) is universal and serverless but yields no central record/"
+    "reservation; stateful DHCPv6 (M=1) gives control but ANDROID DOES NOT SUPPORT DHCPv6 -- so on mixed-OS/BYOD/"
+    "wireless segments you must use SLAAC + stateless DHCPv6 (O=1) for DNS, reserving stateful DHCPv6 for tightly-"
+    "managed Android-free segments. And IPv6 ends address scarcity, so the IPv4 reflex of 'private space + NAT' is "
+    "an anti-pattern: assign Global Unicast end-to-end and enforce reachability with firewalls/ACLs, adding ULA "
+    "(RFC 4193) only as a stable internal adjunct for renumber-independence.",
+  "tradeoffs": "compatibility (SLAAC works everywhere incl. Android) vs central control (stateful DHCPv6 records/"
+    "reservations but no Android); security-via-firewall (GUA + stateful ACL) vs the false comfort of NAT.",
+  "trigger": "Designing IPv6 host addressing + the GUA/ULA model.",
+  "observable": "Not collected by an L1-L4 assessment; an IPv6 design.",
+  "recommended_action": "For mixed-OS/BYOD/wireless use SLAAC (A=1) + stateless DHCPv6 (O=1) for DNS; reserve "
+    "stateful DHCPv6 (M=1) for managed Android-free segments; default to GUA end-to-end secured by stateful "
+    "firewall/ACLs (no NAT); add ULA only where renumber-independence / hard-offline-internal is required.",
+  "alternatives": "Stateful DHCPv6 everywhere only on an Android-free managed estate; NPTv6 (prefix translation, "
+    "not NAT44-style) only for specific multihoming/renumber cases.",
+  "citation": "IPv6 SLAAC (RFC 4862) / DHCPv6 (RFC 8415) / ULA (RFC 4193) design; web-verified (Android no-DHCPv6).",
+ },
+ {
+  "id": "ipv6-transition-dualstack-then-ipv6-mostly-translation",
+  "domain": "ipv6", "priority": "High", "engine_actionable": False,
+  "title": "Choose the coexistence model deliberately: dual-stack to de-risk, then IPv6-mostly (NAT64/DNS64/464XLAT, PREF64, DHCPv4 Option 108) to retire IPv4 at the edge",
+  "design_intent": "Coexistence is a spectrum, not a switch. Dual-stack (v4 and v6 in parallel) is the lowest-risk "
+    "first step but DOUBLES the operational surface (two tables, two ACL sets, two failure modes) and never "
+    "reduces IPv4 dependence. The modern endpoint is to move user/wireless segments to IPv6-MOSTLY: deploy NAT64 + "
+    "DNS64, advertise PREF64 in RAs (don't rely on DNS64 alone), and emit DHCPv4 Option 108 so CLAT-capable "
+    "clients (464XLAT) go single-stack IPv6 while legacy IPv4-only apps still work via the translator -- shrinking "
+    "the IPv4 footprint to the translator.",
+  "tradeoffs": "de-risking (dual-stack first) vs operational doubling; IPv6-mostly retires edge IPv4 "
+    "(simplification, address relief) at the cost of a translation tier + its correctness (PREF64, Option 108).",
+  "trigger": "Planning the IPv4->IPv6 coexistence/transition.",
+  "observable": "Not collected by an L1-L4 assessment; an IPv6 transition design (extends the KB's dual-stack/6VPE principle).",
+  "recommended_action": "Start dual-stack to de-risk; then move user/wireless segments to IPv6-mostly with NAT64+"
+    "DNS64, PREF64 advertised in RAs, and DHCPv4 Option 108 for CLAT/464XLAT clients; keep IPv4 only where "
+    "dependencies require it, behind the translator.",
+  "alternatives": "Stay dual-stack where translation can't be validated for all apps; carry IPv6 over MPLS with "
+    "6VPE/6PE (the existing principle) on an IPv4/MPLS core.",
+  "citation": "IPv6 transition (NAT64/DNS64 RFC 6146/6147, 464XLAT RFC 6877, PREF64 RFC 8781, DHCP Option 108 RFC "
+    "8925); web-verified.",
+ },
+ {
+  "id": "ipv6-first-hop-security-suite-at-access-edge",
+  "domain": "ipv6", "priority": "High", "engine_actionable": False,
+  "title": "Enable the full IPv6 first-hop security suite at the access edge -- RA-Guard, DHCPv6-Guard, ND inspection/device-tracking, IPv6 Source Guard",
+  "design_intent": "IPv6 Neighbor Discovery (RFC 4861) is as trust-on-the-wire as IPv4 ARP: a single rogue or "
+    "fat-fingered Router Advertisement can hijack the default gateway for a whole segment, and spoofed ND/DHCPv6 "
+    "enables MITM and address theft. First-hop security is the L2-edge countermeasure suite -- and absent it, an "
+    "IPv6 deployment is wide open at the access layer (and even an 'IPv4-only' network with IPv6-capable hosts is "
+    "exposed to rogue-RA attacks).",
+  "tradeoffs": "security (gateway-hijack / ND-spoof / address-theft prevention) vs the access-port configuration "
+    "discipline (mark only real router/server uplinks trusted) and platform feature support.",
+  "trigger": "Hardening the access edge for IPv6 (or IPv6-capable) hosts.",
+  "observable": "Not collected by an L1-L4 assessment; an IPv6 security design.",
+  "recommended_action": "On every host-facing access port enable RA-Guard + DHCPv6-Guard (only real uplinks "
+    "trusted), enable IPv6 ND inspection / device-tracking to build the binding table, then layer IPv6 Source "
+    "Guard off that table; apply even on IPv4-only segments where hosts are IPv6-capable (block rogue RAs).",
+  "alternatives": "Disable IPv6 on truly IPv6-free access (rarely clean -- hosts often still process RAs); SEND "
+    "(cryptographic ND) where supported and required.",
+  "citation": "Cisco IPv6 First-Hop Security (RA-Guard, DHCPv6-Guard, ND inspection, Source Guard); web-verified.",
+ },
+ # ---- ACI-advanced (depth beyond wave-1) ----
+ {
+  "id": "aci-fabric-golf-l3out-at-spine-for-wan-scale",
+  "domain": "aci-fabric", "priority": "Medium", "engine_actionable": False,
+  "title": "Move the L3Out to the spine (GOLF) when per-tenant border-leaf WAN scale runs out -- the WAN edge becomes a logical border-leaf via MP-BGP EVPN + VXLAN",
+  "design_intent": "When per-tenant L3Outs at border leaves no longer scale (one BGP session + one config block "
+    "per VRF, multiplied by tenant count), relocate the fabric-to-WAN handoff to the spine using L3 EVPN 'GOLF': "
+    "the spines hold a single MP-BGP EVPN session (Type-5 IP-Prefix NLRI) + VXLAN to WAN-edge routers acting as "
+    "logical border-leaves, with OpFlex automating per-VRF provisioning -- so adding a tenant no longer adds "
+    "border-leaf config. For a stretched (Multi-Pod) fabric with GOLF, ingress/egress path symmetry must be "
+    "engineered (host-routes inbound, local-GOLF egress preference) or traffic hairpins across the inter-pod network.",
+  "tradeoffs": "scalability (one spine EVPN session replaces N per-tenant border-leaf L3Outs) vs added GOLF/EVPN "
+    "complexity at the spine + the path-symmetry engineering on a stretched fabric.",
+  "trigger": "Designing ACI WAN connectivity where border-leaf L3Out scale is the constraint.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI WAN design (depth beyond wave-1 L3Out principles).",
+  "recommended_action": "Where border-leaf L3Out scale is the limit, use GOLF (spine MP-BGP EVPN Type-5 + VXLAN to "
+    "WAN-edge logical border-leaves, OpFlex-automated per-VRF); on a stretched fabric engineer ingress/egress "
+    "symmetry (advertise fabric host-routes inbound, prefer the local GOLF for egress, AS-path tuning per pod).",
+  "alternatives": "Per-tenant border-leaf L3Outs (the wave-1 model) where tenant/VRF count is modest; standalone "
+    "NX-OS VXLAN-EVPN border for a non-ACI fabric.",
+  "citation": "Cisco ACI GOLF / Layer-3 EVPN WAN design; web-verified.",
+ },
+ {
+  "id": "aci-fabric-vmm-domain-virtual-leaf-integration",
+  "domain": "aci-fabric", "priority": "Medium", "engine_actionable": False,
+  "title": "Extend the fabric policy edge into the hypervisor with a VMM domain (APIC-driven DVS / AVE, OpFlex policy) and choose the micro-seg enforcement locus deliberately",
+  "design_intent": "The fabric's policy edge should extend into the hypervisor as a controller-managed virtual "
+    "leaf, not stop at the physical ToR. A VMM (Virtual Machine Manager) domain pairs APIC with vCenter/OpenStack/"
+    "K8s so creating the domain auto-provisions the virtual switch and pushes per-EPG port-groups/encapsulation, "
+    "with OpFlex (not CDP/LLDP) carrying policy + endpoint state. ACI Virtual Edge (AVE) goes further -- a virtual "
+    "leaf that can do local switching and stateful intra-host firewalling inside the hypervisor. The design choice "
+    "is the ENFORCEMENT LOCUS: hypervisor local-switching filters east-west/intra-EPG on the host (efficient, "
+    "workload-proximate) vs hairpinning to the physical leaf -- and enabling the stateful hypervisor firewall "
+    "couples live workload mobility (vMotion) to an inter-instance connection-state-sync path that must be designed.",
+  "tradeoffs": "policy consistency + efficiency (controller-driven vSwitch, host-local enforcement) vs the VMM/"
+    "OpFlex integration + (for stateful firewalling) a designed state-replication path that couples to mobility.",
+  "trigger": "Designing ACI integration with a virtualization platform / hypervisor micro-segmentation.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI VMM design (beyond wave-1).",
+  "recommended_action": "Integrate a VMM domain so APIC drives the DVS and pushes per-EPG port-groups, with OpFlex "
+    "as the policy/endpoint plane; use AVE/virtual-leaf local switching where host-proximate east-west filtering "
+    "is wanted; before enabling the stateful hypervisor firewall, design + monitor the inter-instance state-sync "
+    "path that vMotion depends on.",
+  "alternatives": "Physical-leaf-only enforcement (hairpin) where hypervisor integration is not available/desired; "
+    "standalone NX-OS-EVPN + host networking outside ACI.",
+  "citation": "Cisco ACI VMM domain / AVE / micro-segmentation design; web-verified.",
+ },
+ {
+  "id": "aci-policy-useg-attribute-microsegmentation",
+  "domain": "aci-policy", "priority": "Medium", "engine_actionable": False,
+  "title": "Reclassify endpoints below the base EPG with micro-EPGs (uSeg) by IP/MAC/VM-attribute, plus intra-EPG isolation -- knowing IP-uSeg only acts on ROUTED traffic",
+  "design_intent": "When a base EPG (a VLAN/subnet of endpoints) is too coarse for the security posture, ACI carves "
+    "a finer security group -- a micro-segmented EPG (uSeg/µEPG) -- by matching endpoint ATTRIBUTES (IP/MAC/VM-"
+    "name/attribute) rather than where they plug in, without re-IP or re-VLAN. Two design facts: IP-based µEPG "
+    "classification is a leaf ROUTING-path lookup, so same-Bridge-Domain same-subnet BRIDGED flows bypass it (make "
+    "endpoints cross-subnet, or accept same-subnet pairs aren't enforced); and where overlapping attribute "
+    "criteria can match one endpoint, set explicit match precedence for determinism. To stop east-west inside ONE "
+    "group, use intra-EPG isolation (deny-all) rather than modelling per-endpoint EPGs.",
+  "tradeoffs": "security granularity (attribute-based, location-independent, no re-IP) vs complexity + the routed-"
+    "only/precedence gotchas; intra-EPG isolation vs per-endpoint EPG sprawl.",
+  "trigger": "Designing fine-grained ACI segmentation beyond app-tier EPG/contract whitelisting.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI micro-seg design (beyond wave-1 whitelist).",
+  "recommended_action": "Reserve plain EPG+contract whitelisting for app-tier/zone separation; escalate to a µEPG "
+    "only where attribute-based classification is genuinely needed; for IP-µEPG ensure cross-subnet (routed) "
+    "flows + enable unicast routing/SVI; set explicit attribute precedence; use intra-EPG isolation for same-role "
+    "mutual isolation.",
+  "alternatives": "Plain EPG/contract whitelisting (wave-1) for most cases; SGT/TrustSec micro-seg on a non-ACI "
+    "campus/fabric.",
+  "citation": "Cisco ACI micro-segmentation / uSeg-EPG design; web-verified.",
+ },
+ {
+  "id": "aci-services-service-graph-device-modes-and-management",
+  "domain": "aci-services", "priority": "Medium", "engine_actionable": False,
+  "title": "Pick the service-graph device mode (GoTo routed / GoThrough transparent / one-arm) by the flow it enforces, and choose managed vs unmanaged by who owns L4-L7 config",
+  "design_intent": "The service-graph function node's device MODE dictates fabric behaviour and constrains "
+    "insertion: GoTo (routed/L3) needs unicast routing + the fabric to learn the device's far-side route (static/"
+    "OSPF/iBGP) and is the prerequisite when PBR or route-peering is used; GoThrough (transparent/L2) is for "
+    "bump-in-the-wire; one-arm pairs with PBR. Separately, decide up front whether APIC MANAGES the appliance "
+    "(managed/service-policy mode, via a vendor device package that pushes FW/ADC config at graph instantiation) "
+    "or only STITCHES the fabric (unmanaged/network-policy) -- default to unmanaged when a separate team/"
+    "orchestrator owns the L4-L7 device or no maintained device package exists.",
+  "tradeoffs": "correct insertion + single-pane control (right mode; managed) vs flexibility/ownership (unmanaged "
+    "lets the security/LB team keep their tooling; managed needs a maintained device package).",
+  "trigger": "Inserting an L4-L7 service via an ACI service graph.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI service-insertion design (depth beyond wave-1 PBR).",
+  "recommended_action": "Use GoTo (routed) as the default + the prerequisite for PBR/route-peering (enable unicast "
+    "routing, ensure the fabric knows the far-side subnet); GoThrough only for transparent bump-in-the-wire; "
+    "default to unmanaged (network-policy) mode unless single-pane APIC control of the appliance is wanted AND a "
+    "maintained device package exists.",
+  "alternatives": "Managed (service-policy) mode for single-pane control where a device package is maintained; a "
+    "copy service (not redirect) for passive IDS/analytics taps off the data path.",
+  "citation": "Cisco ACI L4-L7 service-graph design (device modes, managed/unmanaged); web-verified.",
+ },
+ {
+  "id": "aci-fabric-shared-services-inter-vrf-route-leaking-rules",
+  "domain": "aci-fabric", "priority": "Low", "engine_actionable": False,
+  "title": "Build ACI inter-VRF shared services to the leaking rules: provider subnet under the EPG, consumer under the BD, contract scope global, conserve class-IDs",
+  "design_intent": "Inter-VRF (shared-services / shared-L3Out) communication in ACI is route-leaking driven by "
+    "contracts, and its rules are non-obvious and easy to get wrong: to leak, a subnet must be flagged 'shared "
+    "between VRFs', the provider subnet is defined under the EPG (not just the BD) while the consumer subnet sits "
+    "under the BD, the contract scope must be Global, and overlapping subnets break leaking -- so per-EPG carvings "
+    "must be non-overlapping. Designing to these rules (and conserving the finite global class-IDs that shared "
+    "contracts consume) keeps a shared-services VRF maintainable.",
+  "tradeoffs": "controlled cross-VRF shared services (DNS/AD/backup reachable from many tenant VRFs) vs the "
+    "leaking-rule discipline + finite global class-ID budget.",
+  "trigger": "Designing cross-VRF shared services / shared-L3Out on ACI.",
+  "observable": "Not collected by an L1-L4 assessment; an ACI shared-services design (beyond wave-1).",
+  "recommended_action": "Flag the provider subnet 'shared' under the EPG with non-overlapping per-EPG carvings; "
+    "put the consumer subnet under the BD; set contract scope Global (or exported); keep leaked subnets non-"
+    "overlapping; budget the global class-IDs shared contracts consume.",
+  "alternatives": "A fusion router / external firewall for inter-VRF leaking at scale (the wave-1 inter-VRF-via-"
+    "fusion pattern); keep services per-VRF where sharing isn't required.",
+  "citation": "Cisco ACI shared-services / inter-VRF route-leaking design; web-verified.",
+ },
+]
+DOCTRINE.extend(_MEGA_CORPUS_ADDENDUM)
+
+
 # ---------------------------------------------------------------------------- coverage honesty
 # `engine_actionable` MUST mean "design_advisor.compute_design_blueprint emits a decision for this
 # principle's observed trigger". The following are valuable doctrine the HLD / chat can still cite,
