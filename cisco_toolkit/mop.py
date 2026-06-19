@@ -73,7 +73,10 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
     non-empty sequencing/scenario, deduped validation checks. Endpoints are APPORTIONED to this wave's
     switch-share of each group -- a sub-wave is a SLICE, so it must not inherit the parent group's full
     endpoint total. Single source of truth -- reads the engine's records, never recomputes them."""
-    rank = {"blocked": 0, "at-risk": 1, "caution": 1, "ready-with-actions": 2, "ready": 3}
+    # Rank the engine's ACTUAL readiness vocabulary -- analyze.compute_migration_readiness emits exactly
+    # {"NOT READY","CAUTION","READY"}. Lower = worse, so the reduce below keeps the worst verdict; an
+    # unknown value defaults high (least-worst) and never masks a real NOT READY.
+    rank = {"not ready": 0, "caution": 1, "ready": 2}
 
     def _i(x):
         try:
@@ -89,8 +92,8 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         gsw = rr.get("switches") or []
         share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
         r["endpoints"] += round(_i(rr.get("endpoints")) * share)
-        r["n_fail"] += _i(rr.get("n_fail"))
-        r["n_warn"] += _i(rr.get("n_warn"))
+        r["n_fail"] += round(_i(rr.get("n_fail")) * share)   # a slice carries its switch-share of the group's
+        r["n_warn"] += round(_i(rr.get("n_warn")) * share)   # blocking/warning checks, not the whole group's
         rd = rr.get("readiness")
         if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
             worst = rd
@@ -235,7 +238,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         rem, pl = _blockers_for(switches)
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
                         r.get("readiness", "—"), seq.get("sequence", "—"), blast, len(rem) + len(pl)))
-    table(["Wave", "Devices", "Endpoints", "Readiness", "Strategy", "Max blast", "Blockers"],
+    table(["Wave", "Devices", "Endpoint MACs", "Readiness", "Strategy", "Max blast", "Blockers"],
           ov_rows, widths=[1.5, 0.8, 1.0, 1.2, 1.5, 0.9, 0.9])
 
     fleet_rec = (snap.get("migration_scenarios") or {}).get("fleet_recommendation")
@@ -294,21 +297,43 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         blast = max((int(fi_by_host.get(s, {}).get("stranded") or 0) for s in switches), default=0)
         verdict = r.get("readiness", "—")
 
+        # The constituent move-groups this wave covers (a coupled-subwave maps to ONE group; an
+        # independent-batch may bundle MANY). Each keeps its own strategy/rationale/rollback -- surface
+        # every one, never just the first (the joiner picks a representative seq/scen, but the document
+        # must not silently drop the siblings').
+        wave_groups = [(g, scen_by_group.get(g) or {}, seq_by_group.get(g) or {}) for g in _gnames]
+        wave_groups = [(g, sc, sq) for g, sc, sq in wave_groups if sc or sq]
+        multi = len(wave_groups) > 1
+        if multi:
+            strat_cell = "; ".join(dict.fromkeys(
+                (sq.get("sequence") or sc.get("recommended_scenario") or "").strip()
+                for _g, sc, sq in wave_groups if (sq.get("sequence") or sc.get("recommended_scenario")))) or "—"
+        else:
+            strat_cell = seq.get("sequence") or scen.get("recommended_scenario") or "—"
+
         doc.add_heading(f"{wi}. MOP — {name}", level=1)
 
         # 2.x.1 scope
         doc.add_heading(f"{wi}.1 Scope & risk", level=2)
         table(["Field", "Value"], [
             ("Devices in scope", ", ".join(switches) or "—"),
-            ("Endpoints affected", r.get("endpoints", "—")),
+            ("Endpoint MACs (apportioned)", r.get("endpoints", "—")),
             ("Readiness verdict", verdict),
             ("Blocking / warning checks", f"{r.get('n_fail', 0)} / {r.get('n_warn', 0)}"),
-            ("Cutover strategy", seq.get("sequence", scen.get("recommended_scenario", "—"))),
+            ("Cutover strategy", strat_cell),
             ("Max blast radius (endpoints stranded if a device is lost mid-move)", blast),
             ("Maintenance window", "<DATE> <START>–<END>  ·  owner <NAME>  ·  approver <NAME>"),
             ("Rollback decision time", "<HH:MM> — if validation has not passed by this time, roll back"),
         ], widths=[2.6, 4.2])
-        if scen.get("rationale"):
+        if multi:
+            doc.add_paragraph(
+                "This wave bundles several INDEPENDENT move-groups (they share no VLANs, so they may be "
+                "cut in any order within the window — but each must pass its own validation before the "
+                "next). Each keeps its own strategy and rollback:")
+            table(["Move-group", "Strategy", "Why"],
+                  [(g, (sq.get("sequence") or sc.get("recommended_scenario") or "—"),
+                    sc.get("rationale") or "—") for g, sc, sq in wave_groups], widths=[1.4, 1.8, 3.6])
+        elif scen.get("rationale"):
             _label_run(doc.add_paragraph(), "Why this strategy:", scen.get("rationale"))
         if _kind == "coupled-subwave":
             _label_run(doc.add_paragraph(), "Shared-L2 coordination (coupled sub-wave):",
@@ -475,7 +500,13 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         rb = [("Declare rollback in the war room and record the trigger (which validation check "
                "failed).",
                "the trigger and time are recorded in the change log.")]
-        if playbook.get("rollback"):
+        if multi:
+            for g, sc, _sq in wave_groups:
+                rbk = (sc.get("playbook") or {}).get("rollback")
+                if rbk:
+                    rb.append((f"{g}: " + rbk.rstrip(". ") + ".",
+                               "this group's endpoints are back on their legacy path."))
+        elif playbook.get("rollback"):
             rb.append("Strategy-specific: " + playbook["rollback"].rstrip(". ") + ".")
         if _kind == "coupled-subwave":
             rb.append(("Coupled sub-wave: rolling back this sub-wave must NOT strand a sibling sub-wave's "

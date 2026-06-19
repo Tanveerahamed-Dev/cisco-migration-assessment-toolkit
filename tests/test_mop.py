@@ -266,3 +266,66 @@ def test_mop_reads_wave_plan_not_recompute(tmp_path):
     assert any("Wave 1 (independent-batch)" in t for t in h1) and any("Wave 2 (coupled-subwave)" in t for t in h1)
     assert not any("MOP — Group 1" in t for t in h1)             # not recomputed from move_groups
     assert "distA, acc1" in _all_text(d)                          # wave 1 co-locates distA+acc1 (impossible from a move-group recompute)
+
+
+def test_mop_join_worst_readiness_uses_real_vocabulary():
+    """REVIEW #2: the worst-verdict reducer must rank the engine's ACTUAL readiness values
+    (NOT READY worse than CAUTION worse than READY). The old rank map keyed on a fictional
+    vocabulary so 'NOT READY' fell to the default and lost to 'READY'/'CAUTION'."""
+    from cisco_toolkit.mop import _join_group_records
+    base = {"switches": ["x"], "endpoints": 10, "n_fail": 0, "n_warn": 0}
+    rbg = {"G1": {**base, "group": "G1", "switches": ["a"], "readiness": "NOT READY", "n_fail": 1},
+           "G2": {**base, "group": "G2", "switches": ["b"], "readiness": "READY"}}
+    r, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg, {}, {}, {})
+    assert r["readiness"] == "NOT READY", r["readiness"]            # NOT 'READY'
+    rbg2 = {"G1": rbg["G1"], "G2": {**rbg["G2"], "readiness": "CAUTION"}}
+    r2, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg2, {}, {}, {})
+    assert r2["readiness"] == "NOT READY", r2["readiness"]          # NOT READY beats CAUTION
+    rbg3 = {"G1": {**rbg["G1"], "readiness": "READY", "n_fail": 0}, "G2": {**rbg["G2"], "readiness": "CAUTION"}}
+    r3, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg3, {}, {}, {})
+    assert r3["readiness"] == "CAUTION", r3["readiness"]            # CAUTION beats READY
+    rbg4 = {"G1": {**rbg["G1"], "readiness": "READY", "n_fail": 0}, "G2": {**rbg["G2"], "readiness": "READY"}}
+    r4, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg4, {}, {}, {})
+    assert r4["readiness"] == "READY", r4["readiness"]              # READY only when ALL ready
+
+
+def test_mop_join_apportions_fail_warn_to_subwave():
+    """REVIEW #1: n_fail/n_warn, like endpoints, must apportion to a coupled sub-wave's switch share —
+    a 1-of-4 slice must not reprint the parent group's full blocking/warning counts."""
+    from cisco_toolkit.mop import _join_group_records
+    rbg = {"G1": {"group": "G1", "switches": ["a", "b", "c", "d"], "endpoints": 400,
+                  "n_fail": 4, "n_warn": 8, "readiness": "NOT READY"}}
+    r1, *_ = _join_group_records(["G1"], ["a"], rbg, {}, {}, {})            # 1 of 4
+    assert (r1["n_fail"], r1["n_warn"]) == (1, 2), (r1["n_fail"], r1["n_warn"])
+    r4, *_ = _join_group_records(["G1"], ["a", "b", "c", "d"], rbg, {}, {}, {})
+    assert (r4["n_fail"], r4["n_warn"]) == (4, 8), (r4["n_fail"], r4["n_warn"])   # full coverage -> full
+
+
+def test_mop_batch_wave_surfaces_all_group_strategies_and_rollbacks(tmp_path):
+    """REVIEW #4: an independent-batch wave bundling several move-groups must surface EVERY group's
+    cutover strategy + rationale + rollback, not only the first non-empty group's (the old joiner kept
+    only the first, silently dropping the rest)."""
+    snap = _snap()
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "waves": [{"wave": 1, "kind": "independent-batch", "n_switches": 3,
+                   "switches": ["distA", "distB", "acc1"], "source_groups": [0, 1]}],
+        "n_waves": 1, "wave_cap": 40, "n_move_groups": 2, "largest_group": 2,
+        "n_subdivided_groups": 0, "note": "x"}}}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    # Group 2's rationale + rollback (previously DROPPED because Group 1 was the first non-empty record)
+    assert "single-homed access edge" in text                 # Group 2 rationale
+    assert "re-cable to legacy port" in text                  # Group 2 rollback
+    # Group 1's are still present
+    assert "dual-homed — build beside" in text                # Group 1 rationale
+    assert "fail back to the legacy leg" in text              # Group 1 rollback
+
+
+def test_mop_endpoint_figure_labeled_as_mac_sum(tmp_path):
+    """REVIEW #14: the per-wave endpoint figure is an apportioned per-switch-MAC sum; label it so
+    (consistent with excel.py's B3 relabel), not the bare 'Endpoints'."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Endpoint MACs" in text

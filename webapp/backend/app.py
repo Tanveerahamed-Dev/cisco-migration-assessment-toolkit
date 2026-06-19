@@ -334,7 +334,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
             snap = store.get_snapshot(snapshot_id)
             if snap is None:
                 raise HTTPException(404, "Snapshot not found")
-            bp = compute_design_blueprint(snap)
+            # honour the register the CLI published with the snapshot so the fallback recompute is the SAME
+            # right-sized blueprint the stored section would have been (not an un-right-sized one)
+            bp = compute_design_blueprint(snap, snap.get("requirements_register") or {})
         return bp
 
     @app.post("/api/snapshots/{snapshot_id}/design")
@@ -367,13 +369,32 @@ def create_app(db_path: str | None = None) -> FastAPI:
         across three cutover stages: pre-cutover → post-cutover-functional → post-cutover-operational.
         The right-sizing logic lives only in Python — the dashboard never re-derives test items."""
         from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu
+        nrfu = store.get_snapshot_section(snapshot_id, "design_nrfu")   # canonical, published by the engine
+        if isinstance(nrfu, dict) and isinstance(nrfu.get("items"), list):
+            return nrfu
         bp = store.get_snapshot_section(snapshot_id, "design_blueprint")
         if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
             snap = store.get_snapshot(snapshot_id)
             if snap is None:
                 raise HTTPException(404, "Snapshot not found")
-            bp = compute_design_blueprint(snap)
+            bp = compute_design_blueprint(snap, snap.get("requirements_register") or {})
         return compute_design_nrfu(bp)
+
+    @app.post("/api/snapshots/{snapshot_id}/design/nrfu")
+    def design_nrfu_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """Right-size the NRFU/ATP checklist to a requirements register (or {"interview_answers": {...}}),
+        so the dashboard NRFU tab reflects right-sizing rather than the baseline. SSOT: derived server-side
+        from the SAME overlay blueprint POST /design returns (compute_design_blueprint -> compute_design_nrfu)
+        — the dashboard never re-derives test items or their phases."""
+        from cisco_toolkit.design_advisor import (compute_design_blueprint, compute_design_nrfu,
+                                                  requirements_from_interview)
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        body = requirements or {}
+        register = (requirements_from_interview(body["interview_answers"])
+                    if isinstance(body.get("interview_answers"), dict) else body)
+        return compute_design_nrfu(compute_design_blueprint(snap, register or {}))
 
     # -- execution runs (war room) ------------------------------------------
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:

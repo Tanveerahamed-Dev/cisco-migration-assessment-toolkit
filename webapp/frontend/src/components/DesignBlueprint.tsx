@@ -9,7 +9,7 @@
    - Design-driven NRFU panel: GET /design/nrfu → phased acceptance-test checklist from recommended
      decisions, each traceable to the CCDE principle and the specific devices to verify.
    - n_census_vlans disclosure when the IP plan is in needs-requirement state. */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, DesignBlueprint, DesignDecision, DesignNrfu, DesignNrfuItem, DesignTargetState } from "../api";
 import { ErrorBox, Loading, useAsync } from "./ui";
 
@@ -88,8 +88,13 @@ function NrfuItem({ item }: { item: DesignNrfuItem }) {
   );
 }
 
-function NrfuPanel({ snapId }: { snapId: number }) {
-  const { data, error, loading } = useAsync(() => api.designNrfu(snapId), [snapId]);
+function NrfuPanel({ snapId, register }: { snapId: number; register: Record<string, unknown> | null }) {
+  // Right-size the checklist server-side when a requirements register is applied, else the baseline —
+  // never re-derive NRFU items or their phases in JS (one source of truth: the Python engine).
+  const { data, error, loading } = useAsync(
+    () => (register ? api.designNrfuOverlay(snapId, register) : api.designNrfu(snapId)),
+    [snapId, register]
+  );
   if (loading) return <Loading />;
   if (error) return <ErrorBox msg={error} />;
   const nrfu = data as DesignNrfu;
@@ -220,6 +225,15 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const [addrSpace, setAddrSpace] = useState("");
   const [vlanZones, setVlanZones] = useState("");
   const [zonesErr, setZonesErr] = useState("");
+  const [register, setRegister] = useState<Record<string, unknown> | null>(null);
+
+  // Reset the overlay + form when the snapshot changes — otherwise snapshot A's right-sized blueprint and
+  // requirements leak onto snapshot B (the data re-fetches via useAsync, but `over`/`register`/fields do not).
+  useEffect(() => {
+    setOver(null); setRegister(null); setTab("blueprint");
+    setTier(""); setApps(""); setConv(""); setGrowth("");
+    setDataClass(""); setBudget(false); setAddrSpace(""); setVlanZones(""); setZonesErr("");
+  }, [snapId]);
 
   if (loading) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><Loading /></div>;
   if (error) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><ErrorBox msg={error} /></div>;
@@ -233,7 +247,10 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     const req: Record<string, unknown> = {};
     if (tier) req.availability_tier = tier;
     if (apps.trim()) req.critical_apps = apps.split(",").map((x) => x.trim()).filter(Boolean);
-    if (conv.trim()) req.convergence_budget_ms = Number(conv) || conv;
+    if (conv.trim()) {
+      const n = Number(conv);                       // keep a legitimate 0; fall back to raw only if non-numeric
+      req.convergence_budget_ms = Number.isFinite(n) ? n : conv.trim();
+    }
     if (growth.trim()) req.growth_horizon = growth.trim();
     if (dataClass.trim()) req.data_classification = dataClass.split(",").map((x) => x.trim()).filter(Boolean);
     if (budget) req.constraints = ["budget-limited"];
@@ -249,6 +266,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     setBusy(true);
     try {
       setOver(await api.designOverlay(snapId, req));
+      setRegister(req);                              // drives the NRFU panel to the right-sized checklist
     } catch {
       /* keep the base blueprint on error */
     } finally {
@@ -256,7 +274,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     }
   };
   const clearReqs = () => {
-    setOver(null); setTier(""); setApps(""); setConv(""); setGrowth("");
+    setOver(null); setRegister(null); setTier(""); setApps(""); setConv(""); setGrowth("");
     setDataClass(""); setBudget(false); setAddrSpace(""); setVlanZones(""); setZonesErr("");
   };
 
@@ -375,7 +393,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
             post-cutover-functional → post-cutover-operational. Each item is traceable to the CCDE principle
             and the specific devices to verify. Independent of the design authors (proposer ≠ verifier).
           </div>
-          <NrfuPanel snapId={snapId} />
+          <NrfuPanel snapId={snapId} register={register} />
         </div>
       )}
     </div>

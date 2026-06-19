@@ -89,7 +89,6 @@ def _signals(snap):
     links = _as_list(snap.get("link_centrality"))
     bridges = [x for x in links if x.get("is_bridge")]
     sig["bridges"] = len(bridges)
-    sig["bridge_links"] = [f"{x.get('a_host')}<->{x.get('b_host')}" for x in bridges[:12]]
     bh = []
     for x in bridges:
         for h in (x.get("a_host"), x.get("b_host")):
@@ -101,9 +100,13 @@ def _signals(snap):
     sig["nobackup_high"] = sum(1 for x in fi if x.get("severity") == "High" and not _as_int(x.get("backup")))
 
     life = _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
-    sig["eol"] = sum(1 for d in life if str(d.get("band", "")).lower().startswith("past"))
+    # Past-LDoS = unsupported (no TAC / no fixes) -> "eol"/replace. Past-EoS (past end-of-SALE but STILL
+    # supported until LDoS -- analyze emits both bands) is DISTINCT and refresh-class; matching the band
+    # exactly (not startswith "past") keeps supported gear from being mislabelled unsupported/past-LDoS.
+    sig["eol"] = sum(1 for d in life if str(d.get("band", "")).strip().lower() == "past-ldos")
     sig["near"] = sum(1 for d in life if "near" in str(d.get("band", "")).lower())
-    sig["eol_devices"] = [d.get("host") for d in life if str(d.get("band", "")).lower().startswith("past")][:12]
+    sig["eol_devices"] = [d.get("host") for d in life
+                          if str(d.get("band", "")).strip().lower() == "past-ldos"][:12]
 
     qos = _as_list(_as_dict(snap.get("qos_audit")).get("per_device"))
     sig["qos_assessable"] = sum(1 for d in qos if d.get("assessable"))
@@ -134,7 +137,6 @@ def _signals(snap):
     sig["vlans"] = _vlan_count(snap)
     vrfs = _as_list(_as_dict(snap.get("segmentation")).get("vrfs"))
     sig["single_vrf"] = len(vrfs) <= 1
-    sig["gw_count"] = sum(_as_int(v.get("gateway_count")) for v in vrfs)
 
     stp = [x for x in _as_list(snap.get("protocol_health")) if x.get("protocol") == "STP"]
     sig["stp_blocked"] = sum(1 for x in stp if _stp_blocked(x))
@@ -741,7 +743,8 @@ def requirements_from_interview(answers):
         elif k in ("critical_apps", "constraints", "data_classification"):
             out[k] = _to_list(v)
         elif k == "convergence_budget_ms":
-            out[k] = _as_int(v) or v
+            iv = _as_int(v, None)                  # keep a legitimate 0; fall back to raw only if unparseable
+            out[k] = iv if iv is not None else v
         elif k == "vlan_zones":
             nz = _norm_vlan_zones(v)
             if nz:
@@ -775,12 +778,12 @@ def _replacement_bom(snap):
     life = _as_list(_as_dict(snap.get("lifecycle_risk")).get("per_device"))
     replace, refresh = {}, {}
     for d in life:
-        band = str(d.get("band", "")).lower()
+        band = str(d.get("band", "")).strip().lower()
         model = d.get("model") or "Unknown"
-        if band.startswith("past"):
+        if band == "past-ldos":                          # unsupported (no TAC/fixes) -> must replace now
             replace[model] = replace.get(model, 0) + 1
-        elif "near" in band:
-            refresh[model] = refresh.get(model, 0) + 1
+        elif "near" in band or band == "past-eos":       # approaching LDoS, or past-sale but STILL supported
+            refresh[model] = refresh.get(model, 0) + 1    # -> refresh, NOT replace-now
     def _rows(m):
         return sorted(([model, qty] for model, qty in m.items()), key=lambda r: (-r[1], r[0]))
     return {
@@ -793,12 +796,13 @@ def _replacement_bom(snap):
     }
 
 
-def _segmentation_plan(snap, req):
+def _segmentation_plan(snap, req, census=None):
     """Target L3 segmentation intent. The observed VRF/VLAN state is grounded; the zone DEFINITIONS need a
-    data classification -- absent it this stays an open question (zones are never fabricated)."""
+    data classification -- absent it this stays an open question (zones are never fabricated). `census` (the
+    canonical vlan_inventory count) may be passed in to avoid recomputing the inventory walk."""
     seg = _as_dict(snap.get("segmentation"))
     vrfs = _as_list(seg.get("vrfs"))
-    n_vlans = _vlan_count(snap)
+    n_vlans = _vlan_count(snap) if census is None else census
     dc = _as_list(req.get("data_classification")) if req else []
     plan = {
         "observed": (f"{n_vlans} VLAN(s) across "
@@ -865,7 +869,12 @@ def _target_vids(snap):
 def _alloc_flat(supernet, vids, counts):
     """Mode A: a flat /24 per VLAN, sequentially from the supernet (the whole plan summarises to the
     supernet). Sized from observed access-port counts; oversized (>254) and overflow are reported."""
-    pool = supernet.subnets(new_prefix=24) if supernet.prefixlen <= 24 else iter([supernet])
+    if supernet.prefixlen > 24:                          # smaller than a /24 -> cannot give a /24 per VLAN
+        return {"status": "candidate", "mode": "flat", "supernet": str(supernet), "subnets": [],
+                "n_allocated": 0, "n_overflow": len(vids), "oversized_vlans": [],
+                "note": f"address_space {supernet} is smaller than a /24; the /24-per-VLAN scheme needs at "
+                        "least a /24 -- supply a larger supernet."}
+    pool = supernet.subnets(new_prefix=24)
     subnets, overflow, oversized = [], 0, []
     for vid in vids:
         hosts = counts.get(vid, 0)
@@ -891,10 +900,14 @@ def _alloc_flat(supernet, vids, counts):
 
 
 def _alloc_zone_aware(supernet, vids, counts, vlan_zones):
-    """Mode B: one CONTIGUOUS, summarisable block per zone (equal aligned subnets of the supernet via
-    ipaddress -> non-overlapping by construction), per-VLAN /24 within the owning zone's block. VLANs with
-    no mapping go to a residual '(unzoned)' block AND are listed in unmapped_vlans -- never force-fit into
-    a real zone. Each zone summarises to ONE prefix."""
+    """Mode B: one CONTIGUOUS, summarisable block per zone, SIZED TO EACH ZONE'S /24 DEMAND (one /24 per
+    VLAN, rounded up to a power-of-two span so the block is a single aligned, summarisable prefix) -- NOT a
+    uniform split by zone count, which overflows an uneven zone while another wastes space. Blocks are
+    carved greedily from the supernet (largest first, alignment-correct); per-VLAN /24 within the owning
+    zone's block. VLANs with no mapping go to a residual '(unzoned)' block AND are listed in unmapped_vlans
+    -- never force-fit into a real zone. Each zone summarises to ONE prefix. IPv4 only (the caller rejects
+    IPv6 before this point)."""
+    import ipaddress
     import math
     zones, unmapped = {}, []
     for vid in vids:
@@ -905,23 +918,43 @@ def _alloc_zone_aware(supernet, vids, counts, vlan_zones):
         zones["(unzoned)"] = sorted(unmapped)
         order = order + ["(unzoned)"]
     real_zones = [z for z in order if z != "(unzoned)"]
-    n_blocks = max(1, len(order))
-    block_prefix = supernet.prefixlen + (math.ceil(math.log2(n_blocks)) if n_blocks > 1 else 0)
     base = {"status": "candidate", "mode": "zone-aware", "supernet": str(supernet),
             "n_zones": len(real_zones), "unmapped_vlans": sorted(unmapped)}
-    if block_prefix > 24:                                            # supernet too small for a /24-capable block per zone
+
+    def _zone_prefix(n):
+        # one /24 per VLAN, rounded up to a power-of-two /24 count -> a single aligned summarisable prefix;
+        # never longer (smaller) than the supernet itself.
+        span = 1 << max(0, math.ceil(math.log2(max(1, n))))
+        return max(supernet.prefixlen, 24 - (span.bit_length() - 1))
+
+    # Carve a right-sized block per zone, greedily from the supernet, largest block first (so alignment
+    # never strands space a smaller block could have used).
+    net_start, net_end = int(supernet.network_address), int(supernet.broadcast_address)
+    cursor = net_start
+    block_of, overflow = {}, 0
+    for zname, p in sorted(((z, _zone_prefix(len(zones[z]))) for z in order), key=lambda t: t[1]):
+        size = 1 << (32 - p)
+        aligned = (cursor + size - 1) // size * size                # next size-aligned slot at/after cursor
+        if aligned + size - 1 <= net_end:
+            block_of[zname] = ipaddress.ip_network((aligned, p))
+            cursor = aligned + size
+        else:
+            overflow += len(zones[zname])                           # this zone does not fit the supernet
+    if not any(block_of.values()):
         return {**base, "subnets": [], "zones": [], "n_allocated": 0, "n_overflow": len(vids),
                 "oversized_vlans": [],
-                "note": f"address_space {supernet} too small for {n_blocks} zone block(s) -- enlarge it."}
-    blocks = list(supernet.subnets(new_prefix=block_prefix))
-    subnets, zone_recs, overflow, oversized = [], [], 0, []
-    for i, zname in enumerate(order):
-        if i >= len(blocks):
+                "note": f"address_space {supernet} too small for the {len(order)} zone block(s) -- enlarge it."}
+
+    subnets, zone_recs, oversized = [], [], []
+    for zname in order:                                             # stable output order (sorted zones, unzoned last)
+        zblock = block_of.get(zname)
+        if zblock is None:
+            continue
+        if zblock.prefixlen > 24:                       # a sub-/24 block cannot host a /24 per VLAN -> overflow
             overflow += len(zones[zname])
             continue
-        zblock = blocks[i]
         zone_recs.append({"zone": zname, "summary": str(zblock), "n_vlans": len(zones[zname])})
-        pool = zblock.subnets(new_prefix=24) if zblock.prefixlen <= 24 else iter([zblock])
+        pool = zblock.subnets(new_prefix=24)
         for vid in zones[zname]:
             hosts = counts.get(vid, 0)
             try:
@@ -936,24 +969,26 @@ def _alloc_zone_aware(supernet, vids, counts, vlan_zones):
             subnets.append(rec)
     return {**base, "subnets": subnets, "zones": zone_recs, "n_allocated": len(subnets),
             "n_overflow": overflow, "oversized_vlans": oversized,
-            "note": "Zone-aware candidate: each zone is one contiguous, summarisable block (one prefix), "
-                    "per-VLAN /24 within it. Unmapped VLANs sit in a residual '(unzoned)' block -- assign "
-                    "them explicitly. Sized from observed access-port counts; confirm growth headroom."
+            "note": "Zone-aware candidate: each zone is one contiguous, summarisable block sized to its own "
+                    "VLAN demand (one prefix), per-VLAN /24 within it. Unmapped VLANs sit in a residual "
+                    "'(unzoned)' block -- assign them explicitly. Sized from observed access-port counts; "
+                    "confirm growth headroom."
                     + (f" {overflow} VLAN(s) overflowed the supernet (enlarge it)." if overflow else "")}
 
 
-def _addressing_plan(snap, req):
+def _addressing_plan(snap, req, census=None):
     """Net-new IP plan. REQUIREMENT-GATED on address_space -- absent/invalid it returns needs-requirement
     and fabricates NO subnets. Supplied + an explicit vlan_zones map -> ZONE-AWARE allocation (one
     summarisable block per zone); supplied alone -> flat /24-per-VLAN (Mode A). data_classification NAMES
     alone NEVER infer a VLAN->zone map (that would fabricate a security assignment) -- they only set a
-    caveat pointing to vlan_zones."""
+    caveat pointing to vlan_zones. `census` (the canonical vlan_inventory count) may be passed in to avoid
+    recomputing the full inventory walk; it falls back to computing it when absent."""
     space = (req or {}).get("address_space")
     vids, counts = _target_vids(snap)
     # Always compute the full census and the unsizable delta — needed for honest disclosure on ALL paths
     # (including the needs-requirement early returns) so every surface can show the context note
     # "N census VLANs; M have no access port/SVI" before an address_space is even supplied.
-    census = _vlan_count(snap)
+    census = _vlan_count(snap) if census is None else census
     n_unsizable = max(0, census - len(vids))
     if not space:
         return {"status": "needs-requirement", "requirement_needed": "address_space",
@@ -971,6 +1006,11 @@ def _addressing_plan(snap, req):
                 "n_census_vlans": census,
                 "n_unsizable": n_unsizable,
                 "note": f"address_space '{space}' is not a valid network; supply e.g. 10.0.0.0/16."}
+    if supernet.version != 4:                            # the candidate /24-per-VLAN allocator is IPv4-only
+        return {"status": "needs-requirement", "requirement_needed": "address_space",
+                "observed_vlans": len(vids), "n_census_vlans": census, "n_unsizable": n_unsizable,
+                "note": f"address_space '{space}' is IPv6; the candidate /24-per-VLAN allocator is IPv4-only "
+                        "-- size IPv6 prefixes (typically a /64 per VLAN) at detailed design."}
     vlan_zones = _norm_vlan_zones((req or {}).get("vlan_zones"))
     if vlan_zones:
         plan = _alloc_zone_aware(supernet, vids, counts, vlan_zones)
@@ -1036,16 +1076,17 @@ def _wave_plan(snap, cap=_WAVE_CAP):
     }
 
 
-def compute_target_state(snap, requirements=None):
+def compute_target_state(snap, requirements=None, sig=None):
     """A CANDIDATE target-state architecture synthesised from current-state evidence + the requirements
     register + doctrine. Dimension-by-dimension (current -> target -> rationale -> confidence), each
     traceable to a principle; the tier-model CHOICE is requirement-gated on growth (never asserted from
     absent evidence), and uncollected devices stay an explicit unknown. This is architecture-level only --
     a full IP / VLAN-VRF addressing plan and BoM are the next design layer, deliberately not fabricated.
+    `sig` (the _signals bundle) may be passed in to avoid recomputing it when the caller already built one.
     """
     snap = _as_dict(snap)
     req = _as_dict(requirements) if requirements else {}
-    sig = _signals(snap)
+    sig = _signals(snap) if sig is None else sig
     roles = _role_counts(snap)
     wp = _wave_plan(snap)
     dims = []
@@ -1135,8 +1176,8 @@ def compute_target_state(snap, requirements=None):
     return {
         "dimensions": dims,
         "replacement_bom": _replacement_bom(snap),
-        "segmentation_plan": _segmentation_plan(snap, req),
-        "addressing_plan": _addressing_plan(snap, req),
+        "segmentation_plan": _segmentation_plan(snap, req, census=sig["vlans"]),
+        "addressing_plan": _addressing_plan(snap, req, census=sig["vlans"]),
         "wave_plan": wp,
         "coverage": _coverage(snap),
         "summary": {"n_dimensions": len(dims), "n_requirement_gated": n_gated, "headline": headline},
@@ -1211,7 +1252,7 @@ def compute_design_blueprint(snap, requirements=None):
         "summary": summary,
         "coverage": _coverage(snap),
         "doctrine": _doctrine_catalog(),
-        "target_state": compute_target_state(snap, req),
+        "target_state": compute_target_state(snap, req, sig=sig),
     }
 
 

@@ -74,6 +74,9 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     # pass) -> exclude like its lifecycle source; the blueprint logic is pinned deterministically by
     # tests/test_design_blueprint.py and its SSOT publish by tests/test_pipeline_inprocess.py. (design engine)
     snap.pop("design_blueprint", None)
+    # design_nrfu is derived purely from design_blueprint (same date-relative folding) -> exclude it too;
+    # its SSOT publish is locked by tests/test_pipeline_inprocess.py alongside the blueprint. (design engine)
+    snap.pop("design_nrfu", None)
     return snap, str(out_xlsx)
 
 
