@@ -6353,7 +6353,7 @@ function drawDesignDoctrine(bp){
     </div>`;}).join("");
   const outerid="des-doc-"+Math.random().toString(36).slice(2,6);
   return `<div class="sec"><h3>Design knowledge base <span class="ct">${total}</span></h3>
-    <p class="sub" style="margin:0 0 8px">The full CCDE-grounded doctrine across ${doms.length} domain(s) — including the ~23 auto-detected principles plus the broader KB the HLD/chat reasoning draws from (firewall, BGP, MPLS, IPv6…). Each domain is click-to-expand.</p>
+    <p class="sub" style="margin:0 0 8px">The full CCDE-grounded doctrine across ${doms.length} domain(s) — including the auto-detected principles plus the broader KB the HLD/chat reasoning draws from (DC fabric/EVPN, multi-site, cloud, firewall, BGP, MPLS…). Each domain is click-to-expand.</p>
     <button class="xpbtn" onclick="toggleEl('${outerid}')" style="margin-bottom:8px">Show / hide doctrine</button>
     <div id="${outerid}" style="display:none">${domHtml}</div></div>`;
 }

@@ -782,3 +782,96 @@ def test_signals_computed_once_and_no_dead_fields(monkeypatch):
     monkeypatch.setattr(da, "_signals", _counting)
     da.compute_design_blueprint(_snap())
     assert calls["n"] == 1, calls["n"]                            # was 2 (blueprint + target_state)
+
+
+# ===================================================================== DC-fabric corpus enrichment
+# The design brain learns the modern DC target vocabulary (EVPN/VXLAN leaf-spine, Multi-Site, DCI,
+# active-active, cloud/SDDC, L4-L7 services) mined from the [HISTORY-REDACTED] reference corpus + the real [HISTORY-REDACTED] SDD.
+# Coverage-honest: the L1-L4 assessment collects no fabric/cloud state, so these are DOCTRINE the HLD
+# §4.4 catalogue + design-chat cite -- NOT auto-emitted decisions -- EXCEPT the Multi-Site-vs-stretched
+# choice, which (like the other DC-fabric choices) is a requirement-gated open decision.
+_DC_CORPUS_IDS = {
+    "dc-fabric": ["dc-fabric-vxlan-evpn-control-plane", "dc-fabric-underlay-overlay-separation",
+                  "dc-fabric-distributed-anycast-gateway-irb", "dc-fabric-bum-replication-ingress-default",
+                  "dc-fabric-clos-sizing-oversubscription-ecmp", "dc-fabric-ecmp-equal-capacity-no-core-summarization",
+                  "dc-fabric-fabric-drops-bpdu-single-l2-handoff", "dc-fabric-multicast-underlay-now-trm-later"],
+    "dc-multisite": ["dc-multisite-interconnect-fabrics-as-isolated-sites", "dc-multisite-route-server-and-anycast-bgw",
+                     "dc-multisite-prefer-l3-dci-bound-any-stretch", "dc-multisite-mobility-trombone-and-split-brain",
+                     "dc-multisite-dr-and-active-active-from-rto-rpo"],
+    "dc-services": ["dc-services-load-balancer-vip-pool-and-insertion-mode",
+                    "dc-services-shared-border-firewall-and-service-insertion",
+                    "dc-services-tenant-isolation-vrf-acl-and-vrflite-ceiling",
+                    "dc-services-anycast-gateway-dhcp-relay-giaddr"],
+    "cloud": ["cloud-standardized-pod-as-availability-zone", "cloud-decouple-overlay-from-stable-ip-underlay",
+              "cloud-east-west-flattens-tiering-vswitch-and-server-attach"],
+}
+# enrichments placed in EXISTING domains (not new ones)
+_DC_CORPUS_EXTRA = ["dc-switching-unified-fabric-io-consolidation",
+                    "dc-switching-capacity-from-measured-traffic-not-average",
+                    "management-oob-must-not-transit-the-fabric",
+                    "wan-vpn-make-vs-buy-and-test-before-buy-sp-transparency",
+                    "wan-vpn-bgp-everywhere-and-mtu-headroom-on-coexistence"]
+# the ONE corpus principle promoted to a requirement-gated decision (Multi-Site vs stretched fabric)
+_DC_CORPUS_ACTIONABLE = "dc-multisite-interconnect-fabrics-as-isolated-sites"
+
+
+def test_dc_corpus_doctrine_present_cited_and_honest():
+    """Every mined DC-fabric/multi-site/services/cloud principle exists, lives in its intended domain,
+    carries a citation + recommended action, and declares engine_actionability HONESTLY: all are doctrine
+    (engine_actionable False) EXCEPT the Multi-Site-vs-stretched choice (a requirement-gated decision)."""
+    all_new = [pid for ids in _DC_CORPUS_IDS.values() for pid in ids] + _DC_CORPUS_EXTRA
+    assert len(all_new) == 25 and len(set(all_new)) == 25, "25 distinct new principles"
+    for pid in all_new:
+        p = design_kb.by_id(pid)
+        assert p, f"missing corpus principle {pid}"
+        assert p.get("citation"), f"{pid} must cite its source"
+        assert p.get("recommended_action"), f"{pid} must carry a recommended action"
+        assert p.get("design_intent"), f"{pid} must carry the design intent (the WHY)"
+        should_act = pid == _DC_CORPUS_ACTIONABLE
+        assert bool(p.get("engine_actionable")) is should_act, \
+            f"{pid} actionability must be {should_act} (doctrine unless it is the requirement-gated Multi-Site choice)"
+    # the 4 NEW domains exist with the expected membership (by_domain surfaces them automatically)
+    for dom, ids in _DC_CORPUS_IDS.items():
+        got = {p["id"] for p in design_kb.by_domain(dom)}
+        assert set(ids) <= got, f"domain {dom} must contain {set(ids) - got}"
+        assert len(got) == len(ids), f"domain {dom}: expected {len(ids)} principles, got {len(got)}"
+    # citation ACCURACY (the adversarial standards pass): EVPN ctrl-plane is MPLS-EVPN(7432) over VXLAN/NVO
+    # (8365) with IP-prefix RT-5 (9136); anycast GW is EVPN-IRB (9135); TRM routed-multicast is ngMVPN (6513)
+    cp = design_kb.by_id("dc-fabric-vxlan-evpn-control-plane")["citation"]
+    assert "7432" in cp and "8365" in cp and "9136" in cp, "EVPN control-plane must cite 7432 + 8365 + 9136"
+    assert "9135" in design_kb.by_id("dc-fabric-distributed-anycast-gateway-irb")["citation"]
+    assert "6513" in design_kb.by_id("dc-fabric-multicast-underlay-now-trm-later")["citation"]
+
+
+def test_dc_multisite_choice_is_requirement_gated():
+    """Multi-Site-vs-stretched-fabric is a scale/containment CHOICE the L1-L4 evidence cannot decide, so it
+    surfaces as an open design question and flips to recommended once a growth horizon is supplied -- exactly
+    like the other DC-fabric choices. It is engine_actionable (emitted via _NEEDS), keeping the lock green."""
+    base = compute_design_blueprint(_snap())
+    open_ids = {d["id"] for d in base["decisions"] if d["status"] == "needs-requirement"}
+    assert _DC_CORPUS_ACTIONABLE in open_ids, "Multi-Site choice must be an open question without growth"
+    bp = compute_design_blueprint(_snap(), requirements={"growth_horizon": "3y, +2 sites, +60% east-west"})
+    by = {d["id"]: d for d in bp["decisions"]}
+    assert by[_DC_CORPUS_ACTIONABLE]["status"] == "recommended", "must flip to recommended once growth is given"
+    assert _DC_CORPUS_ACTIONABLE in {p["id"] for p in design_kb.engine_actionable()}
+
+
+def test_[HISTORY-REDACTED]_engagement_profile_rightsizes_to_the_real_target():
+    """The SDD-derived [HISTORY-REDACTED] engagement register (requirements.[HISTORY-REDACTED].json, grounded in the human-authored
+    Solution Design) right-sizes the blueprint so it concretely recommends the real target: the DC-fabric +
+    Multi-Site choices flip to recommended (growth supplied), defense-in-depth flips (data_classification
+    supplied), and effective_priority is computed -- while the un-supplied keys stay honest open questions."""
+    import os
+    from cisco_toolkit.design_advisor import load_requirements
+    path = os.path.join(os.path.dirname(__file__), "..", "requirements.[HISTORY-REDACTED].json")
+    reg = load_requirements(path)
+    assert reg.get("growth_horizon") and reg.get("data_classification"), "[HISTORY-REDACTED] register must carry growth + zones"
+    assert "convergence_budget_ms" not in reg and "address_space" not in reg, \
+        "[HISTORY-REDACTED] register must NOT fabricate a convergence budget or supernet the SDD does not state"
+    bp = compute_design_blueprint(_snap(), requirements=reg)
+    by = {d["id"]: d for d in bp["decisions"]}
+    for pid in ("dc-three-tier-vs-collapsed-core", "dc-spine-leaf-evpn-vs-collapsed",
+                _DC_CORPUS_ACTIONABLE, "security-defense-in-depth-segmentation"):
+        assert by[pid]["status"] == "recommended", f"{pid} must flip to recommended under the [HISTORY-REDACTED] register"
+    assert all("effective_priority" in d for d in bp["decisions"])
+    assert bp["requirements_model"]["provided"] is True
