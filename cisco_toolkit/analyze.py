@@ -128,6 +128,11 @@ def compute_move_groups(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> 
 
     Each group dict: switches(list), spanning_vlans(list[(vid,name,nswitches)]),
     endpoints(int), gateways(list[str]), blocked_paths(list[str]), vlan1_spans(bool).
+
+    NOTE on `endpoints`: it is the SUM over the group's switches of each switch's learned MACs -- an
+    endpoint seen on N of the group's switches counts N times, so a large coupled group can EXCEED the
+    DISTINCT fleet endpoint total (executive_brief.scale.n_endpoints / the Endpoint Census). It is a
+    blast-radius proxy, not a distinct count; surfaces label it "Endpoint MACs (per-switch sum)".
     """
     # VLAN -> presence set, plus metadata, mirroring the VLAN Census definition.
     vlan_switches: Dict[int, set] = {}
@@ -186,6 +191,8 @@ def compute_move_groups(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> 
         groups.append({
             "switches": sorted(members),
             "spanning_vlans": spanning,
+            # per-switch SUM of learned MACs (an endpoint on N switches counts N times) -- a blast-radius
+            # proxy, NOT distinct fleet endpoints; surfaces label it "Endpoint MACs (per-switch sum)".
             "endpoints": sum(len(group_endpoints[h]) for h in members),
             "gateways": gw,
             "blocked_paths": blk,

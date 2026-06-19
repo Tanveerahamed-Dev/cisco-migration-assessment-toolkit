@@ -465,7 +465,7 @@ def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
     """Write (or replace) 'Move Groups': one row per migration wave (connected component
     of the shared-VLAN graph), ordered largest-coupling first."""
     cols = ["Group", "# Switches", "Switches", "# Spanning VLANs", "Spanning VLANs",
-            "# Endpoints", "Gateways", "Redundant (STP-blocked) Paths", "Notes"]
+            "# Endpoint MACs (per-switch sum)", "Gateways", "Redundant (STP-blocked) Paths", "Notes"]
     if MOVEGROUP_SHEET_NAME in wb.sheetnames:
         del wb[MOVEGROUP_SHEET_NAME]
     ws = wb.create_sheet(MOVEGROUP_SHEET_NAME)
@@ -756,7 +756,7 @@ def write_migration_scenarios_sheet(wb, scenarios: dict) -> None:
         c = ws.cell(row=1, column=2, value=fleet); c.font = Font(size=10)
         c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
     hdr_row = 3 if fleet else 1
-    cols = ["Move group", "Switches", "Endpoints", "Readiness", "Dual-homed %", "Hard cutovers",
+    cols = ["Move group", "Switches", "Endpoint MACs (per-switch sum)", "Readiness", "Dual-homed %", "Hard cutovers",
             "At-risk eps", "Recommended scenario", "Rationale"]
     for i, h in enumerate(cols, 1):
         cell = ws.cell(row=hdr_row, column=i, value=h)
@@ -2569,7 +2569,7 @@ def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
         c.alignment = Alignment(horizontal="center")
     r = 2
     for g in readiness:
-        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint(s))")
+        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint-MAC(s))")
         c.font = Font(bold=True)
         cs = ws.cell(r, 2, g["readiness"])
         cs.font = Font(bold=True)
