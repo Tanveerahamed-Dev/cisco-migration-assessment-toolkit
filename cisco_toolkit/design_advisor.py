@@ -61,6 +61,26 @@ def _as_float(x, default=0.0):
         return default
 
 
+def _svi_network(svi):
+    """The network (CIDR str) of an SVI address, or None. Handles 'ip/prefix' and 'ip mask' forms (the two
+    shapes l3_forwarding.svi_ip is collected in); a bare IP with no mask is unknown -> None. Used to recover a
+    VLAN's subnet when l3_forwarding.primary_subnet is empty (108/231 [HISTORY-REDACTED] rows) so VLAN-ID reuse across sites is
+    not silently read as one broadcast domain."""
+    import ipaddress
+    s = str(svi or "").strip()
+    if not s:
+        return None
+    try:
+        if "/" in s:
+            return str(ipaddress.ip_interface(s).network)
+        parts = s.split()
+        if len(parts) == 2:
+            return str(ipaddress.ip_interface(f"{parts[0]}/{parts[1]}").network)
+    except ValueError:
+        return None
+    return None
+
+
 def _vlan_count(snap):
     try:
         from .analyze import vlan_inventory
@@ -138,6 +158,7 @@ def _signals(snap):
         if _as_int(s.get("unused")) or _as_int(s.get("undefined")):
             harden.add(host)
     sig["harden_devices"] = len(harden)
+    sig["harden_hosts"] = sorted(harden)[:12]
     sig["mgmt_fail_ids"] = sorted(fid for fid in _MGMT_FAIL_IDS if fail_hosts.get(fid))
     sig["timesync_hosts"] = sorted({h for fid in _TIMESYNC_FAIL_IDS for h in fail_hosts.get(fid, set())})
     sig["timesync_devices"] = len(sig["timesync_hosts"])
@@ -277,6 +298,188 @@ def _signals(snap):
     bd_sw = {r.get("switch") for r in pi_bad if r.get("switch")}
     sig["bundle_degraded_nsw"] = len(bd_sw)
     sig["bundle_degraded_hosts"] = sorted(bd_sw)[:12]
+
+    # ---- 2026-06 mega-wave: collected-but-unused evidence -> firing design decisions (refutation-gated) ----
+    l3f = _as_list(snap.get("l3_forwarding"))
+
+    # #1 one-VLAN-one-subnet integrity: a single VLAN bound to >1 distinct subnet across >1 gateway (the same
+    #    broadcast domain carrying conflicting L3 identities) -> any L2 merge collides. subnet_intelligence is the
+    #    richest source; l3_forwarding.primary_subnet corroborates (containment/mask-mismatch arm).
+    v2sub, v2gw = {}, {}
+    for dev in _as_list(_as_dict(snap.get("subnet_intelligence")).get("per_device")):
+        for ss in _as_list(_as_dict(dev).get("served_subnets")):
+            ss = _as_dict(ss)
+            vid, sub, gw = ss.get("vlan"), ss.get("subnet"), ss.get("gateway")
+            if vid is not None and sub:
+                v2sub.setdefault(str(vid), set()).add(sub)
+                if gw:
+                    v2gw.setdefault(str(vid), set()).add(gw)
+    # l3_forwarding corroborates AND extends: VLAN-ID reuse across sites is frequently visible ONLY here, not in
+    # subnet_intelligence (e.g. [HISTORY-REDACTED] VLAN 64 = 10.200.64.0/24 at one site + 10.203.64.0/24 at another, the latter
+    # recoverable only from svi_ip since primary_subnet is empty). Subnet = primary_subnet, else derived from the
+    # SVI ip+mask; gateway = the switch. This is also the single-broadcast-domain authority for #9 below.
+    for r in _as_list(snap.get("l3_forwarding")):
+        r = _as_dict(r)
+        vid = r.get("vlan")
+        if vid is None:
+            continue
+        sub = str(r.get("primary_subnet") or "").strip() or _svi_network(r.get("svi_ip"))
+        if sub:
+            v2sub.setdefault(str(vid), set()).add(sub)
+            if r.get("switch"):
+                v2gw.setdefault(str(vid), set()).add(r.get("switch"))
+    vsi = [v for v in v2sub if len(v2sub[v]) >= 2 and len(v2gw.get(v, set())) >= 2]
+    sig["vlan_multi_subnet"] = len(vsi)
+    sig["vlan_multi_subnet_vids"] = sorted(vsi, key=lambda v: (len(v), v))[:8]
+    sig["vlan_multi_subnet_hosts"] = sorted({g for v in vsi for g in v2gw.get(v, set())})[:12]
+
+    # #2 STP root determinism: a VLAN whose root won at the DEFAULT priority (32768 + vid) -> accidental root, not
+    #    engineered (won on the MAC tiebreak). Same stp_roots evidence analyze.stp_root_findings feeds the punch-list.
+    acc, acc_hosts = 0, set()
+    for host, vmap in _as_dict(snap.get("stp_roots")).items():
+        for vid, row in _as_dict(vmap).items():
+            row = _as_dict(row)
+            if not row.get("is_root"):
+                continue
+            try:
+                if int(row.get("root_priority")) == 32768 + int(vid):
+                    acc += 1
+                    acc_hosts.add(host)
+            except (TypeError, ValueError):
+                continue
+    sig["stp_accidental_roots"] = acc
+    sig["stp_accidental_nsw"] = len(acc_hosts)
+    sig["stp_accidental_hosts"] = sorted(acc_hosts)[:12]
+
+    # #3 reserved-range VLAN carrying a production SVI: Nexus reserves 3968-4095 for internal use -> the target
+    #    refuses the SVI and the L3 link breaks silently at cutover unless renumbered into the user range.
+    res = [r for r in l3f if isinstance(r, dict) and isinstance(r.get("vlan"), int)
+           and 3968 <= r["vlan"] <= 4095 and str(r.get("svi_ip") or "").strip()]
+    sig["reserved_vlan_svis"] = len(res)
+    sig["reserved_vlan_vids"] = sorted({r["vlan"] for r in res})
+    sig["reserved_vlan_hosts"] = sorted({r.get("switch") or r.get("host") for r in res
+                                         if r.get("switch") or r.get("host")})[:12]
+
+    # #4 static (mode on) multi-member EtherChannels: no LACP negotiation -> a miscabled/one-way member is admitted
+    #    and blackholes its hash share. Exclude FEX-HIF (Eth>=100/x/y) and the Po self-listing artifact.
+    on_bundles = {}
+    for host, ports in _as_dict(snap.get("interfaces")).items():
+        for pn, pdt in _as_dict(ports).items():
+            pdt = _as_dict(pdt)
+            if str(pdt.get("port_channel_protocol") or "").upper() != "ON":
+                continue
+            pc = pdt.get("port_channel")
+            if not pc or str(pn).lower().startswith("po"):
+                continue
+            m = re.match(r"(?:eth|ethernet)\s*(\d+)/\d+/\d+", str(pn).lower())
+            if m and int(m.group(1)) >= 100:
+                continue
+            on_bundles[(host, str(pc))] = on_bundles.get((host, str(pc)), 0) + 1
+    static_b = [k for k, n in on_bundles.items() if n >= 2]
+    sig["static_ec_bundles"] = len(static_b)
+    sig["static_ec_nsw"] = len({h for h, _ in static_b})
+    sig["static_ec_hosts"] = sorted({h for h, _ in static_b})[:12]
+
+    # #5 lost PSU redundancy: a multi-PSU chassis reporting a FAILED supply is now single-corded (N+1 lost).
+    psf = []
+    for host, dv in _as_dict(snap.get("devices")).items():
+        dv = _as_dict(dv)
+        try:
+            n = int(dv.get("num_power_supplies"))
+        except (TypeError, ValueError):
+            n = 0
+        if n > 1 and "fail" in str(dv.get("ps_status") or "").lower():
+            psf.append(host)
+    sig["psu_fail"] = len(psf)
+    sig["psu_fail_hosts"] = sorted(psf)[:12]
+
+    # #6 BPDU-Guard edge-protection gap (the unfired arm of dc-stp-determinism-edge-protection): endpoint-bearing
+    #    access ports with BPDU-Guard NOT enabled. Scoped to the real access edge (non-FEX, access mode, has an
+    #    end-host MAC, no CDP neighbour/uplink, not a port-channel member) to avoid the FEX-HIF inheritance artifact.
+    bpdu_sw = {}
+    for host, ports in _as_dict(snap.get("interfaces")).items():
+        for pn, pdt in _as_dict(ports).items():
+            pdt = _as_dict(pdt)
+            if str(pdt.get("switchport_mode") or "").lower() != "access":
+                continue
+            if not pdt.get("end_host_mac") or pdt.get("cdp_neighbor") or pdt.get("port_channel"):
+                continue
+            m = re.match(r"(?:eth|ethernet)\s*(\d+)/\d+/\d+", str(pn).lower())
+            if m and int(m.group(1)) >= 100:
+                continue
+            if str(pdt.get("stp_bpduguard") or "").strip().lower() not in ("enable", "enabled", "true", "on"):
+                bpdu_sw[host] = bpdu_sw.get(host, 0) + 1
+    sig["bpdu_unguarded"] = sum(bpdu_sw.values())
+    sig["bpdu_unguarded_nsw"] = len(bpdu_sw)
+    sig["bpdu_unguarded_hosts"] = sorted(bpdu_sw)[:12]
+
+    # #8 gateway-move-last: a subnet whose endpoints straddle >=2 switches constrains its SVI move order.
+    # #9 oversized L2 subnet: a SINGLE-SUBNET VLAN (one broadcast domain) with >254 endpoints overflows a /24
+    #    -- subnet-gated below so VLAN-ID reuse across sites is never summed into a false oversize.
+    ei_vlan_hosts, ei_vlan_n = {}, {}
+    for e in _as_list(snap.get("endpoint_identity")):
+        e = _as_dict(e)
+        v, h = e.get("vlan"), e.get("host")
+        if v in (None, 1, "1"):
+            continue
+        ei_vlan_n[str(v)] = ei_vlan_n.get(str(v), 0) + 1
+        if h:
+            ei_vlan_hosts.setdefault(str(v), set()).add(h)
+    gwc, gwc_vlans = 0, set()
+    for r in l3f:
+        r = _as_dict(r)
+        v = r.get("vlan")
+        if v is None or not str(r.get("svi_ip") or "").strip():
+            continue
+        if len(ei_vlan_hosts.get(str(v), set())) >= 2:
+            gwc += 1
+            gwc_vlans.add(str(v))
+    sig["gw_move_last"] = gwc
+    sig["gw_move_last_vlans"] = len(gwc_vlans)
+    # #9 single-broadcast-domain gate: a VLAN's endpoints overflow a /24 ONLY if they are ONE broadcast domain.
+    # VLAN IDs are locally significant and reused across sites, so summing endpoints by VLAN-ID alone conflates
+    # independent /24s (the project's #1 false-attribution class). Reuse v2sub (the comprehensive vlan->subnets
+    # map built above from subnet_intelligence + l3_forwarding incl. svi-derived): EXACTLY 1 subnet = one domain
+    # (can overflow); >1 = VLAN-ID reuse -> _d_vlan_subnet_integrity's renumber territory, NOT a resize; 0 =
+    # subnet not collected (gateway on the uncollected core) -> cannot assert one domain, coverage-honestly exclude.
+    over = sorted(((v, n) for v, n in ei_vlan_n.items()
+                   if n > 254 and len(v2sub.get(v, set())) == 1), key=lambda t: -t[1])
+    sig["oversized_l2"] = len(over)
+    sig["oversized_l2_top"] = [[v, n] for v, n in over[:5]]
+
+    # ---- #7 device attribution: recover the host lists the device-less detectors already inspect, so every surface
+    #    can spotlight them (was: empty evidence.devices dimmed the explorer canvas while claiming 'highlighted').
+    ovh = set()
+    _ac = _as_dict(snap.get("addressing_conflicts"))
+    for grp in _as_list(_ac.get("dup_ip")) + _as_list(_ac.get("dup_subnet")):
+        for w in _as_list(_as_dict(grp).get("where")):
+            if isinstance(w, (list, tuple)) and w and w[0]:
+                ovh.add(w[0])
+    sig["addr_overlap_hosts"] = sorted(ovh)[:12]
+    dhh = set()
+    for rr in _as_list(_as_dict(snap.get("endpoint_dependencies")).get("dual_homed")):
+        for sw in _as_list(_as_dict(rr).get("switches")):
+            if sw:
+                dhh.add(sw)
+    sig["dual_homed_hosts"] = sorted(dhh)[:12]
+    sig["stp_blocked_hosts"] = [x.get("switch") for x in _as_list(snap.get("protocol_health"))
+                                if x.get("protocol") == "STP" and _stp_blocked(x) and x.get("switch")][:12]
+    wh = set()
+    for g in _as_list(snap.get("move_groups")):
+        g = _as_dict(g)
+        wide_hit = bool(g.get("vlan1_spans"))
+        for entry in _as_list(g.get("spanning_vlans")):
+            try:
+                if isinstance(entry[0], int) and entry[0] > 1 and _as_int(entry[2]) >= _L2_SPAN_SWITCHES:
+                    wide_hit = True
+            except (IndexError, TypeError, KeyError):
+                continue
+        if wide_hit:
+            for sw in _as_list(g.get("switches")):
+                if sw:
+                    wh.add(sw)
+    sig["l2_wide_hosts"] = sorted(wh)[:12]
+
     return sig
 
 
@@ -389,7 +592,8 @@ def _d_harden(snap, sig):
         f"(risky services, logging/NTP/banner, or unused/undefined config structures).",
         sig["harden_devices"], ["security", "manageability"],
         ["security[host].findings", "config_hygiene[host].summary"],
-        priority="High", driver="Reduce the control-plane attack surface to a CIS-style baseline.")
+        priority="High", driver="Reduce the control-plane attack surface to a CIS-style baseline.",
+        devices=sig["harden_hosts"])
 
 
 def _d_coverage(snap, sig):
@@ -427,23 +631,32 @@ def _d_stp_lag(snap, sig):
         f"capacity is wasted and failover depends on STP reconvergence.",
         sig["stp_blocked"], ["load_balancing", "availability", "convergence"],
         ["protocol_health[STP].summary"],
-        priority="High", driver="Use both uplinks: multi-chassis LAG (vPC/VSS/SVL/MLAG) instead of STP blocking.")
+        priority="High", driver="Use both uplinks: multi-chassis LAG (vPC/VSS/SVL/MLAG) instead of STP blocking.",
+        devices=sig["stp_blocked_hosts"])
 
 
 def _d_stp_det(snap, sig):
-    if not (sig["stp_legacy"] or sig["vtp_server"]):
+    # Edge protection is part of L2 determinism: fire on legacy STP, VTP server mode, OR an unguarded access edge
+    # (the BPDU-Guard arm, previously unfired -- it contributed zero to any decision though the evidence existed).
+    if not (sig["stp_legacy"] or sig["vtp_server"] or sig["bpdu_unguarded"]):
         return None
     bits = []
     if sig["stp_legacy"]:
         bits.append(f"{sig['stp_legacy']} device(s) run legacy (non-rapid) spanning tree")
     if sig["vtp_server"]:
         bits.append("VTP server mode is active (a fleet-wide VLAN-change blast radius)")
+    if sig["bpdu_unguarded"]:
+        bits.append(f"{sig['bpdu_unguarded']} endpoint-bearing access port(s) across "
+                    f"{sig['bpdu_unguarded_nsw']} switch(es) have no BPDU-Guard (an unprotected L2 edge)")
     return _decision(
         "dc-stp-determinism-edge-protection",
-        "; ".join(bits) + " -- L2 control is not deterministic.",
-        sig["stp_legacy"] + (1 if sig["vtp_server"] else 0), ["availability", "manageability", "convergence"],
-        ["protocol_health[STP].summary", "protocol_health[VTP].summary"],
-        priority="High", driver="Deterministic L2: rapid-PVST/MST, aligned roots, edge protection, VTP off/transparent.")
+        "; ".join(bits) + " -- L2 control is not deterministic and the edge is not protected.",
+        sig["stp_legacy"] + (1 if sig["vtp_server"] else 0) + sig["bpdu_unguarded_nsw"],
+        ["availability", "manageability", "convergence"],
+        ["protocol_health[STP].summary", "protocol_health[VTP].summary", "interfaces[host][port].stp_bpduguard"],
+        priority="High",
+        driver="Deterministic L2: rapid-PVST/MST, aligned roots, edge protection (BPDU-Guard), VTP off/transparent.",
+        devices=sig["bpdu_unguarded_hosts"])
 
 
 def _d_igp(snap, sig):
@@ -530,7 +743,8 @@ def _d_l2_faildomain(snap, sig):
         ["move_groups[].spanning_vlans", "move_groups[].vlan1_spans"],
         priority="High",
         driver="Bound the L2 blast radius: a bridged VLAN is one fault domain -- confine VLAN span, route "
-               "between blocks, isolate any required stretch.")
+               "between blocks, isolate any required stretch.",
+        devices=sig["l2_wide_hosts"])
 
 
 def _d_stp_mst_scale(snap, sig):
@@ -577,7 +791,8 @@ def _d_addr_overlap(snap, sig):
         sig["dup_ip"] + sig["dup_subnet"], ["manageability", "availability", "optimal_routing"],
         ["addressing_conflicts.dup_ip", "addressing_conflicts.dup_subnet"],
         priority="Critical",
-        driver="Addressing integrity: overlapping/duplicate L3 space cannot be merged -- resolve before cutover.")
+        driver="Addressing integrity: overlapping/duplicate L3 space cannot be merged -- resolve before cutover.",
+        devices=sig["addr_overlap_hosts"])
 
 
 def _d_phys_remediation(snap, sig):
@@ -626,7 +841,8 @@ def _d_dualhome(snap, sig):
         sig["dual_homed"], ["availability", "modularity"],
         ["endpoint_dependencies.dual_homed", "endpoint_dependencies.shared_ip"],
         priority="High",
-        driver="Preserve redundancy: a migration must not transiently collapse a dual-homed endpoint to one path.")
+        driver="Preserve redundancy: a migration must not transiently collapse a dual-homed endpoint to one path.",
+        devices=sig["dual_homed_hosts"])
 
 
 def _d_native_vlan(snap, sig):
@@ -676,12 +892,127 @@ def _d_bundle_health(snap, sig):
         devices=sig["bundle_degraded_hosts"])
 
 
+# --------------------------------------------------- mega-wave detectors (collected-but-unused evidence, 2026-06)
+def _d_vlan_subnet_integrity(snap, sig):
+    if sig["vlan_multi_subnet"] <= 0:
+        return None
+    vids = ", ".join(sig["vlan_multi_subnet_vids"][:6]) or "see served_subnets"
+    return _decision(
+        "addressing-one-vlan-one-subnet-integrity",
+        f"{sig['vlan_multi_subnet']} VLAN(s) (e.g. {vids}) are each bound to >= 2 distinct IP subnets across "
+        f">= 2 gateway switches -- the same broadcast domain carries conflicting L3 identities, so any target that "
+        f"merges or stretches these VLANs forwards non-deterministically. Reconcile each VLAN to a single subnet first.",
+        sig["vlan_multi_subnet"], ["manageability", "availability", "optimal_routing"],
+        ["subnet_intelligence.per_device[].served_subnets[].vlan",
+         "subnet_intelligence.per_device[].served_subnets[].subnet",
+         "l3_forwarding[].primary_subnet", "l3_forwarding[].svi_ip"],
+        priority="High",
+        driver="Addressing integrity: one VLAN must map to exactly one subnet, or the L2 merge is non-deterministic.",
+        devices=sig["vlan_multi_subnet_hosts"])
+
+
+def _d_stp_root_determinism(snap, sig):
+    if sig["stp_accidental_roots"] <= 0:
+        return None
+    return _decision(
+        "dc-stp-root-determinism",
+        f"{sig['stp_accidental_roots']} spanning-tree root election(s) across {sig['stp_accidental_nsw']} "
+        f"switch(es) were won at the DEFAULT bridge priority (32768 + VLAN id) on the MAC tiebreak -- the root is "
+        f"accidental, not engineered, so a newly-introduced switch with a lower MAC can silently steal the root at "
+        f"cutover and move the L2 topology. Set explicit 'root primary/secondary' co-located with the active gateway.",
+        sig["stp_accidental_roots"], ["availability", "convergence", "manageability"],
+        ["stp_roots[].is_root", "stp_roots[].root_priority"],
+        priority="High",
+        driver="Deterministic L2: the STP root must be explicitly placed, never left to a MAC-address tiebreak.",
+        devices=sig["stp_accidental_hosts"])
+
+
+def _d_reserved_vlan(snap, sig):
+    if sig["reserved_vlan_svis"] <= 0:
+        return None
+    vids = ", ".join(str(v) for v in sig["reserved_vlan_vids"]) or "the reserved range"
+    return _decision(
+        "addressing-reserved-vlan-range-hygiene",
+        f"{sig['reserved_vlan_svis']} production SVI(s) live on platform-reserved VLAN id(s) {vids} "
+        f"(3968-4095 is reserved for internal use on Nexus) -- the target platform refuses an SVI there, so each of "
+        f"these L3 links breaks silently at migration unless its VLAN is renumbered into the user range first.",
+        sig["reserved_vlan_svis"], ["availability", "manageability", "optimal_routing"],
+        ["l3_forwarding[].vlan", "l3_forwarding[].svi_ip"],
+        priority="High",
+        driver="Platform hygiene: renumber reserved-range SVIs into the user VLAN range before migrating to Nexus.",
+        devices=sig["reserved_vlan_hosts"])
+
+
+def _d_static_etherchannel(snap, sig):
+    if sig["static_ec_bundles"] <= 0:
+        return None
+    return _decision(
+        "dc-lacp-over-static-etherchannel",
+        f"{sig['static_ec_bundles']} multi-member EtherChannel(s) across {sig['static_ec_nsw']} switch(es) run "
+        f"static 'mode on' with no LACP -- a static bundle does no member negotiation, so a miscabled or one-way "
+        f"member is admitted and silently blackholes its share of the hash; convert these to LACP (mode active).",
+        sig["static_ec_bundles"], ["availability", "convergence", "load_balancing"],
+        ["interfaces[host][port].port_channel", "interfaces[host][port].port_channel_protocol"],
+        priority="High",
+        driver="Bundle integrity: LACP detects the miscabling/one-way members that static 'mode on' silently admits.",
+        devices=sig["static_ec_hosts"])
+
+
+def _d_power_redundancy(snap, sig):
+    if sig["psu_fail"] <= 0:
+        return None
+    return _decision(
+        "dc-power-supply-redundancy",
+        f"{sig['psu_fail']} multi-PSU chassis report a FAILED power supply -- N+1 redundancy is already lost and the "
+        f"chassis is single-corded, so the next power event is a full-chassis outage. Restore the failed supply (and "
+        f"dual-feed/dual-grid the keystone distribution/core nodes) before cutover.",
+        sig["psu_fail"], ["availability", "cost"],
+        ["devices[host].ps_status", "devices[host].num_power_supplies"],
+        priority="High",
+        driver="Power resilience: a multi-PSU chassis running on one good supply is a silent single point of failure.",
+        devices=sig["psu_fail_hosts"])
+
+
+def _d_gateway_cutover_order(snap, sig):
+    if sig["gw_move_last"] <= 0:
+        return None
+    return _decision(
+        "migration-gateway-cutover-order",
+        f"{sig['gw_move_last']} gateway SVI(s) across {sig['gw_move_last_vlans']} VLAN(s) serve endpoints that "
+        f"straddle >= 2 switches -- the subnet's default gateway must move LAST (keep the legacy SVI live and the "
+        f"target BD flooding/anycast ready until all workloads are across), or trailing endpoints lose their gateway "
+        f"mid-cutover. Sequence each move-group so the SVI is the final step.",
+        sig["gw_move_last"], ["availability", "manageability"],
+        ["l3_forwarding[].vlan", "l3_forwarding[].svi_ip", "endpoint_identity[].vlan", "endpoint_identity[].host"],
+        priority="Medium", confidence="Planning",
+        driver="Cutover order: move the default gateway after the workloads, never before -- gateway-move-last per subnet.")
+
+
+def _d_oversized_l2_subnet(snap, sig):
+    if sig["oversized_l2"] <= 0:
+        return None
+    top = ", ".join(f"VLAN {v} ({n} endpoints)" for v, n in sig["oversized_l2_top"][:3]) or "see census"
+    return _decision(
+        "dc-size-l2-subnet-to-endpoint-count",
+        f"{sig['oversized_l2']} single-subnet VLAN(s) carry more than 254 evidenced endpoints ({top}) -- one "
+        f"broadcast domain that size cannot live in a single /24, so the target must size a larger prefix (/23, /22) "
+        f"or split the domain. (VLAN IDs reused across sites are excluded -- those are an addressing-integrity "
+        f"renumber, not a resize.) Visible from the endpoint census, independent of any supplied address requirement.",
+        sig["oversized_l2"], ["scalability", "manageability"],
+        ["endpoint_identity[].vlan", "endpoint_identity[].host"],
+        priority="Medium",
+        driver="Subnet sizing: a >254-endpoint VLAN overflows a /24 -- size the prefix to the endpoint count or segment it.")
+
+
 _DETECTORS = [_d_fhrp, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
               _d_stp_mst_scale, _d_oncrit_seg,
               _d_addr_overlap, _d_phys_remediation, _d_capacity, _d_dualhome, _d_native_vlan,
-              _d_false_health, _d_bundle_health]
+              _d_false_health, _d_bundle_health,
+              # mega-wave 2026-06 (collected-but-unused evidence -> firing decisions):
+              _d_vlan_subnet_integrity, _d_stp_root_determinism, _d_reserved_vlan, _d_static_etherchannel,
+              _d_power_redundancy, _d_gateway_cutover_order, _d_oversized_l2_subnet]
 
 
 # ----------------------------------------------------------------------------- requirement-gated decisions
