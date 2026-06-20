@@ -472,6 +472,30 @@ def test_target_state_replacement_bom_and_segmentation_plan():
     assert ts3["replacement_bom"]["n_replace"] == 0 and ts3["replacement_bom"]["replace_now"] == []
 
 
+def test_segmentation_plan_seeds_candidate_from_observed_tiers():
+    """#10: when the estate ALREADY classifies its broadcast domains into >1 sensitivity TIER (evidence the
+    engine derived, NOT a supplied requirement), the segmentation plan emits a CANDIDATE macro-segmentation
+    (one zone per observed tier) instead of punting entirely to data_classification. Coverage-honest: the
+    tiers are a SEED to confirm; supplying data_classification still firms the per-VLAN map and takes precedence."""
+    from cisco_toolkit.design_advisor import compute_target_state
+    snap = _snap(segmentation={"vrfs": [{"vrf": "(global)"}], "summary": {"n_gateways": 10},
+                              "domains": [{"domain": "Media", "tier": "On-air critical", "gateways": 3},
+                                          {"domain": "Corp", "tier": "Production", "gateways": 4},
+                                          {"domain": "Mgmt", "tier": "Support", "gateways": 3}]})
+    sp = compute_target_state(snap)["segmentation_plan"]
+    assert sp["status"] == "candidate" and sp.get("mode") == "tier-seeded"
+    assert sp.get("n_macro_zones") == 3
+    assert set(sp.get("target_zones", [])) == {"On-air critical", "Production", "Support"}
+    assert "tier" in sp["target"].lower() and "data_classification" in sp["target"]   # seed invites firm-up
+    # refutation 1: a single tier is not a macro-segmentation -> stays needs-requirement (no fabricated zones)
+    one = _snap(segmentation={"vrfs": [{"vrf": "(global)"}],
+                              "domains": [{"domain": "A", "tier": "On-air critical", "gateways": 3}]})
+    assert compute_target_state(one)["segmentation_plan"]["status"] == "needs-requirement"
+    # refutation 2: an explicit data_classification still takes precedence (firm declared zones, not the tier seed)
+    dc = compute_target_state(snap, {"data_classification": ["PCI", "corp"]})["segmentation_plan"]
+    assert dc["status"] == "candidate" and set(dc["target_zones"]) == {"PCI", "corp"} and dc.get("mode") != "tier-seeded"
+
+
 def test_addressing_plan_requirement_gated_and_allocates():
     """F1: the net-new IP plan is REQUIREMENT-GATED on address_space (never fabricates subnets); supply a
     supernet and it allocates a candidate per-VLAN /24 from within it, sized/flagged by observed host count."""
