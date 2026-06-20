@@ -270,12 +270,23 @@ def _maximal_snap():
                                 "risks": [{"kind": "no-querier"}]},
         l3_forwarding=[{"switch": "dist1", "vlan": str(v), "svi_ip": f"10.0.{v}.1",
                         "fhrp": "none", "risk": "no-FHRP"} for v in range(10, 32)],
-        interfaces={f"acc{v}": {f"Gi1/0/{v}": {"switchport_mode": "Access", "vlan": str(v)}}
-                    for v in range(10, 32)},
+        interfaces={**{f"acc{v}": {f"Gi1/0/{v}": {"switchport_mode": "Access", "vlan": str(v)}}
+                       for v in range(10, 32)},
+                    "trunk0": {"Eth1/1": {"switchport_mode": "trunk", "trunk_native_vlan": "1"}}},
         segmentation={"vrfs": [{"vrf": "(global)", "gateway_count": 22}],
                       "summary": {"n_oncrit_exposed": 1, "gateway_acl_coverage": 0.0, "n_gateways": 22},
                       "domains": [{"domain": "Media Fabric (SMPTE ST 2110)", "tier": "On-air critical",
                                    "isolated": False, "gateways": 22}]},
+        # v2 evidence-grounded detector triggers (addressing / physical / capacity / multi-homing)
+        addressing_conflicts={"dup_ip": [{"ip": "1.1.1.1", "where": [["d0", "mgmt0", None]]}], "dup_subnet": []},
+        physical_health=[{"switch": "d0", "port": "Gi1/0/1", "crc_errors": 3, "input_errors": 0,
+                          "duplex": "half", "status": "connected"}],
+        capacity=[{"hostname": "d0", "port_util": 90.0, "free_ports": 4, "poe_util": 0.0}],
+        endpoint_dependencies={"dual_homed": [{"endpoint": "e1"}], "clusters": [], "shared_ip": []},
+        operational_drift=[{"severity": "High", "category": "False-health", "devices": ["d0"],
+                            "title": "Temporary L2 bridge on d0"}],
+        protocol_intelligence=[{"switch": "d0", "protocol": "EtherChannel", "state": "D",
+                                "severity": "High", "meaning": "Member port is down."}],
     )
 
 
@@ -947,6 +958,159 @@ def test_oncritical_segmentation_exposure_detector_evidence_gated():
     # refutation: no observed exposure -> no decision
     none = {x["id"] for x in compute_design_blueprint(_snap())["decisions"]}
     assert "security-isolate-oncritical-application-tier" not in none
+
+
+# ===================================================== net-new evidence-grounded design detectors (v2)
+# Five MORE actionable detectors over already-collected-but-unused evidence axes, grounded + refutation-
+# verified against the real AJ snapshot: addressing overlaps (renumber-before-merge), physical-layer
+# faults (remediate-before-cutover), port/PoE capacity headroom, dual-homing/cluster preservation across
+# the migration, and native-VLAN-1 on inter-switch trunks (VLAN-hopping). All coverage-honest: each reads
+# a populated snapshot axis and DISAPPEARS when that evidence is absent (proven below by refutation).
+_ACTIONABLE_NEW2 = {
+    "addressing-resolve-overlaps-before-merge": "methodology",
+    "physical-remediate-l1-faults-before-cutover": "methodology",
+    "capacity-size-target-with-growth-headroom": "methodology",
+    "migration-preserve-dual-homed-endpoints": "scenario-pattern",
+    "l2-dedicated-native-vlan-on-trunks": "security",
+    "design-resolve-false-health-masks-before-baseline": "methodology",
+    "dc-restore-degraded-portchannel-members-before-cutover": "dc-switching",
+}
+
+
+def test_evidence_detector_principles_v2_present_and_honest():
+    """Each v2 detector principle exists, is fully authored (intent/tradeoffs/alternatives/observable),
+    cited, lives in its domain, and is engine_actionable=True -- which the emit-invariant separately
+    proves the advisor actually delivers."""
+    for pid, dom in _ACTIONABLE_NEW2.items():
+        p = design_kb.by_id(pid)
+        assert p, f"missing actionable principle {pid}"
+        for field in ("citation", "recommended_action", "design_intent", "alternatives",
+                      "tradeoffs", "observable", "trigger"):
+            assert p.get(field), f"{pid} missing {field}"
+        assert p.get("engine_actionable") is True, f"{pid} is wired to a detector -> must be actionable"
+        assert pid in {x["id"] for x in design_kb.by_domain(dom)}, f"{pid} must be in domain {dom}"
+
+
+def _snap_v2(**over):
+    """_snap seeded with the five v2 detector trigger axes."""
+    base = dict(
+        addressing_conflicts={"dup_ip": [{"ip": "1.1.1.1", "where": [["d0", "mgmt0", None],
+                                                                       ["d1", "mgmt0", None]]},
+                                          {"ip": "10.0.0.1", "where": [["d2", "Vlan10", None],
+                                                                       ["d3", "Vlan10", None]]}],
+                              "dup_subnet": [{"subnet": "10.0.0.0/24", "where": ["d0", "d1"]}]},
+        physical_health=[{"switch": "d0", "port": "Gi1/0/1", "crc_errors": 5, "input_errors": 9,
+                          "duplex": "half", "status": "connected"},
+                         {"switch": "d1", "port": "Gi1/0/2", "crc_errors": 0, "input_errors": 0,
+                          "duplex": "full", "status": "err-disabled"}],
+        capacity=[{"hostname": "d0", "port_util": 95.0, "free_ports": 2, "poe_util": 10.0},
+                  {"hostname": "d1", "port_util": 40.0, "free_ports": 30, "poe_util": 0.0}],
+        # clusters is seeded but must be IGNORED (it's a vendor/class affinity analytic, not an HA cluster)
+        endpoint_dependencies={"dual_homed": [{"endpoint": "e1"}, {"endpoint": "e2"}],
+                               "clusters": [{"vendor": "HP", "count": 600}], "shared_ip": [{"ip": "10.0.0.9"}]},
+        # operational_drift false-health: 2 High (mask true state) + 1 Low (already covered) -> High-gated to 2
+        operational_drift=[{"severity": "High", "category": "False-health", "devices": ["dx"],
+                            "title": "Temporary L2 bridge on dx"},
+                           {"severity": "High", "category": "False-health", "devices": ["dy"],
+                            "title": "PoE fault on powered endpoint(s) on dy"},
+                           {"severity": "Low", "category": "False-health", "devices": ["dz"],
+                            "title": "Native VLAN 1 on 99 inter-switch trunk(s)"}],
+        interfaces={"acc1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10"}},
+                    "trunkA": {"Eth1/1": {"switchport_mode": "trunk", "trunk_native_vlan": "1"}},
+                    "trunkB": {"Eth1/2": {"switchport_mode": "trunk", "trunk_native_vlan": "99"}}},
+        # protocol_intelligence EtherChannel member anomalies: 2 High (down/suspended) + 1 Low -> gated to 2
+        protocol_intelligence=[{"switch": "dh1", "protocol": "EtherChannel", "state": "D",
+                                "severity": "High", "meaning": "Member port is down."},
+                               {"switch": "dh2", "protocol": "EtherChannel", "state": "s",
+                                "severity": "High", "meaning": "Member is suspended."},
+                               {"switch": "dh3", "protocol": "EtherChannel", "state": "P",
+                                "severity": "Low", "meaning": "Member bundled OK."}],
+    )
+    base.update(over)
+    return _snap(**base)
+
+
+def test_v2_detectors_fire_when_seeded_and_read_numbers_from_evidence():
+    """All five fire on seeded evidence and the summaries carry the COUNTS read from the snapshot
+    (not hardcoded): 2 dup-IP + 1 dup-subnet, 2 dirty ports, 1 hot switch (port_util 95% >= 85%; the 40%
+    switch excluded), 2 dual-homed (the seeded affinity 'cluster' is IGNORED), 1 native-VLAN-1 trunk
+    (trunkB on VLAN 99 is correctly excluded)."""
+    fires = {d["id"]: d for d in compute_design_blueprint(_snap_v2())["decisions"]}
+    for pid in _ACTIONABLE_NEW2:
+        assert pid in fires, f"{pid} must fire on seeded evidence"
+    assert "2 duplicate IP" in fires["addressing-resolve-overlaps-before-merge"]["evidence"]["summary"]
+    assert "1 overlapping subnet" in fires["addressing-resolve-overlaps-before-merge"]["evidence"]["summary"]
+    assert "1 inter-switch trunk(s) across 1 switch" in \
+        fires["l2-dedicated-native-vlan-on-trunks"]["evidence"]["summary"]
+    cap = fires["capacity-size-target-with-growth-headroom"]["evidence"]["summary"]
+    assert "1 of 2 switch" in cap and ">= 85% port" in cap
+    dh = fires["migration-preserve-dual-homed-endpoints"]
+    assert "2 dual-homed endpoint" in dh["evidence"]["summary"]
+    assert "cluster" not in dh["evidence"]["summary"].lower()    # the affinity 'cluster' must NOT leak in
+    assert dh["evidence"]["count"] == 2                          # count is dual_homed only, not + clusters
+
+
+def test_v2_detectors_are_evidence_gated():
+    """Refutation: strip each axis and the matching decision DISAPPEARS -- not hardcoded, never asserted
+    from absence (coverage-honesty)."""
+    bare = {d["id"] for d in compute_design_blueprint(
+        _snap_v2(addressing_conflicts={}, physical_health=[], capacity=[], endpoint_dependencies={},
+                 operational_drift=[], protocol_intelligence=[],
+                 interfaces={"acc1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10"}}}))["decisions"]}
+    for pid in _ACTIONABLE_NEW2:
+        assert pid not in bare, f"{pid} must DISAPPEAR when its evidence is absent"
+
+
+def test_v2_native_vlan_count_matches_canonical_interface_evidence():
+    """SSOT cross-lock: the native-VLAN-1 detector counts the SAME trunk+native==1 ports the rest of the
+    engine keys off (model.trunk_native_vlan), so its emitted count can't drift from the canonical figure."""
+    snap = _snap_v2()
+    expect = sum(1 for ports in snap["interfaces"].values() for pd in ports.values()
+                 if "trunk" in str(pd.get("switchport_mode", "")).lower()
+                 and str(pd.get("trunk_native_vlan", "")).strip() == "1")
+    d = next(x for x in compute_design_blueprint(snap)["decisions"]
+             if x["id"] == "l2-dedicated-native-vlan-on-trunks")
+    assert d["evidence"]["count"] == expect == 1
+
+
+def test_v2_false_health_detector_is_high_severity_gated():
+    """The operational_drift false-health detector fires on HIGH-severity masks only (temporary L2 bridges,
+    masked faults that hide the true redundancy/health state), and excludes the Low rows (e.g. the
+    native-VLAN row already owned by l2-dedicated-native-vlan-on-trunks -> no double-count). Refutation:
+    Low-only or empty must NOT fire."""
+    d = next((x for x in compute_design_blueprint(_snap_v2())["decisions"]
+              if x["id"] == "design-resolve-false-health-masks-before-baseline"), None)
+    assert d, "2 High false-health items must emit the baseline-integrity decision"
+    assert d["evidence"]["count"] == 2, "High-gated count (the Low native-VLAN row is excluded)"
+    assert "Temporary L2 bridge" in d["evidence"]["summary"]
+    # refutation: only Low false-health -> no decision (not asserted from a non-masking drift)
+    low_only = compute_design_blueprint(_snap_v2(operational_drift=[
+        {"severity": "Low", "category": "False-health", "devices": ["dz"], "title": "Multi-year uptime"}]))
+    assert not any(x["id"] == "design-resolve-false-health-masks-before-baseline"
+                   for x in low_only["decisions"])
+    # refutation: axis absent -> no decision
+    gone = compute_design_blueprint(_snap_v2(operational_drift=[]))
+    assert not any(x["id"] == "design-resolve-false-health-masks-before-baseline"
+                   for x in gone["decisions"])
+
+
+def test_v2_bundle_health_detector_is_severity_gated():
+    """Degraded EtherChannel/port-channel members (down/suspended/standalone, the engine's High-severity
+    protocol_intelligence findings) emit a restore-before-cutover decision; the gate reads the engine's
+    OWN severity (SSOT, not re-derived), so a Low/bundled-OK row is excluded. Refutation: Low-only or
+    empty must NOT fire."""
+    d = next((x for x in compute_design_blueprint(_snap_v2())["decisions"]
+              if x["id"] == "dc-restore-degraded-portchannel-members-before-cutover"), None)
+    assert d, "High EtherChannel member anomalies must emit the bundle-restore decision"
+    assert d["evidence"]["count"] == 2, "2 High; the Low (bundled-OK) row is excluded by the severity gate"
+    assert "2 EtherChannel" in d["evidence"]["summary"]
+    low = compute_design_blueprint(_snap_v2(protocol_intelligence=[
+        {"switch": "x", "protocol": "EtherChannel", "state": "P", "severity": "Low", "meaning": "ok"}]))
+    assert not any(x["id"] == "dc-restore-degraded-portchannel-members-before-cutover"
+                   for x in low["decisions"])
+    gone = compute_design_blueprint(_snap_v2(protocol_intelligence=[]))
+    assert not any(x["id"] == "dc-restore-degraded-portchannel-members-before-cutover"
+                   for x in gone["decisions"])
 
 
 # ----------------------------------------- ACI vs standalone NX-OS VXLAN-EVPN fabric operating-model choice
