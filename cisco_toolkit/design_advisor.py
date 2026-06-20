@@ -1420,6 +1420,20 @@ def _replacement_bom(snap):
     }
 
 
+def _tier_zones(seg):
+    """Distinct observed sensitivity tiers that have >=1 gateway, ordered by total gateway weight desc then
+    name. Each is a candidate macro-segmentation zone -- evidence-derived from segmentation.domains[].tier
+    (the engine's OWN classification of the broadcast domains), not a fabricated security assignment."""
+    weight = {}
+    for d in _as_list(_as_dict(seg).get("domains")):
+        d = _as_dict(d)
+        tier = str(d.get("tier") or "").strip()
+        g = _as_int(d.get("gateways"))
+        if tier and g > 0:
+            weight[tier] = weight.get(tier, 0) + g
+    return sorted(weight.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def _segmentation_plan(snap, req, census=None):
     """Target L3 segmentation intent. The observed VRF/VLAN state is grounded; the zone DEFINITIONS need a
     data classification -- absent it this stays an open question (zones are never fabricated). `census` (the
@@ -1441,11 +1455,27 @@ def _segmentation_plan(snap, req, census=None):
                           "inter-zone policy at a firewall/VRF boundary, default-deny between zones (confirm "
                           "the per-VLAN assignment with the customer).")
     else:
-        plan["status"] = "needs-requirement"
-        plan["requirement_needed"] = "data_classification"
-        plan["target"] = ("Segment into security zones aligned to a data classification (which assets must be "
-                          "isolated from which); supply data_classification to propose the VLAN->zone map -- "
-                          "zones are not assumed here.")
+        tiers = _tier_zones(seg)
+        if len(tiers) > 1:
+            # Evidence-derived SEED: the engine already classified the broadcast domains into >1 sensitivity
+            # tier -> a starting macro-segmentation is one zone per observed tier (NOT a fabricated assignment;
+            # the per-VLAN map is still firmed by data_classification, which takes precedence above).
+            plan["status"] = "candidate"
+            plan["mode"] = "tier-seeded"
+            plan["target_zones"] = [t for t, _ in tiers]
+            plan["n_macro_zones"] = len(tiers)
+            tier_desc = ", ".join(f"{t} ({g} gw)" for t, g in tiers)
+            plan["target"] = (f"The estate already classifies its broadcast domains into {len(tiers)} sensitivity "
+                              f"tier(s) ({tier_desc}); a starting macro-segmentation is ONE security zone per "
+                              f"observed tier -- enforce inter-zone policy at a firewall/VRF boundary, default-deny "
+                              f"between zones. The tiers are an evidence-derived SEED: supply data_classification to "
+                              f"firm the per-VLAN zone map (the assignment is not assumed here).")
+        else:
+            plan["status"] = "needs-requirement"
+            plan["requirement_needed"] = "data_classification"
+            plan["target"] = ("Segment into security zones aligned to a data classification (which assets must be "
+                              "isolated from which); supply data_classification to propose the VLAN->zone map -- "
+                              "zones are not assumed here.")
     return plan
 
 
