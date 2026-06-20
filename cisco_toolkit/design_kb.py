@@ -3218,6 +3218,47 @@ _ACTIONABLE_DETECTOR_ADDENDUM = [
 DOCTRINE.extend(_ACTIONABLE_DETECTOR_ADDENDUM)
 
 
+# ---------------------------------------------------------------------------- media-fabric (broadcast) addendum
+# A single doctrine principle for broadcast media-over-IP (SMPTE ST 2110) timing. engine_actionable=False: the
+# full PTP profile/domain is a media-design detail the L1-L4 assessment does not collect, but the
+# multicast_intelligence.ptp axis DOES observe PTP-capable switches + grandmaster state, so compute_target_state
+# surfaces this as a 'Media / timing fabric' TARGET-STATE DIMENSION (not a firing decision). Relevant to the [HISTORY-REDACTED]
+# ([HISTORY-REDACTED]) broadcast estate; cited as a dimension driver. Web-verified (SMPTE ST 2059-2 / ST 2110-10).
+_MEDIA_FABRIC_ADDENDUM = [
+    {
+        "id": "multicast-media-fabric-ptp-timing",
+        "domain": "multicast", "priority": "High", "engine_actionable": False,
+        "title": "Give a broadcast (ST 2110) media fabric a resilient PTP timing plane: SMPTE ST 2059-2, boundary clocks, redundant grandmasters",
+        "design_intent": "Professional media-over-IP (SMPTE ST 2110) carries uncompressed video/audio as multicast "
+            "essence flows that are usable only if every endpoint shares a common, sub-microsecond time reference -- "
+            "delivered by PTP (IEEE 1588) under the SMPTE ST 2059-2 broadcast profile. The timing plane must be "
+            "engineered, not assumed: run a boundary clock on every switch in the media path (each locks to the "
+            "grandmaster and re-serves downstream, which scales far better than one flat PTP domain), lock those to a "
+            "REDUNDANT grandmaster pair (>=2, for seamless BMCA failover), and keep the whole media plane in a "
+            "dedicated VRF/zone with IGMPv3/SSM rather than on the flat L3. PTP-capable switches sitting dormant with "
+            "no operational grandmaster mean the media fabric has no timing reference at all: the essence flows are "
+            "unprotected and a clock event corrupts them silently.",
+        "tradeoffs": "Deterministic sub-microsecond media timing + resilience (boundary clocks + redundant GMs) vs "
+            "the cost of GNSS-locked grandmasters, PTP-aware switches and a separate media VRF/zone; a boundary clock "
+            "per hop vs a simpler but unscalable and fragile single flat PTP domain.",
+        "trigger": "A broadcast/media estate carrying ST 2110 (or AES67/Dante audio) AV multicast groups and "
+            "PTP-capable switches -- especially where the PTP clocks are dormant or there is no operational, "
+            "redundant grandmaster.",
+        "observable": "Partially observable from an L1-L4 assessment: multicast_intelligence.ptp enumerates the "
+            "PTP-capable switches and whether any operational clock/grandmaster is seen, and the AV multicast group "
+            "census shows the media plane; the full PTP profile/domain config is a media-design detail not collected.",
+        "recommended_action": "Deploy >=2 GNSS-locked grandmasters (redundant, ST 2059-2 profile); enable boundary "
+            "clock on every media-path switch; place the media plane in a dedicated VRF/zone with IGMPv3/SSM; verify "
+            "all clocks lock and converge inside the ~1 microsecond accuracy budget.",
+        "alternatives": "A single flat PTP domain (simpler, unscalable, no per-hop correction) for a very small media "
+            "island; external/black-burst legacy sync where ST 2110 is not yet adopted.",
+        "citation": "SMPTE ST 2059-2 (PTP broadcast profile) + ST 2110-10 timing; boundary-clock + redundant-"
+            "grandmaster leading practice (The Broadcast Bridge / KeyCode Media / Leader-Phabrix); web-verified.",
+    },
+]
+DOCTRINE.extend(_MEDIA_FABRIC_ADDENDUM)
+
+
 # ---------------------------------------------------------------------------- coverage honesty
 # `engine_actionable` MUST mean "design_advisor.compute_design_blueprint emits a decision for this
 # principle's observed trigger". The following are valuable doctrine the HLD / chat can still cite,
