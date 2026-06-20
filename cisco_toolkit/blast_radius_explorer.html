@@ -3219,6 +3219,7 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
 /* =====================================================================
    HINTS / MODE TAG / LEGEND
    ===================================================================== */
+function _desSelHasDevices(){if(DES_SEL==null)return false;const bp=designBlueprint();const d=bp&&bp.decisions&&bp.decisions[DES_SEL];return !!(d&&d.evidence&&(d.evidence.devices||[]).length);}
 function setHint(){const h=document.getElementById("hint");const m={
   blast:`Click a switch to <b>simulate its removal</b>`,
   trace:TRACE_SRC?(TRACE_DST?`Path traced — click a new <b>source</b> to restart`:`Now click a <b>destination</b>`):`Click a <b>source</b> switch, then a <b>destination</b>`,
@@ -3231,7 +3232,7 @@ function setHint(){const h=document.getElementById("hint");const m={
   waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
   apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`,
   review:AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`,
-  design:DES_SEL!=null?`Affected devices highlighted — click the decision again or the background to clear`:`Click a design decision to <b>spotlight the devices it affects</b>`}[MODE];
+  design:DES_SEL!=null?(_desSelHasDevices()?`Affected devices highlighted — click the decision again or the background to clear`:`This decision is <b>fleet / VLAN-scoped</b> — no per-host spotlight. Click it again or the background to clear`):`Click a design decision to <b>spotlight the devices it affects</b>`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -6262,7 +6263,7 @@ function drawDesign(){
       <div class="ln" style="margin-top:3px"><b>Trade-offs:</b> ${esc(d.tradeoffs||"")}</div>
       <div class="ln" style="margin-top:3px"><b>CCDE basis:</b> <span class="faint">${esc(((d.principle||{}).citation)||"")}</span></div>
       ${axes.length?`<div class="ln" style="margin-top:4px">${axes.map(a=>`<span class="pill pl-neutral">${esc(a)}</span>`).join(" ")}</div>`:""}
-      ${ev.length?`<div class="ln" style="margin-top:4px">${ev.slice(0,10).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${ev.length>10?` <span class="faint">+${ev.length-10}</span>`:""}</div>`:""}
+      ${ev.length?`<div class="ln" style="margin-top:4px">${ev.slice(0,10).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${ev.length>10?` <span class="faint">+${ev.length-10}</span>`:""}</div>`:`<div class="ln" style="margin-top:4px"><span class="pill pl-neutral">fleet / VLAN-wide</span> <span class="faint">no per-host spotlight</span></div>`}
     </div>`;}).join("");
   const needRows=needs.map(d=>`<div class="ln"><span class="pill pl-neutral">needs</span> ${esc(d.title)} <span class="faint">— ${esc((d.requirements_needed||[]).join(", "))}</span></div>`).join("");
   return head+
@@ -6364,6 +6365,9 @@ function paintDesign(){
   const decs=Array.isArray(bp.decisions)?bp.decisions:[];
   if(DES_SEL!=null){const d=decs[DES_SEL]; if(!d)return;
     const set=new Set((d.evidence&&d.evidence.devices)||[]);
+    // A fleet/VLAN-scoped decision (no per-host evidence, e.g. coverage-honesty, VLAN-span, phased-cutover) has
+    // an empty device set — spotlighting it would dim the WHOLE canvas to zero. No-op instead (honest hint below).
+    if(!set.size)return;
     MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
       if(set.has(h))n.g.classList.add("xlhl"); else n.g.classList.add("xldim");});
     edgeEls.forEach(({e,path})=>{if(!(set.has(e.a)&&set.has(e.b)))path.classList.add("dim");});

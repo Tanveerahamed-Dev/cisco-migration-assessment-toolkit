@@ -3053,6 +3053,171 @@ _MEGA_CORPUS_ADDENDUM = [
 DOCTRINE.extend(_MEGA_CORPUS_ADDENDUM)
 
 
+# ---------------------------------------------------------------------------- actionable-detector addendum
+# Unlike the mined-doctrine addenda above (engine_actionable=False -- reference knowledge the chat/HLD can
+# cite but the advisor cannot auto-detect), EVERY principle here is engine_actionable=True: each is wired to a
+# NEW firing detector in design_advisor.py that reads collected-but-previously-unused snapshot evidence and
+# emits a traceable target-state DESIGN decision. They were surfaced by the 2026-06 multi-domain mining wave,
+# python-measured on the canonical AJ snapshot, and adversarially refutation-gated. The emit-invariant
+# (tests/test_design_blueprint.py::test_every_engine_actionable_principle_is_emitted) and the per-detector
+# honesty tests (tests/test_design_addenda.py) lock that each fires on real evidence and returns None on clean.
+_ACTIONABLE_DETECTOR_ADDENDUM = [
+    {
+        "id": "addressing-one-vlan-one-subnet-integrity",
+        "domain": "dc-switching", "priority": "High", "engine_actionable": True,
+        "title": "Bind each VLAN to exactly one IP subnet (one-VLAN-one-subnet integrity) before any L2 merge or collapse",
+        "design_intent": "A broadcast domain (VLAN) and an IP subnet are meant to be 1:1. When the same VLAN id "
+            "carries two or more distinct subnets across different gateway switches, the L2 domain has conflicting "
+            "L3 identities: hosts in one subnet ARP for a gateway that another switch answers for a different "
+            "subnet, and any target that merges or stretches that VLAN forwards non-deterministically. Reconcile "
+            "each VLAN to a single subnet (renumber the minority, or split the VLAN) before the migration touches it.",
+        "tradeoffs": "Addressing integrity and a deterministic merge vs the renumber/re-IP effort on the minority "
+            "subnet and its endpoints. A silent collision at cutover is far costlier than the planned renumber.",
+        "trigger": "One VLAN id mapped to >=2 distinct subnets across >=2 gateways, or a subnet that strictly "
+            "contains another on the same VLAN (a /22 over a /24) -- a silent black-hole at the mask boundary.",
+        "observable": "Directly observable. subnet_intelligence.per_device[].served_subnets[] gives the "
+            "VLAN->subnet->gateway binding first-hand; l3_forwarding[].primary_subnet corroborates and supplies "
+            "the containment/mask-mismatch arm (excluding /30+ point-to-point links). Scoped to collected gateways.",
+        "recommended_action": "For each offending VLAN, choose the authoritative subnet and renumber the others "
+            "(or split the VLAN per subnet); resolve any containment/mask mismatch so no subnet contains another on "
+            "the same VLAN; verify one-VLAN-one-subnet before merging or stretching the domain in the target.",
+        "alternatives": "Keep the VLANs separate in the target (no merge) where a renumber is infeasible; or route "
+            "between the two subnets rather than bridging them into one L2 domain.",
+        "citation": "Cisco campus/DC L2-L3 design (VLAN<->subnet 1:1, SVI per subnet); RFC 950/1812 subnetting; web-verified.",
+    },
+    {
+        "id": "dc-stp-root-determinism",
+        "domain": "dc-switching", "priority": "High", "engine_actionable": True,
+        "title": "Engineer an explicit STP root priority on every active VLAN -- never let the root be elected by the MAC tiebreak",
+        "design_intent": "Spanning tree breaks priority ties on the lowest bridge MAC address. A switch left at the "
+            "default bridge priority (32768) that wins the root role did so accidentally -- on a MAC tiebreak, not by "
+            "design -- so the root is wherever the oldest/lowest-MAC switch happens to sit, not at the distribution/"
+            "aggregation where the active gateway lives. At migration a newly-introduced switch with a lower MAC can "
+            "silently steal the root, moving the L2 topology and the traffic path under you. Set the root explicitly.",
+        "tradeoffs": "Deterministic, gateway-aligned L2 forwarding and a safe cutover vs a one-time priority-"
+            "engineering pass across the VLANs (and keeping primary/secondary aligned with the FHRP active).",
+        "trigger": "A switch is the STP root for a VLAN while still at the default bridge priority (root_priority == "
+            "32768 + VLAN id) -- i.e. it won on the MAC tiebreak; or the root is not co-located with the active gateway.",
+        "observable": "Directly observable. stp_roots[host][vlan].{is_root, root_priority} gives the elected root and "
+            "its priority per VLAN; the same evidence analyze.stp_root_findings feeds to the punch-list/workbook.",
+        "recommended_action": "Configure 'spanning-tree vlan X root primary' on the intended root (priority 24576) and "
+            "'root secondary' (28672) on its peer, co-located with the active FHRP gateway, for every production VLAN; "
+            "re-verify after introducing any new switch in the migration.",
+        "alternatives": "Move to MST and engineer the per-instance root; or a routed-access / spine-leaf target where "
+            "STP root placement stops being the failover mechanism.",
+        "citation": "Cisco STP design (default bridge priority 32768, lowest-MAC tiebreak, explicit root primary/secondary); web-verified.",
+    },
+    {
+        "id": "addressing-reserved-vlan-range-hygiene",
+        "domain": "dc-switching", "priority": "High", "engine_actionable": True,
+        "title": "Keep production SVIs out of the platform-reserved VLAN range (e.g. 3968-4095 on Nexus) before migrating to that platform",
+        "design_intent": "Nexus / NX-OS reserves VLANs 3968-4095 for internal device use by default and will not let "
+            "you configure an SVI or user data there unless the reserved block is first moved ('system vlan reserve') "
+            "and the device reloaded. A legacy platform that tolerated an SVI on, say, VLAN 4094 will migrate that "
+            "config to a target Nexus that silently refuses it -- the L3 interface never comes up and the link "
+            "black-holes at cutover. Renumber any reserved-range SVI into the normal user range as part of the design.",
+        "tradeoffs": "A clean, portable addressing plan vs renumbering the affected (usually infrastructure /30) links "
+            "and updating both ends + any routing that references them.",
+        "trigger": "An L3 SVI (svi_ip present) configured on a VLAN id in the platform-reserved range (3968-4095 for "
+            "Nexus; also the legacy 1002-1005) on a fleet migrating to that platform.",
+        "observable": "Directly observable. l3_forwarding[].vlan + l3_forwarding[].svi_ip expose the SVI's VLAN id.",
+        "recommended_action": "Renumber each reserved-range SVI into the user VLAN range (1-3967) on both ends before "
+            "cutover; if the reserved block genuinely must move on the target, schedule the 'system vlan reserve' "
+            "change + reload in the MOP and validate the SVI comes up.",
+        "alternatives": "Keep the link on a routed (no-SVI) sub-interface or physical L3 port that is not subject to the "
+            "VLAN-id reservation.",
+        "citation": "Cisco Nexus 9000 NX-OS Layer-2 Switching Config Guide (VLANs 3968-4095 reserved for internal use); web-verified.",
+    },
+    {
+        "id": "dc-lacp-over-static-etherchannel",
+        "domain": "dc-switching", "priority": "High", "engine_actionable": True,
+        "title": "Negotiate multi-member EtherChannels with LACP, not static 'mode on'",
+        "design_intent": "A static ('channel-group ... mode on') EtherChannel bundles its members with no negotiation: "
+            "there is no LACP exchange to confirm the far end agrees, the speeds/duplex match, and the link is "
+            "bidirectional. A miscabled, one-way, or mismatched member is admitted into the bundle anyway and silently "
+            "black-holes its share of the load-balance hash -- an Up-but-broken fault that 'show' does not flag. LACP "
+            "(mode active) detects exactly these and suspends the bad member instead of forwarding into a hole.",
+        "tradeoffs": "Member-level health/miscabling detection and safe bundle formation (LACP) vs a small amount of "
+            "control traffic and the requirement that both ends speak LACP (true for all modern Cisco platforms).",
+        "trigger": "A multi-member (>=2 physical) port-channel whose members are all static 'mode on' "
+            "(port_channel_protocol == ON), excluding FEX fabric/HIF links where mode-on is by design.",
+        "observable": "Directly observable. interfaces[host][port].port_channel groups the members and "
+            "interfaces[host][port].port_channel_protocol exposes ON vs LACP/PAgP; FEX-HIF ports are excluded.",
+        "recommended_action": "Convert each static bundle to LACP (channel-group N mode active on both ends), confirm "
+            "all members reach 'bundled' (P) state, and leave a single member's failure to suspend rather than blackhole.",
+        "alternatives": "Where a peer genuinely cannot run LACP, keep mode-on but add explicit member-up monitoring; "
+            "FEX HIFs legitimately stay mode-on (the parent negotiates).",
+        "citation": "Cisco EtherChannel/LACP design (LACP detects miscabling/one-way members that static mode-on admits); web-verified.",
+    },
+    {
+        "id": "dc-power-supply-redundancy",
+        "domain": "dc-switching", "priority": "High", "engine_actionable": True,
+        "title": "Restore N+1 power-supply redundancy before a multi-PSU chassis is silently single-corded",
+        "design_intent": "A chassis fitted with more than one power supply is meant to survive the loss of one. When it "
+            "reports a FAILED supply, that redundancy is already gone -- it is running on the remaining feed and the "
+            "next power event (a tripped breaker, a pulled cord, a grid blip) is a full-chassis outage. On a keystone "
+            "distribution/core node that strands hundreds of endpoints, the failed PSU is the single further event "
+            "between 'healthy' and a major outage. Replace the supply (and dual-feed/dual-grid the keystones) first.",
+        "tradeoffs": "Restored N+1 (or 2N) power resilience vs the cost of the replacement supply and a dual-feed "
+            "circuit; trivially justified on any aggregation node whose loss strands a closet or a rack.",
+        "trigger": "A device with more than one power supply (num_power_supplies > 1) reporting a failed supply "
+            "(ps_status containing 'fail') -- redundancy lost, now single-corded.",
+        "observable": "Directly observable. devices[host].ps_status (a '/'-joined per-PSU status list) and "
+            "devices[host].num_power_supplies. Single-PSU-by-design boxes (num==1) are excluded.",
+        "recommended_action": "Replace the failed supply to restore N+1; on distribution/core keystones move to dual "
+            "supplies on independent feeds/grids (2N) and alarm on PSU state; verify both supplies 'OK' before cutover.",
+        "alternatives": "Where the chassis is being replaced anyway, ensure the replacement ships with dual supplies "
+            "and dual feeds rather than repairing the outgoing unit.",
+        "citation": "Cisco DC platform power design + leading-practice N+1/2N PSU redundancy on aggregation/core; web-verified.",
+    },
+    {
+        "id": "migration-gateway-cutover-order",
+        "domain": "scenario-pattern", "priority": "Medium", "engine_actionable": True,
+        "title": "Move the default gateway (SVI) LAST for any subnet whose endpoints straddle multiple switches",
+        "design_intent": "When a subnet's endpoints sit on more than one switch, you cannot move them all in one "
+            "instant. As long as ANY workload of that subnet remains on the legacy side, the legacy default gateway "
+            "must stay live and the target broadcast domain must keep flooding/anycast ready -- so the gateway (SVI) "
+            "is the LAST thing to move, after the workloads, not the first. Cut the gateway early and every endpoint "
+            "still trailing on the old side loses its first hop mid-migration. This sequences the move-group plan.",
+        "tradeoffs": "A safe, reversible per-subnet cutover (gateway-move-last, build-before-break) vs a longer window "
+            "where the subnet's L3 is split across legacy and target and must be kept consistent on both.",
+        "trigger": "A gateway SVI whose subnet has evidenced endpoints across >=2 switches -- a move-order constraint "
+            "(the SVI cannot move until its trailing endpoints have).",
+        "observable": "Directly observable. l3_forwarding[].{vlan, svi_ip} gives the gateways; endpoint_identity[]."
+            "{vlan, host} gives which switches still hold each subnet's endpoints (the count that must reach zero first).",
+        "recommended_action": "In each move-group, schedule the SVI/default-gateway move as the final step for every "
+            "straddling subnet; keep the legacy gateway active and the target BD flooding (ARP/unknown-unicast) on with "
+            "unicast routing off until all workloads are across; only then move the gateway and enable routing.",
+        "alternatives": "Move the whole subnet in a single wave where it fits one switch/move-group (no straddle, no "
+            "ordering constraint); or use an anycast/distributed gateway so the gateway exists on both sides during the cut.",
+        "citation": "Cisco 'Migrating Existing Networks to ACI' (BD flood on / unicast-routing off until workloads move; gateway last); web-verified.",
+    },
+    {
+        "id": "dc-size-l2-subnet-to-endpoint-count",
+        "domain": "dc-switching", "priority": "Medium", "engine_actionable": True,
+        "title": "Size each VLAN's subnet to its endpoint count -- a VLAN with >254 endpoints cannot live in a /24",
+        "design_intent": "A /24 holds at most 254 usable host addresses. A VLAN already carrying more evidenced "
+            "endpoints than that physically cannot be a single /24 in the target -- it needs a larger prefix (/23, /22) "
+            "or, better for the failure domain, to be split into multiple smaller broadcast domains. This is a sizing "
+            "REALITY visible from the current endpoint census, independent of any supplied address-space requirement, "
+            "so it should be surfaced up front rather than discovered when the allocator runs out of addresses.",
+        "tradeoffs": "A subnet sized to its hosts (no overflow) vs either a larger broadcast/failure domain (one big "
+            "prefix) or the segmentation effort of splitting the VLAN. Splitting shrinks the fault domain; one big "
+            "prefix is simpler but bridges more hosts into one storm radius.",
+        "trigger": "A VLAN (id != 1) whose evidenced endpoint count exceeds 254 -- it overflows a single /24.",
+        "observable": "Directly observable. endpoint_identity[].{vlan, host} gives the evidenced endpoint count per "
+            "VLAN; the access-port census corroborates. Independent of the requirement-gated address allocator.",
+        "recommended_action": "Size each oversized VLAN's target prefix to its endpoint count plus headroom (/23 or "
+            "/22), or split the broadcast domain into multiple VLANs/subnets to bound the failure domain; reflect the "
+            "choice in the addressing plan.",
+        "alternatives": "Keep one large prefix where L2 adjacency across the whole population is genuinely required "
+            "(accepting the larger storm radius); otherwise prefer splitting.",
+        "citation": "IPv4 subnetting (/24 = 254 usable hosts) + Cisco fault-domain sizing (bound the broadcast domain); web-verified.",
+    },
+]
+DOCTRINE.extend(_ACTIONABLE_DETECTOR_ADDENDUM)
+
+
 # ---------------------------------------------------------------------------- coverage honesty
 # `engine_actionable` MUST mean "design_advisor.compute_design_blueprint emits a decision for this
 # principle's observed trigger". The following are valuable doctrine the HLD / chat can still cite,

@@ -269,10 +269,19 @@ def _maximal_snap():
         multicast_intelligence={"querier": {"n_querier_vlans": 5, "gap_vlans": [148, 611]},
                                 "risks": [{"kind": "no-querier"}]},
         l3_forwarding=[{"switch": "dist1", "vlan": str(v), "svi_ip": f"10.0.{v}.1",
-                        "fhrp": "none", "risk": "no-FHRP"} for v in range(10, 32)],
+                        "fhrp": "none", "risk": "no-FHRP"} for v in range(10, 32)]
+        + [{"switch": "dist1", "vlan": 4094, "svi_ip": "5.5.5.1/30", "primary_subnet": "5.5.5.0/30"},
+           # VLAN 208 with ONE collected subnet -> _d_oversized_l2_subnet (single broadcast domain >254 endpoints)
+           {"switch": "dist1", "vlan": "208", "svi_ip": "10.0.208.1", "primary_subnet": "10.0.208.0/24"}],
         interfaces={**{f"acc{v}": {f"Gi1/0/{v}": {"switchport_mode": "Access", "vlan": str(v)}}
                        for v in range(10, 32)},
-                    "trunk0": {"Eth1/1": {"switchport_mode": "trunk", "trunk_native_vlan": "1"}}},
+                    "trunk0": {"Eth1/1": {"switchport_mode": "trunk", "trunk_native_vlan": "1"}},
+                    # static (mode on) multi-member EtherChannel -> _d_static_etherchannel
+                    "ec0": {"Gi1/0/1": {"port_channel": "Po1", "port_channel_protocol": "ON"},
+                            "Gi1/0/2": {"port_channel": "Po1", "port_channel_protocol": "ON"}},
+                    # endpoint-bearing access edge with no BPDU-Guard -> _d_stp_det BPDU arm
+                    "edge0": {"Gi1/0/3": {"switchport_mode": "Access", "vlan": "10",
+                                          "end_host_mac": "00:11:22:33:44:55"}}},
         segmentation={"vrfs": [{"vrf": "(global)", "gateway_count": 22}],
                       "summary": {"n_oncrit_exposed": 1, "gateway_acl_coverage": 0.0, "n_gateways": 22},
                       "domains": [{"domain": "Media Fabric (SMPTE ST 2110)", "tier": "On-air critical",
@@ -282,11 +291,21 @@ def _maximal_snap():
         physical_health=[{"switch": "d0", "port": "Gi1/0/1", "crc_errors": 3, "input_errors": 0,
                           "duplex": "half", "status": "connected"}],
         capacity=[{"hostname": "d0", "port_util": 90.0, "free_ports": 4, "poe_util": 0.0}],
-        endpoint_dependencies={"dual_homed": [{"endpoint": "e1"}], "clusters": [], "shared_ip": []},
+        endpoint_dependencies={"dual_homed": [{"endpoint": "e1", "switches": ["d0", "d1"]}],
+                               "clusters": [], "shared_ip": []},
         operational_drift=[{"severity": "High", "category": "False-health", "devices": ["d0"],
                             "title": "Temporary L2 bridge on d0"}],
         protocol_intelligence=[{"switch": "d0", "protocol": "EtherChannel", "state": "D",
                                 "severity": "High", "meaning": "Member port is down."}],
+        # mega-wave 2026-06 detector triggers (collected-but-unused evidence -> firing decisions)
+        subnet_intelligence={"per_device": [
+            {"served_subnets": [{"vlan": "10", "subnet": "10.0.10.0/24", "gateway": "g1"}]},
+            {"served_subnets": [{"vlan": "10", "subnet": "10.9.10.0/24", "gateway": "g2"}]}]},
+        stp_roots={"d0": {"10": {"is_root": True, "root_priority": 32778}}},   # 32768 + vlan 10 -> accidental
+        devices={"d0": {"hostname": "d0", "num_power_supplies": 2, "ps_status": "OK / FAIL"},
+                 "d1": {"hostname": "d1"}, "d2": {"hostname": "d2"}, "d3": {"hostname": "d3"}},
+        endpoint_identity=[{"vlan": "10", "host": "d0"}, {"vlan": "10", "host": "d1"}]   # straddle -> gateway-move-last
+        + [{"vlan": "208", "host": f"sw{i % 5}"} for i in range(255)],                   # >254 -> oversized /24
     )
 
 
