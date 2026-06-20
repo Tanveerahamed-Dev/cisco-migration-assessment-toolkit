@@ -1862,6 +1862,29 @@ def compute_target_state(snap, requirements=None, sig=None):
             "Planning", drivers=["scenario-build-before-break-phased-cutover",
                                  "dc-fabric-fabric-drops-bpdu-single-l2-handoff"]))
 
+    # 6. Media / timing fabric -- broadcast (ST 2110) timing plane, from observed PTP + AV-multicast evidence.
+    #    Gated on the media estate actually being present (PTP-capable switches OR AV multicast groups) so it is
+    #    never noise for a non-broadcast network. Coverage-honest: states the observed PTP/grandmaster posture.
+    mi = _as_dict(snap.get("multicast_intelligence"))
+    ptp = _as_dict(mi.get("ptp"))
+    n_clocks = _as_int(ptp.get("n_clocks"))
+    n_av = _as_int(_as_dict(mi.get("summary")).get("n_av_groups"))
+    if n_clocks > 0 or n_av > 0:
+        n_op = _as_int(ptp.get("n_operational"))
+        n_gm = len(_as_list(ptp.get("grandmasters")))
+        dims.append(_ts_dim(
+            "Media / timing fabric",
+            f"{n_clocks} PTP-capable switch(es), {n_op} operational / {n_gm} grandmaster; "
+            f"{n_av} audio/video multicast group(s) on the flat fabric.",
+            "Run SMPTE ST 2059-2 (the broadcast PTP profile) with a boundary clock on every media-path switch, "
+            "locked to a REDUNDANT grandmaster pair in one PTP domain (sub-microsecond, ~1 us accuracy); carry the "
+            "AV essence flows as IGMPv3/SSM and isolate the media plane in a dedicated VRF/zone off the flat global L3.",
+            f"A professional media (ST 2110) fabric lives or dies on timing: PTP-capable switches with "
+            f"{'no operational grandmaster' if n_gm == 0 else 'a single grandmaster'} have no resilient time "
+            f"reference, so a clock loss silently corrupts every audio/video essence flow.",
+            "Observed",
+            drivers=["multicast-media-fabric-ptp-timing", "security-isolate-oncritical-application-tier"]))
+
     n_gated = sum(1 for d in dims if d.get("requirement_needed"))
     headline = (f"Candidate target-state across {len(dims)} dimension(s)"
                 + (f"; {n_gated} await a requirement" if n_gated else "")

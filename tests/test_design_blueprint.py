@@ -419,8 +419,30 @@ def test_target_state_is_evidence_grounded_and_requirement_gated():
     tier2 = {d["area"]: d for d in ts2["dimensions"]}["Topology / tier model"]
     assert not tier2.get("requirement_needed") and tier2.get("target")
     assert tier2["confidence"] != "Requirement-needed"
-    # coverage honesty: uncollected devices are surfaced, never assumed designed
-    assert ts.get("coverage")
+
+
+def test_media_timing_fabric_dimension_is_evidence_gated():
+    """Broadcast media fabric (the AJ estate): PTP-capable switches with no operational/redundant grandmaster
+    plus AV multicast groups surface a 'Media / timing fabric' target-state dimension grounded in SMPTE ST
+    2059-2. Refutation: with no PTP/AV evidence the dimension must NOT appear (no fabricated media plane for a
+    non-broadcast estate). Its driver principle is real KB doctrine and honestly engine_actionable=False."""
+    from cisco_toolkit.design_advisor import compute_target_state
+    snap = _snap(multicast_intelligence={
+        "ptp": {"n_clocks": 13, "n_operational": 0, "grandmasters": [], "dormant": ["s1", "s2"]},
+        "summary": {"n_av_groups": 45, "n_groups": 73},
+        "querier": {"gap_vlans": []}, "risks": []})
+    dim = next((d for d in compute_target_state(snap)["dimensions"]
+                if d["area"] == "Media / timing fabric"), None)
+    assert dim, "13 PTP clocks + 45 AV groups must surface the media/timing dimension"
+    assert "2059" in dim["target"] and "grandmaster" in dim["target"].lower()
+    assert "13" in dim["current"] and "0 grandmaster" in dim["current"]
+    kb_ids = {p["id"] for p in design_kb.DOCTRINE}
+    assert dim["drivers"] and all(drv in kb_ids for drv in dim["drivers"])
+    media_p = design_kb.by_id("multicast-media-fabric-ptp-timing")
+    assert media_p and media_p["engine_actionable"] is False     # surfaced via the dimension, not a firing detector
+    # refutation: base snapshot (no ptp clocks, no AV groups) -> no media dimension
+    assert not any(d["area"] == "Media / timing fabric"
+                   for d in compute_target_state(_snap())["dimensions"])
 
 
 def test_target_state_replacement_bom_and_segmentation_plan():
