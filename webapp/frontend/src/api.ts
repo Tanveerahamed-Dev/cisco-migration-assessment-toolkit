@@ -292,7 +292,8 @@ export interface DesignTargetState {
     waves: { wave: number; kind: string; n_switches: number; switches: string[]; source_groups: number[] }[];
     n_waves: number; wave_cap: number; n_move_groups: number; largest_group: number; n_subdivided_groups: number; note: string;
   };
-  segmentation_plan?: Record<string, unknown>;
+  segmentation_plan?: { observed: string; principle?: string; status: string; target: string;
+    requirement_needed?: string; target_zones?: string[] };
   scope_note?: string;
 }
 export interface DesignBlueprint {

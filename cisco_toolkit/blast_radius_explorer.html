@@ -6248,6 +6248,15 @@ function drawDesign(){
     apHtml=`<div class="ln faint">Net-new IP plan — needs <b>${esc(ap.requirement_needed)}</b>${censusTxt}. ${esc(ap.note||"")}</div>
       <div class="ln" style="margin-top:4px;font-size:11px;color:var(--watch)">Supply <b>--requirements</b> with <code>address_space</code> (e.g. 10.0.0.0/16) when re-running the assessment to generate the candidate IP plan; add <code>vlan_zones</code> for zone-aware allocation. Interactive right-sizing is available in the AssessHub web platform&#x2019;s Design panel.</div>`;
   }
+  const sp=ts.segmentation_plan||{}; let segHtml="";
+  if(sp.observed){
+    if(sp.status==="candidate"&&Array.isArray(sp.target_zones)){
+      const zoneChips=sp.target_zones.map(z=>`<span class="pill pl-neutral">${esc(z)}</span>`).join(" ");
+      segHtml=`<div class="ln faint">${esc(sp.observed)}</div><div class="ln" style="margin-top:4px">${zoneChips}</div><div class="ln faint" style="margin-top:4px">${esc(sp.target||"")}</div>`;
+    }else{
+      segHtml=`<div class="ln faint">${esc(sp.observed)}</div><div class="ln" style="margin-top:4px;font-size:11px;color:var(--watch)">Needs <b>${esc(sp.requirement_needed||"data_classification")}</b> — ${esc(sp.target||"")}</div>`;
+    }
+  }
   const wp=ts.wave_plan||{}; const wv=Array.isArray(wp.waves)?wp.waves:[];
   const waveRows=wv.slice(0,40).map(w=>`<div class="ln"><span class="pill pl-${w.kind==="coupled-subwave"?"watch":"neutral"}">wave ${w.wave}</span> ${esc(w.kind||"")} <span class="faint">${w.n_switches} switch(es)</span></div>`).join("");
   const scoreTok=v=>v==null?"neutral":v<=1?"crit":v<=2?"risk":v<=3?"watch":"ok";
@@ -6260,6 +6269,7 @@ function drawDesign(){
       <div class="ln faint" style="margin-top:3px">${esc((d.evidence&&d.evidence.summary)||"")}</div>
       <div class="ln" style="margin-top:3px"><b>Why:</b> ${esc(d.driver||"")}</div>
       <div class="ln" style="margin-top:3px"><b>Target pattern:</b> ${esc(d.recommended_action||"")}</div>
+      ${d.alternatives?`<div class="ln" style="margin-top:3px"><b>Alternatives weighed:</b> ${esc(d.alternatives)}</div>`:""}
       <div class="ln" style="margin-top:3px"><b>Trade-offs:</b> ${esc(d.tradeoffs||"")}</div>
       <div class="ln" style="margin-top:3px"><b>CCDE basis:</b> <span class="faint">${esc(((d.principle||{}).citation)||"")}</span></div>
       ${axes.length?`<div class="ln" style="margin-top:4px">${axes.map(a=>`<span class="pill pl-neutral">${esc(a)}</span>`).join(" ")}</div>`:""}
@@ -6279,6 +6289,7 @@ function drawDesign(){
     ${dimCards?`<div class="sec"><h3>Target architecture <span class="ct">${dims.length}</span></h3><p class="sub" style="margin:0 0 8px">The candidate target-state, dimension by dimension — current → recommended target; requirement-gated where the choice needs a requirement. Same blueprint the HLD §5 reads.</p>${dimCards}</div>`:""}
     ${bomRows?`<div class="sec"><h3>Hardware refresh BoM</h3><div class="headline"><div class="stat crit"><div class="v"><span class="num" data-to="${bom.n_replace||0}">0</span></div><div class="k">replace</div></div><div class="stat"><div class="v"><span class="num" data-to="${bom.n_refresh||0}">0</span></div><div class="k">refresh</div></div></div><p class="sub" style="margin:6px 0 8px">${esc(bom.note||"")}</p>${bomRows}</div>`:""}
     ${apHtml?`<div class="sec"><h3>Target IP plan</h3>${apHtml}</div>`:""}
+    ${segHtml?`<div class="sec"><h3>Target segmentation</h3>${segHtml}</div>`:""}
     ${waveRows?`<div class="sec"><h3>Migration waves</h3><div class="headline"><div class="stat"><div class="v"><span class="num" data-to="${wp.n_waves||0}">0</span></div><div class="k">waves</div></div><div class="stat"><div class="v"><span class="num" data-to="${wp.wave_cap||0}">0</span></div><div class="k">cap</div></div><div class="stat ${(wp.largest_group||0)>(wp.wave_cap||40)?"crit":""}"><div class="v"><span class="num" data-to="${wp.largest_group||0}">0</span></div><div class="k">largest group</div></div></div><p class="sub" style="margin:6px 0 8px">${esc(wp.note||"")}</p>${waveRows}</div>`:""}
     ${needRows?`<div class="sec"><h3>Open design questions <span class="ct">${needs.length}</span></h3><p class="sub" style="margin:0 0 8px">Design top-down from the WHY: these depend on requirements the assessment cannot observe — the engine surfaces the question, it does not assume. This offline explorer is the read-only design view; right-sizing (re-scoring the decisions against a supplied requirements register) is interactive in the AssessHub web platform's Design panel.</p>${needRows}</div>`:""}
     ${cov.caveat?`<div class="sec"><div class="ln faint"><b>Coverage:</b> ${esc(cov.caveat)}</div></div>`:""}
@@ -6297,7 +6308,8 @@ function drawDesignNrfu(bp){
   const canon=designNrfu();
   if(canon){
     items=canon.items.map(it=>({title:it.title,priority:it.priority,phase:it.phase,
-      devices:Array.isArray(it.devices)?it.devices:[],citation:it.principle_citation||""}));
+      devices:Array.isArray(it.devices)?it.devices:[],citation:it.principle_citation||"",
+      description:it.description||"",pass_criteria:it.pass_criteria||""}));
   }else{
     const rec=(Array.isArray(bp.decisions)?bp.decisions:[]).filter(d=>d&&d.status==="recommended");
     if(!rec.length)return"";
@@ -6322,6 +6334,8 @@ function drawDesignNrfu(bp){
       const devs=it.devices||[];
       return `<div class="card neutral" style="margin-bottom:6px;padding:8px 10px">
         <div class="ct"><span class="nm" style="font-size:12px">${esc(it.title)}</span><span class="pill pl-${dPrioTok(it.priority)}">${esc(it.priority)}</span></div>
+        ${it.description?`<div class="ln" style="font-size:11px;margin-top:3px">${esc(it.description)}</div>`:""}
+        ${it.pass_criteria?`<div class="ln" style="font-size:11px;margin-top:3px"><b>Pass:</b> ${esc(it.pass_criteria)}</div>`:""}
         <div class="ln faint" style="font-size:11px;margin-top:3px">${devs.length?`<span class="mono">${devs.slice(0,6).map(esc).join(", ")}${devs.length>6?` +${devs.length-6}`:""}</span> · `:""}${esc(it.citation)}</div>
       </div>`;}).join("");
     return `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:700;color:${col};margin-bottom:4px">${esc(phaseLabel[ph]||ph)} · ${(byPhase[ph]||[]).length}</div>${rows}</div>`;

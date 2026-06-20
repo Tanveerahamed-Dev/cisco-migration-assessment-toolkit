@@ -132,7 +132,7 @@ function NrfuPanel({ snapId, register }: { snapId: number; register: Record<stri
 }
 
 function TargetState({ ts }: { ts: DesignTargetState }) {
-  const bom = ts.replacement_bom, ap = ts.addressing_plan, wp = ts.wave_plan;
+  const bom = ts.replacement_bom, ap = ts.addressing_plan, wp = ts.wave_plan, sp = ts.segmentation_plan;
   return (
     <div style={{ marginTop: 14 }}>
       {ts.dimensions && ts.dimensions.length > 0 && (
@@ -198,6 +198,30 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
                 Supply <b>address_space</b> (e.g. 10.0.0.0/16) in the requirements form above to generate the candidate IP plan.
                 Optionally add <b>vlan_zones</b> (JSON: {"{"}zone: [vlan_ids]{"}"}") for zone-aware allocation with one summarisable block per zone.
               </div>
+            </div>
+          )}
+        </>
+      )}
+      {sp && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>Target segmentation</div>
+          <div className="dim" style={{ fontSize: 12 }}>{sp.observed}</div>
+          {sp.status === "candidate" && sp.target_zones && sp.target_zones.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              {sp.target_zones.map((z) => (
+                <span key={z} style={{ fontSize: 11, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
+                                       border: "1px solid var(--border)", marginRight: 4 }}>{z}</span>
+              ))}
+            </div>
+          )}
+          <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>
+            {sp.status === "needs-requirement"
+              ? <>Needs <b>{sp.requirement_needed}</b> — {sp.target}</>
+              : sp.target}
+          </div>
+          {sp.status === "needs-requirement" && (
+            <div style={{ marginTop: 6, fontSize: 11, color: "var(--watch)" }}>
+              Supply <b>data_classification</b> (e.g. PCI, corp) in the requirements form above to propose the VLAN-to-zone map.
             </div>
           )}
         </>
