@@ -35,6 +35,7 @@ _TIMESYNC_FAIL_IDS = {"no-ntp", "no-logging"}
 _LARGE_L2_VLANS = 12  # a flat estate carrying this many VLANs in one (global) VRF is an oversized fault domain
 _L2_SPAN_SWITCHES = 8  # a single user VLAN touching this many switches is an oversized L2 failure (bridging) domain
 _WAVE_CAP = 40  # max switches per candidate migration wave (a maintenance-window-sized batch)
+_PORT_UTIL_HOT = 85.0  # PERCENT: a switch at/above this port- (or PoE-) utilisation has < 15% headroom (capacity[].port_util/poe_util are percentages)
 
 
 # ----------------------------------------------------------------------------- defensive coercers
@@ -49,6 +50,13 @@ def _as_dict(x):
 def _as_int(x, default=0):
     try:
         return int(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(x, default=0.0):
+    try:
+        return float(x)
     except (TypeError, ValueError):
         return default
 
@@ -196,6 +204,79 @@ def _signals(snap):
     sig["l2_wide_vlans"] = len(wide)
     sig["l2_vlan1_spans"] = vlan1_spans
     sig["l2_widest"] = sorted(([vid, nm, n] for vid, (nm, n) in wide.items()), key=lambda t: -t[2])[:5]
+
+    # --- net-new evidence-grounded design signals (read already-computed axes the design brain didn't use) ---
+    # addressing collisions: observed duplicate IPs / overlapping subnets -> a merge cannot proceed over them
+    ac = _as_dict(snap.get("addressing_conflicts"))
+    sig["dup_ip"] = len(_as_list(ac.get("dup_ip")))
+    sig["dup_subnet"] = len(_as_list(ac.get("dup_subnet")))
+
+    # physical-layer faults: CRC/input-errors, half-duplex (mismatch), err-disable -> remediate before cutover
+    phy = [p for p in _as_list(snap.get("physical_health")) if isinstance(p, dict)]
+
+    def _phy_dirty(p):
+        return (_as_int(p.get("crc_errors")) > 0 or _as_int(p.get("input_errors")) > 0
+                or str(p.get("duplex", "")).strip().lower() == "half"
+                or ("err" in str(p.get("status", "")).lower() and "dis" in str(p.get("status", "")).lower()))
+    sig["phy_crc"] = sum(1 for p in phy if _as_int(p.get("crc_errors")) > 0)
+    sig["phy_inerr"] = sum(1 for p in phy if _as_int(p.get("input_errors")) > 0)
+    sig["phy_halfduplex"] = sum(1 for p in phy if str(p.get("duplex", "")).strip().lower() == "half")
+    sig["phy_errdisable"] = sum(1 for p in phy if "err" in str(p.get("status", "")).lower()
+                                and "dis" in str(p.get("status", "")).lower())
+    sig["phy_dirty"] = sum(1 for p in phy if _phy_dirty(p))
+    sig["phy_dirty_hosts"] = sorted({p.get("switch") for p in phy if _phy_dirty(p) and p.get("switch")})[:12]
+
+    # capacity headroom: switches at/above the high port- (or PoE-) utilisation threshold
+    cap = [c for c in _as_list(snap.get("capacity")) if isinstance(c, dict)]
+    sig["cap_total"] = len(cap)
+    sig["cap_hot"] = sum(1 for c in cap if _as_float(c.get("port_util")) >= _PORT_UTIL_HOT)
+    sig["cap_hot_hosts"] = [c.get("hostname") for c in cap
+                            if _as_float(c.get("port_util")) >= _PORT_UTIL_HOT][:12]
+    sig["cap_poe_hot"] = sum(1 for c in cap if _as_float(c.get("poe_util")) >= _PORT_UTIL_HOT)
+
+    # dual-homing: an endpoint MAC on two switches whose second path a switch-by-switch move would break.
+    # (endpoint_dependencies.clusters is a vendor/class affinity analytic, NOT an HA cluster -> not used here.)
+    ed = _as_dict(snap.get("endpoint_dependencies"))
+    sig["dual_homed"] = len(_as_list(ed.get("dual_homed")))
+    sig["shared_ip"] = len(_as_list(ed.get("shared_ip")))
+
+    # native-VLAN-1 on inter-switch trunks (double-tag / VLAN-hopping) -- same field the workbook/archreview key off
+    n1_trunks, n1_sw = 0, set()
+    for host, ports in _as_dict(snap.get("interfaces")).items():
+        hit = False
+        for _pn, pd in _as_dict(ports).items():
+            if isinstance(pd, dict) and ("trunk" in str(pd.get("switchport_mode", "")).lower()
+                    and str(pd.get("trunk_native_vlan", "")).strip() == "1"):
+                n1_trunks += 1
+                hit = True
+        if hit:
+            n1_sw.add(host)
+    sig["native1_trunks"] = n1_trunks
+    sig["native1_switches"] = len(n1_sw)
+    sig["native1_hosts"] = sorted(n1_sw)[:12]
+
+    # high-severity false-health (operational_drift) that MASKS the true state -> resolve before baselining.
+    # HIGH only: the LOW rows (native-VLAN-1, long uptime) are owned by other detectors / informational.
+    od_high = [d for d in _as_list(snap.get("operational_drift"))
+               if isinstance(d, dict) and str(d.get("severity", "")).strip().lower() == "high"]
+    sig["false_health_high"] = len(od_high)
+    sig["false_health_titles"] = [str(d.get("title", "")) for d in od_high if d.get("title")][:6]
+    fh_devs = []
+    for d in od_high:
+        for h in _as_list(d.get("devices")):
+            if h and h not in fh_devs:
+                fh_devs.append(h)
+    sig["false_health_devices"] = fh_devs[:12]
+
+    # degraded EtherChannel/port-channel members (down/suspended/standalone) -> restore before cutover.
+    # Reads the engine's OWN High/Critical severity rating (SSOT), not re-derived.
+    pi_bad = [r for r in _as_list(snap.get("protocol_intelligence"))
+              if isinstance(r, dict) and str(r.get("protocol", "")) == "EtherChannel"
+              and str(r.get("severity", "")) in ("High", "Critical")]
+    sig["bundle_degraded"] = len(pi_bad)
+    bd_sw = {r.get("switch") for r in pi_bad if r.get("switch")}
+    sig["bundle_degraded_nsw"] = len(bd_sw)
+    sig["bundle_degraded_hosts"] = sorted(bd_sw)[:12]
     return sig
 
 
@@ -485,10 +566,122 @@ def _d_oncrit_seg(snap, sig):
         devices=sig["oncrit_domains"])
 
 
+def _d_addr_overlap(snap, sig):
+    if sig["dup_ip"] <= 0 and sig["dup_subnet"] <= 0:
+        return None
+    return _decision(
+        "addressing-resolve-overlaps-before-merge",
+        f"{sig['dup_ip']} duplicate IP address(es) and {sig['dup_subnet']} overlapping subnet(s) exist in "
+        f"scope -- any target that merges or collapses these L3 domains will collide (non-deterministic "
+        f"forwarding, broken management reachability), so the addressing plan must renumber or NAT them first.",
+        sig["dup_ip"] + sig["dup_subnet"], ["manageability", "availability", "optimal_routing"],
+        ["addressing_conflicts.dup_ip", "addressing_conflicts.dup_subnet"],
+        priority="Critical",
+        driver="Addressing integrity: overlapping/duplicate L3 space cannot be merged -- resolve before cutover.")
+
+
+def _d_phys_remediation(snap, sig):
+    if sig["phy_dirty"] <= 0:
+        return None
+    return _decision(
+        "physical-remediate-l1-faults-before-cutover",
+        f"{sig['phy_dirty']} port(s) show physical-layer faults ({sig['phy_crc']} CRC, {sig['phy_inerr']} "
+        f"input-error, {sig['phy_halfduplex']} half-duplex, {sig['phy_errdisable']} err-disabled) -- a dirty "
+        f"L1 is migrated into the new fabric on the same cable/optic and corrupts the NRFU baseline; remediate "
+        f"cabling/optics/duplex/err-disable and re-baseline counters before cutover.",
+        sig["phy_dirty"], ["availability", "manageability"],
+        ["physical_health[].crc_errors", "physical_health[].input_errors",
+         "physical_health[].duplex", "physical_health[].status"],
+        priority="High",
+        driver="Clean baseline: do not carry CRC/duplex/err-disable faults across the migration, or NRFU cannot certify it.",
+        devices=sig["phy_dirty_hosts"])
+
+
+def _d_capacity(snap, sig):
+    if sig["cap_hot"] <= 0:
+        return None
+    free = 100 - int(_PORT_UTIL_HOT)
+    extra = f" and {sig['cap_poe_hot']} near the PoE budget" if sig["cap_poe_hot"] else ""
+    return _decision(
+        "capacity-size-target-with-growth-headroom",
+        f"{sig['cap_hot']} of {sig['cap_total']} switch(es) run at >= {int(_PORT_UTIL_HOT)}% port "
+        f"utilisation (< {free}% free ports){extra} -- size THOSE switches' replacements for current load "
+        f"plus a growth headroom (and the build-before-break overhead), not 1:1, or they are born full.",
+        sig["cap_hot"], ["scalability", "cost"],
+        ["capacity[].port_util", "capacity[].free_ports", "capacity[].poe_util"],
+        priority="Medium",
+        driver="Capacity headroom: the few near-full switches must not be ported 1:1 -- design in runway.",
+        devices=sig["cap_hot_hosts"])
+
+
+def _d_dualhome(snap, sig):
+    if sig["dual_homed"] <= 0:
+        return None
+    sip = f"; and reconcile {sig['shared_ip']} shared-IP set(s) (FHRP VIP vs conflict)" if sig["shared_ip"] else ""
+    return _decision(
+        "migration-preserve-dual-homed-endpoints",
+        f"{sig['dual_homed']} dual-homed endpoint(s) (a MAC present on two switches) depend on both "
+        f"attachment points staying up -- the move-group plan must move both attachment switches of each in "
+        f"the same wave{sip}, or the migration silently single-homes them during the most fragile phase.",
+        sig["dual_homed"], ["availability", "modularity"],
+        ["endpoint_dependencies.dual_homed", "endpoint_dependencies.shared_ip"],
+        priority="High",
+        driver="Preserve redundancy: a migration must not transiently collapse a dual-homed endpoint to one path.")
+
+
+def _d_native_vlan(snap, sig):
+    if sig["native1_trunks"] <= 0:
+        return None
+    return _decision(
+        "l2-dedicated-native-vlan-on-trunks",
+        f"{sig['native1_trunks']} inter-switch trunk(s) across {sig['native1_switches']} switch(es) carry "
+        f"VLAN 1 as the native (untagged) VLAN -- a double-tagging / VLAN-hopping exposure and a hygiene gap; "
+        f"the target L2 edge must use a dedicated, unused native VLAN (and prune VLAN 1).",
+        sig["native1_trunks"], ["security", "manageability"],
+        ["interfaces[host][port].switchport_mode", "interfaces[host][port].trunk_native_vlan"],
+        priority="High",
+        driver="L2 edge hygiene: a dedicated native VLAN on trunks closes the VLAN-hopping/double-tag vector.",
+        devices=sig["native1_hosts"])
+
+
+def _d_false_health(snap, sig):
+    if sig["false_health_high"] <= 0:
+        return None
+    egs = "; ".join(sig["false_health_titles"][:3]) or "see operational_drift"
+    return _decision(
+        "design-resolve-false-health-masks-before-baseline",
+        f"{sig['false_health_high']} high-severity false-health condition(s) mask the true current state "
+        f"({egs}) -- a temporary bridge or masked fault hides the real redundancy/topology/health the target "
+        f"design must be built from; resolve and re-baseline before designing or cutting over.",
+        sig["false_health_high"], ["manageability", "availability"],
+        ["operational_drift[].severity", "operational_drift[].title", "operational_drift[].devices"],
+        priority="High",
+        driver="Baseline integrity: design from the true state, not one a temporary workaround or false-health is masking.",
+        devices=sig["false_health_devices"])
+
+
+def _d_bundle_health(snap, sig):
+    if sig["bundle_degraded"] <= 0:
+        return None
+    return _decision(
+        "dc-restore-degraded-portchannel-members-before-cutover",
+        f"{sig['bundle_degraded']} EtherChannel/port-channel member anomalie(s) across "
+        f"{sig['bundle_degraded_nsw']} switch(es) -- members are down/suspended/standalone, so the bundle "
+        f"runs degraded (reduced bandwidth + lost link-level redundancy, often while 'show' still reads Up). "
+        f"Restore full membership before baselining and cutover, or the target is built on degraded uplinks.",
+        sig["bundle_degraded"], ["availability", "load_balancing"],
+        ["protocol_intelligence[].protocol", "protocol_intelligence[].state", "protocol_intelligence[].severity"],
+        priority="High",
+        driver="Bundle redundancy: a port-channel with down/suspended members has degraded capacity and resilience.",
+        devices=sig["bundle_degraded_hosts"])
+
+
 _DETECTORS = [_d_fhrp, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
-              _d_stp_mst_scale, _d_oncrit_seg]
+              _d_stp_mst_scale, _d_oncrit_seg,
+              _d_addr_overlap, _d_phys_remediation, _d_capacity, _d_dualhome, _d_native_vlan,
+              _d_false_health, _d_bundle_health]
 
 
 # ----------------------------------------------------------------------------- requirement-gated decisions

@@ -669,6 +669,242 @@ _ACTIONABLE_DETECTOR_ADDENDUM = [
 DOCTRINE.extend(_ACTIONABLE_DETECTOR_ADDENDUM)
 
 
+# ----------------------------------------------- net-new evidence-grounded detector addendum (v2)
+# FIVE more actionable detectors over evidence the engine ALREADY collects but did not yet reason over
+# at design-decision altitude. Each grounds on a populated snapshot axis, is emitted by a dedicated
+# design_advisor detector (so engine_actionable=True is honest -- the emit-invariant test enforces it),
+# and DISAPPEARS when its evidence is absent (refutation-locked in tests/test_design_blueprint.py):
+#   addressing_conflicts -> renumber/NAT overlaps before any L3 merge;
+#   physical_health       -> remediate CRC/duplex/err-disable L1 faults before cutover (clean NRFU baseline);
+#   capacity              -> size the target for current load + growth headroom, not 1:1;
+#   endpoint_dependencies -> preserve dual-homing + keep clusters together across move-groups;
+#   interfaces.trunk_native_vlan -> dedicated native VLAN on trunks (close the VLAN-hopping/double-tag vector).
+_ACTIONABLE_DETECTOR_ADDENDUM_2 = [
+    {
+        "id": "addressing-resolve-overlaps-before-merge",
+        "title": "Resolve duplicate-IP / overlapping-subnet collisions before merging any L3 domain",
+        "domain": "methodology",
+        "priority": "Critical",
+        "design_intent": "A migration that joins or collapses Layer-3 domains cannot tolerate address "
+        "overlap: two devices answering to the same IP, or two sites advertising the same prefix, produce "
+        "non-deterministic forwarding, broken management reachability and silent black-holes the moment the "
+        "domains touch. Overlap is the single most common reason a 'simple' merge/cutover fails. It must be "
+        "designed out UP FRONT -- in the target addressing plan, not discovered during the window -- by "
+        "renumbering the smaller/least-disruptive side onto unique space, or, where renumber is infeasible, "
+        "bridging the overlap with NAT/NPTv6 as an explicit, documented exception.",
+        "observable": "The engine already computes addressing_conflicts.dup_ip (same address on multiple "
+        "device/interface pairs) and addressing_conflicts.dup_subnet (overlapping prefixes) from the parsed "
+        "L3 evidence -- a directly observed collision set, not an inference.",
+        "trigger": "addressing_conflicts.dup_ip or .dup_subnet is non-empty -- at least one duplicate IP or "
+        "overlapping subnet exists in scope of the planned merge.",
+        "recommended_action": "Build a target addressing plan that assigns globally-unique, summarisable "
+        "space per zone; renumber the duplicates on the least-disruptive side ahead of the window; where a "
+        "renumber is genuinely infeasible, document a NAT/NPTv6 bridge as a tracked exception with an owner "
+        "and a removal plan. Re-run the conflict check until dup_ip / dup_subnet are zero before cutover.",
+        "alternatives": "NAT/NPTv6 to mask the overlap (fast, but adds stateful translation, breaks "
+        "end-to-end visibility and embeds technical debt); defer to the window (highest risk -- a collision "
+        "discovered mid-cutover has no clean rollback).",
+        "tradeoffs": "Renumbering costs project effort and endpoint/DNS churn up front, but is the only option "
+        "that yields clean, deterministic forwarding; NAT trades that effort for permanent operational "
+        "complexity and lost traceability.",
+        "citation": "RFC 1918 (private address space); Cisco enterprise network-merger / migration addressing "
+        "guidance (overlapping space -> renumber, or NAT/NPTv6 as an explicit exception).",
+        "engine_actionable": True,
+    },
+    {
+        "id": "physical-remediate-l1-faults-before-cutover",
+        "title": "Remediate physical-layer faults (CRC / input-errors / half-duplex / err-disable) before cutover",
+        "domain": "methodology",
+        "priority": "High",
+        "design_intent": "A migration inherits whatever physical layer it is built on. Ports showing CRC/FCS "
+        "or input errors, half-duplex (almost always a duplex-mismatch -> late collisions and CRCs), or an "
+        "err-disabled state are carrying real faults -- marginal optics, damaged/too-long cabling, a mismatch, "
+        "or a protective shutdown. Two failure modes follow if they are not cleaned first: (1) the fault is "
+        "physically migrated into the new fabric on the same cable/optic, so the 'new' network is born "
+        "degraded; (2) the NRFU/ATP baseline is taken over a dirty L1, so post-cutover error counters can't be "
+        "trusted to certify the change. A clean physical layer is a precondition for a trustworthy acceptance "
+        "test, not a nice-to-have.",
+        "observable": "The engine collects per-port physical_health[] with crc_errors, input_errors, duplex "
+        "and status (err-disabled) -- directly observed counters/states, per switch and port.",
+        "trigger": "One or more ports show crc_errors>0, input_errors>0, half-duplex, or an err-disabled "
+        "status -- an observed L1 fault that would be carried across the migration.",
+        "recommended_action": "Triage and clear the physical faults before the window: reseat/replace optics "
+        "and cabling on CRC/input-error ports, hard-set or correct duplex/speed on half-duplex links (no "
+        "auto/half mismatch), and resolve the root cause behind each err-disable (don't just recover the port). "
+        "Then re-baseline error counters to zero so NRFU can certify the cutover against a clean L1.",
+        "alternatives": "Carry the faults and remediate post-cutover (cheapest now, but the new fabric starts "
+        "degraded and the acceptance baseline is meaningless); replace the affected hardware wholesale during "
+        "the refresh (clean, but higher BoM cost).",
+        "tradeoffs": "Pre-cutover L1 remediation costs field time and possibly optics/cabling spend, but is the "
+        "only way to guarantee the target is born clean and the NRFU baseline is trustworthy.",
+        "citation": "IEEE 802.3 auto-negotiation (duplex mismatch -> late collisions / CRC); Cisco IOS/NX-OS "
+        "interface error-counter troubleshooting; NRFU/ATP clean-baseline practice.",
+        "engine_actionable": True,
+    },
+    {
+        "id": "capacity-size-target-with-growth-headroom",
+        "title": "Size each switch's replacement for its load plus a growth headroom -- don't port a near-full switch 1:1",
+        "domain": "methodology",
+        "priority": "Medium",
+        "design_intent": "A switch running near its port (or PoE) ceiling cannot be replaced 1:1: a target "
+        "sized to today's active-port count is born full, with no room for the moves/adds/changes, the phased "
+        "build-before-break (which needs spare ports to stand the target up in parallel), or the growth the "
+        "refresh is supposed to buy. Capacity is a per-device design input, not an afterthought -- each "
+        "saturated switch's replacement must be sized from the OBSERVED utilisation plus an explicit headroom "
+        "(and a build-before-break overhead). Most of a lightly-loaded estate ports 1:1 fine; this names the "
+        "specific switches that do not.",
+        "observable": "The engine computes per-device capacity[] with port_util and poe_util as PERCENTAGES "
+        "(active/total ports, PoE drawn vs capacity) plus free_ports -- observed utilisation, per switch.",
+        "trigger": "One or more switches run at or above the high-utilisation threshold (port_util >= 85%, i.e. "
+        "< 15% free ports, or PoE near budget) -- little or no headroom to absorb growth or a parallel cutover. "
+        "On a lightly-loaded estate this fires for only the few genuinely-saturated switches (evidence-gated).",
+        "recommended_action": "Size the target from observed port_util/poe_util plus a documented growth "
+        "headroom (e.g. +30-50%) AND the build-before-break overhead; prefer higher-density or modular "
+        "platforms where switches are saturated; verify the PoE budget covers the powered-endpoint load with "
+        "margin. Carry the headroom assumption into the BoM, not just the slide.",
+        "alternatives": "Port 1:1 to minimise BoM (cheapest, but the fabric is born full and a near-term "
+        "upgrade is forced); over-provision uniformly (simple, wastes spend on lightly-loaded tiers).",
+        "tradeoffs": "Headroom raises the up-front hardware/BoM cost, but a target born full forces a premature "
+        "second refresh and leaves no room to execute the migration in parallel.",
+        "citation": "Cisco Enterprise Campus / CVD capacity & oversubscription planning (size for growth, not "
+        "1:1); IEEE 802.3af/at/bt PoE power budgeting.",
+        "engine_actionable": True,
+    },
+    {
+        "id": "migration-preserve-dual-homed-endpoints",
+        "title": "Preserve dual-homed endpoints across move-groups -- move both attachment points together",
+        "domain": "scenario-pattern",
+        "priority": "High",
+        "design_intent": "An endpoint whose MAC is seen on two switches is dual-homed (two NICs/uplinks for "
+        "redundancy, or NIC-teaming). Its resilience depends on the network keeping BOTH attachment points up. "
+        "A move-group plan that splits the two attachment switches across different waves silently single-homes "
+        "the endpoint for the duration -- one failure away from an outage during the most fragile phase of the "
+        "project. So multi-homing is a MIGRATION CONSTRAINT: the wave plan must move both attachment points of "
+        "each dual-homed endpoint together, and must reconcile shared-IP sets (VRRP/HSRP VIPs and anycast, vs "
+        "genuine duplicates) deliberately rather than carrying them blind.",
+        "observable": "The engine computes endpoint_dependencies.dual_homed (a MAC observed on two switches) "
+        "and .shared_ip from the MAC/ARP/topology evidence -- observed multi-attach, not assumed. (The separate "
+        ".clusters analytic is a vendor/class affinity grouping, not an HA cluster, so it is NOT used here.)",
+        "trigger": "endpoint_dependencies.dual_homed is non-empty -- observed dual-homed endpoints whose second "
+        "path a switch-by-switch move-group would transiently break.",
+        "recommended_action": "Constrain the move-group/wave generator so BOTH attachment switches of each "
+        "dual-homed endpoint land in the SAME wave; validate per wave that each endpoint still has two live "
+        "paths after the move; and classify every shared-IP set (legitimate FHRP/anycast vs a real duplicate to "
+        "renumber) before cutover.",
+        "alternatives": "Move purely by switch/closet ignoring multi-homing (simplest plan, but transiently "
+        "single-homes endpoints); freeze the dual-homed endpoints to a single big-bang wave (safer for them, "
+        "less granular rollback for everything else).",
+        "tradeoffs": "Multi-homing constraints make the wave plan less free (some waves grow to keep both legs "
+        "of an endpoint together), but they preserve the very redundancy the endpoints were built with.",
+        "citation": "Cisco Advanced Services migration move-group methodology (preserve endpoint redundancy "
+        "across waves); NIC-teaming / dual-homing dependency on both network paths.",
+        "engine_actionable": True,
+    },
+    {
+        "id": "l2-dedicated-native-vlan-on-trunks",
+        "title": "Use a dedicated, unused native VLAN on inter-switch trunks -- never VLAN 1",
+        "domain": "security",
+        "priority": "High",
+        "design_intent": "Carrying VLAN 1 (the default) as the untagged native VLAN on inter-switch trunks is "
+        "both a hygiene gap and a concrete attack surface: where the native VLAN is also a user/data VLAN, an "
+        "attacker can double-tag a frame (802.1Q VLAN-hopping) so the first (native) tag is stripped at the "
+        "first trunk and the inner tag delivers it into another VLAN -- a one-way injection across a segment "
+        "boundary. VLAN 1 also can't be cleanly pruned and tends to accumulate control traffic estate-wide. The "
+        "target L2 design must set a dedicated, unused native VLAN on every trunk (or tag the native), and "
+        "prune VLAN 1 from trunks, so the untagged path crosses no data segment.",
+        "observable": "The engine parses switchport_mode and trunk_native_vlan per interface; trunks whose "
+        "native VLAN is 1 are directly countable (interfaces[host][port]) -- the same field the workbook's "
+        "trunk-native and archreview checks key off, so the count cannot drift.",
+        "trigger": "One or more inter-switch trunks carry VLAN 1 as the native (untagged) VLAN -- an observed "
+        "double-tag / VLAN-hopping exposure.",
+        "recommended_action": "Assign a dedicated, unused native VLAN (not 1, not a data VLAN) on every "
+        "inter-switch trunk and prune VLAN 1 from trunks; optionally enforce 'vlan dot1q tag native' so even "
+        "the native VLAN is tagged. Apply it consistently on BOTH trunk ends (a native-VLAN mismatch is its own "
+        "fault), and bake the chosen native VLAN into the target build template.",
+        "alternatives": "Tag the native VLAN globally (vlan dot1q tag native) instead of choosing a dedicated "
+        "one (closes the hop, keeps VLAN 1 plumbing); leave native as VLAN 1 and rely on access-edge controls "
+        "only (weakest -- does not close the trunk-side double-tag vector).",
+        "tradeoffs": "A dedicated native VLAN adds one VLAN id to the plan and a both-ends consistency "
+        "requirement, but removes the untagged frame from every data segment and closes the VLAN-hopping vector.",
+        "citation": "Cisco L2 security hardening (dedicated native VLAN, 'vlan dot1q tag native', prune VLAN 1); "
+        "802.1Q double-tagging / VLAN-hopping; CIS Cisco benchmark trunk native-VLAN guidance.",
+        "engine_actionable": True,
+    },
+    {
+        "id": "design-resolve-false-health-masks-before-baseline",
+        "title": "Resolve high-severity false-health masks (temporary bridges, masked faults) before baselining the design",
+        "domain": "methodology",
+        "priority": "High",
+        "design_intent": "A target design and its NRFU baseline are only as trustworthy as the current-state "
+        "picture they are built from. Some operational conditions actively MASK the true state: a temporary L2 "
+        "bridge stood up as a workaround makes a broken or non-redundant path look healthy (the canonical "
+        "NX-OS false-health class -- a 'show'-level green hiding a real gap), and a masked PoE/endpoint fault "
+        "makes a degraded device look up. If the design is drawn -- or the cutover validated -- over that "
+        "masked state, it inherits the hidden fault: redundancy that is not actually there, a loop risk left "
+        "in place, or an acceptance test that certifies a lie. These high-severity false-health conditions "
+        "must be surfaced, understood, and resolved (or explicitly risk-accepted) BEFORE the current-state "
+        "baseline is frozen and the target is designed from it.",
+        "observable": "The engine's false-health / operational-drift detector publishes operational_drift[] "
+        "with severity + title + the masking devices. The HIGH-severity rows (temporary L2 bridges, masked "
+        "PoE/endpoint faults) are the design-blocking masks; LOW rows (e.g. native-VLAN-1, long uptime) are "
+        "owned by other detectors / informational and are excluded here -- so this never double-counts.",
+        "trigger": "operational_drift carries one or more HIGH-severity false-health conditions -- an observed "
+        "mask over the true redundancy/topology/health state.",
+        "recommended_action": "For each high-severity false-health condition, determine what it is hiding (why "
+        "the temporary bridge exists -- a failed uplink? a missing vPC peer-link? -- and what the masked fault "
+        "is), remediate or remove the workaround, and re-collect so the current-state baseline reflects "
+        "reality. Only then freeze the baseline, design the target from it, and take the NRFU pre-cutover "
+        "snapshot. Track any condition that genuinely cannot be cleared pre-cutover as an explicit risk with "
+        "an owner.",
+        "alternatives": "Design over the masked state and discover the hidden fault at cutover (cheapest now, "
+        "highest risk -- the mask becomes an outage when it is removed); leave the workaround permanently "
+        "(accepts the false-health as the design, defeating the redundancy it hides).",
+        "tradeoffs": "Clearing the masks costs investigation + remediation time before the design can be "
+        "frozen, but it is the only way the current-state baseline -- and therefore the target design and the "
+        "NRFU certification -- reflects the real network rather than a workaround hiding a fault.",
+        "citation": "Cisco NX-OS operational-health guidance (a 'show'-level healthy state can mask a real "
+        "gap); Cisco Advanced Services pre-cutover baseline discipline (design from verified current state).",
+        "engine_actionable": True,
+    },
+    {
+        "id": "dc-restore-degraded-portchannel-members-before-cutover",
+        "title": "Restore degraded EtherChannel / port-channel members (down / suspended / standalone) before cutover",
+        "domain": "dc-switching",
+        "priority": "High",
+        "design_intent": "A port-channel (EtherChannel / LAG) earns its bandwidth and link-level redundancy "
+        "only while ALL its members are bundled and forwarding. A member in the down (D), suspended (s -- "
+        "LACP/PAgP did not agree, so it is not forwarding), or standalone/individual (I -- running on its own, "
+        "not in the bundle) state silently cuts the bundle's capacity and removes the very redundancy the LAG "
+        "exists to provide -- and a 'show ... summary' often still reports the channel as Up, so it is a "
+        "textbook false-health. Building or cutting over onto a bundle that is already running degraded "
+        "inherits a hidden single-link exposure: the next member loss is then an outage, not a non-event. "
+        "These degraded bundles must be diagnosed and restored to full membership BEFORE the design is "
+        "baselined and the cutover is scheduled.",
+        "observable": "The engine's protocol_intelligence axis emits per-switch EtherChannel member findings "
+        "with a state (D/s/I) + severity + plain-language meaning -- directly observed; the engine's own "
+        "High/Critical rating is read as-is (not re-derived).",
+        "trigger": "protocol_intelligence carries one or more High/Critical EtherChannel member anomalies "
+        "(member down / suspended / standalone) -- an observed degraded bundle.",
+        "recommended_action": "For each degraded bundle, find why the member is not bundling (physical: "
+        "cabling / SFP / errdisable; config: speed-duplex or LACP/PAgP mode/rate mismatch between the two "
+        "ends) and restore full membership; verify all members are forwarding before freezing the "
+        "current-state baseline and scheduling the cutover. In the target, keep LAG min-links / fast-LACP and "
+        "member monitoring so a future member loss is alarmed, not silent.",
+        "alternatives": "Cut over on the degraded bundle and remediate after (cheapest now, but the target "
+        "starts a single failure from outage on that uplink); reduce the bundle to its working members as a "
+        "documented interim if a member genuinely cannot be restored in the window (accepts lower capacity, "
+        "explicitly).",
+        "tradeoffs": "Restoring members costs pre-cutover diagnosis / field time, but it is the only way the "
+        "target inherits the bundle's full bandwidth AND its link-level redundancy rather than a hidden "
+        "single-link exposure.",
+        "citation": "Cisco EtherChannel / LACP (IEEE 802.3ad / 802.1AX) member-state troubleshooting "
+        "(D=down, s=suspended, I=standalone); Cisco port-channel design (min-links, mode/rate match).",
+        "engine_actionable": True,
+    },
+]
+DOCTRINE.extend(_ACTIONABLE_DETECTOR_ADDENDUM_2)
+
+
 # --------------------------------------------------------- ACI / EVPN / SP design-corpus addendum
 # Mined from the real Cisco DC design corpus (ACI HLD/LLD/NIP -- NRG DC, EXPO2020 -- Cisco AS ACI
 # Design & Deployment, Stretched Active-Active ACI, Transit Routing, ACI lessons-learned; native
