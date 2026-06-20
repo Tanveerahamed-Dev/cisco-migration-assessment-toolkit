@@ -44,12 +44,18 @@ function DecisionCard({ d }: { d: DesignDecision }) {
         ))}
       </div>
       <div className="faint" style={{ fontSize: 11, marginTop: 6 }}>
-        {d.evidence.devices.length > 0 && (
+        {d.evidence.devices.length > 0 ? (
           <>
             <span className="mono">
               {d.evidence.devices.slice(0, 8).join(", ")}
               {d.evidence.devices.length > 8 ? ` +${d.evidence.devices.length - 8}` : ""}
             </span>
+            {" · "}
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
+                           border: "1px solid var(--border)", color: "var(--text)", opacity: .7 }}>fleet / VLAN-wide</span>
             {" · "}
           </>
         )}
@@ -227,6 +233,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const [vlanZones, setVlanZones] = useState("");
   const [zonesErr, setZonesErr] = useState("");
   const [register, setRegister] = useState<Record<string, unknown> | null>(null);
+  const [liveMsg, setLiveMsg] = useState("");   // assistive-tech announcements for the aria-live status region
 
   // Reset the overlay + form when the snapshot changes — otherwise snapshot A's right-sized blueprint and
   // requirements leak onto snapshot B (the data re-fetches via useAsync, but `over`/`register`/fields do not).
@@ -234,6 +241,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     setOver(null); setRegister(null); setTab("blueprint");
     setTier(""); setApps(""); setConv(""); setGrowth("");
     setDataClass(""); setBudget(false); setAddrSpace(""); setVlanZones(""); setZonesErr(""); setFabricMode("");
+    setLiveMsg("");   // drop any stale announcement when the snapshot changes
   }, [snapId]);
 
   if (loading) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><Loading /></div>;
@@ -267,10 +275,22 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     }
     setBusy(true);
     try {
-      setOver(await api.designOverlay(snapId, req));
+      const nbp = await api.designOverlay(snapId, req);
+      setOver(nbp);
       setRegister(req);                              // drives the NRFU panel to the right-sized checklist
+      // Non-visual feedback: read the recomputed shape STRAIGHT off the server-returned blueprint (the engine
+      // compute_design_blueprint stays the single source of truth — no client-side recount).
+      const ns = nbp.summary;
+      const ipPlan = nbp.target_state?.addressing_plan?.status === "candidate";
+      setLiveMsg(
+        `Requirements applied; the engine recomputed the target-state blueprint: ` +
+        `${ns.n_recommended} recommended decision${ns.n_recommended === 1 ? "" : "s"}, ` +
+        `${ns.n_needs_requirement} open question${ns.n_needs_requirement === 1 ? "" : "s"}, ` +
+        `${ns.n_critical} critical.` +
+        (ipPlan ? " A net-new IP addressing plan was generated." : "")
+      );
     } catch {
-      /* keep the base blueprint on error */
+      setLiveMsg("Could not apply requirements; the baseline blueprint is unchanged.");
     } finally {
       setBusy(false);
     }
@@ -278,11 +298,14 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const clearReqs = () => {
     setOver(null); setRegister(null); setTier(""); setApps(""); setConv(""); setGrowth("");
     setDataClass(""); setBudget(false); setAddrSpace(""); setVlanZones(""); setZonesErr(""); setFabricMode("");
+    setLiveMsg("Requirements cleared; the baseline blueprint has been restored.");
   };
+  const selectTab = (t: Tab, label: string) => { setTab(t); setLiveMsg(`${label} tab selected.`); };
 
   return (
-    <div className="panel">
+    <div className="panel" aria-busy={busy}>
       <h3>Design engineer · target-state blueprint</h3>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{liveMsg}</div>
       <div className="dim" style={{ fontSize: 12, marginTop: 4 }}>{s.headline}</div>
       <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>
         {s.n_recommended} recommended · {s.n_needs_requirement} need a requirement · {s.n_critical} critical
@@ -290,9 +313,11 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: "flex", gap: 4, marginTop: 12, borderBottom: "1px solid var(--border)" }}>
+      <div role="tablist" aria-label="Design blueprint views"
+           style={{ display: "flex", gap: 4, marginTop: 12, borderBottom: "1px solid var(--border)" }}>
         {([["blueprint", "Design blueprint"], ["nrfu", `NRFU checklist`]] as [Tab, string][]).map(([t, label]) => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} role="tab" id={`dbptab-${t}`} aria-controls={`dbppanel-${t}`} aria-selected={tab === t}
+            onClick={() => selectTab(t, label)}
             style={{ background: tab === t ? "var(--accent)" : "transparent",
                      color: tab === t ? "#fff" : "var(--text)", border: "none",
                      borderRadius: "4px 4px 0 0", padding: "4px 12px", cursor: "pointer", fontSize: 12, fontWeight: tab === t ? 700 : 400 }}>
@@ -302,7 +327,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
       </div>
 
       {tab === "blueprint" && (
-        <>
+        <div role="tabpanel" id="dbppanel-blueprint" aria-labelledby="dbptab-blueprint">
           <table className="tbl" style={{ marginTop: 12 }}>
             <thead><tr><th>Trade-off axis</th><th className="num">Score</th><th>Posture</th></tr></thead>
             <tbody>
@@ -390,11 +415,11 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
           )}
 
           <div className="faint" style={{ fontSize: 11, marginTop: 12 }}>{bp.coverage.caveat}</div>
-        </>
+        </div>
       )}
 
       {tab === "nrfu" && (
-        <div style={{ marginTop: 12 }}>
+        <div role="tabpanel" id="dbppanel-nrfu" aria-labelledby="dbptab-nrfu" style={{ marginTop: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Design-driven NRFU/ATP checklist</div>
           <div className="faint" style={{ fontSize: 11, marginBottom: 10 }}>
             One acceptance-test item per recommended design decision, phased across pre-cutover →
