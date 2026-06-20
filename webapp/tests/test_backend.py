@@ -362,12 +362,15 @@ def test_design_blueprint_endpoint_and_requirements_overlay(client):
         assert d["principle"]["citation"], d.get("id")    # every decision cites a CCDE source
     # NEW (target_state surfaces the dashboards render — SAME object the HLD §5 reads, no client recompute)
     ts = bp["target_state"]
-    for k in ("dimensions", "replacement_bom", "addressing_plan", "wave_plan"):
+    for k in ("dimensions", "replacement_bom", "addressing_plan", "wave_plan", "segmentation_plan"):
         assert k in ts, k
     assert isinstance(ts["dimensions"], list)
     assert {"n_replace", "n_refresh", "replace_now", "refresh_soon"} <= set(ts["replacement_bom"])
     assert ts["addressing_plan"].get("status") in ("candidate", "needs-requirement")
     assert {"waves", "n_waves", "wave_cap"} <= set(ts["wave_plan"])
+    # segmentation_plan is the field the dashboards' "Target segmentation" block reads (SSOT, no client recompute)
+    assert ts["segmentation_plan"].get("status") in ("candidate", "needs-requirement")
+    assert ts["segmentation_plan"].get("observed") and ts["segmentation_plan"].get("target")
     # requirements overlay: supplying a register re-scores (effective_priority) every decision
     r2 = client.post(f"/api/snapshots/{snap_id}/design",
                      json={"availability_tier": "gold", "critical_apps": ["voice"], "growth_horizon": "3y"})
