@@ -20,11 +20,17 @@ const scoreColor = (v: number | null) =>
 const phaseColor = (ph: string) =>
   ph === "pre-cutover" ? "var(--crit)" : ph === "post-cutover-functional" ? "var(--risk)" : "var(--watch)";
 
-function DecisionCard({ d }: { d: DesignDecision }) {
+function DecisionCard({ d, isResolved }: { d: DesignDecision; isResolved?: boolean }) {
   return (
     <div className="panel" style={{ padding: 12, borderLeft: `3px solid ${P_COLOR(d.priority)}`, marginBottom: 8 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <b style={{ fontSize: 13 }}>{d.title}</b>
+        {isResolved && (
+          <span className="chip" style={{ color: "var(--accent)", borderColor: "var(--accent)", fontWeight: 700, fontSize: 9 }}
+                title="This was an open design question until your requirements resolved it">
+            ✓ resolved by requirements
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         {d.effective_priority != null && (
           <span className="faint mono" style={{ fontSize: 11 }}>weight {d.effective_priority}</span>
@@ -274,6 +280,14 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const s = bp.summary;
   const rec = bp.decisions.filter((d) => d.status === "recommended");
   const needs = bp.decisions.filter((d) => d.status === "needs-requirement");
+  // #17: which open design questions did the supplied requirements just RESOLVE? A pure client-side delta
+  // between the two blueprints already in state (base `data` vs right-sized `over`) -- no API call, no recompute.
+  const resolvedIds = new Set<string>();
+  if (over) {
+    const wasNeeds = new Set((data as DesignBlueprint).decisions
+      .filter((d) => d.status === "needs-requirement").map((d) => d.id));
+    for (const d of over.decisions) if (d.status === "recommended" && wasNeeds.has(d.id)) resolvedIds.add(d.id);
+  }
 
   const applyReqs = async () => {
     setZonesErr("");
@@ -306,11 +320,15 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
       // compute_design_blueprint stays the single source of truth — no client-side recount).
       const ns = nbp.summary;
       const ipPlan = nbp.target_state?.addressing_plan?.status === "candidate";
+      const wasNeeds = new Set((data as DesignBlueprint).decisions
+        .filter((d) => d.status === "needs-requirement").map((d) => d.id));
+      const nResolved = nbp.decisions.filter((d) => d.status === "recommended" && wasNeeds.has(d.id)).length;
       setLiveMsg(
         `Requirements applied; the engine recomputed the target-state blueprint: ` +
         `${ns.n_recommended} recommended decision${ns.n_recommended === 1 ? "" : "s"}, ` +
         `${ns.n_needs_requirement} open question${ns.n_needs_requirement === 1 ? "" : "s"}, ` +
         `${ns.n_critical} critical.` +
+        (nResolved ? ` ${nResolved} open question${nResolved === 1 ? "" : "s"} resolved by your requirements.` : "") +
         (ipPlan ? " A net-new IP addressing plan was generated." : "")
       );
     } catch {
@@ -415,9 +433,17 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
           </div>
 
           <div style={{ marginTop: 14 }}>
+            {resolvedIds.size > 0 && (
+              <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6,
+                            background: "var(--surface-2)", border: "1px solid var(--accent)", fontSize: 12 }}>
+                <b>✓ {resolvedIds.size} open design question{resolvedIds.size === 1 ? "" : "s"} resolved by your requirements</b>
+                {" — "}
+                <span className="dim">{rec.filter((d) => resolvedIds.has(d.id)).map((d) => d.title).join("; ")}</span>
+              </div>
+            )}
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Target-state design decisions · {rec.length}</div>
             {rec.length
-              ? rec.map((d) => <DecisionCard key={d.id} d={d} />)
+              ? rec.map((d) => <DecisionCard key={d.id} d={d} isResolved={resolvedIds.has(d.id)} />)
               : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
           </div>
 
