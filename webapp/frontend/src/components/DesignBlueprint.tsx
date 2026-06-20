@@ -264,6 +264,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const [zonesErr, setZonesErr] = useState("");
   const [register, setRegister] = useState<Record<string, unknown> | null>(null);
   const [liveMsg, setLiveMsg] = useState("");   // assistive-tech announcements for the aria-live status region
+  const [copied, setCopied] = useState(false);  // "Copy design brief" feedback
 
   // Reset the overlay + form when the snapshot changes — otherwise snapshot A's right-sized blueprint and
   // requirements leak onto snapshot B (the data re-fetches via useAsync, but `over`/`register`/fields do not).
@@ -288,6 +289,37 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
       .filter((d) => d.status === "needs-requirement").map((d) => d.id));
     for (const d of over.decisions) if (d.status === "recommended" && wasNeeds.has(d.id)) resolvedIds.add(d.id);
   }
+
+  // #16: copy the CURRENTLY-DISPLAYED blueprint (right-sized `over` when present, else base) as a readable
+  // text brief -- a quick handoff alongside the full DOCX. Pure client-side serialise of the in-state object.
+  const copyBrief = () => {
+    const L: string[] = ["DESIGN BRIEF — target-state blueprint", s.headline,
+      `${s.n_recommended} recommended · ${s.n_needs_requirement} open question(s) · ${s.n_critical} critical`];
+    if (register && Object.keys(register).length) {
+      L.push("", "Requirements applied: " + Object.entries(register)
+        .map(([k, v]) => `${k}=${Array.isArray(v) ? (v as unknown[]).join("/") : String(v)}`).join(", "));
+    }
+    L.push("", "RECOMMENDED DECISIONS");
+    for (const d of rec) {
+      L.push(`- [${d.priority}] ${d.title}`);
+      if (d.driver) L.push(`    Why: ${d.driver}`);
+      if (d.recommended_action) L.push(`    Target: ${d.recommended_action}`);
+    }
+    L.push("", "TRADE-OFF SCORECARD");
+    for (const a of bp.tradeoff_scorecard) L.push(`- ${a.label}: ${a.score == null ? "n/a" : a.score + "/4"} · ${a.posture}`);
+    if (bp.target_state?.dimensions?.length) {
+      L.push("", "TARGET-STATE ARCHITECTURE");
+      for (const dim of bp.target_state.dimensions) L.push(`- ${dim.area}: ${dim.current} → ${dim.target}`);
+    }
+    if (needs.length) {
+      L.push("", "OPEN DESIGN QUESTIONS (need a requirement)");
+      for (const d of needs) L.push(`- ${d.title} (needs ${d.requirements_needed.join(", ")})`);
+    }
+    const txt = L.join("\n");
+    const done = () => { setCopied(true); setLiveMsg("Design brief copied to the clipboard."); window.setTimeout(() => setCopied(false), 1800); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(done);
+    else done();
+  };
 
   const applyReqs = async () => {
     setZonesErr("");
@@ -441,7 +473,14 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
                 <span className="dim">{rec.filter((d) => resolvedIds.has(d.id)).map((d) => d.title).join("; ")}</span>
               </div>
             )}
-            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Target-state design decisions · {rec.length}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>Target-state design decisions · {rec.length}</div>
+              <span style={{ flex: 1 }} />
+              <button onClick={copyBrief} style={{ fontSize: 11 }}
+                      title="Copy the displayed blueprint (decisions, scorecard, target-state, requirements) to the clipboard">
+                {copied ? "✓ Copied" : "Copy design brief"}
+              </button>
+            </div>
             {rec.length
               ? rec.map((d) => <DecisionCard key={d.id} d={d} isResolved={resolvedIds.has(d.id)} />)
               : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
