@@ -321,6 +321,36 @@ def create_app(db_path: str | None = None) -> FastAPI:
             ar = compute_architecture_review(snap)
         return ar
 
+    @app.get("/api/snapshots/{snapshot_id}/causal_flows")
+    def snapshot_causal_flows(snapshot_id: int) -> Dict[str, Any]:
+        """Unified CAUSAL FLOW model (engine compute_causal_flows) — every finding family rendered as one
+        trigger -> mechanism -> impact -> mitigation story (cross-layer compounds become a bowtie). This is
+        the SAME normalization the explorer's Causal Flow mode shows; computed server-side so the dashboard
+        never re-derives causal intent (one source of truth). For a snapshot that already carries a
+        design_blueprint this matches the explorer exactly; for one that doesn't, the blueprint is computed on
+        the fly (same fallback the /design endpoint uses) so the design-decision family is still present —
+        keeping the webapp internally consistent with its own /design panel."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        # compute design_blueprint when the stored snapshot lacks one (honouring any published requirements),
+        # so the design-decision family appears — a no-op for engagement snapshots that already store it.
+        bp = snap.get("design_blueprint")
+        if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
+            try:
+                from cisco_toolkit.design_advisor import compute_design_blueprint
+                snap = dict(snap)
+                snap["design_blueprint"] = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+            except Exception:
+                pass  # design couldn't be computed -> fall through; the other families still render
+        from cisco_toolkit.causal import compute_causal_flows
+        try:
+            return compute_causal_flows(snap)
+        except Exception as exc:  # defense-in-depth: the engine fn is hardened to be total over any dict,
+            raise HTTPException(500, f"causal-flow computation failed: {exc}")  # but never leak a raw stack
+
     @app.get("/api/snapshots/{snapshot_id}/design")
     def snapshot_design(snapshot_id: int) -> Dict[str, Any]:
         """The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint) — the SAME

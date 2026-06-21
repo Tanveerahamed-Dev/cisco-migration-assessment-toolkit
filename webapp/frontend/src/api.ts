@@ -339,6 +339,44 @@ export interface DesignNrfu {
   note: string;
 }
 
+// The unified CAUSAL FLOW model (engine compute_causal_flows — the SAME normalization the explorer's
+// Causal Flow mode renders). GET /api/snapshots/{id}/causal_flows. Every finding family as one
+// trigger -> mechanism -> impact -> mitigation story; cross-layer compounds carry shape "bowtie".
+export interface CausalFlowItem {
+  key: string;
+  family: string;
+  family_label: string;
+  icon: string;
+  title: string;
+  severity: string;       // normalised: Critical | High | Medium | Low | Info
+  sev_tok: string;        // crit | risk | watch | accent
+  trigger: string;
+  mechanism: string;
+  impact: string;
+  mitigation: string;
+  hosts: string[];
+  blast: number;          // magnitude -> Sankey connector width
+  blast_unit: string;     // the unit actually matched (endpoints | devices | …) — coverage-honest
+  shape: "linear" | "bowtie";
+  evidence: {
+    summary?: string; count?: number; devices?: string[]; fields?: string[];
+    citation?: string; layers?: string; rank?: number; wave?: string;
+  };
+  threats?: string[];     // bowtie: the contributing causes
+  top_event?: string;
+  consequence?: string;
+  confidence?: string;    // design decisions
+  alternatives?: string;
+  tradeoffs?: string;
+  axes?: string[];
+}
+export interface CausalFamily { key: string; label: string; icon: string; n: number; crit: number }
+export interface CausalFlows {
+  flows: CausalFlowItem[];
+  families: CausalFamily[];
+  summary: { n_flows: number; n_families: number; n_critical: number; by_severity: Record<string, number> };
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
@@ -397,6 +435,7 @@ export const api = {
   designNrfu: (id: number) => fetch(`/api/snapshots/${id}/design/nrfu`).then((r) => j<DesignNrfu>(r)),
   designNrfuOverlay: (id: number, requirements: Record<string, unknown>) =>
     post<DesignNrfu>(`/api/snapshots/${id}/design/nrfu`, requirements),
+  causalFlows: (id: number) => fetch(`/api/snapshots/${id}/causal_flows`).then((r) => j<CausalFlows>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),
