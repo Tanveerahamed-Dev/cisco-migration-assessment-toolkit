@@ -31,20 +31,23 @@ def _evidence_facts(snap: dict) -> dict:
     """Pull the evidence the CRD primes its sections with — all defensive reads of known shapes."""
     devices = snap.get("devices") or {}
     ifaces = snap.get("interfaces") or {}
-    endpoints, dual = 0, 0
+    endpoints = 0
     vrfs, n_acl_svis = set(), 0
     for host, ports in ifaces.items():
         for p, d in (ports or {}).items():
             d = d or {}
             if (d.get("switchport_mode") or "").lower() == "access" and (d.get("end_host_mac") or "").strip():
                 endpoints += 1
-                if (d.get("dual_connection") or "").strip():
-                    dual += 1
             vrf = (d.get("vrf") or "").strip()
             if vrf and vrf.lower() not in ("default", "global"):
                 vrfs.add(vrf)
             if (d.get("svi_ip") or "") and ((d.get("acl_in") or "").strip() or (d.get("acl_out") or "").strip()):
                 n_acl_svis += 1
+    # Dual-homed endpoints: the CANONICAL redundancy-bearing count is the engine's
+    # endpoint_dependencies.dual_homed (host MAC observed on two switches) — the SAME source the
+    # design blueprint's preserve-dual-homed-endpoints decision reads — so the CRD and the HLD agree
+    # on one number instead of the CRD reporting a looser per-port dual_connection tally (A1 SSOT fix).
+    dual = len((snap.get("endpoint_dependencies") or {}).get("dual_homed") or [])
     rn = snap.get("routing_neighbors") or {}
     protos = sorted({p.upper() for host in rn for p, nbrs in (rn.get(host) or {}).items() if nbrs})
     l3f = snap.get("l3_forwarding") or []
@@ -184,7 +187,7 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("Devices", ev["n_devices"]),
         ("VLANs in use", ev["n_vlans"]),
         ("Evidenced endpoints (access ports with a host MAC)", ev["endpoints"]),
-        ("…of which dual-homed", ev["dual"]),
+        ("Dual-homed endpoints (host MAC on two switches)", ev["dual"]),
         ("Routing protocols observed", ", ".join(ev["protos"]) or "none (pure L2 fleet)"),
         ("Gateway SVIs / FHRP-protected VLANs", f"{ev['n_l3']} / {len(ev['fhrp_vlans'])}"),
         ("Non-default VRFs", ", ".join(ev["vrfs"]) or "none"),
@@ -227,9 +230,9 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     req_table([
         ("REQ-T-LAN-001", f"Preserve the {ev['n_vlans']} production VLAN IDs and names through the "
                           "migration (observed as-built).", "<owner>", "<H/M/L>", "<YES/AMEND>"),
-        ("REQ-T-LAN-002", f"Maintain dual-homing for the {ev['dual']} dual-homed endpoint port(s); "
-                          "no single server NIC pair may have both legs down together.",
-         "<owner>", "<H/M/L>", "<YES/AMEND>"),
+        ("REQ-T-LAN-002", f"Maintain dual-homing for the {ev['dual']} dual-homed endpoint(s) (host "
+                          "MAC present on two switches); no dual-homed endpoint may lose both legs "
+                          "together.", "<owner>", "<H/M/L>", "<YES/AMEND>"),
     ])
 
     if ev["protos"] or ev["n_l3"]:
@@ -239,8 +242,8 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
              (f"Preserve gateway redundancy on the {len(ev['fhrp_vlans'])} FHRP-protected VLAN(s); "
               "single-gateway VLANs are remediated, not carried forward." if ev["fhrp_vlans"]
               else f"No first-hop redundancy (HSRP/VRRP/GLBP) was observed on any of the {ev['n_l3']} "
-                   "gateway VLAN(s) — every gateway is single-homed; evaluate introducing FHRP so VLANs "
-                   "are not carried forward without gateway redundancy."),
+                   "gateway SVI instance(s) — every gateway is single-homed; evaluate introducing FHRP "
+                   "so VLANs are not carried forward without gateway redundancy."),
              "<owner>", "<H/M/L>", "<YES/AMEND>"),
             ("REQ-T-L3-002", "Maintain the observed routing adjacencies ("
                              + (", ".join(ev["protos"]) or "static/connected only")

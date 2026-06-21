@@ -37,6 +37,13 @@ def _snap():
         "collection_completeness": {"summary": {"complete": 2, "partial": 0, "not_collected": 0}},
         "punchlist": [{"severity": "Critical", "category": "L3 design",
                        "title": "VLAN 30 has a single gateway", "devices": ["core1"]}],
+        # Two genuinely dual-homed endpoints (host MAC on two switches) — the canonical
+        # redundancy-bearing count. Note the per-port dual_connection tally above is only 1, so a
+        # CRD reading endpoint_dependencies (2) is provably distinct from the old per-port count (1).
+        "endpoint_dependencies": {"dual_homed": [
+            {"mac": "bbbb.0000.0001", "switches": ["acc1", "acc2"]},
+            {"mac": "dddd.0000.0002", "switches": ["acc1", "core1"]},
+        ]},
     }
 
 
@@ -71,8 +78,39 @@ def test_crd_environment_summary_reconciles_to_evidence(tmp_path):
     assert "OSPF" in text                                       # protocols observed
     assert "PROD" in text                                       # VRF observed
     assert "VLAN 30 has a single gateway" in text               # punch-list carried as known issue
-    # endpoint counting rule: access ports with a host MAC → 2, of which 1 dual-homed
-    assert "2" in text and "1" in text
+    # endpoints = access ports with a host MAC (2); dual-homed is the canonical
+    # endpoint_dependencies.dual_homed count, surfaced as its own honest stat line
+    assert "Dual-homed endpoints (host MAC on two switches)" in text
+
+
+def test_crd_dual_homed_reads_canonical_endpoint_dependencies(tmp_path):
+    """A1 (SSOT): the CRD's dual-homed figure must be the canonical
+    endpoint_dependencies.dual_homed count (host MAC on two switches) — the SAME source the HLD's
+    preserve-dual-homed-endpoints design decision reads — not a looser per-port dual_connection
+    tally. The fixture has 1 dual_connection port but 2 canonical dual-homed endpoints, so this
+    discriminates: a regression to the per-port count would render 1, not 2."""
+    snap = _snap()
+    assert len(snap["endpoint_dependencies"]["dual_homed"]) == 2          # canonical truth
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Dual-homed endpoints (host MAC on two switches)" in text       # honest label
+    assert "for the 2 dual-homed endpoint" in text                         # REQ-T-LAN-002 cites 2, not 1
+    assert "endpoint port(s)" not in text                                  # old misleading phrasing gone
+
+
+def test_crd_l3_no_fhrp_text_says_svi_instances_not_vlans(tmp_path):
+    """A4: l3_forwarding row count (n_l3) is SVI INSTANCES, not distinct gateway VLANs. The
+    no-FHRP REQ-T-L3-001 wording must not call the SVI-instance count 'gateway VLAN(s)'."""
+    snap = _snap()
+    # all-"none" FHRP so the else-branch (the mislabeled one) renders
+    snap["l3_forwarding"] = [{"switch": "core1", "vlan": "20", "svi_ip": "10.0.20.1", "fhrp": "none"},
+                             {"switch": "core1", "vlan": "30", "svi_ip": "10.0.30.1", "fhrp": "none"}]
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "gateway SVI instance(s)" in text
+    assert "gateway VLAN(s) — every gateway is single-homed" not in text    # old mislabel gone
 
 
 def test_crd_requirements_are_proposals_with_req_ids_and_traceability(tmp_path):
