@@ -44,6 +44,10 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     per_device = [d for d in ((snap_dict.get("lifecycle_risk") or {}).get("per_device") or [])
                   if isinstance(d, dict)]
     coll = (snap_dict.get("collection_completeness") or {}).get("summary") or {}
+    # SSOT: the fleet-scale header reads the canonical executive_brief.scale (the published single
+    # source the explorer/deck/HLD read), with len(devices) only as a pre-brief fallback (C9 fix —
+    # the web-layer NRFU writer was the last surface recomputing fleet scale from the raw array).
+    scale = (snap_dict.get("executive_brief") or {}).get("scale") or {}
     val_items = [i for i in ((snap_dict.get("validation_plan") or {}).get("items") or []) if isinstance(i, dict)]
     services = [s for s in ((snap_dict.get("service_map") or {}).get("services") or []) if isinstance(s, dict)]
     domains = [d for d in ((snap_dict.get("application_intelligence") or {}).get("domains") or [])
@@ -79,7 +83,7 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         ["Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
         ["Snapshot captured", gen],
         ["Engine", engine.ENGINE_SCHEMA_VERSION],
-        ["Devices in scope", len(devices)],
+        ["Devices in scope", scale.get("n_devices") or len(devices)],
     ], widths=[2.2, 4.3])
     doc.add_heading("Sign-off", level=2)
     table(["Role", "Name", "Signature", "Date"], [

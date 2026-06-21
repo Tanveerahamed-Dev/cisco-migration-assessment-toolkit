@@ -598,6 +598,30 @@ def test_nrfu_deliverable_content(client):
     assert any("show " in c for c in all_rows)                   # runnable commands
 
 
+def test_nrfu_devices_in_scope_reads_canonical_scale(tmp_path):
+    """C9 (SSOT): the NRFU 'Devices in scope' header must read the canonical executive_brief.scale —
+    the published single source the explorer/deck/HLD read — not a local len(devices) recompute. The
+    web-layer NRFU writer was the last surface recounting fleet scale. Discriminating fixture: scale
+    says 303 while the raw devices array holds 2, so a recompute regression renders 2, not 303."""
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+    snap = {
+        "script_version": "V3.23.0",
+        "devices": {"a": {}, "b": {}},
+        "executive_brief": {"scale": {"n_devices": 303, "n_vlans": 202, "n_endpoints": 5127}},
+        "collection_completeness": {"summary": {"inventory": 303, "complete": 250, "not_collected": 53}},
+        "lifecycle_risk": {"per_device": []}, "validation_plan": {"items": []},
+        "service_map": {"services": []}, "application_intelligence": {"domains": []},
+        "multicast_intelligence": {}, "design_blueprint": {"decisions": [], "design_nrfu": {"items": []}},
+    }
+    out = str(tmp_path / "nrfu.docx")
+    write_nrfu_docx(out, snap, "Unit Test Fleet")
+    rows = [c.text for t in Document(out).tables for row in t.rows for c in row.cells]
+    assert "303" in rows           # canonical scale.n_devices, not len(devices)=2
+
+
 def test_execution_run_lifecycle(client):
     """The war-room flow end to end: start a run from the cutover plan, check off a step, record
     validation results, scribe a deviation, close out a wave, finish — then the run is read-only."""
