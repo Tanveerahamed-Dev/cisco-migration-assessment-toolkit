@@ -299,6 +299,48 @@ def _signals(snap):
     sig["bundle_degraded_nsw"] = len(bd_sw)
     sig["bundle_degraded_hosts"] = sorted(bd_sw)[:12]
 
+    # vPC / MLAG peer-fabric health (NX-OS multi-chassis). Domain level (peer adjacency, keepalive,
+    # global consistency, peer-link) AND per-vPC member legs (status up/down*, per-vPC consistency).
+    # A down* leg or a type-1/type-2 mismatch means the dual-homing the design implies is not in
+    # service; a domain-level fault risks split-brain at the moment of change.
+    vpc = snap.get("vpc") or {}
+    vpc_items = list(vpc.items()) if isinstance(vpc, dict) else []
+    vpc_dom_bad = vpc_legs = vpc_legs_down = vpc_legs_incons = 0
+    vpc_bad_hosts = []
+    for h, r in vpc_items:
+        if not isinstance(r, dict):
+            continue
+        bad = False
+        cons = str(r.get("consistency", "")).strip().lower()
+        peer = str(r.get("peer_status", "")).strip().lower()
+        ka = str(r.get("keepalive_status", "")).strip().lower()
+        plst = str(_as_dict(r.get("peer_link")).get("status", "")).strip().lower()
+        if (cons and cons != "success") or (peer and "ok" not in peer and "formed" not in peer) \
+                or (ka and "alive" not in ka) or (plst and plst != "up"):
+            vpc_dom_bad += 1
+            bad = True
+        for m in _as_list(r.get("vpcs")):
+            if not isinstance(m, dict):
+                continue
+            vpc_legs += 1
+            st = str(m.get("status", "")).strip().lower()
+            mc = str(m.get("consistency", "")).strip().lower()
+            if st and st != "up":
+                vpc_legs_down += 1
+                bad = True
+            if mc and mc != "success":
+                vpc_legs_incons += 1
+                bad = True
+        if bad and h:
+            vpc_bad_hosts.append(h)
+    sig["vpc_domains"] = sum(1 for _, r in vpc_items if isinstance(r, dict))
+    sig["vpc_dom_bad"] = vpc_dom_bad
+    sig["vpc_legs"] = vpc_legs
+    sig["vpc_legs_down"] = vpc_legs_down
+    sig["vpc_legs_incons"] = vpc_legs_incons
+    sig["vpc_unhealthy"] = vpc_legs_down + vpc_legs_incons + vpc_dom_bad
+    sig["vpc_bad_hosts"] = sorted(vpc_bad_hosts)[:12]
+
     # ---- 2026-06 mega-wave: collected-but-unused evidence -> firing design decisions (refutation-gated) ----
     l3f = _as_list(snap.get("l3_forwarding"))
 
@@ -892,6 +934,33 @@ def _d_bundle_health(snap, sig):
         devices=sig["bundle_degraded_hosts"])
 
 
+def _d_vpc_health(snap, sig):
+    if sig["vpc_unhealthy"] <= 0:
+        return None
+    down, incons, dom = sig["vpc_legs_down"], sig["vpc_legs_incons"], sig["vpc_dom_bad"]
+    parts = []
+    if down:
+        parts.append(f"{down} of {sig['vpc_legs']} member leg(s) are 'down*' (the dual-homed device behind "
+                     f"each is not getting the vPC redundancy it is built for)")
+    if incons:
+        parts.append(f"{incons} member leg(s) carry a type-1/type-2 consistency mismatch (traffic on the "
+                     f"affected VLANs is blocked until reconciled)")
+    if dom:
+        parts.append(f"{dom} domain(s) show a peer-adjacency / keepalive / peer-link fault")
+    return _decision(
+        "dc-vpc-mlag-peer-fabric-integrity",
+        f"vPC/MLAG peer fabric across {sig['vpc_domains']} domain(s): {'; '.join(parts)}. The multi-chassis "
+        f"redundancy is partially not in service -- reconcile every vPC before baselining and cutover or the "
+        f"target inherits phantom redundancy and latent consistency drift.",
+        sig["vpc_unhealthy"], ["availability", "convergence", "manageability"],
+        ["vpc[].consistency", "vpc[].peer_status", "vpc[].keepalive_status",
+         "vpc[].peer_link.status", "vpc[].vpcs[].status", "vpc[].vpcs[].consistency"],
+        priority="High",
+        driver="Multi-chassis integrity: a 'down*' or inconsistent vPC member leg means the dual-homing the "
+               "design implies is not actually in service.",
+        devices=sig["vpc_bad_hosts"])
+
+
 # --------------------------------------------------- mega-wave detectors (collected-but-unused evidence, 2026-06)
 def _d_vlan_subnet_integrity(snap, sig):
     if sig["vlan_multi_subnet"] <= 0:
@@ -1012,7 +1081,8 @@ _DETECTORS = [_d_fhrp, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_false_health, _d_bundle_health,
               # mega-wave 2026-06 (collected-but-unused evidence -> firing decisions):
               _d_vlan_subnet_integrity, _d_stp_root_determinism, _d_reserved_vlan, _d_static_etherchannel,
-              _d_power_redundancy, _d_gateway_cutover_order, _d_oversized_l2_subnet]
+              _d_power_redundancy, _d_gateway_cutover_order, _d_oversized_l2_subnet,
+              _d_vpc_health]
 
 
 # ----------------------------------------------------------------------------- requirement-gated decisions
@@ -2057,6 +2127,10 @@ _NRFU_DESC = {
     "dc-bound-layer2-failure-domain":
         "Verify no user VLAN spans more switches than the approved maximum; 'show mac address-table "
         "count vlan <N>' on each switch should show only local MACs for each bounded VLAN.",
+    "dc-vpc-mlag-peer-fabric-integrity":
+        "Verify every vPC/MLAG domain is healthy BEFORE building the target on it: peer-link up, "
+        "peer-keepalive alive, peer adjacency formed, global + per-vPC consistency = success, and "
+        "every member vPC in 'up' state (no 'down*'). Each dual-homed device must have BOTH legs up.",
 }
 
 _NRFU_PASS = {
@@ -2110,12 +2184,17 @@ _NRFU_PASS = {
     "dc-bound-layer2-failure-domain":
         "'show spanning-tree vlan <N> detail' confirms each bounded VLAN bridges across fewer than the "
         "approved maximum number of switches; a synthetic broadcast test stays within the block.",
+    "dc-vpc-mlag-peer-fabric-integrity":
+        "'show vpc' on both peers shows peer status 'peer adjacency formed (ok)', keepalive 'peer is "
+        "alive', peer-link Po 'up'; 'show vpc consistency-parameters global' and per-interface show no "
+        "type-1/type-2 mismatch; every member vPC reads 'up' (zero 'down*' legs).",
 }
 
 # Phase assignment: where in the cutover sequence this acceptance test runs
 _NRFU_PHASE = {
     "fhrp-not-observed-is-not-healthy": "pre-cutover",          # must verify BEFORE wave executes
     "lifecycle-eol-out-of-critical-roles": "pre-cutover",
+    "dc-vpc-mlag-peer-fabric-integrity": "pre-cutover",         # reconcile the peer fabric before baselining
     "scenario-build-before-break-phased-cutover": "post-cutover-operational",
     "mgmt-time-sync-logging-baseline": "post-cutover-operational",
     "security-device-hardening-baseline": "post-cutover-operational",
