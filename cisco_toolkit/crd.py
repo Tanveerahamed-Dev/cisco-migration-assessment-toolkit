@@ -126,14 +126,16 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         return "<NRFU test — detail in HLD/NRFU>"
 
     def req_table(rows):
-        """A requirement-capture table; registers every REQ-ID for the traceability section, and has
-        each requirement DECLARE how it is proven (Verification) so it is testable, not just stated."""
+        """A requirement-capture table; registers every REQ-ID for traceability, has each requirement
+        DECLARE how it is proven (Verification), and classifies its strength with a BCP 14 / RFC 2119
+        normative keyword (Class) rather than an ad-hoc H/M/L."""
         out = []
         for r in rows:
             req_ids.append(r[0])
-            out.append((r[0], r[1], r[2], r[3], _verify_method(r[0]), r[4]))
-        table(["REQ-ID", "Requirement (testable statement)", "Owner", "Priority", "Verification", "Confirmed?"],
-              out, widths=[0.85, 2.65, 0.8, 0.6, 1.55, 0.75])
+            cls = "<MUST/SHOULD/MAY>" if str(r[3]).strip() in ("<H/M/L>", "") else r[3]
+            out.append((r[0], r[1], r[2], cls, _verify_method(r[0]), r[4]))
+        table(["REQ-ID", "Requirement (testable statement)", "Owner", "Class (RFC 2119)", "Verification",
+               "Confirmed?"], out, widths=[0.85, 2.6, 0.75, 0.95, 1.4, 0.65])
 
     # ---- title page ----
     title = doc.add_paragraph(); title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -221,6 +223,15 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         table(["Severity", "Category", "Issue"],
               [(i.get("severity"), i.get("category") or "—", i.get("title") or "—")
                for i in ev["punch"][:8]], widths=[0.9, 1.4, 4.3])
+
+    # requirements-classification legend (BCP 14 / RFC 2119 + RFC 8174) — establishes the normative-keyword
+    # convention before the first requirement table (N1/N8)
+    doc.add_paragraph(
+        "Requirements classification (BCP 14). Each requirement's strength is stated with an RFC 2119 / "
+        "RFC 8174 normative keyword in the Class column — MUST / MUST NOT (an absolute requirement), "
+        "SHOULD / SHOULD NOT (recommended; deviate only with a documented reason), MAY / OPTIONAL (truly "
+        "discretionary) — and the keyword carries this meaning only when written in all capitals (RFC 8174). "
+        "Confirm the class of each row in the workshop.")
 
     # ===== 3. Business requirements =====
     doc.add_heading("3. Business Requirements", level=1)
