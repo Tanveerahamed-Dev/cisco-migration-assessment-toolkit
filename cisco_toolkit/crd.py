@@ -111,12 +111,29 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     bp = snap.get("design_blueprint") or {}   # NEW: canonical CCDE design blueprint (read, never recompute)
     req_ids: list = []   # (req_id, origin) — feeds the traceability skeleton
 
+    def _verify_method(rid):
+        # how the requirement is PROVEN — Source is implicit in the REQ-ID class (B/T/O/D), so the
+        # higher-value column to add is the verification method, kept consistent with §7 (N5).
+        rid = str(rid)
+        if rid.startswith("REQ-D"):
+            return "Design-driven NRFU (§8 + HLD §4)"
+        if rid.startswith("REQ-T"):
+            return "NRFU technical acceptance test"
+        if rid.startswith("REQ-B"):
+            return "Sponsor acceptance / sign-off"
+        if rid.startswith("REQ-O"):
+            return "Operational acceptance (Day-2 handover)"
+        return "<NRFU test — detail in HLD/NRFU>"
+
     def req_table(rows):
-        """A requirement-capture table; registers every REQ-ID for the traceability section."""
+        """A requirement-capture table; registers every REQ-ID for the traceability section, and has
+        each requirement DECLARE how it is proven (Verification) so it is testable, not just stated."""
+        out = []
         for r in rows:
             req_ids.append(r[0])
-        table(["REQ-ID", "Requirement (testable statement)", "Owner", "Priority", "Confirmed?"],
-              rows, widths=[0.9, 3.2, 1.0, 0.7, 0.9])
+            out.append((r[0], r[1], r[2], r[3], _verify_method(r[0]), r[4]))
+        table(["REQ-ID", "Requirement (testable statement)", "Owner", "Priority", "Verification", "Confirmed?"],
+              out, widths=[0.85, 2.65, 0.8, 0.6, 1.55, 0.75])
 
     # ---- title page ----
     title = doc.add_paragraph(); title.alignment = WD_ALIGN_PARAGRAPH.CENTER
