@@ -6,6 +6,7 @@ import TopologyGraph from "../components/TopologyGraph";
 import CutoverPlanner from "../components/CutoverPlanner";
 import ArchReviewPanel from "../components/ArchReview";
 import DesignBlueprintPanel from "../components/DesignBlueprint";
+import CausalFlowPanel from "../components/CausalFlow";
 
 const HEALTH_TONE = (n: number) => (n >= 80 ? "ok" : n >= 60 ? "watch" : n >= 35 ? "risk" : "crit");
 const GAUGE_COLOR = (n: number) => (n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
@@ -287,6 +288,8 @@ export default function SnapshotPage() {
         <ArchReviewPanel snapId={sid} />
 
         <DesignBlueprintPanel snapId={sid} />
+
+        <CausalFlowPanel snapId={sid} />
 
         <CutoverPlanner snapId={sid} />
 

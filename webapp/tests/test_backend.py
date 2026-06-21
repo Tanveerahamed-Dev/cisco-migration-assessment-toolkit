@@ -1016,3 +1016,66 @@ def test_trend_point_falls_back_when_brief_absent():
     snap.pop("executive_brief")
     tp = engine.trend_point(snap)
     assert tp["n_switches"] == 3 and tp["avg_health"] == 80.0 and tp["n_critical"] == 1
+
+
+def test_causal_flows_endpoint(client):
+    """The unified Causal Flow model (engine compute_causal_flows) — the SAME normalization the explorer's
+    Causal Flow mode renders, served so the dashboard never re-derives causal intent. Cross-layer once."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/causal_flows")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["summary"]["n_flows"] > 0
+    fams = {f["key"] for f in body["families"]}
+    assert "struct" in fams and "xlayer" in fams              # structural SPOFs + cross-layer always present
+    # every flow carries the four narrative stages + the magnitude / shape contract the UI renders
+    f0 = body["flows"][0]
+    for k in ("trigger", "mechanism", "impact", "mitigation", "severity",
+              "blast", "blast_unit", "shape", "family_label", "icon"):
+        assert k in f0, f"flow missing {k}"
+    # cross-layer compounds promote to a bowtie
+    assert any(f["shape"] == "bowtie" for f in body["flows"])
+    # keys unique END-TO-END (cross_layer CL-xx ids repeat — locks the index-based-key fix at the wire)
+    keys = [f["key"] for f in body["flows"]]
+    assert len(keys) == len(set(keys)), "flow keys must be unique at the endpoint"
+    # the cross-layer VLAN magnitude reaches the response ("N VLANs", not "1 device")
+    assert any(f["blast_unit"] in ("VLAN", "VLANs") for f in body["flows"]), "cross-layer VLAN magnitude must surface"
+    # de-dup: the punch-list 'Cross-layer' rows are NOT re-emitted (only the cross_layer array feeds xlayer)
+    assert not any(f["family"] == "Cross-layer" for f in body["flows"])
+    n_xlayer = sum(1 for f in body["flows"] if f["family"] == "xlayer")
+    cl = client.get(f"/api/snapshots/{snap_id}/section/cross_layer")
+    if cl.status_code == 200:
+        assert n_xlayer == len(cl.json()["data"]), "xlayer count must equal cross_layer length (no double-count)"
+    # 404 for a missing snapshot
+    assert client.get("/api/snapshots/999999/causal_flows").status_code == 404
+
+
+def test_causal_flows_total_over_malformed_snapshot():
+    """The engine fn the /causal_flows route calls must be TOTAL over any dict — a malformed-but-truthy
+    container field (a string where a list is expected, an unhashable severity) must NOT raise, else the
+    route 500s. Mirrors the JS Array.isArray defensiveness; the route also has a try/except backstop."""
+    from cisco_toolkit.causal import compute_causal_flows
+    for bad in [
+        {"causality": "notalist"}, {"cross_layer": "x"}, {"punchlist": "x"},
+        {"design_blueprint": {"decisions": "x"}}, {"devices": "x"},
+        {"causality": [{"severity": {"a": 1}, "hosts": ["a"]}]},   # unhashable severity
+        {"punchlist": [{"category": "X", "devices": "notalist", "detail": 12345}]},
+    ]:
+        r = compute_causal_flows(bad)
+        assert r["summary"]["n_flows"] >= 0 and isinstance(r["flows"], list)
+
+
+def test_causal_flows_computes_design_family_like_design_endpoint(client):
+    """Internal consistency: the /causal_flows route computes design_blueprint on the fly when the snapshot
+    didn't store one (exactly as /design does), so the design-decision family appears. The sample carries NO
+    stored design_blueprint but yields recommended decisions — and the count MUST equal /design's recommended
+    decisions (cross-endpoint single-source-of-truth)."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    body = client.get(f"/api/snapshots/{snap_id}/causal_flows").json()
+    fams = {f["key"] for f in body["families"]}
+    assert "design" in fams, "design family must be present (computed when not stored, like /design)"
+    n_design = sum(1 for f in body["flows"] if f["family"] == "design")
+    assert n_design > 0
+    bp = client.get(f"/api/snapshots/{snap_id}/design").json()
+    rec = sum(1 for d in bp["decisions"] if d.get("status") == "recommended")
+    assert n_design == rec, f"causal-flow design family ({n_design}) must equal /design recommended ({rec})"
