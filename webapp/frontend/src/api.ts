@@ -329,6 +329,7 @@ export interface DesignNrfuItem {
   phase: "pre-cutover" | "post-cutover-functional" | "post-cutover-operational";
   description: string;
   pass_criteria: string;
+  setup: string;
   devices: string[];
   principle_citation: string;
 }
