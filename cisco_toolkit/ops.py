@@ -53,8 +53,17 @@ def _facts(snap: dict) -> dict:
             sec_fail += int(s.get("fail") or 0)
         except (TypeError, ValueError):
             continue
+    # routing-adjacency + first-hop-redundancy Day-2 health (N36)
+    ph2 = _as_list(snap.get("protocol_health"))
+    routing_protos = sorted({str(r.get("protocol", "")).upper() for r in ph2
+                             if str(r.get("protocol", "")).upper() in ("OSPF", "BGP", "EIGRP", "ISIS", "IS-IS")})
+    n_proto_high = sum(1 for r in ph2 if isinstance(r, dict) and r.get("severity") in ("High", "Critical"))
+    l3f = _as_list(snap.get("l3_forwarding"))
+    n_gw = len(l3f)
+    n_fhrp = sum(1 for r in l3f if isinstance(r, dict) and (str(r.get("fhrp", "none")) or "none") != "none")
     return {"devices": devices, "keystones": keystones[:5], "si": si, "ph": ph,
-            "gd": gd, "qa": qa, "sr": sr, "lc": lc, "n_sec_fail": sec_fail}
+            "gd": gd, "qa": qa, "sr": sr, "lc": lc, "n_sec_fail": sec_fail,
+            "routing_protos": routing_protos, "n_proto_high": n_proto_high, "n_gw": n_gw, "n_fhrp": n_fhrp}
 
 
 def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
@@ -216,6 +225,33 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     else:
         absent("CPU/memory capacity output",
                "re-run the collection to capture the control-plane baseline.")
+
+    # ---- 3.3 routing-adjacency & first-hop-redundancy health (Day-2 monitored items, N36) ----
+    doc.add_heading("3.3 Routing-adjacency & first-hop-redundancy health", level=2)
+    doc.add_paragraph(
+        "Beyond CIS / syslog / capacity, the operate phase continuously watches the control plane's "
+        "routing adjacencies and gateway redundancy — a silent adjacency drop or a lost FHRP peer is an "
+        "outage waiting for the next failure.")
+    r36 = []
+    if ev["routing_protos"]:
+        r36.append(("Routing adjacencies", ", ".join(ev["routing_protos"]),
+                    "Baseline the neighbour list per device; alert on any adjacency leaving Full/Up and on "
+                    "flap counts."))
+    else:
+        r36.append(("Routing adjacencies", "none observed (L2-forwarded fleet)",
+                    "If routing is introduced in the target design, add adjacency-state + flap monitoring."))
+    if ev["n_gw"]:
+        if ev["n_fhrp"]:
+            r36.append(("First-hop redundancy", f"{ev['n_fhrp']} of {ev['n_gw']} gateway SVI(s) FHRP-protected",
+                        "Alert on HSRP/VRRP/GLBP active↔standby transitions and track-decrement events."))
+        else:
+            r36.append(("First-hop redundancy", f"0 of {ev['n_gw']} gateway SVI(s) — none observed",
+                        "No FHRP state to monitor today; introducing gateway redundancy is a design "
+                        "recommendation — then alarm on active/standby transitions."))
+    if ev["n_proto_high"]:
+        r36.append(("Protocol-health findings", f"{ev['n_proto_high']} flagged High at assessment",
+                    "Re-verify post-cutover and monitor for recurrence (see the punch-list)."))
+    table(["Monitored item", "Observed", "Day-2 alerting"], r36, widths=[1.5, 2.2, 2.8])
 
     # ===== 4. Operational standards & drift control =====
     doc.add_heading("4. Operational Standards & Drift Control", level=1)
