@@ -71,6 +71,22 @@ def test_deck_has_all_slides_and_key_content(tmp_path):
     assert "Where to start" in txt                                     # 7 recommendation
 
 
+def test_deck_lifecycle_past_end_of_support_is_ldos_not_eos(tmp_path):
+    """A3 (SSOT/coverage-honesty): the 'past end-of-support' headline must read n_past_ldos ALONE
+    (matching the canonical executive_brief lifecycle axis, analyze.py:5018), NOT n_past_eos +
+    n_past_ldos. Past-EoS is end-of-SALE (support window still open). Fixture: 152 LDoS + 40 EoS +
+    61 near of 303 → headline 152 and 70% past/nearing; the old conflation rendered 192 / 83%."""
+    snap = _rich_snap()
+    snap["lifecycle_risk"] = {"summary": {
+        "n_devices": 303, "n_past_ldos": 152, "n_past_eos": 40, "n_near": 61, "n_active": 50,
+        "by_band": {"Past-LDoS": 152, "Past-EoS": 40, "Near-LDoS": 61, "Active": 50}}}
+    out = tmp_path / "deck.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert "152" in txt and "70%" in txt           # n_past_ldos headline + (152+61)/303 pct
+    assert "192" not in txt and "83%" not in txt    # old n_past_eos+n_past_ldos conflation gone
+
+
 def test_deck_gains_riskiest_assets_slide_with_register(tmp_path):
     """NEW-V3.23.174: a snapshot carrying the Device Risk Register renders the extra
     'riskiest assets' slide (8 total); the back-compat 7-slide pin above proves the

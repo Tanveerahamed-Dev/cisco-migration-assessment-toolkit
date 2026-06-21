@@ -51,7 +51,7 @@ def _snap():
         },
         "executive_brief": {"posture": "Fair", "posture_statement": "Fleet is migratable with care.",
                             "axes": [], "top_gating": ["1 Critical L3-design finding gates cutover"]},
-        "lifecycle_risk": {"summary": {"n_devices": 4, "n_past_eos": 1}},
+        "lifecycle_risk": {"summary": {"n_devices": 4, "n_past_ldos": 1, "n_past_eos": 0}},
         "remediation_plan": {"summary": {"n_items": 5, "n_devices": 2}},
     }
 
@@ -137,10 +137,26 @@ def test_engagement_raid_is_seeded_from_findings(tmp_path):
     write_engagement_docx(out, _snap(), "Unit Test Fleet")
     text = _all_text(Document(out))
     assert "RSK-001" in text and "VLAN 30 has a single gateway" in text     # risk from punch-list
-    assert "past end-of-support" in text                                    # risk from lifecycle
+    assert "past last-day-of-support (LDoS)" in text                        # risk from lifecycle (LDoS band)
     assert "ISS-001" in text and "show cdp neighbors detail" in text        # issue from blind spot
     assert "ASM-001" in text and "DEP-001" in text                          # assumptions + dependencies
     assert "DEC-001" in text and "PROPOSED" in text                         # decision log seeded
+
+
+def test_engagement_gate_and_raid_key_on_past_ldos_not_past_eos(tmp_path):
+    """A2 (coverage-honesty): the band that LOSES TAC is Past-LDoS, not Past-EoS (end-of-sale,
+    support window still open). A fleet with 152 past-LDoS and 0 past-EoS must surface the 152 in
+    BOTH the go/no-go conditions and the RAID risk — reading n_past_eos (=0) silently drops the 152
+    (the exact AJ defect). Discriminating fixture: n_past_eos=0 so only an n_past_ldos reader passes."""
+    snap = _snap()
+    snap["lifecycle_risk"] = {"summary": {"n_devices": 303, "n_past_ldos": 152, "n_past_eos": 0,
+                                          "n_near": 61}}
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "152 device(s) are past last-day-of-support (LDoS)" in text       # go/no-go condition
+    assert "152 device(s) past last-day-of-support (LDoS)" in text           # RAID risk row
+    assert "152 device(s) are past end-of-support" not in text               # old conflated wording gone
 
 
 def test_engagement_no_waves_fallback(tmp_path):

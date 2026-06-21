@@ -143,9 +143,12 @@ def _verdict(f: dict) -> tuple:
     if n_high:
         conds.append(f"{n_high} High punch-list item(s) should be remediated or explicitly "
                      "risk-accepted before the go/no-go gate.")
+    if _as_int(f["lc"].get("n_past_ldos")):
+        conds.append(f"{f['lc']['n_past_ldos']} device(s) are past last-day-of-support (LDoS) — no "
+                     "TAC escalation path during the windows; stage spares or replace first.")
     if _as_int(f["lc"].get("n_past_eos")):
-        conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-support — no TAC escalation "
-                     "path during the windows; stage spares or replace first.")
+        conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-sale (EoS), support window "
+                     "closing — plan a refresh before they reach last-day-of-support.")
     if n_crit or f["notready"]:
         return "HOLD", conds
     if conds:
@@ -468,9 +471,9 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
             risks.append((i.get("severity"), i.get("title") or "—",
                           "punch-list: " + (i.get("category") or "—"),
                           "Remediate before the owning wave's T-14 checkpoint"))
-    if _as_int(f["lc"].get("n_past_eos")):
-        risks.append(("High", f"{f['lc']['n_past_eos']} device(s) past end-of-support in the "
-                              "migration path", "lifecycle risk",
+    if _as_int(f["lc"].get("n_past_ldos")):
+        risks.append(("High", f"{f['lc']['n_past_ldos']} device(s) past last-day-of-support (LDoS) "
+                              "in the migration path", "lifecycle risk",
                       "Stage spares / replace before their wave; no TAC path otherwise"))
     hard_total = sum(_as_int(w.get("hard_cutover_endpoints")) for w in f["ws_by"].values())
     if hard_total:

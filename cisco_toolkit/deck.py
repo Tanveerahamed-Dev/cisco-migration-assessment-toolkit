@@ -280,11 +280,15 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         s = slide()
         header(s, "A primary migration driver", "Hardware end-of-support exposure")
         n = lsum.get("n_devices", 0)
-        past = lsum.get("n_past_eos", 0) + lsum.get("n_past_ldos", 0)
+        # "Past end-of-support" is the Past-LDoS band ALONE (no TAC) — Past-EoS is end-of-SALE with
+        # the support window still open. Mirror the canonical executive_brief lifecycle axis
+        # (analyze.py:5018) so the deck headline agrees with every other surface (A3 SSOT fix).
+        # Past-EoS is not lost: it keeps its own segment in the band-distribution bar below.
+        past = lsum.get("n_past_ldos", 0)
         near = lsum.get("n_near", 0)
         pct = round(100 * (past + near) / n) if n else 0
         stat(s, 0.7, 2.1, f"{pct}%", "past or nearing end-of-support", _HIGH)
-        stat(s, 3.6, 2.1, lsum.get("n_past_eos", 0) + lsum.get("n_past_ldos", 0), "past end-of-support", _CRIT)
+        stat(s, 3.6, 2.1, past, "past end-of-support", _CRIT)
         stat(s, 6.2, 2.1, near, "within 1 year", _MED)
         lc_order = ["Past-LDoS", "Past-EoS", "Near-LDoS", "Active", "Unknown"]
         byb = lsum.get("by_band") or {}
