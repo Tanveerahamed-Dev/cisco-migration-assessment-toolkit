@@ -305,6 +305,49 @@
     .cz-flow{animation:none !important; stroke-dasharray:none; opacity:.55}
     .cz-spark{display:none}
   }
+  /* ---- Causal-Flow v2 (all finding families): filter toolbar, severity badge, magnitude, evidence, bowtie ---- */
+  .cz-toolbar{display:flex; flex-direction:column; gap:6px; margin:2px 0 6px}
+  .cz-frow{display:flex; flex-wrap:wrap; gap:5px; align-items:center}
+  .cz-frow .lbl{font:700 9.5px var(--sans); letter-spacing:.7px; text-transform:uppercase; color:var(--text-dim); margin-right:2px}
+  .cz-fchip{display:inline-flex; align-items:center; gap:5px; font:600 11px var(--sans); padding:4px 9px;
+    border-radius:999px; cursor:pointer; user-select:none; border:1px solid var(--border);
+    background:var(--surface-2); color:var(--text-dim); transition:.12s}
+  .cz-fchip:hover{border-color:var(--accent); color:var(--text)}
+  .cz-fchip:focus-visible{outline:none; box-shadow:0 0 0 3px var(--accent-soft)}
+  .cz-fchip.on{border-color:var(--accent); background:var(--accent-soft); color:var(--accent)}
+  .cz-fchip .ic{font-size:12px; line-height:1}
+  .cz-fchip .ct{font-size:10px; font-weight:700; opacity:.65}
+  .cz-fchip.on .ct{opacity:.95}
+  .cz-fchip .shp{width:9px; height:9px; display:inline-block}
+  /* severity badge: colour + SHAPE + label (redundant encoding — never hue alone) */
+  .cz-sevbadge{display:inline-flex; align-items:center; gap:5px; font:800 10px var(--sans);
+    letter-spacing:.6px; text-transform:uppercase; padding:2px 8px; border-radius:6px; border:1px solid currentColor}
+  .cz-sevbadge svg{display:block}
+  /* magnitude (blast) + confidence inline meta */
+  .cz-meta{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:9px 0 2px}
+  .cz-mag{display:inline-flex; align-items:center; gap:6px; font:600 11px var(--sans); color:var(--text-dim)}
+  .cz-mag .n{font:800 15px var(--sans); color:var(--text)}
+  .cz-magbar{height:7px; border-radius:4px; min-width:4px; opacity:.9}
+  .cz-conf{font:600 10px var(--sans); color:var(--text-dim); border:1px dashed var(--border-strong); border-radius:5px; padding:2px 7px}
+  .cz-conf.obs{color:var(--ok); border-color:var(--ok)}
+  /* evidence chip strip (coverage-honest: cite device/field/citation) */
+  .cz-evid{display:flex; flex-wrap:wrap; gap:5px; margin-top:8px}
+  .cz-chip{display:inline-flex; align-items:center; gap:4px; font:600 10.5px var(--mono);
+    padding:2px 7px; border-radius:5px; background:var(--surface-3); border:1px solid var(--border); color:var(--text-dim)}
+  .cz-chip b{color:var(--text); font-weight:700}
+  .cz-chip.cite{font-family:var(--sans); font-style:italic}
+  /* bowtie barrier glyph on a connector (a control/mitigation between cause and consequence) */
+  .cz-threat-t{font:600 8.5px var(--sans); fill:var(--text-dim); text-anchor:middle}
+  .cz-barrier rect{fill:var(--ok-soft); stroke:var(--ok); stroke-width:1.5}
+  .cz-barrier text{font:800 7px var(--sans); fill:var(--ok); text-anchor:middle; text-transform:uppercase; letter-spacing:.4px}
+  /* preventive barrier drawn ABSENT (⊘): a dashed ring + slash = "no control here today" (coverage-honest) */
+  .cz-prevbar circle{fill:var(--surface); stroke:var(--crit); stroke-width:1.4; stroke-dasharray:2.5 2; opacity:.9}
+  .cz-prevbar line{stroke:var(--crit); stroke-width:1.4; opacity:.9}
+  /* staged reveal: each stage fades in sequentially (opacity only — safe on SVG; gated to no-preference) */
+  @media (prefers-reduced-motion: no-preference){
+    .cz-reveal{opacity:0; animation:czReveal .42s ease-out forwards}
+    @keyframes czReveal{to{opacity:1}}
+  }
   /* ---- animated layer-lens (U9): an L1→L4 "scanline" sweeps the canvas; edges/nodes
      tint by the layer currently in focus. The sweep band lives under #vp (tracks pan/zoom)
      and never blocks pointer input. Under reduced-motion the band holds static (no sweep)
@@ -968,7 +1011,7 @@
       <button data-mode="health" class="on" aria-pressed="true"><span class="gl" aria-hidden="true">✚</span>Health</button>
       <button data-mode="protocols" aria-pressed="false"><span class="gl" aria-hidden="true">⌥</span>Protocols</button>
       <button data-mode="xlayer" aria-pressed="false"><span class="gl" aria-hidden="true">⌗</span>Cross-Layer</button>
-      <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causality</button>
+      <button data-mode="causality" aria-pressed="false"><span class="gl" aria-hidden="true">⤳</span>Causal Flow</button>
       <button data-mode="waves" aria-pressed="false"><span class="gl" aria-hidden="true">⇉</span>Waves</button>
       <button data-mode="apps" aria-pressed="false"><span class="gl" aria-hidden="true">▦</span>Apps</button>
       <button data-mode="review" aria-pressed="false"><span class="gl" aria-hidden="true">☑</span>Review</button>
@@ -2098,6 +2141,8 @@ function reducedMotion(){return window.matchMedia&&window.matchMedia("(prefers-r
    CAUSAL_SEL = index into the current chain list of the selected chain (null = none).
    CAUSAL_RAF = rAF id for the four-stage spark loop; cancelled on mode change / re-render. */
 let CAUSAL_SEL=null, CAUSAL_RAF=null;
+/* Causal-Flow v2 filters: which finding family + severity the Causality mode shows (browse all options). */
+let CAUSAL_FAMILY="all", CAUSAL_SEV="all";
 
 /* ---- pinned (hand-dragged) node positions ---------------------------------
    PINNED maps host->{x,y} for nodes the user has dragged. These survive layout
@@ -3186,8 +3231,8 @@ function modeSummary(m){
       let nc=0,np=0; hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);
         if(t==="crit")nc++; else if(t==="risk")np++;});
       return ` ${hs.length} switches scored, average ${avg}${nc?`, ${nc} critical`:""}${np?`, ${np} poor`:""}.`;}
-    if(m==="causality"){const ch=causalityChains(MODEL)||[];
-      return ch.length?` ${ch.length} root-cause chain${ch.length>1?"s":""}.`:"";}
+    if(m==="causality"){const ch=causalFlows()||[]; const nf=czFamilies().length;
+      return ch.length?` ${ch.length} causal flow${ch.length>1?"s":""} across ${nf} finding famil${nf>1?"ies":"y"}.`:"";}
     if(m==="waves"){const mg=(SNAP&&SNAP.move_groups)||[]; if(!mg.length)return "";
       const mr=(SNAP&&SNAP.migration_readiness)||[]; const nr=mr.filter(x=>x.readiness==="NOT READY").length;
       return ` ${mg.length} move group${mg.length>1?"s":""}${nr?`, ${nr} not ready`:""}.`;}
@@ -3213,7 +3258,7 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causality chains",waves:"Migration waves",apps:"Application domains",review:"Architecture review",design:"Design blueprint"}[m]||m)+" mode."+modeSummary(m));
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causal Flow",waves:"Migration waves",apps:"Application domains",review:"Architecture review",design:"Design blueprint"}[m]||m)+" mode."+modeSummary(m));
   writeHash();}
 
 /* =====================================================================
@@ -3228,7 +3273,7 @@ function setHint(){const h=document.getElementById("hint");const m={
   health:`Click a switch for its <b>health breakdown</b>`,
   protocols:`Click a switch for its <b>routing-protocol profile</b>`,
   xlayer:`Click a finding to <b>highlight the switches it spans</b>`,
-  causality:`Select a chain to <b>animate its root-cause flow</b>`,
+  causality:`Filter by family/severity, then select a finding to <b>animate its causal flow</b>`,
   waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
   apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`,
   review:AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`,
@@ -3242,7 +3287,7 @@ function setModeTag(){const el=document.getElementById("modetag");
     health:"Per-switch 0–100 health and per-group migration readiness.",
     protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
     xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
-    causality:"Root-cause → impact: each structural SPOF as an animated trigger→mechanism→impact→mitigation chain.",
+    causality:"Root-cause → impact: every finding family — structural SPOFs, cross-layer compounds, CCDE design decisions and the migration punch-list — as an animated trigger→mechanism→impact→mitigation flow (bowtie for multi-cause compounds), with blast magnitude on the connectors and evidence on demand.",
     waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict.",
     apps:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk.",
     review:"The senior-engineer design review: leading-practice conformance verdicts per design domain (A–F grade), each finding citing its evidence, impact and the rule it deviates from.",
@@ -3260,7 +3305,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit")+`<div class="row faint" style="margin-top:3px">◕ node ring fills with the 0–100 score</div>`;
   else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
   else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
-  else if(MODE==="causality"){h+=bx("var(--crit)","root-cause host","")+`<div class="row faint" style="margin-top:3px">Select a chain in the panel — its host is ringed here and its trigger→mitigation flow animates.</div>`;}
+  else if(MODE==="causality"){h+=bx("var(--crit)","affected device(s)","")+`<div class="row faint" style="margin-top:3px">Select a finding in the panel — the devices it implicates are ringed here and its trigger→mitigation flow animates.</div>`;}
   else if(MODE==="waves"){h+=bx("var(--accent)","switches in the selected group","")+`<div class="row faint" style="margin-top:3px">Click a move-group card to spotlight its shared-VLAN L2 domain.</div>`;}
   else if(MODE==="apps"){h+=bx("var(--accent)","switches in the selected domain","")+`<div class="row faint" style="margin-top:3px">Click an application-domain card to spotlight its switches; tiers run <b>On-air critical</b> → <b>Production</b> → <b>Support</b>.</div>`;}
   else if(MODE==="review"){h+=bx("var(--crit)","critical deviation","")+bx("var(--risk)","deviation","")+bx("var(--watch)","advisory","")+bx("var(--ok)","conforms","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>worst verdict naming them</b>; click a finding to spotlight its evidence.</div>`;}
@@ -3439,10 +3484,14 @@ function renderDrawer(){
     c.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();sel();}};});
   // wire causality chain selection (select a chain → re-render its flow diagram + highlight host)
   const _selCausal=i=>{CAUSAL_SEL=i; repaint(); renderDrawer();
-    const list=causalityList(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
+    const list=causalView(); const sel=list[i]; if(sel&&sel.hosts.length&&POS[sel.hosts[0]])centerOn(sel.hosts[0]);};
   p.querySelectorAll("[data-causal]").forEach(r=>{const i=+r.dataset.causal;
     r.onclick=()=>_selCausal(i);
     r.onkeydown=ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();_selCausal(i);}};});
+  // wire Causal-Flow family / severity filter chips (each resets the selection to the top of the new view)
+  const _setCausalFilter=(k,v)=>{if(k==="fam")CAUSAL_FAMILY=v; else CAUSAL_SEV=v; CAUSAL_SEL=0; repaint(); renderDrawer();};
+  p.querySelectorAll("[data-czfam]").forEach(b=>b.onclick=()=>_setCausalFilter("fam",b.dataset.czfam));
+  p.querySelectorAll("[data-czsev]").forEach(b=>b.onclick=()=>_setCausalFilter("sev",b.dataset.czsev));
   // wire row clicks (jump-to-switch); clears any endpoint drill-down
   p.querySelectorAll("[data-jump]").forEach(r=>r.onclick=()=>{const h=r.dataset.jump;
     if(MODE==="trace"){EPSEL=null;pickTrace(h);} else{SEL=h;EPSEL=null;repaint();renderDrawer();centerOn(h);writeHash();}});
@@ -6919,37 +6968,161 @@ const CAUSAL_STAGES=[
   {key:"mechanism", label:"Mechanism",  tok:"risk"},
   {key:"impact",    label:"Impact",     tok:"watch"},
   {key:"mitigation",label:"Mitigation", tok:"ok"}];
-/* Render the four ordered stage-boxes + connectors as an inline SVG string. The
-   connectors carry a static base line plus a .cz-flow stroke whose dash animates
-   L→R (CSS @keyframes causalFlow); animateCausalFlow() then drives a spark dot
-   along them via rAF. Under reduced-motion the spark is skipped and the CSS rule
-   freezes the flow stroke to a faint static line — the chain stays fully legible. */
-function causalDiagramSvg(chain){
-  const W=440, padX=14, n=CAUSAL_STAGES.length;
-  const boxW=92, gap=(W-2*padX-n*boxW)/(n-1);
-  const boxH=62, top=30, H=top+boxH+18;
-  const cy=top+boxH/2;
+/* ---- severity model: a 4-level semantic ramp encoded by COLOUR + SHAPE + LABEL (redundant,
+   so it survives colour-vision deficiency and motion-off — WCAG 1.4.1). Critical/High = triangle,
+   Medium = diamond, Low = square, Info = dot; colours run crit→risk→watch→accent→neutral. ---- */
+const CZ_SEV={
+  Critical:{tok:"crit",   rank:5},
+  High:    {tok:"risk",   rank:4},
+  Medium:  {tok:"watch",  rank:3},
+  Low:     {tok:"accent", rank:2},
+  Info:    {tok:"accent", rank:1}};
+/* pill class for a severity (pl-accent doesn't exist; Low/Info fall back to the neutral pill) */
+function czPillTok(s){const cv=czSev(s); return cv==="Critical"?"crit":cv==="High"?"risk":cv==="Medium"?"watch":"neutral";}
+/* a tiny inline severity glyph (shape+colour) for chips, cards and badges */
+function czSevSvg(sev,s){s=s||11; return `<svg width="${s}" height="${s}" viewBox="0 0 ${s} ${s}" aria-hidden="true" style="vertical-align:-1px">${czShape(sev,0,0,s)}</svg>`;}
+function czSev(s){const t=String(s||"").toLowerCase();
+  if(t.includes("crit"))return "Critical";
+  if(t==="high"||t.includes("warn")||t.includes("error"))return "High";
+  if(t.includes("med"))return "Medium";
+  if(t.includes("low"))return "Low";
+  return CZ_SEV[s]?s:"Info";}
+function czSevMeta(s){return CZ_SEV[czSev(s)]||CZ_SEV.Info;}
+/* inline SVG severity glyph (shape is the redundant, colour-independent channel) */
+function czShape(sev,x,y,s){ s=s||12; const c=`var(--${czSevMeta(sev).tok})`; const cv=czSev(sev);
+  if(cv==="Critical"||cv==="High")return `<path d="M${x} ${y+s} L${x+s/2} ${y} L${x+s} ${y+s} Z" fill="${c}"/>`;
+  if(cv==="Medium")return `<path d="M${x+s/2} ${y} L${x+s} ${y+s/2} L${x+s/2} ${y+s} L${x} ${y+s/2} Z" fill="${c}"/>`;
+  if(cv==="Low")return `<rect x="${x}" y="${y}" width="${s}" height="${s}" rx="2" fill="${c}"/>`;
+  return `<circle cx="${x+s/2}" cy="${y+s/2}" r="${s/2}" fill="${c}"/>`;}
+/* connector stroke-width ∝ blast-radius magnitude (Sankey cue: a heavier flow line reaches more endpoints) */
+function czWidth(b){b=Number(b)||0; return Math.round((2.6+Math.min(8.6, Math.log2(1+b)*1.18))*10)/10;}
+/* best-available blast magnitude AS {n, unit} — coverage-honest: the unit is the one actually matched in
+   the prose (endpoints preferred, then devices/hosts/switches), so a count is never mislabeled. Falls back
+   to the host/device count. The number drives the Sankey connector width; the unit labels the badge. */
+function czBlast(text,hosts,extra){
+  const s=String(text||"");
+  const pick=kw=>{const m=new RegExp("(\\d[\\d,]*)\\s*"+kw,"i").exec(s); return m?+m[1].replace(/,/g,""):null;};
+  // base magnitude keywords (priority order) + any extra a family supplies (cross-layer adds VLAN)
+  const units=[["endpoint","endpoints"],["device","devices"],["host","hosts"],["switch","switches"]].concat(extra||[]);
+  let n=null, unit="devices";
+  for(const u of units){const v=pick(u[0]); if(v!=null){n=v; unit=u[1]; break;}}
+  if(n==null&&Array.isArray(hosts)){n=hosts.length; unit="devices";}
+  n=n||0;
+  if(n===1)unit={endpoints:"endpoint",devices:"device",hosts:"host",switches:"switch",VLANs:"VLAN"}[unit]||unit;  // "1 device", not "1 devices"
+  return {n, unit};}
+/* a small per-family glyph for the filter chips (geometric — renders consistently across fonts) */
+function czFamilyIcon(cat){return ({
+  "struct":"⤳","xlayer":"⧉","design":"✎","Compound risk":"❖","Addressing":"⌖","FHRP":"⮂",
+  "False-health":"❢","Health":"✚","L1":"━","L3":"⇄","Operational logs":"☰","Protocol":"⇆",
+  "Security":"⛨","Software exposure":"⌗","Inventory":"▤","Multicast/Media":"⋔","QoS":"⊜",
+  "STP":"⎇","Timing/PTP":"◷"})[cat]||"•";}
+/* Render ONE causal flow. A simple cause→effect story is a left→right four-stage chain; a finding
+   with multiple contributing causes (cross-layer compounds) promotes to a BOWTIE — threats converge
+   on a centre "top event", then fan out to the impact, with the mitigation drawn as a barrier on the
+   recovery side (the industry-standard barrier-based risk picture). Dispatched on f.shape. */
+function causalDiagramSvg(f){
+  return (f&&f.shape==="bowtie"&&Array.isArray(f.threats)&&f.threats.length>=2)?czBowtieSvg(f):czLinearSvg(f);}
+/* Linear chain: four ordered stage-boxes + magnitude-scaled connectors. The connectors carry a static
+   base line plus a .cz-flow stroke whose dash animates L→R (CSS @keyframes causalFlow); animateCausalFlow()
+   then drives a spark dot along them via rAF. Severity rides a colour+shape ribbon (top-left); the blast
+   count tags the Impact box. Under reduced-motion the spark is skipped and the flow stroke freezes to a
+   faint static line — the chain stays fully legible. */
+function czLinearSvg(f){
+  const W=470, padX=12, n=CAUSAL_STAGES.length;
+  const boxW=99, gap=(W-2*padX-n*boxW)/(n-1);
+  const boxH=66, top=46, H=top+boxH+34, cy=top+boxH/2;
   const xOf=i=>padX+i*(boxW+gap);
+  const sc=`var(--${czSevMeta(f.sev).tok})`, fw=czWidth(f.blast);
+  const blab=(f.blast||0)+" "+(f.blastUnit||"affected");
   let boxes="", conns="", flows="";
   CAUSAL_STAGES.forEach((st,i)=>{
-    const x=xOf(i), txt=String((chain[st.key]||"—"));
-    const lines=_czWrap(txt, 15, 4);
+    const x=xOf(i), txt=String((f[st.key]||"—"));
+    const lines=_czWrap(txt, 16, 4);
     const tspans=lines.map((ln,k)=>`<tspan x="${x+boxW/2}" dy="${k===0?0:11}">${esc(ln)}</tspan>`).join("");
     const ty=cy-((lines.length-1)*11)/2;
-    boxes+=`<rect class="cz-node-box" x="${x}" y="${top}" width="${boxW}" height="${boxH}" rx="9"
+    boxes+=`<g class="cz-reveal" style="animation-delay:${(0.1+i*0.1).toFixed(2)}s">
+      <rect class="cz-node-box" x="${x}" y="${top}" width="${boxW}" height="${boxH}" rx="9"
         fill="var(--${st.tok}-soft)" stroke="var(--${st.tok})"/>
-      <text class="cz-stage" x="${x+boxW/2}" y="${top-8}" fill="var(--${st.tok})">${st.label}</text>
+      <text class="cz-stage" x="${x+boxW/2}" y="${top-7}" fill="var(--${st.tok})">${st.label}</text>
       <text class="cz-node-t" x="${x+boxW/2}" y="${ty}">${tspans}</text>`;
+    if(st.key==="impact"&&f.blast>0)
+      boxes+=`<text x="${x+boxW/2}" y="${top+boxH+16}" text-anchor="middle" fill="${sc}" style="font:800 10px var(--sans)">▣ ${esc(blab)}</text>`;
+    boxes+=`</g>`;
     if(i<n-1){const x1=x+boxW, x2=xOf(i+1);
       conns+=`<line class="cz-conn" x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" marker-end="url(#czArrow)"/>`;
-      flows+=`<line class="cz-flow" x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}"/>`;}
+      flows+=`<line class="cz-flow mag" x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" style="stroke-width:${fw}"/>`;}
   });
-  return `<svg class="causalDiagram" viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="Causal flow: ${esc(chain.trigger||"")} leads to ${esc(chain.impact||"")}; mitigated by ${esc(chain.mitigation||"")}">
+  const conf=f.confidence?`<text x="${W-padX}" y="21" text-anchor="end" style="font:600 10px var(--sans)" fill="var(--text-dim)">${esc(f.confidence)}</text>`:"";
+  return `<svg class="causalDiagram" data-shape="linear" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="${esc(czSev(f.sev))} ${esc(f.familyLabel||"")}: ${esc(f.trigger||"")} leads to ${esc(f.impact||"")}; mitigated by ${esc(f.mitigation||"")}">
     <defs><marker id="czArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="var(--border-strong)"/></marker></defs>
+    <g class="cz-reveal" style="animation-delay:.02s">${czShape(f.sev, padX, 11, 13)}
+      <text x="${padX+20}" y="21" style="font:800 10px var(--sans); letter-spacing:.5px" fill="${sc}">${esc(czSev(f.sev).toUpperCase())} <tspan fill="var(--text-dim)" style="font-weight:600">· ${esc(f.familyLabel||"")}</tspan></text>${conf}</g>
     ${conns}${flows}${boxes}
     <circle id="czSpark" class="cz-spark" r="4" cx="${xOf(0)+boxW}" cy="${cy}" style="opacity:0"/>
+  </svg>`;
+}
+/* Bowtie: N contributing causes (left) converge on a centre top-event, then a single propagation edge
+   reaches the impact (right), with the mitigation shown as a barrier ON that edge — the control that
+   breaks the chain. Every connector is a .cz-flow so the CSS dash animation flows along all of them;
+   no rAF spark is used here (the diagram carries no #czSpark, so animateCausalFlow() no-ops cleanly). */
+function czBowtieSvg(f){
+  const tn=Math.min(3,f.threats.length);
+  const W=470, padX=12;
+  const thX=padX, thW=140, thH=42, tgap=14;
+  const evX=190, evW=112, evH=74;
+  const conX=W-padX-104, conW=104, conH=74;
+  const H=Math.max(182, 90+tn*(thH+tgap)), cy=H/2;
+  const evY=cy-evH/2, conY=cy-conH/2;
+  const blockH=tn*thH+(tn-1)*tgap, ty0=cy-blockH/2;
+  const sc=`var(--${czSevMeta(f.sev).tok})`, fw=czWidth(f.blast);
+  let threats="", conns="", flows="", prevbars="";
+  f.threats.slice(0,3).forEach((t,i)=>{
+    const yy=ty0+i*(thH+tgap), tcy=yy+thH/2;
+    const lines=_czWrap(String(t),26,3);
+    const tsp=lines.map((ln,k)=>`<tspan x="${thX+thW/2}" dy="${k===0?0:10}">${esc(ln)}</tspan>`).join("");
+    const tyt=tcy-((lines.length-1)*10)/2+3;
+    const sx=thX+thW, ex=evX;
+    const d=`M${sx} ${tcy} C ${sx+30} ${tcy}, ${ex-30} ${cy}, ${ex} ${cy}`;
+    threats+=`<g class="cz-reveal" style="animation-delay:${(0.08+i*0.06).toFixed(2)}s">
+      <rect class="cz-node-box" x="${thX}" y="${yy}" width="${thW}" height="${thH}" rx="7" fill="var(--crit-soft)" stroke="var(--crit)"/>
+      <text class="cz-node-t" x="${thX+thW/2}" y="${tyt}" style="font-size:9px">${tsp}</text></g>`;
+    conns+=`<path class="cz-conn" d="${d}" fill="none" marker-end="url(#czArrow)"/>`;
+    flows+=`<path class="cz-flow mag" d="${d}" fill="none" style="stroke-width:${Math.max(2,fw-1)}"/>`;
+    // PREVENTIVE barrier, drawn ABSENT (⊘): no control sits between this cause and the top event today —
+    // that gap is precisely why the cause propagates. Honest: we never invent a control that isn't there.
+    const px=(sx+ex)/2, py=(tcy+cy)/2;
+    prevbars+=`<g class="cz-prevbar cz-reveal" style="animation-delay:${(0.2+i*0.05).toFixed(2)}s"><title>No preventive control here today — this is why the cause reaches the top event</title>
+      <circle cx="${px}" cy="${py}" r="7"/><line x1="${px-5}" y1="${py-5}" x2="${px+5}" y2="${py+5}"/></g>`;
+  });
+  // top-event → impact, with the MITIGATIVE barrier (the fix to add) ON the recovery edge
+  conns+=`<line class="cz-conn" x1="${evX+evW}" y1="${cy}" x2="${conX}" y2="${cy}" marker-end="url(#czArrow)"/>`;
+  flows+=`<line class="cz-flow mag" x1="${evX+evW}" y1="${cy}" x2="${conX}" y2="${cy}" style="stroke-width:${fw}"/>`;
+  const bx=(evX+evW+conX)/2-24;
+  const barrier=`<g class="cz-barrier cz-reveal" style="animation-delay:.46s"><title>The mitigation to add — the control that breaks the chain</title><rect x="${bx}" y="${cy-13}" width="48" height="26" rx="6"/><text x="${bx+24}" y="${cy+3}">✓ FIX</text></g>`;
+  const evLines=_czWrap(String(f.topEvent||f.title||"top event"),19,4);
+  const evtsp=evLines.map((ln,k)=>`<tspan x="${evX+evW/2}" dy="${k===0?0:11}">${esc(ln)}</tspan>`).join("");
+  const evty=cy-((evLines.length-1)*11)/2;
+  const coLines=_czWrap(String(f.impact||f.consequence||"impact"),17,4);
+  const cotsp=coLines.map((ln,k)=>`<tspan x="${conX+conW/2}" dy="${k===0?0:11}">${esc(ln)}</tspan>`).join("");
+  const coty=cy-((coLines.length-1)*11)/2;
+  const center=`<g class="cz-reveal" style="animation-delay:.28s">
+      <rect class="cz-node-box" x="${evX}" y="${evY}" width="${evW}" height="${evH}" rx="10" fill="var(--watch-soft)" stroke="var(--watch)" stroke-width="2.2"/>
+      <text class="cz-stage" x="${evX+evW/2}" y="${evY-7}" fill="var(--watch)">Top event</text>
+      <text class="cz-node-t" x="${evX+evW/2}" y="${evty}">${evtsp}</text></g>
+    <g class="cz-reveal" style="animation-delay:.34s">
+      <rect class="cz-node-box" x="${conX}" y="${conY}" width="${conW}" height="${conH}" rx="9" fill="var(--watch-soft)" stroke="var(--watch)"/>
+      <text class="cz-stage" x="${conX+conW/2}" y="${conY-7}" fill="var(--watch)">Impact</text>
+      <text class="cz-node-t" x="${conX+conW/2}" y="${coty}">${cotsp}</text>
+      ${f.blast>0?`<text x="${conX+conW/2}" y="${conY+conH+15}" text-anchor="middle" fill="${sc}" style="font:800 10px var(--sans)">▣ ${esc((f.blast||0)+" "+(f.blastUnit||"affected"))}</text>`:""}</g>`;
+  return `<svg class="causalDiagram" data-shape="bowtie" viewBox="0 0 ${W} ${H+10}" role="img"
+      aria-label="Bowtie for ${esc(f.title||"")}: ${f.threats.length} contributing causes, each with no preventive control today, converge on ${esc(f.topEvent||f.title||"")}, causing ${esc(f.impact||"")}; mitigated by ${esc(f.mitigation||"")}">
+    <defs><marker id="czArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--border-strong)"/></marker></defs>
+    <g class="cz-reveal" style="animation-delay:.02s">${czShape(f.sev,padX,8,12)}
+      <text x="${padX+18}" y="18" style="font:800 10px var(--sans)" fill="${sc}">${esc(czSev(f.sev).toUpperCase())} <tspan fill="var(--text-dim)" style="font-weight:600">· ${esc(f.familyLabel||"")} · bowtie</tspan></text></g>
+    ${conns}${flows}${prevbars}${threats}${center}${barrier}
   </svg>`;
 }
 /* tiny word-wrapper: split into ≤maxLines lines of ≤maxChars chars (greedy by word) */
@@ -6965,48 +7138,82 @@ function _czWrap(s,maxChars,maxLines){
   return out.length?out:["—"];
 }
 function drawCausality(){
-  const list=causalityList();
-  if(!list.length){
-    return `<div class="drawer-head"><div class="eyebrow">Causality</div><div class="title">Root-cause chains</div></div>
-      <div class="empty"><div class="big">⤳</div><p>No structural single-points-of-failure detected in this fabric.</p>
-      <p class="faint">A causal chain appears when a switch is a sole gateway, a transit articulation point, or rides a single uplink — none are present here.</p></div>`;
+  const all=causalFlows();
+  const head=`<div class="drawer-head"><div class="eyebrow">Causal Flow · every finding's root-cause story</div><div class="title">Root-cause → impact</div></div>`;
+  if(!all.length){
+    return head+`<div class="sec"><div class="empty"><div class="big">⤳</div><p>No findings in this snapshot to trace.</p>
+      <p class="faint">Causal flows are built from the assessment's structural SPOFs, cross-layer compounds, design decisions and the migration punch-list — none are present here.</p></div></div>`;
   }
-  // clamp / default the selection so a row is always active
-  if(CAUSAL_SEL==null||CAUSAL_SEL<0||CAUSAL_SEL>=list.length)CAUSAL_SEL=0;
-  const sel=list[CAUSAL_SEL];
-  const sevCount={crit:0,risk:0,watch:0,neutral:0};
-  list.forEach(c=>{sevCount[c.tok]=(sevCount[c.tok]||0)+1;});
-  // Cap the rendered chain cards (V3.23.74): a real fleet has hundreds of SPOF chains (518 on the
-  // 60-switch AJ fleet) and rendering every card built a ~1.7 MB DOM. Show the most-severe top-N (the list
-  // is already severity-ranked); the selected chain's diagram above still works for any index, and the full
-  // set is in the Causality Chains workbook sheet.
-  const CAUSAL_CARD_CAP=40;
-  const cards=list.slice(0,CAUSAL_CARD_CAP).map((c,i)=>{const on=i===CAUSAL_SEL;
-    return `<div class="card ${c.tok}${on?" czsel":""}" data-causal="${i}" tabindex="0" role="button"
-        aria-pressed="${on?"true":"false"}" style="cursor:pointer">
-      <div class="ct"><span class="nm">${esc(c.title)}</span><span class="pill pl-${c.tok}">${esc(c.sev||"")}</span></div>
-      <div class="ln mono faint">${esc(c.kind)}${c.hosts.length?" · "+esc(c.hosts.map(shortName).join(", ")):""}</div>
-      <div class="ln">${esc(c.impact||"")}</div></div>`;}).join("");
+  const fams=czFamilies();
+  // family-filtered (but NOT severity-filtered) set drives the severity-chip counts
+  const famSet=(CAUSAL_FAMILY==="all")?all:all.filter(f=>f.family===CAUSAL_FAMILY);
+  const sevOrder=["Critical","High","Medium","Low","Info"];
+  const sevCounts={}; famSet.forEach(f=>{const s=czSev(f.sev); sevCounts[s]=(sevCounts[s]||0)+1;});
+  const view=causalView();
+  const nCrit=all.filter(f=>czSevMeta(f.sev).rank>=5).length;
+  // ---- filter toolbar (overview → filter → details-on-demand) ----
+  const famChip=(key,label,ic,n,on)=>`<button type="button" class="cz-fchip${on?" on":""}" data-czfam="${esc(key)}" aria-pressed="${on?"true":"false"}"><span class="ic">${ic}</span>${esc(label)}<span class="ct">${n}</span></button>`;
+  const famChips=famChip("all","All",  "⁂",all.length,CAUSAL_FAMILY==="all")
+    + fams.map(fm=>famChip(fm.key,fm.label,fm.ic,fm.n,CAUSAL_FAMILY===fm.key)).join("");
+  const sevChip=(key,on,n)=>`<button type="button" class="cz-fchip${on?" on":""}" data-czsev="${esc(key)}" aria-pressed="${on?"true":"false"}">${key==="all"?"All":`<span class="shp">${czSevSvg(key,10)}</span>${esc(key)}`}<span class="ct">${n}</span></button>`;
+  const sevChips=sevChip("all",CAUSAL_SEV==="all",famSet.length)
+    + sevOrder.filter(s=>sevCounts[s]).map(s=>sevChip(s,CAUSAL_SEV===s,sevCounts[s])).join("");
+  const toolbar=`<div class="cz-toolbar">
+    <div class="cz-frow"><span class="lbl">Family</span>${famChips}</div>
+    <div class="cz-frow"><span class="lbl">Severity</span>${sevChips}</div></div>`;
+  const stats=`<div class="sec"><div class="headline">
+      <div class="stat ${nCrit?"crit":"ok"}"><div class="v"><span class="num" data-to="${all.length}">0</span></div><div class="k">causal flows</div></div>
+      <div class="stat ${nCrit?"crit":""}"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${nCrit}">0</span></div><div class="k">critical</div></div>
+      <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${fams.length}">0</span></div><div class="k">families</div></div>
+    </div>
+    <p class="sub" style="margin:11px 0 0">Every finding the assessment surfaces — structural SPOFs, cross-layer compounds, CCDE design decisions and the migration punch-list — as one <b>trigger → mechanism → impact → mitigation</b> story. Filter by family or severity, then select a flow to animate it and spotlight its devices on the map.</p>
+    ${toolbar}</div>`;
+  if(!view.length){
+    return head+stats+`<div class="sec"><div class="empty"><div class="big">⁂</div><p>No findings match this filter.</p><p class="faint">Clear the family or severity filter to see more.</p></div></div>`;
+  }
+  if(CAUSAL_SEL==null||CAUSAL_SEL<0||CAUSAL_SEL>=view.length)CAUSAL_SEL=0;
+  const sel=view[CAUSAL_SEL];
   const stageLegend=CAUSAL_STAGES.map(st=>`<span class="cz-legend-stage"><span class="dot" style="background:var(--${st.tok})"></span>${st.label}</span>`).join("");
-  return `<div class="drawer-head"><div class="eyebrow">Causality</div>
-      <div class="title">Root-cause → impact</div></div>
-    <div class="sec"><div class="headline">
-      <div class="stat ${sevCount.crit?"crit":"ok"}"><div class="v"><span class="num" data-to="${list.length}">0</span></div><div class="k">causal chains</div></div>
-      <div class="stat ${sevCount.crit?"crit":""}"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${sevCount.crit}">0</span></div><div class="k">high severity</div></div>
-      <div class="stat"><div class="v" style="font-size:15px;padding:6px 0"><span class="num" data-to="${sel.hosts.length}">0</span></div><div class="k">hosts in chain</div></div>
+  const magW=Math.round(Math.min(120, czWidth(sel.blast)*11));
+  const meta=`<div class="cz-meta">
+    ${sel.blast>0?`<span class="cz-mag"><span class="n">${sel.blast}</span> ${esc(sel.blastUnit||"affected")}<span class="cz-magbar" style="width:${magW}px;background:var(--${sel.sevTok})"></span></span>`:""}
+    ${sel.confidence?`<span class="cz-conf ${/observ/i.test(sel.confidence)?"obs":""}">confidence: ${esc(sel.confidence)}</span>`:""}
+  </div>`;
+  // evidence chips — coverage-honest: cite source field, devices, CCDE citation, layers, wave
+  const ev=sel.evidence||{}; const evChips=[];
+  if(ev.citation)evChips.push(`<span class="cz-chip cite">${esc(ev.citation)}</span>`);
+  if(ev.layers)evChips.push(`<span class="cz-chip"><b>layers</b> ${esc(ev.layers)}</span>`);
+  if(typeof ev.count==="number")evChips.push(`<span class="cz-chip"><b>${ev.count}</b> device(s)</span>`);
+  if(ev.wave)evChips.push(`<span class="cz-chip"><b>wave</b> ${esc(ev.wave)}</span>`);
+  if(sel.hosts&&sel.hosts.length)evChips.push(`<span class="cz-chip">${esc(sel.hosts.slice(0,5).map(shortName).join(", "))}${sel.hosts.length>5?` +${sel.hosts.length-5}`:""}</span>`);
+  if(Array.isArray(ev.fields)&&ev.fields.length)evChips.push(`<span class="cz-chip"><b>src</b> ${esc(ev.fields.join(", "))}</span>`);
+  const evStrip=evChips.length?`<div class="cz-evid">${evChips.join("")}</div>`:"";
+  const extra=(sel.alternatives||sel.tradeoffs)?`<div class="card neutral" style="margin-top:8px">
+      ${sel.alternatives?`<div class="ln"><b>Alternatives weighed:</b> ${esc(sel.alternatives)}</div>`:""}
+      ${sel.tradeoffs?`<div class="ln"><b>Trade-offs:</b> ${esc(sel.tradeoffs)}</div>`:""}</div>`:"";
+  const flowSec=`<div class="sec"><h3>Causal flow — ${esc(sel.title)}</h3>
+    ${causalDiagramSvg(sel)}
+    <div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:12px">${stageLegend}</div>
+    ${sel.shape==="bowtie"?`<div class="ln faint" style="font-size:11px;margin-top:6px">Bowtie: contributing causes (left) converge on the central <b>top event</b>, then propagate to the impact (right). <span style="color:var(--crit)">⊘</span> = <b>no preventive control today</b> (why each cause reaches the event); <span style="color:var(--ok);font-weight:700">✓&nbsp;FIX</span> = the mitigation to add.</div>`:""}
+    ${meta}
+    <div class="card ${sel.sevTok}" style="margin-top:9px">
+      <div class="ln"><b>Trigger:</b> ${esc(sel.trigger||"—")}</div>
+      <div class="ln"><b>Mechanism:</b> ${esc(sel.mechanism||"—")}</div>
+      <div class="ln"><b>Impact:</b> ${esc(sel.impact||"—")}</div>
+      <div class="fix"><b>Mitigation:</b> ${esc(sel.mitigation||"—")}</div>
+      ${evStrip}
     </div>
-    <p class="sub" style="margin:11px 0 0">Each chain traces a <b>trigger</b> through the <b>mechanism</b> that propagates it to its <b>impact</b>, and the <b>mitigation</b> that breaks it. Select a chain to animate its flow and highlight the host on the map.</p>
-    </div>
-    <div class="sec"><h3>Causal flow — ${esc(sel.title)}</h3>
-      ${causalDiagramSvg(sel)}
-      <div style="margin-top:9px;display:flex;flex-wrap:wrap;gap:12px">${stageLegend}</div>
-      <div class="card ${sel.tok}" style="margin-top:11px">
-        <div class="ln"><b>Trigger:</b> ${esc(sel.trigger||"—")}</div>
-        <div class="ln"><b>Mechanism:</b> ${esc(sel.mechanism||"—")}</div>
-        <div class="ln"><b>Impact:</b> ${esc(sel.impact||"—")}</div>
-        <div class="fix"><b>Mitigation:</b> ${esc(sel.mitigation||"—")}</div>
-      </div></div>
-    <div class="sec"><h3>Top causal chains <span class="ct">${Math.min(CAUSAL_CARD_CAP,list.length)} of ${list.length}</span></h3>${cards}${list.length>CAUSAL_CARD_CAP?`<div class="ln faint" style="margin-top:8px">…and <b>${list.length-CAUSAL_CARD_CAP}</b> more — see the <b>Causality Chains</b> workbook sheet, or the cockpit's keystone ranking for the devices these chains converge on.</div>`:""}</div>`;
+    ${extra}</div>`;
+  // ---- card list (the filtered view, severity-ranked, capped) ----
+  const CAP=40;
+  const cards=view.slice(0,CAP).map((c,i)=>{const on=i===CAUSAL_SEL;
+    return `<div class="card ${c.sevTok}${on?" czsel":""}" data-causal="${i}" tabindex="0" role="button" aria-pressed="${on?"true":"false"}" style="cursor:pointer">
+      <div class="ct"><span class="nm">${czSevSvg(c.sev,10)} ${esc(c.title)}</span><span class="pill pl-${czPillTok(c.sev)}">${esc(czSev(c.sev))}</span></div>
+      <div class="ln mono faint">${c.ic} ${esc(c.familyLabel)}${c.hosts.length?" · "+esc(c.hosts.slice(0,3).map(shortName).join(", ")):""}${c.blast>0?" · "+c.blast+" "+esc(c.blastUnit||""):""}</div>
+      <div class="ln">${esc(c.impact||"")}</div></div>`;}).join("");
+  const listTitle=(CAUSAL_FAMILY==="all")?"All findings":esc(view[0].familyLabel);
+  const listSec=`<div class="sec"><h3>${listTitle} <span class="ct">${Math.min(CAP,view.length)} of ${view.length}</span></h3>${cards}${view.length>CAP?`<div class="ln faint" style="margin-top:8px">…and <b>${view.length-CAP}</b> more in this filter — narrow by family or severity to see them, or open the workbook for the full set.</div>`:""}</div>`;
+  return head+stats+flowSec+listSec;
 }
 /* rAF spark traveling along the four-stage connectors, mirroring animatePacket's
    structure: lerp a dot through the connector endpoints at near-constant speed with
@@ -7088,35 +7295,88 @@ function causalSevToken(s){const t=(s||"").toLowerCase();
 // engine (CHAINS) only when the snapshot carries no causality (older snapshots / the in-page demo). The
 // JS engine still drives the interactive Blast simulation; this aligns the Causality MODE's display with
 // the collector's analysis. Hosts are parsed from the trigger/impact text so the canvas can still highlight.
-function causalityList(){
+/* ============================================================================================
+   CAUSAL FLOW (v2) — the unified, all-families model. Every material finding the assessment
+   surfaces is normalised to ONE trigger→mechanism→impact→mitigation story so each can be browsed
+   and animated the same way. No family is re-derived here — each row renders the engine's OWN
+   computed finding (one source of truth):
+     • Structural SPOF   ← SNAP.causality          (rich T/M/I/M; JS engine fallback for the demo)
+     • Cross-layer       ← SNAP.cross_layer        (multi-layer compounds → bowtie)
+     • Design decision   ← SNAP.design_blueprint   (driver→principle→evidence→recommended action)
+     • all other families← SNAP.punchlist          (Compound risk, FHRP, Health, STP, Protocol, …)
+   Built once per SNAP and cached. ============================================================ */
+function causalFlows(){
+  if(causalFlows._snap===SNAP)return causalFlows._c;
   const out=[];
+  const inModel=h=>MODEL&&MODEL.hosts.includes(h);
+  // 1) Structural SPOF — prefer the Python-computed chains, fall back to the JS engine (demo/old snaps)
   const pyc=(SNAP&&Array.isArray(SNAP.causality))?SNAP.causality:null;
   if(pyc&&pyc.length){
-    pyc.forEach((c,i)=>{
-      // V3.23.92: prefer the explicit host list the collector now emits (one source of truth; exact).
-      // Fall back to substring-scanning the prose only for older snapshots that predate c.hosts — that
-      // scan over-highlighted any host whose name was a substring of another's.
-      const hosts=Array.isArray(c.hosts)
-        ? c.hosts.filter(h=>MODEL&&MODEL.hosts.includes(h)).slice(0,6)
-        : (MODEL?MODEL.hosts:[]).filter(h=>((c.trigger||"")+" "+(c.impact||"")+" "+(c.mechanism||"")).indexOf(h)>=0).slice(0,6);
-      out.push({key:"struct-"+i, kind:"Structural SPOF", sev:c.severity, tok:causalSevToken(c.severity),
-        title:c.trigger||("Structural SPOF "+(i+1)), hosts,
-        trigger:c.trigger||"", mechanism:c.mechanism||"", impact:c.impact||"", mitigation:c.mitigation||""});});
+    pyc.forEach((c,i)=>{const hosts=(Array.isArray(c.hosts)?c.hosts:[]).filter(inModel).slice(0,8);
+      out.push({key:"struct-"+i, family:"struct", familyLabel:"Structural SPOF", ic:"⤳",
+        title:c.trigger||("Structural SPOF "+(i+1)), sev:czSev(c.severity), hosts,
+        trigger:c.trigger||"", mechanism:c.mechanism||"", impact:c.impact||"", mitigation:c.mitigation||"",
+        blast:czBlast(c.impact,hosts).n, blastUnit:czBlast(c.impact,hosts).unit, shape:"linear", evidence:{fields:["causality"]}});});
   } else {
-    (CHAINS||[]).forEach((c,i)=>{out.push({
-      key:"struct-"+i, kind:"Structural SPOF", sev:c.sev, tok:sevToken(c.sev),
-      title:c.title, hosts:[c.switch],
-      trigger:c.root, mechanism:c.mech, impact:c.blast, mitigation:c.fix});});
+    (CHAINS||[]).forEach((c,i)=>out.push({key:"struct-"+i, family:"struct", familyLabel:"Structural SPOF", ic:"⤳",
+      title:c.title, sev:czSev(c.sev), hosts:[c.switch].filter(inModel),
+      trigger:c.root, mechanism:c.mech, impact:c.blast, mitigation:c.fix,
+      blast:Number(c.endpoints)||1, blastUnit:"endpoints", shape:"linear", evidence:{}}));
   }
-  const cl=(SNAP&&Array.isArray(SNAP.cross_layer))?SNAP.cross_layer:[];
-  cl.forEach((x,i)=>{const hosts=Array.isArray(x.hosts)?x.hosts.filter(h=>MODEL&&MODEL.hosts.includes(h)):[];
-    out.push({
-      key:"cl-"+(x.id||i), kind:"Cross-layer", sev:x.severity, tok:causalSevToken(x.severity),
-      title:x.title||("Cross-layer finding "+(x.id||i+1)), hosts,
-      trigger:x.detail||"", mechanism:Array.isArray(x.layers)?("Spans layers: "+x.layers.join(" → ")):"",
-      impact:x.detail||"", mitigation:x.recommendation||""});});
-  return out;
+  // 2) Cross-layer — promote to a BOWTIE when ≥2 contributing causes can be read faithfully
+  ((SNAP&&Array.isArray(SNAP.cross_layer))?SNAP.cross_layer:[]).forEach((x,i)=>{
+    const hosts=(Array.isArray(x.hosts)?x.hosts:[]).filter(inModel).slice(0,8);
+    const layers=String(x.layers||"").split(/[+,/&]/).map(s=>s.trim()).filter(Boolean);
+    const clauses=String(x.detail||"").split(/;|\s+\band\b\s+/i).map(s=>s.trim()).filter(s=>s.length>6);
+    const threats=(clauses.length>=2?clauses:layers).slice(0,3);
+    out.push({key:"cl-"+i, family:"xlayer", familyLabel:"Cross-layer", ic:"⧉",   // index — CL-xx ids repeat
+      title:x.title||("Cross-layer "+(x.id||i+1)), sev:czSev(x.severity), hosts,
+      trigger:x.detail||"", mechanism:layers.length?("Two layers compound: "+layers.join(" + ")):"Independent weaknesses align",
+      impact:x.detail||"", mitigation:x.recommendation||"",
+      blast:czBlast(x.detail,hosts,[["VLAN","VLANs"]]).n, blastUnit:czBlast(x.detail,hosts,[["VLAN","VLANs"]]).unit,
+      shape:threats.length>=2?"bowtie":"linear", threats, topEvent:x.title||"", consequence:x.detail||"",
+      evidence:{layers:x.layers, fields:["cross_layer"]}});});
+  // 3) Design decisions (recommended) — the CCDE target-state layer; driver→principle→evidence→action
+  const bp=SNAP&&SNAP.design_blueprint; const decs=(bp&&Array.isArray(bp.decisions))?bp.decisions:[];
+  decs.filter(d=>d&&d.status==="recommended").forEach((d,i)=>{
+    const ev=d.evidence||{}; const devs=(Array.isArray(ev.devices)?ev.devices:[]); const hosts=devs.filter(inModel).slice(0,8);
+    out.push({key:"design-"+(d.id||i), family:"design", familyLabel:"Design decision", ic:"✎",
+      title:d.title||"", sev:czSev(d.priority), hosts,
+      trigger:ev.summary||d.driver||"", mechanism:d.driver||((d.principle||{}).title||""),
+      impact:(ev.count?ev.count+" device(s) carry this gap":"Target-state design risk"),
+      mitigation:d.recommended_action||"",
+      blast:Number(ev.count)||devs.length||0, blastUnit:(Number(ev.count)||devs.length||0)===1?"device":"devices", shape:"linear",
+      confidence:d.confidence||"", alternatives:d.alternatives||"", tradeoffs:d.tradeoffs||"",
+      axes:Array.isArray(d.axes)?d.axes:[],
+      evidence:{count:ev.count, devices:devs, fields:ev.fields, citation:(d.principle||{}).citation}});});
+  // 4) Punch-list — every remaining family (Cross-layer is already covered by its rich array above)
+  ((SNAP&&Array.isArray(SNAP.punchlist))?SNAP.punchlist:[]).forEach((p,i)=>{
+    const cat=p.category||"Finding"; if(cat==="Cross-layer")return;
+    const devs=(Array.isArray(p.devices)?p.devices:[]); const hosts=devs.filter(inModel).slice(0,8);
+    const b=czBlast(p.detail,devs);
+    out.push({key:"pl-"+i, family:cat, familyLabel:cat, ic:czFamilyIcon(cat),
+      title:p.title||cat, sev:czSev(p.severity), hosts,
+      trigger:p.title||"", mechanism:p.detail||"",
+      impact:(b.n>0?(b.n+" "+b.unit+" affected"+(p.wave?" · "+p.wave:"")):(p.detail||(devs.length+" device(s) affected"))),
+      mitigation:p.remediation||"", blast:b.n, blastUnit:b.unit, shape:"linear",
+      evidence:{devices:devs, rank:p.rank, wave:p.wave, fields:["punchlist"]}});});
+  out.forEach(f=>{f.sevTok=czSevMeta(f.sev).tok;});
+  out.sort((a,b)=>czSevMeta(b.sev).rank-czSevMeta(a.sev).rank || (b.blast||0)-(a.blast||0));
+  causalFlows._snap=SNAP; causalFlows._c=out; return out;
 }
+/* the filtered VIEW the Causality mode renders — by family + severity (CAUSAL_FAMILY / CAUSAL_SEV).
+   draw, paint and selection all index into THIS list so they can never disagree. */
+function causalView(){
+  let v=causalFlows();
+  if(CAUSAL_FAMILY&&CAUSAL_FAMILY!=="all")v=v.filter(f=>f.family===CAUSAL_FAMILY);
+  if(CAUSAL_SEV&&CAUSAL_SEV!=="all")v=v.filter(f=>czSev(f.sev)===CAUSAL_SEV);
+  return v;}
+/* family roster for the filter toolbar: {key,label,ic,n,crit} ordered by criticals then volume */
+function czFamilies(){
+  const m=new Map();
+  causalFlows().forEach(f=>{if(!m.has(f.family))m.set(f.family,{key:f.family,label:f.familyLabel,ic:f.ic,n:0,crit:0});
+    const e=m.get(f.family); e.n++; if(czSevMeta(f.sev).rank>=4)e.crit++;});
+  return [...m.values()].sort((a,b)=>b.crit-a.crit||b.n-a.n);}
 /* Resolve a severity token to a DEFINED color family. crit/risk/watch/ok all have
    --<tok> + --<tok>-soft vars; "neutral" (or any unknown, e.g. an Info-severity
    cross_layer entry) does NOT — so fall back to the accent family so the host ring
@@ -7125,13 +7385,13 @@ function causalColorTok(tok){return (tok==="crit"||tok==="risk"||tok==="watch"||
 /* paint hook: ring + label the selected chain's host(s) on the topology */
 function paintCausality(){
   if(!MODEL)return;
-  const list=causalityList(); if(!list.length)return;
+  const list=causalView(); if(!list.length)return;
   // default/clamp the selection here too: repaint() runs BEFORE renderDrawer() on a
   // mode switch, so without this the first paint would have no chain highlighted.
   if(CAUSAL_SEL==null||CAUSAL_SEL<0||CAUSAL_SEL>=list.length)CAUSAL_SEL=0;
   const sel=list[CAUSAL_SEL];
   if(!sel)return;
-  const ctok=causalColorTok(sel.tok);
+  const ctok=causalColorTok(sel.sevTok);
   const set=new Set(sel.hosts);
   MODEL.hosts.forEach(h=>{const n=nodeEls[h]; if(!n)return;
     if(set.has(h)){n.g.classList.add("sel"); n.body.style.stroke=`var(--${ctok})`; n.body.style.fill=`var(--${ctok}-soft)`;
