@@ -288,6 +288,23 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
          "Archived with the post-implementation review"),
     ], widths=[2.6, 2.0, 2.2])
 
+    # §2.2 software / image standardization (per in-scope platform) — N24
+    swrisk_pd = [d for d in ((snap.get("software_risk") or {}).get("per_device") or []) if isinstance(d, dict)]
+    if swrisk_pd:
+        doc.add_heading("2.2 Software / image standardization", level=2)
+        doc.add_paragraph(
+            "Before any wave, agree the target NOS image per platform. The current software trains and their "
+            "disposition (from the software-advisory screening) are below; the target image is selected at "
+            "detailed design and applied + verified per wave in the staged config and post-cutover checks.")
+        agg: dict = {}
+        for d in swrisk_pd:
+            key = (str(d.get("platform") or "—"), str(d.get("train") or "—"), str(d.get("train_band") or "—"))
+            agg[key] = agg.get(key, 0) + 1
+        rows = sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))
+        table(["Platform", "Current train", "Disposition", "Devices", "Target image"],
+              [(p, tr, band, n, "<confirm>") for (p, tr, band), n in rows][:30],
+              widths=[1.0, 1.5, 1.6, 0.7, 1.4])
+
     # ===== per-wave sections =====
     for wi, (name, switches, _kind, _gnames) in enumerate(waves, start=3):
         r, seq, scen, _val_items = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,

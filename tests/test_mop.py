@@ -154,6 +154,22 @@ def test_mop_port_mapping_surfaces_portchannel_redundancy(tmp_path):
     assert text.count("[Po40]") >= 2          # both uplink legs tagged with their bundle
 
 
+def test_mop_software_standardization_table(tmp_path):
+    """N24: the MOP §2 states the per-platform software standardization (current train + disposition)
+    from the software-advisory screening, so the cutover team knows which platforms need an upgrade."""
+    snap = _snap()
+    snap["software_risk"] = {"per_device": [
+        {"host": "a", "platform": "nxos", "sw_version": "6.0", "train": "NX-OS 6.x", "train_band": "Replace/Upgrade"},
+        {"host": "b", "platform": "ios", "sw_version": "15.2", "train": "IOS 15.2", "train_band": "Acceptable"}]}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    heads = [p.text for p in d.paragraphs if p.style.name.startswith("Heading")]
+    text = _all_text(d)
+    assert any("Software" in h and ("standardization" in h.lower() or "image" in h.lower()) for h in heads), heads
+    assert "NX-OS 6.x" in text and "Replace/Upgrade" in text     # current train + disposition surfaced
+
+
 def test_mop_surfaces_blockers_and_rollback(tmp_path):
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, _snap(), "Unit Test Fleet")
