@@ -398,7 +398,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                                          or (dd.get("end_host_ip") or "").strip()):
                     kind = "Endpoint"
                 elif mode == "trunk" and (dd.get("cdp_neighbor") or "").strip():
-                    kind = f"Uplink → {dd.get('cdp_neighbor')}"
+                    po = (dd.get("port_channel") or "").strip()
+                    # surface bundle membership so redundant uplink pairs (two ports sharing a Po) are explicit
+                    kind = f"Uplink → {dd.get('cdp_neighbor')}" + (f" [{po}]" if po else "")
                 else:
                     continue
                 map_rows.append((h, pname, kind, dd.get("vlan") or "—",
@@ -482,10 +484,15 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         if val_items:
             doc.add_paragraph("Every check must pass. A failure that cannot be corrected in-window "
                               "triggers the rollback in §" + f"{wi}.7.")
-            table(["Category", "Device", "Check", "Command", "Expected (good) result"],
-                  [(it.get("category"), it.get("device"), it.get("check"),
-                    it.get("command"), it.get("expect")) for it in val_items[:40]],
-                  widths=[1.0, 1.0, 1.7, 1.5, 1.6])
+            # surface the severity already on each validation item and order High-first, so the
+            # most critical go/no-go checks survive the 40-row display cap (the rationale `why` and
+            # the full set remain in the Cutover Validation workbook sheet).
+            _vr = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+            vshow = sorted(val_items, key=lambda it: _vr.get(it.get("severity"), 5))[:40]
+            table(["Sev", "Category", "Device", "Check", "Command", "Expected (good) result"],
+                  [(it.get("severity") or "—", it.get("category"), it.get("device"), it.get("check"),
+                    it.get("command"), it.get("expect")) for it in vshow],
+                  widths=[0.5, 0.9, 0.9, 1.6, 1.4, 1.5])
             if len(val_items) > 40:
                 doc.add_paragraph(f"… and {len(val_items) - 40} more check(s); full set in the Cutover "
                                   "Validation workbook sheet.")

@@ -121,6 +121,13 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     l3_hosts = [h for h in devices if _is_l3(h, l3f, rn)]
     l2_hosts = [h for h in devices if h not in l3_hosts]
     vlans = _vlan_inventory(snap)
+    # SSOT scale: prefer the canonical executive_brief.scale (the published single source the
+    # explorer, deck and webapp read) over a local recount, with len() only as a fallback — the HLD
+    # was the last surface still recomputing scale, a latent drift risk even though they coincide
+    # today (A5 SSOT fix). Lines that render the actual VLAN LIST keep len(vlans).
+    _scale = eb.get("scale") or {}
+    n_dev = _scale.get("n_devices") or len(devices)
+    n_vlan = _scale.get("n_vlans") or len(vlans)
     vrfs, n_acl_svis, n_svis = _segmentation_facts(snap)
 
     # ---- title page ----
@@ -134,7 +141,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{len(devices)} devices in scope  ·  script {snap.get('script_version', '')}"
+                 f"{n_dev} devices in scope  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     status = doc.add_paragraph(); status.alignment = WD_ALIGN_PARAGRAPH.CENTER
     st = status.add_run("DRAFT — as-built design recovered from collected evidence; review before reuse.")
@@ -166,7 +173,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # ===== 1. Executive design summary =====
     doc.add_heading("1. Executive Design Summary", level=1)
     posture = eb.get("posture_statement") or (
-        f"{len(devices)} devices, {len(vlans)} VLANs and {n_svis} gateway SVIs across the assessed fabric.")
+        f"{n_dev} devices, {n_vlan} VLANs and {n_svis} gateway SVIs across the assessed fabric.")
     doc.add_paragraph(posture)
     if bp.get("summary", {}).get("headline"):
         _label_run(doc.add_paragraph(), "Design headline:", bp["summary"]["headline"])
@@ -179,10 +186,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             "questions the design still needs answered.")
         mr.italic = True; mr.font.color.rgb = GREY
     table(["Design attribute", "As-built value"], [
-        ("Devices in scope", len(devices)),
+        ("Devices in scope", n_dev),
         ("L3 nodes (own an SVI or a routing adjacency)", len(l3_hosts)),
         ("L2-only access nodes", len(l2_hosts)),
-        ("VLANs in use", len(vlans)),
+        ("VLANs in use", n_vlan),
         ("Gateway SVIs", n_svis),
         ("Routing VRFs (non-default)", len(vrfs) if vrfs else "0 (single global table)"),
         ("Gateway SVIs with an ACL applied", f"{n_acl_svis} of {n_svis}"),
@@ -625,6 +632,50 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             _label_run(doc.add_paragraph(), "Scope:", ts["scope_note"], GREY)
         if (ts.get("coverage") or {}).get("caveat"):
             _label_run(doc.add_paragraph(), "Coverage:", ts["coverage"]["caveat"], GREY)
+
+    # ===== 6. Interoperability & platform footprint =====
+    # What the target design must keep interoperating with — the observed NOS-family spread and the
+    # multi-vendor endpoint estate (OUI-derived). HONEST: endpoint_identity is a per-MAC vendor/class
+    # observation, NOT a service-dependency / HA-cluster graph (that over-claim was dropped earlier).
+    nos_mix = {}
+    for dd in devices.values():
+        fam = str((dd or {}).get("platform") or "").strip().lower() or "unknown"
+        nos_mix[fam] = nos_mix.get(fam, 0) + 1
+    ei = [e for e in (snap.get("endpoint_identity") or []) if isinstance(e, dict)]
+    if len(nos_mix) > 1 or ei:
+        doc.add_heading("6. Interoperability & Platform Footprint", level=1)
+        doc.add_paragraph(
+            "What the target design must keep interoperating with. A migration changes the network, not the "
+            "estate attached to it — the rebuilt fabric inherits this NOS-family spread and endpoint population, "
+            "so feature, automation and edge-compatibility parity must hold across all of it.")
+        if len(nos_mix) > 1:
+            doc.add_heading("6.1 NOS-family footprint", level=2)
+            doc.add_paragraph(
+                f"The fleet spans {len(nos_mix)} switch NOS families — design intent, automation and the MOP "
+                "must cover every family, and any cross-family migration (e.g. IOS → NX-OS) is an explicit "
+                "interoperability step, not a like-for-like swap.")
+            table(["NOS family", "Switches"],
+                  sorted(((k.upper(), v) for k, v in nos_mix.items()), key=lambda r: -r[1]),
+                  widths=[2.4, 1.0])
+        if ei:
+            vend, cls = {}, {}
+            for e in ei:
+                vk = (e.get("vendor") or "Unknown").strip() or "Unknown"
+                ck = (e.get("endpoint_class") or "Unknown").strip() or "Unknown"
+                vend[vk] = vend.get(vk, 0) + 1
+                cls[ck] = cls.get(ck, 0) + 1
+            n_known_cls = len([c for c in cls if c != "Unknown"])
+            doc.add_heading("6.2 Endpoint interoperability surface", level=2)
+            doc.add_paragraph(
+                f"{len(ei)} evidenced endpoints span {len(vend)} distinct hardware vendors (OUI-derived) across "
+                f"{n_known_cls} identified device class(es). The access-edge design (port profiles, PoE, "
+                "multicast/AV, security posture) must accommodate this heterogeneity, not only the switching "
+                "tier. These are per-MAC vendor/class observations, not a service-dependency graph.")
+            table(["Top endpoint vendor (OUI)", "Endpoints"],
+                  sorted(vend.items(), key=lambda r: -r[1])[:8], widths=[3.2, 1.0])
+            top_c = [(k, v) for k, v in sorted(cls.items(), key=lambda r: -r[1]) if k != "Unknown"][:8]
+            if top_c:
+                table(["Device class", "Endpoints"], top_c, widths=[3.2, 1.0])
 
     # ---- closing acceptance gate (AS-style back matter) ----
     add_acceptance(

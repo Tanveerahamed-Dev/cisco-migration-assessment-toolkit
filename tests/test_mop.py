@@ -54,10 +54,15 @@ def _snap():
             ],
             "by_wave": {
                 "Group 1": [
+                    {"category": "Hygiene", "device": "distA", "check": "login banner present",
+                     "command": "show banner login", "expect": "MOTD shown", "wave": "Group 1",
+                     "severity": "Low", "why": "cosmetic / compliance"},
                     {"category": "Gateway", "device": "distA", "check": "VLAN 10 gateway up",
-                     "command": "show ip interface brief", "expect": "10.0.10.1 up/up", "wave": "Group 1"},
+                     "command": "show ip interface brief", "expect": "10.0.10.1 up/up", "wave": "Group 1",
+                     "severity": "High", "why": "VLAN 10 endpoints lose their gateway if this SVI is down"},
                     {"category": "FHRP", "device": "distA", "check": "HSRP role",
-                     "command": "show standby brief", "expect": "Active/Standby", "wave": "Group 1"},
+                     "command": "show standby brief", "expect": "Active/Standby", "wave": "Group 1",
+                     "severity": "Medium"},
                 ],
                 "Group 2": [
                     {"category": "Reachability", "device": "acc1", "check": "gateway reachable",
@@ -115,6 +120,38 @@ def test_mop_reuses_validation_plan_as_checks(tmp_path):
     # strategy drives the procedure wording: make-before-break vs hard cutover
     assert "BESIDE" in text or "beside" in text
     assert "hard cutover" in text.lower()
+
+
+def test_mop_validation_table_surfaces_severity_high_first(tmp_path):
+    """N23: the §N.6 go/no-go table must surface each check's severity (already on every
+    validation_plan item) and order High-first, so the most critical checks survive the per-wave
+    display cap. The fixture lists a Low check BEFORE a High one, so a regression that keeps source
+    order renders Low first."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    vtabs = [t for t in d.tables if t.rows and t.rows[0].cells[0].text == "Sev"]
+    assert vtabs, "no §N.6 validation table with a leading 'Sev' column"
+    w1 = next((t for t in vtabs if any("VLAN 10 gateway up" in c.text for r in t.rows for c in r.cells)), None)
+    assert w1 is not None, "wave-1 validation table not found"
+    sevs = [r.cells[0].text for r in w1.rows[1:]]
+    assert "High" in sevs and "Low" in sevs and sevs.index("High") < sevs.index("Low"), sevs
+
+
+def test_mop_port_mapping_surfaces_portchannel_redundancy(tmp_path):
+    """N27: the §x.4 port-mapping must surface uplink port-channel membership so redundant uplink
+    pairs are explicit — two uplink ports on one switch sharing a Po bundle read as a redundant pair."""
+    snap = _snap()
+    snap["interfaces"] = {
+        "distA": {
+            "Te1/1": {"switchport_mode": "Trunk", "cdp_neighbor": "core1", "port_channel": "Po40"},
+            "Te1/2": {"switchport_mode": "Trunk", "cdp_neighbor": "core1", "port_channel": "Po40"},
+        },
+    }
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert text.count("[Po40]") >= 2          # both uplink legs tagged with their bundle
 
 
 def test_mop_surfaces_blockers_and_rollback(tmp_path):

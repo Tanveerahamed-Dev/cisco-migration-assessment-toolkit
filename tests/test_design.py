@@ -114,6 +114,44 @@ def test_design_has_hld_and_lld_sections(tmp_path):
         assert any(t == token for t in h2), f"missing subsection: {token}"
 
 
+def test_design_scale_reads_canonical_executive_brief(tmp_path):
+    """A5 (SSOT): the HLD scale figures (devices / VLANs in scope) must read the canonical
+    executive_brief.scale — the published single source the explorer/deck/webapp read — not a local
+    recount. Discriminating fixture: scale says 999 devices / 777 VLANs while the raw arrays hold a
+    handful each, so a recompute regression would render the small count, not the canonical 999/777."""
+    snap = _snap()
+    snap["executive_brief"]["scale"] = {"n_devices": 999, "n_vlans": 777, "n_endpoints": 5000}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "999" in text       # "Devices in scope" reads canonical scale
+    assert "777" in text       # "VLANs in use" reads canonical scale
+
+
+def test_design_interoperability_footprint_section(tmp_path):
+    """N14: the HLD must surface what the target design has to keep INTEROPERATING with — the
+    observed NOS-family spread and the multi-vendor endpoint estate (OUI-derived) — grounded in
+    devices[].platform + endpoint_identity, framed honestly as per-MAC observations (NOT a
+    service-dependency / HA-cluster claim)."""
+    snap = _snap()
+    hosts = list(snap["devices"])
+    for i, h in enumerate(hosts):
+        snap["devices"][h]["platform"] = "nxos" if i == 0 else "ios"   # two NOS families
+    snap["endpoint_identity"] = (
+        [{"vendor": "Hewlett Packard", "endpoint_class": "Server", "mac": f"aaaa.0000.{i:04x}"} for i in range(5)]
+        + [{"vendor": "APC by Schneider Electric", "endpoint_class": "UPS/PDU", "mac": "bbbb.0000.0001"}])
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any("Interoperability" in t for t in h1), h1
+    text = _all_text(d)
+    assert "IOS" in text and "NXOS" in text                          # both NOS families surfaced
+    assert "Hewlett Packard" in text and "APC by Schneider Electric" in text   # vendor mix
+    assert "Server" in text and "UPS/PDU" in text                    # class mix
+    assert "not a service-dependency" in text.lower() or "not a service-dependency graph" in text  # honest framing
+
+
 def test_design_reconciles_to_snapshot(tmp_path):
     out = str(tmp_path / "d.docx")
     write_design_doc_docx(out, _snap(), "Unit Test Fleet")
