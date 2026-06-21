@@ -9,7 +9,7 @@ from missing evidence), and exercise the interactive requirements overlay (right
 SLA/app/growth/constraint).
 """
 from cisco_toolkit import design_kb
-from cisco_toolkit.design_advisor import compute_design_blueprint
+from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu
 
 _KB_IDS = {p["id"] for p in design_kb.DOCTRINE}
 
@@ -247,6 +247,47 @@ def test_firewall_design_principles_present_and_honest():
     assert set(fw) <= {p["id"] for p in design_kb.by_domain("security")}, "firewall principles are security-domain"
 
 
+def test_vpc_peer_fabric_health_detector_fires_and_refutes():
+    """vPC/MLAG peer-fabric integrity (marquee mega-wave detector): a 'down*' member leg, a per-vPC
+    consistency mismatch, or a domain-level peer/keepalive/peer-link fault means the dual-homing the
+    design implies is NOT actually in service. Fires on unhealthy vpc evidence; remove the fault and
+    the decision disappears (refutation); absent vpc evidence stays silent (coverage-honest)."""
+    unhealthy = {"p1": {"domain_id": 1, "peer_status": "peer adjacency formed ok",
+                        "keepalive_status": "peer is alive", "consistency": "success",
+                        "peer_link": {"status": "up"},
+                        "vpcs": [{"id": "10", "status": "down*", "consistency": "success"},
+                                 {"id": "11", "status": "up", "consistency": "failed"}]}}
+    by = {d["id"]: d for d in compute_design_blueprint(_snap(vpc=unhealthy))["decisions"]}
+    d = by.get("dc-vpc-mlag-peer-fabric-integrity")
+    assert d is not None and d["status"] == "recommended" and d["priority"] == "High"
+    assert "down*" in d["evidence"]["summary"]                       # the real member-leg finding
+    assert "p1" in d["evidence"]["devices"]
+    # refutation: an all-healthy fabric emits nothing
+    healthy = {"p1": {"peer_status": "peer adjacency formed ok", "keepalive_status": "peer is alive",
+                      "consistency": "success", "peer_link": {"status": "up"},
+                      "vpcs": [{"id": "10", "status": "up", "consistency": "success"}]}}
+    assert "dc-vpc-mlag-peer-fabric-integrity" not in {
+        d["id"] for d in compute_design_blueprint(_snap(vpc=healthy))["decisions"]}
+    # coverage-honest: no vpc evidence at all -> silent
+    assert "dc-vpc-mlag-peer-fabric-integrity" not in {
+        d["id"] for d in compute_design_blueprint(_snap())["decisions"]}
+
+
+def test_vpc_decision_produces_a_proper_precutover_nrfu_item():
+    """The vPC peer-fabric decision must carry a REAL (non-fallback) NRFU acceptance item in the
+    pre-cutover phase -- the fabric is reconciled and re-verified before the target is baselined on
+    it, mirroring the fhrp-not-observed / lifecycle pre-cutover gates."""
+    unhealthy = {"p1": {"peer_status": "peer adjacency formed ok", "keepalive_status": "peer is alive",
+                        "consistency": "success", "peer_link": {"status": "up"},
+                        "vpcs": [{"id": "10", "status": "down*", "consistency": "success"}]}}
+    nrfu = compute_design_nrfu(compute_design_blueprint(_snap(vpc=unhealthy)))
+    item = next((i for i in nrfu["items"] if i["decision_id"] == "dc-vpc-mlag-peer-fabric-integrity"), None)
+    assert item is not None
+    assert item["phase"] == "pre-cutover"
+    assert "vPC/MLAG domain is healthy" in item["description"]          # real desc, not the driver fallback
+    assert "down*" in item["pass_criteria"]                            # real pass criteria
+
+
 def _maximal_snap():
     """A snapshot seeded to trigger EVERY evidence-gated detector at once (no requirements supplied,
     so the requirement-gated open questions also surface)."""
@@ -306,6 +347,12 @@ def _maximal_snap():
                  "d1": {"hostname": "d1"}, "d2": {"hostname": "d2"}, "d3": {"hostname": "d3"}},
         endpoint_identity=[{"vlan": "10", "host": "d0"}, {"vlan": "10", "host": "d1"}]   # straddle -> gateway-move-last
         + [{"vlan": "208", "host": f"sw{i % 5}"} for i in range(255)],                   # >254 -> oversized /24
+        # vPC/MLAG peer fabric with a down* member leg + a consistency mismatch -> _d_vpc_health
+        vpc={"p0": {"domain_id": 1, "role": "primary", "peer_status": "peer adjacency formed ok",
+                    "keepalive_status": "peer is alive", "consistency": "success",
+                    "peer_link": {"status": "up"},
+                    "vpcs": [{"id": "10", "status": "down*", "consistency": "success"},
+                             {"id": "11", "status": "up", "consistency": "failed"}]}},
     )
 
 
@@ -337,6 +384,27 @@ def test_every_engine_actionable_principle_is_emitted():
     assert not missing, f"engine_actionable principles never emitted by the advisor: {sorted(missing)}"
     # and conversely every emitted, evidence-grounded decision must be a known KB principle
     assert emitted <= _KB_IDS
+
+
+def test_wave2_gap_addendum_is_honest_reference_doctrine():
+    """The 2026-06-21 mega-wave gap addendum enriches KB-thin/absent design domains (optical /
+    storage / DDI / observability are brand-new; EVPN / SP-L2VPN / SP-MVPN / cloud / ACI-multisite &
+    -services enriched). It is REFERENCE doctrine: every principle is engine_actionable=False (the
+    L1-L4 assessment collects no live state for these), carries a real citation + design_intent, has
+    a unique registered id, and NONE is ever emitted as a firing decision (no overstated coverage).
+    The four brand-new domains are present."""
+    add = design_kb._WAVE2_GAP_ADDENDUM
+    assert len(add) >= 50
+    kb_ids = {p["id"] for p in design_kb.DOCTRINE}
+    for p in add:
+        assert p.get("engine_actionable") is False, p["id"]
+        assert (p.get("citation") or "").strip(), p["id"]
+        assert (p.get("design_intent") or "").strip(), p["id"]
+        assert p["id"] in kb_ids, p["id"]
+    assert {"optical-transport", "storage-fabric", "ddi-ipam", "observability"} <= {p["domain"] for p in add}
+    # coverage-honesty: none of this reference doctrine is ever emitted as a firing decision
+    emitted = {d["id"] for d in compute_design_blueprint(_maximal_snap())["decisions"]}
+    assert not (emitted & {p["id"] for p in add}), "reference doctrine must not be emitted as a decision"
 
 
 # ----------------------------------------------------------- A: requirements register input (the WHY)
@@ -913,10 +981,15 @@ def test_dc_corpus_doctrine_present_cited_and_honest():
     # now SHARED: the ACI-corpus addendum adds the fabric operating-model CHOICE to it -- allow that one
     # documented extra, but nothing else may creep into a DC-corpus domain undetected.
     _ACI_ADDENDUM_EXTRA = {"dc-fabric": {"dc-fabric-aci-vs-nxos-evpn-operating-model"}}
+    # the 2026-06-21 mega-wave gap addendum documents its OWN additions to KB-thin DC-corpus domains
+    # (cloud / aci-multisite / aci-services); allow exactly those, still guarding undocumented creep.
+    _WAVE2_BY_DOM = {}
+    for p in design_kb._WAVE2_GAP_ADDENDUM:
+        _WAVE2_BY_DOM.setdefault(p["domain"], set()).add(p["id"])
     for dom, ids in _DC_CORPUS_IDS.items():
         got = {p["id"] for p in design_kb.by_domain(dom)}
         assert set(ids) <= got, f"domain {dom} must contain {set(ids) - got}"
-        unexpected = got - set(ids) - _ACI_ADDENDUM_EXTRA.get(dom, set())
+        unexpected = got - set(ids) - _ACI_ADDENDUM_EXTRA.get(dom, set()) - _WAVE2_BY_DOM.get(dom, set())
         assert not unexpected, f"domain {dom}: unexpected principles {unexpected}"
     # citation ACCURACY (the adversarial standards pass): EVPN ctrl-plane is MPLS-EVPN(7432) over VXLAN/NVO
     # (8365) with IP-prefix RT-5 (9136); anycast GW is EVPN-IRB (9135); TRM routed-multicast is ngMVPN (6513)
