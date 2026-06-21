@@ -622,6 +622,41 @@ def test_nrfu_devices_in_scope_reads_canonical_scale(tmp_path):
     assert "303" in rows           # canonical scale.n_devices, not len(devices)=2
 
 
+def test_nrfu_carries_design_traceability_and_scope_limits(tmp_path):
+    """N29+N30: the NRFU/ATP must trace its coverage back to the target-state design decisions, and
+    state its SCOPE LIMITS (what it does NOT validate). A needs-requirement design area + not-collected
+    devices are explicit coverage boundaries, not silent gaps."""
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+    snap = {
+        "script_version": "V3.23.0", "devices": {"a": {}, "b": {}},
+        "executive_brief": {"scale": {"n_devices": 303}},
+        "collection_completeness": {"summary": {"inventory": 303, "complete": 250, "not_collected": 50}},
+        "lifecycle_risk": {"per_device": []}, "validation_plan": {"items": []},
+        "service_map": {"services": []}, "application_intelligence": {"domains": []},
+        "multicast_intelligence": {}, "software_risk": {"summary": {"n_config_not_assessable": 50}},
+        "design_blueprint": {"decisions": [
+            {"id": "fhrp-first-hop-gateway-redundancy", "title": "Introduce first-hop gateway redundancy",
+             "domain": "availability", "priority": "Critical", "status": "recommended"},
+            {"id": "dc-three-tier-vs-collapsed-core", "title": "Three-tier vs collapsed core",
+             "domain": "dc-fabric", "priority": "High", "status": "needs-requirement"}]},
+        "design_nrfu": {"items": [
+            {"decision_id": "fhrp-first-hop-gateway-redundancy", "phase": "post-cutover-functional"}]},
+    }
+    out = str(tmp_path / "nrfu.docx")
+    write_nrfu_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    heads = [p.text for p in d.paragraphs if p.style.name.startswith("Heading")]
+    text = "\n".join(p.text for p in d.paragraphs)
+    rows = [c.text for t in d.tables for r in t.rows for c in r.cells]
+    assert any("coverage" in h.lower() and "scope" in h.lower() for h in heads), heads
+    assert "Introduce first-hop gateway redundancy" in rows                 # recommended decision traced
+    assert any("not testable" in r.lower() for r in rows)                   # needs-requirement flagged (N30)
+    assert "50" in text and ("not validated" in text.lower() or "not collected" in text.lower())  # N29 scope limit
+
+
 def test_execution_run_lifecycle(client):
     """The war-room flow end to end: start a run from the cutover plan, check off a step, record
     validation results, scribe a deviation, close out a wave, finish — then the run is read-only."""

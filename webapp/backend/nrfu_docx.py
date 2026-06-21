@@ -53,6 +53,11 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     domains = [d for d in ((snap_dict.get("application_intelligence") or {}).get("domains") or [])
                if isinstance(d, dict)]
     mcast = (snap_dict.get("multicast_intelligence") or {})
+    # design-decision coverage + scope limits (N29/N30): trace the ATP back to the target-state design
+    bp_decisions = [d for d in ((snap_dict.get("design_blueprint") or {}).get("decisions") or [])
+                    if isinstance(d, dict)]
+    nrfu_items = [i for i in ((snap_dict.get("design_nrfu") or {}).get("items") or []) if isinstance(i, dict)]
+    swrisk = (snap_dict.get("software_risk") or {}).get("summary") or {}
 
     # ---- title page ----
     title = doc.add_paragraph()
@@ -131,6 +136,42 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
     if val_by_cat:
         doc.add_paragraph("Phase II tests by category: "
                           + " · ".join(f"{k} {v}" for k, v in sorted(val_by_cat.items(), key=lambda kv: -kv[1])))
+
+    # ---- 2.1 design-decision coverage & scope limits (N30 traceability + N29 coverage-honesty) ----
+    rec = [d for d in bp_decisions if d.get("status") == "recommended"]
+    needs = [d for d in bp_decisions if d.get("status") == "needs-requirement"]
+    nc = coll.get("not_collected") or 0
+    n_na = swrisk.get("n_config_not_assessable") or 0
+    limits = []
+    if nc:
+        limits.append(f"{nc} device(s) were not collected at assessment — their post-cutover state is NOT "
+                      "validated here; re-collect and run Phase I against them before sign-off.")
+    if n_na:
+        limits.append(f"{n_na} device(s) had configuration that could not be assessed for software-advisory "
+                      "exposure — NOT validated here.")
+    if needs:
+        limits.append(f"{len(needs)} target-state design area(s) still need a requirement before they can be "
+                      "designed and acceptance-tested — see the design blueprint's open questions.")
+    if rec or needs or limits:
+        doc.add_heading("2.1 Design-decision coverage & scope limits", level=2)
+        doc.add_paragraph(
+            "Traceability back to the assessment's target-state design: each RECOMMENDED design decision is "
+            "covered by an acceptance test in the phase shown; a decision that still needs a requirement is "
+            "not yet testable and is an explicit coverage boundary, not a silent gap.")
+        if rec or needs:
+            phase_by = {i.get("decision_id"): i.get("phase", "") for i in nrfu_items}
+            trace = [(d.get("title", d.get("id", "")), d.get("priority", ""),
+                      "Tested — " + (phase_by.get(d.get("id")) or "post-cutover-functional")) for d in rec]
+            trace += [(d.get("title", d.get("id", "")), d.get("priority", ""),
+                       "Not testable until the requirement is supplied") for d in needs]
+            table(["Target-state design decision", "Priority", "NRFU coverage"], trace[:40],
+                  widths=[3.4, 0.9, 2.2])
+            if len(trace) > 40:
+                doc.add_paragraph(f"… and {len(trace) - 40} more decision(s); full set in the design blueprint.")
+        if limits:
+            doc.add_paragraph("Scope limits — NOT validated in this NRFU:")
+            for lm in limits:
+                doc.add_paragraph(lm, style="List Bullet")
 
     # ---- 3. Phase I — device readiness ----
     doc.add_heading("3. Phase I — Device readiness (per-device standalone)", level=1)
