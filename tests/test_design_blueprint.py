@@ -288,6 +288,16 @@ def test_vpc_decision_produces_a_proper_precutover_nrfu_item():
     assert "down*" in item["pass_criteria"]                            # real pass criteria
 
 
+def test_design_nrfu_items_carry_setup_preconditions():
+    """N31: every design-NRFU acceptance item carries a `setup` (preconditions) field — phase-driven by
+    default so a functional test reads as 'in service' and a pre-cutover gate as a readiness check."""
+    nrfu = compute_design_nrfu(compute_design_blueprint(_maximal_snap()))
+    assert nrfu["items"]
+    for it in nrfu["items"]:
+        assert it.get("setup"), it["decision_id"]                       # every item carries preconditions
+    assert any("carrying production traffic" in it["setup"] for it in nrfu["items"])   # functional-phase default
+
+
 def _maximal_snap():
     """A snapshot seeded to trigger EVERY evidence-gated detector at once (no requirements supplied,
     so the requirement-gated open questions also surface)."""

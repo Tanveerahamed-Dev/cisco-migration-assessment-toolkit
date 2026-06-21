@@ -85,6 +85,7 @@ function NrfuItem({ item }: { item: DesignNrfuItem }) {
       </div>
       {open && (
         <div style={{ marginTop: 8 }}>
+          {item.setup && <div style={{ fontSize: 12, marginBottom: 4 }}><b>Setup:</b> <span className="dim">{item.setup}</span></div>}
           <div style={{ fontSize: 12, marginBottom: 4 }}><b>Verify:</b> <span className="dim">{item.description}</span></div>
           <div style={{ fontSize: 12, marginBottom: 4 }}><b>Pass criteria:</b> <span className="dim">{item.pass_criteria}</span></div>
           {item.devices.length > 0 && (

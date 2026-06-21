@@ -6309,7 +6309,7 @@ function drawDesignNrfu(bp){
   if(canon){
     items=canon.items.map(it=>({title:it.title,priority:it.priority,phase:it.phase,
       devices:Array.isArray(it.devices)?it.devices:[],citation:it.principle_citation||"",
-      description:it.description||"",pass_criteria:it.pass_criteria||""}));
+      description:it.description||"",pass_criteria:it.pass_criteria||"",setup:it.setup||""}));
   }else{
     const rec=(Array.isArray(bp.decisions)?bp.decisions:[]).filter(d=>d&&d.status==="recommended");
     if(!rec.length)return"";
@@ -6334,6 +6334,7 @@ function drawDesignNrfu(bp){
       const devs=it.devices||[];
       return `<div class="card neutral" style="margin-bottom:6px;padding:8px 10px">
         <div class="ct"><span class="nm" style="font-size:12px">${esc(it.title)}</span><span class="pill pl-${dPrioTok(it.priority)}">${esc(it.priority)}</span></div>
+        ${it.setup?`<div class="ln" style="font-size:11px;margin-top:3px"><b>Setup:</b> ${esc(it.setup)}</div>`:""}
         ${it.description?`<div class="ln" style="font-size:11px;margin-top:3px">${esc(it.description)}</div>`:""}
         ${it.pass_criteria?`<div class="ln" style="font-size:11px;margin-top:3px"><b>Pass:</b> ${esc(it.pass_criteria)}</div>`:""}
         <div class="ln faint" style="font-size:11px;margin-top:3px">${devs.length?`<span class="mono">${devs.slice(0,6).map(esc).join(", ")}${devs.length>6?` +${devs.length-6}`:""}</span> · `:""}${esc(it.citation)}</div>

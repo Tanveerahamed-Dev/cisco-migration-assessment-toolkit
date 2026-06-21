@@ -2202,6 +2202,25 @@ _NRFU_PHASE = {
 }
 _NRFU_PHASE_DEFAULT = "post-cutover-functional"
 
+# Per-item SETUP / preconditions (ATP "Setup"): what must hold before the item can be run. Phase-driven
+# defaults cover every item; a few decision-specific overrides sharpen the high-value checks (N31).
+_NRFU_SETUP_BY_PHASE = {
+    "pre-cutover": "Target hardware racked, cabled and code-loaded; the management plane is reachable on "
+                   "every in-scope device; the maintenance window has not yet started (this is a readiness gate).",
+    "post-cutover-functional": "The wave's cutover steps are complete and the device is carrying production "
+                               "traffic on the target design.",
+    "post-cutover-operational": "The device is in steady state after cutover and the operational tooling "
+                                "(syslog / SNMP / AAA / NTP collectors) is reachable.",
+}
+_NRFU_SETUP = {
+    "fhrp-not-observed-is-not-healthy":
+        "A fresh engine collection has been run against every previously-uncollected device.",
+    "lifecycle-eol-out-of-critical-roles":
+        "Replacement hardware is on site with an active support contract and staged for install.",
+    "dc-vpc-mlag-peer-fabric-integrity":
+        "Both peers of every vPC/MLAG domain are reachable and 'show vpc' output is available from each.",
+}
+
 
 def compute_design_nrfu(design_blueprint):
     """Bridge the design blueprint to a design-driven NRFU/ATP acceptance test checklist.
@@ -2236,6 +2255,7 @@ def compute_design_nrfu(design_blueprint):
             "description": _NRFU_DESC.get(pid, d.get("recommended_action", d.get("driver", ""))[:400]),
             "pass_criteria": _NRFU_PASS.get(pid,
                 "Verify the recommended pattern is operational as described in the design blueprint."),
+            "setup": _NRFU_SETUP.get(pid, _NRFU_SETUP_BY_PHASE.get(phase, "")),
             "devices": _as_list(_as_dict(d.get("evidence")).get("devices")),
             "principle_citation": _as_dict(d.get("principle")).get("citation", ""),
         })
