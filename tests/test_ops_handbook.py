@@ -53,6 +53,28 @@ def test_rich_snapshot_renders_evidence_derived_baselines(tmp_path, golden_snap)
     assert "Acceptance" in text
 
 
+def test_ops_routing_adjacency_and_fhrp_day2_section(tmp_path):
+    """N36: the handbook carries a Day-2 routing-adjacency + first-hop-redundancy monitoring
+    subsection — observed routing protocols get adjacency monitoring, and the FHRP coverage (or its
+    absence) is a NAMED monitored item, not a silent gap."""
+    snap = {
+        "script_version": "V3.23.0", "devices": {"r1": {}},
+        "protocol_health": [
+            {"switch": "r1", "protocol": "OSPF", "severity": "Info", "summary": "1 nbr Full"},
+            {"switch": "r1", "protocol": "EtherChannel", "severity": "High", "summary": "member down"}],
+        "l3_forwarding": [{"switch": "r1", "vlan": "10", "svi_ip": "10.0.10.1", "fhrp": "none"},
+                          {"switch": "r1", "vlan": "20", "svi_ip": "10.0.20.1", "fhrp": "none"}],
+    }
+    out = str(tmp_path / "ops.docx")
+    write_ops_handbook_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    heads = [p.text for p in d.paragraphs if p.style.name.startswith("Heading")]
+    text = _all_text(d)
+    assert any("routing-adjacency" in h.lower() for h in heads), heads
+    assert "OSPF" in text                                   # observed routing protocol monitored
+    assert "0 of 2" in text                                 # FHRP coverage named: 0 of 2 gateways
+
+
 def test_related_docs_exclude_self(tmp_path, golden_snap):
     out = tmp_path / "ops.docx"
     write_ops_handbook_docx(str(out), golden_snap, "x")
