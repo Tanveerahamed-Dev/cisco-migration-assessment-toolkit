@@ -73,6 +73,8 @@ def _evidence_facts(snap: dict) -> dict:
         "vrfs": sorted(vrfs), "n_acl_svis": n_acl_svis, "services": services,
         "mcast": mc, "mcast_active": mcast_active, "lifecycle": lc, "coll": coll, "punch": punch,
         "n_l3": len(l3f),
+        # canonical endpoint scale (the published single source) with the access-port tally as fallback
+        "n_endpoints": (((snap.get("executive_brief") or {}).get("scale") or {}).get("n_endpoints")) or endpoints,
     }
 
 
@@ -296,6 +298,14 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
     # ===== 6. Future plans & growth =====
     doc.add_heading("6. Future Plans & Growth", level=1)
+    # evidence-anchored scale baseline — growth targets are measured against observed reality (N3)
+    table(["Scale dimension", "Today (observed)", "Target horizon", "Headroom / note"], [
+        ("Switches in scope", ev["n_devices"], "<confirm>",
+         "replacement / refresh tracked in the lifecycle plan"),
+        ("Production VLANs", ev["n_vlans"], "<confirm>", "new segments add to the L2/L3 + addressing plan"),
+        ("Evidenced endpoints", ev["n_endpoints"], "<confirm>",
+         "PoE / port / multicast capacity must absorb the growth"),
+    ], widths=[1.7, 1.3, 1.2, 2.5])
     doc.add_paragraph(
         "Planned initiatives the design must not block — capacity horizon, new sites or services, "
         "technology directions. Captured in the workshop; each becomes a requirement row or an "

@@ -99,6 +99,18 @@ def test_crd_dual_homed_reads_canonical_endpoint_dependencies(tmp_path):
     assert "endpoint port(s)" not in text                                  # old misleading phrasing gone
 
 
+def test_crd_future_plans_anchors_to_observed_scale(tmp_path):
+    """N3: §6 Future Plans must anchor growth to the OBSERVED scale baseline (devices / VLANs /
+    endpoints, canonical-first), so a growth target is measured against reality, not a blank prompt."""
+    snap = _snap()
+    snap["executive_brief"] = {"scale": {"n_devices": 2, "n_vlans": 5, "n_endpoints": 4242}}
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Today (observed)" in text        # evidence-anchored scale baseline table
+    assert "4242" in text                     # canonical n_endpoints, not a blank prompt
+
+
 def test_crd_l3_no_fhrp_text_says_svi_instances_not_vlans(tmp_path):
     """A4: l3_forwarding row count (n_l3) is SVI INSTANCES, not distinct gateway VLANs. The
     no-FHRP REQ-T-L3-001 wording must not call the SVI-instance count 'gateway VLAN(s)'."""
