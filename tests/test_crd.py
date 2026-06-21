@@ -111,6 +111,18 @@ def test_crd_future_plans_anchors_to_observed_scale(tmp_path):
     assert "4242" in text                     # canonical n_endpoints, not a blank prompt
 
 
+def test_crd_requirement_tables_declare_verification_method(tmp_path):
+    """N5: every requirement-capture table declares HOW each requirement is proven (a Verification
+    column), so a requirement is testable — the technical rows reference the NRFU acceptance test."""
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    req_tabs = [t for t in d.tables if t.rows and any(c.text == "Verification" for c in t.rows[0].cells)]
+    assert req_tabs, "no requirement table with a Verification column"
+    text = _all_text(d)
+    assert "NRFU technical acceptance test" in text     # REQ-T rows declare their verification method
+
+
 def test_crd_l3_no_fhrp_text_says_svi_instances_not_vlans(tmp_path):
     """A4: l3_forwarding row count (n_l3) is SVI INSTANCES, not distinct gateway VLANs. The
     no-FHRP REQ-T-L3-001 wording must not call the SVI-instance count 'gateway VLAN(s)'."""
