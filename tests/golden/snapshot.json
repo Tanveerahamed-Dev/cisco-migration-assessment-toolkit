@@ -4606,11 +4606,12 @@
    {
     "key": "Operational readiness & hygiene",
     "verdict": "advisory",
-    "score_pct": 80,
+    "score_pct": 77,
     "checks": [
      "OPS-1",
      "OPS-2",
-     "OPS-3"
+     "OPS-3",
+     "OPS-4"
     ]
    },
    {
@@ -4875,6 +4876,17 @@
     "evidence": []
    },
    {
+    "id": "OPS-4",
+    "domain": "Operational readiness & hygiene",
+    "title": "Cross-domain dependencies & interoperability declared",
+    "verdict": "advisory",
+    "observed": "The fleet spans 2 switch NOS families (2\u00d7 IOS, 1\u00d7 NXOS).",
+    "implication": "A multi-NOS estate must keep feature / CLI / automation parity across families, and any cross-family migration (e.g. IOS->NX-OS) is an explicit interoperability step, not a like-for-like swap \u2014 undeclared, it surfaces as a cutover surprise.",
+    "recommendation": "Declare the platform-dependency + interoperability surface in the HLD (the design interoperability footprint) and validate cross-family behaviour during NRFU.",
+    "reference": "Cisco Advanced Services design-review practice \u2014 declare platform dependencies & interop",
+    "evidence": []
+   },
+   {
     "id": "SEC-1",
     "domain": "Security & segmentation",
     "title": "Management-plane hardening (CIS baseline)",
@@ -5028,17 +5040,17 @@
    }
   ],
   "summary": {
-   "n_checks": 24,
-   "n_assessable": 21,
+   "n_checks": 25,
+   "n_assessable": 22,
    "n_conforms": 8,
-   "n_advisory": 8,
+   "n_advisory": 9,
    "n_deviation": 4,
    "n_critical": 1,
    "n_not_assessable": 3,
    "score_pct": 71,
    "grade": "C",
    "grade_label": "Material deviations",
-   "statement": "Architecture conformance grade C (71%) \u2014 Material deviations. 8 of 21 assessable checks conform to leading practice; 1 critical and 4 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
+   "statement": "Architecture conformance grade C (71%) \u2014 Material deviations. 8 of 22 assessable checks conform to leading practice; 1 critical and 4 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
   }
  }
 }
