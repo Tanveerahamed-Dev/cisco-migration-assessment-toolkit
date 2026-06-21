@@ -790,6 +790,29 @@ def compute_architecture_review(snap: dict) -> dict:
             "—",
             "Assessment doctrine — state collection blind spots explicitly")
 
+    # OPS-4 · cross-domain dependencies & interoperability (N37): declare the multi-NOS interop surface
+    _nos = {}
+    for d in _as_dict(snap.get("devices")).values():
+        fam = str(_as_dict(d).get("platform") or "").strip().lower() or "unknown"
+        _nos[fam] = _nos.get(fam, 0) + 1
+    _fams = {k: v for k, v in _nos.items() if k != "unknown"}
+    if len(_fams) >= 2:
+        _mix = ", ".join(f"{v}× {k.upper()}" for k, v in sorted(_fams.items(), key=lambda x: -x[1]))
+        add("OPS-4", D6, "Cross-domain dependencies & interoperability declared", "advisory",
+            f"The fleet spans {len(_fams)} switch NOS families ({_mix}).",
+            "A multi-NOS estate must keep feature / CLI / automation parity across families, and any "
+            "cross-family migration (e.g. IOS->NX-OS) is an explicit interoperability step, not a "
+            "like-for-like swap — undeclared, it surfaces as a cutover surprise.",
+            "Declare the platform-dependency + interoperability surface in the HLD (the design "
+            "interoperability footprint) and validate cross-family behaviour during NRFU.",
+            "Cisco Advanced Services design-review practice — declare platform dependencies & interop")
+    elif _fams:
+        add("OPS-4", D6, "Cross-domain dependencies & interoperability declared", "conforms",
+            f"The fleet is a single NOS family ({next(iter(_fams)).upper()}), simplifying interoperability.",
+            "A homogeneous NOS estate minimises cross-platform interoperability risk.",
+            "Keep the single-family footprint where practical; declare any new platform's dependencies.",
+            "Cisco Advanced Services design-review practice — declare platform dependencies & interop")
+
     # ---------------- D7 · Security & segmentation ----------------
     D7 = "Security & segmentation"
     sec = _as_dict(snap.get("security"))

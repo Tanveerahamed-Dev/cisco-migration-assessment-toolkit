@@ -98,6 +98,20 @@ def test_review_shape_and_rollup():
     assert "grade" in s["statement"].lower() or s["grade"] in s["statement"]
 
 
+def test_archreview_interop_check_flags_multi_nos():
+    """N37: a multi-NOS estate gets an OPS-4 interoperability check (advisory) telling the design to
+    DECLARE its cross-platform dependency surface; a single-NOS fleet conforms."""
+    ar = compute_architecture_review({"devices": {"a": {"platform": "ios"}, "b": {"platform": "ios"},
+                                                  "c": {"platform": "nxos"}}})
+    c = _check(ar, "OPS-4")
+    assert c["verdict"] == "advisory"
+    assert "interoperability" in c["title"].lower()
+    assert "NOS famil" in c["observed"]
+    # a single-NOS fleet conforms
+    ar2 = compute_architecture_review({"devices": {"a": {"platform": "ios"}, "b": {"platform": "ios"}}})
+    assert _check(ar2, "OPS-4")["verdict"] == "conforms"
+
+
 def test_single_gateway_vlan_is_critical_and_tops_the_queue():
     ar = compute_architecture_review(_snap())
     res2 = _check(ar, "RES-2")
