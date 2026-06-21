@@ -123,6 +123,17 @@ def test_crd_requirement_tables_declare_verification_method(tmp_path):
     assert "NRFU technical acceptance test" in text     # REQ-T rows declare their verification method
 
 
+def test_crd_has_rfc2119_classification_legend(tmp_path):
+    """N1/N8: the CRD declares the BCP 14 (RFC 2119 / RFC 8174) normative-keyword convention, and the
+    requirement tables classify strength with MUST/SHOULD/MAY rather than an ad-hoc H/M/L."""
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "BCP 14" in text and "RFC 2119" in text       # classification legend cites the standard
+    assert "Class (RFC 2119)" in text                     # requirement tables use the RFC-2119 class column
+    assert "<MUST/SHOULD/MAY>" in text                    # the normative-keyword placeholder, not <H/M/L>
+
+
 def test_crd_l3_no_fhrp_text_says_svi_instances_not_vlans(tmp_path):
     """A4: l3_forwarding row count (n_l3) is SVI INSTANCES, not distinct gateway VLANs. The
     no-FHRP REQ-T-L3-001 wording must not call the SVI-instance count 'gateway VLAN(s)'."""
