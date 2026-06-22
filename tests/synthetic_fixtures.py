@@ -852,6 +852,18 @@ Memory usage:   16400932K total,   7322120K used,   9078812K free
   ]
 }
 """,
+    # Cisco ACI logical inventory (move-group scoping): fvCtx = the VRFs/routing contexts. legacy-vrf has
+    # pcEnfPref=unenforced (contract enforcement OFF -> default-permit between all its EPGs) -> the segmentation
+    # posture detector _d_aci_vrf_unenforced FIRES; the enforced prod-vrf is the healthy companion (silent).
+    "moquery -c fvCtx": """\
+{
+  "totalCount": "2",
+  "imdata": [
+    {"fvCtx": {"attributes": {"name": "prod-vrf", "dn": "uni/tn-PROD/ctx-prod-vrf", "pcEnfPref": "enforced", "pcEnfDir": "ingress"}}},
+    {"fvCtx": {"attributes": {"name": "legacy-vrf", "dn": "uni/tn-LEGACY/ctx-legacy-vrf", "pcEnfPref": "unenforced", "pcEnfDir": "ingress"}}}
+  ]
+}
+""",
 }
 
 # --------------------------------------------------------------------------- #

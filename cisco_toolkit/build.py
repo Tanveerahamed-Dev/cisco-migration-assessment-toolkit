@@ -25,7 +25,7 @@ from cisco_toolkit.parse import (
     parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni, parse_copp_drops,
     parse_bgp_vpnv4_summary, parse_mpls_ldp_neighbors, parse_mpls_l2vpn_vc,   # SP/MPLS: L3VPN VPNv4 / LDP underlay / L2VPN pseudowire
     parse_lisp_sessions, parse_cts_environment_data, parse_dmvpn_peers, parse_crypto_sessions, parse_bfd_neighbors, parse_ipv6_interface_addrs, parse_ipv6_route_summary, parse_ospfv3_neighbors, parse_bgp_ipv6_summary,   # universal arch coverage: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
-    parse_aci_faults, parse_aci_fabric_nodes, parse_aci_health,       # Cisco ACI (APIC JSON-ingestion channel)
+    parse_aci_faults, parse_aci_fabric_nodes, parse_aci_health, parse_aci_vrfs,   # Cisco ACI (APIC JSON-ingestion channel)
     parse_sdwan_control_connections, parse_sdwan_devices, parse_sdwan_omp_counters,   # Cisco Catalyst SD-WAN (vManage JSON channel)
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
@@ -196,6 +196,7 @@ def build_aci(cmd_to_file: Dict[str, str]) -> dict:
     faults = _safe_parse(parse_aci_faults, _load_cmd_output(cmd_to_file, "moquery -c faultInst")) or []
     nodes = _safe_parse(parse_aci_fabric_nodes, _load_cmd_output(cmd_to_file, "moquery -c fabricNode")) or []
     health = _safe_parse(parse_aci_health, _load_cmd_output(cmd_to_file, "moquery -c fabricHealthTotal")) or {}
+    vrfs = _safe_parse(parse_aci_vrfs, _load_cmd_output(cmd_to_file, "moquery -c fvCtx")) or []
     out = {}
     if faults:
         out["faults"] = faults
@@ -203,6 +204,8 @@ def build_aci(cmd_to_file: Dict[str, str]) -> dict:
         out["nodes"] = nodes
     if health:
         out["health"] = health
+    if vrfs:
+        out["vrfs"] = vrfs
     return out
 
 

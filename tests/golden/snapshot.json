@@ -3891,7 +3891,23 @@
    "health": {
     "cur": 82,
     "max_sev": "critical"
-   }
+   },
+   "vrfs": [
+    {
+     "name": "prod-vrf",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/ctx-prod-vrf",
+     "pc_enf_pref": "enforced",
+     "pc_enf_dir": "ingress"
+    },
+    {
+     "name": "legacy-vrf",
+     "tenant": "LEGACY",
+     "dn": "uni/tn-LEGACY/ctx-legacy-vrf",
+     "pc_enf_pref": "unenforced",
+     "pc_enf_dir": "ingress"
+    }
+   ]
   }
  },
  "sdwan": {

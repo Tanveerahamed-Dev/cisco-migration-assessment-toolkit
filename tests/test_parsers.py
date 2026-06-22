@@ -1108,6 +1108,22 @@ def test_parse_sdwan_omp_counters(cp):
     assert parse.parse_sdwan_omp_counters("") == []
 
 
+def test_parse_aci_vrfs_enforcement(cp):
+    """Universality (Cisco ACI logical inventory): parse_aci_vrfs reads 'moquery -c fvCtx' so a VRF with
+    contract enforcement UNENFORCED (default-permit between EPGs) is detectable; the tenant is parsed from the
+    dn (uni/tn-<tenant>/ctx-<name>); pcEnfPref is lower-cased."""
+    out = (
+        '{"imdata": ['
+        '{"fvCtx": {"attributes": {"name": "prod-vrf", "dn": "uni/tn-PROD/ctx-prod-vrf", "pcEnfPref": "enforced"}}},'
+        '{"fvCtx": {"attributes": {"name": "legacy-vrf", "dn": "uni/tn-LEGACY/ctx-legacy-vrf", "pcEnfPref": "Unenforced"}}}'
+        ']}')
+    r = parse.parse_aci_vrfs(out)
+    assert len(r) == 2
+    assert r[0] == {"name": "prod-vrf", "tenant": "PROD", "dn": "uni/tn-PROD/ctx-prod-vrf", "pc_enf_pref": "enforced", "pc_enf_dir": ""}
+    assert r[1]["tenant"] == "LEGACY" and r[1]["pc_enf_pref"] == "unenforced"
+    assert parse.parse_aci_vrfs("") == []
+
+
 def test_parse_nve_vni_states(cp):
     """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
     out = (

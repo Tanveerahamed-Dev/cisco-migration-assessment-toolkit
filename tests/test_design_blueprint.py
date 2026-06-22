@@ -1431,6 +1431,25 @@ def test_d_sdwan_omp_peer_down_fires_on_omp_down_only():
     assert da._d_sdwan_omp_peer_down({}, da._signals({})) is None
 
 
+def test_d_aci_vrf_unenforced_fires_on_unenforced_only():
+    """Universality (Cisco ACI logical / segmentation posture): a VRF with pcEnfPref=unenforced fires
+    _d_aci_vrf_unenforced (no contracts between EPGs -> default-permit -> segmentation off). Refutation: an
+    enforced VRF and an absent aci axis stay silent (coverage-honest -- fires only on the explicit attribute)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"aci": {"apic1": {"vrfs": [
+        {"name": "prod-vrf", "tenant": "PROD", "pc_enf_pref": "enforced"},
+        {"name": "legacy-vrf", "tenant": "LEGACY", "pc_enf_pref": "unenforced"},
+    ]}}}
+    sig = da._signals(fire)
+    assert any("legacy-vrf" in x for x in sig.get("aci_vrf_unenforced", []))
+    dec = da._d_aci_vrf_unenforced(fire, sig)
+    assert dec is not None and dec["priority"] == "Medium" and "unenforced" in str(dec).lower()
+    assert "apic1" in dec["evidence"]["devices"]
+    clean = {"aci": {"apic1": {"vrfs": [{"name": "prod-vrf", "tenant": "PROD", "pc_enf_pref": "enforced"}]}}}
+    assert da._d_aci_vrf_unenforced(clean, da._signals(clean)) is None
+    assert da._d_aci_vrf_unenforced({}, da._signals({})) is None
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected
