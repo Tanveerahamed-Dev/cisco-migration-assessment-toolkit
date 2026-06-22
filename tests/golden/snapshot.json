@@ -3907,6 +3907,53 @@
      "pc_enf_pref": "unenforced",
      "pc_enf_dir": "ingress"
     }
+   ],
+   "tenants": [
+    {
+     "name": "PROD",
+     "dn": "uni/tn-PROD"
+    },
+    {
+     "name": "LEGACY",
+     "dn": "uni/tn-LEGACY"
+    },
+    {
+     "name": "common",
+     "dn": "uni/tn-common"
+    }
+   ],
+   "bds": [
+    {
+     "name": "prod-bd",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/BD-prod-bd",
+     "unicast_route": "yes",
+     "arp_flood": "no"
+    },
+    {
+     "name": "legacy-bd",
+     "tenant": "LEGACY",
+     "dn": "uni/tn-LEGACY/BD-legacy-bd",
+     "unicast_route": "no",
+     "arp_flood": "yes"
+    }
+   ],
+   "epgs": [
+    {
+     "name": "web-epg",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/ap-app/epg-web-epg"
+    },
+    {
+     "name": "db-epg",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/ap-app/epg-db-epg"
+    },
+    {
+     "name": "legacy-epg",
+     "tenant": "LEGACY",
+     "dn": "uni/tn-LEGACY/ap-legacy/epg-legacy-epg"
+    }
    ]
   }
  },

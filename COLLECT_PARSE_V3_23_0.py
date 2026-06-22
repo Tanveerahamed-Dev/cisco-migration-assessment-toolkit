@@ -500,6 +500,9 @@ COMMANDS_NXOS = [
     "moquery -c fabricNode",             # Cisco ACI fabric inventory (APIC JSON) -> build_aci / _d_aci_node_not_active
     "moquery -c fabricHealthTotal",      # Cisco ACI fabric health score (APIC JSON) -> build_aci / _d_aci_fabric_health_degraded
     "moquery -c fvCtx",                  # Cisco ACI VRF inventory + enforcement (APIC JSON) -> build_aci / _d_aci_vrf_unenforced
+    "moquery -c fvTenant",               # Cisco ACI tenant census (APIC JSON) -> build_aci (move-group scoping)
+    "moquery -c fvBD",                   # Cisco ACI bridge-domain census (APIC JSON) -> build_aci (move-group scoping)
+    "moquery -c fvAEPg",                 # Cisco ACI EPG census (APIC JSON) -> build_aci (finest move-group unit)
     "show policy-map interface",         # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
     "show ip pim rp mapping",            # PIM-SM learned RP -> build_pim / _d_pim_rp_health
     "show ip pim neighbor",              # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim

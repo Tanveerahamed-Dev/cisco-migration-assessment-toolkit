@@ -1202,6 +1202,39 @@ def parse_aci_vrfs(output: str) -> list:
     return out
 
 
+def parse_aci_tenants(output: str) -> list:
+    """APIC 'moquery -c fvTenant' -> [{name, dn}] per tenant (the top-level ACI admin/policy container and a
+    coarse migration move-group boundary). CENSUS only -- pure inventory, no broken-state (a tenant is not
+    'wrong'). [] when no ACI export. Tolerant; never raises."""
+    return [{"name": a.get("name", ""), "dn": a.get("dn", "")} for a in _aci_imdata(output, "fvTenant")]
+
+
+def parse_aci_bds(output: str) -> list:
+    """APIC 'moquery -c fvBD' -> [{name, tenant, dn, unicast_route, arp_flood}] per Bridge Domain (the ACI L2
+    forwarding domain, ~ a VLAN/segment; a migration move-group unit). CENSUS; the route/flood flags are
+    informational context. [] when no ACI export. Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fvBD"):
+        dn = a.get("dn", "")
+        mt = re.search(r"/tn-([^/]+)/", dn)
+        out.append({"name": a.get("name", ""), "tenant": mt.group(1) if mt else "", "dn": dn,
+                    "unicast_route": (a.get("unicastRoute", "") or "").lower(),
+                    "arp_flood": (a.get("arpFlood", "") or "").lower()})
+    return out
+
+
+def parse_aci_epgs(output: str) -> list:
+    """APIC 'moquery -c fvAEPg' -> [{name, tenant, dn}] per EPG (Endpoint Group -- the ACI segmentation unit
+    that groups endpoints by policy; the FINEST migration move-group unit). CENSUS. [] when no ACI export.
+    Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fvAEPg"):
+        dn = a.get("dn", "")
+        mt = re.search(r"/tn-([^/]+)/", dn)
+        out.append({"name": a.get("name", ""), "tenant": mt.group(1) if mt else "", "dn": dn})
+    return out
+
+
 def _sdwan_data(output: str) -> list:
     """Catalyst SD-WAN Manager (vManage) /dataservice/* responses wrap their rows in {"data":[...]} -- flat
     JSON objects, NOT the ACI imdata/attributes envelope. The JSON-ingestion front door for the SD-WAN

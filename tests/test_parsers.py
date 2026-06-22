@@ -1124,6 +1124,18 @@ def test_parse_aci_vrfs_enforcement(cp):
     assert parse.parse_aci_vrfs("") == []
 
 
+def test_parse_aci_logical_census(cp):
+    """Universality (Cisco ACI logical census / move-group scoping): the tenant/BD/EPG inventory parsers read
+    'moquery -c fvTenant/fvBD/fvAEPg'. Pure inventory (the migration move-group units); tenant is parsed from
+    the dn. Empty -> []."""
+    assert parse.parse_aci_tenants('{"imdata":[{"fvTenant":{"attributes":{"name":"PROD","dn":"uni/tn-PROD"}}}]}') == [{"name": "PROD", "dn": "uni/tn-PROD"}]
+    bds = parse.parse_aci_bds('{"imdata":[{"fvBD":{"attributes":{"name":"prod-bd","dn":"uni/tn-PROD/BD-prod-bd","unicastRoute":"yes","arpFlood":"no"}}}]}')
+    assert bds[0]["name"] == "prod-bd" and bds[0]["tenant"] == "PROD" and bds[0]["unicast_route"] == "yes"
+    epgs = parse.parse_aci_epgs('{"imdata":[{"fvAEPg":{"attributes":{"name":"web-epg","dn":"uni/tn-PROD/ap-app/epg-web-epg"}}}]}')
+    assert epgs[0]["name"] == "web-epg" and epgs[0]["tenant"] == "PROD"
+    assert parse.parse_aci_tenants("") == [] and parse.parse_aci_bds("") == [] and parse.parse_aci_epgs("") == []
+
+
 def test_parse_nve_vni_states(cp):
     """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
     out = (
