@@ -144,7 +144,8 @@ def test_runbook_has_12_sections_and_reconciles(tmp_path):
     assert exec_rows["Devices in scope"] == "2"
     assert exec_rows["Migration move groups"] == "2"
     assert exec_rows["Punch-list items"] == "1"
-    assert exec_rows["Endpoints (access-port host MACs at snapshot)"] == "3"   # trunk MAC excluded
+    assert exec_rows["Endpoints — access-port host MACs at snapshot (superset of canonical)"] == "3"   # trunk MAC excluded
+    assert "Evidenced endpoints (canonical assessment scale)" in exec_rows   # SSOT-endpoint-deliv-1: canonical headline present
 
 
 def _all_text(doc):
@@ -154,6 +155,18 @@ def _all_text(doc):
         for row in t.rows:
             parts.extend(c.text for c in row.cells)
     return "\n".join(parts)
+
+
+def test_runbook_scope_distinguishes_collected_from_inventory(tmp_path):
+    """Coverage-honesty: §2 Scope must NOT call the device INVENTORY total 'the collected dataset' — it
+    states how many of the inventoried switches were actually collected (collection_completeness.complete)."""
+    snap = _snap()
+    snap["collection_completeness"] = {"summary": {"complete": 2, "inventory": 9}}
+    out = str(tmp_path / "rb_scope.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "present in the collected dataset" not in text   # the inventory-mislabeled-as-collected wording is gone
+    assert "inventoried" in text                            # the honest inventoried/collected framing
 
 
 def test_runbook_renders_device_risk_register_section(tmp_path):

@@ -122,6 +122,23 @@ def test_mop_reuses_validation_plan_as_checks(tmp_path):
     assert "hard cutover" in text.lower()
 
 
+def test_mop_mixed_homing_wave_is_not_classified_pure_make_before_break(tmp_path):
+    """A wave with BOTH dual-homed (make_before_break) and single-homed (hard_cutover) members must not be
+    classified pure make-before-break off the free-text 'sequence' — single-homed switches have no second
+    path. The procedure sequences the dual-homed MBB first then takes the scheduled outage; the rollback
+    flags the single-homed members' rollback as a brief outage, not 'non-disruptive'."""
+    snap = _snap()
+    g1 = snap["wave_sequencing"][0]                     # was pure MBB (make_before_break=[distA, distB])
+    g1["hard_cutover"] = ["accSingle"]                  # now MIXED
+    g1["sequence"] = "2 make-before-break (dual-homed) + 1 hard cutover (single-homed)"
+    out = str(tmp_path / "mop_mixed.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "make-before-break the 2 dual-homed" in text          # dual-homed MBB sequenced FIRST
+    assert "scheduled outage" in text.lower()                    # then the single-homed outage (not pure MBB)
+    assert "brief outage" in text.lower()                        # rollback honesty for the single-homed members
+
+
 def test_mop_validation_table_surfaces_severity_high_first(tmp_path):
     """N23: the §N.6 go/no-go table must surface each check's severity (already on every
     validation_plan item) and order High-first, so the most critical checks survive the per-wave
@@ -352,6 +369,17 @@ def test_mop_join_apportions_fail_warn_to_subwave():
     assert (r1["n_fail"], r1["n_warn"]) == (1, 2), (r1["n_fail"], r1["n_warn"])
     r4, *_ = _join_group_records(["G1"], ["a", "b", "c", "d"], rbg, {}, {}, {})
     assert (r4["n_fail"], r4["n_warn"]) == (4, 8), (r4["n_fail"], r4["n_warn"])   # full coverage -> full
+
+
+def test_mop_join_never_masks_a_blocker_via_rounding():
+    """Coverage-honesty: a SINGLE blocking check on a large group must not round to 0 in a small coupled
+    sub-wave (1*0.25=0.25 -> round 0) — that would show a NOT-READY wave with '0 blockers'. A positive
+    share of a positive count contributes at least 1, so the gate can never be silently masked."""
+    from cisco_toolkit.mop import _join_group_records
+    rbg = {"G1": {"group": "G1", "switches": ["a", "b", "c", "d"], "n_fail": 1, "n_warn": 1,
+                  "readiness": "NOT READY"}}
+    r1, *_ = _join_group_records(["G1"], ["a"], rbg, {}, {}, {})            # 1 of 4 -> 0.25 must NOT mask to 0
+    assert r1["n_fail"] == 1 and r1["n_warn"] == 1, (r1["n_fail"], r1["n_warn"])
 
 
 def test_mop_batch_wave_surfaces_all_group_strategies_and_rollbacks(tmp_path):

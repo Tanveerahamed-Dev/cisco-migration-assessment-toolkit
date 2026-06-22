@@ -232,6 +232,14 @@ def compute_architecture_review(snap: dict) -> dict:
             "No interface/neighbour data in the snapshot.", "—",
             "Re-collect with CDP/LLDP output included.",
             "Cisco campus design — each access switch homes to the distribution layer")
+    elif not any(adj.get(h) for h in l2_hosts):
+        # conforms-by-silence guard: interfaces are present but NO access-tier CDP/LLDP neighbour was
+        # observed, so daisy-chaining cannot be assessed — never grade 'conforms' off absent evidence.
+        add("HIER-2", D1, "No daisy-chained access switches", "not-assessable",
+            "No in-fleet CDP/LLDP neighbour was observed on the access tier — daisy-chaining cannot be "
+            "assessed from this evidence.", "—",
+            "Re-collect with CDP/LLDP output on the access switches.",
+            "Cisco campus design — each access switch homes to the distribution layer")
     elif chains:
         add("HIER-2", D1, "No daisy-chained access switches", "deviation",
             f"{len(chains)} access-to-access inter-switch link(s): "
@@ -421,17 +429,34 @@ def compute_architecture_review(snap: dict) -> dict:
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
 
     v1_access, v1_native = [], []
+    has_access_vlan = has_native = False                  # evidence-capture: was the field present at all?
     for host, ports in interfaces.items():
         for p, d in _as_dict(ports).items():
             d = _as_dict(d)
             mode = str(d.get("switchport_mode") or "").lower()
-            if mode == "access" and str(d.get("vlan") or "").strip() == "1":
-                v1_access.append(host)
-            if mode == "trunk" and str(d.get("trunk_native_vlan") or "").strip() == "1":
-                v1_native.append(host)
+            _av = str(d.get("vlan") or "").strip()
+            _nv = str(d.get("trunk_native_vlan") or "").strip()
+            if mode == "access":
+                if _av:
+                    has_access_vlan = True
+                if _av == "1":
+                    v1_access.append(host)
+            if mode == "trunk":
+                if _nv:
+                    has_native = True
+                if _nv == "1":
+                    v1_native.append(host)
     if not interfaces:
         add("L2-3", D3, "VLAN 1 not used for user traffic", "not-assessable",
             "No interface data in the snapshot.", "—", "Re-collect.",
+            "Cisco hardening guidance — keep user traffic and trunk native VLAN off VLAN 1")
+    elif not (has_access_vlan or has_native):
+        # conforms-by-silence guard: interfaces present but neither the access-VLAN nor the trunk
+        # native-VLAN field was captured anywhere — VLAN-1 usage cannot be assessed off absent evidence.
+        add("L2-3", D3, "VLAN 1 not used for user traffic", "not-assessable",
+            "Interfaces are present but no access-VLAN or trunk native-VLAN field was captured — "
+            "VLAN-1 usage cannot be assessed from this evidence.", "—",
+            "Re-collect with access-VLAN / trunk native-VLAN detail.",
             "Cisco hardening guidance — keep user traffic and trunk native VLAN off VLAN 1")
     elif v1_access:
         add("L2-3", D3, "VLAN 1 not used for user traffic", "deviation",
@@ -902,8 +927,12 @@ def compute_architecture_review(snap: dict) -> dict:
             "Cisco EoX policy — no TAC/software support past last-day-of-support")
     elif n_ldos:
         add("LC-1", D8, "No hardware past end-of-support", "critical",
-            f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT (and {n_eos} past end-of-sale): "
-            + _ev(lc_dev) + ".",
+            f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT"
+            # bands are EXCLUSIVE: n_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past
+            # end-of-sale, so a bare "(and 0 past end-of-sale)" reads as "nothing is past EoS" — omit it
+            # when 0, and say "more" when >0 (the additional EoS-only devices).
+            + (f" (and {n_eos} more past end-of-sale)" if n_eos else "")
+            + ": " + _ev(lc_dev) + ".",
             "Past LDoS there is NO TAC escalation path and no software fix — a fault during a "
             "migration window on these devices has no vendor backstop.",
             "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for "
@@ -1074,6 +1103,7 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     add_document_control(
         doc, document="Architecture Review & Conformance Report", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="Customer architecture owners and the engagement's design authority; consumed by "
                  "the HLD/LLD as target-state input and by the engagement plan as gate evidence.",
         exclude=("archreview",),

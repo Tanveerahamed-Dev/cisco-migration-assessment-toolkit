@@ -1020,6 +1020,8 @@
    "media": "SFP/fiber",
    "input_errors": 0,
    "crc_errors": 0,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "",
    "poe": "",
@@ -1035,6 +1037,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1050,6 +1054,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1065,6 +1071,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1080,6 +1088,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
@@ -1095,6 +1105,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
@@ -1110,6 +1122,8 @@
    "media": "SFP/fiber",
    "input_errors": 0,
    "crc_errors": 0,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "",
    "poe": "",
@@ -1125,6 +1139,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1140,6 +1156,8 @@
    "media": "copper",
    "input_errors": 142,
    "crc_errors": 17,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "",
    "poe": "",
@@ -1155,6 +1173,8 @@
    "media": "10g",
    "input_errors": 0,
    "crc_errors": 0,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "Po1",
    "poe": "",
@@ -1170,6 +1190,8 @@
    "media": "10g",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
@@ -2972,7 +2994,7 @@
      "title": "AAA new-model",
      "severity": "info",
      "status": "pass",
-     "detail": "'aaa new-model' is enabled.",
+     "detail": "central AAA (TACACS+/RADIUS) is configured.",
      "cis_ref": "CIS 1.4",
      "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting."
     },
@@ -4087,7 +4109,7 @@
    "poe_remaining_w": "",
    "poe_util": "",
    "flags": [
-    "Port-bound (>=90%)"
+    "Port-bound (>=85%)"
    ]
   },
   {
@@ -4115,7 +4137,7 @@
    "poe_remaining_w": "",
    "poe_util": "",
    "flags": [
-    "Port-bound (>=90%)"
+    "Port-bound (>=85%)"
    ]
   }
  ],

@@ -135,7 +135,8 @@ class Store:
                    VALUES (?,?,?,?,?,?,?)""",
                 (campaign_id, label.strip() or "snapshot", _now(),
                  str(snapshot.get("script_version", "")),
-                 len(snapshot.get("devices") or {}),
+                 (((snapshot.get("executive_brief") or {}).get("scale") or {}).get("n_devices"))
+                 or len(snapshot.get("devices") or {}),   # SSOT: canonical inventoried count, len() fallback
                  json.dumps(summary, separators=(",", ":")),
                  json.dumps(snapshot, separators=(",", ":"))),
             )

@@ -1044,6 +1044,34 @@ def build_run_manifest(rootdir: str, script_version: str, devices_meta: List[dic
         "devices": devices_meta,
     }
 
+
+def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
+    """Provenance: the instant the EVIDENCE was collected (NOT wall-clock-at-regen). Returns
+    (iso_datetime, defaulted). A live run stamps now() -- collection IS happening now. A
+    `--no-collect` re-analysis instead RECOVERS the original collection time so re-rendering old
+    evidence reproduces the original lifecycle bands + cover date byte-for-byte: first from the
+    `YYYYMMDD_HHMMSS` stamp in the collection-dir name (how every run names its dir), else the
+    earliest member-file mtime, else -- last resort -- now() flagged `defaulted=True` so the caller
+    can disclose that the collection date was unknown. Pure read; no side effects."""
+    if not no_collect:
+        return datetime.now().isoformat(), False
+    base = os.path.basename(os.path.normpath(collection_dir or root_dir or ""))
+    m = re.search(r"(\d{8})_(\d{6})", base)
+    if m:
+        try:
+            return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").isoformat(), False
+        except ValueError:
+            pass
+    d = collection_dir or root_dir or ""
+    try:
+        mtimes = [os.path.getmtime(os.path.join(dp, f))
+                  for dp, _dirs, files in os.walk(d) for f in files]
+        if mtimes:
+            return datetime.fromtimestamp(min(mtimes)).isoformat(), False
+    except OSError:
+        pass
+    return datetime.now().isoformat(), True
+
 # =============================================================================
 # V3.15.0 ADDITIONS - new analysis outputs (Tier 1) + new collection (Tier 2).
 # Tier 1 sheets aggregate already-parsed data (InterfaceData / DevicePhysical).
@@ -1338,6 +1366,17 @@ def main():
     root_dir = args.collection_dir or COLLECTION_DIR.format(stamp)
     os.makedirs(root_dir, exist_ok=True)
     logger.info(f"[OK] Collection directory: {root_dir}")
+
+    # Provenance (wave R2-1-01 / R2-3-01): pin the lifecycle EoL bands + the deliverable "Snapshot
+    # captured" date to WHEN THE EVIDENCE WAS COLLECTED, not the wall-clock day this pipeline runs. On a
+    # --no-collect re-analysis collected_at is recovered from the collection-dir stamp, so a "frozen"
+    # assessment reproduces its bands + cover date byte-for-byte instead of drifting against today.
+    collected_at, _collected_at_defaulted = _derive_collected_at(args.no_collect, args.collection_dir, root_dir)
+    if _collected_at_defaulted:
+        logger.warning("  [PROVENANCE] collection date could not be determined from %r; "
+                       "'Snapshot captured' falls back to generation time.", root_dir)
+    else:
+        logger.info(f"  [PROVENANCE] evidence collected_at = {collected_at}")
 
     _progress_lock = threading.Lock()
     _done_count    = [0]
@@ -1717,7 +1756,8 @@ def main():
     # offline eoldb KB (a top reason orgs migrate). asof defaults to now (the assessment date). Compute once
     # -> sheet + snapshot + punch-list fold.
     _dev_lifecycle = {dp.hostname: {"model": dp.model, "sw_version": dp.sw_version} for dp in all_device_physical}
-    lifecycle_risk = _run_phase("Lifecycle risk", compute_lifecycle_risk, _dev_lifecycle, _default={})
+    lifecycle_risk = _run_phase("Lifecycle risk", compute_lifecycle_risk, _dev_lifecycle,
+                                asof=collected_at, _default={})   # provenance: bands as-of collection, not regen-day
     _run_phase("Lifecycle Risk sheet", write_lifecycle_risk_sheet, wb, lifecycle_risk)
 
     # Phase 27d: Collection completeness (NEW-V3.23.109). The pre-assessment blind-spot report -- which
@@ -1941,7 +1981,21 @@ def main():
                                  syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,      # NEW-V3.23.169
                                  software_risk=software_risk, platform_health=platform_health,      # NEW-V3.23.169
                                  device_dossiers=device_dossiers,                                   # NEW-V3.23.172
-                                 _default={})
+                                 _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty brief (wave R2-4-01)
+    # SSOT: inject the canonical VLAN count (vlan_inventory) into the brief's scale HERE, BEFORE the
+    # Executive Summary sheet reads it. At this point interfaces are still InterfaceData OBJECTS (the dict
+    # serialization happens during snapshot assembly, after the workbook), so build the minimal vlan/
+    # vlan_name dict vlan_inventory reads. The snapshot re-injects the same value at assembly (idempotent).
+    if isinstance(executive_brief, dict) and isinstance(executive_brief.get("scale"), dict):
+        _ifd = {h: {p: {"vlan": getattr(d, "vlan", ""), "vlan_name": getattr(d, "vlan_name", "")}
+                    for p, d in (ports or {}).items()}
+                for h, ports in (all_interfaces or {}).items()}
+        executive_brief["scale"]["n_vlans"] = len(vlan_inventory(
+            {"interfaces": _ifd, "l3_forwarding": l3_forwarding, "service_map": service_map}))
+        # ...and the genuinely-COLLECTED count HERE too (QA F1), so the Exec Summary Fleet-posture block reads
+        # canonical n_collected (253 of 303 inventoried) instead of a local recompute. collection_completeness
+        # is already computed (Phase 27d). Assembly re-injects the same value at snapshot time (idempotent).
+        executive_brief["scale"]["n_collected"] = ((collection_completeness or {}).get("summary") or {}).get("complete")
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
                health_scores, punchlist, migration_readiness, failure_impact,   # NEW-V3.23.91: reuse precomputed fi
                brief=executive_brief)
@@ -1983,6 +2037,7 @@ def main():
         logger.warning(f"  Topology diagram write failed: {e}")
     snap_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".snapshot.json"
     snap_dict = snapshot_state(all_interfaces, all_device_physical)  # CHANGED-V3.17: capture for reuse (JSON + HTML)
+    snap_dict["collected_at"] = collected_at                         # provenance: evidence collection instant (vs generated_at = regen time)
     snap_dict["physical_health"] = physical_health                   # NEW-V3.18
     snap_dict["l3_forwarding"] = l3_forwarding                       # NEW-V3.20
     snap_dict["cross_layer"] = cross_layer                           # NEW-V3.21
@@ -2051,6 +2106,18 @@ def main():
     _ebscale = snap_dict["executive_brief"].get("scale") if isinstance(snap_dict.get("executive_brief"), dict) else None
     if isinstance(_ebscale, dict):
         _ebscale["n_vlans"] = len(vlan_inventory(snap_dict))
+        # publish the genuinely-COLLECTED subset alongside scale so coverage-honesty surfaces (deck /
+        # engagement / ops / workbook) read ONE canonical "253 of 303 collected" instead of re-deriving it
+        # or mislabelling the 303 inventory as "assessed / evidence scope". (SSOT-device-deliv-06)
+        _ebscale["n_collected"] = ((snap_dict.get("collection_completeness") or {}).get("summary") or {}).get("complete")
+    # Integrity (wave R2-4-01): if the cross-axis brief synthesis FAILED, _run_phase returned the sentinel
+    # default and scale/posture/axes are absent. Disclose it as a machine-readable flag so consumers
+    # (deck / explorer / webapp) surface "cross-axis synthesis unavailable" instead of rendering the
+    # missing numbers as healthy zeros -- the assembly-level analogue of the device false-health class.
+    if isinstance(executive_brief, dict) and executive_brief.get("_unavailable"):
+        logger.warning("  [INTEGRITY] executive-brief synthesis FAILED; stamping assessment_integrity so "
+                       "consumers disclose 'cross-axis synthesis unavailable' rather than zeros.")
+        snap_dict["assessment_integrity"] = {"executive_brief": "compute_failed"}
     snap_dict["device_dossiers"] = device_dossiers                   # NEW-V3.23.172 (per-asset compound-risk register; reused from the Phase 30d synthesis)
     # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
     # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),

@@ -622,6 +622,23 @@ def test_nrfu_devices_in_scope_reads_canonical_scale(tmp_path):
     assert "303" in rows           # canonical scale.n_devices, not len(devices)=2
 
 
+def test_snapshot_meta_n_devices_reads_canonical_scale(client):
+    """SSOT (python<->dashboard): the stored snapshot-meta n_devices (shown in the dashboard's snapshot
+    list) must read the canonical executive_brief.scale.n_devices, not a server-side len(devices) recount.
+    Discriminating fixture: scale says 303 while the raw devices array holds only 2."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "scale"}).json()["id"]
+    snap = {"script_version": "V3.23.0", "devices": {"a": {}, "b": {}},
+            "health_scores": [{"switch": "a", "band": "Good", "score": 80}],
+            "executive_brief": {"scale": {"n_devices": 303, "n_vlans": 202, "n_endpoints": 5127},
+                                "posture": {"avg_health": 80, "n_critical": 0}}}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "scale-test"})
+    assert r.status_code == 201, r.text
+    assert r.json()["n_devices"] == 303          # canonical scale.n_devices, NOT len(devices)=2
+
+
 def test_nrfu_carries_design_traceability_and_scope_limits(tmp_path):
     """N29+N30: the NRFU/ATP must trace its coverage back to the target-state design decisions, and
     state its SCOPE LIMITS (what it does NOT validate). A needs-requirement design area + not-collected

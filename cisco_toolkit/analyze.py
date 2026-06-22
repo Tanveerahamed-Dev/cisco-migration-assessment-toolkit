@@ -2822,18 +2822,22 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
                     "remediation": "Confirm whether the temporary bridge is still required; remove it or "
                                    "convert it to a designed, pruned link before cutover."})
 
-    # 2. PoE fault on a port described as a live powered endpoint -- a pre-cutover action, not cosmetic.
+    # 2. PoE fault -- a real pre-cutover action. A powered-endpoint description only RAISES severity (a
+    # dark phone/AP); it must never SUPPRESS a fault, or faults on blank-described ports go unseen. (DET-poe-002)
     poe_by_host: Dict[str, list] = {}
     for host, ports in all_interfaces.items():
         for p, d in ports.items():
             ps = (d.poe_status or ""); desc = (d.description or "").strip()
-            if ps and POE_FAULT.search(ps) and POWERED.search(desc):
-                poe_by_host.setdefault(host, []).append(f"{p} ({desc[:30]}: {ps})")
-    for host, ports in sorted(poe_by_host.items()):
-        out.append({"severity": "High", "category": "False-health", "devices": [host],
-                    "title": f"PoE fault on powered endpoint(s) on {host}",
-                    "detail": f"{len(ports)} port(s) in a PoE fault state with a powered-endpoint "
-                              f"description: {', '.join(ports[:6])}. The endpoint is likely dark.",
+            if ps and POE_FAULT.search(ps):
+                poe_by_host.setdefault(host, []).append((p, desc, ps, bool(POWERED.search(desc))))
+    for host, items in sorted(poe_by_host.items()):
+        powered = [it for it in items if it[3]]
+        shown = [f"{p} ({(desc[:30] + ': ') if desc else ''}{ps})" for p, desc, ps, _ in items[:6]]
+        out.append({"severity": "High" if powered else "Medium", "category": "False-health", "devices": [host],
+                    "title": f"PoE fault on {host}" + (" (powered endpoint affected)" if powered else ""),
+                    "detail": f"{len(items)} port(s) in a PoE fault state"
+                              + (f", {len(powered)} on a powered-endpoint description (endpoint likely dark)" if powered else "")
+                              + f": {', '.join(shown)}.",
                     "remediation": "Resolve the PoE fault (power budget / cabling / device) before the "
                                    "cutover window."})
 
@@ -4058,6 +4062,14 @@ _SYSLOG_DOCTRINE: Dict[str, tuple] = {
     "login-fail": ("Repeated login failures", "Medium",
                    "Multiple failed logins recorded. Confirm AAA health and check for unauthorized "
                    "access attempts before the migration window."),
+    "optic-degraded": ("Transceiver / optic fault", "High",
+                       "An SFP/optic reported a DOM threshold violation or an unsupported/invalid "
+                       "transceiver in the log window -- a marginal or wrong optic corrupts the link and "
+                       "is migrated as-is; replace / qualify it before the NRFU baseline."),
+    "lacp-error": ("EtherChannel / LACP error", "High",
+                   "LACP reported a member suspended / incompatible-partner / misconfig in the log window -- "
+                   "a degraded port-channel silently loses capacity and redundancy; reconcile the bundle "
+                   "before cutover."),
 }
 
 # >= this many DOWN transitions on ONE interface = a flap detection. V3.23.170: the counter
@@ -4131,8 +4143,10 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
                 up = ev["raw"].upper()                 # built only past the cheap mnemonic branches
                 if mn in ("MALLOCFAIL", "CPUHOG") or "TRACEBACK" in up:
                     kind = "stability"
-                elif (("ENV" in fac or "THERMAL" in fac) or
-                      any(t in mn for t in ("FAN", "TEMP", "THERM", "PSU", "POWER"))) and sev <= 3:
+                elif (("ENV" in fac or "THERMAL" in fac)
+                      or fac.startswith(("PFMA", "NOHMS", "PLATFORM_FEP", "NGWC_PLATFORM_FEP"))   # NX-OS/Cat9K power/FRU
+                      or any(t in mn for t in ("FAN", "TEMP", "THERM", "PSU", "POWER",
+                                               "PS_FAIL", "FRU_PS", "PFM_ALERT", "PS_CAPACITY"))) and sev <= 3:
                     kind = "environment"
                 elif "TCAM" in up and any(t in up for t in ("EXCEED", "EXHAUST", "FULL", "EXCEPTION")):
                     kind = "resource"
@@ -4142,6 +4156,12 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
                     kind = "native-vlan-mismatch"
                 elif fac.startswith("STORM_CONTROL"):
                     kind = "storm-control"
+                elif "SFF8472" in fac or any(t in mn for t in
+                        ("SFF8472", "UNSUPPORTED_TRANSCEIVER", "GBIC_INVALID", "SFP_NOT_SUPPORTED", "UNSUPPORTED_SFP")):
+                    kind = "optic-degraded"      # DOM threshold violation / unsupported|invalid transceiver
+                elif (fac.startswith(("ETH_PORT_CHANNEL", "LACP")) or fac == "EC") and any(t in mn for t in
+                        ("SUSPEND", "INCOMPAT", "MISCFG", "MISCONFIG", "LACP_ERR")):
+                    kind = "lacp-error"          # unambiguous LACP errors only (benign bundle events excluded)
                 elif mn == "RESTART" or "SYSTEM RESTARTED" in up:
                     kind = "reload"
             if kind:
@@ -4158,7 +4178,9 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
             # config-change audit: IOS %SYS[-SP]-5-CONFIG_I / NX-OS %VSHD-5-VSHD_SYSLOG_CONFIG_I
             if mn.endswith("CONFIG_I"):
                 config_changes += 1
-            if "LOGIN" in fac and "FAIL" in mn:
+            # IOS: %SEC_LOGIN-...-LOGIN_FAILED; NX-OS/AAA: %AUTHPRIV/%DAEMON/%AAA '... authentication failed'.
+            if (("LOGIN" in fac and "FAIL" in mn)
+                    or (fac in ("AUTHPRIV", "DAEMON", "AAA") and "AUTHENTICATION FAIL" in ev["raw"].upper())):
                 login_fails += 1
 
         for kind in sorted(kind_events):
@@ -4979,7 +5001,10 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     bands: Dict[str, int] = {}
     for x in hs:
         bands[x.get("band", "")] = bands.get(x.get("band", ""), 0) + 1
-    avg = round(sum((x.get("score") or 0) for x in hs) / n) if n else 0
+    # honesty: average over only genuinely-scored, evidence-bearing rows — an 'Insufficient Data' device
+    # (absent evidence -> no deductions -> a near-perfect score) must not inflate the fleet health headline.
+    _scored = [x for x in hs if isinstance(x.get("score"), (int, float)) and x.get("band") != "Insufficient Data"]
+    avg = round(sum(x["score"] for x in _scored) / len(_scored)) if _scored else 0
     n_crit = bands.get("Critical", 0)
     n_poor = bands.get("Poor", 0)
     worst = next((b for b in ("Critical", "Poor", "Fair", "Good", "Excellent") if bands.get(b)), "")
@@ -5016,7 +5041,10 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
         ax("Hardware lifecycle (EoL)",
            "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near") else "Low",
            f"{lc.get('n_past_ldos', 0)} past end-of-support, {lc.get('n_near', 0)} within 1yr "
-           f"({lc_pct}%)", "Reference dates from the offline KB.")
+           f"({lc_pct}%)",
+           f"Reference dates from the offline KB; bands are time-relative, computed as-of "
+           f"{lc.get('asof') or 'the analysis date'} (they shift as time passes), and an LDoS absent from "
+           f"the KB is derived as end-of-sale + 5yr — re-verify on Cisco's EoX portal before acting.")
     if seg.get("n_gateways"):
         ax("Segmentation", "High" if seg.get("flat") or seg.get("n_oncrit_exposed") else "Low",
            ("flat L3 — " if seg.get("flat") else "")

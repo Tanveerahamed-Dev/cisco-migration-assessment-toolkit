@@ -111,6 +111,35 @@ def test_crd_future_plans_anchors_to_observed_scale(tmp_path):
     assert "4242" in text                     # canonical n_endpoints, not a blank prompt
 
 
+def test_crd_vlan_count_reads_published_scale_canonical_first(tmp_path):
+    """SSOT: the 'VLANs in use' count must read the published executive_brief.scale.n_vlans (the ONE
+    source the workbook / design / explorer / webapp reconcile to) canonical-first, not independently
+    recompute vlan_inventory — mirroring the endpoint line one row below (n_endpoints) and design.py's
+    'A5 SSOT fix' canonical-first read. Mutation-proof: pin a published scale.n_vlans that DISAGREES with
+    vlan_inventory and assert the CRD renders the published value, so the read path cannot silently drift."""
+    snap = _snap()
+    # vlan_inventory(_snap()) is a small set; pin a disagreeing published canonical scalar (777).
+    snap["executive_brief"] = {"scale": {"n_devices": 2, "n_vlans": 777, "n_endpoints": 4242}}
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "777" in text, "CRD must render the published scale.n_vlans (777), not a local vlan_inventory recount"
+
+
+def test_crd_evidence_scope_says_collected_not_inventory_scope(tmp_path):
+    """Coverage-honesty (inventoried vs collected): n_devices is the full INVENTORY (devices.json), not
+    the collected count. The title page + §1 evidence-scope must phrase it 'C of N devices collected'
+    (C = collection_completeness.complete), never the old 'N devices in evidence scope' which presented
+    the inventory as if every device had been collected."""
+    snap = _snap()
+    snap["collection_completeness"] = {"summary": {"complete": 1, "inventory": 99}}
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "devices collected" in text and "1 of" in text     # collected framing + the collected count
+    assert "devices in evidence scope" not in text            # the old inventory-as-scope wording is gone
+
+
 def test_crd_requirement_tables_declare_verification_method(tmp_path):
     """N5: every requirement-capture table declares HOW each requirement is proven (a Verification
     column), so a requirement is testable — the technical rows reference the NRFU acceptance test."""

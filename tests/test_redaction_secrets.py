@@ -83,6 +83,32 @@ def test_secret_scrub_is_idempotent():
     assert snap["devices"]["core1"]["snmp"] == "snmp-server community S3cr3t-RO RO"
 
 
+def test_authentication_key_digest_scrub_preserves_algorithm_context():
+    """NTP/OSPF/EIGRP 'authentication-key|message-digest-key N md5|sha|hmac-sha <SECRET>' digest forms.
+    The generic '\\bkey' deny-list pattern used to capture the *algorithm* token ('md5'/'sha') and leave
+    the real digest EXPOSED in a --redact deliverable (offline-crackable). The key prefix now absorbs the
+    hash-algorithm label so only the secret AFTER it is redacted, while the 'md5'/'sha' context survives.
+    Conservative: anchored on 'key', so a bare 'hash md5' algorithm choice is never corrupted."""
+    from cisco_toolkit.html import _scrub_secrets
+    assert _scrub_secrets("ntp authentication-key 1 md5 NtpMd5DigestXYZ") == \
+        "ntp authentication-key 1 md5 <redacted>"
+    assert _scrub_secrets("ip ospf message-digest-key 7 md5 7 OspfMd5DigestABC") == \
+        "ip ospf message-digest-key 7 md5 7 <redacted>"
+    assert _scrub_secrets("authentication-key 1 hmac-sha-256 ShaDigest256Val") == \
+        "authentication-key 1 hmac-sha-256 <redacted>"
+    # regression: standalone keychain 'key 7 <hex>' (no algorithm token) still redacts the value
+    assert _scrub_secrets("key 7 02050D480809") == "key 7 <redacted>"
+    # conservative — 'hash md5' as an IKE/ISAKMP algorithm choice (no key-id + secret) must NOT corrupt
+    # the following structured token (this is what a broad '\\bmd5 <next>' rule would have broken)
+    assert _scrub_secrets("hash md5\n encryption aes-256") == "hash md5\n encryption aes-256"
+    # idempotent
+    once = _scrub_secrets("ntp authentication-key 1 md5 NtpMd5DigestXYZ")
+    assert _scrub_secrets(once) == once
+    # end-to-end: the digest must not survive a full redact_snapshot
+    snap = {"raw_config": ["ntp authentication-key 1 md5 NtpMd5DigestXYZ"]}
+    assert "NtpMd5DigestXYZ" not in json.dumps(html.redact_snapshot(snap))
+
+
 def test_secret_scrub_preserves_acl_wildcard_and_ip_redaction():
     # the secret pass must not disturb the existing IP/MAC/serial + ACL 'wild' behavior
     snap = {

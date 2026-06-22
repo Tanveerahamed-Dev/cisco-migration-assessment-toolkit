@@ -128,6 +128,27 @@ def test_design_scale_reads_canonical_executive_brief(tmp_path):
     assert "777" in text       # "VLANs in use" reads canonical scale
 
 
+def test_design_fhrp_candidates_not_mislabeled_as_configured_groups(tmp_path):
+    """FHRP false-redundancy class: snap['fhrp'] is the set of MULTI-GATEWAY VLANs (FHRP candidates),
+    most/all WITHOUT a configured first-hop-redundancy protocol (every member fhrp=False — the AJ shape).
+    The §2.4 resilience table must NOT label them 'FHRP gateway groups' (which reads as 'N FHRP groups
+    protect the gateways'); it labels them candidates and surfaces the honest count actually running
+    FHRP (0 here), so the design doc can never imply redundancy that is not configured."""
+    snap = _snap()
+    snap["fhrp"] = [
+        {"vid": 3, "issues": ["3 gateways but no FHRP — no first-hop redundancy"],
+         "members": [{"host": "a", "fhrp": False}, {"host": "b", "fhrp": False}, {"host": "c", "fhrp": False}]},
+        {"vid": 4, "issues": ["2 gateways but no FHRP — no first-hop redundancy"],
+         "members": [{"host": "a", "fhrp": False}, {"host": "b", "fhrp": False}]},
+    ]
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "FHRP gateway groups" not in text, "must not imply configured FHRP groups exist (false redundancy)"
+    assert "Multi-gateway VLANs (FHRP candidates)" in text
+    assert "first-hop redundancy (FHRP) configured" in text
+
+
 def test_design_interoperability_footprint_section(tmp_path):
     """N14: the HLD must surface what the target design has to keep INTEROPERATING with — the
     observed NOS-family spread and the multi-vendor endpoint estate (OUI-derived) — grounded in

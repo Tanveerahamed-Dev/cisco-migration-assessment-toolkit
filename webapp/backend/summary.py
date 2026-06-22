@@ -66,7 +66,8 @@ def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
 
     Prefer the engine's own executive-brief keystones; else derive from failure_impact
     (stranded endpoints, severity), which is always present."""
-    eb = snap.get("executive_brief") or {}
+    eb = snap.get("executive_brief")
+    eb = eb if isinstance(eb, dict) else {}      # a truthy non-dict section must not raise (malformed upload)
     if isinstance(eb.get("keystones"), list) and eb["keystones"]:
         return eb["keystones"][:top]
     fi = [r for r in (snap.get("failure_impact") or []) if isinstance(r, dict)]
@@ -105,14 +106,18 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
     pl = [r for r in (snap.get("punchlist") or []) if isinstance(r, dict)]
     mr = [r for r in (snap.get("migration_readiness") or []) if isinstance(r, dict)]
 
-    head = engine.trend_point(snap)  # re-use the engine's headline extractor
+    try:
+        head = engine.trend_point(snap)  # re-use the engine's headline extractor
+    except Exception:
+        head = {}                        # a malformed upload must degrade, not 500 the dashboard summary
 
     readiness = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
     for r in mr:
         if r.get("readiness") in readiness:
             readiness[r["readiness"]] += 1
 
-    lr = (snap.get("lifecycle_risk") or {}).get("summary") or {}
+    _lr = snap.get("lifecycle_risk")
+    lr = ((_lr if isinstance(_lr, dict) else {}).get("summary")) or {}
 
     return {
         "version": snap.get("script_version", ""),

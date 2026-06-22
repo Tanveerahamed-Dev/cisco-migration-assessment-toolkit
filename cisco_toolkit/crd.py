@@ -68,7 +68,11 @@ def _evidence_facts(snap: dict) -> dict:
     coll = (snap.get("collection_completeness") or {}).get("summary") or {}
     punch = sorted((snap.get("punchlist") or []), key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
     return {
-        "devices": devices, "n_devices": len(devices), "n_vlans": len(vlan_inventory(snap)),
+        "devices": devices, "n_devices": len(devices),
+        # SSOT: the published canonical VLAN count first (the one source design/explorer/webapp/workbook
+        # reconcile to), with the local vlan_inventory recount only as the pre-brief fallback (mirrors
+        # n_endpoints below + design.py's A5 canonical-first read — closes the recompute drift seam).
+        "n_vlans": (((snap.get("executive_brief") or {}).get("scale") or {}).get("n_vlans")) or len(vlan_inventory(snap)),
         "endpoints": endpoints, "dual": dual, "protos": protos, "fhrp_vlans": fhrp_vlans,
         "vrfs": sorted(vrfs), "n_acl_svis": n_acl_svis, "services": services,
         "mcast": mc, "mcast_active": mcast_active, "lifecycle": lc, "coll": coll, "punch": punch,
@@ -148,7 +152,7 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{ev['n_devices']} devices in evidence scope  ·  script {snap.get('script_version', '')}"
+                 f"{ev['coll'].get('complete', ev['n_devices'])} of {ev['n_devices']} devices collected  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     status = doc.add_paragraph(); status.alignment = WD_ALIGN_PARAGRAPH.CENTER
     st = status.add_run("DRAFT TEMPLATE — requirements are the customer's statements; confirm, amend or "
@@ -169,6 +173,7 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     add_document_control(
         doc, document="Customer Requirements Document (CRD)", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="The customer's project sponsor, network owner and operations lead (requirement "
                  "owners), and the delivery engineer facilitating the requirements workshop.",
         exclude=("crd",),
@@ -190,8 +195,9 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     table(["Field", "Value"], [
         ("Business drivers for the change", "<why now — e.g. EoL exposure, capacity, site move>"),
         ("Engagement scope (sites / domains)", "<sites and network domains in scope>"),
-        ("Evidence scope (this assessment)", f"{ev['n_devices']} devices, {ev['n_vlans']} VLANs, "
-                                             f"{ev['endpoints']} evidenced endpoints"),
+        ("Evidence scope (this assessment)", f"{ev['coll'].get('complete', ev['n_devices'])} of "
+                                             f"{ev['n_devices']} devices collected, {ev['n_vlans']} VLANs, "
+                                             f"{ev['n_endpoints']} evidenced endpoints"),
         ("Project sponsor", "<name, role>"),
         ("Network owner (requirement owner)", "<name, role>"),
         ("Operations lead", "<name, role>"),

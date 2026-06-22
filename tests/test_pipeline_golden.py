@@ -59,6 +59,9 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     with open(snap_path, encoding="utf-8") as f:
         snap = json.load(f)
     snap.pop("generated_at", None)            # volatile: wall-clock timestamp
+    # collection-time provenance: now() on a live run, dir-stamp/mtime on --no-collect -> volatile like
+    # generated_at; exclude it (its consumer lifecycle_risk is already excluded below). (provenance R2-1-01)
+    snap.pop("collected_at", None)
     # lifecycle_risk is date-dependent (bands/years shift relative to 'today') -> exclude from the frozen
     # golden; its logic is pinned deterministically by tests/test_lifecycle.py with a fixed asof. (V3.23.117)
     snap.pop("lifecycle_risk", None)

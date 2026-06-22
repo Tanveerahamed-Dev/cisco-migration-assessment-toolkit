@@ -91,9 +91,13 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         rr = readiness_by_group.get(g) or {}
         gsw = rr.get("switches") or []
         share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
-        r["endpoints"] += round(_i(rr.get("endpoints")) * share)
-        r["n_fail"] += round(_i(rr.get("n_fail")) * share)   # a slice carries its switch-share of the group's
-        r["n_warn"] += round(_i(rr.get("n_warn")) * share)   # blocking/warning checks, not the whole group's
+        r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
+        # n_fail/n_warn apportion by switch-share too (REVIEW #1: a 1-of-4 slice must not reprint the parent's
+        # full count) BUT a blocking check must never round DOWN to 0 — that would mask a NOT-READY wave's
+        # gate. So a positive share of a positive count contributes at least 1 (round elsewhere).
+        _ef, _ew = _i(rr.get("n_fail")) * share, _i(rr.get("n_warn")) * share
+        r["n_fail"] += max(round(_ef), 1) if _ef > 0 else 0
+        r["n_warn"] += max(round(_ew), 1) if _ew > 0 else 0
         rd = rr.get("readiness")
         if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
             worst = rd
@@ -211,6 +215,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     add_document_control(
         doc, document="Migration Method of Procedure (MOP)", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="The implementing engineer(s) executing each maintenance window, the validation / "
                  "war-room lead, and the change manager approving the windows.",
         exclude=("mop",),
@@ -462,7 +467,13 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         if playbook.get("pre"):
             proc.append(("Preparation: " + playbook["pre"].rstrip(". ") + ".",
                          "staging complete with no production-facing change."))
-        if "make-before-break" in strategy or "parallel" in strategy:
+        # classify off the engine's STRUCTURED dual-homed/single-homed split, NOT the free-text 'sequence'
+        # (which for a mixed wave reads "...hard cutover (single-homed) + ...make-before-break (dual-homed)" —
+        # the old substring match flipped the WHOLE wave to make-before-break, applying "keep the legacy leg
+        # as the live fallback" steps to single-homed switches that have NO second path). Make-before-break
+        # is the procedure ONLY when every member is dual-homed; any single-homed member -> hard-cutover flow.
+        mbb_hosts, hard_hosts = (seq.get("make_before_break") or []), (seq.get("hard_cutover") or [])
+        if mbb_hosts and not hard_hosts:
             proc += [
                 ("Build the new/target path BESIDE the existing one (do not remove the legacy path "
                  "yet): stage the target device config and bring up the new uplinks per the §"
@@ -477,7 +488,13 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 ("Once all load is on the new path and validated, decommission the legacy path.",
                  "no endpoint remains on the legacy leg (MAC/ARP tables clean)."),
             ]
-        else:  # hard cutover
+        else:  # any single-homed member present (mixed or pure single-homed) -> scheduled-outage flow
+            if mbb_hosts and hard_hosts:   # MIXED: do the dual-homed make-before-break FIRST, then the outage
+                proc.append((
+                    f"Sequence within the wave: make-before-break the {len(mbb_hosts)} dual-homed switch(es) "
+                    f"first (build beside, keep the legacy leg), THEN take the scheduled outage for the "
+                    f"{len(hard_hosts)} single-homed switch(es) that have no second path.",
+                    "dual-homed members re-homed with no outage before the single-homed window opens."))
             proc += [
                 ("Announce the hard cutover; this wave has a brief outage for the moved endpoints.",
                  "stakeholders acknowledged; the outage clock is started."),
@@ -537,11 +554,16 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                        "shared VLAN — keep the shared VLANs extended on the legacy path and coordinate with "
                        "any sibling sub-waves already cut over before withdrawing anything.",
                        "no sibling sub-wave loses a shared VLAN as a result of this rollback."))
-        if "make-before-break" in strategy or "parallel" in strategy:
+        if mbb_hosts and not hard_hosts:   # pure make-before-break: the legacy path was never torn down
             rb.append(("Move any migrated endpoints back onto the still-live legacy leg; remove the "
                        "new path. Because the legacy path was never torn down, this is non-disruptive.",
                        "all endpoints re-home onto the legacy leg with no loss."))
         else:
+            if mbb_hosts and hard_hosts:   # MIXED: only the dual-homed legs roll back non-disruptively
+                rb.append(("Dual-homed members roll back onto their still-live legacy leg (non-disruptive); "
+                           "the single-homed members need the §" + f"{wi}.3 pre-change config re-applied (a "
+                           "brief outage), since their path was torn down at cutover.",
+                           "dual-homed members re-home with no loss; single-homed members restored from baseline."))
             rb.append(("Re-apply the pre-change configuration captured in §" + f"{wi}.3 to <devices>; "
                        "move uplinks/endpoints back to the legacy ports.",
                        "configuration and cabling match the §" + f"{wi}.3 captured state."))
