@@ -306,6 +306,10 @@ export interface DesignTargetState {
     waves: { wave: number; kind: string; n_switches: number; switches: string[]; source_groups: number[] }[];
     n_waves: number; wave_cap: number; n_move_groups: number; largest_group: number; n_subdivided_groups: number; note: string;
   };
+  aci_move_groups?: {
+    groups: { tenant: string; n_vrfs: number; n_bds: number; n_epgs: number; vrfs: string[]; epgs: string[]; unenforced_vrfs: string[]; segmentation_gap: boolean }[];
+    n_tenants: number; n_epgs: number; n_segmentation_gaps: number; note: string;
+  };
   segmentation_plan?: { observed: string; principle?: string; status: string; target: string;
     requirement_needed?: string; target_zones?: string[] };
   scope_note?: string;
