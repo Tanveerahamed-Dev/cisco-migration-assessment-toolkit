@@ -179,7 +179,7 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
 }
 
 function TargetState({ ts }: { ts: DesignTargetState }) {
-  const bom = ts.replacement_bom, ap = ts.addressing_plan, wp = ts.wave_plan, sp = ts.segmentation_plan;
+  const bom = ts.replacement_bom, ap = ts.addressing_plan, wp = ts.wave_plan, sp = ts.segmentation_plan, amg = ts.aci_move_groups;
   return (
     <div style={{ marginTop: 14 }}>
       {ts.dimensions && ts.dimensions.length > 0 && (
@@ -279,6 +279,17 @@ function TargetState({ ts }: { ts: DesignTargetState }) {
           <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>{wp.n_move_groups} move-group(s), largest {wp.largest_group} · cap {wp.wave_cap}. {wp.note}</div>
           <table className="tbl"><thead><tr><th className="num">Wave</th><th>Kind</th><th className="num">Switches</th></tr></thead>
             <tbody>{wp.waves.slice(0, 40).map((w) => <tr key={w.wave}><td className="num">{w.wave}</td><td>{w.kind}</td><td className="num">{w.n_switches}</td></tr>)}</tbody></table>
+        </>
+      )}
+      {amg && amg.groups && amg.groups.length > 0 && (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>ACI move-groups · {amg.n_tenants}</div>
+          <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>{amg.n_epgs} EPG(s) · {amg.n_segmentation_gaps} segmentation gap(s). {amg.note}</div>
+          <table className="tbl"><thead><tr><th>Tenant</th><th className="num">EPGs</th><th className="num">VRFs</th><th className="num">BDs</th><th>Segmentation</th></tr></thead>
+            <tbody>{amg.groups.slice(0, 40).map((g) => (
+              <tr key={g.tenant}><td>{g.tenant}</td><td className="num">{g.n_epgs}</td><td className="num">{g.n_vrfs}</td><td className="num">{g.n_bds}</td>
+                <td style={{ color: g.segmentation_gap ? "var(--crit)" : undefined }}>{g.segmentation_gap ? `⚠ unenforced: ${g.unenforced_vrfs.join(", ")}` : "enforced"}</td></tr>
+            ))}</tbody></table>
         </>
       )}
     </div>
