@@ -122,3 +122,13 @@ def test_collect_login_failure_is_fail_soft(tmp_path, monkeypatch):
     assert rest_collect.collect_apic("https://x", "u", "p", str(tmp_path / "a")) == []
     monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: _FakeResp("<html><body>login</body></html>"))
     assert rest_collect.collect_vmanage("https://x", "u", "p", str(tmp_path / "v")) == []
+
+
+def test_collect_refuses_non_https(monkeypatch, tmp_path):
+    """Security: the collectors refuse a non-HTTPS controller URL (the login would leak the password in
+    cleartext) -- they return [] WITHOUT ever issuing the login POST."""
+    posted = []
+    monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: (posted.append(a), _FakeResp("{}"))[1])
+    assert rest_collect.collect_apic("http://apic.example", "u", "secret", str(tmp_path / "a")) == []
+    assert rest_collect.collect_vmanage("http://vmanage.example:8443", "u", "secret", str(tmp_path / "v")) == []
+    assert posted == [], "no login POST may be sent to a non-HTTPS URL (the password would be cleartext)"
