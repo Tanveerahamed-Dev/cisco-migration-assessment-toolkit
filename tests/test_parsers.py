@@ -670,3 +670,80 @@ def test_parse_poe_inline_budget_sums_modules_and_skips_na(cp):
           "1             n/a        n/a         n/a\n")
     assert parse._parse_poe_inline_budget(na) == {}
     assert parse._parse_poe_inline_budget("") == {}
+
+
+def test_parse_hsrp_detail_captures_priority_preempt_track(cp):
+    """Universality (FHRP gap): the brief parser keeps only state+VIP, silently dropping priority,
+    preemption and tracking. parse_hsrp_detail reads the FULL 'show standby [all]' so a senior FHRP
+    audit (election, preempt, untracked-active) becomes possible. [HISTORY-REDACTED] has zero FHRP -> this is the first
+    capability proven on a NON-[HISTORY-REDACTED] environment."""
+    out = (
+        "GigabitEthernet0/1 - Group 10\n"
+        "  State is Active\n"
+        "  Virtual IP address is 10.1.1.1\n"
+        "  Active virtual MAC address is 0000.0c07.ac0a\n"
+        "  Hello time 3 sec, hold time 10 sec\n"
+        "  Preemption enabled, delay min 30 secs\n"
+        "  Active router is local\n"
+        "  Standby router is 10.1.1.3, priority 90 (expires in 8.000 sec)\n"
+        "  Priority 110 (configured 110)\n"
+        "    Track object 1 state Up decrement 20\n"
+        "GigabitEthernet0/2 - Group 20\n"
+        "  State is Active\n"
+        "  Virtual IP address is 10.1.2.1\n"
+        "  Active virtual MAC address is 0000.0c07.ac14\n"
+        "  Preemption disabled\n"
+        "  Priority 100 (configured 100)\n")
+    r = parse.parse_hsrp_detail(out)
+    by_grp = {k[1]: v for k, v in r.items()}
+    g10 = by_grp["10"]
+    assert g10["state"] == "Active" and g10["priority"] == 110 and g10["preempt"] is True
+    assert g10["vip"] == "10.1.1.1" and g10["standby_ip"] == "10.1.1.3"
+    assert g10["track"] == [{"obj": "1", "decrement": 20}] and g10["preempt_delay"] == 30
+    g20 = by_grp["20"]
+    # the senior red flags [HISTORY-REDACTED] could never surface: an Active group with NO preemption and NO tracking
+    assert g20["preempt"] is False and g20["track"] == [] and g20["priority"] == 100
+    assert parse.parse_hsrp_detail("") == {}
+
+
+def test_parse_nve_peers_states(cp):
+    """Universality (NX-OS VXLAN-EVPN): the engine was blind to its OWN target fabric. parse_nve_peers reads
+    'show nve peers' so a DOWN VTEP peer (overlay partition) is detectable."""
+    out = (
+        "Interface Peer-IP          State LearnType Uptime   Router-Mac\n"
+        "--------- ---------------  ----- --------- -------- -----------------\n"
+        "nve1      10.0.0.1         Up    CP        00:10:00 n/a\n"
+        "nve1      10.0.0.2         Down  CP        00:00:00 n/a\n")
+    r = parse.parse_nve_peers(out)
+    assert len(r) == 2
+    assert r[0] == {"interface": "nve1", "peer_ip": "10.0.0.1", "state": "Up", "learn_type": "CP"}
+    assert r[1]["state"] == "Down" and r[1]["peer_ip"] == "10.0.0.2"
+    assert parse.parse_nve_peers("") == []
+
+
+def test_parse_evpn_summary_states(cp):
+    """Universality (VXLAN-EVPN control plane): parse_evpn_summary reads 'show bgp l2vpn evpn summary' so a
+    non-Established RR session (overlay MAC/IP route exchange broken) is detectable."""
+    out = (
+        "BGP router identifier 10.0.0.7, local AS number 65001\n"
+        "Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "10.0.0.254      4 65001    5000    5000      120    0    0 1d05h    240\n"
+        "10.0.0.253      4 65001       0       0        0    0    0 00:00:00 Idle\n")
+    r = parse.parse_evpn_summary(out)
+    assert len(r) == 2
+    assert r[0] == {"neighbor": "10.0.0.254", "as": "65001", "state": "Established", "prefixes": 240}
+    assert r[1]["state"] == "Idle" and r[1]["prefixes"] == 0
+    assert parse.parse_evpn_summary("") == []
+
+
+def test_parse_nve_vni_states(cp):
+    """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
+    out = (
+        "Interface VNI      Multicast-group   State Mode Type [BD/VRF]\n"
+        "nve1      10010    225.1.1.10        Up    CP   L2 [10]\n"
+        "nve1      50000    n/a               Down  CP   L3 [vrf-prod]\n")
+    r = parse.parse_nve_vni(out)
+    assert len(r) == 2
+    assert r[0] == {"vni": "10010", "mcast_group": "225.1.1.10", "state": "Up", "mode": "CP", "type": "L2"}
+    assert r[1]["vni"] == "50000" and r[1]["state"] == "Down" and r[1]["mcast_group"] == ""
+    assert parse.parse_nve_vni("") == []

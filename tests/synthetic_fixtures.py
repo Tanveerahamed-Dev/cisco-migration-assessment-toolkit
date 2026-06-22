@@ -255,6 +255,28 @@ Interface   Grp  Pri P State    Active          Standby         Virtual IP
 Vl10        10   110 P Active   local           10.0.10.3       10.0.10.1
 Vl20        20   100   Standby  10.0.20.3       local           10.0.20.1
 """,
+    # FHRP DETAIL (universality): the active Vl10 gateway has preempt but NO interface tracking -- the
+    # classic gap _d_fhrp_resilience now catches. [HISTORY-REDACTED] ran zero FHRP, so this fixture is the first to prove
+    # the engine ASSESSES first-hop redundancy end-to-end.
+    "show standby all": """\
+Vlan10 - Group 10
+  State is Active
+  Virtual IP address is 10.0.10.1
+  Active virtual MAC address is 0000.0c07.ac0a
+  Hello time 3 sec, hold time 10 sec
+  Preemption enabled
+  Active router is local
+  Standby router is 10.0.10.3, priority 100 (expires in 9.000 sec)
+  Priority 110 (configured 110)
+Vlan20 - Group 20
+  State is Standby
+  Virtual IP address is 10.0.20.1
+  Active virtual MAC address is 0000.0c07.ac14
+  Preemption disabled
+  Standby router is local
+  Active router is 10.0.20.3, priority 110
+  Priority 100 (configured 100)
+""",
     "show ip route": """\
 Codes: C - connected, L - local, O - OSPF, B - BGP, S - static
 Gateway of last resort is 10.0.10.254 to network 0.0.0.0
@@ -349,6 +371,29 @@ Processor Pool Total:  690885376 Used:  168148848 Free:  522736528
 # core2 - NX-OS core switch
 # --------------------------------------------------------------------------- #
 _CORE2 = {
+    # VXLAN-EVPN overlay (universality): core2 is a VTEP with one peer DOWN -> _d_nve_peer_health fires.
+    # The engine's own target fabric was blind until parse_nve_peers / build_overlay.
+    "show nve peers": """\
+Interface Peer-IP          State LearnType Uptime   Router-Mac
+--------- ---------------  ----- --------- -------- -----------------
+nve1      10.255.0.1       Up    CP        1d05h    5e00.0005.0007
+nve1      10.255.0.2       Down  CP        00:00:00 n/a
+""",
+    # BGP-EVPN control plane (universality): one RR session Idle -> _d_evpn_rr_health fires (overlay route
+    # exchange dark even though an NVE data-plane peer is Up).
+    "show bgp l2vpn evpn summary": """\
+BGP summary information for VRF default, address family L2VPN EVPN
+BGP router identifier 10.255.0.7, local AS number 65001
+Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+10.255.0.254    4 65001    5000    5000      120    0    0 1d05h    240
+10.255.0.253    4 65001       0       0        0    0    0 00:00:00 Idle
+""",
+    # VXLAN VNI bindings (universality): L3VNI 50000 Down -> _d_nve_vni_health fires (VRF stranded).
+    "show nve vni": """\
+Interface VNI      Multicast-group   State Mode Type [BD/VRF]
+nve1      10010    225.1.1.10        Up    CP   L2 [10]
+nve1      50000    n/a               Down  CP   L3 [vrf-prod]
+""",
     "show interface status": """\
 --------------------------------------------------------------------------------
 Port          Name               Status    Vlan      Duplex  Speed   Type

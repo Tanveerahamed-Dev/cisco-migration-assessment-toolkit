@@ -120,6 +120,99 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                 routes[current]['entries'].append({'prefix': current, 'code': '', 'source': '', 'next_hop': nh, 'out_intf': out_intf, 'raw': s})
     return routes
 
+def parse_nve_vni(output: str) -> list:
+    """'show nve vni' (NX-OS VXLAN) -> [{vni, mcast_group, state, mode, type}]. The L2 (VLAN<->VNI) and L3
+    (VRF<->L3VNI) bindings on this VTEP; State Up = the VNI is operational. A VNI not Up strands its VLAN/VRF
+    on the local VTEP (no overlay reachability for that segment). [] when no NVE. Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        m = re.match(r"^\s*nve\d+\s+(\d+)\s+(\S+)\s+(\w+)\s+(\w+)\s+(L[23])\b", raw, re.IGNORECASE)
+        if m:
+            mc = m.group(2)
+            out.append({"vni": m.group(1), "mcast_group": "" if mc.lower() in ("n/a", "--", "unknown") else mc,
+                        "state": m.group(3).capitalize(), "mode": m.group(4).upper(), "type": m.group(5).upper()})
+    return out
+
+
+def parse_evpn_summary(output: str) -> list:
+    """'show bgp l2vpn evpn summary' -> [{neighbor, as, state, prefixes}]. The BGP-EVPN control plane that
+    distributes VXLAN MAC/IP (Type-2) and prefix (Type-5) routes between VTEPs; a neighbor not Established
+    means no overlay route exchange with that peer (the data plane can be Up while the control plane is
+    dark). State = 'Established' when the last column is a prefix count, else the BGP state word. []
+    when EVPN is not running. Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\d+)\b", s)   # Neighbor V AS ...
+        if not m:
+            continue
+        last = s.split()[-1]
+        out.append({"neighbor": m.group(1), "as": m.group(2),
+                    "state": "Established" if last.isdigit() else last,
+                    "prefixes": int(last) if last.isdigit() else 0})
+    return out
+
+
+def parse_nve_peers(output: str) -> list:
+    """'show nve peers' (NX-OS VXLAN) -> [{interface, peer_ip, state, learn_type}]. State Up/Down; learn-type
+    CP (control-plane / BGP-EVPN) vs DP (flood-and-learn). [] when the device runs no NVE/VXLAN. Tolerant;
+    never raises. The engine's OWN target fabric (VXLAN-EVPN) was previously blind -- this is its first
+    data-plane visibility (a down VTEP peer partitions the overlay)."""
+    out = []
+    for raw in (output or "").splitlines():
+        m = re.match(r"^\s*(nve\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\w+)\s+(\w+)", raw, re.IGNORECASE)
+        if m:
+            out.append({"interface": m.group(1).lower(), "peer_ip": m.group(2),
+                        "state": m.group(3).capitalize(), "learn_type": m.group(4).upper()})
+    return out
+
+
+def parse_hsrp_detail(output: str) -> Dict[tuple, dict]:
+    """Full 'show standby [all]' DETAIL -> {(ifname, group): {state, priority, cfg_priority, preempt,
+    preempt_delay, vip, vmac, hello, hold, standby_ip, track:[{obj,decrement}], version}}. The brief
+    parser (parse_hsrp_summary) keeps only state+VIP; this captures the fields a senior FHRP audit needs
+    -- election (priority/preempt), failure-awareness (tracking) -- the [HISTORY-REDACTED] fleet (no FHRP) never exercised.
+    Tolerant: {} on empty / non-detail input; never raises."""
+    res: Dict[tuple, dict] = {}
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        h = re.match(r"^(\S+)\s+-\s+Group\s+(\d+)\s*$", s)           # 'GigabitEthernet0/1 - Group 10'
+        if h:
+            cur = (normalize_ifname(h.group(1)), h.group(2))
+            res[cur] = {"state": "", "priority": None, "cfg_priority": None, "preempt": False,
+                        "preempt_delay": None, "vip": "", "vmac": "", "hello": None, "hold": None,
+                        "standby_ip": "", "track": [], "version": 1}
+            continue
+        if cur is None:
+            continue
+        r = res[cur]
+        m = re.match(r"^State is (\w+)", s)
+        if m: r["state"] = m.group(1); continue
+        m = re.search(r"Virtual IP address is (\d+\.\d+\.\d+\.\d+)", s)
+        if m: r["vip"] = m.group(1); continue
+        m = re.search(r"virtual MAC address is ([0-9a-fA-F.]+)", s)
+        if m and not r["vmac"]: r["vmac"] = m.group(1); continue
+        m = re.search(r"Hello time (\d+) sec, hold time (\d+) sec", s)
+        if m: r["hello"], r["hold"] = int(m.group(1)), int(m.group(2)); continue
+        if s.startswith("Preemption enabled"):
+            r["preempt"] = True
+            md = re.search(r"delay min (\d+)", s)
+            if md: r["preempt_delay"] = int(md.group(1))
+            continue
+        if s.startswith("Preemption disabled"):
+            r["preempt"] = False; continue
+        m = re.match(r"^Priority (\d+)(?:\s*\(configured (\d+)\))?", s)
+        if m:
+            r["priority"] = int(m.group(1))
+            r["cfg_priority"] = int(m.group(2)) if m.group(2) else int(m.group(1)); continue
+        m = re.search(r"Track object (\S+) state \w+ decrement (\d+)", s)
+        if m: r["track"].append({"obj": m.group(1), "decrement": int(m.group(2))}); continue
+        m = re.search(r"Standby router is (\d+\.\d+\.\d+\.\d+)", s)
+        if m: r["standby_ip"] = m.group(1); continue
+    return res
+
+
 def parse_hsrp_summary(output: str) -> Dict[str, str]:
     res: Dict[str, str] = {}
     if not output:

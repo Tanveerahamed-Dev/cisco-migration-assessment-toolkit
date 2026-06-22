@@ -13,7 +13,7 @@ from cisco_toolkit.cmdio import _load_cmd_output, _safe_parse
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _compress_vlans, infer_endpoint_type, parse_etherchannel_protocol_ios,
-    parse_etherchannel_summary_members, parse_glbp_summary, parse_hsrp_summary,
+    parse_etherchannel_summary_members, parse_glbp_summary, parse_hsrp_detail, parse_hsrp_summary,
     parse_ip_routes, parse_multicast_info, parse_neighbors_cdp, parse_neighbors_lldp,
     parse_portchannel_protocol_from_summary, parse_run_config_interfaces,
     parse_show_environment, parse_show_environment_power, _parse_poe_inline_budget,
@@ -22,7 +22,7 @@ from cisco_toolkit.parse import (
     parse_show_ip_arp, parse_show_mac_address_table, parse_show_module_count,
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
-    parse_spanning_tree_root, parse_vpc,
+    parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_cpu_utilization, parse_memory_stats, parse_system_resources,   # NEW-V3.23.167 (platform health)
@@ -120,6 +120,30 @@ def build_vpc(cmd_to_file: Dict[str, str]) -> dict:
     {domain_id, role, peer_status, keepalive_status, vpcs:[...]}; {} when the device runs no vPC.
     Fail-soft. CONFIRMS MLAG peer pairs (vs topology inference) for the flow simulator."""
     return _safe_parse(parse_vpc, _load_cmd_output(cmd_to_file, "show vpc")) or {}
+
+
+def build_fhrp_detail(cmd_to_file: Dict[str, str]) -> list:
+    """Full first-hop-redundancy state for THIS device from 'show standby [all]' DETAIL (parse_hsrp_detail):
+    [{ifname, group, state, priority, cfg_priority, preempt, preempt_delay, vip, vmac, standby_ip, track}].
+    [] when the device runs no HSRP. The brief form (interface hsrp_behavior) keeps only state+VIP; this
+    carries the election / preempt / tracking fields a senior FHRP audit needs (the [HISTORY-REDACTED] fleet ran no FHRP,
+    so this is the first capability proven on a non-[HISTORY-REDACTED] environment). Fail-soft via _safe_parse."""
+    d = _safe_parse(parse_hsrp_detail, _load_cmd_output(cmd_to_file, "show standby all", "show standby")) or {}
+    return [{"ifname": k[0], "group": k[1], **v} for k, v in d.items()]
+
+
+def build_overlay(cmd_to_file: Dict[str, str]) -> dict:
+    """VXLAN-EVPN overlay state for THIS device from 'show nve peers': {nve_peers:[{interface, peer_ip,
+    state, learn_type}]}. {} when the device runs no NVE/VXLAN. The engine's OWN target fabric was blind;
+    a down VTEP peer partitions the overlay for every VNI it serves. Fail-soft via _safe_parse."""
+    peers = _safe_parse(parse_nve_peers, _load_cmd_output(cmd_to_file, "show nve peers")) or []
+    evpn = _safe_parse(parse_evpn_summary, _load_cmd_output(cmd_to_file, "show bgp l2vpn evpn summary")) or []
+    vni = _safe_parse(parse_nve_vni, _load_cmd_output(cmd_to_file, "show nve vni")) or []
+    out = {}
+    if peers: out["nve_peers"] = peers
+    if evpn: out["evpn_neighbors"] = evpn
+    if vni: out["nve_vni"] = vni
+    return out
 
 
 def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:

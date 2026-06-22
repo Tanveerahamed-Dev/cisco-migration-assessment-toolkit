@@ -3146,6 +3146,90 @@
   }
  },
  "vpc": {},
+ "fhrp_detail": {
+  "core1": [
+   {
+    "ifname": "Vlan10",
+    "group": "10",
+    "state": "Active",
+    "priority": 110,
+    "cfg_priority": 110,
+    "preempt": true,
+    "preempt_delay": null,
+    "vip": "10.0.10.1",
+    "vmac": "0000.0c07.ac0a",
+    "hello": 3,
+    "hold": 10,
+    "standby_ip": "10.0.10.3",
+    "track": [],
+    "version": 1
+   },
+   {
+    "ifname": "Vlan20",
+    "group": "20",
+    "state": "Standby",
+    "priority": 100,
+    "cfg_priority": 100,
+    "preempt": false,
+    "preempt_delay": null,
+    "vip": "10.0.20.1",
+    "vmac": "0000.0c07.ac14",
+    "hello": null,
+    "hold": null,
+    "standby_ip": "",
+    "track": [],
+    "version": 1
+   }
+  ]
+ },
+ "overlay": {
+  "core2": {
+   "nve_peers": [
+    {
+     "interface": "nve1",
+     "peer_ip": "10.255.0.1",
+     "state": "Up",
+     "learn_type": "CP"
+    },
+    {
+     "interface": "nve1",
+     "peer_ip": "10.255.0.2",
+     "state": "Down",
+     "learn_type": "CP"
+    }
+   ],
+   "evpn_neighbors": [
+    {
+     "neighbor": "10.255.0.254",
+     "as": "65001",
+     "state": "Established",
+     "prefixes": 240
+    },
+    {
+     "neighbor": "10.255.0.253",
+     "as": "65001",
+     "state": "Idle",
+     "prefixes": 0
+    }
+   ],
+   "nve_vni": [
+    {
+     "vni": "10010",
+     "mcast_group": "225.1.1.10",
+     "state": "Up",
+     "mode": "CP",
+     "type": "L2"
+    },
+    {
+     "vni": "50000",
+     "mcast_group": "",
+     "state": "Down",
+     "mode": "CP",
+     "type": "L3"
+    }
+   ]
+  }
+ },
  "punchlist": [
   {
    "severity": "Critical",
