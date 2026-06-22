@@ -1450,6 +1450,28 @@ def test_d_aci_vrf_unenforced_fires_on_unenforced_only():
     assert da._d_aci_vrf_unenforced({}, da._signals({})) is None
 
 
+def test_aci_move_groups_tenant_grouping():
+    """ACI migration move-groups: the published logical census groups BY TENANT (the ACI migration boundary);
+    EPGs are the finest unit; a tenant with an unenforced VRF carries a segmentation_gap; the biggest move
+    group (most EPGs) leads. No ACI inventory -> {} (coverage-honest)."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"aci": {"apic1": {
+        "tenants": [{"name": "PROD", "dn": "uni/tn-PROD"}, {"name": "LEGACY", "dn": "uni/tn-LEGACY"}],
+        "vrfs": [{"name": "prod-vrf", "tenant": "PROD", "pc_enf_pref": "enforced"},
+                 {"name": "legacy-vrf", "tenant": "LEGACY", "pc_enf_pref": "unenforced"}],
+        "bds": [{"name": "prod-bd", "tenant": "PROD"}],
+        "epgs": [{"name": "web", "tenant": "PROD"}, {"name": "db", "tenant": "PROD"}, {"name": "old", "tenant": "LEGACY"}],
+    }}}
+    mg = da._aci_move_groups(snap)
+    by = {g["tenant"]: g for g in mg["groups"]}
+    assert mg["n_tenants"] == 2 and mg["n_epgs"] == 3
+    assert by["PROD"]["n_epgs"] == 2 and by["PROD"]["segmentation_gap"] is False
+    assert by["LEGACY"]["segmentation_gap"] is True and "legacy-vrf" in by["LEGACY"]["unenforced_vrfs"]
+    assert mg["n_segmentation_gaps"] == 1
+    assert mg["groups"][0]["tenant"] == "PROD"   # 2 EPGs leads LEGACY's 1
+    assert da._aci_move_groups({}) == {}
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected

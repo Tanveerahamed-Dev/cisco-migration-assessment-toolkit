@@ -204,6 +204,14 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     _aci_core2 = (snap.get("aci") or {}).get("core2") or {}
     assert _aci_core2.get("tenants") and _aci_core2.get("bds") and _aci_core2.get("epgs"), \
         "snapshot must publish the ACI logical census (build_aci -> parse_aci_tenants/bds/epgs)"
+    # ACI move-group PLAN: the design blueprint's target_state derives tenant-by-tenant ACI move-groups from
+    # the published census (the wave-planner consuming the ACI logical inventory). The LEGACY tenant's
+    # unenforced VRF surfaces as a segmentation gap on its move group -- design-engine integration, end-to-end.
+    _amg = (_bp.get("target_state") or {}).get("aci_move_groups") or {}
+    assert _amg.get("groups") and _amg.get("n_tenants", 0) >= 2, \
+        "blueprint target_state must carry ACI tenant move-groups derived from the logical census"
+    assert _amg.get("n_segmentation_gaps", 0) >= 1, \
+        "an unenforced-VRF tenant must be flagged as a move-group segmentation gap"
     # UNIVERSALITY (Cisco Catalyst SD-WAN / vManage JSON channel): core1 stands in as the vManage query host;
     # a DOWN vsmart control connection and an UNREACHABLE device must each fire end-to-end (the up vbond
     # connection and the reachable device prove no over-firing). The second JSON-ingestion controller fabric.
