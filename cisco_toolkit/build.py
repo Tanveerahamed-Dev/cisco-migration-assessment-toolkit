@@ -23,6 +23,13 @@ from cisco_toolkit.parse import (
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni, parse_copp_drops,
+    parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
+    parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
+    parse_ntp_status,                                                 # NTP clock-sync STATE (stratum 16 / unsynchronized)
+    parse_port_security_detail,                                       # access-edge port-security DETAIL (Secure-shutdown)
+    parse_storm_control,                                             # storm-control action (toothless 'None' rule)
+    parse_policymap_drops,                                           # QoS runtime: egress queue/policer drops
+    parse_neighbors_detail,                                          # CDP/LLDP detail w/ capability codes (shadow infra)
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_cpu_utilization, parse_memory_stats, parse_system_resources,   # NEW-V3.23.167 (platform health)
@@ -153,6 +160,183 @@ def build_copp(cmd_to_file: Dict[str, str]) -> list:
     means the policer is actively discarding punted control-plane traffic. Fail-soft via _safe_parse."""
     return _safe_parse(parse_copp_drops, _load_cmd_output(
         cmd_to_file, "show policy-map interface control-plane", "show policy-map control-plane")) or []
+
+
+def build_pim(cmd_to_file: Dict[str, str]) -> dict:
+    """PIM-SM control-plane facts for the multicast-resilience detector -> {rp_mapping, neighbors}:
+      rp_mapping = parse_pim_rp_mapping('show ip pim rp mapping')  -- learned-RP summary
+                   ({} when uncollected; {present, rp_count, rps, groups, ssm_only} otherwise)
+      neighbors  = parse_pim_neighbors('show ip pim neighbor')     -- [{neighbor, interface, uptime}]
+    'PIM running but no RP' (rp_mapping.present True, rp_count 0) is distinct from 'PIM not collected'
+    ({}). Fail-soft via _safe_parse."""
+    return {
+        "rp_mapping": _safe_parse(parse_pim_rp_mapping,
+                                  _load_cmd_output(cmd_to_file, "show ip pim rp mapping")) or {},
+        "neighbors": _safe_parse(parse_pim_neighbors,
+                                 _load_cmd_output(cmd_to_file, "show ip pim neighbor")) or [],
+    }
+
+
+def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
+    """IPv6 first-hop-security posture for THIS device, fusing the dedicated FHS show-commands
+    ('show ipv6 nd raguard policy', 'show ipv6 dhcp guard policy') with the already-collected
+    'show running-config' (the most reliable, platform-agnostic evidence of dual-stack + per-interface
+    attachment). {} when the device shows no IPv6 at all -> a pure-IPv4 device contributes nothing and the
+    detector never cries wolf over it. Fail-soft via _safe_parse."""
+    rag = _safe_parse(parse_ipv6_raguard_policy,
+                      _load_cmd_output(cmd_to_file, "show ipv6 nd raguard policy")) or []
+    dhg = _safe_parse(parse_ipv6_dhcp_guard_policy,
+                      _load_cmd_output(cmd_to_file, "show ipv6 dhcp guard policy")) or []
+    run = _load_cmd_output(cmd_to_file, "show running-config") or ""
+
+    ipv6_svi_vlans: List[int] = []
+    ra_if: Set[str] = set()
+    dhg_if: Set[str] = set()
+    cur_if = ""
+    cur_is_svi = False
+    cur_has_v6 = False
+    for raw in run.splitlines():
+        m = re.match(r"^\s*interface\s+(\S+)", raw, re.IGNORECASE)
+        if m:
+            cur_if = normalize_ifname(m.group(1))
+            cur_is_svi = bool(re.match(r"^(Vlan|Vl)\d+$", m.group(1), re.IGNORECASE))
+            cur_has_v6 = False
+            continue
+        if not cur_if:
+            continue
+        low = raw.strip().lower()
+        if low.startswith("ipv6 address ") and "autoconfig" not in low:
+            if cur_is_svi and not cur_has_v6:
+                mvid = re.match(r"^(?:Vlan|Vl)(\d+)$", cur_if, re.IGNORECASE)
+                if mvid:
+                    ipv6_svi_vlans.append(int(mvid.group(1)))
+                cur_has_v6 = True
+        if re.match(r"^ipv6 nd raguard\b", low):
+            ra_if.add(cur_if)
+        if re.match(r"^ipv6 dhcp guard\b", low):
+            dhg_if.add(cur_if)
+
+    for pol in rag:
+        for t in pol.get("targets", []):
+            if t.get("type") == "PORT" and t.get("name"):
+                ra_if.add(t["name"])
+    for pol in dhg:
+        for t in pol.get("targets", []):
+            if t.get("type") == "PORT" and t.get("name"):
+                dhg_if.add(t["name"])
+
+    ra_policy_names = sorted({p.get("policy") for p in rag if p.get("policy")})
+    dhg_policy_names = sorted({p.get("policy") for p in dhg if p.get("policy")})
+    ra_vlan_attached = any(t.get("type") == "VLAN" for p in rag for t in p.get("targets", []))
+    dhg_vlan_attached = any(t.get("type") == "VLAN" for p in dhg for t in p.get("targets", []))
+
+    ra_present = bool(ra_if) or ra_vlan_attached
+    dhg_present = bool(dhg_if) or dhg_vlan_attached
+    dualstack = bool(ipv6_svi_vlans)
+
+    if not dualstack and not ra_present and not dhg_present and not ra_policy_names and not dhg_policy_names:
+        return {}
+    return {
+        "dualstack": dualstack,
+        "ipv6_svi_vlans": sorted(set(ipv6_svi_vlans)),
+        "ra_guard_policies": ra_policy_names,
+        "dhcp_guard_policies": dhg_policy_names,
+        "ra_guard_ifaces": sorted(ra_if),
+        "dhcp_guard_ifaces": sorted(dhg_if),
+        "ra_guard_present": ra_present,
+        "dhcp_guard_present": dhg_present,
+    }
+
+
+def build_ntp(cmd_to_file: Dict[str, str]) -> dict:
+    """Clock-synchronization STATE for THIS device from 'show ntp status' (IOS/IOS-XE) or, on NX-OS where that
+    command carries no sync line, 'show ntp peer-status' (parse_ntp_status) -> {synchronized, stratum,
+    reference, source}. {} when the device returned no NTP output (so a never-collected device is ABSENT from
+    snap['ntp'] rather than counted unsynchronized). The OPERATIONAL complement to the config-only CIS no-ntp
+    check. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_ntp_status,
+                       _load_cmd_output(cmd_to_file, "show ntp status", "show ntp peer-status")) or {}
+
+
+def build_port_security_detail(cmd_to_file: Dict[str, str]) -> dict:
+    """Access-edge port-security state for THIS device from 'show port-security interface' DETAIL
+    (parse_port_security_detail): {ifname: {enabled, port_status, violation_mode, violation_count, last_src,
+    last_vlan}}. {} when the device runs no port-security or the detail form was not collected. An err-disabled
+    (Secure-shutdown) secured port -- a live access outage -- was previously invisible to the design layer (the
+    summary form has no port-status column). Fail-soft via _safe_parse."""
+    return _safe_parse(parse_port_security_detail,
+                       _load_cmd_output(cmd_to_file, "show port-security interface")) or {}
+
+
+def build_storm_control(cmd_to_file: Dict[str, str]) -> list:
+    """Per-interface traffic-storm-control state for THIS device from 'show storm-control' (parse_storm_control):
+    [{interface, traffic, filter_state, upper, lower, current, action, configured}]. [] when the device runs no
+    storm-control. The senior gap (-> _d_storm_control_action) is a CONFIGURED rule whose action is None -- it
+    drops a storm silently with no trap and no err-disable. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_storm_control, _load_cmd_output(cmd_to_file, "show storm-control")) or []
+
+
+def build_qos_runtime(cmd_to_file: Dict[str, str]) -> list:
+    """QoS RUNTIME health for THIS device from 'show policy-map interface' (parse_policymap_drops):
+    [{interface, policy, class, priority, drop_pkts, drop_bytes, output_pkts, police_drop_pkts,
+    police_drop_bytes}] -- one row per EGRESS class/queue. [] when no service-policy is attached (or the command
+    was not collected). The runtime complement to build/parse_qos_config (which only proves a policy EXISTS):
+    a class with significant egress drops means the configured QoS is shedding the very traffic its intent
+    classified. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_policymap_drops,
+                       _load_cmd_output(cmd_to_file, "show policy-map interface")) or []
+
+
+# Explicit switch/router model families, used ONLY when a neighbour advertises no capabilities (a bare
+# LLDP neighbour). Deliberately NARROW -- it must NOT match a Cisco IP phone or access point, so we do NOT
+# key off the bare word 'cisco' the way infer_endpoint_type does (that maps every Cisco box to 'Switch').
+_INFRA_PLATFORM_RE = re.compile(
+    r"(\bnexus|\bcatalyst|\bn[0-9]k\b|\bc9[0-9]{3}|\bc3[0-9]{3}|\bc2[0-9]{3}|\bws-c[23456]|"
+    r"\basr[0-9]|\bisr[0-9]|\bcsr[0-9]|\bncs[- ]?[0-9]|\bcisco[ -][0-9]{4}\b)", re.IGNORECASE)
+
+
+def _neighbor_is_infra(rec: Dict[str, str]) -> bool:
+    """Classify a CDP/LLDP neighbour record (parse_neighbors_detail) as INFRASTRUCTURE (a switch/router in
+    the L2/L3 path) vs an EDGE device (phone / access-point / host / WLC). The advertised CAPABILITIES are
+    AUTHORITATIVE when present (a device that says it is a phone/AP/host is not silently re-read as a switch
+    via its platform string):
+      * CDP capabilities (full words): infra iff 'Switch' or 'Router' appears.
+      * LLDP enabled-capabilities (letters): infra iff 'R' (Router) or 'B' (Bridge) is set AND 'W' (WLAN-AP)
+        is NOT (an AP sets only W; a switch advertises B).
+      * Only when NO capabilities are advertised do we fall back to an explicit switch/router PLATFORM family
+        (_INFRA_PLATFORM_RE) -- never the greedy 'cisco'-substring rule.
+    A neighbour with neither an infra capability nor an infra platform is treated as NON-infra."""
+    caps = (rec.get("capabilities") or "").strip()
+    proto = (rec.get("proto") or "cdp").lower()
+    if caps:
+        if proto == "lldp":
+            tokens = {t.strip().upper() for t in re.split(r"[,\s]+", caps) if t.strip()}
+            return ("R" in tokens or "B" in tokens) and "W" not in tokens
+        low = caps.lower()
+        return bool(re.search(r"\bswitch\b", low) or re.search(r"\brouter\b", low))
+    return bool(_INFRA_PLATFORM_RE.search(rec.get("platform", "") or ""))
+
+
+def build_undocumented_neighbors(cmd_to_file: Dict[str, str]) -> list:
+    """INFRASTRUCTURE CDP/LLDP neighbours of THIS device, parsed from the already-collected
+    'show cdp neighbors detail' + 'show lldp neighbors detail' (parse_neighbors_detail) and filtered to
+    switches/routers via _neighbor_is_infra. Returns [{device_id, platform, capabilities, mgmt_ip,
+    local_intf, remote_port, proto}] -- the candidate set the shadow-infra detector reconciles against the
+    assessed inventory. Edge devices (phones / APs / hosts) are excluded here. [] when the device advertises no
+    infra neighbour. No NEW collected command. Fail-soft via _safe_parse."""
+    cdp = _safe_parse(parse_neighbors_detail, _load_cmd_output(cmd_to_file, "show cdp neighbors detail"), "cdp") or []
+    lldp = _safe_parse(parse_neighbors_detail, _load_cmd_output(cmd_to_file, "show lldp neighbors detail"), "lldp") or []
+    out = []
+    seen = set()
+    for rec in list(cdp) + list(lldp):
+        if not _neighbor_is_infra(rec):
+            continue
+        key = ((rec.get("device_id") or "").strip().lower(), (rec.get("local_intf") or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(rec)
+    return out
 
 
 def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:

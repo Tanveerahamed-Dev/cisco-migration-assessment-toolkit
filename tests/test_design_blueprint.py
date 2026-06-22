@@ -363,6 +363,18 @@ def _maximal_snap():
                     "peer_link": {"status": "up"},
                     "vpcs": [{"id": "10", "status": "down*", "consistency": "success"},
                              {"id": "11", "status": "up", "consistency": "failed"}]}},
+        # architecture-coverage slices (build-wave) — each engine_actionable principle must emit here:
+        # PIM running but no RP learned -> _d_pim_rp_health
+        pim={"d0": {"rp_mapping": {"present": True, "rp_count": 0, "rps": [], "groups": [], "ssm_only": False},
+                    "neighbors": [{"neighbor": "10.0.255.2", "interface": "Gi1/0/1", "uptime": "1d"}]}},
+        # dual-stack access switch (acc10 owns an Access port above) with NO RA-Guard -> _d_ipv6_fhs
+        ipv6_fhs={"acc10": {"dualstack": True, "ipv6_svi_vlans": [10], "ra_guard_policies": [],
+                            "dhcp_guard_policies": [], "ra_guard_ifaces": [], "dhcp_guard_ifaces": [],
+                            "ra_guard_present": False, "dhcp_guard_present": False}},
+        # an infra (router) CDP neighbour not in the inventory -> _d_shadow_infra
+        shadow_infra={"d0": [{"device_id": "wan-edge-rtr1.corp", "platform": "cisco ASR1001-X",
+                              "capabilities": "Router", "proto": "cdp", "local_intf": "Gi0/0/0",
+                              "mgmt_ip": "10.0.0.254", "remote_port": "Gi0/0/1"}]},
     )
 
 
@@ -1012,6 +1024,185 @@ def test_d_copp_drops_fires_on_dropping_class_only():
     clean = {"copp": {"core2": [{"class": "c", "conformed": 5, "exceeded": 0, "violated": 0, "dropped": 0, "drops": 0}]}}
     assert da._d_copp_drops(clean, da._signals(clean)) is None
     assert da._d_copp_drops({}, da._signals({})) is None
+
+
+# ============================ architecture-coverage slices (build wave) =========================== #
+def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
+    """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected
+    but learned ZERO RP and is not SSM-only fires _d_pim_rp_health (broken ASM forwarding, RFC 7761). Refutation:
+    RP learned, SSM-only, PIM not running (no neighbor), and rp-mapping not collected ALL stay silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"pim": {"core1": {"rp_mapping": {"present": True, "rp_count": 0, "rps": [], "groups": [], "ssm_only": False},
+                              "neighbors": [{"neighbor": "10.0.255.2", "interface": "Gi1/0/1", "uptime": "1d"}]}}}
+    sig = da._signals(fire)
+    assert sig["pim_no_rp"] == ["core1"] and sig["pim_running"] == ["core1"]
+    dec = da._d_pim_rp_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "RP" in str(dec)
+    assert dec["principle"]["id"] == "multicast-pim-rp-resilience" and dec["evidence"]["devices"] == ["core1"]
+    rp = {"pim": {"core1": {"rp_mapping": {"present": True, "rp_count": 1, "ssm_only": False},
+                            "neighbors": [{"neighbor": "x", "interface": "Gi1", "uptime": "1d"}]}}}
+    assert da._d_pim_rp_health(rp, da._signals(rp)) is None
+    ssm = {"pim": {"core1": {"rp_mapping": {"present": True, "rp_count": 0, "groups": ["232.0.0.0/8"], "ssm_only": True},
+                            "neighbors": [{"neighbor": "x", "interface": "Gi1", "uptime": "1d"}]}}}
+    assert da._d_pim_rp_health(ssm, da._signals(ssm)) is None
+    notrun = {"pim": {"core1": {"rp_mapping": {"present": True, "rp_count": 0, "ssm_only": False}, "neighbors": []}}}
+    assert da._d_pim_rp_health(notrun, da._signals(notrun)) is None
+    notcoll = {"pim": {"core1": {"rp_mapping": {}, "neighbors": [{"neighbor": "x", "interface": "Gi1", "uptime": "1d"}]}}}
+    assert da._d_pim_rp_health(notcoll, da._signals(notcoll)) is None
+    assert da._d_pim_rp_health({}, da._signals({})) is None
+
+
+def test_d_ipv6_fhs_fires_on_dualstack_access_without_raguard():
+    """IPv6 first-hop security: a switch that is OBSERVABLY dual-stack (>=1 IPv6 SVI) with host-facing access
+    ports but NO RA-Guard fires _d_ipv6_fhs (rogue-RA gateway hijack, RFC 6104). Refutation: RA-Guard present,
+    pure-IPv4 (not dual-stack), no access ports (core/transit), and an absent axis ALL stay silent."""
+    import cisco_toolkit.design_advisor as da
+    access_if = {"acc1": {"Gi0/2": {"switchport_mode": "Access", "vlan": "10"}}}
+    fire = {"interfaces": access_if,
+            "ipv6_fhs": {"acc1": {"dualstack": True, "ipv6_svi_vlans": [10], "ra_guard_present": False,
+                                  "dhcp_guard_present": False, "ra_guard_policies": [], "ra_guard_ifaces": []}}}
+    sig = da._signals(fire)
+    assert sig["ipv6_fhs_open"] == 1 and sig["ipv6_fhs_open_hosts"] == ["acc1"]
+    assert sig["ipv6_fhs_vlans"] == [10] and sig["ipv6_fhs_open_dhcp"] == 1
+    dec = da._d_ipv6_fhs(fire, sig)
+    assert dec is not None and "RA-Guard" in str(dec) and "RFC 6104" in str(dec)
+    assert dec["principle"]["id"] == "ipv6-first-hop-security-suite-at-access-edge" and dec["priority"] == "High"
+    guarded = {"interfaces": access_if,
+               "ipv6_fhs": {"acc1": {"dualstack": True, "ipv6_svi_vlans": [10], "ra_guard_present": True,
+                                     "dhcp_guard_present": True}}}
+    assert da._d_ipv6_fhs(guarded, da._signals(guarded)) is None
+    v4only = {"interfaces": access_if,
+              "ipv6_fhs": {"acc1": {"dualstack": False, "ipv6_svi_vlans": [], "ra_guard_present": False}}}
+    assert da._d_ipv6_fhs(v4only, da._signals(v4only)) is None
+    coreonly = {"interfaces": {"core1": {"Po1": {"switchport_mode": "Trunk"}}},
+                "ipv6_fhs": {"core1": {"dualstack": True, "ipv6_svi_vlans": [10], "ra_guard_present": False}}}
+    assert da._d_ipv6_fhs(coreonly, da._signals(coreonly)) is None
+    assert da._d_ipv6_fhs({}, da._signals({})) is None
+
+
+def test_d_ntp_sync_fires_on_unsynchronized_clock_not_absence():
+    """OPERATIONAL clock-sync: a DEFINITIVELY-unsynchronized clock (synchronized False or stratum 16) fires
+    _d_ntp_sync -- the complement to the config-only no-ntp check. Refutation: a synchronized clock, a clock
+    whose sync state was never observed (synchronized None), and an absent NTP axis ALL stay silent."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"ntp": {
+        "core1": {"synchronized": False, "stratum": 16, "reference": "", "source": "ios-status"},
+        "core2": {"synchronized": True, "stratum": 2, "reference": "10.255.0.254", "source": "nxos-peer-status"},
+        "access1": {"synchronized": True, "stratum": 3, "reference": "10.0.10.2", "source": "ios-status"},
+    }}
+    sig = da._signals(snap)
+    assert sig["ntp_unsynced"] == ["core1 (stratum 16)"]
+    dec = da._d_ntp_sync(snap, sig)
+    assert dec is not None and "UNSYNCHRONIZED" in str(dec) and "core1" in str(dec)
+    assert dec["priority"] == "High" and dec["principle"]["id"] == "mgmt-time-sync-logging-baseline"
+    s16 = {"ntp": {"r1": {"synchronized": None, "stratum": 16, "reference": "", "source": "nxos-peer-status"}}}
+    assert da._d_ntp_sync(s16, da._signals(s16)) is not None
+    ok = {"ntp": {"core1": {"synchronized": True, "stratum": 2, "reference": "1.2.3.4", "source": "ios-status"}}}
+    assert da._d_ntp_sync(ok, da._signals(ok)) is None
+    unk = {"ntp": {"core1": {"synchronized": None, "stratum": None, "reference": "", "source": ""}}}
+    assert da._d_ntp_sync(unk, da._signals(unk)) is None
+    assert da._d_ntp_sync({}, da._signals({})) is None
+
+
+def test_d_port_security_errdisable_fires_on_secure_shutdown_not_restrict_count():
+    """Access-edge port-security: a secured access port currently err-disabled (Port Status 'secure-shutdown')
+    is a live outage -> _d_port_security_errdisable fires, naming the offending MAC. Non-cry-wolf: a restrict-mode
+    port that stays 'secure-up' while accumulating a violation COUNT is SILENT; an absent axis is silent too."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"port_security": {"access1": {
+        "Gi0/2":  {"port_status": "secure-up",       "violation_mode": "Shutdown", "violation_count": 0,  "last_src": "aabb.ccdd.ee01"},
+        "Gi0/3":  {"port_status": "secure-shutdown", "violation_mode": "Shutdown", "violation_count": 3,  "last_src": "0011.22aa.0099"},
+        "Gi0/10": {"port_status": "secure-up",       "violation_mode": "Restrict", "violation_count": 17, "last_src": "aabb.ccdd.ee10"},
+    }}}
+    sig = da._signals(snap)
+    assert sig["psec_errdisabled"] == ["access1 Gi0/3 (offender 0011.22aa.0099)"]
+    dec = da._d_port_security_errdisable(snap, sig)
+    assert dec is not None and "Secure-shutdown" in str(dec) and "0011.22aa.0099" in str(dec)
+    assert dec["priority"] == "High" and dec["evidence"]["devices"] == ["access1"]
+    restrict_only = {"port_security": {"access1": {"Gi0/10": {"port_status": "secure-up", "violation_mode": "Restrict", "violation_count": 99}}}}
+    assert da._d_port_security_errdisable(restrict_only, da._signals(restrict_only)) is None
+    assert da._d_port_security_errdisable({}, da._signals({})) is None
+
+
+def test_d_storm_control_action_flags_configured_noaction_only():
+    """Storm-control: a CONFIGURED rule whose action is 'None' (drops a storm silently) fires
+    _d_storm_control_action. Refutation: a rule with a real action (Shutdown/Trap), an UN-configured row, and an
+    absent storm_control axis are all silent -- the toothless-rule STATE, never blanket absence."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"storm_control": {"access1": [
+        {"interface": "Gi0/2", "traffic": "broadcast", "action": "None", "configured": True},
+        {"interface": "Gi0/2", "traffic": "multicast", "action": "None", "configured": True},
+        {"interface": "Gi0/3", "traffic": "broadcast", "action": "Shutdown", "configured": True},
+        {"interface": "Gi0/4", "traffic": "broadcast", "action": "None", "configured": False},
+    ]}}
+    sig = da._signals(snap)
+    assert sig["storm_noaction"] == ["access1 Gi0/2 broadcast", "access1 Gi0/2 multicast"]
+    assert sig["storm_noaction_devices"] == ["access1"]
+    dec = da._d_storm_control_action(snap, sig)
+    assert dec is not None and "action 'None'" in str(dec) and "Gi0/2" in str(dec) and dec["priority"] == "Medium"
+    ok = {"storm_control": {"access1": [{"interface": "Gi0/2", "traffic": "broadcast", "action": "Trap", "configured": True}]}}
+    assert da._d_storm_control_action(ok, da._signals(ok)) is None
+    assert da._d_storm_control_action({}, da._signals({})) is None
+
+
+def test_d_qos_runtime_drops_fires_and_refutes_cry_wolf():
+    """QoS RUNTIME: an egress class actually SHEDDING traffic fires _d_qos_runtime_drops -- HIGH if a priority/LLQ
+    class is congestion-dropped, MEDIUM for a data-only over-threshold class. CRY-WOLF GUARD: a busy data class
+    tail-dropping a handful of packets (<1%) and a class just below the ratio stay silent; an absent axis silent."""
+    import cisco_toolkit.design_advisor as da
+    bad = {"qos_runtime": {"wan1": [
+        {"interface": "Gi0/0/0", "policy": "WAN", "class": "VOICE", "priority": True,
+         "drop_pkts": 1840521, "output_pkts": 24817400, "police_drop_pkts": 0},
+        {"interface": "Gi0/0/0", "policy": "WAN", "class": "BULK", "priority": False,
+         "drop_pkts": 50000, "output_pkts": 500000, "police_drop_pkts": 0}]}}
+    dec = da._d_qos_runtime_drops(bad, da._signals(bad))
+    assert dec is not None and dec["priority"] == "High" and "VOICE" in str(dec) and "LLQ" in str(dec)
+    assert dec["evidence"]["devices"] == ["wan1"]
+    data_only = {"qos_runtime": {"sw1": [{"interface": "Gi1", "policy": "P", "class": "D", "priority": False,
+                                          "drop_pkts": 20000, "output_pkts": 200000, "police_drop_pkts": 0}]}}
+    assert da._d_qos_runtime_drops(data_only, da._signals(data_only))["priority"] == "Medium"
+    noisy = {"qos_runtime": {"sw1": [
+        {"interface": "Gi1", "policy": "P", "class": "BULK", "priority": False,
+         "drop_pkts": 250, "output_pkts": 3000000, "police_drop_pkts": 0},
+        {"interface": "Gi1", "policy": "P", "class": "VOICE", "priority": True,
+         "drop_pkts": 0, "output_pkts": 99, "police_drop_pkts": 0}]}}
+    assert da._d_qos_runtime_drops(noisy, da._signals(noisy)) is None
+    edge = {"qos_runtime": {"sw1": [{"interface": "Gi1", "policy": "P", "class": "D", "priority": False,
+                                     "drop_pkts": 1000, "output_pkts": 1000000, "police_drop_pkts": 0}]}}
+    assert da._d_qos_runtime_drops(edge, da._signals(edge)) is None
+    pol = {"qos_runtime": {"sw1": [{"interface": "Gi1", "policy": "P", "class": "EF", "priority": True,
+                                    "drop_pkts": 0, "output_pkts": 50000, "police_drop_pkts": 5000}]}}
+    assert da._d_qos_runtime_drops(pol, da._signals(pol)) is not None
+    assert da._d_qos_runtime_drops({}, da._signals({})) is None
+
+
+def test_d_shadow_infra_flags_undocumented_switch_router_only():
+    """Undocumented (shadow) infrastructure: an infra CDP/LLDP neighbour whose canonical hostname is NOT an
+    assessed device fires _d_shadow_infra. Coverage-honest: an in-scope neighbour (even advertised by its
+    FQDN/serial) does NOT fire, and the axis being absent is silent."""
+    import cisco_toolkit.design_advisor as da
+    snap = {
+        "health_scores": [{"switch": "core1"}, {"switch": "core2"}],
+        "devices": {"core1": {"hostname": "core1"}, "core2": {"hostname": "core2"}},
+        "shadow_infra": {"core2": [
+            {"device_id": "wan-edge-rtr1.lab", "platform": "cisco ASR1001-X", "capabilities": "Router",
+             "proto": "cdp", "local_intf": "Eth1/47"},
+            {"device_id": "core1.lab(FOC1234ABCD)", "platform": "cisco WS-C3850", "capabilities": "Router Switch",
+             "proto": "cdp", "local_intf": "Po1"}]},
+    }
+    sig = da._signals(snap)
+    names = [s["name"] for s in sig["shadow_infra"]]
+    assert names == ["wan-edge-rtr1.lab"]
+    assert sig["shadow_infra"][0]["seen_from"] == ["core2"] and sig["shadow_infra"][0]["via"] == ["core2:Eth1/47"]
+    assert sig["shadow_infra_devices"] == ["core2"]
+    dec = da._d_shadow_infra(snap, sig)
+    assert dec is not None and "undocumented infrastructure" in str(dec) and "wan-edge-rtr1.lab" in str(dec)
+    assert dec["priority"] == "High" and dec["principle"]["id"] == "discover-undocumented-infrastructure-before-cutover"
+    clean = {"health_scores": [{"switch": "core1"}, {"switch": "core2"}], "devices": {},
+             "shadow_infra": {"core2": [{"device_id": "core1.lab", "capabilities": "Router Switch",
+                                         "proto": "cdp", "local_intf": "Po1"}]}}
+    assert da._d_shadow_infra(clean, da._signals(clean)) is None
+    assert da._d_shadow_infra({}, da._signals({})) is None
 
 
 def test_d_nve_peer_health_flags_down_vtep():

@@ -450,7 +450,7 @@
   null
  ],
  "QoS Audit": [
-  "Configured QoS posture from the captured running-configs of 1 of 3 device(s) -> 1 finding(s). Config evidence only (no live queue counters); a device without a full capture is declared not assessable.",
+  "Configured QoS posture from the captured running-configs of 2 of 3 device(s) -> 1 finding(s). Config evidence only (no live queue counters); a device without a full capture is declared not assessable.",
   null,
   null,
   null,
@@ -462,7 +462,7 @@
   null
  ],
  "Software Risk": [
-  "Software risk SCREENING: 3 exposed surface(s) on 1 of 3 config-assessable device(s), joined to landmark public advisories. This is configuration-evidence screening, NOT a vulnerability scan \u2014 validate every running release with the Cisco PSIRT Software Checker.",
+  "Software risk SCREENING: 3 exposed surface(s) on 2 of 3 config-assessable device(s), joined to landmark public advisories. This is configuration-evidence screening, NOT a vulnerability scan \u2014 validate every running release with the Cisco PSIRT Software Checker.",
   null,
   null,
   null,

@@ -419,6 +419,7 @@ from cisco_toolkit.build import (
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
     build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_routing_neighbors,
+    build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
 )
@@ -486,6 +487,15 @@ COMMANDS_NXOS = [
     "show bgp l2vpn evpn summary",       # BGP-EVPN control plane (MAC/IP route exchange) -> _d_evpn_rr_health
     "show nve vni",                      # VXLAN VNI (VLAN/VRF<->VNI) binding state -> _d_nve_vni_health
     "show policy-map interface control-plane",  # CoPP drop counters (NX-OS) -> build_copp / _d_copp_drops
+    "show policy-map interface",         # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
+    "show ip pim rp mapping",            # PIM-SM learned RP -> build_pim / _d_pim_rp_health
+    "show ip pim neighbor",              # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
+    "show ipv6 nd raguard policy",       # IPv6 first-hop security: RA-Guard -> build_ipv6_fhs / _d_ipv6_fhs
+    "show ipv6 dhcp guard policy",       # IPv6 first-hop security: DHCPv6-Guard -> build_ipv6_fhs
+    "show ntp status",                   # NTP clock-sync STATE (IOS form) -> build_ntp / _d_ntp_sync
+    "show ntp peer-status",              # NTP clock-sync STATE (NX-OS peer table) -> build_ntp
+    "show port-security interface",      # access-edge port-security DETAIL (Secure-shutdown) -> build_port_security_detail / _d_port_security_errdisable
+    "show storm-control",                # storm-control action audit (toothless 'None') -> build_storm_control / _d_storm_control_action
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
@@ -563,6 +573,14 @@ COMMANDS_IOS = [
     "show standby brief",        # NEW-V14.2 wiring (gateway / HSRP behavior)
     "show standby all",          # FHRP DETAIL (election/preempt/tracking) -> build_fhrp_detail / _d_fhrp_resilience
     "show policy-map control-plane",  # CoPP drop counters (IOS / IOS-XE) -> build_copp / _d_copp_drops
+    "show policy-map interface",  # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
+    "show ip pim rp mapping",     # PIM-SM learned RP -> build_pim / _d_pim_rp_health
+    "show ip pim neighbor",       # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
+    "show ipv6 nd raguard policy",  # IPv6 first-hop security: RA-Guard -> build_ipv6_fhs / _d_ipv6_fhs
+    "show ipv6 dhcp guard policy",  # IPv6 first-hop security: DHCPv6-Guard -> build_ipv6_fhs
+    "show ntp status",            # NTP clock-sync STATE (IOS form) -> build_ntp / _d_ntp_sync
+    "show port-security interface",  # access-edge port-security DETAIL (Secure-shutdown) -> build_port_security_detail / _d_port_security_errdisable
+    "show storm-control",         # storm-control action audit (toothless 'None') -> build_storm_control / _d_storm_control_action
     "show vrrp brief",           # NEW-V14.6 (VRRP gateways)
     "show glbp brief",           # NEW-V14.6 (GLBP gateways)
     "show ip mroute",            # NEW-V14.2 wiring (multicast info)
@@ -1522,6 +1540,13 @@ def main():
     all_fhrp_detail: Dict[str, list] = {}                            # FHRP detail (show standby) per device -> snap['fhrp_detail']
     all_overlay: Dict[str, dict] = {}                                # VXLAN-EVPN overlay (show nve peers) per device -> snap['overlay']
     all_copp: Dict[str, list] = {}                                   # CoPP drop counters (show policy-map control-plane) per device -> snap['copp']
+    all_pim: Dict[str, dict] = {}                                    # PIM-SM control plane (RP mapping / neighbor) per device -> snap['pim']
+    all_ipv6_fhs: Dict[str, dict] = {}                               # IPv6 first-hop security posture per device -> snap['ipv6_fhs']
+    all_ntp: Dict[str, dict] = {}                                    # NTP clock-sync STATE per device -> snap['ntp']
+    all_port_security: Dict[str, dict] = {}                          # access-edge port-security DETAIL per device -> snap['port_security']
+    all_storm_control: Dict[str, list] = {}                          # storm-control action state per device -> snap['storm_control']
+    all_qos_runtime: Dict[str, list] = {}                            # QoS runtime egress drops per device -> snap['qos_runtime']
+    all_shadow_infra: Dict[str, list] = {}                           # undocumented infra CDP/LLDP neighbours per device -> snap['shadow_infra']
     all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
     all_run_configs: Dict[str, str] = {}                             # NEW-V3.23.146 (raw running-config for golden-config drift)
@@ -1579,6 +1604,36 @@ def main():
         if copp:
             all_copp[hostname] = copp
             logger.info(f"  [CoPP] {hostname}: {len(copp)} control-plane class(es)")
+        pim = build_pim(cmd_to_file)
+        if pim.get("rp_mapping") or pim.get("neighbors"):
+            all_pim[hostname] = pim
+            logger.info(f"  [PIM] {hostname}: {len(pim.get('neighbors', []))} neighbor(s), "
+                        f"{(pim.get('rp_mapping') or {}).get('rp_count', 0)} RP(s)")
+        ipv6_fhs = build_ipv6_fhs(cmd_to_file)
+        if ipv6_fhs:
+            all_ipv6_fhs[hostname] = ipv6_fhs
+            logger.info(f"  [V6FHS] {hostname}: dualstack={ipv6_fhs.get('dualstack')} "
+                        f"ra_guard={ipv6_fhs.get('ra_guard_present')}")
+        ntp = build_ntp(cmd_to_file)
+        if ntp:
+            all_ntp[hostname] = ntp
+            logger.info(f"  [NTP] {hostname}: synchronized={ntp.get('synchronized')} stratum={ntp.get('stratum')}")
+        psec = build_port_security_detail(cmd_to_file)
+        if psec:
+            all_port_security[hostname] = psec
+            logger.info(f"  [PSEC] {hostname}: {len(psec)} secured port(s)")
+        storm = build_storm_control(cmd_to_file)
+        if storm:
+            all_storm_control[hostname] = storm
+            logger.info(f"  [STORM] {hostname}: {len(storm)} storm-control rule(s)")
+        qos_rt = build_qos_runtime(cmd_to_file)
+        if qos_rt:
+            all_qos_runtime[hostname] = qos_rt
+            logger.info(f"  [QOSRT] {hostname}: {len(qos_rt)} egress class(es)")
+        shadow = build_undocumented_neighbors(cmd_to_file)
+        if shadow:
+            all_shadow_infra[hostname] = shadow
+            logger.info(f"  [SHADOW] {hostname}: {len(shadow)} infra neighbour(s) seen")
         rn = build_routing_neighbors(cmd_to_file)
         if any(rn.values()):
             all_routing_neighbors[hostname] = rn
@@ -2086,6 +2141,13 @@ def main():
     snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-[HISTORY-REDACTED] coverage)
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
     snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
+    snap_dict["pim"] = all_pim                                       # PIM-SM RP/neighbor -> _d_pim_rp_health (multicast resilience)
+    snap_dict["ipv6_fhs"] = all_ipv6_fhs                             # IPv6 first-hop security -> _d_ipv6_fhs (rogue-RA gateway hijack)
+    snap_dict["ntp"] = all_ntp                                       # NTP clock-sync STATE -> _d_ntp_sync (unsynchronized clock)
+    snap_dict["port_security"] = all_port_security                   # port-security DETAIL -> _d_port_security_errdisable (Secure-shutdown)
+    snap_dict["storm_control"] = all_storm_control                   # storm-control action -> _d_storm_control_action (toothless rule)
+    snap_dict["qos_runtime"] = all_qos_runtime                       # QoS runtime egress drops -> _d_qos_runtime_drops
+    snap_dict["shadow_infra"] = all_shadow_infra                     # undocumented infra neighbours -> _d_shadow_infra
     snap_dict["punchlist"] = punchlist                              # NEW-V3.23.63 (consolidated severity-ranked migration punch-list)
     snap_dict["operational_drift"] = _drift                         # NEW-V3.23.93 (false-health / operational-drift findings; also folded into the punch-list)
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)

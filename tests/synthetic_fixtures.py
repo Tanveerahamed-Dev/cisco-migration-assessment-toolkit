@@ -277,6 +277,62 @@ Vlan20 - Group 20
   Active router is 10.0.20.3, priority 110
   Priority 100 (configured 100)
 """,
+    # PIM-SM control plane: core1 RUNS sparse-mode (a live PIM neighbor toward core2) but 'show ip pim rp
+    # mapping' learned NO RP -> ASM (*,G) shared trees can't form -> _d_pim_rp_health FIRES (running +
+    # collected + 0 RP + not SSM-only). The header is present so the axis is unambiguously COLLECTED.
+    "show ip pim neighbor": """\
+PIM Neighbor Table
+Mode: B - Bidir Capable, DR - Designated Router, N - Default DR Priority,
+      P - Proxy Capable, S - State Refresh Capable, G - GenID Capable
+Neighbor          Interface                Uptime/Expires    Ver   DR
+Address                                                            Prio/Mode
+10.0.255.2        GigabitEthernet1/0/1     00:42:17/00:01:31 v2    1 / DR S P G
+""",
+    "show ip pim rp mapping": """\
+PIM Group-to-RP Mappings
+
+""",
+    # NTP clock-sync STATE: core1 has 'ntp server' configured (config-only CIS no-ntp PASSES) yet the
+    # operational clock is UNSYNCHRONIZED at stratum 16 -> _d_ntp_sync catches what the config check cannot.
+    "show ntp status": """\
+Clock is unsynchronized, stratum 16, no reference clock
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+reference time is 00000000.00000000 (00:00:00.000 UTC Mon Jan 1 1900)
+clock offset is 0.0000 msec, root delay is 0.00 msec
+root dispersion is 15.91 msec, peer dispersion is 0.00 msec
+""",
+    # QoS RUNTIME: core1's egress PRIORITY (LLQ) class is congestion-dropping real-time traffic, and a data
+    # class is shedding >1% of its load -> _d_qos_runtime_drops fires HIGH. class-default is clean (no cry-wolf).
+    "show policy-map interface": """\
+GigabitEthernet1/0/24
+
+  Service-policy output: WAN-EDGE-OUT
+
+    Class-map: VOICE (match-any)
+      24817400 packets, 4765747200 bytes
+      Match: dscp ef (46)
+      Queueing
+      priority level 1
+      queue limit 512 packets
+      (queue depth/total drops/no-buffer drops) 511/1840521/0
+      (pkts output/bytes output) 24817400/4765747200
+
+    Class-map: BULK-DATA (match-any)
+      8400000 packets, 6048000000 bytes
+      Match: dscp af11 (10)
+      Queueing
+      queue limit 2000 packets
+      (queue depth/total drops/no-buffer drops) 1998/512000/0
+      (pkts output/bytes output) 8400000/6048000000
+      bandwidth remaining 30%
+
+    Class-map: class-default (match-any)
+      150000 packets, 18000000 bytes
+      Queueing
+      queue limit 416 packets
+      (queue depth/total drops/no-buffer drops) 0/0/0
+      (pkts output/bytes output) 150000/18000000
+""",
     "show ip route": """\
 Codes: C - connected, L - local, O - OSPF, B - BGP, S - static
 Gateway of last resort is 10.0.10.254 to network 0.0.0.0
@@ -488,12 +544,40 @@ Interface        Role Sts Cost      Prio.Nbr Type
 ---------------- ---- --- --------- -------- ----
 Po1              Desg FWD 1         128.4096 P2p
 """,
+    # core1.lab is an assessed device (in scan); wan-edge-rtr1.lab is an INFRA router (Capabilities: Router)
+    # NOT in the inventory -> undocumented 'shadow' infrastructure -> _d_shadow_infra fires. The CDP-speaking
+    # IP phone (Host Phone) and access point (Trans-Bridge) are EDGE devices and must be IGNORED (no cry-wolf).
     "show cdp neighbors detail": """\
 ----------------------------------------
 Device ID: core1.lab
   IP address: 10.0.99.1
 Platform: cisco WS-C3850-24T,  Capabilities: Router Switch
 Interface: port-channel1,  Port ID (outgoing port): Port-channel1
+----------------------------------------
+Device ID: wan-edge-rtr1.lab
+  IP address: 10.0.250.1
+Platform: cisco ASR1001-X,  Capabilities: Router
+Interface: Ethernet1/47,  Port ID (outgoing port): GigabitEthernet0/0/1
+----------------------------------------
+Device ID: SEP00112233AABB
+  IP address: 10.0.40.20
+Platform: Cisco IP Phone 8845,  Capabilities: Host Phone
+Interface: Ethernet1/20,  Port ID (outgoing port): Port 1
+----------------------------------------
+Device ID: AP-floor3-01
+  IP address: 10.0.50.30
+Platform: cisco AIR-AP2802I-B-K9,  Capabilities: Trans-Bridge
+Interface: Ethernet1/30,  Port ID (outgoing port): GigabitEthernet0
+""",
+    # NTP clock-sync STATE (NX-OS): a '*'-selected peer at stratum 2 -> core2 is SYNCHRONIZED -> _d_ntp_sync
+    # stays SILENT for core2 (proves the detector does not over-fire on a healthy clock).
+    "show ntp peer-status": """\
+Total peers : 2
+* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode
+remote               local                st  poll reach delay   vrf
+-------------------------------------------------------------------------------
+*10.255.0.254        10.255.0.7           2   16   377   0.00107 default
+=127.127.1.0         10.255.0.7           8   16   377   0.00000 default
 """,
     "show mac address-table": """\
 Legend:
@@ -614,6 +698,125 @@ interface GigabitEthernet0/3
 interface GigabitEthernet0/10
  description srv-backup
  switchport access vlan 30
+""",
+    # IPv6 first-hop security: access1 is OBSERVABLY dual-stack (an IPv6 SVI on Vlan10) with host-facing
+    # access ports (Gi0/2/3 vlan 10, Gi0/10 vlan 30) but NO RA-Guard -> _d_ipv6_fhs FIRES (rogue-RA gateway
+    # hijack, RFC 6104). build_ipv6_fhs reads the FULL run-config for the dual-stack signal; the FHS
+    # show-commands return a defined-but-UNATTACHED policy (which does NOT protect). core1/core2 are IPv4-only
+    # / no full run-config -> {} (silent), so EXACTLY ONE switch fires.
+    "show running-config": """\
+!
+hostname access1
+!
+ipv6 unicast-routing
+!
+interface GigabitEthernet0/1
+ description uplink-to-core1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+interface GigabitEthernet0/2
+ description ap-floor1
+ switchport access vlan 10
+ switchport mode access
+ spanning-tree portfast
+interface GigabitEthernet0/3
+ description phone-201
+ switchport access vlan 10
+ switchport mode access
+interface GigabitEthernet0/10
+ description srv-backup
+ switchport access vlan 30
+ switchport mode access
+interface Vlan10
+ description USERS
+ ip address 10.0.10.4 255.255.255.0
+ ipv6 address 2001:DB8:10::4/64
+interface Vlan30
+ description SERVERS
+ ip address 10.0.30.4 255.255.255.0
+!
+line vty 0 4
+ transport input ssh
+!
+""",
+    "show ipv6 nd raguard policy": """\
+RA guard configured policies:
+
+Policy default configuration:
+  device-role host
+""",
+    "show ipv6 dhcp guard policy": """\
+DHCP guard configured policies:
+
+Dhcp guard policy: default
+  Device Role: dhcp client
+""",
+    # ACCESS-EDGE port-security DETAIL: Gi0/3 (phone port) is ERR-DISABLED by a shutdown-mode violation ->
+    # Port Status 'Secure-shutdown' -> _d_port_security_errdisable FIRES, naming the offending MAC. Gi0/2 is a
+    # clean Secure-up port; Gi0/10 is RESTRICT mode with a nonzero violation COUNT but stays Secure-up -> must
+    # NOT fire (the detector keys on the shutdown STATE, not the counter).
+    "show port-security interface": """\
+Port: GigabitEthernet0/2
+Port Security              : Enabled
+Port Status                : Secure-up
+Violation Mode             : Shutdown
+Aging Time                 : 0 mins
+Aging Type                 : Absolute
+SecureStatic Address Aging : Disabled
+Maximum MAC Addresses      : 2
+Total MAC Addresses        : 1
+Configured MAC Addresses   : 0
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : aabb.ccdd.ee01:10
+Security Violation Count   : 0
+
+Port: GigabitEthernet0/3
+Port Security              : Enabled
+Port Status                : Secure-shutdown
+Violation Mode             : Shutdown
+Aging Time                 : 0 mins
+Aging Type                 : Absolute
+SecureStatic Address Aging : Disabled
+Maximum MAC Addresses      : 1
+Total MAC Addresses        : 1
+Configured MAC Addresses   : 0
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : 0011.22aa.0099:10
+Security Violation Count   : 3
+
+Port: GigabitEthernet0/10
+Port Security              : Enabled
+Port Status                : Secure-up
+Violation Mode             : Restrict
+Aging Time                 : 0 mins
+Aging Type                 : Absolute
+SecureStatic Address Aging : Disabled
+Maximum MAC Addresses      : 1
+Total MAC Addresses        : 1
+Configured MAC Addresses   : 0
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : aabb.ccdd.ee10:30
+Security Violation Count   : 17
+""",
+    # Storm-control action audit: Gi0/2 has a configured broadcast/multicast threshold but action 'None' -- a
+    # storm is dropped SILENTLY -> _d_storm_control_action fires. Gi0/3 is correctly actioned (Shutdown/Trap)
+    # and Gi0/1 has no storm-control at all (absent) -> both stay silent (coverage-honest).
+    "show storm-control": """\
+Key: U - Unicast, B - Broadcast, M - Multicast
+Interface Filter State   Upper       Lower       Current    Action    Type
+--------- ------------- ----------- ----------- ---------- --------- ----
+Gi0/2     Forwarding    5.00%       5.00%       0.12%      None      B
+Gi0/2     Forwarding    5.00%       5.00%       0.00%      None      M
+Gi0/3     Forwarding    2.00%       2.00%       0.05%      Shutdown  B
+Gi0/3     Forwarding    2.00%       2.00%       0.00%      Trap      M
+""",
+    # NTP clock-sync STATE (IOS): access1's clock IS synchronized (stratum 3) -> _d_ntp_sync stays SILENT for
+    # access1 (proves the detector fires only on the genuinely-unsynchronized core1).
+    "show ntp status": """\
+Clock is synchronized, stratum 3, reference is 10.0.10.2
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+reference time is E1A2B3C4.00000000 (12:00:00.000 UTC Mon Jun 1 2026)
+clock offset is 0.5000 msec, root delay is 1.20 msec
 """,
     "show spanning-tree": """\
 VLAN0010
