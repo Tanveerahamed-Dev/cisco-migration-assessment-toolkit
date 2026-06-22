@@ -964,6 +964,73 @@ def test_phys_dirty_counts_tx_side_faults_on_up_ports_only():
     assert dec is not None and "late-collision" in str(dec) and "output-error" in str(dec)
 
 
+def test_d_nve_vni_health_flags_down_vni():
+    """Universality (VXLAN VNI): a VNI not Up strands its segment -> _d_nve_vni_health fires; silent when all Up."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"overlay": {"leaf1": {"nve_vni": [
+        {"vni": "10010", "state": "Up", "mode": "CP", "type": "L2"},
+        {"vni": "50000", "state": "Down", "mode": "CP", "type": "L3"},
+    ]}}}
+    sig = da._signals(snap)
+    assert sig["nve_vni_down"] == ["leaf1 VNI 50000"]
+    dec = da._d_nve_vni_health(snap, sig)
+    assert dec is not None and "not Up" in str(dec)
+    ok = {"overlay": {"leaf1": {"nve_vni": [{"vni": "10010", "state": "Up", "mode": "CP", "type": "L2"}]}}}
+    assert da._d_nve_vni_health(ok, da._signals(ok)) is None
+
+
+def test_d_evpn_rr_health_flags_down_rr():
+    """Universality (VXLAN-EVPN control plane): a BGP-EVPN neighbor not Established -> _d_evpn_rr_health fires
+    (overlay control plane dark). Silent when all Established or no EVPN."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"overlay": {"leaf1": {"evpn_neighbors": [
+        {"neighbor": "10.0.0.254", "as": "65001", "state": "Established", "prefixes": 240},
+        {"neighbor": "10.0.0.253", "as": "65001", "state": "Idle", "prefixes": 0},
+    ]}}}
+    sig = da._signals(snap)
+    assert sig["evpn_down"] == ["leaf1 10.0.0.253"]
+    dec = da._d_evpn_rr_health(snap, sig)
+    assert dec is not None and "not Established" in str(dec)
+    ok = {"overlay": {"leaf1": {"evpn_neighbors": [{"neighbor": "10.0.0.254", "as": "65001", "state": "Established", "prefixes": 240}]}}}
+    assert da._d_evpn_rr_health(ok, da._signals(ok)) is None
+
+
+def test_d_nve_peer_health_flags_down_vtep():
+    """Universality (NX-OS VXLAN-EVPN): a DOWN VTEP (NVE) peer partitions the overlay -> _d_nve_peer_health
+    fires; silent when all peers Up or no NVE. The engine's OWN target fabric, previously blind."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"overlay": {"leaf1": {"nve_peers": [
+        {"interface": "nve1", "peer_ip": "10.0.0.1", "state": "Up", "learn_type": "CP"},
+        {"interface": "nve1", "peer_ip": "10.0.0.2", "state": "Down", "learn_type": "CP"},
+    ]}}}
+    sig = da._signals(snap)
+    assert sig["nve_peers_down"] == ["leaf1 10.0.0.2"]
+    dec = da._d_nve_peer_health(snap, sig)
+    assert dec is not None and "DOWN" in str(dec) and "10.0.0.2" in str(dec)
+    allup = {"overlay": {"leaf1": {"nve_peers": [{"interface": "nve1", "peer_ip": "10.0.0.1", "state": "Up", "learn_type": "CP"}]}}}
+    assert da._d_nve_peer_health(allup, da._signals(allup)) is None
+    assert da._d_nve_peer_health({}, da._signals({})) is None
+
+
+def test_d_fhrp_resilience_flags_untracked_or_no_preempt_active_gateways():
+    """Universality (FHRP): an ACTIVE gateway with no interface tracking (black-holes on uplink loss) or
+    no preempt (non-deterministic primary) fires _d_fhrp_resilience; a clean active gateway and an absent
+    fhrp_detail axis are silent. AJ runs no FHRP -> first health check proven on a non-AJ architecture."""
+    import cisco_toolkit.design_advisor as da
+    fragile = {"fhrp_detail": {"core1": [
+        {"ifname": "Vlan10", "group": "10", "state": "Active", "preempt": True, "track": []},               # no tracking
+        {"ifname": "Vlan20", "group": "20", "state": "Active", "preempt": False, "track": [{"obj": "1"}]},   # no preempt
+        {"ifname": "Vlan99", "group": "99", "state": "Standby", "preempt": False, "track": []},              # standby -> ignored
+    ]}}
+    sig = da._signals(fragile)
+    assert sig["fhrp_no_track"] == ["core1 Vlan10 grp 10"] and sig["fhrp_no_preempt"] == ["core1 Vlan20 grp 20"]
+    dec = da._d_fhrp_resilience(fragile, sig)
+    assert dec is not None and "NO interface tracking" in str(dec) and "preemption DISABLED" in str(dec)
+    clean = {"fhrp_detail": {"core1": [{"ifname": "Vlan10", "group": "10", "state": "Active", "preempt": True, "track": [{"obj": "1"}]}]}}
+    assert da._d_fhrp_resilience(clean, da._signals(clean)) is None
+    assert da._d_fhrp_resilience({}, da._signals({})) is None
+
+
 def test_d_fhrp_state_fires_on_broken_not_absent_fhrp():
     """DET-fhrp-state-01: broken-but-PRESENT FHRP (split-brain / mixed protocol / mismatched group|VIP) fires
     _d_fhrp_state; pure FHRP-ABSENCE ('no FHRP') does NOT (that is _d_fhrp's Critical domain). Coverage-honest

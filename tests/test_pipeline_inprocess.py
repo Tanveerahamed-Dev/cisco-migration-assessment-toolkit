@@ -123,6 +123,23 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # supplied via --requirements, it is stored in the snapshot so the blueprint stays reproducible).
     assert _bp == compute_design_blueprint(snap, snap.get("requirements_register")), \
         "published design_blueprint must equal the canonical recompute (with the same requirements register)"
+    # UNIVERSALITY (FHRP): the fixture's core1 has an untracked active HSRP gateway. The engine must PUBLISH
+    # per-device FHRP detail and ASSESS it end-to-end -- the blueprint carries the FHRP-resilience decision.
+    # AJ ran zero FHRP, so this is the first architecture coverage proven on a non-AJ environment.
+    assert isinstance(snap.get("fhrp_detail"), dict) and snap["fhrp_detail"].get("core1"), \
+        "snapshot must publish per-device FHRP detail (build_fhrp_detail -> parse_hsrp_detail)"
+    assert any(d.get("id") == "fhrp-resilience-tracking-and-preempt" for d in _bp.get("decisions", [])), \
+        "engine must assess FHRP: an untracked active gateway must fire _d_fhrp_resilience"
+    # UNIVERSALITY (VXLAN-EVPN): core2 is a VTEP with a DOWN peer. The engine must PUBLISH snap['overlay']
+    # and the blueprint must carry the VXLAN NVE-peer-down decision -- its OWN target fabric, previously blind.
+    assert isinstance(snap.get("overlay"), dict) and snap["overlay"].get("core2", {}).get("nve_peers"), \
+        "snapshot must publish per-device VXLAN overlay (build_overlay -> parse_nve_peers)"
+    assert any(d.get("id") == "vxlan-nve-peer-down" for d in _bp.get("decisions", [])), \
+        "engine must assess VXLAN: a down VTEP peer must fire _d_nve_peer_health"
+    assert any(d.get("id") == "vxlan-evpn-control-plane-down" for d in _bp.get("decisions", [])), \
+        "engine must assess EVPN control plane: an Idle RR session must fire _d_evpn_rr_health"
+    assert any(d.get("id") == "vxlan-nve-vni-down" for d in _bp.get("decisions", [])), \
+        "engine must assess VXLAN VNI: a not-Up VNI must fire _d_nve_vni_health"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu

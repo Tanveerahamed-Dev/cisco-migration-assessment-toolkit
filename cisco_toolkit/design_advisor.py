@@ -127,6 +127,35 @@ def _signals(snap):
     sig["fhrp_broken_vids"] = sorted({g.get("vid") for g in broken_fhrp if g.get("vid") is not None})[:12]
     sig["fhrp_broken_devices"] = sorted({m.get("host") for g in broken_fhrp
                                          for m in _as_list(g.get("members")) if m.get("host")})[:12]
+    # FHRP RESILIENCE from the published detail axis (parse_hsrp_detail -> snap['fhrp_detail']): ACTIVE
+    # gateways missing interface tracking or preemption -- the senior red flags the AJ fleet (no FHRP at
+    # all) could never surface. Coverage-honest: empty lists when the detail axis is absent.
+    sig["fhrp_no_track"] = []; sig["fhrp_no_preempt"] = []
+    _fd = snap.get("fhrp_detail")
+    for _host, _groups in (_fd.items() if isinstance(_fd, dict) else []):
+        for _g in _as_list(_groups):
+            if str(_g.get("state", "")).lower() in ("active", "master"):
+                _tag = f"{_host} {_g.get('ifname', '?')} grp {_g.get('group', '?')}"
+                if not (_g.get("track") or []): sig["fhrp_no_track"].append(_tag)
+                if _g.get("preempt") is False: sig["fhrp_no_preempt"].append(_tag)
+    # VXLAN-EVPN overlay health (snap['overlay'] from build_overlay): VTEP (NVE) peers DOWN partition the
+    # fabric. The engine's OWN target fabric was previously blind. Coverage-honest: empty when no NVE.
+    sig["nve_peers_down"] = []
+    _ov = snap.get("overlay")
+    for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
+        for _p in _as_list((_o or {}).get("nve_peers")):
+            if str(_p.get("state", "")).lower() not in ("up", ""):
+                sig["nve_peers_down"].append(f"{_h} {_p.get('peer_ip', '?')}")
+    sig["evpn_down"] = []
+    for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
+        for _n in _as_list((_o or {}).get("evpn_neighbors")):
+            if str(_n.get("state", "")).lower() != "established":
+                sig["evpn_down"].append(f"{_h} {_n.get('neighbor', '?')}")
+    sig["nve_vni_down"] = []
+    for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
+        for _v in _as_list((_o or {}).get("nve_vni")):
+            if str(_v.get("state", "")).lower() != "up":
+                sig["nve_vni_down"].append(f"{_h} VNI {_v.get('vni', '?')}")
     devs = []
     for g in bad_fhrp:
         for m in _as_list(g.get("members")):
@@ -623,6 +652,92 @@ def _d_fhrp_state(snap, sig):
         driver="Gateway resilience: a configured-but-broken FHRP pair gives FALSE redundancy; cutover on top "
                "of it strands the gateway at the first failover.",
         devices=sig.get("fhrp_broken_devices") or [])
+
+
+def _d_fhrp_resilience(snap, sig):
+    """Senior FHRP red flags from the full 'show standby' DETAIL (parse_hsrp_detail -> snap['fhrp_detail']):
+    an ACTIVE gateway with NO interface tracking (a failed uplink won't trigger failover -> traffic
+    black-holes) or NO preemption (the intended primary won't reclaim after recovery -> non-deterministic
+    election). Coverage-honest: silent when the FHRP detail axis is absent or clean. First health check on
+    a NON-AJ architecture (the AJ fleet runs no FHRP at all)."""
+    nt = sig.get("fhrp_no_track") or []
+    npre = sig.get("fhrp_no_preempt") or []
+    if not nt and not npre:
+        return None
+    parts = []
+    if nt: parts.append(f"{len(nt)} active gateway(s) with NO interface tracking")
+    if npre: parts.append(f"{len(npre)} active gateway(s) with preemption DISABLED")
+    return _decision(
+        "fhrp-resilience-tracking-and-preempt",
+        f"First-hop redundancy is configured but fragile: {' and '.join(parts)}. An untracked active gateway "
+        f"keeps forwarding to a dead uplink; without preempt the elected primary is non-deterministic after a "
+        f"failover. Wire object/interface tracking to every active gateway and enable preempt with a delay.",
+        len(nt) + len(npre), ["availability", "convergence"],
+        ["fhrp_detail[].track (parse_hsrp_detail / show standby)", "fhrp_detail[].preempt"],
+        priority="High" if nt else "Medium",
+        driver="Gateway resilience: an untracked active HSRP/VRRP gateway black-holes traffic on an uplink "
+               "failure; preemption makes the elected primary deterministic.",
+        devices=sorted({x.split()[0] for x in (nt + npre)})[:12])
+
+
+def _d_nve_peer_health(snap, sig):
+    """VXLAN-EVPN VTEP (NVE) peers DOWN -> the overlay is PARTITIONED: every host behind that VTEP is
+    unreachable across the fabric, for every VNI it serves. Coverage-honest: silent when the device runs no
+    NVE. The engine's OWN target fabric (VXLAN-EVPN) was previously blind -- first data-plane health check."""
+    down = sig.get("nve_peers_down") or []
+    if not down:
+        return None
+    return _decision(
+        "vxlan-nve-peer-down",
+        f"{len(down)} VXLAN VTEP peer(s) are DOWN ({', '.join(down[:8])}). Hosts behind a down VTEP are "
+        f"unreachable across the overlay; check the underlay (NVE source loopback reachable via the IGP, and "
+        f"PIM or ingress-replication for BUM traffic) and the remote NVE configuration.",
+        len(down), ["availability", "convergence"],
+        ["overlay.nve_peers[].state (parse_nve_peers / show nve peers)"],
+        priority="High",
+        driver="VXLAN data plane: a VTEP peer down partitions the overlay for every VNI it carries; the "
+               "underlay or the remote NVE is the fault domain.",
+        devices=sorted({d.split()[0] for d in down})[:12])
+
+
+def _d_evpn_rr_health(snap, sig):
+    """BGP-EVPN control-plane neighbors NOT Established -> VXLAN MAC/IP (Type-2) and prefix (Type-5) routes
+    are not exchanged with that peer; the overlay control plane is dark even if NVE data-plane peers show Up.
+    Coverage-honest: silent when EVPN is not running."""
+    bad = sig.get("evpn_down") or []
+    if not bad:
+        return None
+    return _decision(
+        "vxlan-evpn-control-plane-down",
+        f"{len(bad)} BGP-EVPN neighbor(s) are not Established ({', '.join(bad[:8])}). VXLAN MAC/IP and prefix "
+        f"routes are not being exchanged with these peers -- the overlay control plane is dark even if the "
+        f"NVE data-plane peers are Up; check the EVPN route-reflector and the iBGP L2VPN-EVPN session.",
+        len(bad), ["availability", "convergence"],
+        ["overlay.evpn_neighbors[].state (parse_evpn_summary / show bgp l2vpn evpn summary)"],
+        priority="High",
+        driver="VXLAN control plane: BGP-EVPN distributes the MAC/IP and prefix routes; a down route-reflector "
+               "session blinds the fabric to every endpoint behind that peer.",
+        devices=sorted({b.split()[0] for b in bad})[:12])
+
+
+def _d_nve_vni_health(snap, sig):
+    """VXLAN VNIs not in the Up state -> that L2 segment (VLAN) or L3 segment (VRF) is not extended across
+    the fabric; it is stranded on the local VTEP with no overlay reachability. Coverage-honest: silent when
+    the device runs no NVE."""
+    down = sig.get("nve_vni_down") or []
+    if not down:
+        return None
+    return _decision(
+        "vxlan-nve-vni-down",
+        f"{len(down)} VXLAN VNI(s) are not Up ({', '.join(down[:8])}). The VLAN or VRF behind each is not "
+        f"extended across the fabric (stranded on the local VTEP); check the VLAN-to-VNI / VRF-to-L3VNI "
+        f"binding and the NVE member configuration.",
+        len(down), ["availability"],
+        ["overlay.nve_vni[].state (parse_nve_vni / show nve vni)"],
+        priority="High",
+        driver="VXLAN segment health: a VNI that is not Up strands its VLAN/VRF on the local VTEP -- no "
+               "overlay reachability for that segment.",
+        devices=sorted({d.split()[0] for d in down})[:12])
 
 
 def _d_spof(snap, sig):
@@ -1128,7 +1243,7 @@ def _d_oversized_l2_subnet(snap, sig):
         driver="Subnet sizing: a >254-endpoint VLAN overflows a /24 -- size the prefix to the endpoint count or segment it.")
 
 
-_DETECTORS = [_d_fhrp, _d_fhrp_state, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
+_DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
               _d_stp_mst_scale, _d_oncrit_seg,
