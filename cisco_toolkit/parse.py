@@ -1136,7 +1136,9 @@ def _aci_imdata(output: str, cls: str) -> list:
         mo = it.get(cls) if isinstance(it, dict) else None
         attrs = mo.get("attributes") if isinstance(mo, dict) else None
         if isinstance(attrs, dict):
-            out.append(attrs)
+            # APIC attribute VALUES are strings on the wire; coerce defensively so a malformed export with a
+            # non-string value can never make a downstream .lower()/re.search raise (no-op on real data).
+            out.append({k: ("" if v is None else str(v)) for k, v in attrs.items()})
     return out
 
 
@@ -1245,7 +1247,9 @@ def _sdwan_data(output: str) -> list:
     except (ValueError, TypeError):
         return []
     rows = obj.get("data") if isinstance(obj, dict) else None
-    return [r for r in (rows or []) if isinstance(r, dict)]
+    # Coerce values to strings defensively (no-op on real vManage data) so a malformed export with a
+    # non-string state/reachability can never make a downstream .lower() raise; int reads re-parse the string.
+    return [{k: ("" if v is None else str(v)) for k, v in r.items()} for r in (rows or []) if isinstance(r, dict)]
 
 
 def parse_sdwan_control_connections(output: str) -> list:
