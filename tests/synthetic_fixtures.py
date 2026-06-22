@@ -782,6 +782,41 @@ Processes   :   720 total, 1 running
 CPU states  :   3.5% user,   4.1% kernel,   92.4% idle
 Memory usage:   16400932K total,   7322120K used,   9078812K free
 """,
+    # Cisco ACI (universality, JSON-ingestion channel): core2 stands in as the APIC query host for an offline
+    # APIC export (moquery -o json). faultInst has TWO raised+unacked critical faults (F1394 fabric port down,
+    # F0321 cluster degraded) -> _d_aci_critical_faults FIRES on 2; the minor fault (F1234) and the ACKED major
+    # (F3083) prove the severity+ack filter stays silent. fabricNode has a decommissioned ghost (leaf-102-OLD)
+    # -> _d_aci_node_not_active FIRES on 1 (the two active nodes stay silent). fabricHealthTotal cur=82 (<90)
+    # -> _d_aci_fabric_health_degraded FIRES. Schema grounded in the APIC REST/faults guides (docs/arch-wave).
+    "moquery -c faultInst": """\
+{
+  "totalCount": "4",
+  "imdata": [
+    {"faultInst": {"attributes": {"code": "F1394", "severity": "critical", "lc": "raised", "ack": "no", "domain": "infra", "cause": "interface-physical-down", "dn": "topology/pod-1/node-101/sys/phys-[eth1/49]/phys/fault-F1394", "descr": "Port is down, reason:sfp-missing, used by:Fabric"}}},
+    {"faultInst": {"attributes": {"code": "F0321", "severity": "critical", "lc": "raised", "ack": "no", "domain": "infra", "cause": "cluster-health-degraded", "dn": "topology/pod-1/node-1/av/fault-F0321", "descr": "APIC cluster is degraded: leadership diverged"}}},
+    {"faultInst": {"attributes": {"code": "F1234", "severity": "minor", "lc": "raised", "ack": "no", "domain": "tenant", "cause": "config-drift", "dn": "topology/pod-1/node-102/fault-F1234", "descr": "Minor config drift (must stay silent)"}}},
+    {"faultInst": {"attributes": {"code": "F3083", "severity": "major", "lc": "raised", "ack": "yes", "domain": "infra", "cause": "known-accepted", "dn": "topology/pod-1/node-204/fault-F3083", "descr": "Acknowledged major fault (must stay silent)"}}}
+  ]
+}
+""",
+    "moquery -c fabricNode": """\
+{
+  "totalCount": "3",
+  "imdata": [
+    {"fabricNode": {"attributes": {"dn": "topology/pod-1/node-101", "id": "101", "name": "leaf-101", "role": "leaf", "model": "N9K-C93180YC-FX", "serial": "FDO12345ABC", "version": "n9000-16.0(5h)", "fabricSt": "active", "adSt": "on"}}},
+    {"fabricNode": {"attributes": {"dn": "topology/pod-1/node-204", "id": "204", "name": "spine-204", "role": "spine", "model": "N9K-C9336C-FX2", "serial": "FDO99999XYZ", "version": "n9000-16.0(5h)", "fabricSt": "active", "adSt": "on"}}},
+    {"fabricNode": {"attributes": {"dn": "topology/pod-1/node-102", "id": "102", "name": "leaf-102-OLD", "role": "leaf", "model": "N9K-C93180YC-EX", "serial": "FDO55555OLD", "version": "n9000-15.2(7g)", "fabricSt": "decommissioned", "adSt": "off"}}}
+  ]
+}
+""",
+    "moquery -c fabricHealthTotal": """\
+{
+  "totalCount": "1",
+  "imdata": [
+    {"fabricHealthTotal": {"attributes": {"dn": "topology/HDfabricOverallHealth5min-0", "cur": "82", "twScore": "82", "maxSev": "critical"}}}
+  ]
+}
+""",
 }
 
 # --------------------------------------------------------------------------- #

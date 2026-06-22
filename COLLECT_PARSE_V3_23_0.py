@@ -420,6 +420,7 @@ from cisco_toolkit.build import (
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
     build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
     build_lisp, build_cts, build_dmvpn, build_crypto, build_bfd, build_ipv6_nd, build_ipv6_routing,   # universal arch coverage
+    build_aci,   # Cisco ACI (APIC JSON-ingestion channel)
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -491,6 +492,12 @@ COMMANDS_NXOS = [
     "show mpls ldp neighbor",            # SP/MPLS: LDP transport-underlay session state -> build_mpls / _d_mpls_ldp_health
     "show bgp vpnv4 unicast summary",    # SP/MPLS: L3VPN VPNv4 PE-PE control-plane -> build_mpls / _d_mpls_l3vpn_health
     "show mpls l2transport vc",          # SP/MPLS: L2VPN/AToM pseudowire VC state -> build_mpls / _d_mpls_l2vpn_health
+    "show bfd neighbors",                # BFD fast-failover (both platforms) -> build_bfd / _d_bfd_session_health
+    "show ipv6 route summary",           # IPv6 routing-active gate (both platforms) -> build_ipv6_routing
+    "show bgp ipv6 unicast summary",     # IPv6 BGP peers (both platforms) -> build_ipv6_routing / _d_ipv6_routing_adjacency
+    "moquery -c faultInst",              # Cisco ACI (APIC JSON export) -> build_aci / _d_aci_critical_faults
+    "moquery -c fabricNode",             # Cisco ACI fabric inventory (APIC JSON) -> build_aci / _d_aci_node_not_active
+    "moquery -c fabricHealthTotal",      # Cisco ACI fabric health score (APIC JSON) -> build_aci / _d_aci_fabric_health_degraded
     "show policy-map interface",         # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
     "show ip pim rp mapping",            # PIM-SM learned RP -> build_pim / _d_pim_rp_health
     "show ip pim neighbor",              # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
@@ -1557,6 +1564,7 @@ def main():
     all_overlay: Dict[str, dict] = {}                                # VXLAN-EVPN overlay (show nve peers) per device -> snap['overlay']
     all_copp: Dict[str, list] = {}                                   # CoPP drop counters (show policy-map control-plane) per device -> snap['copp']
     all_mpls: Dict[str, dict] = {}                                   # SP/MPLS service-plane state (LDP/VPNv4/L2VPN) per device -> snap['mpls']
+    all_aci: Dict[str, dict] = {}                              # Cisco ACI (APIC JSON export) -> snap['aci']
     all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
     all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
     all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
@@ -1649,6 +1657,9 @@ def main():
         _bfd = build_bfd(cmd_to_file)
         if _bfd:
             all_bfd[hostname] = _bfd
+        _aci = build_aci(cmd_to_file)
+        if _aci:
+            all_aci[hostname] = _aci
         _ipv6_nd = build_ipv6_nd(cmd_to_file)
         if _ipv6_nd:
             all_ipv6_nd[hostname] = _ipv6_nd
@@ -2193,6 +2204,7 @@ def main():
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
     snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
     snap_dict["mpls"] = all_mpls                                     # SP/MPLS service-plane (LDP/VPNv4/L2VPN) -> _d_mpls_ldp_health/_d_mpls_l3vpn_health/_d_mpls_l2vpn_health
+    snap_dict["aci"] = all_aci                                         # Cisco ACI (APIC JSON-ingestion channel) -> _d_aci_critical_faults/_d_aci_node_not_active/_d_aci_fabric_health_degraded
     snap_dict["lisp"] = all_lisp                                       # universal arch coverage
     snap_dict["cts"] = all_cts                                       # universal arch coverage
     snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage

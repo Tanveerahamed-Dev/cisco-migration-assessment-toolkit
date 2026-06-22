@@ -1018,6 +1018,48 @@ def test_parse_ipv6_routing_plane(cp):
     assert parse.parse_ipv6_route_summary("") == {}
 
 
+def test_parse_aci_faults_filters_and_normalizes(cp):
+    """Universality (Cisco ACI / JSON-ingestion): parse_aci_faults json-loads an APIC 'moquery -c faultInst'
+    export (imdata[].faultInst.attributes). severity/lc/ack are lower-cased for the detector's filter; a
+    non-JSON or imdata-less payload yields [] (so a non-ACI fleet never cries wolf)."""
+    out = (
+        '{"totalCount": "2", "imdata": ['
+        '{"faultInst": {"attributes": {"code": "F1394", "severity": "critical", "lc": "raised", "ack": "no", "dn": "topology/pod-1/node-101/fault-F1394", "descr": "Port is down"}}},'
+        '{"faultInst": {"attributes": {"code": "F1234", "severity": "Minor", "lc": "raised", "ack": "no", "dn": "x", "descr": "minor"}}}'
+        ']}')
+    r = parse.parse_aci_faults(out)
+    assert len(r) == 2
+    assert r[0]["code"] == "F1394" and r[0]["severity"] == "critical" and r[0]["lc"] == "raised" and r[0]["ack"] == "no"
+    assert r[1]["severity"] == "minor"          # normalized to lower-case
+    assert parse.parse_aci_faults("") == []
+    assert parse.parse_aci_faults("not json at all") == []
+    assert parse.parse_aci_faults("{}") == []
+
+
+def test_parse_aci_fabric_nodes_state(cp):
+    """Universality (Cisco ACI): parse_aci_fabric_nodes reads 'moquery -c fabricNode' so a node whose
+    fabricSt is not active (decommissioned/inactive) is detectable; fabricSt/adSt are lower-cased."""
+    out = (
+        '{"imdata": ['
+        '{"fabricNode": {"attributes": {"id": "101", "name": "leaf-101", "role": "leaf", "fabricSt": "active", "adSt": "on", "dn": "topology/pod-1/node-101"}}},'
+        '{"fabricNode": {"attributes": {"id": "102", "name": "leaf-102-OLD", "role": "leaf", "fabricSt": "Decommissioned", "adSt": "off", "dn": "topology/pod-1/node-102"}}}'
+        ']}')
+    r = parse.parse_aci_fabric_nodes(out)
+    assert len(r) == 2
+    assert r[0]["id"] == "101" and r[0]["fabric_st"] == "active"
+    assert r[1]["name"] == "leaf-102-OLD" and r[1]["fabric_st"] == "decommissioned"
+    assert parse.parse_aci_fabric_nodes("") == []
+
+
+def test_parse_aci_health_score(cp):
+    """Universality (Cisco ACI): parse_aci_health reads 'moquery -c fabricHealthTotal' -> {cur:int, max_sev}.
+    A non-numeric / empty / imdata-less payload yields {} (never a false 'degraded')."""
+    out = '{"imdata": [{"fabricHealthTotal": {"attributes": {"cur": "82", "maxSev": "critical"}}}]}'
+    assert parse.parse_aci_health(out) == {"cur": 82, "max_sev": "critical"}
+    assert parse.parse_aci_health("") == {}
+    assert parse.parse_aci_health('{"imdata": []}') == {}
+
+
 def test_parse_nve_vni_states(cp):
     """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
     out = (

@@ -1,6 +1,7 @@
 """Pure show-command parsers + column primitives. Depends only on `re`, stdlib
 typing, and cisco_toolkit.textutils (the leaf layer). Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 2 (behaviour byte-identical)."""
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Tuple
@@ -1116,6 +1117,72 @@ def parse_bgp_ipv6_summary(output: str) -> list:
         else:
             out.append({"neighbor": nbr, "as": asn, "state": last, "prefixes": 0})
     return out
+
+
+def _aci_imdata(output: str, cls: str) -> list:
+    """Extract the list of `attributes` dicts for one MO class from an APIC export -- the JSON that
+    'moquery -c <cls> -o json' (or the REST GET /api/class/<cls>.json) returns: {totalCount, imdata:[{<cls>:
+    {attributes:{...}}}]}. 'imdata' is the response container (not a class). This is the JSON-ingestion
+    front door for controller-based fabrics (ACI/APIC): the engine reads the export file as text via the
+    SAME _load_cmd_output path the show-text parsers use, and these normalizers json.load it instead of
+    regex-matching it. Tolerant: [] on empty / non-JSON / missing-imdata; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return []
+    rows = obj.get("imdata") if isinstance(obj, dict) else None
+    out = []
+    for it in rows or []:
+        mo = it.get(cls) if isinstance(it, dict) else None
+        attrs = mo.get("attributes") if isinstance(mo, dict) else None
+        if isinstance(attrs, dict):
+            out.append(attrs)
+    return out
+
+
+def parse_aci_faults(output: str) -> list:
+    """APIC 'moquery -c faultInst -o json' / REST /api/class/faultInst.json -> [{code, severity, lc, ack,
+    domain, cause, dn, descr}] per active fault. The APIC fault list IS the fabric's current broken-state
+    inventory; severity is warning|minor|major|critical, lc (lifecycle) is soaking|raised|raised-clearing|
+    retaining, ack is yes|no. A raised (lc=raised), unacknowledged (ack=no) critical/major fault is an
+    active service-affecting condition. [] when no ACI export is present. Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "faultInst"):
+        out.append({"code": a.get("code", ""), "severity": (a.get("severity", "") or "").lower(),
+                    "lc": (a.get("lc", "") or "").lower(), "ack": (a.get("ack", "") or "").lower(),
+                    "domain": a.get("domain", ""), "cause": a.get("cause", ""),
+                    "dn": a.get("dn", ""), "descr": a.get("descr", "")})
+    return out
+
+
+def parse_aci_fabric_nodes(output: str) -> list:
+    """APIC 'moquery -c fabricNode -o json' / REST /api/class/fabricNode.json -> [{id, name, role, model,
+    serial, version, fabric_st, ad_st, dn}] per fabric node. role is leaf|spine|controller; fabricSt is the
+    OPERATIONAL state active|inactive|disabled|decommissioned; adSt is the ADMIN state on|off. A node present
+    in the MIT but with fabricSt not 'active' is a ghost/decommissioned asset or an admin-vs-operational
+    divergence. [] when no ACI export is present. Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fabricNode"):
+        out.append({"id": a.get("id", ""), "name": a.get("name", ""), "role": a.get("role", ""),
+                    "model": a.get("model", ""), "serial": a.get("serial", ""), "version": a.get("version", ""),
+                    "fabric_st": (a.get("fabricSt", "") or "").lower(),
+                    "ad_st": (a.get("adSt", "") or "").lower(), "dn": a.get("dn", "")})
+    return out
+
+
+def parse_aci_health(output: str) -> dict:
+    """APIC 'moquery -c fabricHealthTotal -o json' / REST /api/class/fabricHealthTotal.json -> {cur, max_sev}
+    -- the fabric-wide rollup health score (cur, 0-100) and the worst contributing severity (maxSev). {} when
+    no ACI export is present or cur is non-numeric. Tolerant; never raises."""
+    rows = _aci_imdata(output, "fabricHealthTotal")
+    if not rows:
+        return {}
+    a = rows[0]
+    try:
+        cur = int(a.get("cur"))
+    except (TypeError, ValueError):
+        return {}
+    return {"cur": cur, "max_sev": (a.get("maxSev", "") or "").lower()}
 
 
 def parse_nve_peers(output: str) -> list:

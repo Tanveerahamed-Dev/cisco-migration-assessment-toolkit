@@ -314,6 +314,31 @@ def _signals(snap):
                 _bgp6_down.append(f"{_vh} {_as_dict(_n).get('neighbor', '?')}")
     sig["ipv6_ospfv3_stuck"] = _ospfv3_stuck
     sig["ipv6_bgp_down"] = _bgp6_down
+    # Cisco ACI controller-fabric health (snap['aci'] from build_aci; the JSON-ingestion channel). Three
+    # PRESENT-state break conditions the APIC itself reports: a raised (lc=raised) + unacknowledged (ack=no)
+    # critical/major faultInst, a fabricNode whose fabricSt is not 'active' (decommissioned/inactive/disabled),
+    # and a fabric-wide health score below 90. Coverage-honest: a fleet with no ACI export publishes {} and
+    # never fires; an acknowledged/cleared fault, a minor/warning fault, an active node, and cur>=90 all stay
+    # silent -- every signal reads a present broken-state attribute, never absence.
+    _aci = _as_dict(snap.get("aci"))
+    _aci_faults, _aci_ghost, _aci_health = [], [], []
+    for _ah, _af in sorted(_aci.items()):
+        _af = _as_dict(_af)
+        for _f in _as_list(_af.get("faults")):
+            _f = _as_dict(_f)
+            if _f.get("lc") == "raised" and _f.get("ack") == "no" and _f.get("severity") in ("critical", "major"):
+                _aci_faults.append(f"{_ah} {_f.get('code', '?')} {_f.get('severity', '')}")
+        for _n in _as_list(_af.get("nodes")):
+            _n = _as_dict(_n)
+            if _n.get("fabric_st") in ("decommissioned", "inactive", "disabled"):
+                _aci_ghost.append(f"{_ah} node {_n.get('id', '?')} {_n.get('name', '')} ({_n.get('fabric_st', '')})")
+        _h = _as_dict(_af.get("health"))
+        if _h and isinstance(_h.get("cur"), int) and _h.get("cur") < 90:
+            _aci_health.append(f"{_ah} fabric health {_h.get('cur')}/100 (maxSev {_h.get('max_sev', '')})")
+    sig["aci_faults"] = _aci_faults
+    sig["aci_ghost_nodes"] = _aci_ghost
+    sig["aci_health_degraded"] = _aci_health
+    sig["aci_devices"] = sorted({x.split()[0] for x in (_aci_faults + _aci_ghost + _aci_health)})[:12]
     # PIM-SM control-plane resilience (snap['pim'] from build_pim). FIRING STATE: PIM is RUNNING here (a live
     # neighbor), rp-mapping WAS collected, yet ZERO RP is learned and the domain is not SSM-only -- ASM (*,G)
     # shared trees cannot form (RFC 7761). Coverage-honest: config-only/not-running, SSM-only, and
@@ -1357,6 +1382,80 @@ def _d_ipv6_routing_adjacency(snap, sig):
         devices=sorted(devs)[:12])
 
 
+def _d_aci_critical_faults(snap, sig):
+    """Cisco ACI: a raised, unacknowledged faultInst at critical/major severity (parse_aci_faults ->
+    snap['aci'].faults). The APIC fault list IS the fabric's own current broken-state inventory; a raised
+    (lc=raised) fault not yet acknowledged (ack=no) at critical or major severity is an active, service-
+    affecting condition the controller itself is reporting (e.g. F1394 fabric port down, F0321 APIC cluster
+    degraded). Coverage-honest: fires ONLY on a present raised/unacked critical-or-major fault -- acknowledged,
+    cleared (lc!=raised), and minor/warning faults stay silent, and a fleet with no APIC export never fires."""
+    f = sig.get("aci_faults") or []
+    if not f:
+        return None
+    return _decision(
+        "aci-critical-fault-raised",
+        f"{len(f)} raised, unacknowledged ACI fault(s) at critical/major severity (e.g. {', '.join(f[:5])}). "
+        "The APIC fault list is the fabric's own current broken-state inventory; a raised (lc=raised) fault "
+        "that has not been acknowledged, at critical or major severity, is an active service-affecting "
+        "condition -- a fabric port down, an APIC cluster degraded, a contract/programming failure. Triage "
+        "each fault code against the APIC fault guide, clear the underlying condition (or explicitly "
+        "acknowledge a known-accepted one), and re-pull the fault list before the fabric is accepted at cutover.",
+        len(f), ["availability"],
+        ["aci.faults[].severity / aci.faults[].lc / aci.faults[].ack (parse_aci_faults / moquery -c faultInst)"],
+        priority="Critical",
+        driver="Controller-fabric health: a raised, unacknowledged critical/major APIC fault is an active "
+               "service-affecting condition the fabric controller itself is reporting -- not inferred from absence.",
+        devices=sig.get("aci_devices") or [])
+
+
+def _d_aci_node_not_active(snap, sig):
+    """Cisco ACI: a fabricNode present in the APIC MIT but NOT in the active state -- decommissioned /
+    inactive / disabled (parse_aci_fabric_nodes -> snap['aci'].nodes). A decommissioned node still in the
+    inventory is a ghost asset (cutover blast-radius, stale license/serial); an inactive/disabled node is the
+    controller's own admin-vs-operational divergence (the fabric reports the node down while it stays
+    provisioned). Coverage-honest: fires ONLY on an OBSERVED non-active fabricSt; an all-active fabric and a
+    fleet with no APIC export stay silent."""
+    g = sig.get("aci_ghost_nodes") or []
+    if not g:
+        return None
+    return _decision(
+        "aci-node-not-active",
+        f"{len(g)} ACI fabric node(s) are present in the APIC inventory but NOT active "
+        f"(e.g. {', '.join(g[:5])}). A decommissioned node still in the MIT is a ghost asset (cutover "
+        "blast-radius, stale license/serial); an inactive/disabled node is the controller's own admin-vs-"
+        "operational divergence -- the fabric reports it down while it remains provisioned. Reconcile each "
+        "node against the intended fabric inventory and fully decommission or recover it before the node "
+        "census and cutover blast-radius depend on it.",
+        len(g), ["availability", "manageability"],
+        ["aci.nodes[].fabric_st (parse_aci_fabric_nodes / moquery -c fabricNode)"],
+        priority="High",
+        driver="Controller-fabric inventory: a node present in the APIC MIT but not active is a ghost asset or "
+               "an admin-vs-operational divergence that distorts the fabric census and cutover blast radius.",
+        devices=sig.get("aci_devices") or [])
+
+
+def _d_aci_fabric_health_degraded(snap, sig):
+    """Cisco ACI: the fabric-wide rollup health score (fabricHealthTotal.cur) is below 90 (parse_aci_health
+    -> snap['aci'].health). The APIC folds every node, tenant and fault into one 0-100 gauge; a sub-90 score
+    (sub-75 is serious) means accumulated faults are materially degrading the fabric. Coverage-honest: a
+    MEASURED low score, never inferred from absence -- cur>=90 and a fleet with no APIC export stay silent."""
+    h = sig.get("aci_health_degraded") or []
+    if not h:
+        return None
+    return _decision(
+        "aci-fabric-health-degraded",
+        f"The ACI fabric-wide health score is degraded (below 90): {', '.join(h[:4])}. fabricHealthTotal "
+        "rolls every node, tenant and fault into one 0-100 gauge, so a sub-90 score (sub-75 is serious) means "
+        "accumulated faults are materially degrading the fabric. Drive the score back up by clearing the "
+        "contributing faults -- the raised critical/major fault list is the place to start -- before cutover.",
+        len(h), ["availability", "manageability"],
+        ["aci.health.cur (parse_aci_health / moquery -c fabricHealthTotal)"],
+        priority="Medium",
+        driver="Controller-fabric health: a degraded fabric-wide health score is the APIC's own rollup signal "
+               "that accumulated faults are impacting the fabric -- a measured value, not an absence.",
+        devices=sig.get("aci_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -2057,6 +2156,7 @@ def _d_oversized_l2_subnet(snap, sig):
 _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_copp_drops,
               _d_mpls_ldp_health, _d_mpls_l3vpn_health, _d_mpls_l2vpn_health,  # SP/MPLS: LDP underlay / L3VPN VPNv4 / L2VPN pseudowire
               _d_lisp_fabric_session_down, _d_cts_environment_data_health, _d_dmvpn_tunnel_health, _d_crypto_session_health, _d_bfd_session_health, _d_ipv6_dad_duplicate, _d_ipv6_routing_adjacency,  # universal arch: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
+              _d_aci_critical_faults, _d_aci_node_not_active, _d_aci_fabric_health_degraded,  # Cisco ACI (APIC JSON-ingestion channel)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
