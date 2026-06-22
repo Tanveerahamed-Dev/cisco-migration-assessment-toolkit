@@ -3230,6 +3230,26 @@
    ]
   }
  },
+ "copp": {
+  "core2": [
+   {
+    "class": "copp-system-p-class-critical",
+    "conformed": 177446058,
+    "exceeded": 0,
+    "violated": 4521,
+    "dropped": 0,
+    "drops": 4521
+   },
+   {
+    "class": "copp-system-p-class-normal",
+    "conformed": 88231005,
+    "exceeded": 0,
+    "violated": 0,
+    "dropped": 0,
+    "drops": 0
+   }
+  ]
+ },
  "punchlist": [
   {
    "severity": "Critical",

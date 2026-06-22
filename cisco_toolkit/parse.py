@@ -120,6 +120,44 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                 routes[current]['entries'].append({'prefix': current, 'code': '', 'source': '', 'next_hop': nh, 'out_intf': out_intf, 'raw': s})
     return routes
 
+def parse_copp_drops(output: str) -> list:
+    """'show policy-map interface control-plane' (NX-OS) / 'show policy-map control-plane' (IOS / IOS-XE)
+    -> [{class, conformed, exceeded, violated, dropped, drops}] per CoPP class. `drops` = the total
+    control-plane traffic DISCARDED by the policer for that class (exceeded + violated + dropped). A class
+    with drops > 0 means the box is actively policing/dropping punted control-plane traffic -- a mistuned
+    policer or a control-plane flood/CPU-pressure event (protocol packets can be silently starved).
+    Counters are PACKETS on IOS/IOS-XE and BYTES on NX-OS (module blocks summed per class); the firing
+    condition (drops > 0) is platform-agnostic. [] when no CoPP policy is applied. Tolerant; never raises."""
+    out: list = []
+    cur = None
+
+    def _flush():
+        if cur is not None:
+            cur["drops"] = cur["exceeded"] + cur["violated"] + cur["dropped"]
+            out.append(cur)
+
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        h = re.match(r"^[Cc]lass-?map:?\s+(\S+)\s*\(match-", s)
+        if h:
+            _flush()
+            cur = {"class": h.group(1), "conformed": 0, "exceeded": 0, "violated": 0, "dropped": 0, "drops": 0}
+            continue
+        if cur is None:
+            continue
+        if re.match(r"^police\b", s, re.IGNORECASE):
+            continue
+        for key in ("conformed", "exceeded", "violated", "dropped"):
+            m = re.match(rf"^{key}\s+(\d+)\s+(packets|bytes)\b", s, re.IGNORECASE)
+            if m:
+                cur[key] += int(m.group(1))
+                break
+    _flush()
+    return out
+
+
 def parse_nve_vni(output: str) -> list:
     """'show nve vni' (NX-OS VXLAN) -> [{vni, mcast_group, state, mode, type}]. The L2 (VLAN<->VNI) and L3
     (VRF<->L3VNI) bindings on this VTEP; State Up = the VNI is operational. A VNI not Up strands its VLAN/VRF

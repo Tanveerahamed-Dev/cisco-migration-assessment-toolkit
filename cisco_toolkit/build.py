@@ -22,7 +22,7 @@ from cisco_toolkit.parse import (
     parse_show_ip_arp, parse_show_mac_address_table, parse_show_module_count,
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
-    parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni,
+    parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni, parse_copp_drops,
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_cpu_utilization, parse_memory_stats, parse_system_resources,   # NEW-V3.23.167 (platform health)
@@ -144,6 +144,15 @@ def build_overlay(cmd_to_file: Dict[str, str]) -> dict:
     if evpn: out["evpn_neighbors"] = evpn
     if vni: out["nve_vni"] = vni
     return out
+
+
+def build_copp(cmd_to_file: Dict[str, str]) -> list:
+    """Control-plane-policing drop state for THIS device from 'show policy-map interface control-plane'
+    (NX-OS) or 'show policy-map control-plane' (IOS / IOS-XE), via parse_copp_drops:
+    [{class, conformed, exceeded, violated, dropped, drops}]. [] when no CoPP policy. A class with drops > 0
+    means the policer is actively discarding punted control-plane traffic. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_copp_drops, _load_cmd_output(
+        cmd_to_file, "show policy-map interface control-plane", "show policy-map control-plane")) or []
 
 
 def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:

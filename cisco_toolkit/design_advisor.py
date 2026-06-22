@@ -156,6 +156,19 @@ def _signals(snap):
         for _v in _as_list((_o or {}).get("nve_vni")):
             if str(_v.get("state", "")).lower() != "up":
                 sig["nve_vni_down"].append(f"{_h} VNI {_v.get('vni', '?')}")
+    # Control-plane policing (CoPP): a class with drops > 0 is actively discarding punted control-plane
+    # traffic (mistuned policer, or a control-plane flood / CPU pressure). Coverage-honest: a class at
+    # drops == 0 is NORMAL (policers are armed but not firing) and must NOT signal.
+    _copp = snap.get("copp")
+    copp_hits = []
+    for _ch, _cl in (_copp.items() if isinstance(_copp, dict) else []):
+        for _c in _as_list(_cl):
+            if _as_int(_c.get("drops")) > 0:
+                copp_hits.append((_ch, str(_c.get("class", "?")), _as_int(_c.get("drops"))))
+    sig["copp_drop_classes"] = len(copp_hits)
+    sig["copp_drop_pkts"] = sum(d for _, _, d in copp_hits)
+    sig["copp_drop_hosts"] = sorted({h for h, _, _ in copp_hits})[:12]
+    sig["copp_drop_examples"] = [f"{h} {cls}" for h, cls, _ in sorted(copp_hits, key=lambda t: -t[2])][:6]
     devs = []
     for g in bad_fhrp:
         for m in _as_list(g.get("members")):
@@ -740,6 +753,35 @@ def _d_nve_vni_health(snap, sig):
         devices=sorted({d.split()[0] for d in down})[:12])
 
 
+def _d_copp_drops(snap, sig):
+    """Control-plane policing (CoPP/CPPr) actively DROPPING punted traffic: a CoPP class with a non-zero
+    discard counter (parse_copp_drops -> snap['copp']) means the policer is discarding CPU-bound traffic --
+    either a mistuned policer clipping legitimate protocol punts (routing/ARP -> adjacency flaps) or a
+    control-plane flood starving the supervisor. Coverage-honest: an armed policer at drops == 0 is the
+    NORMAL state and stays silent; fires ONLY on observed non-zero discards."""
+    n = sig.get("copp_drop_classes", 0)
+    if n <= 0:
+        return None
+    egs = ", ".join(sig.get("copp_drop_examples") or [])
+    return _decision(
+        "copp-control-plane-policer-dropping",
+        f"{n} control-plane-policing (CoPP) class(es) are actively dropping punted traffic"
+        + (f" (e.g. {egs})" if egs else "")
+        + f" -- {sig.get('copp_drop_pkts', 0)} total discarded. CoPP drops mean CPU-bound traffic is being "
+        "policed: either the policer is mistuned and clipping legitimate control-plane traffic "
+        "(routing/ARP/management punts -> adjacency flaps, slow convergence) or a control-plane flood/DoS is "
+        "starving the supervisor. Identify the dropping class, confirm whether the offered rate is "
+        "legitimate, and re-baseline the policer (raise the CIR) or trace and suppress the source before cutover.",
+        n, ["availability", "security", "manageability"],
+        ["copp[].drops (parse_copp_drops / show policy-map [interface] control-plane)",
+         "copp[].exceeded", "copp[].violated"],
+        priority="High",
+        driver="Control-plane protection: a CoPP class dropping punted traffic either clips legitimate "
+               "protocol packets (convergence/adjacency risk) or signals a control-plane flood; neither "
+               "should be carried silently into a migration baseline.",
+        devices=sig.get("copp_drop_hosts") or [])
+
+
 def _d_spof(snap, sig):
     if sig["bridges"] <= 0:
         return None
@@ -1243,7 +1285,7 @@ def _d_oversized_l2_subnet(snap, sig):
         driver="Subnet sizing: a >254-endpoint VLAN overflows a /24 -- size the prefix to the endpoint count or segment it.")
 
 
-_DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
+_DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_copp_drops, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
               _d_stp_mst_scale, _d_oncrit_seg,

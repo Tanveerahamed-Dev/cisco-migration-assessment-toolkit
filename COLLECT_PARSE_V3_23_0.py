@@ -418,7 +418,7 @@ from cisco_toolkit.build import (
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
-    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_routing_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
 )
@@ -485,6 +485,7 @@ COMMANDS_NXOS = [
     "show nve peers",                    # VXLAN-EVPN VTEP peer state -> build_overlay / _d_nve_peer_health
     "show bgp l2vpn evpn summary",       # BGP-EVPN control plane (MAC/IP route exchange) -> _d_evpn_rr_health
     "show nve vni",                      # VXLAN VNI (VLAN/VRF<->VNI) binding state -> _d_nve_vni_health
+    "show policy-map interface control-plane",  # CoPP drop counters (NX-OS) -> build_copp / _d_copp_drops
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
@@ -561,6 +562,7 @@ COMMANDS_IOS = [
     "show vtp status",           # NEW-V14.2 wiring (VTP domain identity)
     "show standby brief",        # NEW-V14.2 wiring (gateway / HSRP behavior)
     "show standby all",          # FHRP DETAIL (election/preempt/tracking) -> build_fhrp_detail / _d_fhrp_resilience
+    "show policy-map control-plane",  # CoPP drop counters (IOS / IOS-XE) -> build_copp / _d_copp_drops
     "show vrrp brief",           # NEW-V14.6 (VRRP gateways)
     "show glbp brief",           # NEW-V14.6 (GLBP gateways)
     "show ip mroute",            # NEW-V14.2 wiring (multicast info)
@@ -1519,6 +1521,7 @@ def main():
     all_vpc: Dict[str, dict] = {}                                    # NEW-V3.23.125 (vPC / MLAG status per device)
     all_fhrp_detail: Dict[str, list] = {}                            # FHRP detail (show standby) per device -> snap['fhrp_detail']
     all_overlay: Dict[str, dict] = {}                                # VXLAN-EVPN overlay (show nve peers) per device -> snap['overlay']
+    all_copp: Dict[str, list] = {}                                   # CoPP drop counters (show policy-map control-plane) per device -> snap['copp']
     all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
     all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
     all_run_configs: Dict[str, str] = {}                             # NEW-V3.23.146 (raw running-config for golden-config drift)
@@ -1572,6 +1575,10 @@ def main():
         if overlay:
             all_overlay[hostname] = overlay
             logger.info(f"  [VXLAN] {hostname}: {len(overlay.get('nve_peers', []))} NVE peer(s)")
+        copp = build_copp(cmd_to_file)
+        if copp:
+            all_copp[hostname] = copp
+            logger.info(f"  [CoPP] {hostname}: {len(copp)} control-plane class(es)")
         rn = build_routing_neighbors(cmd_to_file)
         if any(rn.values()):
             all_routing_neighbors[hostname] = rn
@@ -2078,6 +2085,7 @@ def main():
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
     snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-AJ coverage)
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
+    snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
     snap_dict["punchlist"] = punchlist                              # NEW-V3.23.63 (consolidated severity-ranked migration punch-list)
     snap_dict["operational_drift"] = _drift                         # NEW-V3.23.93 (false-health / operational-drift findings; also folded into the punch-list)
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)

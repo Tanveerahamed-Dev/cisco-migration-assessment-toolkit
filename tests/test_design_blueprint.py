@@ -995,6 +995,25 @@ def test_d_evpn_rr_health_flags_down_rr():
     assert da._d_evpn_rr_health(ok, da._signals(ok)) is None
 
 
+def test_d_copp_drops_fires_on_dropping_class_only():
+    """Universality (control-plane policing): a CoPP class actively dropping (drops > 0) fires _d_copp_drops;
+    an armed-but-clean policer (every class drops == 0) and an ABSENT copp axis are both silent (coverage-honest
+    -- 'CoPP configured, nothing dropping' is the NORMAL state, not a finding)."""
+    import cisco_toolkit.design_advisor as da
+    dropping = {"copp": {"core2": [
+        {"class": "copp-system-p-class-critical", "conformed": 177446058, "exceeded": 0, "violated": 4521, "dropped": 0, "drops": 4521},
+        {"class": "copp-system-p-class-normal", "conformed": 88231005, "exceeded": 0, "violated": 0, "dropped": 0, "drops": 0},
+    ]}}
+    sig = da._signals(dropping)
+    assert sig["copp_drop_classes"] == 1 and sig["copp_drop_pkts"] == 4521 and sig["copp_drop_hosts"] == ["core2"]
+    dec = da._d_copp_drops(dropping, sig)
+    assert dec is not None and "CoPP" in str(dec) and "dropping" in str(dec)
+    assert "core2" in dec["evidence"]["devices"] and dec["priority"] == "High"
+    clean = {"copp": {"core2": [{"class": "c", "conformed": 5, "exceeded": 0, "violated": 0, "dropped": 0, "drops": 0}]}}
+    assert da._d_copp_drops(clean, da._signals(clean)) is None
+    assert da._d_copp_drops({}, da._signals({})) is None
+
+
 def test_d_nve_peer_health_flags_down_vtep():
     """Universality (NX-OS VXLAN-EVPN): a DOWN VTEP (NVE) peer partitions the overlay -> _d_nve_peer_health
     fires; silent when all peers Up or no NVE. The engine's OWN target fabric, previously blind."""

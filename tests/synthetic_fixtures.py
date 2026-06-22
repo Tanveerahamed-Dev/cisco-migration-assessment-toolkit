@@ -394,6 +394,26 @@ Interface VNI      Multicast-group   State Mode Type [BD/VRF]
 nve1      10010    225.1.1.10        Up    CP   L2 [10]
 nve1      50000    n/a               Down  CP   L3 [vrf-prod]
 """,
+    # CoPP drop state (universality): the 'critical' class is actively dropping (violated 4521 bytes) while
+    # 'normal' is armed but clean (violated 0) -> _d_copp_drops fires on the dropping class only.
+    "show policy-map interface control-plane": """\
+Control Plane
+
+  Service-policy input: copp-system-p-policy-strict
+
+    class-map copp-system-p-class-critical (match-any)
+      police cir 36000 kbps bc 250 ms
+      module 1:
+        conformed 177446058 bytes,
+          5-min offered rate 3 bytes/sec
+        violated 4521 bytes,
+          5-min violate rate 12 bytes/sec
+    class-map copp-system-p-class-normal (match-any)
+      police cir 680 kbps bc 250 ms
+      module 1:
+        conformed 88231005 bytes,
+        violated 0 bytes,
+""",
     "show interface status": """\
 --------------------------------------------------------------------------------
 Port          Name               Status    Vlan      Duplex  Speed   Type
