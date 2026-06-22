@@ -3765,6 +3765,50 @@
    }
   ]
  },
+ "mpls": {
+  "core1": {
+   "ldp_neighbors": [
+    {
+     "peer": "10.0.255.2",
+     "label_space": "0",
+     "state": "Oper"
+    },
+    {
+     "peer": "10.0.255.9",
+     "label_space": "0",
+     "state": "Nonexistent"
+    }
+   ],
+   "vpnv4_neighbors": [
+    {
+     "neighbor": "10.0.255.2",
+     "as": "65000",
+     "state": "Established",
+     "prefixes": 6
+    },
+    {
+     "neighbor": "10.0.255.9",
+     "as": "65000",
+     "state": "Idle",
+     "prefixes": 0
+    }
+   ],
+   "l2vpn_vcs": [
+    {
+     "local_intf": "Gi1/0/2",
+     "dest": "10.0.255.2",
+     "vc_id": "200",
+     "status": "UP"
+    },
+    {
+     "local_intf": "Gi1/0/3",
+     "dest": "10.0.255.9",
+     "vc_id": "300",
+     "status": "DOWN"
+    }
+   ]
+  }
+ },
  "pim": {
   "core1": {
    "rp_mapping": {

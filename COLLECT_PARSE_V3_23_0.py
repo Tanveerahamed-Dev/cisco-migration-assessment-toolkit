@@ -418,7 +418,7 @@ from cisco_toolkit.build import (
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
-    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -487,6 +487,9 @@ COMMANDS_NXOS = [
     "show bgp l2vpn evpn summary",       # BGP-EVPN control plane (MAC/IP route exchange) -> _d_evpn_rr_health
     "show nve vni",                      # VXLAN VNI (VLAN/VRF<->VNI) binding state -> _d_nve_vni_health
     "show policy-map interface control-plane",  # CoPP drop counters (NX-OS) -> build_copp / _d_copp_drops
+    "show mpls ldp neighbor",            # SP/MPLS: LDP transport-underlay session state -> build_mpls / _d_mpls_ldp_health
+    "show bgp vpnv4 unicast summary",    # SP/MPLS: L3VPN VPNv4 PE-PE control-plane -> build_mpls / _d_mpls_l3vpn_health
+    "show mpls l2transport vc",          # SP/MPLS: L2VPN/AToM pseudowire VC state -> build_mpls / _d_mpls_l2vpn_health
     "show policy-map interface",         # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
     "show ip pim rp mapping",            # PIM-SM learned RP -> build_pim / _d_pim_rp_health
     "show ip pim neighbor",              # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
@@ -573,6 +576,9 @@ COMMANDS_IOS = [
     "show standby brief",        # NEW-V14.2 wiring (gateway / HSRP behavior)
     "show standby all",          # FHRP DETAIL (election/preempt/tracking) -> build_fhrp_detail / _d_fhrp_resilience
     "show policy-map control-plane",  # CoPP drop counters (IOS / IOS-XE) -> build_copp / _d_copp_drops
+    "show mpls ldp neighbor",     # SP/MPLS: LDP transport-underlay session state -> build_mpls / _d_mpls_ldp_health
+    "show bgp vpnv4 unicast summary",  # SP/MPLS: L3VPN VPNv4 PE-PE control-plane -> build_mpls / _d_mpls_l3vpn_health
+    "show mpls l2transport vc",   # SP/MPLS: L2VPN/AToM pseudowire VC state -> build_mpls / _d_mpls_l2vpn_health
     "show policy-map interface",  # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
     "show ip pim rp mapping",     # PIM-SM learned RP -> build_pim / _d_pim_rp_health
     "show ip pim neighbor",       # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
@@ -1540,6 +1546,7 @@ def main():
     all_fhrp_detail: Dict[str, list] = {}                            # FHRP detail (show standby) per device -> snap['fhrp_detail']
     all_overlay: Dict[str, dict] = {}                                # VXLAN-EVPN overlay (show nve peers) per device -> snap['overlay']
     all_copp: Dict[str, list] = {}                                   # CoPP drop counters (show policy-map control-plane) per device -> snap['copp']
+    all_mpls: Dict[str, dict] = {}                                   # SP/MPLS service-plane state (LDP/VPNv4/L2VPN) per device -> snap['mpls']
     all_pim: Dict[str, dict] = {}                                    # PIM-SM control plane (RP mapping / neighbor) per device -> snap['pim']
     all_ipv6_fhs: Dict[str, dict] = {}                               # IPv6 first-hop security posture per device -> snap['ipv6_fhs']
     all_ntp: Dict[str, dict] = {}                                    # NTP clock-sync STATE per device -> snap['ntp']
@@ -1604,6 +1611,12 @@ def main():
         if copp:
             all_copp[hostname] = copp
             logger.info(f"  [CoPP] {hostname}: {len(copp)} control-plane class(es)")
+        mpls = build_mpls(cmd_to_file)
+        if mpls:
+            all_mpls[hostname] = mpls
+            logger.info(f"  [MPLS] {hostname}: {len(mpls.get('ldp_neighbors', []))} LDP session(s), "
+                        f"{len(mpls.get('vpnv4_neighbors', []))} VPNv4 peer(s), "
+                        f"{len(mpls.get('l2vpn_vcs', []))} L2VPN VC(s)")
         pim = build_pim(cmd_to_file)
         if pim.get("rp_mapping") or pim.get("neighbors"):
             all_pim[hostname] = pim
@@ -2141,6 +2154,7 @@ def main():
     snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-[HISTORY-REDACTED] coverage)
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
     snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
+    snap_dict["mpls"] = all_mpls                                     # SP/MPLS service-plane (LDP/VPNv4/L2VPN) -> _d_mpls_ldp_health/_d_mpls_l3vpn_health/_d_mpls_l2vpn_health
     snap_dict["pim"] = all_pim                                       # PIM-SM RP/neighbor -> _d_pim_rp_health (multicast resilience)
     snap_dict["ipv6_fhs"] = all_ipv6_fhs                             # IPv6 first-hop security -> _d_ipv6_fhs (rogue-RA gateway hijack)
     snap_dict["ntp"] = all_ntp                                       # NTP clock-sync STATE -> _d_ntp_sync (unsynchronized clock)

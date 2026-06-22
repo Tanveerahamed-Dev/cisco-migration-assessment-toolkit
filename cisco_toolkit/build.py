@@ -23,6 +23,7 @@ from cisco_toolkit.parse import (
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni, parse_copp_drops,
+    parse_bgp_vpnv4_summary, parse_mpls_ldp_neighbors, parse_mpls_l2vpn_vc,   # SP/MPLS: L3VPN VPNv4 / LDP underlay / L2VPN pseudowire
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
     parse_ntp_status,                                                 # NTP clock-sync STATE (stratum 16 / unsynchronized)
@@ -160,6 +161,25 @@ def build_copp(cmd_to_file: Dict[str, str]) -> list:
     means the policer is actively discarding punted control-plane traffic. Fail-soft via _safe_parse."""
     return _safe_parse(parse_copp_drops, _load_cmd_output(
         cmd_to_file, "show policy-map interface control-plane", "show policy-map control-plane")) or []
+
+
+def build_mpls(cmd_to_file: Dict[str, str]) -> dict:
+    """SP/MPLS service-plane state for THIS device -> {ldp_neighbors, vpnv4_neighbors, l2vpn_vcs}. Covers the
+    three planes an MPLS PE assessment must see: the LDP transport underlay ('show mpls ldp neighbor'), the
+    L3VPN control plane ('show bgp vpnv4 unicast summary'), and L2VPN pseudowires ('show mpls l2transport
+    vc'). {} when the device runs no MPLS. A not-Oper LDP session, a not-Established VPNv4 peer, or a DOWN
+    pseudowire each breaks the service riding it. Fail-soft via _safe_parse."""
+    ldp = _safe_parse(parse_mpls_ldp_neighbors, _load_cmd_output(cmd_to_file, "show mpls ldp neighbor")) or []
+    vpnv4 = _safe_parse(parse_bgp_vpnv4_summary, _load_cmd_output(cmd_to_file, "show bgp vpnv4 unicast summary")) or []
+    l2vc = _safe_parse(parse_mpls_l2vpn_vc, _load_cmd_output(cmd_to_file, "show mpls l2transport vc")) or []
+    out = {}
+    if ldp:
+        out["ldp_neighbors"] = ldp
+    if vpnv4:
+        out["vpnv4_neighbors"] = vpnv4
+    if l2vc:
+        out["l2vpn_vcs"] = l2vc
+    return out
 
 
 def build_pim(cmd_to_file: Dict[str, str]) -> dict:

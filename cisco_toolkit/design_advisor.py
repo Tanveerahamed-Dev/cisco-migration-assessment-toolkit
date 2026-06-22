@@ -173,6 +173,27 @@ def _signals(snap):
     sig["copp_drop_pkts"] = sum(d for _, _, d in copp_hits)
     sig["copp_drop_hosts"] = sorted({h for h, _, _ in copp_hits})[:12]
     sig["copp_drop_examples"] = [f"{h} {cls}" for h, cls, _ in sorted(copp_hits, key=lambda t: -t[2])][:6]
+    # SP/MPLS service-plane health (snap['mpls'] from build_mpls): three independent break conditions across the
+    # LDP transport underlay, the L3VPN VPNv4 control plane, and L2VPN pseudowires. Coverage-honest: a device
+    # running no MPLS publishes {} and never fires; only an OBSERVED not-Oper LDP session, a not-Established
+    # VPNv4 peer, or a DOWN pseudowire (STANDBY/UP are healthy) is surfaced.
+    _mpls = _as_dict(snap.get("mpls"))
+    _ldp_down, _vpnv4_down, _l2vc_down = [], [], []
+    for _mh, _mf in sorted(_mpls.items()):
+        _mf = _as_dict(_mf)
+        for _n in _as_list(_mf.get("ldp_neighbors")):
+            _st = str(_as_dict(_n).get("state", "")).strip()
+            if _st and _st.lower() != "oper":
+                _ldp_down.append(f"{_mh} {_as_dict(_n).get('peer', '?')}")
+        for _n in _as_list(_mf.get("vpnv4_neighbors")):
+            if str(_as_dict(_n).get("state", "")) != "Established":
+                _vpnv4_down.append(f"{_mh} {_as_dict(_n).get('neighbor', '?')}")
+        for _v in _as_list(_mf.get("l2vpn_vcs")):
+            if str(_as_dict(_v).get("status", "")).upper() == "DOWN":
+                _l2vc_down.append(f"{_mh} VC {_as_dict(_v).get('vc_id', '?')}")
+    sig["mpls_ldp_down"] = _ldp_down
+    sig["mpls_vpnv4_down"] = _vpnv4_down
+    sig["mpls_l2vc_down"] = _l2vc_down
     # PIM-SM control-plane resilience (snap['pim'] from build_pim). FIRING STATE: PIM is RUNNING here (a live
     # neighbor), rp-mapping WAS collected, yet ZERO RP is learned and the domain is not SSM-only -- ASM (*,G)
     # shared trees cannot form (RFC 7761). Coverage-honest: config-only/not-running, SSM-only, and
@@ -928,6 +949,79 @@ def _d_copp_drops(snap, sig):
         devices=sig.get("copp_drop_hosts") or [])
 
 
+def _d_mpls_ldp_health(snap, sig):
+    """MPLS LDP underlay: an LDP neighbor not in the operational (Oper) state (parse_mpls_ldp_neighbors ->
+    snap['mpls'].ldp_neighbors). LDP distributes the transport labels for the MPLS core; a session that is not
+    Oper exchanges no label bindings, so every LSP through that peer -- and the L3VPN/L2VPN services riding it
+    -- blackholes. Coverage-honest: fires only on an OBSERVED non-Oper session; a box with no MPLS, or with all
+    sessions Oper, stays silent."""
+    down = sig.get("mpls_ldp_down") or []
+    if not down:
+        return None
+    return _decision(
+        "mpls-ldp-session-down",
+        f"{len(down)} MPLS LDP session(s) are not in the operational (Oper) state (e.g. {', '.join(down[:6])}). "
+        "LDP distributes the transport labels for the MPLS underlay; a session that is not Oper exchanges no "
+        "label bindings, so every LSP through that adjacency -- and the L3VPN/L2VPN services it carries -- "
+        "blackholes. Confirm the link and IGP to the peer, LDP router-id reachability, and any LDP "
+        "authentication / session-protection before relying on the core at cutover.",
+        len(down), ["availability"],
+        ["mpls.ldp_neighbors[].state (parse_mpls_ldp_neighbors / show mpls ldp neighbor)"],
+        priority="High",
+        driver="MPLS underlay: an LDP session not in Oper withholds transport labels, breaking every LSP and "
+               "VPN service that transits the adjacency.",
+        devices=sorted({d.split()[0] for d in down})[:12])
+
+
+def _d_mpls_l3vpn_health(snap, sig):
+    """MPLS L3VPN control plane: an MP-BGP VPNv4 neighbor not Established (parse_bgp_vpnv4_summary ->
+    snap['mpls'].vpnv4_neighbors). VPNv4 carries per-VRF customer prefixes between PE routers; a peer that is
+    not Established exchanges no VPN routes, so every VRF depending on that PE loses its remote sites (the LDP
+    data plane can be Up while VPNv4 is dark). Coverage-honest: fires only on an OBSERVED non-Established
+    VPNv4 peer; a non-PE box (no VPNv4 session) stays silent."""
+    down = sig.get("mpls_vpnv4_down") or []
+    if not down:
+        return None
+    return _decision(
+        "mpls-l3vpn-vpnv4-down",
+        f"{len(down)} MP-BGP VPNv4 (L3VPN) neighbor(s) are not Established (e.g. {', '.join(down[:6])}). "
+        "VPNv4 distributes per-VRF customer prefixes between PE routers; a neighbor that is not Established "
+        "exchanges no VPN routes, so every VRF that relies on that PE loses reachability to its remote sites "
+        "even while the LDP/IGP underlay stays Up. Confirm the BGP session (update-source / loopback "
+        "reachability, vpnv4 address-family activation, RR-client config) before the L3VPN service is trusted "
+        "at cutover.",
+        len(down), ["availability"],
+        ["mpls.vpnv4_neighbors[].state (parse_bgp_vpnv4_summary / show bgp vpnv4 unicast summary)"],
+        priority="High",
+        driver="MPLS L3VPN: a VPNv4 PE-PE session that is not Established stops customer VRF route exchange, "
+               "blackholing remote sites independently of underlay health.",
+        devices=sorted({d.split()[0] for d in down})[:12])
+
+
+def _d_mpls_l2vpn_health(snap, sig):
+    """MPLS L2VPN pseudowire: an AToM/EoMPLS virtual circuit signalled DOWN (parse_mpls_l2vpn_vc ->
+    snap['mpls'].l2vpn_vcs). A pseudowire carries a point-to-point customer L2 circuit across the MPLS core; a
+    VC in the DOWN state means that circuit is broken end-to-end. Coverage-honest: fires only on an OBSERVED
+    DOWN VC -- UP (forwarding) and STANDBY (a healthy backup PW) never fire, and a box with no L2VPN stays
+    silent."""
+    down = sig.get("mpls_l2vc_down") or []
+    if not down:
+        return None
+    return _decision(
+        "mpls-l2vpn-pseudowire-down",
+        f"{len(down)} MPLS L2VPN pseudowire(s) are DOWN (e.g. {', '.join(down[:6])}). A pseudowire carries a "
+        "point-to-point customer L2 circuit (AToM/EoMPLS) across the MPLS core; a VC in the DOWN state means "
+        "that attachment circuit is broken end-to-end -- the customer service is hard down, not degraded. "
+        "Check the attachment circuit, the targeted-LDP session to the remote PE, and VC-ID / encapsulation "
+        "match on both ends before the L2VPN is accepted at cutover.",
+        len(down), ["availability"],
+        ["mpls.l2vpn_vcs[].status (parse_mpls_l2vpn_vc / show mpls l2transport vc)"],
+        priority="High",
+        driver="MPLS L2VPN: a pseudowire in the DOWN state is a hard-down customer L2 circuit; STANDBY/UP are "
+               "healthy and are not flagged.",
+        devices=sorted({d.split()[0] for d in down})[:12])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -1626,6 +1720,7 @@ def _d_oversized_l2_subnet(snap, sig):
 
 
 _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_copp_drops,
+              _d_mpls_ldp_health, _d_mpls_l3vpn_health, _d_mpls_l2vpn_health,  # SP/MPLS: LDP underlay / L3VPN VPNv4 / L2VPN pseudowire
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
