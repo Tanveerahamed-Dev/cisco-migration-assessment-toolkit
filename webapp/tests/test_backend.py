@@ -66,6 +66,23 @@ def test_section_slice_and_guard(client):
     assert client.get(f"/api/snapshots/{snap_id}/section/not_a_section").status_code == 400
 
 
+def test_architecture_coverage_endpoint(client):
+    """The architecture-coverage SSOT is served (computed server-side with the SAME engine function the
+    explorer/CLI use -- the dashboard never re-derives coverage). Shape is the 20-class, two-channel,
+    coverage-honest map."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/architecture_coverage")
+    assert r.status_code == 200
+    cov = r.json()
+    assert isinstance(cov.get("classes"), list) and cov["summary"]["n_classes"] == 20
+    assert cov["summary"]["by_channel"]["json"] == 2 and cov["summary"]["by_channel"]["ssh"] == 18
+    by = {c["key"]: c for c in cov["classes"]}
+    assert by["aci"]["channel"] == "json" and by["sdwan"]["channel"] == "json"
+    # coverage-honest: every class is observed-and-status or not-observed (never silently 'healthy')
+    assert all(c["status"] in ("finding", "clean", "not-observed") for c in cov["classes"])
+    assert client.get("/api/snapshots/999999/architecture_coverage").status_code == 404
+
+
 def test_nos_quartet_sections_reachable(client):
     """NEW-V3.23.176: the syslog / QoS / software-risk / platform-health axes (V3.23.164-.167)
     are tabbed AND fetchable -- the one-source-of-truth audit found them unreachable from the

@@ -41,7 +41,7 @@ _ALLOWED_SECTIONS = {k for k, _ in summary.SECTION_LABELS} | {
     "devices", "interfaces", "stp_roots", "routing_neighbors", "subnet_intelligence",
     "endpoint_dependencies", "migration_scenarios", "operational_drift", "security",
     "config_hygiene", "service_map", "addressing_conflicts", "calibration", "score_sensitivity",
-    "design_blueprint",
+    "design_blueprint", "architecture_coverage",
 }
 
 
@@ -368,6 +368,26 @@ def create_app(db_path: str | None = None) -> FastAPI:
             # right-sized blueprint the stored section would have been (not an un-right-sized one)
             bp = compute_design_blueprint(snap, snap.get("requirements_register") or {})
         return bp
+
+    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage")
+    def snapshot_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
+        """Architecture-coverage SSOT (engine compute_architecture_coverage): which architecture CLASSES were
+        OBSERVED vs not, across both ingestion channels (ssh show-text / json controller-REST), and what fired
+        -- the SAME map the explorer's ✎Design view renders. Coverage-honest: 'not-observed' is NOT 'healthy'.
+        Prefers the stored section; computes server-side with the same engine function otherwise (one source of
+        truth -- the dashboard never re-derives coverage)."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        cov = store.get_snapshot_section(snapshot_id, "architecture_coverage")
+        if not (isinstance(cov, dict) and isinstance(cov.get("classes"), list)):
+            from cisco_toolkit.design_advisor import compute_design_blueprint, compute_architecture_coverage
+            snap = store.get_snapshot(snapshot_id)
+            if snap is None:
+                raise HTTPException(404, "Snapshot not found")
+            if not isinstance(snap.get("design_blueprint"), dict):
+                snap["design_blueprint"] = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+            cov = compute_architecture_coverage(snap)
+        return cov
 
     @app.post("/api/snapshots/{snapshot_id}/design")
     def design_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
