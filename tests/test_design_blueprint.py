@@ -1296,6 +1296,59 @@ def test_d_ipv6_routing_adjacency_fires_on_stuck_adjacency_only():
     assert da._d_ipv6_routing_adjacency({}, da._signals({})) is None
 
 
+def test_d_aci_critical_faults_fires_on_raised_unacked_only():
+    """Universality (Cisco ACI / JSON-ingestion channel): a raised, unacknowledged critical/major faultInst
+    fires _d_aci_critical_faults. Refutation (coverage-honest): a minor fault, an acknowledged fault, a
+    cleared (lc != raised) fault, and an absent aci axis ALL stay silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"aci": {"apic1": {"faults": [
+        {"code": "F1394", "severity": "critical", "lc": "raised", "ack": "no", "dn": "d1", "descr": "port down"},
+        {"code": "F1234", "severity": "minor", "lc": "raised", "ack": "no", "dn": "d2", "descr": "minor"},
+        {"code": "F3083", "severity": "major", "lc": "raised", "ack": "yes", "dn": "d3", "descr": "acked"},
+        {"code": "F9", "severity": "critical", "lc": "raised-clearing", "ack": "no", "dn": "d4", "descr": "clearing"},
+    ]}}}
+    sig = da._signals(fire)
+    assert len(sig.get("aci_faults", [])) == 1 and any("F1394" in x for x in sig["aci_faults"])
+    dec = da._d_aci_critical_faults(fire, sig)
+    assert dec is not None and dec["priority"] == "Critical" and "ACI" in str(dec)
+    assert "apic1" in dec["evidence"]["devices"]
+    clean = {"aci": {"apic1": {"faults": [
+        {"code": "F1234", "severity": "minor", "lc": "raised", "ack": "no", "dn": "d", "descr": "m"}]}}}
+    assert da._d_aci_critical_faults(clean, da._signals(clean)) is None
+    assert da._d_aci_critical_faults({}, da._signals({})) is None
+
+
+def test_d_aci_node_not_active_fires_on_nonactive_fabricst_only():
+    """Universality (Cisco ACI): a fabricNode with fabricSt not active (decommissioned/inactive/disabled)
+    fires _d_aci_node_not_active. An all-active fabric and an absent aci axis stay silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"aci": {"apic1": {"nodes": [
+        {"id": "101", "name": "leaf-101", "fabric_st": "active", "ad_st": "on"},
+        {"id": "102", "name": "leaf-102-OLD", "fabric_st": "decommissioned", "ad_st": "off"},
+    ]}}}
+    sig = da._signals(fire)
+    assert any("102" in x for x in sig.get("aci_ghost_nodes", []))
+    dec = da._d_aci_node_not_active(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "apic1" in dec["evidence"]["devices"]
+    clean = {"aci": {"apic1": {"nodes": [{"id": "101", "name": "leaf-101", "fabric_st": "active", "ad_st": "on"}]}}}
+    assert da._d_aci_node_not_active(clean, da._signals(clean)) is None
+    assert da._d_aci_node_not_active({}, da._signals({})) is None
+
+
+def test_d_aci_fabric_health_degraded_fires_below_90_only():
+    """Universality (Cisco ACI): fabricHealthTotal.cur below 90 fires _d_aci_fabric_health_degraded; cur>=90
+    and an absent aci axis stay silent (a measured score, never inferred from absence)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"aci": {"apic1": {"health": {"cur": 82, "max_sev": "critical"}}}}
+    sig = da._signals(fire)
+    assert sig.get("aci_health_degraded")
+    dec = da._d_aci_fabric_health_degraded(fire, sig)
+    assert dec is not None and dec["priority"] == "Medium" and "apic1" in dec["evidence"]["devices"]
+    healthy = {"aci": {"apic1": {"health": {"cur": 96, "max_sev": "cleared"}}}}
+    assert da._d_aci_fabric_health_degraded(healthy, da._signals(healthy)) is None
+    assert da._d_aci_fabric_health_degraded({}, da._signals({})) is None
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected

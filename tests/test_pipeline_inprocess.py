@@ -185,6 +185,18 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "engine must assess MPLS L3VPN: an Idle VPNv4 peer must fire _d_mpls_l3vpn_health"
     assert any(d.get("id") == "mpls-l2vpn-pseudowire-down" for d in _bp.get("decisions", [])), \
         "engine must assess MPLS L2VPN: a DOWN pseudowire must fire _d_mpls_l2vpn_health"
+    # UNIVERSALITY (Cisco ACI / JSON-ingestion channel): core2 stands in as the APIC query host with an offline
+    # APIC export (moquery -o json). Two raised/unacked critical faults, a decommissioned fabric node, and a
+    # degraded health score (cur 82) must each fire end-to-end; the minor + acknowledged faults prove the
+    # severity/ack filter stays silent. This proves the engine ingests JSON (not just show-text) end-to-end.
+    assert isinstance(snap.get("aci"), dict) and snap["aci"].get("core2", {}).get("faults"), \
+        "snapshot must publish per-host ACI state (build_aci -> parse_aci_faults; the JSON-ingestion channel)"
+    assert any(d.get("id") == "aci-critical-fault-raised" for d in _bp.get("decisions", [])), \
+        "engine must assess ACI: a raised/unacknowledged critical fault must fire _d_aci_critical_faults"
+    assert any(d.get("id") == "aci-node-not-active" for d in _bp.get("decisions", [])), \
+        "engine must assess ACI inventory: a decommissioned fabric node must fire _d_aci_node_not_active"
+    assert any(d.get("id") == "aci-fabric-health-degraded" for d in _bp.get("decisions", [])), \
+        "engine must assess ACI health: a sub-90 fabric health score must fire _d_aci_fabric_health_degraded"
     # UNIVERSALITY (SD-Access LISP fabric control plane): core1 is an IOS-XE fabric node whose VRF 'red' has
     # 2 control-plane (map-server/map-resolver) sessions configured but ZERO established (both peers Down),
     # while the healthy VRF 'default' (2/2 established, peers Up) in the same output proves no over-firing.

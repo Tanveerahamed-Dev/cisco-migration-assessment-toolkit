@@ -3809,6 +3809,91 @@
    ]
   }
  },
+ "aci": {
+  "core2": {
+   "faults": [
+    {
+     "code": "F1394",
+     "severity": "critical",
+     "lc": "raised",
+     "ack": "no",
+     "domain": "infra",
+     "cause": "interface-physical-down",
+     "dn": "topology/pod-1/node-101/sys/phys-[eth1/49]/phys/fault-F1394",
+     "descr": "Port is down, reason:sfp-missing, used by:Fabric"
+    },
+    {
+     "code": "F0321",
+     "severity": "critical",
+     "lc": "raised",
+     "ack": "no",
+     "domain": "infra",
+     "cause": "cluster-health-degraded",
+     "dn": "topology/pod-1/node-1/av/fault-F0321",
+     "descr": "APIC cluster is degraded: leadership diverged"
+    },
+    {
+     "code": "F1234",
+     "severity": "minor",
+     "lc": "raised",
+     "ack": "no",
+     "domain": "tenant",
+     "cause": "config-drift",
+     "dn": "topology/pod-1/node-102/fault-F1234",
+     "descr": "Minor config drift (must stay silent)"
+    },
+    {
+     "code": "F3083",
+     "severity": "major",
+     "lc": "raised",
+     "ack": "yes",
+     "domain": "infra",
+     "cause": "known-accepted",
+     "dn": "topology/pod-1/node-204/fault-F3083",
+     "descr": "Acknowledged major fault (must stay silent)"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "101",
+     "name": "leaf-101",
+     "role": "leaf",
+     "model": "N9K-C93180YC-FX",
+     "serial": "FDO12345ABC",
+     "version": "n9000-16.0(5h)",
+     "fabric_st": "active",
+     "ad_st": "on",
+     "dn": "topology/pod-1/node-101"
+    },
+    {
+     "id": "204",
+     "name": "spine-204",
+     "role": "spine",
+     "model": "N9K-C9336C-FX2",
+     "serial": "FDO99999XYZ",
+     "version": "n9000-16.0(5h)",
+     "fabric_st": "active",
+     "ad_st": "on",
+     "dn": "topology/pod-1/node-204"
+    },
+    {
+     "id": "102",
+     "name": "leaf-102-OLD",
+     "role": "leaf",
+     "model": "N9K-C93180YC-EX",
+     "serial": "FDO55555OLD",
+     "version": "n9000-15.2(7g)",
+     "fabric_st": "decommissioned",
+     "ad_st": "off",
+     "dn": "topology/pod-1/node-102"
+    }
+   ],
+   "health": {
+    "cur": 82,
+    "max_sev": "critical"
+   }
+  }
+ },
  "lisp": {
   "core1": {
    "sessions": [
