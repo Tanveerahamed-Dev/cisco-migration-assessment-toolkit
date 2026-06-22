@@ -421,6 +421,39 @@ Processor Pool Total:  690885376 Used:  168148848 Free:  522736528
  PID  TTY  Allocated      Freed    Holding    Getbufs    Retbufs Process
    0    0  295427864   95758288  185940776          0          0 *Init*
 """,
+    # SP/MPLS universality: core1 acts as an MPLS PE with a broken LDP session, a non-Established VPNv4
+    # peer, and a DOWN pseudowire.  Each fires one of the three MPLS detectors end-to-end.
+    # _d_mpls_ldp_health FIRES: core1 <-> 10.0.255.9 LDP session is Nonexistent (no label bindings).
+    # _d_mpls_l3vpn_health FIRES: core1 <-> 10.0.255.9 VPNv4 BGP peer is Idle (no VPN routes).
+    # _d_mpls_l2vpn_health FIRES: VC 300 (core1 <-> 10.0.255.9) is DOWN (customer L2 circuit broken).
+    # The healthy peers (Oper LDP, Established VPNv4, UP VC 200) confirm coverage-honest silence.
+    "show mpls ldp neighbor": """\
+Peer LDP Ident: 10.0.255.2:0; Local LDP Ident 10.0.255.1:0
+\tTCP connection: 10.0.255.2.646 - 10.0.255.1.11008
+\tState: Oper; Msgs sent/rcvd: 842/839; Downstream
+\tUp time: 4d05h
+\tLDP discovery sources:
+\t  GigabitEthernet1/0/1, Src IP addr: 10.0.255.2
+\tAddresses bound to peer LDP Ident:
+\t  10.0.255.2
+Peer LDP Ident: 10.0.255.9:0; Local LDP Ident 10.0.255.1:0
+\tTCP connection: (none)
+\tState: Nonexistent; Msgs sent/rcvd: 0/0; Downstream
+\tUp time: never
+""",
+    "show bgp vpnv4 unicast summary": """\
+BGP router identifier 10.0.255.1, local AS number 65000
+BGP table version is 14, main routing table version 14
+Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+10.0.255.2      4        65000     842     839       14    0    0 4d05h           6
+10.0.255.9      4        65000       0       0        1    0    0 never    Idle
+""",
+    "show mpls l2transport vc": """\
+Local intf     Local circuit              Dest address    VC ID    Status
+-------------  -------------------------  --------------  -------  ----------
+Gi1/0/2        Ethernet                   10.0.255.2      200      UP
+Gi1/0/3        Ethernet VLAN 300          10.0.255.9      300      DOWN
+""",
 }
 
 # --------------------------------------------------------------------------- #

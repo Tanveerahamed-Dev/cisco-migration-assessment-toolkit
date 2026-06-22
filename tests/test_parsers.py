@@ -736,6 +736,59 @@ def test_parse_evpn_summary_states(cp):
     assert parse.parse_evpn_summary("") == []
 
 
+def test_parse_bgp_vpnv4_summary_states(cp):
+    """Universality (MPLS L3VPN): parse_bgp_vpnv4_summary reads 'show bgp vpnv4 unicast summary' (same grid as
+    the EVPN/IPv4 summaries) so a non-Established VPNv4 PE peer -- no customer VRF routes exchanged -- is
+    detectable. The 'BGP router identifier' and header rows never become phantom neighbors."""
+    out = (
+        "BGP router identifier 10.0.255.1, local AS number 65000\n"
+        "Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "10.0.255.2      4        65000     842     839       14    0    0 4d05h           6\n"
+        "10.0.255.9      4        65000       0       0        1    0    0 never    Idle\n")
+    r = parse.parse_bgp_vpnv4_summary(out)
+    assert len(r) == 2
+    assert r[0] == {"neighbor": "10.0.255.2", "as": "65000", "state": "Established", "prefixes": 6}
+    assert r[1]["neighbor"] == "10.0.255.9" and r[1]["state"] == "Idle" and r[1]["prefixes"] == 0
+    assert parse.parse_bgp_vpnv4_summary("") == []
+
+
+def test_parse_mpls_ldp_neighbors_states(cp):
+    """Universality (MPLS LDP underlay): parse_mpls_ldp_neighbors reads 'show mpls ldp neighbor' so a session
+    not in 'Oper' (no transport label bindings exchanged -> LSPs blackhole) is detectable. The indented TCP /
+    discovery lines and the 'Addresses bound to peer LDP Ident' line never create phantom neighbors."""
+    out = (
+        "Peer LDP Ident: 10.0.255.2:0; Local LDP Ident 10.0.255.1:0\n"
+        "\tTCP connection: 10.0.255.2.646 - 10.0.255.1.11008\n"
+        "\tState: Oper; Msgs sent/rcvd: 842/839; Downstream\n"
+        "\tUp time: 4d05h\n"
+        "\tAddresses bound to peer LDP Ident:\n"
+        "\t  10.0.255.2\n"
+        "Peer LDP Ident: 10.0.255.9:0; Local LDP Ident 10.0.255.1:0\n"
+        "\tState: Nonexistent; Msgs sent/rcvd: 0/0; Downstream\n")
+    r = parse.parse_mpls_ldp_neighbors(out)
+    assert len(r) == 2
+    assert r[0] == {"peer": "10.0.255.2", "label_space": "0", "state": "Oper"}
+    assert r[1]["peer"] == "10.0.255.9" and r[1]["state"] == "Nonexistent"
+    assert parse.parse_mpls_ldp_neighbors("") == []
+
+
+def test_parse_mpls_l2vpn_vc_status(cp):
+    """Universality (MPLS L2VPN/pseudowire): parse_mpls_l2vpn_vc reads 'show mpls l2transport vc' and parses
+    each row from the RIGHT, so a 'Local circuit' value containing spaces still yields the correct VC ID /
+    dest / status, and a DOWN pseudowire (broken customer L2 circuit) is detectable. The header and the dashed
+    separator are skipped (their dest column is not an IPv4 address)."""
+    out = (
+        "Local intf     Local circuit              Dest address    VC ID    Status\n"
+        "-------------  -------------------------  --------------  -------  ----------\n"
+        "Gi1/0/2        Ethernet                   10.0.255.2      200      UP\n"
+        "Gi1/0/3        Ethernet VLAN 300          10.0.255.9      300      DOWN\n")
+    r = parse.parse_mpls_l2vpn_vc(out)
+    assert len(r) == 2
+    assert r[0] == {"local_intf": "Gi1/0/2", "dest": "10.0.255.2", "vc_id": "200", "status": "UP"}
+    assert r[1]["vc_id"] == "300" and r[1]["status"] == "DOWN" and r[1]["dest"] == "10.0.255.9"
+    assert parse.parse_mpls_l2vpn_vc("") == []
+
+
 def test_parse_nve_vni_states(cp):
     """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
     out = (

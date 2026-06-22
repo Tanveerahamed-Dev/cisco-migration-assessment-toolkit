@@ -174,6 +174,17 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "snapshot must publish per-device shadow-infra neighbours (build_undocumented_neighbors)"
     assert any(d.get("id") == "discover-undocumented-infrastructure-before-cutover" for d in _bp.get("decisions", [])), \
         "engine must assess shadow infra: an undocumented infra neighbour must fire _d_shadow_infra"
+    # UNIVERSALITY (SP/MPLS): core1 acts as an MPLS PE with a Nonexistent LDP session, an Idle VPNv4
+    # peer, and a DOWN pseudowire (all on 10.0.255.9 / VC 300).  The three MPLS detectors must fire
+    # end-to-end; the healthy peers (Oper LDP / Established VPNv4 / UP VC 200) prove no over-firing.
+    assert isinstance(snap.get("mpls"), dict) and snap["mpls"].get("core1", {}).get("ldp_neighbors"), \
+        "snapshot must publish per-device MPLS state (build_mpls -> parse_mpls_ldp_neighbors)"
+    assert any(d.get("id") == "mpls-ldp-session-down" for d in _bp.get("decisions", [])), \
+        "engine must assess MPLS LDP underlay: a Nonexistent LDP session must fire _d_mpls_ldp_health"
+    assert any(d.get("id") == "mpls-l3vpn-vpnv4-down" for d in _bp.get("decisions", [])), \
+        "engine must assess MPLS L3VPN: an Idle VPNv4 peer must fire _d_mpls_l3vpn_health"
+    assert any(d.get("id") == "mpls-l2vpn-pseudowire-down" for d in _bp.get("decisions", [])), \
+        "engine must assess MPLS L2VPN: a DOWN pseudowire must fire _d_mpls_l2vpn_health"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu

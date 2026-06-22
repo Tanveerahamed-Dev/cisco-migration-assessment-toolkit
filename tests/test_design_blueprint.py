@@ -1026,6 +1026,68 @@ def test_d_copp_drops_fires_on_dropping_class_only():
     assert da._d_copp_drops({}, da._signals({})) is None
 
 
+def test_d_mpls_ldp_health_fires_on_non_oper_session_only():
+    """Universality (SP/MPLS LDP underlay): a device with an LDP neighbor NOT in state 'Oper' fires
+    _d_mpls_ldp_health (no transport labels exchanged -> LSPs blackhole). Refutation: all sessions
+    Oper (normal healthy state) and absent mpls axis both stay silent (coverage-honest)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"mpls": {"pe1": {
+        "ldp_neighbors": [
+            {"peer": "10.0.255.2", "label_space": "0", "state": "Oper"},
+            {"peer": "10.0.255.9", "label_space": "0", "state": "Nonexistent"},
+        ]}}}
+    sig = da._signals(fire)
+    assert "10.0.255.9" in " ".join(sig.get("mpls_ldp_down", []))
+    dec = da._d_mpls_ldp_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "LDP" in str(dec)
+    assert "pe1" in dec["evidence"]["devices"]
+    clean = {"mpls": {"pe1": {"ldp_neighbors": [{"peer": "10.0.255.2", "label_space": "0", "state": "Oper"}]}}}
+    assert da._d_mpls_ldp_health(clean, da._signals(clean)) is None
+    assert da._d_mpls_ldp_health({}, da._signals({})) is None
+
+
+def test_d_mpls_l3vpn_health_fires_on_non_established_vpnv4_only():
+    """Universality (SP/MPLS L3VPN): a device with a VPNv4 MP-BGP neighbor not Established fires
+    _d_mpls_l3vpn_health (no VPN routes exchanged -> remote VRF sites blackhole). Refutation: all
+    VPNv4 neighbors Established and absent mpls axis both stay silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"mpls": {"pe1": {
+        "vpnv4_neighbors": [
+            {"neighbor": "10.0.255.2", "as": "65000", "state": "Established", "prefixes": 6},
+            {"neighbor": "10.0.255.9", "as": "65000", "state": "Idle", "prefixes": 0},
+        ]}}}
+    sig = da._signals(fire)
+    assert "10.0.255.9" in " ".join(sig.get("mpls_vpnv4_down", []))
+    dec = da._d_mpls_l3vpn_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "VPNv4" in str(dec)
+    assert "pe1" in dec["evidence"]["devices"]
+    clean = {"mpls": {"pe1": {"vpnv4_neighbors": [{"neighbor": "10.0.255.2", "as": "65000", "state": "Established", "prefixes": 6}]}}}
+    assert da._d_mpls_l3vpn_health(clean, da._signals(clean)) is None
+    assert da._d_mpls_l3vpn_health({}, da._signals({})) is None
+
+
+def test_d_mpls_l2vpn_health_fires_on_down_vc_only():
+    """Universality (SP/MPLS L2VPN/pseudowire): a device with a VC in state DOWN fires
+    _d_mpls_l2vpn_health (customer L2 circuit broken). Refutation: UP and STANDBY VCs (healthy
+    states) and absent mpls axis both stay silent (coverage-honest)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"mpls": {"pe1": {
+        "l2vpn_vcs": [
+            {"local_intf": "Gi1/0/2", "dest": "10.0.255.2", "vc_id": "200", "status": "UP"},
+            {"local_intf": "Gi1/0/3", "dest": "10.0.255.9", "vc_id": "300", "status": "DOWN"},
+        ]}}}
+    sig = da._signals(fire)
+    assert "300" in " ".join(sig.get("mpls_l2vc_down", []))
+    dec = da._d_mpls_l2vpn_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "pseudowire" in str(dec).lower()
+    assert "pe1" in dec["evidence"]["devices"]
+    standby = {"mpls": {"pe1": {"l2vpn_vcs": [{"local_intf": "Gi1/0/4", "dest": "10.0.255.2", "vc_id": "201", "status": "STANDBY"}]}}}
+    assert da._d_mpls_l2vpn_health(standby, da._signals(standby)) is None
+    up = {"mpls": {"pe1": {"l2vpn_vcs": [{"local_intf": "Gi1/0/2", "dest": "10.0.255.2", "vc_id": "200", "status": "UP"}]}}}
+    assert da._d_mpls_l2vpn_health(up, da._signals(up)) is None
+    assert da._d_mpls_l2vpn_health({}, da._signals({})) is None
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected

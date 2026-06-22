@@ -655,12 +655,12 @@ def parse_nve_vni(output: str) -> list:
     return out
 
 
-def parse_evpn_summary(output: str) -> list:
-    """'show bgp l2vpn evpn summary' -> [{neighbor, as, state, prefixes}]. The BGP-EVPN control plane that
-    distributes VXLAN MAC/IP (Type-2) and prefix (Type-5) routes between VTEPs; a neighbor not Established
-    means no overlay route exchange with that peer (the data plane can be Up while the control plane is
-    dark). State = 'Established' when the last column is a prefix count, else the BGP state word. []
-    when EVPN is not running. Tolerant; never raises."""
+def _parse_bgp_summary_rows(output: str) -> list:
+    """Shared parser for the standard BGP neighbor summary grid (address-family agnostic) that
+    'show bgp <afi> <safi> summary' prints identically for l2vpn evpn, vpnv4 unicast, ipv4 unicast, etc.:
+    'Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd' -> [{neighbor, as, state, prefixes}].
+    'state' is 'Established' when the final column is a prefix count, else the literal BGP state word
+    (Idle/Active/Connect/OpenSent/OpenConfirm). Tolerant; never raises."""
     out = []
     for raw in (output or "").splitlines():
         s = raw.strip()
@@ -671,6 +671,72 @@ def parse_evpn_summary(output: str) -> list:
         out.append({"neighbor": m.group(1), "as": m.group(2),
                     "state": "Established" if last.isdigit() else last,
                     "prefixes": int(last) if last.isdigit() else 0})
+    return out
+
+
+def parse_evpn_summary(output: str) -> list:
+    """'show bgp l2vpn evpn summary' -> [{neighbor, as, state, prefixes}]. The BGP-EVPN control plane that
+    distributes VXLAN MAC/IP (Type-2) and prefix (Type-5) routes between VTEPs; a neighbor not Established
+    means no overlay route exchange with that peer (the data plane can be Up while the control plane is
+    dark). State = 'Established' when the last column is a prefix count, else the BGP state word. []
+    when EVPN is not running. Tolerant; never raises."""
+    return _parse_bgp_summary_rows(output)
+
+
+def parse_bgp_vpnv4_summary(output: str) -> list:
+    """'show bgp vpnv4 unicast summary' (MPLS L3VPN PE) -> [{neighbor, as, state, prefixes}]. The MP-BGP
+    VPNv4 control plane carries per-VRF customer prefixes between PE routers; a neighbor not 'Established'
+    means no VPN routes are exchanged with that PE, so every VRF depending on it loses its remote sites
+    (the LDP/data plane can be Up while VPNv4 is dark). Same neighbor grid as the EVPN/IPv4 summaries.
+    Tolerant; never raises."""
+    return _parse_bgp_summary_rows(output)
+
+
+def parse_mpls_ldp_neighbors(output: str) -> list:
+    """'show mpls ldp neighbor' (IOS / IOS-XE) -> [{peer, label_space, state}] per LDP adjacency. LDP
+    distributes the transport labels for the MPLS underlay; the operational state is 'Oper'. Any other
+    state (Nonexistent, Initialized, OpenSent, OpenRec) means the session is not exchanging label bindings,
+    so LSPs through that peer -- and the L3VPN/L2VPN services riding them -- blackhole. [] when no MPLS/LDP
+    is configured. Tolerant; never raises."""
+    out = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        m = re.match(r"^Peer LDP Ident:\s*(\d+\.\d+\.\d+\.\d+):(\d+)", s, re.IGNORECASE)
+        if m:
+            if cur is not None:
+                out.append(cur)
+            cur = {"peer": m.group(1), "label_space": m.group(2), "state": ""}
+            continue
+        if cur is None:
+            continue
+        st = re.match(r"^State:\s*(\w+)", s, re.IGNORECASE)
+        if st:
+            cur["state"] = st.group(1)
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def parse_mpls_l2vpn_vc(output: str) -> list:
+    """'show mpls l2transport vc' (IOS / IOS-XE AToM/EoMPLS) -> [{local_intf, dest, vc_id, status}] per L2VPN
+    pseudowire. Status is UP (forwarding), DOWN (the pseudowire is signalled down -- the customer L2 circuit
+    is broken), or STANDBY (a healthy backup PW). The 'Local circuit' column contains spaces, so each data
+    row is parsed from the RIGHT (status, VC ID, dest IP) with the first token as the local interface; a row
+    whose dest is not an IPv4 address (header / separator) is skipped. [] when no L2VPN VC is configured.
+    Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s or re.match(r"^Local\s+intf", s, re.IGNORECASE):
+            continue
+        toks = s.split()
+        if len(toks) < 4:
+            continue
+        dest = toks[-3]
+        if not re.match(r"^\d+\.\d+\.\d+\.\d+$", dest) or not toks[-2].isdigit():
+            continue
+        out.append({"local_intf": toks[0], "dest": dest, "vc_id": toks[-2], "status": toks[-1]})
     return out
 
 
