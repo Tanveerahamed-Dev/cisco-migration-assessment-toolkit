@@ -150,11 +150,11 @@ def parse_copp_drops(output: str) -> list:
             continue
         if re.match(r"^police\b", s, re.IGNORECASE):
             continue
-        for key in ("conformed", "exceeded", "violated", "dropped"):
-            m = re.match(rf"^{key}\s+(\d+)\s+(packets|bytes)\b", s, re.IGNORECASE)
-            if m:
-                cur[key] += int(m.group(1))
-                break
+        # Scan ANYWHERE in the line (not just line-start) and allow multiple counters per line, so the NX-OS
+        # one-line 'module N : transmitted X bytes; dropped Y bytes;' form (counter mid-line) is captured -- not
+        # only the split-line NX-OS / classic IOS-XE forms. ('transmitted' is intentionally not summed.)
+        for kw, num in re.findall(r"\b(conformed|exceeded|violated|dropped)\s+(\d+)\s+(?:packets|bytes)\b", s, re.IGNORECASE):
+            cur[kw.lower()] += int(num)
     _flush()
     return out
 
@@ -166,7 +166,7 @@ def parse_copp_drops(output: str) -> list:
 # cannot be built -- multicast forwarding is broken (RFC 7761). SSM (232.0.0.0/8)
 # needs no RP, so an SSM-only domain is NOT a finding. Tolerant: empty/absent -> {}/[].
 _PIM_RP_LINE_RE = re.compile(r"\bRP[:\s]+(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE)
-_PIM_GROUP_RE = re.compile(r"Group\(s\)[:\s]+(\d+\.\d+\.\d+\.\d+/\d+)", re.IGNORECASE)
+_PIM_GROUP_RE = re.compile(r"(?:Group\(s\)|Group ranges?)[:\s]+(\d+\.\d+\.\d+\.\d+/\d+)", re.IGNORECASE)
 _PIM_INFOSRC_RE = re.compile(r"Info source:\s*(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE)
 
 
@@ -195,11 +195,12 @@ def parse_pim_rp_mapping(output: str) -> dict:
         s = raw.strip()
         if not s:
             continue
-        gm = _PIM_GROUP_RE.search(s)
-        if gm:
-            cur_group = gm.group(1)
-            if cur_group not in groups:
-                groups.append(cur_group)
+        gms = _PIM_GROUP_RE.findall(s)                     # NX-OS may list multiple comma-separated ranges per line
+        if gms:
+            cur_group = gms[0]
+            for g in gms:
+                if g not in groups:
+                    groups.append(g)
         rm = _PIM_RP_LINE_RE.search(s)
         if rm:
             rp = rm.group(1)
@@ -576,20 +577,31 @@ def parse_neighbors_detail(output: str, proto: str = "cdp") -> List[Dict[str, st
     if not output:
         return out
     if (proto or "").lower() == "lldp":
-        for ch in re.split(r"\n\s*Local Intf:\s*", "\n" + output):
+        # IOS/IOS-XE blocks begin with 'Local Intf:'; NX-OS has none and begins each block with 'Chassis id:'
+        # (its local interface is on a 'Local Port id:' line). Split on whichever delimits THIS output so an
+        # NX-OS capture is not collapsed into one Frankenstein record spanning every neighbour.
+        iosxe = bool(re.search(r"(?im)^\s*Local Intf:", output))
+        blocks = (re.split(r"\n\s*Local Intf:\s*", "\n" + output) if iosxe
+                  else re.split(r"(?im)^(?=[ \t]*Chassis id:)", output))
+        for ch in blocks:
             ch = ch.strip()
             if not ch:
                 continue
-            local = normalize_ifname(ch.splitlines()[0].strip().split()[0])
             rec = {"device_id": "", "platform": "", "capabilities": "", "mgmt_ip": "",
-                   "local_intf": local, "remote_port": "", "proto": "lldp"}
+                   "local_intf": "", "remote_port": "", "proto": "lldp"}
+            # IOS-XE: the split consumed 'Local Intf:', so the block's first token IS the local interface.
+            if iosxe:
+                rec["local_intf"] = normalize_ifname(ch.splitlines()[0].strip().split()[0])
             sys_caps = ""
             for line in ch.splitlines():
                 ls = line.strip()
+                m = re.match(r"^Local Port id:\s*(.+)$", ls, re.IGNORECASE)   # NX-OS local interface (by LABEL)
+                if m and not rec["local_intf"]:
+                    rec["local_intf"] = normalize_ifname(m.group(1).strip())
                 m = re.match(r"^System Name:\s*(.+)$", ls, re.IGNORECASE)
                 if m:
                     rec["device_id"] = m.group(1).strip()
-                m = re.match(r"^Port id:\s*(.+)$", ls, re.IGNORECASE)
+                m = re.match(r"^Port id:\s*(.+)$", ls, re.IGNORECASE)         # remote port ('Local Port id:' excluded)
                 if m and not rec["remote_port"]:
                     rec["remote_port"] = normalize_ifname(m.group(1).strip())
                 m = re.match(r"^System Description:\s*(.+)$", ls, re.IGNORECASE)
@@ -601,13 +613,14 @@ def parse_neighbors_detail(output: str, proto: str = "cdp") -> List[Dict[str, st
                 m = re.match(r"^System Capabilities:\s*(.+)$", ls, re.IGNORECASE)
                 if m:
                     sys_caps = m.group(1).strip()
+                # mgmt IP: NX-OS 'Management Address: x'; IOS-XE 'Management Addresses:' then an indented 'IP: x'
                 m = re.search(r"\b(\d+\.\d+\.\d+\.\d+)\b", ls)
-                if m and not rec["mgmt_ip"] and "management" in ls.lower():
+                if m and not rec["mgmt_ip"] and ("management" in ls.lower() or re.match(r"^IP:\s", ls, re.IGNORECASE)):
                     rec["mgmt_ip"] = m.group(1)
             if not rec["capabilities"]:
                 rec["capabilities"] = sys_caps
             caps = rec["capabilities"].upper().replace("N/A", "").strip()
-            if local and (rec["device_id"] or caps):
+            if rec["local_intf"] and (rec["device_id"] or caps):
                 out.append(rec)
         return out
     for sec in re.split(r"-{5,}", output):
@@ -627,7 +640,7 @@ def parse_neighbors_detail(output: str, proto: str = "cdp") -> List[Dict[str, st
                 if cm:
                     rec["capabilities"] = cm.group(1).strip()
                 rec["platform"] = re.split(r",\s*Capabilities", body, 1)[0].strip()
-            ipm = re.search(r"\bip address:\s*(\d+\.\d+\.\d+\.\d+)\b", ls, re.IGNORECASE)
+            ipm = re.search(r"\b(?:ip address|ipv4 address):\s*(\d+\.\d+\.\d+\.\d+)\b", ls, re.IGNORECASE)
             if ipm and not rec["mgmt_ip"]:
                 rec["mgmt_ip"] = ipm.group(1)
             if ls.lower().startswith("interface:"):
@@ -648,11 +661,20 @@ def parse_nve_vni(output: str) -> list:
     on the local VTEP (no overlay reachability for that segment). [] when no NVE. Tolerant; never raises."""
     out = []
     for raw in (output or "").splitlines():
+        # NX-OS: 'Interface VNI Multicast-group State Mode(CP/DP) Type(L2/L3) [BD/VRF]'
         m = re.match(r"^\s*nve\d+\s+(\d+)\s+(\S+)\s+(\w+)\s+(\w+)\s+(L[23])\b", raw, re.IGNORECASE)
         if m:
             mc = m.group(2)
             out.append({"vni": m.group(1), "mcast_group": "" if mc.lower() in ("n/a", "--", "unknown") else mc,
                         "state": m.group(3).capitalize(), "mode": m.group(4).upper(), "type": m.group(5).upper()})
+            continue
+        # IOS-XE Catalyst 9000: 'Interface VNI Multicast-group State Mode(L2CP/L3CP) vlan vrf' -- Type is fused
+        # into the Mode token and the column after it is the VLAN/BD number (not an L2/L3 type token).
+        m2 = re.match(r"^\s*nve\d+\s+(\d+)\s+(\S+)\s+(\w+)\s+L([23])CP\b", raw, re.IGNORECASE)
+        if m2:
+            mc = m2.group(2)
+            out.append({"vni": m2.group(1), "mcast_group": "" if mc.lower() in ("n/a", "--", "unknown") else mc,
+                        "state": m2.group(3).capitalize(), "mode": "CP", "type": "L" + m2.group(4)})
     return out
 
 
@@ -661,17 +683,33 @@ def _parse_bgp_summary_rows(output: str) -> list:
     'show bgp <afi> <safi> summary' prints identically for l2vpn evpn, vpnv4 unicast, ipv4 unicast, etc.:
     'Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd' -> [{neighbor, as, state, prefixes}].
     'state' is 'Established' when the final column is a prefix count, else the literal BGP state word
-    (Idle/Active/Connect/OpenSent/OpenConfirm). Tolerant; never raises."""
+    (Idle/Active/Connect/OpenSent/OpenConfirm). A wide Neighbor/AS (a 15-char IPv4, any IPv6 peer, or a
+    4-byte asdot AS) makes IOS/NX-OS WRAP the State/PfxRcd onto a continuation line; rows are stitched back
+    (head line + following numeric continuation) so a wrapped DOWN peer is never read as Established and IPv6
+    peers are not dropped. Tolerant; never raises."""
+    # a neighbor row STARTS with an IPv4 or IPv6 address as its first token (then optionally a %zone-id)
+    head = re.compile(r"^(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)(?:%\S+)?(?:\s|$)")
     out = []
-    for raw in (output or "").splitlines():
-        s = raw.strip()
-        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\d+)\b", s)   # Neighbor V AS ...
-        if not m:
-            continue
-        last = s.split()[-1]
-        out.append({"neighbor": m.group(1), "as": m.group(2),
+    cur = None
+
+    def _flush(toks):
+        if not toks or len(toks) < 10:        # the full grid is 10 columns; a header/partial fragment is dropped
+            return
+        last = toks[-1]
+        out.append({"neighbor": toks[0], "as": toks[2],
                     "state": "Established" if last.isdigit() else last,
                     "prefixes": int(last) if last.isdigit() else 0})
+
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if head.match(s):
+            _flush(cur)
+            cur = s.split()
+        elif cur is not None and len(cur) < 10 and re.match(r"^\d", s):
+            cur.extend(s.split())             # wrapped continuation: the numeric stats + State/PfxRcd
+    _flush(cur)
     return out
 
 
@@ -734,10 +772,14 @@ def parse_mpls_l2vpn_vc(output: str) -> list:
         toks = s.split()
         if len(toks) < 4:
             continue
-        dest = toks[-3]
-        if not re.match(r"^\d+\.\d+\.\d+\.\d+$", dest) or not toks[-2].isdigit():
+        # Anchor on the VC ID = the rightmost all-digit token preceded by an IPv4 dest; everything to its right
+        # is the status, so a two-word 'ADMIN DOWN' state is captured WHOLE instead of dropping the row entirely.
+        vc_i = next((i for i in range(len(toks) - 1, 1, -1)
+                     if toks[i].isdigit() and re.match(r"^\d+\.\d+\.\d+\.\d+$", toks[i - 1])), -1)
+        if vc_i < 0 or vc_i >= len(toks) - 1:
             continue
-        out.append({"local_intf": toks[0], "dest": dest, "vc_id": toks[-2], "status": toks[-1]})
+        out.append({"local_intf": toks[0], "dest": toks[vc_i - 1],
+                    "vc_id": toks[vc_i], "status": " ".join(toks[vc_i + 1:])})
     return out
 
 
@@ -833,10 +875,14 @@ def parse_dmvpn_peers(output: str) -> list:
     # Peer NBMA / Peer Tunnel are IPv4 (sample) or IPv6 NBMA on dual-stack; match either, then anchor State to
     # the UpDn HH:MM:SS time so only real peer rows match.  Attrb (trailing letters) is optional / best-effort.
     addr = r"[0-9A-Fa-f:.]+"
+    # UpDn Tm is HH:MM:SS (<24h) OR a Cisco compact uptime (1d05h / 3w0d / 48w0d / 2y34w) OR 'never'. Anchor
+    # State to it so legend / header / separator lines (which carry no such token) are skipped -- while an
+    # aged or never-up broken peer (the SINGLE most common real broken case) is NOT silently dropped.
+    updn = r"(?:\d{1,2}:\d{2}:\d{2}|\d+[ywd]\d+[ywdh]|\d+[ywdhms]|never)"
     row = re.compile(
         r"^\s*(?:\d+\s+)?(" + addr + r")\s+(" + addr + r")\s+"   # Peer NBMA Addr, Peer Tunnel Add
         r"([A-Za-z]+)\s+"                                          # State (UP / NHRP / IKE / down)
-        r"\d{1,2}:\d{2}:\d{2}"                                     # UpDn Tm  HH:MM:SS  (anchor)
+        + updn +                                                  # UpDn Tm (anchor)
         r"(?:\s+([A-Za-z0-9]+))?")                                 # Attrb (optional)
     for raw in (output or "").splitlines():
         s = raw.strip()
@@ -924,22 +970,26 @@ def parse_bfd_neighbors(output: str) -> list:
         return out
     ip_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]+:[0-9A-Fa-f:]+)$")
     for raw in lines[hdr_idx + 1:]:
-        if not raw.strip() or set(raw.strip()) <= {"-"}:
+        s = raw.strip()
+        if not s or set(s) <= {"-"}:
             continue
-        s0, e0 = cols["neighaddr"]
-        neigh = slice_col(raw, s0, e0).split()[0] if slice_col(raw, s0, e0) else ""
-        if not ip_re.match(neigh):                      # skip wrapped/continuation/non-data lines
+        toks = s.split()
+        # Anchor on the LD/RD discriminator pair (digits/digits): immune to the column DRIFT a wide 32-bit
+        # discriminator causes (header char-position slicing otherwise misreads State as the Holdown ')' or Int).
+        ld_i = next((i for i, t in enumerate(toks) if re.match(r"^\d+/\d+$", t)), -1)
+        if ld_i < 1 or not ip_re.match(toks[ld_i - 1]):     # need an IP NeighAddr immediately before LD/RD
             continue
-        st_s, st_e = cols["state"]
-        state = (slice_col(raw, st_s, st_e).split() or [""])[0]
-        ldrd = slice_col(raw, *cols["ldrd"]).split()[0] if "ldrd" in cols and slice_col(raw, *cols["ldrd"]) else ""
-        ld, _, rd = ldrd.partition("/")
-        iface = ""
-        if "interface" in cols:
-            itoks = slice_col(raw, *cols["interface"]).split()
-            iface = normalize_ifname(itoks[0]) if itoks else ""
-        out.append({"neighbor": neigh, "local_disc": ld, "remote_disc": rd,
-                    "state": state, "interface": iface})
+        ld, _, rd = toks[ld_i].partition("/")
+        rest = toks[ld_i + 1:]                               # RH/RS [Holdown(mult)] State [Int] [Vrf Type]
+        # State is the column AFTER the Holdown(mult) paren token (IOS-XE / NX-OS); classic IOS has no Holdown
+        # column, so State is one token after RH/RS. Read by TOKEN, never by header char-position.
+        hold_j = next((j for j, t in enumerate(rest) if "(" in t and ")" in t), -1)
+        st_j = hold_j + 1 if hold_j >= 0 else 1
+        if st_j >= len(rest):
+            continue
+        iface = next((normalize_ifname(t) for t in rest[st_j + 1:] if is_valid_iface(t)), "")
+        out.append({"neighbor": toks[ld_i - 1], "local_disc": ld, "remote_disc": rd,
+                    "state": rest[st_j], "interface": iface})
     return out
 
 
@@ -971,50 +1021,78 @@ def parse_ipv6_interface_addrs(output: str) -> list:
     # 'Global unicast address(es):' may carry the first address on the same line OR start a list whose
     # addresses are on the following indented continuation lines; track that we are inside that block.
     in_global = False
+    nx_addr = False                                          # inside an NX-OS bare 'IPv6 address:' block
     for raw in (output or "").splitlines():
         s = raw.strip()
         if not s:
-            in_global = False
+            in_global = nx_addr = False
             continue
-        # interface header: '<ifname> is [administratively ]up/down, line protocol is up/down'
+        # IOS / IOS-XE interface header: '<ifname> is [administratively ]up/down, line protocol is up/down'
         mh = re.match(r"^(\S+)\s+is\s+(administratively\s+down|up|down),"
                       r"\s+line protocol is\s+(up|down)", s, re.IGNORECASE)
-        if mh:
+        # NX-OS interface header: '<ifname>, Interface status: protocol-up/link-up/admin-up, iod: N'
+        mnx = re.match(r"^(\S+),\s+Interface status:\s+protocol-(up|down)/link-\S+/admin-(up|down)", s, re.IGNORECASE)
+        if mh or mnx:
             if cur is not None:
                 out.append(cur)
-            cur = {"interface": normalize_ifname(mh.group(1)),
-                   "admin_up": mh.group(2).lower() == "up",
-                   "proto_up": mh.group(3).lower() == "up",
-                   "ipv6_enabled": False, "link_local": "", "link_local_dup": False, "global": []}
-            in_global = False
+            if mh:
+                cur = {"interface": normalize_ifname(mh.group(1)),
+                       "admin_up": mh.group(2).lower() == "up", "proto_up": mh.group(3).lower() == "up",
+                       "ipv6_enabled": False, "link_local": "", "link_local_dup": False, "global": []}
+            else:   # NX-OS lists an interface in 'show ipv6 interface' ONLY when IPv6 is enabled on it
+                cur = {"interface": normalize_ifname(mnx.group(1)),
+                       "admin_up": mnx.group(3).lower() == "up", "proto_up": mnx.group(2).lower() == "up",
+                       "ipv6_enabled": True, "link_local": "", "link_local_dup": False, "global": []}
+            in_global = nx_addr = False
             continue
         if cur is None:
             continue
-        # 'IPv6 is enabled, link-local address is FE80::130 [DUPLICATE]'
-        ml = re.match(r"^IPv6 is (enabled|disabled)(?:,\s*link-local address is\s+(\S+)(.*))?$",
+        # IOS: 'IPv6 is enabled/disabled[, link-local address is FE80::130 [DUPLICATE]]' (the verb itself may be
+        # tentative/duplicate when the link-local fails DAD)
+        ml = re.match(r"^IPv6 is (enabled|disabled|tentative|duplicate)(?:,\s*link-local address is\s+(\S+)(.*))?$",
                       s, re.IGNORECASE)
         if ml:
-            cur["ipv6_enabled"] = ml.group(1).lower() == "enabled"
+            cur["ipv6_enabled"] = ml.group(1).lower() != "disabled"
             if ml.group(2):
                 cur["link_local"] = ml.group(2)
-                cur["link_local_dup"] = _dad(ml.group(3)) == "duplicate"
-            in_global = False
+                cur["link_local_dup"] = _dad(ml.group(3)) == "duplicate" or ml.group(1).lower() == "duplicate"
+            in_global = nx_addr = False
             continue
-        # 'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'  (first addr inline)
+        # NX-OS: 'IPv6 link-local address: fe80::1 (default) [VALID]'
+        mnl = re.match(r"^IPv6 link-local address:\s+(\S+)(?:\s+\([^)]*\))?\s*(\[[^\]]*\])?", s, re.IGNORECASE)
+        if mnl:
+            cur["link_local"] = mnl.group(1)
+            cur["link_local_dup"] = _dad(mnl.group(2) or "") == "duplicate"
+            in_global = nx_addr = False
+            continue
+        # IOS: 'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'  (first addr inline)
         mg = re.match(r"^Global unicast address\(es\):\s*(.+)$", s, re.IGNORECASE)
         if mg:
             in_global = True
+            nx_addr = False
             rest = mg.group(1).strip()
             if rest:  # an address sits on the header line itself
                 _addr_line(cur, rest, _dad)
             continue
-        # indented address-only continuation under the Global block:
+        # NX-OS: bare 'IPv6 address:' header, with the addresses on the FOLLOWING indented lines
+        if re.match(r"^IPv6 address:\s*$", s, re.IGNORECASE):
+            nx_addr = True
+            in_global = False
+            continue
+        # NX-OS indented address line: '2001:db8:1::1/64 [VALID|DUPLICATE|TENTATIVE]'
+        if nx_addr:
+            mna = re.match(r"^([0-9A-Fa-f:]+)/(\d+)\s*(\[[^\]]*\])?", s)
+            if mna and ":" in mna.group(1):
+                cur["global"].append({"addr": mna.group(1), "subnet": "", "dad_state": _dad(mna.group(3) or "")})
+                continue
+            nx_addr = False     # a non-address line ends the NX-OS address block
+        # IOS indented address-only continuation under the Global block:
         #   '1:5::1, subnet is 1:5::/64 [DUPLICATE]'  or  '1:5::1 [TENTATIVE]'
         if in_global and re.match(r"^[0-9A-Fa-f:]+(?:,|\s|$)", s):
             _addr_line(cur, s, _dad)
             continue
-        # any other field line ends the global continuation context but keeps the interface block open
-        in_global = False
+        # any other field line ends the continuation contexts but keeps the interface block open
+        in_global = nx_addr = False
     if cur is not None:
         out.append(cur)
     return out
@@ -1065,6 +1143,15 @@ def parse_ipv6_route_summary(output: str) -> dict:
         mc = re.match(r"\s*([A-Za-z][\w ]*?)\s+(\d+)\s+\d+\s+\d+\s+\d+\s*$", raw)
         if mc and mc.group(1).strip().lower() not in ("total", "route source"):
             out["by_source"].setdefault(mc.group(1).strip().lower(), int(mc.group(2)))
+    # Number-first comma list on its OWN line: '  37 local, 35 connected, 25 static, 0 RIP, 160 BGP' (the real
+    # IOS/IOS-XE 'show ipv6 route summary' form; the inline branch above only fires when the list trails a colon).
+    for raw in tail.splitlines():
+        if ":" in raw:                              # skip 'Number of prefixes:' and the '/NN: c' prefix-length lines
+            continue
+        for piece in raw.split(","):
+            mnf = re.match(r"\s*(\d+)\s+([A-Za-z][\w /-]*?)\s*$", piece)
+            if mnf:
+                out["by_source"].setdefault(mnf.group(2).strip().lower(), int(mnf.group(1)))
     if "::/0" in txt:
         out["has_default"] = True
     return out
@@ -1098,25 +1185,10 @@ def parse_bgp_ipv6_summary(output: str) -> list:
     """'show bgp ipv6 unicast summary' (IOS / IOS-XE / NX-OS) -> [{neighbor, as, state, prefixes}] per IPv6 BGP
     peer. The session is Established ONLY when the final 'State/PfxRcd' column is NUMERIC (the accepted-prefix
     count); any state WORD there (Idle / Active / Connect / OpenSent / OpenConfirm / Idle(Admin)) means the peer
-    is not Established and exchanges no IPv6 routes. The 'Neighbor' value is an IPv6 address (may wrap to its own
-    line on IOS when long, but the common single-line form is parsed here). Header / identifier lines are skipped
-    (their first token is not an IPv6 address). [] when no IPv6 BGP is configured. Tolerant; never raises."""
-    out = []
-    for raw in (output or "").splitlines():
-        s = raw.strip()
-        if not s or s.lower().startswith("neighbor") or not re.match(r"^[0-9A-Fa-f:]+:", s):
-            continue
-        toks = s.split()
-        # need at least: nbr V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd
-        if len(toks) < 10:
-            continue
-        nbr, last = toks[0], toks[-1]
-        asn = toks[2] if toks[2].isdigit() else ""
-        if last.isdigit():
-            out.append({"neighbor": nbr, "as": asn, "state": "Established", "prefixes": int(last)})
-        else:
-            out.append({"neighbor": nbr, "as": asn, "state": last, "prefixes": 0})
-    return out
+    is not Established and exchanges no IPv6 routes. The 'Neighbor' value is an IPv6 address that, when long,
+    wraps to its own line with the grid on the next line; both the single-line and wrapped forms are handled
+    (delegated to the shared BGP-summary row parser). [] when no IPv6 BGP is configured. Tolerant; never raises."""
+    return _parse_bgp_summary_rows(output)
 
 
 def _aci_imdata(output: str, cls: str) -> list:
@@ -1307,16 +1379,25 @@ def parse_sdwan_omp_counters(output: str) -> list:
 
 
 def parse_nve_peers(output: str) -> list:
-    """'show nve peers' (NX-OS VXLAN) -> [{interface, peer_ip, state, learn_type}]. State Up/Down; learn-type
-    CP (control-plane / BGP-EVPN) vs DP (flood-and-learn). [] when the device runs no NVE/VXLAN. Tolerant;
-    never raises. The engine's OWN target fabric (VXLAN-EVPN) was previously blind -- this is its first
-    data-plane visibility (a down VTEP peer partitions the overlay)."""
+    """'show nve peers' (NX-OS AND IOS-XE Catalyst 9000 VXLAN) -> [{interface, peer_ip, state, learn_type}].
+    State Up/Down; learn-type CP (control-plane / BGP-EVPN) vs DP (flood-and-learn). A down VTEP peer partitions
+    the overlay. Two on-wire layouts: NX-OS 'Interface Peer-IP State LearnType ...' (the local IP is column 2)
+    and IOS-XE 'Interface VNI Type(L2/L3CP) Peer-IP RMAC/Num_RTs eVNI state flags uptime' (column 2 is the VNI,
+    the IP is column 4). [] when the device runs no NVE/VXLAN. Tolerant; never raises."""
     out = []
+    ip = r"(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)"
     for raw in (output or "").splitlines():
-        m = re.match(r"^\s*(nve\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\w+)\s+(\w+)", raw, re.IGNORECASE)
+        # NX-OS: 'Interface Peer-IP State [LearnType] ...' -- the peer IP is the 2nd token
+        m = re.match(r"^\s*(nve\d+)\s+(" + ip + r")\s+(\w+)(?:\s+(\w+))?", raw, re.IGNORECASE)
         if m:
             out.append({"interface": m.group(1).lower(), "peer_ip": m.group(2),
-                        "state": m.group(3).capitalize(), "learn_type": m.group(4).upper()})
+                        "state": m.group(3).capitalize(), "learn_type": (m.group(4) or "").upper()})
+            continue
+        # IOS-XE Catalyst 9000: 'Interface VNI Type(L2/L3CP) Peer-IP RMAC/Num_RTs eVNI state flags uptime'
+        m2 = re.match(r"^\s*(nve\d+)\s+\d+\s+L[23]CP\s+(" + ip + r")\s+\S+\s+\d+\s+(\w+)", raw, re.IGNORECASE)
+        if m2:
+            out.append({"interface": m2.group(1).lower(), "peer_ip": m2.group(2),
+                        "state": m2.group(3).capitalize(), "learn_type": "CP"})
     return out
 
 
@@ -1330,12 +1411,13 @@ def parse_hsrp_detail(output: str) -> Dict[tuple, dict]:
     cur = None
     for raw in (output or "").splitlines():
         s = raw.strip()
-        h = re.match(r"^(\S+)\s+-\s+Group\s+(\d+)\s*$", s)           # 'GigabitEthernet0/1 - Group 10'
+        h = re.match(r"^(\S+)\s+-\s+Group\s+(\d+)\b", s)             # 'Gi0/1 - Group 10' / 'Vlan50 - Group 50 (version 2)'
         if h:
             cur = (normalize_ifname(h.group(1)), h.group(2))
+            ver = re.search(r"\(version\s+(\d+)\)", s)               # HSRPv2 headers carry a '(version N)' suffix
             res[cur] = {"state": "", "priority": None, "cfg_priority": None, "preempt": False,
                         "preempt_delay": None, "vip": "", "vmac": "", "hello": None, "hold": None,
-                        "standby_ip": "", "track": [], "version": 1}
+                        "standby_ip": "", "track": [], "version": int(ver.group(1)) if ver else 1}
             continue
         if cur is None:
             continue

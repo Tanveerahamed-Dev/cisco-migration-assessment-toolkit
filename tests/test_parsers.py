@@ -693,7 +693,12 @@ def test_parse_hsrp_detail_captures_priority_preempt_track(cp):
         "  Virtual IP address is 10.1.2.1\n"
         "  Active virtual MAC address is 0000.0c07.ac14\n"
         "  Preemption disabled\n"
-        "  Priority 100 (configured 100)\n")
+        "  Priority 100 (configured 100)\n"
+        "Vlan50 - Group 50 (version 2)\n"
+        "  State is Standby\n"
+        "  Virtual IP address is 10.1.50.1\n"
+        "  Preemption enabled\n"
+        "  Priority 120 (configured 120)\n")
     r = parse.parse_hsrp_detail(out)
     by_grp = {k[1]: v for k, v in r.items()}
     g10 = by_grp["10"]
@@ -703,7 +708,39 @@ def test_parse_hsrp_detail_captures_priority_preempt_track(cp):
     g20 = by_grp["20"]
     # the senior red flags [HISTORY-REDACTED] could never surface: an Active group with NO preemption and NO tracking
     assert g20["preempt"] is False and g20["track"] == [] and g20["priority"] == 100
+    # HSRPv2 header carries a '(version 2)' suffix -- the group must still be captured (not dropped) + version read.
+    g50 = by_grp["50"]
+    assert g50["state"] == "Standby" and g50["priority"] == 120 and g50["version"] == 2 and g50["preempt"] is True
     assert parse.parse_hsrp_detail("") == {}
+
+
+def test_parse_ipv6_route_summary_number_first(cp):
+    """parse_ipv6_route_summary must read the real IOS/IOS-XE number-first comma list ('37 local, 35 connected,
+    ...') which sits on its OWN line (not after an inline colon). Previously by_source came back EMPTY so the
+    per-source breakdown was invisible even though the routing table was 'present'."""
+    out = (
+        "IPv6 Routing Table Summary - 257 entries\n"
+        "  37 local, 35 connected, 25 static, 0 RIP, 160 BGP\n"
+        "  Number of prefixes:\n"
+        "    /16: 1, /64: 200, /128: 56\n")
+    r = parse.parse_ipv6_route_summary(out)
+    assert r["present"] is True and r["total"] == 257
+    assert r["by_source"]["local"] == 37 and r["by_source"]["connected"] == 35
+    assert r["by_source"]["static"] == 25 and r["by_source"]["bgp"] == 160 and r["by_source"]["rip"] == 0
+    assert parse.parse_ipv6_route_summary("") == {}
+
+
+def test_parse_pim_rp_mapping_nxos_group_ranges_ssm_only(cp):
+    """NX-OS prints 'Group ranges:' (not IOS 'Group(s)'). The old regex missed it -> groups=[] -> the SSM-only
+    safety valve was dead -> a healthy SSM-only Nexus (0 ASM RP; SSM needs none) FALSE-POSITIVE fired 'PIM up,
+    no RP'. The NX-OS wording must populate groups so ssm_only is recognised and the cry-wolf is suppressed."""
+    nxos_ssm = (
+        "PIM Group-to-RP Mappings and Expiry Times\n"
+        "Group ranges: 232.0.0.0/8\n"
+        "  (SSM)\n")
+    r = parse.parse_pim_rp_mapping(nxos_ssm)
+    assert r["present"] is True and r["rp_count"] == 0
+    assert r["groups"] == ["232.0.0.0/8"] and r["ssm_only"] is True
 
 
 def test_parse_nve_peers_states(cp):
@@ -718,6 +755,16 @@ def test_parse_nve_peers_states(cp):
     assert len(r) == 2
     assert r[0] == {"interface": "nve1", "peer_ip": "10.0.0.1", "state": "Up", "learn_type": "CP"}
     assert r[1]["state"] == "Down" and r[1]["peer_ip"] == "10.0.0.2"
+    # IOS-XE Catalyst 9000 layout: 'Interface VNI Type Peer-IP RMAC/Num_RTs eVNI state flags uptime' -- the IP is
+    # column 4 (column 2 is the VNI), so the NX-OS regex returned [] for the entire IOS-XE VXLAN-EVPN fleet.
+    iosxe = (
+        "Interface VNI       Type Peer-IP        RMAC/Num_RTs   eVNI    state flags UP time\n"
+        "nve1      50001     L2CP 10.1.1.1       a0b1.c2d3.e4f5 50001   UP    A/M/4 1d05h\n"
+        "nve1      50002     L3CP 10.1.1.2       a0b1.c2d3.e4f6 50002   DOWN  A/-/4 00:00:10\n")
+    byi = {x["peer_ip"]: x for x in parse.parse_nve_peers(iosxe)}
+    assert set(byi) == {"10.1.1.1", "10.1.1.2"}
+    assert byi["10.1.1.1"]["state"] == "Up" and byi["10.1.1.1"]["learn_type"] == "CP"
+    assert byi["10.1.1.2"]["state"] == "Down"
     assert parse.parse_nve_peers("") == []
 
 
@@ -752,6 +799,48 @@ def test_parse_bgp_vpnv4_summary_states(cp):
     assert parse.parse_bgp_vpnv4_summary("") == []
 
 
+def test_parse_bgp_summary_wrapped_ipv6_and_asdot(cp):
+    """Refutes the wrapped-row FALSE-HEALTH bug. When the Neighbor/AS columns are wide (a 15-char IPv4, any
+    IPv6 peer, or a 4-byte asdot AS), real 'show bgp ... summary' wraps the State/PfxRcd onto a continuation
+    line. The old parser read the last token of line 1 (an AS number) as the state and fabricated
+    'Established' for a genuinely DOWN peer -- and dropped IPv6 peers entirely (IPv4-only anchor). The down
+    peers must surface as Idle, IPv6/asdot peers must not vanish, and the asdot AS must be captured whole."""
+    out = (
+        "BGP router identifier 10.0.0.7, local AS number 65001\n"
+        "Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        # long 15-char IPv4: Neighbor/V/AS on line 1, stats+State wrap to line 2 (Idle == DOWN)
+        "192.168.250.254 4 65001\n"
+        "                         984    1086       11    0    0 16:16:33 Idle\n"
+        # IPv6 peer: address alone on line 1, the whole grid wraps to line 2 (Idle == DOWN)
+        "FEC0:C0FF:EE00::11:2\n"
+        "                4 65100     984    1086       11    0    0 16:16:33 Idle\n"
+        # asdot 4-byte AS, single line, Established -> AS captured whole ('1.2'), not truncated to '1'
+        "10.0.0.9        4  1.2     5000    5000      120    0    0 1d05h        240\n")
+    r = parse._parse_bgp_summary_rows(out)
+    by = {x["neighbor"]: x for x in r}
+    assert set(by) == {"192.168.250.254", "FEC0:C0FF:EE00::11:2", "10.0.0.9"}, by
+    assert by["192.168.250.254"]["state"] == "Idle" and by["192.168.250.254"]["prefixes"] == 0
+    assert by["FEC0:C0FF:EE00::11:2"]["state"] == "Idle"
+    assert by["10.0.0.9"]["state"] == "Established" and by["10.0.0.9"]["prefixes"] == 240
+    assert by["10.0.0.9"]["as"] == "1.2"
+
+
+def test_parse_bgp_ipv6_summary_wrapped(cp):
+    """parse_bgp_ipv6_summary must not drop a wrapped long-IPv6 peer: real 'show bgp ipv6 unicast summary' prints
+    a long neighbor on its own line with the V/AS/.../State grid wrapped to the next line; a down (Idle) peer in
+    that form previously VANISHED (read as 'no IPv6 BGP'). It must surface as Idle."""
+    out = (
+        "BGP router identifier 10.0.0.7, local AS number 65001\n"
+        "Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "2001:DB8::1     4 65001    5000    5000      120    0    0 1d05h        240\n"
+        "FEC0:C0FF:EE00::11:2\n"
+        "                4 65100     984    1086       11    0    0 16:16:33 Idle\n")
+    by = {x["neighbor"]: x for x in parse.parse_bgp_ipv6_summary(out)}
+    assert by["2001:DB8::1"]["state"] == "Established" and by["2001:DB8::1"]["prefixes"] == 240
+    assert by["FEC0:C0FF:EE00::11:2"]["state"] == "Idle"
+    assert parse.parse_bgp_ipv6_summary("") == []
+
+
 def test_parse_mpls_ldp_neighbors_states(cp):
     """Universality (MPLS LDP underlay): parse_mpls_ldp_neighbors reads 'show mpls ldp neighbor' so a session
     not in 'Oper' (no transport label bindings exchanged -> LSPs blackhole) is detectable. The indented TCP /
@@ -781,11 +870,14 @@ def test_parse_mpls_l2vpn_vc_status(cp):
         "Local intf     Local circuit              Dest address    VC ID    Status\n"
         "-------------  -------------------------  --------------  -------  ----------\n"
         "Gi1/0/2        Ethernet                   10.0.255.2      200      UP\n"
-        "Gi1/0/3        Ethernet VLAN 300          10.0.255.9      300      DOWN\n")
+        "Gi1/0/3        Ethernet VLAN 300          10.0.255.9      300      DOWN\n"
+        "Gi1/0/4        Ethernet                   10.0.255.10     400      ADMIN DOWN\n")
     r = parse.parse_mpls_l2vpn_vc(out)
-    assert len(r) == 2
+    assert len(r) == 3
     assert r[0] == {"local_intf": "Gi1/0/2", "dest": "10.0.255.2", "vc_id": "200", "status": "UP"}
     assert r[1]["vc_id"] == "300" and r[1]["status"] == "DOWN" and r[1]["dest"] == "10.0.255.9"
+    # the two-word 'ADMIN DOWN' state must be captured WHOLE (the row was previously dropped entirely)
+    assert r[2]["vc_id"] == "400" and r[2]["status"] == "ADMIN DOWN" and r[2]["dest"] == "10.0.255.10"
     assert parse.parse_mpls_l2vpn_vc("") == []
 
 
@@ -872,14 +964,19 @@ def test_parse_dmvpn_peers_states(cp):
         " ----- --------------- --------------- ----- -------- -----\n"
         "     1 17.17.17.1             10.0.1.1    UP 00:27:26     S\n"
         "     1 27.27.27.2             10.0.1.2   IKE 00:16:28     S\n"
-        "     1 37.37.37.3             10.0.1.3  NHRP 00:00:04     D\n")
+        "     1 37.37.37.3             10.0.1.3  NHRP 00:00:04     D\n"
+        "     1 47.47.47.4             10.0.1.4  NHRP 48w0d        D\n"
+        "     1 57.57.57.5             10.0.1.5  NHRP never        D\n")
     r = parse.parse_dmvpn_peers(out)
-    assert len(r) == 3
+    assert len(r) == 5
     assert r[0] == {"interface": "Tunnel1", "nbma": "17.17.17.1", "tunnel_ip": "10.0.1.1", "state": "UP", "attrb": "S"}
     assert r[1]["tunnel_ip"] == "10.0.1.2" and r[1]["state"] == "IKE"
     assert r[2]["tunnel_ip"] == "10.0.1.3" and r[2]["state"] == "NHRP"
-    # Legend / header / dashed-separator lines must NOT become peers (only the 3 real rows).
-    assert [p["state"] for p in r] == ["UP", "IKE", "NHRP"]
+    # Aged (>=24h -> '48w0d', no HH:MM:SS) and 'never' UpDn times must NOT drop a broken peer (most common real case).
+    assert r[3]["tunnel_ip"] == "10.0.1.4" and r[3]["state"] == "NHRP"
+    assert r[4]["tunnel_ip"] == "10.0.1.5" and r[4]["state"] == "NHRP"
+    # Legend / header / dashed-separator lines must NOT become peers (only the 5 real rows).
+    assert [p["state"] for p in r] == ["UP", "IKE", "NHRP", "NHRP", "NHRP"]
     assert parse.parse_dmvpn_peers("") == []
     assert parse.parse_dmvpn_peers("% Incomplete command.") == []
 
@@ -935,6 +1032,16 @@ def test_parse_bfd_neighbors_state_by_column_not_rhrs(cp):
         "10.0.0.2                           1/1     Up        Up        Fa0/0\n")
     ri = parse.parse_bfd_neighbors(ios)
     assert len(ri) == 1 and ri[0]["neighbor"] == "10.0.0.2" and ri[0]["state"] == "Up" and ri[0]["interface"] == "Fa0/0"
+    # Real-world COLUMN DRIFT: a wide 32-bit discriminator overflows the LD/RD column, shifting every right-hand
+    # column past its header position, so reading State by header CHAR-POSITION misreads it (lands on Holdown/Int).
+    # Reading State by TOKEN (the column right after the Holdown paren token) stays correct under any drift.
+    drift = (
+        "OurAddr      NeighAddr    LD/RD       RH/RS   Holdown(mult)   State    Int       Vrf   Type\n"
+        "2.16.2.1     2.16.2.2     1090519042/1090519042   Up    9193(5)    Up     Eth1/1    default  SH\n"
+        "2.16.2.1     2.16.2.3     1090519044/1090519043   Up    8800(5)    Down   Eth2/1    default  SH\n")
+    byd = {x["neighbor"]: x for x in parse.parse_bfd_neighbors(drift)}
+    assert byd["2.16.2.2"]["state"] == "Up" and byd["2.16.2.2"]["interface"] == "Eth1/1"
+    assert byd["2.16.2.3"]["state"] == "Down"   # the genuinely broken session must NOT be misread or lost
     assert parse.parse_bfd_neighbors("") == []
     assert parse.parse_bfd_neighbors("% BFD is not enabled\n") == []
 
@@ -975,6 +1082,34 @@ def test_parse_ipv6_interface_addrs_dad_state(cp):
     # admin-down IPv6-disabled interface: enabled False, no addresses, no false duplicate
     assert by["Gi0/2"]["ipv6_enabled"] is False and by["Gi0/2"]["global"] == []
     assert parse.parse_ipv6_interface_addrs("") == []
+
+
+def test_parse_ipv6_interface_addrs_nxos_dad(cp):
+    """parse_ipv6_interface_addrs must read the NX-OS 'show ipv6 interface' format (its '<intf>, Interface
+    status: protocol-.../admin-...' header, the bare 'IPv6 address:' block, and 'IPv6 link-local address:'
+    line all differ from IOS). Previously it returned [] for EVERY Nexus device -> a [DUPLICATE] DAD failure on
+    the Nexus core ([HISTORY-REDACTED]'s DS/CS tier is Nexus) was silently reported as clean."""
+    out = (
+        "Ethernet2/1, Interface status: protocol-up/link-up/admin-up, iod: 36\n"
+        "  IPv6 address:\n"
+        "    2001:db8:1::1/64 [VALID]\n"
+        "    2001:db8:1::99/64 [DUPLICATE]\n"
+        "  IPv6 link-local address: fe80::1 (default) [VALID]\n"
+        "  IPv6 multicast routing is disabled\n"
+        "Vlan20, Interface status: protocol-up/link-up/admin-up, iod: 40\n"
+        "  IPv6 address:\n"
+        "    2001:db8:20::1/64 [VALID]\n"
+        "  IPv6 link-local address: fe80::20 [DUPLICATE]\n")
+    r = parse.parse_ipv6_interface_addrs(out)
+    by = {x["interface"]: x for x in r}
+    assert set(by) >= {"Eth2/1", "Vlan20"}
+    e = by["Eth2/1"]
+    assert e["ipv6_enabled"] is True
+    states = {g["addr"]: g["dad_state"] for g in e["global"]}
+    assert states == {"2001:db8:1::1": "ok", "2001:db8:1::99": "duplicate"}
+    assert e["link_local_dup"] is False
+    # a DUPLICATE link-local (disables IPv6 packet processing on the whole interface) must be flagged
+    assert by["Vlan20"]["link_local_dup"] is True
 
 
 def test_parse_ipv6_routing_plane(cp):
@@ -1146,6 +1281,15 @@ def test_parse_nve_vni_states(cp):
     assert len(r) == 2
     assert r[0] == {"vni": "10010", "mcast_group": "225.1.1.10", "state": "Up", "mode": "CP", "type": "L2"}
     assert r[1]["vni"] == "50000" and r[1]["state"] == "Down" and r[1]["mcast_group"] == ""
+    # IOS-XE Catalyst 9000: Type is fused into the Mode (L2CP/L3CP) and the next column is the VLAN/BD number,
+    # so the NX-OS regex (which needs a bare L2/L3 token there) returned [] for every IOS-XE VTEP.
+    iosxe = (
+        "Interface VNI       Multicast-group   VNI state Mode VLAN cfg vrf\n"
+        "nve1      10306     N/A               Up        L3CP 306      CLI\n"
+        "nve1      20100     239.1.1.1         Down      L2CP 100      -\n")
+    byv = {x["vni"]: x for x in parse.parse_nve_vni(iosxe)}
+    assert byv["10306"]["state"] == "Up" and byv["10306"]["type"] == "L3" and byv["10306"]["mode"] == "CP"
+    assert byv["20100"]["state"] == "Down" and byv["20100"]["type"] == "L2" and byv["20100"]["mcast_group"] == "239.1.1.1"
     assert parse.parse_nve_vni("") == []
 
 
@@ -1185,6 +1329,16 @@ def test_parse_copp_drops_nxos_and_iosxe(cp):
     byx = {c["class"]: c for c in parse.parse_copp_drops(iosxe)}
     assert byx["copp-class-bgp"]["exceeded"] == 5 and byx["copp-class-bgp"]["violated"] == 2
     assert byx["copp-class-bgp"]["drops"] == 7 and byx["class-default"]["drops"] == 0
+    # NX-OS one-line module form: 'module N : transmitted X bytes; dropped Y bytes;' -- the drop counter is NOT
+    # at line start, so the old ^-anchored match silently missed it (CoPP-drop blindness on Nexus, CoPP default).
+    nx_oneline = (
+        "    class-map copp-system-p-class-important (match-any)\n"
+        "      police cir 2500 kbps bc 1000 ms\n"
+        "      module 1 : transmitted 13818516 bytes; dropped 84348 bytes;\n"
+        "      module 2 : transmitted 0 bytes; dropped 0 bytes;\n")
+    byo = {c["class"]: c for c in parse.parse_copp_drops(nx_oneline)}
+    assert byo["copp-system-p-class-important"]["dropped"] == 84348
+    assert byo["copp-system-p-class-important"]["drops"] == 84348
     assert parse.parse_copp_drops("") == [] and parse.parse_copp_drops("% policy-map not configured\n") == []
 
 
@@ -1232,10 +1386,13 @@ def test_parse_pim_neighbors_ios_and_nxos(cp):
         Address                                                            Prio/Mode
         192.168.12.2      GigabitEthernet0/1       00:00:17/00:01:27 v2    1 / DR S P G
         192.168.14.4      GigabitEthernet0/2       00:00:15/00:01:29 v2    1 / DR S P G
+        3.3.3.3           Tunnel0                  00:16:40/00:01:20 v2    1 / DR S P G
     """)
     rows = parse.parse_pim_neighbors(ios)
-    assert len(rows) == 2 and rows[0]["neighbor"] == "192.168.12.2" and rows[0]["interface"] == "Gi0/1"
+    assert len(rows) == 3 and rows[0]["neighbor"] == "192.168.12.2" and rows[0]["interface"] == "Gi0/1"
     assert rows[0]["uptime"] == "00:00:17"
+    # PIM over a Tunnel (DMVPN/mGRE multicast WAN) must NOT be dropped by the interface-validity gate
+    assert rows[2]["interface"] == "Tu0" and rows[2]["neighbor"] == "3.3.3.3"
     nxos = textwrap.dedent("""\
         PIM Neighbor Status for VRF "default"
         Neighbor       Interface            Uptime    Expires   DR    Bidir-  BFD
@@ -1507,3 +1664,41 @@ def test_parse_neighbors_detail_cdp_and_lldp_keep_capabilities(cp):
     assert rl[0]["local_intf"] == "Gi1/0/47" and rl[0]["remote_port"] == "Gi1/0/1" and rl[0]["proto"] == "lldp"
     assert rl[1]["device_id"] == "phone-2" and rl[1]["capabilities"] == "T"
     assert parse.parse_neighbors_detail("", "lldp") == []
+
+
+def test_parse_neighbors_detail_nxos(cp):
+    """NX-OS LLDP detail has NO 'Local Intf:' (the local interface is on a 'Local Port id:' line and each block
+    begins with 'Chassis id:'). The old split-on-'Local Intf:' returned ONE Frankenstein record for N neighbours,
+    feeding the shadow-infra detector garbage on every Nexus switch ([HISTORY-REDACTED]'s core is Nexus). NX-OS CDP also reports
+    'IPv4 Address:' (not IOS 'IP address:'). Both must parse one correct record per neighbour."""
+    lldp = (
+        "Chassis id: 547f.eeab.0001\n"
+        "Port id: Ethernet1/1\n"
+        "Local Port id: Eth1/2\n"
+        "System Name: spine-1\n"
+        "System Description: Cisco Nexus Operating System (NX-OS) Software\n"
+        "Enabled Capabilities: B, R\n"
+        "Management Address: 10.0.0.1\n"
+        "\n"
+        "Chassis id: 547f.eeab.0002\n"
+        "Port id: Ethernet2/2\n"
+        "Local Port id: Eth2/2\n"
+        "System Name: leaf-9\n"
+        "System Description: Cisco Nexus 9000\n"
+        "Enabled Capabilities: B, R\n"
+        "Management Address: 10.0.0.9\n")
+    rl = parse.parse_neighbors_detail(lldp, "lldp")
+    assert len(rl) == 2
+    by = {x["local_intf"]: x for x in rl}
+    assert set(by) == {"Eth1/2", "Eth2/2"}
+    assert by["Eth1/2"]["device_id"] == "spine-1" and by["Eth1/2"]["remote_port"] == "Eth1/1"
+    assert by["Eth1/2"]["capabilities"] == "B, R" and by["Eth1/2"]["mgmt_ip"] == "10.0.0.1"
+    assert by["Eth2/2"]["device_id"] == "leaf-9"
+    nxcdp = (
+        "----------------------------------------\n"
+        "Device ID: core-nexus.lab(FOX1234)\n"
+        "  IPv4 Address: 10.0.0.2\n"
+        "Platform: N9K-C9504,  Capabilities: Router Switch\n"
+        "Interface: Ethernet1/1,  Port ID (outgoing port): Ethernet1/2\n")
+    rc = parse.parse_neighbors_detail(nxcdp, "cdp")
+    assert len(rc) == 1 and rc[0]["mgmt_ip"] == "10.0.0.2" and rc[0]["local_intf"] == "Eth1/1"
