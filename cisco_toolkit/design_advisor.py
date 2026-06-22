@@ -321,7 +321,7 @@ def _signals(snap):
     # never fires; an acknowledged/cleared fault, a minor/warning fault, an active node, and cur>=90 all stay
     # silent -- every signal reads a present broken-state attribute, never absence.
     _aci = _as_dict(snap.get("aci"))
-    _aci_faults, _aci_ghost, _aci_health = [], [], []
+    _aci_faults, _aci_ghost, _aci_health, _aci_vrf_open = [], [], [], []
     for _ah, _af in sorted(_aci.items()):
         _af = _as_dict(_af)
         for _f in _as_list(_af.get("faults")):
@@ -335,10 +335,15 @@ def _signals(snap):
         _h = _as_dict(_af.get("health"))
         if _h and isinstance(_h.get("cur"), int) and _h.get("cur") < 90:
             _aci_health.append(f"{_ah} fabric health {_h.get('cur')}/100 (maxSev {_h.get('max_sev', '')})")
+        for _v in _as_list(_af.get("vrfs")):   # logical inventory: a VRF with contract enforcement OFF (default-permit)
+            _v = _as_dict(_v)
+            if _v.get("pc_enf_pref") == "unenforced":
+                _aci_vrf_open.append(f"{_ah} {_v.get('tenant', '?')}/{_v.get('name', '?')}")
     sig["aci_faults"] = _aci_faults
     sig["aci_ghost_nodes"] = _aci_ghost
     sig["aci_health_degraded"] = _aci_health
-    sig["aci_devices"] = sorted({x.split()[0] for x in (_aci_faults + _aci_ghost + _aci_health)})[:12]
+    sig["aci_vrf_unenforced"] = _aci_vrf_open
+    sig["aci_devices"] = sorted({x.split()[0] for x in (_aci_faults + _aci_ghost + _aci_health + _aci_vrf_open)})[:12]
     # Cisco Catalyst SD-WAN (vManage) overlay health (snap['sdwan'] from build_sdwan; JSON-ingestion channel).
     # Two present-state break conditions the Manager reports: a control connection down (state=down, or
     # actual-connections < expected-connections to a vsmart/vbond = the edge is losing its overlay control
@@ -1484,6 +1489,33 @@ def _d_aci_fabric_health_degraded(snap, sig):
         devices=sig.get("aci_devices") or [])
 
 
+def _d_aci_vrf_unenforced(snap, sig):
+    """Cisco ACI logical inventory: a VRF (fvCtx) with contract enforcement set to UNENFORCED
+    (parse_aci_vrfs -> snap['aci'].vrfs, pcEnfPref=unenforced). An unenforced VRF applies NO contracts /
+    SGACLs between its EPGs -- every endpoint group in that routing context can communicate freely
+    (default-permit), so the policy-based segmentation ACI is meant to enforce is OFF for that VRF. For a
+    migration toward a segmented / zero-trust target this is a segmentation gap to confirm and close.
+    Coverage-honest: fires ONLY on the EXPLICIT 'unenforced' attribute -- an enforced VRF and a fleet with
+    no ACI export stay silent. Medium: a posture/intent finding to confirm (some shared-services VRFs are
+    intentionally unenforced), not a hard fault."""
+    v = sig.get("aci_vrf_unenforced") or []
+    if not v:
+        return None
+    return _decision(
+        "aci-vrf-enforcement-unenforced",
+        f"{len(v)} ACI VRF(s) have contract enforcement set to UNENFORCED (e.g. {', '.join(v[:6])}). An "
+        "unenforced VRF applies no contracts / SGACLs between its EPGs, so every endpoint group in that "
+        "routing context can communicate freely (default-permit) -- the policy-based segmentation ACI is meant "
+        "to provide is off there. Confirm whether each unenforced VRF is intentional (e.g. a shared-services "
+        "context) or a gap, and design the target segmentation (contracts / SGTs) per move group before cutover.",
+        len(v), ["security", "segmentation"],
+        ["aci.vrfs[].pc_enf_pref (parse_aci_vrfs / moquery -c fvCtx)"],
+        priority="Medium",
+        driver="ACI segmentation posture: a VRF with enforcement unenforced is default-permit between all its "
+               "EPGs -- the policy segmentation is off for that routing context; confirm intent before cutover.",
+        devices=sig.get("aci_devices") or [])
+
+
 def _d_sdwan_control_connection_down(snap, sig):
     """Cisco Catalyst SD-WAN: a control connection that is down -- state=down, or actual-connections <
     expected-connections to a Validator/vBond or Controller/vSmart (parse_sdwan_control_connections ->
@@ -2266,7 +2298,7 @@ def _d_oversized_l2_subnet(snap, sig):
 _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_copp_drops,
               _d_mpls_ldp_health, _d_mpls_l3vpn_health, _d_mpls_l2vpn_health,  # SP/MPLS: LDP underlay / L3VPN VPNv4 / L2VPN pseudowire
               _d_lisp_fabric_session_down, _d_cts_environment_data_health, _d_dmvpn_tunnel_health, _d_crypto_session_health, _d_bfd_session_health, _d_ipv6_dad_duplicate, _d_ipv6_routing_adjacency,  # universal arch: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
-              _d_aci_critical_faults, _d_aci_node_not_active, _d_aci_fabric_health_degraded,  # Cisco ACI (APIC JSON-ingestion channel)
+              _d_aci_critical_faults, _d_aci_node_not_active, _d_aci_fabric_health_degraded, _d_aci_vrf_unenforced,  # Cisco ACI (APIC JSON-ingestion channel)
               _d_sdwan_control_connection_down, _d_sdwan_device_unreachable, _d_sdwan_omp_peer_down,  # Cisco Catalyst SD-WAN (vManage JSON channel)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
@@ -3491,7 +3523,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("bfd",           "BFD fast-failover",                       "ssh",  ["bfd-session-down-failover-degraded"]),
     ("ipv6_nd",       "IPv6 addressing / DAD",                   "ssh",  ["ipv6-duplicate-address-dad-failure"]),
     ("ipv6_routing",  "IPv6 routing (OSPFv3 / BGP)",             "ssh",  ["ipv6-routing-adjacency-down"]),
-    ("aci",           "Cisco ACI (APIC fabric)",                 "json", ["aci-critical-fault-raised", "aci-node-not-active", "aci-fabric-health-degraded"]),
+    ("aci",           "Cisco ACI (APIC fabric)",                 "json", ["aci-critical-fault-raised", "aci-node-not-active", "aci-fabric-health-degraded", "aci-vrf-enforcement-unenforced"]),
     ("sdwan",         "Cisco Catalyst SD-WAN (vManage)",         "json", ["sdwan-control-connection-down", "sdwan-device-unreachable", "sdwan-omp-peer-down"]),
 ]
 

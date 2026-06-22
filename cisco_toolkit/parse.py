@@ -1185,6 +1185,23 @@ def parse_aci_health(output: str) -> dict:
     return {"cur": cur, "max_sev": (a.get("maxSev", "") or "").lower()}
 
 
+def parse_aci_vrfs(output: str) -> list:
+    """APIC 'moquery -c fvCtx' / REST /api/class/fvCtx.json -> [{name, tenant, dn, pc_enf_pref, pc_enf_dir}]
+    per VRF. fvCtx is the ACI routing context (the L3 segmentation boundary) and a primary migration
+    move-group unit -- you migrate a fabric tenant/VRF at a time. pcEnfPref is 'enforced' (contracts / SGACLs
+    applied between EPGs) or 'unenforced' (NO enforcement -- default-permit, every EPG in the VRF talks
+    freely). The tenant is parsed from the dn (uni/tn-<tenant>/ctx-<name>). [] when no ACI export is present.
+    Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fvCtx"):
+        dn = a.get("dn", "")
+        mt = re.search(r"/tn-([^/]+)/", dn)
+        out.append({"name": a.get("name", ""), "tenant": mt.group(1) if mt else "", "dn": dn,
+                    "pc_enf_pref": (a.get("pcEnfPref", "") or "").lower(),
+                    "pc_enf_dir": (a.get("pcEnfDir", "") or "").lower()})
+    return out
+
+
 def _sdwan_data(output: str) -> list:
     """Catalyst SD-WAN Manager (vManage) /dataservice/* responses wrap their rows in {"data":[...]} -- flat
     JSON objects, NOT the ACI imdata/attributes envelope. The JSON-ingestion front door for the SD-WAN

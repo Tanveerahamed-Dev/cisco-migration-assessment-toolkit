@@ -197,6 +197,8 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "engine must assess ACI inventory: a decommissioned fabric node must fire _d_aci_node_not_active"
     assert any(d.get("id") == "aci-fabric-health-degraded" for d in _bp.get("decisions", [])), \
         "engine must assess ACI health: a sub-90 fabric health score must fire _d_aci_fabric_health_degraded"
+    assert any(d.get("id") == "aci-vrf-enforcement-unenforced" for d in _bp.get("decisions", [])), \
+        "engine must assess ACI logical inventory: an unenforced VRF (default-permit) must fire _d_aci_vrf_unenforced"
     # UNIVERSALITY (Cisco Catalyst SD-WAN / vManage JSON channel): core1 stands in as the vManage query host;
     # a DOWN vsmart control connection and an UNREACHABLE device must each fire end-to-end (the up vbond
     # connection and the reachable device prove no over-firing). The second JSON-ingestion controller fabric.

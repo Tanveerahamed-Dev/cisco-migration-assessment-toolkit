@@ -97,6 +97,7 @@ APIC_CLASSES = {
     "moquery -c faultInst": "faultInst",
     "moquery -c fabricNode": "fabricNode",
     "moquery -c fabricHealthTotal": "fabricHealthTotal",
+    "moquery -c fvCtx": "fvCtx",
 }
 
 
