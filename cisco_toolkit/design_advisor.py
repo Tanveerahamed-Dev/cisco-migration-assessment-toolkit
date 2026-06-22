@@ -344,8 +344,11 @@ def _signals(snap):
     # actual-connections < expected-connections to a vsmart/vbond = the edge is losing its overlay control
     # plane) and a device the Manager declares unreachable. Coverage-honest: no SD-WAN export -> {} -> silent;
     # an up/full-count connection and a reachable device stay silent.
+    # ... plus OMP (Overlay Management Protocol) peers DOWN -- OMP runs OVER the control connections and
+    # distributes the overlay routes/TLOCs, so an edge with OMP peers down is missing overlay routing even when
+    # its control plane is up. Coverage-honest: only an OBSERVED ompPeersDown>0 fires.
     _sdwan = _as_dict(snap.get("sdwan"))
-    _sdwan_cc, _sdwan_unreach = [], []
+    _sdwan_cc, _sdwan_unreach, _sdwan_omp = [], [], []
     for _sh, _sf in sorted(_sdwan.items()):
         _sf = _as_dict(_sf)
         for _c in _as_list(_sf.get("control_connections")):
@@ -356,9 +359,14 @@ def _signals(snap):
         for _d in _as_list(_sf.get("devices")):
             if str(_as_dict(_d).get("reachability", "")).lower() == "unreachable":
                 _sdwan_unreach.append(f"{_sh} {_as_dict(_d).get('host_name') or _as_dict(_d).get('system_ip', '?')}")
+        for _o in _as_list(_sf.get("omp_counters")):
+            _o = _as_dict(_o)
+            if isinstance(_o.get("omp_down"), int) and _o.get("omp_down") > 0:
+                _sdwan_omp.append(f"{_sh} {_o.get('host_name') or _o.get('system_ip', '?')} ({_o.get('omp_down')} OMP peer(s) down)")
     sig["sdwan_control_down"] = _sdwan_cc
     sig["sdwan_unreachable"] = _sdwan_unreach
-    sig["sdwan_devices"] = sorted({x.split()[0] for x in (_sdwan_cc + _sdwan_unreach)})[:12]
+    sig["sdwan_omp_down"] = _sdwan_omp
+    sig["sdwan_devices"] = sorted({x.split()[0] for x in (_sdwan_cc + _sdwan_unreach + _sdwan_omp)})[:12]
     # PIM-SM control-plane resilience (snap['pim'] from build_pim). FIRING STATE: PIM is RUNNING here (a live
     # neighbor), rp-mapping WAS collected, yet ZERO RP is learned and the domain is not SSM-only -- ASM (*,G)
     # shared trees cannot form (RFC 7761). Coverage-honest: config-only/not-running, SSM-only, and
@@ -1528,6 +1536,36 @@ def _d_sdwan_device_unreachable(snap, sig):
         devices=sig.get("sdwan_devices") or [])
 
 
+def _d_sdwan_omp_peer_down(snap, sig):
+    """Cisco Catalyst SD-WAN: a WAN edge with OMP peers DOWN (parse_sdwan_omp_counters -> snap['sdwan']
+    .omp_counters, ompPeersDown>0). OMP (Overlay Management Protocol) runs OVER the control connections and
+    distributes the overlay routes / TLOCs / service routes between the edges and the controllers; an edge
+    with OMP peers down is missing overlay routing -- it cannot learn or advertise some remote prefixes, so
+    traffic to those sites blackholes even while its control connections / transport look up. This is DISTINCT
+    from a control-connection-down (DTLS to the controllers): OMP can be down while the control connection is
+    up. Coverage-honest: fires ONLY on an OBSERVED ompPeersDown>0; a fully-peered edge and a fleet with no
+    SD-WAN counters export stay silent."""
+    d = sig.get("sdwan_omp_down") or []
+    if not d:
+        return None
+    return _decision(
+        "sdwan-omp-peer-down",
+        f"{len(d)} SD-WAN edge(s) have OMP peers DOWN (e.g. {', '.join(d[:5])}). OMP (Overlay Management "
+        "Protocol) runs over the control connections and distributes the overlay routes, TLOCs and service "
+        "routes; an edge with OMP peers down is missing overlay routing -- it cannot learn or advertise some "
+        "remote prefixes, so traffic to the affected sites blackholes even while the control and transport "
+        "planes look up. Confirm the OMP session and graceful-restart/hold timers to the vSmart, that the edge "
+        "is advertising its routes, and any control policy filtering them before the overlay routing is trusted "
+        "at cutover.",
+        len(d), ["availability"],
+        ["sdwan.omp_counters[].omp_down (parse_sdwan_omp_counters / vManage /dataservice/device/counters)"],
+        priority="High",
+        driver="SD-WAN overlay routing: an edge with OMP peers down is missing overlay routes (TLOCs / prefixes), "
+               "blackholing some sites even while the control/transport plane is up -- distinct from a control-"
+               "connection loss.",
+        devices=sig.get("sdwan_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -2229,7 +2267,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_mpls_ldp_health, _d_mpls_l3vpn_health, _d_mpls_l2vpn_health,  # SP/MPLS: LDP underlay / L3VPN VPNv4 / L2VPN pseudowire
               _d_lisp_fabric_session_down, _d_cts_environment_data_health, _d_dmvpn_tunnel_health, _d_crypto_session_health, _d_bfd_session_health, _d_ipv6_dad_duplicate, _d_ipv6_routing_adjacency,  # universal arch: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
               _d_aci_critical_faults, _d_aci_node_not_active, _d_aci_fabric_health_degraded,  # Cisco ACI (APIC JSON-ingestion channel)
-              _d_sdwan_control_connection_down, _d_sdwan_device_unreachable,  # Cisco Catalyst SD-WAN (vManage JSON channel)
+              _d_sdwan_control_connection_down, _d_sdwan_device_unreachable, _d_sdwan_omp_peer_down,  # Cisco Catalyst SD-WAN (vManage JSON channel)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -3454,7 +3492,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("ipv6_nd",       "IPv6 addressing / DAD",                   "ssh",  ["ipv6-duplicate-address-dad-failure"]),
     ("ipv6_routing",  "IPv6 routing (OSPFv3 / BGP)",             "ssh",  ["ipv6-routing-adjacency-down"]),
     ("aci",           "Cisco ACI (APIC fabric)",                 "json", ["aci-critical-fault-raised", "aci-node-not-active", "aci-fabric-health-degraded"]),
-    ("sdwan",         "Cisco Catalyst SD-WAN (vManage)",         "json", ["sdwan-control-connection-down", "sdwan-device-unreachable"]),
+    ("sdwan",         "Cisco Catalyst SD-WAN (vManage)",         "json", ["sdwan-control-connection-down", "sdwan-device-unreachable", "sdwan-omp-peer-down"]),
 ]
 
 

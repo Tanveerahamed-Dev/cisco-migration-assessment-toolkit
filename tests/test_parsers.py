@@ -1092,6 +1092,22 @@ def test_parse_sdwan_devices_reachability(cp):
     assert parse.parse_sdwan_devices("") == []
 
 
+def test_parse_sdwan_omp_counters(cp):
+    """Universality (Cisco Catalyst SD-WAN OMP): parse_sdwan_omp_counters reads vManage
+    /dataservice/device/counters so an edge with ompPeersDown > 0 (overlay routing degraded) is detectable;
+    omp_up/omp_down are coerced to ints. Empty / non-JSON -> []."""
+    out = (
+        '{"data": ['
+        '{"system-ip": "10.10.1.13", "host-name": "BR13", "ompPeersUp": 1, "ompPeersDown": 1},'
+        '{"system-ip": "10.10.1.1", "host-name": "DC1", "ompPeersUp": 2, "ompPeersDown": 0}'
+        ']}')
+    r = parse.parse_sdwan_omp_counters(out)
+    assert len(r) == 2
+    assert r[0]["host_name"] == "BR13" and r[0]["omp_up"] == 1 and r[0]["omp_down"] == 1
+    assert r[1]["omp_down"] == 0
+    assert parse.parse_sdwan_omp_counters("") == []
+
+
 def test_parse_nve_vni_states(cp):
     """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
     out = (

@@ -206,6 +206,8 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "engine must assess SD-WAN: a down control connection must fire _d_sdwan_control_connection_down"
     assert any(d.get("id") == "sdwan-device-unreachable" for d in _bp.get("decisions", [])), \
         "engine must assess SD-WAN: an unreachable device must fire _d_sdwan_device_unreachable"
+    assert any(d.get("id") == "sdwan-omp-peer-down" for d in _bp.get("decisions", [])), \
+        "engine must assess SD-WAN OMP (deeper modeling): an edge with ompPeersDown>0 must fire _d_sdwan_omp_peer_down"
     # UNIVERSALITY (SD-Access LISP fabric control plane): core1 is an IOS-XE fabric node whose VRF 'red' has
     # 2 control-plane (map-server/map-resolver) sessions configured but ZERO established (both peers Down),
     # while the healthy VRF 'default' (2/2 established, peers Up) in the same output proves no over-firing.

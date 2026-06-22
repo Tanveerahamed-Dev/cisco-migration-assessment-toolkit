@@ -599,6 +599,7 @@ COMMANDS_IOS = [
     "show bgp ipv6 unicast summary",  # universal arch coverage
     "dataservice/device/control/connections",  # Cisco Catalyst SD-WAN (vManage JSON) -> build_sdwan / _d_sdwan_control_connection_down
     "dataservice/device",             # Cisco Catalyst SD-WAN device reachability (vManage JSON) -> build_sdwan / _d_sdwan_device_unreachable
+    "dataservice/device/counters",    # Cisco Catalyst SD-WAN OMP peer counters (vManage JSON) -> build_sdwan / _d_sdwan_omp_peer_down
     "show policy-map interface",  # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
     "show ip pim rp mapping",     # PIM-SM learned RP -> build_pim / _d_pim_rp_health
     "show ip pim neighbor",       # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim

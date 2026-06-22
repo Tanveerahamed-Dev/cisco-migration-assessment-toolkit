@@ -1233,6 +1233,25 @@ def parse_sdwan_devices(output: str) -> list:
     return out
 
 
+def parse_sdwan_omp_counters(output: str) -> list:
+    """vManage GET /dataservice/device/counters JSON -> [{system_ip, host_name, omp_up, omp_down}] per WAN
+    edge. The Manager's OWN count of OMP (Overlay Management Protocol) peers up vs down. OMP runs OVER the
+    control connections and distributes the overlay routes / TLOCs / service routes between edges and the
+    controllers; an edge with OMP peers DOWN is missing overlay routing even when its control connections are
+    up (so traffic to the affected prefixes blackholes). [] when no SD-WAN counters export is present.
+    Tolerant; never raises."""
+    out = []
+    for r in _sdwan_data(output):
+        def _i(k):
+            try:
+                return int(r.get(k))
+            except (TypeError, ValueError):
+                return None
+        out.append({"system_ip": r.get("system-ip", ""), "host_name": r.get("host-name", ""),
+                    "omp_up": _i("ompPeersUp"), "omp_down": _i("ompPeersDown")})
+    return out
+
+
 def parse_nve_peers(output: str) -> list:
     """'show nve peers' (NX-OS VXLAN) -> [{interface, peer_ip, state, learn_type}]. State Up/Down; learn-type
     CP (control-plane / BGP-EVPN) vs DP (flood-and-learn). [] when the device runs no NVE/VXLAN. Tolerant;

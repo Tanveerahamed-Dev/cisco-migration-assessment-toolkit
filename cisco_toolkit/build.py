@@ -26,7 +26,7 @@ from cisco_toolkit.parse import (
     parse_bgp_vpnv4_summary, parse_mpls_ldp_neighbors, parse_mpls_l2vpn_vc,   # SP/MPLS: L3VPN VPNv4 / LDP underlay / L2VPN pseudowire
     parse_lisp_sessions, parse_cts_environment_data, parse_dmvpn_peers, parse_crypto_sessions, parse_bfd_neighbors, parse_ipv6_interface_addrs, parse_ipv6_route_summary, parse_ospfv3_neighbors, parse_bgp_ipv6_summary,   # universal arch coverage: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
     parse_aci_faults, parse_aci_fabric_nodes, parse_aci_health,       # Cisco ACI (APIC JSON-ingestion channel)
-    parse_sdwan_control_connections, parse_sdwan_devices,             # Cisco Catalyst SD-WAN (vManage JSON channel)
+    parse_sdwan_control_connections, parse_sdwan_devices, parse_sdwan_omp_counters,   # Cisco Catalyst SD-WAN (vManage JSON channel)
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
     parse_ntp_status,                                                 # NTP clock-sync STATE (stratum 16 / unsynchronized)
@@ -216,11 +216,14 @@ def build_sdwan(cmd_to_file: Dict[str, str]) -> dict:
     conns = _safe_parse(parse_sdwan_control_connections,
                         _load_cmd_output(cmd_to_file, "dataservice/device/control/connections")) or []
     devs = _safe_parse(parse_sdwan_devices, _load_cmd_output(cmd_to_file, "dataservice/device")) or []
+    omp = _safe_parse(parse_sdwan_omp_counters, _load_cmd_output(cmd_to_file, "dataservice/device/counters")) or []
     out = {}
     if conns:
         out["control_connections"] = conns
     if devs:
         out["devices"] = devs
+    if omp:
+        out["omp_counters"] = omp
     return out
 
 

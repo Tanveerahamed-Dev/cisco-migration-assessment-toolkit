@@ -3931,6 +3931,20 @@
      "model": "vedge-C8000V",
      "version": "17.09.03a"
     }
+   ],
+   "omp_counters": [
+    {
+     "system_ip": "10.10.1.13",
+     "host_name": "BR13-cedge",
+     "omp_up": 1,
+     "omp_down": 1
+    },
+    {
+     "system_ip": "10.10.1.1",
+     "host_name": "DC1-cedge",
+     "omp_up": 2,
+     "omp_down": 0
+    }
    ]
   }
  },
