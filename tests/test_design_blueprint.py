@@ -1088,6 +1088,214 @@ def test_d_mpls_l2vpn_health_fires_on_down_vc_only():
     assert da._d_mpls_l2vpn_health({}, da._signals({})) is None
 
 
+def test_d_lisp_fabric_session_down_fires_on_zero_established_vrf_only():
+    """Universality (SD-Access LISP fabric control plane): a VRF with sessions configured (total>=1) but ZERO
+    established fires _d_lisp_fabric_session_down (the node cannot register/resolve EID-to-RLOC -> overlay
+    partition). Refutation -- ALL THREE must stay silent: (a) a healthy VRF (established>=1); (b) the BENIGN
+    partial-Down case (an idle border/edge: one peer Down but established>=1 -- a lone Down session is normal
+    per Cisco's TS guide and must not cry wolf); (c) the absent lisp axis."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"lisp": {"edge1": {"sessions": [
+        {"vrf": "default", "total": 2, "established": 2,
+         "peers": [{"peer": "10.0.255.2", "port": "4342", "state": "Up"},
+                   {"peer": "10.0.255.3", "port": "4342", "state": "Up"}]},
+        {"vrf": "red", "total": 2, "established": 0,
+         "peers": [{"peer": "10.0.255.2", "port": "4342", "state": "Down"},
+                   {"peer": "10.0.255.3", "port": "4342", "state": "Down"}]},
+    ]}}}
+    sig = da._signals(fire)
+    assert any("VRF red" in x for x in sig.get("lisp_fabric_partition", []))
+    dec = da._d_lisp_fabric_session_down(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "LISP" in str(dec)
+    assert "edge1" in dec["evidence"]["devices"]
+    # (a) healthy: every VRF has established >= 1
+    healthy = {"lisp": {"edge1": {"sessions": [
+        {"vrf": "default", "total": 2, "established": 2,
+         "peers": [{"peer": "10.0.255.2", "port": "4342", "state": "Up"},
+                   {"peer": "10.0.255.3", "port": "4342", "state": "Up"}]}]}}}
+    assert da._d_lisp_fabric_session_down(healthy, da._signals(healthy)) is None
+    # (b) benign partial-Down: a Down peer but established >= 1 -> must NOT fire (no cry-wolf)
+    benign = {"lisp": {"border1": {"sessions": [
+        {"vrf": "default", "total": 2, "established": 1,
+         "peers": [{"peer": "10.0.255.2", "port": "4342", "state": "Up"},
+                   {"peer": "10.0.255.3", "port": "4342", "state": "Down"}]}]}}}
+    assert da._d_lisp_fabric_session_down(benign, da._signals(benign)) is None
+    # (c) absent axis
+    assert da._d_lisp_fabric_session_down({}, da._signals({})) is None
+
+
+def test_d_cts_environment_data_health_fires_on_non_complete_only():
+    """Universality (Cisco TrustSec / CTS segmentation): a device whose CTS environment-data 'Current state'
+    is not COMPLETE fires _d_cts_environment_data_health (no SGT->policy map downloaded -> group-based
+    segmentation blind/unenforced). Refutation (coverage-honest): a COMPLETE state -- EVEN WITH dead RADIUS
+    servers -- stays silent, and an absent cts axis stays silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"cts": {"core1": {"environment_data": {
+        "state": "WAITING_RESPONSE", "last_status": "Failed", "sgt_count": 0, "server_count": 0}}}}
+    sig = da._signals(fire)
+    assert "core1" in " ".join(sig.get("cts_env_stale", []))
+    dec = da._d_cts_environment_data_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "TrustSec" in str(dec)
+    assert "core1" in dec["evidence"]["devices"]
+    # Healthy COMPLETE (servers DEAD on purpose) must NOT fire -- a cached COMPLETE set survives dead servers.
+    clean = {"cts": {"core1": {"environment_data": {
+        "state": "COMPLETE", "last_status": "Successful", "sgt_count": 7, "server_count": 2}}}}
+    assert da._d_cts_environment_data_health(clean, da._signals(clean)) is None
+    # Absent CTS axis must NOT fire (coverage-honest).
+    assert da._d_cts_environment_data_health({}, da._signals({})) is None
+
+
+def test_d_dmvpn_tunnel_health_fires_on_non_up_peer_only():
+    """Universality (DMVPN WAN overlay mGRE/NHRP): a device with a DMVPN tunnel peer NOT in the UP state fires
+    _d_dmvpn_tunnel_health (NHRP/IKE/down -> no overlay forwarding to that spoke/hub site). Refutation: every
+    peer UP (normal healthy state) and an absent dmvpn axis both stay silent (coverage-honest)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"dmvpn": {"hub1": {"peers": [
+        {"interface": "Tunnel1", "nbma": "27.27.27.2", "tunnel_ip": "10.0.1.2", "state": "UP", "attrb": "D"},
+        {"interface": "Tunnel1", "nbma": "37.37.37.3", "tunnel_ip": "10.0.1.3", "state": "NHRP", "attrb": "D"},
+        {"interface": "Tunnel1", "nbma": "47.47.47.4", "tunnel_ip": "10.0.1.4", "state": "IKE", "attrb": "D"},
+    ]}}}
+    sig = da._signals(fire)
+    assert "10.0.1.3" in " ".join(sig.get("dmvpn_down", []))
+    assert "10.0.1.4" in " ".join(sig.get("dmvpn_down", []))
+    dec = da._d_dmvpn_tunnel_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "DMVPN" in str(dec)
+    assert dec["evidence"]["count"] == 2 and "hub1" in dec["evidence"]["devices"]
+    # Healthy: every peer UP -> silent (no over-firing).
+    clean = {"dmvpn": {"hub1": {"peers": [
+        {"interface": "Tunnel1", "nbma": "27.27.27.2", "tunnel_ip": "10.0.1.2", "state": "UP", "attrb": "D"}]}}}
+    assert da._d_dmvpn_tunnel_health(clean, da._signals(clean)) is None
+    # Absent: no dmvpn axis -> silent.
+    assert da._d_dmvpn_tunnel_health({}, da._signals({})) is None
+
+
+def test_d_crypto_session_health_fires_on_down_session_only():
+    """Universality (IPsec encrypted WAN): a device with a crypto session whose status begins with DOWN
+    (DOWN / DOWN-NEGOTIATING -> no established IKE/IPsec SA) fires _d_crypto_session_health. Refutation: every
+    UP-* status (UP-ACTIVE passing data, UP-IDLE established-idle, UP-NO-IKE IPsec-up-while-IKE-rekeys) and an
+    absent crypto axis all stay silent (coverage-honest)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"crypto": {"hub1": {"sessions": [
+        {"interface": "Tunnel0", "peer": "10.0.255.2", "status": "UP-ACTIVE"},
+        {"interface": "Tunnel1", "peer": "10.0.255.9", "status": "DOWN-NEGOTIATING"},
+    ]}}}
+    sig = da._signals(fire)
+    assert "10.0.255.9" in " ".join(sig.get("crypto_sessions_down", []))
+    dec = da._d_crypto_session_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "crypto session" in str(dec).lower()
+    assert "hub1" in dec["evidence"]["devices"]
+    # healthy: UP-ACTIVE, UP-IDLE and UP-NO-IKE are all established tunnels -> silent (no cry-wolf)
+    for _ok in ("UP-ACTIVE", "UP-IDLE", "UP-NO-IKE"):
+        clean = {"crypto": {"hub1": {"sessions": [{"interface": "Tunnel0", "peer": "10.0.255.2", "status": _ok}]}}}
+        assert da._d_crypto_session_health(clean, da._signals(clean)) is None
+    # plain DOWN also fires (not only DOWN-NEGOTIATING)
+    hard = {"crypto": {"hub1": {"sessions": [{"interface": "Tunnel2", "peer": "10.0.255.8", "status": "DOWN"}]}}}
+    assert da._d_crypto_session_health(hard, da._signals(hard)) is not None
+    # absent crypto axis -> silent
+    assert da._d_crypto_session_health({}, da._signals({})) is None
+
+
+def test_d_bfd_session_health_fires_on_down_session_only():
+    """Universality (BFD fast-failover): a device with a BFD session in the Down state fires
+    _d_bfd_session_health (sub-second failover gone -> client falls back to slow native timers). Refutation:
+    an all-Up device, an AdminDown-only device (operator-disabled, intentional -- must NOT cry-wolf), and an
+    absent bfd axis all stay silent (coverage-honest)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"bfd": {"core1": {"sessions": [
+        {"neighbor": "10.0.255.2", "local_disc": "11", "remote_disc": "10", "state": "Up", "interface": "Gi1/0/1"},
+        {"neighbor": "10.0.255.9", "local_disc": "12", "remote_disc": "0", "state": "Down", "interface": "Gi1/0/3"},
+    ]}}}
+    sig = da._signals(fire)
+    assert "10.0.255.9" in " ".join(sig.get("bfd_down", []))
+    dec = da._d_bfd_session_health(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "BFD" in str(dec)
+    assert "core1" in dec["evidence"]["devices"]
+    # healthy: every session Up -> silent
+    clean = {"bfd": {"core1": {"sessions": [
+        {"neighbor": "10.0.255.2", "local_disc": "11", "remote_disc": "10", "state": "Up", "interface": "Gi1/0/1"}]}}}
+    assert da._d_bfd_session_health(clean, da._signals(clean)) is None
+    # AdminDown (operator-disabled) is intentional, not a forwarding failure -> must stay silent
+    admin = {"bfd": {"core1": {"sessions": [
+        {"neighbor": "10.0.255.9", "local_disc": "12", "remote_disc": "0", "state": "AdminDown", "interface": "Gi1/0/3"}]}}}
+    assert da._d_bfd_session_health(admin, da._signals(admin)) is None
+    # absent axis -> silent
+    assert da._d_bfd_session_health({}, da._signals({})) is None
+
+
+def test_d_ipv6_dad_duplicate_fires_on_duplicate_state_only():
+    """Universality (IPv6 addressing / ND): a device with a global IPv6 address in the DUPLICATE state fires
+    _d_ipv6_dad_duplicate (DAD disabled the address -> the dual-stack interface is dark for IPv6). Refutation:
+    a clean (unmarked) address, a transient TENTATIVE address, and an absent ipv6_nd axis ALL stay silent
+    (coverage-honest -- a settled duplicate is the only firing state)."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"ipv6_nd": {"core1": {"interfaces": [
+        {"interface": "Vl10", "admin_up": True, "proto_up": True, "ipv6_enabled": True,
+         "link_local": "FE80::10", "link_local_dup": False,
+         "global": [{"addr": "2001:DB8:10::1", "subnet": "2001:DB8:10::/64", "dad_state": "ok"}]},
+        {"interface": "Vl30", "admin_up": True, "proto_up": True, "ipv6_enabled": True,
+         "link_local": "FE80::30", "link_local_dup": False,
+         "global": [{"addr": "2001:DB8:30::1", "subnet": "2001:DB8:30::/64", "dad_state": "duplicate"}]},
+    ]}}}
+    sig = da._signals(fire)
+    assert any("2001:DB8:30::1" in x for x in sig.get("ipv6_dad_duplicate", []))
+    dec = da._d_ipv6_dad_duplicate(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "DUPLICATE" in str(dec)
+    assert dec["principle"]["id"] == "ipv6-duplicate-address-dad-failure"
+    assert "core1" in dec["evidence"]["devices"]
+    # clean: every address dad_state 'ok' -> silent
+    clean = {"ipv6_nd": {"core1": {"interfaces": [
+        {"interface": "Vl10", "ipv6_enabled": True, "link_local": "FE80::10", "link_local_dup": False,
+         "global": [{"addr": "2001:DB8:10::1", "subnet": "2001:DB8:10::/64", "dad_state": "ok"}]}]}}}
+    assert da._d_ipv6_dad_duplicate(clean, da._signals(clean)) is None
+    # transient TENTATIVE (DAD in progress) -> silent
+    tentative = {"ipv6_nd": {"core1": {"interfaces": [
+        {"interface": "Vl10", "ipv6_enabled": True, "link_local": "FE80::10", "link_local_dup": False,
+         "global": [{"addr": "2001:DB8:10::9", "subnet": "2001:DB8:10::/64", "dad_state": "tentative"}]}]}}}
+    assert da._d_ipv6_dad_duplicate(tentative, da._signals(tentative)) is None
+    # absent axis -> silent
+    assert da._d_ipv6_dad_duplicate({}, da._signals({})) is None
+
+
+def test_d_ipv6_routing_adjacency_fires_on_stuck_adjacency_only():
+    """Universality (IPv6 routing plane / dual-stack reachability): a device with an OSPFv3 neighbor stuck in a
+    transient state (NOT FULL / NOT 2WAY) OR an IPv6 BGP peer not Established fires _d_ipv6_routing_adjacency
+    (dual-stack reachability dark while IPv4 stays Up). Refutation, coverage-honest: a FULL + 2WAY OSPFv3 pair
+    and an Established (numeric-PfxRcd) IPv6 BGP peer (all healthy resting states), and an absent ipv6_routing
+    axis, all stay silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"ipv6_routing": {"sw1": {
+        "ospfv3_neighbors": [
+            {"neighbor_id": "10.0.0.1", "pri": "1", "state": "FULL", "role": "DR", "interface": "Vlan10"},
+            {"neighbor_id": "10.0.0.7", "pri": "1", "state": "2WAY", "role": "DROTHER", "interface": "Vlan10"},
+            {"neighbor_id": "10.0.0.9", "pri": "0", "state": "EXSTART", "role": "-", "interface": "Gi0/1"},
+        ],
+        "bgp_ipv6_neighbors": [
+            {"neighbor": "2001:DB8:0:1::1", "as": "65001", "state": "Established", "prefixes": 12},
+            {"neighbor": "2001:DB8:0:9::9", "as": "65009", "state": "Active", "prefixes": 0},
+        ]}}}
+    sig = da._signals(fire)
+    assert "10.0.0.9" in " ".join(sig.get("ipv6_ospfv3_stuck", []))
+    assert "EXSTART" in " ".join(sig.get("ipv6_ospfv3_stuck", []))
+    assert "2001:DB8:0:9::9" in " ".join(sig.get("ipv6_bgp_down", []))
+    # the two healthy OSPFv3 neighbors must NOT appear in the stuck list (FULL + 2WAY are resting states)
+    assert "10.0.0.1" not in " ".join(sig.get("ipv6_ospfv3_stuck", []))
+    assert "10.0.0.7" not in " ".join(sig.get("ipv6_ospfv3_stuck", []))
+    dec = da._d_ipv6_routing_adjacency(fire, sig)
+    assert dec is not None and dec["priority"] == "High"
+    assert "OSPFv3" in str(dec) and "sw1" in dec["evidence"]["devices"]
+    # all-healthy: FULL + 2WAY OSPFv3, Established IPv6 BGP -> silent
+    clean = {"ipv6_routing": {"sw1": {
+        "ospfv3_neighbors": [
+            {"neighbor_id": "10.0.0.1", "pri": "1", "state": "FULL", "role": "BDR", "interface": "Vlan10"},
+            {"neighbor_id": "10.0.0.7", "pri": "1", "state": "2WAY", "role": "DROTHER", "interface": "Vlan10"},
+        ],
+        "bgp_ipv6_neighbors": [
+            {"neighbor": "2001:DB8:0:1::1", "as": "65001", "state": "Established", "prefixes": 0}]}}}
+    assert da._d_ipv6_routing_adjacency(clean, da._signals(clean)) is None
+    # absent axis -> silent
+    assert da._d_ipv6_routing_adjacency({}, da._signals({})) is None
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected

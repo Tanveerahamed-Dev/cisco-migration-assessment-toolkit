@@ -454,6 +454,119 @@ Local intf     Local circuit              Dest address    VC ID    Status
 Gi1/0/2        Ethernet                   10.0.255.2      200      UP
 Gi1/0/3        Ethernet VLAN 300          10.0.255.9      300      DOWN
 """,
+    # Cisco SD-Access LISP fabric control-plane (universality): core1 is an IOS-XE fabric node. VRF 'red' has
+    # 2 reliable-transport sessions to the control-plane nodes (map-server/map-resolver, port 4342) but ZERO
+    # established (both peers Down) -> _d_lisp_fabric_session_down FIRES (red overlay partitioned: cannot register
+    # or resolve EID-to-RLOC). The healthy companion VRF 'default' (2 sessions, 2 established, both peers Up) in
+    # the SAME output proves coverage-honest silence -- a node with established>=1 is NOT flagged, so the single
+    # firing comes only from the all-down VRF, not from any individual Down row.
+    "show lisp session": """\
+Sessions for VRF default, total: 2, established: 2
+Peer                           State      Up/Down        In/Out    Users
+10.0.255.2:4342                Up         1d04h          27/9      14
+10.0.255.3:4342                Up         1d03h          19/9      14
+Sessions for VRF red, total: 2, established: 0
+Peer                           State      Up/Down        In/Out    Users
+10.0.255.2:4342                Down       never          0/0       0
+10.0.255.3:4342                Down       never          0/0       0
+""",
+    # Cisco TrustSec / CTS universality: core1 (IOS-XE) is a TrustSec node whose environment-data download
+    # never completed -> _d_cts_environment_data_health FIRES (Current state = WAITING_RESPONSE, not
+    # COMPLETE; SGT/SGACL map absent -> group-based segmentation blind). The healthy COMPLETE companion +
+    # the absent-CTS case are proved in test_d_cts_environment_data_health_fires_on_non_complete_only and in
+    # access1 (which carries no 'show cts environment-data' at all -> snap['cts'] omits it -> silent).
+    "show cts environment-data": """\
+CTS Environment Data
+====================
+Current state = WAITING_RESPONSE
+Last status = Failed
+Environment Data is empty
+State Machine is running
+Retry_timer (60 secs) is running
+""",
+    # DMVPN WAN-overlay universality (mGRE/NHRP): core1 acts as a DMVPN hub. Tunnel1 peer 10.0.1.3 (NBMA
+    # 37.37.37.3) is stuck in NHRP state and 10.0.1.4 (NBMA 47.47.47.4) is stuck in IKE -> _d_dmvpn_tunnel_health
+    # FIRES (broken spoke tunnels: no overlay forwarding to those sites). The healthy peers (10.0.1.2 UP) prove
+    # coverage-honest silence -- an all-UP hub never over-fires.
+    "show dmvpn": """\
+Legend: Attrb --> S - Static, D - Dynamic, I - Incomplete
+        N - NATed, L - Local, X - No Socket
+        # Ent --> Number of NHRP entries with same NBMA peer
+        NHS Status: E --> Expecting Replies, R --> Responding, W --> Waiting
+        UpDn Time --> Up or Down Time for a Tunnel
+==========================================================================
+
+Interface: Tunnel1, IPv4 NHRP Details
+Type:Hub, NHRP Peers:3,
+
+ # Ent  Peer NBMA Addr Peer Tunnel Add State  UpDn Tm Attrb
+ ----- --------------- --------------- ----- -------- -----
+     1 27.27.27.2             10.0.1.2    UP 00:28:32     D
+     1 37.37.37.3             10.0.1.3  NHRP 00:00:04     D
+     1 47.47.47.4             10.0.1.4   IKE 00:00:09     D
+""",
+    # IPsec encrypted-WAN universality: core1 is an IOS site-to-site IPsec hub with two crypto sessions.
+    # _d_crypto_session_health FIRES: Tunnel1 -> 10.0.255.9 is DOWN-NEGOTIATING (no established IKE/IPsec SA,
+    # the spoke behind it is cut off). The healthy companion Tunnel0 -> 10.0.255.2 is UP-ACTIVE and must NOT
+    # fire (proves coverage-honest silence on an established tunnel).
+    "show crypto session": """\
+Crypto session current status
+
+Interface: Tunnel0
+Session status: UP-ACTIVE
+Peer: 10.0.255.2 port 500
+  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.2/500 Active
+  IPSEC FLOW: permit ip 10.0.10.0/255.255.255.0 10.0.20.0/255.255.255.0
+        Active SAs: 2, origin: crypto map
+Interface: Tunnel1
+Session status: DOWN-NEGOTIATING
+Peer: 10.0.255.9 port 500
+  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.9/500 Inactive
+  IPSEC FLOW: permit ip 10.0.10.0/255.255.255.0 10.0.30.0/255.255.255.0
+        Active SAs: 0, origin: crypto map
+""",
+    # BFD fast-failover (universality): core1 runs BFD with one session DOWN and one UP -> _d_bfd_session_health
+    # fires on the Down session only. The Down session (10.0.255.9 on Gi1/0/3) means sub-second failover for its
+    # client protocol is broken; the Up session (10.0.255.2 on Gi1/0/1) is the healthy companion that proves the
+    # detector does NOT over-fire. Note the 'RH/RS' column is also literally Up/Down -- the parser must read the
+    # later 'State' column by position, not the first Up/Down token, or it would misread the healthy row.
+    "show bfd neighbors": """\
+OurAddr         NeighAddr       LD/RD                 RH/RS           Holdown(mult)     State       Int
+10.0.255.1      10.0.255.2      1090519041/1090519040 Up              583(3)            Up          Gi1/0/1
+10.0.255.1      10.0.255.9      1090519042/0          Down            N/A(3)            Down        Gi1/0/3
+""",
+    # IPv6 addressing / neighbor-discovery readiness (universality): core1 is a dual-stack distribution
+    # switch. Vlan30's GLOBAL IPv6 address is in the DUPLICATE state ([DUPLICATE]) -- DAD (RFC 4862) found the
+    # address already in use, so IOS disabled it -> _d_ipv6_dad_duplicate FIRES on Vlan30 only. The HEALTHY
+    # companions (Vlan10 with a clean global address, and Gi1/0/24 also clean) prove the detector does NOT
+    # over-fire on a normal dual-stack interface; the TENTATIVE entry on Gi1/0/1 proves a transient DAD state
+    # is correctly IGNORED. Grounded verbatim in the Cisco IPv6 command-reference sample output.
+    "show ipv6 interface": """\
+Vlan10 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:10
+  Global unicast address(es): 2001:DB8:10::1, subnet is 2001:DB8:10::/64
+  Joined group address(es): FF02::1 FF02::2 FF02::1:FF00:1
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+  Hosts use stateless autoconfig for addresses.
+Vlan30 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:30
+  Global unicast address(es): 2001:DB8:30::1, subnet is 2001:DB8:30::/64 [DUPLICATE]
+  Joined group address(es): FF02::1 FF02::2 FF02::1:FF00:1
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+  Hosts use stateless autoconfig for addresses.
+GigabitEthernet1/0/24 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:24
+  Global unicast address(es): 2001:DB8:FFFE::24, subnet is 2001:DB8:FFFE::/64
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+GigabitEthernet1/0/1 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:01
+  Global unicast address(es): 2001:DB8:FFFD::1, subnet is 2001:DB8:FFFD::/64 [TENTATIVE]
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+""",
 }
 
 # --------------------------------------------------------------------------- #
@@ -940,6 +1053,39 @@ Log Buffer (4096 bytes):
 *May 30 22:14:09.551: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: root] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
 *May 30 22:14:16.808: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: root] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
 *Jun  1 08:00:09.121: %SYS-5-CONFIG_I: Configured from console by svc-audit on vty0 (10.0.99.50)
+""",
+# IPv6 routing plane (dual-stack reachability): access1 is already dual-stack (ipv6 unicast-routing + IPv6 SVIs
+# in its run-config). It runs OSPFv3 and IPv6 BGP. _d_ipv6_routing_adjacency FIRES on TWO observed stuck
+# adjacencies: OSPFv3 neighbor 10.0.0.9 is EXSTART (MTU-mismatch stuck -> no IPv6 LSDB sync) and IPv6 BGP peer
+# 2001:DB8:0:9::9 is Active (never Established -> no IPv6 routes). The healthy companions prove coverage-honest
+# silence: 10.0.0.1 FULL/DR and 10.0.0.7 2WAY/DROTHER (2WAY is the INTENTIONAL DROTHER<->DROTHER steady state,
+# must NOT fire) and IPv6 BGP peer 2001:DB8:0:1::1 with PfxRcd 12 (Established). 'show ipv6 route summary' is the
+# routing-active GATE (census only -- never a firing signal). core1/core2 emit none of these -> {} (silent), so
+# EXACTLY ONE switch fires.
+"show ipv6 route summary": """\
+IPv6 Routing Table - default - 8 entries
+Route Source    Networks    Subnets     Overhead    Memory (bytes)
+connected       4           0           384         576
+local           4           0           384         576
+static          0           0           0           0
+ospf 1          1           0           96          144
+bgp 65001       1           0           96          144
+Total           10          0           960         1440
+""",
+"show ospfv3 neighbor": """\
+            OSPFv3 1 address-family ipv6 (router-id 10.0.0.4)
+
+Neighbor ID     Pri   State           Dead Time   Interface ID    Interface
+10.0.0.1          1   FULL/DR         00:00:37    16              Vlan10
+10.0.0.7          1   2WAY/DROTHER    00:00:35    18              Vlan10
+10.0.0.9          0   EXSTART/  -     00:00:33    20              GigabitEthernet0/1
+""",
+"show bgp ipv6 unicast summary": """\
+BGP router identifier 10.0.0.4, local AS number 65001
+BGP table version is 15, main routing table version 15
+Neighbor                  V         AS  MsgRcvd  MsgSent  TblVer  InQ OutQ Up/Down  State/PfxRcd
+2001:DB8:0:1::1           4      65001     3421     3418      15    0    0 1d02h          12
+2001:DB8:0:9::9           4      65009        0        0       0    0    0 never    Active
 """,
 }
 

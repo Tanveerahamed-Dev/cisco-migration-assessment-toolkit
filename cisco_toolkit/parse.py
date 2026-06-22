@@ -740,6 +740,384 @@ def parse_mpls_l2vpn_vc(output: str) -> list:
     return out
 
 
+def parse_lisp_sessions(output: str) -> list:
+    """'show lisp session' (IOS-XE SD-Access fabric) -> [{vrf, total, established, peers:[{peer, port, state}]}]
+    per VRF block. Each fabric node opens a LISP reliable-transport (TCP) session to every control-plane node
+    (map-server / map-resolver, port 4342); registrations and EID-to-RLOC resolution ride those sessions. The
+    summary line 'Sessions for VRF <name>, total: N, established: M' is the device's OWN count of configured vs
+    established sessions, and each peer row is 'IP[:port] State Up/Down In/Out Users' with State Up or Down.
+    COVERAGE-HONESTY: a lone Down peer is NORMAL on a border that imports no routes or an edge with no endpoints
+    (nothing to register on that session) -- so the down-peer list is carried as raw evidence, NOT a verdict;
+    the detector keys off the summary counts (total>=1 & established==0 = every CP session down), never off a
+    single Down row. [] when no LISP session output is present. Tolerant; never raises."""
+    out = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        m = re.match(r"^Sessions\s+for\s+VRF\s+(\S+?),?\s+total:\s*(\d+),\s*established:\s*(\d+)",
+                     s, re.IGNORECASE)
+        if m:
+            cur = {"vrf": m.group(1), "total": int(m.group(2)),
+                   "established": int(m.group(3)), "peers": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        if re.match(r"^Peer\b", s, re.IGNORECASE):   # column header
+            continue
+        # data row: 'IP[:port]  State  Up/Down  In/Out  Users' -- State is the 2nd column.
+        pm = re.match(r"^(\d+\.\d+\.\d+\.\d+)(?::(\d+))?\s+(\w+)\b", s)
+        if pm:
+            cur["peers"].append({"peer": pm.group(1), "port": pm.group(2) or "",
+                                 "state": pm.group(3).capitalize()})
+    return out
+
+
+def parse_cts_environment_data(output: str) -> dict:
+    """'show cts environment-data' (IOS-XE TrustSec) -> {} when CTS is not configured / the command is absent,
+    else {state, last_status, sgt_count, server_count, lifetime}. The environment-data download is the
+    state machine that pulls the SGT->name table (and SGACL policy) from Cisco ISE; 'Current state =
+    COMPLETE' (with 'Last status = Successful') is the only fully-downloaded/valid state. Any other state
+    (START, WAITING_RESPONSE, WAITING_PAC, ...) means the SGT-to-policy data is stale or was never
+    downloaded, so group-based segmentation has no map to enforce (default-permit) -- the device is blind.
+
+    Read ONLY the env-data 'Current state' / 'Last status' lines and the size of the 'Security Group Name
+    Table'. The per-server 'Status = DEAD' line is deliberately IGNORED: a device can hold a COMPLETE,
+    cached environment-data set while its RADIUS/ISE servers later go DEAD (verified against Cisco docs /
+    field output), so server liveness is NOT an env-data-validity signal and must not drive this detector.
+    Tolerant: returns {} when no env-data block is present; never raises."""
+    text = output or ""
+    # Anchor on the env-data block header; a box with no CTS env-data prints neither this nor 'Current state'.
+    if not re.search(r"^\s*(?:CTS|TS)\s+Environment\s+Data\b", text, re.IGNORECASE | re.MULTILINE) \
+            and not re.search(r"^\s*Current state\s*=", text, re.IGNORECASE | re.MULTILINE):
+        return {}
+    res = {"state": "", "last_status": "", "sgt_count": 0, "server_count": 0, "lifetime": None}
+    m = re.search(r"^\s*Current state\s*=\s*(\S+)", text, re.IGNORECASE | re.MULTILINE)
+    if m:
+        res["state"] = m.group(1).strip().upper()
+    m = re.search(r"^\s*Last status\s*=\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
+    if m:
+        res["last_status"] = m.group(1).strip()
+    m = re.search(r"Lifetime\s*=\s*(\d+)", text, re.IGNORECASE)
+    if m:
+        res["lifetime"] = int(m.group(1))
+    # SGT->name entries look like '0-07:Unknown' / '4-04:Employees' (tag '-' generation ':' name), one or
+    # more per line in the 'Security Group Name Table'. Count distinct leading SGT tags actually present.
+    _tbl = text.split("Security Group Name Table", 1)   # count only the policy SGT name table,
+    sgts = set(re.findall(r"(?:^|\s)(\d+)-[0-9a-fA-F]+:\S+", _tbl[1])) if len(_tbl) == 2 else set()
+    res["sgt_count"] = len(sgts)   # never the device's own Local Device SGT line
+    # RADIUS server lines: ' *Server: 10.10.10.1, port 1812, A-ID ...'. Count them (informational only).
+    res["server_count"] = len(re.findall(r"^\s*\*?Server:\s*\d+\.\d+\.\d+\.\d+", text, re.MULTILINE))
+    # A state line with no recognizable value is not a usable signal -> treat as absent.
+    if not res["state"]:
+        return {}
+    return res
+
+
+def parse_dmvpn_peers(output: str) -> list:
+    """'show dmvpn' (IOS / IOS-XE DMVPN mGRE/NHRP overlay) -> [{interface, nbma, tunnel_ip, state, attrb}]
+    per NHRP/tunnel peer entry. 'State' is the per-peer tunnel session state: UP is the ONLY fully-established
+    (healthy) state; NHRP (stuck resolving the next-hop), IKE (stuck in IPsec/IKE negotiation) and down each
+    mean that spoke/hub DMVPN tunnel is broken (no overlay forwarding to that peer). Each data row carries two
+    addresses (Peer NBMA Addr, Peer Tunnel Add) followed by State and the UpDn time (HH:MM:SS); the State token
+    is anchored to the immediately-following HH:MM:SS time, which lets the legend / column-header / dashed-
+    separator lines (none of which carry a HH:MM:SS time) be skipped. The leading '# Ent' count is optional
+    (continuation rows for multi-network peers omit it), so it is not required by the row regex; 'interface' is
+    carried from the most recent 'Interface: TunnelN' header. [] when the device runs no DMVPN ('show dmvpn'
+    absent / '% Incomplete command' / no peer rows). Tolerant; never raises."""
+    out = []
+    cur_if = ""
+    # Peer NBMA / Peer Tunnel are IPv4 (sample) or IPv6 NBMA on dual-stack; match either, then anchor State to
+    # the UpDn HH:MM:SS time so only real peer rows match.  Attrb (trailing letters) is optional / best-effort.
+    addr = r"[0-9A-Fa-f:.]+"
+    row = re.compile(
+        r"^\s*(?:\d+\s+)?(" + addr + r")\s+(" + addr + r")\s+"   # Peer NBMA Addr, Peer Tunnel Add
+        r"([A-Za-z]+)\s+"                                          # State (UP / NHRP / IKE / down)
+        r"\d{1,2}:\d{2}:\d{2}"                                     # UpDn Tm  HH:MM:SS  (anchor)
+        r"(?:\s+([A-Za-z0-9]+))?")                                 # Attrb (optional)
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        h = re.match(r"^Interface:\s*(\S+?),", s, re.IGNORECASE)   # 'Interface: Tunnel1, IPv4 NHRP Details'
+        if h:
+            cur_if = h.group(1)
+            continue
+        m = row.match(s)
+        if not m:
+            continue
+        nbma, tun, state = m.group(1), m.group(2), m.group(3)
+        # Guard: at least one of the two address columns must look like a real NBMA/tunnel address (contain a
+        # '.' or ':'), so a stray two-word alpha line can never be mistaken for a peer row.
+        if "." not in (nbma + tun) and ":" not in (nbma + tun):
+            continue
+        out.append({"interface": cur_if, "nbma": nbma, "tunnel_ip": tun,
+                    "state": state, "attrb": (m.group(4) or "")})
+    return out
+
+
+def parse_crypto_sessions(output: str) -> list:
+    """'show crypto session' (IOS / IOS-XE site-to-site IPsec) -> [{interface, peer, status}] per crypto
+    session. A crypto session is the IKE + IPsec SA bundle to one peer; the operational health is the
+    'Session status:' field. UP-ACTIVE (passing data) / UP-IDLE (established, idle) / UP-NO-IKE (IPsec SAs
+    up, IKE re-keying) are all UP states -- the encrypted tunnel exists. DOWN and DOWN-NEGOTIATING mean the
+    IKE/IPsec SA is not established, so the tunnel is down and carries nothing. Each 'Interface:' opens a new
+    record; 'Peer:' (first token after the label, before any 'port') and 'Session status:' fill it. [] when
+    the device runs no IPsec / the command produced nothing. Tolerant; never raises."""
+    out = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        m = re.match(r"^Interface:\s*(\S+)", s, re.IGNORECASE)
+        if m:
+            if cur is not None:
+                out.append(cur)
+            cur = {"interface": m.group(1), "peer": "", "status": ""}
+            continue
+        if cur is None:
+            continue
+        st = re.match(r"^Session status:\s*(\S+)", s, re.IGNORECASE)
+        if st:
+            cur["status"] = st.group(1).upper()
+            continue
+        pr = re.match(r"^Peer:\s*(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
+        if pr and not cur["peer"]:
+            cur["peer"] = pr.group(1)
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def parse_bfd_neighbors(output: str) -> list:
+    """'show bfd neighbors' (IOS / IOS-XE / NX-OS) -> [{neighbor, local_disc, remote_disc, state, interface}]
+    per BFD session. BFD gives a client protocol (OSPF/BGP/EIGRP/HSRP/static) sub-second forwarding-path
+    failure detection; a session in the Up state is protecting its clients. A session in the Down state means
+    the fast-failover path is broken -- the client falls back to its native (multi-second) timers, so a link
+    failure no longer converges in milliseconds. AdminDown (operator-disabled) is captured but is NOT a
+    forwarding failure.
+
+    Two real on-the-wire layouts exist and BOTH are handled by anchoring on the header line and reading the
+    'State' column BY POSITION (never the FIRST Up/Down token, because the 'RH/RS' column is also literally
+    'Up'/'Down' and would otherwise be misread):
+      * IOS:            'NeighAddr  LD/RD  RH/RS  State  Int'
+      * IOS-XE / NX-OS: 'OurAddr  NeighAddr  LD/RD  RH/RS  Holdown(mult)  State  Int [Vrf  Type]'
+    NX-OS adds trailing Vrf/Type (SH/MH) columns and may leave Int blank for a multihop session. [] when the
+    device runs no BFD ('% BFD is not enabled' / no header / empty). Tolerant; never raises."""
+    lines = (output or "").splitlines()
+    hdr_idx = -1
+    cols = {}
+    for i, raw in enumerate(lines):
+        # The header is the line carrying both 'NeighAddr' and 'State' (case-insensitive).
+        if re.search(r"NeighAddr", raw, re.IGNORECASE) and re.search(r"\bState\b", raw, re.IGNORECASE):
+            cols = extract_fixed_cols(raw, [
+                ("OurAddr", "ouraddr"), ("NeighAddr", "neighaddr"), ("LD/RD", "ldrd"),
+                ("RH/RS", "rhrs"), ("Holdown", "holdown"), ("State", "state"),
+                ("Int", "interface"), ("Vrf", "vrf"), ("Type", "type"),
+            ])
+            hdr_idx = i
+            break
+    out = []
+    if hdr_idx < 0 or "state" not in cols or "neighaddr" not in cols:
+        return out
+    ip_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]+:[0-9A-Fa-f:]+)$")
+    for raw in lines[hdr_idx + 1:]:
+        if not raw.strip() or set(raw.strip()) <= {"-"}:
+            continue
+        s0, e0 = cols["neighaddr"]
+        neigh = slice_col(raw, s0, e0).split()[0] if slice_col(raw, s0, e0) else ""
+        if not ip_re.match(neigh):                      # skip wrapped/continuation/non-data lines
+            continue
+        st_s, st_e = cols["state"]
+        state = (slice_col(raw, st_s, st_e).split() or [""])[0]
+        ldrd = slice_col(raw, *cols["ldrd"]).split()[0] if "ldrd" in cols and slice_col(raw, *cols["ldrd"]) else ""
+        ld, _, rd = ldrd.partition("/")
+        iface = ""
+        if "interface" in cols:
+            itoks = slice_col(raw, *cols["interface"]).split()
+            iface = normalize_ifname(itoks[0]) if itoks else ""
+        out.append({"neighbor": neigh, "local_disc": ld, "remote_disc": rd,
+                    "state": state, "interface": iface})
+    return out
+
+
+def parse_ipv6_interface_addrs(output: str) -> list:
+    """'show ipv6 interface' (IOS / IOS-XE) -> one record per L3 interface that has IPv6 enabled:
+    [{interface, admin_up, proto_up, ipv6_enabled, link_local, link_local_dup, global:[{addr, subnet,
+    dad_state}]}]. dad_state is 'ok' (no marker), 'duplicate' (a [DUPLICATE]/[DUP] marker -> DAD positively
+    detected an address clash, so Cisco sets the address to DUPLICATE and STOPS using it), or 'tentative'
+    (a [TENTATIVE] marker -> DAD still in progress, transient -- NOT a fault). A duplicate LINK-LOCAL disables
+    IPv6 packet processing on the whole interface (link_local_dup=True). [] when the device shows no IPv6 at
+    all (a pure-IPv4 box contributes nothing, so nothing can cry wolf). Tolerant; never raises.
+
+    Header line: 'GigabitEthernet0/1 is up, line protocol is up' (or 'administratively down'); IPv6 enabled
+    line: 'IPv6 is enabled, link-local address is FE80::130 [DUPLICATE]'; address line:
+    'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'. A single 'Global unicast
+    address(es):' header may be followed by additional indented address-only continuation lines, each its own
+    record. Grounded verbatim in the Cisco IPv6 command reference / config-guide sample output."""
+    out: list = []
+    cur = None
+
+    def _dad(tail: str) -> str:
+        t = (tail or "").upper()
+        if "[DUPLICATE]" in t or "[DUP]" in t:
+            return "duplicate"
+        if "[TENTATIVE]" in t or "[TEN]" in t:
+            return "tentative"
+        return "ok"
+
+    # 'Global unicast address(es):' may carry the first address on the same line OR start a list whose
+    # addresses are on the following indented continuation lines; track that we are inside that block.
+    in_global = False
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            in_global = False
+            continue
+        # interface header: '<ifname> is [administratively ]up/down, line protocol is up/down'
+        mh = re.match(r"^(\S+)\s+is\s+(administratively\s+down|up|down),"
+                      r"\s+line protocol is\s+(up|down)", s, re.IGNORECASE)
+        if mh:
+            if cur is not None:
+                out.append(cur)
+            cur = {"interface": normalize_ifname(mh.group(1)),
+                   "admin_up": mh.group(2).lower() == "up",
+                   "proto_up": mh.group(3).lower() == "up",
+                   "ipv6_enabled": False, "link_local": "", "link_local_dup": False, "global": []}
+            in_global = False
+            continue
+        if cur is None:
+            continue
+        # 'IPv6 is enabled, link-local address is FE80::130 [DUPLICATE]'
+        ml = re.match(r"^IPv6 is (enabled|disabled)(?:,\s*link-local address is\s+(\S+)(.*))?$",
+                      s, re.IGNORECASE)
+        if ml:
+            cur["ipv6_enabled"] = ml.group(1).lower() == "enabled"
+            if ml.group(2):
+                cur["link_local"] = ml.group(2)
+                cur["link_local_dup"] = _dad(ml.group(3)) == "duplicate"
+            in_global = False
+            continue
+        # 'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'  (first addr inline)
+        mg = re.match(r"^Global unicast address\(es\):\s*(.+)$", s, re.IGNORECASE)
+        if mg:
+            in_global = True
+            rest = mg.group(1).strip()
+            if rest:  # an address sits on the header line itself
+                _addr_line(cur, rest, _dad)
+            continue
+        # indented address-only continuation under the Global block:
+        #   '1:5::1, subnet is 1:5::/64 [DUPLICATE]'  or  '1:5::1 [TENTATIVE]'
+        if in_global and re.match(r"^[0-9A-Fa-f:]+(?:,|\s|$)", s):
+            _addr_line(cur, s, _dad)
+            continue
+        # any other field line ends the global continuation context but keeps the interface block open
+        in_global = False
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _addr_line(cur: dict, rest: str, _dad) -> None:
+    """Parse one global-unicast address fragment ('<addr>, subnet is <pfx> [MARK]' or '<addr> [MARK]')
+    into cur['global']. A fragment whose first token is not an IPv6 address is ignored (defensive)."""
+    m = re.match(r"^([0-9A-Fa-f:]+)(?:,\s*subnet is\s+(\S+?))?\s*(\[[^\]]*\])?\s*$", rest)
+    if not m or ":" not in m.group(1):
+        return
+    cur["global"].append({"addr": m.group(1), "subnet": (m.group(2) or ""),
+                          "dad_state": _dad(m.group(3) or "")})
+
+
+def parse_ipv6_route_summary(output: str) -> dict:
+    """'show ipv6 route summary' (IOS / IOS-XE / NX-OS) -> {present, total, by_source:{name:count}, has_default}.
+    The summary header is 'IPv6 Routing Table - <vrf>? - N entries' followed by per-source 'name: N (subnets|total)'
+    lines (connected/local/static/RIP/OSPF/BGP/EIGRP/...). This is the IPv6-routing-active GATE, not a fault by
+    itself: a device that runs no IPv6 routing emits nothing -> {} so the detector never cries wolf. has_default is
+    True only if an explicit '::/0' line is present in the source breakdown (most boxes summarise without it, so it
+    is NOT used as a firing signal -- recorded for context only). Tolerant; never raises; {} when absent."""
+    out = {"present": False, "total": 0, "by_source": {}, "has_default": False}
+    txt = output or ""
+    if not txt.strip():
+        return {}
+    # Header: 'IPv6 Routing Table - 21 entries' or 'IPv6 Routing Table - default - 21 entries'
+    mh = re.search(r"IPv6 Routing Table.*?-\s*(\d+)\s+entries", txt, re.IGNORECASE)
+    if not mh:
+        return {}
+    out["present"] = True
+    out["total"] = int(mh.group(1))
+    # Inline form: '... entries: 4 connected, 2 static, 0 RIP, 1 OSPF, 0 BGP'
+    tail = txt[mh.end():]
+    minl = re.match(r"\s*:\s*(.+)", tail.splitlines()[0] if tail.splitlines() else "")
+    if minl:
+        for piece in minl.group(1).split(","):
+            m = re.match(r"\s*(\d+)\s+([A-Za-z][\w /-]*?)\s*$", piece)
+            if m:
+                out["by_source"][m.group(2).strip().lower()] = int(m.group(1))
+    # Block form: 'connected: 4' / 'local: 6' / 'static: 2 (5 subnets)' on their own lines
+    for raw in tail.splitlines():
+        m = re.match(r"\s*([A-Za-z][\w /-]*?)\s*:\s*(\d+)\b", raw)
+        if m and "entries" not in m.group(1).lower():
+            out["by_source"][m.group(1).strip().lower()] = int(m.group(2))
+    # Columnar table form: 'connected  4  0  384  576' (Route Source/Networks/Subnets/Overhead/Memory)
+    for raw in tail.splitlines():
+        mc = re.match(r"\s*([A-Za-z][\w ]*?)\s+(\d+)\s+\d+\s+\d+\s+\d+\s*$", raw)
+        if mc and mc.group(1).strip().lower() not in ("total", "route source"):
+            out["by_source"].setdefault(mc.group(1).strip().lower(), int(mc.group(2)))
+    if "::/0" in txt:
+        out["has_default"] = True
+    return out
+
+
+def parse_ospfv3_neighbors(output: str) -> list:
+    """'show ospfv3 neighbor' / 'show ipv6 ospf neighbor' (IOS / IOS-XE) -> [{neighbor_id, pri, state, role,
+    interface}] per OSPFv3 adjacency. The State column carries a role suffix: 'FULL/DR', 'FULL/BDR', 'FULL/  -',
+    '2WAY/DROTHER', 'EXSTART/  -', etc.; state is the token LEFT of '/', role the token right of it (normalised,
+    '-' kept). FULL and 2WAY are the two healthy resting states (2WAY is the intentional DROTHER<->DROTHER state on
+    a broadcast segment); INIT/ATTEMPT/EXSTART/EXCHANGE/LOADING/DOWN are transient-stuck (broken/forming adjacency,
+    e.g. MTU mismatch sticks EXSTART, a one-way hello sticks INIT). The OSPFv3 process header line and the column
+    header never create phantom neighbors (their first token is not a router-id). [] when no OSPFv3 is configured.
+    Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s or re.match(r"^(OSPFv3|Neighbor ID)\b", s, re.IGNORECASE):
+            continue
+        # <router-id> <pri> <STATE/ROLE> <dead-time> <if-id> <interface>
+        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+([A-Za-z0-9-]+)\s*/\s*([A-Za-z0-9-]+)\s+\S+\s+\S+\s+(\S+)", s)
+        if not m:
+            continue
+        out.append({"neighbor_id": m.group(1), "pri": m.group(2),
+                    "state": m.group(3).upper(), "role": m.group(4),
+                    "interface": m.group(5)})
+    return out
+
+
+def parse_bgp_ipv6_summary(output: str) -> list:
+    """'show bgp ipv6 unicast summary' (IOS / IOS-XE / NX-OS) -> [{neighbor, as, state, prefixes}] per IPv6 BGP
+    peer. The session is Established ONLY when the final 'State/PfxRcd' column is NUMERIC (the accepted-prefix
+    count); any state WORD there (Idle / Active / Connect / OpenSent / OpenConfirm / Idle(Admin)) means the peer
+    is not Established and exchanges no IPv6 routes. The 'Neighbor' value is an IPv6 address (may wrap to its own
+    line on IOS when long, but the common single-line form is parsed here). Header / identifier lines are skipped
+    (their first token is not an IPv6 address). [] when no IPv6 BGP is configured. Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s or s.lower().startswith("neighbor") or not re.match(r"^[0-9A-Fa-f:]+:", s):
+            continue
+        toks = s.split()
+        # need at least: nbr V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd
+        if len(toks) < 10:
+            continue
+        nbr, last = toks[0], toks[-1]
+        asn = toks[2] if toks[2].isdigit() else ""
+        if last.isdigit():
+            out.append({"neighbor": nbr, "as": asn, "state": "Established", "prefixes": int(last)})
+        else:
+            out.append({"neighbor": nbr, "as": asn, "state": last, "prefixes": 0})
+    return out
+
+
 def parse_nve_peers(output: str) -> list:
     """'show nve peers' (NX-OS VXLAN) -> [{interface, peer_ip, state, learn_type}]. State Up/Down; learn-type
     CP (control-plane / BGP-EVPN) vs DP (flood-and-learn). [] when the device runs no NVE/VXLAN. Tolerant;
