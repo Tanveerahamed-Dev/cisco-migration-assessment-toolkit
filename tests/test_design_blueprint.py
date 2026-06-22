@@ -1412,6 +1412,25 @@ def test_compute_architecture_coverage_observed_vs_not():
     assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 20
 
 
+def test_d_sdwan_omp_peer_down_fires_on_omp_down_only():
+    """Universality (Cisco Catalyst SD-WAN OMP / deeper modeling): an edge with ompPeersDown>0 fires
+    _d_sdwan_omp_peer_down (overlay routing degraded -- missing TLOCs/prefixes even with the control plane up).
+    Refutation: a fully-peered edge (ompPeersDown 0) and an absent sdwan axis stay silent. Distinct signal
+    from control-connection-down."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"sdwan": {"mgr1": {"omp_counters": [
+        {"system_ip": "10.10.1.13", "host_name": "BR13", "omp_up": 1, "omp_down": 1},
+        {"system_ip": "10.10.1.1", "host_name": "DC1", "omp_up": 2, "omp_down": 0},
+    ]}}}
+    sig = da._signals(fire)
+    assert any("BR13" in x for x in sig.get("sdwan_omp_down", []))
+    dec = da._d_sdwan_omp_peer_down(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "OMP" in str(dec) and "mgr1" in dec["evidence"]["devices"]
+    clean = {"sdwan": {"mgr1": {"omp_counters": [{"system_ip": "x", "host_name": "DC1", "omp_up": 2, "omp_down": 0}]}}}
+    assert da._d_sdwan_omp_peer_down(clean, da._signals(clean)) is None
+    assert da._d_sdwan_omp_peer_down({}, da._signals({})) is None
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected

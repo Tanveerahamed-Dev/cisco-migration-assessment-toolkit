@@ -589,6 +589,19 @@ GigabitEthernet1/0/1 is up, line protocol is up
   ]
 }
 """,
+    # Cisco Catalyst SD-WAN OMP (deeper modeling): /dataservice/device/counters reports per-edge OMP peer
+    # counts. BR13-cedge has ompPeersDown=1 (overlay routing degraded -- missing some TLOCs/prefixes even
+    # though its control connection is up) -> _d_sdwan_omp_peer_down FIRES; DC1-cedge (ompPeersDown=0) is the
+    # healthy companion that proves no over-firing. OMP runs over the control connections, so this is a
+    # DISTINCT signal from sdwan-control-connection-down.
+    "dataservice/device/counters": """\
+{
+  "data": [
+    {"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "ompPeersUp": 1, "ompPeersDown": 1, "vsmartControlConnections": 1, "bfdSessionsUp": 4, "bfdSessionsDown": 0},
+    {"system-ip": "10.10.1.1", "host-name": "DC1-cedge", "ompPeersUp": 2, "ompPeersDown": 0, "vsmartControlConnections": 2, "bfdSessionsUp": 8, "bfdSessionsDown": 0}
+  ]
+}
+""",
 }
 
 # --------------------------------------------------------------------------- #
