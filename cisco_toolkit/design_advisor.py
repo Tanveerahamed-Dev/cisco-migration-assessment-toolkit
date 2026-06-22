@@ -194,6 +194,126 @@ def _signals(snap):
     sig["mpls_ldp_down"] = _ldp_down
     sig["mpls_vpnv4_down"] = _vpnv4_down
     sig["mpls_l2vc_down"] = _l2vc_down
+    # Cisco SD-Access LISP fabric control-plane (snap['lisp'] from build_lisp). FIRING STATE: a VRF whose
+    # 'show lisp session' summary reports sessions CONFIGURED (total >= 1) but ZERO established -- every reliable-
+    # transport session to the map-server / map-resolver is down, so that fabric node can neither register nor
+    # resolve any EID-to-RLOC (control-plane partition). COVERAGE-HONEST: a device with no LISP publishes {} and
+    # never fires; a healthy node (established >= 1) and the BENIGN partial-Down case (an idle border/edge with
+    # nothing to register shows a Down peer but still keeps established >= 1) both stay silent -- we key off the
+    # device's OWN summary counts, never off a single Down peer row (Cisco TS guide: a lone Down session is normal).
+    _lisp = _as_dict(snap.get("lisp"))
+    _lisp_part = []
+    for _lh, _lf in sorted(_lisp.items()):
+        for _vb in _as_list(_as_dict(_lf).get("sessions")):
+            _vb = _as_dict(_vb)
+            if _as_int(_vb.get("total")) >= 1 and _as_int(_vb.get("established")) == 0:
+                _peers = [str(_as_dict(_p).get("peer", "?")) for _p in _as_list(_vb.get("peers"))]
+                _lisp_part.append(f"{_lh} VRF {_vb.get('vrf', '?')} "
+                                  f"({_as_int(_vb.get('total'))} session(s), 0 established"
+                                  + (f"; CP {', '.join(_peers[:4])}" if _peers else "") + ")")
+    sig["lisp_fabric_partition"] = _lisp_part
+    sig["lisp_fabric_partition_devices"] = sorted({d.split()[0] for d in _lisp_part})[:12]
+    # Cisco TrustSec / CTS group-based segmentation (snap['cts'] from build_cts): the env-data download is the
+    # prerequisite for SGT/SGACL enforcement. FIRING STATE: CTS env-data WAS collected here but its 'Current
+    # state' is not COMPLETE (START / WAITING_RESPONSE / WAITING_PAC / ...), i.e. the SGT-to-policy map is
+    # stale or never downloaded -> group-based segmentation is blind/unenforced (default-permit). Coverage-
+    # honest: a device with no CTS publishes {} and never fires; a COMPLETE state is silent EVEN WHEN its
+    # RADIUS servers show Status=DEAD (a COMPLETE set can be cached after the servers die -- not an env-data
+    # fault), because the parser reads only the env-data state, never per-server status.
+    _cts = _as_dict(snap.get("cts"))
+    _cts_stale = []
+    for _ch, _cf in sorted(_cts.items()):
+        _env = _as_dict(_as_dict(_cf).get("environment_data"))
+        _state = str(_env.get("state", "")).strip().upper()
+        if _state and _state != "COMPLETE":
+            _cts_stale.append(f"{_ch} ({_state or '?'})")
+    sig["cts_env_stale"] = _cts_stale
+    # DMVPN WAN-overlay (mGRE/NHRP) health (snap['dmvpn'] from build_dmvpn): a per-peer tunnel State that is not
+    # UP. UP is the only fully-established state; NHRP (stuck resolving next-hop), IKE (stuck in IPsec/IKE
+    # negotiation) and down each mean that spoke/hub DMVPN tunnel is broken (no overlay forwarding to that peer).
+    # Coverage-honest: a device running no DMVPN publishes {} and never fires; only an OBSERVED not-UP peer is
+    # surfaced (an all-UP hub/spoke stays silent).
+    _dmvpn = _as_dict(snap.get("dmvpn"))
+    _dmvpn_down = []
+    for _dh, _df in sorted(_dmvpn.items()):
+        for _p in _as_list(_as_dict(_df).get("peers")):
+            _p = _as_dict(_p)
+            _st = str(_p.get("state", "")).strip()
+            if _st and _st.upper() != "UP":
+                _dmvpn_down.append(f"{_dh} {_p.get('tunnel_ip', '?')} ({_st})")
+    sig["dmvpn_down"] = _dmvpn_down
+    # IPsec encrypted-WAN session health (snap['crypto'] from build_crypto): a site-to-site crypto session
+    # whose 'Session status' begins with DOWN (DOWN / DOWN-NEGOTIATING) has no established IKE/IPsec SA, so
+    # the encrypted tunnel is down and carries no traffic. Coverage-honest: a device with no IPsec publishes
+    # {} and never fires; every UP-* status (UP-ACTIVE passing data, UP-IDLE established-idle, UP-NO-IKE
+    # IPsec-up-while-IKE-rekeys) is treated as healthy and stays silent -- only an OBSERVED DOWN* session is
+    # surfaced (a false 'tunnel down' is worse than no detector).
+    _crypto = _as_dict(snap.get("crypto"))
+    _crypto_down = []
+    for _ch, _cf in sorted(_crypto.items()):
+        for _se in _as_list(_as_dict(_cf).get("sessions")):
+            _se = _as_dict(_se)
+            if str(_se.get("status", "")).strip().upper().startswith("DOWN"):
+                _crypto_down.append(f"{_ch} {_se.get('interface', '?')} -> {_se.get('peer', '?')}")
+    sig["crypto_sessions_down"] = _crypto_down
+    # BFD fast-failover health (snap['bfd'] from build_bfd): a BFD session in the Down state means sub-second
+    # forwarding-path failure detection is broken for its client protocol (OSPF/BGP/EIGRP/HSRP/static) -- the
+    # client reverts to its native (multi-second) convergence timers, so a link failure no longer fails over in
+    # milliseconds. Coverage-honest: a device running no BFD publishes {} and never fires; an UP session is
+    # healthy; AdminDown is an OPERATOR-DISABLED (intentional / maintenance) state, NOT a forwarding failure,
+    # so it is deliberately EXCLUDED (firing on it would cry-wolf during a maintenance window).
+    _bfd = _as_dict(snap.get("bfd"))
+    _bfd_down = []
+    for _bh, _bf in sorted(_bfd.items()):
+        for _s in _as_list(_as_dict(_bf).get("sessions")):
+            _st = str(_as_dict(_s).get("state", "")).strip().lower()
+            if _st == "down":
+                _bfd_down.append(f"{_bh} {_as_dict(_s).get('neighbor', '?')}"
+                                 + (f" ({_as_dict(_s).get('interface')})" if _as_dict(_s).get('interface') else ""))
+    sig["bfd_down"] = _bfd_down
+    sig["bfd_down_devices"] = sorted({d.split()[0] for d in _bfd_down})[:12]
+    # IPv6 addressing / neighbor-discovery readiness (snap['ipv6_nd'] from build_ipv6_nd). FIRING STATE: a
+    # global IPv6 address (or the interface link-local) whose DAD state is DUPLICATE -- Duplicate Address
+    # Detection (RFC 4862) positively found another node already using that address, so Cisco set it to
+    # DUPLICATE and STOPPED using it (a duplicate link-local disables IPv6 on the whole interface). That is a
+    # hard, OBSERVED L3 fault: the dual-stack interface is dark for IPv6 while its IPv4 keeps forwarding.
+    # Coverage-honest & non-cry-wolf: a pure-IPv4 device publishes {} and never fires; an address with NO
+    # marker (dad_state 'ok') is healthy; a TENTATIVE address (DAD still in progress -- transient) is NOT a
+    # fault and is excluded. Only the settled DUPLICATE state is surfaced.
+    _v6 = _as_dict(snap.get("ipv6_nd"))
+    _dad_dups, _dad_ll = [], []
+    for _v6h, _v6f in sorted(_v6.items()):
+        for _if in _as_list(_as_dict(_v6f).get("interfaces")):
+            _if = _as_dict(_if)
+            _ifn = _if.get("interface", "?")
+            if _if.get("link_local_dup"):
+                _dad_ll.append(f"{_v6h} {_ifn} (link-local {_if.get('link_local', '?')})")
+            for _g in _as_list(_if.get("global")):
+                if str(_as_dict(_g).get("dad_state", "")).lower() == "duplicate":
+                    _dad_dups.append(f"{_v6h} {_ifn} ({_as_dict(_g).get('addr', '?')})")
+    sig["ipv6_dad_duplicate"] = _dad_dups
+    sig["ipv6_dad_duplicate_ll"] = _dad_ll
+    sig["ipv6_dad_duplicate_devices"] = sorted({x.split()[0] for x in (_dad_dups + _dad_ll)})[:12]
+    # IPv6 routing-plane adjacency health (snap['ipv6_routing'] from build_ipv6_routing): two independent break
+    # conditions across dual-stack reachability. Coverage-honest: a device running no IPv6 routing publishes {} and
+    # never fires; only an OBSERVED stuck OSPFv3 neighbor (NOT FULL and NOT 2WAY -- the two healthy resting states;
+    # 2WAY is the intentional DROTHER<->DROTHER state on a broadcast segment) or a not-Established IPv6 BGP peer is
+    # surfaced. 'show ipv6 route summary' is the routing-active GATE only (no '::/0'-absence heuristic -- a missing
+    # default is legitimate on a transit/IGP-full box, so it is never a firing signal).
+    _v6r = _as_dict(snap.get("ipv6_routing"))
+    _ospfv3_stuck, _bgp6_down = [], []
+    _OSPFV3_HEALTHY = {"FULL", "2WAY"}
+    for _vh, _vf in sorted(_v6r.items()):
+        _vf = _as_dict(_vf)
+        for _n in _as_list(_vf.get("ospfv3_neighbors")):
+            _st = str(_as_dict(_n).get("state", "")).upper().strip()
+            if _st and _st not in _OSPFV3_HEALTHY:
+                _ospfv3_stuck.append(f"{_vh} {_as_dict(_n).get('neighbor_id', '?')} ({_st})")
+        for _n in _as_list(_vf.get("bgp_ipv6_neighbors")):
+            if str(_as_dict(_n).get("state", "")) != "Established":
+                _bgp6_down.append(f"{_vh} {_as_dict(_n).get('neighbor', '?')}")
+    sig["ipv6_ospfv3_stuck"] = _ospfv3_stuck
+    sig["ipv6_bgp_down"] = _bgp6_down
     # PIM-SM control-plane resilience (snap['pim'] from build_pim). FIRING STATE: PIM is RUNNING here (a live
     # neighbor), rp-mapping WAS collected, yet ZERO RP is learned and the domain is not SSM-only -- ASM (*,G)
     # shared trees cannot form (RFC 7761). Coverage-honest: config-only/not-running, SSM-only, and
@@ -1022,6 +1142,221 @@ def _d_mpls_l2vpn_health(snap, sig):
         devices=sorted({d.split()[0] for d in down})[:12])
 
 
+def _d_lisp_fabric_session_down(snap, sig):
+    """Cisco SD-Access LISP fabric control-plane partition: a VRF whose 'show lisp session' reports sessions
+    configured (total>=1) but ZERO established (parse_lisp_sessions -> snap['lisp'].sessions). Every fabric
+    edge/border holds a reliable-transport session to each control-plane node (map-server / map-resolver, port
+    4342); when none in a VRF is established that node can neither register its EIDs nor resolve any EID-to-RLOC
+    mapping, so the fabric overlay for that VRF cannot forward (border/edge fall to control-plane partition).
+    Coverage-honest: fires ONLY on an OBSERVED total>=1 / established==0 VRF; a box with no LISP, a healthy node
+    (established>=1), and the benign single-Down-peer case (idle border/edge, still established>=1) stay silent --
+    a lone Down session is normal per Cisco's LISP-VXLAN troubleshooting guide and must NOT cry wolf."""
+    part = sig.get("lisp_fabric_partition") or []
+    if not part:
+        return None
+    return _decision(
+        "lisp-fabric-session-down",
+        f"{len(part)} LISP fabric VRF(s) have control-plane sessions configured but NONE established "
+        f"(e.g. {', '.join(part[:6])}). Each SD-Access fabric node opens a reliable-transport session to every "
+        "control-plane node (map-server / map-resolver, port 4342) to register its EIDs and resolve EID-to-RLOC "
+        "mappings; with zero established sessions in a VRF the node cannot register or resolve, so the fabric "
+        "overlay for that VRF is partitioned (the border/edge blackholes silently rather than erroring). Confirm "
+        "underlay reachability to the control-plane loopback, the device's map-server/map-resolver configuration, "
+        "and any LISP authentication-key mismatch before the fabric is trusted at cutover. (A lone Down peer on an "
+        "idle border/edge is normal and is NOT flagged -- this fires only when a VRF has total>=1 yet established==0.)",
+        len(part), ["availability"],
+        ["lisp.sessions[].total / lisp.sessions[].established (parse_lisp_sessions / show lisp session)"],
+        priority="High",
+        driver="SD-Access LISP control plane: a fabric node with sessions configured but none established to the "
+               "map-server / map-resolver cannot register or resolve EID-to-RLOC -- the overlay for that VRF is "
+               "partitioned, independent of underlay link state.",
+        devices=sig.get("lisp_fabric_partition_devices") or [])
+
+
+def _d_cts_environment_data_health(snap, sig):
+    """Cisco TrustSec / CTS group-based segmentation: a device whose CTS environment-data 'Current state' is
+    NOT COMPLETE (parse_cts_environment_data -> snap['cts'].environment_data.state). The environment-data
+    download pulls the SGT->name table and SGACL policy from Cisco ISE; until it reaches COMPLETE the switch
+    has no SGT-to-policy map, so group-based segmentation is blind and SGACLs cannot be enforced (the fabric
+    falls back to default-permit) even though TrustSec is configured. Coverage-honest: fires ONLY on an
+    OBSERVED non-COMPLETE state -- a box running no CTS (snap['cts'] absent / {}) stays silent, and a
+    COMPLETE state stays silent even when its RADIUS servers are DEAD (a COMPLETE env-data set can be cached
+    after the servers die; server liveness is not read here)."""
+    stale = sig.get("cts_env_stale") or []
+    if not stale:
+        return None
+    return _decision(
+        "cts-environment-data-not-downloaded",
+        f"{len(stale)} device(s) have CTS TrustSec environment-data that is NOT in the COMPLETE/valid "
+        f"downloaded state (e.g. {', '.join(stale[:6])}). The environment-data download distributes the "
+        "SGT-to-name table and SGACL policy from Cisco ISE; until it reaches COMPLETE the switch holds no "
+        "group-to-policy map, so group-based (SGT/SGACL) segmentation is blind and unenforced -- traffic "
+        "between security groups is default-permitted even though TrustSec is configured. Confirm "
+        "PAC provisioning, RADIUS/ISE (CTS) server reachability and the 'cts authorization list' / "
+        "'cts refresh environment-data' before the segmentation policy is trusted at cutover.",
+        len(stale), ["security", "segmentation"],
+        ["cts.environment_data.state (parse_cts_environment_data / show cts environment-data)"],
+        priority="High",
+        driver="TrustSec segmentation: a CTS environment-data set that is not COMPLETE leaves the device with "
+               "no SGT-to-policy map, so group-based access control is silently unenforced (default-permit).",
+        devices=sorted({s.split(" (")[0] for s in stale})[:12])
+
+
+def _d_dmvpn_tunnel_health(snap, sig):
+    """DMVPN WAN overlay (mGRE/NHRP): an NHRP/tunnel peer not in the UP state (parse_dmvpn_peers ->
+    snap['dmvpn'].peers). 'show dmvpn' lists every spoke/hub tunnel peer with a per-peer State; UP is the only
+    fully-established state, while NHRP (stuck resolving the next-hop), IKE (stuck in IPsec/IKE negotiation) and
+    down each mean that DMVPN tunnel is broken -- there is no overlay forwarding to that site. Coverage-honest:
+    fires ONLY on an OBSERVED not-UP peer; a box with no DMVPN (no 'show dmvpn' capture), or with every peer UP,
+    stays silent."""
+    down = sig.get("dmvpn_down") or []
+    if not down:
+        return None
+    return _decision(
+        "dmvpn-tunnel-peer-down",
+        f"{len(down)} DMVPN tunnel peer(s) are NOT in the UP state (e.g. {', '.join(down[:6])}). DMVPN carries "
+        "the WAN overlay over an mGRE interface with NHRP next-hop resolution and IPsec protection; UP is the "
+        "only fully-established state, so a peer stuck in NHRP (next-hop unresolved), IKE (IPsec/IKE still "
+        "negotiating) or down has no overlay forwarding to that spoke/hub -- the remote site is unreachable "
+        "across the WAN even while the tunnel interface and underlay may appear up. Confirm NBMA reachability "
+        "to the NHS, NHRP registration / authentication, and the IKE/IPsec profile to the peer before relying "
+        "on the overlay at cutover.",
+        len(down), ["availability"],
+        ["dmvpn.peers[].state (parse_dmvpn_peers / show dmvpn)"],
+        priority="High",
+        driver="DMVPN WAN overlay: a tunnel peer not in UP (NHRP/IKE/down) has no overlay forwarding to that "
+               "spoke/hub site -- the remote location is unreachable across the WAN.",
+        devices=sorted({d.split()[0] for d in down})[:12])
+
+
+def _d_crypto_session_health(snap, sig):
+    """IPsec encrypted-WAN tunnel health: a site-to-site crypto session whose 'Session status' begins with
+    DOWN -- DOWN or DOWN-NEGOTIATING (parse_crypto_sessions -> snap['crypto'].sessions). The status is the
+    IKE+IPsec SA state to that peer; DOWN / DOWN-NEGOTIATING means the SA is not established, so the encrypted
+    tunnel is down and forwards no protected traffic (the WAN/overlay site behind it is cut off). Coverage-
+    honest: fires ONLY on an OBSERVED DOWN* session -- every UP-* status (UP-ACTIVE / UP-IDLE / UP-NO-IKE) is
+    an established tunnel and stays silent, and a device with no IPsec stays silent."""
+    down = sig.get("crypto_sessions_down") or []
+    if not down:
+        return None
+    return _decision(
+        "ipsec-crypto-session-down",
+        f"{len(down)} IPsec crypto session(s) are DOWN / DOWN-NEGOTIATING (e.g. {', '.join(down[:6])}). "
+        "The session status is the IKE + IPsec SA state to that peer; a session that is not in an UP state "
+        "has no established SA, so the encrypted tunnel forwards no traffic and every site / prefix reachable "
+        "only across that VPN is cut off. Confirm peer reachability and the ISAKMP/IKEv2 policy, pre-shared "
+        "key or certificate trustpoint, transform-set / proposal, and the crypto ACL or VTI route match on "
+        "both ends before the encrypted WAN is relied on at cutover.",
+        len(down), ["availability"],
+        ["crypto.sessions[].status (parse_crypto_sessions / show crypto session)"],
+        priority="High",
+        driver="IPsec encrypted WAN: a crypto session in DOWN / DOWN-NEGOTIATING has no IKE/IPsec SA, so the "
+               "tunnel is hard down and the sites behind it are unreachable; UP-ACTIVE / UP-IDLE / UP-NO-IKE "
+               "are established and are not flagged.",
+        devices=sorted({d.split()[0] for d in down})[:12])
+
+
+def _d_bfd_session_health(snap, sig):
+    """BFD fast-failover: a BFD session in the Down state (parse_bfd_neighbors -> snap['bfd'].sessions). BFD
+    gives its client protocol (OSPF/BGP/EIGRP/HSRP/static) sub-second forwarding-path failure detection; a
+    session that is Down means that protection is gone and the client has reverted to its native multi-second
+    convergence timers, so a link failure no longer fails over in milliseconds -- the exact resilience a
+    migration is supposed to preserve. Coverage-honest: fires ONLY on an OBSERVED Down session; an Up session,
+    an AdminDown (operator-disabled / maintenance) session, and a box with no BFD all stay silent."""
+    down = sig.get("bfd_down") or []
+    if not down:
+        return None
+    return _decision(
+        "bfd-session-down-failover-degraded",
+        f"{len(down)} BFD session(s) are in the Down state (e.g. {', '.join(down[:6])}). BFD provides "
+        "sub-second forwarding-path failure detection for its client protocol (OSPF/BGP/EIGRP/HSRP/static); a "
+        "session that is Down means that fast-failover is broken and the client has fallen back to its native "
+        "(multi-second) convergence timers, so a link or next-hop failure no longer converges in milliseconds. "
+        "Confirm the L1/L2 path and IGP/BGP adjacency to the neighbor, matching BFD interval/multiplier and "
+        "echo settings on both ends, and any platform BFD-offload limit before the fast-convergence design is "
+        "trusted at cutover.",
+        len(down), ["availability", "convergence"],
+        ["bfd.sessions[].state (parse_bfd_neighbors / show bfd neighbors)"],
+        priority="High",
+        driver="Fast failover: a BFD session in the Down state removes sub-second failure detection for its "
+               "client protocol, dropping convergence back to slow native timers (AdminDown / Up are not flagged).",
+        devices=sig.get("bfd_down_devices") or [])
+
+
+def _d_ipv6_dad_duplicate(snap, sig):
+    """IPv6 Duplicate Address Detection FAILURE (parse_ipv6_interface_addrs -> snap['ipv6_nd']): a global
+    IPv6 address -- or an interface link-local -- that 'show ipv6 interface' marks [DUPLICATE]. DAD (RFC 4862)
+    positively found another node already using that address, so IOS set it to the DUPLICATE state and STOPPED
+    using it; a duplicate link-local disables IPv6 packet processing on the entire interface. The dual-stack
+    interface/SVI is therefore DARK for IPv6 while its IPv4 keeps forwarding -- a silent stack asymmetry that
+    strands every IPv6 host on that segment at cutover. Coverage-honest & non-cry-wolf: fires ONLY on the
+    settled DUPLICATE state; a healthy (unmarked) address, a transient TENTATIVE address (DAD still running),
+    and a pure-IPv4 box that publishes no ipv6_nd axis all stay silent."""
+    dups = sig.get("ipv6_dad_duplicate") or []
+    ll = sig.get("ipv6_dad_duplicate_ll") or []
+    if not dups and not ll:
+        return None
+    parts = []
+    if dups:
+        parts.append(f"{len(dups)} global IPv6 address(es) in the DUPLICATE state (e.g. {', '.join(dups[:4])})")
+    if ll:
+        parts.append(f"{len(ll)} interface(s) whose LINK-LOCAL is duplicate -- IPv6 is disabled on the whole "
+                     f"interface (e.g. {', '.join(ll[:4])})")
+    return _decision(
+        "ipv6-duplicate-address-dad-failure",
+        "IPv6 Duplicate Address Detection has FAILED: " + "; ".join(parts) + ". DAD (RFC 4862) confirmed "
+        "another node already owns the address, so IOS set it to DUPLICATE and is not using it -- the "
+        "dual-stack interface is dark for IPv6 even though its IPv4 still forwards (a silent stack asymmetry). "
+        "Find and remove the address collision (a mis-typed static, an overlapping SLAAC/EUI-64 clash, or a "
+        "duplicated SVI), then 'clear ipv6 duplicate address' to re-run DAD before the segment is trusted at "
+        "cutover.",
+        len(dups) + len(ll), ["availability", "addressing"],
+        ["ipv6_nd.interfaces[].global[].dad_state (parse_ipv6_interface_addrs / show ipv6 interface)",
+         "ipv6_nd.interfaces[].link_local_dup"],
+        priority="High",
+        driver="IPv6 dual-stack readiness: an address in the DUPLICATE state is operationally disabled by DAD, "
+               "so the interface has no working IPv6 -- the stack is asymmetric and IPv6 hosts on it are "
+               "stranded until the collision is resolved.",
+        devices=sig.get("ipv6_dad_duplicate_devices") or [])
+
+
+def _d_ipv6_routing_adjacency(snap, sig):
+    """IPv6 routing plane (dual-stack reachability): an OSPFv3 neighbor stuck in a transient state (NOT FULL and NOT
+    2WAY -> parse_ospfv3_neighbors / 'show ospfv3 neighbor') or an IPv6 BGP peer not Established (parse_bgp_ipv6_summary
+    / 'show bgp ipv6 unicast summary'), read from snap['ipv6_routing']. A stuck OSPFv3 adjacency (e.g. EXSTART from an
+    MTU mismatch, INIT from a one-way hello) or a not-Established IPv6 BGP session exchanges no IPv6 routes, so the
+    dual-stack reachability that depends on it is dark even while the parallel IPv4 plane stays Up -- a silent
+    half-failure at cutover. Coverage-honest: fires ONLY on an OBSERVED stuck/not-Established adjacency. FULL and 2WAY
+    OSPFv3 neighbors (2WAY is the intentional DROTHER<->DROTHER steady state on a broadcast segment) and Established
+    IPv6 BGP peers never fire, and a box with no IPv6 routing publishes {} and stays silent."""
+    stuck = sig.get("ipv6_ospfv3_stuck") or []
+    bgp_down = sig.get("ipv6_bgp_down") or []
+    if not stuck and not bgp_down:
+        return None
+    parts = []
+    if stuck:
+        parts.append(f"{len(stuck)} OSPFv3 neighbor(s) stuck in a transient (non-FULL/non-2WAY) state "
+                     f"(e.g. {', '.join(stuck[:6])})")
+    if bgp_down:
+        parts.append(f"{len(bgp_down)} IPv6 BGP peer(s) not Established (e.g. {', '.join(bgp_down[:6])})")
+    devs = {d.split()[0] for d in stuck} | {d.split()[0] for d in bgp_down}
+    return _decision(
+        "ipv6-routing-adjacency-down",
+        "; ".join(parts) + ". OSPFv3 settles in FULL (or 2WAY between DROTHERs); any other state is a forming/stuck "
+        "adjacency, and an IPv6 BGP peer is Established only when it advertises a prefix count -- a peer in "
+        "Idle/Active/Connect exchanges no IPv6 routes. The dual-stack reachability riding that adjacency is dark even "
+        "while the parallel IPv4 plane is Up, so the failure is invisible to an IPv4-only check. Confirm interface "
+        "MTU and IPv6 link-local reachability for OSPFv3, and update-source / AS / address-family activation for IPv6 "
+        "BGP, before dual-stack is trusted at cutover.",
+        len(stuck) + len(bgp_down), ["availability", "convergence"],
+        ["ipv6_routing.ospfv3_neighbors[].state (parse_ospfv3_neighbors / show ospfv3 neighbor)",
+         "ipv6_routing.bgp_ipv6_neighbors[].state (parse_bgp_ipv6_summary / show bgp ipv6 unicast summary)"],
+        priority="High",
+        driver="IPv6 routing plane: a stuck OSPFv3 adjacency or a not-Established IPv6 BGP peer blackholes dual-stack "
+               "reachability while the IPv4 plane stays Up -- a silent half-failure unless explicitly checked.",
+        devices=sorted(devs)[:12])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -1721,6 +2056,7 @@ def _d_oversized_l2_subnet(snap, sig):
 
 _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_copp_drops,
               _d_mpls_ldp_health, _d_mpls_l3vpn_health, _d_mpls_l2vpn_health,  # SP/MPLS: LDP underlay / L3VPN VPNv4 / L2VPN pseudowire
+              _d_lisp_fabric_session_down, _d_cts_environment_data_health, _d_dmvpn_tunnel_health, _d_crypto_session_health, _d_bfd_session_health, _d_ipv6_dad_duplicate, _d_ipv6_routing_adjacency,  # universal arch: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,

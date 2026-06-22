@@ -789,6 +789,235 @@ def test_parse_mpls_l2vpn_vc_status(cp):
     assert parse.parse_mpls_l2vpn_vc("") == []
 
 
+def test_parse_lisp_sessions_states(cp):
+    """Universality (SD-Access LISP fabric): parse_lisp_sessions reads 'show lisp session', keying each
+    'Sessions for VRF <name>, total: N, established: M' block and its 'IP:port State ...' peer rows. The Down
+    VRF (established 0) is distinguishable from the Up VRF by the summary counts, so the all-sessions-down
+    fabric partition is detectable while the indented column header never creates a phantom peer."""
+    out = (
+        "Sessions for VRF default, total: 2, established: 2\n"
+        "Peer                           State      Up/Down        In/Out    Users\n"
+        "10.0.255.2:4342                Up         1d04h          27/9      14\n"
+        "10.0.255.3:4342                Up         1d03h          19/9      14\n"
+        "Sessions for VRF red, total: 2, established: 0\n"
+        "Peer                           State      Up/Down        In/Out    Users\n"
+        "10.0.255.2:4342                Down       never          0/0       0\n"
+        "10.0.255.3:4342                Down       never          0/0       0\n")
+    r = parse.parse_lisp_sessions(out)
+    assert len(r) == 2
+    assert r[0]["vrf"] == "default" and r[0]["total"] == 2 and r[0]["established"] == 2
+    assert len(r[0]["peers"]) == 2
+    assert r[0]["peers"][0] == {"peer": "10.0.255.2", "port": "4342", "state": "Up"}
+    assert r[1]["vrf"] == "red" and r[1]["total"] == 2 and r[1]["established"] == 0
+    assert all(p["state"] == "Down" for p in r[1]["peers"])
+    assert parse.parse_lisp_sessions("") == []
+
+
+def test_parse_cts_environment_data_states(cp):
+    """Universality (Cisco TrustSec / CTS segmentation): parse_cts_environment_data reads the env-data
+    'Current state' so a download that is not COMPLETE (no SGT->policy map -> segmentation blind) is
+    detectable, while a COMPLETE set is recognized as healthy. Critically, a COMPLETE state with DEAD
+    RADIUS servers stays COMPLETE (server status is NOT read), and absent / non-CTS output yields {}."""
+    complete = (
+        "CTS Environment Data\n"
+        "====================\n"
+        "Current state = COMPLETE\n"
+        "Last status = Successful\n"
+        "Local Device SGT:\n"
+        "  SGT tag = 216-22:TrustSec_Devices\n"
+        "Server List Info:\n"
+        "Installed list: CTSServerList1-000B, 2 server(s):\n"
+        " *Server: 10.0.0.10, port 1812, A-ID 3X0P672A296F212FUEC21S27E4A2579N\n"
+        "          Status = DEAD\n"
+        " *Server: 10.0.0.11, port 1812, A-ID 3X08674A806S217FUEC21C24E4A3549N\n"
+        "          Status = DEAD\n"
+        "Security Group Name Table:\n"
+        "    0-07:Unknown    3-00:Network_Services    4-04:Employees    5-00:Contractors\n"
+        "Environment Data Lifetime = 86400 secs\n"
+        "State Machine is running\n")
+    r = parse.parse_cts_environment_data(complete)
+    assert r["state"] == "COMPLETE" and r["last_status"] == "Successful"
+    assert r["sgt_count"] == 4 and r["server_count"] == 2 and r["lifetime"] == 86400
+    broken = (
+        "CTS Environment Data\n"
+        "====================\n"
+        "Current state = WAITING_RESPONSE\n"
+        "Last status = Failed\n"
+        "Environment Data is empty\n"
+        "State Machine is running\n"
+        "Retry_timer (60 secs) is running\n")
+    b = parse.parse_cts_environment_data(broken)
+    assert b["state"] == "WAITING_RESPONSE" and b["last_status"] == "Failed" and b["sgt_count"] == 0
+    # Absent / non-CTS -> {} (coverage-honest: nothing to assess).
+    assert parse.parse_cts_environment_data("") == {}
+    assert parse.parse_cts_environment_data("% Invalid input detected at '^' marker.") == {}
+
+
+def test_parse_dmvpn_peers_states(cp):
+    """Universality (DMVPN WAN overlay): parse_dmvpn_peers reads 'show dmvpn' so a tunnel peer NOT in the UP
+    state (NHRP / IKE / down -> no overlay forwarding to that spoke/hub) is detectable. The State token is
+    anchored to the UpDn HH:MM:SS time, so the legend, the column-header row and the dashed separator (none of
+    which carry a time) never create phantom peers; the leading '# Ent' count is optional; 'interface' is
+    carried from the 'Interface: TunnelN' header."""
+    out = (
+        "Legend: Attrb --> S - Static, D - Dynamic, I - Incomplete\n"
+        "        N - NATed, L - Local, X - No Socket\n"
+        "        # Ent --> Number of NHRP entries with same NBMA peer\n"
+        "==========================================================================\n"
+        "\n"
+        "Interface: Tunnel1, IPv4 NHRP Details\n"
+        "Type:Spoke, NHRP Peers:3,\n"
+        "\n"
+        " # Ent  Peer NBMA Addr Peer Tunnel Add State  UpDn Tm Attrb\n"
+        " ----- --------------- --------------- ----- -------- -----\n"
+        "     1 17.17.17.1             10.0.1.1    UP 00:27:26     S\n"
+        "     1 27.27.27.2             10.0.1.2   IKE 00:16:28     S\n"
+        "     1 37.37.37.3             10.0.1.3  NHRP 00:00:04     D\n")
+    r = parse.parse_dmvpn_peers(out)
+    assert len(r) == 3
+    assert r[0] == {"interface": "Tunnel1", "nbma": "17.17.17.1", "tunnel_ip": "10.0.1.1", "state": "UP", "attrb": "S"}
+    assert r[1]["tunnel_ip"] == "10.0.1.2" and r[1]["state"] == "IKE"
+    assert r[2]["tunnel_ip"] == "10.0.1.3" and r[2]["state"] == "NHRP"
+    # Legend / header / dashed-separator lines must NOT become peers (only the 3 real rows).
+    assert [p["state"] for p in r] == ["UP", "IKE", "NHRP"]
+    assert parse.parse_dmvpn_peers("") == []
+    assert parse.parse_dmvpn_peers("% Incomplete command.") == []
+
+
+def test_parse_crypto_sessions_states(cp):
+    """Universality (IPsec encrypted WAN): parse_crypto_sessions reads 'show crypto session' so a session
+    whose 'Session status' begins with DOWN (no established IKE/IPsec SA -> tunnel down) is detectable. Each
+    'Interface:' opens a new record; the indented IKE SA / IPSEC FLOW / Active SAs lines never create phantom
+    sessions, and the peer is captured without the trailing 'port 500'."""
+    out = (
+        "Crypto session current status\n"
+        "\n"
+        "Interface: Tunnel0\n"
+        "Session status: UP-ACTIVE\n"
+        "Peer: 10.0.255.2 port 500\n"
+        "  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.2/500 Active\n"
+        "  IPSEC FLOW: permit ip 10.0.10.0/255.255.255.0 10.0.20.0/255.255.255.0\n"
+        "        Active SAs: 2, origin: crypto map\n"
+        "Interface: Tunnel1\n"
+        "Session status: DOWN-NEGOTIATING\n"
+        "Peer: 10.0.255.9 port 500\n"
+        "  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.9/500 Inactive\n"
+        "        Active SAs: 0, origin: crypto map\n")
+    r = parse.parse_crypto_sessions(out)
+    assert len(r) == 2
+    assert r[0] == {"interface": "Tunnel0", "peer": "10.0.255.2", "status": "UP-ACTIVE"}
+    assert r[1]["interface"] == "Tunnel1" and r[1]["peer"] == "10.0.255.9" and r[1]["status"] == "DOWN-NEGOTIATING"
+    assert parse.parse_crypto_sessions("") == []
+
+
+def test_parse_bfd_neighbors_state_by_column_not_rhrs(cp):
+    """Universality (BFD fast-failover): parse_bfd_neighbors reads 'show bfd neighbors' and MUST take the
+    State value from the State COLUMN, not the first Up/Down token -- the 'RH/RS' column is also literally
+    Up/Down, so a naive first-token match would misread a healthy row. Covers the NX-OS/IOS-XE layout (with
+    Holdown + trailing Vrf/Type) and proves a Down session is detectable while the Up row stays Up. Empty /
+    'not enabled' input yields []."""
+    out = (
+        "switch# show bfd neighbors\n"
+        "\n"
+        "OurAddr         NeighAddr       LD/RD                 RH/RS           Holdown(mult)     State       Int               Vrf                       Type\n"
+        "10.0.255.1      10.0.255.2      1090519041/1090519040 Up              583(3)            Up          Po10              default                   SH\n"
+        "10.0.255.1      10.0.255.9      1090519042/0          Down            N/A(3)            Down        Eth8/2            default                   SH\n")
+    r = parse.parse_bfd_neighbors(out)
+    assert len(r) == 2
+    by_n = {x["neighbor"]: x for x in r}
+    assert by_n["10.0.255.2"]["state"] == "Up"      # RH/RS Up did NOT bleed into a phantom; real State is Up
+    assert by_n["10.0.255.9"]["state"] == "Down"    # the genuinely broken session
+    assert by_n["10.0.255.2"]["interface"] == "Po10"
+    assert by_n["10.0.255.9"]["local_disc"] == "1090519042" and by_n["10.0.255.9"]["remote_disc"] == "0"
+    # older IOS layout (no OurAddr/Holdown, NeighAddr first) still parses the State column correctly
+    ios = (
+        "NeighAddr                         LD/RD    RH/RS     State     Int\n"
+        "10.0.0.2                           1/1     Up        Up        Fa0/0\n")
+    ri = parse.parse_bfd_neighbors(ios)
+    assert len(ri) == 1 and ri[0]["neighbor"] == "10.0.0.2" and ri[0]["state"] == "Up" and ri[0]["interface"] == "Fa0/0"
+    assert parse.parse_bfd_neighbors("") == []
+    assert parse.parse_bfd_neighbors("% BFD is not enabled\n") == []
+
+
+def test_parse_ipv6_interface_addrs_dad_state(cp):
+    """Universality (IPv6 addressing / ND): parse_ipv6_interface_addrs reads 'show ipv6 interface' and flags a
+    global address marked [DUPLICATE] (DAD found a clash -> IOS disabled the address) distinctly from a clean
+    address (dad_state 'ok') and a transient [TENTATIVE] address. A duplicate link-local sets link_local_dup.
+    The Description / Joined-group / MTU / ND lines never create phantom addresses, and a single 'Global
+    unicast address(es):' header followed by an indented continuation address yields a second record."""
+    out = (
+        "Vlan10 is up, line protocol is up\n"
+        "  IPv6 is enabled, link-local address is FE80::1\n"
+        "  Description: clean dual-stack SVI\n"
+        "  Global unicast address(es): 2001:DB8:10::1, subnet is 2001:DB8:10::/64\n"
+        "    2001:DB8:10::2, subnet is 2001:DB8:10::/64 [TENTATIVE]\n"
+        "  Joined group address(es): FF02::1 FF02::2\n"
+        "  MTU is 1500 bytes\n"
+        "Vlan30 is up, line protocol is up\n"
+        "  IPv6 is enabled, link-local address is FE80::30 [DUPLICATE]\n"
+        "  Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]\n"
+        "  MTU is 1500 bytes\n"
+        "GigabitEthernet0/2 is administratively down, line protocol is down\n"
+        "  IPv6 is disabled\n"
+    )
+    r = parse.parse_ipv6_interface_addrs(out)
+    by = {x["interface"]: x for x in r}
+    assert set(by) >= {"Vlan10", "Vlan30", "Gi0/2"}
+    # Vlan10: one clean global + one TENTATIVE continuation address; NEITHER is a duplicate
+    v10 = by["Vlan10"]
+    assert v10["link_local_dup"] is False and v10["ipv6_enabled"] is True
+    states10 = {g["addr"]: g["dad_state"] for g in v10["global"]}
+    assert states10 == {"2001:DB8:10::1": "ok", "2001:DB8:10::2": "tentative"}
+    # Vlan30: the global address AND the link-local are DUPLICATE
+    v30 = by["Vlan30"]
+    assert v30["link_local_dup"] is True
+    assert v30["global"] == [{"addr": "1:4::1", "subnet": "1:4::/64", "dad_state": "duplicate"}]
+    # admin-down IPv6-disabled interface: enabled False, no addresses, no false duplicate
+    assert by["Gi0/2"]["ipv6_enabled"] is False and by["Gi0/2"]["global"] == []
+    assert parse.parse_ipv6_interface_addrs("") == []
+
+
+def test_parse_ipv6_routing_plane(cp):
+    """Universality (IPv6 routing plane / dual-stack reachability): the three IPv6 control-plane parsers.
+    parse_ospfv3_neighbors splits the State/role column on '/' so FULL/2WAY (healthy resting states) are
+    distinguishable from a stuck EXSTART; the process header + column header create no phantom neighbors.
+    parse_bgp_ipv6_summary treats a numeric State/PfxRcd as Established and a state WORD (Active) as down.
+    parse_ipv6_route_summary reads the 'N entries' header (the IPv6-routing-active gate). All three return
+    []/{} on empty input (a pure-IPv4 box) and never raise."""
+    ospf = (
+        "            OSPFv3 1 address-family ipv6 (router-id 10.0.0.4)\n"
+        "\n"
+        "Neighbor ID     Pri   State           Dead Time   Interface ID    Interface\n"
+        "10.0.0.1          1   FULL/DR         00:00:37    16              Vlan10\n"
+        "10.0.0.7          1   2WAY/DROTHER    00:00:35    18              Vlan10\n"
+        "10.0.0.9          0   EXSTART/  -     00:00:33    20              GigabitEthernet0/1\n")
+    r = parse.parse_ospfv3_neighbors(ospf)
+    assert len(r) == 3
+    assert r[0] == {"neighbor_id": "10.0.0.1", "pri": "1", "state": "FULL", "role": "DR", "interface": "Vlan10"}
+    assert r[1]["state"] == "2WAY" and r[1]["role"] == "DROTHER"
+    assert r[2]["neighbor_id"] == "10.0.0.9" and r[2]["state"] == "EXSTART"
+    assert parse.parse_ospfv3_neighbors("") == []
+
+    bgp = (
+        "BGP router identifier 10.0.0.4, local AS number 65001\n"
+        "Neighbor                  V         AS  MsgRcvd  MsgSent  TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "2001:DB8:0:1::1           4      65001     3421     3418      15    0    0 1d02h          12\n"
+        "2001:DB8:0:9::9           4      65009        0        0       0    0    0 never    Active\n")
+    b = parse.parse_bgp_ipv6_summary(bgp)
+    assert len(b) == 2
+    assert b[0] == {"neighbor": "2001:DB8:0:1::1", "as": "65001", "state": "Established", "prefixes": 12}
+    assert b[1]["neighbor"] == "2001:DB8:0:9::9" and b[1]["state"] == "Active" and b[1]["prefixes"] == 0
+    assert parse.parse_bgp_ipv6_summary("") == []
+
+    summ = parse.parse_ipv6_route_summary(
+        "IPv6 Routing Table - default - 8 entries\n"
+        "connected       4           0           384         576\n"
+        "ospf 1          1           0           96          144\n")
+    assert summ["present"] is True and summ["total"] == 8
+    assert summ["by_source"].get("connected") == 4
+    assert parse.parse_ipv6_route_summary("") == {}
+
+
 def test_parse_nve_vni_states(cp):
     """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
     out = (

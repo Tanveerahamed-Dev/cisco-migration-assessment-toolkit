@@ -185,6 +185,59 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "engine must assess MPLS L3VPN: an Idle VPNv4 peer must fire _d_mpls_l3vpn_health"
     assert any(d.get("id") == "mpls-l2vpn-pseudowire-down" for d in _bp.get("decisions", [])), \
         "engine must assess MPLS L2VPN: a DOWN pseudowire must fire _d_mpls_l2vpn_health"
+    # UNIVERSALITY (SD-Access LISP fabric control plane): core1 is an IOS-XE fabric node whose VRF 'red' has
+    # 2 control-plane (map-server/map-resolver) sessions configured but ZERO established (both peers Down),
+    # while the healthy VRF 'default' (2/2 established, peers Up) in the same output proves no over-firing.
+    assert isinstance(snap.get("lisp"), dict) and snap["lisp"].get("core1", {}).get("sessions"), \
+        "snapshot must publish per-device LISP fabric state (build_lisp -> parse_lisp_sessions)"
+    assert any(d.get("id") == "lisp-fabric-session-down" for d in _bp.get("decisions", [])), \
+        "engine must assess SD-Access LISP control plane: a VRF with total>=1/established==0 must fire _d_lisp_fabric_session_down"
+    # UNIVERSALITY (Cisco TrustSec / CTS segmentation): core1 is a TrustSec node whose environment-data
+    # download is stuck in WAITING_RESPONSE (not COMPLETE) -> the SGT/SGACL policy map is never downloaded,
+    # so _d_cts_environment_data_health must fire end-to-end. A non-CTS device publishes no cts entry and
+    # stays silent (coverage-honest).
+    assert isinstance(snap.get("cts"), dict) and snap["cts"].get("core1", {}).get("environment_data"), \
+        "snapshot must publish per-device CTS state (build_cts -> parse_cts_environment_data)"
+    assert snap["cts"]["core1"]["environment_data"].get("state") == "WAITING_RESPONSE", \
+        "core1 CTS env-data 'Current state' must be the observed non-COMPLETE value"
+    assert any(d.get("id") == "cts-environment-data-not-downloaded" for d in _bp.get("decisions", [])), \
+        "engine must assess TrustSec segmentation: a non-COMPLETE CTS env-data download must fire _d_cts_environment_data_health"
+    # UNIVERSALITY (DMVPN WAN overlay mGRE/NHRP): core1 acts as a DMVPN hub with two spoke tunnels not in UP
+    # (10.0.1.3 NHRP, 10.0.1.4 IKE) while 10.0.1.2 is UP.  The detector must fire end-to-end; the UP peer proves
+    # no over-firing.
+    assert isinstance(snap.get("dmvpn"), dict) and snap["dmvpn"].get("core1", {}).get("peers"), \
+        "snapshot must publish per-device DMVPN state (build_dmvpn -> parse_dmvpn_peers)"
+    assert any(d.get("id") == "dmvpn-tunnel-peer-down" for d in _bp.get("decisions", [])), \
+        "engine must assess the DMVPN WAN overlay: a not-UP tunnel peer (NHRP/IKE) must fire _d_dmvpn_tunnel_health"
+    # UNIVERSALITY (IPsec encrypted WAN): core1 acts as an IOS site-to-site IPsec hub with a DOWN-NEGOTIATING
+    # crypto session (Tunnel1 -> 10.0.255.9). The detector must fire end-to-end; the healthy companion
+    # (UP-ACTIVE Tunnel0 -> 10.0.255.2) proves no over-firing.
+    assert isinstance(snap.get("crypto"), dict) and snap["crypto"].get("core1", {}).get("sessions"), \
+        "snapshot must publish per-device IPsec crypto state (build_crypto -> parse_crypto_sessions)"
+    assert any(d.get("id") == "ipsec-crypto-session-down" for d in _bp.get("decisions", [])), \
+        "engine must assess IPsec encrypted WAN: a DOWN-NEGOTIATING crypto session must fire _d_crypto_session_health"
+    # UNIVERSALITY (BFD fast-failover): core1 runs BFD with one session DOWN (10.0.255.9 on Gi1/0/3) and one
+    # UP (10.0.255.2 on Gi1/0/1).  The detector must fire end-to-end; the healthy Up session (whose RH/RS
+    # column is also 'Up') proves no over-firing and proves the parser reads State by column, not first token.
+    assert isinstance(snap.get("bfd"), dict) and snap["bfd"].get("core1", {}).get("sessions"), \
+        "snapshot must publish per-device BFD state (build_bfd -> parse_bfd_neighbors)"
+    assert any(d.get("id") == "bfd-session-down-failover-degraded" for d in _bp.get("decisions", [])), \
+        "engine must assess BFD fast-failover: a Down BFD session must fire _d_bfd_session_health"
+    # UNIVERSALITY (IPv6 addressing / ND): core1 is a dual-stack distribution switch whose Vlan30 GLOBAL IPv6
+    # address is in the DUPLICATE state (DAD found a clash -> IOS disabled it). The DAD detector must fire
+    # end-to-end; the clean Vlan10/Gi1/0/24 addresses and the TENTATIVE Gi1/0/1 address prove no over-firing.
+    assert isinstance(snap.get("ipv6_nd"), dict) and snap["ipv6_nd"].get("core1", {}).get("interfaces"), \
+        "snapshot must publish per-device IPv6 ND state (build_ipv6_nd -> parse_ipv6_interface_addrs)"
+    assert any(d.get("id") == "ipv6-duplicate-address-dad-failure" for d in _bp.get("decisions", [])), \
+        "engine must assess IPv6 DAD: a global address in the DUPLICATE state must fire _d_ipv6_dad_duplicate"
+    # UNIVERSALITY (IPv6 routing plane / dual-stack reachability): access1 is dual-stack and runs OSPFv3 + IPv6 BGP
+    # with one OSPFv3 neighbor stuck EXSTART (10.0.0.9) and one IPv6 BGP peer Active (2001:DB8:0:9::9). The IPv6
+    # routing-adjacency detector must fire end-to-end; the healthy companions (FULL/DR, 2WAY/DROTHER, Established
+    # PfxRcd 12) prove no over-firing.
+    assert isinstance(snap.get("ipv6_routing"), dict) and snap["ipv6_routing"].get("access1", {}).get("ospfv3_neighbors"), \
+        "snapshot must publish per-device IPv6 routing state (build_ipv6_routing -> parse_ospfv3_neighbors)"
+    assert any(d.get("id") == "ipv6-routing-adjacency-down" for d in _bp.get("decisions", [])), \
+        "engine must assess the IPv6 routing plane: a stuck OSPFv3 adjacency / not-Established IPv6 BGP peer must fire _d_ipv6_routing_adjacency"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu

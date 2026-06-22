@@ -24,6 +24,7 @@ from cisco_toolkit.parse import (
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
     parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni, parse_copp_drops,
     parse_bgp_vpnv4_summary, parse_mpls_ldp_neighbors, parse_mpls_l2vpn_vc,   # SP/MPLS: L3VPN VPNv4 / LDP underlay / L2VPN pseudowire
+    parse_lisp_sessions, parse_cts_environment_data, parse_dmvpn_peers, parse_crypto_sessions, parse_bfd_neighbors, parse_ipv6_interface_addrs, parse_ipv6_route_summary, parse_ospfv3_neighbors, parse_bgp_ipv6_summary,   # universal arch coverage: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
     parse_ntp_status,                                                 # NTP clock-sync STATE (stratum 16 / unsynchronized)
@@ -179,6 +180,114 @@ def build_mpls(cmd_to_file: Dict[str, str]) -> dict:
         out["vpnv4_neighbors"] = vpnv4
     if l2vc:
         out["l2vpn_vcs"] = l2vc
+    return out
+
+
+def build_lisp(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco SD-Access LISP fabric control-plane state for THIS device -> {sessions:[per-VRF blocks]}. Reads
+    'show lisp session' (IOS-XE): each fabric edge/border opens a reliable-transport session to every control-
+    plane node (map-server / map-resolver, port 4342) over which it registers and resolves EID-to-RLOC mappings.
+    The published per-VRF summary (total / established) lets _d_lisp_fabric_session_down fire ONLY when a VRF has
+    sessions configured (total>=1) yet ZERO established -- a genuine fabric control-plane partition for that node
+    -- while a benign single Down peer (idle border/edge) keeps established>=1 and stays silent. {} when the
+    device runs no SD-Access / LISP. Fail-soft via _safe_parse."""
+    sessions = _safe_parse(parse_lisp_sessions,
+                           _load_cmd_output(cmd_to_file, "show lisp session"), _default=[]) or []
+    out = {}
+    if sessions:
+        out["sessions"] = sessions
+    return out
+
+
+def build_cts(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco TrustSec environment-data download state for THIS device -> {environment_data: {...}} or {}.
+    'show cts environment-data' reports the state machine that pulls the SGT->name table / SGACL policy from
+    Cisco ISE; the env-data download is the prerequisite for ANY group-based (SGT/SGACL) enforcement. {} when
+    the device runs no CTS (command absent / not configured) -- coverage-honest, so a non-TrustSec fleet never
+    fires. A 'Current state' that is not COMPLETE means the SGT-to-policy data is stale or was never
+    downloaded, so segmentation is blind/unenforced. Fail-soft via _safe_parse."""
+    env = _safe_parse(parse_cts_environment_data,
+                      _load_cmd_output(cmd_to_file, "show cts environment-data")) or {}
+    out = {}
+    if env:
+        out["environment_data"] = env
+    return out
+
+
+def build_dmvpn(cmd_to_file: Dict[str, str]) -> dict:
+    """DMVPN WAN-overlay (mGRE/NHRP) state for THIS device -> {peers: [{interface, nbma, tunnel_ip, state,
+    attrb}]}. Reads 'show dmvpn' (IOS / IOS-XE only -- DMVPN is not an NX-OS feature, so a Nexus box simply has
+    no capture and publishes {}). A peer whose State is not UP (NHRP / IKE / down) is a broken spoke/hub tunnel:
+    no overlay forwarding to that site. {} when the device runs no DMVPN. Fail-soft via _safe_parse."""
+    peers = _safe_parse(parse_dmvpn_peers, _load_cmd_output(cmd_to_file, "show dmvpn")) or []
+    out = {}
+    if peers:
+        out["peers"] = peers
+    return out
+
+
+def build_crypto(cmd_to_file: Dict[str, str]) -> dict:
+    """IPsec encrypted-WAN session state for THIS device -> {sessions: [{interface, peer, status}]}. Reads
+    'show crypto session' (IOS / IOS-XE site-to-site IPsec, crypto-map or VTI). Each entry is one IKE/IPsec
+    peering; a status that begins with DOWN (DOWN / DOWN-NEGOTIATING) means the IKE/IPsec SA is not
+    established, so the encrypted tunnel is down. {} when the device runs no IPsec (no sessions parsed).
+    Fail-soft via _safe_parse."""
+    sessions = _safe_parse(parse_crypto_sessions, _load_cmd_output(cmd_to_file, "show crypto session")) or []
+    out = {}
+    if sessions:
+        out["sessions"] = sessions
+    return out
+
+
+def build_bfd(cmd_to_file: Dict[str, str]) -> dict:
+    """BFD fast-failover session state for THIS device -> {sessions: [{neighbor, local_disc, remote_disc,
+    state, interface}]}. BFD provides sub-second forwarding-path failure detection for its client protocols
+    (OSPF/BGP/EIGRP/HSRP/static); a session in the Down state means that fast-failover is broken and the
+    client has fallen back to its native (multi-second) convergence timers. {} when the device runs no BFD
+    (so a non-BFD box never publishes the axis and the detector stays silent). Fail-soft via _safe_parse."""
+    sessions = _safe_parse(parse_bfd_neighbors, _load_cmd_output(cmd_to_file, "show bfd neighbors")) or []
+    out = {}
+    if sessions:
+        out["sessions"] = sessions
+    return out
+
+
+def build_ipv6_nd(cmd_to_file: Dict[str, str]) -> dict:
+    """IPv6 addressing / neighbor-discovery readiness for THIS device from 'show ipv6 interface'
+    (parse_ipv6_interface_addrs) -> {interfaces:[{interface, admin_up, proto_up, ipv6_enabled, link_local,
+    link_local_dup, global:[{addr, subnet, dad_state}]}]}. {} when the device shows no IPv6 at all -- a pure
+    IPv4 box contributes nothing and the DAD detector never cries wolf over it. A global address in dad_state
+    'duplicate' (or a duplicate link-local) is the OBSERVED broken state: DAD positively detected an address
+    clash, so Cisco set the address to DUPLICATE and stopped using it -- a hard L3 fault on a dual-stack
+    interface. Fail-soft via _safe_parse."""
+    ifaces = _safe_parse(parse_ipv6_interface_addrs,
+                         _load_cmd_output(cmd_to_file, "show ipv6 interface")) or []
+    out = {}
+    if ifaces:
+        out["interfaces"] = ifaces
+    return out
+
+
+def build_ipv6_routing(cmd_to_file: Dict[str, str]) -> dict:
+    """IPv6 routing-plane state for THIS device -> {route_summary, ospfv3_neighbors, bgp_ipv6_neighbors}. Covers the
+    dual-stack reachability control plane: the IPv6 RIB census ('show ipv6 route summary', the routing-active GATE),
+    OSPFv3 adjacencies ('show ospfv3 neighbor'), and IPv6 BGP peers ('show bgp ipv6 unicast summary'). {} when the
+    device runs no IPv6 routing at all -> a pure-IPv4 box contributes nothing and the detector never cries wolf. An
+    OSPFv3 neighbor stuck in a transient state (not FULL and not 2WAY), or an IPv6 BGP peer not Established, each
+    means that dual-stack adjacency exchanges no IPv6 routes. Fail-soft via _safe_parse."""
+    rsum = _safe_parse(parse_ipv6_route_summary,
+                       _load_cmd_output(cmd_to_file, "show ipv6 route summary")) or {}
+    ospfv3 = _safe_parse(parse_ospfv3_neighbors,
+                         _load_cmd_output(cmd_to_file, "show ospfv3 neighbor", "show ipv6 ospf neighbor")) or []
+    bgp6 = _safe_parse(parse_bgp_ipv6_summary,
+                       _load_cmd_output(cmd_to_file, "show bgp ipv6 unicast summary")) or []
+    out = {}
+    if rsum:
+        out["route_summary"] = rsum
+    if ospfv3:
+        out["ospfv3_neighbors"] = ospfv3
+    if bgp6:
+        out["bgp_ipv6_neighbors"] = bgp6
     return out
 
 

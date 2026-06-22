@@ -419,6 +419,7 @@ from cisco_toolkit.build import (
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
     build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
+    build_lisp, build_cts, build_dmvpn, build_crypto, build_bfd, build_ipv6_nd, build_ipv6_routing,   # universal arch coverage
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -579,6 +580,15 @@ COMMANDS_IOS = [
     "show mpls ldp neighbor",     # SP/MPLS: LDP transport-underlay session state -> build_mpls / _d_mpls_ldp_health
     "show bgp vpnv4 unicast summary",  # SP/MPLS: L3VPN VPNv4 PE-PE control-plane -> build_mpls / _d_mpls_l3vpn_health
     "show mpls l2transport vc",   # SP/MPLS: L2VPN/AToM pseudowire VC state -> build_mpls / _d_mpls_l2vpn_health
+    "show lisp session",  # universal arch coverage
+    "show cts environment-data",  # universal arch coverage
+    "show dmvpn",  # universal arch coverage
+    "show crypto session",  # universal arch coverage
+    "show bfd neighbors",  # universal arch coverage
+    "show ipv6 interface",  # universal arch coverage
+    "show ipv6 route summary",  # universal arch coverage
+    "show ospfv3 neighbor",  # universal arch coverage
+    "show bgp ipv6 unicast summary",  # universal arch coverage
     "show policy-map interface",  # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
     "show ip pim rp mapping",     # PIM-SM learned RP -> build_pim / _d_pim_rp_health
     "show ip pim neighbor",       # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
@@ -1547,6 +1557,13 @@ def main():
     all_overlay: Dict[str, dict] = {}                                # VXLAN-EVPN overlay (show nve peers) per device -> snap['overlay']
     all_copp: Dict[str, list] = {}                                   # CoPP drop counters (show policy-map control-plane) per device -> snap['copp']
     all_mpls: Dict[str, dict] = {}                                   # SP/MPLS service-plane state (LDP/VPNv4/L2VPN) per device -> snap['mpls']
+    all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
+    all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
+    all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
+    all_crypto: Dict[str, dict] = {}                             # universal arch coverage -> snap['crypto']
+    all_bfd: Dict[str, dict] = {}                             # universal arch coverage -> snap['bfd']
+    all_ipv6_nd: Dict[str, dict] = {}                             # universal arch coverage -> snap['ipv6_nd']
+    all_ipv6_routing: Dict[str, dict] = {}                             # universal arch coverage -> snap['ipv6_routing']
     all_pim: Dict[str, dict] = {}                                    # PIM-SM control plane (RP mapping / neighbor) per device -> snap['pim']
     all_ipv6_fhs: Dict[str, dict] = {}                               # IPv6 first-hop security posture per device -> snap['ipv6_fhs']
     all_ntp: Dict[str, dict] = {}                                    # NTP clock-sync STATE per device -> snap['ntp']
@@ -1617,6 +1634,27 @@ def main():
             logger.info(f"  [MPLS] {hostname}: {len(mpls.get('ldp_neighbors', []))} LDP session(s), "
                         f"{len(mpls.get('vpnv4_neighbors', []))} VPNv4 peer(s), "
                         f"{len(mpls.get('l2vpn_vcs', []))} L2VPN VC(s)")
+        _lisp = build_lisp(cmd_to_file)
+        if _lisp:
+            all_lisp[hostname] = _lisp
+        _cts = build_cts(cmd_to_file)
+        if _cts:
+            all_cts[hostname] = _cts
+        _dmvpn = build_dmvpn(cmd_to_file)
+        if _dmvpn:
+            all_dmvpn[hostname] = _dmvpn
+        _crypto = build_crypto(cmd_to_file)
+        if _crypto:
+            all_crypto[hostname] = _crypto
+        _bfd = build_bfd(cmd_to_file)
+        if _bfd:
+            all_bfd[hostname] = _bfd
+        _ipv6_nd = build_ipv6_nd(cmd_to_file)
+        if _ipv6_nd:
+            all_ipv6_nd[hostname] = _ipv6_nd
+        _ipv6_routing = build_ipv6_routing(cmd_to_file)
+        if _ipv6_routing:
+            all_ipv6_routing[hostname] = _ipv6_routing
         pim = build_pim(cmd_to_file)
         if pim.get("rp_mapping") or pim.get("neighbors"):
             all_pim[hostname] = pim
@@ -2155,6 +2193,13 @@ def main():
     snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
     snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
     snap_dict["mpls"] = all_mpls                                     # SP/MPLS service-plane (LDP/VPNv4/L2VPN) -> _d_mpls_ldp_health/_d_mpls_l3vpn_health/_d_mpls_l2vpn_health
+    snap_dict["lisp"] = all_lisp                                       # universal arch coverage
+    snap_dict["cts"] = all_cts                                       # universal arch coverage
+    snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage
+    snap_dict["crypto"] = all_crypto                                       # universal arch coverage
+    snap_dict["bfd"] = all_bfd                                       # universal arch coverage
+    snap_dict["ipv6_nd"] = all_ipv6_nd                                       # universal arch coverage
+    snap_dict["ipv6_routing"] = all_ipv6_routing                                       # universal arch coverage
     snap_dict["pim"] = all_pim                                       # PIM-SM RP/neighbor -> _d_pim_rp_health (multicast resilience)
     snap_dict["ipv6_fhs"] = all_ipv6_fhs                             # IPv6 first-hop security -> _d_ipv6_fhs (rogue-RA gateway hijack)
     snap_dict["ntp"] = all_ntp                                       # NTP clock-sync STATE -> _d_ntp_sync (unsynchronized clock)
