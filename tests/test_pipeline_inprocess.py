@@ -140,6 +140,8 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "engine must assess EVPN control plane: an Idle RR session must fire _d_evpn_rr_health"
     assert any(d.get("id") == "vxlan-nve-vni-down" for d in _bp.get("decisions", [])), \
         "engine must assess VXLAN VNI: a not-Up VNI must fire _d_nve_vni_health"
+    assert any(d.get("id") == "copp-control-plane-policer-dropping" for d in _bp.get("decisions", [])), \
+        "engine must assess CoPP: a dropping control-plane class must fire _d_copp_drops"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu

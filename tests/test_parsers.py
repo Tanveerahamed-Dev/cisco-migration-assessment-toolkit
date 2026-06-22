@@ -747,3 +747,42 @@ def test_parse_nve_vni_states(cp):
     assert r[0] == {"vni": "10010", "mcast_group": "225.1.1.10", "state": "Up", "mode": "CP", "type": "L2"}
     assert r[1]["vni"] == "50000" and r[1]["state"] == "Down" and r[1]["mcast_group"] == ""
     assert parse.parse_nve_vni("") == []
+
+
+def test_parse_copp_drops_nxos_and_iosxe(cp):
+    """Universality (control-plane policing): the engine had no CoPP visibility. parse_copp_drops reads
+    'show policy-map [interface] control-plane' on BOTH NX-OS (bytes, module blocks) and IOS/IOS-XE (packets,
+    actions: drop) so a CoPP class actively DROPPING punted traffic (drops > 0) becomes detectable; rate lines
+    and the policer cir/bc config line are never miscounted."""
+    nxos = (
+        "    class-map copp-system-p-class-critical (match-any)\n"
+        "      police cir 36000 kbps bc 250 ms\n"
+        "      module 1:\n"
+        "        conformed 177446058 bytes,\n"
+        "          5-min offered rate 3 bytes/sec\n"
+        "        violated 4521 bytes,\n"
+        "          5-min violate rate 12 bytes/sec\n"
+        "    class-map copp-system-p-class-normal (match-any)\n"
+        "      module 1:\n"
+        "        conformed 88231005 bytes,\n"
+        "        violated 0 bytes,\n")
+    by = {c["class"]: c for c in parse.parse_copp_drops(nxos)}
+    assert by["copp-system-p-class-critical"]["violated"] == 4521
+    assert by["copp-system-p-class-critical"]["drops"] == 4521
+    assert by["copp-system-p-class-normal"]["drops"] == 0
+    assert by["copp-system-p-class-critical"]["conformed"] == 177446058
+    iosxe = (
+        "    Class-map: copp-class-bgp (match-any)\n"
+        "      120 packets, 7680 bytes\n"
+        "      police:\n"
+        "          cir 8000 bps, bc 1500 bytes\n"
+        "        conformed 15 packets, 6210 bytes; actions: transmit\n"
+        "        exceeded 5 packets, 5070 bytes; actions: drop\n"
+        "        violated 2 packets, 140 bytes; actions: drop\n"
+        "    Class-map: class-default (match-any)\n"
+        "        conformed 0 packets, 0 bytes; actions: transmit\n"
+        "        exceeded 0 packets, 0 bytes; actions: drop\n")
+    byx = {c["class"]: c for c in parse.parse_copp_drops(iosxe)}
+    assert byx["copp-class-bgp"]["exceeded"] == 5 and byx["copp-class-bgp"]["violated"] == 2
+    assert byx["copp-class-bgp"]["drops"] == 7 and byx["class-default"]["drops"] == 0
+    assert parse.parse_copp_drops("") == [] and parse.parse_copp_drops("% policy-map not configured\n") == []
