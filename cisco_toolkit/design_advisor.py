@@ -3223,6 +3223,7 @@ def compute_target_state(snap, requirements=None, sig=None):
         "segmentation_plan": _segmentation_plan(snap, req, census=sig["vlans"]),
         "addressing_plan": _addressing_plan(snap, req, census=sig["vlans"]),
         "wave_plan": wp,
+        "aci_move_groups": _aci_move_groups(snap),   # controller-fabric move-groups (tenant-by-tenant) when ACI logical inventory is present
         "coverage": _coverage(snap),
         "summary": {"n_dimensions": len(dims), "n_requirement_gated": n_gated, "headline": headline},
         "scope_note": "Architecture + LLD detail (tier model, L2/L3 boundary, resilience, lifecycle "
@@ -3233,6 +3234,50 @@ def compute_target_state(snap, requirements=None, sig=None):
 
 
 # ----------------------------------------------------------------------------- public entrypoint
+def _aci_move_groups(snap):
+    """ACI migration move-groups derived from the published logical census (snap['aci'] tenants/vrfs/bds/epgs).
+    The switch-topology wave-planner (_wave_plan) groups SSH switches by L2 coupling; an ACI fabric instead
+    migrates by its POLICY hierarchy -- tenant -> VRF -> BD -> EPG -- so this groups the move units BY TENANT
+    (the natural ACI migration boundary), the finest unit being the EPG. Each group carries its VRF/BD/EPG
+    counts and flags any VRF with contract enforcement off (a segmentation gap to resolve before the move).
+    {} when no ACI logical inventory was collected (coverage-honest -- no ACI evidence, no plan)."""
+    aci = _as_dict(snap.get("aci"))
+    by_tenant = {}
+    for _host, _f in aci.items():
+        _f = _as_dict(_f)
+        for kind in ("tenants", "vrfs", "bds", "epgs"):
+            for it in _as_list(_f.get(kind)):
+                it = _as_dict(it)
+                ten = it.get("name") if kind == "tenants" else it.get("tenant")
+                if not ten:
+                    continue
+                g = by_tenant.setdefault(ten, {"vrfs": [], "bds": [], "epgs": [], "unenforced_vrfs": []})
+                if kind == "vrfs":
+                    g["vrfs"].append(it.get("name", ""))
+                    if it.get("pc_enf_pref") == "unenforced":
+                        g["unenforced_vrfs"].append(it.get("name", ""))
+                elif kind == "bds":
+                    g["bds"].append(it.get("name", ""))
+                elif kind == "epgs":
+                    g["epgs"].append(it.get("name", ""))
+    if not by_tenant:
+        return {}
+    groups = []
+    for ten, g in by_tenant.items():
+        groups.append({"tenant": ten, "n_vrfs": len(g["vrfs"]), "n_bds": len(g["bds"]), "n_epgs": len(g["epgs"]),
+                       "vrfs": sorted(g["vrfs"]), "epgs": sorted(g["epgs"])[:24],
+                       "unenforced_vrfs": sorted(g["unenforced_vrfs"]), "segmentation_gap": bool(g["unenforced_vrfs"])})
+    groups.sort(key=lambda x: (-x["n_epgs"], x["tenant"]))   # biggest move group (most EPGs) leads the sequencing
+    return {
+        "groups": groups, "n_tenants": len(groups), "n_epgs": sum(g["n_epgs"] for g in groups),
+        "n_segmentation_gaps": sum(1 for g in groups if g["segmentation_gap"]),
+        "note": (f"{len(groups)} ACI tenant move-group(s), {sum(g['n_epgs'] for g in groups)} EPG(s) total -- "
+                 "migrate tenant by tenant (the ACI policy boundary); each tenant's EPGs are the finest move "
+                 "unit. Tenants flagged with an unenforced VRF carry a segmentation gap to close in the target "
+                 "design before the move."),
+    }
+
+
 def compute_design_blueprint(snap, requirements=None):
     """Canonical, CCDE-grounded target-state design blueprint for a snapshot.
 
