@@ -36,6 +36,16 @@ def _cmd_filename(cmd: str) -> str:
     return cmd.replace(" ", "_").replace("|", "_").replace("^", "").replace("/", "_") + ".txt"
 
 
+def _require_https(base_url: str, fabric: str) -> bool:
+    """Refuse to send credentials over a non-HTTPS URL (the login would leak the password in cleartext). Real
+    APIC / vManage controllers are HTTPS-only, so this is a safe secure-default, not a limitation."""
+    if not base_url.lower().startswith("https://"):
+        logger.error("  [%s] refusing to authenticate over a non-HTTPS URL (%r) -- credentials would be sent "
+                     "in cleartext. Use an https:// controller URL.", fabric, base_url)
+        return False
+    return True
+
+
 def _http_session(verify_tls: bool = True):
     """A urllib opener with a cookie jar (carries the session cookie across requests). With verify_tls False a
     CERT_NONE context is used — controller fabrics often ship a self-signed cert; opt out EXPLICITLY (logged)."""
@@ -110,6 +120,8 @@ def collect_apic(base_url: str, username: str, password: str, out_dir: str, veri
     list of files written. GET-only after the login POST; never changes fabric state; requires a read-only RBAC
     account (see the module doctrine). The password is used once for login and never persisted."""
     base = base_url.rstrip("/")
+    if not _require_https(base, "APIC"):
+        return []
     opener = _http_session(verify_tls)
     if _post(opener, f"{base}/api/aaaLogin.json",
              {"aaaUser": {"attributes": {"name": username, "pwd": password}}},
@@ -138,6 +150,8 @@ def collect_vmanage(base_url: str, username: str, password: str, out_dir: str, v
     then GET each /dataservice endpoint as JSON and write it under the offline command-filename (build_sdwan ->
     parse_sdwan_*). GET-only after login; read-only RBAC account; password never persisted."""
     base = base_url.rstrip("/")
+    if not _require_https(base, "vManage"):
+        return []
     opener = _http_session(verify_tls)
     login = _post(opener, f"{base}/j_security_check",
                   urllib.parse.urlencode({"j_username": username, "j_password": password}),
