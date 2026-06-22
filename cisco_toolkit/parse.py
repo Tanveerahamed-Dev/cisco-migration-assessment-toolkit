@@ -1063,7 +1063,11 @@ def parse_security(output: str) -> dict:
     svc_pwenc = has(r"^service password-encryption\b")
     enable_secret = has(r"^enable secret\b")
     enable_pw = has(r"^enable password\b")
-    aaa = has(r"^aaa new-model\b")
+    # NOS-aware: IOS/IOS-XE use 'aaa new-model'; NX-OS / IOS-XR enable central AAA via
+    # 'aaa authentication login default group ...' / 'aaa group server tacacs+|radius' (no 'new-model').
+    aaa = (has(r"^aaa new-model\b")
+           or has(r"^aaa authentication login default group\b")
+           or has(r"^aaa group server (tacacs\+|radius)\b"))
     ntp = has(r"^ntp (server|peer)\b")
     logging_on = has(r"^logging (host|buffered|server)\b")
     banner = has(r"^banner (motd|login|exec)\b")
@@ -1130,8 +1134,9 @@ def parse_security(output: str) -> dict:
         "'service password-encryption' is set." if svc_pwenc
         else "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).")
     add("no-aaa", "pass" if aaa else "fail",
-        "'aaa new-model' is enabled." if aaa
-        else "no 'aaa new-model' -- authentication is local-only / line-based.")
+        "central AAA (TACACS+/RADIUS) is configured." if aaa
+        else "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- "
+             "authentication is local-only / line-based.")
     add("no-ntp", "pass" if ntp else "fail",
         "NTP server configured." if ntp
         else "no NTP server -- clock drift makes logs and certificate validity untrustworthy.")
@@ -1946,6 +1951,7 @@ def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
             return
         text = "\n".join(lines)
         rec: Dict[str, object] = {"oper": "", "input_errors": "", "crc": "",
+                                  "output_errors": "", "late_collisions": "", "runts": "", "giants": "",
                                   "output_drops": "", "last_input": "", "last_output": ""}
         mhdr = re.match(r"^\S+\s+is\s+([A-Za-z ]+?)(?:,|$)", lines[0])
         if mhdr: rec["oper"] = mhdr.group(1).strip()
@@ -1953,6 +1959,14 @@ def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
         if m: rec["input_errors"] = int(m.group(1))
         m = re.search(r"(\d+)\s+CRC", text)
         if m: rec["crc"] = int(m.group(1))
+        # output-side L1 health (was collected but discarded): TX errors, late collisions (duplex mismatch),
+        # runts/giants (framing) — preserved so the explorer interface view + future detectors can read them.
+        for _fld, _pat in (("output_errors", r"(\d+)\s+output error"),
+                           ("late_collisions", r"(\d+)\s+late collision"),
+                           ("runts", r"(\d+)\s+runts"), ("giants", r"(\d+)\s+giants")):
+            _m = re.search(_pat, text)
+            if _m:
+                rec[_fld] = int(_m.group(1))
         m = re.search(r"Total output drops:\s*(\d+)", text)
         if m:
             rec["output_drops"] = int(m.group(1))
@@ -2134,6 +2148,21 @@ def _parse_poe_watts(output: str) -> Dict[str, float]:
             except ValueError:
                 pass
     return res
+
+
+def _parse_poe_inline_budget(output: str) -> Dict[str, float]:
+    """Total PoE budget from the 'show power inline' Module-summary rows (one per stack member):
+    '<module>  <available>  <used>  <remaining>' watts, e.g. '1   1120.0   0.0   1120.0'. Sums across
+    modules; 'n/a' rows (a non-PoE module) are skipped. Returns {'available','used'} only when at least
+    one real module row was seen, else {} -- so an n/a-only / non-PoE switch stays UNBUDGETED (poe_util
+    blank) rather than reading a false 0/0. (DET-poe-001: the budget the per-port parse never captured.)"""
+    avail = used = 0.0
+    seen = False
+    for line in output.splitlines():
+        m = re.match(r"^\s*\d+\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s*$", line)
+        if m:
+            avail += float(m.group(1)); used += float(m.group(2)); seen = True
+    return {"available": round(avail, 1), "used": round(used, 1)} if seen else {}
 
 
 # =============================================================================

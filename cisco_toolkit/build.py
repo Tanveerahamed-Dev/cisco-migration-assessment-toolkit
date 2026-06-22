@@ -16,7 +16,8 @@ from cisco_toolkit.parse import (
     parse_etherchannel_summary_members, parse_glbp_summary, parse_hsrp_summary,
     parse_ip_routes, parse_multicast_info, parse_neighbors_cdp, parse_neighbors_lldp,
     parse_portchannel_protocol_from_summary, parse_run_config_interfaces,
-    parse_show_environment, parse_show_environment_power, parse_show_interface_status,
+    parse_show_environment, parse_show_environment_power, _parse_poe_inline_budget,
+    parse_show_interface_status,
     parse_show_interface_switchport, parse_show_interface_trunk_table, parse_show_inventory,
     parse_show_ip_arp, parse_show_mac_address_table, parse_show_module_count,
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
@@ -311,6 +312,18 @@ def build_device_physical(hostname: str, platform: str,
         ps_list = [s for s in pwr.get("ps_status_list", []) if s]
         if ps_list:
             dp.ps_status = " / ".join(list(dict.fromkeys(ps_list)))
+
+    # PoE budget fallback (DET-poe-001): access stacks report their inline-power budget only in the
+    # 'show power inline' Module rows ('1  1120.0  0.0  1120.0'), which 'show environment power' above
+    # never sees -- so poe_util read 0/303 fleet-wide. When the env-power parse left it blank, sum the
+    # inline Module rows so PoE utilisation is real (n/a-only / non-PoE modules stay blank, not a false 0).
+    if not str(dp.power_capacity_w).strip():
+        _poe_inline = _load_cmd_output(cmd_to_file, "show power inline")
+        if _poe_inline:
+            _pb = _parse_poe_inline_budget(_poe_inline)
+            if _pb.get("available"):
+                dp.power_capacity_w = f"{_pb['available']} W"
+                dp.power_drawn_w = f"{_pb.get('used', 0.0)} W"
 
     mod_out = _load_cmd_output(cmd_to_file, "show module")
     if mod_out and dp.num_modules == 0:

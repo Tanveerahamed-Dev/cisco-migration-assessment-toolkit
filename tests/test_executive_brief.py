@@ -60,6 +60,17 @@ def test_clean_fleet_has_no_blockers():
     assert b["top_gating"] == []
 
 
+def test_avg_health_excludes_insufficient_data():
+    """Coverage-honesty: an 'Insufficient Data' device (absent evidence -> no deductions -> a near-perfect
+    score) must NOT inflate the fleet average-health headline; the average is over genuinely-scored rows."""
+    b = compute_executive_brief(health_scores=[
+        {"switch": "a", "band": "Critical", "score": 20},
+        {"switch": "b", "band": "Good", "score": 80},
+        {"switch": "c", "band": "Insufficient Data", "score": 99}])   # uncollected — must be excluded
+    assert b["posture"]["avg_health"] == 50            # (20+80)/2, NOT (20+80+99)/3 == 66
+    assert b["scale"]["n_devices"] == 3                # but the device COUNT still reflects all inventoried
+
+
 def test_empty_and_deterministic():
     out = compute_executive_brief()
     assert out["axes"] and out["scale"]["n_devices"] == 0            # health + punch-list axes always present

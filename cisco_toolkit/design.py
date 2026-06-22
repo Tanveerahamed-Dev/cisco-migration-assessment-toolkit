@@ -162,6 +162,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     add_document_control(
         doc, document="As-Built Network Design Document (HLD + LLD)", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="Customer architecture and engineering owners, and the build engineers who derive "
                  "device configurations from the LLD detail.",
         exclude=("design",))
@@ -175,8 +176,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     posture = eb.get("posture_statement") or (
         f"{n_dev} devices, {n_vlan} VLANs and {n_svis} gateway SVIs across the assessed fabric.")
     doc.add_paragraph(posture)
-    if bp.get("summary", {}).get("headline"):
-        _label_run(doc.add_paragraph(), "Design headline:", bp["summary"]["headline"])
+    _sm = bp.get("summary") or {}      # `bp.get("summary", {})` only substitutes when ABSENT; a None value would raise
+    if _sm.get("headline"):
+        _label_run(doc.add_paragraph(), "Design headline:", _sm["headline"])
         mp = doc.add_paragraph()
         mr = mp.add_run(
             "Design method: this design reasons top-down from requirements (the WHY) and manages the "
@@ -193,7 +195,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("Gateway SVIs", n_svis),
         ("Routing VRFs (non-default)", len(vrfs) if vrfs else "0 (single global table)"),
         ("Gateway SVIs with an ACL applied", f"{n_acl_svis} of {n_svis}"),
-        ("FHRP gateway groups", len(fhrp)),
+        ("Multi-gateway VLANs (FHRP candidates)", len(fhrp)),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
     ], widths=[4.6, 2.2])
 
@@ -259,9 +261,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     doc.add_heading("2.4 Resilience & redundancy", level=2)
     n_single_gw = sum(1 for r in l3f if "single-gateway" in (r.get("risk") or ""))
     n_fhrp_issue = sum(1 for g in fhrp if g.get("issues"))
+    # honesty: snap["fhrp"] is the set of MULTI-GATEWAY VLANs (FHRP *candidates*), not configured FHRP
+    # groups — count those actually running a first-hop-redundancy protocol so the table never implies
+    # redundancy that is not there (the FHRP false-redundancy class; canonical posture is 0 observed).
+    n_fhrp_cfg = sum(1 for g in fhrp if any((m or {}).get("fhrp") for m in (g.get("members") or [])))
     table(["Resilience attribute", "As-built value"], [
-        ("FHRP gateway groups", len(fhrp)),
-        ("FHRP groups with a consistency issue", n_fhrp_issue),
+        ("Multi-gateway VLANs (FHRP candidates)", len(fhrp)),
+        ("…with first-hop redundancy (FHRP) configured", n_fhrp_cfg),
+        ("…lacking FHRP (missing / inconsistent)", n_fhrp_issue),
         ("Single-gateway VLANs (no FHRP peer)", n_single_gw),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
         ("Keystone devices (strand endpoints if lost)", len([r for r in failure_impact

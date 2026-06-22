@@ -941,6 +941,48 @@ def test_signals_computed_once_and_no_dead_fields(monkeypatch):
     assert calls["n"] == 1, calls["n"]                            # was 2 (blueprint + target_state)
 
 
+def test_phys_dirty_counts_tx_side_faults_on_up_ports_only():
+    """DET-intf-errors-002: a port clean on CRC/input-errors but carrying late_collisions (duplex/cable) or
+    output_errors (marginal optic) on an UP port counts as dirty-L1 and surfaces in the remediation
+    decision; stale cumulative counters on a DOWN ('notconnect') port must NOT flag."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"physical_health": [
+        {"switch": "s1", "port": "Te1/1", "status": "connected", "crc_errors": 0, "input_errors": 0,
+         "late_collisions": 3, "output_errors": 0, "duplex": "full"},
+        {"switch": "s2", "port": "Te1/2", "status": "connected", "crc_errors": 0, "input_errors": 0,
+         "late_collisions": 0, "output_errors": 9, "duplex": "full"},
+        {"switch": "s3", "port": "Te1/3", "status": "notconnect", "crc_errors": 0, "input_errors": 0,
+         "late_collisions": 50, "output_errors": 50, "duplex": "full"},      # DOWN -> stale counters, NOT dirty
+        {"switch": "s4", "port": "Te1/4", "status": "connected", "crc_errors": 0, "input_errors": 0,
+         "late_collisions": 0, "output_errors": 0, "duplex": "full"},        # clean
+    ]}
+    sig = da._signals(snap)
+    assert sig["phy_latecoll"] == 1 and sig["phy_outerr"] == 1
+    assert sig["phy_dirty"] == 2                                             # s1 + s2 only
+    assert set(sig["phy_dirty_hosts"]) == {"s1", "s2"}
+    dec = da._d_phys_remediation(snap, sig)
+    assert dec is not None and "late-collision" in str(dec) and "output-error" in str(dec)
+
+
+def test_d_fhrp_state_fires_on_broken_not_absent_fhrp():
+    """DET-fhrp-state-01: broken-but-PRESENT FHRP (split-brain / mixed protocol / mismatched group|VIP) fires
+    _d_fhrp_state; pure FHRP-ABSENCE ('no FHRP') does NOT (that is _d_fhrp's Critical domain). Coverage-honest
+    -- on a fleet running no FHRP at all (e.g. [HISTORY-REDACTED]) this correctly stays silent."""
+    import cisco_toolkit.design_advisor as da
+    broken = {"fhrp": [
+        {"vid": 10, "issues": ["two active routers (a, b) — split-brain"], "members": [{"host": "a"}, {"host": "b"}]},
+        {"vid": 20, "issues": ["mixed FHRP protocols (HSRP vs VRRP)"], "members": [{"host": "c"}]},
+    ]}
+    sig = da._signals(broken)
+    assert sig["fhrp_broken"] == 2 and set(sig["fhrp_broken_vids"]) == {10, 20}
+    dec = da._d_fhrp_state(broken, sig)
+    assert dec is not None and "split-brain" in str(dec) and "CONFIGURED BUT BROKEN" in str(dec)
+    # pure absence must NOT trigger the broken-state detector (that is _d_fhrp's domain)
+    absent = {"fhrp": [{"vid": 30, "issues": ["3 gateways but no FHRP — no first-hop redundancy"], "members": [{"host": "d"}]}]}
+    sig2 = da._signals(absent)
+    assert sig2["fhrp_broken"] == 0 and da._d_fhrp_state(absent, sig2) is None
+
+
 # ===================================================================== DC-fabric corpus enrichment
 # The design brain learns the modern DC target vocabulary (EVPN/VXLAN leaf-spine, Multi-Site, DCI,
 # active-active, cloud/SDDC, L4-L7 services) mined from the [HISTORY-REDACTED] reference corpus + the real [HISTORY-REDACTED] SDD.
@@ -1251,7 +1293,7 @@ def test_v2_bundle_health_detector_is_severity_gated():
               if x["id"] == "dc-restore-degraded-portchannel-members-before-cutover"), None)
     assert d, "High EtherChannel member anomalies must emit the bundle-restore decision"
     assert d["evidence"]["count"] == 2, "2 High; the Low (bundled-OK) row is excluded by the severity gate"
-    assert "2 EtherChannel" in d["evidence"]["summary"]
+    assert "2 degraded EtherChannel" in d["evidence"]["summary"]   # records, not "members" (count is per-finding)
     low = compute_design_blueprint(_snap_v2(protocol_intelligence=[
         {"switch": "x", "protocol": "EtherChannel", "state": "P", "severity": "Low", "meaning": "ok"}]))
     assert not any(x["id"] == "dc-restore-degraded-portchannel-members-before-cutover"

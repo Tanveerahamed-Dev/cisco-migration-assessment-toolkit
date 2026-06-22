@@ -102,10 +102,31 @@ def _no_fhrp_vlans(snap):
     return out
 
 
+def _broken_fhrp_vlans(snap):
+    """VLANs whose FHRP is CONFIGURED but BROKEN -- split-brain (two actives), mixed protocols, a mismatched
+    group / virtual-IP, or a partial pair where one gateway runs no FHRP. DISTINCT from `_no_fhrp_vlans` (FHRP
+    entirely ABSENT): a broken-but-present pair fails SILENTLY at failover, a worse trap than honest
+    no-redundancy because it implies protection that isn't there. Reads the issue strings
+    compute_fhrp_consistency already emits (excel.py:2413-2421)."""
+    _broken = ("split-brain", "two active", "mixed fhrp", "different fhrp groups",
+               "different virtual ip", "unprotected, independent gateway")
+    out = []
+    for g in _as_list(snap.get("fhrp")):
+        issues = [str(i).lower() for i in _as_list(g.get("issues"))]
+        if any(any(tok in i for tok in _broken) for i in issues):
+            out.append(g)
+    return out
+
+
 def _signals(snap):
     sig = {}
     bad_fhrp = _no_fhrp_vlans(snap)
     sig["no_fhrp"] = len(bad_fhrp)
+    broken_fhrp = _broken_fhrp_vlans(snap)
+    sig["fhrp_broken"] = len(broken_fhrp)
+    sig["fhrp_broken_vids"] = sorted({g.get("vid") for g in broken_fhrp if g.get("vid") is not None})[:12]
+    sig["fhrp_broken_devices"] = sorted({m.get("host") for g in broken_fhrp
+                                         for m in _as_list(g.get("members")) if m.get("host")})[:12]
     devs = []
     for g in bad_fhrp:
         for m in _as_list(g.get("members")):
@@ -235,12 +256,22 @@ def _signals(snap):
     # physical-layer faults: CRC/input-errors, half-duplex (mismatch), err-disable -> remediate before cutover
     phy = [p for p in _as_list(snap.get("physical_health")) if isinstance(p, dict)]
 
+    def _oper_up(p):
+        st = str(p.get("status", "")).lower()
+        return st.startswith("connect") or st == "up"   # "connected"/"up" only -- NOT "notconnect" (down)
+
     def _phy_dirty(p):
+        st = str(p.get("status", "")).lower()
         return (_as_int(p.get("crc_errors")) > 0 or _as_int(p.get("input_errors")) > 0
                 or str(p.get("duplex", "")).strip().lower() == "half"
-                or ("err" in str(p.get("status", "")).lower() and "dis" in str(p.get("status", "")).lower()))
+                # TX-side L1 faults (late collisions = duplex/cable mismatch; output errors = marginal optic/cable).
+                # Gated on an operationally-up port so stale cumulative counters on a down port don't flag. (DET-intf-errors-002)
+                or (_oper_up(p) and (_as_int(p.get("late_collisions")) > 0 or _as_int(p.get("output_errors")) > 0))
+                or ("err" in st and "dis" in st))
     sig["phy_crc"] = sum(1 for p in phy if _as_int(p.get("crc_errors")) > 0)
     sig["phy_inerr"] = sum(1 for p in phy if _as_int(p.get("input_errors")) > 0)
+    sig["phy_latecoll"] = sum(1 for p in phy if _oper_up(p) and _as_int(p.get("late_collisions")) > 0)
+    sig["phy_outerr"] = sum(1 for p in phy if _oper_up(p) and _as_int(p.get("output_errors")) > 0)
     sig["phy_halfduplex"] = sum(1 for p in phy if str(p.get("duplex", "")).strip().lower() == "half")
     sig["phy_errdisable"] = sum(1 for p in phy if "err" in str(p.get("status", "")).lower()
                                 and "dis" in str(p.get("status", "")).lower())
@@ -328,8 +359,8 @@ def _signals(snap):
             if st and st != "up":
                 vpc_legs_down += 1
                 bad = True
-            if mc and mc != "success":
-                vpc_legs_incons += 1
+            elif mc and mc != "success":   # a GENUINE type-1/2 mismatch only when the leg is UP — a down leg's
+                vpc_legs_incons += 1       # non-success consistency is a side-effect of being down, not a mismatch
                 bad = True
         if bad and h:
             vpc_bad_hosts.append(h)
@@ -570,6 +601,28 @@ def _d_fhrp(snap, sig):
         ["fhrp[].issues", "l3_forwarding[].fhrp", "failure_impact[].fhrp"],
         priority="Critical", driver="Gateway resilience: a VLAN must survive loss of its distribution switch.",
         devices=sig["no_fhrp_devices"])
+
+
+def _d_fhrp_state(snap, sig):
+    """Broken-but-PRESENT FHRP (distinct from _d_fhrp's absence case). Coverage-honest: fires only when the
+    engine observed a split-brain / mixed-protocol / mismatched-group|VIP / partial pair -- silent when FHRP
+    is absent or clean (e.g. the [HISTORY-REDACTED] fleet runs no FHRP at all, so this correctly stays at 0)."""
+    if sig.get("fhrp_broken", 0) <= 0:
+        return None
+    vids = sig.get("fhrp_broken_vids") or []
+    return _decision(
+        "reconcile-broken-fhrp-before-cutover",
+        f"{sig['fhrp_broken']} gateway VLAN(s) run FHRP that is CONFIGURED BUT BROKEN -- split-brain (two "
+        f"actives), mixed protocols, or a mismatched group / virtual-IP / partial pair"
+        + (f" (VLAN(s) {', '.join(str(v) for v in vids)})" if vids else "")
+        + ". A broken first-hop pair fails SILENTLY at failover -- worse than no FHRP because it implies "
+        "redundancy that isn't there; reconcile to one protocol / one group / one VIP / one active before cutover.",
+        sig["fhrp_broken"], ["availability", "convergence"],
+        ["fhrp[].issues (compute_fhrp_consistency: split-brain / mixed protocol / mismatched group|VIP)"],
+        priority="High",
+        driver="Gateway resilience: a configured-but-broken FHRP pair gives FALSE redundancy; cutover on top "
+               "of it strands the gateway at the first failover.",
+        devices=sig.get("fhrp_broken_devices") or [])
 
 
 def _d_spof(snap, sig):
@@ -843,11 +896,13 @@ def _d_phys_remediation(snap, sig):
     return _decision(
         "physical-remediate-l1-faults-before-cutover",
         f"{sig['phy_dirty']} port(s) show physical-layer faults ({sig['phy_crc']} CRC, {sig['phy_inerr']} "
-        f"input-error, {sig['phy_halfduplex']} half-duplex, {sig['phy_errdisable']} err-disabled) -- a dirty "
+        f"input-error, {sig['phy_latecoll']} late-collision, {sig['phy_outerr']} output-error, "
+        f"{sig['phy_halfduplex']} half-duplex, {sig['phy_errdisable']} err-disabled) -- a dirty "
         f"L1 is migrated into the new fabric on the same cable/optic and corrupts the NRFU baseline; remediate "
         f"cabling/optics/duplex/err-disable and re-baseline counters before cutover.",
         sig["phy_dirty"], ["availability", "manageability"],
         ["physical_health[].crc_errors", "physical_health[].input_errors",
+         "physical_health[].late_collisions", "physical_health[].output_errors",
          "physical_health[].duplex", "physical_health[].status"],
         priority="High",
         driver="Clean baseline: do not carry CRC/duplex/err-disable faults across the migration, or NRFU cannot certify it.",
@@ -923,7 +978,7 @@ def _d_bundle_health(snap, sig):
         return None
     return _decision(
         "dc-restore-degraded-portchannel-members-before-cutover",
-        f"{sig['bundle_degraded']} EtherChannel/port-channel member anomalie(s) across "
+        f"{sig['bundle_degraded']} degraded EtherChannel/port-channel(s) across "
         f"{sig['bundle_degraded_nsw']} switch(es) -- members are down/suspended/standalone, so the bundle "
         f"runs degraded (reduced bandwidth + lost link-level redundancy, often while 'show' still reads Up). "
         f"Restore full membership before baselining and cutover, or the target is built on degraded uplinks.",
@@ -1073,7 +1128,7 @@ def _d_oversized_l2_subnet(snap, sig):
         driver="Subnet sizing: a >254-endpoint VLAN overflows a /24 -- size the prefix to the endpoint count or segment it.")
 
 
-_DETECTORS = [_d_fhrp, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
+_DETECTORS = [_d_fhrp, _d_fhrp_state, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
               _d_stp_mst_scale, _d_oncrit_seg,

@@ -166,6 +166,21 @@ def test_parse_security(cp):
     assert sec["summary"]["grade"] == "weak" and sec["summary"]["fail"] >= 8
 
 
+def test_parse_security_nxos_central_aaa_is_recognized(cp):
+    # NX-OS / IOS-XR enable central AAA WITHOUT 'aaa new-model'. The 'no-aaa' control must PASS, not
+    # falsely report 'authentication is local-only' (the IOS-only-'aaa new-model' false-health class —
+    # a false security finding on every NX-OS device with TACACS+/RADIUS).
+    out = textwrap.dedent("""\
+        feature tacacs+
+        aaa group server tacacs+ ISE
+         server 10.0.0.5
+        aaa authentication login default group ISE
+    """)
+    by = {f["id"]: f for f in parse.parse_security(out)["findings"]}
+    assert by["no-aaa"]["status"] == "pass", by["no-aaa"]["detail"]
+    assert "central AAA" in by["no-aaa"]["detail"]
+
+
 def test_parse_security_hardened(cp):
     # a hardened config: every control satisfied, no risky services -> all pass, grade 'hardened'
     out = textwrap.dedent("""\
@@ -538,6 +553,21 @@ def test_parse_interface_counters(cp):
     assert res["Gi1/0/9"]["crc"] == 17
 
 
+def test_parse_interface_counters_captures_output_side_errors(cp):
+    # output errors / late collisions (duplex mismatch) / runts / giants were collected but DISCARDED by
+    # the parser; they are now preserved on the per-interface record (output L1 health for the explorer).
+    out = textwrap.dedent("""\
+        GigabitEthernet1/0/9 is up, line protocol is up
+          MTU 1500 bytes, BW 1000000 Kbit/sec, DLY 10 usec
+             142 input errors, 17 CRC, 0 frame, 0 overrun, 0 ignored
+             5 runts, 2 giants, 0 throttles
+             8 output errors, 3 late collision, 0 deferred
+    """)
+    rec = parse.parse_show_interface_counters(out)["Gi1/0/9"]
+    assert rec["output_errors"] == 8 and rec["late_collisions"] == 3
+    assert rec["runts"] == 5 and rec["giants"] == 2
+
+
 # ---- show environment: Catalyst 4948E / 4500-X PS table -------------------- #
 def test_parse_show_environment_catalyst_ps_table(cp):
     # 4948E layout: PS health + fan-sensor live here (NOT in 'show environment power',
@@ -624,3 +654,19 @@ def test_parsers_tolerate_empty_and_garbage(cp):
         assert fn("") in ({}, [])
         # random non-matching text must not raise and must yield nothing useful
         assert fn("garbage line\n%% nonsense ????\n") in ({}, [])
+
+
+def test_parse_poe_inline_budget_sums_modules_and_skips_na(cp):
+    """DET-poe-001: the 'show power inline' Module rows carry the PoE budget the per-port parse skips.
+    Sum across stack modules; an n/a-only switch stays UNBUDGETED (no false 0/0 -> poe_util blank)."""
+    two_mod = (
+        "Module   Available     Used     Remaining\n"
+        "          (Watts)     (Watts)    (Watts)\n"
+        "------   ---------   --------   ---------\n"
+        "1          1120.0      156.4       963.6\n"
+        "2          1120.0      171.8       948.2\n")
+    assert parse._parse_poe_inline_budget(two_mod) == {"available": 2240.0, "used": 328.2}
+    na = ("Module   Available     Used     Remaining\n"
+          "1             n/a        n/a         n/a\n")
+    assert parse._parse_poe_inline_budget(na) == {}
+    assert parse._parse_poe_inline_budget("") == {}

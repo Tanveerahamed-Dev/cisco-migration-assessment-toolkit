@@ -185,6 +185,47 @@ def test_lifecycle_bands_map_to_verdicts():
     assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "conforms"
 
 
+def test_lc1_detail_omits_misleading_zero_past_eos():
+    """Coverage-honesty (EoS/LDoS class, same as the campaign-trend fix): the lifecycle bands are
+    EXCLUSIVE, so n_past_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past end-of-sale,
+    so when n_past_eos==0 the LC-1 detail must NOT print '(and 0 past end-of-sale)' (reads as 'nothing is
+    past end-of-sale'); when there ARE EoS-only devices it says 'N more past end-of-sale'."""
+    snap = _snap()
+    snap["lifecycle_risk"]["summary"] = {"n_past_eos": 0, "n_past_ldos": 2, "n_near": 0}
+    snap["lifecycle_risk"]["per_device"] = [{"host": "d1", "band": "Past-LDoS"},
+                                            {"host": "d2", "band": "Past-LDoS"}]
+    obs = _check(compute_architecture_review(snap), "LC-1")["observed"]
+    assert "past LAST-DAY-OF-SUPPORT" in obs
+    assert "0 past end-of-sale" not in obs and "and 0" not in obs
+    snap["lifecycle_risk"]["summary"] = {"n_past_eos": 3, "n_past_ldos": 2, "n_near": 0}
+    obs2 = _check(compute_architecture_review(snap), "LC-1")["observed"]
+    assert "3 more past end-of-sale" in obs2
+
+
+def test_hier2_not_assessable_without_neighbour_evidence():
+    """Conforms-by-silence guard: HIER-2's evidence is the in-fleet CDP/LLDP adjacency map. With
+    interfaces present but NO access-tier neighbour observed, it must grade 'not-assessable', never
+    'conforms' (which would assert a star topology off absent evidence)."""
+    snap = _snap()
+    for ports in snap["interfaces"].values():
+        for d in ports.values():
+            if isinstance(d, dict):
+                d.pop("cdp_neighbor", None); d.pop("lldp_neighbor", None)
+    assert _check(compute_architecture_review(snap), "HIER-2")["verdict"] == "not-assessable"
+
+
+def test_l2_3_not_assessable_without_vlan_evidence():
+    """Conforms-by-silence guard: L2-3's evidence is the access-VLAN / trunk native-VLAN fields. With
+    interfaces present but neither field captured anywhere, it must grade 'not-assessable', never
+    'conforms' (which would assert VLAN-1 hygiene off absent evidence)."""
+    snap = _snap()
+    for ports in snap["interfaces"].values():
+        for d in ports.values():
+            if isinstance(d, dict):
+                d.pop("vlan", None); d.pop("trunk_native_vlan", None)
+    assert _check(compute_architecture_review(snap), "L2-3")["verdict"] == "not-assessable"
+
+
 def test_mixed_images_flagged_per_platform():
     ar = compute_architecture_review(_snap())
     lc2 = _check(ar, "LC-2")

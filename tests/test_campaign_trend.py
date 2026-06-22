@@ -6,8 +6,13 @@ from openpyxl import load_workbook
 from cisco_toolkit.html import compute_campaign_trend, write_campaign_workbook
 
 
-def _snap(date, avg, bands, punch, not_ready, eos):
-    """bands: {band: count} -> health_scores with stable switch names; punch: list of (severity, title)."""
+def _snap(date, avg, bands, punch, not_ready, ldos):
+    """bands: {band: count} -> health_scores with stable switch names; punch: list of (severity, title).
+    ldos = n_past_ldos (past last-day-of-support = the engine's canonical "past end-of-support", the
+    migration-critical unsupported count the brief/deck/explorer headline). n_past_eos (past end-of-SALE,
+    still supported) is PINNED to 0 here so the 'Past end-of-support' trajectory metric can read as
+    'improving' ONLY if it sources n_past_ldos, never n_past_eos -- guards the EoS/LDoS silent-drop class
+    (a fleet can be 0 past-EoS yet have 152 past-LDoS; reading the wrong field hides every unsupported box)."""
     hs, i = [], 0
     for band, cnt in bands.items():
         for _ in range(cnt):
@@ -18,7 +23,7 @@ def _snap(date, avg, bands, punch, not_ready, eos):
         "health_scores": hs,
         "punchlist": [{"severity": s, "category": "X", "title": t, "devices": ["sw0"]} for (s, t) in punch],
         "migration_readiness": [{"readiness": "NOT READY", "switches": ["sw0"]} for _ in range(not_ready)],
-        "lifecycle_risk": {"summary": {"n_past_eos": eos}},
+        "lifecycle_risk": {"summary": {"n_past_ldos": ldos, "n_past_eos": 0}},
         "executive_brief": {"posture": {"avg_health": avg}},
     }
 

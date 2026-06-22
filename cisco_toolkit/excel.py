@@ -569,9 +569,12 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
      exactly as before); flags is a list of "Port-bound (>=90%)" / "PoE-bound (>=80%)"."""
     out: List[dict] = []
     for dp in sorted(all_device_physical, key=lambda d: d.hostname.lower()):
-        total, active = dp.total_ports or 0, dp.active_ports or 0
-        free = max(total - active, 0) if total else ""
-        putil = round(100.0 * active / total, 1) if total else ""
+        total = dp.total_ports or 0
+        active = dp.active_ports                              # None = active-port count NOT observed (distinct from 0)
+        # honesty: a device whose active-port count was not observed must NOT read 0% utilization — it would
+        # then rank first as "most consolidation headroom". Leave util/free blank when active_ports is unknown.
+        free = max(total - active, 0) if (total and active is not None) else ""
+        putil = round(100.0 * active / total, 1) if (total and active is not None) else ""
         cap, drawn = _to_float(dp.power_capacity_w), _to_float(dp.power_drawn_w)
         if dp.power_remaining_w:
             rem = dp.power_remaining_w
@@ -581,7 +584,7 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
             rem = ""
         poe_util = round(100.0 * drawn / cap, 1) if (cap and drawn is not None and cap > 0) else ""
         flags = []
-        if putil != "" and putil >= 90: flags.append("Port-bound (>=90%)")
+        if putil != "" and putil >= 85: flags.append("Port-bound (>=85%)")   # match design_advisor._PORT_UTIL_HOT=85 so workbook + design narrative agree (DET-capacity-04)
         if poe_util != "" and poe_util >= 80: flags.append("PoE-bound (>=80%)")
         out.append({"hostname": dp.hostname, "model": dp.model,
                     "total_ports": total or "", "active_ports": active or "", "free_ports": free,
@@ -2045,7 +2048,7 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
     L = lr or {}
     s = L.get("summary") or {}
     ws.cell(1, 1, "Hardware lifecycle (EoL / End-of-Support) — replacement urgency").font = Font(bold=True, size=11)
-    ws.cell(2, 1, f"As of {L.get('asof', '')}: {s.get('n_past_ldos', 0)} past end-of-support · "
+    ws.cell(2, 1, f"Lifecycle bands as of collection date {L.get('asof', '')}: {s.get('n_past_ldos', 0)} past end-of-support · "
                   f"{s.get('n_near', 0)} within 1yr · {s.get('n_active', 0)} active · "
                   f"{s.get('n_unknown', 0)} unknown (of {s.get('n_devices', 0)}).").font = Font(size=10)
     ws.cell(3, 1, L.get("note", "")).font = Font(size=9, italic=True, color="808080")
@@ -2927,13 +2930,30 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         if b in bands:
             bands[b] += 1
     avg = round(sum((x.get("score") or 0) for x in hs) / n) if n else 0
+    # SSOT (QA F1/F2): read the canonical executive_brief block every narrative surface uses -- the local
+    # arithmetic mean overstates vs posture.avg_health (criticality-weighted), and "assessed = 303" overstates
+    # coverage by the 50 not-collected devices vs scale.n_collected. Fall back to the local recompute only if
+    # the brief is absent (legacy snapshot).
+    _ebp = (brief or {}).get("posture") or {}
+    _ebs = (brief or {}).get("scale") or {}
+    _ncoll = _ebs.get("n_collected"); _avgc = _ebp.get("avg_health")
     _sub("Fleet posture")
-    _kv("Switches assessed", n)
-    _kv("Average health score", f"{avg} / 100")
+    _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
+    _kv("Average health score", f"{_avgc if isinstance(_avgc, (int, float)) else avg} / 100")
     _kv("Critical band", bands["Critical"])
     _kv("Poor / Fair", bands["Poor"] + bands["Fair"])
     _kv("Good / Excellent", bands["Good"] + bands["Excellent"])
     r += 1
+
+    # canonical scope/scale from the published brief (one source — not a raw-array recompute). The sheet
+    # showed band counts but never the fleet scale (the endpoints / VLANs the other deliverables headline).
+    _sc = eb.get("scale") or {}
+    if _sc:
+        _sub("Scope / scale")
+        _kv("Devices inventoried", _sc.get("n_devices"))
+        _kv("Endpoints (evidenced)", _sc.get("n_endpoints"))
+        _kv("VLANs in use", _sc.get("n_vlans"))
+        r += 1
 
     # --- punch-list severity / category breakdown ---
     pl = punchlist or []
@@ -3054,6 +3074,8 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             ie = cnt.get("input_errors", "")
             crc = cnt.get("crc", "")
             od = cnt.get("output_drops", "")
+            oe = cnt.get("output_errors", "")            # output-side L1 (TX errors)
+            lc = cnt.get("late_collisions", "")          # late collisions = duplex mismatch
             pc = d.port_channel or ""
 
             # PoE cell: per-port watts if parseable, else the status word; mark over-budget devices.
@@ -3081,7 +3103,7 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             if (host, port) in single_fiber:
                 flags.append("single-fiber-uplink")
                 if sev != "High": sev = "Medium"
-            if oper_up and (_intpos(ie) or _intpos(crc) or _intpos(od)):
+            if oper_up and (_intpos(ie) or _intpos(crc) or _intpos(od) or _intpos(oe) or _intpos(lc)):
                 flags.append("error-rate-high")
                 if sev != "High": sev = "Medium"
             if not flags:
@@ -3090,6 +3112,7 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             records.append({"switch": host, "port": port, "status": status or "",
                             "speed": speed or "unknown", "duplex": duplex or "unknown",
                             "media": media or "unknown", "input_errors": ie, "crc_errors": crc,
+                            "output_errors": oe, "late_collisions": lc,
                             "output_drops": od, "port_channel": pc, "poe": poe_cell,
                             "risk": "; ".join(flags), "severity": sev})
 

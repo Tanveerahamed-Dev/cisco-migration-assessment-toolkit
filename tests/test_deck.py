@@ -56,6 +56,41 @@ def _deck(path):
     return n, txt
 
 
+def test_deck_title_slide_always_shows_canonical_scale(tmp_path):
+    """The title slide must ALWAYS surface the canonical fleet scale (devices/endpoints/VLANs). Previously
+    scale rendered only as a FALLBACK for an empty posture_statement — which is canonically never empty —
+    so the deck showed no fleet scale at all."""
+    out = tmp_path / "deck_scale.pptx"
+    snap = _rich_snap()
+    snap["executive_brief"]["scale"] = {"n_devices": 303, "n_endpoints": 5127, "n_vlans": 202}
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _, txt = _deck(str(out))
+    assert "303 devices" in txt and "5127 endpoints" in txt and "202 VLANs" in txt
+
+
+def test_deck_discloses_failed_brief_not_false_zeros(tmp_path):
+    """R2-4-02: a FAILED cross-axis brief (assessment_integrity flag / _unavailable sentinel) must be
+    DISCLOSED on the deck, and the Critical-band count must still come from health_scores -- never a silent
+    em-dash scale line nor a false '0 Critical'."""
+    snap = {
+        "executive_brief": {"_unavailable": True},
+        "assessment_integrity": {"executive_brief": "compute_failed"},
+        "health_scores": [
+            {"switch": "core1", "score": 8, "band": "Critical"},
+            {"switch": "core2", "score": 11, "band": "Critical"},
+            {"switch": "acc1", "score": 90, "band": "Excellent"},
+        ],
+        "punchlist": [], "failure_impact": [], "migration_readiness": [], "move_groups": [],
+        "lifecycle_risk": {"summary": {}},
+    }
+    out = tmp_path / "deck_failed_brief.pptx"
+    write_executive_deck_pptx(str(out), snap, "Fleet X")
+    _n, txt = _deck(str(out))
+    assert "unavailable" in txt.lower()      # the synthesis failure is disclosed on the title slide
+    assert "Critical: 2" in txt              # the REAL Critical count surfaces from the band tally, not 0
+    assert "— devices" not in txt            # no silent em-dash scale line masquerading as fleet scale
+
+
 def test_deck_has_all_slides_and_key_content(tmp_path):
     out = tmp_path / "deck.pptx"
     write_executive_deck_pptx(str(out), _rich_snap(), "Test fleet")

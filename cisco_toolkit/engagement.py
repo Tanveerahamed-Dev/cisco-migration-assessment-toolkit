@@ -117,7 +117,8 @@ def _workflow_facts(snap: dict) -> dict:
             "sc": sc, "sc_by": sc_by, "by_wave": by_wave, "csum": csum,
             "coll_present": coll_present, "blind": blind,
             "brief": brief, "lc": lc, "rem": rem, "notready": notready, "pilot": pilot,
-            "n_devices": len(_as_dict(snap.get("devices")))}
+            "n_devices": len(_as_dict(snap.get("devices"))),
+            "n_collected": ((_as_dict(snap.get("executive_brief")).get("scale")) or {}).get("n_collected")}
 
 
 def _verdict(f: dict) -> tuple:
@@ -207,7 +208,7 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{f['n_devices']} devices in evidence scope  ·  script {snap.get('script_version', '')}"
+                 f"{f.get('n_collected') or f['n_devices']} collected of {f['n_devices']} inventoried  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     status = doc.add_paragraph(); status.alignment = WD_ALIGN_PARAGRAPH.CENTER
     st = status.add_run("DRAFT PLAN OF RECORD — the verdict and every gate below are evidence-led "
@@ -227,6 +228,7 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     add_document_control(
         doc, document="Engagement Workflow & Plan of Record", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="The delivery engineer running the engagement, the customer's project sponsor and "
                  "network owner (gate signatories), and the project / change manager who owns the "
                  "calendar and the RAID cadence.",

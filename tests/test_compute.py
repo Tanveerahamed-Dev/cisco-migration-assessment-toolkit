@@ -308,6 +308,41 @@ def test_compute_hostname_mismatches(cp):
 # --------------------------------------------------------------------------- #
 # write_executive_summary_sheet (V3.23.75) — one-page landing synthesis
 # --------------------------------------------------------------------------- #
+def test_compute_capacity_blanks_util_when_active_ports_unobserved(cp):
+    """Coverage-honesty: a device whose active-port count was NOT observed must not read 0% utilization
+    (active_ports None coerced to 0) — that would rank it first as 'most consolidation headroom' in the
+    runbook §8 ranking. Util/free are blank when unknown; a genuine 0 (all ports free) is distinct."""
+    from cisco_toolkit.excel import compute_capacity
+    from cisco_toolkit.model import DevicePhysical
+    out = {r["hostname"]: r for r in compute_capacity([
+        DevicePhysical(hostname="obs", total_ports=48, active_ports=10),     # observed -> 20.8%
+        DevicePhysical(hostname="unobs", total_ports=48, active_ports=None),  # not observed -> blank
+    ])}
+    assert out["obs"]["port_util"] == 20.8
+    assert out["unobs"]["port_util"] == "" and out["unobs"]["free_ports"] == ""
+
+
+def test_physical_health_surfaces_and_flags_output_side_errors(cp, tmp_path):
+    """The output-side L1 counters (output errors / late collisions) — previously parsed then discarded —
+    now reach the physical_health record AND feed the 'error-rate-high' dirty-port flag, so a port that is
+    clean on the input side but errored on the output side is no longer silently healthy."""
+    from openpyxl import Workbook
+    from cisco_toolkit.excel import write_physical_health_sheet
+    from cisco_toolkit.model import InterfaceData, DevicePhysical
+    shint = tmp_path / "shint.txt"
+    shint.write_text("GigabitEthernet1/0/9 is up, line protocol is up\n"
+                     "  0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored\n"
+                     "  7 output errors, 2 late collision, 0 deferred\n", encoding="utf-8")
+    recs = write_physical_health_sheet(
+        Workbook(),
+        {"sw1": {"Gi1/0/9": InterfaceData(port="Gi1/0/9", status="connected")}},
+        {"sw1": {"show interfaces": str(shint)}},
+        [DevicePhysical(hostname="sw1")])
+    r = next(x for x in recs if x["port"] == "Gi1/0/9")
+    assert r["output_errors"] == 7 and r["late_collisions"] == 2
+    assert "error-rate-high" in r["risk"]      # output-side errors flag a dirty port (input side is clean)
+
+
 def test_executive_summary_sheet_is_first_and_synthesizes(cp):
     from openpyxl import Workbook
     health_scores = [
@@ -614,14 +649,18 @@ def test_operational_drift_detects_and_aggregates():
             "Gi1/0/5": InterfaceData(port="Gi1/0/5", description="*Robotics camera*", poe_status="Fault"),
             "Te1/2": InterfaceData(port="Te1/2", trunk_status="trunking", trunk_native_vlan="1"),
         },
-        "acc1": {"Te1/1": InterfaceData(port="Te1/1", trunk_status="trunking", trunk_native_vlan="1")},
+        "acc1": {"Te1/1": InterfaceData(port="Te1/1", trunk_status="trunking", trunk_native_vlan="1"),
+                 "Gi1/0/9": InterfaceData(port="Gi1/0/9", poe_status="Fault")},   # DET-poe-002: fault on a blank-desc port
     }
     dphys = [DevicePhysical(hostname="core1", uptime="10 years, 2 weeks"),
              DevicePhysical(hostname="acc1", uptime="5 days")]
     out = compute_operational_drift(ai, dphys)
     titles = [f["title"] for f in out]
     assert any("Temporary L2 bridge on core1" in t for t in titles)
-    assert any("PoE fault on powered endpoint(s) on core1" in t for t in titles)
+    assert any("PoE fault on core1 (powered endpoint affected)" in t for t in titles)
+    # DET-poe-002: a PoE fault on a port WITHOUT a powered-endpoint description is no longer silently dropped
+    _acc_poe = next((f for f in out if "PoE fault on acc1" in f["title"]), None)
+    assert _acc_poe is not None and "powered endpoint affected" not in _acc_poe["title"] and _acc_poe["severity"] == "Medium"
     # native VLAN 1 -> ONE aggregated finding across 2 trunks / 2 switches (not one row per trunk)
     nat = next(f for f in out if "Native VLAN 1" in f["title"])
     assert "2 inter-switch trunk(s)" in nat["title"] and set(nat["devices"]) == {"core1", "acc1"}

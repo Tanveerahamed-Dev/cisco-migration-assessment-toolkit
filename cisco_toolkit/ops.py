@@ -111,8 +111,9 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     sub = doc.add_paragraph(); sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sr2 = sub.add_run(label); sr2.font.size = Pt(13); sr2.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _ncoll = ((snap.get("executive_brief") or {}).get("scale") or {}).get("n_collected")
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{len(devices)} devices in evidence scope  ·  script {snap.get('script_version', '')}"
+                 f"{_ncoll if isinstance(_ncoll, int) else len(devices)} collected of {len(devices)} inventoried  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     doc.add_paragraph()
     note = doc.add_paragraph()
@@ -128,6 +129,7 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     add_document_control(
         doc, document="Operations Handbook", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="The customer's NOC / operations team (primary users), the network owner "
                  "(standards and escalation authority) and the delivery engineer handing over.",
         exclude=("opshandbook",),

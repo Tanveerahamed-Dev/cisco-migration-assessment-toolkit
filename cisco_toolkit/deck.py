@@ -155,9 +155,20 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
          [[("Network Migration", 52, _WHITE, True)], [("Assessment", 52, _ICE, True)]], space=2)
     text(s, 0.9, 3.95, W - 1.8, 0.5, [(label or "Current-state assessment", 18, _ICE, False, True)])
     posture = eb.get("posture") or {}
-    sub = eb.get("posture_statement") or (
-        f"{scale.get('n_devices', '—')} devices · {scale.get('n_endpoints', '—')} endpoints assessed")
-    text(s, 0.9, 4.7, W - 1.8, 1.2, [(sub, 14, _ICE, False)])
+    # the canonical posture_statement is ALWAYS non-empty, so the old scale fallback never rendered — the
+    # deck showed no fleet scale at all. Always render the canonical scale on a second subtitle line.
+    sub = eb.get("posture_statement") or ""
+    # honesty (wave R2-4-02): when the cross-axis synthesis FAILED (sentinel / assessment_integrity flag),
+    # say so on the title slide rather than rendering an em-dash "— devices · — endpoints" as if it were scale.
+    if eb.get("_unavailable") or (snap.get("assessment_integrity") or {}).get("executive_brief") == "compute_failed":
+        _scale_line = "⚠ Cross-axis synthesis unavailable — see the workbook Executive Brief"
+    else:
+        _ncoll = scale.get("n_collected")
+        _coll = f" ({_ncoll} collected)" if isinstance(_ncoll, int) and _ncoll != scale.get("n_devices") else ""
+        _scale_line = (f"{scale.get('n_devices', '—')} devices{_coll} · {scale.get('n_endpoints', '—')} endpoints "
+                       f"· {scale.get('n_vlans', '—')} VLANs in scope")
+    text(s, 0.9, 4.7, W - 1.8, 1.6,
+         [[(sub, 14, _ICE, False)], [(_scale_line, 13, _ICE, False)]])
     text(s, 0.9, 6.7, W - 1.8, 0.4,
          [("Generated offline by the Cisco Migration-Assessment Toolkit — full evidence in the workbook, "
            "explorer & runbook.", 11, (0x9F, 0xB3, 0xE0), False)])
@@ -172,8 +183,10 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     avg = posture.get("avg_health", "—")
     # stat callouts across the full width (generous gaps, no side-by-side columns to overlap)
     stat(s, 0.7, 1.95, f"{avg}", "avg health / 100", _NAVY, w=3.4)
-    stat(s, 5.0, 1.95, posture.get("n_critical", 0), "Critical-band switches", _CRIT, w=3.4)
-    stat(s, 9.3, 1.95, len(hs), "switches assessed", _INK, w=3.3)
+    # false-health guard: if the brief is absent/failed, posture is {} — fall back to the band tally
+    # computed above from health_scores, never a literal 0 that would claim '0 Critical' on a Critical fleet.
+    stat(s, 5.0, 1.95, posture.get("n_critical", band_counts.get("Critical", 0)), "Critical-band switches", _CRIT, w=3.4)
+    stat(s, 9.3, 1.95, len(hs), "switches in scope", _INK, w=3.3)   # 303 inventoried; 50 not collected -> "assessed" overclaims
     # full-width band-distribution bar
     order = ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
     segs = [(band_counts.get(b, 0), _BAND_COLOR.get(b, _MUTED)) for b in order]
@@ -193,6 +206,15 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         text(s, 1.85, y - 0.03, 10.8, 0.5,
              [[(_clean(a.get("axis", "")) + ":  ", 12, _NAVY, True), (_clean(a.get("headline", "")), 12, _INK, False)]])
         y += 0.5
+    # honesty: never silently drop axes — breadcrumb the overflow + how many are Critical/High, so a
+    # 4-row cap can't hide a High/Critical axis (the severity-sorted source means the cap drops the tail).
+    _more = axes[4:]
+    if _more:
+        _more_hi = sum(1 for a in _more if a.get("severity") in ("Critical", "High"))
+        text(s, 0.7, y, 11.8, 0.4,
+             [[(f"+ {len(_more)} more axis headline(s)"
+                + (f" — {_more_hi} at High or above" if _more_hi else "")
+                + " — full set in the workbook Executive Summary.", 10, _MUTED, False)]])
 
     # ---------------------------------------------------------------- 3. Top risks (light)
     s = slide()

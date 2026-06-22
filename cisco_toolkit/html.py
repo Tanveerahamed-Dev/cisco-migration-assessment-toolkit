@@ -95,8 +95,10 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
         verdict = "CLEAN"
         note = "No health-band regressions and no new findings — post-cutover state is no worse than pre."
 
+    def _scn(s):  # SSOT: canonical device count (one source); raw len() only as the pre-brief fallback
+        return ((s.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
     return {
-        "switches": {"old": len(od), "new": len(nd),
+        "switches": {"old": _scn(old) or len(od), "new": _scn(new) or len(nd),
                      "added": sorted(set(nd) - set(od)), "removed": removed_sw},
         "interfaces": {"old": sum(len(v) for v in oi.values()), "new": sum(len(v) for v in ni.values())},
         "health": {"regressed": regressed, "improved": improved,
@@ -310,7 +312,10 @@ def _trend_point(snap: dict) -> dict:
         "n_punchlist": len(pl),
         "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")),
         "n_not_ready": readiness["NOT READY"],
-        "past_eos": lr.get("n_past_eos", "") if lr else "",
+        # "Past end-of-support" = Past-LDoS (no TAC / no fixes) — the migration-critical count the
+        # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE, still supported): reading
+        # n_past_eos here showed 0 while 152 boxes were past support (the EoS/LDoS silent-drop class).
+        "past_ldos": lr.get("n_past_ldos", "") if lr else "",
     }
 
 
@@ -320,7 +325,7 @@ _TREND_METRICS = (("Avg health / 100", "avg_health", False),
                   ("Punch-list items", "n_punchlist", True),
                   ("Critical/High findings", "n_crit_high", True),
                   ("NOT READY groups", "n_not_ready", True),
-                  ("Past end-of-support", "past_eos", True))
+                  ("Past end-of-support", "past_ldos", True))
 
 
 def compute_campaign_trend(snapshots: List[dict]) -> dict:
@@ -429,10 +434,10 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
 
     # ---- Timeline (one row per collection) + a trajectory line chart ----
     cols = ["Collection", "Date", "Version", "Switches", "Avg Health", "Critical",
-            "Punch-list", "Crit/High", "NOT READY", "Past-EoS"]
+            "Punch-list", "Crit/High", "NOT READY", "Past end-of-support"]
     ws = sheet("Timeline", cols)
     keys = ["collection", "date", "version", "n_switches", "avg_health", "n_critical",
-            "n_punchlist", "n_crit_high", "n_not_ready", "past_eos"]
+            "n_punchlist", "n_crit_high", "n_not_ready", "past_ldos"]
     for i, pt in enumerate(trend["timeline"], start=2):
         for c, k in enumerate(keys, 1):
             cell = ws.cell(row=i, column=c, value=pt.get(k, "")); cell.font = DF
@@ -626,8 +631,12 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     r"(key-string\s+(?:\d+\s+)?)(\S+)",
     r"(pre-shared-key\s+(?:(?:local|remote)\s+)?(?:\d+\s+)?)(\S+)",
     r"(crypto\s+isakmp\s+key\s+(?:\d+\s+)?)(\S+)",
-    # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication).
-    r"(\bkey\s+(?:\d+\s+)?)(\S+)",
+    # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication). The optional
+    # inner group absorbs a hash-algorithm label so 'authentication-key|message-digest-key N md5|sha|
+    # hmac-sha <DIGEST>' (NTP/OSPF/EIGRP) redacts the DIGEST after it, not the 'md5'/'sha' token -- the
+    # latter left the real, offline-crackable digest exposed. Anchored on 'key', so a bare IKE 'hash md5'
+    # algorithm choice (no key-id + secret) is never corrupted.
+    r"(\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(\S+)",
 )]
 
 
