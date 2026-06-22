@@ -158,6 +158,489 @@ def parse_copp_drops(output: str) -> list:
     return out
 
 
+# --- PIM-SM control-plane (RP mapping + neighbor adjacency) ------------------ #
+# These read 'show ip pim rp mapping' and 'show ip pim neighbor' (IOS / IOS-XE /
+# NX-OS). The pair powers the multicast-resilience detector: PIM sparse-mode that
+# is *running* (>=1 neighbor) but has learned NO RP means ASM (*,G) shared trees
+# cannot be built -- multicast forwarding is broken (RFC 7761). SSM (232.0.0.0/8)
+# needs no RP, so an SSM-only domain is NOT a finding. Tolerant: empty/absent -> {}/[].
+_PIM_RP_LINE_RE = re.compile(r"\bRP[:\s]+(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE)
+_PIM_GROUP_RE = re.compile(r"Group\(s\)[:\s]+(\d+\.\d+\.\d+\.\d+/\d+)", re.IGNORECASE)
+_PIM_INFOSRC_RE = re.compile(r"Info source:\s*(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE)
+
+
+def parse_pim_rp_mapping(output: str) -> dict:
+    """'show ip pim rp mapping' (IOS/IOS-XE/NX-OS) -> a learned-RP summary:
+    {present, rp_count, rps:[{group, rp, source}], groups:[...], ssm_only}.
+
+    `present`  -- the command actually ran (header / any RP / any Group seen), so an
+                  empty {} unambiguously means 'not collected', never 'no RP'.
+    `rp_count` -- distinct RP unicast addresses learned (static + Auto-RP + BSR).
+    `ssm_only` -- True when the ONLY group range(s) mapped are inside SSM (232.0.0.0/8)
+                  and zero RPs are learned: SSM needs no RP, so this is HEALTHY, not broken.
+    {} when no PIM RP-mapping output (absent / Cisco error)."""
+    if not output or "rp" not in output.lower() and "group(s)" not in output.lower():
+        return {}
+    low = output.lower()
+    present = ("group-to-rp" in low or "group(s)" in low
+               or "rp-mapping" in low or "rp mapping" in low or "rp:" in low or "rp " in low)
+    if not present:
+        return {}
+    rps: List[dict] = []
+    groups: List[str] = []
+    seen_rp: set = set()
+    cur_group = ""
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        gm = _PIM_GROUP_RE.search(s)
+        if gm:
+            cur_group = gm.group(1)
+            if cur_group not in groups:
+                groups.append(cur_group)
+        rm = _PIM_RP_LINE_RE.search(s)
+        if rm:
+            rp = rm.group(1)
+            sm = _PIM_INFOSRC_RE.search(s)
+            grp = cur_group
+            inline_g = _PIM_GROUP_RE.search(s)
+            if inline_g:
+                grp = inline_g.group(1)
+            rps.append({"group": grp, "rp": rp, "source": (sm.group(1) if sm else "")})
+            seen_rp.add(rp)
+            continue
+        ism = _PIM_INFOSRC_RE.search(s)
+        if ism and rps and not rps[-1]["source"]:
+            rps[-1]["source"] = ism.group(1)
+
+    def _is_ssm(cidr: str) -> bool:
+        try:
+            return cidr.split(".")[0] == "232"
+        except Exception:
+            return False
+    ssm_only = bool(groups) and all(_is_ssm(g) for g in groups) and not seen_rp
+    return {"present": True, "rp_count": len(seen_rp), "rps": rps,
+            "groups": groups, "ssm_only": ssm_only}
+
+
+def parse_pim_neighbors(output: str) -> List[dict]:
+    """'show ip pim neighbor' (IOS/IOS-XE/NX-OS) -> [{neighbor, interface, uptime}].
+    [] when none (no adjacencies) or absent. The mode-legend / header / 'VRF' banner
+    lines are skipped. Interfaces are normalised to the engine's short canonical form."""
+    out: List[dict] = []
+    if not output:
+        return out
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if (low.startswith(("neighbor", "address", "mode:", "pim neighbor", "interface"))
+                or "designated router" in low or "dr priority" in low
+                or low.startswith(("b -", "p -", "s -", "g -", "l -", "n -"))):
+            continue
+        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+(\d+:\d+:\d+)\b", s)
+        if m and is_valid_iface(m.group(2)):
+            out.append({"neighbor": m.group(1),
+                        "interface": normalize_ifname(m.group(2)),
+                        "uptime": m.group(3)})
+    return out
+
+
+def parse_ipv6_raguard_policy(output: str) -> list:
+    """'show ipv6 nd raguard policy' (IOS / IOS-XE / NX-OS IPv6 first-hop security) ->
+    [{policy, device_role, trusted, targets:[{name, type}]}]. RA-Guard blocks rogue / spoofed Router
+    Advertisements at the L2 access edge -- without it a single bogus RA hijacks the default gateway for the
+    whole segment (RFC 6104 / RFC 4861 gateway-hijack -> MITM/DoS). [] when the device runs no RA-Guard (or
+    the command is unsupported). Tolerant; never raises. normalize_ifname canonicalises PORT targets."""
+    out: list = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        m = re.match(r"^(?:RA guard )?Policy\s+(\S+)\s+configuration\s*:?\s*$", s, re.IGNORECASE)
+        if m:
+            cur = {"policy": m.group(1), "device_role": "", "trusted": False, "targets": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"^device-role\s+(\S+)", s, re.IGNORECASE)
+        if m:
+            cur["device_role"] = m.group(1).lower(); continue
+        if re.match(r"^trusted-port\b", s, re.IGNORECASE):
+            cur["trusted"] = True; continue
+        mt = re.match(r"^(\S+(?:\s+\d[\d,\- ]*)?)\s+(PORT|VLAN)\s+(\S+)\s+RA guard\b", s, re.IGNORECASE)
+        if mt:
+            ttype = mt.group(2).upper()
+            tname = mt.group(1).strip()
+            name = normalize_ifname(tname) if ttype == "PORT" else tname
+            owner = next((p for p in out if p["policy"] == mt.group(3)), cur)
+            owner["targets"].append({"name": name, "type": ttype})
+    return out
+
+
+def parse_ipv6_dhcp_guard_policy(output: str) -> list:
+    """'show ipv6 dhcp guard policy' (IPv6 first-hop security) -> [{policy, device_role, targets:[{name,type}]}].
+    DHCPv6-Guard blocks DHCPv6 reply/advertise messages from unauthorised servers/relays at the access edge
+    (rogue-DHCPv6 -> address theft / MITM). [] when no DHCPv6-Guard. Tolerant; never raises."""
+    out: list = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        m = re.match(r"^Dhcp guard policy\s*:?\s*(\S+)", s, re.IGNORECASE)
+        if m:
+            cur = {"policy": m.group(1), "device_role": "", "targets": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"^Device Role\s*:?\s*(?:dhcp\s+)?(\S+)", s, re.IGNORECASE)
+        if m:
+            cur["device_role"] = m.group(1).lower(); continue
+        m = re.match(r"^Target\s*:?\s*(.+)$", s, re.IGNORECASE)
+        if m:
+            rest = m.group(1).strip()
+            vlans = re.findall(r"vlan\s+(\d+)", rest, re.IGNORECASE)
+            if vlans:
+                for v in vlans:
+                    cur["targets"].append({"name": v, "type": "VLAN"})
+            else:
+                for tok in rest.split():
+                    cur["targets"].append({"name": normalize_ifname(tok), "type": "PORT"})
+    return out
+
+
+def parse_ntp_status(output: str) -> Dict[str, object]:
+    """Clock-synchronization STATE from 'show ntp status' (IOS/IOS-XE) OR 'show ntp peer-status' (NX-OS) ->
+    {synchronized: True|False|None, stratum: int|None, reference: str, source: str}. The OPERATIONAL complement
+    to the config-only `no-ntp` CIS check: a device can have NTP configured yet be UNSYNCHRONIZED (stratum 16).
+
+    IOS/IOS-XE: 'Clock is synchronized, stratum 7, reference is 10.0.0.10' (first line authoritative).
+    NX-OS: 'show ntp status' has no sync line, so it is derived from 'show ntp peer-status' -- a '*'-prefixed
+    row is the peer selected for sync; its 'st' column is the system stratum (16 = none).
+
+    Coverage-honest: returns {} when there is NO NTP output at all (absence is NOT unsynchronized). synchronized
+    stays None when neither shape is present, so a device is never inferred unsynced from silence. Never raises."""
+    text = output or ""
+    if not text.strip():
+        return {}
+    res: Dict[str, object] = {"synchronized": None, "stratum": None, "reference": "", "source": ""}
+
+    m = re.search(r"Clock is (un)?synchroni[sz]ed", text, re.IGNORECASE)
+    if m:
+        res["synchronized"] = (m.group(1) is None)
+        res["source"] = "ios-status"
+        ms = re.search(r"\bstratum\s+(\d+)", text, re.IGNORECASE)
+        if ms:
+            res["stratum"] = int(ms.group(1))
+        mr = re.search(r"reference is\s+(\S+)", text, re.IGNORECASE)
+        if mr:
+            res["reference"] = mr.group(1).rstrip(",")
+        return res
+
+    saw_table = False
+    for raw in text.splitlines():
+        s = raw.strip()
+        pm = re.match(r"^([*+=-])\s*(\d+\.\d+\.\d+\.\d+)\s+(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:.]+)\s+(\d+)\b", s)
+        if not pm:
+            continue
+        saw_table = True
+        sym, remote, st = pm.group(1), pm.group(2), int(pm.group(3))
+        if sym == "*":
+            res["synchronized"] = True
+            res["stratum"] = st
+            res["reference"] = remote
+            res["source"] = "nxos-peer-status"
+    if saw_table:
+        res["source"] = res["source"] or "nxos-peer-status"
+        if res["synchronized"] is None:
+            res["synchronized"] = False
+            res["stratum"] = 16
+        return res
+
+    return res if (res["synchronized"] is not None or res["stratum"] is not None) else {}
+
+
+def parse_port_security_detail(output: str) -> Dict[str, dict]:
+    """Per-interface 'show port-security interface [<if>]' DETAIL -> {ifname: {enabled, port_status,
+    violation_mode, violation_count, last_src, last_vlan}}. The summary parser (parse_port_security)
+    has NO port-status column, so it cannot tell an err-disabled (Secure-shutdown) port from a healthy one.
+    A shutdown-mode violation err-disables the port (Port Status -> 'Secure-shutdown'), stopping ALL traffic
+    incl. authorized devices, whereas 'restrict'/'protect' keep the port up (Secure-up) and merely drop+count
+    -- so only Secure-shutdown is a live outage, not a raw nonzero counter. Tolerant: {} on empty / non-detail
+    input; never raises. port_status is lower-cased canonical ('secure-shutdown', 'secure-up', 'secure-down')."""
+    res: Dict[str, dict] = {}
+    cur: Optional[str] = None
+    pend: Optional[str] = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        hm = re.match(r"^(?:Secure\s+Port|Port|Interface)\s*[:=]\s*(\S+)\s*$", s, re.IGNORECASE)
+        if hm and is_valid_iface(hm.group(1)):
+            pend = normalize_ifname(hm.group(1)); continue
+        bare = re.match(r"^(\S+)$", s)
+        if bare and is_valid_iface(bare.group(1)) and PHYSICAL_IFACE_RE.match(normalize_ifname(bare.group(1))):
+            pend = normalize_ifname(bare.group(1)); continue
+        m = re.match(r"^Port\s+Security\s*[:=]\s*(\w+)", s, re.IGNORECASE)
+        if m:
+            cur = pend or cur
+            pend = None
+            if cur is None:
+                continue
+            res.setdefault(cur, {"enabled": False, "port_status": "", "violation_mode": "",
+                                 "violation_count": 0, "last_src": "", "last_vlan": ""})
+            res[cur]["enabled"] = m.group(1).strip().lower() == "enabled"
+            continue
+        if cur is None or cur not in res:
+            continue
+        r = res[cur]
+        m = re.match(r"^Port\s+Status\s*[:=]\s*(\S+)", s, re.IGNORECASE)
+        if m: r["port_status"] = m.group(1).strip().lower(); continue
+        m = re.match(r"^Violation\s+Mode\s*[:=]\s*(\w+)", s, re.IGNORECASE)
+        if m: r["violation_mode"] = m.group(1).strip().capitalize(); continue
+        m = re.match(r"^Security\s+Violation\s+Count\s*[:=]\s*(\d+)", s, re.IGNORECASE)
+        if m: r["violation_count"] = int(m.group(1)); continue
+        m = re.match(r"^Last\s+Source\s+Address(?::Vlan)?\s*[:=]\s*([0-9a-fA-F.:]+?)(?::(\d+))?\s*$", s, re.IGNORECASE)
+        if m:
+            r["last_src"] = m.group(1)
+            if m.group(2): r["last_vlan"] = m.group(2)
+            continue
+    return res
+
+
+_STORM_TYPE_WORD = {"B": "broadcast", "M": "multicast", "U": "unicast",
+                    "BCAST": "broadcast", "MCAST": "multicast", "UCAST": "unicast",
+                    "BROADCAST": "broadcast", "MULTICAST": "multicast", "UNICAST": "unicast"}
+
+
+def parse_storm_control(output: str) -> list:
+    """'show storm-control' -> [{interface, traffic, filter_state, upper, lower, current, action, configured}].
+    The per-traffic ACTION decides what happens when the storm crosses the rising threshold -- 'Shutdown'
+    err-disables the port, 'Trap' raises an SNMP notification, and 'None' SILENTLY drops the excess with no
+    operator visibility. The senior gap (-> _d_storm_control_action) is a configured rule whose action is None.
+    `configured` is True when a real Upper threshold is present (the rule exists), so a port simply ABSENT from
+    the output is never flagged. Tolerant of the modern Action+Type form and the older no-Action form (action
+    ''). [] on empty / non-storm-control input; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s or s.lower().startswith(("key:", "interface", "---")):
+            continue
+        toks = s.split()
+        if len(toks) < 2 or not is_valid_iface(toks[0]):
+            continue
+        ifname = normalize_ifname(toks[0])
+        rest = toks[1:]
+        traffic = ""
+        if rest and rest[-1].upper() in _STORM_TYPE_WORD and len(rest[-1]) == 1:
+            traffic = _STORM_TYPE_WORD[rest.pop().upper()]
+        if not traffic and rest and rest[0].upper() in _STORM_TYPE_WORD:
+            traffic = _STORM_TYPE_WORD[rest.pop(0).upper()]
+        action = ""
+        if rest and rest[-1].lower() in ("none", "trap", "shutdown"):
+            action = rest.pop().capitalize()
+        nums = [t for t in rest if re.match(r"^[\d.]+[a-z%]*$", t, re.IGNORECASE)]
+        upper = nums[0] if len(nums) >= 1 else ""
+        lower = nums[1] if len(nums) >= 2 else ""
+        current = nums[2] if len(nums) >= 3 else (nums[-1] if nums else "")
+        state_words = []
+        for t in rest:
+            if re.match(r"^[\d.]+[a-z%]*$", t, re.IGNORECASE):
+                break
+            state_words.append(t)
+        out.append({"interface": ifname, "traffic": traffic,
+                    "filter_state": " ".join(state_words), "upper": upper, "lower": lower,
+                    "current": current, "action": action, "configured": bool(upper)})
+    return out
+
+
+# 'show policy-map interface' RUNTIME statistics regexes (egress queue/policer drops). Validated against
+# Cisco's genieparser golden corpus + IOS-XE/NX-OS QoS guides. The drops line is identical for bandwidth and
+# priority (LLQ) classes on modern IOS-XE; priority/policer context is tracked by the line-driven state machine.
+_PM_IFACE_RE   = re.compile(r"^([A-Za-z][\w./-]*\d[\w./-]*)\s*$")
+_PM_SVCPOL_RE  = re.compile(r"^Service-policy\s+(?:\((?P<kind>[^)]*)\)\s+)?(?P<dir>input|output)\s*:\s*(?P<name>\S+)",
+                            re.IGNORECASE)
+_PM_CLASS_RE   = re.compile(r"^Class-map(?:\s+\((?P<kind>[^)]*)\))?\s*:\s*(?P<name>\S+)", re.IGNORECASE)
+_PM_QDROPS_RE  = re.compile(r"\(queue depth/total drops/no-buffer drops\)\s+(\d+)/(\d+)/(\d+)", re.IGNORECASE)
+_PM_PRIDROPS_RE = re.compile(r"\(total drops/bytes drops\)\s+(\d+)/(\d+)", re.IGNORECASE)
+_PM_OUTPUT_RE  = re.compile(r"\(pkts output/bytes output\)\s+(\d+)/(\d+)", re.IGNORECASE)
+_PM_PRIORITY_RE = re.compile(r"^(?:priority(?:\s+level\s+\d+)?\b|Strict Priority|Priority:)", re.IGNORECASE)
+_PM_POLICE_RE  = re.compile(r"^police\b", re.IGNORECASE)
+_PM_EXCEEDED_RE = re.compile(r"^exceeded\s+(\d+)\s+packets,\s+(\d+)\s+bytes", re.IGNORECASE)
+_PM_VIOLATED_RE = re.compile(r"^violated\s+(\d+)\s+packets,\s+(\d+)\s+bytes", re.IGNORECASE)
+_PM_NX_CLASS_RE = re.compile(r"^Class-map\s+\(queuing\)\s*:\s*(?P<name>\S+)", re.IGNORECASE)
+_PM_NX_DROP_RE = re.compile(r"^queue\s+dropped\s+pkts\s*:\s*(\d+)", re.IGNORECASE)
+_PM_NX_DROPB_RE = re.compile(r"^queue\s+dropped\s+bytes\s*:\s*(\d+)", re.IGNORECASE)
+_PM_NX_TX_RE   = re.compile(r"^queue\s+transmit\s+pkts\s*:\s*(\d+)", re.IGNORECASE)
+
+
+def parse_policymap_drops(output: str) -> list:
+    """'show policy-map interface' RUNTIME stats -> one record per EGRESS class/queue that has data:
+    [{interface, policy, class, priority(bool), drop_pkts, drop_bytes, output_pkts, police_drop_pkts,
+    police_drop_bytes}]. The QoS-RUNTIME complement to parse_qos_config (which only proves a policy EXISTS):
+    a class with significant egress drops means the queue/policer is shedding the very traffic the intent
+    classified. Only the OUTPUT (egress) direction is recorded. Both IOS/IOS-XE and NX-OS queuing dialects are
+    parsed. Tolerant: [] on empty / non-policy-map input; never raises."""
+    out: list = []
+    iface = ""
+    egress = False
+    policy = ""
+    cur: Optional[dict] = None
+    in_police = False
+
+    def _flush():
+        if cur is not None and egress and iface:
+            out.append(cur)
+
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        mi = _PM_IFACE_RE.match(s)
+        if mi and not s.lower().startswith(("class-map", "service-policy", "police", "queueing",
+                                            "queue", "match", "priority", "bandwidth", "exceeded",
+                                            "conformed", "violated")):
+            _flush(); cur = None; in_police = False
+            iface = normalize_ifname(mi.group(1)); egress = False; policy = ""
+            continue
+        msp = _PM_SVCPOL_RE.match(s)
+        if msp:
+            _flush(); cur = None; in_police = False
+            egress = msp.group("dir").lower() == "output"
+            policy = msp.group("name")
+            continue
+        mnc = _PM_NX_CLASS_RE.match(s)
+        mc = mnc or _PM_CLASS_RE.match(s)
+        if mc:
+            _flush(); in_police = False
+            cur = {"interface": iface, "policy": policy, "class": mc.group("name"),
+                   "priority": False, "drop_pkts": 0, "drop_bytes": 0, "output_pkts": 0,
+                   "police_drop_pkts": 0, "police_drop_bytes": 0}
+            continue
+        if cur is None:
+            continue
+        if _PM_PRIORITY_RE.match(s):
+            cur["priority"] = True
+            continue
+        if _PM_POLICE_RE.match(s):
+            in_police = True
+            continue
+        m = _PM_QDROPS_RE.search(s)
+        if m:
+            cur["drop_pkts"] = int(m.group(2)); continue
+        m = _PM_PRIDROPS_RE.search(s)
+        if m:
+            cur["priority"] = True
+            cur["drop_pkts"] = int(m.group(1)); cur["drop_bytes"] = int(m.group(2)); continue
+        m = _PM_OUTPUT_RE.search(s)
+        if m:
+            cur["output_pkts"] = int(m.group(1)); continue
+        if in_police:
+            m = _PM_EXCEEDED_RE.match(s)
+            if m:
+                cur["police_drop_pkts"] += int(m.group(1)); cur["police_drop_bytes"] += int(m.group(2)); continue
+            m = _PM_VIOLATED_RE.match(s)
+            if m:
+                cur["police_drop_pkts"] += int(m.group(1)); cur["police_drop_bytes"] += int(m.group(2)); continue
+        m = _PM_NX_DROP_RE.match(s)
+        if m:
+            cur["drop_pkts"] = int(m.group(1)); continue
+        m = _PM_NX_DROPB_RE.match(s)
+        if m:
+            cur["drop_bytes"] = int(m.group(1)); continue
+        m = _PM_NX_TX_RE.match(s)
+        if m:
+            cur["output_pkts"] = int(m.group(1)); continue
+    _flush()
+    return out
+
+
+# CDP advertises capabilities as FULL WORDS on the Platform line ("Capabilities: Router Switch IGMP");
+# LLDP advertises them as SINGLE LETTERS in "Enabled Capabilities: B,R". Capturing the raw capability string
+# is what lets the shadow-infra detector tell an undocumented DISTRIBUTION SWITCH from a CDP-speaking phone or
+# AP. CDP codes: R Router, T Trans-Bridge, B Source-Route-Bridge, S Switch, H Host, I IGMP, r Repeater, P Phone.
+# LLDP codes: R Router, B Bridge, T Telephone, C DOCSIS, W WLAN-AP, P Repeater, S Station, O Other.
+def parse_neighbors_detail(output: str, proto: str = "cdp") -> List[Dict[str, str]]:
+    """'show cdp neighbors detail' (proto='cdp') / 'show lldp neighbors detail' (proto='lldp') ->
+    [{device_id, platform, capabilities, mgmt_ip, local_intf, remote_port, proto}] -- ONE record per
+    discovered neighbour, KEEPING the capability codes the topology-link parsers discard. [] on empty /
+    unrecognised input; tolerant, never raises. Reuses the already-collected CDP/LLDP detail (no new command)."""
+    out: List[Dict[str, str]] = []
+    if not output:
+        return out
+    if (proto or "").lower() == "lldp":
+        for ch in re.split(r"\n\s*Local Intf:\s*", "\n" + output):
+            ch = ch.strip()
+            if not ch:
+                continue
+            local = normalize_ifname(ch.splitlines()[0].strip().split()[0])
+            rec = {"device_id": "", "platform": "", "capabilities": "", "mgmt_ip": "",
+                   "local_intf": local, "remote_port": "", "proto": "lldp"}
+            sys_caps = ""
+            for line in ch.splitlines():
+                ls = line.strip()
+                m = re.match(r"^System Name:\s*(.+)$", ls, re.IGNORECASE)
+                if m:
+                    rec["device_id"] = m.group(1).strip()
+                m = re.match(r"^Port id:\s*(.+)$", ls, re.IGNORECASE)
+                if m and not rec["remote_port"]:
+                    rec["remote_port"] = normalize_ifname(m.group(1).strip())
+                m = re.match(r"^System Description:\s*(.+)$", ls, re.IGNORECASE)
+                if m and not rec["platform"]:
+                    rec["platform"] = m.group(1).strip()
+                m = re.match(r"^Enabled Capabilities:\s*(.+)$", ls, re.IGNORECASE)
+                if m:
+                    rec["capabilities"] = m.group(1).strip()
+                m = re.match(r"^System Capabilities:\s*(.+)$", ls, re.IGNORECASE)
+                if m:
+                    sys_caps = m.group(1).strip()
+                m = re.search(r"\b(\d+\.\d+\.\d+\.\d+)\b", ls)
+                if m and not rec["mgmt_ip"] and "management" in ls.lower():
+                    rec["mgmt_ip"] = m.group(1)
+            if not rec["capabilities"]:
+                rec["capabilities"] = sys_caps
+            caps = rec["capabilities"].upper().replace("N/A", "").strip()
+            if local and (rec["device_id"] or caps):
+                out.append(rec)
+        return out
+    for sec in re.split(r"-{5,}", output):
+        sec = sec.strip()
+        if not sec:
+            continue
+        rec = {"device_id": "", "platform": "", "capabilities": "", "mgmt_ip": "",
+               "local_intf": "", "remote_port": "", "proto": "cdp"}
+        for line in sec.splitlines():
+            ls = line.strip()
+            if ls.lower().startswith("device id:"):
+                rec["device_id"] = ls.split(":", 1)[1].strip()
+            pm = re.match(r"^Platform:\s*(.*)$", ls, re.IGNORECASE)
+            if pm:
+                body = pm.group(1)
+                cm = re.search(r"Capabilities:\s*(.+)$", body, re.IGNORECASE)
+                if cm:
+                    rec["capabilities"] = cm.group(1).strip()
+                rec["platform"] = re.split(r",\s*Capabilities", body, 1)[0].strip()
+            ipm = re.search(r"\bip address:\s*(\d+\.\d+\.\d+\.\d+)\b", ls, re.IGNORECASE)
+            if ipm and not rec["mgmt_ip"]:
+                rec["mgmt_ip"] = ipm.group(1)
+            if ls.lower().startswith("interface:"):
+                mv = re.search(r"Interface:\s*([^,]+)", ls, re.IGNORECASE)
+                if mv:
+                    rec["local_intf"] = normalize_ifname(mv.group(1).strip())
+                pp = re.search(r"Port ID\s*\(outgoing port\):\s*(\S+)", ls, re.IGNORECASE)
+                if pp:
+                    rec["remote_port"] = normalize_ifname(pp.group(1).strip())
+        if rec["device_id"] or rec["capabilities"]:
+            out.append(rec)
+    return out
+
+
 def parse_nve_vni(output: str) -> list:
     """'show nve vni' (NX-OS VXLAN) -> [{vni, mcast_group, state, mode, type}]. The L2 (VLAN<->VNI) and L3
     (VRF<->L3VNI) bindings on this VTEP; State Up = the VNI is operational. A VNI not Up strands its VLAN/VRF

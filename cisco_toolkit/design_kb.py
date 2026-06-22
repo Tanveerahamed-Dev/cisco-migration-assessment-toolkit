@@ -2825,26 +2825,6 @@ _MEGA_CORPUS_ADDENDUM = [
   "citation": "IPv6 transition (NAT64/DNS64 RFC 6146/6147, 464XLAT RFC 6877, PREF64 RFC 8781, DHCP Option 108 RFC "
     "8925); web-verified.",
  },
- {
-  "id": "ipv6-first-hop-security-suite-at-access-edge",
-  "domain": "ipv6", "priority": "High", "engine_actionable": False,
-  "title": "Enable the full IPv6 first-hop security suite at the access edge -- RA-Guard, DHCPv6-Guard, ND inspection/device-tracking, IPv6 Source Guard",
-  "design_intent": "IPv6 Neighbor Discovery (RFC 4861) is as trust-on-the-wire as IPv4 ARP: a single rogue or "
-    "fat-fingered Router Advertisement can hijack the default gateway for a whole segment, and spoofed ND/DHCPv6 "
-    "enables MITM and address theft. First-hop security is the L2-edge countermeasure suite -- and absent it, an "
-    "IPv6 deployment is wide open at the access layer (and even an 'IPv4-only' network with IPv6-capable hosts is "
-    "exposed to rogue-RA attacks).",
-  "tradeoffs": "security (gateway-hijack / ND-spoof / address-theft prevention) vs the access-port configuration "
-    "discipline (mark only real router/server uplinks trusted) and platform feature support.",
-  "trigger": "Hardening the access edge for IPv6 (or IPv6-capable) hosts.",
-  "observable": "Not collected by an L1-L4 assessment; an IPv6 security design.",
-  "recommended_action": "On every host-facing access port enable RA-Guard + DHCPv6-Guard (only real uplinks "
-    "trusted), enable IPv6 ND inspection / device-tracking to build the binding table, then layer IPv6 Source "
-    "Guard off that table; apply even on IPv4-only segments where hosts are IPv6-capable (block rogue RAs).",
-  "alternatives": "Disable IPv6 on truly IPv6-free access (rarely clean -- hosts often still process RAs); SEND "
-    "(cryptographic ND) where supported and required.",
-  "citation": "Cisco IPv6 First-Hop Security (RA-Guard, DHCPv6-Guard, ND inspection, Source Guard); web-verified.",
- },
  # ---- ACI-advanced (depth beyond wave-1) ----
  {
   "id": "aci-fabric-golf-l3out-at-spine-for-wan-scale",
@@ -3252,6 +3232,80 @@ _ACTIONABLE_DETECTOR_ADDENDUM = [
         "alternatives": "Keep one large prefix where L2 adjacency across the whole population is genuinely required "
             "(accepting the larger storm radius); otherwise prefer splitting.",
         "citation": "IPv4 subnetting (/24 = 254 usable hosts) + Cisco fault-domain sizing (bound the broadcast domain); web-verified.",
+    },
+    {
+        # NET-NEW engine_actionable principle: build_pim + _d_pim_rp_health FIRE on a PIM sparse-mode device
+        # that is running (live neighbor) but has learned no RP and is not SSM-only.
+        "id": "multicast-pim-rp-resilience",
+        "domain": "multicast", "priority": "High", "engine_actionable": True,
+        "title": "Keep a reachable rendezvous point (RP) for every running PIM sparse-mode domain (or move groups to SSM)",
+        "design_intent": "PIM sparse-mode builds ASM (*,G) shared trees rooted at a rendezvous point. If sparse-mode is "
+            "running (a live PIM neighbor) but no RP is learned, the shared tree can never form and multicast forwarding "
+            "is broken (RFC 7761) -- a silent fault that a cutover baseline would carry forward. SSM (232.0.0.0/8) needs "
+            "no RP, so an SSM-only domain is healthy without one.",
+        "tradeoffs": "RP availability (redundant/anycast RP, Auto-RP or BSR election) and the operational discipline to "
+            "keep it reachable, vs the simplicity of SSM where the application supports source-specific joins.",
+        "trigger": "snap['pim'] shows a device with >=1 live PIM neighbor AND a collected 'show ip pim rp mapping' that "
+            "learned ZERO RPs AND the domain is not SSM-only.",
+        "observable": "Directly observable. build_pim parses 'show ip pim rp mapping' (learned-RP summary, with a "
+            "'present' flag so 'not collected' is never read as 'no RP') and 'show ip pim neighbor' (proof sparse-mode is "
+            "live); _d_pim_rp_health fires only on running + collected + zero-RP + not-SSM-only.",
+        "recommended_action": "Restore RP reachability/election (static RP with anycast-RP redundancy, Auto-RP, or BSR), "
+            "verify each running PIM device learns the RP, or migrate the affected groups to SSM; re-verify before the "
+            "cutover baseline.",
+        "alternatives": "Migrate to SSM (no RP needed) where the application supports source-specific joins; or run "
+            "anycast-RP / phantom-RP for RP redundancy.",
+        "citation": "RFC 7761 (PIM-SM); Cisco PIM RP configuration & verification (Auto-RP / BSR / static / anycast-RP); web-verified.",
+    },
+    {
+        # GRADUATED from reference doctrine to engine_actionable: build_ipv6_fhs + _d_ipv6_fhs now FIRE this on
+        # observed dual-stack access switches missing RA-Guard (moved out of _MEGA_CORPUS_ADDENDUM).
+        "id": "ipv6-first-hop-security-suite-at-access-edge",
+        "domain": "ipv6", "priority": "High", "engine_actionable": True,
+        "title": "Enable the full IPv6 first-hop security suite at the access edge -- RA-Guard, DHCPv6-Guard, ND inspection/device-tracking, IPv6 Source Guard",
+        "design_intent": "IPv6 Neighbor Discovery (RFC 4861) is as trust-on-the-wire as IPv4 ARP: a single rogue or "
+            "fat-fingered Router Advertisement can hijack the default gateway for a whole segment, and spoofed ND/DHCPv6 "
+            "enables MITM and address theft. First-hop security is the L2-edge countermeasure suite -- and absent it, an "
+            "IPv6 deployment is wide open at the access layer (RFC 6104).",
+        "tradeoffs": "security (gateway-hijack / ND-spoof / address-theft prevention) vs the access-port configuration "
+            "discipline (mark only real router/server uplinks trusted) and platform feature support.",
+        "trigger": "A switch that is OBSERVABLY dual-stack (>=1 IPv6-addressed SVI) and owns host-facing access ports "
+            "but applies NO RA-Guard anywhere (no global policy on a port/VLAN, no interface 'ipv6 nd raguard').",
+        "observable": "Directly observable. build_ipv6_fhs fuses 'show ipv6 nd raguard policy' / 'show ipv6 dhcp guard "
+            "policy' with the running-config (IPv6 SVIs + per-interface attach); _d_ipv6_fhs fires only on a live "
+            "dual-stack access switch with no RA-Guard (a pure-IPv4 switch or an already-guarded switch stays silent).",
+        "recommended_action": "On every host-facing access port enable RA-Guard + DHCPv6-Guard (only real uplinks "
+            "trusted), enable IPv6 ND inspection / device-tracking to build the binding table, then layer IPv6 Source "
+            "Guard off that table; apply even on IPv4-only segments where hosts are IPv6-capable (block rogue RAs).",
+        "alternatives": "Disable IPv6 on truly IPv6-free access (rarely clean -- hosts often still process RAs); SEND "
+            "(cryptographic ND) where supported and required.",
+        "citation": "Cisco IPv6 First-Hop Security (RA-Guard, DHCPv6-Guard, ND inspection, Source Guard); RFC 6104; web-verified.",
+    },
+    {
+        # NET-NEW engine_actionable principle: build_undocumented_neighbors + _d_shadow_infra reconcile collected
+        # CDP/LLDP infra neighbours against the assessed inventory and FIRE on any undocumented switch/router.
+        "id": "discover-undocumented-infrastructure-before-cutover",
+        "domain": "operations", "priority": "High", "engine_actionable": True,
+        "title": "Discover and inventory undocumented (shadow) infrastructure before baselining the design",
+        "design_intent": "CDP/LLDP discovery is the cross-check that the device inventory is COMPLETE; an infra "
+            "neighbour (switch/router) absent from the inventory is undocumented 'shadow' infrastructure carrying "
+            "production traffic outside the migration scope -- its uplinks, redundancy, software and end-of-support "
+            "state are all unknown, and a cutover wave that depends on it can break silently.",
+        "tradeoffs": "Chasing every neighbour costs discovery time, but it is the only way the inventory -- and the "
+            "hardening/lifecycle/cutover plans built on it -- is provably complete rather than silently partial.",
+        "trigger": "snap['shadow_infra'] is non-empty: an infra-capable CDP/LLDP neighbour whose canonical hostname is "
+            "not an assessed device (collected OR inventoried). Edge devices (phones / APs / hosts) are excluded by "
+            "capability so they never trigger it.",
+        "observable": "Directly observable. parse_neighbors_detail keeps the CDP/LLDP capability codes the topology-link "
+            "parsers discard; _neighbor_is_infra filters to switches/routers; _d_shadow_infra reconciles by canonical "
+            "hostname exactly like the topology map, so an in-scope neighbour advertised by its FQDN is not mis-flagged.",
+        "recommended_action": "Identify each shadow node from the advertising device+port and its CDP/LLDP platform/mgmt "
+            "IP, then add it to the inventory and collect it (or formally scope it out WITH the customer and record it). "
+            "Re-run discovery until every infra neighbour reconciles, then freeze the baseline.",
+        "alternatives": "Proceed on the partial inventory and discover the device during cutover (cheapest now, but the "
+            "wave starts blind to a live dependency).",
+        "citation": "Cisco Discovery Protocol (CDP) + IEEE 802.1AB LLDP capability codes (Switch/Router vs Trans-Bridge/"
+            "Host/Phone); Cisco PPDIOO Prepare/Plan network-discovery & inventory-completeness practice.",
     },
 ]
 DOCTRINE.extend(_ACTIONABLE_DETECTOR_ADDENDUM)

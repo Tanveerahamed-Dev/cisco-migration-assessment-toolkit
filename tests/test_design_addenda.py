@@ -151,16 +151,27 @@ def _fires_all():
                           {"switch": "d", "vlan": "64", "svi_ip": "10.0.64.1"},
                           {"switch": "d2", "vlan": "208", "svi_ip": "10.0.208.1", "primary_subnet": "10.0.208.0/24"}],
         "interfaces": {"sw1": {"Gi1/0/1": {"port_channel": "Po1", "port_channel_protocol": "ON"},
-                               "Gi1/0/2": {"port_channel": "Po1", "port_channel_protocol": "ON"}}},
+                               "Gi1/0/2": {"port_channel": "Po1", "port_channel_protocol": "ON"}},
+                       "acc9": {"Gi0/2": {"switchport_mode": "Access", "vlan": "10"}}},
         "devices": {"ds02": {"num_power_supplies": 18, "ps_status": "OK / FAIL"}},
         "endpoint_identity": [{"vlan": "64", "host": "a"}, {"vlan": "64", "host": "b"}]
         + [{"vlan": "208", "host": f"h{i}"} for i in range(255)],
+        # build-wave engine_actionable principles: PIM running but no RP learned -> _d_pim_rp_health
+        "pim": {"sw1": {"rp_mapping": {"present": True, "rp_count": 0, "rps": [], "groups": [], "ssm_only": False},
+                        "neighbors": [{"neighbor": "10.0.255.2", "interface": "Gi1/0/1", "uptime": "1d"}]}},
+        # dual-stack access switch w/o RA-Guard -> _d_ipv6_fhs
+        "ipv6_fhs": {"acc9": {"dualstack": True, "ipv6_svi_vlans": [10], "ra_guard_policies": [],
+                              "dhcp_guard_policies": [], "ra_guard_ifaces": [], "dhcp_guard_ifaces": [],
+                              "ra_guard_present": False, "dhcp_guard_present": False}},
+        # an infra router CDP neighbour absent from the inventory (devices above) -> _d_shadow_infra
+        "shadow_infra": {"sw1": [{"device_id": "wan-edge-rtr9.corp", "platform": "cisco ASR1001-X",
+                                  "capabilities": "Router", "proto": "cdp", "local_intf": "Gi0/0/0"}]},
     }
 
 
 def test_actionable_detector_addendum_complete_actionable_and_emitted():
     add = design_kb._ACTIONABLE_DETECTOR_ADDENDUM
-    assert isinstance(add, list) and len(add) == 7, "the actionable-detector addendum must hold the 7 mega-wave principles"
+    assert isinstance(add, list) and len(add) == 10, "the actionable-detector addendum must hold the 7 mega-wave principles + the 3 build-wave (pim, ipv6-fhs, shadow-infra)"
     ids = [p["id"] for p in add]
     assert len(ids) == len(set(ids)), f"duplicate ids in the actionable addendum: {ids}"
     _FIELDS = ("id", "domain", "title", "priority", "engine_actionable", "design_intent",

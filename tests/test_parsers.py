@@ -786,3 +786,324 @@ def test_parse_copp_drops_nxos_and_iosxe(cp):
     assert byx["copp-class-bgp"]["exceeded"] == 5 and byx["copp-class-bgp"]["violated"] == 2
     assert byx["copp-class-bgp"]["drops"] == 7 and byx["class-default"]["drops"] == 0
     assert parse.parse_copp_drops("") == [] and parse.parse_copp_drops("% policy-map not configured\n") == []
+
+
+# ============================ architecture-coverage slices (build wave) =========================== #
+def test_parse_pim_rp_mapping_learned_static_ssm_and_broken(cp):
+    """PIM-SM RP learning: parse_pim_rp_mapping reads 'show ip pim rp mapping' across IOS Auto-RP (multi-line),
+    IOS static (single-line), NX-OS multi-RP, header-only (running but 0 RP -> the broken state), and SSM-only
+    (0 RP but HEALTHY). 'present' distinguishes 'collected, no RP' from 'not collected' ({})."""
+    autorp = textwrap.dedent("""\
+        PIM Group-to-RP Mappings
+        Group(s) 224.0.0.0/4
+          RP 10.10.205.20 (?), v2v1
+            Info source: 10.10.105.20 (?), elected via Auto-RP
+                 Uptime: 00:12:02, expires: 00:00:53
+    """)
+    r = parse.parse_pim_rp_mapping(autorp)
+    assert r["present"] is True and r["rp_count"] == 1 and r["rps"][0]["rp"] == "10.10.205.20"
+    assert r["rps"][0]["group"] == "224.0.0.0/4" and r["rps"][0]["source"] == "10.10.105.20" and r["ssm_only"] is False
+    static = "PIM Group-to-RP Mappings\nGroup(s): 224.0.0.0/4, Static RP: 192.168.7.2 (?)\n"
+    rs = parse.parse_pim_rp_mapping(static)
+    assert rs["rp_count"] == 1 and rs["rps"][0]["rp"] == "192.168.7.2" and rs["rps"][0]["group"] == "224.0.0.0/4"
+    nxos = textwrap.dedent("""\
+        PIM Group-to-RP Mappings
+        Group(s) 239.1.0.0/16, uptime: 1d02h, expires: never,
+          RP: 10.0.0.1, (local), via static
+        Group(s) 239.2.0.0/16, uptime: 1d02h, expires: never,
+          RP: 10.0.0.2, via bsr
+    """)
+    rn = parse.parse_pim_rp_mapping(nxos)
+    assert rn["rp_count"] == 2 and {x["rp"] for x in rn["rps"]} == {"10.0.0.1", "10.0.0.2"}
+    broken = parse.parse_pim_rp_mapping("PIM Group-to-RP Mappings\n\n")
+    assert broken["present"] is True and broken["rp_count"] == 0 and broken["ssm_only"] is False
+    ssm = parse.parse_pim_rp_mapping("PIM Group-to-RP Mappings\nGroup(s) 232.0.0.0/8\n  (SSM, no RP required)\n")
+    assert ssm["present"] is True and ssm["rp_count"] == 0 and ssm["ssm_only"] is True
+    assert parse.parse_pim_rp_mapping("") == {} and parse.parse_pim_rp_mapping("% Invalid input detected") == {}
+
+
+def test_parse_pim_neighbors_ios_and_nxos(cp):
+    """parse_pim_neighbors reads 'show ip pim neighbor' on IOS (combined Uptime/Expires) and NX-OS (separate
+    columns), skipping the legend/header, and normalises interfaces to the short canonical form. [] on empty."""
+    ios = textwrap.dedent("""\
+        PIM Neighbor Table
+        Mode: B - Bidir Capable, DR - Designated Router, N - Default DR Priority
+        Neighbor          Interface                Uptime/Expires    Ver   DR
+        Address                                                            Prio/Mode
+        192.168.12.2      GigabitEthernet0/1       00:00:17/00:01:27 v2    1 / DR S P G
+        192.168.14.4      GigabitEthernet0/2       00:00:15/00:01:29 v2    1 / DR S P G
+    """)
+    rows = parse.parse_pim_neighbors(ios)
+    assert len(rows) == 2 and rows[0]["neighbor"] == "192.168.12.2" and rows[0]["interface"] == "Gi0/1"
+    assert rows[0]["uptime"] == "00:00:17"
+    nxos = textwrap.dedent("""\
+        PIM Neighbor Status for VRF "default"
+        Neighbor       Interface            Uptime    Expires   DR    Bidir-  BFD
+                                                                Priority Capable State
+        192.0.2.2      port-channel2000     03:43:40  00:01:21  1     no      n/a
+        192.0.2.1      Ethernet1/26         03:43:44  00:01:33  1     no      n/a
+    """)
+    rn = parse.parse_pim_neighbors(nxos)
+    assert len(rn) == 2 and rn[0]["interface"] == "Po2000" and rn[1]["interface"] == "Eth1/26"
+    assert parse.parse_pim_neighbors("") == []
+    assert parse.parse_pim_neighbors("PIM Neighbor Table\nNeighbor Interface Uptime\n") == []
+
+
+def test_parse_ipv6_raguard_and_dhcp_guard_policy(cp):
+    """IPv6 first-hop security: 'show ipv6 nd raguard policy' -> policy/device-role/trusted/PORT-VLAN targets;
+    'show ipv6 dhcp guard policy' -> policy/device-role/targets (interface tokens or 'vlan N' list). [] on empty."""
+    ra = textwrap.dedent("""\
+        Policy HOSTS configuration:
+          device-role host
+        Policy HOSTS is applied on the following targets:
+        Target               Type  Policy               Feature        Target range
+        Gi0/2                PORT  HOSTS                RA guard       vlan all
+        Policy UPLINK configuration:
+          device-role router
+          trusted-port
+        Policy UPLINK is applied on the following targets:
+        Target               Type  Policy               Feature        Target range
+        Gi0/1                PORT  UPLINK               RA guard       vlan all
+    """)
+    r = parse.parse_ipv6_raguard_policy(ra)
+    by = {p["policy"]: p for p in r}
+    assert by["HOSTS"]["device_role"] == "host" and by["HOSTS"]["trusted"] is False
+    assert by["HOSTS"]["targets"] == [{"name": "Gi0/2", "type": "PORT"}]
+    assert by["UPLINK"]["device_role"] == "router" and by["UPLINK"]["trusted"] is True
+    assert parse.parse_ipv6_raguard_policy("") == []
+    assert parse.parse_ipv6_raguard_policy("% Invalid input detected at '^' marker.") == []
+    dh = textwrap.dedent("""\
+        Dhcp guard policy: default
+          Device Role: dhcp client
+          Target: Et0/3
+        Dhcp guard policy: test1
+          Device Role: dhcp server
+          Target: vlan 0 vlan 1 vlan 2
+        Dhcp guard policy: test2
+          Device Role: dhcp relay
+          Target: Et0/0 Et0/1
+    """)
+    rd = parse.parse_ipv6_dhcp_guard_policy(dh)
+    byd = {p["policy"]: p for p in rd}
+    assert byd["default"]["device_role"] == "client" and byd["default"]["targets"] == [{"name": "Et0/3", "type": "PORT"}]
+    assert byd["test1"]["device_role"] == "server"
+    assert byd["test1"]["targets"] == [{"name": "0", "type": "VLAN"}, {"name": "1", "type": "VLAN"}, {"name": "2", "type": "VLAN"}]
+    assert byd["test2"]["device_role"] == "relay" and len(byd["test2"]["targets"]) == 2
+    assert parse.parse_ipv6_dhcp_guard_policy("") == []
+
+
+def test_parse_ntp_status_ios_and_nxos(cp):
+    """Clock-sync STATE: IOS 'show ntp status' first line is authoritative (synchronized + stratum + reference;
+    British spelling tolerated); NX-OS 'show ntp peer-status' uses a '*'-selected peer (its 'st' = stratum), and
+    a populated table with NO '*' means unsynchronized (stratum 16). {} on absence (never inferred unsynced)."""
+    bad = ("Clock is unsynchronized, stratum 16, no reference clock\n"
+           "nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18\n")
+    r = parse.parse_ntp_status(bad)
+    assert r["synchronized"] is False and r["stratum"] == 16 and r["source"] == "ios-status"
+    good = "Clock is synchronized, stratum 3, reference is 10.0.10.2\n"
+    g = parse.parse_ntp_status(good)
+    assert g["synchronized"] is True and g["stratum"] == 3 and g["reference"] == "10.0.10.2"
+    assert parse.parse_ntp_status("Clock is synchronised, stratum 2, reference is 1.2.3.4")["synchronized"] is True
+    assert parse.parse_ntp_status("") == {} and parse.parse_ntp_status("% NTP is not enabled.") == {}
+    synced = ("Total peers : 2\n"
+              "* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode\n"
+              "remote               local                st  poll reach delay   vrf\n"
+              "-------------------------------------------------------------------------------\n"
+              "*10.255.0.254        10.255.0.7           2   16   377   0.00107 default\n"
+              "=127.127.1.0         10.255.0.7           8   16   377   0.00000 default\n")
+    rs = parse.parse_ntp_status(synced)
+    assert rs["synchronized"] is True and rs["stratum"] == 2 and rs["reference"] == "10.255.0.254"
+    assert rs["source"] == "nxos-peer-status"
+    nosync = ("Total peers : 1\n"
+              "* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode\n"
+              "remote               local                st  poll reach delay   vrf\n"
+              "-------------------------------------------------------------------------------\n"
+              "=10.255.0.254        10.255.0.7           16  64   0     0.00000 default\n")
+    n = parse.parse_ntp_status(nosync)
+    assert n["synchronized"] is False and n["stratum"] == 16
+
+
+def test_parse_port_security_detail_secure_shutdown_vs_restrict(cp):
+    """Access-edge port-security DETAIL: parse_port_security_detail reads 'show port-security interface' so a
+    shutdown-mode violation -> Port Status 'secure-shutdown' (a live outage with an offending MAC) is captured,
+    distinct from a restrict-mode port that stays 'secure-up' while counting. Interface name precedes each block."""
+    out = (
+        "Port: GigabitEthernet0/3\n"
+        "Port Security              : Enabled\n"
+        "Port Status                : Secure-shutdown\n"
+        "Violation Mode             : Shutdown\n"
+        "Maximum MAC Addresses      : 1\n"
+        "Last Source Address:Vlan   : 0011.22aa.0099:10\n"
+        "Security Violation Count   : 3\n"
+        "Port: GigabitEthernet0/10\n"
+        "Port Security              : Enabled\n"
+        "Port Status                : Secure-up\n"
+        "Violation Mode             : Restrict\n"
+        "Last Source Address:Vlan   : aabb.ccdd.ee10:30\n"
+        "Security Violation Count   : 17\n")
+    r = parse.parse_port_security_detail(out)
+    assert set(r) == {"Gi0/3", "Gi0/10"}
+    g3 = r["Gi0/3"]
+    assert g3["enabled"] is True and g3["port_status"] == "secure-shutdown"
+    assert g3["violation_mode"] == "Shutdown" and g3["violation_count"] == 3
+    assert g3["last_src"] == "0011.22aa.0099" and g3["last_vlan"] == "10"
+    g10 = r["Gi0/10"]
+    assert g10["port_status"] == "secure-up" and g10["violation_mode"] == "Restrict" and g10["violation_count"] == 17
+    assert parse.parse_port_security_detail("") == {}
+    assert parse.parse_port_security_detail("random noise\nnot a detail block") == {}
+
+
+def test_parse_storm_control_actions_and_legacy_form(cp):
+    """Storm-control: the modern 'Action + Type(B/M/U)' form yields the per-traffic action ('None' = the toothless
+    gap, Trap/Shutdown actioned), and the older leading-Type form (no Action column) yields action '' (so the
+    detector, firing only on action 'None', correctly stays silent on that form). configured=True iff Upper present."""
+    out = (
+        "Key: U - Unicast, B - Broadcast, M - Multicast\n"
+        "Interface Filter State   Upper       Lower       Current    Action    Type\n"
+        "--------- ------------- ----------- ----------- ---------- --------- ----\n"
+        "Gi0/2     Forwarding    5.00%       5.00%       0.12%      None      B\n"
+        "Gi0/3     Forwarding    2.00%       2.00%       0.05%      Shutdown  B\n"
+        "Gi0/4     Link Down     50k bps     40k bps     0 bps      Trap      M\n")
+    r = parse.parse_storm_control(out)
+    assert len(r) == 3
+    assert r[0] == {"interface": "Gi0/2", "traffic": "broadcast", "filter_state": "Forwarding",
+                    "upper": "5.00%", "lower": "5.00%", "current": "0.12%", "action": "None", "configured": True}
+    assert r[1]["action"] == "Shutdown" and r[1]["traffic"] == "broadcast"
+    assert r[2]["filter_state"] == "Link Down" and r[2]["action"] == "Trap" and r[2]["upper"] == "50k"
+    assert parse.parse_storm_control("") == []
+    legacy = (
+        "Interface Type    Filter State    Upper       Lower       Current\n"
+        "--------- ------  -------------   ----------- ----------- ----------\n"
+        "Gi0/0/1   Bcast   Blocking        50k bps     40k bps     362.25k bps\n"
+        "Gi0/0/1   Ucast   Forwarding      1.00%       0.50%       1.28%\n")
+    rl = parse.parse_storm_control(legacy)
+    assert len(rl) == 2
+    assert rl[0]["traffic"] == "broadcast" and rl[0]["filter_state"] == "Blocking"
+    assert rl[0]["upper"] == "50k" and rl[0]["action"] == "" and rl[0]["configured"] is True
+    assert rl[1]["traffic"] == "unicast" and rl[1]["action"] == ""
+
+
+def test_parse_policymap_drops_iosxe_and_nxos(cp):
+    """QoS RUNTIME: parse_policymap_drops reads 'show policy-map interface' EGRESS-only across the IOS-XE dialect
+    (priority/LLQ queue drops, bandwidth class, policer 'exceeded' block, clean class) and the NX-OS queuing form
+    ('Class-map (queuing):', 'queue dropped/transmit pkts'). The input direction is ignored."""
+    iosxe = textwrap.dedent("""\
+        GigabitEthernet0/0/0
+
+          Service-policy input: MARK-IN
+
+            Class-map: SCAVENGER-IN (match-any)
+              Queueing
+              (queue depth/total drops/no-buffer drops) 0/999999/0
+              (pkts output/bytes output) 1/1
+
+          Service-policy output: WAN-EDGE-OUT
+
+            Class-map: VOICE (match-any)
+              2348138 packets, 1202246656 bytes
+              Match: dscp ef (46)
+              Queueing
+              priority level 1
+              queue limit 512 packets
+              (queue depth/total drops/no-buffer drops) 49476/44577300/0
+              (pkts output/bytes output) 2348138/1202246656
+
+            Class-map: BULK (match-any)
+              3000453 packets, 262033259 bytes
+              Match: dscp af11 (10)
+              Queueing
+              queue limit 525000 bytes
+              (queue depth/total drops/no-buffer drops) 0/250/0
+              (pkts output/bytes output) 3000454/262033337
+              bandwidth remaining 30%
+
+            Class-map: SCAVENGER (match-any)
+              9000 packets, 8000 bytes
+              police: cir 1000000 bps, bc 31250 bytes
+                conformed 5000 packets, 4000 bytes; action: transmit
+                exceeded 4000 packets, 3500 bytes; action: drop
+                violated 0 packets, 0 bytes; action: drop
+
+            Class-map: class-default (match-any)
+              100 packets, 9000 bytes
+              Queueing
+              queue limit 416 packets
+              (queue depth/total drops/no-buffer drops) 0/0/0
+              (pkts output/bytes output) 100/9000
+    """)
+    r = parse.parse_policymap_drops(iosxe)
+    assert [c["class"] for c in r] == ["VOICE", "BULK", "SCAVENGER", "class-default"]
+    assert all(c["interface"] == "Gi0/0/0" and c["policy"] == "WAN-EDGE-OUT" for c in r)
+    assert r[0]["priority"] is True and r[0]["drop_pkts"] == 44577300 and r[0]["output_pkts"] == 2348138
+    assert r[1]["priority"] is False and r[1]["drop_pkts"] == 250 and r[1]["output_pkts"] == 3000454
+    assert r[2]["police_drop_pkts"] == 4000 and r[2]["police_drop_bytes"] == 3500 and r[2]["drop_pkts"] == 0
+    assert r[3]["drop_pkts"] == 0 and r[3]["output_pkts"] == 100
+    assert parse.parse_policymap_drops("") == [] and parse.parse_policymap_drops("% Incomplete command") == []
+    nxos = textwrap.dedent("""\
+        port-channel6
+        Service-policy (queuing) output: out-q-policy
+
+        Class-map (queuing): q1 (match-any)
+        priority level 1
+        queue dropped pkts: 12345
+        queue dropped bytes: 678900
+        queue transmit pkts: 2175032764
+        queue transmit bytes: 1051188564890
+
+        Class-map (queuing): q-default (match-any)
+        bandwidth percent 49
+        queue dropped pkts: 0
+        queue dropped bytes: 0
+        queue transmit pkts: 518903560636
+    """)
+    rn = parse.parse_policymap_drops(nxos)
+    assert [c["class"] for c in rn] == ["q1", "q-default"]
+    assert all(c["interface"] == "Po6" for c in rn)
+    assert rn[0]["priority"] is True and rn[0]["drop_pkts"] == 12345 and rn[0]["output_pkts"] == 2175032764
+    assert rn[1]["drop_pkts"] == 0 and rn[1]["priority"] is False
+
+
+def test_parse_neighbors_detail_cdp_and_lldp_keep_capabilities(cp):
+    """Shadow-infra discovery: parse_neighbors_detail KEEPS the capability codes the topology-link parsers drop
+    (CDP 'Router Switch' words; LLDP 'B,R' letters) so an undocumented switch/router is distinguishable from a
+    CDP/LLDP-speaking phone or AP. [] on empty."""
+    cdp = (
+        "-------------------------\n"
+        "Device ID: dist-core-7.lab\n"
+        "  IP address: 10.0.0.7\n"
+        "Platform: cisco N9K-C93180YC-EX,  Capabilities: Router Switch\n"
+        "Interface: Ethernet1/47,  Port ID (outgoing port): Ethernet1/1\n"
+        "-------------------------\n"
+        "Device ID: SEP00112233AABB\n"
+        "  IP address: 10.0.40.20\n"
+        "Platform: Cisco IP Phone 8845,  Capabilities: Host Phone\n"
+        "Interface: GigabitEthernet1/0/20,  Port ID (outgoing port): Port 1\n")
+    rc = parse.parse_neighbors_detail(cdp, "cdp")
+    assert len(rc) == 2
+    assert rc[0]["device_id"] == "dist-core-7.lab" and rc[0]["capabilities"] == "Router Switch"
+    assert rc[0]["platform"] == "cisco N9K-C93180YC-EX" and rc[0]["local_intf"] == "Eth1/47"
+    assert rc[0]["remote_port"] == "Eth1/1" and rc[0]["mgmt_ip"] == "10.0.0.7" and rc[0]["proto"] == "cdp"
+    assert rc[1]["device_id"] == "SEP00112233AABB" and rc[1]["capabilities"] == "Host Phone"
+    assert parse.parse_neighbors_detail("", "cdp") == []
+    lldp = (
+        "Local Intf: Gi1/0/47\n"
+        "Chassis id: 00aa.bbcc.ddee\n"
+        "Port id: Gi1/0/1\n"
+        "System Name: agg-sw-2\n"
+        "System Description: Cisco IOS Software, C9300\n"
+        "System Capabilities: B,R\n"
+        "Enabled Capabilities: B,R\n"
+        "Management Addresses:\n"
+        "  IP: 10.0.0.8\n"
+        "\n"
+        "Local Intf: Gi1/0/20\n"
+        "Port id: 1\n"
+        "System Name: phone-2\n"
+        "System Capabilities: T\n"
+        "Enabled Capabilities: T\n")
+    rl = parse.parse_neighbors_detail(lldp, "lldp")
+    assert len(rl) == 2
+    assert rl[0]["device_id"] == "agg-sw-2" and rl[0]["capabilities"] == "B,R"
+    assert rl[0]["local_intf"] == "Gi1/0/47" and rl[0]["remote_port"] == "Gi1/0/1" and rl[0]["proto"] == "lldp"
+    assert rl[1]["device_id"] == "phone-2" and rl[1]["capabilities"] == "T"
+    assert parse.parse_neighbors_detail("", "lldp") == []

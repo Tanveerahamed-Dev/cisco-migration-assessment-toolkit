@@ -142,6 +142,38 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "engine must assess VXLAN VNI: a not-Up VNI must fire _d_nve_vni_health"
     assert any(d.get("id") == "copp-control-plane-policer-dropping" for d in _bp.get("decisions", [])), \
         "engine must assess CoPP: a dropping control-plane class must fire _d_copp_drops"
+    # UNIVERSALITY (architecture-coverage build wave): each new axis is PUBLISHED into the snapshot and its
+    # detector fires end-to-end on the synthetic fixtures (broken state only; silent companions prove no
+    # over-firing). core1 = PIM-no-RP + unsynchronized NTP + QoS LLQ drops; access1 = dual-stack-no-RA-Guard +
+    # port-security Secure-shutdown + toothless storm-control; core2 = an undocumented (shadow) infra router.
+    assert isinstance(snap.get("pim"), dict) and snap["pim"].get("core1", {}).get("neighbors"), \
+        "snapshot must publish per-device PIM (build_pim -> parse_pim_rp_mapping / parse_pim_neighbors)"
+    assert any(d.get("id") == "multicast-pim-rp-resilience" for d in _bp.get("decisions", [])), \
+        "engine must assess PIM: a running PIM device with no RP must fire _d_pim_rp_health"
+    assert isinstance(snap.get("ipv6_fhs"), dict) and snap["ipv6_fhs"].get("access1", {}).get("dualstack"), \
+        "snapshot must publish per-device IPv6 first-hop security (build_ipv6_fhs)"
+    assert any(d.get("id") == "ipv6-first-hop-security-suite-at-access-edge" for d in _bp.get("decisions", [])), \
+        "engine must assess IPv6 FHS: a dual-stack access switch with no RA-Guard must fire _d_ipv6_fhs"
+    assert isinstance(snap.get("ntp"), dict) and snap["ntp"].get("core1", {}).get("synchronized") is False, \
+        "snapshot must publish per-device NTP clock-sync STATE (build_ntp -> parse_ntp_status)"
+    assert any(d.get("id") == "mgmt-time-sync-logging-baseline" for d in _bp.get("decisions", [])), \
+        "engine must assess NTP: an unsynchronized clock must fire _d_ntp_sync"
+    assert isinstance(snap.get("port_security"), dict) and snap["port_security"].get("access1"), \
+        "snapshot must publish per-device port-security DETAIL (build_port_security_detail)"
+    assert any(d.get("id") == "security-l2-access-edge-suite" for d in _bp.get("decisions", [])), \
+        "engine must assess port-security: a Secure-shutdown port must fire _d_port_security_errdisable"
+    assert isinstance(snap.get("storm_control"), dict) and snap["storm_control"].get("access1"), \
+        "snapshot must publish per-device storm-control (build_storm_control)"
+    assert any(d.get("id") == "storm-control-action-on-edge" for d in _bp.get("decisions", [])), \
+        "engine must assess storm-control: a configured action-None rule must fire _d_storm_control_action"
+    assert isinstance(snap.get("qos_runtime"), dict) and snap["qos_runtime"].get("core1"), \
+        "snapshot must publish per-device QoS runtime (build_qos_runtime -> parse_policymap_drops)"
+    assert any(d.get("id") == "qos-runtime-egress-queue-drops" for d in _bp.get("decisions", [])), \
+        "engine must assess QoS runtime: an LLQ class being congestion-dropped must fire _d_qos_runtime_drops"
+    assert isinstance(snap.get("shadow_infra"), dict) and snap["shadow_infra"].get("core2"), \
+        "snapshot must publish per-device shadow-infra neighbours (build_undocumented_neighbors)"
+    assert any(d.get("id") == "discover-undocumented-infrastructure-before-cutover" for d in _bp.get("decisions", [])), \
+        "engine must assess shadow infra: an undocumented infra neighbour must fire _d_shadow_infra"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu

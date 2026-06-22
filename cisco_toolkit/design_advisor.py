@@ -33,6 +33,10 @@ _HARDEN_FAIL_IDS = {"risky-services", "no-banner"}
 _TIMESYNC_FAIL_IDS = {"no-ntp", "no-logging"}
 
 _LARGE_L2_VLANS = 12  # a flat estate carrying this many VLANs in one (global) VRF is an oversized fault domain
+# QoS-runtime egress-drop thresholds (one source of truth for _d_qos_runtime_drops's cry-wolf guard):
+_QOS_DROP_FLOOR = 1000           # min egress drops on a non-priority class before it can fire
+_QOS_DROP_RATIO = 0.01           # ... AND drops must be >=1% of (drops + output) on that class
+_QOS_PRIORITY_DROP_FLOOR = 100   # any priority/LLQ class above this many drops fires (stricter bar)
 _L2_SPAN_SWITCHES = 8  # a single user VLAN touching this many switches is an oversized L2 failure (bridging) domain
 _WAVE_CAP = 40  # max switches per candidate migration wave (a maintenance-window-sized batch)
 _PORT_UTIL_HOT = 85.0  # PERCENT: a switch at/above this port- (or PoE-) utilisation has < 15% headroom (capacity[].port_util/poe_util are percentages)
@@ -169,6 +173,148 @@ def _signals(snap):
     sig["copp_drop_pkts"] = sum(d for _, _, d in copp_hits)
     sig["copp_drop_hosts"] = sorted({h for h, _, _ in copp_hits})[:12]
     sig["copp_drop_examples"] = [f"{h} {cls}" for h, cls, _ in sorted(copp_hits, key=lambda t: -t[2])][:6]
+    # PIM-SM control-plane resilience (snap['pim'] from build_pim). FIRING STATE: PIM is RUNNING here (a live
+    # neighbor), rp-mapping WAS collected, yet ZERO RP is learned and the domain is not SSM-only -- ASM (*,G)
+    # shared trees cannot form (RFC 7761). Coverage-honest: config-only/not-running, SSM-only, and
+    # not-collected devices never fire (no cry-wolf).
+    _pim = _as_dict(snap.get("pim"))
+    _pim_running, _pim_collected, _pim_no_rp = [], [], []
+    for _ph, _pf in sorted(_pim.items()):
+        _pf = _as_dict(_pf)
+        _rpm = _as_dict(_pf.get("rp_mapping"))
+        _running = bool(_as_list(_pf.get("neighbors")))
+        _present = bool(_rpm.get("present"))
+        if _present:
+            _pim_collected.append(_ph)
+        if _running:
+            _pim_running.append(_ph)
+        if _running and _present and _as_int(_rpm.get("rp_count")) == 0 and not _rpm.get("ssm_only"):
+            _pim_no_rp.append(_ph)
+    sig["pim_running"] = _pim_running
+    sig["pim_collected"] = _pim_collected
+    sig["pim_no_rp"] = _pim_no_rp
+    # IPv6 first-hop security at the access edge (snap['ipv6_fhs'] from build_ipv6_fhs). FIRES ONLY on a switch
+    # that is OBSERVABLY dual-stack (>=1 IPv6 SVI) AND owns host-facing ACCESS ports, yet has NO RA-Guard
+    # applied anywhere -- a rogue-RA default-gateway hijack (RFC 6104). Coverage-honest: a pure-IPv4 switch and
+    # a dual-stack switch that HAS RA-Guard both stay silent.
+    _fhs = _as_dict(snap.get("ipv6_fhs"))
+    _ifaces = _as_dict(snap.get("interfaces"))
+    _fhs_open, _fhs_open_dhcp, _fhs_open_vlans = [], [], set()
+    for _fh, _f in _fhs.items():
+        _f = _as_dict(_f)
+        if not _f.get("dualstack"):
+            continue
+        _has_access = any(str(_as_dict(pd).get("switchport_mode", "")).lower() == "access"
+                          for pd in _as_dict(_ifaces.get(_fh)).values())
+        if not _has_access:
+            continue
+        if not _f.get("ra_guard_present"):
+            _fhs_open.append(_fh)
+            for v in _as_list(_f.get("ipv6_svi_vlans")):
+                _fhs_open_vlans.add(v)
+        if not _f.get("dhcp_guard_present"):
+            _fhs_open_dhcp.append(_fh)
+    sig["ipv6_fhs_open"] = len(_fhs_open)
+    sig["ipv6_fhs_open_hosts"] = sorted(_fhs_open)[:12]
+    sig["ipv6_fhs_open_dhcp"] = len(_fhs_open_dhcp)
+    sig["ipv6_fhs_vlans"] = sorted(_fhs_open_vlans)[:12]
+    # NTP clock-sync STATE (snap['ntp'] from build_ntp): a device whose clock is UNSYNCHRONIZED (or pinned at
+    # stratum 16) is the broken-STATE complement to the config-only CIS no-ntp check. Coverage-honest: a host
+    # whose synchronized field is None (no definitive sync line seen) is NOT flagged -- absence/uncertainty is
+    # never inferred as unsynced.
+    sig["ntp_unsynced"] = []
+    _ntp = _as_dict(snap.get("ntp"))
+    for _nh, _n in _ntp.items():
+        _n = _as_dict(_n)
+        _st = _n.get("stratum")
+        if _n.get("synchronized") is False or _st == 16:
+            sig["ntp_unsynced"].append(f"{_nh} (stratum {_st if _st is not None else '16'})")
+    # ACCESS-EDGE port-security (snap['port_security'] from build_port_security_detail): a secured port
+    # currently err-disabled by a violation (Port Status 'secure-shutdown') is a LIVE access outage. Non-cry-
+    # wolf: a raw violation COUNT is NOT flagged (restrict/protect keep the port up while counting); only the
+    # shutdown state fires.
+    sig["psec_errdisabled"] = []
+    _ps = _as_dict(snap.get("port_security"))
+    for _psh, _ports in _ps.items():
+        for _if, _pd in _as_dict(_ports).items():
+            if str(_as_dict(_pd).get("port_status", "")).lower() == "secure-shutdown":
+                _mac = _as_dict(_pd).get("last_src") or "?"
+                sig["psec_errdisabled"].append(f"{_psh} {_if} (offender {_mac})")
+    # STORM-CONTROL ACTION (snap['storm_control'] from build_storm_control): an edge port with a CONFIGURED
+    # storm-control rule whose action is 'None' drops a storm SILENTLY -- no trap, no err-disable. Coverage-
+    # honest: a port with NO storm-control at all never appears here (configured=False is skipped).
+    sig["storm_noaction"] = []
+    _sc = _as_dict(snap.get("storm_control"))
+    for _sch, _rows in _sc.items():
+        for _r in _as_list(_rows):
+            if _r.get("configured") and str(_r.get("action", "")).strip().lower() == "none":
+                sig["storm_noaction"].append(f"{_sch} {_r.get('interface', '?')} {_r.get('traffic', 'storm')}")
+    sig["storm_noaction_devices"] = sorted({x.split()[0] for x in sig["storm_noaction"]})[:12]
+    # QoS RUNTIME (snap['qos_runtime'] from build_qos_runtime): an EGRESS class taking SIGNIFICANT drops means
+    # the configured QoS is shedding the traffic its intent classified. CRY-WOLF GUARD: a non-priority class
+    # fires ONLY when drops clear an absolute floor AND are >=1% of (drops+output); a PRIORITY/LLQ class is held
+    # to a stricter floor (real-time traffic must never be congestion-dropped). Policer exceeded/violated drops
+    # count the same as a queue drop. _QOS_DROP_* are module constants so the threshold is one source.
+    sig["qos_drop_classes"] = []
+    _qr = _as_dict(snap.get("qos_runtime"))
+    for _qh, _qrows in _qr.items():
+        for _c in _as_list(_qrows):
+            _drop = _as_int(_c.get("drop_pkts")) + _as_int(_c.get("police_drop_pkts"))
+            if _drop <= 0:
+                continue
+            _outp = _as_int(_c.get("output_pkts"))
+            _denom = _drop + _outp
+            _ratio = (_drop / _denom) if _denom > 0 else 1.0
+            _is_pri = bool(_c.get("priority"))
+            _fires = (_drop >= _QOS_PRIORITY_DROP_FLOOR) if _is_pri else \
+                     (_drop >= _QOS_DROP_FLOOR and _ratio >= _QOS_DROP_RATIO)
+            if _fires:
+                sig["qos_drop_classes"].append({
+                    "host": _qh, "interface": _c.get("interface", "?"), "policy": _c.get("policy", ""),
+                    "class": _c.get("class", "?"), "priority": _is_pri, "drops": _drop,
+                    "ratio": round(_ratio, 4)})
+    sig["qos_drop_priority"] = sum(1 for x in sig["qos_drop_classes"] if x["priority"])
+    sig["qos_drop_hosts"] = sorted({x["host"] for x in sig["qos_drop_classes"]})
+    # SHADOW INFRASTRUCTURE (snap['shadow_infra'] from build_undocumented_neighbors): an INFRA neighbour
+    # (switch/router) that real assessed devices see over CDP/LLDP but whose canonical hostname is NOT in the
+    # assessed inventory -> an undocumented box in the production path. Reconcile against the assessed-host set
+    # (collected + inventoried), canon-normalising names exactly as the topology map does.
+    try:
+        from .analyze import _canon_host as _ch
+    except Exception:
+        def _ch(_n):
+            _n = re.sub(r"\(.*?\)\s*$", "", str(_n or "").strip()).strip().split(".")[0]
+            return _n.lower()
+    _assessed = set()
+    for _r in _as_list(snap.get("health_scores")):
+        _hh = _ch(_as_dict(_r).get("switch"))
+        if _hh:
+            _assessed.add(_hh)
+    for _hk in _as_dict(snap.get("devices")):
+        _ck = _ch(_hk)
+        if _ck:
+            _assessed.add(_ck)
+    _shadow: dict = {}
+    _si = _as_dict(snap.get("shadow_infra"))
+    for _sih, _recs in _si.items():
+        for _n in _as_list(_recs):
+            _did = (_n.get("device_id") or "").strip()
+            _cn = _ch(_did)
+            if not _cn or _cn in _assessed:
+                continue
+            _e = _shadow.setdefault(_cn, {"name": _did, "platform": _n.get("platform", ""),
+                                          "proto": _n.get("proto", ""), "seen_from": set(), "via": []})
+            _e["seen_from"].add(_sih)
+            _via = f"{_sih}:{_n.get('local_intf') or '?'}"
+            if _via not in _e["via"]:
+                _e["via"].append(_via)
+            if not _e["platform"] and _n.get("platform"):
+                _e["platform"] = _n.get("platform")
+    sig["shadow_infra"] = [
+        {"name": v["name"], "platform": v["platform"], "proto": v["proto"],
+         "n_attach": len(v["seen_from"]), "seen_from": sorted(v["seen_from"]), "via": v["via"][:6]}
+        for _k, v in sorted(_shadow.items())]
+    sig["shadow_infra_devices"] = sorted({h for v in _shadow.values() for h in v["seen_from"]})[:12]
     devs = []
     for g in bad_fhrp:
         for m in _as_list(g.get("members")):
@@ -782,6 +928,200 @@ def _d_copp_drops(snap, sig):
         devices=sig.get("copp_drop_hosts") or [])
 
 
+def _d_pim_rp_health(snap, sig):
+    """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
+    one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
+    WAS collected, yet ZERO rendezvous points are learned and the domain is not SSM-only. With no RP, ASM
+    (*,G) shared trees can't be built -- multicast forwarding is broken (RFC 7761). SSM-only and not-collected
+    are excluded, so it cannot cry wolf. None when the axis is absent or clean."""
+    broken = sig.get("pim_no_rp") or []
+    if not broken:
+        return None
+    n = len(broken)
+    return _decision(
+        "multicast-pim-rp-resilience",
+        f"PIM sparse-mode is running on {n} device(s) but no rendezvous point (RP) is learned "
+        f"({', '.join(broken[:8])}) -- ASM multicast (*,G) shared trees cannot form, so multicast forwarding is "
+        f"broken. Restore RP reachability/election (static RP, Auto-RP, or BSR), or migrate affected groups to "
+        f"SSM, before the cutover baseline.",
+        n, ["availability", "convergence"],
+        ["pim[].rp_mapping.rp_count (parse_pim_rp_mapping / show ip pim rp mapping)",
+         "pim[].neighbors (show ip pim neighbor)", "pim[].rp_mapping.ssm_only"],
+        priority="High",
+        driver="Multicast resilience: PIM sparse-mode that is running but has no RP cannot build ASM shared "
+               "trees -- multicast is silently broken and a cutover baseline would carry the fault forward.",
+        devices=broken[:12])
+
+
+def _d_ipv6_fhs(snap, sig):
+    """IPv6 first-hop security GAP at the access edge: a switch that is OBSERVABLY dual-stack (has IPv6 SVIs)
+    and owns host-facing access ports, but applies NO RA-Guard anywhere -> a single rogue/spoofed Router
+    Advertisement hijacks the default gateway for the whole segment (RFC 6104 / RFC 4861) -> MITM / DoS.
+    Coverage-honest & non-cry-wolf: fires only on a LIVE IPv6 deployment missing the control; a pure-IPv4
+    switch or a dual-stack switch that already has RA-Guard stays silent; silent when the axis is absent."""
+    n = sig.get("ipv6_fhs_open", 0)
+    if n <= 0:
+        return None
+    vids = sig.get("ipv6_fhs_vlans") or []
+    dhcp = sig.get("ipv6_fhs_open_dhcp", 0)
+    dhcp_part = (f" {dhcp} of them also have no DHCPv6-Guard (rogue-DHCPv6 -> address theft)."
+                 if dhcp else "")
+    return _decision(
+        "ipv6-first-hop-security-suite-at-access-edge",
+        f"{n} dual-stack access switch(es) have IPv6 gateways"
+        + (f" (VLAN(s) {', '.join(str(v) for v in vids)})" if vids else "")
+        + " but NO RA-Guard on the host-facing edge -- a single rogue or fat-fingered Router Advertisement "
+        f"hijacks the default gateway for the whole segment (RFC 6104 -> MITM/DoS).{dhcp_part} Enable RA-Guard "
+        "+ DHCPv6-Guard on every host-facing access port (trust only the real router/server uplinks), then "
+        "layer ND inspection / device-tracking and IPv6 Source Guard.",
+        n, ["security", "availability"],
+        ["ipv6_fhs.dualstack", "ipv6_fhs.ra_guard_present", "ipv6_fhs.ipv6_svi_vlans",
+         "interfaces[host][port].switchport_mode (access-edge gate)"],
+        priority="High",
+        driver="IPv6 access-edge security: an unguarded dual-stack segment lets a rogue RA seize the default "
+               "gateway (NDP is as spoofable as ARP); RA-Guard/DHCPv6-Guard is the L2-edge countermeasure.",
+        devices=sig.get("ipv6_fhs_open_hosts") or [])
+
+
+def _d_ntp_sync(snap, sig):
+    """OPERATIONAL clock-sync failure from 'show ntp status' / 'show ntp peer-status' (parse_ntp_status ->
+    snap['ntp']): a device whose clock is UNSYNCHRONIZED (stratum 16 / no sync peer) -- distinct from the
+    config-only CIS no-ntp finding (_d_timesync), which only sees whether an 'ntp server' line EXISTS. A wrong
+    clock breaks log correlation, certificate-validity windows and Kerberos/802.1X, and a cutover cannot be
+    forensically reconstructed. Coverage-honest: fires only on a DEFINITIVELY-unsynchronized device; silent
+    when the NTP axis is absent or every observed clock is synchronized."""
+    bad = sig.get("ntp_unsynced") or []
+    if not bad:
+        return None
+    return _decision(
+        "mgmt-time-sync-logging-baseline",
+        f"{len(bad)} device(s) have an UNSYNCHRONIZED clock ({', '.join(bad[:8])}) -- NTP is not locked to a "
+        f"reference (stratum 16 / no sync peer), even where an 'ntp server' is configured. A wrong clock makes "
+        f"cross-device log correlation, certificate-validity and Kerberos/802.1X checks, and post-cutover "
+        f"forensic reconstruction unreliable; restore reachable, authenticated NTP from a trusted stratum and "
+        f"confirm 'show ntp status' reports the clock synchronized before baselining.",
+        len(bad), ["manageability", "security"],
+        ["ntp[].synchronized (parse_ntp_status / show ntp status | show ntp peer-status)", "ntp[].stratum"],
+        priority="High",
+        driver="Operational baseline: an unsynchronized clock silently corrupts log correlation, certificate/"
+               "Kerberos validity, and the post-cutover audit trail -- worse than absent NTP because the "
+               "'ntp server' line implies time discipline that is not actually in effect.",
+        devices=sorted({b.split()[0] for b in bad})[:12])
+
+
+def _d_port_security_errdisable(snap, sig):
+    """Access-edge port-security red flag from the 'show port-security interface' DETAIL
+    (parse_port_security_detail -> snap['port_security']): a secured access port currently in the
+    'Secure-shutdown' (err-disabled) state because a port-security violation tripped a shutdown-mode port --
+    ALL traffic on that port is dropped, including the authorized endpoint, so it is a live access outage.
+    Coverage-honest + non-cry-wolf: silent when the detail axis is absent or every secured port is up; a raw
+    nonzero violation counter is deliberately NOT flagged (restrict/protect keep forwarding while counting)."""
+    bad = sig.get("psec_errdisabled") or []
+    if not bad:
+        return None
+    return _decision(
+        "security-l2-access-edge-suite",
+        f"{len(bad)} access port(s) are ERR-DISABLED by a port-security violation (Port Status "
+        f"Secure-shutdown): {', '.join(bad[:8])}. A shutdown-mode violation drops ALL traffic on the port -- "
+        f"including the authorized endpoint -- so each is a live access outage with an evidenced offending MAC. "
+        f"Triage the violation (rogue device, MAC move, or a too-tight max), clear err-disable, and right-size "
+        f"port-security (sticky/MAC limits) before the migration baseline.",
+        len(bad), ["security", "availability"],
+        ["port_security[host][if].port_status (parse_port_security_detail / show port-security interface)",
+         "port_security[host][if].last_src"],
+        priority="High",
+        driver="Access-edge integrity: a port-security shutdown is a real outage of a user/endpoint port; "
+               "an unexplained violation may also be an active L2 attack (MAC flooding / rogue device).",
+        devices=sorted({b.split()[0] for b in bad})[:12])
+
+
+def _d_storm_control_action(snap, sig):
+    """Storm-control configured but TOOTHLESS: an edge port with a storm-control threshold whose action is
+    'None' (snap['storm_control'][].action == None). It still drops a broadcast/multicast storm, but raises NO
+    SNMP trap and does NOT err-disable -- the storm is invisible to operations until users complain, and the
+    offending host is never quarantined. Coverage-honest: fires ONLY on a CONFIGURED rule (a port with no
+    storm-control at all is silent) and stays silent when the storm-control axis was not collected."""
+    bad = sig.get("storm_noaction") or []
+    if not bad:
+        return None
+    return _decision(
+        "storm-control-action-on-edge",
+        f"{len(bad)} storm-control rule(s) are configured with action 'None' ({', '.join(bad[:8])}). The "
+        f"control caps the storm but sends no trap and does not err-disable the port, so a broadcast/multicast "
+        f"storm is dropped SILENTLY -- operations never learns it fired and the storming host is never "
+        f"quarantined. Add 'storm-control action trap' (visibility) and/or 'storm-control action shutdown' "
+        f"(containment) on the access edge so a storm is observable and self-isolating.",
+        len(bad), ["availability", "manageability"],
+        ["storm_control[].action (parse_storm_control / show storm-control)", "storm_control[].configured"],
+        priority="Medium",
+        driver="Broadcast-storm containment must be OBSERVABLE: a storm-control rule that only drops (action "
+               "None) hides the event from operations and leaves the storming host attached; trap/shutdown make "
+               "it visible and self-isolating.",
+        devices=sig.get("storm_noaction_devices") or [])
+
+
+def _d_qos_runtime_drops(snap, sig):
+    """QoS RUNTIME failure (the complement to _d_qos/_d_voice_qos, which only check a policy EXISTS): an EGRESS
+    class/queue is actually SHEDDING traffic at runtime (snap['qos_runtime'] from parse_policymap_drops). The
+    configured intent is not protecting traffic. Coverage-honest + NO cry-wolf: a busy data class tail-dropping
+    a few packets is normal and stays silent (it must clear an absolute floor AND a >=1% drop ratio); a
+    PRIORITY/LLQ class dropping at all above a small floor fires HIGH (real-time traffic must never be
+    congestion-dropped). Silent when the axis is absent."""
+    classes = sig.get("qos_drop_classes") or []
+    if not classes:
+        return None
+    npri = sig.get("qos_drop_priority", 0)
+    examples = ", ".join(
+        f"{c['host']} {c['interface']} class {c['class']} "
+        f"{c['drops']:,} drops ({c['ratio']*100:.1f}%{'/LLQ' if c['priority'] else ''})"
+        for c in sorted(classes, key=lambda c: (not c["priority"], -c["drops"]))[:6])
+    pri_clause = (f"{npri} of these are PRIORITY/LLQ class(es) -- real-time traffic is being "
+                  f"congestion-dropped, which a priority queue must never do. " if npri else "")
+    return _decision(
+        "qos-runtime-egress-queue-drops",
+        f"{len(classes)} egress QoS class/queue(s) are dropping traffic at runtime ({examples}). "
+        f"{pri_clause}A class shedding a material share of its traffic means the configured QoS is not "
+        f"protecting the traffic its intent classified -- the queue/policer is undersized, the class is "
+        f"misclassified, or the link is oversubscribed. Right-size the priority bandwidth / queue-limit "
+        f"(and the policer) for the real load, and re-verify the drop counters are flat before cutover.",
+        len(classes), ["availability", "convergence"],
+        ["qos_runtime[].drop_pkts (parse_policymap_drops / show policy-map interface)",
+         "qos_runtime[].police_drop_pkts", "qos_runtime[].priority"],
+        priority="High" if npri else "Medium",
+        driver="Application performance at runtime: a QoS class dropping its own traffic (especially the LLQ) "
+               "proves the policy is mis-sized -- the intent exists on paper but fails under load.",
+        devices=sig.get("qos_drop_hosts") or [])
+
+
+def _d_shadow_infra(snap, sig):
+    """UNDOCUMENTED (shadow) infrastructure: a switch/router that assessed devices SEE over CDP/LLDP but that
+    is NOT in the assessment inventory -> a box in the production L2/L3 path the migration neither inventoried,
+    hardened, lifecycle-checked, nor planned a cutover for. Coverage-honest: built from collected CDP/LLDP
+    detail and reconciled against the assessed inventory by canonical hostname, so an in-scope neighbour
+    advertised under its FQDN is NOT mis-flagged; silent when every infra neighbour is an assessed device."""
+    shadow = sig.get("shadow_infra") or []
+    if not shadow:
+        return None
+    names = [s["name"] for s in shadow]
+    return _decision(
+        "discover-undocumented-infrastructure-before-cutover",
+        f"{len(shadow)} undocumented infrastructure neighbour(s) (switch/router) are visible over CDP/LLDP "
+        f"but absent from the assessed inventory: {', '.join(names[:8])}"
+        + (f" (+{len(names) - 8} more)" if len(names) > 8 else "")
+        + ". Each is an unmanaged device in the production path -- its uplinks, redundancy, software and "
+        "end-of-support state are UNKNOWN, and a cutover wave that traverses it can fail silently. Add every "
+        "shadow node to the inventory and collect it (or formally scope it out with the customer) before "
+        "baselining the design.",
+        len(shadow), ["availability", "manageability"],
+        ["shadow_infra[].name (build_undocumented_neighbors / show cdp|lldp neighbors detail)",
+         "shadow_infra[].seen_from", "shadow_infra[].via"],
+        priority="High",
+        driver="Coverage / blast radius: an un-inventoried switch or router in the data path is a migration "
+               "blind-spot -- you cannot assess the resilience of, or safely cut over around, a device you "
+               "have not collected.",
+        devices=sig.get("shadow_infra_devices") or [])
+
+
 def _d_spof(snap, sig):
     if sig["bridges"] <= 0:
         return None
@@ -1285,7 +1625,9 @@ def _d_oversized_l2_subnet(snap, sig):
         driver="Subnet sizing: a >254-endpoint VLAN overflows a /24 -- size the prefix to the endpoint count or segment it.")
 
 
-_DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_copp_drops, _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
+_DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d_evpn_rr_health, _d_nve_vni_health, _d_copp_drops,
+              _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
+              _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
               _d_stp_mst_scale, _d_oncrit_seg,
