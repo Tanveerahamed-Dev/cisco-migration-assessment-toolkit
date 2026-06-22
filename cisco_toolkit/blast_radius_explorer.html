@@ -6258,6 +6258,35 @@ function designBlueprint(){const bp=SNAP&&SNAP.design_blueprint;
 function designNrfu(){const n=SNAP&&SNAP.design_nrfu;   /* canonical, engine-published (items carry phases) */
   return (n&&Array.isArray(n.items))?n:null;}
 function dPrioTok(p){return p==="Critical"?"crit":p==="High"?"risk":p==="Medium"?"watch":"ok";}
+function drawArchCoverage(){
+  /* Architecture-coverage SSOT (engine-published SNAP.architecture_coverage): which architecture CLASSES the
+     engine assessed in this fleet, across both ingestion channels (ssh show-text + json controller-REST).
+     Coverage-honest: 'not observed' means no evidence was captured, NOT 'healthy'. No client recompute. */
+  const cov=SNAP&&SNAP.architecture_coverage;
+  if(!cov||!Array.isArray(cov.classes))return "";
+  const s=cov.summary||{}; const ch=s.by_channel||{};
+  const tok=c=>c.status==="finding"?((c.findings&&c.findings.length)?"crit":"risk"):(c.status==="clean"?"ok":"neutral");
+  const note=c=>c.status==="finding"?(c.n_hosts+" host(s) · "+(c.findings||[]).length+" finding(s)")
+                :(c.status==="clean"?(c.n_hosts+" host(s) · clean"):"not observed");
+  const ord={finding:0,clean:1,"not-observed":2};
+  const rows=cov.classes.slice().sort((a,b)=>(ord[a.status]-ord[b.status])||String(a.label).localeCompare(b.label)).map(c=>{
+    const faint=c.status==="not-observed"?" faint":"";
+    return `<div class="ln${faint}" style="display:flex;gap:8px;align-items:center;margin-top:3px">
+      <span class="pill pl-${tok(c)}" style="min-width:84px;text-align:center">${esc(c.status)}</span>
+      <span class="pill pl-neutral" style="font-size:9px">${esc(c.channel)}</span>
+      <span style="flex:1">${esc(c.label)}</span>
+      <span class="faint" style="font-size:11px">${esc(note(c))}</span></div>`;}).join("");
+  return `<div class="sec"><h3>Architecture coverage <span class="ct">${s.n_observed||0}/${s.n_classes||0}</span></h3>
+    <p class="sub" style="margin:0 0 8px">Which architecture classes the engine assessed in this fleet, across both ingestion channels (SSH show-text + JSON controller-REST). <b>Not observed</b> means no evidence was captured — coverage-honest, <i>not</i> 'healthy'. The same <b>architecture_coverage</b> map the engine publishes.</p>
+    <div class="headline">
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_observed||0}">0</span></div><div class="k">observed</div></div>
+      <div class="stat ${s.n_with_findings?"crit":""}"><div class="v"><span class="num" data-to="${s.n_with_findings||0}">0</span></div><div class="k">findings</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_clean||0}">0</span></div><div class="k">clean</div></div>
+      <div class="stat"><div class="v"><span class="num" data-to="${s.n_not_observed||0}">0</span></div><div class="k">not observed</div></div>
+    </div>
+    <p class="sub" style="margin:8px 0 6px">${(ch.ssh||0)} SSH show-text · ${(ch.json||0)} JSON controller-REST</p>
+    ${rows}</div>`;
+}
 function drawDesign(){
   if(!MODEL)return "";
   const head=`<div class="drawer-head"><div class="eyebrow">CCDE-grounded target-state design</div><div class="title">Design blueprint</div></div>`;
@@ -6333,6 +6362,7 @@ function drawDesign(){
       <div class="stat"><div class="v"><span class="num" data-to="${s.n_needs_requirement||0}">0</span></div><div class="k">need a req</div></div>
     </div>
     <p class="sub" style="margin:10px 0 0">${esc(s.headline||"")}</p></div>
+    ${drawArchCoverage()}
     <div class="sec"><h3>Trade-off scorecard <span class="ct">${sc.length}</span></h3><p class="sub" style="margin:0 0 8px">Where the fabric stands on each axis a senior designer balances (0 weak → 4 strong).</p>${scRows}</div>
     ${cards?`<div class="sec"><h3>Target-state design decisions <span class="ct">${rec.length}</span></h3><p class="sub" style="margin:0 0 8px"><b>Click a decision</b> to spotlight the devices it affects. Decisions come from the Python design engine — the SAME design_blueprint the HLD/LLD reads.</p>${cards}</div>`:`<div class="sec"><div class="ln faint">No evidence-grounded design decisions in this snapshot.</div></div>`}
     ${dimCards?`<div class="sec"><h3>Target architecture <span class="ct">${dims.length}</span></h3><p class="sub" style="margin:0 0 8px">The candidate target-state, dimension by dimension — current → recommended target; requirement-gated where the choice needs a requirement. Same blueprint the HLD §5 reads.</p>${dimCards}</div>`:""}

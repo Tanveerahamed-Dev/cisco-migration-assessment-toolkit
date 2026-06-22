@@ -301,6 +301,14 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         assert _embed_scale.get(_k) == _scale.get(_k), (
             f"explorer embed dropped canonical scale.{_k} "
             f"({_embed_scale.get(_k)!r} != published {_scale.get(_k)!r}) — census would drift to a client recount")
+    # SSOT (explorer ✎Design): the architecture-coverage map reaches the embedded payload AND the explorer has
+    # the renderer wired (drawArchCoverage reads SNAP.architecture_coverage — no client recompute), so the
+    # universal-coverage view is interactive on the dashboard, one source with the engine.
+    _embed_cov = _embedded.get("architecture_coverage") or {}
+    assert (_embed_cov.get("summary") or {}).get("n_classes") == _cov["summary"]["n_classes"], \
+        "explorer embed must carry the engine's architecture_coverage SSOT (not slimmed away)"
+    assert "drawArchCoverage" in html and "Architecture coverage" in html, \
+        "explorer must render the architecture-coverage section (drawArchCoverage wired into the Design view)"
 
     # ---- executive deck (optional python-pptx): if the lib is present, main() must have written it ----
     try:
