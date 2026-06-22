@@ -3429,3 +3429,68 @@ def compute_design_nrfu(design_blueprint):
             "→ post-cutover-operational."
         ),
     }
+
+
+# Architecture-coverage registry: every architecture CLASS the engine assesses, mapped to its snapshot axis,
+# its ingestion channel (ssh show-text vs json controller-REST export), and its detector ids. The authoritative
+# architecture -> detector map; compute_architecture_coverage reads it to publish the coverage-honesty SSOT.
+_ARCH_COVERAGE_REGISTRY = [
+    ("fhrp_detail",   "First-hop redundancy (HSRP/VRRP/GLBP)",   "ssh",  ["fhrp-resilience-tracking-and-preempt"]),
+    ("overlay",       "VXLAN-EVPN overlay (NVE / EVPN / VNI)",   "ssh",  ["vxlan-nve-peer-down", "vxlan-evpn-control-plane-down", "vxlan-nve-vni-down"]),
+    ("mpls",          "SP/MPLS (LDP / L3VPN / L2VPN)",           "ssh",  ["mpls-ldp-session-down", "mpls-l3vpn-vpnv4-down", "mpls-l2vpn-pseudowire-down"]),
+    ("copp",          "Control-plane policing (CoPP)",           "ssh",  ["copp-control-plane-policer-dropping"]),
+    ("pim",           "Multicast PIM-SM",                        "ssh",  ["multicast-pim-rp-resilience"]),
+    ("ipv6_fhs",      "IPv6 first-hop security",                 "ssh",  ["ipv6-first-hop-security-suite-at-access-edge"]),
+    ("ntp",           "Time synchronization (NTP)",              "ssh",  ["mgmt-time-sync-logging-baseline"]),
+    ("port_security", "Access-edge port-security",               "ssh",  ["security-l2-access-edge-suite"]),
+    ("storm_control", "Storm control",                           "ssh",  ["storm-control-action-on-edge"]),
+    ("qos_runtime",   "QoS runtime (egress queue/policer drops)", "ssh", ["qos-runtime-egress-queue-drops"]),
+    ("shadow_infra",  "Undocumented / shadow infrastructure",    "ssh",  ["discover-undocumented-infrastructure-before-cutover"]),
+    ("lisp",          "SD-Access LISP fabric",                   "ssh",  ["lisp-fabric-session-down"]),
+    ("cts",           "TrustSec / CTS segmentation",             "ssh",  ["cts-environment-data-not-downloaded"]),
+    ("dmvpn",         "DMVPN WAN overlay",                       "ssh",  ["dmvpn-tunnel-peer-down"]),
+    ("crypto",        "IPsec encrypted WAN",                     "ssh",  ["ipsec-crypto-session-down"]),
+    ("bfd",           "BFD fast-failover",                       "ssh",  ["bfd-session-down-failover-degraded"]),
+    ("ipv6_nd",       "IPv6 addressing / DAD",                   "ssh",  ["ipv6-duplicate-address-dad-failure"]),
+    ("ipv6_routing",  "IPv6 routing (OSPFv3 / BGP)",             "ssh",  ["ipv6-routing-adjacency-down"]),
+    ("aci",           "Cisco ACI (APIC fabric)",                 "json", ["aci-critical-fault-raised", "aci-node-not-active", "aci-fabric-health-degraded"]),
+    ("sdwan",         "Cisco Catalyst SD-WAN (vManage)",         "json", ["sdwan-control-connection-down", "sdwan-device-unreachable"]),
+]
+
+
+def compute_architecture_coverage(snap):
+    """Architecture-coverage map -- the coverage-honesty SSOT across the engine and the dashboard. For every
+    architecture CLASS the engine can assess (_ARCH_COVERAGE_REGISTRY), report whether it was OBSERVED in the
+    evidence (its snapshot axis is present), which hosts carry it, its ingestion channel (ssh show-text vs
+    json controller-REST), and which of its detectors fired in the published design_blueprint. status is:
+      'finding'      -- the axis was observed AND one of its detectors fired (a real problem),
+      'clean'        -- observed, no detector fired (assessed, nothing wrong),
+      'not-observed' -- no evidence of this architecture in the fleet. COVERAGE-HONEST: this is NOT 'healthy';
+                        the engine simply did not see it (no LISP captures, no APIC export, etc.).
+    The engine publishes this once; deliverables / explorer / webapp READ it instead of each re-deriving which
+    architectures were covered -- one source of truth. Deterministic; depends only on the snapshot."""
+    bp = _as_dict(snap.get("design_blueprint"))
+    fired = {d.get("id") for d in _as_list(bp.get("decisions")) if isinstance(d, dict)}
+    classes = []
+    for axis, label, channel, pids in _ARCH_COVERAGE_REGISTRY:
+        data = snap.get(axis)
+        observed = bool(data)
+        hosts = sorted(data) if isinstance(data, dict) else []
+        # Attribute a finding to a class ONLY when its axis was observed -- a pid shared with a base detector
+        # (e.g. the NTP-state pid is also emitted by the config-based time-sync detector) must not mark an
+        # UN-observed architecture as 'finding'. Coverage-honesty: no axis evidence -> not-observed, period.
+        findings = sorted(p for p in pids if p in fired) if observed else []
+        status = "not-observed" if not observed else ("finding" if findings else "clean")
+        classes.append({"key": axis, "label": label, "channel": channel, "detectors": list(pids),
+                        "observed": observed, "n_hosts": len(hosts), "hosts": hosts[:12],
+                        "status": status, "findings": findings})
+    summary = {
+        "n_classes": len(classes),
+        "n_observed": sum(1 for c in classes if c["observed"]),
+        "n_with_findings": sum(1 for c in classes if c["status"] == "finding"),
+        "n_clean": sum(1 for c in classes if c["status"] == "clean"),
+        "n_not_observed": sum(1 for c in classes if c["status"] == "not-observed"),
+        "by_channel": {"ssh": sum(1 for c in classes if c["channel"] == "ssh"),
+                       "json": sum(1 for c in classes if c["channel"] == "json")},
+    }
+    return {"classes": classes, "summary": summary}

@@ -1389,6 +1389,29 @@ def test_d_sdwan_device_unreachable_fires_on_unreachable_only():
     assert da._d_sdwan_device_unreachable({}, da._signals({})) is None
 
 
+def test_compute_architecture_coverage_observed_vs_not():
+    """Architecture-coverage SSOT: an axis present + a fired detector -> 'finding'; present + no finding ->
+    'clean'; absent -> 'not-observed' (coverage-honest -- NEVER 'healthy'). Channels are tallied (ssh vs json)."""
+    import cisco_toolkit.design_advisor as da
+    snap = {
+        "aci": {"core2": {"faults": [{"severity": "critical", "lc": "raised", "ack": "no"}]}},
+        "bfd": {"core1": {"sessions": [{"state": "Up"}]}},   # observed but clean (no detector fired)
+        "design_blueprint": {"decisions": [{"id": "aci-critical-fault-raised"}]},
+    }
+    cov = da.compute_architecture_coverage(snap)
+    by = {c["key"]: c for c in cov["classes"]}
+    assert by["aci"]["observed"] and by["aci"]["status"] == "finding" and by["aci"]["channel"] == "json"
+    assert "aci-critical-fault-raised" in by["aci"]["findings"]
+    assert by["bfd"]["observed"] and by["bfd"]["status"] == "clean" and by["bfd"]["findings"] == []
+    assert by["sdwan"]["observed"] is False and by["sdwan"]["status"] == "not-observed"
+    assert cov["summary"]["n_classes"] == 20
+    assert cov["summary"]["by_channel"] == {"ssh": 18, "json": 2}
+    assert cov["summary"]["n_with_findings"] == 1 and cov["summary"]["n_clean"] == 1
+    # empty snapshot: every class not-observed, nothing fired (the coverage-honest baseline -- never 'healthy')
+    empty = da.compute_architecture_coverage({})
+    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 20
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected

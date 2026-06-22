@@ -266,6 +266,22 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert isinstance(snap["design_nrfu"].get("items"), list)
     assert snap["design_nrfu"] == compute_design_nrfu(_bp), \
         "published design_nrfu must equal the canonical recompute from the published blueprint"
+    # SSOT: the architecture-coverage map is published (one source for "which architecture classes did we
+    # assess, and what did we find") and equals a fresh compute. The fixtures exercise BOTH ingestion channels
+    # -- ssh show-text AND json controller-REST -- so aci/sdwan (json) + mpls (ssh) are observed-with-findings;
+    # this proves the engine assesses the full architecture universe across both channels, end-to-end.
+    from cisco_toolkit.design_advisor import compute_architecture_coverage
+    assert "architecture_coverage" in snap, "snapshot must publish the architecture_coverage SSOT"
+    _cov = snap["architecture_coverage"]
+    assert _cov == compute_architecture_coverage(snap), \
+        "published architecture_coverage must equal the canonical recompute"
+    _covby = {c["key"]: c for c in _cov["classes"]}
+    assert _covby["aci"]["status"] == "finding" and _covby["aci"]["channel"] == "json", \
+        "ACI (json controller channel) must be observed-with-findings on the fixtures"
+    assert _covby["sdwan"]["status"] == "finding" and _covby["mpls"]["status"] == "finding"
+    assert _cov["summary"]["by_channel"] == {"ssh": 18, "json": 2}
+    assert _cov["summary"]["n_with_findings"] == 20, \
+        "every one of the 20 architecture classes fires on the synthetic fixtures (full-universe proof)"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"
