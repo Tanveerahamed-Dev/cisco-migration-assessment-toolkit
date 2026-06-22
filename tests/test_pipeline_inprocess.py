@@ -197,6 +197,15 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "engine must assess ACI inventory: a decommissioned fabric node must fire _d_aci_node_not_active"
     assert any(d.get("id") == "aci-fabric-health-degraded" for d in _bp.get("decisions", [])), \
         "engine must assess ACI health: a sub-90 fabric health score must fire _d_aci_fabric_health_degraded"
+    # UNIVERSALITY (Cisco Catalyst SD-WAN / vManage JSON channel): core1 stands in as the vManage query host;
+    # a DOWN vsmart control connection and an UNREACHABLE device must each fire end-to-end (the up vbond
+    # connection and the reachable device prove no over-firing). The second JSON-ingestion controller fabric.
+    assert isinstance(snap.get("sdwan"), dict) and snap["sdwan"].get("core1", {}).get("control_connections"), \
+        "snapshot must publish per-host SD-WAN state (build_sdwan -> parse_sdwan_control_connections)"
+    assert any(d.get("id") == "sdwan-control-connection-down" for d in _bp.get("decisions", [])), \
+        "engine must assess SD-WAN: a down control connection must fire _d_sdwan_control_connection_down"
+    assert any(d.get("id") == "sdwan-device-unreachable" for d in _bp.get("decisions", [])), \
+        "engine must assess SD-WAN: an unreachable device must fire _d_sdwan_device_unreachable"
     # UNIVERSALITY (SD-Access LISP fabric control plane): core1 is an IOS-XE fabric node whose VRF 'red' has
     # 2 control-plane (map-server/map-resolver) sessions configured but ZERO established (both peers Down),
     # while the healthy VRF 'default' (2/2 established, peers Up) in the same output proves no over-firing.

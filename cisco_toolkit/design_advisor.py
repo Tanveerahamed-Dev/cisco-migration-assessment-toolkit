@@ -339,6 +339,26 @@ def _signals(snap):
     sig["aci_ghost_nodes"] = _aci_ghost
     sig["aci_health_degraded"] = _aci_health
     sig["aci_devices"] = sorted({x.split()[0] for x in (_aci_faults + _aci_ghost + _aci_health)})[:12]
+    # Cisco Catalyst SD-WAN (vManage) overlay health (snap['sdwan'] from build_sdwan; JSON-ingestion channel).
+    # Two present-state break conditions the Manager reports: a control connection down (state=down, or
+    # actual-connections < expected-connections to a vsmart/vbond = the edge is losing its overlay control
+    # plane) and a device the Manager declares unreachable. Coverage-honest: no SD-WAN export -> {} -> silent;
+    # an up/full-count connection and a reachable device stay silent.
+    _sdwan = _as_dict(snap.get("sdwan"))
+    _sdwan_cc, _sdwan_unreach = [], []
+    for _sh, _sf in sorted(_sdwan.items()):
+        _sf = _as_dict(_sf)
+        for _c in _as_list(_sf.get("control_connections")):
+            _c = _as_dict(_c)
+            _exp, _act = _c.get("expected"), _c.get("actual")
+            if str(_c.get("state", "")).lower() == "down" or (isinstance(_exp, int) and isinstance(_act, int) and _act < _exp):
+                _sdwan_cc.append(f"{_sh} {_c.get('host_name') or _c.get('system_ip', '?')} -> {_c.get('peer_type', '?')} ({_c.get('state', '')})")
+        for _d in _as_list(_sf.get("devices")):
+            if str(_as_dict(_d).get("reachability", "")).lower() == "unreachable":
+                _sdwan_unreach.append(f"{_sh} {_as_dict(_d).get('host_name') or _as_dict(_d).get('system_ip', '?')}")
+    sig["sdwan_control_down"] = _sdwan_cc
+    sig["sdwan_unreachable"] = _sdwan_unreach
+    sig["sdwan_devices"] = sorted({x.split()[0] for x in (_sdwan_cc + _sdwan_unreach)})[:12]
     # PIM-SM control-plane resilience (snap['pim'] from build_pim). FIRING STATE: PIM is RUNNING here (a live
     # neighbor), rp-mapping WAS collected, yet ZERO RP is learned and the domain is not SSM-only -- ASM (*,G)
     # shared trees cannot form (RFC 7761). Coverage-honest: config-only/not-running, SSM-only, and
@@ -1456,6 +1476,58 @@ def _d_aci_fabric_health_degraded(snap, sig):
         devices=sig.get("aci_devices") or [])
 
 
+def _d_sdwan_control_connection_down(snap, sig):
+    """Cisco Catalyst SD-WAN: a control connection that is down -- state=down, or actual-connections <
+    expected-connections to a Validator/vBond or Controller/vSmart (parse_sdwan_control_connections ->
+    snap['sdwan'].control_connections). A WAN edge holds DTLS/TLS control connections to the controllers;
+    losing them drops the edge out of the overlay control plane (no OMP routes / policy), so the site cannot
+    build overlay tunnels even while its underlay transport is up. Coverage-honest: fires ONLY on an OBSERVED
+    down/deficit connection; an up, full-count connection and a fleet with no SD-WAN export stay silent."""
+    cc = sig.get("sdwan_control_down") or []
+    if not cc:
+        return None
+    return _decision(
+        "sdwan-control-connection-down",
+        f"{len(cc)} SD-WAN control connection(s) are down or below the expected count "
+        f"(e.g. {', '.join(cc[:5])}). A WAN edge holds DTLS/TLS control connections to the SD-WAN controllers "
+        "(Validator/vBond, Controller/vSmart); losing them drops the edge out of the overlay control plane -- "
+        "no OMP routes or policy are exchanged, so the site cannot build overlay tunnels even while its "
+        "underlay transport is up. Confirm controller reachability per transport color, certificate/serial "
+        "validity, and any control-policy or firewall blocking DTLS/12346 before the overlay is trusted at cutover.",
+        len(cc), ["availability"],
+        ["sdwan.control_connections[].state / actual-vs-expected "
+         "(parse_sdwan_control_connections / vManage /dataservice/device/control/connections)"],
+        priority="High",
+        driver="SD-WAN overlay control plane: a WAN edge that loses its control connections to the controllers "
+               "falls out of the overlay (no OMP/policy), isolating the site regardless of transport health.",
+        devices=sig.get("sdwan_devices") or [])
+
+
+def _d_sdwan_device_unreachable(snap, sig):
+    """Cisco Catalyst SD-WAN: a device the vManage Manager reports as unreachable (parse_sdwan_devices ->
+    snap['sdwan'].devices, reachability=unreachable). Reachability is the controller's own verdict on each
+    WAN edge; unreachable means the Manager has lost management/control contact with the device -- it cannot
+    be monitored, templated or pushed policy, and is likely isolated from the overlay. Coverage-honest: fires
+    ONLY on an OBSERVED reachability=unreachable; a reachable device and a fleet with no SD-WAN export stay
+    silent."""
+    u = sig.get("sdwan_unreachable") or []
+    if not u:
+        return None
+    return _decision(
+        "sdwan-device-unreachable",
+        f"{len(u)} SD-WAN device(s) are reported UNREACHABLE by the vManage Manager (e.g. {', '.join(u[:5])}). "
+        "Reachability is the controller's own verdict on each WAN edge; unreachable means the Manager has lost "
+        "management/control contact with the device -- it cannot be monitored, templated or pushed policy, and "
+        "is likely isolated from the overlay. Confirm the device is powered and on-net, its control "
+        "connections, and any out-of-band management path before the site is counted as in-service at cutover.",
+        len(u), ["availability", "manageability"],
+        ["sdwan.devices[].reachability (parse_sdwan_devices / vManage /dataservice/device)"],
+        priority="High",
+        driver="SD-WAN fabric reachability: a device the Manager reports unreachable has lost controller "
+               "contact -- unmonitored, unmanageable, and probably isolated from the overlay.",
+        devices=sig.get("sdwan_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -2157,6 +2229,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_mpls_ldp_health, _d_mpls_l3vpn_health, _d_mpls_l2vpn_health,  # SP/MPLS: LDP underlay / L3VPN VPNv4 / L2VPN pseudowire
               _d_lisp_fabric_session_down, _d_cts_environment_data_health, _d_dmvpn_tunnel_health, _d_crypto_session_health, _d_bfd_session_health, _d_ipv6_dad_duplicate, _d_ipv6_routing_adjacency,  # universal arch: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
               _d_aci_critical_faults, _d_aci_node_not_active, _d_aci_fabric_health_degraded,  # Cisco ACI (APIC JSON-ingestion channel)
+              _d_sdwan_control_connection_down, _d_sdwan_device_unreachable,  # Cisco Catalyst SD-WAN (vManage JSON channel)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,

@@ -1349,6 +1349,46 @@ def test_d_aci_fabric_health_degraded_fires_below_90_only():
     assert da._d_aci_fabric_health_degraded({}, da._signals({})) is None
 
 
+def test_d_sdwan_control_connection_down_fires_on_down_or_deficit_only():
+    """Universality (Cisco Catalyst SD-WAN): a control connection state=down OR actual<expected fires
+    _d_sdwan_control_connection_down. Refutation: an up, full-count connection and an absent sdwan axis stay silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"sdwan": {"mgr1": {"control_connections": [
+        {"system_ip": "10.10.1.13", "host_name": "BR13", "peer_type": "vsmart", "state": "down", "expected": 2, "actual": 0},
+        {"system_ip": "10.10.1.14", "host_name": "BR14", "peer_type": "vbond", "state": "up", "expected": 1, "actual": 1},
+    ]}}}
+    sig = da._signals(fire)
+    assert any("BR13" in x for x in sig.get("sdwan_control_down", []))
+    dec = da._d_sdwan_control_connection_down(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "mgr1" in dec["evidence"]["devices"]
+    # deficit-only (state up but actual < expected) must also fire
+    deficit = {"sdwan": {"mgr1": {"control_connections": [
+        {"system_ip": "x", "host_name": "BR15", "peer_type": "vsmart", "state": "up", "expected": 2, "actual": 1}]}}}
+    assert da._d_sdwan_control_connection_down(deficit, da._signals(deficit)) is not None
+    # all up + full count -> silent
+    clean = {"sdwan": {"mgr1": {"control_connections": [
+        {"system_ip": "x", "host_name": "BR16", "peer_type": "vbond", "state": "up", "expected": 1, "actual": 1}]}}}
+    assert da._d_sdwan_control_connection_down(clean, da._signals(clean)) is None
+    assert da._d_sdwan_control_connection_down({}, da._signals({})) is None
+
+
+def test_d_sdwan_device_unreachable_fires_on_unreachable_only():
+    """Universality (Cisco Catalyst SD-WAN): a device with reachability=unreachable fires
+    _d_sdwan_device_unreachable; a reachable device and an absent sdwan axis stay silent."""
+    import cisco_toolkit.design_advisor as da
+    fire = {"sdwan": {"mgr1": {"devices": [
+        {"system_ip": "10.10.1.1", "host_name": "DC1", "reachability": "reachable"},
+        {"system_ip": "10.10.1.99", "host_name": "BR99", "reachability": "unreachable"},
+    ]}}}
+    sig = da._signals(fire)
+    assert any("BR99" in x for x in sig.get("sdwan_unreachable", []))
+    dec = da._d_sdwan_device_unreachable(fire, sig)
+    assert dec is not None and dec["priority"] == "High" and "mgr1" in dec["evidence"]["devices"]
+    clean = {"sdwan": {"mgr1": {"devices": [{"system_ip": "x", "host_name": "DC1", "reachability": "reachable"}]}}}
+    assert da._d_sdwan_device_unreachable(clean, da._signals(clean)) is None
+    assert da._d_sdwan_device_unreachable({}, da._signals({})) is None
+
+
 # ============================ architecture-coverage slices (build wave) =========================== #
 def test_d_pim_rp_health_fires_on_running_pim_without_rp_only():
     """Multicast PIM-SM: a device with PIM sparse-mode RUNNING (a live neighbor) whose rp-mapping WAS collected

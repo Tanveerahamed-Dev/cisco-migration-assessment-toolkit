@@ -1060,6 +1060,38 @@ def test_parse_aci_health_score(cp):
     assert parse.parse_aci_health('{"imdata": []}') == {}
 
 
+def test_parse_sdwan_control_connections_state(cp):
+    """Universality (Cisco Catalyst SD-WAN / vManage JSON channel): parse_sdwan_control_connections reads the
+    {"data":[...]} envelope so a control connection that is down (or actual < expected) is detectable; state
+    is lower-cased and expected/actual are ints. Non-JSON / empty / data-less -> []."""
+    out = (
+        '{"data": ['
+        '{"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vsmart", "state": "Down", "local-color": "mpls", "expected-connections": 2, "actual-connections": 0},'
+        '{"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vbond", "state": "up", "expected-connections": 1, "actual-connections": 1}'
+        ']}')
+    r = parse.parse_sdwan_control_connections(out)
+    assert len(r) == 2
+    assert r[0]["peer_type"] == "vsmart" and r[0]["state"] == "down" and r[0]["expected"] == 2 and r[0]["actual"] == 0
+    assert r[1]["state"] == "up"
+    assert parse.parse_sdwan_control_connections("") == []
+    assert parse.parse_sdwan_control_connections("not json") == []
+
+
+def test_parse_sdwan_devices_reachability(cp):
+    """Universality (Cisco Catalyst SD-WAN): parse_sdwan_devices reads vManage /dataservice/device so a device
+    the Manager reports unreachable is detectable; reachability is lower-cased. Empty -> []."""
+    out = (
+        '{"data": ['
+        '{"system-ip": "10.10.1.1", "host-name": "DC1-cedge", "reachability": "reachable", "device-model": "vedge-C8000V"},'
+        '{"system-ip": "10.10.1.99", "host-name": "BR99-cedge", "reachability": "Unreachable", "device-model": "vedge-C8000V"}'
+        ']}')
+    r = parse.parse_sdwan_devices(out)
+    assert len(r) == 2
+    assert r[0]["host_name"] == "DC1-cedge" and r[0]["reachability"] == "reachable"
+    assert r[1]["reachability"] == "unreachable"
+    assert parse.parse_sdwan_devices("") == []
+
+
 def test_parse_nve_vni_states(cp):
     """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
     out = (
