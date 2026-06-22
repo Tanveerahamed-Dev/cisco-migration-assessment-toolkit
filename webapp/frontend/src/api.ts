@@ -250,6 +250,20 @@ export interface ArchReview {
 
 // The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint — the SAME object the
 // HLD/LLD DOCX and the explorer ✎ Design mode carry). POST /design with a requirements register re-scores.
+// Architecture-coverage SSOT (engine compute_architecture_coverage — the SAME map the explorer ✎ Design view
+// renders): which architecture CLASSES were observed vs not, across both ingestion channels (ssh / json).
+export interface ArchitectureCoverageClass {
+  key: string; label: string; channel: string; detectors: string[];
+  observed: boolean; n_hosts: number; hosts: string[]; status: string; findings: string[];
+}
+export interface ArchitectureCoverage {
+  classes: ArchitectureCoverageClass[];
+  summary: {
+    n_classes: number; n_observed: number; n_with_findings: number; n_clean: number; n_not_observed: number;
+    by_channel: { ssh: number; json: number };
+  };
+}
+
 export interface DesignDecision {
   id: string;
   title: string;
@@ -430,6 +444,8 @@ export const api = {
   cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
   archreview: (id: number) => fetch(`/api/snapshots/${id}/archreview`).then((r) => j<ArchReview>(r)),
   design: (id: number) => fetch(`/api/snapshots/${id}/design`).then((r) => j<DesignBlueprint>(r)),
+  architectureCoverage: (id: number) =>
+    fetch(`/api/snapshots/${id}/architecture_coverage`).then((r) => j<ArchitectureCoverage>(r)),
   designOverlay: (id: number, requirements: Record<string, unknown>) =>
     post<DesignBlueprint>(`/api/snapshots/${id}/design`, requirements),
   designNrfu: (id: number) => fetch(`/api/snapshots/${id}/design/nrfu`).then((r) => j<DesignNrfu>(r)),

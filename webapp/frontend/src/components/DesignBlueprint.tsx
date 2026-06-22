@@ -10,7 +10,7 @@
      decisions, each traceable to the CCDE principle and the specific devices to verify.
    - n_census_vlans disclosure when the IP plan is in needs-requirement state. */
 import { useEffect, useState } from "react";
-import { api, DesignBlueprint, DesignDecision, DesignNrfu, DesignNrfuItem, DesignTargetState } from "../api";
+import { api, ArchitectureCoverage, DesignBlueprint, DesignDecision, DesignNrfu, DesignNrfuItem, DesignTargetState } from "../api";
 import { ErrorBox, Loading, useAsync } from "./ui";
 
 const P_COLOR = (p: string) =>
@@ -134,6 +134,46 @@ function NrfuPanel({ snapId, register }: { snapId: number; register: Record<stri
           </div>
         ) : null
       )}
+    </div>
+  );
+}
+
+function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
+  // Architecture-coverage SSOT — computed server-side by the SAME engine function the explorer/CLI use
+  // (never re-derived in JS). Which architecture classes were observed vs not, across both ingestion channels.
+  const { data, error, loading } = useAsync(() => api.architectureCoverage(snapId), [snapId]);
+  if (loading) return <Loading />;
+  if (error) return <ErrorBox msg={error} />;
+  const cov = data as ArchitectureCoverage;
+  const s = cov.summary;
+  const col = (st: string) => (st === "finding" ? "var(--crit)" : st === "clean" ? "var(--ok, #2e7d32)" : "var(--muted, #888)");
+  const ord: Record<string, number> = { finding: 0, clean: 1, "not-observed": 2 };
+  const rows = [...cov.classes].sort((a, b) => (ord[a.status] - ord[b.status]) || a.label.localeCompare(b.label));
+  return (
+    <div>
+      <div className="faint" style={{ fontSize: 11, marginBottom: 10 }}>
+        Which architecture classes the engine assessed in this fleet, across both ingestion channels (SSH
+        show-text + JSON controller-REST). <b>Not observed</b> means no evidence was captured — coverage-honest,
+        not “healthy”. The same architecture_coverage map the engine publishes.
+      </div>
+      <div style={{ display: "flex", gap: 16, marginBottom: 10, fontSize: 12, flexWrap: "wrap" }}>
+        <span><b>{s.n_observed}</b>/{s.n_classes} observed</span>
+        <span style={{ color: "var(--crit)" }}><b>{s.n_with_findings}</b> findings</span>
+        <span><b>{s.n_clean}</b> clean</span>
+        <span className="faint"><b>{s.n_not_observed}</b> not observed</span>
+        <span className="faint">· {s.by_channel.ssh} SSH · {s.by_channel.json} JSON</span>
+      </div>
+      {rows.map((c) => (
+        <div key={c.key} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", opacity: c.status === "not-observed" ? 0.55 : 1 }}>
+          <span style={{ minWidth: 86, textAlign: "center", fontSize: 10, fontWeight: 700, color: "#fff", background: col(c.status), borderRadius: 4, padding: "1px 6px" }}>{c.status}</span>
+          <span style={{ fontSize: 9, padding: "1px 5px", border: "1px solid var(--line, #ccc)", borderRadius: 4 }}>{c.channel}</span>
+          <span style={{ flex: 1, fontSize: 12 }}>{c.label}</span>
+          <span className="faint" style={{ fontSize: 11 }}>
+            {c.status === "finding" ? `${c.n_hosts} host(s) · ${c.findings.length} finding(s)`
+              : c.status === "clean" ? `${c.n_hosts} host(s) · clean` : "not observed"}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -503,6 +543,9 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
               ))}
             </div>
           )}
+
+          <div style={{ fontSize: 13, fontWeight: 700, margin: "18px 0 6px" }}>Architecture coverage <span className="faint" style={{ fontWeight: 400, fontSize: 11 }}>· universal-coverage map, both ingestion channels</span></div>
+          <ArchitectureCoveragePanel snapId={snapId} />
 
           <div className="faint" style={{ fontSize: 11, marginTop: 12 }}>{bp.coverage.caveat}</div>
         </div>
