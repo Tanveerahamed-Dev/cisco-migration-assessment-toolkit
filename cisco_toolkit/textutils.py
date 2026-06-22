@@ -12,7 +12,7 @@ IFACE_TOKEN_RE = re.compile(
 VALID_IFACE_RE = re.compile(
     r"^(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
     r"Tw\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?|"
-    r"Vlan\d+|Lo\d+|mgmt0)$",
+    r"Vlan\d+|Lo\d+|Tu\d+|mgmt0)$",
     re.IGNORECASE)
 
 PHYSICAL_IFACE_RE = re.compile(
@@ -35,6 +35,7 @@ def normalize_ifname(s: str) -> str:
     x = re.sub(r"^TwentyFiveGigE",    "Tw",  x, flags=re.IGNORECASE)
     x = re.sub(r"^HundredGigE",       "Hu",  x, flags=re.IGNORECASE)
     x = re.sub(r"^[Pp]ort-[Cc]hannel","Po",  x)
+    x = re.sub(r"^Tunnel",            "Tu",  x, flags=re.IGNORECASE)
     return x
 
 def is_valid_iface(name: str) -> bool:
