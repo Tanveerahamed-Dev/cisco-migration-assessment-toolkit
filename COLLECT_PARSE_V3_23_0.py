@@ -352,7 +352,7 @@ from cisco_toolkit.analyze import (
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
 )
-from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU (single source of truth for design intent)
+from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
 # build); only _CISCO_ERRORS stays (platform detection reuses it).
@@ -2310,6 +2310,10 @@ def main():
         # read ONE set of phased acceptance items (and their phases) instead of re-deriving them in JS.
         # Derived purely from design_blueprint -> excluded from the golden + publish-locked alongside it.
         snap_dict["design_nrfu"] = compute_design_nrfu(snap_dict["design_blueprint"])
+        # Architecture-coverage SSOT: which architecture CLASSES were observed vs not, and what fired -- one
+        # source the deliverables/explorer/webapp read instead of re-deriving coverage. Reads design_blueprint
+        # + the per-axis snapshot keys; excluded from the golden (date-relative via the blueprint) like it.
+        snap_dict["architecture_coverage"] = compute_architecture_coverage(snap_dict)
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
     try:

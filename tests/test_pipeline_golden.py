@@ -80,6 +80,9 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     # design_nrfu is derived purely from design_blueprint (same date-relative folding) -> exclude it too;
     # its SSOT publish is locked by tests/test_pipeline_inprocess.py alongside the blueprint. (design engine)
     snap.pop("design_nrfu", None)
+    # architecture_coverage is derived from design_blueprint (its findings shift with the date-relative blueprint)
+    # -> exclude it too; its SSOT publish is locked by tests/test_pipeline_inprocess.py. (architecture coverage)
+    snap.pop("architecture_coverage", None)
     return snap, str(out_xlsx)
 
 
