@@ -864,6 +864,38 @@ Memory usage:   16400932K total,   7322120K used,   9078812K free
   ]
 }
 """,
+    # Cisco ACI logical CENSUS (move-group-scoping inventory -- pure facts, no detector): the tenants, bridge
+    # domains and EPGs are the migration move-group units. Published into snap['aci'] for the deliverables /
+    # any future wave-planner; not a broken-state, so it never fires a finding.
+    "moquery -c fvTenant": """\
+{
+  "totalCount": "3",
+  "imdata": [
+    {"fvTenant": {"attributes": {"name": "PROD", "dn": "uni/tn-PROD"}}},
+    {"fvTenant": {"attributes": {"name": "LEGACY", "dn": "uni/tn-LEGACY"}}},
+    {"fvTenant": {"attributes": {"name": "common", "dn": "uni/tn-common"}}}
+  ]
+}
+""",
+    "moquery -c fvBD": """\
+{
+  "totalCount": "2",
+  "imdata": [
+    {"fvBD": {"attributes": {"name": "prod-bd", "dn": "uni/tn-PROD/BD-prod-bd", "unicastRoute": "yes", "arpFlood": "no"}}},
+    {"fvBD": {"attributes": {"name": "legacy-bd", "dn": "uni/tn-LEGACY/BD-legacy-bd", "unicastRoute": "no", "arpFlood": "yes"}}}
+  ]
+}
+""",
+    "moquery -c fvAEPg": """\
+{
+  "totalCount": "3",
+  "imdata": [
+    {"fvAEPg": {"attributes": {"name": "web-epg", "dn": "uni/tn-PROD/ap-app/epg-web-epg"}}},
+    {"fvAEPg": {"attributes": {"name": "db-epg", "dn": "uni/tn-PROD/ap-app/epg-db-epg"}}},
+    {"fvAEPg": {"attributes": {"name": "legacy-epg", "dn": "uni/tn-LEGACY/ap-legacy/epg-legacy-epg"}}}
+  ]
+}
+""",
 }
 
 # --------------------------------------------------------------------------- #
