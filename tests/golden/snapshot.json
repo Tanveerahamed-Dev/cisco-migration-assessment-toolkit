@@ -3894,6 +3894,46 @@
    }
   }
  },
+ "sdwan": {
+  "core1": {
+   "control_connections": [
+    {
+     "system_ip": "10.10.1.13",
+     "host_name": "BR13-cedge",
+     "peer_type": "vsmart",
+     "state": "down",
+     "local_color": "mpls",
+     "expected": 2,
+     "actual": 0
+    },
+    {
+     "system_ip": "10.10.1.13",
+     "host_name": "BR13-cedge",
+     "peer_type": "vbond",
+     "state": "up",
+     "local_color": "biz-internet",
+     "expected": 1,
+     "actual": 1
+    }
+   ],
+   "devices": [
+    {
+     "system_ip": "10.10.1.1",
+     "host_name": "DC1-cedge",
+     "reachability": "reachable",
+     "model": "vedge-C8000V",
+     "version": "17.09.03a"
+    },
+    {
+     "system_ip": "10.10.1.99",
+     "host_name": "BR99-cedge",
+     "reachability": "unreachable",
+     "model": "vedge-C8000V",
+     "version": "17.09.03a"
+    }
+   ]
+  }
+ },
  "lisp": {
   "core1": {
    "sessions": [

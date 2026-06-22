@@ -567,6 +567,28 @@ GigabitEthernet1/0/1 is up, line protocol is up
   MTU is 1500 bytes
   ND DAD is enabled, number of DAD attempts: 1
 """,
+    # Cisco Catalyst SD-WAN (universality, vManage JSON-ingestion channel): core1 stands in as the vManage
+    # Manager query host for an offline /dataservice export. control/connections has a DOWN vsmart connection
+    # (actual 0 of expected 2) -> _d_sdwan_control_connection_down FIRES; the UP vbond connection (1/1) proves
+    # the detector stays silent on a healthy connection. /device reports BR99-cedge UNREACHABLE ->
+    # _d_sdwan_device_unreachable FIRES; the reachable DC1-cedge stays silent. (vManage wraps rows in
+    # {"data":[...]}, distinct from ACI's imdata envelope.) Schema grounded in the Catalyst SD-WAN Manager API.
+    "dataservice/device/control/connections": """\
+{
+  "data": [
+    {"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vsmart", "state": "down", "local-color": "mpls", "remote-color": "default", "controlProtocol": "dtls", "expected-connections": 2, "actual-connections": 0, "uptime": "0:00:00:00"},
+    {"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vbond", "state": "up", "local-color": "biz-internet", "controlProtocol": "dtls", "expected-connections": 1, "actual-connections": 1, "uptime": "12:04:33:10"}
+  ]
+}
+""",
+    "dataservice/device": """\
+{
+  "data": [
+    {"system-ip": "10.10.1.1", "host-name": "DC1-cedge", "reachability": "reachable", "device-model": "vedge-C8000V", "version": "17.09.03a", "device-type": "vedge"},
+    {"system-ip": "10.10.1.99", "host-name": "BR99-cedge", "reachability": "unreachable", "device-model": "vedge-C8000V", "version": "17.09.03a", "device-type": "vedge"}
+  ]
+}
+""",
 }
 
 # --------------------------------------------------------------------------- #

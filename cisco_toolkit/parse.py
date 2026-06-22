@@ -1185,6 +1185,54 @@ def parse_aci_health(output: str) -> dict:
     return {"cur": cur, "max_sev": (a.get("maxSev", "") or "").lower()}
 
 
+def _sdwan_data(output: str) -> list:
+    """Catalyst SD-WAN Manager (vManage) /dataservice/* responses wrap their rows in {"data":[...]} -- flat
+    JSON objects, NOT the ACI imdata/attributes envelope. The JSON-ingestion front door for the SD-WAN
+    controller fabric (the overlay state lives in the Manager's NMS database, not the edge CLI). Tolerant:
+    [] on empty / non-JSON / missing-'data'; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return []
+    rows = obj.get("data") if isinstance(obj, dict) else None
+    return [r for r in (rows or []) if isinstance(r, dict)]
+
+
+def parse_sdwan_control_connections(output: str) -> list:
+    """vManage GET /dataservice/device/control/connections JSON -> [{system_ip, host_name, peer_type, state,
+    local_color, expected, actual}] per control connection. state is up|down; a down connection (or
+    actual-connections < expected-connections) to a Validator/vBond or Controller/vSmart means the WAN edge
+    is losing its overlay control plane (no OMP routes / policy). expected/actual are ints (None if absent).
+    [] when no SD-WAN export is present. Tolerant; never raises."""
+    out = []
+    for r in _sdwan_data(output):
+        try:
+            exp = int(r.get("expected-connections"))
+        except (TypeError, ValueError):
+            exp = None
+        try:
+            act = int(r.get("actual-connections"))
+        except (TypeError, ValueError):
+            act = None
+        out.append({"system_ip": r.get("system-ip", ""), "host_name": r.get("host-name", ""),
+                    "peer_type": r.get("peer-type", ""), "state": (r.get("state", "") or "").lower(),
+                    "local_color": r.get("local-color", ""), "expected": exp, "actual": act})
+    return out
+
+
+def parse_sdwan_devices(output: str) -> list:
+    """vManage GET /dataservice/device JSON -> [{system_ip, host_name, reachability, model, version}] per
+    fabric device. reachability is reachable|unreachable -- the controller's own verdict on each WAN edge; an
+    unreachable device is one the Manager has lost management/control contact with. [] when no SD-WAN export.
+    Tolerant; never raises."""
+    out = []
+    for r in _sdwan_data(output):
+        out.append({"system_ip": r.get("system-ip", ""), "host_name": r.get("host-name", ""),
+                    "reachability": (r.get("reachability", "") or "").lower(),
+                    "model": r.get("device-model", ""), "version": r.get("version", "")})
+    return out
+
+
 def parse_nve_peers(output: str) -> list:
     """'show nve peers' (NX-OS VXLAN) -> [{interface, peer_ip, state, learn_type}]. State Up/Down; learn-type
     CP (control-plane / BGP-EVPN) vs DP (flood-and-learn). [] when the device runs no NVE/VXLAN. Tolerant;
