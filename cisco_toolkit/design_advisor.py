@@ -449,6 +449,17 @@ def _signals(snap):
             if _r.get("configured") and str(_r.get("action", "")).strip().lower() == "none":
                 sig["storm_noaction"].append(f"{_sch} {_r.get('interface', '?')} {_r.get('traffic', 'storm')}")
     sig["storm_noaction_devices"] = sorted({x.split()[0] for x in sig["storm_noaction"]})[:12]
+    # STORM-CONTROL ACTIVE SUPPRESSION: a port whose Filter State is 'Blocking' is dropping a broadcast/multicast/
+    # unicast storm RIGHT NOW (the rate crossed the rising threshold). Directly observed, so it fires even on the
+    # Catalyst form that omits the Action column. Coverage-honest: only 'Blocking' fires; Forwarding/Link-Down/absent silent.
+    sig["storm_blocking"] = []
+    for _sch, _rows in _sc.items():
+        for _r in _as_list(_rows):
+            if str(_r.get("filter_state", "")).strip().lower() == "blocking":
+                _scur = str(_r.get("current", "")).strip()
+                sig["storm_blocking"].append(f"{_sch} {_r.get('interface', '?')} {_r.get('traffic', 'storm')}"
+                                             + (f" (current {_scur})" if _scur else ""))
+    sig["storm_blocking_devices"] = sorted({x.split()[0] for x in sig["storm_blocking"]})[:12]
     # QoS RUNTIME (snap['qos_runtime'] from build_qos_runtime): an EGRESS class taking SIGNIFICANT drops means
     # the configured QoS is shedding the traffic its intent classified. CRY-WOLF GUARD: a non-priority class
     # fires ONLY when drops clear an absolute floor AND are >=1% of (drops+output); a PRIORITY/LLQ class is held
@@ -1730,6 +1741,30 @@ def _d_storm_control_action(snap, sig):
         devices=sig.get("storm_noaction_devices") or [])
 
 
+def _d_storm_control_active(snap, sig):
+    """Storm-control ACTIVELY suppressing a storm: a port whose Filter State is 'Blocking' (parse_storm_control)
+    is dropping a broadcast/multicast/unicast storm RIGHT NOW because the rate crossed its rising threshold -- a
+    real, directly-OBSERVED L2 storm in the production path. Unlike the toothless-action finding this is observed
+    state (not config), so it fires even on the Catalyst 'show storm-control' form that has no Action column.
+    Coverage-honest + non-cry-wolf: ONLY an observed 'Blocking' state fires; Forwarding / link-down / absent silent."""
+    bad = sig.get("storm_blocking") or []
+    if not bad:
+        return None
+    return _decision(
+        "storm-control-active-suppression",
+        f"{len(bad)} port(s) are ACTIVELY suppressing a traffic storm right now (storm-control Filter State = "
+        f"'Blocking'): {', '.join(bad[:8])}. The ingress rate has crossed the rising threshold and the switch is "
+        f"dropping the excess broadcast/multicast/unicast traffic -- a LIVE L2 storm (a forwarding loop, a "
+        f"misbehaving host/NIC, or a broadcast-heavy app). Find and clear the storm source before the migration "
+        f"baseline: a port storming at cutover skews the traffic baseline and can mask a real loop.",
+        len(bad), ["availability", "stability"],
+        ["storm_control[].filter_state (parse_storm_control / show storm-control)", "storm_control[].current"],
+        priority="High",
+        driver="A storm-control rule in the Blocking state is a directly-observed active L2 storm in the "
+               "production path -- a loop or runaway host that must be found before it is baselined into the design.",
+        devices=sig.get("storm_blocking_devices") or [])
+
+
 def _d_qos_runtime_drops(snap, sig):
     """QoS RUNTIME failure (the complement to _d_qos/_d_voice_qos, which only check a policy EXISTS): an EGRESS
     class/queue is actually SHEDDING traffic at runtime (snap['qos_runtime'] from parse_policymap_drops). The
@@ -2300,7 +2335,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_lisp_fabric_session_down, _d_cts_environment_data_health, _d_dmvpn_tunnel_health, _d_crypto_session_health, _d_bfd_session_health, _d_ipv6_dad_duplicate, _d_ipv6_routing_adjacency,  # universal arch: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
               _d_aci_critical_faults, _d_aci_node_not_active, _d_aci_fabric_health_degraded, _d_aci_vrf_unenforced,  # Cisco ACI (APIC JSON-ingestion channel)
               _d_sdwan_control_connection_down, _d_sdwan_device_unreachable, _d_sdwan_omp_peer_down,  # Cisco Catalyst SD-WAN (vManage JSON channel)
-              _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_qos_runtime_drops, _d_shadow_infra,
+              _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
               _d_timesync, _d_voice_qos, _d_phased, _d_l2_faildomain,
@@ -3558,7 +3593,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("ipv6_fhs",      "IPv6 first-hop security",                 "ssh",  ["ipv6-first-hop-security-suite-at-access-edge"]),
     ("ntp",           "Time synchronization (NTP)",              "ssh",  ["mgmt-time-sync-logging-baseline"]),
     ("port_security", "Access-edge port-security",               "ssh",  ["security-l2-access-edge-suite"]),
-    ("storm_control", "Storm control",                           "ssh",  ["storm-control-action-on-edge"]),
+    ("storm_control", "Storm control",                           "ssh",  ["storm-control-action-on-edge", "storm-control-active-suppression"]),
     ("qos_runtime",   "QoS runtime (egress queue/policer drops)", "ssh", ["qos-runtime-egress-queue-drops"]),
     ("shadow_infra",  "Undocumented / shadow infrastructure",    "ssh",  ["discover-undocumented-infrastructure-before-cutover"]),
     ("lisp",          "SD-Access LISP fabric",                   "ssh",  ["lisp-fabric-session-down"]),

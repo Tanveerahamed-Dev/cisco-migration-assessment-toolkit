@@ -1649,6 +1649,20 @@ def test_parse_policymap_drops_iosxe_and_nxos(cp):
     by = {c["class"]: c for c in parse.parse_policymap_drops(llq)}
     assert by["VOICE"]["priority"] is True and by["VOICE"]["drop_pkts"] == 60
     assert by["class-default"]["drop_pkts"] == 0
+    # NX-OS ingress queuing (VOQ): 'Service-policy (queuing) input:' with a dropping queue class. The egress-only
+    # _flush gate used to DISCARD it, so Nexus ingress VOQ drops were invisible. It must now be recorded (it is a
+    # NX-OS queuing policy) -- while an IOS-XE *non-queuing* input policy (the SCAVENGER-IN above) stays ignored.
+    nx_ingress = textwrap.dedent("""\
+        Ethernet1/1
+        Service-policy (queuing) input: in-q-policy
+
+        Class-map (queuing): iq1 (match-any)
+        queue dropped pkts: 4242
+        queue transmit pkts: 1000000
+    """)
+    ri = parse.parse_policymap_drops(nx_ingress)
+    assert [c["class"] for c in ri] == ["iq1"]
+    assert ri[0]["drop_pkts"] == 4242 and ri[0]["interface"] == "Eth1/1" and ri[0]["output_pkts"] == 1000000
 
 
 def test_parse_neighbors_detail_cdp_and_lldp_keep_capabilities(cp):

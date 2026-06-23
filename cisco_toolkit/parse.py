@@ -496,9 +496,12 @@ def parse_policymap_drops(output: str) -> list:
     policy = ""
     cur: Optional[dict] = None
     in_police = False
+    nx_queuing = False                  # the current service-policy is a NX-OS '(queuing)' policy
 
     def _flush():
-        if cur is not None and egress and iface:
+        # NX-OS queuing drops are real on INGRESS too (VOQ), so record a NX-OS queuing class regardless of
+        # direction; an IOS-XE non-queuing input policy stays egress-only (egress=False, nx_queuing=False -> dropped).
+        if cur is not None and (egress or nx_queuing) and iface:
             out.append(cur)
 
     for raw in (output or "").splitlines():
@@ -509,13 +512,14 @@ def parse_policymap_drops(output: str) -> list:
         if mi and not s.lower().startswith(("class-map", "service-policy", "police", "queueing",
                                             "queue", "match", "priority", "bandwidth", "exceeded",
                                             "conformed", "violated")):
-            _flush(); cur = None; in_police = False
+            _flush(); cur = None; in_police = False; nx_queuing = False
             iface = normalize_ifname(mi.group(1)); egress = False; policy = ""
             continue
         msp = _PM_SVCPOL_RE.match(s)
         if msp:
             _flush(); cur = None; in_police = False
             egress = msp.group("dir").lower() == "output"
+            nx_queuing = "queuing" in (msp.group("kind") or "").lower()
             policy = msp.group("name")
             continue
         mnc = _PM_NX_CLASS_RE.match(s)
