@@ -22,7 +22,7 @@ wide addresses/ASNs. Several were empirically reproduced against the live parser
 acutely because the canonical AJ fleet's DS/CS core + EVS vPC pair are **Nexus** — so the NX-OS blind spots hit
 the real target estate, not a hypothetical one.
 
-## Fixes (14 parser functions, test-first, real-format fixtures)
+## Fixes (15 parser functions, test-first, real-format fixtures)
 
 | Parser | Real-world failure (before) | Fix |
 |---|---|---|
@@ -40,6 +40,7 @@ the real target estate, not a hypothetical one.
 | `parse_pim_neighbors` | a PIM-over-Tunnel (DMVPN/mGRE WAN) neighbour failed the interface-validity gate and vanished | add `Tunnel`→`Tu` to `normalize_ifname` + `VALID_IFACE_RE` |
 | `parse_nve_peers` / `parse_nve_vni` | IOS-XE Catalyst 9000 VXLAN layout differs (VNI in col 2, `L2CP/L3CP` fusion) → `[]` for the entire IOS-XE VTEP fleet | add an IOS-XE branch (formats web-verified against the Catalyst 9300 BGP-EVPN-VXLAN guide) |
 | `parse_cts_environment_data` | NX-OS prints `Current State : CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE` — a **colon** separator and an **enum** success token (not `= COMPLETE`) → the parser returned `{}` **and** the detector would **false-fire** on a fully-downloaded *healthy* Nexus | accept `:`; normalize the NX-OS DONE enum → `COMPLETE` (verified vs the DevNet NX-API CTS ref) |
+| `parse_policymap_drops` | IOS 15.x+ LLQ priority classes report drops as `b/w exceed drops: N` on the `Priority:` line — the parser's `Priority:` `continue` skipped it, so a **voice/video LLQ shedding real-time traffic reported 0 drops** and the HIGH detector never fired | capture `b/w exceed drops`; `max()`-guard so a co-present aggregate `queue stats for all priority classes` 0/0/0 line can't clobber it (format web-verified) |
 
 Each fix is locked by a real-format regression test in `tests/test_parsers.py`; the golden snapshot is
 **unchanged** (the fixes are purely additive — existing fixtures parse identically; only previously-unhandled
@@ -54,7 +55,7 @@ rather than guessed:
 | Parser | Gap | Why deferred / fix approach |
 |---|---|---|
 | `parse_storm_control` | Catalyst `show storm-control` prints NO Action column, so the "configured-but-action-None" detector cannot determine the action from this command alone | needs a `running-config` cross-reference (build.py) to recover the action; a "Filter-State=Blocking" path would be a *different* detector (active-storm, not a config gap) |
-| `parse_policymap_drops` | IOS-XE LLQ drops render as `b/w exceed drops:` (unmatched); NX-OS ingress-queuing records are discarded by the egress gate | add the LLQ dialect + record direction per-record; touches the detector — a secondary (QoS-runtime) axis |
+| `parse_policymap_drops` (NX-OS ingress only) | the IOS-XE LLQ `b/w exceed drops` miss is now **fixed** (above); the remaining sub-gap is NX-OS **ingress**-queuing (VOQ) drops, which the egress-only `_flush` gate discards | record direction per-record and let the detector decide — a detector-gate semantics change (not a clean parser fix); do with a real NX-OS ingress-queue capture |
 | `parse_port_security_detail` | NX-OS un-blinding needs two things this command can't cleanly give: **(a)** the per-interface DETAIL layout / interface-delimiter could not be authoritatively obtained (cisco.com 403s; DevNet + ManualsLib give only field *labels*); **(b)** on NX-OS a violation err-disable shows `port_status=secure-down` — but `secure-down` is **also** a plain link-down port, so the IOS-XE detector (fires on `secure-shutdown`) cannot be reused without a `secure-down AND violation_count>0` guard — a detector-semantics change with cry-wolf risk | fix when a real NX-OS `show port-security interface` capture is in hand: broaden the enable-anchor to `Configured/Opertional Port Security` [sic] + add the `secure-down`+violation guard |
 
 ## Method note

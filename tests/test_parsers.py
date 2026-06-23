@@ -1629,6 +1629,26 @@ def test_parse_policymap_drops_iosxe_and_nxos(cp):
     assert all(c["interface"] == "Po6" for c in rn)
     assert rn[0]["priority"] is True and rn[0]["drop_pkts"] == 12345 and rn[0]["output_pkts"] == 2175032764
     assert rn[1]["drop_pkts"] == 0 and rn[1]["priority"] is False
+    # IOS 15.x+ LLQ form: the priority class's drop counter is 'b/w exceed drops: N' ON the 'Priority:' line (no
+    # '(queue depth/total drops/...)' line). The 'Priority:' continue used to SKIP it -> a voice/video LLQ shedding
+    # real-time traffic reported 0 drops and the HIGH detector never fired. The co-present aggregate 0/0/0
+    # 'queue stats for all priority classes' line must NOT clobber the captured drops back to 0.
+    llq = textwrap.dedent("""\
+        GigabitEthernet0/1
+          Service-policy output: WAN-OUT
+            Class-map: VOICE (match-any)
+              1000 packets, 640000 bytes
+              Priority: 2000 kbps, burst bytes 50000, b/w exceed drops: 60
+              queue stats for all priority classes:
+                queue limit 512 packets
+                (queue depth/total drops/no-buffer drops) 0/0/0
+            Class-map: class-default (match-any)
+              500 packets, 320000 bytes
+              (queue depth/total drops/no-buffer drops) 0/0/0
+    """)
+    by = {c["class"]: c for c in parse.parse_policymap_drops(llq)}
+    assert by["VOICE"]["priority"] is True and by["VOICE"]["drop_pkts"] == 60
+    assert by["class-default"]["drop_pkts"] == 0
 
 
 def test_parse_neighbors_detail_cdp_and_lldp_keep_capabilities(cp):

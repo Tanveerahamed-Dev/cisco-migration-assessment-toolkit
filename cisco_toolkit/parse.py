@@ -473,6 +473,7 @@ _PM_QDROPS_RE  = re.compile(r"\(queue depth/total drops/no-buffer drops\)\s+(\d+
 _PM_PRIDROPS_RE = re.compile(r"\(total drops/bytes drops\)\s+(\d+)/(\d+)", re.IGNORECASE)
 _PM_OUTPUT_RE  = re.compile(r"\(pkts output/bytes output\)\s+(\d+)/(\d+)", re.IGNORECASE)
 _PM_PRIORITY_RE = re.compile(r"^(?:priority(?:\s+level\s+\d+)?\b|Strict Priority|Priority:)", re.IGNORECASE)
+_PM_BWEXCEED_RE = re.compile(r"b/w\s+exceed\s+drops:\s*(\d+)", re.IGNORECASE)   # IOS 15.x+ LLQ priority-class drops
 _PM_POLICE_RE  = re.compile(r"^police\b", re.IGNORECASE)
 _PM_EXCEEDED_RE = re.compile(r"^exceeded\s+(\d+)\s+packets,\s+(\d+)\s+bytes", re.IGNORECASE)
 _PM_VIOLATED_RE = re.compile(r"^violated\s+(\d+)\s+packets,\s+(\d+)\s+bytes", re.IGNORECASE)
@@ -527,6 +528,11 @@ def parse_policymap_drops(output: str) -> list:
             continue
         if cur is None:
             continue
+        m = _PM_BWEXCEED_RE.search(s)        # IOS 15.x+ LLQ drop counter on the 'Priority: ... b/w exceed drops: N'
+        if m:                                 # line; the _PM_PRIORITY_RE continue below would otherwise SKIP it
+            cur["priority"] = True
+            cur["drop_pkts"] = max(cur["drop_pkts"], int(m.group(1)))
+            continue
         if _PM_PRIORITY_RE.match(s):
             cur["priority"] = True
             continue
@@ -535,7 +541,9 @@ def parse_policymap_drops(output: str) -> list:
             continue
         m = _PM_QDROPS_RE.search(s)
         if m:
-            cur["drop_pkts"] = int(m.group(2)); continue
+            # max(), not assign: a later aggregate 'queue stats for all priority classes' 0/0/0 line must not
+            # clobber a real 'b/w exceed drops' value already captured for an LLQ class.
+            cur["drop_pkts"] = max(cur["drop_pkts"], int(m.group(2))); continue
         m = _PM_PRIDROPS_RE.search(s)
         if m:
             cur["priority"] = True
