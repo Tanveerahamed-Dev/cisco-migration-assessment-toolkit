@@ -1591,6 +1591,25 @@ def test_d_storm_control_action_flags_configured_noaction_only():
     assert da._d_storm_control_action({}, da._signals({})) is None
 
 
+def test_d_storm_control_active_flags_blocking_only():
+    """Storm-control ACTIVE suppression: a port whose Filter State is 'Blocking' is dropping a live broadcast/
+    multicast storm RIGHT NOW -> _d_storm_control_active fires (directly observed, so it works even on the
+    Catalyst 'show storm-control' form that omits the Action column). Refutation: a 'Forwarding' port, an absent
+    storm_control axis, and a port with no filter_state all stay silent -- only the observed Blocking state fires."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"storm_control": {"access1": [
+        {"interface": "Gi0/5", "traffic": "broadcast", "filter_state": "Blocking", "current": "2.08m", "configured": True},
+        {"interface": "Gi0/6", "traffic": "multicast", "filter_state": "Forwarding", "current": "0", "configured": True}]}}
+    sig = da._signals(snap)
+    assert any("Gi0/5" in x for x in sig["storm_blocking"]) and sig["storm_blocking_devices"] == ["access1"]
+    dec = da._d_storm_control_active(snap, sig)
+    assert dec is not None and "Blocking" in str(dec) and "Gi0/5" in str(dec) and dec["priority"] == "High"
+    assert "Gi0/6" not in str(dec)   # the Forwarding port is NOT flagged (coverage-honest)
+    fwd = {"storm_control": {"access1": [{"interface": "Gi0/6", "traffic": "broadcast", "filter_state": "Forwarding", "configured": True}]}}
+    assert da._d_storm_control_active(fwd, da._signals(fwd)) is None
+    assert da._d_storm_control_active({}, da._signals({})) is None
+
+
 def test_d_qos_runtime_drops_fires_and_refutes_cry_wolf():
     """QoS RUNTIME: an egress class actually SHEDDING traffic fires _d_qos_runtime_drops -- HIGH if a priority/LLQ
     class is congestion-dropped, MEDIUM for a data-only over-threshold class. CRY-WOLF GUARD: a busy data class

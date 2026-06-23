@@ -46,16 +46,28 @@ Each fix is locked by a real-format regression test in `tests/test_parsers.py`; 
 **unchanged** (the fixes are purely additive — existing fixtures parse identically; only previously-unhandled
 real formats gain coverage).
 
-## Residual gaps (documented, not fixed — deliberately)
+## Detector enhancements (follow-up — closed 2 of the 3 residuals)
 
-These are genuine but lower-value and/or require more than a parser change and/or a format not yet verified;
-per the rigor floor (don't ship a parser for an unverified format) and proportion, they are recorded here
-rather than guessed:
+Two residuals were closed not by a parser-format fix but by a **detector** change — test-first, golden
+unchanged, and **AJ-re-verified coverage-honest**: both stay silent on the AJ fleet (which collected neither
+axis, so AJ holds steady at 40 decisions) and would fire on a customer that has the condition.
+
+- **`_d_storm_control_active`** (new detector) — fires on an observed storm-control `Filter State = Blocking`
+  (a broadcast/multicast/unicast storm being suppressed *right now*). Directly observed, so it works on the
+  Catalyst `show storm-control` form that omits the Action column — exactly where `_d_storm_control_action` was
+  structurally dead. Registered in `_DETECTORS` + the coverage registry; only `Blocking` fires (Forwarding /
+  link-down / absent stay silent).
+- **`parse_policymap_drops` NX-OS ingress** — the egress-only `_flush` gate now also records NX-OS `(queuing)`
+  classes regardless of direction, so **Nexus ingress (VOQ) queue drops** are seen by `_d_qos_runtime_drops`;
+  an IOS-XE *non-queuing* input policy stays correctly ignored (egress-only).
+
+## Residual gaps (1 remaining — documented, not guessed)
+
+Per the rigor floor (don't ship code for an unverified format) and proportion, this is recorded rather than
+guessed:
 
 | Parser | Gap | Why deferred / fix approach |
 |---|---|---|
-| `parse_storm_control` | Catalyst `show storm-control` prints NO Action column, so the "configured-but-action-None" detector cannot determine the action from this command alone | needs a `running-config` cross-reference (build.py) to recover the action; a "Filter-State=Blocking" path would be a *different* detector (active-storm, not a config gap) |
-| `parse_policymap_drops` (NX-OS ingress only) | the IOS-XE LLQ `b/w exceed drops` miss is now **fixed** (above); the remaining sub-gap is NX-OS **ingress**-queuing (VOQ) drops, which the egress-only `_flush` gate discards | record direction per-record and let the detector decide — a detector-gate semantics change (not a clean parser fix); do with a real NX-OS ingress-queue capture |
 | `parse_port_security_detail` | NX-OS un-blinding needs two things this command can't cleanly give: **(a)** the per-interface DETAIL layout / interface-delimiter could not be authoritatively obtained (cisco.com 403s; DevNet + ManualsLib give only field *labels*); **(b)** on NX-OS a violation err-disable shows `port_status=secure-down` — but `secure-down` is **also** a plain link-down port, so the IOS-XE detector (fires on `secure-shutdown`) cannot be reused without a `secure-down AND violation_count>0` guard — a detector-semantics change with cry-wolf risk | fix when a real NX-OS `show port-security interface` capture is in hand: broaden the enable-anchor to `Configured/Opertional Port Security` [sic] + add the `secure-down`+violation guard |
 
 ## Method note
