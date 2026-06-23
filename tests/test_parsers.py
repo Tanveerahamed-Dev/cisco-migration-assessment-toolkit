@@ -940,6 +940,17 @@ def test_parse_cts_environment_data_states(cp):
         "Retry_timer (60 secs) is running\n")
     b = parse.parse_cts_environment_data(broken)
     assert b["state"] == "WAITING_RESPONSE" and b["last_status"] == "Failed" and b["sgt_count"] == 0
+    # NX-OS: 'Current State : <enum>' uses a COLON separator and an enum token (NOT 'COMPLETE'). The success enum
+    # CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE must NORMALISE to COMPLETE so a fully-downloaded Nexus does not FALSE-fire;
+    # an in-progress enum must stay non-COMPLETE so the detector still flags it. (Verified vs the DevNet NX-API CTS ref.)
+    nxos_done = (
+        "CTS Environment Data\n"
+        "Current State                : CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE\n"
+        "Environment Data Lifetime    : 86400 secs\n")
+    assert parse.parse_cts_environment_data(nxos_done)["state"] == "COMPLETE"
+    nxos_busy = "CTS Environment Data\nCurrent State : CTS_ENV_DNLD_ST_ENV_START\n"
+    nbusy = parse.parse_cts_environment_data(nxos_busy)["state"]
+    assert nbusy and nbusy != "COMPLETE"
     # Absent / non-CTS -> {} (coverage-honest: nothing to assess).
     assert parse.parse_cts_environment_data("") == {}
     assert parse.parse_cts_environment_data("% Invalid input detected at '^' marker.") == {}

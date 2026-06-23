@@ -819,7 +819,7 @@ def parse_lisp_sessions(output: str) -> list:
 
 
 def parse_cts_environment_data(output: str) -> dict:
-    """'show cts environment-data' (IOS-XE TrustSec) -> {} when CTS is not configured / the command is absent,
+    """'show cts environment-data' (IOS-XE & NX-OS TrustSec) -> {} when CTS is not configured / absent,
     else {state, last_status, sgt_count, server_count, lifetime}. The environment-data download is the
     state machine that pulls the SGT->name table (and SGACL policy) from Cisco ISE; 'Current state =
     COMPLETE' (with 'Last status = Successful') is the only fully-downloaded/valid state. Any other state
@@ -834,13 +834,18 @@ def parse_cts_environment_data(output: str) -> dict:
     text = output or ""
     # Anchor on the env-data block header; a box with no CTS env-data prints neither this nor 'Current state'.
     if not re.search(r"^\s*(?:CTS|TS)\s+Environment\s+Data\b", text, re.IGNORECASE | re.MULTILINE) \
-            and not re.search(r"^\s*Current state\s*=", text, re.IGNORECASE | re.MULTILINE):
+            and not re.search(r"^\s*Current state\s*[=:]", text, re.IGNORECASE | re.MULTILINE):
         return {}
     res = {"state": "", "last_status": "", "sgt_count": 0, "server_count": 0, "lifetime": None}
-    m = re.search(r"^\s*Current state\s*=\s*(\S+)", text, re.IGNORECASE | re.MULTILINE)
+    m = re.search(r"^\s*Current state\s*[=:]\s*(\S+)", text, re.IGNORECASE | re.MULTILINE)
     if m:
-        res["state"] = m.group(1).strip().upper()
-    m = re.search(r"^\s*Last status\s*=\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
+        st = m.group(1).strip().upper()
+        # IOS-XE prints 'COMPLETE' with '='; NX-OS prints the download-state ENUM with a ':' separator
+        # (CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE = the success/valid state, verified vs the DevNet NX-API CTS ref).
+        # Normalise the NX-OS success enum to COMPLETE so the COMPLETE-is-healthy detector does NOT false-fire
+        # on a fully-downloaded Nexus; any in-progress enum stays non-COMPLETE so it is still flagged.
+        res["state"] = "COMPLETE" if st in ("COMPLETE", "CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE") else st
+    m = re.search(r"^\s*Last status\s*[=:]\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
     if m:
         res["last_status"] = m.group(1).strip()
     m = re.search(r"Lifetime\s*=\s*(\d+)", text, re.IGNORECASE)
