@@ -11,7 +11,7 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
-from openpyxl.cell.cell import MergedCell
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE, MergedCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -32,6 +32,52 @@ from cisco_toolkit.textutils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _xls_sanitize(value):
+    """Strip the control characters openpyxl rejects (IllegalCharacterError: 0x00-0x08, 0x0B-0x0C, 0x0E-0x1F)
+    from a string; pass non-strings through unchanged. Device-derived free-text (a CDP/LLDP-advertised neighbour
+    name, an interface description, a banner) can carry a BEL/VT/ESC -- collected with errors='ignore', which
+    passes valid-UTF-8 control bytes through -- and a single one aborts the ENTIRE workbook, the one deliverable
+    produced unconditionally (there is no --no-excel)."""
+    return ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
+
+
+def _harden_ws(ws):
+    """Wrap one worksheet's cell()/append() so every written string value is sanitized (no IllegalCharacterError)."""
+    _orig_cell, _orig_append = ws.cell, ws.append
+
+    def _cell(*args, **kwargs):
+        if "value" in kwargs:
+            kwargs["value"] = _xls_sanitize(kwargs["value"])
+        elif len(args) >= 3:
+            args = (args[0], args[1], _xls_sanitize(args[2])) + args[3:]
+        return _orig_cell(*args, **kwargs)
+
+    def _append(iterable):
+        if isinstance(iterable, (list, tuple)):
+            iterable = [_xls_sanitize(v) for v in iterable]
+        return _orig_append(iterable)
+
+    ws.cell, ws.append = _cell, _append
+
+
+def harden_workbook(wb):
+    """Make EVERY worksheet in wb sanitize string cell values, so a control character in any device-derived
+    free-text field cannot abort the workbook. Covers every existing sheet (the template's own) AND every sheet
+    created later via wb.create_sheet -- one chokepoint over all ~329 cell-write sites + any future one, so the
+    safety can't drift the way a per-site helper would. Returns wb. Call once right after load_workbook()."""
+    for ws in wb.worksheets:
+        _harden_ws(ws)
+    _orig_create = wb.create_sheet
+
+    def _create(*args, **kwargs):
+        ws = _orig_create(*args, **kwargs)
+        _harden_ws(ws)
+        return ws
+
+    wb.create_sheet = _create
+    return wb
 
 _CENSUS_HDR_FILL = "1F497D"
 

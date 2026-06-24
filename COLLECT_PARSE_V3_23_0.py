@@ -1428,6 +1428,8 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(out_xlsx)) or ".", exist_ok=True)
 
     wb = load_workbook(args.template)
+    from cisco_toolkit.excel import harden_workbook
+    harden_workbook(wb)   # every sheet sanitizes control chars -> one device-text field can't abort the workbook
     ws = wb.active
     logger.info(f"[OK] Loaded template: {args.template}")
 
