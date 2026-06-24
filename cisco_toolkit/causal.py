@@ -162,15 +162,26 @@ def compute_causal_flows(snap: Optional[dict]) -> Dict[str, Any]:
         ev = _as_dict(d.get("evidence"))
         devs = _as_list(ev.get("devices"))
         hosts = [h for h in devs if in_model(h)][:8]
-        cnt = ev.get("count")
-        blast = int(cnt) if isinstance(cnt, (int, float)) and not isinstance(cnt, bool) else len(devs)
+        cnt = int(ev.get("count")) if isinstance(ev.get("count"), (int, float)) and not isinstance(ev.get("count"), bool) else None
+        # BLAST = the affected-DEVICE count (what a blast-radius badge means). The metric `cnt` counts whatever
+        # the decision is about -- ports / VLANs / member-legs / trunks / root-elections / move-groups -- and
+        # stays in the TITLE with its own unit; labelling `cnt` as 'device(s)' was a LIVE mislabel (e.g. a chip
+        # reading '1339 device(s)' for 1339 ports). When a fleet-level decision carries no device list, fall back
+        # to the metric under the unit-neutral 'affected' rather than asserting a unit we cannot name.
+        n_dev = len(devs)
+        if n_dev:
+            blast, blast_unit, impact = n_dev, ("device" if n_dev == 1 else "devices"), f"{n_dev} device(s) carry this gap"
+        elif cnt:
+            blast, blast_unit, impact = cnt, "affected", f"{cnt} affected by this gap"
+        else:
+            blast, blast_unit, impact = 0, "devices", "Target-state design risk"
         f = _flow(
             f"design-{d.get('id') or i}", "design", "Design decision",
             d.get("title", ""), d.get("priority"), hosts,
             ev.get("summary") or d.get("driver", ""),
             d.get("driver") or _as_dict(d.get("principle")).get("title", ""),
-            (f"{cnt} device(s) carry this gap" if cnt else "Target-state design risk"),
-            d.get("recommended_action", ""), blast, ("device" if blast == 1 else "devices"), "linear",
+            impact,
+            d.get("recommended_action", ""), blast, blast_unit, "linear",
             evidence={"count": cnt, "devices": devs, "fields": ev.get("fields"),
                       "citation": _as_dict(d.get("principle")).get("citation")})
         f["confidence"] = d.get("confidence") or ""

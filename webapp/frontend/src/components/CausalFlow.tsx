@@ -181,7 +181,9 @@ function EvidenceChips({ f }: { f: CausalFlowItem }) {
   const chips: ReactNode[] = [];
   if (ev.citation) chips.push(<span key="cite" className="czchip" style={{ fontFamily: "var(--sans)", fontStyle: "italic" }}>{ev.citation}</span>);
   if (ev.layers) chips.push(<span key="lay" className="czchip"><b>layers</b> {ev.layers}</span>);
-  if (typeof ev.count === "number") chips.push(<span key="cnt" className="czchip"><b>{ev.count}</b> device(s)</span>);
+  // ev.count is the decision's metric (ports / VLANs / member-legs / ... per the title), NOT a device count --
+  // label it unit-neutrally rather than the old hard-coded 'device(s)' (a live mislabel on the real AJ data).
+  if (typeof ev.count === "number") chips.push(<span key="cnt" className="czchip"><b>{ev.count}</b> affected</span>);
   if (ev.wave) chips.push(<span key="wave" className="czchip"><b>wave</b> {ev.wave}</span>);
   if (f.hosts && f.hosts.length) chips.push(<span key="hosts" className="czchip">{f.hosts.slice(0, 5).join(", ")}{f.hosts.length > 5 ? ` +${f.hosts.length - 5}` : ""}</span>);
   if (ev.fields && ev.fields.length) chips.push(<span key="src" className="czchip"><b>src</b> {ev.fields.join(", ")}</span>);

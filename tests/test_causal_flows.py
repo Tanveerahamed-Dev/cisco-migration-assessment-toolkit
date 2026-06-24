@@ -232,3 +232,24 @@ def test_non_xlayer_families_do_not_scan_vlan():
         "detail": "impacts 3 VLAN(s)", "devices": ["sw1"]}]}
     pl = next(f for f in compute_causal_flows(snap)["flows"] if f["family"] == "STP")
     assert pl["blast"] == 1 and pl["blast_unit"] == "device"   # 1 device, never "3 VLANs"
+
+
+def test_design_flow_does_not_mislabel_metric_as_devices():
+    """LIVE mislabel fix: a design decision's evidence.count is the decision's METRIC (ports / VLANs /
+    member-legs / ... per its title), NOT a device count. The blast badge must show the affected-DEVICE count
+    (labelled 'devices'), the metric stays in the title (and evidence.count for the chip), and a fleet-level
+    decision with no device list falls back to the unit-neutral 'affected' -- never a false 'device(s)'."""
+    snap = {"design_blueprint": {"decisions": [
+        {"id": "ports", "title": "1339 port(s) show physical-layer faults", "priority": "High",
+         "status": "recommended", "evidence": {"count": 1339, "devices": ["sw1", "sw2"]}},
+        {"id": "vlans", "title": "202 VLANs span the fabric", "priority": "Medium",
+         "status": "recommended", "evidence": {"count": 202, "devices": []}},
+    ]}}
+    flows = {f["key"]: f for f in compute_causal_flows(snap)["flows"]}
+    ports = flows["design-ports"]
+    assert ports["blast"] == 2 and ports["blast_unit"] == "devices"      # the DEVICE count, not the 1339 ports
+    assert ports["impact"] == "2 device(s) carry this gap"
+    assert ports["evidence"]["count"] == 1339                            # metric preserved (title + chip)
+    vlans = flows["design-vlans"]
+    assert vlans["blast"] == 202 and vlans["blast_unit"] == "affected"   # no device list -> neutral, NOT 'devices'
+    assert vlans["impact"] == "202 affected by this gap"

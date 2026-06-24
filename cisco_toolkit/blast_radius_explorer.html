@@ -7378,9 +7378,12 @@ function causalFlows(){
     out.push({key:"design-"+(d.id||i), family:"design", familyLabel:"Design decision", ic:"✎",
       title:d.title||"", sev:czSev(d.priority), hosts,
       trigger:ev.summary||d.driver||"", mechanism:d.driver||((d.principle||{}).title||""),
-      impact:(ev.count?ev.count+" device(s) carry this gap":"Target-state design risk"),
+      // blast = the affected-DEVICE count; the metric (ev.count: ports/VLANs/member-legs/...) stays in the title
+      // with its own unit (labelling it 'device(s)' was a live mislabel). Fleet-level decisions with no device
+      // list fall back to the metric under the unit-neutral 'affected'. (Mirrors causal.py compute_causal_flows.)
+      impact:(devs.length?(devs.length+" device(s) carry this gap"):(ev.count?(ev.count+" affected by this gap"):"Target-state design risk")),
       mitigation:d.recommended_action||"",
-      blast:Number(ev.count)||devs.length||0, blastUnit:(Number(ev.count)||devs.length||0)===1?"device":"devices", shape:"linear",
+      blast:(devs.length||Number(ev.count)||0), blastUnit:(devs.length?(devs.length===1?"device":"devices"):(ev.count?"affected":"devices")), shape:"linear",
       confidence:d.confidence||"", alternatives:d.alternatives||"", tradeoffs:d.tradeoffs||"",
       axes:Array.isArray(d.axes)?d.axes:[],
       evidence:{count:ev.count, devices:devs, fields:ev.fields, citation:(d.principle||{}).citation}});});
