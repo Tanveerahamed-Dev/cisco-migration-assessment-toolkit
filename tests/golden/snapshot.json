@@ -4227,6 +4227,24 @@
    ]
   }
  },
+ "fortigate": {
+  "core2": {
+   "ha": {
+    "health": "OK",
+    "mode": "HA A-P",
+    "members": [
+     {
+      "name": "FGT-A",
+      "sync": "in-sync"
+     },
+     {
+      "name": "FGT-B",
+      "sync": "out-of-sync"
+     }
+    ]
+   }
+  }
+ },
  "lisp": {
   "core1": {
    "sessions": [

@@ -543,6 +543,30 @@ def _signals(snap):
                     _cloud_hosts.add(_clh)
     sig["cloud_sg_open"] = _cloud_open
     sig["cloud_devices"] = sorted(_cloud_hosts)[:12]
+    # MULTI-VENDOR (Fortinet FortiGate) HA cluster sync (snap['fortigate'][h]['ha'] from build_fortigate) -- the
+    # THIRD non-Cisco vendor axis. FortiGate HA is the firewall HA pair, the analogue of the Cisco ASA/FTD
+    # 'show failover'. FIRING STATE: HA is configured (Mode HA A-P/A-A) yet a member is 'out-of-sync' (a config-
+    # checksum mismatch -- the standby holds DIVERGENT config, so a failover applies the wrong ruleset) or the
+    # HA Health Status is not OK. Coverage-honest: a standalone FortiGate publishes {} and never fires; an
+    # all-in-sync + Health-OK cluster stays silent.
+    _fortigate = _as_dict(snap.get("fortigate"))
+    _fg_bad = []
+    for _fgh, _fgf in sorted(_fortigate.items()):
+        _ha = _as_dict(_as_dict(_fgf).get("ha"))
+        if not _ha:
+            continue
+        _why = []
+        _oos = [str(_as_dict(_m).get("name", "?")) for _m in _as_list(_ha.get("members"))
+                if str(_as_dict(_m).get("sync", "")).strip().lower() == "out-of-sync"]
+        if _oos:
+            _why.append(f"config out-of-sync: {', '.join(_oos[:4])}")
+        _health = str(_ha.get("health", "")).strip()
+        if _health and _health.lower() not in ("ok", ""):
+            _why.append(f"HA health {_health}")
+        if _why:
+            _fg_bad.append(f"{_fgh} ({'; '.join(_why)})")
+    sig["fortigate_ha_degraded"] = _fg_bad
+    sig["fortigate_ha_devices"] = sorted({x.split(' ')[0] for x in _fg_bad})[:12]
     # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
     # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
     # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
@@ -2249,6 +2273,34 @@ def _d_arista_evpn_degraded(snap, sig):
         devices=sig.get("arista_evpn_devices") or [])
 
 
+def _d_fortigate_ha_degraded(snap, sig):
+    """Fortinet FortiGate HA cluster-sync health (parse_fortigate_ha_status -> snap['fortigate'].ha) -- the THIRD
+    non-Cisco vendor detector. FortiGate HA is the firewall HA pair (A-P/A-A), the analogue of the Cisco ASA/FTD
+    'show failover' and the Juniper SRX chassis cluster. FIRES when HA is configured yet a member is
+    'out-of-sync' (a config-checksum mismatch -- the standby holds DIVERGENT config, so a failover would apply
+    the wrong ruleset) or the HA Health Status is not OK. Coverage-honest: a standalone FortiGate publishes {}
+    and never fires; an all-in-sync + Health-OK cluster stays silent. None when no FortiGate HA is observed."""
+    bad = sig.get("fortigate_ha_degraded") or []
+    if not bad:
+        return None
+    return _decision(
+        "fortigate-ha-cluster-out-of-sync",
+        f"{len(bad)} Fortinet FortiGate HA cluster(s) are degraded (e.g. {', '.join(bad[:5])}). FortiGate HA is "
+        "the firewall HA pair. A member 'out-of-sync' means its configuration checksum no longer matches the "
+        "primary -- the standby holds a DIVERGENT ruleset, so a failover would silently enforce the wrong "
+        "policy (or drop sessions the primary permits); an HA Health Status other than OK means a monitored "
+        "fault has degraded the cluster. 'config-sync enable' present is NOT proof the peers actually match -- "
+        "only the checksum is. Recalculate / force-resync the checksums (verify identical firmware + ISDB/IPS "
+        "versions first) and restore Health to OK before the FortiGate is on the cutover path.",
+        len(bad), ["security", "availability"],
+        ["fortigate.ha.members[].sync / .health (parse_fortigate_ha_status / get system ha status)"],
+        priority="High",
+        driver="Fortinet FortiGate HA: an out-of-sync member holds a divergent ruleset and a not-OK health "
+               "means a degraded cluster -- a failover would enforce the wrong policy, the firewall "
+               "config-present-but-operationally-broken trap on a third non-Cisco vendor.",
+        devices=sig.get("fortigate_ha_devices") or [])
+
+
 def _d_cloud_sg_open_ingress(snap, sig):
     """Public-cloud (AWS) security-group exposure (parse_aws_security_groups -> snap['cloud'].security_groups) --
     the FIRST cloud-domain detector, proving the engine extends beyond on-prem multi-vendor to public cloud.
@@ -3087,6 +3139,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_arista_mlag_degraded, _d_arista_evpn_degraded,  # MULTI-VENDOR: Arista EOS DC fabric -- MLAG (vPC analogue) + BGP-EVPN overlay (NX-OS EVPN-RR analogue); device-native JSON
               _d_junos_chassis_cluster_degraded,  # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor ('| display json')
               _d_cloud_sg_open_ingress,  # PUBLIC CLOUD: AWS security-group exposure -- the FIRST cloud-domain detector (CIS 5.2/5.3)
+              _d_fortigate_ha_degraded,  # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -- the THIRD non-Cisco vendor ('get system ha status')
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -4363,6 +4416,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("arista",        "Arista EOS DC fabric (MLAG + BGP-EVPN)",   "ssh",  ["arista-mlag-domain-degraded", "arista-bgp-evpn-peer-down"]),
     ("juniper",       "Juniper SRX chassis cluster (HA)",          "ssh",  ["junos-chassis-cluster-ha-degraded"]),
     ("cloud",         "Public cloud exposure (AWS security groups)", "json", ["cloud-security-group-open-ingress"]),
+    ("fortigate",     "Fortinet FortiGate HA (cluster sync)",      "ssh",  ["fortigate-ha-cluster-out-of-sync"]),
 ]
 
 

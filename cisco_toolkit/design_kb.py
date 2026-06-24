@@ -441,6 +441,47 @@ _CLOUD_DESIGN_ADDENDUM = [
 ]
 DOCTRINE.extend(_CLOUD_DESIGN_ADDENDUM)
 
+# --- multi-vendor (Fortinet FortiGate): the THIRD non-Cisco vendor principle -----------------------------
+# FortiGate HA is the firewall HA pair -- the analogue of the Cisco ASA/FTD failover model -- assessed via the
+# device-native 'get system ha status' axis (parse_fortigate_ha_status / build_fortigate). engine_actionable:
+# _d_fortigate_ha_degraded fires on an out-of-sync member or a not-OK HA Health (coverage-honest -- silent on a
+# standalone FortiGate or an all-in-sync + Health-OK cluster).
+_FORTINET_DESIGN_ADDENDUM = [
+    {
+        "id": "fortigate-ha-cluster-out-of-sync",
+        "title": "Keep every Fortinet FortiGate HA cluster in-sync and Health-OK (the firewall HA pair)",
+        "domain": "security",
+        "priority": "High",
+        "design_intent": "A FortiGate HA cluster (Active-Passive or Active-Active) presents two firewalls as one "
+        "logical pair: the primary handles traffic and continuously pushes its configuration to the secondary so "
+        "that, on a failover, the standby enforces the SAME policy. That guarantee holds only when the members "
+        "are actually in-sync -- FortiOS compares configuration CHECKSUMS, not every line, and a mismatch "
+        "('out-of-sync') means the standby holds a divergent ruleset. A failover to an out-of-sync (or "
+        "Health-not-OK) member silently enforces the wrong policy or drops sessions the primary permitted: the "
+        "firewall HA is configured but not a faithful standby.",
+        "observable": "'get system ha status' (parse_fortigate_ha_status / build_fortigate -> "
+        "snap['fortigate'].ha): the per-member Configuration Status (in-sync / out-of-sync) and the HA Health "
+        "Status. Coverage-honest: a standalone FortiGate (Mode: Standalone) publishes {} and is never assessed.",
+        "trigger": "An HA cluster member reported out-of-sync (a configuration-checksum mismatch) or an HA "
+        "Health Status other than OK.",
+        "recommended_action": "Identify the divergent objects ('diagnose sys ha checksum cluster' / the GUI HA "
+        "widget), confirm identical firmware and ISDB / IPS / AV database versions on both units, then "
+        "recalculate or force a resync until every member reads in-sync and Health is OK -- before the FortiGate "
+        "is on the cutover path. Treat 'config-sync enable' as intent, not proof.",
+        "alternatives": "A standalone firewall (no HA -- a device failure is an outage); FGSP session-sync "
+        "without full config-sync (you then own config parity operationally). Neither removes the need to verify "
+        "the chosen HA is actually in-sync.",
+        "tradeoffs": "A FortiGate HA cluster adds a heartbeat / sync link and the discipline of keeping firmware "
+        "+ signature databases identical across members, but gives stateful, sub-second firewall failover -- the "
+        "same trade as a Cisco ASA/FTD failover pair.",
+        "citation": "Fortinet FortiOS Administration Guide -- HA, 'Check HA synchronization status' (get system "
+        "ha status; in-sync / out-of-sync configuration checksums); Fortinet KB (HA checksum-mismatch "
+        "troubleshooting); analogous to the Cisco ASA / FTD failover model",
+        "engine_actionable": True,
+    },
+]
+DOCTRINE.extend(_FORTINET_DESIGN_ADDENDUM)
+
 # --------------------------------------------------------------------- Cisco ISE (identity / NAC control plane)
 # ISE is the authentication + segmentation control plane the access layer depends on (802.1X/MAB over RADIUS;
 # the TrustSec SGT/SGACL matrix + environment-data the switches download). It is a CONTROLLER cluster, assessed

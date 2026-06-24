@@ -1511,6 +1511,32 @@ def parse_aws_security_groups(output: str):
     return out
 
 
+# --- multi-vendor: Fortinet FortiGate (the THIRD non-Cisco NOS) -- 'get system ha status' show-text ---------
+def parse_fortigate_ha_status(output: str) -> dict:
+    """Fortinet FortiGate 'get system ha status' -> {health, mode, members:[{name, sync}]}, or {} when the
+    device is not an HA cluster (standalone) / not present. FortiGate HA is the firewall HA pair -- the analogue
+    of the Cisco ASA/FTD 'show failover'. The decisive lines (version-stable): 'HA Health Status: OK|WARNING',
+    'Mode: HA A-P|HA A-A|Standalone', and a 'Configuration Status:' section listing each member as
+    '<id>(updated N seconds ago): in-sync|out-of-sync' (a config-checksum dump that, when it differs between
+    members, reads out-of-sync). Returns {} unless Mode indicates an HA cluster AND at least one member line is
+    present, so a standalone box (Mode: Standalone, no Configuration Status) is coverage-honestly never assessed.
+    Tolerant regex; never raises."""
+    if not output:
+        return {}
+    mode_m = re.search(r"^\s*Mode\s*:\s*(.+?)\s*$", output, re.IGNORECASE | re.MULTILINE)
+    mode = mode_m.group(1).strip() if mode_m else ""
+    if not re.match(r"HA\b", mode, re.IGNORECASE):           # standalone / no HA -> not assessed (coverage-honest)
+        return {}
+    members = []
+    for m in re.finditer(r"^\s*([^\s(]+)\(updated\s+[^)]*\):\s*(in-sync|out-of-sync)",
+                         output, re.IGNORECASE | re.MULTILINE):
+        members.append({"name": m.group(1).strip(), "sync": m.group(2).strip().lower()})
+    if not members:
+        return {}
+    health_m = re.search(r"^\s*HA Health Status\s*:\s*(\S+)", output, re.IGNORECASE | re.MULTILINE)
+    return {"health": (health_m.group(1).strip() if health_m else ""), "mode": mode, "members": members}
+
+
 # --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
 def _fmc_items(output: str) -> list:
     """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object
