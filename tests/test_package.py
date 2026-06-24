@@ -399,3 +399,34 @@ def test_redact_snapshot_pseudonymizes_consistently():
     assert dev["serial_number"] == dev["chassis_serial"] and dev["serial_number"].startswith("SN")
     assert "core1" in r["interfaces"]
     assert snap["interfaces"]["core1"]["Gi1/0/1"]["end_host_ip"] == "10.0.10.5"
+
+
+def test_collect_global_arp_attribution_is_order_independent(tmp_path):
+    """Reproducibility (SSOT): under multi-worker collection all_cmd_to_files is built in thread-COMPLETION
+    order (COLLECT_PARSE's as_completed), so collect_global_arp's first-writer-wins attribution of a MAC seen by
+    >=2 switches was nondeterministic -- the chosen end_host_ip (on an IP conflict) and the arp_source_switch
+    provenance could differ run-to-run for the SAME evidence, and both are persisted + displayed snapshot
+    fields. The attribution must be order-INDEPENDENT: deterministic, 'lowest hostname wins'."""
+    import os  # noqa: F401
+    from cisco_toolkit import build
+
+    mac = "00aa.bbcc.ddee"   # the SAME MAC, reported by two switches with DIFFERENT IPs (moved host / overlapping ARP)
+
+    def _arp(name, ip):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "arp.txt").write_text(
+            "Protocol  Address     Age   Hardware Addr   Type   Interface\n"
+            f"Internet  {ip}   5     {mac}  ARPA   Vlan10\n", encoding="utf-8")
+        return {"show ip arp": str(d / "arp.txt")}
+
+    cA = _arp("access-a", "10.0.10.5")
+    cB = _arp("access-b", "10.0.20.5")
+
+    arp1, src1 = build.collect_global_arp({"access-a": cA, "access-b": cB})   # one insertion order
+    arp2, src2 = build.collect_global_arp({"access-b": cB, "access-a": cA})   # the OTHER (as a different completion order would give)
+
+    assert arp1 == arp2, (arp1, arp2)        # same MAC->IP regardless of host insertion order
+    assert src1 == src2, (src1, src2)        # same provenance regardless of order
+    m = next(iter(arp1))                      # the single normalized MAC key
+    assert arp1[m] == "10.0.10.5" and src1[m] == "access-a"   # deterministic winner: 'access-a' < 'access-b'
