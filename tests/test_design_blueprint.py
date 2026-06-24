@@ -394,7 +394,7 @@ def _arch_fire_snap():
         "overlay": {"leaf1": {"nve_peers": [{"interface": "nve1", "peer_ip": "10.0.0.2", "state": "Down", "learn_type": "CP"}],
                               "nve_vni": [{"vni": "10010", "state": "Down"}],
                               "evpn_neighbors": [{"neighbor": "10.0.0.3", "state": "Idle"}]}},
-        "copp": {"sw1": [{"class": "copp-system-critical", "drops": 50000, "exceeded": 50000, "violated": 0}]},
+        "copp": {"sw1": [{"class": "MGMT-RATE-LIMIT", "drops": 50000, "exceeded": 50000, "violated": 0}]},  # USER class -> fires (default-profile copp-system-* is now coverage-honest-silent)
         # MULTI-VENDOR (Arista EOS): a config-inconsistent MLAG domain -> _d_arista_mlag_degraded, AND an Idle
         # BGP-EVPN peer -> _d_arista_evpn_degraded (the NX-OS EVPN-RR-down analogue on a non-Cisco platform).
         "arista": {"spine1": {"mlag": {"state": "active", "neg_status": "connected", "config_sanity": "inconsistent",
@@ -1087,22 +1087,30 @@ def test_d_evpn_rr_health_flags_down_rr():
     assert da._d_evpn_rr_health(ok, da._signals(ok)) is None
 
 
-def test_d_copp_drops_fires_on_dropping_class_only():
-    """Universality (control-plane policing): a CoPP class actively dropping (drops > 0) fires _d_copp_drops;
-    an armed-but-clean policer (every class drops == 0) and an ABSENT copp axis are both silent (coverage-honest
-    -- 'CoPP configured, nothing dropping' is the NORMAL state, not a finding)."""
+def test_d_copp_drops_fires_on_user_class_not_default_profile_cumulative():
+    """CoPP single-sample cry-wolf fix (DETEC-01): a CUMULATIVE lifetime drop counter cannot distinguish a real
+    flood from the NX-OS default strict profile's NORMAL steady state -- copp-system-p-class-critical accumulates
+    'violated' from routine microbursts over uptime, and copp-system-p-class-undesirable / the *-default
+    catch-alls DROP by design -- and the snapshot has no rate. So the system default-profile classes
+    (copp-system-*) and by-design droppers stay SILENT; a USER-defined CoPP class dropping IS the operator's own
+    policy actively discarding -> fires. Armed-but-clean and absent stay silent."""
     import cisco_toolkit.design_advisor as da
-    dropping = {"copp": {"core2": [
-        {"class": "copp-system-p-class-critical", "conformed": 177446058, "exceeded": 0, "violated": 4521, "dropped": 0, "drops": 4521},
-        {"class": "copp-system-p-class-normal", "conformed": 88231005, "exceeded": 0, "violated": 0, "dropped": 0, "drops": 0},
+    # default strict-profile steady state: class-critical cumulative + undesirable by-design -> SILENT (was the cry-wolf)
+    default_profile = {"copp": {"core2": [
+        {"class": "copp-system-p-class-critical", "conformed": 177446058, "violated": 4521, "dropped": 0, "drops": 4521},
+        {"class": "copp-system-p-class-undesirable", "conformed": 0, "violated": 88231, "dropped": 88231, "drops": 88231},
     ]}}
-    sig = da._signals(dropping)
+    assert da._signals(default_profile)["copp_drop_classes"] == 0
+    assert da._d_copp_drops(default_profile, da._signals(default_profile)) is None
+    # a USER-defined CoPP class actively dropping -> fires
+    user = {"copp": {"core2": [{"class": "MGMT-RATE-LIMIT", "conformed": 5, "violated": 4521, "dropped": 4521, "drops": 4521}]}}
+    sig = da._signals(user)
     assert sig["copp_drop_classes"] == 1 and sig["copp_drop_pkts"] == 4521 and sig["copp_drop_hosts"] == ["core2"]
-    dec = da._d_copp_drops(dropping, sig)
-    assert dec is not None and "CoPP" in str(dec) and "dropping" in str(dec)
-    assert "core2" in dec["evidence"]["devices"] and dec["priority"] == "High"
-    clean = {"copp": {"core2": [{"class": "c", "conformed": 5, "exceeded": 0, "violated": 0, "dropped": 0, "drops": 0}]}}
-    assert da._d_copp_drops(clean, da._signals(clean)) is None
+    dec = da._d_copp_drops(user, sig)
+    assert dec is not None and "CoPP" in str(dec) and "core2" in dec["evidence"]["devices"]
+    # armed-but-clean + absent stay silent
+    _clean = {"copp": {"core2": [{"class": "MGMT-RATE-LIMIT", "drops": 0}]}}
+    assert da._d_copp_drops(_clean, da._signals(_clean)) is None
     assert da._d_copp_drops({}, da._signals({})) is None
 
 

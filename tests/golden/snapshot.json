@@ -3766,7 +3766,7 @@
  "copp": {
   "core2": [
    {
-    "class": "copp-system-p-class-critical",
+    "class": "MGMT-RATE-LIMIT",
     "conformed": 177446058,
     "exceeded": 0,
     "violated": 4521,
@@ -3774,12 +3774,12 @@
     "drops": 4521
    },
    {
-    "class": "copp-system-p-class-normal",
+    "class": "copp-system-p-class-critical",
     "conformed": 88231005,
     "exceeded": 0,
-    "violated": 0,
+    "violated": 9999,
     "dropped": 0,
-    "drops": 0
+    "drops": 9999
    }
   ]
  },
