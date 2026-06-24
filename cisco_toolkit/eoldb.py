@@ -38,6 +38,14 @@ _EOL = [
      "source": "Cisco EOL (Catalyst 3650)", "conf": "derived"},
     {"pat": "WS-C3560", "platform": "Catalyst 3560", "eos": "2013-10-31", "ldos": "2018-10-31",
      "source": "Cisco EOL (Catalyst 3560)", "conf": "derived"},
+    # Newer COMPACT SKUs whose PID shares a classic family's prefix but whose lifecycle is YEARS later --
+    # explicit rows so longest-prefix matching credits them instead of inheriting the classic family's past
+    # dates (the cry-wolf: an in-support WS-C3560CX/WS-C2960CX was flagged Past-LDoS). 3560-CX EoS 2024-04-30
+    # (Cisco EoL); 2960-CX is a newer compact still in support -> Active/verify rather than asserting a date.
+    {"pat": "WS-C3560CX", "platform": "Catalyst 3560-CX", "eos": "2024-04-30", "ldos": "2029-04-30",
+     "source": "Cisco EOL (Catalyst 3560-CX)", "conf": "derived"},
+    {"pat": "WS-C2960CX", "platform": "Catalyst 2960-CX", "eos": "", "ldos": "",
+     "source": "Catalyst 2960-CX (newer compact) — verify on Cisco EoX", "conf": "active"},
     {"pat": "WS-C2960X", "platform": "Catalyst 2960-X", "eos": "2025-04-30", "ldos": "2030-04-30",
      "source": "Cisco EOL (Catalyst 2960-X)", "conf": "derived"},
     {"pat": "WS-C2960", "platform": "Catalyst 2960", "eos": "2019-10-31", "ldos": "2024-10-31",
@@ -80,6 +88,12 @@ _EOL = [
      "source": "no EoL announced", "conf": "active"},
     {"pat": "N9K", "platform": "Nexus 9000", "eos": "", "ldos": "",
      "source": "no EoL announced", "conf": "active"},
+    # Older Nexus 3000 SKUs the blanket 'N3K -> active' row masked as in-support though they are PAST LDoS
+    # (false-health): N3K-C3048 EoS 2020-08-03, N3K-C3064 EoS 2017-04-28 (Cisco EoL) -> LDoS = EoS + 5y.
+    {"pat": "N3K-C3048", "platform": "Nexus 3048", "eos": "2020-08-03", "ldos": "2025-08-03",
+     "source": "Cisco EOL (Nexus 3048)", "conf": "derived"},
+    {"pat": "N3K-C3064", "platform": "Nexus 3064", "eos": "2017-04-28", "ldos": "2022-04-28",
+     "source": "Cisco EOL (Nexus 3064)", "conf": "derived"},
     {"pat": "N3K", "platform": "Nexus 3000", "eos": "", "ldos": "",
      "source": "no EoL announced", "conf": "active"},
 ]
