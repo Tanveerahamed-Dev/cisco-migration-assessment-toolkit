@@ -1470,6 +1470,47 @@ def parse_junos_chassis_cluster(output: str) -> list:
     return out
 
 
+# --- public cloud: AWS (the FIRST cloud-domain axis) -- 'aws ec2 describe-security-groups' JSON -------------
+_CLOUD_OPEN_V4 = "0.0.0.0/0"
+_CLOUD_OPEN_V6 = "::/0"
+
+
+def parse_aws_security_groups(output: str):
+    """AWS 'aws ec2 describe-security-groups' JSON -> [{group_id, group_name, vpc_id, open_ingress:[{proto,
+    from_port, to_port, cidr}]}] -- one entry per security group that has at least one INBOUND rule open to the
+    whole internet (an IpRanges CidrIp 0.0.0.0/0 or an Ipv6Ranges CidrIpv6 ::/0). Returns [] when the export is
+    present but NOTHING is world-open (observed / clean), and None when there is no / an invalid export (so the
+    axis stays coverage-honestly 'not observed', never 'healthy'). Per the EC2 DescribeSecurityGroups API. The
+    detector applies the sensitive-port filter; this parser is purely structural. Never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return None
+    if not (isinstance(obj, dict) and isinstance(obj.get("SecurityGroups"), list)):
+        return None
+    out = []
+    for sg in obj["SecurityGroups"]:
+        if not isinstance(sg, dict):
+            continue
+        open_rules = []
+        for perm in (sg.get("IpPermissions") if isinstance(sg.get("IpPermissions"), list) else []):
+            if not isinstance(perm, dict):
+                continue
+            v4 = any(isinstance(r, dict) and r.get("CidrIp") == _CLOUD_OPEN_V4
+                     for r in (perm.get("IpRanges") if isinstance(perm.get("IpRanges"), list) else []))
+            v6 = any(isinstance(r, dict) and r.get("CidrIpv6") == _CLOUD_OPEN_V6
+                     for r in (perm.get("Ipv6Ranges") if isinstance(perm.get("Ipv6Ranges"), list) else []))
+            if v4 or v6:
+                open_rules.append({"proto": str(perm.get("IpProtocol", "") or ""),
+                                   "from_port": perm.get("FromPort"), "to_port": perm.get("ToPort"),
+                                   "cidr": _CLOUD_OPEN_V4 if v4 else _CLOUD_OPEN_V6})
+        if open_rules:
+            out.append({"group_id": str(sg.get("GroupId", "") or ""),
+                        "group_name": str(sg.get("GroupName", "") or ""),
+                        "vpc_id": str(sg.get("VpcId", "") or ""), "open_ingress": open_rules})
+    return out
+
+
 # --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
 def _fmc_items(output: str) -> list:
     """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object

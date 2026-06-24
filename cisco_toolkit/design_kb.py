@@ -401,6 +401,46 @@ _JUNIPER_DESIGN_ADDENDUM = [
 ]
 DOCTRINE.extend(_JUNIPER_DESIGN_ADDENDUM)
 
+# --- public cloud (AWS): the FIRST cloud-domain principle ------------------------------------------------
+# A cloud account is assessed as a 'device' via its read-only 'aws ec2 describe-security-groups' export
+# (parse_aws_security_groups / build_cloud). engine_actionable: _d_cloud_sg_open_ingress fires on an admin/DB/
+# all-port rule open to 0.0.0.0/0 (coverage-honest -- silent on a legit 80/443 web tier or no cloud export).
+_CLOUD_DESIGN_ADDENDUM = [
+    {
+        "id": "cloud-security-group-open-ingress",
+        "title": "Never expose an admin / database port (or all ports) to 0.0.0.0/0 in a cloud security group",
+        "domain": "cloud",
+        "priority": "High",
+        "design_intent": "A cloud security group is the per-workload stateful firewall: its inbound rules decide "
+        "who can reach the host. The cardinal rule is least-exposure -- the management plane (SSH 22 / RDP 3389), "
+        "data stores (database ports) and any 'all ports / all protocols' rule must be sourced from specific "
+        "admin / peering CIDRs (or a bastion / VPN / SSM), NEVER from 0.0.0.0/0 (or ::/0). A world-open admin "
+        "port puts the host's control or data plane directly on the public internet -- the single most common "
+        "cloud breach vector -- whereas a public web tier legitimately exposes only 80/443.",
+        "observable": "'aws ec2 describe-security-groups' (parse_aws_security_groups / build_cloud -> "
+        "snap['cloud'].security_groups): per security group, the inbound rules open to 0.0.0.0/0 or ::/0 and "
+        "their ports. Coverage-honest: no cloud export -> the axis is not assessed (never 'healthy'); a SG open "
+        "only on 80/443 or with no world-open ingress is clean.",
+        "trigger": "A security-group inbound rule allowing 0.0.0.0/0 (or ::/0) to a sensitive admin / DB port "
+        "or to all ports / protocols.",
+        "recommended_action": "Restrict the source to the specific admin / peering CIDRs, or front the access "
+        "with a bastion / VPN / SSM Session Manager; re-scope any 'all ports / all protocols' rule to the "
+        "minimum required; and verify there is no inherited world-open admin path before the workload is "
+        "migrated or the account goes to production. Pair with VPC flow logs + a network-exposure analyzer.",
+        "alternatives": "A public load balancer / WAF in front of a private subnet (the host has no world-open "
+        "rule at all); zero-trust access (SSM / Identity-Aware Proxy) instead of network reachability. Both "
+        "remove the world-open admin port entirely.",
+        "tradeoffs": "Locking the source CIDRs (or adding a bastion) adds a small operational step versus "
+        "leaving a port open to the world, but removes the highest-signal cloud-exposure path -- the same "
+        "defence-in-depth trade as a least-privilege firewall rule on-prem.",
+        "citation": "CIS Amazon Web Services Foundations Benchmark 5.2 / 5.3 (no security group allows ingress "
+        "from 0.0.0.0/0 to port 22 / 3389); AWS Well-Architected Security Pillar; AWS EC2 "
+        "DescribeSecurityGroups API",
+        "engine_actionable": True,
+    },
+]
+DOCTRINE.extend(_CLOUD_DESIGN_ADDENDUM)
+
 # --------------------------------------------------------------------- Cisco ISE (identity / NAC control plane)
 # ISE is the authentication + segmentation control plane the access layer depends on (802.1X/MAB over RADIUS;
 # the TrustSec SGT/SGACL matrix + environment-data the switches download). It is a CONTROLLER cluster, assessed

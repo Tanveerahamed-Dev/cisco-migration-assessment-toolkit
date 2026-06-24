@@ -518,6 +518,31 @@ def _signals(snap):
                 _junos_bad.append(f"{_jh} RG{_r.get('rg', '?')} {_r.get('node', '?')} ({', '.join(_why)})")
     sig["junos_cluster_degraded"] = _junos_bad
     sig["junos_cluster_devices"] = sorted({x.split(' ')[0] for x in _junos_bad})[:12]
+    # PUBLIC CLOUD (AWS) security-group exposure (snap['cloud'][h]['security_groups'] from build_cloud) -- the
+    # FIRST cloud-domain axis. FIRING STATE (CIS AWS Foundations 5.2/5.3): a security group allows INBOUND from
+    # 0.0.0.0/0 (or ::/0) to a SENSITIVE admin port (SSH/RDP/DB/...) or to ALL ports/protocols -- the host is
+    # exposed to the whole internet. Coverage-honest & non-cry-wolf: a SG open only on 80/443 (a legitimate
+    # public web tier) or with no world-open ingress does NOT fire; no cloud export never fires.
+    _CLOUD_SENSITIVE = {22, 23, 135, 445, 1433, 1521, 2375, 2376, 3306, 3389, 5432, 5601, 5984, 6379, 6443, 9200, 9300, 11211, 27017}
+    _cloud = _as_dict(snap.get("cloud"))
+    _cloud_open, _cloud_hosts = [], set()
+    for _clh, _clf in sorted(_cloud.items()):
+        for _sg in _as_list(_as_dict(_clf).get("security_groups")):
+            _sg = _as_dict(_sg)
+            for _rule in _as_list(_sg.get("open_ingress")):
+                _rule = _as_dict(_rule)
+                _proto = str(_rule.get("proto", "")).strip()
+                _fp, _tp = _rule.get("from_port"), _rule.get("to_port")
+                _all = _proto in ("-1", "all") or (_fp in (None, 0) and _tp in (None, 65535))
+                _hit = _all or (isinstance(_fp, int) and isinstance(_tp, int)
+                                and any(_fp <= _p <= _tp for _p in _CLOUD_SENSITIVE))
+                if _hit:
+                    _scope = "ALL ports/protocols" if _all else (f"port {_fp}" if _fp == _tp else f"ports {_fp}-{_tp}")
+                    _cloud_open.append(f"{_sg.get('group_id') or _sg.get('group_name') or '?'} "
+                                       f"({_scope} open to {_rule.get('cidr')})")
+                    _cloud_hosts.add(_clh)
+    sig["cloud_sg_open"] = _cloud_open
+    sig["cloud_devices"] = sorted(_cloud_hosts)[:12]
     # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
     # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
     # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
@@ -2224,6 +2249,36 @@ def _d_arista_evpn_degraded(snap, sig):
         devices=sig.get("arista_evpn_devices") or [])
 
 
+def _d_cloud_sg_open_ingress(snap, sig):
+    """Public-cloud (AWS) security-group exposure (parse_aws_security_groups -> snap['cloud'].security_groups) --
+    the FIRST cloud-domain detector, proving the engine extends beyond on-prem multi-vendor to public cloud.
+    FIRES when a security group allows INBOUND from 0.0.0.0/0 (or ::/0) to a SENSITIVE admin port (SSH 22 /
+    RDP 3389 / a database port / ...) or to ALL ports/protocols -- the host/service behind it is reachable from
+    the entire internet (CIS AWS Foundations 5.2/5.3). Coverage-honest & non-cry-wolf: a SG open only on 80/443
+    (a legitimate public web tier) or with no world-open ingress does NOT fire; no cloud export never fires.
+    Surfaces the EXPOSURE (open to the world), never claims a vulnerability. None when absent/clean."""
+    bad = sig.get("cloud_sg_open") or []
+    if not bad:
+        return None
+    return _decision(
+        "cloud-security-group-open-ingress",
+        f"{len(bad)} cloud security-group rule(s) expose a sensitive port to the whole internet "
+        f"(e.g. {', '.join(bad[:5])}). A security group that allows inbound from 0.0.0.0/0 (or ::/0) to an admin "
+        "port (SSH/RDP), a database port, or ALL ports means the host behind it is reachable from anywhere -- "
+        "the management / data plane is exposed to the entire internet (CIS AWS Foundations 5.2/5.3). This is a "
+        "surface-OPEN finding, not a proven compromise, but it is the single most common cloud-exposure "
+        "anti-pattern and a cutover / inheritance risk. Restrict the source to the specific admin/peering CIDRs "
+        "(or a bastion / VPN / SSM), and re-scope any 'all ports / all protocols' rule, before the workload is "
+        "migrated or the account is in production.",
+        len(bad), ["security", "manageability"],
+        ["cloud.security_groups[].open_ingress[].from_port / .cidr (parse_aws_security_groups / aws ec2 describe-security-groups)"],
+        priority="High",
+        driver="Cloud exposure: a security group open from 0.0.0.0/0 to an admin / DB / all port puts the "
+               "host's management or data plane on the public internet -- the highest-signal, vendor-"
+               "authoritative cloud-segmentation finding (surface OPEN, not vulnerable).",
+        devices=sig.get("cloud_devices") or [])
+
+
 def _d_junos_chassis_cluster_degraded(snap, sig):
     """Juniper Junos SRX chassis-cluster HA health (parse_junos_chassis_cluster -> snap['juniper'].chassis_cluster)
     -- the SECOND non-Cisco vendor detector, proving the adapter pattern generalises beyond Arista. SRX chassis
@@ -3031,6 +3086,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_ftd_ha_degraded, _d_fmc_device_disconnected, _d_fmc_deployment_pending, _d_fmc_manager_ha_degraded, _d_fmc_version_inversion,  # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
               _d_arista_mlag_degraded, _d_arista_evpn_degraded,  # MULTI-VENDOR: Arista EOS DC fabric -- MLAG (vPC analogue) + BGP-EVPN overlay (NX-OS EVPN-RR analogue); device-native JSON
               _d_junos_chassis_cluster_degraded,  # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor ('| display json')
+              _d_cloud_sg_open_ingress,  # PUBLIC CLOUD: AWS security-group exposure -- the FIRST cloud-domain detector (CIS 5.2/5.3)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -4306,6 +4362,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("fmc",           "Cisco Secure Firewall Mgmt Center (FMC)", "json", ["ftd-ha-pair-degraded", "fmc-device-disconnected", "fmc-deployment-pending", "fmc-manager-ha-degraded", "fmc-version-inversion"]),
     ("arista",        "Arista EOS DC fabric (MLAG + BGP-EVPN)",   "ssh",  ["arista-mlag-domain-degraded", "arista-bgp-evpn-peer-down"]),
     ("juniper",       "Juniper SRX chassis cluster (HA)",          "ssh",  ["junos-chassis-cluster-ha-degraded"]),
+    ("cloud",         "Public cloud exposure (AWS security groups)", "json", ["cloud-security-group-open-ingress"]),
 ]
 
 

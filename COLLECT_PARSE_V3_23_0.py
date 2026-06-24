@@ -427,6 +427,7 @@ from cisco_toolkit.build import (
     build_fmc,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     build_arista,   # MULTI-VENDOR: Arista EOS MLAG -- the FIRST non-Cisco vendor channel (device-native JSON)
     build_juniper,   # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor channel ('| display json')
+    build_cloud,   # PUBLIC CLOUD: AWS security-group exposure -- the FIRST cloud-domain channel (account-as-device JSON export)
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -664,6 +665,11 @@ COMMANDS_ARISTA = [
 # COMMANDS_ARISTA (kept off the Cisco live lists); a captured 'show chassis cluster status' is read and assessed.
 COMMANDS_JUNIPER = [
     "show chassis cluster status",       # Juniper SRX chassis-cluster HA state -> build_juniper / _d_junos_chassis_cluster_degraded
+]
+# PUBLIC CLOUD (AWS): a cloud account is added as a 'device' (like the ACI/ISE/FMC controllers); its read-only
+# export drops into the SAME offline pipeline. Folded into the offline union only (no live collection here).
+COMMANDS_CLOUD = [
+    "aws ec2 describe-security-groups",  # AWS security-group exposure -> build_cloud / _d_cloud_sg_open_ingress
 ]
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 
@@ -1477,7 +1483,7 @@ def main():
             if platform in ("auto",""):
                 platform = detect_platform_from_files(dev_dir)
                 logger.info(f"  [{hostname}] Auto-detected platform: {platform}")
-            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS + COMMANDS_ARISTA + COMMANDS_JUNIPER))
+            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS + COMMANDS_ARISTA + COMMANDS_JUNIPER + COMMANDS_CLOUD))
             for cmd in all_cmds:
                 fn    = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_")+".txt"
                 fpath = os.path.join(dev_dir, fn)
@@ -1606,6 +1612,7 @@ def main():
     all_fmc: Dict[str, dict] = {}                              # Cisco Secure Firewall Mgmt Center (FMC) -> snap['fmc']
     all_arista: Dict[str, dict] = {}                           # MULTI-VENDOR: Arista EOS MLAG -> snap['arista'] (first non-Cisco vendor axis)
     all_juniper: Dict[str, dict] = {}                          # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> snap['juniper'] (second non-Cisco vendor axis)
+    all_cloud: Dict[str, dict] = {}                            # PUBLIC CLOUD: AWS security-group exposure -> snap['cloud'] (first cloud-domain axis)
     all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
     all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
     all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
@@ -1719,6 +1726,9 @@ def main():
         _juniper = build_juniper(cmd_to_file)   # MULTI-VENDOR: Juniper Junos SRX chassis-cluster ({} on a non-Juniper device)
         if _juniper:
             all_juniper[hostname] = _juniper
+        _cloud = build_cloud(cmd_to_file)   # PUBLIC CLOUD: AWS security-group exposure ({} when no cloud export)
+        if _cloud:
+            all_cloud[hostname] = _cloud
         _ipv6_nd = build_ipv6_nd(cmd_to_file)
         if _ipv6_nd:
             all_ipv6_nd[hostname] = _ipv6_nd
@@ -2270,6 +2280,7 @@ def main():
     snap_dict["fmc"] = all_fmc                                        # Cisco Secure Firewall Mgmt Center (FMC) -> _d_ftd_*/_d_fmc_* (JSON controller-REST channel)
     snap_dict["arista"] = all_arista                                  # MULTI-VENDOR: Arista EOS MLAG -> _d_arista_mlag_degraded (device-native JSON; the first non-Cisco vendor axis)
     snap_dict["juniper"] = all_juniper                               # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> _d_junos_chassis_cluster_degraded (the second non-Cisco vendor axis)
+    snap_dict["cloud"] = all_cloud                                   # PUBLIC CLOUD: AWS security-group exposure -> _d_cloud_sg_open_ingress (the first cloud-domain axis)
     snap_dict["lisp"] = all_lisp                                       # universal arch coverage
     snap_dict["cts"] = all_cts                                       # universal arch coverage
     snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage
