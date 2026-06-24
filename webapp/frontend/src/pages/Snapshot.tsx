@@ -117,7 +117,7 @@ function RegisterTable({ rows, note }: { rows: any[]; note?: string }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{ flex: 1, height: 7, borderRadius: 4, background: "var(--surface-2)", overflow: "hidden" }}>
                     <div style={{ width: `${Math.max(2, Number(d.risk_index) || 0)}%`, height: "100%", borderRadius: 4,
-                                  background: BAND_COLOR[d.risk_band] || "var(--ok)" }} />
+                                  background: BAND_COLOR[d.risk_band] || "var(--text-faint)" }} />
                   </div>
                   <span className="mono" style={{ fontSize: 12, minWidth: 34 }}>{d.risk_index}</span>
                 </div>

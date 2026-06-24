@@ -128,6 +128,17 @@ class Store:
     # -- snapshots ---------------------------------------------------------
     def add_snapshot(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
                      summary: Dict[str, Any]) -> Dict[str, Any]:
+        # SSOT: the canonical inventoried count (executive_brief.scale.n_devices), falling back to
+        # len(devices) ONLY when the canonical field is ABSENT. isinstance-guarded so a truthy non-dict
+        # executive_brief/scale on a malformed upload degrades instead of raising AttributeError (-> a 500
+        # on every upload). `is not None` (NOT `or`) so a legitimate canonical 0 is recorded as 0, not
+        # silently replaced by the len() recount (the project's `or`-masks-zero bug class).
+        _eb = snapshot.get("executive_brief")
+        _scale = _eb.get("scale") if isinstance(_eb, dict) else None
+        _n = _scale.get("n_devices") if isinstance(_scale, dict) else None
+        if _n is None:
+            _dev = snapshot.get("devices")
+            _n = len(_dev) if isinstance(_dev, (dict, list)) else 0
         with self._lock:
             cur = self._conn.execute(
                 """INSERT INTO snapshots(campaign_id, label, uploaded_at, script_version,
@@ -135,8 +146,7 @@ class Store:
                    VALUES (?,?,?,?,?,?,?)""",
                 (campaign_id, label.strip() or "snapshot", _now(),
                  str(snapshot.get("script_version", "")),
-                 (((snapshot.get("executive_brief") or {}).get("scale") or {}).get("n_devices"))
-                 or len(snapshot.get("devices") or {}),   # SSOT: canonical inventoried count, len() fallback
+                 _n,
                  json.dumps(summary, separators=(",", ":")),
                  json.dumps(snapshot, separators=(",", ":"))),
             )

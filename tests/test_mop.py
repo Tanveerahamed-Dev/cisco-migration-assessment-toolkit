@@ -2,6 +2,8 @@
 the module is skipped when it is absent (the generator fails soft the same way). These tests pin the
 one-section-per-wave structure, the change-overview reconciliation, the reuse of the existing validation
 plan as the post-cutover checks, the blocker surfacing, and the fail-soft path."""
+import os
+
 import pytest
 
 docx = pytest.importorskip("docx")  # skip the file if the optional dep is absent
@@ -424,3 +426,29 @@ def test_mop_endpoint_figure_labeled_as_mac_sum(tmp_path):
     write_mop_docx(out, _snap(), "Unit Test Fleet")
     text = _all_text(Document(out))
     assert "Endpoint MACs" in text
+
+
+def test_mop_robust_to_malformed_uploaded_snapshot(tmp_path):
+    """Robustness (webapp raw-upload path): a hand-edited / hostile snapshot can pass the webapp
+    validator (which only checks a top-level 'devices' key) with sections that are the WRONG truthy type
+    -- migration_readiness as an object, punchlist devices as a string, etc. The old `or {}`/`or []`
+    idioms do NOT guard a truthy non-dict/non-list, so write_mop_docx char-iterated or raised
+    AttributeError mid-render. With the shared docmeta coercers it must degrade and still produce a doc
+    (matching engagement/ops/archreview + the webapp cutover hardening)."""
+    out = str(tmp_path / "mop_malformed.docx")
+    bad = {
+        "devices": {"SW1": {"platform": "ios"}},
+        "migration_readiness": {"group": "G1", "switches": ["SW1"]},   # object, not a list
+        "move_groups": "oops",                                          # string, not a list
+        "wave_sequencing": {"k": "v"},
+        "migration_scenarios": "nope",
+        "validation_plan": [1, 2, 3],
+        "failure_impact": "str",
+        "remediation_plan": {"items": "notalist"},
+        "punchlist": [{"severity": "High", "category": "X", "title": "t", "devices": "SW1"}],
+        "software_risk": "x",
+        "executive_brief": 5,
+        "interfaces": "bad",
+    }
+    write_mop_docx(out, bad, "Malformed Fleet")   # must NOT raise
+    assert os.path.isfile(out) and os.path.getsize(out) > 0

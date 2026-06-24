@@ -28,11 +28,15 @@ class _FakeResp:
         pass
 
 
-def test_collect_refuses_redirect_downgrade():
-    """Security: an https->http redirect is REFUSED. _require_https only guards the FIRST hop, but urllib's stock
-    HTTPRedirectHandler follows a 30x without checking the new scheme -- a controller (or MITM / poisoned DNS) that
-    answers with a 302 to http:// would make urllib re-send the session cookie / Basic-auth Authorization header
-    over cleartext. The opener must install a no-downgrade redirect handler so that leak is closed on a redirect too."""
+def test_collect_refuses_redirect_downgrade_and_cross_host():
+    """Security: a redirect that would leak the credential is REFUSED on TWO vectors. _require_https only guards
+    the FIRST hop, but urllib's stock HTTPRedirectHandler follows a 30x and re-sends the session cookie /
+    Basic-auth Authorization header to the new location. (1) An https->http DOWNGRADE would put the credential
+    on the wire in cleartext. (2) A same-scheme CROSS-HOST redirect (a controller / MITM / poisoned DNS that
+    answers with a 302 to https://attacker/) would deliver the still-encrypted credential straight to an attacker
+    host. A read-only collector pointed at ONE controller has no reason to follow an auth redirect to a different
+    host, so the handler must refuse both -- only a SAME-HOST https->https redirect (a different path/port on the
+    same controller) is delegated to urllib."""
     import urllib.request
     import urllib.error
     opener = rest_collect._http_session()
@@ -42,11 +46,15 @@ def test_collect_refuses_redirect_downgrade():
     req = urllib.request.Request("https://controller.example/api/x")
     with pytest.raises(urllib.error.HTTPError):        # https -> http downgrade is refused (raises -> fail-soft None)
         h.redirect_request(req, None, 302, "Found", {}, "http://evil.example/login")
-    # a same-scheme https -> https redirect must still be allowed (normal redirects keep working)
-    try:
-        h.redirect_request(req, None, 302, "Found", {}, "https://controller.example/api/y")
-    except urllib.error.HTTPError:
-        pytest.fail("an https->https redirect must be allowed, not refused")
+    # a same-HOST https -> https redirect (a different path on the same controller) must still be allowed
+    same_host = h.redirect_request(req, None, 302, "Found", {}, "https://controller.example/api/y")
+    assert same_host is not None, "a same-host https->https redirect must be allowed, not refused"
+    # but a CROSS-HOST same-scheme redirect is REFUSED -- urllib's stock handler would re-send the credential
+    # to the foreign host (the same-scheme cross-host credential-exfiltration vector)
+    cred_req = urllib.request.Request("https://controller.example/api/x",
+                                      headers={"Authorization": "Basic dXNlcjpwYXNz"})
+    with pytest.raises(urllib.error.HTTPError):
+        h.redirect_request(cred_req, None, 302, "Found", {}, "https://attacker.example/collect")
 
 
 def test_collect_apic_writes_offline_files_then_parsers_read_them(tmp_path, monkeypatch):

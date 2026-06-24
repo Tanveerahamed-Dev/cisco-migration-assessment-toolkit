@@ -380,3 +380,15 @@ def test_archreview_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "ar.docx")
     write_archreview_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_trunk_allowed_none_is_not_classified_allow_all():
+    """L2-5 inverted cry-wolf: a trunk allowed-VLAN list of 'none' allows NO VLANs -- the INVERSE of
+    'allow ALL VLANs'. It must never be counted as an un-pruned allow-all trunk. With only a 'none' trunk
+    present, the captured-list trunk is maximally pruned, so the check CONFORMS and the observed text never
+    says 'allow ALL VLANs'."""
+    snap = {"devices": {"SW1": {"platform": "ios"}},
+            "interfaces": {"SW1": {"Gi1/0/1": {"switchport_mode": "trunk", "trunk_allowed_vlans": "none"}}}}
+    c = _check(compute_architecture_review(snap), "L2-5")
+    assert "allow ALL VLANs" not in c["observed"], c["observed"]
+    assert c["verdict"] == "conforms", c["verdict"]

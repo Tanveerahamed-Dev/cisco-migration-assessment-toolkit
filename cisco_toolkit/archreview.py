@@ -532,7 +532,7 @@ def compute_architecture_review(snap: dict) -> dict:
             av = str(d.get("trunk_allowed_vlans") or "").strip().lower()
             if av:
                 pruned_data += 1
-                if av in ("all", "1-4094", "none") or av.startswith("1-4094"):
+                if av in ("all", "1-4094") or av.startswith("1-4094"):   # 'none' = allows NO VLANs (the INVERSE of allow-all): never an un-pruned trunk
                     allow_all += 1
                     allow_all_hosts.add(host)
     if trunks == 0 or pruned_data == 0:
