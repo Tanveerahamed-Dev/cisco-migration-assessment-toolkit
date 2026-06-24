@@ -535,6 +535,87 @@ OurAddr         NeighAddr       LD/RD                 RH/RS           Holdown(mu
 10.0.255.1      10.0.255.2      1090519041/1090519040 Up              583(3)            Up          Gi1/0/1
 10.0.255.1      10.0.255.9      1090519042/0          Down            N/A(3)            Down        Gi1/0/3
 """,
+    # Cisco firewall HA (universality, SSH show-text channel): core1 stands in as a Secure Firewall ASA/FTD
+    # whose failover is ENABLED ('Failover On') but the standby peer is FAILED -> _d_firewall_ha_degraded
+    # FIRES (the HA pair has no working standby; a firewall in the data path is a single point of failure --
+    # the firewall analogue of the config-present-but-operationally-broken false-health trap). 'This host'
+    # Active is the healthy companion; a standalone 'Failover Off' box and the TRANSIENT sync states are
+    # proved silent (no cry-wolf) in tests/test_firewall.py. Grounded in the ASA 'show failover' format.
+    "show failover": """\
+Failover On
+Failover unit Primary
+Failover LAN Interface: FAILOVER GigabitEthernet0/2 (up)
+Unit Poll frequency 1 seconds, holdtime 15 seconds
+Interface Poll frequency 5 seconds, holdtime 25 seconds
+Interface Policy 1
+Monitored Interfaces 3 of 1050 maximum
+Version: Ours 9.16(3)23, Mate 9.16(3)23
+Last Failover at: 12:00:00 UTC Jan 1 2026
+        This host: Primary - Active
+                Active time: 102233 (sec)
+                  Interface outside (203.0.113.1): Normal (Monitored)
+                  Interface inside (10.0.0.1): Normal (Monitored)
+        Other host: Secondary - Failed
+                Active time: 0 (sec)
+                  Interface outside (203.0.113.2): Normal (Waiting)
+                  Interface inside (10.0.0.2): Normal (Waiting)
+""",
+    # Cisco firewall capacity (universality): core1's 'show resource usage' shows the data-plane Conns resource
+    # DENYING at peak (Denied 312, peak right at the 280000 Limit) -> _d_firewall_resource_exhaustion FIRES (the
+    # box dropped connections at its limit -- a hard sizing signal for the migration). The SSH row (Denied 44 =
+    # failed mgmt logins) and the '[rate]' row are administrative/rate and correctly EXCLUDED (no cry-wolf).
+    "show resource usage": """\
+Resource          Current     Peak       Limit       Denied  Context
+SSH                     1        3           5           44   System
+Conns               240128   279994      280000          312   System
+Xlates               21944    40210         N/A            0   System
+Hosts                15955    24871         N/A            0   System
+Conns [rate]           62      984         N/A            0   System
+""",
+    # Cisco ISE (universality, Open API JSON-ingestion channel): core1 stands in as the ISE Primary Admin
+    # query host for an offline 'GET /api/v1/deployment/node' export. ise-psn-2 is NOT Connected ->
+    # _d_ise_node_unreachable FIRES; only ise-pan-1 carries the Policy Service ('Session') in a 2-node
+    # deployment -> _d_ise_psn_no_redundancy FIRES (single PSN); and no SecondaryAdmin/SecondaryMonitoring is
+    # present -> _d_ise_admin_monitoring_redundancy FIRES. A single-node STANDALONE would NOT fire these (the
+    # >=2-node gate, proved in tests/test_ise.py). The Open API LIST wraps rows in {"response":[...]}.
+    "api/v1/deployment/node": """\
+{
+  "response": [
+    {"hostname": "ise-pan-1", "fqdn": "ise-pan-1.aj.local", "roles": ["PrimaryAdmin", "PrimaryMonitoring"], "services": ["Session", "Profiler"], "nodeStatus": "Connected"},
+    {"hostname": "ise-psn-2", "fqdn": "ise-psn-2.aj.local", "roles": [], "services": [], "nodeStatus": "Disconnected"}
+  ],
+  "version": "1.0.0"
+}
+""",
+    # Cisco Secure Firewall Mgmt Center (FMC, universality, JSON channel): core1 stands in as the FMC query
+    # host. devicerecords has AJ-FTD-99 isConnected=false+red -> _d_fmc_device_disconnected; ftddevicehapairs
+    # has a Failed secondary -> _d_ftd_ha_degraded; deployabledevices is non-empty -> _d_fmc_deployment_pending;
+    # fmchastatuses Degraded -> _d_fmc_manager_ha_degraded. (An intentional 'Disabled' HA + an empty deployable
+    # would stay silent -- proved in tests/test_fmc.py.) List endpoints wrap rows in {"items":[...]}.
+    "api/fmc_config/v1/devices/devicerecords": """\
+{"items": [
+  {"name": "AJ-FTD-01", "hostName": "10.9.9.1", "model": "FTDv", "sw_version": "7.2.5", "isConnected": true, "healthStatus": "green", "deploymentStatus": "DEPLOYED"},
+  {"name": "AJ-FTD-99", "hostName": "10.9.9.99", "model": "FTDv", "sw_version": "7.2.5", "isConnected": false, "healthStatus": "red", "deploymentStatus": "WARNING"}
+], "paging": {"count": 2}}
+""",
+    "api/fmc_config/v1/devicehapairs/ftddevicehapairs": """\
+{"items": [
+  {"name": "AJ-FTD-HA-Edge", "primaryStatus": {"currentStatus": "Active"}, "secondaryStatus": {"currentStatus": "Failed"}}
+], "paging": {"count": 1}}
+""",
+    "api/fmc_config/v1/deployment/deployabledevices": """\
+{"items": [
+  {"name": "AJ-FTD-03", "canBeDeployed": true, "upToDate": false, "device": {"name": "AJ-FTD-03"}}
+], "paging": {"count": 1}}
+""",
+    "api/fmc_config/v1/integration/fmchastatuses": """\
+{"fmcHARole": "Active", "haStatus": "Degraded", "syncStatus": "Synchronization incomplete", "peerReachability": "reachable"}
+""",
+    # FMC server version 7.0.0 is OLDER than the managed FTDs (7.2.5) -> _d_fmc_version_inversion FIRES (Cisco
+    # mandates FMC >= every managed device). A 7.4.x FMC would stay silent. Platform namespace (not domain).
+    "api/fmc_platform/v1/info/serverversion": """\
+{"items": [{"serverVersion": "7.0.0 (build 94)", "geoVersion": "2024-01-01-001", "vdbVersion": "build 357"}]}
+""",
     # IPv6 addressing / neighbor-discovery readiness (universality): core1 is a dual-stack distribution
     # switch. Vlan30's GLOBAL IPv6 address is in the DUPLICATE state ([DUPLICATE]) -- DAD (RFC 4862) found the
     # address already in use, so IOS disabled it -> _d_ipv6_dad_duplicate FIRES on Vlan30 only. The HEALTHY

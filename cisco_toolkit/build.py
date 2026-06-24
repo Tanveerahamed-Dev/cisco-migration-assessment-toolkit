@@ -28,6 +28,9 @@ from cisco_toolkit.parse import (
     parse_aci_faults, parse_aci_fabric_nodes, parse_aci_health, parse_aci_vrfs,   # Cisco ACI (APIC JSON-ingestion channel)
     parse_aci_tenants, parse_aci_bds, parse_aci_epgs,                # Cisco ACI logical census (tenant/BD/EPG move-group units)
     parse_sdwan_control_connections, parse_sdwan_devices, parse_sdwan_omp_counters,   # Cisco Catalyst SD-WAN (vManage JSON channel)
+    parse_asa_failover, parse_asa_resource_usage,                    # Cisco firewall (ASA / Secure Firewall Threat Defense) HA + resource capacity -- SSH show-text channel
+    parse_ise_nodes,                                                 # Cisco ISE (Identity Services Engine) deployment -- JSON controller-REST channel
+    parse_fmc_devices, parse_fmc_ha_pairs, parse_fmc_deployable, parse_fmc_ha_status, parse_fmc_server_version,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
     parse_ntp_status,                                                 # NTP clock-sync STATE (stratum 16 / unsynchronized)
@@ -294,6 +297,64 @@ def build_crypto(cmd_to_file: Dict[str, str]) -> dict:
     out = {}
     if sessions:
         out["sessions"] = sessions
+    return out
+
+
+def build_firewall(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco firewall (ASA / Secure Firewall Threat Defense) state for THIS device -> {failover, resource_usage}.
+    Reads 'show failover' (classic ASA over SSH; FTD reaches the same LINA CLI via 'system support diagnostic-cli')
+    -- the HA/failover state machine -- and 'show resource usage' -- per-resource Current/Peak/Limit/Denied for
+    the capacity-sizing axis (a Denied>0 or near-Limit Peak on a data-plane resource is observed exhaustion). A pair with failover ENABLED but a unit Failed / Disabled or the peer
+    Not Detected has no working standby, so a firewall in the data path is a single point of failure (the
+    config-present-but-operationally-broken false-health trap). {} when the device is not a firewall / runs no
+    failover (the command errors or is absent) -- coverage-honest, so a switch fleet never fires. Fail-soft."""
+    fo = _safe_parse(parse_asa_failover, _load_cmd_output(cmd_to_file, "show failover")) or {}
+    res = _safe_parse(parse_asa_resource_usage, _load_cmd_output(cmd_to_file, "show resource usage")) or []
+    out = {}
+    if fo:
+        out["failover"] = fo
+    if res:
+        out["resource_usage"] = res
+    return out
+
+
+def build_ise(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco ISE (Identity Services Engine) deployment state for THIS query host from a read-only Open API
+    export -> {nodes: [...]}. The JSON-ingestion channel (like ACI/SD-WAN): ISE is a controller cluster, not
+    a CLI-`show` device, so 'GET /api/v1/deployment/node' (saved into the collection dir) is read through the
+    SAME _load_cmd_output path and json-normalized. The node list carries each node's personas (roles /
+    services) and reachability (nodeStatus) -- a node not Connected, a lone Policy Service node, or a missing
+    Secondary Admin/Monitoring are present, controller-reported gaps. {} when no ISE export. Fail-soft."""
+    nodes = _safe_parse(parse_ise_nodes, _load_cmd_output(cmd_to_file, "api/v1/deployment/node")) or []
+    out = {}
+    if nodes:
+        out["nodes"] = nodes
+    return out
+
+
+def build_fmc(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco Secure Firewall Management Center (FMC) state for THIS query host from a read-only REST export ->
+    {devices, ha_pairs, deployable, ha_status}. The JSON-ingestion channel (like ACI/SD-WAN/ISE): an FMC
+    manages an FTD fleet centrally, so for an FMC-managed fleet the controller -- not the device CLI -- is the
+    source of truth. Reads the four migration-relevant endpoint exports (devicerecords, ftddevicehapairs,
+    deployabledevices, fmchastatuses) through the SAME _load_cmd_output path, json-normalized. {} when no FMC
+    export. Fail-soft."""
+    devs = _safe_parse(parse_fmc_devices, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/devices/devicerecords")) or []
+    ha = _safe_parse(parse_fmc_ha_pairs, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/devicehapairs/ftddevicehapairs")) or []
+    dep = _safe_parse(parse_fmc_deployable, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/deployment/deployabledevices")) or []
+    has = _safe_parse(parse_fmc_ha_status, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/integration/fmchastatuses")) or {}
+    sv = _safe_parse(parse_fmc_server_version, _load_cmd_output(cmd_to_file, "api/fmc_platform/v1/info/serverversion")) or {}
+    out = {}
+    if devs:
+        out["devices"] = devs
+    if ha:
+        out["ha_pairs"] = ha
+    if dep:
+        out["deployable"] = dep
+    if has:
+        out["ha_status"] = has
+    if sv:
+        out["server_version"] = sv
     return out
 
 
@@ -756,8 +817,14 @@ def build_device_physical(hostname: str, platform: str,
                 if PHYSICAL_IFACE_RE.match(normalize_ifname(p))
                 and not normalize_ifname(p).startswith("Po")]
     dp.total_ports  = len(physical)
-    dp.active_ports = sum(1 for p in physical
-                          if interfaces[p].status in ("connected","up"))
+    # Coverage-honest active-port count: if NO physical port carries an observed link status (the
+    # device's port up/down state was not collected — e.g. no 'show interfaces status'), the active
+    # count is UNKNOWN -> None, not 0. A false 0 renders 0% utilization / all-ports-free and ranks the
+    # device first as "most consolidation headroom" on the Capacity sheet. compute_capacity already
+    # blanks util/free for a None count (test_compute_capacity_blanks_util_when_active_ports_unobserved).
+    _status_seen = any((interfaces[p].status or "").strip() for p in physical)
+    dp.active_ports = (sum(1 for p in physical if interfaces[p].status in ("connected", "up"))
+                       if _status_seen else None)
     return dp
 
 

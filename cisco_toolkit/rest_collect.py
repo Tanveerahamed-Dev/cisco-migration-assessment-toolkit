@@ -20,6 +20,7 @@ SAFETY DOCTRINE (read this before pointing it at a fabric):
     Mirrors the SSH collector's 'never run a live collection unless explicitly asked' doctrine.
   * **TLS** verifies by default; pass ``verify_tls=False`` only for a lab/sandbox with a self-signed cert (logged).
 """
+import base64
 import http.cookiejar
 import json
 import logging
@@ -174,20 +175,108 @@ def collect_vmanage(base_url: str, username: str, password: str, out_dir: str, v
     return written
 
 
+# --- Cisco ISE (Identity Services Engine) ---------------------------------------------------------------
+# ISE deployment state via the Open API (ISE 3.1+): GET /api/v1/deployment/node lists every node with its
+# personas (roles/services) + nodeStatus. HTTPS/443, HTTP Basic auth (no token login).
+ISE_ENDPOINTS = {
+    "api/v1/deployment/node": "/api/v1/deployment/node",
+}
+
+
+def collect_ise(base_url: str, username: str, password: str, out_dir: str, verify_tls: bool = True) -> list:
+    """Read-only Cisco ISE (Identity Services Engine) collection via the Open API: GET /api/v1/deployment/node
+    (the deployment node list -- personas + nodeStatus) written under the offline command-filename (build_ise
+    -> parse_ise_nodes). ISE Open API uses HTTP Basic auth over HTTPS (no token login), so the credential
+    rides the Authorization header on each GET; it is NEVER written to the export (only the node JSON is).
+    GET-only -- cannot change deployment state; use a DEDICATED read-only RBAC account (an ERS / Open API
+    read-only admin). Refuses non-HTTPS (a cleartext Basic-auth leak). Returns the files written."""
+    base = base_url.rstrip("/")
+    if not _require_https(base, "ISE"):
+        return []
+    opener = _http_session(verify_tls)
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    headers = {"Authorization": "Basic " + token, "Accept": "application/json"}
+    written = []
+    for cmd, ep in ISE_ENDPOINTS.items():
+        obj = _get_json(opener, f"{base}{ep}", headers=headers)
+        if obj is not None:
+            written.append(_write(out_dir, cmd, obj))
+    logger.info("  [ISE] collected %d endpoint export(s) into %s", len(written), out_dir)
+    return written
+
+
+# --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -------------------------
+# FMC manages an FTD fleet; the migration-relevant state is the device inventory + HA + deploy + manager-HA.
+# Auth: POST /api/fmc_platform/v1/auth/generatetoken (HTTP Basic) -> the access token AND the DOMAINS list come
+# back in RESPONSE HEADERS (X-auth-access-token, DOMAINS); the config endpoints are domain-scoped. The cmd keys
+# are domain-less canonical names (the collector fills the domain uuid into the live URL; build_fmc reads the key).
+FMC_CONFIG_ENDPOINTS = {
+    "api/fmc_config/v1/devices/devicerecords": "/devices/devicerecords?expanded=true",
+    "api/fmc_config/v1/devicehapairs/ftddevicehapairs": "/devicehapairs/ftddevicehapairs?expanded=true",
+    "api/fmc_config/v1/deployment/deployabledevices": "/deployment/deployabledevices?expanded=true",
+    "api/fmc_config/v1/integration/fmchastatuses": "/integration/fmchastatuses",
+}
+
+
+def collect_fmc(base_url: str, username: str, password: str, out_dir: str, verify_tls: bool = True) -> list:
+    """Read-only Cisco Secure Firewall Management Center (FMC) collection. POST generatetoken (HTTP Basic over
+    HTTPS) returns the X-auth-access-token AND the DOMAINS list in the response HEADERS; then GET each domain-
+    scoped config endpoint (devicerecords / ftddevicehapairs / deployabledevices / fmchastatuses) and write it
+    under the offline command-filename (build_fmc -> parse_fmc_*). GET-only after the login POST; the credential
+    is used once for the Basic login header and is NEVER written to the export (only the JSON is). Refuses
+    non-HTTPS. Use a DEDICATED read-only RBAC account. Returns the files written."""
+    base = base_url.rstrip("/")
+    if not _require_https(base, "FMC"):
+        return []
+    opener = _http_session(verify_tls)
+    token_b64 = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    login = _post(opener, f"{base}/api/fmc_platform/v1/auth/generatetoken", "",
+                  headers={"Authorization": "Basic " + token_b64})
+    if login is None:
+        logger.error("  [FMC] login failed -- no collection")
+        return []
+    token, domains = None, []
+    try:
+        hdrs = getattr(login, "headers", {}) or {}
+        token = hdrs.get("X-auth-access-token")
+        domains = json.loads(hdrs.get("DOMAINS") or "[]")
+    except (ValueError, TypeError, AttributeError):
+        domains = []
+    if not token:
+        logger.error("  [FMC] no X-auth-access-token in the login response -- no collection")
+        return []
+    # the domain UUID comes from the DOMAINS header (NOT a 'DOMAIN_UUID' header); default to Global / the first
+    dom = next((d for d in domains if isinstance(d, dict) and str(d.get("name", "")).lower() == "global"),
+               (domains[0] if domains and isinstance(domains[0], dict) else {}))
+    dom_uuid = dom.get("uuid", "") if isinstance(dom, dict) else ""
+    headers = {"X-auth-access-token": token}
+    written = []
+    for cmd, suffix in FMC_CONFIG_ENDPOINTS.items():
+        obj = _get_json(opener, f"{base}/api/fmc_config/v1/domain/{dom_uuid}{suffix}", headers=headers)
+        if obj is not None:
+            written.append(_write(out_dir, cmd, obj))
+    sv = _get_json(opener, f"{base}/api/fmc_platform/v1/info/serverversion", headers=headers)   # platform namespace (not domain-scoped)
+    if sv is not None:
+        written.append(_write(out_dir, "api/fmc_platform/v1/info/serverversion", sv))
+    logger.info("  [FMC] collected %d endpoint export(s) into %s", len(written), out_dir)
+    return written
+
+
 if __name__ == "__main__":                                           # opt-in CLI; never runs on import
     import argparse
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    p = argparse.ArgumentParser(description="Read-only REST collector for ACI/APIC + Catalyst SD-WAN/vManage. "
-                                            "Writes JSON exports a `cisco-assess --no-collect` run then analyses. "
-                                            "Use a DEDICATED READ-ONLY account; opt-in only.")
-    p.add_argument("fabric", choices=["apic", "vmanage"])
+    p = argparse.ArgumentParser(description="Read-only REST collector for ACI/APIC + Catalyst SD-WAN/vManage + "
+                                            "ISE + Secure Firewall Mgmt Center (FMC). Writes JSON exports a "
+                                            "`cisco-assess --no-collect` run then analyses. Use a DEDICATED "
+                                            "READ-ONLY account; opt-in only.")
+    p.add_argument("fabric", choices=["apic", "vmanage", "ise", "fmc"])
     p.add_argument("--url", required=True, help="https://<controller>")
     p.add_argument("--user", required=True)
     p.add_argument("--password", required=True, help="read-only RBAC account; used once for login, never stored")
     p.add_argument("--out-dir", required=True, help="the controller's device directory under the collection dir")
     p.add_argument("--insecure", action="store_true", help="disable TLS verification (lab/sandbox self-signed cert only)")
     a = p.parse_args()
-    fn = collect_apic if a.fabric == "apic" else collect_vmanage
+    fn = {"apic": collect_apic, "vmanage": collect_vmanage, "ise": collect_ise, "fmc": collect_fmc}[a.fabric]
     files = fn(a.url, a.user, a.password, a.out_dir, verify_tls=not a.insecure)
     print(f"wrote {len(files)} export file(s):")
     for f in files:

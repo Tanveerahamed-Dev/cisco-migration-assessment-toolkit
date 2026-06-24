@@ -422,6 +422,9 @@ from cisco_toolkit.build import (
     build_lisp, build_cts, build_dmvpn, build_crypto, build_bfd, build_ipv6_nd, build_ipv6_routing,   # universal arch coverage
     build_aci,   # Cisco ACI (APIC JSON-ingestion channel)
     build_sdwan,   # Cisco Catalyst SD-WAN (vManage JSON-ingestion channel)
+    build_firewall,   # Cisco firewall (ASA / Secure Firewall Threat Defense) HA -- SSH show-text channel
+    build_ise,   # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
+    build_fmc,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -503,6 +506,14 @@ COMMANDS_NXOS = [
     "moquery -c fvTenant",               # Cisco ACI tenant census (APIC JSON) -> build_aci (move-group scoping)
     "moquery -c fvBD",                   # Cisco ACI bridge-domain census (APIC JSON) -> build_aci (move-group scoping)
     "moquery -c fvAEPg",                 # Cisco ACI EPG census (APIC JSON) -> build_aci (finest move-group unit)
+    "show failover",                     # Cisco firewall (ASA / Secure Firewall Threat Defense) HA -> build_firewall / _d_firewall_ha_degraded
+    "show resource usage",               # Cisco firewall (ASA/FTD) resource capacity -> build_firewall / _d_firewall_resource_exhaustion
+    "api/v1/deployment/node",            # Cisco ISE (Identity Services Engine) deployment nodes -> build_ise / _d_ise_*
+    "api/fmc_config/v1/devices/devicerecords",            # Cisco FMC device inventory + health -> build_fmc / _d_fmc_device_disconnected
+    "api/fmc_config/v1/devicehapairs/ftddevicehapairs",   # Cisco FMC FTD HA pairs -> build_fmc / _d_ftd_ha_degraded
+    "api/fmc_config/v1/deployment/deployabledevices",     # Cisco FMC staged-deploy state -> build_fmc / _d_fmc_deployment_pending
+    "api/fmc_config/v1/integration/fmchastatuses",        # Cisco FMC manager-HA -> build_fmc / _d_fmc_manager_ha_degraded
+    "api/fmc_platform/v1/info/serverversion",             # Cisco FMC server version (vs managed FTD) -> build_fmc / _d_fmc_version_inversion
     "show policy-map interface",         # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
     "show ip pim rp mapping",            # PIM-SM learned RP -> build_pim / _d_pim_rp_health
     "show ip pim neighbor",              # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
@@ -1574,6 +1585,9 @@ def main():
     all_mpls: Dict[str, dict] = {}                                   # SP/MPLS service-plane state (LDP/VPNv4/L2VPN) per device -> snap['mpls']
     all_aci: Dict[str, dict] = {}                              # Cisco ACI (APIC JSON export) -> snap['aci']
     all_sdwan: Dict[str, dict] = {}                            # Cisco Catalyst SD-WAN (vManage JSON export) -> snap['sdwan']
+    all_firewall: Dict[str, dict] = {}                         # Cisco firewall (ASA/FTD failover) HA -> snap['firewall']
+    all_ise: Dict[str, dict] = {}                              # Cisco ISE (Identity Services Engine) deployment -> snap['ise']
+    all_fmc: Dict[str, dict] = {}                              # Cisco Secure Firewall Mgmt Center (FMC) -> snap['fmc']
     all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
     all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
     all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
@@ -1672,6 +1686,15 @@ def main():
         _sdwan = build_sdwan(cmd_to_file)
         if _sdwan:
             all_sdwan[hostname] = _sdwan
+        _firewall = build_firewall(cmd_to_file)
+        if _firewall:
+            all_firewall[hostname] = _firewall
+        _ise = build_ise(cmd_to_file)
+        if _ise:
+            all_ise[hostname] = _ise
+        _fmc = build_fmc(cmd_to_file)
+        if _fmc:
+            all_fmc[hostname] = _fmc
         _ipv6_nd = build_ipv6_nd(cmd_to_file)
         if _ipv6_nd:
             all_ipv6_nd[hostname] = _ipv6_nd
@@ -2218,6 +2241,9 @@ def main():
     snap_dict["mpls"] = all_mpls                                     # SP/MPLS service-plane (LDP/VPNv4/L2VPN) -> _d_mpls_ldp_health/_d_mpls_l3vpn_health/_d_mpls_l2vpn_health
     snap_dict["aci"] = all_aci                                         # Cisco ACI (APIC JSON-ingestion channel) -> _d_aci_critical_faults/_d_aci_node_not_active/_d_aci_fabric_health_degraded
     snap_dict["sdwan"] = all_sdwan                                     # Cisco Catalyst SD-WAN (vManage JSON channel) -> _d_sdwan_control_connection_down/_d_sdwan_device_unreachable
+    snap_dict["firewall"] = all_firewall                              # Cisco firewall (ASA/FTD failover) HA -> _d_firewall_ha_degraded (SSH show-text channel)
+    snap_dict["ise"] = all_ise                                        # Cisco ISE (Identity Services Engine deployment) -> _d_ise_* (JSON controller-REST channel)
+    snap_dict["fmc"] = all_fmc                                        # Cisco Secure Firewall Mgmt Center (FMC) -> _d_ftd_*/_d_fmc_* (JSON controller-REST channel)
     snap_dict["lisp"] = all_lisp                                       # universal arch coverage
     snap_dict["cts"] = all_cts                                       # universal arch coverage
     snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage
@@ -2321,6 +2347,25 @@ def main():
         snap_dict["architecture_coverage"] = compute_architecture_coverage(snap_dict)
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
+    # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
+    # fixtures, never on a real customer snapshot. Reconcile the published canonical facts against
+    # their raw-evidence derivation NOW, on the fully-assembled snap_dict, and ONLY on drift disclose
+    # it via the existing assessment_integrity channel (which the deck/explorer already surface) +
+    # an [INTEGRITY] warning. A clean run stamps nothing -> no false alarm, no golden churn. (ssot.audit)
+    try:
+        from cisco_toolkit import ssot as _ssot
+        _ssot_drift = _ssot.audit(snap_dict)
+        # Positive self-verification badge for the dashboards (golden-excluded with executive_brief):
+        # an always-present client-facing trust signal that the published headline facts were
+        # reconciled to the raw evidence, distinct from the drift-only assessment_integrity channel.
+        if isinstance(snap_dict.get("executive_brief"), dict):
+            snap_dict["executive_brief"]["ssot"] = _ssot.summary(snap_dict)
+        if _ssot_drift:
+            logger.warning(f"  [INTEGRITY] {_ssot_drift['n_violations']} published fact(s) do not reconcile "
+                           f"to the raw evidence; disclosing in assessment_integrity: {_ssot_drift['violations'][:3]}")
+            snap_dict.setdefault("assessment_integrity", {}).update(_ssot_drift)
+    except Exception as e:                                            # fail-soft: a self-check must never break the write
+        logger.warning(f"  SSOT self-check skipped (non-fatal): {e}")
     try:
         write_json_file(snap_path, snap_dict)
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")
