@@ -26,10 +26,37 @@ import json
 import logging
 import os
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 
 logger = logging.getLogger(__name__)
+
+
+class _NoDowngradeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse an HTTPS->non-HTTPS redirect. urllib's stock handler follows a 30x without checking the new
+    scheme, and on a redirect it re-sends the request -- carrying the session cookie (CookieJar) or the
+    'Authorization: Basic <b64(user:pass)>' header -- to the new location. A controller (or a MITM / poisoned
+    DNS) that answers the login or any GET with a 302 to http:// would therefore leak the credential in
+    cleartext: the exact failure ``_require_https`` prevents on the FIRST hop, reachable again via a redirect.
+    Refusing the downgrade raises (caught by the fail-soft GET/POST wrappers -> the query returns None), so the
+    credential is never transmitted unencrypted. A same-scheme https->https redirect is delegated unchanged."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlparse(newurl).scheme.lower() != "https":
+            logger.error("  [rest] refusing an HTTPS->non-HTTPS redirect to %r -- a downgrade would leak the "
+                         "credential/session cookie in cleartext", newurl)
+            raise urllib.error.HTTPError(newurl, code, "refused HTTPS->non-HTTPS redirect downgrade", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _safe_close(resp) -> None:
+    """Close an HTTP response object best-effort (no dangling socket/fd from the login response)."""
+    try:
+        if resp is not None:
+            resp.close()
+    except Exception:                                                # noqa: BLE001
+        pass
 
 
 def _cmd_filename(cmd: str) -> str:
@@ -50,7 +77,8 @@ def _require_https(base_url: str, fabric: str) -> bool:
 def _http_session(verify_tls: bool = True):
     """A urllib opener with a cookie jar (carries the session cookie across requests). With verify_tls False a
     CERT_NONE context is used — controller fabrics often ship a self-signed cert; opt out EXPLICITLY (logged)."""
-    handlers = [urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())]
+    handlers = [urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+                _NoDowngradeRedirectHandler()]   # block an https->http redirect downgrade (cleartext-cred leak)
     if not verify_tls:
         logger.warning("  [rest] TLS verification DISABLED (verify_tls=False) — only acceptable for a lab/sandbox")
         ctx = ssl.create_default_context()
@@ -124,11 +152,13 @@ def collect_apic(base_url: str, username: str, password: str, out_dir: str, veri
     if not _require_https(base, "APIC"):
         return []
     opener = _http_session(verify_tls)
-    if _post(opener, f"{base}/api/aaaLogin.json",
-             {"aaaUser": {"attributes": {"name": username, "pwd": password}}},
-             headers={"Content-Type": "application/json"}) is None:
+    login = _post(opener, f"{base}/api/aaaLogin.json",
+                  {"aaaUser": {"attributes": {"name": username, "pwd": password}}},
+                  headers={"Content-Type": "application/json"})
+    if login is None:
         logger.error("  [APIC] login failed — no collection")
         return []
+    _safe_close(login)                              # session is carried by the cookie jar; close the login fd
     written = []
     for cmd, mo in APIC_CLASSES.items():
         obj = _get_json(opener, f"{base}/api/class/{mo}.json")
@@ -161,6 +191,7 @@ def collect_vmanage(base_url: str, username: str, password: str, out_dir: str, v
         logger.error("  [vManage] login failed — no collection")
         return []
     body = login.read().decode("utf-8", "ignore") if hasattr(login, "read") else ""
+    _safe_close(login)                                               # drained; release the login fd
     if "<html" in (body or "").lower():                              # vManage serves an HTML login page on auth failure
         logger.error("  [vManage] authentication rejected — no collection")
         return []
@@ -270,6 +301,8 @@ def collect_fmc(base_url: str, username: str, password: str, out_dir: str, verif
         domains = json.loads(hdrs.get("DOMAINS") or "[]")
     except (ValueError, TypeError, AttributeError):
         domains = []
+    finally:
+        _safe_close(login)                                          # token taken from the headers; close the fd
     if not token:
         logger.error("  [FMC] no X-auth-access-token in the login response -- no collection")
         return []

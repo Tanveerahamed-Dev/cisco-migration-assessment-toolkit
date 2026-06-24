@@ -8,6 +8,8 @@ is used once and never persisted to any written file)."""
 import os
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -21,6 +23,30 @@ class _FakeResp:
 
     def read(self):
         return self._b
+
+    def close(self):                       # collectors close the login response (no fd left dangling)
+        pass
+
+
+def test_collect_refuses_redirect_downgrade():
+    """Security: an https->http redirect is REFUSED. _require_https only guards the FIRST hop, but urllib's stock
+    HTTPRedirectHandler follows a 30x without checking the new scheme -- a controller (or MITM / poisoned DNS) that
+    answers with a 302 to http:// would make urllib re-send the session cookie / Basic-auth Authorization header
+    over cleartext. The opener must install a no-downgrade redirect handler so that leak is closed on a redirect too."""
+    import urllib.request
+    import urllib.error
+    opener = rest_collect._http_session()
+    assert any(isinstance(h, rest_collect._NoDowngradeRedirectHandler) for h in opener.handlers), \
+        "the opener must install the no-downgrade redirect handler"
+    h = rest_collect._NoDowngradeRedirectHandler()
+    req = urllib.request.Request("https://controller.example/api/x")
+    with pytest.raises(urllib.error.HTTPError):        # https -> http downgrade is refused (raises -> fail-soft None)
+        h.redirect_request(req, None, 302, "Found", {}, "http://evil.example/login")
+    # a same-scheme https -> https redirect must still be allowed (normal redirects keep working)
+    try:
+        h.redirect_request(req, None, 302, "Found", {}, "https://controller.example/api/y")
+    except urllib.error.HTTPError:
+        pytest.fail("an https->https redirect must be allowed, not refused")
 
 
 def test_collect_apic_writes_offline_files_then_parsers_read_them(tmp_path, monkeypatch):
