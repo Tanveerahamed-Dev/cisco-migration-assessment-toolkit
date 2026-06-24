@@ -514,6 +514,7 @@ COMMANDS_NXOS = [
     "show failover",                     # Cisco firewall (ASA / Secure Firewall Threat Defense) HA -> build_firewall / _d_firewall_ha_degraded
     "show resource usage",               # Cisco firewall (ASA/FTD) resource capacity -> build_firewall / _d_firewall_resource_exhaustion
     "api/v1/deployment/node",            # Cisco ISE (Identity Services Engine) deployment nodes -> build_ise / _d_ise_*
+    "ers/config/node",                   # Cisco ISE ERS-channel fallback export -> build_ise (registered so --no-collect re-reads a collected ERS-only cluster, not 'not-observed')
     "api/fmc_config/v1/devices/devicerecords",            # Cisco FMC device inventory + health -> build_fmc / _d_fmc_device_disconnected
     "api/fmc_config/v1/devicehapairs/ftddevicehapairs",   # Cisco FMC FTD HA pairs -> build_fmc / _d_ftd_ha_degraded
     "api/fmc_config/v1/deployment/deployabledevices",     # Cisco FMC staged-deploy state -> build_fmc / _d_fmc_deployment_pending
@@ -616,6 +617,7 @@ COMMANDS_IOS = [
     "show ipv6 interface",  # universal arch coverage
     "show ipv6 route summary",  # universal arch coverage
     "show ospfv3 neighbor",  # universal arch coverage
+    "show ipv6 ospf neighbor",  # classic-IOS OSPFv3 form (build_ipv6_routing falls back to it; collect it or OSPFv3 is blind on classic IOS)
     "show bgp ipv6 unicast summary",  # universal arch coverage
     "dataservice/device/control/connections",  # Cisco Catalyst SD-WAN (vManage JSON) -> build_sdwan / _d_sdwan_control_connection_down
     "dataservice/device",             # Cisco Catalyst SD-WAN device reachability (vManage JSON) -> build_sdwan / _d_sdwan_device_unreachable
@@ -2202,6 +2204,7 @@ def main():
                                  syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,      # NEW-V3.23.169
                                  software_risk=software_risk, platform_health=platform_health,      # NEW-V3.23.169
                                  device_dossiers=device_dossiers,                                   # NEW-V3.23.172
+                                 endpoint_identity=endpoint_identity,   # SSOT: n_endpoints == len(endpoint_identity)
                                  _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty brief (wave R2-4-01)
     # SSOT: inject the canonical VLAN count (vlan_inventory) into the brief's scale HERE, BEFORE the
     # Executive Summary sheet reads it. At this point interfaces are still InterfaceData OBJECTS (the dict

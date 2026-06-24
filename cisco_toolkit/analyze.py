@@ -1372,14 +1372,16 @@ def _parse_stp_tcn(detail_output: str):
     return (max(counts), sum(counts))
 
 def _parse_etherchannel_member_states(output: str) -> Dict[str, str]:
-    """'show etherchannel/port-channel summary' -> {member_port: flag} (single-letter status:
-    P bundled, s suspended, D down, I stand-alone, w waiting, H hot-standby, R L3)."""
+    """'show etherchannel/port-channel summary' -> {member_port: flag_token} (the member's status flags:
+    P bundled, s suspended, D down, I stand-alone, w waiting, H hot-standby, M minimum-links-not-met,
+    f failed-to-allocate-aggregator). The FULL flag token is kept (not just its first letter) so a combined
+    flag like 'RM' cannot mask the non-forwarding 'M'."""
     res: Dict[str, str] = {}
     for line in (output or "").splitlines():
         for m in re.finditer(r"\b([A-Za-z]{2,}[\d/]+)\(([A-Za-z]+)\)", line):
             nm = normalize_ifname(m.group(1))
             if not nm.startswith("Po"):
-                res[nm] = m.group(2)[0]
+                res[nm] = m.group(2)
     return res
 
 def _parse_vtp_full(output: str) -> dict:
@@ -1431,9 +1433,14 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         if ec_out:
             states = _parse_etherchannel_member_states(ec_out)
             if states:
-                bad = {m: f for m, f in states.items() if f in ("s", "D", "I", "w")}
+                # 'M' (not in use, minimum links not met) and 'f' (failed to allocate aggregator) are
+                # NON-FORWARDING member states -- a min-links-failed bundle is DOWN. Omitting them read a
+                # broken LACP bundle as healthy Info (false-health). Scan the WHOLE flag token (the parser keeps
+                # it) so a combined flag like 'RM' cannot mask the 'M'. 'w' (waiting) stays a soft/Medium state.
+                _EC_BAD, _EC_HARD = set("sDIwMf"), set("sDIMf")
+                bad = {m: f for m, f in states.items() if any(ch in _EC_BAD for ch in f)}
                 npo = len({po for po in parse_etherchannel_summary_members(ec_out).values()})
-                hard = any(f in ("s", "D", "I") for f in bad.values())
+                hard = any(any(ch in _EC_HARD for ch in f) for f in bad.values())
                 sev = "High" if hard else ("Medium" if bad else "Info")
                 summary = f"{npo} bundle(s), {len(states)} member(s)" + (f"; {len(bad)} not bundled" if bad else "")
                 detail = ("; ".join(f"{m}({f})" for m, f in sorted(bad.items()))) if bad else ""
@@ -1480,8 +1487,16 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         if groups:
             protos = sorted({g[0] for g in groups})
             actives = sum(1 for g in groups if g[1].lower() in ("active", "master"))
-            add(host, "FHRP", "Info",
-                f"{len(groups)} group(s) [{', '.join(protos)}]; {actives} active/master")
+            # A group stuck in a NON-FORWARDING role after convergence (Init/Learn -- interface down, auth
+            # mismatch, or no peer) is a real first-hop-redundancy fault, not a healthy Info. Standby/Listen/
+            # Speak are NORMAL for a non-active member, so an all-Standby device is NOT flagged (it can't be
+            # told apart from a healthy backup without the peer's view) -- only Init/Learn escalates.
+            stuck = [(g[3], g[0], g[1]) for g in groups if g[1].lower() in ("init", "learn")]
+            sev = "Medium" if stuck else "Info"
+            detail = "; ".join(f"{port} {proto} {role}" for port, proto, role in stuck)
+            add(host, "FHRP", sev,
+                f"{len(groups)} group(s) [{', '.join(protos)}]; {actives} active/master"
+                + (f"; {len(stuck)} stuck (Init/Learn)" if stuck else ""), detail)
 
     return records
 
@@ -4982,7 +4997,8 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
                             qos_audit: Optional[dict] = None,
                             software_risk: Optional[dict] = None,
                             platform_health: Optional[dict] = None,
-                            device_dossiers: Optional[dict] = None) -> dict:
+                            device_dossiers: Optional[dict] = None,
+                            endpoint_identity: Optional[list] = None) -> dict:
     """NEW-V3.23.120: cross-axis migration brief -- one headline per assessment axis rolled up into a single
     decision-grade synthesis. Pure read of each layer's already-computed summary; deterministic given inputs.
     V3.23.169: the operational-log / QoS / software-risk / platform-capacity axes joined the synthesis.
@@ -5008,7 +5024,13 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     n_crit = bands.get("Critical", 0)
     n_poor = bands.get("Poor", 0)
     worst = next((b for b in ("Critical", "Poor", "Fair", "Good", "Excellent") if bands.get(b)), "")
-    n_endpoints = sum((d.get("endpoint_count") or 0) for d in (app.get("domains") or []))
+    # SSOT: n_endpoints is the canonical evidenced-endpoint total == len(endpoint_identity) (what ssot.reconcile
+    # verifies and CANONICAL_FACTS documents). Use it directly when available; fall back to the per-domain
+    # endpoint_count sum only when endpoint_identity was not supplied (older callers). The per-domain sum drops
+    # any endpoint_identity row whose host is not an all_interfaces key, so deriving from it diverged from the
+    # verifier on an off-pipeline snapshot and made reconcile/audit false-fire a spurious integrity violation.
+    n_endpoints = (len(endpoint_identity) if isinstance(endpoint_identity, list)
+                   else sum((d.get("endpoint_count") or 0) for d in (app.get("domains") or [])))
     sev_pl = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     for it in pl:
         if it.get("severity") in sev_pl:

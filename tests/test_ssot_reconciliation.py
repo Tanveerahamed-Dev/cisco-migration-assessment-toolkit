@@ -307,3 +307,30 @@ def test_scale_surfaces_read_canonical_counts(tmp_path):
     assert "202" in design_text, "HLD must surface the canonical VLAN count (202)"
     assert "5127" in runbook_text, "runbook must surface the canonical endpoint count (5127)"
     assert "303" in runbook_text, "runbook must surface the canonical device count (303)"
+
+
+def test_n_endpoints_reconciles_with_host_less_endpoint_rows():
+    """SSOT producer/verifier agreement: executive_brief.scale.n_endpoints is published as
+    len(endpoint_identity) -- the canonical evidenced-endpoint total ssot.reconcile checks -- NOT the
+    per-domain endpoint_count sum, which silently drops any endpoint_identity row whose host is not an
+    all_interfaces key. Those two formulas diverged on an off-pipeline snapshot (a host-less / foreign-host
+    row), so reconcile/audit FALSE-FIRED a spurious 'ssot_reconciliation: failed' integrity alarm. Here two of
+    four endpoint rows are off-host: the brief must publish 4 (not the domain-sum 2) and reconcile clean."""
+    from cisco_toolkit.analyze import compute_application_intelligence, compute_executive_brief
+    from cisco_toolkit.model import InterfaceData
+    d = InterfaceData(port="Gi1/0/1", switchport_mode="Access", end_host_mac="00:11:22:33:44:55", vlan="10")
+    aif = {"sw1": {"Gi1/0/1": d}}
+    ei = [
+        {"host": "sw1", "port": "Gi1/0/1", "vlan": "10", "mac": "00:11:22:33:44:55", "endpoint_class": "Server", "vendor": "Dell"},
+        {"host": "sw1", "port": "Gi1/0/2", "vlan": "10", "mac": "00:11:22:33:44:66", "endpoint_class": "Server", "vendor": "Dell"},
+        {"host": "GHOST", "port": "Gi9/9", "vlan": "10", "mac": "aa:bb:cc:dd:ee:ff", "endpoint_class": "Server", "vendor": "HP"},
+        {"host": "", "port": "Gi9/8", "vlan": "10", "mac": "aa:bb:cc:dd:ee:00", "endpoint_class": "Server", "vendor": "HP"},
+    ]
+    app = compute_application_intelligence(aif, endpoint_identity=ei)
+    brief = compute_executive_brief(health_scores=[{"switch": "sw1", "band": "Good", "score": 90}],
+                                    application_intelligence=app, endpoint_identity=ei)
+    assert brief["scale"]["n_endpoints"] == 4              # len(endpoint_identity), NOT the domain-sum (2)
+    snap = {"executive_brief": brief, "endpoint_identity": ei,
+            "health_scores": [{"switch": "sw1", "band": "Good", "score": 90}]}
+    assert ssot.reconcile(snap) == []                      # producer == verifier -> no spurious violation
+    assert ssot.audit(snap) is None

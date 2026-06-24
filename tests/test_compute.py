@@ -433,6 +433,38 @@ def test_protocol_health_flags_down_ospf(cp, built):
     assert not [r for r in recs if r["switch"] == "core2" and r["protocol"] == "OSPF"]
 
 
+def test_protocol_health_etherchannel_min_links_not_met_is_not_healthy(cp, tmp_path):
+    """FALSE-HEALTH: an LACP bundle that is non-forwarding because minimum-links was not met shows its members
+    with the 'M' flag ('not in use, minimum links not met'); 'f' = failed-to-allocate-aggregator is likewise
+    non-forwarding. These were absent from the bad/hard sets, so a down min-links bundle read as healthy Info.
+    The EtherChannel row must now be High. (Also pins the parser keeping the full flag token so a combined
+    'RM' can't mask the 'M'.)"""
+    ec = ("Flags:  D - down        P - bundled in port-channel\n"
+          "        M - not in use, minimum links not met\n"
+          "Group  Port-channel  Protocol    Ports\n"
+          "1      Po1(SD)        LACP        Gi1/0/5(M)   Gi1/0/6(M)\n")
+    fp = tmp_path / "show_etherchannel_summary.txt"
+    fp.write_text(ec, encoding="utf-8")
+    recs = cp.compute_protocol_health({"SW1": {}}, {"SW1": {"show etherchannel summary": str(fp)}})
+    ec_rows = [r for r in recs if r["protocol"] == "EtherChannel"]
+    assert ec_rows and ec_rows[0]["severity"] == "High", ec_rows
+    assert "not bundled" in ec_rows[0]["summary"]
+
+
+def test_protocol_health_fhrp_stuck_init_is_not_healthy(cp):
+    """FALSE-HEALTH: an FHRP group stuck in a non-forwarding Init/Learn role (interface down, auth mismatch,
+    or no peer) is a real first-hop-redundancy fault -- the FHRP row must escalate to Medium, not the old
+    hardcoded healthy Info. An all-Standby device stays Info (a backup with zero local actives is normal and
+    can't be told apart from a fault without the peer's view -- no cry-wolf)."""
+    from cisco_toolkit.model import InterfaceData
+    init = {"R1": {"Vlan10": InterfaceData(port="Vlan10", hsrp_behavior="HSRP grp 1 Init VIP 10.0.10.1")}}
+    f1 = [r for r in cp.compute_protocol_health(init, {"R1": {}}) if r["protocol"] == "FHRP"]
+    assert f1 and f1[0]["severity"] == "Medium", f1
+    standby = {"R2": {"Vlan10": InterfaceData(port="Vlan10", hsrp_behavior="HSRP grp 1 Standby VIP 10.0.10.1")}}
+    f2 = [r for r in cp.compute_protocol_health(standby, {"R2": {}}) if r["protocol"] == "FHRP"]
+    assert f2 and f2[0]["severity"] == "Info", f2
+
+
 # --------------------------------------------------------------------------- #
 # Route-aware reachability: scope_routes / inscope_subnets (build-layer helpers)
 # --------------------------------------------------------------------------- #

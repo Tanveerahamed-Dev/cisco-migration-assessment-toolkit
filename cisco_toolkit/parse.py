@@ -356,7 +356,12 @@ def parse_ntp_status(output: str) -> Dict[str, object]:
     saw_table = False
     for raw in text.splitlines():
         s = raw.strip()
-        pm = re.match(r"^([*+=-])\s*(\d+\.\d+\.\d+\.\d+)\s+(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:.]+)\s+(\d+)\b", s)
+        # The leading sync-selection symbol is OPTIONAL: a genuinely-unsynchronized peer (init/unreachable,
+        # stratum 16) carries NO symbol -- its row is space-prefixed, and `.strip()` above removes that space,
+        # leaving the IP at column 0. Requiring a mandatory '[*+=-]' here made the whole table unrecognised on
+        # such a device, so a configured-but-unsynced NX-OS clock read as 'absent' (false-health). The sync
+        # verdict keys on sym=='*' below, never on the row merely being present.
+        pm = re.match(r"^([*+=-]?)\s*(\d+\.\d+\.\d+\.\d+)\s+(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:.]+)\s+(\d+)\b", s)
         if not pm:
             continue
         saw_table = True
@@ -1621,6 +1626,13 @@ def _fmc_items(output: str) -> list:
     items = obj.get("items")
     if isinstance(items, list):
         return [x for x in items if isinstance(x, dict)]
+    # An FMC *list* endpoint that is EMPTY can come back as a paging/links envelope with NO 'items' key (the
+    # standard empty-list shape). That is an EMPTY list, not a data row -- returning [obj] here fabricated a
+    # phantom row (e.g. a fully-deployed fleet read as '1 device with staged undeployed changes', a cry-wolf).
+    # Only a genuine single-OBJECT endpoint (fmchastatuses / serverversion -- which carry neither 'paging' nor
+    # 'links') is wrapped as [obj].
+    if "paging" in obj or "links" in obj:
+        return []
     return [obj]                                          # single-object endpoint (no 'items' wrapper)
 
 
@@ -1662,7 +1674,10 @@ def parse_fmc_deployable(output: str) -> list:
     out = []
     for d in _fmc_items(output):
         dev = d.get("device") if isinstance(d.get("device"), dict) else {}
-        out.append({"name": str(d.get("name") or dev.get("name") or ""),
+        name = str(d.get("name") or dev.get("name") or "")
+        if not name:                  # a real deployable row always names its device; skip a nameless phantom
+            continue                  # (belt-and-braces with the _fmc_items list-envelope guard above)
+        out.append({"name": name,
                     "can_be_deployed": d.get("canBeDeployed") if isinstance(d.get("canBeDeployed"), bool) else None,
                     "up_to_date": d.get("upToDate") if isinstance(d.get("upToDate"), bool) else None})
     return out
