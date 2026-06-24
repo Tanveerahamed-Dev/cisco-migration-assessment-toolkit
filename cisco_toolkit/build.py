@@ -948,7 +948,15 @@ def collect_global_arp(all_cmd_to_files: Dict[str, Dict[str, str]],
     """
     global_arp:        Dict[str, str] = {}
     global_arp_source: Dict[str, str] = {}   # NEW-V11
-    for hostname, cmd_to_file in all_cmd_to_files.items():
+    # Iterate in a DETERMINISTIC host order. all_cmd_to_files is populated in thread-COMPLETION order under
+    # multi-worker collection (COLLECT_PARSE as_completed), so the first-writer-wins attribution below would
+    # otherwise pick a different end_host_ip (on a MAC->IP conflict) and a different arp_source_switch
+    # provenance run-to-run for the SAME evidence -- a reproducibility break on two persisted/displayed fields.
+    # Sorting by hostname makes it order-independent ('lowest hostname wins' the tie). (Genuine MAC->IP conflicts
+    # -- a moved host / overlapping-VRF ARP -- are inherently ambiguous; a subnet-containment tie-break is not
+    # available here because interfaces/SVIs are parsed AFTER this phase, and it would not disambiguate the
+    # common case where each switch reports an IP in its own connected subnet.)
+    for hostname, cmd_to_file in sorted(all_cmd_to_files.items()):
         _ARP_CMDS   = ["show ip arp vrf all", "show ip arp", "show ip arp detail"]
         device_new   = 0
         device_total = 0
