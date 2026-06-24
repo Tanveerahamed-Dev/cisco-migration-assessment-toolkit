@@ -442,6 +442,43 @@ def _signals(snap):
                 _fw_res.append(f"{_fh}: {_name} peak {_peak}/{_lim} ({int(round(100.0 * _peak / _lim))}%)")
     sig["firewall_resource_exhausted"] = _fw_res
     sig["firewall_resource_devices"] = sorted({x.split(':')[0] for x in _fw_res})[:12]
+    # MULTI-VENDOR (Arista EOS) -- the FIRST non-Cisco vendor axis (snap['arista'][h]['mlag'] from build_arista).
+    # MLAG is Arista's dual-active redundancy primitive, the direct analogue of Cisco vPC. FIRING STATE: MLAG is
+    # CONFIGURED (build_arista returns {} when state=='disabled', so absence never fires) yet a SETTLED-broken
+    # condition holds -- config-sanity 'inconsistent' (the Arista analogue of the vPC Type-1 consistency trap:
+    # mismatched peer config silently SUSPENDS VLANs), the peer-link or local interface down, negotiation not
+    # 'connected' (split-brain risk), the domain 'inactive', or Inactive / single-homed (Active-partial) member
+    # ports. Non-cry-wolf: a healthy active+connected+consistent domain is silent; the TRANSIENT 'connecting'
+    # bring-up state is EXCLUDED (mirrors the firewall transient-sync exclusion); a missing field never fires.
+    _arista = _as_dict(snap.get("arista"))
+    _mlag_bad = []
+    for _ah, _af in sorted(_arista.items()):
+        _ml = _as_dict(_as_dict(_af).get("mlag"))
+        if not _ml:
+            continue
+        _mstate = str(_ml.get("state", "")).strip().lower()
+        if _mstate == "connecting":                       # transient bring-up -- never cry-wolf
+            continue
+        _why = []
+        if _mstate == "inactive":                         # configured but not operational
+            _why.append("state inactive")
+        _neg = str(_ml.get("neg_status", "")).strip().lower()
+        if _neg and _neg != "connected":
+            _why.append(f"negStatus {_neg}")
+        if str(_ml.get("peer_link_status", "")).strip().lower() == "down":
+            _why.append("peer-link down")
+        if str(_ml.get("local_intf_status", "")).strip().lower() == "down":
+            _why.append("local-intf down")
+        if str(_ml.get("config_sanity", "")).strip().lower() == "inconsistent":
+            _why.append("config-sanity inconsistent")
+        if _as_int(_ml.get("ports_inactive")) > 0:
+            _why.append(f"{_as_int(_ml.get('ports_inactive'))} inactive MLAG port(s)")
+        if _as_int(_ml.get("ports_active_partial")) > 0:
+            _why.append(f"{_as_int(_ml.get('ports_active_partial'))} single-homed MLAG port(s)")
+        if _why:
+            _mlag_bad.append(f"{_ah} ({', '.join(_why)})")
+    sig["arista_mlag_degraded"] = _mlag_bad
+    sig["arista_mlag_devices"] = sorted({x.split(' ')[0] for x in _mlag_bad})[:12]
     # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
     # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
     # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
@@ -2087,6 +2124,39 @@ def _d_fmc_version_inversion(snap, sig):
         devices=sig.get("fmc_devices") or [])
 
 
+def _d_arista_mlag_degraded(snap, sig):
+    """Arista EOS MLAG (multi-chassis link aggregation) health (parse_arista_mlag -> snap['arista'].mlag) --
+    the FIRST non-Cisco vendor detector, proving the engine assesses ANY vendor's core redundancy construct,
+    not just Cisco vPC. MLAG is Arista's dual-active primitive, the direct analogue of Cisco vPC. FIRES when
+    MLAG is CONFIGURED yet a settled-broken condition holds: config-sanity 'inconsistent' (the Arista analogue
+    of the vPC Type-1 consistency trap -- mismatched peer config silently SUSPENDS VLANs), the peer-link /
+    local interface down, negotiation not 'connected' (split-brain risk), the domain 'inactive', or Inactive /
+    single-homed (Active-partial) MLAG member ports. Coverage-honest & non-cry-wolf: a standalone switch with
+    MLAG 'disabled' publishes {} and never fires; a healthy active+connected+consistent domain is silent; the
+    transient 'connecting' bring-up state is excluded. None when no Arista MLAG is observed."""
+    bad = sig.get("arista_mlag_degraded") or []
+    if not bad:
+        return None
+    return _decision(
+        "arista-mlag-domain-degraded",
+        f"{len(bad)} Arista MLAG domain(s) are configured but operationally degraded (e.g. {', '.join(bad[:5])}). "
+        "MLAG is Arista's dual-active redundancy primitive -- the analogue of Cisco vPC -- so a peer that is "
+        "inconsistent, has its peer-link down, cannot negotiate, or carries Inactive / single-homed member "
+        "ports has lost (or is silently suspending) the redundancy the downstream devices depend on: a "
+        "config-sanity mismatch SUSPENDS the affected VLANs exactly as a vPC Type-1 inconsistency does, and a "
+        "peer-link loss risks a dual-active split. 'mlag' present in the running-config is NOT evidence of "
+        "working redundancy; only the operational state is. Reconcile the peer configuration (config-sanity), "
+        "confirm the peer-link and member-port state, and restore the domain to active + connected + "
+        "consistent before the pair is on the cutover path.",
+        len(bad), ["availability"],
+        ["arista.mlag.config_sanity / .peer_link_status / .ports_inactive (parse_arista_mlag / show mlag | json)"],
+        priority="High",
+        driver="Arista MLAG is the vPC-equivalent dual-active redundancy primitive: an inconsistent / "
+               "peer-link-down / single-homed MLAG domain has no working standby and can silently suspend "
+               "VLANs -- the config-present-but-operationally-broken false-health trap, on a non-Cisco platform.",
+        devices=sig.get("arista_mlag_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -2859,6 +2929,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_firewall_ha_degraded, _d_firewall_resource_exhaustion,  # Cisco firewall (ASA / Secure Firewall Threat Defense): HA/failover + resource capacity -- SSH show-text channel
               _d_ise_node_unreachable, _d_ise_psn_no_redundancy, _d_ise_admin_monitoring_redundancy,  # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
               _d_ftd_ha_degraded, _d_fmc_device_disconnected, _d_fmc_deployment_pending, _d_fmc_manager_ha_degraded, _d_fmc_version_inversion,  # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
+              _d_arista_mlag_degraded,  # MULTI-VENDOR: Arista EOS MLAG (multi-chassis link agg) -- the FIRST non-Cisco vendor detector (device-native JSON)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -4132,6 +4203,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("firewall",      "Cisco firewall (ASA/FTD: HA + capacity)", "ssh",  ["firewall-ha-failover-degraded", "firewall-resource-exhaustion"]),
     ("ise",           "Cisco ISE (Identity Services Engine)",    "json", ["ise-deployment-node-unreachable", "ise-policy-service-node-redundancy", "ise-admin-monitoring-redundancy"]),
     ("fmc",           "Cisco Secure Firewall Mgmt Center (FMC)", "json", ["ftd-ha-pair-degraded", "fmc-device-disconnected", "fmc-deployment-pending", "fmc-manager-ha-degraded", "fmc-version-inversion"]),
+    ("arista",        "Arista EOS MLAG (multi-chassis link agg)", "ssh",  ["arista-mlag-domain-degraded"]),
 ]
 
 

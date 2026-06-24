@@ -977,6 +977,28 @@ Memory usage:   16400932K total,   7322120K used,   9078812K free
   ]
 }
 """,
+    # MULTI-VENDOR (Arista EOS, universality): core2 ALSO stands in as an Arista EOS spine exporting
+    # 'show mlag | json' -- the FIRST non-Cisco vendor axis, proving the engine assesses ANY vendor's core
+    # redundancy construct, not just Cisco. MLAG is Arista's dual-active primitive (the analogue of Cisco vPC).
+    # This domain is CONFIGURED (state active) but DEGRADED: configSanity 'inconsistent' (the analogue of a vPC
+    # Type-1 consistency failure -- SUSPENDS the affected VLANs) AND 2 Inactive member ports -> the detector
+    # _d_arista_mlag_degraded FIRES end-to-end. A healthy 'consistent' domain, the transient 'connecting'
+    # bring-up state, and a 'disabled' (not-configured) box stay SILENT -- proved in tests/test_arista.py.
+    "show mlag": """\
+{
+  "state": "active",
+  "negStatus": "connected",
+  "peerLinkStatus": "up",
+  "localIntfStatus": "up",
+  "configSanity": "inconsistent",
+  "peerLink": "Port-Channel1000",
+  "peerAddress": "10.255.0.8",
+  "domainId": "MLAG-DC1",
+  "reloadDelay": 300,
+  "portsErrdisabled": false,
+  "mlagPorts": {"Disabled": 0, "Active-partial": 0, "Inactive": 2, "Configured": 0, "Active-full": 46}
+}
+""",
 }
 
 # --------------------------------------------------------------------------- #

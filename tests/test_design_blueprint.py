@@ -395,6 +395,10 @@ def _arch_fire_snap():
                               "nve_vni": [{"vni": "10010", "state": "Down"}],
                               "evpn_neighbors": [{"neighbor": "10.0.0.3", "state": "Idle"}]}},
         "copp": {"sw1": [{"class": "copp-system-critical", "drops": 50000, "exceeded": 50000, "violated": 0}]},
+        # MULTI-VENDOR (Arista EOS MLAG): a configured-but-config-inconsistent domain -> _d_arista_mlag_degraded
+        "arista": {"spine1": {"mlag": {"state": "active", "neg_status": "connected", "config_sanity": "inconsistent",
+                                       "peer_link_status": "up", "local_intf_status": "up",
+                                       "ports_inactive": 0, "ports_active_partial": 0}}},
         "mpls": {"pe1": {"ldp_neighbors": [{"neighbor": "1.1.1.1", "state": "Down"}],
                          "vpnv4_neighbors": [{"neighbor": "2.2.2.2", "state": "Idle"}],
                          "l2vpn_vcs": [{"vc_id": "100", "status": "DOWN"}]}},
@@ -1463,12 +1467,12 @@ def test_compute_architecture_coverage_observed_vs_not():
     assert "aci-critical-fault-raised" in by["aci"]["findings"]
     assert by["bfd"]["observed"] and by["bfd"]["status"] == "clean" and by["bfd"]["findings"] == []
     assert by["sdwan"]["observed"] is False and by["sdwan"]["status"] == "not-observed"
-    assert cov["summary"]["n_classes"] == 23
-    assert cov["summary"]["by_channel"] == {"ssh": 19, "json": 4}
+    assert cov["summary"]["n_classes"] == 24
+    assert cov["summary"]["by_channel"] == {"ssh": 20, "json": 4}
     assert cov["summary"]["n_with_findings"] == 1 and cov["summary"]["n_clean"] == 1
     # empty snapshot: every class not-observed, nothing fired (the coverage-honest baseline -- never 'healthy')
     empty = da.compute_architecture_coverage({})
-    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 23
+    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 24
 
 
 def test_d_sdwan_omp_peer_down_fires_on_omp_down_only():

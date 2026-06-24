@@ -4157,6 +4157,24 @@
    }
   }
  },
+ "arista": {
+  "core2": {
+   "mlag": {
+    "state": "active",
+    "neg_status": "connected",
+    "config_sanity": "inconsistent",
+    "peer_link_status": "up",
+    "local_intf_status": "up",
+    "peer_link": "Port-Channel1000",
+    "peer_address": "10.255.0.8",
+    "domain_id": "MLAG-DC1",
+    "ports_active_full": 46,
+    "ports_active_partial": 0,
+    "ports_inactive": 2,
+    "ports_configured": 0
+   }
+  }
+ },
  "lisp": {
   "core1": {
    "sessions": [

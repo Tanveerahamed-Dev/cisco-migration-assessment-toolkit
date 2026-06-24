@@ -425,6 +425,7 @@ from cisco_toolkit.build import (
     build_firewall,   # Cisco firewall (ASA / Secure Firewall Threat Defense) HA -- SSH show-text channel
     build_ise,   # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
     build_fmc,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
+    build_arista,   # MULTI-VENDOR: Arista EOS MLAG -- the FIRST non-Cisco vendor channel (device-native JSON)
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -649,6 +650,14 @@ COMMANDS_IOS = [
     "show processes memory",          # NEW-V3.23.167 (processor-pool memory - platform health)
 ]
 
+# MULTI-VENDOR (Arista EOS): device-native JSON commands ('show ... | json'). Deliberately kept OFF the Cisco
+# live-collection lists (COMMANDS_NXOS/IOS) -- they are folded into the OFFLINE analysis union (the --no-collect
+# path) so a captured Arista 'show mlag' is read and assessed, WITHOUT making the Cisco collector issue
+# Arista-only commands. Live Arista collection (an arista_eos netmiko driver) is a follow-on; offline is the
+# universal entry point and needs only this.
+COMMANDS_ARISTA = [
+    "show mlag",                         # Arista MLAG (multi-chassis link agg) state -> build_arista / _d_arista_mlag_degraded
+]
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 
 # Interface regex constants moved to cisco_toolkit.textutils (PHASE 2.7 step 1);
@@ -1461,7 +1470,7 @@ def main():
             if platform in ("auto",""):
                 platform = detect_platform_from_files(dev_dir)
                 logger.info(f"  [{hostname}] Auto-detected platform: {platform}")
-            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
+            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS + COMMANDS_ARISTA))
             for cmd in all_cmds:
                 fn    = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_")+".txt"
                 fpath = os.path.join(dev_dir, fn)
@@ -1588,6 +1597,7 @@ def main():
     all_firewall: Dict[str, dict] = {}                         # Cisco firewall (ASA/FTD failover) HA -> snap['firewall']
     all_ise: Dict[str, dict] = {}                              # Cisco ISE (Identity Services Engine) deployment -> snap['ise']
     all_fmc: Dict[str, dict] = {}                              # Cisco Secure Firewall Mgmt Center (FMC) -> snap['fmc']
+    all_arista: Dict[str, dict] = {}                           # MULTI-VENDOR: Arista EOS MLAG -> snap['arista'] (first non-Cisco vendor axis)
     all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
     all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
     all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
@@ -1695,6 +1705,9 @@ def main():
         _fmc = build_fmc(cmd_to_file)
         if _fmc:
             all_fmc[hostname] = _fmc
+        _arista = build_arista(cmd_to_file)   # MULTI-VENDOR: Arista EOS MLAG (device-native JSON; {} on a Cisco device)
+        if _arista:
+            all_arista[hostname] = _arista
         _ipv6_nd = build_ipv6_nd(cmd_to_file)
         if _ipv6_nd:
             all_ipv6_nd[hostname] = _ipv6_nd
@@ -2244,6 +2257,7 @@ def main():
     snap_dict["firewall"] = all_firewall                              # Cisco firewall (ASA/FTD failover) HA -> _d_firewall_ha_degraded (SSH show-text channel)
     snap_dict["ise"] = all_ise                                        # Cisco ISE (Identity Services Engine deployment) -> _d_ise_* (JSON controller-REST channel)
     snap_dict["fmc"] = all_fmc                                        # Cisco Secure Firewall Mgmt Center (FMC) -> _d_ftd_*/_d_fmc_* (JSON controller-REST channel)
+    snap_dict["arista"] = all_arista                                  # MULTI-VENDOR: Arista EOS MLAG -> _d_arista_mlag_degraded (device-native JSON; the first non-Cisco vendor axis)
     snap_dict["lisp"] = all_lisp                                       # universal arch coverage
     snap_dict["cts"] = all_cts                                       # universal arch coverage
     snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage

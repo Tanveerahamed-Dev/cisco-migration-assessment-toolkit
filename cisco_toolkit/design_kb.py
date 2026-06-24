@@ -287,6 +287,50 @@ _FIREWALL_DESIGN_ADDENDUM = [
 ]
 DOCTRINE.extend(_FIREWALL_DESIGN_ADDENDUM)
 
+# --- multi-vendor (Arista EOS): the FIRST non-Cisco vendor principle ------------------------------------
+# MLAG is Arista's dual-active redundancy primitive -- the direct analogue of Cisco vPC -- assessed via the
+# device-native 'show mlag | json' axis (parse_arista_mlag / build_arista). engine_actionable:
+# _d_arista_mlag_degraded fires on a configured-but-operationally-degraded MLAG domain (coverage-honest --
+# silent when MLAG is 'disabled' / absent, so a Cisco fleet never fires). This is the keystone that makes the
+# engine multi-vendor: it assesses a non-Cisco platform's core redundancy construct end to end.
+_ARISTA_DESIGN_ADDENDUM = [
+    {
+        "id": "arista-mlag-domain-degraded",
+        "title": "Keep every Arista MLAG domain active, connected and config-consistent (the vPC-equivalent dual-active primitive)",
+        "domain": "evpn",
+        "priority": "High",
+        "design_intent": "Arista MLAG (multi-chassis link aggregation) presents two physical switches as one "
+        "logical LAG peer so downstream and uplink devices dual-home across both -- it is Arista's dual-active "
+        "redundancy primitive, the direct analogue of Cisco vPC. The redundancy is real only when the domain "
+        "is operationally healthy: the two peers negotiated (negStatus connected), the peer-link and local "
+        "interface up, the configuration consistent across peers, and every MLAG member port active on BOTH "
+        "peers. A config-sanity INCONSISTENCY silently SUSPENDS the affected VLANs (exactly as a vPC Type-1 "
+        "consistency failure does), and a peer-link loss risks a dual-active split-brain.",
+        "observable": "'show mlag | json' (parse_arista_mlag / build_arista -> snap['arista'].mlag): state, "
+        "negStatus, peerLinkStatus, localIntfStatus, configSanity, and mlagPorts (Active-full / Active-partial "
+        "/ Inactive counts). Coverage-honest: a switch with MLAG 'disabled' or no capture publishes {} and is "
+        "never assessed as broken.",
+        "trigger": "An Arista MLAG domain that is configured (not 'disabled') yet operationally degraded -- "
+        "config-sanity inconsistent, peer-link / local-interface down, negotiation not connected, state "
+        "inactive, or Inactive / single-homed (Active-partial) member ports.",
+        "recommended_action": "Reconcile the peer configuration until 'show mlag config-sanity' is consistent, "
+        "confirm the peer-link and member-port state, and restore the domain to active + connected + "
+        "consistent before the pair is on the cutover path. Treat 'mlag' in the running-config as intent, not "
+        "proof -- verify the operational state.",
+        "alternatives": "Single-homed access (no dual-active redundancy -- a switch failure is an outage); a "
+        "different dual-active technology where the platform supports it. Neither removes the need to verify "
+        "the chosen redundancy is operationally healthy.",
+        "tradeoffs": "MLAG adds a peer-link and a config-consistency burden across two control planes, but is "
+        "the standard way to give downstream devices a loop-free, non-blocking, dual-homed attachment on "
+        "Arista -- the same trade as Cisco vPC.",
+        "citation": "Arista EOS User Manual (Multi-Chassis Link Aggregation); Arista Network Test Automation "
+        "(ANTA) MLAG health tests (VerifyMlagStatus / VerifyMlagConfigSanity / VerifyMlagInterfaces); "
+        "analogous to the Cisco Nexus vPC consistency model",
+        "engine_actionable": True,
+    },
+]
+DOCTRINE.extend(_ARISTA_DESIGN_ADDENDUM)
+
 # --------------------------------------------------------------------- Cisco ISE (identity / NAC control plane)
 # ISE is the authentication + segmentation control plane the access layer depends on (802.1X/MAB over RADIUS;
 # the TrustSec SGT/SGACL matrix + environment-data the switches download). It is a CONTROLLER cluster, assessed

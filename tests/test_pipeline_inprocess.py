@@ -292,6 +292,16 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "snapshot must publish per-device IPv6 routing state (build_ipv6_routing -> parse_ospfv3_neighbors)"
     assert any(d.get("id") == "ipv6-routing-adjacency-down" for d in _bp.get("decisions", [])), \
         "engine must assess the IPv6 routing plane: a stuck OSPFv3 adjacency / not-Established IPv6 BGP peer must fire _d_ipv6_routing_adjacency"
+    # UNIVERSALITY (MULTI-VENDOR -- Arista EOS): core2 ALSO stands in as an Arista spine exporting 'show mlag |
+    # json'. The domain is configured (state active) but DEGRADED (configSanity inconsistent + Inactive ports)
+    # -> _d_arista_mlag_degraded FIRES end-to-end. This is the FIRST NON-CISCO vendor axis -- the engine now
+    # assesses a non-Cisco platform's core redundancy construct (MLAG, the analogue of Cisco vPC) through the
+    # same parse->build->signal->detect->coverage pipeline. A healthy / transient / 'disabled' domain stays
+    # silent (proved in tests/test_arista.py). Coverage-honest on [HISTORY-REDACTED]: the all-Cisco fleet has no MLAG -> silent.
+    assert isinstance(snap.get("arista"), dict) and snap["arista"].get("core2", {}).get("mlag"), \
+        "snapshot must publish per-device Arista MLAG state (build_arista -> parse_arista_mlag, the first non-Cisco vendor axis)"
+    assert any(d.get("id") == "arista-mlag-domain-degraded" for d in _bp.get("decisions", [])), \
+        "engine must assess Arista MLAG: a config-inconsistent / Inactive-port MLAG domain must fire _d_arista_mlag_degraded"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu
@@ -312,9 +322,9 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert _covby["aci"]["status"] == "finding" and _covby["aci"]["channel"] == "json", \
         "ACI (json controller channel) must be observed-with-findings on the fixtures"
     assert _covby["sdwan"]["status"] == "finding" and _covby["mpls"]["status"] == "finding"
-    assert _cov["summary"]["by_channel"] == {"ssh": 19, "json": 4}
-    assert _cov["summary"]["n_with_findings"] == 23, \
-        "every one of the 23 architecture classes fires on the synthetic fixtures (full-universe proof)"
+    assert _cov["summary"]["by_channel"] == {"ssh": 20, "json": 4}
+    assert _cov["summary"]["n_with_findings"] == 24, \
+        "every one of the 24 architecture classes (incl. the first non-Cisco vendor, Arista MLAG) fires on the synthetic fixtures (full-universe proof)"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"
