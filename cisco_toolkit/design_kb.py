@@ -361,6 +361,46 @@ _ARISTA_DESIGN_ADDENDUM = [
 ]
 DOCTRINE.extend(_ARISTA_DESIGN_ADDENDUM)
 
+# --- multi-vendor (Juniper Junos): the SECOND non-Cisco vendor principle ---------------------------------
+# SRX chassis cluster is Juniper's stateful-firewall HA -- the analogue of the Cisco ASA/FTD failover pair --
+# assessed via the device-native 'show chassis cluster status | display json' axis (parse_junos_chassis_cluster
+# / build_juniper). engine_actionable: _d_junos_chassis_cluster_degraded fires on a priority-0 / monitoring-
+# failed / lost node (coverage-honest -- silent on a standalone SRX or a healthy primary+secondary pair).
+_JUNIPER_DESIGN_ADDENDUM = [
+    {
+        "id": "junos-chassis-cluster-ha-degraded",
+        "title": "Keep every Juniper SRX chassis-cluster redundancy group ready to fail over (both nodes non-zero priority, monitoring clean)",
+        "domain": "security",
+        "priority": "High",
+        "design_intent": "An SRX chassis cluster presents two firewalls as one logical HA pair: each redundancy "
+        "group elects a primary and a secondary, and on a fault the secondary takes over the data path. The "
+        "redundancy is real only when both nodes are READY -- both carry a non-zero priority, neither reports a "
+        "monitoring failure, and neither has dropped out (lost/disabled/ineligible). A node at priority 0 is the "
+        "classic trap: it is configured into the cluster but not ready to accept traffic, so Junos will not even "
+        "fail over to it -- the group has no working standby and a firewall in the data path is a single point "
+        "of failure.",
+        "observable": "'show chassis cluster status' (parse_junos_chassis_cluster / build_juniper -> "
+        "snap['juniper'].chassis_cluster): per (redundancy-group, node) priority, redundancy-group-status and "
+        "monitor-failures. Coverage-honest: a standalone SRX (no cluster) publishes [] and is never assessed.",
+        "trigger": "A redundancy group with a node at priority 0, a node reporting monitor-failures (IF / IP / "
+        "...), or a node lost / disabled / ineligible.",
+        "recommended_action": "Restore both nodes to a non-zero priority, clear the monitored interface/IP fault "
+        "that decremented the priority, and confirm a healthy primary+secondary pair (plus the control link / "
+        "fabric link and RG0 dampening) before the SRX is on the cutover path. Treat 'chassis cluster' in the "
+        "config as intent, not proof -- verify the operational state.",
+        "alternatives": "A standalone firewall (no HA -- a device failure is an outage); a different HA model "
+        "(e.g. routing-based failover). Neither removes the need to verify the chosen HA is operationally ready.",
+        "tradeoffs": "An SRX chassis cluster adds a control link, a fabric link and redundancy-group / "
+        "monitoring tuning to maintain, but gives stateful, sub-second failover for a firewall in the data path "
+        "-- the same trade as a Cisco ASA/FTD failover pair.",
+        "citation": "Juniper Junos OS Chassis Cluster (SRX) documentation -- redundancy-group failover & "
+        "interface monitoring; Juniper KB19431 (priority-0 redundancy groups); analogous to the Cisco Secure "
+        "Firewall (ASA / FTD) failover model",
+        "engine_actionable": True,
+    },
+]
+DOCTRINE.extend(_JUNIPER_DESIGN_ADDENDUM)
+
 # --------------------------------------------------------------------- Cisco ISE (identity / NAC control plane)
 # ISE is the authentication + segmentation control plane the access layer depends on (802.1X/MAB over RADIUS;
 # the TrustSec SGT/SGACL matrix + environment-data the switches download). It is a CONTROLLER cluster, assessed

@@ -426,6 +426,7 @@ from cisco_toolkit.build import (
     build_ise,   # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
     build_fmc,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     build_arista,   # MULTI-VENDOR: Arista EOS MLAG -- the FIRST non-Cisco vendor channel (device-native JSON)
+    build_juniper,   # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor channel ('| display json')
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -658,6 +659,11 @@ COMMANDS_IOS = [
 COMMANDS_ARISTA = [
     "show mlag",                         # Arista MLAG (multi-chassis link agg) state -> build_arista / _d_arista_mlag_degraded
     "show bgp evpn summary",             # Arista BGP-EVPN overlay control plane -> build_arista / _d_arista_evpn_degraded
+]
+# MULTI-VENDOR (Juniper Junos): device-native JSON via 'show ... | display json'. Same offline-only fold as
+# COMMANDS_ARISTA (kept off the Cisco live lists); a captured 'show chassis cluster status' is read and assessed.
+COMMANDS_JUNIPER = [
+    "show chassis cluster status",       # Juniper SRX chassis-cluster HA state -> build_juniper / _d_junos_chassis_cluster_degraded
 ]
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 
@@ -1471,7 +1477,7 @@ def main():
             if platform in ("auto",""):
                 platform = detect_platform_from_files(dev_dir)
                 logger.info(f"  [{hostname}] Auto-detected platform: {platform}")
-            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS + COMMANDS_ARISTA))
+            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS + COMMANDS_ARISTA + COMMANDS_JUNIPER))
             for cmd in all_cmds:
                 fn    = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_")+".txt"
                 fpath = os.path.join(dev_dir, fn)
@@ -1599,6 +1605,7 @@ def main():
     all_ise: Dict[str, dict] = {}                              # Cisco ISE (Identity Services Engine) deployment -> snap['ise']
     all_fmc: Dict[str, dict] = {}                              # Cisco Secure Firewall Mgmt Center (FMC) -> snap['fmc']
     all_arista: Dict[str, dict] = {}                           # MULTI-VENDOR: Arista EOS MLAG -> snap['arista'] (first non-Cisco vendor axis)
+    all_juniper: Dict[str, dict] = {}                          # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> snap['juniper'] (second non-Cisco vendor axis)
     all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
     all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
     all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
@@ -1709,6 +1716,9 @@ def main():
         _arista = build_arista(cmd_to_file)   # MULTI-VENDOR: Arista EOS MLAG (device-native JSON; {} on a Cisco device)
         if _arista:
             all_arista[hostname] = _arista
+        _juniper = build_juniper(cmd_to_file)   # MULTI-VENDOR: Juniper Junos SRX chassis-cluster ({} on a non-Juniper device)
+        if _juniper:
+            all_juniper[hostname] = _juniper
         _ipv6_nd = build_ipv6_nd(cmd_to_file)
         if _ipv6_nd:
             all_ipv6_nd[hostname] = _ipv6_nd
@@ -2259,6 +2269,7 @@ def main():
     snap_dict["ise"] = all_ise                                        # Cisco ISE (Identity Services Engine deployment) -> _d_ise_* (JSON controller-REST channel)
     snap_dict["fmc"] = all_fmc                                        # Cisco Secure Firewall Mgmt Center (FMC) -> _d_ftd_*/_d_fmc_* (JSON controller-REST channel)
     snap_dict["arista"] = all_arista                                  # MULTI-VENDOR: Arista EOS MLAG -> _d_arista_mlag_degraded (device-native JSON; the first non-Cisco vendor axis)
+    snap_dict["juniper"] = all_juniper                               # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> _d_junos_chassis_cluster_degraded (the second non-Cisco vendor axis)
     snap_dict["lisp"] = all_lisp                                       # universal arch coverage
     snap_dict["cts"] = all_cts                                       # universal arch coverage
     snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage

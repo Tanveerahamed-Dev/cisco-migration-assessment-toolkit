@@ -123,7 +123,7 @@ edge is vendor-specific. Priority order (market presence × closeness-to-Cisco �
 |---|---|---|---|
 | **1a ✅ DONE** | **Arista EOS** | **MLAG degraded** (vPC analogue; configSanity-inconsistent / peer-link-down / single-homed ports) | `show … \| json` / eAPI (JSON-native → robust `json.loads`) |
 | **1b ✅ DONE** | **Arista EOS** | **BGP-EVPN peer not Established** (`show bgp evpn summary` — the NX-OS EVPN-RR analogue) — VXLAN config-sanity / interface counters remain | same JSON channel — same device |
-| 2 | **Juniper Junos** | chassis-cluster redundancy (`show chassis cluster status`) / Virtual-Chassis (`show virtual-chassis status`); interface drops | NETCONF / `show … \| display json\|xml` |
+| **2 ✅ DONE** | **Juniper Junos** | **SRX chassis-cluster HA degraded** (`show chassis cluster status` — priority-0 "not ready" trap / monitor-failures / lost node; the Cisco-firewall-failover analogue) — Virtual-Chassis / interface drops remain | `\| display json` (the `[{"data":v}]`-wrapped dialect) |
 | 3 | **Fortinet / Palo Alto / F5** | HA cluster health & sync (the config-present-but-standby-failed trap) + session/throughput **capacity vs limit** — mirrors the existing Cisco ASA/FTD firewall detectors | FortiOS REST `/api/v2/monitor`, PAN-OS XML API `type=op`, F5 iControl REST `/mgmt/tm` |
 | 4 | Aruba/HPE AOS-CX, Nokia SR OS/SR Linux | VSX / SRL redundancy; later | AOS-CX REST; gNMI/OpenConfig |
 
@@ -209,7 +209,7 @@ coverage-honest **detector layer stays vendor-agnostic** regardless of how the e
 | Wave | Scope | Effort | Risk | Proves |
 |---|---|---|---|---|
 | **0 ✅** | Arista MLAG keystone | — | low | engine is multi-vendor |
-| **1** | Arista EVPN/VXLAN + Juniper chassis-cluster/VC | M | low-med | breadth generalizes to a 2nd & 3rd NOS |
+| **1 ✅ core** | Arista BGP-EVPN ✅ + Juniper SRX chassis-cluster ✅ (VXLAN-sanity / Virtual-Chassis / interface counters remain) | M | low-med | **PROVEN: the adapter pattern generalizes to a 2nd NOS** |
 | **2** | Multi-vendor firewalls (Forti/Palo/F5 HA + capacity) | M | med | security-edge universality |
 | **3** | OpenConfig/gNMI offline reader + normalization layer | L | med | the vendor-neutral channel (cheap vendor #6+) |
 | **4** | Cloud JSON channel (AWS/Azure/GCP exposure + SPOF + reachability) | L | med | domain universality |

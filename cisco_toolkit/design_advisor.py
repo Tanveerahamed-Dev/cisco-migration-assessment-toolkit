@@ -493,6 +493,31 @@ def _signals(snap):
                 _arista_evpn_down.append(f"{_ah} {_p.get('peer', '?')} ({_st})")
     sig["arista_evpn_down"] = _arista_evpn_down
     sig["arista_evpn_devices"] = sorted({x.split(' ')[0] for x in _arista_evpn_down})[:12]
+    # MULTI-VENDOR (Juniper Junos) -- the SECOND non-Cisco vendor axis (snap['juniper'][h]['chassis_cluster']
+    # from build_juniper). SRX chassis cluster is Juniper's stateful-firewall HA, the analogue of the Cisco
+    # firewall 'show failover'. FIRING STATE: a redundancy group configured yet operationally degraded -- a node
+    # at PRIORITY 0 (the documented 'not ready to accept traffic' trap; Junos refuses a manual failover to it),
+    # a node reporting monitor-failures (interface/IP monitoring caught a fault), or a node lost/disabled/
+    # ineligible. Coverage-honest & non-cry-wolf: a standalone SRX publishes [] and never fires; a healthy
+    # primary+secondary pair (non-zero priorities, monitor None) and the transient hold states stay silent.
+    _JUNOS_BROKEN_STATUS = {"lost", "disabled", "ineligible"}
+    _juniper = _as_dict(snap.get("juniper"))
+    _junos_bad = []
+    for _jh, _jf in sorted(_juniper.items()):
+        for _r in _as_list(_as_dict(_jf).get("chassis_cluster")):
+            _r = _as_dict(_r)
+            _why = []
+            if _r.get("priority") == 0:
+                _why.append("priority 0 (not ready)")
+            _mf = str(_r.get("monitor_failures", "")).strip()
+            if _mf and _mf.lower() != "none":
+                _why.append(f"monitor-failures {_mf}")
+            if str(_r.get("status", "")).strip().lower() in _JUNOS_BROKEN_STATUS:
+                _why.append(str(_r.get("status", "")).strip().lower())
+            if _why:
+                _junos_bad.append(f"{_jh} RG{_r.get('rg', '?')} {_r.get('node', '?')} ({', '.join(_why)})")
+    sig["junos_cluster_degraded"] = _junos_bad
+    sig["junos_cluster_devices"] = sorted({x.split(' ')[0] for x in _junos_bad})[:12]
     # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
     # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
     # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
@@ -2199,6 +2224,39 @@ def _d_arista_evpn_degraded(snap, sig):
         devices=sig.get("arista_evpn_devices") or [])
 
 
+def _d_junos_chassis_cluster_degraded(snap, sig):
+    """Juniper Junos SRX chassis-cluster HA health (parse_junos_chassis_cluster -> snap['juniper'].chassis_cluster)
+    -- the SECOND non-Cisco vendor detector, proving the adapter pattern generalises beyond Arista. SRX chassis
+    cluster is Juniper's stateful-firewall HA, the analogue of the Cisco firewall 'show failover'. FIRES when a
+    redundancy group is configured yet operationally degraded: a node at PRIORITY 0 (the documented 'not ready
+    to accept traffic' trap -- Junos refuses a manual failover to it, so that group has no working standby), a
+    node reporting monitor-failures (interface/IP monitoring caught a fault), or a node lost/disabled/ineligible.
+    Coverage-honest & non-cry-wolf: a standalone SRX (no cluster) publishes [] and never fires; a healthy
+    primary+secondary pair (non-zero priorities, monitor None) and the transient hold states stay silent. None
+    when no Junos chassis cluster is observed."""
+    bad = sig.get("junos_cluster_degraded") or []
+    if not bad:
+        return None
+    return _decision(
+        "junos-chassis-cluster-ha-degraded",
+        f"{len(bad)} Juniper SRX chassis-cluster redundancy-group/node(s) are degraded (e.g. {', '.join(bad[:5])}). "
+        "SRX chassis cluster is Juniper's stateful-firewall HA -- the analogue of the Cisco firewall failover "
+        "pair. A node at priority 0 is NOT ready to accept traffic (Junos will not even fail over to it), so that "
+        "redundancy group has no working standby; a monitor-failure means interface/IP monitoring has caught a "
+        "fault that has (or will) force a failover; a node lost/disabled/ineligible has dropped out of the "
+        "cluster. A firewall in the data path whose HA is degraded is a single point of failure -- the "
+        "config-present-but-operationally-broken trap, on a non-Cisco platform. Restore both nodes to non-zero "
+        "priority, clear the monitored fault, and confirm a primary+secondary pair before the SRX is on the "
+        "cutover path.",
+        len(bad), ["availability"],
+        ["juniper.chassis_cluster[].priority / .monitor_failures / .status (parse_junos_chassis_cluster / show chassis cluster status)"],
+        priority="High",
+        driver="Juniper SRX HA: a redundancy group with a priority-0 (not-ready) node, a monitoring failure, or "
+               "a node lost/disabled has no working standby -- a single point of failure in the data path, "
+               "regardless of what the configuration claims (the second non-Cisco vendor's HA false-health trap).",
+        devices=sig.get("junos_cluster_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -2972,6 +3030,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_ise_node_unreachable, _d_ise_psn_no_redundancy, _d_ise_admin_monitoring_redundancy,  # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
               _d_ftd_ha_degraded, _d_fmc_device_disconnected, _d_fmc_deployment_pending, _d_fmc_manager_ha_degraded, _d_fmc_version_inversion,  # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
               _d_arista_mlag_degraded, _d_arista_evpn_degraded,  # MULTI-VENDOR: Arista EOS DC fabric -- MLAG (vPC analogue) + BGP-EVPN overlay (NX-OS EVPN-RR analogue); device-native JSON
+              _d_junos_chassis_cluster_degraded,  # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor ('| display json')
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -4246,6 +4305,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("ise",           "Cisco ISE (Identity Services Engine)",    "json", ["ise-deployment-node-unreachable", "ise-policy-service-node-redundancy", "ise-admin-monitoring-redundancy"]),
     ("fmc",           "Cisco Secure Firewall Mgmt Center (FMC)", "json", ["ftd-ha-pair-degraded", "fmc-device-disconnected", "fmc-deployment-pending", "fmc-manager-ha-degraded", "fmc-version-inversion"]),
     ("arista",        "Arista EOS DC fabric (MLAG + BGP-EVPN)",   "ssh",  ["arista-mlag-domain-degraded", "arista-bgp-evpn-peer-down"]),
+    ("juniper",       "Juniper SRX chassis cluster (HA)",          "ssh",  ["junos-chassis-cluster-ha-degraded"]),
 ]
 
 

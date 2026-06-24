@@ -1421,6 +1421,55 @@ def parse_arista_bgp_evpn_summary(output: str) -> list:
     return out
 
 
+# --- multi-vendor: Juniper Junos (the SECOND non-Cisco NOS) -- 'show ... | display json' device-native JSON --
+def _junos_val(x):
+    """Unwrap the Junos '| display json' value form. Junos wraps every leaf value as a single-element list of
+    {"data": "<v>"} (e.g. "device-priority": [{"data": "100"}]); some versions emit a bare {"data": "<v>"} or
+    a plain scalar. Return the string value (stripped), or '' when it cannot be read. Never raises."""
+    if isinstance(x, list) and x and isinstance(x[0], dict):
+        return str(x[0].get("data", "") or "").strip()
+    if isinstance(x, dict):
+        return str(x.get("data", "") or "").strip()
+    if isinstance(x, (str, int, float)):
+        return str(x).strip()
+    return ""
+
+
+def parse_junos_chassis_cluster(output: str) -> list:
+    """Juniper Junos 'show chassis cluster status | display json' -> [{rg, node, priority:int|None, status,
+    monitor_failures}] per (redundancy-group, node), or [] when the device is not a chassis cluster / not
+    present. SRX chassis cluster is Juniper's stateful-firewall HA -- the analogue of the Cisco firewall 'show
+    failover'. Junos '| display json' is deeply nested and wraps every value as [{"data": "<v>"}]; this walks
+    chassis-cluster-status[].redundancy-group[].device-stats[] tolerantly (see _junos_val) so it survives the
+    Junos-version nesting/wrapping variants. [] when absent / non-JSON. Never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+    out = []
+    for block in (obj.get("chassis-cluster-status") if isinstance(obj.get("chassis-cluster-status"), list) else []):
+        if not isinstance(block, dict):
+            continue
+        for rg in (block.get("redundancy-group") if isinstance(block.get("redundancy-group"), list) else []):
+            if not isinstance(rg, dict):
+                continue
+            rg_id = _junos_val(rg.get("redundancy-group-id"))
+            for dev in (rg.get("device-stats") if isinstance(rg.get("device-stats"), list) else []):
+                if not isinstance(dev, dict):
+                    continue
+                pr = _junos_val(dev.get("device-priority"))
+                out.append({
+                    "rg": rg_id,
+                    "node": _junos_val(dev.get("device-name")),
+                    "priority": int(pr) if pr.lstrip("-").isdigit() else None,
+                    "status": _junos_val(dev.get("redundancy-group-status")).lower(),
+                    "monitor_failures": _junos_val(dev.get("monitor-failures")),
+                })
+    return out
+
+
 # --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
 def _fmc_items(output: str) -> list:
     """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object
