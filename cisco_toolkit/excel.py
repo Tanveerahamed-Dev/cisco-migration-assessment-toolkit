@@ -11,7 +11,7 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
-from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE, MergedCell
+from openpyxl.cell.cell import Cell, ILLEGAL_CHARACTERS_RE, MergedCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -62,11 +62,38 @@ def _harden_ws(ws):
     ws.cell, ws.append = _cell, _append
 
 
+_CELL_VALUE_GUARDED = False
+
+
+def _install_cell_value_guard():
+    """Sanitize control chars at the openpyxl Cell.value SETTER -- the true write chokepoint. The per-worksheet
+    cell()/append() wraps catch ws.cell(value=...) and ws.append([...]), but a writer that gets a cell and then
+    assigns ``cell.value = val`` DIRECTLY (e.g. append_interface_rows' w() helper) bypasses them -- and a single
+    control char in an interface description there raised IllegalCharacterError mid-loop, which _run_phase (per
+    HOST) swallowed, silently dropping every port written AFTER the offending one from the customer-facing
+    interface census. Guarding the Cell.value setter closes every direct-assignment path at once. Idempotent +
+    process-wide; stripping control chars is always correct for the xlsx format (a no-op on clean strings) and
+    only the WRITE path is touched."""
+    global _CELL_VALUE_GUARDED
+    if _CELL_VALUE_GUARDED:
+        return
+    prop = Cell.value
+    if getattr(prop, "fset", None) is None:                       # defensive: nothing to wrap
+        return
+    Cell.value = property(prop.fget,
+                          lambda self, v: prop.fset(self, _xls_sanitize(v)),
+                          getattr(prop, "fdel", None))
+    _CELL_VALUE_GUARDED = True
+
+
 def harden_workbook(wb):
     """Make EVERY worksheet in wb sanitize string cell values, so a control character in any device-derived
-    free-text field cannot abort the workbook. Covers every existing sheet (the template's own) AND every sheet
-    created later via wb.create_sheet -- one chokepoint over all ~329 cell-write sites + any future one, so the
-    safety can't drift the way a per-site helper would. Returns wb. Call once right after load_workbook()."""
+    free-text field cannot abort the workbook -- via the Cell.value setter guard (covers DIRECT ``cell.value =``
+    assignment, e.g. append_interface_rows) PLUS per-worksheet cell()/append() wraps on every existing sheet
+    (the template's own) AND every sheet created later via wb.create_sheet. One chokepoint over all ~329
+    cell-write sites + any future one, so the safety can't drift the way a per-site helper would. Returns wb.
+    Call once right after load_workbook()."""
+    _install_cell_value_guard()
     for ws in wb.worksheets:
         _harden_ws(ws)
     _orig_create = wb.create_sheet

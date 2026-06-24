@@ -6,18 +6,18 @@ from typing import List
 
 IFACE_TOKEN_RE = re.compile(
     r"\b(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
-    r"Tw\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?)\b",
+    r"Tw\d+/\d+(?:/\d+)?|Twe\d+/\d+(?:/\d+)?|Fif\d+/\d+(?:/\d+)?|Fi\d+/\d+(?:/\d+)?|App?\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?)\b",
     re.IGNORECASE)
 
 VALID_IFACE_RE = re.compile(
     r"^(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
-    r"Tw\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?|"
+    r"Tw\d+/\d+(?:/\d+)?|Twe\d+/\d+(?:/\d+)?|Fif\d+/\d+(?:/\d+)?|Fi\d+/\d+(?:/\d+)?|App?\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?|"
     r"Vlan\d+|Lo\d+|Tu\d+|mgmt0)$",
     re.IGNORECASE)
 
 PHYSICAL_IFACE_RE = re.compile(
     r"^(?:Po\d+|Eth\d+/\d+(?:/\d+)?|Gi\d+/\d+(?:/\d+)?|Te\d+/\d+(?:/\d+)?|"
-    r"Tw\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?)$",
+    r"Tw\d+/\d+(?:/\d+)?|Twe\d+/\d+(?:/\d+)?|Fif\d+/\d+(?:/\d+)?|Fi\d+/\d+(?:/\d+)?|App?\d+/\d+(?:/\d+)?|Fo\d+/\d+(?:/\d+)?|Hu\d+/\d+(?:/\d+)?|Fa\d+/\d+(?:/\d+)?)$",
     re.IGNORECASE)
 
 _JUNK_IFACE_TOKENS  = {"port","ports","capability","status","native","vlan","name","duplex","speed","type"}
@@ -32,7 +32,15 @@ def normalize_ifname(s: str) -> str:
     x = re.sub(r"^GigabitEthernet",   "Gi",  x, flags=re.IGNORECASE)
     x = re.sub(r"^TenGigabitEthernet","Te",  x, flags=re.IGNORECASE)
     x = re.sub(r"^FortyGigabitEthernet","Fo",x, flags=re.IGNORECASE)
-    x = re.sub(r"^TwentyFiveGigE",    "Tw",  x, flags=re.IGNORECASE)
+    # Multi-gig long forms must converge on the SAME canonical short token the rest of the codebase + the
+    # device's own `show interfaces status` use (verified vs Cisco IOS-XE Catalyst 9300/9400/9600 docs):
+    # 25G=Twe (NOT Tw -- Tw is 2.5G TwoGigabitEthernet), 5G=Fi, 50G=Fif, 2.5G=Tw, AppGig=Ap. The old
+    # TwentyFiveGigE->Tw folded 25G onto the 2.5G token, so the long and short paths disagreed.
+    x = re.sub(r"^TwentyFiveGig(?:abitEthernet|E)?", "Twe", x, flags=re.IGNORECASE)
+    x = re.sub(r"^TwoGigabitEthernet",               "Tw",  x, flags=re.IGNORECASE)
+    x = re.sub(r"^FiftyGig(?:abitEthernet|E)?",      "Fif", x, flags=re.IGNORECASE)
+    x = re.sub(r"^FiveGigabitEthernet",              "Fi",  x, flags=re.IGNORECASE)
+    x = re.sub(r"^AppGigabitEthernet",               "Ap",  x, flags=re.IGNORECASE)
     x = re.sub(r"^HundredGigE",       "Hu",  x, flags=re.IGNORECASE)
     x = re.sub(r"^[Pp]ort-[Cc]hannel","Po",  x)
     x = re.sub(r"^Tunnel",            "Tu",  x, flags=re.IGNORECASE)

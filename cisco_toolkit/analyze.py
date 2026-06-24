@@ -1094,8 +1094,14 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         if data_quality is not None:                          # NEW-V3.23.7 (audit C3)
             dq = data_quality.get(h, 1.0)
             rec["data_quality"] = round(dq, 2)
-            if dq < config.data_quality_threshold:
-                rec["band"] = "Insufficient Data"             # collection gap != healthy
+            # A collection gap is not health -- AND neither is a device whose essentials WERE collected (dq ok)
+            # yet whose interface parse yielded ZERO interfaces. compute_data_quality measures raw show-command
+            # FILE presence, not parse YIELD, so a NOS/format the interface parser can't read (or a truncated
+            # capture that clears the error filter) produced an empty parse -> no deductions -> a perfect 100
+            # 'Excellent', ranking the unreadable box the single healthiest asset and excluding it from every
+            # finding. An empty parse is 'Insufficient Data', never Excellent (the absence-is-not-health rule).
+            if dq < config.data_quality_threshold or not all_interfaces.get(h):
+                rec["band"] = "Insufficient Data"             # collection gap / unparseable != healthy
         records.append(rec)
     records.sort(key=lambda r: (r["score"], r["switch"]))
     return records

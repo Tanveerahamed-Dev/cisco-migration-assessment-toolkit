@@ -22,6 +22,31 @@ def test_parse_show_interface_status_ios(cp):
     assert res["Gi1/0/5"]["vlan_raw"] == "10"
 
 
+def test_parse_show_interface_status_modern_multigig_short_forms(cp):
+    """Real-format fidelity: modern Catalyst 9300/9400/9500(X) 'show interfaces status' emits the multi-gig
+    short forms Twe (25G), Fi (5G), Tw (2.5G), Ap (AppGigabitEthernet), Fif (50G). The interface regexes only
+    accepted Tw, so every Twe/Fi/Ap/Fif port silently vanished from the port census + topology. (Cisco IOS-XE
+    Catalyst interface docs: 25G=Twe, 5G=Fi, 50G=Fif, 2.5G=Tw, AppGig=Ap.)"""
+    out = textwrap.dedent("""\
+        Port      Name               Status       Vlan       Duplex  Speed Type
+        Gi1/0/1   access-pc          connected    10           full  1000  10/100/1000BaseTX
+        Twe1/0/1  CORE-UPLINK-25G    connected    trunk        full   25G  SFP-25G-SR
+        Tw1/0/3   mgig-camera        connected    20         a-full  2.5G  100/1000/2.5GBaseTX
+        Fi1/0/2   mgig-ap-wifi6      connected    30         a-full    5G  100/1000/2.5G/5GBaseTX
+        Ap1/0/1   app-hosting        connected    40         a-full  1000  App
+        Te1/0/2   legacy-10g         connected    trunk        full   10G  SFP-10G-SR
+    """)
+    res = parse.parse_show_interface_status(out)
+    assert set(res) == {"Gi1/0/1", "Twe1/0/1", "Tw1/0/3", "Fi1/0/2", "Ap1/0/1", "Te1/0/2"}, set(res)
+    # long-form <-> short-form convergence (the rest of the codebase keys on the short token)
+    from cisco_toolkit.textutils import normalize_ifname, is_valid_iface
+    assert normalize_ifname("TwentyFiveGigE1/0/1") == "Twe1/0/1"   # 25G -> Twe, NOT Tw (2.5G)
+    assert normalize_ifname("FiveGigabitEthernet1/0/2") == "Fi1/0/2"
+    assert normalize_ifname("TwoGigabitEthernet1/0/3") == "Tw1/0/3"
+    assert normalize_ifname("AppGigabitEthernet1/0/1") == "Ap1/0/1"
+    assert all(is_valid_iface(p) for p in ("Twe1/0/1", "Fi1/0/2", "Ap1/0/1", "Fif2/0/1"))
+
+
 # ---- run-config: ACL application (L4/ACL flagging) ------------------------- #
 def test_parse_run_config_interface_acl(cp):
     out = textwrap.dedent("""\
