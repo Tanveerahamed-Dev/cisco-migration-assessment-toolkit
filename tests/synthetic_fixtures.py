@@ -1033,6 +1033,24 @@ Memory usage:   16400932K total,   7322120K used,   9078812K free
   ]}
 ]}
 """,
+    # MULTI-VENDOR (Fortinet FortiGate, universality): core2 ALSO stands in as a FortiGate HA cluster exporting
+    # 'get system ha status' -- the THIRD non-Cisco vendor axis. The secondary (FGT-B) is OUT-OF-SYNC: its
+    # configuration checksum no longer matches the primary, so the standby holds a DIVERGENT ruleset and a
+    # failover would enforce the wrong policy (the firewall-HA config-present-but-broken trap, the analogue of a
+    # Cisco ASA failover pair with a stale standby) -> _d_fortigate_ha_degraded FIRES. A healthy all-in-sync
+    # cluster and a standalone FortiGate stay SILENT -- proved in tests/test_fortinet.py.
+    "get system ha status": """\
+HA Health Status: OK
+Model: FortiGate-100F
+Mode: HA A-P
+Group: 10
+Cluster Uptime: 45 days 3:14:22
+Configuration Status:
+  FGT-A(updated 2 seconds ago): in-sync
+  FGT-B(updated 9 seconds ago): out-of-sync
+Primary     : FGT-A, serial number FG100FTK00000001
+Secondary   : FGT-B, serial number FG100FTK00000002
+""",
 }
 
 # --------------------------------------------------------------------------- #

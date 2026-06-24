@@ -319,6 +319,14 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "snapshot must publish per-account cloud state (build_cloud -> parse_aws_security_groups, the first cloud-domain axis)"
     assert any(d.get("id") == "cloud-security-group-open-ingress" for d in _bp.get("decisions", [])), \
         "engine must assess cloud exposure: an SSH-open-to-0.0.0.0/0 security group must fire _d_cloud_sg_open_ingress"
+    # UNIVERSALITY (MULTI-VENDOR -- Fortinet FortiGate, the THIRD non-Cisco vendor): core2 ALSO stands in as a
+    # FortiGate HA cluster ('get system ha status'). The secondary is OUT-OF-SYNC (a config-checksum mismatch ->
+    # the standby holds a divergent ruleset) -> _d_fortigate_ha_degraded FIRES. Three vendors now assess their
+    # firewall/HA construct through the same coverage-honest pipeline. Silent on [HISTORY-REDACTED] (no FortiGate captures).
+    assert isinstance(snap.get("fortigate"), dict) and snap["fortigate"].get("core2", {}).get("ha"), \
+        "snapshot must publish per-device FortiGate HA state (build_fortigate -> parse_fortigate_ha_status, the third non-Cisco vendor axis)"
+    assert any(d.get("id") == "fortigate-ha-cluster-out-of-sync" for d in _bp.get("decisions", [])), \
+        "engine must assess FortiGate HA: an out-of-sync cluster member must fire _d_fortigate_ha_degraded"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu
@@ -339,9 +347,9 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert _covby["aci"]["status"] == "finding" and _covby["aci"]["channel"] == "json", \
         "ACI (json controller channel) must be observed-with-findings on the fixtures"
     assert _covby["sdwan"]["status"] == "finding" and _covby["mpls"]["status"] == "finding"
-    assert _cov["summary"]["by_channel"] == {"ssh": 21, "json": 5}
-    assert _cov["summary"]["n_with_findings"] == 26, \
-        "every one of the 26 architecture classes (TWO non-Cisco vendors -- Arista + Juniper -- AND the public-cloud domain) fires on the synthetic fixtures (full-universe proof)"
+    assert _cov["summary"]["by_channel"] == {"ssh": 22, "json": 5}
+    assert _cov["summary"]["n_with_findings"] == 27, \
+        "every one of the 27 architecture classes (THREE non-Cisco vendors -- Arista + Juniper + Fortinet -- AND the public-cloud domain) fires on the synthetic fixtures (full-universe proof)"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"

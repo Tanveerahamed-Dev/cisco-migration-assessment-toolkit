@@ -410,6 +410,9 @@ def _arch_fire_snap():
         "cloud": {"acct1": {"security_groups": [
             {"group_id": "sg-x", "group_name": "admin", "vpc_id": "vpc-1",
              "open_ingress": [{"proto": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"}]}]}},
+        # MULTI-VENDOR (Fortinet FortiGate): a member out-of-sync -> _d_fortigate_ha_degraded
+        "fortigate": {"fgt1": {"ha": {"health": "OK", "mode": "HA A-P", "members": [
+            {"name": "FGT-A", "sync": "in-sync"}, {"name": "FGT-B", "sync": "out-of-sync"}]}}},
         "mpls": {"pe1": {"ldp_neighbors": [{"neighbor": "1.1.1.1", "state": "Down"}],
                          "vpnv4_neighbors": [{"neighbor": "2.2.2.2", "state": "Idle"}],
                          "l2vpn_vcs": [{"vc_id": "100", "status": "DOWN"}]}},
@@ -1478,12 +1481,12 @@ def test_compute_architecture_coverage_observed_vs_not():
     assert "aci-critical-fault-raised" in by["aci"]["findings"]
     assert by["bfd"]["observed"] and by["bfd"]["status"] == "clean" and by["bfd"]["findings"] == []
     assert by["sdwan"]["observed"] is False and by["sdwan"]["status"] == "not-observed"
-    assert cov["summary"]["n_classes"] == 26
-    assert cov["summary"]["by_channel"] == {"ssh": 21, "json": 5}
+    assert cov["summary"]["n_classes"] == 27
+    assert cov["summary"]["by_channel"] == {"ssh": 22, "json": 5}
     assert cov["summary"]["n_with_findings"] == 1 and cov["summary"]["n_clean"] == 1
     # empty snapshot: every class not-observed, nothing fired (the coverage-honest baseline -- never 'healthy')
     empty = da.compute_architecture_coverage({})
-    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 26
+    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 27
 
 
 def test_d_sdwan_omp_peer_down_fires_on_omp_down_only():

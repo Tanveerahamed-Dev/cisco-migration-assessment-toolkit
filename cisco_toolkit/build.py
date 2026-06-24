@@ -33,6 +33,7 @@ from cisco_toolkit.parse import (
     parse_arista_mlag, parse_arista_bgp_evpn_summary,                # multi-vendor: Arista EOS MLAG + BGP-EVPN overlay (device-native JSON; first non-Cisco vendor)
     parse_junos_chassis_cluster,                                     # multi-vendor: Juniper Junos SRX chassis-cluster HA (the SECOND non-Cisco vendor; '| display json')
     parse_aws_security_groups,                                       # public cloud: AWS security-group exposure (the FIRST cloud-domain axis)
+    parse_fortigate_ha_status,                                       # multi-vendor: Fortinet FortiGate HA cluster sync (the THIRD non-Cisco vendor)
     parse_fmc_devices, parse_fmc_ha_pairs, parse_fmc_deployable, parse_fmc_ha_status, parse_fmc_server_version,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
@@ -405,6 +406,19 @@ def build_cloud(cmd_to_file: Dict[str, str]) -> dict:
     if sgs is None:
         return {}
     return {"security_groups": sgs}
+
+
+def build_fortigate(cmd_to_file: Dict[str, str]) -> dict:
+    """Fortinet FortiGate multi-vendor state for THIS device -> {ha: {...}}. The THIRD non-Cisco vendor channel:
+    FortiGate exposes its HA cluster state via 'get system ha status' (CLI show-text), captured per-device and
+    normalised by parse_fortigate_ha_status. FortiGate HA is the firewall HA pair -- the analogue of the Cisco
+    ASA/FTD 'show failover'. {} when the device is not an HA cluster (standalone) / runs no HA -- coverage-honest,
+    so a Cisco / Arista / Juniper fleet never fires. Fail-soft."""
+    ha = _safe_parse(parse_fortigate_ha_status, _load_cmd_output(cmd_to_file, "get system ha status")) or {}
+    out = {}
+    if ha:
+        out["ha"] = ha
+    return out
 
 
 def build_bfd(cmd_to_file: Dict[str, str]) -> dict:
