@@ -479,6 +479,20 @@ def _signals(snap):
             _mlag_bad.append(f"{_ah} ({', '.join(_why)})")
     sig["arista_mlag_degraded"] = _mlag_bad
     sig["arista_mlag_devices"] = sorted({x.split(' ')[0] for x in _mlag_bad})[:12]
+    # MULTI-VENDOR (Arista EOS) BGP-EVPN overlay control plane (snap['arista'][h]['evpn'] from build_arista,
+    # 'show bgp evpn summary'). FIRING STATE: an EVPN BGP peer whose peerState is not 'Established' -- overlay
+    # route exchange to that peer is dark (no type-2 MAC/IP or type-5 prefix reachability learned from it). The
+    # direct analogue of the Cisco _d_evpn_rr_health (NX-OS 'show bgp l2vpn evpn summary'). Coverage-honest: a
+    # device with no BGP-EVPN publishes [] and never fires; an all-Established fabric stays silent.
+    _arista_evpn_down = []
+    for _ah, _af in sorted(_arista.items()):
+        for _p in _as_list(_as_dict(_af).get("evpn")):
+            _p = _as_dict(_p)
+            _st = str(_p.get("state", "")).strip()
+            if _st and _st.lower() != "established":
+                _arista_evpn_down.append(f"{_ah} {_p.get('peer', '?')} ({_st})")
+    sig["arista_evpn_down"] = _arista_evpn_down
+    sig["arista_evpn_devices"] = sorted({x.split(' ')[0] for x in _arista_evpn_down})[:12]
     # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
     # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
     # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
@@ -2157,6 +2171,34 @@ def _d_arista_mlag_degraded(snap, sig):
         devices=sig.get("arista_mlag_devices") or [])
 
 
+def _d_arista_evpn_degraded(snap, sig):
+    """Arista EOS BGP-EVPN overlay control-plane health (parse_arista_bgp_evpn_summary -> snap['arista'].evpn).
+    FIRES when an EVPN BGP peer is not 'Established' -- the overlay route exchange to that peer is dark, so the
+    MAC/IP (type-2) and prefix (type-5) reachability the VXLAN fabric depends on is not learned from it. This is
+    the direct analogue of the Cisco _d_evpn_rr_health (NX-OS 'show bgp l2vpn evpn summary'), on a non-Cisco
+    platform. Coverage-honest & non-cry-wolf: a device running no BGP-EVPN publishes [] and never fires; an
+    all-Established fabric stays silent. None when no Arista EVPN is observed."""
+    bad = sig.get("arista_evpn_down") or []
+    if not bad:
+        return None
+    return _decision(
+        "arista-bgp-evpn-peer-down",
+        f"{len(bad)} Arista BGP-EVPN peer(s) are not Established (e.g. {', '.join(bad[:5])}). BGP-EVPN is the "
+        "control plane of an Arista VXLAN fabric -- the analogue of the Cisco NX-OS L2VPN-EVPN address family. A "
+        "peer not Established means the overlay route exchange to it is dark: type-2 (MAC/IP) and type-5 (prefix) "
+        "routes are not learned from that neighbour, so endpoints behind the affected VTEPs lose fabric-wide "
+        "reachability even while the underlay and the local VTEP look up. Confirm the peering (session state, "
+        "AS, update-source, EVPN address-family activation, route-reflector reachability) and restore it to "
+        "Established before the fabric is on the cutover path.",
+        len(bad), ["availability", "convergence"],
+        ["arista.evpn[].state (parse_arista_bgp_evpn_summary / show bgp evpn summary)"],
+        priority="High",
+        driver="Overlay control plane: an Arista BGP-EVPN peer that is not Established stops learning the type-2/"
+               "type-5 routes the VXLAN fabric needs -- a partition of overlay reachability, distinct from a "
+               "healthy underlay (the non-Cisco analogue of the NX-OS EVPN-RR-down trap).",
+        devices=sig.get("arista_evpn_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -2929,7 +2971,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_firewall_ha_degraded, _d_firewall_resource_exhaustion,  # Cisco firewall (ASA / Secure Firewall Threat Defense): HA/failover + resource capacity -- SSH show-text channel
               _d_ise_node_unreachable, _d_ise_psn_no_redundancy, _d_ise_admin_monitoring_redundancy,  # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
               _d_ftd_ha_degraded, _d_fmc_device_disconnected, _d_fmc_deployment_pending, _d_fmc_manager_ha_degraded, _d_fmc_version_inversion,  # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
-              _d_arista_mlag_degraded,  # MULTI-VENDOR: Arista EOS MLAG (multi-chassis link agg) -- the FIRST non-Cisco vendor detector (device-native JSON)
+              _d_arista_mlag_degraded, _d_arista_evpn_degraded,  # MULTI-VENDOR: Arista EOS DC fabric -- MLAG (vPC analogue) + BGP-EVPN overlay (NX-OS EVPN-RR analogue); device-native JSON
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -4203,7 +4245,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("firewall",      "Cisco firewall (ASA/FTD: HA + capacity)", "ssh",  ["firewall-ha-failover-degraded", "firewall-resource-exhaustion"]),
     ("ise",           "Cisco ISE (Identity Services Engine)",    "json", ["ise-deployment-node-unreachable", "ise-policy-service-node-redundancy", "ise-admin-monitoring-redundancy"]),
     ("fmc",           "Cisco Secure Firewall Mgmt Center (FMC)", "json", ["ftd-ha-pair-degraded", "fmc-device-disconnected", "fmc-deployment-pending", "fmc-manager-ha-degraded", "fmc-version-inversion"]),
-    ("arista",        "Arista EOS MLAG (multi-chassis link agg)", "ssh",  ["arista-mlag-domain-degraded"]),
+    ("arista",        "Arista EOS DC fabric (MLAG + BGP-EVPN)",   "ssh",  ["arista-mlag-domain-degraded", "arista-bgp-evpn-peer-down"]),
 ]
 
 

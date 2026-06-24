@@ -395,10 +395,13 @@ def _arch_fire_snap():
                               "nve_vni": [{"vni": "10010", "state": "Down"}],
                               "evpn_neighbors": [{"neighbor": "10.0.0.3", "state": "Idle"}]}},
         "copp": {"sw1": [{"class": "copp-system-critical", "drops": 50000, "exceeded": 50000, "violated": 0}]},
-        # MULTI-VENDOR (Arista EOS MLAG): a configured-but-config-inconsistent domain -> _d_arista_mlag_degraded
+        # MULTI-VENDOR (Arista EOS): a config-inconsistent MLAG domain -> _d_arista_mlag_degraded, AND an Idle
+        # BGP-EVPN peer -> _d_arista_evpn_degraded (the NX-OS EVPN-RR-down analogue on a non-Cisco platform).
         "arista": {"spine1": {"mlag": {"state": "active", "neg_status": "connected", "config_sanity": "inconsistent",
                                        "peer_link_status": "up", "local_intf_status": "up",
-                                       "ports_inactive": 0, "ports_active_partial": 0}}},
+                                       "ports_inactive": 0, "ports_active_partial": 0},
+                              "evpn": [{"vrf": "default", "peer": "10.0.0.254", "state": "Established", "asn": "65001"},
+                                       {"vrf": "default", "peer": "10.0.0.253", "state": "Idle", "asn": "65001"}]}},
         "mpls": {"pe1": {"ldp_neighbors": [{"neighbor": "1.1.1.1", "state": "Down"}],
                          "vpnv4_neighbors": [{"neighbor": "2.2.2.2", "state": "Idle"}],
                          "l2vpn_vcs": [{"vc_id": "100", "status": "DOWN"}]}},
