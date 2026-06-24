@@ -1537,6 +1537,45 @@ def parse_fortigate_ha_status(output: str) -> dict:
     return {"health": (health_m.group(1).strip() if health_m else ""), "mode": mode, "members": members}
 
 
+# --- Cisco multicast depth: 'show ip mroute' -> per-entry RPF state (the #1 multicast outage class) ----------
+def parse_mroute_entries(output: str) -> list:
+    """'show ip mroute' (NX-OS / IOS) -> [{source, group, iif, oil_count}] per mroute entry. source is '*' for a
+    (*,G) shared-tree entry or a unicast IP for an (S,G) source-tree entry; iif is the Incoming interface (the
+    RPF interface toward the source) or 'Null' when no RPF path exists; oil_count is the outgoing-interface count
+    (NX-OS '(count: N)'; 0 on IOS, where it is not on the header). Handles both NX-OS
+    ('(src/32, grp/32), uptime: ...') and IOS ('(src, grp), .../..., flags') entry headers plus their shared
+    'Incoming interface: X, RPF nbr ...' line. [] when no mroute table. Tolerant; never raises.
+
+    Coverage-honesty note: a (*,G) entry legitimately shows 'Incoming interface: Null' on NX-OS for locally-
+    joined / well-known / SSM groups, so a Null IIF is NOT by itself an outage -- only an (S,G) (a specific
+    source) with a Null IIF is an unambiguous RPF failure. This parser is purely structural; the detector applies
+    that gate."""
+    if not output:
+        return []
+    entries, cur = [], None
+    for line in output.splitlines():
+        m = re.match(r"^\(([^,]+),\s*([^)]+)\)", line)
+        if m:
+            if cur is not None:
+                entries.append(cur)
+            cur = {"source": m.group(1).strip().split("/")[0],
+                   "group": m.group(2).strip().split("/")[0].rstrip(","),
+                   "iif": "", "oil_count": 0}
+            continue
+        if cur is None:
+            continue
+        mi = re.search(r"Incoming interface:\s*([^\s,]+)", line, re.IGNORECASE)
+        if mi:
+            cur["iif"] = mi.group(1).strip()
+            continue
+        mo = re.search(r"Outgoing interface list:\s*\(count:\s*(\d+)\)", line, re.IGNORECASE)
+        if mo:
+            cur["oil_count"] = int(mo.group(1))
+    if cur is not None:
+        entries.append(cur)
+    return entries
+
+
 # --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
 def _fmc_items(output: str) -> list:
     """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object

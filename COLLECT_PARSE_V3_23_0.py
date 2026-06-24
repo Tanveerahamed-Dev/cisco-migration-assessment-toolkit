@@ -429,6 +429,7 @@ from cisco_toolkit.build import (
     build_juniper,   # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor channel ('| display json')
     build_cloud,   # PUBLIC CLOUD: AWS security-group exposure -- the FIRST cloud-domain channel (account-as-device JSON export)
     build_fortigate,   # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -- the THIRD non-Cisco vendor channel ('get system ha status')
+    build_mroute,   # CISCO DEPTH: multicast RPF integrity -- (S,G) Null incoming-interface from 'show ip mroute'
     build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
@@ -1619,6 +1620,7 @@ def main():
     all_juniper: Dict[str, dict] = {}                          # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> snap['juniper'] (second non-Cisco vendor axis)
     all_cloud: Dict[str, dict] = {}                            # PUBLIC CLOUD: AWS security-group exposure -> snap['cloud'] (first cloud-domain axis)
     all_fortigate: Dict[str, dict] = {}                        # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -> snap['fortigate'] (third non-Cisco vendor axis)
+    all_mroute: Dict[str, dict] = {}                           # CISCO DEPTH: multicast RPF state ((S,G) Null IIF) -> snap['mroute']
     all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
     all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
     all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
@@ -1738,6 +1740,9 @@ def main():
         _fortigate = build_fortigate(cmd_to_file)   # MULTI-VENDOR: Fortinet FortiGate HA ({} on a non-FortiGate / standalone device)
         if _fortigate:
             all_fortigate[hostname] = _fortigate
+        _mroute = build_mroute(cmd_to_file)   # CISCO DEPTH: multicast RPF state ({} when no mroute table)
+        if _mroute:
+            all_mroute[hostname] = _mroute
         _ipv6_nd = build_ipv6_nd(cmd_to_file)
         if _ipv6_nd:
             all_ipv6_nd[hostname] = _ipv6_nd
@@ -2291,6 +2296,7 @@ def main():
     snap_dict["juniper"] = all_juniper                               # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> _d_junos_chassis_cluster_degraded (the second non-Cisco vendor axis)
     snap_dict["cloud"] = all_cloud                                   # PUBLIC CLOUD: AWS security-group exposure -> _d_cloud_sg_open_ingress (the first cloud-domain axis)
     snap_dict["fortigate"] = all_fortigate                           # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -> _d_fortigate_ha_degraded (the third non-Cisco vendor axis)
+    snap_dict["mroute"] = all_mroute                                 # CISCO DEPTH: multicast RPF integrity -> _d_mcast_rpf_failure ((S,G) Null incoming-interface)
     snap_dict["lisp"] = all_lisp                                       # universal arch coverage
     snap_dict["cts"] = all_cts                                       # universal arch coverage
     snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage

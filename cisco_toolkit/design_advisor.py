@@ -567,6 +567,19 @@ def _signals(snap):
             _fg_bad.append(f"{_fgh} ({'; '.join(_why)})")
     sig["fortigate_ha_degraded"] = _fg_bad
     sig["fortigate_ha_devices"] = sorted({x.split(' ')[0] for x in _fg_bad})[:12]
+    # CISCO DEPTH: multicast RPF integrity (snap['mroute'][h]['rpf_failures'] from build_mroute). FIRING STATE:
+    # an (S,G) source-tree entry with a Null incoming (RPF) interface -- the device has no reverse-path toward
+    # the source, so that stream is blackholed (the #1 multicast data-plane outage). Coverage-honest & non-cry-
+    # wolf: a (*,G) shared-tree Null IIF is benign (locally-joined / well-known / SSM) and is EXCLUDED already at
+    # build_mroute -- proven on the AJ fleet (36 benign (*,G)-Null entries, 0 (S,G)-Null -> the detector is silent).
+    _mroute = _as_dict(snap.get("mroute"))
+    _rpf = []
+    for _mh, _mf in sorted(_mroute.items()):
+        for _r in _as_list(_as_dict(_mf).get("rpf_failures")):
+            _r = _as_dict(_r)
+            _rpf.append(f"{_mh} (S={_r.get('source', '?')},G={_r.get('group', '?')})")
+    sig["mcast_rpf_failures"] = _rpf
+    sig["mcast_rpf_devices"] = sorted({x.split(' ')[0] for x in _rpf})[:12]
     # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
     # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
     # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
@@ -2364,6 +2377,35 @@ def _d_junos_chassis_cluster_degraded(snap, sig):
         devices=sig.get("junos_cluster_devices") or [])
 
 
+def _d_mcast_rpf_failure(snap, sig):
+    """Multicast RPF integrity (parse_mroute_entries -> snap['mroute'].rpf_failures). FIRES when an (S,G)
+    source-tree entry has an Incoming interface of 'Null' -- the device has no RPF (reverse-path) interface
+    toward the source, so that multicast stream is blackholed. An RPF failure is the single most common
+    multicast data-plane outage. Coverage-honest & non-cry-wolf: a (*,G) shared-tree entry legitimately shows a
+    Null IIF on NX-OS for locally-joined / well-known / SSM groups, so ONLY a specific-source (S,G) Null IIF is
+    flagged (the exclusion is enforced in build_mroute). Proven on the AJ fleet -- 36 benign (*,G)-Null entries
+    and zero (S,G)-Null, so the detector is silent there. None when no RPF failure is observed."""
+    bad = sig.get("mcast_rpf_failures") or []
+    if not bad:
+        return None
+    return _decision(
+        "multicast-rpf-failure-sg",
+        f"{len(bad)} multicast (S,G) source-tree(s) have a Null incoming (RPF) interface "
+        f"(e.g. {', '.join(bad[:5])}) -- the device cannot reverse-path-forward toward the source, so that "
+        "stream is blackholed (an RPF failure is the single most common multicast data-plane outage). This is "
+        "distinct from a (*,G) shared-tree entry, which legitimately shows a Null IIF for locally-joined / "
+        "well-known / SSM groups and is NOT flagged. Check the unicast route and RPF neighbour toward the source "
+        "(show ip rpf <source>), any static mroute / RPF-override, and the PIM adjacency on the upstream path; "
+        "reconcile before the multicast path is on the cutover plan.",
+        len(bad), ["availability"],
+        ["mroute.rpf_failures[].source / .group (parse_mroute_entries / show ip mroute)"],
+        priority="High",
+        driver="Multicast RPF integrity: an (S,G) with a Null incoming interface is blackholed (no reverse path "
+               "toward the source) -- the #1 multicast outage, surfaced coverage-honestly (the benign (*,G)-Null "
+               "shared-tree case is excluded).",
+        devices=sig.get("mcast_rpf_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -3140,6 +3182,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_junos_chassis_cluster_degraded,  # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor ('| display json')
               _d_cloud_sg_open_ingress,  # PUBLIC CLOUD: AWS security-group exposure -- the FIRST cloud-domain detector (CIS 5.2/5.3)
               _d_fortigate_ha_degraded,  # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -- the THIRD non-Cisco vendor ('get system ha status')
+              _d_mcast_rpf_failure,  # CISCO DEPTH: multicast RPF integrity -- (S,G) Null incoming-interface (the benign (*,G)-Null case excluded)
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -4394,7 +4437,7 @@ _ARCH_COVERAGE_REGISTRY = [
     ("overlay",       "VXLAN-EVPN overlay (NVE / EVPN / VNI)",   "ssh",  ["vxlan-nve-peer-down", "vxlan-evpn-control-plane-down", "vxlan-nve-vni-down"]),
     ("mpls",          "SP/MPLS (LDP / L3VPN / L2VPN)",           "ssh",  ["mpls-ldp-session-down", "mpls-l3vpn-vpnv4-down", "mpls-l2vpn-pseudowire-down"]),
     ("copp",          "Control-plane policing (CoPP)",           "ssh",  ["copp-control-plane-policer-dropping"]),
-    ("pim",           "Multicast PIM-SM",                        "ssh",  ["multicast-pim-rp-resilience"]),
+    ("pim",           "Multicast PIM-SM",                        "ssh",  ["multicast-pim-rp-resilience", "multicast-rpf-failure-sg"]),
     ("ipv6_fhs",      "IPv6 first-hop security",                 "ssh",  ["ipv6-first-hop-security-suite-at-access-edge"]),
     ("ntp",           "Time synchronization (NTP)",              "ssh",  ["mgmt-time-sync-logging-baseline"]),
     ("port_security", "Access-edge port-security",               "ssh",  ["security-l2-access-edge-suite"]),

@@ -413,6 +413,9 @@ def _arch_fire_snap():
         # MULTI-VENDOR (Fortinet FortiGate): a member out-of-sync -> _d_fortigate_ha_degraded
         "fortigate": {"fgt1": {"ha": {"health": "OK", "mode": "HA A-P", "members": [
             {"name": "FGT-A", "sync": "in-sync"}, {"name": "FGT-B", "sync": "out-of-sync"}]}}},
+        # CISCO DEPTH (multicast RPF): an (S,G) source-tree with a Null incoming interface -> _d_mcast_rpf_failure
+        "mroute": {"sw1": {"n_entries": 2, "rpf_failures": [
+            {"source": "10.0.0.5", "group": "239.1.1.1", "oil_count": 1}]}},
         "mpls": {"pe1": {"ldp_neighbors": [{"neighbor": "1.1.1.1", "state": "Down"}],
                          "vpnv4_neighbors": [{"neighbor": "2.2.2.2", "state": "Idle"}],
                          "l2vpn_vcs": [{"vc_id": "100", "status": "DOWN"}]}},

@@ -482,6 +482,43 @@ _FORTINET_DESIGN_ADDENDUM = [
 ]
 DOCTRINE.extend(_FORTINET_DESIGN_ADDENDUM)
 
+# --- Cisco depth (multicast RPF integrity): the #1 multicast data-plane outage, made coverage-honest --------
+# An (S,G) source-tree with a Null incoming (RPF) interface is blackholed; a (*,G) Null IIF is benign. Assessed
+# from 'show ip mroute' (parse_mroute_entries / build_mroute -> snap['mroute']); _d_mcast_rpf_failure fires only
+# on the (S,G) case (the benign (*,G) case is excluded -- proven on the AJ fleet's 36 (*,G)-Null entries).
+_MULTICAST_RPF_ADDENDUM = [
+    {
+        "id": "multicast-rpf-failure-sg",
+        "title": "Resolve any (S,G) with a Null RPF incoming interface (a blackholed multicast source-tree)",
+        "domain": "multicast",
+        "priority": "High",
+        "design_intent": "PIM forwards multicast by Reverse-Path Forwarding: a packet from source S is accepted "
+        "only on the interface the unicast routing table uses to REACH S (the RPF interface). When an (S,G) "
+        "source-tree entry shows 'Incoming interface: Null', the device has no RPF interface toward S, so every "
+        "packet from that source fails the RPF check and is dropped -- the stream is blackholed. RPF failure is "
+        "the single most common multicast data-plane outage, and it is invisible to a control-plane-only check "
+        "because PIM and the RP can look healthy while the (S,G) forwards nothing.",
+        "observable": "'show ip mroute' (parse_mroute_entries / build_mroute -> snap['mroute'].rpf_failures): the "
+        "(S,G) entries whose Incoming interface is Null. COVERAGE-HONEST: a (*,G) shared-tree entry legitimately "
+        "shows a Null IIF for locally-joined / well-known / SSM groups (36 such benign entries on the AJ fleet) "
+        "and is NOT flagged -- only a specific-source (S,G) Null IIF is.",
+        "trigger": "An (S,G) source-tree mroute entry (a real unicast source, not *) with Incoming interface Null.",
+        "recommended_action": "Verify the unicast route and RPF neighbour toward the source ('show ip rpf "
+        "<source>'); fix the missing / incorrect route, the broken PIM adjacency on the upstream path, or the "
+        "static-mroute / RPF-override that should bridge a unicast/multicast topology divergence; re-verify the "
+        "(S,G) IIF is non-Null before the multicast path is on the cutover plan.",
+        "alternatives": "SSM (source-specific) with correct source routing; a static mroute / RPF-override where "
+        "the multicast topology intentionally differs from unicast; an RP / anycast-RP redesign if the RPF path "
+        "is structurally wrong. Each must still yield a non-Null (S,G) IIF.",
+        "tradeoffs": "RPF is what makes PIM loop-free, so it cannot be disabled -- the fix is always to make the "
+        "reverse path toward the source valid (route + PIM adjacency), not to bypass the check.",
+        "citation": "Cisco IP Multicast / PIM design guides (the RPF check and 'show ip rpf'); RFC 7761 (PIM-SM) "
+        "RPF forwarding rule; the RPF-failure / Null-IIF outage class",
+        "engine_actionable": True,
+    },
+]
+DOCTRINE.extend(_MULTICAST_RPF_ADDENDUM)
+
 # --------------------------------------------------------------------- Cisco ISE (identity / NAC control plane)
 # ISE is the authentication + segmentation control plane the access layer depends on (802.1X/MAB over RADIUS;
 # the TrustSec SGT/SGACL matrix + environment-data the switches download). It is a CONTROLLER cluster, assessed
