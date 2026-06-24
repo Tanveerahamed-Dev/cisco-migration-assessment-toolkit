@@ -54,3 +54,30 @@ def test_endpoint_census_sheet_survives_control_char_in_device_text(tmp_path):
             for c in row if isinstance(c.value, str)]
     assert any("EDGE-SW1" in v for v in vals)                       # neighbour text survived
     assert not any("\x07" in v or "\x1b" in v or "\x0b" in v for v in vals)   # control chars gone
+
+
+def test_append_interface_rows_survives_control_char_no_silent_port_drop(tmp_path):
+    """EXCEL-01 (silent data loss): append_interface_rows writes device text via DIRECT `cell.value = val`
+    (not ws.cell(value=...)), so a control char in ONE port's description raised IllegalCharacterError mid-loop;
+    _run_phase (per host) swallowed it, and every port written AFTER the offending one was silently dropped from
+    the customer-facing interface census. The Cell.value-setter guard installed by harden_workbook must keep ALL
+    four ports (the bug landed only 2)."""
+    from openpyxl import Workbook
+    from cisco_toolkit.excel import append_interface_rows
+    from cisco_toolkit.model import InterfaceData
+
+    def mk(p, desc):
+        d = InterfaceData(); d.port = p; d.status = "connected"; d.description = desc; return d
+    ifaces = {"Gi1/0/1": mk("Gi1/0/1", "one"),
+              "Gi1/0/2": mk("Gi1/0/2", "uplink \x1b[0m core"),   # control char mid-loop
+              "Gi1/0/3": mk("Gi1/0/3", "three"),
+              "Gi1/0/4": mk("Gi1/0/4", "four")}
+    wb = harden_workbook(Workbook())
+    ws = wb.active
+    col_map = {"hostname": 1, "port": 2, "status": 3, "description": 4}
+    for h, c in col_map.items():
+        ws.cell(row=1, column=c, value=h)
+    append_interface_rows(ws, 1, col_map, "SW1", ifaces)          # must NOT raise nor drop the tail
+    ports = [ws.cell(r, 2).value for r in range(2, ws.max_row + 1) if ws.cell(r, 2).value]
+    assert set(ports) == {"Gi1/0/1", "Gi1/0/2", "Gi1/0/3", "Gi1/0/4"}, ports
+    wb.save(str(tmp_path / "if.xlsx"))

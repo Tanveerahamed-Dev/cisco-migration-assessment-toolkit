@@ -3383,7 +3383,11 @@ function wireLegendHover(){
 /* =====================================================================
    DRAWER — single right panel, re-skinned per mode
    ===================================================================== */
-function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+// escape &<> AND the quotes: esc() is used in dozens of DOUBLE-QUOTED HTML attribute sinks (title=, aria-label=,
+// data-*=) that interpolate device-derived strings, so leaving " intact let a collected device string break out
+// of the attribute and inject a live inline event-handler (XSS; the page CSP allows 'unsafe-inline'). Escaping
+// the quotes is safe in text context too, so this one change closes every attribute site at once.
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function toggleEl(id){const el=document.getElementById(id);if(el)el.style.display=el.style.display==="none"?"":"none";}
 
 /* rAF-tween el.textContent 0→target over ~500ms ease-out. Cancels any prior tween on the

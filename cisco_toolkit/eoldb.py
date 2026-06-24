@@ -42,7 +42,14 @@ _EOL = [
      "source": "Cisco EOL (Catalyst 2960-X)", "conf": "derived"},
     {"pat": "WS-C2960", "platform": "Catalyst 2960", "eos": "2019-10-31", "ldos": "2024-10-31",
      "source": "Cisco EOL (Catalyst 2960)", "conf": "derived"},
-    {"pat": "WS-C6500", "platform": "Catalyst 6500", "eos": "2017-09-30", "ldos": "2022-09-30",
+    # Classic Catalyst 6500-E chassis report their PID with the slot count baked in (WS-C6503-E / WS-C6504-E /
+    # WS-C6506-E / WS-C6509-E / WS-C6509-V-E / WS-C6513-E) -- NONE start with the marketing string 'WS-C6500',
+    # so a single 'WS-C6500' pattern was DEAD (every real 6500 fell to Unknown, emitting no past-LDoS risk).
+    # Match the real chassis stems instead. (The newer 6807-XL / 6800 carry later EoL and are intentionally NOT
+    # folded in here -- doing so under these classic dates would cry-wolf.)
+    {"pat": "WS-C650", "platform": "Catalyst 6500", "eos": "2017-09-30", "ldos": "2022-09-30",
+     "source": "Cisco EOL (Catalyst 6500)", "conf": "derived"},
+    {"pat": "WS-C6513", "platform": "Catalyst 6500", "eos": "2017-09-30", "ldos": "2022-09-30",
      "source": "Cisco EOL (Catalyst 6500)", "conf": "derived"},
     {"pat": "C9300", "platform": "Catalyst 9300", "eos": "", "ldos": "",
      "source": "no EoL announced", "conf": "active"},

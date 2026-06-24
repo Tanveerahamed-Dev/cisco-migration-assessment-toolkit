@@ -57,3 +57,16 @@ def test_empty_and_deterministic():
     a = compute_lifecycle_risk(_dev("WS-C4948E-F"), asof=ASOF)
     b = compute_lifecycle_risk(_dev("WS-C4948E-F"), asof=ASOF)
     assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def test_catalyst_6500_real_chassis_pids_match_not_dead_pattern():
+    """A classic Catalyst 6500-E chassis reports its PID with the slot count baked in (WS-C6503-E ...
+    WS-C6513-E) -- none start with the marketing string 'WS-C6500', so the old single 'WS-C6500' pattern was
+    DEAD: every real 6500 fell to band 'Unknown' and emitted NO past-LDoS risk (a long-EoL box read as no-risk).
+    Every real chassis PID must now resolve to Catalyst 6500 and a 6500-E running today must band Past-LDoS."""
+    for pid in ("WS-C6503-E", "WS-C6504-E", "WS-C6506-E", "WS-C6509-E", "WS-C6509-V-E", "WS-C6513-E"):
+        rec = eoldb.lifecycle_for(pid)
+        assert rec is not None and rec["platform"] == "Catalyst 6500", (pid, rec)
+    o = compute_lifecycle_risk({"core6500": {"model": "WS-C6509-V-E", "sw_version": "15.1(2)SY"}}, asof=ASOF)
+    assert o["per_device"][0]["band"] == "Past-LDoS"
+    assert o["summary"]["n_past_ldos"] >= 1 and o["risks"]   # a risk row IS emitted (was [] under the dead pattern)
