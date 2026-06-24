@@ -117,7 +117,11 @@ def _workflow_facts(snap: dict) -> dict:
             "sc": sc, "sc_by": sc_by, "by_wave": by_wave, "csum": csum,
             "coll_present": coll_present, "blind": blind,
             "brief": brief, "lc": lc, "rem": rem, "notready": notready, "pilot": pilot,
-            "n_devices": len(_as_dict(snap.get("devices"))),
+            # SSOT: read the canonical inventory count first (the same source n_collected reads), with
+            # the local len(devices) only as a pre-brief fallback — else "N collected of M inventoried"
+            # mixes a canonical n_collected with a recount and can render "253 collected of 3 inventoried".
+            "n_devices": (((_as_dict(snap.get("executive_brief")).get("scale")) or {}).get("n_devices")
+                          or len(_as_dict(snap.get("devices")))),
             "n_collected": ((_as_dict(snap.get("executive_brief")).get("scale")) or {}).get("n_collected")}
 
 

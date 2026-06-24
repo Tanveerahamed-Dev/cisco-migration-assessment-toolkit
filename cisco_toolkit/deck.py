@@ -254,7 +254,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
              [[(f"{dbands.get('Severe', 0)} Severe · {dbands.get('Elevated', 0)} Elevated  ", 14, _NAVY, True),
                ("— risk index = topology impact × stacked exposure; compound patterns (CR-xx) mark "
                 "independent risks coinciding on one box.", 13, _MUTED, False)]])
-        _BAND_SEV = {"Severe": "Critical", "Elevated": "High", "Guarded": "Medium", "Low": "Low"}
+        _BAND_SEV = {"Severe": "Critical", "Elevated": "High", "Guarded": "Medium", "Low": "Low", "Unassessed": "Info"}
         y = 2.6
         for d in dd_top:
             band = d.get("risk_band", "Low")

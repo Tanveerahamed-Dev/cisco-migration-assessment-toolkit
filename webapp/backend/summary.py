@@ -135,7 +135,7 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         "keystones": _keystones(snap),
         "lifecycle": {
             "past_eos": lr.get("n_past_eos", ""),
-            "near_eos": lr.get("n_near_eos", ""),
+            "near_eos": lr.get("n_near", ""),          # canonical Near-LDoS count (was a non-existent n_near_eos -> always blank)
             "past_ldos": lr.get("n_past_ldos", ""),
         } if lr else {},
         "sections": _section_index(snap),

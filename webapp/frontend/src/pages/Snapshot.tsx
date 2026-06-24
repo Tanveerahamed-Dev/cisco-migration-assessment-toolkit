@@ -97,8 +97,9 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
 /* ---------- Device Risk Register (V3.23.174) ---------- */
 const BAND_COLOR: Record<string, string> = {
   Severe: "var(--crit)", Elevated: "var(--risk)", Guarded: "var(--watch)", Low: "var(--ok)",
+  Unassessed: "var(--text-faint)",   // coverage gap (no evidence collected) — neutral, never the green "ok"
 };
-const BAND_SEV: Record<string, string> = { Severe: "Critical", Elevated: "High", Guarded: "Medium", Low: "Low" };
+const BAND_SEV: Record<string, string> = { Severe: "Critical", Elevated: "High", Guarded: "Medium", Low: "Low", Unassessed: "Info" };
 
 function RegisterTable({ rows, note }: { rows: any[]; note?: string }) {
   return (
@@ -144,14 +145,16 @@ function RiskRegisterPanel({ snapId }: { snapId: number }) {
   const dd = data?.data;
   if (error || !dd?.per_device?.length) return null;   // older snapshots have no register — panel is data-gated
   const bands = dd.summary?.bands || {};
-  const flagged = dd.per_device.filter((d: any) => d.risk_band !== "Low");
+  // Unassessed (no evidence collected) is a coverage gap, not a risk — keep it out of the
+  // risk-flagged rows; it is surfaced as its own count in the panel header instead.
+  const flagged = dd.per_device.filter((d: any) => d.risk_band !== "Low" && d.risk_band !== "Unassessed");
   const shown = (flagged.length ? flagged : dd.per_device).slice(0, 8);
   return (
     <div className="panel">
       <h3>
         Device Risk Register · the senior-engineer read
-        <span className="chip" style={{ marginLeft: 10, color: bands.Severe ? "var(--crit)" : bands.Elevated ? "var(--risk)" : "var(--ok)" }}>
-          {bands.Severe ? `${bands.Severe} Severe` : bands.Elevated ? `${bands.Elevated} Elevated` : "no stacked risk"}
+        <span className="chip" style={{ marginLeft: 10, color: bands.Severe ? "var(--crit)" : bands.Elevated ? "var(--risk)" : bands.Unassessed ? "var(--text-faint)" : "var(--ok)" }}>
+          {bands.Severe ? `${bands.Severe} Severe` : bands.Elevated ? `${bands.Elevated} Elevated` : bands.Unassessed ? `${bands.Unassessed} not assessed` : "no stacked risk"}
         </span>
       </h3>
       <div className="faint" style={{ fontSize: 12, marginBottom: 10 }}>

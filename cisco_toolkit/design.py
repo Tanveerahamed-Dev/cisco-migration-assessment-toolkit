@@ -348,8 +348,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         lc = lc_by_host.get(h, {})
         role = "Core/Dist (L3)" if h in l3_hosts else "Access (L2)"
         cap = cap_by_host.get(h, {})
-        ports = (f"{d.get('active_ports', cap.get('active_ports', '—'))}/"
-                 f"{d.get('total_ports', cap.get('total_ports', '—'))}")
+        _ap = d.get("active_ports", cap.get("active_ports", "—"))
+        _ap = "—" if _ap is None else _ap          # None = active count not observed -> dash, never a false 0
+        ports = f"{_ap}/{d.get('total_ports', cap.get('total_ports', '—'))}"
         inv_rows.append((h, d.get("model") or "—", d.get("serial_number") or d.get("chassis_serial") or "—",
                          d.get("sw_version") or "—", role, lc.get("band") or "—", ports))
     table(["Hostname", "Model", "Serial", "SW version", "Role", "EoL band", "Active/Total ports"],

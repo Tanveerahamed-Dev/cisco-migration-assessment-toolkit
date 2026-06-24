@@ -5449,7 +5449,7 @@ function hygieneCard(){
    patterns CR-01..CR-06 where independent risks coincide, pre-ranked riskiest-first. Reads
    SNAP.device_dossiers {per_device, summary} straight from the engine — the explorer renders the
    verdicts, it never re-derives them (one source of truth). Back-compat: no key -> no card. */
-const _RR_PILL={Severe:"pl-crit",Elevated:"pl-risk",Guarded:"pl-watch",Low:"pl-ok"};
+const _RR_PILL={Severe:"pl-crit",Elevated:"pl-risk",Guarded:"pl-watch",Low:"pl-ok",Unassessed:"pl-neutral"};
 const _RR_TOK={Severe:"crit",Elevated:"risk",Guarded:"watch",Low:"ok"};
 function riskRegisterCard(){
   const dd=SNAP&&SNAP.device_dossiers; if(!dd)return "";
@@ -7701,6 +7701,7 @@ function briefCard(){
   const b=(SNAP&&SNAP.executive_brief)||null;
   if(!b||!(b.axes&&b.axes.length))return "";
   const sc=b.scale||{}, ps=b.posture_statement||"";
+  const ss=b.ssot||null;  // SSOT self-verification badge (executive_brief.ssot, from cisco_toolkit/ssot.summary); absent on older snapshots -> hidden
   const bSevTok=v=>(v==="Critical"||v==="High")?"crit":v==="Medium"?"watch":v==="Info"?"neutral":"ok";
   const rows=(b.axes||[]).map(a=>`<div class="ln"><span class="pill pl-${bSevTok(a.severity)}">${esc(a.severity)}</span> <b>${esc(a.axis)}</b> — <span class="faint">${esc(a.headline)}</span></div>`).join("");
   const tg=(b.top_gating||[]).slice(0,6);
@@ -7708,6 +7709,7 @@ function briefCard(){
     `<div class="card crit" style="margin-bottom:9px"><div class="ln">${esc(ps)}</div></div>`+
     (tg.length?`<div class="ln" style="margin-bottom:7px"><b>Address first:</b> <span class="faint">${tg.map(esc).join(" · ")}</span></div>`:"")+
     `<div class="sub" style="margin-bottom:5px">${(+sc.n_devices||0)} devices · ${(+sc.n_domains||0)} application domains · ${(+sc.n_endpoints||0)} endpoints — one headline per axis:</div>`+
+    (ss?`<div class="ln" style="margin-bottom:6px"><span class="pill pl-${ss.verified?"ok":"crit"}" title="${ss.verified?"Every published headline figure reconciles to the raw evidence (cisco_toolkit/ssot.py)":esc((+ss.n_violations||0)+" headline figure(s) did not reconcile to the raw evidence")}">${ss.verified?("✓ "+(+ss.n_facts||0)+" headline figures self-verified"):("⚠ "+(+ss.n_violations||0)+" figures unreconciled")}</span> <span class="faint">single source of truth — reconciled to raw evidence</span></div>`:"")+
     rows+`</div>`;
 }
 /* V3.23.122: false-health / operational-drift findings from SNAP.operational_drift

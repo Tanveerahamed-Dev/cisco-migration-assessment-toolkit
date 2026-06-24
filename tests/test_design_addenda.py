@@ -201,3 +201,111 @@ def test_device_attribution_populates_previously_empty_decisions():
     assert set(by["migration-preserve-dual-homed-endpoints"]["evidence"]["devices"]) == {"s1", "s2"}
     assert by["security-device-hardening-baseline"]["evidence"]["devices"] == ["h3"]
     assert set(by["dc-bound-layer2-failure-domain"]["evidence"]["devices"]) == {"w1", "w2"}
+
+
+# ----------------------------------------------------------------- active L2 instability (syslog mac-flap)
+def test_active_l2_instability_fires_and_honest():
+    """A 'mac-flap' syslog detection (the previously-unread syslog_intelligence axis) is a LIVE L2 loop /
+    mis-cabling — it fires a High decision counting the distinct flapping hosts. REFUTATION: an
+    OTHER-kind detection (e.g. link-flap) must NOT fire it, so the design claim is grounded in the
+    mac-flap signal alone, not any syslog noise."""
+    fire = {"syslog_intelligence": {"detections": [
+        {"host": "sw1", "kind": "mac-flap", "severity": "High", "count": 2},
+        {"host": "sw2", "kind": "mac-flap", "severity": "High", "count": 5},
+        {"host": "sw1", "kind": "mac-flap", "severity": "High", "count": 1}]}}  # sw1 twice -> distinct-host count = 2
+    d = _by(fire).get("dc-resolve-active-l2-instability-mac-flap")
+    assert d and d["evidence"]["count"] == 2 and set(d["evidence"]["devices"]) == {"sw1", "sw2"}
+    assert d["priority"] == "High"
+    assert "syslog_intelligence.detections[].kind=='mac-flap'" in d["evidence"]["fields"]
+    # clean: link-flap / other kinds are not an active L2 loop -> must NOT fire this decision
+    clean = {"syslog_intelligence": {"detections": [{"host": "sw1", "kind": "link-flap", "severity": "High"},
+                                                    {"host": "sw2", "kind": "optic-degraded"}]}}
+    assert "dc-resolve-active-l2-instability-mac-flap" not in _by(clean)
+
+
+# ----------------------------------------------------------------- static default route cutover dependency
+def test_static_default_dependency_fires_and_honest():
+    """A STATIC default route (source s / s*) is a cutover black-hole hazard — no dynamic reconvergence
+    when the next-hop changes. Fires counting the static-default hosts. REFUTATION: a DYNAMICALLY-learned
+    default (OSPF 'o*') reconverges on its own and must NOT fire; a static route that is NOT the default
+    must NOT fire."""
+    fire = {"routes": {"r1": [{"prefix": "0.0.0.0/0", "source": "s*", "next_hop": "10.0.0.1"}],
+                       "r2": [{"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.0.2"}]}}
+    d = _by(fire).get("routing-static-default-cutover-dependency")
+    assert d and d["evidence"]["count"] == 2 and set(d["evidence"]["devices"]) == {"r1", "r2"}
+    assert d["priority"] == "High" and "routes[].source (s/s*)" in d["evidence"]["fields"]
+    # clean: a dynamically-learned default reconverges -> NOT a black-hole dependency
+    dyn = {"routes": {"r3": [{"prefix": "0.0.0.0/0", "source": "o*ia", "next_hop": "10.0.0.3"}]}}
+    assert "routing-static-default-cutover-dependency" not in _by(dyn)
+    # clean: a static route that is NOT the default must not fire this default-route detector
+    nondef = {"routes": {"r4": [{"prefix": "10.9.0.0/16", "source": "s", "next_hop": "10.0.0.4"}]}}
+    assert "routing-static-default-cutover-dependency" not in _by(nondef)
+
+
+# ----------------------------------------------------------------- SPOF cut-edge blast-radius enrichment
+def test_spof_decision_surfaces_cut_edge_blast_radius():
+    """The SPOF decision must surface the WORST cut-edge's blast radius (link_centrality[].pairs_cut =
+    node-pairs disconnected when the edge is lost), so a catastrophic cut-edge is distinguishable from a
+    merely redundancy-less one. pairs_cut was computed + shown in deliverables but previously unread by
+    the design layer."""
+    snap = {"link_centrality": [
+        {"is_bridge": True, "a_host": "core1", "b_host": "core2", "pairs_cut": 122},
+        {"is_bridge": True, "a_host": "d1", "b_host": "d2", "pairs_cut": 25},
+        {"is_bridge": False, "pairs_cut": 3}]}                      # non-bridge ignored
+    d = _by(snap)["topology-triangles-not-squares-rings"]
+    assert d["evidence"]["count"] == 2                             # == is_bridge count
+    assert "122 node-pair" in d["evidence"]["summary"]             # worst blast surfaced
+    assert "2 cut-edge(s) each isolate >=20" in d["evidence"]["summary"]   # both bridges are >=20
+    assert "link_centrality[].pairs_cut" in d["evidence"]["fields"]
+
+
+# ============================================ universal-architecture KB principles (26 detectors)
+# Each was a detector that FIRED a decision but had no backing design_kb principle, so the decision
+# rendered with the raw pid as title + empty citation/action. These 26 web-researched, primary-source-
+# cited principles complete them (coverage-honest: they fire only when the architecture is collected).
+_UNIVERSAL_ARCH_PIDS = {
+    "aci-critical-fault-raised": "aci", "aci-node-not-active": "aci", "aci-fabric-health-degraded": "aci",
+    "aci-vrf-enforcement-unenforced": "aci", "vxlan-nve-peer-down": "dc-overlay",
+    "vxlan-evpn-control-plane-down": "dc-overlay", "vxlan-nve-vni-down": "dc-overlay",
+    "mpls-ldp-session-down": "sp-mpls", "mpls-l3vpn-vpnv4-down": "sp-mpls", "mpls-l2vpn-pseudowire-down": "sp-mpls",
+    "sdwan-control-connection-down": "sd-wan", "sdwan-omp-peer-down": "sd-wan", "sdwan-device-unreachable": "sd-wan",
+    "fhrp-resilience-tracking-and-preempt": "routing", "reconcile-broken-fhrp-before-cutover": "routing",
+    "bfd-session-down-failover-degraded": "routing", "ipv6-duplicate-address-dad-failure": "ipv6",
+    "ipv6-routing-adjacency-down": "ipv6", "copp-control-plane-policer-dropping": "management",
+    "cts-environment-data-not-downloaded": "security", "lisp-fabric-session-down": "campus-sda",
+    "dmvpn-tunnel-peer-down": "wan", "ipsec-crypto-session-down": "wan",
+    "storm-control-action-on-edge": "dc-switching", "storm-control-active-suppression": "dc-switching",
+    "qos-runtime-egress-queue-drops": "qos",
+}
+
+
+def test_universal_arch_principles_present_cited_and_actionable():
+    """All 26 universal-architecture detectors now carry a fully-authored, primary-source-cited principle,
+    each engine_actionable=True and in its declared domain. (The emit-invariant separately proves each emits
+    when its architecture is present; coverage-honest silence otherwise.)"""
+    assert len(_UNIVERSAL_ARCH_PIDS) == 26
+    for pid, dom in _UNIVERSAL_ARCH_PIDS.items():
+        p = design_kb.by_id(pid)
+        assert p, f"missing universal-arch principle {pid}"
+        for k in ("title", "design_intent", "observable", "trigger", "recommended_action",
+                  "alternatives", "tradeoffs", "citation"):
+            assert (p.get(k) or "").strip(), f"{pid} missing {k}"
+        assert p.get("engine_actionable") is True, f"{pid} fires a detector -> must be engine_actionable"
+        assert p["domain"] == dom and pid in {x["id"] for x in design_kb.by_domain(dom)}
+        assert any(t in p["citation"] for t in ("Cisco", "RFC", "IETF", "SMPTE")), f"{pid} citation not a primary source"
+
+
+def test_universal_arch_decision_renders_complete_when_fired():
+    """The original defect: a fired universal-arch decision rendered the RAW PID as its title with empty
+    citation/recommended_action (no backing principle). With the principles added, a fired decision now
+    carries the real title + citation + action. Proven on the all-architectures fixture."""
+    from test_design_blueprint import _arch_fire_snap
+    by = _by(_arch_fire_snap())
+    d = by.get("aci-critical-fault-raised")
+    assert d, "the ACI critical-fault decision must fire on the all-architectures fixture"
+    assert d["title"] != "aci-critical-fault-raised" and d["title"].strip()          # real title, not the raw pid
+    assert d["principle"]["citation"].strip() and "Cisco" in d["principle"]["citation"]
+    assert (d.get("recommended_action") or "").strip()                                # real action, not empty
+    # spot-check a second architecture (SD-WAN) renders complete too
+    s = by.get("sdwan-omp-peer-down")
+    assert s and s["title"] != "sdwan-omp-peer-down" and s["principle"]["citation"].strip()
