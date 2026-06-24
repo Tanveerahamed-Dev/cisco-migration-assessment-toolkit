@@ -30,7 +30,7 @@ from cisco_toolkit.parse import (
     parse_sdwan_control_connections, parse_sdwan_devices, parse_sdwan_omp_counters,   # Cisco Catalyst SD-WAN (vManage JSON channel)
     parse_asa_failover, parse_asa_resource_usage,                    # Cisco firewall (ASA / Secure Firewall Threat Defense) HA + resource capacity -- SSH show-text channel
     parse_ise_nodes,                                                 # Cisco ISE (Identity Services Engine) deployment -- JSON controller-REST channel
-    parse_arista_mlag,                                               # multi-vendor: Arista EOS MLAG -- the FIRST non-Cisco vendor axis (device-native JSON)
+    parse_arista_mlag, parse_arista_bgp_evpn_summary,                # multi-vendor: Arista EOS MLAG + BGP-EVPN overlay (device-native JSON; first non-Cisco vendor)
     parse_fmc_devices, parse_fmc_ha_pairs, parse_fmc_deployable, parse_fmc_ha_status, parse_fmc_server_version,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
@@ -362,15 +362,19 @@ def build_fmc(cmd_to_file: Dict[str, str]) -> dict:
 
 
 def build_arista(cmd_to_file: Dict[str, str]) -> dict:
-    """Arista EOS multi-vendor state for THIS device -> {mlag: {...}}. The FIRST non-Cisco vendor channel:
-    EOS is JSON-native, so 'show mlag | json' is captured per-device (like the Cisco show-text classes) and
-    json-normalized by parse_arista_mlag. MLAG is Arista's dual-active redundancy primitive (the analogue of
-    Cisco vPC). {} when the device is not an Arista MLAG peer / runs no MLAG (no 'show mlag' capture, or MLAG
-    'disabled') -- coverage-honest, so a Cisco switch fleet never fires. Fail-soft."""
+    """Arista EOS multi-vendor state for THIS device -> {mlag: {...}, evpn: [...]}. The FIRST non-Cisco vendor
+    channel: EOS is JSON-native, so 'show mlag | json' (MLAG -- the dual-active analogue of Cisco vPC) and
+    'show bgp evpn summary | json' (the BGP-EVPN/VXLAN overlay control plane -- the analogue of the Cisco NX-OS
+    'show bgp l2vpn evpn summary') are captured per-device (like the Cisco show-text classes) and json-normalized
+    by parse_arista_mlag / parse_arista_bgp_evpn_summary. {} when the device runs neither (no capture, MLAG
+    'disabled', no EVPN peers) -- coverage-honest, so a Cisco switch fleet never fires. Fail-soft."""
     mlag = _safe_parse(parse_arista_mlag, _load_cmd_output(cmd_to_file, "show mlag")) or {}
+    evpn = _safe_parse(parse_arista_bgp_evpn_summary, _load_cmd_output(cmd_to_file, "show bgp evpn summary")) or []
     out = {}
     if mlag:
         out["mlag"] = mlag
+    if evpn:
+        out["evpn"] = evpn
     return out
 
 

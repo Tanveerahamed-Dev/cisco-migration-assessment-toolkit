@@ -187,3 +187,84 @@ def test_arista_in_architecture_coverage_registry():
     assert da.compute_architecture_coverage({})["summary"]["n_not_observed"] >= 1
     none = {c["key"]: c for c in da.compute_architecture_coverage({})["classes"]}
     assert none["arista"]["status"] == "not-observed"
+
+
+# ======================================================================================================
+# Arista BGP-EVPN overlay control plane (wave 1b) -- the analogue of the Cisco NX-OS _d_evpn_rr_health.
+# 'show bgp evpn summary | json' shape verified against the Arista BGP-summary eAPI fixtures (ANTA).
+# ======================================================================================================
+_EVPN_HEALTHY = """\
+{"vrfs": {"default": {"vrf": "default", "routerId": "10.0.0.7", "asn": "65001",
+  "peers": {"10.0.0.254": {"peerState": "Established", "peerAsn": "65001"},
+            "10.0.0.253": {"peerState": "Established", "peerAsn": "65001"}}}}}
+"""
+# one route-reflector peering stuck Idle -> overlay route exchange to it is dark
+_EVPN_DOWN = _EVPN_HEALTHY.replace('"10.0.0.253": {"peerState": "Established"',
+                                   '"10.0.0.253": {"peerState": "Idle"')
+
+
+def _snap_evpn(*evpn_jsons):
+    arista = {}
+    for i, j in enumerate(evpn_jsons):
+        peers = parse.parse_arista_bgp_evpn_summary(j)
+        if peers:
+            arista[f"spine{i + 1}"] = {"evpn": peers}
+    return {"arista": arista}
+
+
+def _fire_evpn(snap):
+    sig = da._signals(snap)
+    return da._d_arista_evpn_degraded(snap, sig)
+
+
+def test_parse_evpn_healthy_lists_peers():
+    peers = parse.parse_arista_bgp_evpn_summary(_EVPN_HEALTHY)
+    assert len(peers) == 2 and all(p["state"] == "Established" for p in peers)
+    assert {p["peer"] for p in peers} == {"10.0.0.254", "10.0.0.253"}
+    assert peers[0]["vrf"] == "default" and peers[0]["asn"] == "65001"
+
+
+def test_parse_evpn_hostile_input_never_raises():
+    for bad in ("", "not json", "[1,2,3]", "{}", '{"vrfs": "x"}', '{"vrfs": {"default": {"peers": "x"}}}'):
+        out = parse.parse_arista_bgp_evpn_summary(bad)
+        assert out == [] or isinstance(out, list)
+
+
+def test_build_arista_reads_evpn(tmp_path):
+    d = tmp_path / "spine1"
+    d.mkdir()
+    (d / "show_bgp_evpn_summary.txt").write_text(_EVPN_DOWN, encoding="utf-8")
+    out = build.build_arista({"show bgp evpn summary": str(d / "show_bgp_evpn_summary.txt")})
+    assert isinstance(out.get("evpn"), list) and any(p["state"] == "Idle" for p in out["evpn"])
+
+
+def test_fires_on_evpn_peer_not_established():
+    d = _fire_evpn(_snap_evpn(_EVPN_DOWN))
+    assert d and d["id"] == "arista-bgp-evpn-peer-down" and d["priority"] == "High"
+    assert "10.0.0.253" in d["evidence"]["summary"] and "Idle" in d["evidence"]["summary"]
+    assert d["evidence"]["count"] == 1 and d["evidence"]["devices"] == ["spine1"]
+
+
+def test_silent_when_all_evpn_established():
+    assert _fire_evpn(_snap_evpn(_EVPN_HEALTHY)) is None
+
+
+def test_silent_when_no_evpn_observed():
+    assert _fire_evpn({"arista": {"spine1": {"mlag": {"state": "active"}}}}) is None   # mlag-only, no evpn
+    assert _fire_evpn({"arista": {}}) is None
+    assert _fire_evpn({}) is None
+
+
+def test_evpn_detector_never_raises_on_malformed_axis():
+    for bad in ({"arista": "x"}, {"arista": {"s1": {"evpn": "x"}}}, {"arista": {"s1": {"evpn": ["x"]}}},
+                {"arista": {"s1": {"evpn": [{"state": None}]}}}):
+        sig = da._signals(bad)
+        out = da._d_arista_evpn_degraded(bad, sig)
+        assert out is None or isinstance(out, dict)
+
+
+def test_both_arista_pids_registered_in_one_class():
+    entry = [t for t in da._ARCH_COVERAGE_REGISTRY if t[0] == "arista"][0]
+    assert set(entry[3]) == {"arista-mlag-domain-degraded", "arista-bgp-evpn-peer-down"}
+    p = design_kb.by_id("arista-bgp-evpn-peer-down")
+    assert p and p["engine_actionable"] is True and "Arista" in p["citation"]

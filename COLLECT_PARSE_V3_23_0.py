@@ -657,6 +657,7 @@ COMMANDS_IOS = [
 # universal entry point and needs only this.
 COMMANDS_ARISTA = [
     "show mlag",                         # Arista MLAG (multi-chassis link agg) state -> build_arista / _d_arista_mlag_degraded
+    "show bgp evpn summary",             # Arista BGP-EVPN overlay control plane -> build_arista / _d_arista_evpn_degraded
 ]
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 

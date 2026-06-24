@@ -1393,6 +1393,34 @@ def parse_arista_mlag(output: str) -> dict:
     }
 
 
+def parse_arista_bgp_evpn_summary(output: str) -> list:
+    """Arista EOS 'show bgp evpn summary | json' -> [{vrf, peer, state, asn}] per EVPN BGP peer, or [] when no
+    BGP-EVPN is configured / not present. This is the overlay CONTROL plane of an Arista BGP-EVPN/VXLAN fabric --
+    the direct analogue of the Cisco NX-OS 'show bgp l2vpn evpn summary' the engine already reads
+    (_d_evpn_rr_health). EOS is JSON-native, so this is a robust json.loads (no regex-fidelity risk). Structure
+    (verified against the Arista BGP-summary eAPI shape): {"vrfs": {"<vrf>": {"peers": {"<ip>": {"peerState":
+    "Established"|Idle|Active|Connect|OpenSent|OpenConfirm, "peerAsn": "<asn>"}}}}}; the per-peer field is
+    'peerState' and the ONLY healthy value is 'Established'. [] when absent / non-JSON. Tolerant; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+    out = []
+    vrfs = obj.get("vrfs")
+    for vrf, vd in (vrfs.items() if isinstance(vrfs, dict) else []):
+        if not isinstance(vd, dict):
+            continue
+        peers = vd.get("peers")
+        for ip, pd in (peers.items() if isinstance(peers, dict) else []):
+            pd = pd if isinstance(pd, dict) else {}
+            out.append({"vrf": str(vrf), "peer": str(ip),
+                        "state": str(pd.get("peerState", "") or "").strip(),
+                        "asn": str(pd.get("peerAsn", "") or "").strip()})
+    return out
+
+
 # --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
 def _fmc_items(output: str) -> list:
     """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object

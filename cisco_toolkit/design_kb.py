@@ -328,6 +328,36 @@ _ARISTA_DESIGN_ADDENDUM = [
         "analogous to the Cisco Nexus vPC consistency model",
         "engine_actionable": True,
     },
+    {
+        "id": "arista-bgp-evpn-peer-down",
+        "title": "Keep every Arista BGP-EVPN overlay peer Established (the VXLAN fabric control plane)",
+        "domain": "evpn",
+        "priority": "High",
+        "design_intent": "In an Arista BGP-EVPN/VXLAN fabric the BGP EVPN address family is the overlay control "
+        "plane: VTEPs advertise type-2 (MAC/IP) and type-5 (prefix) routes to one another (usually via a pair of "
+        "route reflectors), and that is how an endpoint behind one VTEP becomes reachable from another. The "
+        "overlay is only as healthy as its EVPN peerings -- a peer that is not Established learns and advertises "
+        "nothing, so the endpoints behind the affected VTEPs silently lose fabric-wide reachability even though "
+        "the IGP underlay and the local VTEP still look up.",
+        "observable": "'show bgp evpn summary' (parse_arista_bgp_evpn_summary / build_arista -> "
+        "snap['arista'].evpn): per-peer peerState. Coverage-honest: a switch running no BGP-EVPN publishes [] "
+        "and is never assessed.",
+        "trigger": "An Arista EVPN BGP peer whose peerState is not 'Established' (Idle / Active / Connect / "
+        "OpenSent / OpenConfirm).",
+        "recommended_action": "Restore the EVPN peering to Established: verify the session is administratively "
+        "up, the remote AS / update-source / BGP router-id are correct, the l2vpn evpn address-family is "
+        "activated for the neighbour, and the route reflectors are reachable; confirm before the fabric is on "
+        "the cutover path.",
+        "alternatives": "Flood-and-learn (multicast) VXLAN without a BGP control plane (operationally simpler, "
+        "but no host-route mobility or scale); a controller-driven overlay. Neither removes the need for the "
+        "chosen overlay control plane to be operationally healthy.",
+        "tradeoffs": "BGP-EVPN adds a control-plane peering mesh (usually route-reflected) to maintain, but "
+        "gives scalable, loop-free host and prefix reachability across the VXLAN fabric -- the same trade as the "
+        "Cisco NX-OS L2VPN-EVPN model.",
+        "citation": "Arista EOS User Manual (EVPN Overview / Configuring EVPN); Arista Network Test Automation "
+        "(ANTA) BGP / EVPN health tests; analogous to the Cisco NX-OS VXLAN BGP-EVPN (L2VPN EVPN) control plane",
+        "engine_actionable": True,
+    },
 ]
 DOCTRINE.extend(_ARISTA_DESIGN_ADDENDUM)
 

@@ -122,7 +122,7 @@ edge is vendor-specific. Priority order (market presence × closeness-to-Cisco �
 | Wave | Vendor | First detector(s) — the headline redundancy/false-health trap | Structured access |
 |---|---|---|---|
 | **1a ✅ DONE** | **Arista EOS** | **MLAG degraded** (vPC analogue; configSanity-inconsistent / peer-link-down / single-homed ports) | `show … \| json` / eAPI (JSON-native → robust `json.loads`) |
-| 1b | Arista EOS | BGP-EVPN/VXLAN peer down (`show bgp evpn summary`, `show vxlan vtep`); interface error/drop counters | same JSON channel — same device |
+| **1b ✅ DONE** | **Arista EOS** | **BGP-EVPN peer not Established** (`show bgp evpn summary` — the NX-OS EVPN-RR analogue) — VXLAN config-sanity / interface counters remain | same JSON channel — same device |
 | 2 | **Juniper Junos** | chassis-cluster redundancy (`show chassis cluster status`) / Virtual-Chassis (`show virtual-chassis status`); interface drops | NETCONF / `show … \| display json\|xml` |
 | 3 | **Fortinet / Palo Alto / F5** | HA cluster health & sync (the config-present-but-standby-failed trap) + session/throughput **capacity vs limit** — mirrors the existing Cisco ASA/FTD firewall detectors | FortiOS REST `/api/v2/monitor`, PAN-OS XML API `type=op`, F5 iControl REST `/mgmt/tm` |
 | 4 | Aruba/HPE AOS-CX, Nokia SR OS/SR Linux | VSX / SRL redundancy; later | AOS-CX REST; gNMI/OpenConfig |
@@ -190,6 +190,11 @@ coverage-honest **detector layer stays vendor-agnostic** regardless of how the e
 **proven**:
 - `parse_arista_mlag` (`show mlag \| json`) → `build_arista` → `_signals` → `_d_arista_mlag_degraded` → KB
   principle (`arista-mlag-domain-degraded`, cited to Arista EOS docs + ANTA) → `_ARCH_COVERAGE_REGISTRY`.
+- **Wave 1b (also shipped):** `parse_arista_bgp_evpn_summary` (`show bgp evpn summary \| json`) →
+  `_d_arista_evpn_degraded` (fires on a peer not `Established` — the analogue of the Cisco NX-OS
+  `_d_evpn_rr_health`), added to the **same `arista` class** (no `n_classes` churn). JSON shape verified against
+  ANTA's BGP-summary fixtures (`vrfs.*.peers.*.peerState`). The Arista leaf/spine DC fabric (MLAG + BGP-EVPN)
+  is now assessed end-to-end. Full suite **801 green**.
 - Coverage-honest: fires on a configured-but-degraded domain (configSanity inconsistent / peer-link down /
   single-homed ports); **silent** on healthy, on the transient `connecting` bring-up, and on `disabled`
   (absence of MLAG is never a finding).
