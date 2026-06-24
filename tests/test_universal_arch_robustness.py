@@ -101,7 +101,7 @@ def test_coverage_and_move_groups_survive_malformed():
     """The coverage-honesty SSOT and the ACI move-group plan must tolerate malformed/empty input fail-soft."""
     for snap in _MALFORMED_SNAPS + [{"design_blueprint": "x"}, {"design_blueprint": {"decisions": "x"}}]:
         cov = da.compute_architecture_coverage(snap)
-        assert cov["summary"]["n_classes"] == 25 and isinstance(cov["classes"], list)
+        assert cov["summary"]["n_classes"] == 26 and isinstance(cov["classes"], list)
         mg = da._aci_move_groups(snap)
         assert isinstance(mg, dict)          # {} or a valid plan, never a raise
 

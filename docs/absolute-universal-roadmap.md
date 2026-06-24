@@ -147,6 +147,11 @@ cheap.
 
 ## 7. Axis D — domain breadth (cloud / virtual / SDN)
 
+> **✅ FIRST CLOUD AXIS SHIPPED:** `_d_cloud_sg_open_ingress` — an AWS security group open from `0.0.0.0/0`
+> (or `::/0`) to an admin/DB/all port (CIS AWS 5.2/5.3; silent on a legit 80/443 web tier). Proves the engine
+> extends beyond on-prem to **public cloud** via the same offline JSON pattern (account-as-device). Azure
+> Resource Graph / GCP Cloud Asset Inventory / AWS Network Access Analyzer (reachability) extend the same class.
+
 Cloud is "just another JSON channel." Each hyperscaler exposes a **read-only inventory/assessment export** that
 drops into the offline pipeline:
 
@@ -212,7 +217,7 @@ coverage-honest **detector layer stays vendor-agnostic** regardless of how the e
 | **1 ✅ core** | Arista BGP-EVPN ✅ + Juniper SRX chassis-cluster ✅ (VXLAN-sanity / Virtual-Chassis / interface counters remain) | M | low-med | **PROVEN: the adapter pattern generalizes to a 2nd NOS** |
 | **2** | Multi-vendor firewalls (Forti/Palo/F5 HA + capacity) | M | med | security-edge universality |
 | **3** | OpenConfig/gNMI offline reader + normalization layer | L | med | the vendor-neutral channel (cheap vendor #6+) |
-| **4** | Cloud JSON channel (AWS/Azure/GCP exposure + SPOF + reachability) | L | med | domain universality |
+| **4 ✅ seeded** | Cloud JSON channel — **AWS security-group exposure ✅** (Azure/GCP exposure + AZ-spread SPOF + reachability remain) | L | med | **domain universality proven (on-prem + cloud)** |
 | **5** | Class-depth backlog (vPC/FHRP/IPv6-FHS/RPF/SR/SDA/QoS) | L (parallel) | low | senior-grade depth per class |
 
 Each wave is independent, coverage-honest, and non-disruptive to the canonical AJ fleet (additive axes are

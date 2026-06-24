@@ -4195,6 +4195,38 @@
    ]
   }
  },
+ "cloud": {
+  "core1": {
+   "security_groups": [
+    {
+     "group_id": "sg-0pubweb",
+     "group_name": "public-web",
+     "vpc_id": "vpc-aj1",
+     "open_ingress": [
+      {
+       "proto": "tcp",
+       "from_port": 443,
+       "to_port": 443,
+       "cidr": "0.0.0.0/0"
+      }
+     ]
+    },
+    {
+     "group_id": "sg-0bastion",
+     "group_name": "bastion-ssh",
+     "vpc_id": "vpc-aj1",
+     "open_ingress": [
+      {
+       "proto": "tcp",
+       "from_port": 22,
+       "to_port": 22,
+       "cidr": "0.0.0.0/0"
+      }
+     ]
+    }
+   ]
+  }
+ },
  "lisp": {
   "core1": {
    "sessions": [

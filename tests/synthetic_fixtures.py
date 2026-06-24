@@ -683,6 +683,23 @@ GigabitEthernet1/0/1 is up, line protocol is up
   ]
 }
 """,
+    # PUBLIC CLOUD (AWS, universality): core1 ALSO stands in as an AWS account query host for an offline
+    # 'aws ec2 describe-security-groups' export -- the FIRST cloud-domain axis, proving the engine extends
+    # beyond on-prem multi-vendor to public cloud (account-as-device, the same offline JSON pattern as the
+    # ACI/ISE/FMC controllers). sg-0bastion opens SSH(22) to 0.0.0.0/0 -> _d_cloud_sg_open_ingress FIRES (CIS
+    # 5.2 -- admin port exposed to the whole internet). sg-0pubweb opens only 443 to the world -> a legitimate
+    # public web tier that must STAY SILENT (no cry-wolf) -- proved alongside the internal-only case in
+    # tests/test_cloud.py. JSON shape per the AWS EC2 DescribeSecurityGroups API.
+    "aws ec2 describe-security-groups": """\
+{"SecurityGroups": [
+  {"GroupId": "sg-0pubweb", "GroupName": "public-web", "VpcId": "vpc-aj1", "IpPermissions": [
+    {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0"}], "Ipv6Ranges": []}
+  ]},
+  {"GroupId": "sg-0bastion", "GroupName": "bastion-ssh", "VpcId": "vpc-aj1", "IpPermissions": [
+    {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "ssh open to the world"}], "Ipv6Ranges": []}
+  ]}
+]}
+""",
 }
 
 # --------------------------------------------------------------------------- #

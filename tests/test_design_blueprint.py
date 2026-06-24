@@ -406,6 +406,10 @@ def _arch_fire_snap():
         "juniper": {"srx1": {"chassis_cluster": [
             {"rg": "0", "node": "node0", "priority": 100, "status": "primary", "monitor_failures": "None"},
             {"rg": "0", "node": "node1", "priority": 0, "status": "secondary", "monitor_failures": "None"}]}},
+        # PUBLIC CLOUD (AWS): a security group with SSH(22) open to 0.0.0.0/0 -> _d_cloud_sg_open_ingress
+        "cloud": {"acct1": {"security_groups": [
+            {"group_id": "sg-x", "group_name": "admin", "vpc_id": "vpc-1",
+             "open_ingress": [{"proto": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"}]}]}},
         "mpls": {"pe1": {"ldp_neighbors": [{"neighbor": "1.1.1.1", "state": "Down"}],
                          "vpnv4_neighbors": [{"neighbor": "2.2.2.2", "state": "Idle"}],
                          "l2vpn_vcs": [{"vc_id": "100", "status": "DOWN"}]}},
@@ -1474,12 +1478,12 @@ def test_compute_architecture_coverage_observed_vs_not():
     assert "aci-critical-fault-raised" in by["aci"]["findings"]
     assert by["bfd"]["observed"] and by["bfd"]["status"] == "clean" and by["bfd"]["findings"] == []
     assert by["sdwan"]["observed"] is False and by["sdwan"]["status"] == "not-observed"
-    assert cov["summary"]["n_classes"] == 25
-    assert cov["summary"]["by_channel"] == {"ssh": 21, "json": 4}
+    assert cov["summary"]["n_classes"] == 26
+    assert cov["summary"]["by_channel"] == {"ssh": 21, "json": 5}
     assert cov["summary"]["n_with_findings"] == 1 and cov["summary"]["n_clean"] == 1
     # empty snapshot: every class not-observed, nothing fired (the coverage-honest baseline -- never 'healthy')
     empty = da.compute_architecture_coverage({})
-    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 25
+    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 26
 
 
 def test_d_sdwan_omp_peer_down_fires_on_omp_down_only():
@@ -1850,10 +1854,16 @@ def test_dc_corpus_doctrine_present_cited_and_honest():
     _WAVE2_BY_DOM = {}
     for p in design_kb._WAVE2_GAP_ADDENDUM:
         _WAVE2_BY_DOM.setdefault(p["domain"], set()).add(p["id"])
+    # the 2026-06-24 cloud addendum documents its OWN addition to the cloud domain (the engine-actionable AWS
+    # security-group exposure detector); allow exactly that, still guarding against undocumented creep.
+    _CLOUD_BY_DOM = {}
+    for p in design_kb._CLOUD_DESIGN_ADDENDUM:
+        _CLOUD_BY_DOM.setdefault(p["domain"], set()).add(p["id"])
     for dom, ids in _DC_CORPUS_IDS.items():
         got = {p["id"] for p in design_kb.by_domain(dom)}
         assert set(ids) <= got, f"domain {dom} must contain {set(ids) - got}"
-        unexpected = got - set(ids) - _ACI_ADDENDUM_EXTRA.get(dom, set()) - _WAVE2_BY_DOM.get(dom, set())
+        unexpected = (got - set(ids) - _ACI_ADDENDUM_EXTRA.get(dom, set())
+                      - _WAVE2_BY_DOM.get(dom, set()) - _CLOUD_BY_DOM.get(dom, set()))
         assert not unexpected, f"domain {dom}: unexpected principles {unexpected}"
     # citation ACCURACY (the adversarial standards pass): EVPN ctrl-plane is MPLS-EVPN(7432) over VXLAN/NVO
     # (8365) with IP-prefix RT-5 (9136); anycast GW is EVPN-IRB (9135); TRM routed-multicast is ngMVPN (6513)

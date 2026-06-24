@@ -32,6 +32,7 @@ from cisco_toolkit.parse import (
     parse_ise_nodes,                                                 # Cisco ISE (Identity Services Engine) deployment -- JSON controller-REST channel
     parse_arista_mlag, parse_arista_bgp_evpn_summary,                # multi-vendor: Arista EOS MLAG + BGP-EVPN overlay (device-native JSON; first non-Cisco vendor)
     parse_junos_chassis_cluster,                                     # multi-vendor: Juniper Junos SRX chassis-cluster HA (the SECOND non-Cisco vendor; '| display json')
+    parse_aws_security_groups,                                       # public cloud: AWS security-group exposure (the FIRST cloud-domain axis)
     parse_fmc_devices, parse_fmc_ha_pairs, parse_fmc_deployable, parse_fmc_ha_status, parse_fmc_server_version,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
@@ -391,6 +392,19 @@ def build_juniper(cmd_to_file: Dict[str, str]) -> dict:
     if cc:
         out["chassis_cluster"] = cc
     return out
+
+
+def build_cloud(cmd_to_file: Dict[str, str]) -> dict:
+    """Public-cloud (AWS) network-exposure state for THIS account -> {security_groups: [...]}. The FIRST
+    cloud-domain axis: a cloud account is added as a 'device' (like the ACI/ISE/FMC controllers), and its
+    read-only 'aws ec2 describe-security-groups' export is read through the SAME _load_cmd_output path and
+    json-normalised by parse_aws_security_groups. {} when there is no cloud export (coverage-honest, so an
+    on-prem fleet never fires); {security_groups: []} when the export is present but nothing is world-open
+    (observed / clean). Fail-soft."""
+    sgs = _safe_parse(parse_aws_security_groups, _load_cmd_output(cmd_to_file, "aws ec2 describe-security-groups"))
+    if sgs is None:
+        return {}
+    return {"security_groups": sgs}
 
 
 def build_bfd(cmd_to_file: Dict[str, str]) -> dict:
