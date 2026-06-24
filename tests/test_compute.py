@@ -779,3 +779,21 @@ def test_wave_sequencing_classifies_cutover():
     assert seq["make_before_break"] == ["DIST1"]          # degree 2 -> dual-homed
     assert seq["hard_cutover"] == ["ACC1", "ACC2"]        # degree 1 -> single-homed
     assert seq["hard_cutover_endpoints"] == 3             # 2 on ACC1 + 1 on ACC2
+
+
+def test_stp_root_findings_skips_mst_instances_not_vlan0(cp):
+    """ANALY-02: parse_spanning_tree_root keys MST records by INSTANCE number, not VLAN id. stp_root_findings
+    did `int(vlan)` and tested prio==32768+int(vlan), so MST instance 0 at default priority fired a phantom
+    'accidental root' for a non-existent VLAN 0, while the gateway-misalignment join (keyed on real VLAN ids)
+    was silently dead for MST. MST records must be skipped; PVST default-priority roots must still fire."""
+    from cisco_toolkit import parse
+    mst = ("MST0\n  Spanning tree enabled protocol mstp\n  Root ID    Priority    32768\n"
+           "             Address     0011.2233.4455\n             This bridge is the root\n")
+    rm = parse.parse_spanning_tree_root(mst)
+    assert rm["0"]["is_mst"] is True
+    assert cp.stp_root_findings({"SW-MST": rm}, {})["accidental"] == []           # no phantom 'VLAN 0'
+    pvst = ("VLAN0010\n  Root ID    Priority    32778\n             Address     0011.2233.4455\n"
+            "             This bridge is the root\n")
+    rp = parse.parse_spanning_tree_root(pvst)
+    acc = cp.stp_root_findings({"SW1": rp}, {})["accidental"]
+    assert acc == [{"vlan": "10", "host": "SW1", "priority": 32778}]               # genuine PVST accidental still fires
