@@ -176,20 +176,27 @@ def collect_vmanage(base_url: str, username: str, password: str, out_dir: str, v
 
 
 # --- Cisco ISE (Identity Services Engine) ---------------------------------------------------------------
-# ISE deployment state via the Open API (ISE 3.1+): GET /api/v1/deployment/node lists every node with its
-# personas (roles/services) + nodeStatus. HTTPS/443, HTTP Basic auth (no token login).
+# ISE deployment state via TWO read-only REST channels:
+#   * Open API (ISE 3.1+, HTTPS/443): GET /api/v1/deployment/node -- personas (roles/services) + nodeStatus.
+#   * ERS (HTTPS/9060, closed by default): GET /ers/config/node (SearchResult) -> per-id GET
+#     /ers/config/node/{id} (boolean personas + nodeServiceTypes; NO reachability). The ERS "External RESTful
+#     Services Operator" group is GET-only (read-only); Open API needs a read-only RBAC admin.
+# Both use HTTP Basic auth (no token login). build_ise prefers the Open API list (richer) and falls back to
+# the consolidated ERS export.
 ISE_ENDPOINTS = {
     "api/v1/deployment/node": "/api/v1/deployment/node",
 }
 
 
 def collect_ise(base_url: str, username: str, password: str, out_dir: str, verify_tls: bool = True) -> list:
-    """Read-only Cisco ISE (Identity Services Engine) collection via the Open API: GET /api/v1/deployment/node
-    (the deployment node list -- personas + nodeStatus) written under the offline command-filename (build_ise
-    -> parse_ise_nodes). ISE Open API uses HTTP Basic auth over HTTPS (no token login), so the credential
-    rides the Authorization header on each GET; it is NEVER written to the export (only the node JSON is).
-    GET-only -- cannot change deployment state; use a DEDICATED read-only RBAC account (an ERS / Open API
-    read-only admin). Refuses non-HTTPS (a cleartext Basic-auth leak). Returns the files written."""
+    """Read-only Cisco ISE (Identity Services Engine) collection via BOTH the Open API (HTTPS/443) and ERS
+    (HTTPS/9060). Open API: GET /api/v1/deployment/node (personas + nodeStatus). ERS: GET /ers/config/node
+    (a SearchResult of id/name), then per-id GET /ers/config/node/{id} for the rich node, CONSOLIDATED into a
+    single export so the offline build reads one file. HTTP Basic auth over HTTPS -- the credential rides the
+    Authorization header on each GET and is NEVER written to any export (only the node JSON is). GET-only --
+    cannot change deployment state; use a DEDICATED read-only account (ERS 'External RESTful Services
+    Operator' = GET-only; Open API read-only RBAC admin). Refuses non-HTTPS (a cleartext Basic-auth leak).
+    Fail-soft: a disabled/unreachable channel is skipped, never raises. Returns the files written."""
     base = base_url.rstrip("/")
     if not _require_https(base, "ISE"):
         return []
@@ -197,11 +204,32 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
     token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     headers = {"Authorization": "Basic " + token, "Accept": "application/json"}
     written = []
+    # Open API (HTTPS/443): the cleanest single source -- personas + nodeStatus reachability.
     for cmd, ep in ISE_ENDPOINTS.items():
         obj = _get_json(opener, f"{base}{ep}", headers=headers)
         if obj is not None:
             written.append(_write(out_dir, cmd, obj))
-    logger.info("  [ISE] collected %d endpoint export(s) into %s", len(written), out_dir)
+    # ERS (HTTPS/9060, closed by default): two-step list -> per-id detail, consolidated into one export. Fail-
+    # soft: if ERS is disabled/unreachable the SearchResult is None and the whole block is skipped.
+    host = urllib.parse.urlparse(base).hostname or base
+    ers_base = f"https://{host}:9060"
+    sr = _get_json(opener, f"{ers_base}/ers/config/node", headers=headers)
+    resources = (sr.get("SearchResult") or {}).get("resources") if isinstance(sr, dict) else None
+    if isinstance(resources, list) and resources:
+        ers_nodes = []
+        for res in resources:
+            rid = res.get("id") if isinstance(res, dict) else None
+            if not rid:
+                continue
+            detail = _get_json(opener, f"{ers_base}/ers/config/node/{rid}", headers=headers)
+            if isinstance(detail, dict):
+                # ERS wraps a single resource one level (e.g. {"ers-node-data": {...}}); unwrap to the node.
+                inner = next(iter(detail.values())) if len(detail) == 1 else None
+                node = inner if isinstance(inner, dict) else detail
+                ers_nodes.append(node)
+        if ers_nodes:
+            written.append(_write(out_dir, "ers/config/node", {"resources": ers_nodes}))
+    logger.info("  [ISE] collected %d export(s) into %s", len(written), out_dir)
     return written
 
 
