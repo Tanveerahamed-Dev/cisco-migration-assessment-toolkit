@@ -2358,6 +2358,9 @@ def parse_spanning_tree_root(output: str) -> Dict[str, dict]:
         if vm:
             cur = vm.group(1) or vm.group(2)
             raw_recs.setdefault(cur, {})
+            # group(2) matches an MST header ('MST0'), so the key is an MST INSTANCE number, not a VLAN id;
+            # group(1) is a real PVST/RPVST VLAN. Tag it so stp_root_findings doesn't treat instance 0 as VLAN 0.
+            raw_recs[cur]["is_mst"] = bool(vm.group(2))
             section = None
             continue
         if cur is None:
@@ -2380,7 +2383,7 @@ def parse_spanning_tree_root(output: str) -> Dict[str, dict]:
         ra, ba = r.get("root_address"), r.get("bridge_address")
         is_root = bool(r.get("is_root")) or (bool(ra) and ra == ba)
         rec: dict = {"root_priority": r.get("root_priority"),
-                     "root_address": ra or "", "is_root": is_root}
+                     "root_address": ra or "", "is_root": is_root, "is_mst": bool(r.get("is_mst"))}
         if "bridge_priority" in r:
             rec["bridge_priority"] = r["bridge_priority"]
         out[vlan] = rec

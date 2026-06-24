@@ -101,6 +101,19 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     stp_roots = snap.get("stp_roots") or {}
     redist = snap.get("redistribution") or {}
     fhrp = snap.get("fhrp") or []
+    # FHRP candidate/configured counts come from the FULL gateway register (l3_forwarding), NOT snap['fhrp'] --
+    # which is compute_fhrp_consistency()'s PROBLEMS-ONLY list (multi-gateway VLANs with an inconsistency).
+    # Deriving the counts from it undercounts candidates and can NEVER credit a cleanly-redundant VLAN, so a
+    # fully-redundant fabric reported 0 candidates / 0 with FHRP. snap['fhrp'] stays the source of the
+    # 'lacking/inconsistent' row only. (Matches the CRD, which counts FHRP from l3_forwarding[].fhrp.)
+    _vlan_gw_count: dict = {}
+    for _r in l3f:
+        _v = str(_r.get("vlan") or "")
+        if _v:
+            _vlan_gw_count[_v] = _vlan_gw_count.get(_v, 0) + 1
+    n_multi_gw = sum(1 for _c in _vlan_gw_count.values() if _c >= 2)
+    n_fhrp_cfg = len({str(_r.get("vlan") or "") for _r in l3f
+                      if str(_r.get("fhrp") or "").strip().lower() not in ("", "none", "-", "—")})
     capacity = snap.get("capacity") or []
     lifecycle = snap.get("lifecycle_risk") or {}
     vpc = snap.get("vpc") or {}
@@ -195,7 +208,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("Gateway SVIs", n_svis),
         ("Routing VRFs (non-default)", len(vrfs) if vrfs else "0 (single global table)"),
         ("Gateway SVIs with an ACL applied", f"{n_acl_svis} of {n_svis}"),
-        ("Multi-gateway VLANs (FHRP candidates)", len(fhrp)),
+        ("Multi-gateway VLANs (FHRP candidates)", n_multi_gw),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
     ], widths=[4.6, 2.2])
 
@@ -260,13 +273,12 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
 
     doc.add_heading("2.4 Resilience & redundancy", level=2)
     n_single_gw = sum(1 for r in l3f if "single-gateway" in (r.get("risk") or ""))
+    # 'lacking/inconsistent' is the only row sourced from snap['fhrp'] (the problems-only consistency list);
+    # n_multi_gw (candidates) and n_fhrp_cfg (running FHRP) are derived from l3_forwarding above so a cleanly
+    # FHRP-redundant fabric is credited instead of misrepresented as 0-candidate / 0-FHRP.
     n_fhrp_issue = sum(1 for g in fhrp if g.get("issues"))
-    # honesty: snap["fhrp"] is the set of MULTI-GATEWAY VLANs (FHRP *candidates*), not configured FHRP
-    # groups — count those actually running a first-hop-redundancy protocol so the table never implies
-    # redundancy that is not there (the FHRP false-redundancy class; canonical posture is 0 observed).
-    n_fhrp_cfg = sum(1 for g in fhrp if any((m or {}).get("fhrp") for m in (g.get("members") or [])))
     table(["Resilience attribute", "As-built value"], [
-        ("Multi-gateway VLANs (FHRP candidates)", len(fhrp)),
+        ("Multi-gateway VLANs (FHRP candidates)", n_multi_gw),
         ("…with first-hop redundancy (FHRP) configured", n_fhrp_cfg),
         ("…lacking FHRP (missing / inconsistent)", n_fhrp_issue),
         ("Single-gateway VLANs (no FHRP peer)", n_single_gw),
@@ -466,7 +478,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
 
     # ===== 4. Target-state design recommendations =====
     doc.add_heading("4. Target-State Design Recommendations", level=1)
-    decisions = bp.get("decisions") or []
+    # isinstance-filter (like crd.py:355 / deck.py:376): a single non-dict element in a corrupt/hand-edited
+    # design_blueprint.decisions otherwise raised AttributeError on d.get(...) and aborted the WHOLE As-Built
+    # Design Document, despite the 'never raised' contract -- design.py was the asymmetric gap vs the deck/CRD.
+    decisions = [d for d in (bp.get("decisions") or []) if isinstance(d, dict)]
     if decisions:
         doc.add_paragraph(
             "The senior-design view: each target-state decision below is gated on collected evidence and "

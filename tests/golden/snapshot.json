@@ -3636,13 +3636,29 @@
     "root_priority": 24586,
     "root_address": "aaaa.0001.0001",
     "is_root": true,
+    "is_mst": false,
     "bridge_priority": 24586
    },
    "30": {
     "root_priority": 32798,
     "root_address": "cccc.0003.0003",
     "is_root": false,
+    "is_mst": false,
     "bridge_priority": 32798
+   }
+  },
+  "core2": {
+   "10": {
+    "root_priority": null,
+    "root_address": "",
+    "is_root": false,
+    "is_mst": false
+   },
+   "20": {
+    "root_priority": null,
+    "root_address": "",
+    "is_root": false,
+    "is_mst": false
    }
   },
   "access1": {
@@ -3650,12 +3666,14 @@
     "root_priority": 24586,
     "root_address": "aaaa.0001.0001",
     "is_root": false,
+    "is_mst": false,
     "bridge_priority": 32778
    },
    "30": {
     "root_priority": 32798,
     "root_address": "cccc.0003.0003",
     "is_root": true,
+    "is_mst": false,
     "bridge_priority": 32798
    }
   }
@@ -6151,8 +6169,8 @@
      "TENANT_RED"
     ],
     "gateways_with_acl": 2,
-    "isolated": true,
-    "exposure": "Has a dedicated VRF or a gateway ACL."
+    "isolated": false,
+    "exposure": "1 of 3 gateway(s) share the global VRF with no ACL \u2014 reachable from every other domain at L3."
    },
    {
     "domain": "General / Back-office (unclassified)",
@@ -6163,7 +6181,7 @@
     ],
     "gateways_with_acl": 0,
     "isolated": false,
-    "exposure": "Shares the global VRF, no gateway ACL \u2014 reachable from every other domain at L3."
+    "exposure": "2 of 2 gateway(s) share the global VRF with no ACL \u2014 reachable from every other domain at L3."
    }
   ],
   "summary": {

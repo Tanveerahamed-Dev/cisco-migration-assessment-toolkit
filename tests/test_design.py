@@ -486,3 +486,41 @@ def test_design_53_renders_when_candidate_but_no_subnets(tmp_path):
     paras = [p.text for p in Document(out).paragraphs]
     assert any("Net-new IP addressing plan" in p for p in paras)
     assert any("smaller than a /24" in p or "enlarge" in p.lower() for p in paras)
+
+
+def test_design_fhrp_counts_credit_a_clean_redundant_fabric(tmp_path):
+    """DECK_-01: the FHRP candidate/configured counts must come from the FULL gateway register
+    (l3_forwarding), NOT the PROBLEMS-ONLY snap['fhrp'] list -- else a cleanly-redundant multi-gateway VLAN
+    (absent from snap['fhrp']) is never counted and a fully-redundant fabric is misrepresented as 0 candidates /
+    0 with FHRP. Here snap['fhrp']=[] (no inconsistencies) yet VLAN 10 has 2 gateways running HSRP."""
+    snap = _snap()
+    snap["fhrp"] = []
+    snap["l3_forwarding"] = [
+        {"switch": "core1", "vlan": "10", "svi_ip": "10.0.10.1", "fhrp": "HSRP active"},
+        {"switch": "core2", "vlan": "10", "svi_ip": "10.0.10.2", "fhrp": "HSRP standby"},
+        {"switch": "core1", "vlan": "20", "svi_ip": "10.0.20.1", "fhrp": "none"},
+    ]
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")
+    rows = {}
+    for t in Document(out).tables:
+        for row in t.rows:
+            cells = [c.text for c in row.cells]
+            if len(cells) == 2:
+                rows[cells[0]] = cells[1]
+    cand = next(v for k, v in rows.items() if "Multi-gateway VLANs (FHRP candidates)" in k)
+    cfg = next(v for k, v in rows.items() if "first-hop redundancy (FHRP) configured" in k)
+    assert cand == "1", rows     # VLAN 10 has 2 gateways -> 1 candidate (was 0 from len(snap['fhrp']))
+    assert cfg == "1", rows      # VLAN 10 runs HSRP -> 1 configured (was 0)
+
+
+def test_design_doc_robust_to_non_dict_decision(tmp_path):
+    """DECK_-03: a single non-dict element in design_blueprint.decisions (corrupt/hand-edited snapshot) must
+    not abort the whole As-Built Design Document with AttributeError (deck.py/crd.py already isinstance-guard)."""
+    import os
+    snap = _snap()
+    snap["design_blueprint"] = {"decisions": ["junk", {"status": "recommended", "title": "ok",
+                                "priority": "High", "domain": "x"}], "tradeoff_scorecard": []}
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "Unit Test Fleet")   # must not raise
+    assert os.path.getsize(out) > 0

@@ -2399,7 +2399,13 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
     accidental: List[dict] = []
     misaligned: List[dict] = []
     for vlan, host in root_of.items():
-        prio = (all_stp_roots[host][vlan] or {}).get("root_priority")
+        rec = all_stp_roots[host][vlan] or {}
+        # MST keys are INSTANCE numbers, not VLAN ids: the 32768+vlan accidental-root test would fire on
+        # instance 0 at default priority (a non-existent 'VLAN 0' cry-wolf), and the gateway-misalignment join
+        # (keyed on real VLAN ids) can never match an instance key. Both checks are PVST/RPVST-only.
+        if rec.get("is_mst"):
+            continue
+        prio = rec.get("root_priority")
         if isinstance(prio, int) and prio == 32768 + int(vlan):
             accidental.append({"vlan": vlan, "host": host, "priority": prio})
         gws = gw_of.get(vlan)
@@ -4938,14 +4944,20 @@ def compute_segmentation(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         dgw = [g for h in sws for g in gw_by_host.get(h, [])]
         dvrfs = sorted({(g["vrf"] or "(global)") for g in dgw})
         dacl = sum(1 for g in dgw if g["has_acl"])
-        has_dedicated_vrf = any(g["vrf"] for g in dgw)
-        isolated = bool(dgw) and (has_dedicated_vrf or dacl > 0)
+        # A domain is isolated only when EVERY gateway is protected (a dedicated VRF or a gateway ACL). The old
+        # ANY test flipped the WHOLE domain to isolated when a SINGLE gateway had a VRF/ACL, masking sibling
+        # gateways sitting in the global VRF with no ACL (reachable from every other domain at L3) -- so a real
+        # on-air-critical exposure was dropped from exposed_oncrit and the executive Segmentation axis.
+        n_protected = sum(1 for g in dgw if g["vrf"] or g["has_acl"])
+        n_exposed = len(dgw) - n_protected
+        isolated = bool(dgw) and n_exposed == 0
         if not dgw:
             exposure = "No L3 gateway on this domain's switches (L2-only, or its gateway lives elsewhere)."
         elif isolated:
-            exposure = "Has a dedicated VRF or a gateway ACL."
+            exposure = "Every gateway has a dedicated VRF or a gateway ACL."
         else:
-            exposure = "Shares the global VRF, no gateway ACL — reachable from every other domain at L3."
+            exposure = (f"{n_exposed} of {len(dgw)} gateway(s) share the global VRF with no ACL — "
+                        "reachable from every other domain at L3.")
         domains_out.append({"domain": dom.get("domain"), "tier": dom.get("tier"), "gateways": len(dgw),
                             "vrfs": dvrfs, "gateways_with_acl": dacl, "isolated": isolated, "exposure": exposure})
     domains_out.sort(key=lambda d: (_APP_TIER_RANK.get(d["tier"], 9), -d["gateways"], d["domain"]))
