@@ -208,3 +208,92 @@ def test_collect_ise_is_https_only_and_password_safe(monkeypatch, tmp_path):
     files = rest_collect.collect_ise("https://ise", "admin", secret, str(tmp_path / "ise"))
     assert len(files) == 1
     assert secret not in open(files[0], encoding="utf-8").read()
+
+
+# ============================================================ ERS channel (/ers/config/node), additive
+# ERS Node resource (HTTPS/9060) -- boolean personas + a comma-string nodeServiceTypes, and NO reachability
+# field (so node-not-connected is coverage-honestly SILENT on ERS; Open API's nodeStatus is the reachability
+# source). parse_ise_nodes normalizes BOTH shapes into the same record + persona booleans.
+def _ers_node(name, primary_pap=False, pap=False, pxgrid=False, svc="", in_dep=True):
+    return {"id": name + "-id", "name": name, "fqdn": name + ".example.com", "ipAddress": "10.0.0.1",
+            "inDeployment": in_dep, "primaryPapNode": primary_pap, "papNode": pap,
+            "pxGridNode": pxgrid, "nodeServiceTypes": svc}
+
+
+def _ers(nodes):  # the consolidated ERS export collect_ise writes (per-id details gathered under 'resources')
+    return json.dumps({"resources": nodes})
+
+
+def test_parse_ise_ers_node_normalized():
+    n = parse.parse_ise_nodes(_ers([_ers_node("psn1", svc="Session, Profiler")]))[0]
+    assert n["host"] == "psn1.example.com" and n["fqdn"] == "psn1.example.com"
+    assert "session" in [s.lower() for s in n["services"]]
+    assert n["is_psn"] is True and n["in_deployment"] is True
+    assert n["node_status"] == ""          # ERS Node resource has no reachability field (coverage-honest)
+
+
+def test_parse_ise_ers_admin_roles_and_pxgrid():
+    prim = parse.parse_ise_nodes(_ers([_ers_node("pan1", primary_pap=True, pap=True)]))[0]
+    sec = parse.parse_ise_nodes(_ers([_ers_node("pan2", primary_pap=False, pap=True)]))[0]
+    px = parse.parse_ise_nodes(_ers([_ers_node("px1", pxgrid=True)]))[0]
+    assert "PrimaryAdmin" in prim["roles"] and prim["is_pan"] is True
+    assert "SecondaryAdmin" in sec["roles"]
+    assert px["is_pxgrid"] is True
+
+
+def test_parse_ise_ers_searchresult_degraded_no_fabrication():
+    # the bare SearchResult (id/name/link only, no rich fields) -> a node with name but NO fabricated personas
+    sr = json.dumps({"SearchResult": {"total": 1, "resources": [{"id": "a", "name": "ise1", "link": {}}]}})
+    n = parse.parse_ise_nodes(sr)[0]
+    assert n["is_psn"] is False and n["roles"] == [] and n["is_pan"] is False
+
+
+def test_parse_ise_ers_single_node_wrapped_unwrapped():
+    # a single ERS detail wrapped one level ({"ers-node-data": {...}}) must still parse to one node
+    wrapped = json.dumps({"ers-node-data": _ers_node("psn9", svc="Session")})
+    out = parse.parse_ise_nodes(wrapped)
+    assert len(out) == 1 and out[0]["is_psn"] is True
+
+
+def test_ise_detectors_fire_on_broken_ers_deployment():
+    broken = _ers([_ers_node("pan1", primary_pap=True, pap=True), _ers_node("psn1", svc="Session")])
+    snap = {"ise": {"ise-pan": {"nodes": parse.parse_ise_nodes(broken)}}}
+    sig = da._signals(snap)
+    assert da._d_ise_psn_no_redundancy(snap, sig) is not None           # exactly one PSN
+    assert da._d_ise_admin_monitoring_redundancy(snap, sig) is not None  # PrimaryAdmin but no SecondaryAdmin
+    assert da._d_ise_node_unreachable(snap, sig) is None                 # ERS has no nodeStatus -> silent
+
+
+def test_ise_detectors_silent_on_healthy_ers_deployment():
+    healthy = _ers([_ers_node("pan1", primary_pap=True, pap=True), _ers_node("pan2", pap=True),
+                    _ers_node("psn1", svc="Session, Profiler"), _ers_node("psn2", svc="Session, Profiler")])
+    snap = {"ise": {"ise-pan": {"nodes": parse.parse_ise_nodes(healthy)}}}
+    sig = da._signals(snap)
+    assert da._d_ise_node_unreachable(snap, sig) is None
+    assert da._d_ise_psn_no_redundancy(snap, sig) is None               # two PSNs
+    assert da._d_ise_admin_monitoring_redundancy(snap, sig) is None     # secondary admin present
+
+
+def test_build_ise_reads_ers_export(tmp_path):
+    from cisco_toolkit import build
+    p = tmp_path / "ers_config_node.txt"
+    p.write_text(_ers([_ers_node("psn1", svc="Session")]), encoding="utf-8")
+    ise = build.build_ise({"ers/config/node": str(p)})
+    assert ise["nodes"] and any(n["is_psn"] for n in ise["nodes"])
+
+
+def test_collect_ise_ers_consolidates_and_password_safe(monkeypatch, tmp_path):
+    from cisco_toolkit import rest_collect
+
+    def fake_get_json(opener, url, **k):
+        if url.endswith("/ers/config/node"):                            # the ERS SearchResult list
+            return {"SearchResult": {"total": 1, "resources": [{"id": "n1", "name": "ise1", "link": {}}]}}
+        if "/ers/config/node/n1" in url:                               # the per-id rich detail (wrapped)
+            return {"ers-node-data": _ers_node("ise1", primary_pap=True, pap=True, svc="Session")}
+        return None                                                    # Open API list absent in this lab
+    monkeypatch.setattr(rest_collect, "_get_json", fake_get_json)
+    secret = "ISE-ERS-PW-77"
+    files = rest_collect.collect_ise("https://ise", "ro", secret, str(tmp_path / "ise"))
+    assert files                                                       # the consolidated ERS file
+    blob = "".join(open(f, encoding="utf-8").read() for f in files)
+    assert "ise1" in blob and secret not in blob

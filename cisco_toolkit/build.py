@@ -326,6 +326,8 @@ def build_ise(cmd_to_file: Dict[str, str]) -> dict:
     services) and reachability (nodeStatus) -- a node not Connected, a lone Policy Service node, or a missing
     Secondary Admin/Monitoring are present, controller-reported gaps. {} when no ISE export. Fail-soft."""
     nodes = _safe_parse(parse_ise_nodes, _load_cmd_output(cmd_to_file, "api/v1/deployment/node")) or []
+    if not nodes:                                          # ERS fallback (the consolidated /ers/config/node export)
+        nodes = _safe_parse(parse_ise_nodes, _load_cmd_output(cmd_to_file, "ers/config/node")) or []
     out = {}
     if nodes:
         out["nodes"] = nodes

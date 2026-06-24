@@ -1278,32 +1278,76 @@ def parse_asa_resource_usage(output: str) -> list:
 
 
 # --- Cisco ISE (Identity Services Engine) -- JSON controller-REST channel -------------------------------
+def _ise_rows(obj) -> list:
+    """Extract the list of node dicts from ANY ISE node envelope: Open API {"response":[...]|{...}} (list or
+    single), the ERS list {"SearchResult":{"resources":[...]}}, the consolidated {"resources":[...]} the
+    collector writes, a single-key-wrapped ERS detail ({"ers-node-data":{...}}), or a bare node dict. A bare
+    top-level ARRAY is deliberately refused (no documented ISE endpoint returns one). Tolerant; never raises."""
+    if not isinstance(obj, dict):                          # a bare top-level ARRAY is NOT a documented ISE
+        return []                                          # shape -- refuse it (assuming it fabricates nodes)
+    if isinstance(obj.get("response"), list):
+        return obj["response"]                              # Open API list
+    if isinstance(obj.get("response"), dict):
+        return [obj["response"]]                            # Open API single node
+    sr = obj.get("SearchResult")
+    if isinstance(sr, dict) and isinstance(sr.get("resources"), list):
+        return sr["resources"]                             # ERS list (id/name/link rows -- degraded)
+    if isinstance(obj.get("resources"), list):
+        return obj["resources"]                            # consolidated ERS per-id details
+    if len(obj) == 1:                                       # a single resource wrapped one level
+        v = next(iter(obj.values()))
+        if isinstance(v, dict):
+            return [v]
+    _node_keys = ("hostname", "fqdn", "name", "roles", "services", "nodeStatus",
+                  "primaryPapNode", "papNode", "nodeServiceTypes", "inDeployment")
+    return [obj] if any(k in obj for k in _node_keys) else []   # a bare node dict (only if it looks like one)
+
+
+def _ise_node(r: dict) -> dict:
+    """Normalize ONE ISE node dict -- Open API (roles[]/services[]/nodeStatus) OR ERS (primaryPapNode /
+    papNode / pxGridNode / nodeServiceTypes / inDeployment) -- into a unified record. ERS booleans are mapped
+    to the same roles[]/services[] vocabulary so the detectors read one shape; ERS has NO reachability field,
+    so node_status is '' for ERS (coverage-honest -- Open API's nodeStatus is the only reachability source).
+    Persona booleans (is_pan/is_mnt/is_psn/is_pxgrid) + in_deployment are derived uniformly."""
+    fqdn = str(r.get("fqdn") or r.get("hostname") or r.get("name") or "")
+    if "primaryPapNode" in r or "papNode" in r or "nodeServiceTypes" in r or "inDeployment" in r:  # ERS shape
+        roles = (["PrimaryAdmin"] if r.get("primaryPapNode") is True
+                 else (["SecondaryAdmin"] if r.get("papNode") is True else []))
+        svcs = [s.strip() for s in str(r.get("nodeServiceTypes", "") or "").split(",") if s.strip()]
+        if r.get("pxGridNode") is True and not any(s.lower() == "pxgrid" for s in svcs):
+            svcs.append("pxGrid")
+        node_status = ""                                    # ERS Node resource exposes no reachability
+        in_dep = r.get("inDeployment") is True
+    else:                                                   # Open API shape
+        rr, ss = r.get("roles"), r.get("services")
+        roles = [str(x) for x in rr if x is not None] if isinstance(rr, list) else []
+        svcs = [str(x) for x in ss if x is not None] if isinstance(ss, list) else []
+        node_status = str(r.get("nodeStatus", "") or "")
+        in_dep = True                                       # present in the deployment-node list
+    _rl = [x.lower() for x in roles]
+    _sl = [x.lower() for x in svcs]
+    return {"hostname": str(r.get("hostname") or fqdn or ""), "host": fqdn, "fqdn": fqdn,
+            "roles": roles, "services": svcs, "node_status": node_status, "in_deployment": in_dep,
+            "is_pan": any("admin" in x for x in _rl), "is_mnt": any("monitoring" in x for x in _rl),
+            "is_psn": any(x == "session" for x in _sl), "is_pxgrid": any("pxgrid" in x for x in _sl)}
+
+
 def parse_ise_nodes(output: str) -> list:
-    """ISE Open API 'GET /api/v1/deployment/node' (ISE 3.1+, HTTPS/443, Basic auth) -> [{hostname, fqdn,
-    roles, services, node_status}] per deployment node. The list call WRAPS the rows as {"response":[...],
-    "version":...} and the single-node call wraps ONE dict -- both are unwrapped here (a bare-array
-    assumption would silently parse zero nodes). roles[] carries PrimaryAdmin / SecondaryAdmin /
-    PrimaryMonitoring / SecondaryMonitoring; services[] carries Session (= Policy Service / PSN), Profiler,
-    DeviceAdmin, pxGrid, SXP, PassiveID; nodeStatus is the node's REACHABILITY to the Primary Admin node
-    ('Connected' = healthy) -- it is NOT a replication verdict (the REST API does not expose replication
-    state). [] when no ISE export is present / non-JSON. Tolerant; never raises."""
+    """ISE deployment nodes from EITHER controller-REST channel -> unified per-node records {hostname, host,
+    fqdn, roles, services, node_status, in_deployment, is_pan, is_mnt, is_psn, is_pxgrid}.
+      * Open API (ISE 3.1+, HTTPS/443): GET /api/v1/deployment/node -> {"response":[...]} (list) / {...}
+        (single). roles[] = PrimaryAdmin/SecondaryAdmin/PrimaryMonitoring/SecondaryMonitoring; services[] =
+        Session(=PSN)/Profiler/DeviceAdmin/pxGrid/SXP/PassiveID; nodeStatus = reachability ('Connected'=ok).
+      * ERS (HTTPS/9060, closed by default): GET /ers/config/node -> {"SearchResult":{"resources":[...]}}
+        then per-id GET /ers/config/node/{id} with boolean personas (primaryPapNode/papNode/pxGridNode) +
+        nodeServiceTypes; mapped to the same roles[]/services[]. ERS exposes no reachability -> node_status ''.
+    Both envelopes + a bare/wrapped node + the consolidated {"resources":[...]} are handled. [] when no ISE
+    export / non-JSON. Tolerant; never raises."""
     try:
         obj = json.loads(output or "")
     except (ValueError, TypeError):
         return []
-    resp = obj.get("response") if isinstance(obj, dict) else None
-    rows = resp if isinstance(resp, list) else ([resp] if isinstance(resp, dict) else [])
-    out = []
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        roles, svcs = r.get("roles"), r.get("services")
-        out.append({"hostname": str(r.get("hostname") or r.get("fqdn") or ""),
-                    "fqdn": str(r.get("fqdn", "") or ""),
-                    "roles": [str(x) for x in roles if x is not None] if isinstance(roles, list) else [],
-                    "services": [str(x) for x in svcs if x is not None] if isinstance(svcs, list) else [],
-                    "node_status": str(r.get("nodeStatus", "") or "")})
-    return out
+    return [_ise_node(r) for r in _ise_rows(obj) if isinstance(r, dict)]
 
 
 # --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---

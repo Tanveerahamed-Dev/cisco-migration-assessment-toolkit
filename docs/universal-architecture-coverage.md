@@ -46,11 +46,16 @@ Each detector fires on a single, unambiguous broken state; the cry-wolf trap is 
   of a numeric Limit (approaching exhaustion) — the migration sizing signal (size the replacement above the
   observed peak). The administrative rows (SSH/ASDM/HTTP failed-login & session-cap counters) and the `[rate]`
   rows (intentional rate-limiting) are excluded; an `N/A`/unlimited Limit or a low peak stays silent.
-- **Cisco ISE (Identity Services Engine)** — Open API `GET /api/v1/deployment/node`: a node `nodeStatus` not
-  `Connected` (a reachability signal — transient in-progress/registering states excluded, NOT a replication
-  verdict); exactly one Policy Service node (`services` carries `Session`) or a missing Secondary Admin /
-  Monitoring in a **multi-node** deployment. The ≥2-node gate never cry-wolfs a Cisco-supported single-node
-  standalone (which is single-PSN/PAN/MnT by design).
+- **Cisco ISE (Identity Services Engine)** — **two read-only front doors**, both normalized by `parse_ise_nodes`:
+  the **Open API** (`GET /api/v1/deployment/node`, HTTPS/443 — `roles[]`/`services[]` + `nodeStatus`
+  reachability) and **ERS** (`GET /ers/config/node` → per-id detail, HTTPS/9060, closed by default — boolean
+  personas `primaryPapNode`/`papNode`/`pxGridNode` + comma-string `nodeServiceTypes`, mapped to the same
+  `roles[]`/`services[]`; ERS exposes **no reachability**, so node-not-connected is coverage-honestly silent on
+  ERS-only evidence). Detectors: a node `nodeStatus` not `Connected` (transient in-progress/registering
+  excluded, NOT a replication verdict); exactly one Policy Service node (`Session`) or a missing Secondary
+  Admin / Monitoring in a **multi-node** deployment. The ≥2-node gate never cry-wolfs a Cisco-supported
+  single-node standalone (single-PSN/PAN/MnT by design). ISE is the source of truth for the SGT/SGACL matrix
+  the switch-side **TrustSec/CTS** detector consumes — a dead PSN degrades env-data/SGACL download too.
 - **Cisco Secure Firewall Management Center (FMC)** — for an FMC-managed FTD fleet the controller is the source
   of truth. `.../devicehapairs/ftddevicehapairs`: an FTD HA pair node `Failed`/`Not Detected` or split
   (`Disabled` = operator-suspended, excluded); `.../devices/devicerecords`: `isConnected==false` or
@@ -96,7 +101,9 @@ python -m cisco_toolkit.rest_collect apic --url https://<apic> --user <ro-user> 
 python -m cisco_toolkit.rest_collect vmanage --url https://<manager>:8443 --user <ro-user> --password <pw> \
     --out-dir <collection-dir>/<vmanage-host>
 
-# Cisco ISE / Identity Services Engine  (Open API, writes api_v1_deployment_node.txt; HTTP Basic auth, no token login)
+# Cisco ISE / Identity Services Engine  (HTTP Basic auth; collects BOTH the Open API /api/v1/deployment/node
+#   on 443 AND ERS /ers/config/node on 9060 -> consolidated; use a read-only account, ERS 'External RESTful
+#   Services Operator' = GET-only. ERS is closed by default; if disabled it is skipped fail-soft.)
 python -m cisco_toolkit.rest_collect ise --url https://<ise-pan> --user <ro-user> --password <pw> \
     --out-dir <collection-dir>/<ise-host>
 
