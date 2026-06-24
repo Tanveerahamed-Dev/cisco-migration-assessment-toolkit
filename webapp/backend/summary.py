@@ -16,6 +16,14 @@ SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 _SEV_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
 BANDS = ["Excellent", "Good", "Fair", "Poor", "Critical"]
 
+
+def _as_list(v: Any) -> List[Any]:
+    """Coerce a snapshot section to a list. `(snap.get(k) or [])` only guards falsy values; a truthy
+    NON-list (an int/str/dict in a malformed or hostile upload) would flow into a list-comprehension and
+    raise TypeError -- summarize() runs on every upload, so that escapes as an HTTP 500. Returning [] for a
+    non-list degrades gracefully, honouring this function's `Every field degrades gracefully` contract."""
+    return v if isinstance(v, list) else []
+
 # Detail sections the web UI can render as tabs, in display order. (key, human label)
 SECTION_LABELS: List[tuple] = [
     ("punchlist", "Punch-list"),
@@ -102,9 +110,9 @@ def _section_index(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
     """Headline + breakdowns used by the dashboard cards. Every field degrades gracefully."""
-    hs = [r for r in (snap.get("health_scores") or []) if isinstance(r, dict)]
-    pl = [r for r in (snap.get("punchlist") or []) if isinstance(r, dict)]
-    mr = [r for r in (snap.get("migration_readiness") or []) if isinstance(r, dict)]
+    hs = [r for r in _as_list(snap.get("health_scores")) if isinstance(r, dict)]
+    pl = [r for r in _as_list(snap.get("punchlist")) if isinstance(r, dict)]
+    mr = [r for r in _as_list(snap.get("migration_readiness")) if isinstance(r, dict)]
 
     try:
         head = engine.trend_point(snap)  # re-use the engine's headline extractor

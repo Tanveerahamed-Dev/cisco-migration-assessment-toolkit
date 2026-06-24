@@ -34,19 +34,34 @@ logger = logging.getLogger(__name__)
 
 
 class _NoDowngradeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Refuse an HTTPS->non-HTTPS redirect. urllib's stock handler follows a 30x without checking the new
-    scheme, and on a redirect it re-sends the request -- carrying the session cookie (CookieJar) or the
-    'Authorization: Basic <b64(user:pass)>' header -- to the new location. A controller (or a MITM / poisoned
-    DNS) that answers the login or any GET with a 302 to http:// would therefore leak the credential in
-    cleartext: the exact failure ``_require_https`` prevents on the FIRST hop, reachable again via a redirect.
-    Refusing the downgrade raises (caught by the fail-soft GET/POST wrappers -> the query returns None), so the
-    credential is never transmitted unencrypted. A same-scheme https->https redirect is delegated unchanged."""
+    """Refuse a credential-leaking redirect on BOTH vectors. urllib's stock handler follows a 30x and, on the
+    redirect, re-sends the request -- carrying the session cookie (CookieJar) or the
+    'Authorization: Basic <b64(user:pass)>' header (stripping only content-length/content-type) -- to the new
+    location. Two ways that leaks the read-only credential, both reachable via a single 302 from a controller /
+    MITM / poisoned DNS:
+      1. **scheme downgrade** (https->http): the credential goes on the wire in CLEARTEXT -- the exact failure
+         ``_require_https`` prevents on the FIRST hop, reachable again via a redirect.
+      2. **cross-host** (https://a -> https://attacker): the credential is delivered, still encrypted, straight
+         to an ATTACKER-controlled host (TLS just guarantees it is encrypted *to the attacker*). Stock urllib
+         does NO cross-host Authorization stripping, so there is no library backstop.
+    A read-only collector is pointed at ONE controller and has no reason to follow an auth redirect to a
+    different host, so both are refused (the raise is caught by the fail-soft GET/POST wrappers -> the query
+    returns None; the credential is never transmitted to an unintended endpoint). Only a SAME-HOST https->https
+    redirect (a different path/port on the same controller) is delegated to urllib unchanged."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if urllib.parse.urlparse(newurl).scheme.lower() != "https":
             logger.error("  [rest] refusing an HTTPS->non-HTTPS redirect to %r -- a downgrade would leak the "
                          "credential/session cookie in cleartext", newurl)
             raise urllib.error.HTTPError(newurl, code, "refused HTTPS->non-HTTPS redirect downgrade", headers, fp)
+        old_host = (urllib.parse.urlparse(req.get_full_url()).hostname or "").lower()
+        new_host = (urllib.parse.urlparse(newurl).hostname or "").lower()
+        if old_host and new_host and new_host != old_host:
+            logger.error("  [rest] refusing a cross-host redirect (%s -> %s) -- urllib re-sends the "
+                         "'Authorization: Basic' header / session cookie to the new host, so a 302 to a foreign "
+                         "host would deliver the read-only credential to it", old_host, new_host)
+            raise urllib.error.HTTPError(newurl, code, "refused cross-host redirect (credential-leak vector)",
+                                         headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 

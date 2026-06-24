@@ -662,6 +662,52 @@ def test_snapshot_meta_n_devices_reads_canonical_scale(client):
     assert r.json()["n_devices"] == 303          # canonical scale.n_devices, NOT len(devices)=2
 
 
+def test_upload_robust_to_truthy_non_list_sections(client):
+    """Robustness (malformed-upload DoS): summarize() runs on every upload and reads health_scores /
+    punchlist / migration_readiness. `(snap.get(k) or [])` only coerces FALSY values, so a truthy
+    NON-list (e.g. an int) flowed into a list-comprehension and raised TypeError -> an unhandled HTTP 500
+    on a structurally-valid-but-hostile upload. It must now degrade to 201 (empty section)."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "robust-list"}).json()["id"]
+    snap = {"devices": {"sw1": {}}, "health_scores": 5, "punchlist": "oops",
+            "migration_readiness": {"not": "a list"}}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "hostile"})
+    assert r.status_code == 201, r.text          # was 500 before the _as_list coercion
+
+
+def test_add_snapshot_robust_to_truthy_non_dict_executive_brief(client):
+    """Robustness: a snapshot whose health_scores is a valid list (so summarize() succeeds) but whose
+    executive_brief is a truthy NON-dict ('CORRUPT') reaches Store.add_snapshot, whose canonical
+    n_devices read chained .get() through `(executive_brief or {})` -- which does NOT guard a truthy
+    non-dict -> AttributeError -> HTTP 500. It must now degrade to 201."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "robust-eb"}).json()["id"]
+    snap = {"devices": {"sw1": {}}, "health_scores": [{"switch": "sw1", "band": "Good", "score": 80}],
+            "executive_brief": "CORRUPT"}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "corrupt-eb"})
+    assert r.status_code == 201, r.text          # was 500 before the isinstance guard
+    assert r.json()["n_devices"] == 1            # falls back to len(devices) when scale is unreadable
+
+
+def test_snapshot_meta_n_devices_canonical_zero_not_recounted(client):
+    """SSOT `or`-masks-zero: a snapshot canonically publishing n_devices == 0 (an empty-inventory
+    collection) that nonetheless carries a non-empty raw devices map must record the CANONICAL 0, not
+    fall through `0 or len(devices)` to the client-side recount. Requires the `is not None` fix."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "zero"}).json()["id"]
+    snap = {"devices": {"sw1": {}, "sw2": {}, "sw3": {}},
+            "executive_brief": {"scale": {"n_devices": 0}}}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "zero-canonical"})
+    assert r.status_code == 201, r.text
+    assert r.json()["n_devices"] == 0            # canonical 0, NOT len(devices)=3
+
+
 def test_nrfu_carries_design_traceability_and_scope_limits(tmp_path):
     """N29+N30: the NRFU/ATP must trace its coverage back to the target-state design decisions, and
     state its SCOPE LIMITS (what it does NOT validate). A needs-requirement design area + not-collected

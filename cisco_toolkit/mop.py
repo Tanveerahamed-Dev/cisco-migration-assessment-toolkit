@@ -19,6 +19,7 @@ import logging
 from datetime import datetime
 
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,12 @@ def _waves(snap: dict):
     migration_readiness verdict rows (they carry the group name + switch set the validation plan keys
     on); fall back to synthesising 'Group N' from move_groups so the MOP still renders on an older or
     minimal snapshot."""
-    mr = snap.get("migration_readiness") or []
+    mr = [_as_dict(r) for r in _as_list(snap.get("migration_readiness"))]
     if mr:
-        return [(r.get("group") or f"Group {i + 1}", list(r.get("switches") or []))
+        return [(r.get("group") or f"Group {i + 1}", list(_as_list(r.get("switches"))))
                 for i, r in enumerate(mr)]
-    return [(f"Group {i + 1}", list(g.get("switches") or []))
-            for i, g in enumerate(snap.get("move_groups") or [])]
+    return [(f"Group {i + 1}", list(_as_list(_as_dict(g).get("switches"))))
+            for i, g in enumerate(_as_list(snap.get("move_groups")))]
 
 
 def _wave_sections(snap: dict):
@@ -45,18 +46,20 @@ def _wave_sections(snap: dict):
     1-based -- joining by index would misattribute checks). Falls back to _waves() (one section per
     move-group) when wave_plan is absent, so older/minimal snapshots still render unchanged.
     Returns (name, switches, kind, group_names)."""
-    wp = (((snap.get("design_blueprint") or {}).get("target_state") or {}).get("wave_plan") or {})
-    waves = wp.get("waves") or []
+    wp = _as_dict(_as_dict(_as_dict(snap.get("design_blueprint")).get("target_state")).get("wave_plan"))
+    waves = _as_list(wp.get("waves"))
     if not waves:
         return [(name, switches, "move-group", [name]) for name, switches in _waves(snap)]
     sw2grp = {}
-    for r in (snap.get("migration_readiness") or []):
+    for r in _as_list(snap.get("migration_readiness")):
+        r = _as_dict(r)
         g = r.get("group")
-        for s in (r.get("switches") or []):
+        for s in _as_list(r.get("switches")):
             sw2grp.setdefault(s, g)
     out = []
     for w in waves:
-        switches = list(w.get("switches") or [])
+        w = _as_dict(w)
+        switches = list(_as_list(w.get("switches")))
         kind = w.get("kind") or "wave"
         gnames = []
         for s in switches:
@@ -175,16 +178,19 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 doc.add_paragraph(f"{i}. {s}")
 
     # ---- snapshot-derived facts ----
-    devices = snap.get("devices") or {}
+    # Shared coercers (not `or {}`/`or []`, which do NOT guard a truthy non-dict/list) so a malformed
+    # uploaded snapshot -- where a section that should be a list is an object, etc. -- degrades instead of
+    # char-iterating or raising AttributeError mid-render (matching engagement/ops/archreview).
+    devices = _as_dict(snap.get("devices"))
     waves = _wave_sections(snap)
-    readiness_by_group = {r.get("group"): r for r in (snap.get("migration_readiness") or [])}
-    seq_by_group = {r.get("group"): r for r in (snap.get("wave_sequencing") or [])}
-    scen_by_group = {r.get("group"): r
-                     for r in ((snap.get("migration_scenarios") or {}).get("per_group") or [])}
-    val_by_wave = (snap.get("validation_plan") or {}).get("by_wave") or {}
-    fi_by_host = {r.get("host"): r for r in (snap.get("failure_impact") or [])}
-    rem_items = (snap.get("remediation_plan") or {}).get("items") or []
-    punchlist = snap.get("punchlist") or []
+    readiness_by_group = {d.get("group"): d for d in (_as_dict(r) for r in _as_list(snap.get("migration_readiness")))}
+    seq_by_group = {d.get("group"): d for d in (_as_dict(r) for r in _as_list(snap.get("wave_sequencing")))}
+    scen_by_group = {d.get("group"): d
+                     for d in (_as_dict(r) for r in _as_list(_as_dict(snap.get("migration_scenarios")).get("per_group")))}
+    val_by_wave = _as_dict(_as_dict(snap.get("validation_plan")).get("by_wave"))
+    fi_by_host = {d.get("host"): d for d in (_as_dict(r) for r in _as_list(snap.get("failure_impact")))}
+    rem_items = [_as_dict(r) for r in _as_list(_as_dict(snap.get("remediation_plan")).get("items"))]
+    punchlist = [_as_dict(r) for r in _as_list(snap.get("punchlist"))]
 
     def _blockers_for(switches):
         sw = set(switches)
@@ -259,7 +265,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     table(["Wave", "Devices", "Endpoint MACs", "Readiness", "Strategy", "Max blast", "Blockers"],
           ov_rows, widths=[1.5, 0.8, 1.0, 1.2, 1.5, 0.9, 0.9])
 
-    fleet_rec = (snap.get("migration_scenarios") or {}).get("fleet_recommendation")
+    fleet_rec = _as_dict(snap.get("migration_scenarios")).get("fleet_recommendation")
     if fleet_rec:
         _label_run(doc.add_paragraph(), "Fleet-level recommendation:", fleet_rec)
 
@@ -268,7 +274,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     doc.add_paragraph(
         "Complete these once, before the first wave. They are the fleet-wide gating items the assessment "
         "flagged; cutting over before they are resolved or risk-accepted carries the documented risk.")
-    gating = (snap.get("executive_brief") or {}).get("top_gating") or []
+    gating = _as_list(_as_dict(snap.get("executive_brief")).get("top_gating"))
     if gating:
         for g in gating[:6]:
             doc.add_paragraph(g, style="List Bullet")
@@ -307,7 +313,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     ], widths=[2.6, 2.0, 2.2])
 
     # §2.2 software / image standardization (per in-scope platform) — N24
-    swrisk_pd = [d for d in ((snap.get("software_risk") or {}).get("per_device") or []) if isinstance(d, dict)]
+    swrisk_pd = [d for d in _as_list(_as_dict(snap.get("software_risk")).get("per_device")) if isinstance(d, dict)]
     if swrisk_pd:
         doc.add_heading("2.2 Software / image standardization", level=2)
         doc.add_paragraph(
@@ -424,7 +430,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             "configuration — the legacy side is read from the collected evidence; every <target> "
             "column must be completed by the implementing engineer before the window.")
         map_rows = []
-        ifaces_all = snap.get("interfaces") or {}
+        ifaces_all = _as_dict(snap.get("interfaces"))
         for h in switches:
             for pname, dd in sorted((ifaces_all.get(h) or {}).items()):
                 dd = dd or {}

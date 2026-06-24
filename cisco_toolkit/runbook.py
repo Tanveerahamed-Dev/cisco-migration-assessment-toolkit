@@ -100,7 +100,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         r = p.add_run(label_text)
         r.bold = True
         r.font.color.rgb = color
-        p.add_run(" " + (value if value else "—"))
+        # str()-guard the value (mirrors docmeta._kv): a truthy NON-string value (an int count, a list)
+        # would raise `TypeError: can only concatenate str` here -- the lone family writer missing the guard.
+        p.add_run(" " + (str(value) if value not in (None, "") else "—"))
 
     def finding_block(title, *, severity, scope, observed, interpretation, impact,
                       confidence, unknowns, next_validation, remediation=""):
