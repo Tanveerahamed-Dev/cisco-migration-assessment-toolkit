@@ -45,6 +45,11 @@ _HA_DISABLED = _wrap([{"name": "HA-Edge", "primaryStatus": {"currentStatus": "Ac
                        "secondaryStatus": {"currentStatus": "Disabled"}}])
 _DEP_PENDING = _wrap([{"name": "AJ-FTD-03", "canBeDeployed": True, "upToDate": False, "device": {"name": "AJ-FTD-03"}}])
 _DEP_EMPTY = _wrap([])
+# REAL empty shape: an FMC list endpoint with nothing to return can answer with a paging/links envelope that
+# OMITS 'items' entirely (not {"items":[]}). The self-authored {"items":[]} fixture hid this; a clean fleet in
+# this real form fabricated a phantom nameless row -> _d_fmc_deployment_pending cry-wolfed on a fully-deployed fleet.
+_DEP_EMPTY_NOITEMS = json.dumps({"links": {"self": "https://fmc.example/api/.../deployabledevices"},
+                                 "paging": {"offset": 0, "limit": 25, "count": 0, "pages": 0}})
 # Real /integration/fmchastatuses shape: a LIST endpoint ({"items":[...]}) whose object carries overallStatus +
 # syncStatus (the HEALTHY value is 'GOOD', NOT 'Synced') + fmcPrimary/fmcSecondary{role}; HA-not-configured ->
 # items []. (The previous fixtures invented fmcHARole/haStatus/syncStatus:'Synced' -- a schema that does not
@@ -110,6 +115,11 @@ def test_parse_fmc_deployable_empty_is_empty():
     assert parse.parse_fmc_deployable(_DEP_EMPTY) == []
 
 
+def test_parse_fmc_deployable_no_items_envelope_is_empty_not_phantom():
+    # the REAL empty form (paging/links, no 'items' key) must read as [] -- never a fabricated nameless row.
+    assert parse.parse_fmc_deployable(_DEP_EMPTY_NOITEMS) == []
+
+
 # ============================================================ detector: FTD HA degraded
 def test_ftd_ha_degraded_fires_on_failed():
     snap = _snap(ha=_HA_FAILED)
@@ -149,6 +159,13 @@ def test_deployment_pending_fires_on_staged_changes():
 
 def test_deployment_pending_silent_when_empty():
     snap = _snap(dep=_DEP_EMPTY)
+    assert da._d_fmc_deployment_pending(snap, da._signals(snap)) is None
+
+
+def test_deployment_pending_silent_on_no_items_clean_fleet():
+    # CRY-WOLF FIX: a fully-deployed fleet whose deployabledevices comes back as the real no-'items' empty
+    # envelope must NOT raise 'N device(s) with staged undeployed changes'.
+    snap = _snap(dep=_DEP_EMPTY_NOITEMS)
     assert da._d_fmc_deployment_pending(snap, da._signals(snap)) is None
 
 

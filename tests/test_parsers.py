@@ -1519,6 +1519,19 @@ def test_parse_ntp_status_ios_and_nxos(cp):
               "=10.255.0.254        10.255.0.7           16  64   0     0.00000 default\n")
     n = parse.parse_ntp_status(nosync)
     assert n["synchronized"] is False and n["stratum"] == 16
+    # REAL-FORMAT FIDELITY: a genuinely-unsynchronized NX-OS peer carries NO sync-selection symbol at all
+    # (every peer init/unreachable -> stratum 16, each row prefixed by a SPACE, not '*'/'='/'+'/'-'). The
+    # leading symbol must be OPTIONAL or the whole table goes unrecognised and the device reads as 'absent'
+    # (false-health: a configured-but-unsynced Nexus would silently pass _d_ntp_sync).
+    nosym = ("Total peers : 2\n"
+             "* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode\n"
+             "remote               local                st  poll reach delay   vrf\n"
+             "-------------------------------------------------------------------------------\n"
+             " 10.255.0.254        10.255.0.7           16  64   0     0.00000 default\n"
+             " 10.255.0.253        10.255.0.7           16  64   0     0.00000 default\n")
+    ns = parse.parse_ntp_status(nosym)
+    assert ns["synchronized"] is False and ns["stratum"] == 16, ns
+    assert ns["source"] == "nxos-peer-status"
 
 
 def test_parse_port_security_detail_secure_shutdown_vs_restrict(cp):

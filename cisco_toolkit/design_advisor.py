@@ -479,10 +479,19 @@ def _signals(snap):
             _why.append("local-intf down")
         if str(_ml.get("config_sanity", "")).strip().lower() == "inconsistent":
             _why.append("config-sanity inconsistent")
-        if _as_int(_ml.get("ports_inactive")) > 0:
-            _why.append(f"{_as_int(_ml.get('ports_inactive'))} inactive MLAG port(s)")
+        # 'Active-partial' = a port-channel active on only ONE MLAG peer -> a GENUINELY single-homed (lost-leg)
+        # dual-homed bundle: a real loss of redundancy, so it fires.
         if _as_int(_ml.get("ports_active_partial")) > 0:
             _why.append(f"{_as_int(_ml.get('ports_active_partial'))} single-homed MLAG port(s)")
+        # 'Inactive' MLAG ports (a downstream host powered off, an un-cabled port, an admin-shut interface) are a
+        # PORT/endpoint-level state, NOT a loss of DOMAIN redundancy -- per Arista's own EOS docs the Inactive
+        # warning "can be ignored" when the link is simply not in use. So Inactive must NOT by itself raise a
+        # 'domain degraded -- redundancy lost' decision (that was a cry-wolf on a perfectly healthy pair with one
+        # host switched off). Surface it ONLY as corroborating context when the domain is ALREADY degraded for a
+        # genuine reason above.
+        _inact = _as_int(_ml.get("ports_inactive"))
+        if _why and _inact > 0:
+            _why.append(f"{_inact} inactive MLAG port(s)")
         if _why:
             _mlag_bad.append(f"{_ah} ({', '.join(_why)})")
     sig["arista_mlag_degraded"] = _mlag_bad

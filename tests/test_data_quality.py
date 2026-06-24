@@ -51,3 +51,13 @@ def test_threshold_is_configurable(cp):
     cfg = analyze.ScoringConfig(data_quality_threshold=0.2)   # 0.25 now clears the bar
     recs = cp.compute_health_scores({"sw": {}}, [], [], [], [], config=cfg, data_quality={"sw": 0.25})
     assert recs[0]["band"] == "Excellent"
+
+
+def test_loader_registers_ers_and_classic_ios_ospfv3(cp):
+    """Collect/--no-collect command coverage: a builder fallback variant is DEAD unless the command is also in
+    the COMMANDS_* lists the collector writes and the --no-collect loader scans. (1) the ISE ERS fallback export
+    'ers/config/node' (build_ise's second channel) -- without it a collected ERS-only ISE cluster re-analyzes as
+    'not-observed'. (2) the classic-IOS OSPFv3 form 'show ipv6 ospf neighbor' (build_ipv6_routing's fallback) --
+    without it OSPFv3 adjacency is blind on a classic-IOS router that rejects 'show ospfv3 neighbor'."""
+    assert "ers/config/node" in cp.COMMANDS_NXOS
+    assert "show ipv6 ospf neighbor" in cp.COMMANDS_IOS

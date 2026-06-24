@@ -116,15 +116,27 @@ def test_fires_on_config_sanity_inconsistent():
     assert d["evidence"]["count"] == 1 and d["evidence"]["devices"] == ["spine1"]
 
 
-def test_fires_on_inactive_ports():
-    d = _fire(_snap(_INACTIVE_PORTS))
-    assert d and d["id"] == "arista-mlag-domain-degraded"
-    assert "inactive MLAG port" in d["evidence"]["summary"]
+def test_silent_on_inactive_ports_only_is_not_redundancy_loss():
+    """CRY-WOLF FIX: an otherwise-healthy MLAG domain (active/connected/consistent/peer-link-up) with one or
+    more 'Inactive' member ports must NOT fire. Per Arista EOS docs an Inactive port reflects port-level state
+    (a downstream host off / un-cabled / admin-shut) and 'can be ignored' when the link is not in use -- it is
+    NOT a loss of DOMAIN redundancy, so flagging it as 'domain degraded -- redundancy lost' was a cry-wolf on a
+    perfectly healthy pair with a host switched off. 'Active-partial' (a genuinely single-homed leg) still fires."""
+    assert _fire(_snap(_INACTIVE_PORTS)) is None
 
 
 def test_fires_on_single_homed_partial_ports():
     d = _fire(_snap(_PARTIAL_PORTS))
     assert d and "single-homed MLAG port" in d["evidence"]["summary"]
+
+
+def test_inactive_ports_corroborate_a_genuinely_degraded_domain():
+    """Inactive ports are still surfaced as CORROBORATING context when the domain is ALREADY degraded for a
+    genuine reason (here config-sanity inconsistent), so no information is lost -- they just can't fire alone."""
+    both = _INACTIVE_PORTS.replace('"configSanity": "consistent"', '"configSanity": "inconsistent"')
+    d = _fire(_snap(both))
+    assert d and "config-sanity inconsistent" in d["evidence"]["summary"]
+    assert "inactive MLAG port" in d["evidence"]["summary"]
 
 
 def test_fires_on_peerlink_down_and_inactive_state():
@@ -135,7 +147,7 @@ def test_fires_on_peerlink_down_and_inactive_state():
 
 
 def test_fires_counts_each_degraded_domain():
-    d = _fire(_snap(_CFG_INCONSISTENT, _INACTIVE_PORTS, _HEALTHY))   # 2 broken + 1 healthy
+    d = _fire(_snap(_CFG_INCONSISTENT, _PARTIAL_PORTS, _HEALTHY))   # 2 genuinely broken + 1 healthy
     assert d and d["evidence"]["count"] == 2 and len(d["evidence"]["devices"]) == 2
 
 
