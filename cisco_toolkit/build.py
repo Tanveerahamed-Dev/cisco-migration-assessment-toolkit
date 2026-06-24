@@ -425,15 +425,20 @@ def build_fortigate(cmd_to_file: Dict[str, str]) -> dict:
 def build_mroute(cmd_to_file: Dict[str, str]) -> dict:
     """Cisco multicast RPF state for THIS device from 'show ip mroute' -> {n_entries, rpf_failures:[{source,
     group, oil_count}]}, or {} when no mroute table. rpf_failures lists ONLY the (S,G) source-tree entries with
-    a Null incoming (RPF) interface -- the unambiguous RPF-failure / blackhole case. The benign (*,G) shared-tree
-    Null-IIF entries (locally-joined / well-known / SSM groups -- 36 of them across the AJ fleet) are deliberately
-    excluded here so the detector cannot cry wolf. {} when no multicast is running -- coverage-honest. Fail-soft."""
+    a Null incoming (RPF) interface AND a NON-ZERO RPF neighbour -- the genuinely anomalous blackhole. TWO benign
+    Null-IIF classes are deliberately excluded so the detector cannot cry wolf:
+      * (*,G) shared-tree entries (locally-joined / well-known / SSM groups -- 36 of them across the AJ fleet); and
+      * an (S,G) whose 'RPF nbr' is 0.0.0.0, which per Cisco means THIS router is the source (a local source / PIM
+        register / SPT-pending) -- a normal, expected Null IIF, NOT an RPF failure (a real RPF failure shows a valid
+        mismatched interface or dropped packets, never (S,G)+Null+RPF-0.0.0.0).
+    {} when no multicast is running -- coverage-honest. Fail-soft."""
     entries = _safe_parse(parse_mroute_entries, _load_cmd_output(cmd_to_file, "show ip mroute")) or []
     if not entries:
         return {}
     rpf = [{"source": e.get("source"), "group": e.get("group"), "oil_count": e.get("oil_count", 0)}
            for e in entries
-           if e.get("source") not in ("*", "", None) and str(e.get("iif", "")).strip().lower() == "null"]
+           if e.get("source") not in ("*", "", None) and str(e.get("iif", "")).strip().lower() == "null"
+           and str(e.get("rpf_nbr", "")).strip() not in ("", "0.0.0.0")]   # RPF 0.0.0.0 == local source (benign)
     return {"n_entries": len(entries), "rpf_failures": rpf}
 
 

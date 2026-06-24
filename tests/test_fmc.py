@@ -45,8 +45,23 @@ _HA_DISABLED = _wrap([{"name": "HA-Edge", "primaryStatus": {"currentStatus": "Ac
                        "secondaryStatus": {"currentStatus": "Disabled"}}])
 _DEP_PENDING = _wrap([{"name": "AJ-FTD-03", "canBeDeployed": True, "upToDate": False, "device": {"name": "AJ-FTD-03"}}])
 _DEP_EMPTY = _wrap([])
-_MGR_HEALTHY = json.dumps({"fmcHARole": "Active", "haStatus": "Healthy", "syncStatus": "Synced", "peerReachability": "reachable"})
-_MGR_DEGRADED = json.dumps({"fmcHARole": "Active", "haStatus": "Degraded", "syncStatus": "Synchronization incomplete", "peerReachability": "reachable"})
+# Real /integration/fmchastatuses shape: a LIST endpoint ({"items":[...]}) whose object carries overallStatus +
+# syncStatus (the HEALTHY value is 'GOOD', NOT 'Synced') + fmcPrimary/fmcSecondary{role}; HA-not-configured ->
+# items []. (The previous fixtures invented fmcHARole/haStatus/syncStatus:'Synced' -- a schema that does not
+# exist on a real FMC, which is exactly why the silent-on-healthy test passed against fiction while the detector
+# cried wolf on real GOOD/GOOD data.)
+_MGR_HEALTHY = _wrap([{"overallStatus": "GOOD", "syncStatus": "GOOD",
+                       "fmcPrimary": {"role": "Active"}, "fmcSecondary": {"role": "Standby"},
+                       "haStatusMessages": ["Healthy"]}])
+_MGR_DEGRADED = _wrap([{"overallStatus": "DEGRADED", "syncStatus": "FAILED",
+                        "fmcPrimary": {"role": "Active"}, "fmcSecondary": {"role": "Failed"},
+                        "haStatusMessages": ["Synchronization failed"]}])
+# syncStatus IN_PROGRESS is a transient mid-sync state -> must NOT fire (non-cry-wolf, mirrors the FTD-HA rule).
+_MGR_TRANSIENT = _wrap([{"overallStatus": "GOOD", "syncStatus": "IN_PROGRESS",
+                         "fmcPrimary": {"role": "Active"}, "fmcSecondary": {"role": "Standby"}}])
+# SPLIT_BRAIN overall (both Active) -> a real degraded manager.
+_MGR_SPLIT = _wrap([{"overallStatus": "SPLIT_BRAIN", "syncStatus": "GOOD",
+                     "fmcPrimary": {"role": "Active"}, "fmcSecondary": {"role": "Active"}}])
 
 
 _SV_OK = json.dumps({"items": [{"serverVersion": "7.4.1 (build 172)"}]})    # FMC newer than the FTD fleet
@@ -81,9 +96,14 @@ def test_parse_fmc_ha_pairs_reads_nested_currentstatus():
     assert h["primary_status"] == "Active" and h["secondary_status"] == "Failed"
 
 
-def test_parse_fmc_ha_status_single_object():
+def test_parse_fmc_ha_status_real_schema():
     s = parse.parse_fmc_ha_status(_MGR_DEGRADED)
-    assert s["ha_status"] == "Degraded" and s["sync_status"] == "Synchronization incomplete"
+    assert s["ha_status"] == "DEGRADED" and s["sync_status"] == "FAILED"
+    # the HEALTHY pair carries overallStatus/syncStatus 'GOOD' (the real value, NOT the fictional 'Synced')
+    h = parse.parse_fmc_ha_status(_MGR_HEALTHY)
+    assert h["ha_status"] == "GOOD" and h["sync_status"] == "GOOD"
+    # standalone FMC (HA not configured) returns no items -> {} (coverage-honest)
+    assert parse.parse_fmc_ha_status(_wrap([])) == {}
 
 
 def test_parse_fmc_deployable_empty_is_empty():
@@ -139,8 +159,21 @@ def test_manager_ha_fires_on_degraded():
 
 
 def test_manager_ha_silent_on_healthy():
+    # GOOD/GOOD on the REAL schema -- the regression guard: the OLD parser+gate cried wolf here because it read
+    # the non-existent syncStatus value 'Synced' and fired on anything else (incl. the real 'GOOD').
     snap = _snap(mgr=_MGR_HEALTHY)
     assert da._d_fmc_manager_ha_degraded(snap, da._signals(snap)) is None
+
+
+def test_manager_ha_silent_on_transient_sync():
+    # syncStatus IN_PROGRESS (mid-sync) with GOOD overall -> a transient resync is NOT a fault (non-cry-wolf).
+    snap = _snap(mgr=_MGR_TRANSIENT)
+    assert da._d_fmc_manager_ha_degraded(snap, da._signals(snap)) is None
+
+
+def test_manager_ha_fires_on_split_brain():
+    snap = _snap(mgr=_MGR_SPLIT)
+    assert da._d_fmc_manager_ha_degraded(snap, da._signals(snap)) is not None
 
 
 # ============================================================ detector: FMC<FTD version inversion

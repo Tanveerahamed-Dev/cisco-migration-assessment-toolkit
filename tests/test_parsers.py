@@ -1053,6 +1053,18 @@ def test_parse_bfd_neighbors_state_by_column_not_rhrs(cp):
     byd = {x["neighbor"]: x for x in parse.parse_bfd_neighbors(drift)}
     assert byd["2.16.2.2"]["state"] == "Up" and byd["2.16.2.2"]["interface"] == "Eth1/1"
     assert byd["2.16.2.3"]["state"] == "Down"   # the genuinely broken session must NOT be misread or lost
+    # REAL Cisco IOS-XE form (per the IOS-XE BFD Config Guide): the RH/RS column renders as 'N(RH)' (e.g. '1(RH)')
+    # -- it ALSO contains parens, so the old 'first token containing ()' Holdown heuristic latched onto RH/RS and
+    # read State one column early; a Down session was then stored as the numeric Holdown -> the BFD-down detector
+    # silently MISSED it (false-health). State must come from the column before Int regardless of the RH/RS form.
+    xe = (
+        "OurAddr      NeighAddr    LD/RD   RH/RS    Holdown(mult)   State   Int\n"
+        "172.16.1.1   172.16.1.3   5/3     1(RH)    134 (3 )        Up      Gi0/0/1\n"
+        "172.16.1.2   172.16.1.9   1/6     0(RH)    0 (3 )          Down    Gi0/0/2\n")
+    bx = {x["neighbor"]: x for x in parse.parse_bfd_neighbors(xe)}
+    assert bx["172.16.1.3"]["state"] == "Up"
+    assert bx["172.16.1.9"]["state"] == "Down"        # NOT swallowed by the '0(RH)' RH/RS paren token
+    assert bx["172.16.1.9"]["interface"] == "Gi0/0/2"
     assert parse.parse_bfd_neighbors("") == []
     assert parse.parse_bfd_neighbors("% BFD is not enabled\n") == []
 
@@ -1413,6 +1425,24 @@ def test_parse_pim_neighbors_ios_and_nxos(cp):
     """)
     rn = parse.parse_pim_neighbors(nxos)
     assert len(rn) == 2 and rn[0]["interface"] == "Po2000" and rn[1]["interface"] == "Eth1/26"
+    # Real STEADY-STATE uptimes render in the abbreviated week/day/hour form (Cisco shows any uptime >= ~24h this
+    # way: '2d00h', '1w2d', '15w4d') -- the OLD H:M:S-only regex DROPPED these rows, so a long-established PIM
+    # neighbour on a production core went invisible and _d_pim_rp_health mis-read a running domain as 'not running'.
+    steady = textwrap.dedent("""\
+        PIM Neighbor Status for VRF "default"
+        Neighbor       Interface            Uptime    Expires   DR
+        10.2.1.1       Ethernet1/1          2d00h     00:01:15  1
+        10.2.1.2       Ethernet1/2          1w2d      00:01:33  1
+        10.2.1.3       Ethernet1/3          15w4d     00:01:20  1
+    """)
+    rs = parse.parse_pim_neighbors(steady)
+    assert len(rs) == 3                                       # NONE dropped -- the domain IS running
+    assert {r["uptime"] for r in rs} == {"2d00h", "1w2d", "15w4d"}
+    assert rs[0]["interface"] == "Eth1/1"
+    # IOS still combines Uptime/Expires in one slash-token; the abbreviated uptime before the '/' is captured.
+    ios_abbr = "10.3.3.3      GigabitEthernet0/1   1w2d/00:01:20 v2    1 / DR\n"
+    ra = parse.parse_pim_neighbors(ios_abbr)
+    assert len(ra) == 1 and ra[0]["uptime"] == "1w2d"
     assert parse.parse_pim_neighbors("") == []
     assert parse.parse_pim_neighbors("PIM Neighbor Table\nNeighbor Interface Uptime\n") == []
 

@@ -4148,9 +4148,11 @@
    ],
    "ha_status": {
     "ha_role": "Active",
-    "ha_status": "Degraded",
-    "sync_status": "Synchronization incomplete",
-    "peer_reachability": "reachable"
+    "ha_status": "DEGRADED",
+    "sync_status": "FAILED",
+    "messages": [
+     "Synchronization failed"
+    ]
    },
    "server_version": {
     "server_version": "7.0.0 (build 94)"

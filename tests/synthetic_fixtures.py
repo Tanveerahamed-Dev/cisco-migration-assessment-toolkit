@@ -590,8 +590,9 @@ Conns [rate]           62      984         N/A            0   System
     # Cisco Secure Firewall Mgmt Center (FMC, universality, JSON channel): core1 stands in as the FMC query
     # host. devicerecords has AJ-FTD-99 isConnected=false+red -> _d_fmc_device_disconnected; ftddevicehapairs
     # has a Failed secondary -> _d_ftd_ha_degraded; deployabledevices is non-empty -> _d_fmc_deployment_pending;
-    # fmchastatuses Degraded -> _d_fmc_manager_ha_degraded. (An intentional 'Disabled' HA + an empty deployable
-    # would stay silent -- proved in tests/test_fmc.py.) List endpoints wrap rows in {"items":[...]}.
+    # fmchastatuses overallStatus DEGRADED -> _d_fmc_manager_ha_degraded (real FMCHAStatus schema: overallStatus
+    # /syncStatus, healthy value 'GOOD'; a transient IN_PROGRESS sync or 'Disabled' HA stays silent -- proved in
+    # tests/test_fmc.py.) List endpoints wrap rows in {"items":[...]}.
     "api/fmc_config/v1/devices/devicerecords": """\
 {"items": [
   {"name": "AJ-FTD-01", "hostName": "10.9.9.1", "model": "FTDv", "sw_version": "7.2.5", "isConnected": true, "healthStatus": "green", "deploymentStatus": "DEPLOYED"},
@@ -609,7 +610,9 @@ Conns [rate]           62      984         N/A            0   System
 ], "paging": {"count": 1}}
 """,
     "api/fmc_config/v1/integration/fmchastatuses": """\
-{"fmcHARole": "Active", "haStatus": "Degraded", "syncStatus": "Synchronization incomplete", "peerReachability": "reachable"}
+{"items": [
+  {"overallStatus": "DEGRADED", "syncStatus": "FAILED", "fmcPrimary": {"role": "Active"}, "fmcSecondary": {"role": "Failed"}, "haStatusMessages": ["Synchronization failed"]}
+], "paging": {"count": 1}}
 """,
     # FMC server version 7.0.0 is OLDER than the managed FTDs (7.2.5) -> _d_fmc_version_inversion FIRES (Cisco
     # mandates FMC >= every managed device). A 7.4.x FMC would stay silent. Platform namespace (not domain).

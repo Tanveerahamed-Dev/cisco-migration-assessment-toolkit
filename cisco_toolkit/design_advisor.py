@@ -65,6 +65,14 @@ def _as_float(x, default=0.0):
         return default
 
 
+def _dev_list(tagged, sep=" "):
+    """The deduped, sorted, capped device list for a detector's evidence, from its '<host> ...'-tagged finding
+    strings. The host is the leading token before ``sep`` (':' for the firewall 'host: ...' form, ' ' otherwise);
+    device keys are hostnames, which never contain those delimiters, so the split recovers the host exactly. One
+    place for the host-source + the [:12] cap (previously copy-pasted across every multi-vendor/firewall detector)."""
+    return sorted({str(x).split(sep)[0] for x in tagged})[:12]
+
+
 def _svi_network(svi):
     """The network (CIDR str) of an SVI address, or None. Handles 'ip/prefix' and 'ip mask' forms (the two
     shapes l3_forwarding.svi_ip is collected in); a bare IP with no mask is unknown -> None. Used to recover a
@@ -418,7 +426,7 @@ def _signals(snap):
                 _parts.append(str(_u.get("state", "")))
                 _fw_ha.append(" ".join(_parts))
     sig["firewall_ha_degraded"] = _fw_ha
-    sig["firewall_ha_devices"] = sorted({x.split(':')[0] for x in _fw_ha})[:12]
+    sig["firewall_ha_devices"] = _dev_list(_fw_ha, sep=":")
     # Cisco firewall (ASA/FTD) resource/capacity exhaustion (snap['firewall'][h].resource_usage from
     # build_firewall / 'show resource usage'). The capacity-sizing axis: a DATA-PLANE resource (Conns / Xlates
     # / Hosts) that either (a) has Denied > 0 -- an OBSERVED refusal: the box hit its Limit and dropped real
@@ -441,7 +449,7 @@ def _signals(snap):
             elif isinstance(_lim, int) and _lim > 0 and isinstance(_peak, int) and _peak >= 0.9 * _lim:
                 _fw_res.append(f"{_fh}: {_name} peak {_peak}/{_lim} ({int(round(100.0 * _peak / _lim))}%)")
     sig["firewall_resource_exhausted"] = _fw_res
-    sig["firewall_resource_devices"] = sorted({x.split(':')[0] for x in _fw_res})[:12]
+    sig["firewall_resource_devices"] = _dev_list(_fw_res, sep=":")
     # MULTI-VENDOR (Arista EOS) -- the FIRST non-Cisco vendor axis (snap['arista'][h]['mlag'] from build_arista).
     # MLAG is Arista's dual-active redundancy primitive, the direct analogue of Cisco vPC. FIRING STATE: MLAG is
     # CONFIGURED (build_arista returns {} when state=='disabled', so absence never fires) yet a SETTLED-broken
@@ -478,7 +486,7 @@ def _signals(snap):
         if _why:
             _mlag_bad.append(f"{_ah} ({', '.join(_why)})")
     sig["arista_mlag_degraded"] = _mlag_bad
-    sig["arista_mlag_devices"] = sorted({x.split(' ')[0] for x in _mlag_bad})[:12]
+    sig["arista_mlag_devices"] = _dev_list(_mlag_bad)
     # MULTI-VENDOR (Arista EOS) BGP-EVPN overlay control plane (snap['arista'][h]['evpn'] from build_arista,
     # 'show bgp evpn summary'). FIRING STATE: an EVPN BGP peer whose peerState is not 'Established' -- overlay
     # route exchange to that peer is dark (no type-2 MAC/IP or type-5 prefix reachability learned from it). The
@@ -492,7 +500,7 @@ def _signals(snap):
             if _st and _st.lower() != "established":
                 _arista_evpn_down.append(f"{_ah} {_p.get('peer', '?')} ({_st})")
     sig["arista_evpn_down"] = _arista_evpn_down
-    sig["arista_evpn_devices"] = sorted({x.split(' ')[0] for x in _arista_evpn_down})[:12]
+    sig["arista_evpn_devices"] = _dev_list(_arista_evpn_down)
     # MULTI-VENDOR (Juniper Junos) -- the SECOND non-Cisco vendor axis (snap['juniper'][h]['chassis_cluster']
     # from build_juniper). SRX chassis cluster is Juniper's stateful-firewall HA, the analogue of the Cisco
     # firewall 'show failover'. FIRING STATE: a redundancy group configured yet operationally degraded -- a node
@@ -517,7 +525,7 @@ def _signals(snap):
             if _why:
                 _junos_bad.append(f"{_jh} RG{_r.get('rg', '?')} {_r.get('node', '?')} ({', '.join(_why)})")
     sig["junos_cluster_degraded"] = _junos_bad
-    sig["junos_cluster_devices"] = sorted({x.split(' ')[0] for x in _junos_bad})[:12]
+    sig["junos_cluster_devices"] = _dev_list(_junos_bad)
     # PUBLIC CLOUD (AWS) security-group exposure (snap['cloud'][h]['security_groups'] from build_cloud) -- the
     # FIRST cloud-domain axis. FIRING STATE (CIS AWS Foundations 5.2/5.3): a security group allows INBOUND from
     # 0.0.0.0/0 (or ::/0) to a SENSITIVE admin port (SSH/RDP/DB/...) or to ALL ports/protocols -- the host is
@@ -566,7 +574,7 @@ def _signals(snap):
         if _why:
             _fg_bad.append(f"{_fgh} ({'; '.join(_why)})")
     sig["fortigate_ha_degraded"] = _fg_bad
-    sig["fortigate_ha_devices"] = sorted({x.split(' ')[0] for x in _fg_bad})[:12]
+    sig["fortigate_ha_devices"] = _dev_list(_fg_bad)
     # CISCO DEPTH: multicast RPF integrity (snap['mroute'][h]['rpf_failures'] from build_mroute). FIRING STATE:
     # an (S,G) source-tree entry with a Null incoming (RPF) interface -- the device has no reverse-path toward
     # the source, so that stream is blackholed (the #1 multicast data-plane outage). Coverage-honest & non-cry-
@@ -579,7 +587,7 @@ def _signals(snap):
             _r = _as_dict(_r)
             _rpf.append(f"{_mh} (S={_r.get('source', '?')},G={_r.get('group', '?')})")
     sig["mcast_rpf_failures"] = _rpf
-    sig["mcast_rpf_devices"] = sorted({x.split(' ')[0] for x in _rpf})[:12]
+    sig["mcast_rpf_devices"] = _dev_list(_rpf)
     # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
     # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
     # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
@@ -638,6 +646,11 @@ def _signals(snap):
     # Brain / not-Synced. Coverage-honest: no FMC export -> nothing; a standalone FTD (no HA entry) / standalone
     # FMC (no fmchastatuses) is silent (absence of HA is not a failure).
     _FTD_HA_BROKEN = {"failed", "not detected"}          # 'disabled' EXCLUDED -- intentional suspend, not a fault
+    # FMC's OWN HA (overallStatus/syncStatus per the real fmchastatuses schema). KNOWN-BAD only (coverage-honest):
+    # overallStatus 'good' (healthy) and syncStatus 'in progress' (transient resync) / 'paused' (operator-suspended)
+    # all stay SILENT -- firing on any non-'synced' sync (the old gate) cried wolf on the real healthy value 'GOOD'.
+    _FMC_HA_BAD = {"degraded", "split brain", "failed", "error"}     # overallStatus, '_'->' ' normalised
+    _FMC_SYNC_BAD = {"failed", "out of sync"}                        # syncStatus
     _fmc = _as_dict(snap.get("fmc"))
     _fmc_disc, _ftd_ha, _fmc_deploy, _fmc_mgr_ha, _fmc_ver_inv = [], [], [], [], []
     for _mh, _mf in sorted(_fmc.items()):
@@ -660,10 +673,9 @@ def _signals(snap):
             _fmc_deploy.append(f"{_mh}: {len(_dep)} device(s) with staged undeployed changes")
         _has = _as_dict(_mf.get("ha_status"))
         if _has:
-            _hs = str(_has.get("ha_status", "")).strip().lower()
-            _sy = str(_has.get("sync_status", "")).strip().lower()
-            _pr = str(_has.get("peer_reachability", "")).strip().lower()
-            if _hs in ("degraded", "split brain") or (_sy and _sy not in ("synced", "in sync")) or _pr in ("unreachable", "not reachable"):
+            _hs = str(_has.get("ha_status", "")).strip().lower().replace("_", " ")
+            _sy = str(_has.get("sync_status", "")).strip().lower().replace("_", " ")
+            if _hs in _FMC_HA_BAD or _sy in _FMC_SYNC_BAD:   # known-bad only -- good/in-progress/paused stay silent
                 _fmc_mgr_ha.append(f"{_mh}: FMC HA {_has.get('ha_status', '?')} (sync {_has.get('sync_status', '?')})")
         _sv = _version_tuple(_as_dict(_mf.get("server_version")).get("server_version"))
         if _sv:                                          # Cisco mandates FMC >= every managed FTD
