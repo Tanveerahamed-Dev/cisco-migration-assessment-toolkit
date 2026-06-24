@@ -234,7 +234,17 @@ def create_app(db_path: str | None = None) -> FastAPI:
                               label: str = Form("")) -> Dict[str, Any]:
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        snap = _parse_snapshot_bytes(await file.read())
+        # Hard size cap (chunked) like the sibling /ingest endpoint -- `await file.read()` with no bound let a
+        # multi-GB upload exhaust server memory before parsing (a trivial DoS on an unauthenticated POST).
+        chunks: List[bytes] = []
+        received = 0
+        while chunk := await file.read(1024 * 1024):
+            received += len(chunk)
+            if received > ingest.MAX_ARCHIVE_BYTES:
+                raise HTTPException(
+                    413, f"Snapshot exceeds the {ingest.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB upload limit")
+            chunks.append(chunk)
+        snap = _parse_snapshot_bytes(b"".join(chunks))
         lbl = label.strip() or (file.filename or "snapshot").rsplit(".", 1)[0]
         return store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
 

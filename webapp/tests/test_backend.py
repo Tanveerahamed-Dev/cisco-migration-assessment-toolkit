@@ -1175,3 +1175,26 @@ def test_causal_flows_computes_design_family_like_design_endpoint(client):
     bp = client.get(f"/api/snapshots/{snap_id}/design").json()
     rec = sum(1 for d in bp["decisions"] if d.get("status") == "recommended")
     assert n_design == rec, f"causal-flow design family ({n_design}) must equal /design recommended ({rec})"
+
+
+def test_build_graph_robust_to_non_dict_interfaces_devices():
+    """WEBAP-02: build_graph used `snap.get("interfaces") or {}` / `(snap.get("devices") or {})` -- a TRUTHY
+    non-dict (a JSON string/list in a malformed upload) slipped through and .keys() raised AttributeError -> an
+    unhandled 500 on GET /graph. It must degrade instead."""
+    from webapp.backend.graph import build_graph
+    g = build_graph({"interfaces": "oops", "devices": [1, 2, 3], "health_scores": "nope"})   # must not raise
+    assert isinstance(g, dict) and "nodes" in g and "edges" in g
+
+
+def test_get_snapshot_section_robust_to_scalar_section(tmp_path):
+    """WEBAP-01: get_snapshot_section json.loads()'d sqlite json_extract output, but a JSON SCALAR section
+    (string/number) comes back as the native value -- json.loads(int) raised TypeError and json.loads(a bare
+    string) raised JSONDecodeError, neither caught -> 500. A scalar section must be returned, not raise."""
+    from webapp.backend.storage import Store
+    st = Store(str(tmp_path / "t.db"))
+    cid = st.create_campaign("c", "cust")["id"]
+    snap = {"devices": {"sw1": {}}, "design_blueprint": 5, "architecture_coverage": "weird-scalar"}
+    sid = st.add_snapshot(cid, "s", snap, {"n_switches": 1})["id"]
+    assert st.get_snapshot_section(sid, "design_blueprint") == 5           # native int, not a 500
+    assert st.get_snapshot_section(sid, "architecture_coverage") == "weird-scalar"
+    assert st.get_snapshot_section(sid, "devices") == {"sw1": {}}          # objects still decode

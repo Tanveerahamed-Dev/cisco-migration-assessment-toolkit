@@ -607,7 +607,13 @@ _REDACT_IP_RE = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
 _REDACT_MAC_RE = re.compile(
     r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b")
 _REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
-                       "current_switch_serial", "neighbor_switch_serial"}
+                       "current_switch_serial", "neighbor_switch_serial",
+                       # controller + inventory serials reach the snapshot under other key names: ACI
+                       # fabric-node 'serial' (parse_aci_fabric_nodes -> snap['aci'].nodes) and the
+                       # power-supply 'ps_serials' list (parse_show_inventory). Without these they leaked
+                       # verbatim under --redact (a bare serial matches no inline secret form). 'ps_serials'
+                       # is a LIST -- _walk recurses each string item with the same key, so each is redacted.
+                       "serial", "ps_serials", "sn"}
 
 # Credential deny-list: conservatively match KNOWN secret-bearing config/output forms
 # (IOS / IOS-XE / NX-OS, case-insensitive) and replace ONLY the secret token with a
