@@ -34,6 +34,7 @@ from cisco_toolkit.parse import (
     parse_junos_chassis_cluster,                                     # multi-vendor: Juniper Junos SRX chassis-cluster HA (the SECOND non-Cisco vendor; '| display json')
     parse_aws_security_groups,                                       # public cloud: AWS security-group exposure (the FIRST cloud-domain axis)
     parse_fortigate_ha_status,                                       # multi-vendor: Fortinet FortiGate HA cluster sync (the THIRD non-Cisco vendor)
+    parse_mroute_entries,                                            # Cisco depth: multicast RPF integrity ((S,G) Null incoming-interface)
     parse_fmc_devices, parse_fmc_ha_pairs, parse_fmc_deployable, parse_fmc_ha_status, parse_fmc_server_version,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
@@ -419,6 +420,21 @@ def build_fortigate(cmd_to_file: Dict[str, str]) -> dict:
     if ha:
         out["ha"] = ha
     return out
+
+
+def build_mroute(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco multicast RPF state for THIS device from 'show ip mroute' -> {n_entries, rpf_failures:[{source,
+    group, oil_count}]}, or {} when no mroute table. rpf_failures lists ONLY the (S,G) source-tree entries with
+    a Null incoming (RPF) interface -- the unambiguous RPF-failure / blackhole case. The benign (*,G) shared-tree
+    Null-IIF entries (locally-joined / well-known / SSM groups -- 36 of them across the [HISTORY-REDACTED] fleet) are deliberately
+    excluded here so the detector cannot cry wolf. {} when no multicast is running -- coverage-honest. Fail-soft."""
+    entries = _safe_parse(parse_mroute_entries, _load_cmd_output(cmd_to_file, "show ip mroute")) or []
+    if not entries:
+        return {}
+    rpf = [{"source": e.get("source"), "group": e.get("group"), "oil_count": e.get("oil_count", 0)}
+           for e in entries
+           if e.get("source") not in ("*", "", None) and str(e.get("iif", "")).strip().lower() == "null"]
+    return {"n_entries": len(entries), "rpf_failures": rpf}
 
 
 def build_bfd(cmd_to_file: Dict[str, str]) -> dict:

@@ -81,7 +81,7 @@ reconciled against the current `_d_*` inventory):
 | **VXLAN-EVPN** | NVE-peer / EVPN-RR / VNI down; `_d_vpc_health` | **FEX** resilience; **vPC consistency-parameters** (split-brain PKL-on-peerlink, Type-1/2 mismatch); **anycast-gateway** consistency |
 | **FHRP** | presence, split-brain, resilience (no-track / no-preempt) | **election** (equal-priority), **tracking-wired** proof (`show track` subscriber), **peer-consistency** (v1/v2, VIP, timers, auth) |
 | **IPv6** | DAD duplicate; OSPFv3/BGP adjacency | **silent-FHS** (IPv6 up at access edge, zero RA-guard/DHCP-guard/ND-inspection — the headline IPv6 gap); non-/64 hygiene |
-| **Multicast** | PIM RP resilience | **RPF integrity** (Null IIF — #1 mcast outage), **MSDP** liveness, **mrouter-aware** querier-gap |
+| **Multicast** | PIM RP resilience; **RPF integrity ✅** ((S,G) Null IIF — #1 mcast outage; coverage-honest, excludes the benign (\*,G)-Null case, proven on [HISTORY-REDACTED]'s 36 such entries) | **MSDP** liveness, **mrouter-aware** querier-gap |
 | **SP/MPLS** | LDP / VPNv4 / L2VPN session down | **RD/RT integrity** (VPNv4/v6/EVPN), **SR SRGB** homogeneity, **TI-LFA** coverage (RFC 9855) |
 | **SD-Access** | LISP session partition; CTS env-data | **fabric roles** (edge/border/CP), **CP/border redundancy**, **fabric MTU 9100**, **SGACL enforcement-counters** |
 | **QoS run-state** | egress queue/policer drops | **marking** (RFC 4594/medianet), **unbounded LLQ** (priority w/o police), **conditional-trust** at phone edge, **PTP run-state** role |

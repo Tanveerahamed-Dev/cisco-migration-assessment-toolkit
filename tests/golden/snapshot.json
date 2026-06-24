@@ -4245,6 +4245,7 @@
    }
   }
  },
+ "mroute": {},
  "lisp": {
   "core1": {
    "sessions": [
