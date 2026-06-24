@@ -226,6 +226,12 @@ def parse_pim_rp_mapping(output: str) -> dict:
             "groups": groups, "ssm_only": ssm_only}
 
 
+# Cisco uptime token: H:M:S, OR the abbreviated week/day/hour/min/sec form (2d00h, 1w2d, 15w4d, 5y1w, 3d01h)
+# Cisco prints for any uptime >= ~24h. Anchoring the PIM-neighbour row to ONLY H:M:S dropped every steady-state
+# neighbour (the normal production-core state), blinding the PIM-running signal.
+_PIM_UPTIME = re.compile(r"^(?:\d+:\d+:\d+|\d+[smhdwy](?:\d+[smhdwy]){0,2})$")
+
+
 def parse_pim_neighbors(output: str) -> List[dict]:
     """'show ip pim neighbor' (IOS/IOS-XE/NX-OS) -> [{neighbor, interface, uptime}].
     [] when none (no adjacencies) or absent. The mode-legend / header / 'VRF' banner
@@ -242,11 +248,13 @@ def parse_pim_neighbors(output: str) -> List[dict]:
                 or "designated router" in low or "dr priority" in low
                 or low.startswith(("b -", "p -", "s -", "g -", "l -", "n -"))):
             continue
-        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+(\d+:\d+:\d+)\b", s)
+        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+(\S+)", s)
         if m and is_valid_iface(m.group(2)):
-            out.append({"neighbor": m.group(1),
-                        "interface": normalize_ifname(m.group(2)),
-                        "uptime": m.group(3)})
+            uptime = m.group(3).split("/")[0]        # IOS combines 'Uptime/Expires' in one token; NX-OS is bare
+            if _PIM_UPTIME.match(uptime):            # H:M:S OR the abbreviated w/d/h form (2d00h / 1w2d / 15w4d)
+                out.append({"neighbor": m.group(1),
+                            "interface": normalize_ifname(m.group(2)),
+                            "uptime": uptime})
     return out
 
 
@@ -954,6 +962,9 @@ def parse_crypto_sessions(output: str) -> list:
     return out
 
 
+_BFD_STATE_WORDS = {"up", "down", "admindown", "init", "fail", "none", "np"}   # BFD session-state vocabulary
+
+
 def parse_bfd_neighbors(output: str) -> list:
     """'show bfd neighbors' (IOS / IOS-XE / NX-OS) -> [{neighbor, local_disc, remote_disc, state, interface}]
     per BFD session. BFD gives a client protocol (OSPF/BGP/EIGRP/HSRP/static) sub-second forwarding-path
@@ -998,13 +1009,24 @@ def parse_bfd_neighbors(output: str) -> list:
             continue
         ld, _, rd = toks[ld_i].partition("/")
         rest = toks[ld_i + 1:]                               # RH/RS [Holdown(mult)] State [Int] [Vrf Type]
-        # State is the column AFTER the Holdown(mult) paren token (IOS-XE / NX-OS); classic IOS has no Holdown
-        # column, so State is one token after RH/RS. Read by TOKEN, never by header char-position.
-        hold_j = next((j for j, t in enumerate(rest) if "(" in t and ")" in t), -1)
-        st_j = hold_j + 1 if hold_j >= 0 else 1
-        if st_j >= len(rest):
+        # State is the column immediately BEFORE the interface -- true for EVERY layout ('... State Int [Vrf Type]').
+        # The interface is the first interface-shaped token in rest. This is immune both to the real IOS/IOS-XE
+        # RH/RS 'N(RH)' form (e.g. '1(RH)', which ALSO contains parens, so the old 'first token with ()' Holdown
+        # heuristic latched onto RH/RS and read State one column early -- a Down session became a number and the
+        # detector silently missed it) and to discriminator-width column drift. Fallbacks for a blank-Int multihop
+        # row: the rightmost BFD state keyword, then the legacy after-Holdown-paren position.
+        iface_j = next((j for j, t in enumerate(rest) if is_valid_iface(t)), -1)
+        if iface_j > 0:
+            st_j = iface_j - 1
+        else:
+            st_j = next((j for j in range(len(rest) - 1, -1, -1)
+                         if rest[j].strip().lower() in _BFD_STATE_WORDS), -1)
+            if st_j < 0:
+                hold_j = next((j for j, t in enumerate(rest) if "(" in t and ")" in t), -1)
+                st_j = hold_j + 1 if hold_j >= 0 else 1
+        if not (0 <= st_j < len(rest)):
             continue
-        iface = next((normalize_ifname(t) for t in rest[st_j + 1:] if is_valid_iface(t)), "")
+        iface = normalize_ifname(rest[iface_j]) if iface_j >= 0 else ""
         out.append({"neighbor": toks[ld_i - 1], "local_disc": ld, "remote_disc": rd,
                     "state": rest[st_j], "interface": iface})
     return out
@@ -1417,7 +1439,9 @@ def parse_arista_bgp_evpn_summary(output: str) -> list:
             pd = pd if isinstance(pd, dict) else {}
             out.append({"vrf": str(vrf), "peer": str(ip),
                         "state": str(pd.get("peerState", "") or "").strip(),
-                        "asn": str(pd.get("peerAsn", "") or "").strip()})
+                        # EOS BGP-summary JSON names the peer AS 'asn' in most builds and 'peerAsn' in some;
+                        # read either (display only -- the detector keys on 'state', so this never gates a finding).
+                        "asn": str(pd.get("asn", "") or pd.get("peerAsn", "") or "").strip()})
     return out
 
 
@@ -1560,13 +1584,19 @@ def parse_mroute_entries(output: str) -> list:
                 entries.append(cur)
             cur = {"source": m.group(1).strip().split("/")[0],
                    "group": m.group(2).strip().split("/")[0].rstrip(","),
-                   "iif": "", "oil_count": 0}
+                   "iif": "", "rpf_nbr": "", "oil_count": 0}
             continue
         if cur is None:
             continue
         mi = re.search(r"Incoming interface:\s*([^\s,]+)", line, re.IGNORECASE)
         if mi:
             cur["iif"] = mi.group(1).strip()
+        # RPF nbr is on the same line ('Incoming interface: Null, RPF nbr: 0.0.0.0'). 0.0.0.0 means the source is
+        # LOCAL (this router originates the stream) -- a benign Null IIF, NOT an RPF failure; the detector uses it.
+        mr = re.search(r"RPF nbr:?\s+([0-9.]+)", line, re.IGNORECASE)
+        if mr:
+            cur["rpf_nbr"] = mr.group(1).strip()
+        if mi or mr:
             continue
         mo = re.search(r"Outgoing interface list:\s*\(count:\s*(\d+)\)", line, re.IGNORECASE)
         if mo:
@@ -1639,17 +1669,30 @@ def parse_fmc_deployable(output: str) -> list:
 
 
 def parse_fmc_ha_status(output: str) -> dict:
-    """FMC GET .../integration/fmchastatuses -> {ha_role, ha_status, sync_status, peer_reachability} -- the
-    FMC's OWN high-availability (the management plane). haStatus Healthy + syncStatus Synced is the good state;
-    Degraded / Split Brain / a not-Synced sync / an unreachable peer is a degraded manager. {} when the FMC is
-    standalone (no fmchastatuses) -- coverage-honest: absence of FMC-HA is not a failure. Tolerant; never raises."""
+    """FMC GET .../integration/fmchastatuses -> {ha_role, ha_status, sync_status, messages} -- the FMC's OWN
+    high-availability (the management plane). Per the FMC REST API the FMCHAStatus object carries
+    ``overallStatus`` (the HEALTHY value is 'GOOD'; DEGRADED / SPLIT_BRAIN / FAILED are bad) + ``syncStatus``
+    ('GOOD' healthy; 'IN_PROGRESS'/'PAUSED' are transient/suspended, 'FAILED' is bad) + ``fmcPrimary`` /
+    ``fmcSecondary`` (each {role: Active|Standby}) + ``haStatusMessages``. ha_status<-overallStatus,
+    sync_status<-syncStatus, ha_role<-the Active side's role (display only). {} when the FMC is standalone (the
+    list endpoint returns no items) -- coverage-honest: absence of FMC-HA is not a failure. Tolerant; never raises.
+
+    (NB: the earlier shape read fmcHARole/haStatus/peerReachability -- keys that do NOT exist on a real FMC; on a
+    healthy GOOD/GOOD pair that yielded sync_status='GOOD' and the detector cried wolf. This reads the real keys.)"""
     items = _fmc_items(output)
-    if not items:
+    if not items or not isinstance(items[0], dict):
         return {}
     a = items[0]
-    return {"ha_role": str(a.get("fmcHARole", "") or ""), "ha_status": str(a.get("haStatus", "") or ""),
+    role = ""
+    for side in ("fmcPrimary", "fmcSecondary"):
+        r = a.get(side)
+        if isinstance(r, dict) and str(r.get("role", "")).strip().lower() == "active":
+            role = str(r.get("role", "") or "")
+            break
+    msgs = a.get("haStatusMessages")
+    return {"ha_role": role, "ha_status": str(a.get("overallStatus", "") or ""),
             "sync_status": str(a.get("syncStatus", "") or ""),
-            "peer_reachability": str(a.get("peerReachability", "") or "")}
+            "messages": [str(m) for m in msgs] if isinstance(msgs, list) else []}
 
 
 def parse_fmc_server_version(output: str) -> dict:

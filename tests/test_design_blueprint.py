@@ -443,7 +443,7 @@ def _arch_fire_snap():
             "devices": [{"name": "FTD-DEAD", "is_connected": False, "health_status": "red", "sw_version": "7.2.5"}],
             "ha_pairs": [{"name": "HA-EDGE", "primary_status": "Active", "secondary_status": "Failed"}],
             "deployable": [{"name": "FTD-DRIFT", "can_be_deployed": True, "up_to_date": False}],
-            "ha_status": {"ha_role": "Active", "ha_status": "Degraded", "sync_status": "Synchronization incomplete", "peer_reachability": "reachable"},
+            "ha_status": {"ha_role": "Active", "ha_status": "DEGRADED", "sync_status": "FAILED"},
             "server_version": {"server_version": "7.0.0 (build 94)"}}},
         "storm_control": {"a1": [{"interface": "Gi0/2", "traffic": "broadcast", "action": "None", "configured": True},
                                  {"interface": "Gi0/5", "traffic": "broadcast", "filter_state": "Blocking", "current": "2m", "configured": True}]},
