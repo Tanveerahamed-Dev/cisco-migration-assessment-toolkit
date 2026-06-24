@@ -186,15 +186,24 @@ def _signals(snap):
         for _v in _as_list((_o or {}).get("nve_vni")):
             if str(_v.get("state", "")).lower() != "up":
                 sig["nve_vni_down"].append(f"{_h} VNI {_v.get('vni', '?')}")
-    # Control-plane policing (CoPP): a class with drops > 0 is actively discarding punted control-plane
-    # traffic (mistuned policer, or a control-plane flood / CPU pressure). Coverage-honest: a class at
-    # drops == 0 is NORMAL (policers are armed but not firing) and must NOT signal.
+    # Control-plane policing (CoPP): a class actively DROPPING punted control-plane traffic. A single CUMULATIVE
+    # lifetime counter cannot distinguish a real flood from the NX-OS default strict profile's NORMAL steady
+    # state -- copp-system-p-class-critical accumulates 'violated' from routine control-plane microbursts over
+    # uptime, and copp-system-p-class-undesirable / the *-default catch-alls DROP known-bad BY DESIGN -- and the
+    # snapshot carries no rate/delta to gate on. So the system default-profile classes (copp-system-*) and the
+    # by-design droppers are NOT fired on (the cry-wolf this guard kills); a USER-defined CoPP class dropping IS
+    # the operator's own policy actively discarding, and IS surfaced. Armed-but-clean (drops == 0) stays silent.
+    _COPP_BYDESIGN = ("undesirable", "l2-default", "l3-default", "class-default", "l2-unpoliced")
     _copp = snap.get("copp")
     copp_hits = []
     for _ch, _cl in (_copp.items() if isinstance(_copp, dict) else []):
         for _c in _as_list(_cl):
-            if _as_int(_c.get("drops")) > 0:
-                copp_hits.append((_ch, str(_c.get("class", "?")), _as_int(_c.get("drops"))))
+            if _as_int(_c.get("drops")) <= 0:
+                continue
+            _clsl = str(_c.get("class", "?")).lower()
+            if _clsl.startswith("copp-system-") or any(_b in _clsl for _b in _COPP_BYDESIGN):
+                continue   # default-profile cumulative / by-design droppers -> not a single-sample finding
+            copp_hits.append((_ch, str(_c.get("class", "?")), _as_int(_c.get("drops"))))
     sig["copp_drop_classes"] = len(copp_hits)
     sig["copp_drop_pkts"] = sum(d for _, _, d in copp_hits)
     sig["copp_drop_hosts"] = sorted({h for h, _, _ in copp_hits})[:12]

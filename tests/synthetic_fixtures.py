@@ -732,25 +732,28 @@ Interface VNI      Multicast-group   State Mode Type [BD/VRF]
 nve1      10010    225.1.1.10        Up    CP   L2 [10]
 nve1      50000    n/a               Down  CP   L3 [vrf-prod]
 """,
-    # CoPP drop state (universality): the 'critical' class is actively dropping (violated 4521 bytes) while
-    # 'normal' is armed but clean (violated 0) -> _d_copp_drops fires on the dropping class only.
+    # CoPP drop state (universality): a USER-defined CoPP class (MGMT-RATE-LIMIT) is actively dropping (violated
+    # 4521) -> _d_copp_drops fires (the operator's own policy discarding). The NX-OS default strict-profile
+    # class-critical shows a CUMULATIVE violated counter (9999, normal microburst accumulation over uptime) and
+    # must stay SILENT -- a single lifetime counter cannot prove a flood, so default-profile copp-system-* classes
+    # are not single-sample findings (the DETEC-01 cry-wolf fix).
     "show policy-map interface control-plane": """\
 Control Plane
 
-  Service-policy input: copp-system-p-policy-strict
+  Service-policy input: copp-policy-custom
 
-    class-map copp-system-p-class-critical (match-any)
+    class-map MGMT-RATE-LIMIT (match-any)
       police cir 36000 kbps bc 250 ms
       module 1:
         conformed 177446058 bytes,
           5-min offered rate 3 bytes/sec
         violated 4521 bytes,
           5-min violate rate 12 bytes/sec
-    class-map copp-system-p-class-normal (match-any)
+    class-map copp-system-p-class-critical (match-any)
       police cir 680 kbps bc 250 ms
       module 1:
         conformed 88231005 bytes,
-        violated 0 bytes,
+        violated 9999 bytes,
 """,
     "show interface status": """\
 --------------------------------------------------------------------------------
