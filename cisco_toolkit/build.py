@@ -31,6 +31,7 @@ from cisco_toolkit.parse import (
     parse_asa_failover, parse_asa_resource_usage,                    # Cisco firewall (ASA / Secure Firewall Threat Defense) HA + resource capacity -- SSH show-text channel
     parse_ise_nodes,                                                 # Cisco ISE (Identity Services Engine) deployment -- JSON controller-REST channel
     parse_arista_mlag, parse_arista_bgp_evpn_summary,                # multi-vendor: Arista EOS MLAG + BGP-EVPN overlay (device-native JSON; first non-Cisco vendor)
+    parse_junos_chassis_cluster,                                     # multi-vendor: Juniper Junos SRX chassis-cluster HA (the SECOND non-Cisco vendor; '| display json')
     parse_fmc_devices, parse_fmc_ha_pairs, parse_fmc_deployable, parse_fmc_ha_status, parse_fmc_server_version,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
     parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
     parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
@@ -375,6 +376,20 @@ def build_arista(cmd_to_file: Dict[str, str]) -> dict:
         out["mlag"] = mlag
     if evpn:
         out["evpn"] = evpn
+    return out
+
+
+def build_juniper(cmd_to_file: Dict[str, str]) -> dict:
+    """Juniper Junos multi-vendor state for THIS device -> {chassis_cluster: [...]}. The SECOND non-Cisco vendor
+    channel, proving the adapter pattern generalises beyond Arista: Junos exposes structured state via 'show ...
+    | display json', captured per-device and normalised by parse_junos_chassis_cluster. SRX chassis cluster is
+    Juniper's stateful-firewall HA -- the analogue of the Cisco firewall 'show failover'. {} when the device is
+    not a chassis cluster / runs no HA (no capture, or 'Chassis cluster is not enabled') -- coverage-honest, so
+    a Cisco/Arista fleet never fires. Fail-soft."""
+    cc = _safe_parse(parse_junos_chassis_cluster, _load_cmd_output(cmd_to_file, "show chassis cluster status")) or []
+    out = {}
+    if cc:
+        out["chassis_cluster"] = cc
     return out
 
 

@@ -302,6 +302,15 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
         "snapshot must publish per-device Arista MLAG state (build_arista -> parse_arista_mlag, the first non-Cisco vendor axis)"
     assert any(d.get("id") == "arista-mlag-domain-degraded" for d in _bp.get("decisions", [])), \
         "engine must assess Arista MLAG: a config-inconsistent / Inactive-port MLAG domain must fire _d_arista_mlag_degraded"
+    # UNIVERSALITY (MULTI-VENDOR -- Juniper Junos, the SECOND non-Cisco vendor): core2 ALSO stands in as a
+    # Juniper SRX chassis cluster ('show chassis cluster status | display json'). RG0's secondary is at PRIORITY
+    # 0 (configured but not ready to accept traffic) -> _d_junos_chassis_cluster_degraded FIRES end-to-end. This
+    # proves the vendor-adapter pattern generalises beyond Arista: a different NOS, a different deeply-nested
+    # JSON dialect, the same coverage-honest contract. Silent on [HISTORY-REDACTED] (the all-Cisco fleet runs no SRX cluster).
+    assert isinstance(snap.get("juniper"), dict) and snap["juniper"].get("core2", {}).get("chassis_cluster"), \
+        "snapshot must publish per-device Juniper chassis-cluster state (build_juniper -> parse_junos_chassis_cluster, the second non-Cisco vendor axis)"
+    assert any(d.get("id") == "junos-chassis-cluster-ha-degraded" for d in _bp.get("decisions", [])), \
+        "engine must assess Juniper SRX HA: a priority-0 redundancy-group node must fire _d_junos_chassis_cluster_degraded"
     # SSOT: the design-driven NRFU checklist is ALSO published (the one source the explorer + webapp read,
     # so neither re-derives the phased acceptance items) and equals a fresh compute over the blueprint.
     from cisco_toolkit.design_advisor import compute_design_nrfu
@@ -322,9 +331,9 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert _covby["aci"]["status"] == "finding" and _covby["aci"]["channel"] == "json", \
         "ACI (json controller channel) must be observed-with-findings on the fixtures"
     assert _covby["sdwan"]["status"] == "finding" and _covby["mpls"]["status"] == "finding"
-    assert _cov["summary"]["by_channel"] == {"ssh": 20, "json": 4}
-    assert _cov["summary"]["n_with_findings"] == 24, \
-        "every one of the 24 architecture classes (incl. the first non-Cisco vendor, Arista MLAG) fires on the synthetic fixtures (full-universe proof)"
+    assert _cov["summary"]["by_channel"] == {"ssh": 21, "json": 4}
+    assert _cov["summary"]["n_with_findings"] == 25, \
+        "every one of the 25 architecture classes (incl. TWO non-Cisco vendors -- Arista + Juniper) fires on the synthetic fixtures (full-universe proof)"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"

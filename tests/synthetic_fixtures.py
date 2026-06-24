@@ -999,6 +999,23 @@ Memory usage:   16400932K total,   7322120K used,   9078812K free
   "mlagPorts": {"Disabled": 0, "Active-partial": 0, "Inactive": 2, "Configured": 0, "Active-full": 46}
 }
 """,
+    # MULTI-VENDOR (Juniper Junos, universality): core2 ALSO stands in as a Juniper SRX chassis cluster exporting
+    # 'show chassis cluster status | display json' -- the SECOND non-Cisco vendor axis, proving the adapter
+    # pattern generalises beyond Arista (a different NOS, a different deeply-nested JSON dialect where every
+    # value is wrapped [{"data": "<v>"}]). RG0's secondary (node1) is at PRIORITY 0 -- it is configured into the
+    # cluster but NOT ready to accept traffic, so RG0 has no working standby (the SRX false-health trap, the
+    # analogue of a Cisco firewall failover pair with a Failed unit) -> _d_junos_chassis_cluster_degraded FIRES.
+    # A healthy primary+secondary pair and a standalone SRX stay SILENT -- proved in tests/test_juniper.py.
+    "show chassis cluster status": """\
+{"chassis-cluster-status": [
+  {"redundancy-group": [
+    {"redundancy-group-id": [{"data": "0"}], "device-stats": [
+      {"device-name": [{"data": "node0"}], "device-priority": [{"data": "100"}], "redundancy-group-status": [{"data": "primary"}], "preempt": [{"data": "no"}], "monitor-failures": [{"data": "None"}]},
+      {"device-name": [{"data": "node1"}], "device-priority": [{"data": "0"}], "redundancy-group-status": [{"data": "secondary"}], "preempt": [{"data": "no"}], "monitor-failures": [{"data": "None"}]}
+    ]}
+  ]}
+]}
+""",
 }
 
 # --------------------------------------------------------------------------- #

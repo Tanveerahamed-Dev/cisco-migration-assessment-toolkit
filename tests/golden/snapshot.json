@@ -4175,6 +4175,26 @@
    }
   }
  },
+ "juniper": {
+  "core2": {
+   "chassis_cluster": [
+    {
+     "rg": "0",
+     "node": "node0",
+     "priority": 100,
+     "status": "primary",
+     "monitor_failures": "None"
+    },
+    {
+     "rg": "0",
+     "node": "node1",
+     "priority": 0,
+     "status": "secondary",
+     "monitor_failures": "None"
+    }
+   ]
+  }
+ },
  "lisp": {
   "core1": {
    "sessions": [
