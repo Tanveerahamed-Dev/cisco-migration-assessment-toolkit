@@ -1208,6 +1208,190 @@ def parse_bgp_ipv6_summary(output: str) -> list:
     return _parse_bgp_summary_rows(output)
 
 
+# --- Cisco firewall (ASA / Secure Firewall Threat Defense) -- SSH show-text channel -----------------------
+def parse_asa_failover(output: str) -> dict:
+    """'show failover' (classic ASA over SSH; FTD runs the identical LINA command from its CLI / via 'system
+    support diagnostic-cli') -> {enabled: bool, units: [{host, role, [group], state}]}. The header line is
+    'Failover On' or 'Failover Off'. TWO layouts are handled: ACTIVE/STANDBY reports the state inline as
+    'This host: <Primary|Secondary> - <State>' / 'Other host: ...'; ACTIVE/ACTIVE reports the role on the
+    'This/Other host' line and then a per-failover-group state as 'Group <n>  State:  <State>' beneath it
+    (each group is Active on one peer in a healthy A/A pair). State is the HA state-machine value: Active /
+    Standby Ready are healthy; Failed / Not Detected / Disabled are SETTLED broken (no working standby);
+    Negotiation / Cold Standby / Sync Config / Sync File System / Bulk Sync / App Sync are TRANSIENT bring-up
+    / resync states. `enabled` reflects On/Off so a standalone firewall (Failover Off) is coverage-honestly
+    'observed, no HA configured' -- NOT a fault. {} when the text is not 'show failover' output (e.g. a
+    switch's '% Invalid input'). Tolerant; never raises."""
+    text = output if isinstance(output, str) else ""
+    on = re.search(r"(?mi)^\s*Failover\s+On\b", text) is not None
+    off = re.search(r"(?mi)^\s*Failover\s+Off\b", text) is not None
+    if not on and not off:
+        return {}
+    units = []
+    cur_host, cur_role = None, ""
+    for line in text.splitlines():
+        # Active/Standby: role + state inline ('This host: Primary - Active'). Active/Active: role only here.
+        m = re.match(r"(?i)\s*(This|Other)\s+host\s*[:\-]\s*(Primary|Secondary)?\s*(?:-\s*([A-Za-z][A-Za-z ]*?))?\s*$", line)
+        if m:
+            cur_host = m.group(1).lower()
+            cur_role = (m.group(2) or "").strip()
+            st = re.sub(r"\s+", " ", m.group(3) or "").strip()
+            if st:
+                units.append({"host": cur_host, "role": cur_role, "state": st})
+            continue
+        # Active/Active: per-failover-group state under the current host ('Group 1   State:   Active').
+        g = re.match(r"(?i)\s*Group\s+(\d+)\s+State\s*:\s*([A-Za-z][A-Za-z ]*?)\s*$", line)
+        if g and cur_host:
+            st = re.sub(r"\s+", " ", g.group(2)).strip()
+            if st:
+                units.append({"host": cur_host, "role": cur_role, "group": g.group(1), "state": st})
+    out = {"enabled": on}
+    if units:
+        out["units"] = units
+    return out
+
+
+def parse_asa_resource_usage(output: str) -> list:
+    """'show resource usage' (ASA / FTD LINA) -> [{resource, current, peak, limit, denied, context}] per row.
+    Columns are Resource | Current | Peak | Limit | Denied | Context, but the Resource name can carry spaces
+    and a bracketed suffix ('Conns [rate]', 'Syslogs [rate]'), so each row is parsed from the RIGHT: the last
+    five fields are Current Peak Limit Denied Context, and everything before them is the resource name. Limit
+    is an int or None ('N/A' / unlimited). A 'Denied' > 0 on a data-plane resource is an OBSERVED refusal (the
+    box hit its Limit and dropped conns/xlates); a Peak near a numeric Limit is approaching exhaustion. [] when
+    not resource-usage output -- the header row is auto-skipped (its trailing fields aren't numeric). Token-
+    based (immune to column drift), tolerant; never raises."""
+    def _int(x):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return None
+    out = []
+    for line in (output.splitlines() if isinstance(output, str) else []):
+        toks = line.split()
+        if len(toks) < 6:
+            continue
+        cur, peak, denied = _int(toks[-5]), _int(toks[-4]), _int(toks[-2])
+        if cur is None or peak is None or denied is None:     # header / non-data row
+            continue
+        out.append({"resource": " ".join(toks[:-5]).strip(), "current": cur, "peak": peak,
+                    "limit": _int(toks[-3]), "denied": denied, "context": toks[-1]})
+    return out
+
+
+# --- Cisco ISE (Identity Services Engine) -- JSON controller-REST channel -------------------------------
+def parse_ise_nodes(output: str) -> list:
+    """ISE Open API 'GET /api/v1/deployment/node' (ISE 3.1+, HTTPS/443, Basic auth) -> [{hostname, fqdn,
+    roles, services, node_status}] per deployment node. The list call WRAPS the rows as {"response":[...],
+    "version":...} and the single-node call wraps ONE dict -- both are unwrapped here (a bare-array
+    assumption would silently parse zero nodes). roles[] carries PrimaryAdmin / SecondaryAdmin /
+    PrimaryMonitoring / SecondaryMonitoring; services[] carries Session (= Policy Service / PSN), Profiler,
+    DeviceAdmin, pxGrid, SXP, PassiveID; nodeStatus is the node's REACHABILITY to the Primary Admin node
+    ('Connected' = healthy) -- it is NOT a replication verdict (the REST API does not expose replication
+    state). [] when no ISE export is present / non-JSON. Tolerant; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return []
+    resp = obj.get("response") if isinstance(obj, dict) else None
+    rows = resp if isinstance(resp, list) else ([resp] if isinstance(resp, dict) else [])
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        roles, svcs = r.get("roles"), r.get("services")
+        out.append({"hostname": str(r.get("hostname") or r.get("fqdn") or ""),
+                    "fqdn": str(r.get("fqdn", "") or ""),
+                    "roles": [str(x) for x in roles if x is not None] if isinstance(roles, list) else [],
+                    "services": [str(x) for x in svcs if x is not None] if isinstance(svcs, list) else [],
+                    "node_status": str(r.get("nodeStatus", "") or "")})
+    return out
+
+
+# --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
+def _fmc_items(output: str) -> list:
+    """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object
+    endpoints (fmchastatuses, serverversion) return the object directly. Return the list of dict rows for a
+    list response, or [the object] for a single-object response. Tolerant: [] on empty / non-JSON / non-dict;
+    never raises. (The JSON-ingestion front door for FMC -- analogous to _aci_imdata / _sdwan_data.)"""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+    items = obj.get("items")
+    if isinstance(items, list):
+        return [x for x in items if isinstance(x, dict)]
+    return [obj]                                          # single-object endpoint (no 'items' wrapper)
+
+
+def parse_fmc_devices(output: str) -> list:
+    """FMC GET .../devices/devicerecords?expanded=true -> [{name, host_name, model, sw_version, is_connected,
+    health_status, deployment_status}] per managed FTD. isConnected is the FTD<->FMC management channel (bool);
+    healthStatus is green|yellow|red|black|blue (red = active health alert; black/blue = no-data/unknown,
+    NOT a failure). [] when no FMC export. Tolerant; never raises."""
+    out = []
+    for d in _fmc_items(output):
+        out.append({"name": str(d.get("name") or d.get("hostName") or ""),
+                    "host_name": str(d.get("hostName", "") or ""), "model": str(d.get("model", "") or ""),
+                    "sw_version": str(d.get("sw_version", "") or ""),
+                    "is_connected": d.get("isConnected") if isinstance(d.get("isConnected"), bool) else None,
+                    "health_status": str(d.get("healthStatus", "") or "").lower(),
+                    "deployment_status": str(d.get("deploymentStatus", "") or "")})
+    return out
+
+
+def parse_fmc_ha_pairs(output: str) -> list:
+    """FMC GET .../devicehapairs/ftddevicehapairs?expanded=true -> [{name, primary_status, secondary_status}]
+    per FTD HA pair. currentStatus (nested in primaryStatus/secondaryStatus) is Active|Standby (healthy) |
+    Failed|Not Detected (broken) | Disabled (INTENTIONAL operator-suspended HA -- not a failure) | Negotiation
+    (transient). [] when no HA pairs / no FMC export. Tolerant; never raises."""
+    out = []
+    for h in _fmc_items(output):
+        ps = h.get("primaryStatus") if isinstance(h.get("primaryStatus"), dict) else {}
+        ss = h.get("secondaryStatus") if isinstance(h.get("secondaryStatus"), dict) else {}
+        out.append({"name": str(h.get("name", "") or ""),
+                    "primary_status": str(ps.get("currentStatus", "") or ""),
+                    "secondary_status": str(ss.get("currentStatus", "") or "")})
+    return out
+
+
+def parse_fmc_deployable(output: str) -> list:
+    """FMC GET .../deployment/deployabledevices?expanded=true -> [{name, can_be_deployed, up_to_date}] per
+    device with STAGED, undeployed config changes (the running config != the FMC's intended config). An EMPTY
+    list ('items':[]) means every device is fully deployed/in-sync. [] when no FMC export. Tolerant; never raises."""
+    out = []
+    for d in _fmc_items(output):
+        dev = d.get("device") if isinstance(d.get("device"), dict) else {}
+        out.append({"name": str(d.get("name") or dev.get("name") or ""),
+                    "can_be_deployed": d.get("canBeDeployed") if isinstance(d.get("canBeDeployed"), bool) else None,
+                    "up_to_date": d.get("upToDate") if isinstance(d.get("upToDate"), bool) else None})
+    return out
+
+
+def parse_fmc_ha_status(output: str) -> dict:
+    """FMC GET .../integration/fmchastatuses -> {ha_role, ha_status, sync_status, peer_reachability} -- the
+    FMC's OWN high-availability (the management plane). haStatus Healthy + syncStatus Synced is the good state;
+    Degraded / Split Brain / a not-Synced sync / an unreachable peer is a degraded manager. {} when the FMC is
+    standalone (no fmchastatuses) -- coverage-honest: absence of FMC-HA is not a failure. Tolerant; never raises."""
+    items = _fmc_items(output)
+    if not items:
+        return {}
+    a = items[0]
+    return {"ha_role": str(a.get("fmcHARole", "") or ""), "ha_status": str(a.get("haStatus", "") or ""),
+            "sync_status": str(a.get("syncStatus", "") or ""),
+            "peer_reachability": str(a.get("peerReachability", "") or "")}
+
+
+def parse_fmc_server_version(output: str) -> dict:
+    """FMC GET /api/fmc_platform/v1/info/serverversion -> {server_version} (e.g. '7.4.1 (build 172)'). Cisco
+    requires the FMC to run a version >= every managed FTD, so reconciling serverVersion against the device
+    sw_versions catches the FMC-older-than-a-managed-device misconfiguration. {} when no FMC export. Tolerant."""
+    items = _fmc_items(output)
+    if not items:
+        return {}
+    return {"server_version": str(items[0].get("serverVersion", "") or "")}
+
+
 def _aci_imdata(output: str, cls: str) -> list:
     """Extract the list of `attributes` dicts for one MO class from an APIC export -- the JSON that
     'moquery -c <cls> -o json' (or the REST GET /api/class/<cls>.json) returns: {totalCount, imdata:[{<cls>:

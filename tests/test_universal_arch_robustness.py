@@ -36,6 +36,9 @@ _PARSERS = [
     parse.parse_crypto_sessions, parse.parse_bfd_neighbors, parse.parse_ipv6_interface_addrs,
     parse.parse_ipv6_route_summary, parse.parse_ospfv3_neighbors, parse.parse_bgp_ipv6_summary,
     parse.parse_mpls_ldp_neighbors, parse.parse_mpls_l2vpn_vc, parse.parse_bgp_vpnv4_summary,
+    parse.parse_asa_failover, parse.parse_asa_resource_usage, parse.parse_ise_nodes,
+    parse.parse_fmc_devices, parse.parse_fmc_ha_pairs, parse.parse_fmc_deployable, parse.parse_fmc_ha_status,
+    parse.parse_fmc_server_version,
 ]
 
 
@@ -76,6 +79,10 @@ _DETECTORS = [
     da._d_dmvpn_tunnel_health, da._d_crypto_session_health, da._d_bfd_session_health,
     da._d_ipv6_dad_duplicate, da._d_ipv6_routing_adjacency, da._d_mpls_ldp_health,
     da._d_mpls_l3vpn_health, da._d_mpls_l2vpn_health,
+    da._d_firewall_ha_degraded, da._d_firewall_resource_exhaustion,
+    da._d_ise_node_unreachable, da._d_ise_psn_no_redundancy, da._d_ise_admin_monitoring_redundancy,
+    da._d_ftd_ha_degraded, da._d_fmc_device_disconnected, da._d_fmc_deployment_pending, da._d_fmc_manager_ha_degraded,
+    da._d_fmc_version_inversion,
 ]
 
 
@@ -94,9 +101,20 @@ def test_coverage_and_move_groups_survive_malformed():
     """The coverage-honesty SSOT and the ACI move-group plan must tolerate malformed/empty input fail-soft."""
     for snap in _MALFORMED_SNAPS + [{"design_blueprint": "x"}, {"design_blueprint": {"decisions": "x"}}]:
         cov = da.compute_architecture_coverage(snap)
-        assert cov["summary"]["n_classes"] == 20 and isinstance(cov["classes"], list)
+        assert cov["summary"]["n_classes"] == 23 and isinstance(cov["classes"], list)
         mg = da._aci_move_groups(snap)
         assert isinstance(mg, dict)          # {} or a valid plan, never a raise
+
+
+def test_coverage_truthy_nondict_axis_is_not_observed_not_clean():
+    """Coverage-honesty: a corrupted axis that is truthy-but-not-a-dict (a stray list/str/int) must read
+    'not-observed', NEVER 'clean' ('clean' = assessed-and-fine) -- so corruption/absence cannot silently
+    present as healthy. The real build path always emits a dict or omits the key; this guards the corrupted
+    -snapshot path (the 'not observed never becomes healthy' invariant, enforced for malformed input too)."""
+    for bad in (["host"], "x", 42):
+        cov = da.compute_architecture_coverage({"firewall": bad})
+        fw = [c for c in cov["classes"] if c["key"] == "firewall"][0]
+        assert fw["observed"] is False and fw["status"] == "not-observed", (bad, fw)
 
 
 def test_rest_collect_fail_soft_on_broken_transport(monkeypatch, tmp_path):

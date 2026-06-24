@@ -91,6 +91,22 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # ONE "N collected of M inventoried" instead of mislabelling inventory as assessed. (SSOT-device-deliv-06)
     assert _scale.get("n_collected") == ((snap.get("collection_completeness") or {}).get("summary") or {}).get("complete"), \
         "scale.n_collected must equal collection_completeness.summary.complete"
+    # SSOT (unified): every published canonical fact in the REAL assembled snapshot must still
+    # reconcile to its raw-evidence derivation (scale/posture/lifecycle bands/decision count). This
+    # one invariant subsumes the spot-checks above and extends them to the facts they miss — the
+    # gap that let the n_past_eos/n_past_ldos conflation slip surface-by-surface. See ssot.reconcile.
+    from cisco_toolkit import ssot
+    assert ssot.reconcile(snap) == [], f"engine published SSOT-inconsistent facts: {ssot.reconcile(snap)}"
+    # The runtime self-check stamped at assembly must agree: a healthy run raises no integrity alarm
+    # (audit -> None) and therefore leaves no assessment_integrity field (cf. test_pipeline_failopen).
+    assert ssot.audit(snap) is None, f"healthy run raised a false SSOT integrity alarm: {ssot.audit(snap)}"
+    assert "assessment_integrity" not in snap, "a clean SSOT run must not stamp assessment_integrity"
+    # The positive self-verification badge the dashboards render must be published and pass on a
+    # healthy run (executive_brief.ssot, from ssot.summary; golden-excluded with executive_brief).
+    _ssot_badge = (snap.get("executive_brief") or {}).get("ssot")
+    assert isinstance(_ssot_badge, dict) and _ssot_badge.get("verified") is True, \
+        f"assembly must publish a passing executive_brief.ssot self-verification badge, got {_ssot_badge}"
+    assert _ssot_badge.get("n_facts", 0) >= 5, "the badge must report the published canonical-fact count"
     # SSOT (workbook headline): the Executive Summary 'Scope / scale' block must STATE the canonical VLAN
     # count, never leave it blank. The brief's scale gets n_vlans injected BEFORE this sheet is written (the
     # snapshot's n_vlans is assembled later), so without that injection the workbook would miss 'VLANs in use'.
@@ -296,9 +312,9 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     assert _covby["aci"]["status"] == "finding" and _covby["aci"]["channel"] == "json", \
         "ACI (json controller channel) must be observed-with-findings on the fixtures"
     assert _covby["sdwan"]["status"] == "finding" and _covby["mpls"]["status"] == "finding"
-    assert _cov["summary"]["by_channel"] == {"ssh": 18, "json": 2}
-    assert _cov["summary"]["n_with_findings"] == 20, \
-        "every one of the 20 architecture classes fires on the synthetic fixtures (full-universe proof)"
+    assert _cov["summary"]["by_channel"] == {"ssh": 19, "json": 4}
+    assert _cov["summary"]["n_with_findings"] == 23, \
+        "every one of the 23 architecture classes fires on the synthetic fixtures (full-universe proof)"
 
     # ---- explorer (snapshot embedded into the single-file viewer) ----
     explorer = os.path.splitext(str(out_xlsx))[0] + "_explorer.html"

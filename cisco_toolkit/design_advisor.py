@@ -122,6 +122,24 @@ def _broken_fhrp_vlans(snap):
     return out
 
 
+def _version_tuple(s):
+    """Best-effort dotted-version -> int tuple for comparison ('7.4.1 (build 172)' -> (7,4,1); '7.2.5' ->
+    (7,2,5)); None when no leading numeric version is present. Dependency-free (no regex)."""
+    head = str(s or "").strip().split()[0] if str(s or "").strip() else ""
+    out = []
+    for part in head.split(".")[:4]:
+        num = ""
+        for ch in part:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        if not num:
+            break
+        out.append(int(num))
+    return tuple(out) if out else None
+
+
 def _signals(snap):
     sig = {}
     bad_fhrp = _no_fhrp_vlans(snap)
@@ -372,6 +390,156 @@ def _signals(snap):
     sig["sdwan_unreachable"] = _sdwan_unreach
     sig["sdwan_omp_down"] = _sdwan_omp
     sig["sdwan_devices"] = sorted({x.split()[0] for x in (_sdwan_cc + _sdwan_unreach + _sdwan_omp)})[:12]
+    # Cisco firewall (ASA / Secure Firewall Threat Defense) HA/failover health (snap['firewall'] from
+    # build_firewall; SSH show-text channel). FIRING STATE: failover is ENABLED (Failover On) yet a unit rests
+    # in a SETTLED broken state -- Failed, Disabled, or the peer Not Detected -- so the HA pair has no working
+    # standby and a firewall in the data path is a single point of failure (the firewall analogue of the
+    # config-present-but-operationally-broken false-health trap: 'failover' in the running-config is NOT proof
+    # of redundancy). Coverage-honest & non-cry-wolf: a standalone firewall (Failover Off -> enabled False)
+    # NEVER fires (absence of HA is not broken HA); a healthy Active+Standby-Ready pair stays silent; and every
+    # TRANSIENT state (Negotiation, Cold Standby, Sync Config, Sync File System, Bulk Sync, App Sync) is
+    # EXCLUDED so a pair mid-bring-up / mid-resync is not flagged.
+    _FW_HA_BROKEN = {"failed", "not detected", "disabled"}
+    _fw = _as_dict(snap.get("firewall"))
+    _fw_ha = []
+    for _fh, _ff in sorted(_fw.items()):
+        _fo = _as_dict(_as_dict(_ff).get("failover"))
+        if not _fo.get("enabled"):
+            continue
+        for _u in _as_list(_fo.get("units")):
+            _u = _as_dict(_u)
+            if str(_u.get("state", "")).strip().lower() in _FW_HA_BROKEN:
+                _who = "this unit" if _u.get("host") == "this" else "peer"
+                _parts = [f"{_fh}:", _who]
+                if _u.get("group"):                          # Active/Active: name the failover group
+                    _parts.append(f"group {_u.get('group')}")
+                if str(_u.get("role", "")).strip():
+                    _parts.append(str(_u.get("role")).strip())
+                _parts.append(str(_u.get("state", "")))
+                _fw_ha.append(" ".join(_parts))
+    sig["firewall_ha_degraded"] = _fw_ha
+    sig["firewall_ha_devices"] = sorted({x.split(':')[0] for x in _fw_ha})[:12]
+    # Cisco firewall (ASA/FTD) resource/capacity exhaustion (snap['firewall'][h].resource_usage from
+    # build_firewall / 'show resource usage'). The capacity-sizing axis: a DATA-PLANE resource (Conns / Xlates
+    # / Hosts) that either (a) has Denied > 0 -- an OBSERVED refusal: the box hit its Limit and dropped real
+    # traffic at peak -- or (b) peaked at >= 90% of a NUMERIC Limit (approaching exhaustion). The administrative
+    # rows (SSH/Telnet/ASDM/HTTP -- Denied = benign failed-login/session-cap counters) and the '[rate]' rows
+    # (a Denied there is intentional rate-limiting) are EXCLUDED so the signal cannot cry wolf. Coverage-honest:
+    # no resource-usage export -> nothing; Denied 0 with Peak well under (or an N/A) Limit -> silent.
+    _FW_ADMIN_RES = ("ssh", "telnet", "asdm", "http", "console", "management", "webvpn", "anyconnect")
+    _fw_res = []
+    for _fh, _ff in sorted(_fw.items()):
+        for _r in _as_list(_as_dict(_ff).get("resource_usage")):
+            _r = _as_dict(_r)
+            _name = str(_r.get("resource", "")).strip()
+            _nl = _name.lower()
+            if not _name or "[rate]" in _nl or any(_a in _nl for _a in _FW_ADMIN_RES):
+                continue
+            _den, _peak, _lim = _r.get("denied"), _r.get("peak"), _r.get("limit")
+            if isinstance(_den, int) and _den > 0:
+                _fw_res.append(f"{_fh}: {_name} denied {_den}" + (f" (Limit {_lim})" if isinstance(_lim, int) else ""))
+            elif isinstance(_lim, int) and _lim > 0 and isinstance(_peak, int) and _peak >= 0.9 * _lim:
+                _fw_res.append(f"{_fh}: {_name} peak {_peak}/{_lim} ({int(round(100.0 * _peak / _lim))}%)")
+    sig["firewall_resource_exhausted"] = _fw_res
+    sig["firewall_resource_devices"] = sorted({x.split(':')[0] for x in _fw_res})[:12]
+    # Cisco ISE (Identity Services Engine) deployment health (snap['ise'] from build_ise; JSON controller-REST
+    # channel, like ACI/vManage). ISE is the AuthC/AuthZ + TrustSec SGT/SGACL control plane the access layer
+    # depends on, so its deployment gaps are cutover-blocking yet invisible to the switch-side view. Three
+    # PRESENT-state, coverage-honest, STANDALONE-AWARE signals: (a) a node whose nodeStatus is not 'Connected'
+    # (not reachable/healthy to the PAN -- a REACHABILITY signal; transient in-progress/registering states are
+    # EXCLUDED, and it is NOT a replication verdict -- the REST API does not expose replication state); (b)
+    # exactly ONE Policy Service node (services carries 'Session') in a MULTI-node deployment (auth SPOF); (c)
+    # no SecondaryAdmin (single PAN) or no SecondaryMonitoring (single MnT) in a MULTI-node deployment, and
+    # only when the matching Primary IS observed (so the missing Secondary is real, not un-collected). The
+    # >=2-node gate excludes a Cisco-supported single-node STANDALONE (all personas on one node, BY DESIGN
+    # single-PSN/PAN/MnT) so it is never cry-wolfed. Coverage-honest: no ISE export -> {} -> every signal silent.
+    _ISE_TRANSIENT = {"", "in progress", "in-progress", "inprogress", "in_progress", "registering",
+                      "syncing", "sync in progress", "pending", "running", "initializing", "in_sync_progress"}
+    _ise = _as_dict(snap.get("ise"))
+    _ise_down, _ise_psn1, _ise_pan1, _ise_mnt1 = [], [], [], []
+    for _ih, _if in sorted(_ise.items()):
+        _nodes = _as_list(_as_dict(_if).get("nodes"))
+        _npsn = 0
+        _has_pan = _has_mnt = _sec_admin = _sec_mnt = False
+        for _nd in _nodes:
+            _nd = _as_dict(_nd)
+            _st = str(_nd.get("node_status") or "").strip().lower()
+            if _st and _st != "connected" and _st not in _ISE_TRANSIENT:
+                _ise_down.append(f"{_nd.get('fqdn') or _nd.get('hostname') or '?'} ({_nd.get('node_status')})")
+            _roles = [str(_x).strip().lower() for _x in _as_list(_nd.get("roles"))]
+            _svcs = [str(_x).strip().lower() for _x in _as_list(_nd.get("services"))]
+            if "session" in _svcs:
+                _npsn += 1
+            if "primaryadmin" in _roles:
+                _has_pan = True
+            if "secondaryadmin" in _roles:
+                _sec_admin = True
+            if "primarymonitoring" in _roles:
+                _has_mnt = True
+            if "secondarymonitoring" in _roles:
+                _sec_mnt = True
+        if len(_nodes) >= 2 and _npsn == 1:                  # multi-node gate excludes the standalone topology
+            _ise_psn1.append(f"{_ih} ({len(_nodes)} nodes, 1 Policy Service node)")
+        if len(_nodes) >= 2 and _has_pan and not _sec_admin:
+            _ise_pan1.append(_ih)
+        if len(_nodes) >= 2 and _has_mnt and not _sec_mnt:
+            _ise_mnt1.append(_ih)
+    sig["ise_node_unreachable"] = _ise_down
+    sig["ise_single_psn"] = _ise_psn1
+    sig["ise_single_pan"] = _ise_pan1
+    sig["ise_single_mnt"] = _ise_mnt1
+    sig["ise_devices"] = sorted(_ise.keys())[:12]
+    # Cisco Secure Firewall Management Center (FMC) controller health (snap['fmc'] from build_fmc; JSON
+    # controller-REST channel, like ACI/vManage/ISE). For an FMC-managed FTD fleet the controller is the source
+    # of truth (you may have no device CLI). Four present-state, coverage-honest signals: (a) a device with
+    # isConnected==False (lost its FMC management channel) or healthStatus=='red' (active health alert) -- the
+    # no-data 'black'/'blue' and the warning 'yellow' are NOT failures; (b) an FTD HA pair with a node Failed /
+    # Not Detected, or split (both Active or both Standby) -- 'Disabled' is EXCLUDED (operator-suspended HA =
+    # intentional, the headline non-cry-wolf rule); (c) a device with STAGED undeployed changes (deployabledevices
+    # non-empty -- running config != intended, a cutover-hygiene risk); (d) the FMC's OWN HA Degraded / Split
+    # Brain / not-Synced. Coverage-honest: no FMC export -> nothing; a standalone FTD (no HA entry) / standalone
+    # FMC (no fmchastatuses) is silent (absence of HA is not a failure).
+    _FTD_HA_BROKEN = {"failed", "not detected"}          # 'disabled' EXCLUDED -- intentional suspend, not a fault
+    _fmc = _as_dict(snap.get("fmc"))
+    _fmc_disc, _ftd_ha, _fmc_deploy, _fmc_mgr_ha, _fmc_ver_inv = [], [], [], [], []
+    for _mh, _mf in sorted(_fmc.items()):
+        _mf = _as_dict(_mf)
+        for _d in _as_list(_mf.get("devices")):
+            _d = _as_dict(_d)
+            if _d.get("is_connected") is False or str(_d.get("health_status", "")).strip().lower() == "red":
+                _why = "lost mgmt channel" if _d.get("is_connected") is False else "health red"
+                _fmc_disc.append(f"{_mh}: {_d.get('name', '?')} ({_why})")
+        for _h in _as_list(_mf.get("ha_pairs")):
+            _h = _as_dict(_h)
+            _ps = str(_h.get("primary_status", "")).strip()
+            _ss = str(_h.get("secondary_status", "")).strip()
+            _broken = _ps.lower() in _FTD_HA_BROKEN or _ss.lower() in _FTD_HA_BROKEN
+            _split = bool(_ps) and _ps.lower() == _ss.lower() and _ps.lower() in ("active", "standby")
+            if _broken or _split:
+                _ftd_ha.append(f"{_mh}: {_h.get('name', '?')} (primary {_ps or '?'} / secondary {_ss or '?'})")
+        _dep = _as_list(_mf.get("deployable"))
+        if _dep:
+            _fmc_deploy.append(f"{_mh}: {len(_dep)} device(s) with staged undeployed changes")
+        _has = _as_dict(_mf.get("ha_status"))
+        if _has:
+            _hs = str(_has.get("ha_status", "")).strip().lower()
+            _sy = str(_has.get("sync_status", "")).strip().lower()
+            _pr = str(_has.get("peer_reachability", "")).strip().lower()
+            if _hs in ("degraded", "split brain") or (_sy and _sy not in ("synced", "in sync")) or _pr in ("unreachable", "not reachable"):
+                _fmc_mgr_ha.append(f"{_mh}: FMC HA {_has.get('ha_status', '?')} (sync {_has.get('sync_status', '?')})")
+        _sv = _version_tuple(_as_dict(_mf.get("server_version")).get("server_version"))
+        if _sv:                                          # Cisco mandates FMC >= every managed FTD
+            for _d in _as_list(_mf.get("devices")):
+                _dv = _version_tuple(_as_dict(_d).get("sw_version"))
+                if _dv and _dv > _sv:
+                    _svr = _as_dict(_mf.get("server_version")).get("server_version")
+                    _fmc_ver_inv.append(f"{_mh}: FMC {_svr} < FTD {_as_dict(_d).get('name', '?')} {_as_dict(_d).get('sw_version')}")
+    sig["fmc_device_disconnected"] = _fmc_disc
+    sig["ftd_ha_degraded"] = _ftd_ha
+    sig["fmc_deployment_pending"] = _fmc_deploy
+    sig["fmc_manager_ha_degraded"] = _fmc_mgr_ha
+    sig["fmc_version_inversion"] = _fmc_ver_inv
+    sig["fmc_devices"] = sorted(_fmc.keys())[:12]
     # PIM-SM control-plane resilience (snap['pim'] from build_pim). FIRING STATE: PIM is RUNNING here (a live
     # neighbor), rp-mapping WAS collected, yet ZERO RP is learned and the domain is not SSM-only -- ASM (*,G)
     # shared trees cannot form (RFC 7761). Coverage-honest: config-only/not-running, SSM-only, and
@@ -542,6 +710,12 @@ def _signals(snap):
             if h and h not in bh:
                 bh.append(h)
     sig["bridge_hosts"] = bh
+    # blast-radius magnitude per cut-edge (link_centrality[].pairs_cut = node-pairs disconnected when the
+    # edge is lost) — surface the WORST so the SPOF decision can prioritise the catastrophic cut-edges
+    # over the merely-redundancy-less ones. Previously computed + shown in deliverables but unread here.
+    _pc = [_as_int(x.get("pairs_cut")) or 0 for x in bridges]
+    sig["worst_pairs_cut"] = max(_pc) if _pc else 0
+    sig["bridges_high_blast"] = sum(1 for v in _pc if v >= 20)
 
     fi = _as_list(snap.get("failure_impact"))
     sig["nobackup_high"] = sum(1 for x in fi if x.get("severity") == "High" and not _as_int(x.get("backup")))
@@ -950,6 +1124,30 @@ def _signals(snap):
                 if sw:
                     wh.add(sw)
     sig["l2_wide_hosts"] = sorted(wh)[:12]
+
+    # active L2 instability (collected-but-unread: syslog_intelligence mac-flap detections). A MAC seen
+    # flapping between two ports is a LIVE loop / mis-cabled-or-dual-homed host / unidirectional link — an
+    # unstable baseline + a storm risk to carry into the target. No prior design detector read syslog.
+    _si = _as_dict(snap.get("syslog_intelligence"))
+    _flap_hosts = sorted({d.get("host") for d in _as_list(_si.get("detections"))
+                          if isinstance(d, dict) and d.get("kind") == "mac-flap" and d.get("host")})
+    sig["mac_flap_n"] = len(_flap_hosts)
+    sig["mac_flap_hosts"] = _flap_hosts[:12]
+
+    # static default-route cutover dependency (collected-but-unread: snap['routes']). A host whose
+    # default route is STATIC (source s / s*) has no dynamic reconvergence — at cutover, if the next-hop
+    # gateway changes, the static 0.0.0.0/0 still points at the old hop and black-holes until re-pointed.
+    _static_def = []
+    for _h, _rows in _as_dict(snap.get("routes")).items():
+        for _r in _as_list(_rows):
+            if not isinstance(_r, dict) or not str(_r.get("prefix") or "").startswith("0.0.0.0"):
+                continue
+            if str(_r.get("source") or "").strip().lower().startswith("s") and (_r.get("next_hop") or "").strip():
+                _static_def.append(_h)
+            break          # only the default-route row matters per host
+    _static_def = sorted(set(_static_def))
+    sig["static_default_n"] = len(_static_def)
+    sig["static_default_hosts"] = _static_def[:12]
 
     return sig
 
@@ -1609,6 +1807,286 @@ def _d_sdwan_omp_peer_down(snap, sig):
         devices=sig.get("sdwan_devices") or [])
 
 
+def _d_firewall_ha_degraded(snap, sig):
+    """Cisco firewall (ASA / Secure Firewall Threat Defense) HA/failover health (parse_asa_failover ->
+    snap['firewall'].failover). FIRES when failover is ENABLED yet a unit rests in a settled broken state --
+    Failed, Disabled, or the peer Not Detected -- so the HA pair has no working standby and a firewall in the
+    data path is (or is about to become) a single point of failure: a failover during the migration window
+    would drop every stateful flow through it. This is the firewall analogue of the config-present-but-
+    operationally-broken false-health trap -- 'failover' in the running-config is NOT evidence of redundancy;
+    only the operational state is. Coverage-honest: a standalone firewall (Failover Off) and a healthy
+    Active+Standby-Ready pair stay silent, and every transient state (Negotiation / Cold Standby / Sync* /
+    Bulk Sync / App Sync) is excluded so a pair mid-bring-up does not cry wolf. None when no firewall observed."""
+    ha = sig.get("firewall_ha_degraded") or []
+    if not ha:
+        return None
+    return _decision(
+        "firewall-ha-failover-degraded",
+        f"{len(ha)} Cisco firewall(s) have failover ENABLED but a unit in a broken state "
+        f"(e.g. {', '.join(ha[:5])}). A firewall whose HA pair is Failed, has a unit Disabled, or cannot see "
+        "its peer (Not Detected) has no working standby -- it is a single point of failure in the data path, "
+        "and a failover during the maintenance window would drop every stateful connection through it. "
+        "'failover' present in the running-config is NOT evidence of redundancy; only the operational state "
+        "is. Confirm the failover link, unit/interface health and config sync, and restore the standby to "
+        "Standby Ready before the firewall is on the cutover path.",
+        len(ha), ["availability"],
+        ["firewall.failover.units[].state (parse_asa_failover / show failover)"],
+        priority="High",
+        driver="Stateful-firewall HA: an enabled failover pair with a unit Failed/Disabled or the peer Not "
+               "Detected has no standby -- a single point of failure in the data path, regardless of what the "
+               "running-config claims.",
+        devices=sig.get("firewall_ha_devices") or [])
+
+
+def _d_firewall_resource_exhaustion(snap, sig):
+    """Cisco firewall (ASA / Secure Firewall Threat Defense) resource/capacity exhaustion (parse_asa_resource_
+    usage -> snap['firewall'].resource_usage). FIRES when a DATA-PLANE resource (Conns / Xlates / Hosts) either
+    has Denied > 0 -- an OBSERVED refusal: the box hit its configured Limit and dropped real connections /
+    translations at peak -- or peaked at >= 90% of a numeric Limit (approaching exhaustion). This is the
+    capacity-sizing signal for the migration: a firewall already dropping (or nearly at) its limit today must
+    be sized UP on the replacement, or it inherits and worsens the drops post-consolidation. Coverage-honest &
+    non-cry-wolf: the administrative rows (SSH/Telnet/ASDM/HTTP -- Denied = benign failed-login/session-cap
+    counters) and the '[rate]' rows (a Denied there is intentional rate-limiting) are EXCLUDED; a resource with
+    Denied 0 and Peak well under a numeric Limit (or an N/A/unlimited Limit) stays silent; no resource-usage
+    export never fires. None when the axis is absent/clean."""
+    r = sig.get("firewall_resource_exhausted") or []
+    if not r:
+        return None
+    return _decision(
+        "firewall-resource-exhaustion",
+        f"{len(r)} firewall resource(s) are exhausted or near their configured limit (e.g. {', '.join(r[:5])}). "
+        "A data-plane resource with Denied > 0 means the firewall hit its Limit and DROPPED real connections / "
+        "translations at peak; a Peak at >= 90% of the Limit means it is one busy interval from dropping. This "
+        "is a hard sizing signal for the migration: the replacement (or consolidated) firewall must be sized "
+        "with headroom above the OBSERVED peak, and any per-context / per-class connection limit re-evaluated, "
+        "or the cutover inherits (and worsens) the drops. Confirm against 'show resource usage' / 'show "
+        "perfmon' at peak before fixing the replacement's capacity.",
+        len(r), ["scalability", "availability"],
+        ["firewall.resource_usage[].denied / .peak vs .limit (parse_asa_resource_usage / show resource usage)"],
+        priority="High",
+        driver="Stateful-firewall capacity: a resource the box is denying (or peaking near its limit) is "
+               "dropping or about to drop production traffic -- the replacement must be sized above the "
+               "observed peak, not the current average.",
+        devices=sig.get("firewall_resource_devices") or [])
+
+
+def _d_ise_node_unreachable(snap, sig):
+    """Cisco ISE: a deployment node whose Open API nodeStatus is not 'Connected' (parse_ise_nodes ->
+    snap['ise'].nodes). nodeStatus is each node's reachability/health to the Primary Admin node; a node not
+    Connected is one the PAN has lost contact with -- it cannot serve RADIUS/TACACS+ AAA or policy and may be
+    partitioned from the deployment. Coverage-honest & non-cry-wolf: a node reporting 'Connected' is healthy;
+    a transient in-progress / registering / syncing state (a node mid-bring-up) is EXCLUDED; and a fleet with
+    no ISE export never fires. This is a REACHABILITY signal -- the REST API does not expose replication
+    state, so a replication failure (a separate GUI/CLI signal) is not claimed here. None when absent/clean."""
+    d = sig.get("ise_node_unreachable") or []
+    if not d:
+        return None
+    return _decision(
+        "ise-deployment-node-unreachable",
+        f"{len(d)} Cisco ISE deployment node(s) are NOT 'Connected' to the Primary Admin node "
+        f"(e.g. {', '.join(d[:5])}). nodeStatus is each node's reachability/health to the PAN; a node not "
+        "Connected has lost contact with the deployment -- it cannot serve RADIUS/TACACS+ AAA or policy and "
+        "may be partitioned, so endpoints that depend on it for 802.1X/MAB/TrustSec could fail authentication. "
+        "Confirm the node is powered, on-net and time-synced and that the PAN<->node path (and replication) is "
+        "healthy before the access layer is cut over onto it.",
+        len(d), ["availability", "manageability"],
+        ["ise.nodes[].node_status (parse_ise_nodes / GET /api/v1/deployment/node)"],
+        priority="High",
+        driver="ISE deployment health: a node the Primary Admin reports not Connected has lost contact with "
+               "the deployment -- it cannot serve AAA/policy, so the access layer that depends on it can fail "
+               "auth at cutover.",
+        devices=sig.get("ise_devices") or [])
+
+
+def _d_ise_psn_no_redundancy(snap, sig):
+    """Cisco ISE: a MULTI-node deployment with exactly ONE Policy Service node (parse_ise_nodes -> a single
+    node whose services[] carries 'Session'). The PSN answers RADIUS for 802.1X/MAB and serves the TrustSec
+    environment-data / SGACL matrix the switches download; a single PSN is an authentication single point of
+    failure -- if it is lost or saturated during the migration window, every 802.1X/MAB port on every migrated
+    switch blackholes to fail-auth / critical-VLAN. Coverage-honest & standalone-aware: fires ONLY at >=2
+    deployment nodes (a Cisco-supported single-node STANDALONE runs all personas on one node and is NOT a
+    redundancy defect); silent with >=2 PSNs and when no ISE export exists. None otherwise."""
+    p = sig.get("ise_single_psn") or []
+    if not p:
+        return None
+    return _decision(
+        "ise-policy-service-node-redundancy",
+        f"A Cisco ISE deployment has only ONE Policy Service node (PSN) (e.g. {', '.join(p[:4])}). The PSN "
+        "answers RADIUS for 802.1X/MAB and serves the TrustSec environment-data / SGACL matrix the switches "
+        "download; a single PSN is an authentication single point of failure -- if it is lost or saturated "
+        "during the maintenance window, every 802.1X/MAB port on every migrated switch blackholes to "
+        "fail-auth / critical-VLAN. Deploy at least two PSNs behind the RADIUS clients (a node group, with the "
+        "switches' RADIUS server-groups pointing at both) before the access layer is cut over.",
+        len(p), ["availability"],
+        ["ise.nodes[].services (parse_ise_nodes / GET /api/v1/deployment/node)"],
+        priority="High",
+        driver="ISE policy-plane redundancy: a single Policy Service node is an auth SPOF -- losing it "
+               "blackholes 802.1X/MAB on every dependent switch at cutover.",
+        devices=sig.get("ise_devices") or [])
+
+
+def _d_ise_admin_monitoring_redundancy(snap, sig):
+    """Cisco ISE: a MULTI-node deployment missing a Secondary Administration node (single PAN) and/or a
+    Secondary Monitoring node (single MnT) (parse_ise_nodes -> roles[]). The PAN owns configuration +
+    replication; the MnT owns logging/reporting. Without a standby, loss of the primary during the migration
+    leaves the deployment unmanageable (no policy change / no promotion path) or blind (no auth logging to
+    troubleshoot the cutover). Coverage-honest & standalone-aware: fires ONLY at >=2 nodes AND when the
+    matching Primary IS observed (so the missing Secondary is real, not un-collected); a single-node
+    standalone is excluded. None when the axis is absent / both redundancies present."""
+    pan = sig.get("ise_single_pan") or []
+    mnt = sig.get("ise_single_mnt") or []
+    if not pan and not mnt:
+        return None
+    miss = []
+    if pan:
+        miss.append("no Secondary Administration node (single PAN)")
+    if mnt:
+        miss.append("no Secondary Monitoring node (single MnT)")
+    return _decision(
+        "ise-admin-monitoring-redundancy",
+        f"A Cisco ISE deployment is missing administration/monitoring redundancy: {'; and '.join(miss)} "
+        f"(deployment: {', '.join(sorted(set(pan + mnt))[:4])}). The Primary Admin node (PAN) owns "
+        "configuration + replication and the Monitoring node (MnT) owns logging/reporting; without a standby, "
+        "loss of the primary leaves the deployment unmanageable (no policy change / no promotion) or blind "
+        "(no auth logs to troubleshoot the cutover). Add the missing Secondary PAN / MnT so the control and "
+        "logging planes survive a node loss during and after the migration.",
+        len(pan) + len(mnt), ["availability", "manageability"],
+        ["ise.nodes[].roles (parse_ise_nodes / GET /api/v1/deployment/node)"],
+        priority="Medium",
+        driver="ISE management-plane redundancy: a single PAN or single MnT means a node loss leaves the "
+               "deployment unmanageable or blind -- design a Secondary for each before cutover.",
+        devices=sig.get("ise_devices") or [])
+
+
+def _d_ftd_ha_degraded(snap, sig):
+    """Cisco FMC: an FTD HA pair the controller reports degraded (parse_fmc_ha_pairs -> snap['fmc'].ha_pairs).
+    FIRES when a node's currentStatus is Failed or Not Detected, or the pair is split (both Active or both
+    Standby) -- the pair has no working active/standby split, so a firewall in the data path is a single point
+    of failure during the migration window. For an FMC-managed fleet the controller is the authoritative HA
+    source (you may have no device CLI). Coverage-honest & non-cry-wolf: a healthy Active+Standby pair, a
+    transient Negotiation/Synchronizing, and -- critically -- a 'Disabled' pair (operator-SUSPENDED HA, an
+    intentional maintenance state, NOT a failure) all stay silent; a standalone FTD has no HA entry and never
+    fires. None when the axis is absent/clean."""
+    h = sig.get("ftd_ha_degraded") or []
+    if not h:
+        return None
+    return _decision(
+        "ftd-ha-pair-degraded",
+        f"{len(h)} FTD HA pair(s) are degraded per FMC (e.g. {', '.join(h[:5])}). A pair with a node Failed / "
+        "Not Detected, or split (both units the same role), has no working active/standby -- the firewall is a "
+        "single point of failure, and a failover during the maintenance window would drop every stateful flow "
+        "through it. For an FMC-managed fleet the controller is the authoritative HA source. Confirm the "
+        "failover link, unit health and the high-availability config in FMC, and restore the standby before the "
+        "firewall is on the cutover path. (An intentionally-suspended 'Disabled' pair is excluded -- re-enable "
+        "it when maintenance ends.)",
+        len(h), ["availability"],
+        ["fmc.ha_pairs[].primary_status / .secondary_status (parse_fmc_ha_pairs / ftddevicehapairs)"],
+        priority="Critical",
+        driver="Controller-reported firewall HA: an FTD pair FMC reports Failed/Not-Detected/split has no "
+               "standby -- a single point of failure in the data path, authoritative for an FMC-managed fleet.",
+        devices=sig.get("fmc_devices") or [])
+
+
+def _d_fmc_device_disconnected(snap, sig):
+    """Cisco FMC: a managed FTD that has lost its management channel to FMC (isConnected==false) or is in a
+    'red' health state (parse_fmc_devices -> snap['fmc'].devices). A disconnected device cannot be managed,
+    monitored or deployed-to and may be partitioned; a red health status is an active, FMC-reported alert.
+    Coverage-honest & non-cry-wolf: a connected device with green/yellow health stays silent (yellow = a
+    non-fatal warning); the no-data 'black'/'blue' states are NOT treated as failures (health monitoring
+    disabled / unknown). A transient disconnect (reboot / deploy-in-progress) should be confirmed, not assumed
+    permanent. None when the axis is absent/clean."""
+    d = sig.get("fmc_device_disconnected") or []
+    if not d:
+        return None
+    return _decision(
+        "fmc-device-disconnected",
+        f"{len(d)} FMC-managed FTD(s) have lost their management channel or are in a red health state "
+        f"(e.g. {', '.join(d[:5])}). A device FMC reports not-connected cannot be monitored, templated or "
+        "deployed-to and may be partitioned from management; a red health status is an active FMC alert. "
+        "Confirm the device is powered, on-net and not mid-reboot/deploy, restore the FMC<->FTD management "
+        "channel, and clear the health alert before the device is counted in-scope at cutover.",
+        len(d), ["availability", "manageability"],
+        ["fmc.devices[].is_connected / .health_status (parse_fmc_devices / devicerecords)"],
+        priority="High",
+        driver="Controller-reported reachability: an FTD FMC reports disconnected/red is unmanaged and possibly "
+               "partitioned -- it cannot be deployed-to or monitored during the migration.",
+        devices=sig.get("fmc_devices") or [])
+
+
+def _d_fmc_deployment_pending(snap, sig):
+    """Cisco FMC: managed FTD(s) with STAGED, undeployed configuration changes (parse_fmc_deployable ->
+    snap['fmc'].deployable non-empty). The device's RUNNING config no longer equals FMC's intended config -- a
+    config-drift / cutover-hygiene risk: deploying mid-migration changes device behaviour, and NOT deploying
+    leaves the documented intent un-applied. Coverage-honest: an empty deployable list (every device in sync)
+    stays silent; no FMC export never fires. Medium -- a state to RECONCILE before cutover, not a hard fault."""
+    d = sig.get("fmc_deployment_pending") or []
+    if not d:
+        return None
+    return _decision(
+        "fmc-deployment-pending",
+        f"{', '.join(d[:5])} -- staged, undeployed configuration changes in FMC. The running config no longer "
+        "equals FMC's intended config: deploying mid-migration changes device behaviour, and not deploying "
+        "leaves the intended policy un-applied. Reconcile each pending deployment BEFORE the cutover window "
+        "(deploy and re-validate, or explicitly defer) so the firewall's running state is known and intended "
+        "at cutover.",
+        len(d), ["manageability"],
+        ["fmc.deployable[] (parse_fmc_deployable / deployabledevices)"],
+        priority="Medium",
+        driver="Config drift: an FTD with staged undeployed changes is running a config that differs from "
+               "FMC's intent -- reconcile before cutover so the running state is known.",
+        devices=sig.get("fmc_devices") or [])
+
+
+def _d_fmc_manager_ha_degraded(snap, sig):
+    """Cisco FMC: the FMC's OWN high-availability is degraded (parse_fmc_ha_status -> snap['fmc'].ha_status).
+    FIRES when haStatus is Degraded or Split Brain, the sync is not Synced, or the peer is unreachable -- the
+    management plane that drives the FTD fleet has no healthy standby, so losing the active FMC during the
+    migration leaves the fleet unmanageable (no policy change / no deployment / no monitoring). Coverage-honest:
+    a Healthy + Synced pair stays silent, and a standalone (non-HA) FMC publishes no fmchastatuses and never
+    fires (absence of FMC-HA is not a failure). None when the axis is absent/clean."""
+    m = sig.get("fmc_manager_ha_degraded") or []
+    if not m:
+        return None
+    return _decision(
+        "fmc-manager-ha-degraded",
+        f"The FMC's own high-availability is degraded ({', '.join(m[:3])}). The management plane that drives "
+        "the FTD fleet has no healthy standby -- losing the active FMC during the migration leaves the fleet "
+        "unmanageable (no policy change, no deployment, no monitoring) and risks a split-brain if both go "
+        "Active. Restore FMC HA sync / reachability (and resolve any split-brain) before relying on the manager "
+        "through the cutover.",
+        len(m), ["availability", "manageability"],
+        ["fmc.ha_status.ha_status / .sync_status (parse_fmc_ha_status / fmchastatuses)"],
+        priority="High",
+        driver="Management-plane HA: a Degraded / Split-Brain / unsynced FMC pair means a manager loss leaves "
+               "the FTD fleet unmanageable during the migration -- restore it before cutover.",
+        devices=sig.get("fmc_devices") or [])
+
+
+def _d_fmc_version_inversion(snap, sig):
+    """Cisco FMC: the FMC runs an OLDER software version than an FTD it manages (parse_fmc_server_version vs
+    parse_fmc_devices[].sw_version). Cisco REQUIRES the FMC to run a version >= every managed device, so an FMC
+    behind a managed FTD is an unsupported management state -- it can fail to deploy policy to, or upgrade, that
+    device. Version-COMPARED (not date-based), so it never rots. Coverage-honest: fires ONLY when BOTH the FMC
+    serverVersion AND a device sw_version parse to a version AND FMC < device; a matching/newer FMC and any
+    unparseable version stay silent; no FMC export never fires. None when the axis is absent/clean."""
+    v = sig.get("fmc_version_inversion") or []
+    if not v:
+        return None
+    return _decision(
+        "fmc-version-inversion",
+        f"The FMC is running an OLDER version than a managed FTD (e.g. {', '.join(v[:5])}). Cisco requires the "
+        "FMC to run a version equal to or newer than every device it manages, so an FMC behind a managed FTD is "
+        "an unsupported state -- it can fail to deploy policy to, or upgrade, that device. Upgrade the FMC to at "
+        "least the highest managed-FTD version (respecting the supported upgrade path) before relying on central "
+        "management through the migration.",
+        len(v), ["manageability"],
+        ["fmc.server_version vs fmc.devices[].sw_version (parse_fmc_server_version / serverversion)"],
+        priority="Medium",
+        driver="Manager/device version order: Cisco mandates FMC >= every managed FTD -- an FMC older than a "
+               "device it manages cannot reliably deploy-to or upgrade it.",
+        devices=sig.get("fmc_devices") or [])
+
+
 def _d_pim_rp_health(snap, sig):
     """Multicast PIM-SM control-plane resilience. Fires ONLY on a broken STATE, never on blanket absence:
     one or more devices have PIM sparse-mode RUNNING (a live PIM neighbor) and their 'show ip pim rp mapping'
@@ -1830,12 +2308,18 @@ def _d_shadow_infra(snap, sig):
 def _d_spof(snap, sig):
     if sig["bridges"] <= 0:
         return None
+    blast = ""
+    if sig["worst_pairs_cut"]:
+        blast = f" — the worst isolates {sig['worst_pairs_cut']} node-pair(s)"
+        if sig["bridges_high_blast"] > 1:
+            blast += f", and {sig['bridges_high_blast']} cut-edge(s) each isolate >=20"
     return _decision(
         "topology-triangles-not-squares-rings",
-        f"{sig['bridges']} link(s) are cut-edges (their loss partitions the topology); "
+        f"{sig['bridges']} link(s) are cut-edges (their loss partitions the topology{blast}); "
         f"{sig['nobackup_high']} device(s) strand endpoints with no backup path on failure.",
         sig["bridges"], ["availability", "convergence"],
-        ["link_centrality[].is_bridge", "failure_impact[].backup", "failure_impact[].stranded"],
+        ["link_centrality[].is_bridge", "link_centrality[].pairs_cut",
+         "failure_impact[].backup", "failure_impact[].stranded"],
         priority="High", driver="Physical redundancy: recovery should not depend on a single link or node.",
         devices=sig["bridge_hosts"])
 
@@ -2218,6 +2702,43 @@ def _d_vpc_health(snap, sig):
         devices=sig["vpc_bad_hosts"])
 
 
+def _d_active_l2_instability(snap, sig):
+    if sig["mac_flap_n"] <= 0:
+        return None
+    return _decision(
+        "dc-resolve-active-l2-instability-mac-flap",
+        f"{sig['mac_flap_n']} switch(es) are logging MAC-address flapping (%SW_MATM-4-MACFLAP_NOTIF) — the same "
+        f"host learned on two ports, i.e. an ACTIVE L2 loop, a mis-cabled / dual-homed host bridging two access "
+        f"ports, or a unidirectional link. This is happening now: every flap re-floods and churns the VLAN's MAC "
+        f"table, and migrating a flapping domain carries the loop straight into the target where a fabric change "
+        f"can escalate it to a broadcast storm. Find and clear each flap before freezing the baseline and cutover.",
+        sig["mac_flap_n"], ["availability", "manageability", "convergence"],
+        ["syslog_intelligence.detections[].kind=='mac-flap'", "syslog_intelligence.detections[].host"],
+        priority="High",
+        driver="Active L2 instability: a flapping MAC is a live loop / mis-cabling, so the current state is an "
+               "unstable baseline and a storm risk to carry into the target.",
+        devices=sig["mac_flap_hosts"])
+
+
+def _d_static_default_dependency(snap, sig):
+    if sig["static_default_n"] <= 0:
+        return None
+    return _decision(
+        "routing-static-default-cutover-dependency",
+        f"{sig['static_default_n']} host(s) ride a STATIC default route (0.0.0.0/0 via a fixed next-hop, no "
+        f"dynamically-learned default to reconverge). A static default does not fail over: at cutover, the "
+        f"moment its next-hop gateway changes (new core, re-addressed transit, VRF/interface move) the route "
+        f"still points at the old hop and silently black-holes all off-subnet traffic until it is re-pointed by "
+        f"hand. Sequence each re-point into the change (or pre-stage a tracked/dynamic default) — don't discover "
+        f"it broken after the window.",
+        sig["static_default_n"], ["availability", "convergence", "manageability"],
+        ["routes[].prefix=='0.0.0.0/0'", "routes[].source (s/s*)", "routes[].next_hop"],
+        priority="High",
+        driver="Cutover black-hole: a static default route has no reconvergence, so a gateway/next-hop change "
+               "at cutover black-holes the host until the static route is manually re-pointed.",
+        devices=sig["static_default_hosts"])
+
+
 # --------------------------------------------------- mega-wave detectors (collected-but-unused evidence, 2026-06)
 def _d_vlan_subnet_integrity(snap, sig):
     if sig["vlan_multi_subnet"] <= 0:
@@ -2335,6 +2856,9 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               _d_lisp_fabric_session_down, _d_cts_environment_data_health, _d_dmvpn_tunnel_health, _d_crypto_session_health, _d_bfd_session_health, _d_ipv6_dad_duplicate, _d_ipv6_routing_adjacency,  # universal arch: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
               _d_aci_critical_faults, _d_aci_node_not_active, _d_aci_fabric_health_degraded, _d_aci_vrf_unenforced,  # Cisco ACI (APIC JSON-ingestion channel)
               _d_sdwan_control_connection_down, _d_sdwan_device_unreachable, _d_sdwan_omp_peer_down,  # Cisco Catalyst SD-WAN (vManage JSON channel)
+              _d_firewall_ha_degraded, _d_firewall_resource_exhaustion,  # Cisco firewall (ASA / Secure Firewall Threat Defense): HA/failover + resource capacity -- SSH show-text channel
+              _d_ise_node_unreachable, _d_ise_psn_no_redundancy, _d_ise_admin_monitoring_redundancy,  # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
+              _d_ftd_ha_degraded, _d_fmc_device_disconnected, _d_fmc_deployment_pending, _d_fmc_manager_ha_degraded, _d_fmc_version_inversion,  # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
               _d_pim_rp_health, _d_ipv6_fhs, _d_ntp_sync, _d_port_security_errdisable, _d_storm_control_action, _d_storm_control_active, _d_qos_runtime_drops, _d_shadow_infra,
               _d_spof, _d_eol, _d_qos, _d_mgmt, _d_harden, _d_coverage,
               _d_flat_l2, _d_stp_lag, _d_stp_det, _d_igp, _d_mcast,
@@ -2345,7 +2869,7 @@ _DETECTORS = [_d_fhrp, _d_fhrp_state, _d_fhrp_resilience, _d_nve_peer_health, _d
               # mega-wave 2026-06 (collected-but-unused evidence -> firing decisions):
               _d_vlan_subnet_integrity, _d_stp_root_determinism, _d_reserved_vlan, _d_static_etherchannel,
               _d_power_redundancy, _d_gateway_cutover_order, _d_oversized_l2_subnet,
-              _d_vpc_health]
+              _d_vpc_health, _d_active_l2_instability, _d_static_default_dependency]
 
 
 # ----------------------------------------------------------------------------- requirement-gated decisions
@@ -3605,6 +4129,9 @@ _ARCH_COVERAGE_REGISTRY = [
     ("ipv6_routing",  "IPv6 routing (OSPFv3 / BGP)",             "ssh",  ["ipv6-routing-adjacency-down"]),
     ("aci",           "Cisco ACI (APIC fabric)",                 "json", ["aci-critical-fault-raised", "aci-node-not-active", "aci-fabric-health-degraded", "aci-vrf-enforcement-unenforced"]),
     ("sdwan",         "Cisco Catalyst SD-WAN (vManage)",         "json", ["sdwan-control-connection-down", "sdwan-device-unreachable", "sdwan-omp-peer-down"]),
+    ("firewall",      "Cisco firewall (ASA/FTD: HA + capacity)", "ssh",  ["firewall-ha-failover-degraded", "firewall-resource-exhaustion"]),
+    ("ise",           "Cisco ISE (Identity Services Engine)",    "json", ["ise-deployment-node-unreachable", "ise-policy-service-node-redundancy", "ise-admin-monitoring-redundancy"]),
+    ("fmc",           "Cisco Secure Firewall Mgmt Center (FMC)", "json", ["ftd-ha-pair-degraded", "fmc-device-disconnected", "fmc-deployment-pending", "fmc-manager-ha-degraded", "fmc-version-inversion"]),
 ]
 
 
@@ -3624,7 +4151,9 @@ def compute_architecture_coverage(snap):
     classes = []
     for axis, label, channel, pids in _ARCH_COVERAGE_REGISTRY:
         data = snap.get(axis)
-        observed = bool(data)
+        # coverage-honest: a corrupted truthy-but-non-dict axis (a stray list/str/int) must read 'not-observed',
+        # NEVER 'clean' -- 'clean' = assessed-and-fine, so absence/corruption must not silently present healthy.
+        observed = isinstance(data, dict) and bool(data)
         hosts = sorted(data) if isinstance(data, dict) else []
         # Attribute a finding to a class ONLY when its axis was observed -- a pid shared with a base detector
         # (e.g. the NTP-state pid is also emitted by the config-based time-sync detector) must not mark an

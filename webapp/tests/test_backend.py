@@ -68,14 +68,14 @@ def test_section_slice_and_guard(client):
 
 def test_architecture_coverage_endpoint(client):
     """The architecture-coverage SSOT is served (computed server-side with the SAME engine function the
-    explorer/CLI use -- the dashboard never re-derives coverage). Shape is the 20-class, two-channel,
+    explorer/CLI use -- the dashboard never re-derives coverage). Shape is the 23-class, two-channel,
     coverage-honest map."""
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/architecture_coverage")
     assert r.status_code == 200
     cov = r.json()
-    assert isinstance(cov.get("classes"), list) and cov["summary"]["n_classes"] == 20
-    assert cov["summary"]["by_channel"]["json"] == 2 and cov["summary"]["by_channel"]["ssh"] == 18
+    assert isinstance(cov.get("classes"), list) and cov["summary"]["n_classes"] == 23
+    assert cov["summary"]["by_channel"]["json"] == 4 and cov["summary"]["by_channel"]["ssh"] == 19
     by = {c["key"]: c for c in cov["classes"]}
     assert by["aci"]["channel"] == "json" and by["sdwan"]["channel"] == "json"
     # coverage-honest: every class is observed-and-status or not-observed (never silently 'healthy')
@@ -1040,6 +1040,16 @@ def test_summarize_projects_the_canonical_headline():
     from backend.summary import summarize
     s = summarize(_divergent_snap())
     assert s["n_switches"] == 42 and s["avg_health"] == 63.4 and s["n_critical"] == 5
+
+
+def test_summarize_near_eos_reads_canonical_n_near():
+    """Coverage-honesty: the dashboard summary's near-end-of-support figure must read the canonical
+    lifecycle field n_near (Near-LDoS). It previously read a non-existent n_near_eos, silently
+    blanking the count while past_eos/past_ldos rendered — a half-shown lifecycle posture."""
+    from backend.summary import summarize
+    life = summarize({"lifecycle_risk": {"summary": {"n_past_ldos": 152, "n_past_eos": 0, "n_near": 61}}})["lifecycle"]
+    assert life["near_eos"] == 61, life
+    assert life["past_ldos"] == 152 and life["past_eos"] == 0
 
 
 def test_trend_point_falls_back_when_brief_absent():

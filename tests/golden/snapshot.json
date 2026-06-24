@@ -4011,6 +4011,140 @@
    ]
   }
  },
+ "firewall": {
+  "core1": {
+   "failover": {
+    "enabled": true,
+    "units": [
+     {
+      "host": "this",
+      "role": "Primary",
+      "state": "Active"
+     },
+     {
+      "host": "other",
+      "role": "Secondary",
+      "state": "Failed"
+     }
+    ]
+   },
+   "resource_usage": [
+    {
+     "resource": "SSH",
+     "current": 1,
+     "peak": 3,
+     "limit": 5,
+     "denied": 44,
+     "context": "System"
+    },
+    {
+     "resource": "Conns",
+     "current": 240128,
+     "peak": 279994,
+     "limit": 280000,
+     "denied": 312,
+     "context": "System"
+    },
+    {
+     "resource": "Xlates",
+     "current": 21944,
+     "peak": 40210,
+     "limit": null,
+     "denied": 0,
+     "context": "System"
+    },
+    {
+     "resource": "Hosts",
+     "current": 15955,
+     "peak": 24871,
+     "limit": null,
+     "denied": 0,
+     "context": "System"
+    },
+    {
+     "resource": "Conns [rate]",
+     "current": 62,
+     "peak": 984,
+     "limit": null,
+     "denied": 0,
+     "context": "System"
+    }
+   ]
+  }
+ },
+ "ise": {
+  "core1": {
+   "nodes": [
+    {
+     "hostname": "ise-pan-1",
+     "fqdn": "ise-pan-1.[HISTORY-REDACTED].local",
+     "roles": [
+      "PrimaryAdmin",
+      "PrimaryMonitoring"
+     ],
+     "services": [
+      "Session",
+      "Profiler"
+     ],
+     "node_status": "Connected"
+    },
+    {
+     "hostname": "ise-psn-2",
+     "fqdn": "ise-psn-2.[HISTORY-REDACTED].local",
+     "roles": [],
+     "services": [],
+     "node_status": "Disconnected"
+    }
+   ]
+  }
+ },
+ "fmc": {
+  "core1": {
+   "devices": [
+    {
+     "name": "[HISTORY-REDACTED]-FTD-01",
+     "host_name": "10.9.9.1",
+     "model": "FTDv",
+     "sw_version": "7.2.5",
+     "is_connected": true,
+     "health_status": "green",
+     "deployment_status": "DEPLOYED"
+    },
+    {
+     "name": "[HISTORY-REDACTED]-FTD-99",
+     "host_name": "10.9.9.99",
+     "model": "FTDv",
+     "sw_version": "7.2.5",
+     "is_connected": false,
+     "health_status": "red",
+     "deployment_status": "WARNING"
+    }
+   ],
+   "ha_pairs": [
+    {
+     "name": "[HISTORY-REDACTED]-FTD-HA-Edge",
+     "primary_status": "Active",
+     "secondary_status": "Failed"
+    }
+   ],
+   "deployable": [
+    {
+     "name": "[HISTORY-REDACTED]-FTD-03",
+     "can_be_deployed": true,
+     "up_to_date": false
+    }
+   ],
+   "ha_status": {
+    "ha_role": "Active",
+    "ha_status": "Degraded",
+    "sync_status": "Synchronization incomplete",
+    "peer_reachability": "reachable"
+   },
+   "server_version": {
+    "server_version": "7.0.0 (build 94)"
+   }
+  }
+ },
  "lisp": {
   "core1": {
    "sessions": [

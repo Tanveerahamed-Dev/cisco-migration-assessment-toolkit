@@ -363,6 +363,11 @@ def _maximal_snap():
                     "peer_link": {"status": "up"},
                     "vpcs": [{"id": "10", "status": "down*", "consistency": "success"},
                              {"id": "11", "status": "up", "consistency": "failed"}]}},
+        # active L2 instability: a syslog mac-flap detection -> _d_active_l2_instability
+        syslog_intelligence={"detections": [{"host": "d0", "kind": "mac-flap", "severity": "High",
+                                             "count": 2, "label": "MAC address flapping"}]},
+        # static default route (no dynamic reconvergence) -> _d_static_default_dependency
+        routes={"d0": [{"prefix": "0.0.0.0/0", "source": "s*", "next_hop": "10.0.0.1"}]},
         # architecture-coverage slices (build-wave) — each engine_actionable principle must emit here:
         # PIM running but no RP learned -> _d_pim_rp_health
         pim={"d0": {"rp_mapping": {"present": True, "rp_count": 0, "rps": [], "groups": [], "ssm_only": False},
@@ -376,6 +381,56 @@ def _maximal_snap():
                               "capabilities": "Router", "proto": "cdp", "local_intf": "Gi0/0/0",
                               "mgmt_ip": "10.0.0.254", "remote_port": "Gi0/0/1"}]},
     )
+
+
+def _arch_fire_snap():
+    """A snapshot seeded to trigger EVERY universal-architecture detector at once (NX-OS VXLAN-EVPN
+    overlay, CoPP, MPLS LDP/L3VPN/L2VPN, LISP, CTS, DMVPN, BFD, IPv6 DAD/routing, IPsec, APIC/ACI,
+    Catalyst SD-WAN, firewall HA + capacity, Cisco ISE, Cisco FMC, storm-control, QoS-runtime, FHRP detail/
+    state). These detectors read architecture axes the [HISTORY-REDACTED] estate doesn't run (so they are coverage-honest-
+    SILENT on [HISTORY-REDACTED]); this fixture proves each emits its decision when present, so the emit-invariant covers all 36.
+    Verified: fires all 36 KB-backed universal-arch detectors."""
+    return {
+        "overlay": {"leaf1": {"nve_peers": [{"interface": "nve1", "peer_ip": "10.0.0.2", "state": "Down", "learn_type": "CP"}],
+                              "nve_vni": [{"vni": "10010", "state": "Down"}],
+                              "evpn_neighbors": [{"neighbor": "10.0.0.3", "state": "Idle"}]}},
+        "copp": {"sw1": [{"class": "copp-system-critical", "drops": 50000, "exceeded": 50000, "violated": 0}]},
+        "mpls": {"pe1": {"ldp_neighbors": [{"neighbor": "1.1.1.1", "state": "Down"}],
+                         "vpnv4_neighbors": [{"neighbor": "2.2.2.2", "state": "Idle"}],
+                         "l2vpn_vcs": [{"vc_id": "100", "status": "DOWN"}]}},
+        "lisp": {"x1": {"sessions": [{"total": 2, "established": 0}]}},
+        "cts": {"sw1": {"environment_data": {"state": "incomplete"}}},
+        "dmvpn": {"hub1": {"peers": [{"peer": "10.1.1.1", "state": "NHRP", "tunnel": "Tu0"}]}},
+        "bfd": {"r1": {"sessions": [{"neighbor": "10.0.0.1", "state": "Down"}]}},
+        "ipv6_nd": {"sw1": {"interfaces": [{"interface": "Gi0/1", "global": [{"addr": "2001:db8::1", "dad_state": "DUPLICATE"}], "link_local_dup": False}]}},
+        "ipv6_routing": {"sw1": {"ospfv3_neighbors": [{"neighbor": "1.1.1.1", "state": "DOWN"}], "bgp_ipv6_neighbors": []}},
+        "crypto": {"r1": {"sessions": [{"interface": "Tu1", "peer": "1.1.1.1", "status": "DOWN"}]}},
+        "aci": {"apic1": {"faults": [{"severity": "critical", "lc": "raised", "ack": "no", "code": "F1234"}],
+                          "health": {"cur": 50}, "nodes": [{"id": "101", "name": "leaf101", "fabric_st": "inactive"}],
+                          "vrfs": [{"tenant": "t1", "name": "v1", "pc_enf_pref": "unenforced"}]}},
+        "sdwan": {"vm1": {"control_connections": [{"system_ip": "1.1.1.1", "peer_type": "vsmart", "state": "down"}],
+                          "devices": [{"system_ip": "2.2.2.2", "reachability": "unreachable"}],
+                          "omp_counters": [{"system_ip": "1.1.1.1", "omp_down": 1}]}},
+        "firewall": {"fw1": {"failover": {"enabled": True, "units": [
+            {"host": "this", "role": "Primary", "state": "Active"},
+            {"host": "other", "role": "Secondary", "state": "Failed"}]},
+            "resource_usage": [{"resource": "Conns", "current": 250000, "peak": 270000, "limit": 280000, "denied": 120, "context": "System"}]}},
+        "ise": {"ise-pan1": {"nodes": [
+            {"hostname": "ise-pan1", "roles": ["PrimaryAdmin", "PrimaryMonitoring"], "services": ["Session"], "node_status": "Connected"},
+            {"hostname": "ise-psn-dead", "roles": [], "services": [], "node_status": "Disconnected"}]}},
+        "fmc": {"fmc1": {
+            "devices": [{"name": "FTD-DEAD", "is_connected": False, "health_status": "red", "sw_version": "7.2.5"}],
+            "ha_pairs": [{"name": "HA-EDGE", "primary_status": "Active", "secondary_status": "Failed"}],
+            "deployable": [{"name": "FTD-DRIFT", "can_be_deployed": True, "up_to_date": False}],
+            "ha_status": {"ha_role": "Active", "ha_status": "Degraded", "sync_status": "Synchronization incomplete", "peer_reachability": "reachable"},
+            "server_version": {"server_version": "7.0.0 (build 94)"}}},
+        "storm_control": {"a1": [{"interface": "Gi0/2", "traffic": "broadcast", "action": "None", "configured": True},
+                                 {"interface": "Gi0/5", "traffic": "broadcast", "filter_state": "Blocking", "current": "2m", "configured": True}]},
+        "qos_runtime": {"wan1": [{"interface": "Gi0/0/0", "policy": "WAN", "class": "VOICE", "priority": True,
+                                  "drop_pkts": 1840521, "output_pkts": 24817400, "police_drop_pkts": 0}]},
+        "fhrp_detail": {"core1": [{"ifname": "Vlan10", "group": "10", "state": "Active", "preempt": True, "track": []}]},
+        "fhrp": [{"vid": 10, "issues": ["split-brain"], "members": [{"host": "a"}, {"host": "b"}]}],
+    }
 
 
 def test_dc_fabric_choices_are_requirement_gated():
@@ -399,8 +454,12 @@ def test_every_engine_actionable_principle_is_emitted():
     """COVERAGE-HONESTY LOCK: `engine_actionable` must mean the advisor actually emits a decision for
     that principle's trigger. If a principle claims engine-actionability the advisor can't deliver
     (or a new detector goes un-wired), this fails -- the design brain may not overstate its coverage."""
-    bp = compute_design_blueprint(_maximal_snap())            # no requirements -> needs-requirement decisions too
-    emitted = {d["id"] for d in bp["decisions"]}
+    # the universal-architecture detectors (ACI/VXLAN-EVPN/MPLS/SD-WAN/LISP/...) fire ONLY when that
+    # architecture's collected state is present, so they are coverage-honest-silent on an [HISTORY-REDACTED]-style switch
+    # fleet. Union the maximal switch snapshot with _arch_fire_snap (which seeds every architecture axis)
+    # so the invariant exercises the FULL engine_actionable set, including those 36 principles.
+    emitted = {d["id"] for d in compute_design_blueprint(_maximal_snap())["decisions"]}  # no requirements -> needs-requirement too
+    emitted |= {d["id"] for d in compute_design_blueprint(_arch_fire_snap())["decisions"]}
     ea = {p["id"] for p in design_kb.engine_actionable()}
     missing = ea - emitted
     assert not missing, f"engine_actionable principles never emitted by the advisor: {sorted(missing)}"
@@ -1404,12 +1463,12 @@ def test_compute_architecture_coverage_observed_vs_not():
     assert "aci-critical-fault-raised" in by["aci"]["findings"]
     assert by["bfd"]["observed"] and by["bfd"]["status"] == "clean" and by["bfd"]["findings"] == []
     assert by["sdwan"]["observed"] is False and by["sdwan"]["status"] == "not-observed"
-    assert cov["summary"]["n_classes"] == 20
-    assert cov["summary"]["by_channel"] == {"ssh": 18, "json": 2}
+    assert cov["summary"]["n_classes"] == 23
+    assert cov["summary"]["by_channel"] == {"ssh": 19, "json": 4}
     assert cov["summary"]["n_with_findings"] == 1 and cov["summary"]["n_clean"] == 1
     # empty snapshot: every class not-observed, nothing fired (the coverage-honest baseline -- never 'healthy')
     empty = da.compute_architecture_coverage({})
-    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 20
+    assert empty["summary"]["n_observed"] == 0 and empty["summary"]["n_not_observed"] == 23
 
 
 def test_d_sdwan_omp_peer_down_fires_on_omp_down_only():
