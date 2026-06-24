@@ -55,7 +55,11 @@ def parse_bgp_summary(output: str) -> List[Dict[str, str]]:
     Last column (State/PfxRcd) is the established state or the prefix count."""
     rows = []
     for line in output.splitlines():
-        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]+:[0-9A-Fa-f:]+)\s+\d+\s+(\d+)\s+.*\s(\S+)\s*$", line)
+        # IPv6 neighbour: a LENGTH-BOUNDED hex/colon run (RFC max IPv6 textual length ~45). The old
+        # `[0-9A-Fa-f:]+:[0-9A-Fa-f:]+` had two adjacent unbounded `+` groups overlapping on `:`, so a long
+        # all-hex/colon line (a garbled/attacker-supplied capture) caused O(n^2) backtracking (ReDoS). Bounding
+        # the run to 45 chars makes each line linear while still matching every real IPv6 (incl. `::`-compressed).
+        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]+:[0-9A-Fa-f:]{1,44})\s+\d+\s+(\d+)\s+.*\s(\S+)\s*$", line)
         if m:
             rows.append({"neighbor": m.group(1), "as": m.group(2), "state": m.group(3)})
     return rows
@@ -1951,6 +1955,20 @@ def parse_hsrp_detail(output: str) -> Dict[tuple, dict]:
         if cur is None:
             continue
         r = res[cur]
+        # NX-OS 'show hsrp detail' packs state + priority + preempt onto ONE line, e.g.
+        #   'Local state is Active, priority 110 (Cfged 110), may preempt'
+        # (IOS-XE uses separate 'State is ...' / 'Priority ...' / 'Preemption ...' lines below). Without this
+        # the NX-OS group's state/priority/preempt stayed unset, so _d_fhrp_resilience -- gated on state
+        # active/master -- never evaluated an NX-OS group.
+        mn = re.match(r"^Local state is (\w+)", s, re.IGNORECASE)
+        if mn:
+            r["state"] = mn.group(1).capitalize()
+            mp = re.search(r"priority\s+(\d+)(?:\s*\(Cfged\s+(\d+)\))?", s, re.IGNORECASE)
+            if mp:
+                r["priority"] = int(mp.group(1))
+                r["cfg_priority"] = int(mp.group(2)) if mp.group(2) else int(mp.group(1))
+            r["preempt"] = bool(re.search(r"\bmay\s+preempt\b", s, re.IGNORECASE))
+            continue
         m = re.match(r"^State is (\w+)", s)
         if m: r["state"] = m.group(1); continue
         m = re.search(r"Virtual IP address is (\d+\.\d+\.\d+\.\d+)", s)
@@ -2488,21 +2506,36 @@ def parse_neighbors_cdp(output: str) -> Dict[str, Dict[str, str]]:
 
 def parse_neighbors_lldp(output: str) -> Dict[str, Dict[str, str]]:
     res: Dict[str, Dict[str, str]] = {}
-    for ch in re.split(r"\n\s*Local Intf:\s*", "\n" + output):
+    if not output:
+        return res
+    # IOS/IOS-XE 'show lldp neighbors detail' blocks begin with 'Local Intf:'; NX-OS has NO such line and begins
+    # each block with 'Chassis id:' (its local interface is on a 'Local Port id:' line). Splitting only on
+    # 'Local Intf:' (the old code) collapsed an NX-OS capture into ONE Frankenstein record -- 'local' became the
+    # literal first token 'Chassis', and System Name / Port id / Management Address from DIFFERENT neighbours
+    # were mixed into it, so every real NX-OS adjacency was lost from the topology. Mirror parse_neighbors_detail.
+    iosxe = bool(re.search(r"(?im)^\s*Local Intf:", output))
+    blocks = (re.split(r"\n\s*Local Intf:\s*", "\n" + output) if iosxe
+              else re.split(r"(?im)^(?=[ \t]*Chassis id:)", output))
+    for ch in blocks:
         ch = ch.strip()
         if not ch: continue
-        local   = normalize_ifname(ch.splitlines()[0].strip().split()[0])
+        # IOS-XE: the split consumed 'Local Intf:', so the block's first token IS the local interface.
+        local = normalize_ifname(ch.splitlines()[0].strip().split()[0]) if iosxe else ""
         sysname = mgmt = remote_port = ""
         for line in ch.splitlines():
             ls = line.strip()
+            m = re.match(r"^Local Port id:\s*(.+)$", ls, re.IGNORECASE)        # NX-OS local interface (by label)
+            if m and not local:
+                local = normalize_ifname(m.group(1).strip())
             if ls.lower().startswith("system name:"):
-                sysname = ls.split(":",1)[1].strip()
-            if ls.lower().startswith("port id:"):
-                remote_port = normalize_ifname(ls.split(":",1)[1].strip())
+                sysname = ls.split(":", 1)[1].strip()
+            m = re.match(r"^Port id:\s*(.+)$", ls, re.IGNORECASE)              # remote port ('Local Port id:' excluded by the anchor)
+            if m and not remote_port:
+                remote_port = normalize_ifname(m.group(1).strip())
             if ls.lower().startswith("management address:"):
                 ipm = re.search(r"(\d+\.\d+\.\d+\.\d+)", ls)
                 if ipm: mgmt = ipm.group(1)
-        if local:
+        if local and is_valid_iface(local) and (sysname or remote_port):
             res[local] = {"device_id": sysname, "platform": "", "mgmt_ip": mgmt,
                           "remote_port": remote_port}
     return res
@@ -3437,10 +3470,15 @@ def parse_igmp_snooping_querier(output: str) -> List[dict]:
             cur_vlan = mv.group(1)
         mip = re.search(r"IP address\s*[:=]\s*(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
         if mip and cur_vlan:
-            out.append({"vlan": cur_vlan, "querier": mip.group(1)}); cur_vlan = ""; continue
+            # '0.0.0.0' is the placeholder NX-OS/IOS print when NO querier is operational/elected -- it is the
+            # absence of a querier, not a live one, so it must NOT be recorded (else the VLAN counts as
+            # querier-covered and the 'no IGMP querier' multicast gap is silently suppressed).
+            if mip.group(1) != "0.0.0.0":
+                out.append({"vlan": cur_vlan, "querier": mip.group(1)})
+            cur_vlan = ""; continue
         # table form: '10    10.0.10.1    v2    ...'
         mt = re.match(r"^(\d+)\s+(\d+\.\d+\.\d+\.\d+)\b", s)
-        if mt:
+        if mt and mt.group(2) != "0.0.0.0":
             out.append({"vlan": mt.group(1), "querier": mt.group(2)})
     # de-dup (vlan,querier)
     seen, uniq = set(), []
@@ -3701,7 +3739,10 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
         except Exception as e:
             logger.debug(f"remaining-power calc failed (cap={r['total_capacity_w']} drawn={r['total_drawn_w']}): {e}")  # NEW-V3.23.1
     r["ps_status_list"] = ps_list
-    r["num_ps"] = len(set(ps_list))
+    # PHYSICAL PSU count = number of PS rows, NOT the count of DISTINCT statuses: two healthy PSUs both 'OK'
+    # collapse under set() to 1, so a dual-PSU chassis reported num_ps=1 and a genuinely-redundant box was
+    # flagged single-PSU (cry-wolf). ps_status_list keeps the per-row statuses for display.
+    r["num_ps"] = len(ps_list)
     return r
 
 

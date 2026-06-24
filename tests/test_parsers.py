@@ -1815,3 +1815,59 @@ def test_parse_neighbors_detail_nxos(cp):
         "Interface: Ethernet1/1,  Port ID (outgoing port): Ethernet1/2\n")
     rc = parse.parse_neighbors_detail(nxcdp, "cdp")
     assert len(rc) == 1 and rc[0]["mgmt_ip"] == "10.0.0.2" and rc[0]["local_intf"] == "Eth1/1"
+
+
+def test_parse_hsrp_detail_nxos_single_line_form(cp):
+    """PARSE-01: NX-OS 'show hsrp detail' packs state+priority+preempt on ONE line ('Local state is Active,
+    priority 110 (Cfged 110), may preempt'); the IOS-XE-only regexes left them empty, so _d_fhrp_resilience
+    (gated on state active/master) never evaluated an NX-OS group."""
+    r = parse.parse_hsrp_detail("Vlan10 - Group 10 (HSRP-V2) (IPv4)\n"
+                                "  Local state is Active, priority 110 (Cfged 100), may preempt\n"
+                                "  Virtual IP address is 10.10.10.1 (Cfged)")
+    rec = r[("Vlan10", "10")]
+    assert rec["state"] == "Active" and rec["priority"] == 110 and rec["cfg_priority"] == 100
+    assert rec["preempt"] is True and rec["vip"] == "10.10.10.1"
+
+
+def test_parse_neighbors_lldp_nxos_chassis_id_split(cp):
+    """PARSE-02: NX-OS 'show lldp neighbors detail' has no 'Local Intf:' delimiter (it uses 'Local Port id:'),
+    so splitting only on 'Local Intf:' collapsed every neighbour into one cross-contaminated record. Mirror the
+    sibling detail parser: split on 'Chassis id:' and read the local from 'Local Port id:'."""
+    nx = ("Chassis id: 547f.eeab.0001\nPort id: Ethernet1/1\nLocal Port id: Eth1/2\nSystem Name: spine-1\n"
+          "Management Address: 10.0.0.1\n\nChassis id: 547f.eeab.0002\nPort id: Ethernet2/2\nLocal Port id: Eth2/2\n"
+          "System Name: leaf-9\nManagement Address: 10.0.0.9\n")
+    g = parse.parse_neighbors_lldp(nx)
+    assert {k: v["device_id"] for k, v in g.items()} == {"Eth1/2": "spine-1", "Eth2/2": "leaf-9"}
+    assert g["Eth1/2"]["remote_port"] == "Eth1/1" and g["Eth2/2"]["mgmt_ip"] == "10.0.0.9"
+    # IOS-XE 'Local Intf:' form still works
+    iosxe = "Local Intf: Gi1/0/1\nSystem Name: ap-01\nPort id: Gi0\nManagement Address: 10.1.1.1\n"
+    assert parse.parse_neighbors_lldp(iosxe)["Gi1/0/1"]["device_id"] == "ap-01"
+
+
+def test_parse_show_environment_power_counts_physical_psus(cp):
+    """PARSE-03: num_ps was len(set(statuses)), so two healthy PSUs both 'Ok' collapsed to 1 -> a dual-PSU
+    chassis was flagged single-PSU (redundancy cry-wolf). Count PSU rows."""
+    r = parse.parse_show_environment_power("Power\nSupply Model Output Capacity Status\n"
+                                           "1 N9K-PAC-650W-B 120 W 650 W Ok\n2 N9K-PAC-650W-B 115 W 650 W Ok\n")
+    assert r["num_ps"] == 2 and r["ps_status_list"] == ["OK", "OK"]
+
+
+def test_parse_igmp_snooping_querier_skips_no_querier_placeholder(cp):
+    """PARSE-04: '0.0.0.0' is the placeholder for NO operational querier, not a live one. Recording it made the
+    VLAN count as querier-covered and silenced the 'no IGMP querier' multicast-gap finding."""
+    assert parse.parse_igmp_snooping_querier("10    10.0.10.1    v2\n30    0.0.0.0    v2\n") == \
+        [{"vlan": "10", "querier": "10.0.10.1"}]
+    # detail form too
+    assert parse.parse_igmp_snooping_querier("Vlan 30: querier\n IP address : 0.0.0.0\n") == []
+
+
+def test_parse_bgp_summary_ipv6_is_linear_not_redos(cp):
+    """ROBUS-01: the IPv6-neighbour alternative had two adjacent unbounded `+` over a colon-overlapping class,
+    so a long all-hex/colon line backtracked O(n^2). The length-bounded form must parse a 32KB junk line fast
+    while still matching a real (incl. ::-compressed) IPv6 neighbour."""
+    import time
+    t = time.perf_counter()
+    parse.parse_bgp_summary("a:" * 16000)
+    assert time.perf_counter() - t < 1.0           # was ~14s
+    rows = parse.parse_bgp_summary("2001:db8::1     4 65002  10 10 5 0 0 02:00:00 Idle")
+    assert rows and rows[0]["neighbor"] == "2001:db8::1" and rows[0]["state"] == "Idle"
