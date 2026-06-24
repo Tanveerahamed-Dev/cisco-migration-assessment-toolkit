@@ -151,3 +151,17 @@ def test_json_value_and_vendor_secrets_are_redacted():
     # structural 'key' field and the pass/fail COUNT must NOT be redacted
     assert r["causal"][0]["key"] == "struct-0" and r["causal"][0]["title"] == "ok"
     assert r["security"]["core1"]["summary"]["pass"] == 9
+
+
+def test_controller_and_inventory_serials_are_redacted():
+    """HTML_-02: ACI fabric-node 'serial' (parse_aci_fabric_nodes -> snap['aci'].nodes) and the power-supply
+    'ps_serials' LIST (parse_show_inventory) reach the snapshot under key names that were not in the serial-key
+    set, so they leaked verbatim under --redact. Both must now be pseudonymized to SNxxxx."""
+    snap = {"aci": {"apic1": {"nodes": [{"name": "leaf-101", "serial": "FDO12345REAL"}]}},
+            "inventory": {"sw1": {"ps_serials": ["POW1111SECRET", "POW2222SECRET"]}}}
+    r = html.redact_snapshot(snap)
+    blob = json.dumps(r)
+    for s in ("FDO12345REAL", "POW1111SECRET", "POW2222SECRET"):
+        assert s not in blob, f"serial leaked under --redact: {s}"
+    assert r["aci"]["apic1"]["nodes"][0]["serial"].startswith("SN")
+    assert all(v.startswith("SN") for v in r["inventory"]["sw1"]["ps_serials"])

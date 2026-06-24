@@ -194,7 +194,17 @@ class Store:
             return (snap or {}).get(key)
         if row is None or row["sect"] is None:
             return None
-        return json.loads(row["sect"])
+        sect = row["sect"]
+        # json_extract returns a JSON *object/array* as an encoded string, but a JSON SCALAR (string/number/
+        # bool) is returned as the native Python value -- json.loads(int) raises TypeError and json.loads(a bare
+        # string) raises JSONDecodeError, neither caught above, so a section that is a scalar in a malformed
+        # upload (e.g. {"design_blueprint": 5}) 500'd. Only decode an encoded str; return a native scalar as-is.
+        if not isinstance(sect, (str, bytes, bytearray)):
+            return sect
+        try:
+            return json.loads(sect)
+        except (json.JSONDecodeError, ValueError):
+            return sect   # a bare scalar string -> hand back the raw value; callers isinstance-check it
 
     def campaign_exists(self, campaign_id: int) -> bool:
         """Existence check without parsing every snapshot summary (V3.23.159: get_campaign was
