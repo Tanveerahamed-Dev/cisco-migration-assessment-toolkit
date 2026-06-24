@@ -86,6 +86,7 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
 
     r = {"endpoints": 0, "n_fail": 0, "n_warn": 0, "readiness": None}
     seq, scen, val_items, worst, seen = {}, {}, [], None, set()
+    mbb_all, hard_all = [], []   # cutover host split UNIONED across every group in the wave (not just the first)
     wsw = set(wave_switches or [])
     for g in gnames:
         rr = readiness_by_group.get(g) or {}
@@ -101,8 +102,15 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         rd = rr.get("readiness")
         if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
             worst = rd
+        gseq = seq_by_group.get(g) or {}
         if not seq:
-            seq = seq_by_group.get(g) or {}
+            seq = gseq
+        for _h in (gseq.get("make_before_break") or []):
+            if _h not in mbb_all:
+                mbb_all.append(_h)
+        for _h in (gseq.get("hard_cutover") or []):
+            if _h not in hard_all:
+                hard_all.append(_h)
         if not scen:
             scen = scen_by_group.get(g) or {}
         for v in (val_by_wave.get(g) or []):
@@ -111,6 +119,11 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
                 seen.add(key)
                 val_items.append(v)
     r["readiness"] = worst or "—"
+    # Overlay the UNIONED cutover host split so the procedure branches on the WHOLE wave, not just the
+    # representative group (the free-text 'sequence' stays the representative's — descriptive only). Copy
+    # so the engine's record is never mutated (this joiner reads the engine's records, never recomputes).
+    if seq:
+        seq = {**seq, "make_before_break": mbb_all, "hard_cutover": hard_all}
     return r, seq, scen, val_items
 
 
@@ -460,7 +473,6 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
         # 2.x.5 procedure (each step carries its success criterion — the MOP definition)
         doc.add_heading(f"{wi}.5 Cutover procedure", level=2)
-        strategy = (seq.get("sequence") or scen.get("recommended_scenario") or "").lower()
         proc = [("Open the change window and announce start in the war room; confirm rollback owner "
                  "is present.",
                  "roles confirmed; the rollback decision time in §" + f"{wi}.1 is agreed.")]

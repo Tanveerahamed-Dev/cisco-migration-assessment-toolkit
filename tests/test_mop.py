@@ -279,6 +279,20 @@ def test_mop_join_apportions_endpoints_to_subwave():
     assert r4["endpoints"] == 400                                          # full coverage -> full total
 
 
+def test_mop_join_unions_cutover_split_across_groups():
+    """A batch wave spans MULTIPLE groups; the cutover host split (make_before_break / hard_cutover)
+    must UNION across all of them, not just the first/representative group. Else a wave mixing a
+    dual-homed group (make-before-break) with a single-homed group (hard cutover) reads only the first
+    group's split — taking the wrong procedure branch and silently dropping the other group's switches."""
+    from cisco_toolkit.mop import _join_group_records
+    seq_by_group = {"G1": {"make_before_break": ["a", "b"], "hard_cutover": []},
+                    "G2": {"make_before_break": [], "hard_cutover": ["c"]}}
+    rbg = {"G1": {"switches": ["a", "b"]}, "G2": {"switches": ["c"]}}
+    _r, seq, _scen, _val = _join_group_records(["G1", "G2"], ["a", "b", "c"], rbg, seq_by_group, {}, {})
+    assert set(seq.get("make_before_break") or []) == {"a", "b"}
+    assert set(seq.get("hard_cutover") or []) == {"c"}     # the single-homed group is NOT dropped -> branch is correct
+
+
 def _snap_waves():
     """_snap() + a canonical wave_plan: Group 1 (distA,distB) sliced into 2 coupled-subwaves; Group 2
     (acc1) as an independent-batch — 3 waves."""

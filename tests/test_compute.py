@@ -322,6 +322,25 @@ def test_compute_capacity_blanks_util_when_active_ports_unobserved(cp):
     assert out["unobs"]["port_util"] == "" and out["unobs"]["free_ports"] == ""
 
 
+def test_build_device_physical_emits_none_active_ports_when_status_unobserved(cp):
+    """The companion to the above: compute_capacity handles a None active count, but the PIPELINE must
+    actually PRODUCE one. build_device_physical must emit active_ports=None (not 0) when no physical
+    port carries an observed link status — else that None-guard is dead code and a device whose port
+    status was not collected (e.g. [HISTORY-REDACTED]'s DS17/AS01: chassis ports known, status uncollected) falsely
+    reads 0% utilization / all-ports-free on the Capacity sheet. A genuine all-down switch (status
+    observed, 0 up) stays a real 0."""
+    from cisco_toolkit.build import build_device_physical
+    from cisco_toolkit.model import InterfaceData
+    blind = {f"GigabitEthernet1/0/{i}": InterfaceData(port=f"GigabitEthernet1/0/{i}", status="")
+             for i in range(1, 5)}
+    dp = build_device_physical("blind", "ios", {}, blind)
+    assert dp.total_ports == 4 and dp.active_ports is None, (dp.total_ports, dp.active_ports)
+    seen = {f"GigabitEthernet1/0/{i}": InterfaceData(port=f"GigabitEthernet1/0/{i}",
+            status=("connected" if i <= 3 else "notconnect")) for i in range(1, 5)}
+    dp2 = build_device_physical("seen", "ios", {}, seen)
+    assert dp2.active_ports == 3, dp2.active_ports
+
+
 def test_physical_health_surfaces_and_flags_output_side_errors(cp, tmp_path):
     """The output-side L1 counters (output errors / late collisions) — previously parsed then discarded —
     now reach the physical_health record AND feed the 'error-rate-high' dirty-port flag, so a port that is

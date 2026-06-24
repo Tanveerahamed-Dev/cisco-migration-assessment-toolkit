@@ -81,6 +81,19 @@ def test_engagement_has_skeleton_sections_and_furniture(tmp_path):
     assert "Engagement Workflow & Plan of Record (.docx)" not in text
 
 
+def test_engagement_inventoried_count_reads_canonical_scale(tmp_path):
+    """SSOT: the 'N collected of M inventoried' line must take BOTH figures from the canonical
+    executive_brief.scale (n_collected AND n_devices), not mix a canonical n_collected with a
+    len(devices) recount — which renders a self-contradictory 'collected of <smaller> inventoried'
+    when the inventory exceeds the (smaller) device map. Discriminating fixture: scale says 303
+    devices while the devices map holds 4."""
+    snap = _snap()
+    snap.setdefault("executive_brief", {})["scale"] = {"n_devices": 303, "n_collected": 253}
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Test Fleet")
+    assert "253 collected of 303 inventoried" in _all_text(Document(out))
+
+
 def test_engagement_verdict_holds_on_blockers_and_cites_evidence(tmp_path):
     out = str(tmp_path / "e.docx")
     write_engagement_docx(out, _snap(), "Unit Test Fleet")

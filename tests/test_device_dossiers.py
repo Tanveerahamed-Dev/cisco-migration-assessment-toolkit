@@ -24,7 +24,7 @@ def test_empty_inputs_yield_empty_register():
     dd = compute_device_dossiers()
     assert dd["per_device"] == []
     assert dd["summary"]["n_devices"] == 0
-    assert dd["summary"]["bands"] == {"Severe": 0, "Elevated": 0, "Guarded": 0, "Low": 0}
+    assert dd["summary"]["bands"] == {"Severe": 0, "Elevated": 0, "Guarded": 0, "Low": 0, "Unassessed": 0}
     assert "not assessed" in dd["note"]
 
 
@@ -45,6 +45,24 @@ def test_healthy_device_lands_low_and_na_axes_never_count():
     assert states["Health"] == "ok"
     assert d["n_na"] >= 5                    # most axes carry no evidence here
     assert d["verdict"].startswith("No stacked risk")
+
+
+def test_fully_unassessed_device_is_not_a_clean_bill_of_health():
+    """Coverage-honesty: a device with NO collected evidence (health band 'Insufficient Data', every
+    risk axis n/a, no risk/watch signal) must NOT be labeled 'No stacked risk — routine migration
+    handling' / Low — that reads a collection GAP as a clean assessment (the exact false-health the
+    doctrine forbids). It gets a distinct 'Unassessed' band + an honest verdict. On [HISTORY-REDACTED] this is the 50
+    not-collected devices. Distinct from the assessed-clean case above (band 'Excellent', Health=ok)."""
+    dd = compute_device_dossiers(
+        health_scores=[{"switch": "darkbox", "score": None, "band": "Insufficient Data",
+                        "role": "access", "criticality": 1.0, "deductions": []}])
+    (d,) = dd["per_device"]
+    assert d["health_band"] == "Insufficient Data"
+    assert d["n_risk"] == 0 and d["n_watch"] == 0
+    assert d["risk_band"] == "Unassessed", d["risk_band"]
+    assert not d["verdict"].startswith("No stacked risk")
+    assert ("not assess" in d["verdict"].lower()) or ("collection gap" in d["verdict"].lower())
+    assert dd["summary"]["bands"].get("Unassessed") == 1
 
 
 def test_compound_eol_keystone_fires_and_floors_the_band():

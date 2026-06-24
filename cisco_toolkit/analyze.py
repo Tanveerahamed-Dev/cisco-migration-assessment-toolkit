@@ -5170,7 +5170,7 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
 # signature senior-engineer read. Pure synthesis of already-computed records;
 # no new collection; an axis without evidence is 'not assessed', never red.
 # =============================================================================
-_DOSSIER_BANDS = ("Severe", "Elevated", "Guarded", "Low")
+_DOSSIER_BANDS = ("Severe", "Elevated", "Guarded", "Low", "Unassessed")
 _DOSSIER_BAND_RANK = {b: i for i, b in enumerate(_DOSSIER_BANDS)}
 # risk_index thresholds (impact 1-10 x exposure 0-10 -> 0-100)
 _DOSSIER_SEVERE, _DOSSIER_ELEVATED, _DOSSIER_GUARDED = 50, 25, 10
@@ -5471,10 +5471,21 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif "High" in comp_sevs and risk_band in ("Guarded", "Low"):
             risk_band = "Elevated"
 
+        # coverage-honesty: a device with NO collected evidence (no health score -> 'Insufficient
+        # Data' band, every risk axis n/a, no risk/watch signal) is NOT low-risk — it is UNASSESSED.
+        # Banding it "Low / no stacked risk" would read a collection GAP as a clean bill of health
+        # (the exact false-health the doctrine forbids). Distinct band so it never inflates the risk
+        # view yet is counted + visible. ([HISTORY-REDACTED]: the 50 not-collected devices.)
+        if band == "Insufficient Data" and n_risk == 0 and n_watch == 0:
+            risk_band = "Unassessed"
+
         # -- the engineer's one-sentence verdict ------------------------------
         red_labels = [e["label"] for e in exposures if e["state"] == "risk"][:3]
         watch_labels = [e["label"] for e in exposures if e["state"] == "watch"][:3]
-        if risk_band == "Severe":
+        if risk_band == "Unassessed":
+            verdict = ("Not assessed — no evidence was collected for this device; this is a coverage "
+                       "gap, not a clean bill of health. Collect before relying on a risk verdict.")
+        elif risk_band == "Severe":
             verdict = ("Stabilize or replace before migration — "
                        + "; ".join(red_labels or watch_labels) + f"; {impact_phrase}.")
         elif risk_band == "Elevated":
