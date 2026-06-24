@@ -321,6 +321,23 @@ def create_app(db_path: str | None = None) -> FastAPI:
             ar = compute_architecture_review(snap)
         return ar
 
+    _fallback_bp: Dict[int, Any] = {}
+
+    def _fallback_blueprint(snapshot_id: int, snap: Dict[str, Any]) -> Dict[str, Any]:
+        """The design_blueprint computed on the fly for a snapshot that doesn't store one, MEMOISED by id. The
+        four read endpoints below (causal_flows / design / architecture_coverage / nrfu) each fall back to this
+        when the stored section is absent; a stored snapshot is immutable (the Store exposes no update), so this
+        pure function of the snapshot + its STORED requirements is identical on every request -- compute it once
+        per snapshot instead of re-running compute_design_blueprint on each panel load. The POST overlays use a
+        REQUEST-supplied register and deliberately bypass this cache."""
+        cached = _fallback_bp.get(snapshot_id)
+        if cached is None:
+            from cisco_toolkit.design_advisor import compute_design_blueprint
+            cached = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+            if len(_fallback_bp) < 256:        # bound memory; immutable snapshots mean an entry never goes stale
+                _fallback_bp[snapshot_id] = cached
+        return cached
+
     @app.get("/api/snapshots/{snapshot_id}/causal_flows")
     def snapshot_causal_flows(snapshot_id: int) -> Dict[str, Any]:
         """Unified CAUSAL FLOW model (engine compute_causal_flows) — every finding family rendered as one
@@ -340,9 +357,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         bp = snap.get("design_blueprint")
         if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
             try:
-                from cisco_toolkit.design_advisor import compute_design_blueprint
                 snap = dict(snap)
-                snap["design_blueprint"] = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+                snap["design_blueprint"] = _fallback_blueprint(snapshot_id, snap)
             except Exception:
                 pass  # design couldn't be computed -> fall through; the other families still render
         from cisco_toolkit.causal import compute_causal_flows
@@ -360,13 +376,12 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         bp = store.get_snapshot_section(snapshot_id, "design_blueprint")
         if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
-            from cisco_toolkit.design_advisor import compute_design_blueprint
             snap = store.get_snapshot(snapshot_id)
             if snap is None:
                 raise HTTPException(404, "Snapshot not found")
             # honour the register the CLI published with the snapshot so the fallback recompute is the SAME
             # right-sized blueprint the stored section would have been (not an un-right-sized one)
-            bp = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+            bp = _fallback_blueprint(snapshot_id, snap)
         return bp
 
     @app.get("/api/snapshots/{snapshot_id}/architecture_coverage")
@@ -380,12 +395,12 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         cov = store.get_snapshot_section(snapshot_id, "architecture_coverage")
         if not (isinstance(cov, dict) and isinstance(cov.get("classes"), list)):
-            from cisco_toolkit.design_advisor import compute_design_blueprint, compute_architecture_coverage
+            from cisco_toolkit.design_advisor import compute_architecture_coverage
             snap = store.get_snapshot(snapshot_id)
             if snap is None:
                 raise HTTPException(404, "Snapshot not found")
             if not isinstance(snap.get("design_blueprint"), dict):
-                snap["design_blueprint"] = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+                snap["design_blueprint"] = _fallback_blueprint(snapshot_id, snap)
             cov = compute_architecture_coverage(snap)
         return cov
 
@@ -418,7 +433,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
         that triggered it, and the specific devices the NRFU engineer must verify. Items are phased
         across three cutover stages: pre-cutover → post-cutover-functional → post-cutover-operational.
         The right-sizing logic lives only in Python — the dashboard never re-derives test items."""
-        from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu
+        from cisco_toolkit.design_advisor import compute_design_nrfu
         nrfu = store.get_snapshot_section(snapshot_id, "design_nrfu")   # canonical, published by the engine
         if isinstance(nrfu, dict) and isinstance(nrfu.get("items"), list):
             return nrfu
@@ -427,7 +442,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
             snap = store.get_snapshot(snapshot_id)
             if snap is None:
                 raise HTTPException(404, "Snapshot not found")
-            bp = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+            bp = _fallback_blueprint(snapshot_id, snap)
         return compute_design_nrfu(bp)
 
     @app.post("/api/snapshots/{snapshot_id}/design/nrfu")
