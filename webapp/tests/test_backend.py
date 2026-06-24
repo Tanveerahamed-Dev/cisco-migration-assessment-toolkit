@@ -68,14 +68,20 @@ def test_section_slice_and_guard(client):
 
 def test_architecture_coverage_endpoint(client):
     """The architecture-coverage SSOT is served (computed server-side with the SAME engine function the
-    explorer/CLI use -- the dashboard never re-derives coverage). Shape is the 23-class, two-channel,
-    coverage-honest map."""
+    explorer/CLI use -- the dashboard never re-derives coverage). The class count is locked to the engine's
+    OWN registry (drift-proof: when the engine adds an architecture class the webapp contract moves with it,
+    so the lock can never silently fall stale the way a hardcoded number does)."""
+    import cisco_toolkit.design_advisor as da
+    n_ssh = sum(1 for _axis, _label, ch, _pids in da._ARCH_COVERAGE_REGISTRY if ch == "ssh")
+    n_json = sum(1 for _axis, _label, ch, _pids in da._ARCH_COVERAGE_REGISTRY if ch == "json")
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/architecture_coverage")
     assert r.status_code == 200
     cov = r.json()
-    assert isinstance(cov.get("classes"), list) and cov["summary"]["n_classes"] == 23
-    assert cov["summary"]["by_channel"]["json"] == 4 and cov["summary"]["by_channel"]["ssh"] == 19
+    # Cross-surface SSOT: the served count == the engine's canonical registry (and is internally consistent).
+    assert isinstance(cov.get("classes"), list)
+    assert cov["summary"]["n_classes"] == len(da._ARCH_COVERAGE_REGISTRY) == len(cov["classes"])
+    assert cov["summary"]["by_channel"]["json"] == n_json and cov["summary"]["by_channel"]["ssh"] == n_ssh
     by = {c["key"]: c for c in cov["classes"]}
     assert by["aci"]["channel"] == "json" and by["sdwan"]["channel"] == "json"
     # coverage-honest: every class is observed-and-status or not-observed (never silently 'healthy')
