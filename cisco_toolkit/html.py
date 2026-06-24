@@ -119,6 +119,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     NONE = "\u2205"  # empty marker
 
     wb = Workbook(); wb.remove(wb.active)
+    from cisco_toolkit.excel import harden_workbook
+    harden_workbook(wb)   # sanitize control chars in device-derived text -> no IllegalCharacterError abort
 
     def sheet(title, cols):
         ws = wb.create_sheet(title)
@@ -393,6 +395,8 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
 
     trend = compute_campaign_trend(snapshots)
     wb = Workbook(); wb.remove(wb.active)
+    from cisco_toolkit.excel import harden_workbook
+    harden_workbook(wb)   # sanitize control chars in device-derived text -> no IllegalCharacterError abort
 
     def sheet(title, cols):
         ws = wb.create_sheet(title)
@@ -637,7 +641,25 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # latter left the real, offline-crackable digest exposed. Anchored on 'key', so a bare IKE 'hash md5'
     # algorithm choice (no key-id + secret) is never corrupted.
     r"(\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(\S+)",
+    # Non-Cisco vendor config forms: FortiGate 'set passwd|psksecret|password [ENC] <VALUE>' and Junos
+    # 'authentication-key|secret "<VALUE>"' -- 'passwd'/'psksecret' are not the whole words 'password'/'secret',
+    # so the Cisco patterns above miss them.
+    r"(set\s+(?:passwd|psksecret|password|private-key)\s+(?:ENC\s+)?)(\S+)",
 )]
+# JSON-VALUE secrets: the controller-REST channels (ACI / ISE / FMC / vManage) and IaC exports store a secret as
+# a VALUE under a key, with no inline keyword for the deny-list regexes above to anchor on. So redact the WHOLE
+# value when its key is a known secret-bearing name. Keys are normalized (lowercased, '_'/'-' stripped) before
+# the lookup. 'key' is deliberately EXCLUDED -- it is a generic structural field name across the snapshot (causal
+# flows, design decisions) and the inline 'key <val>' CLI form is already covered above.
+_REDACT_SECRET_KEYS = {
+    "password", "passwd", "pwd", "passphrase", "secret", "psksecret", "presharedkey", "psk",
+    "token", "authtoken", "accesstoken", "apikey", "apisecret", "community", "snmpcommunity",
+    "credential", "credentials", "privatekey", "sharedsecret", "clientsecret",
+}   # 'pass' deliberately omitted -- it is a pass/fail COUNT key in security summaries, not a secret
+
+
+def _norm_key(k) -> str:
+    return re.sub(r"[_-]", "", str(k or "").lower())
 
 
 def _scrub_secrets(s: str) -> str:
@@ -692,6 +714,8 @@ def redact_snapshot(snap: dict) -> dict:
         if isinstance(o, str):
             if key in _REDACT_SERIAL_KEYS: return _serial(o)
             if key == "wild": return o   # ACL wildcard mask is not an address; preserve so post-redact L4 eval stays correct
+            if o and _norm_key(key) in _REDACT_SECRET_KEYS:
+                return _REDACT_PLACEHOLDER   # a secret stored as a JSON value under a credential-named key
             return _scrub(o)
         return o
 

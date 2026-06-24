@@ -125,3 +125,29 @@ def test_secret_scrub_preserves_acl_wildcard_and_ip_redaction():
     assert acl["src"]["ip"] != "10.0.10.0"            # IP still pseudonymized
     assert r["devices"]["core1"]["serial_number"].startswith("SN")
     assert "FOC1234X" not in json.dumps(r)
+
+
+def test_json_value_and_vendor_secrets_are_redacted():
+    """The controller-REST channels (ACI / ISE / FMC / vManage) and IaC exports store a secret as a VALUE under
+    a credential-named key, with NO inline keyword for the CLI deny-list to anchor on; and FortiGate uses
+    'set passwd|psksecret' (not the whole words 'password'/'secret'). Both must be scrubbed by --redact. A
+    generic structural 'key' field (a causal-flow id) must be PRESERVED -- it is not a secret, and a pass/fail
+    COUNT keyed 'pass' must survive too."""
+    snap = {
+        "aci": {"login": {"token": "AABB-LeakToken-1234", "password": "Sup3rSecret!"}},
+        "creds": {"apiKey": "sk-live-9f8e7d6c", "community": "PrivateRO-COMM", "client_secret": "cs-zzzz"},
+        "fortigate": {"raw": ["set passwd ENC AABBenchashvalue==", "set psksecret MyVpnPreSharedKey99"]},
+        "causal": [{"key": "struct-0", "title": "ok"}],
+        "security": {"core1": {"summary": {"fail": 0, "pass": 9, "na": 1}}},
+    }
+    r = html.redact_snapshot(snap)
+    blob = json.dumps(r)
+    for secret in ("AABB-LeakToken-1234", "Sup3rSecret!", "sk-live-9f8e7d6c", "PrivateRO-COMM",
+                   "cs-zzzz", "AABBenchashvalue==", "MyVpnPreSharedKey99"):
+        assert secret not in blob, f"secret leaked into the redacted snapshot: {secret!r}"
+    assert r["aci"]["login"]["token"] == "<redacted>" and r["aci"]["login"]["password"] == "<redacted>"
+    assert r["creds"]["apiKey"] == "<redacted>" and r["creds"]["community"] == "<redacted>"
+    assert r["creds"]["client_secret"] == "<redacted>"
+    # structural 'key' field and the pass/fail COUNT must NOT be redacted
+    assert r["causal"][0]["key"] == "struct-0" and r["causal"][0]["title"] == "ok"
+    assert r["security"]["core1"]["summary"]["pass"] == 9
