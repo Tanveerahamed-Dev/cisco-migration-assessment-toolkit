@@ -1350,6 +1350,49 @@ def parse_ise_nodes(output: str) -> list:
     return [_ise_node(r) for r in _ise_rows(obj) if isinstance(r, dict)]
 
 
+# --- multi-vendor: Arista EOS (the FIRST non-Cisco NOS) -- 'show mlag | json' device-native JSON ----------
+def parse_arista_mlag(output: str) -> dict:
+    """Arista EOS MLAG (multi-chassis link aggregation) state from 'show mlag | json' / eAPI -> a normalized
+    dict, or {} when MLAG is not configured / not present. MLAG is Arista's dual-active redundancy primitive
+    -- the direct analogue of Cisco vPC -- so this is the first NON-Cisco vendor axis the engine assesses.
+    EOS is JSON-native ('show ... | json'), so this is a robust json.loads (no regex-fidelity risk). Fields
+    (per the EOS 'show mlag' model): state (disabled|inactive|active|primary|secondary|connecting), negStatus
+    (connected when the peers agree), peerLinkStatus / localIntfStatus (up|down), configSanity
+    (consistent|inconsistent -- the analogue of the vPC Type-1 consistency check; inconsistent silently
+    SUSPENDS the affected VLANs), and mlagPorts (counts keyed by Active-full / Active-partial / Inactive /
+    Configured / Disabled). Returns {} when state is absent or 'disabled' (MLAG not configured), so the
+    detector stays coverage-honest -- absence of MLAG is never a finding. Tolerant; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    state = str(obj.get("state", "") or "").strip().lower()
+    if not state or state == "disabled":
+        return {}                                          # MLAG not configured -- coverage-honest absence
+    ports = obj.get("mlagPorts") if isinstance(obj.get("mlagPorts"), dict) else {}
+
+    def _ct(key):
+        v = ports.get(key)
+        return v if isinstance(v, int) else 0
+
+    return {
+        "state": state,
+        "neg_status": str(obj.get("negStatus", "") or "").strip().lower(),
+        "config_sanity": str(obj.get("configSanity", "") or "").strip().lower(),
+        "peer_link_status": str(obj.get("peerLinkStatus", "") or "").strip().lower(),
+        "local_intf_status": str(obj.get("localIntfStatus", "") or "").strip().lower(),
+        "peer_link": str(obj.get("peerLink", "") or ""),
+        "peer_address": str(obj.get("peerAddress", "") or ""),
+        "domain_id": str(obj.get("domainId", "") or ""),
+        "ports_active_full": _ct("Active-full"),
+        "ports_active_partial": _ct("Active-partial"),
+        "ports_inactive": _ct("Inactive"),
+        "ports_configured": _ct("Configured"),
+    }
+
+
 # --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
 def _fmc_items(output: str) -> list:
     """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object
