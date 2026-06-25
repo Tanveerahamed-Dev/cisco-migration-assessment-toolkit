@@ -157,6 +157,124 @@ def test_reachability_diff_total_on_bad_pairs():
     assert fib.reachability_diff({}, {}, [None, ("only-one",), 5])["summary"] == {}   # malformed pairs skipped
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Adversarial-wave findings (12 confirmed; fib-adversarial-verify wave). Each asserts the COVERAGE-HONEST behavior:
+# a definitive computed:reached / computed:unreachable / diff verdict must never be fabricated from incomplete
+# exploration -- when the routes don't support a definitive answer, the result is an explicit lower bound.
+# ---------------------------------------------------------------------------------------------------------------
+
+def _ecmp_snap(bad_first):
+    """R1 has TWO equal-cost (ospf/AD110) legs to 10.9.9.0/24: one dead-ends at collected R3 (no route), one
+    reaches via R2 (dst connected). A real router installs both and load-balances, so the flow CAN take the
+    working leg -- exploring only the first leg and asserting a definitive drop is false-health."""
+    g = {"prefix": "10.9.9.0/24", "source": "ospf", "next_hop": "10.0.12.2"}   # good leg via R2
+    b = {"prefix": "10.9.9.0/24", "source": "ospf", "next_hop": "10.0.13.3"}   # dead-end leg via R3
+    legs = [b, g] if bad_first else [g, b]
+    return {"routes": {
+        "R1": legs + [{"prefix": "10.0.12.0/30", "source": "connected"},
+                      {"prefix": "10.0.13.0/30", "source": "connected"},
+                      {"prefix": "10.0.1.0/24", "source": "connected"}],
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.9.9.0/24", "source": "connected"}],
+        "R3": [{"prefix": "10.0.13.0/30", "source": "connected"}]}}
+
+
+def test_ecmp_reaches_via_an_equal_cost_alternate_leg():
+    """[wave #1 HIGH moat] trace must explore ALL equal-cost legs; the dst is deliverable via R2 regardless of
+    which leg compute_fib happens to order first -> computed:reached, never a fabricated computed:unreachable."""
+    for bad_first in (False, True):
+        t = fib.trace_fib_path(_ecmp_snap(bad_first), "10.0.1.5", "10.9.9.5")
+        assert t["status"] == "computed:reached" and t["reached"] is True, f"bad_first={bad_first} -> {t['status']}"
+
+
+def test_ecmp_reachability_diff_is_order_independent():
+    """[wave #2 HIGH moat] Two set-identical ECMP fabrics differing only in leg insertion order must NOT diff as a
+    newly_blocked regression (route reordering happens across re-collections / IOS-vs-NXOS show ordering)."""
+    d = fib.reachability_diff(_ecmp_snap(False), _ecmp_snap(True), [("10.0.1.5", "10.9.9.5")])
+    assert d["pairs"][0]["verdict"] == "preserved", d["pairs"][0]
+
+
+def test_eigrp_external_admin_distance():
+    """[wave #3] 'D EX' (EIGRP external, true AD 170) must not fall through to 255 (a spurious tie with junk)."""
+    assert fib._admin_distance("D EX") == 170 and fib._admin_distance("eigrp-external") == 170
+    f = fib.compute_fib([{"prefix": "10.5.5.0/24", "source": "frobnicate", "next_hop": "10.0.99.99"},
+                         {"prefix": "10.5.5.0/24", "source": "D EX", "next_hop": "10.0.12.2"}])
+    assert fib.fib_lookup(f, "10.5.5.5")["next_hop"] == "10.0.12.2"      # AD 170 beats unknown 255
+
+
+def test_is_connected_is_not_fooled_by_a_substring():
+    """[wave #4 moat] 'redistribute connected' / 'disconnected' / 'interconnect' are NOT directly-attached; the
+    old `'connect' in s` substring test fabricated a connected dst -> false computed:reached + false diff verdict."""
+    for s in ("redistribute connected", "bgp redistributed connected", "disconnected", "interconnect", "Not connected"):
+        assert fib._is_connected(s) is False, s
+    new = {"routes": {"R1": [{"prefix": "10.0.0.0/30", "source": "connected"},
+                             {"prefix": "10.99.99.0/24", "source": "redistribute connected", "next_hop": "10.0.0.2"}]}}
+    t = fib.trace_fib_path(new, "10.0.0.1", "10.99.99.5")
+    assert t["reached"] is False and t["status"] != "computed:reached"  # dst is NOT attached at R1
+    old = {"routes": {"R1": [{"prefix": "10.0.0.0/30", "source": "connected"}]}}
+    assert fib.reachability_diff(old, new, [("10.0.0.1", "10.99.99.5")])["pairs"][0]["verdict"] == "inconclusive"
+
+
+def test_nxos_direct_and_attached_are_connected():
+    """[wave #5] NX-OS 'show ip route' labels a directly-attached subnet 'direct' (and the /32 'local'); these
+    must be recognized as connected or genuinely-attached destinations are missed (reachable read as lower_bound)."""
+    assert fib._is_connected("direct") is True and fib._is_connected("attached") is True
+    snap = {"routes": {"R1": [{"prefix": "10.0.0.0/30", "source": "connected"},
+                              {"prefix": "192.168.1.0/24", "source": "direct"}]}}
+    assert fib.trace_fib_path(snap, "10.0.0.1", "192.168.1.50")["status"] == "computed:reached"
+
+
+def test_transit_mask_mismatch_is_ambiguous_not_a_fabricated_drop():
+    """[wave #6 HIGH moat] When two collected hosts both have a connected route covering the next-hop IP but at
+    DIFFERENT masks (/30 vs /24 on the same wire), the next hop cannot be pinned -> ambiguous lower bound, NOT a
+    definitive computed:unreachable / newly_blocked (the most-specific owner might be the dead-end)."""
+    snap = {"routes": {
+        "A": [{"prefix": "10.0.0.0/24", "source": "connected"}, {"prefix": "10.255.1.0/30", "source": "connected"},
+              {"prefix": "9.9.9.9/32", "source": "static", "next_hop": "10.255.1.2"}],
+        "GW": [{"prefix": "10.255.1.0/24", "source": "connected"}, {"prefix": "9.9.9.9/32", "source": "connected"}],
+        "DEADEND": [{"prefix": "10.255.1.0/30", "source": "connected"}]}}
+    t = fib.trace_fib_path(snap, "10.0.0.5", "9.9.9.9")
+    assert t["computed"] is False and t["status"] == "lower_bound:ambiguous_next_hop"
+
+
+def test_ambiguous_source_ip_is_a_lower_bound_not_a_verdict():
+    """[wave #8/#12 HIGH moat] A src IP owned by >1 collected host (a transit /30, connected on both ends) must
+    not be silently resolved via sorted src_hosts[0] -> the verdict would flip on hostname order alone."""
+    snap = {"routes": {
+        "R1": [{"prefix": "192.168.0.0/30", "source": "connected"}, {"prefix": "172.16.0.0/24", "source": "connected"}],
+        "R2": [{"prefix": "192.168.0.0/30", "source": "connected"}]}}
+    t = fib.trace_fib_path(snap, "192.168.0.1", "172.16.0.5")
+    assert t["computed"] is False and t["status"] == "lower_bound:ambiguous_src"
+    # and the diff must not fabricate a verdict off that ambiguous source
+    new = {"routes": {"R1": [{"prefix": "192.168.0.0/30", "source": "connected"}],
+                      "R2": [{"prefix": "192.168.0.0/30", "source": "connected"}]}}
+    assert fib.reachability_diff(snap, new, [("192.168.0.1", "172.16.0.5")])["pairs"][0]["verdict"] == "inconclusive"
+
+
+def test_cross_family_pair_is_never_reached():
+    """[wave #9 HIGH moat] A v6-src / v4-dst flow is physically impossible; it must never be certified
+    computed:reached (which fed the flagship diff a fabricated 'preserved')."""
+    snap = {"routes": {
+        "R1": [{"prefix": "2001:db8:1::/64", "source": "connected"}, {"prefix": "10.0.1.0/24", "source": "connected"},
+               {"prefix": "10.0.2.0/24", "source": "ospf", "next_hop": "10.0.1.2"}],
+        "R2": [{"prefix": "10.0.1.0/24", "source": "connected"}, {"prefix": "10.0.2.0/24", "source": "connected"}]}}
+    t = fib.trace_fib_path(snap, "2001:db8:1::9", "10.0.2.9")
+    assert t["reached"] is False and t["status"] == "lower_bound:cross_family"
+    assert fib.reachability_diff(snap, snap, [("2001:db8:1::9", "10.0.2.9")])["pairs"][0]["verdict"] == "inconclusive"
+
+
+def test_trace_and_diff_are_total_on_scalar_routes():
+    """[wave #10/#11] A host mapping to a non-iterable scalar must not raise -- the module promises total fns."""
+    assert fib.compute_fib(5) == [] and fib.compute_fib("oops") == []
+    assert fib.trace_fib_path({"routes": {"R1": 5}}, "1.1.1.1", "2.2.2.2")["computed"] is False
+    assert fib.reachability_diff({"routes": {"R1": 5}}, {"routes": {"R2": None}},
+                                 [("1.1.1.1", "2.2.2.2")])["pairs"][0]["verdict"] == "inconclusive"
+
+
+def test_odr_admin_distance():
+    """[wave L1] ODR has true AD 160, not OSPF's 110 (it was misread via the startswith('o') branch)."""
+    assert fib._admin_distance("ODR") == 160
+
+
 def test_real_route_source_codes_map_correctly():
     """Format-fidelity vs REAL AJ snapshot source values (a mix of expanded names AND raw codes with the '*'
     candidate-default marker): 's*' is static, 'o*ia' is OSPF inter-area, '' is unknown. _is_connected and the
