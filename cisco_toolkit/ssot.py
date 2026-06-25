@@ -187,8 +187,10 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
         try:  # vlan_inventory is the canonical VLAN-in-use derivation; import lazily (avoids cycles)
             from cisco_toolkit.analyze import vlan_inventory
             derived_vlans = len(vlan_inventory(snap))
-            check("executive_brief.scale.n_vlans", scale.get("n_vlans"), derived_vlans,
-                  "len(vlan_inventory)")
+            if derived_vlans:   # raw-evidence guard (like the n_devices/n_endpoints checks): a slimmed snapshot
+                # publishes n_vlans but strips the raw VLAN arrays -> derives 0 -> SKIP, never a false violation.
+                check("executive_brief.scale.n_vlans", scale.get("n_vlans"), derived_vlans,
+                      "len(vlan_inventory)")
         except Exception:
             pass  # not derivable on this snapshot shape -> skip, never a false violation
 

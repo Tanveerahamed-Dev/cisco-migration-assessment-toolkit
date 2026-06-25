@@ -22,7 +22,10 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
     ifaces = _ifaces if isinstance(_ifaces, dict) else {}
     _devices = snap.get("devices")
     devices = _devices if isinstance(_devices, dict) else {}
-    health = {r.get("switch"): r for r in (snap.get("health_scores") or []) if isinstance(r, dict)}
+    # require a STRING 'switch' key: a row without one would inject a None node id and make sorted(node_ids)
+    # raise TypeError (str vs None) -> an unhandled 500 on /graph (multi-domain audit #10).
+    health = {r.get("switch"): r for r in (snap.get("health_scores") or [])
+              if isinstance(r, dict) and isinstance(r.get("switch"), str)}
     node_ids = set(ifaces.keys()) | set(health.keys()) | set(devices.keys())
     ks = set(keystones or [])
 

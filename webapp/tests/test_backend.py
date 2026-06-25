@@ -1235,3 +1235,11 @@ def test_reconcile_gate_flags_a_drifting_snapshot(caplog):
         viol = _reconcile_gate(drift, "mop")
     assert viol and any("n_devices" in v for v in viol)                    # the drift is returned
     assert any("unreconciled" in r.getMessage() for r in caplog.records)   # ...and loudly logged
+
+
+def test_build_graph_tolerates_health_row_without_switch_key():
+    """[multi-domain audit #10] a health_scores row lacking a string 'switch' key injected a None node id and made
+    sorted(node_ids) raise TypeError (str vs None) -> an unhandled 500 on /graph."""
+    from webapp.backend.graph import build_graph
+    g = build_graph({"devices": {"sw1": {}}, "interfaces": {}, "health_scores": [{"band": "Good", "score": 90}]})
+    assert "nodes" in g and all(n["id"] is not None for n in g["nodes"])

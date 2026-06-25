@@ -152,6 +152,12 @@ def _signals(snap):
     sig = {}
     bad_fhrp = _no_fhrp_vlans(snap)
     sig["no_fhrp"] = len(bad_fhrp)
+    # TRUE single-gateway SPOFs (the SVI on exactly ONE device) per the l3_forwarding evidence -- distinct from
+    # 'no FHRP' (a multi-gateway VLAN without HSRP/VRRP has redundant gateways, just no automatic VIP failover, and
+    # is NOT a single point of failure). Reconciles the design doc's SPOF claim to its own l3_forwarding table
+    # (one source of truth) instead of conflating it with the larger no-FHRP count (multi-domain audit #5).
+    sig["single_gw"] = len({r.get("vlan") for r in _as_list(snap.get("l3_forwarding"))
+                            if "single-gateway" in str(r.get("risk") or "")})
     broken_fhrp = _broken_fhrp_vlans(snap)
     sig["fhrp_broken"] = len(broken_fhrp)
     sig["fhrp_broken_vids"] = sorted({g.get("vid") for g in broken_fhrp if g.get("vid") is not None})[:12]
@@ -1379,8 +1385,10 @@ def _d_fhrp(snap, sig):
         return None
     return _decision(
         "fhrp-first-hop-gateway-redundancy",
-        f"{sig['no_fhrp']} gateway VLAN(s) have a single gateway and no first-hop redundancy "
-        f"(HSRP/VRRP/GLBP) -- each is a per-VLAN single point of failure.",
+        f"{sig['no_fhrp']} gateway VLAN(s) have no first-hop redundancy (no HSRP/VRRP/GLBP)"
+        + (f"; {sig['single_gw']} of these are single-homed (one gateway) -- a per-VLAN single point of failure, "
+           "the rest have redundant gateways but no automatic VIP failover."
+           if sig.get("single_gw") else " -- redundant gateways present but no automatic VIP failover."),
         sig["no_fhrp"], ["availability", "convergence"],
         ["fhrp[].issues", "l3_forwarding[].fhrp", "failure_impact[].fhrp"],
         priority="Critical", driver="Gateway resilience: a VLAN must survive loss of its distribution switch.",
@@ -4093,7 +4101,8 @@ def compute_target_state(snap, requirements=None, sig=None):
     if sig["no_fhrp"]:
         dims.append(_ts_dim(
             "Gateway / first-hop resilience",
-            f"{sig['no_fhrp']} gateway VLAN(s) single-homed, no FHRP.",
+            f"{sig['no_fhrp']} gateway VLAN(s) without FHRP ({sig.get('single_gw', 0)} single-homed, the rest "
+            "multi-gateway but no VIP failover).",
             "Provide first-hop redundancy: in a classic distribution, dual gateways with FHRP (HSRP/VRRP) and "
             "the STP root co-located with the active gateway; in the target VXLAN-EVPN fabric, a DISTRIBUTED "
             "ANYCAST GATEWAY -- the same gateway IP/MAC on every leaf, so first-hop routing is local at the "

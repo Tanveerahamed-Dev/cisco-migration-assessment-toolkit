@@ -2027,3 +2027,34 @@ def test_parse_show_version_nxos_not_fooled_by_bios_substring(cp):
     r = parse.parse_show_version(out)
     assert r["sw_version"] == "9.3(10)"
     assert r["model"] == "C93180YC-EX"
+
+
+def test_parse_sdwan_control_connections_real_vmanage_field_names(cp):
+    """[multi-domain audit #3] real vManage /dataservice/device/control/connections rows use camelCase
+    'expectedControlConnections' + 'actualControlConnectionsToVsmart' (verified vs Cisco DevNet API docs); the
+    parser read hyphenated names -> expected/actual always None -> a control-plane redundancy DEFICIT
+    (actual < expected) was silently read healthy."""
+    import json
+    real = {"data": [{"peer-type": "vsmart", "system-ip": "172.16.255.40", "host-name": "BR40",
+                      "state": "up", "local-color": "mpls",
+                      "expectedControlConnections": 2, "actualControlConnectionsToVsmart": 1}]}
+    rows = parse.parse_sdwan_control_connections(json.dumps(real))
+    assert rows and rows[0]["expected"] == 2 and rows[0]["actual"] == 1 and rows[0]["peer_type"] == "vsmart"
+
+
+def test_parse_fortigate_ha_status_tolerates_bytes(cp):
+    """[multi-domain audit L1] the docstring promises 'never raises'; bytes input made the regex raise TypeError
+    (str pattern vs bytes string). Decode bytes first (siblings accept bytes via json.loads)."""
+    txt = b"Mode: HA A-P\nHA Health Status: OK\nConfiguration Status:\nFGT1(updated 1 seconds ago): in-sync\n"
+    r = parse.parse_fortigate_ha_status(txt)
+    assert r.get("mode", "").startswith("HA") and r["members"][0]["sync"] == "in-sync"
+
+
+def test_parse_sdwan_devices_extracts_status_and_state(cp):
+    """[multi-domain audit L2] a vManage edge can be 'reachable' yet status=error / state=red (a present-but-broken
+    fabric member); parse_sdwan_devices must surface status/state, not just reachability (else read healthy)."""
+    import json
+    real = {"data": [{"system-ip": "172.16.255.40", "host-name": "BR40", "reachability": "reachable",
+                      "status": "error", "state": "red", "device-model": "vedge-cloud", "version": "20.9"}]}
+    rows = parse.parse_sdwan_devices(json.dumps(real))
+    assert rows[0]["status"] == "error" and rows[0]["state"] == "red" and rows[0]["reachability"] == "reachable"

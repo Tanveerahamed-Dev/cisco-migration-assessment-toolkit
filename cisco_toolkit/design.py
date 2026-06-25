@@ -121,8 +121,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     punchlist = snap.get("punchlist") or []
     subnet_intel = snap.get("subnet_intelligence") or {}
     svc = snap.get("service_map") or {}
-    eb = snap.get("executive_brief") or {}
-    bp = snap.get("design_blueprint") or {}            # NEW: canonical CCDE-grounded design blueprint (read, never recompute)
+    # isinstance-guard, not `or {}`: a TRUTHY non-dict (a string/list in a malformed or slimmed snapshot) slips
+    # through `or {}` and then crashes .get('scale') -- the fail-soft siblings (engagement/ops) degrade via
+    # _as_dict; design.py was the asymmetric gap (multi-domain audit L4).
+    _eb = snap.get("executive_brief"); eb = _eb if isinstance(_eb, dict) else {}
+    _bp = snap.get("design_blueprint"); bp = _bp if isinstance(_bp, dict) else {}   # canonical design blueprint
 
     lc_by_host = {}
     for r in (lifecycle.get("per_device") or []):
@@ -138,7 +141,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # explorer, deck and webapp read) over a local recount, with len() only as a fallback — the HLD
     # was the last surface still recomputing scale, a latent drift risk even though they coincide
     # today (A5 SSOT fix). Lines that render the actual VLAN LIST keep len(vlans).
-    _scale = eb.get("scale") or {}
+    _sc = eb.get("scale"); _scale = _sc if isinstance(_sc, dict) else {}
     n_dev = _scale.get("n_devices") or len(devices)
     n_vlan = _scale.get("n_vlans") or len(vlans)
     vrfs, n_acl_svis, n_svis = _segmentation_facts(snap)
@@ -240,7 +243,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             if isinstance(info, dict) and info.get("is_root"):
                 root_count[host] += 1
     doc.add_paragraph(
-        f"The fabric carries {len(vlans)} VLANs. Spanning-tree root placement is recovered from "
+        # SSOT: the headline VLAN COUNT reads the canonical executive_brief.scale.n_vlans (n_vlan), not a
+        # recomputed len(vlans), so it can't drift from the rest of the doc (multi-domain audit L3). The VLAN
+        # LIST render below keeps len(vlans) -- it counts the rows actually shown.
+        f"The fabric carries {n_vlan} VLANs. Spanning-tree root placement is recovered from "
         f"'show spanning-tree': " + (
             "; ".join(f"{h} roots {n} VLAN(s)" for h, n in root_count.most_common(6))
             if root_count else "no explicit root bridge was observed in the collected output") + ".")
