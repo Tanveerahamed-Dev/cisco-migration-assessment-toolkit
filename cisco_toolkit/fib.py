@@ -174,10 +174,22 @@ def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32) -> dict:
     computed:unreachable. Pure/offline; total on bad input.
 
     Returns {src, dst, hops:[{host, match, next_hop, out_intf, source}], status, computed:bool, reached:bool}."""
+    fibs, connected = _build(snap)
+    return _trace(fibs, connected, src_ip, dst_ip)
+
+
+def _build(snap):
+    """(fibs, connected) for a snapshot -- the per-host FIBs + the connected-subnet index. Built ONCE so a
+    reachability matrix over many pairs (reachability_diff/reachability_delta) doesn't recompute them per trace."""
     snap = snap if isinstance(snap, dict) else {}
     routes_by_host = snap.get("routes") if isinstance(snap.get("routes"), dict) else {}
     fibs = {h: compute_fib(r) for h, r in routes_by_host.items()}
     connected = _connected_index(routes_by_host)
+    return fibs, connected
+
+
+def _trace(fibs, connected, src_ip, dst_ip):
+    """Core trace over PREBUILT (fibs, connected); coverage-honest semantics per trace_fib_path()."""
 
     def _result(hops, status, reached):
         return {"src": src_ip, "dst": dst_ip, "hops": hops, "status": status,
@@ -273,14 +285,15 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
     previously-working flow now drops) | newly_reachable | both_unreachable | inconclusive.
 
     Returns {pairs:[{src,dst,old_status,new_status,verdict}], summary:{verdict:count}}. Pure/offline; total."""
+    of, nf = _build(old_snap), _build(new_snap)            # build each snapshot's FIB ONCE, not per pair
     rows, summary = [], {}
     for pair in (pairs or []):
         try:
             src, dst = pair[0], pair[1]
         except (TypeError, IndexError, KeyError):
             continue
-        o = trace_fib_path(old_snap, src, dst)
-        n = trace_fib_path(new_snap, src, dst)
+        o = _trace(of[0], of[1], src, dst)
+        n = _trace(nf[0], nf[1], src, dst)
         if not (o["computed"] and n["computed"]):
             v = "inconclusive"
         elif o["reached"] and n["reached"]:
@@ -294,3 +307,70 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
         rows.append({"src": src, "dst": dst, "old_status": o["status"], "new_status": n["status"], "verdict": v})
         summary[v] = summary.get(v, 0) + 1
     return {"pairs": rows, "summary": summary}
+
+
+def subnet_reps(snap, limit: int = 24) -> list:
+    """A bounded, deterministic [(network_str, representative_host_ip)] -- one usable host IP per collected
+    CONNECTED subnet (the subnet's first host), sorted by (version, network) and capped at `limit`. Skips /32 &
+    /128 host routes (not a subnet to test) and unusable prefixes. Used to auto-derive the inter-subnet flows the
+    --compare reachability what-if checks. Pure/offline; total."""
+    snap = snap if isinstance(snap, dict) else {}
+    rbh = snap.get("routes") if isinstance(snap.get("routes"), dict) else {}
+    nets: dict = {}
+    for _host, routes in rbh.items():
+        for r in (routes if isinstance(routes, (list, tuple)) else []):
+            if not (isinstance(r, dict) and _is_connected(r.get("source"))):
+                continue
+            try:
+                net = ipaddress.ip_network(str(r.get("prefix", "")).strip(), strict=False)
+            except ValueError:
+                continue
+            if net.num_addresses < 2:                  # a /32 or /128 host route -- not a subnet to probe
+                continue
+            key = str(net)
+            if key not in nets:
+                try:
+                    nets[key] = str(next(net.hosts()))
+                except StopIteration:
+                    continue
+    ordered = sorted(nets.items(), key=lambda kv: (ipaddress.ip_network(kv[0]).version, ipaddress.ip_network(kv[0])))
+    return ordered[:max(0, int(limit))]
+
+
+def default_pairs(snap, limit: int = 24, max_pairs: int = 400) -> list:
+    """Representative inter-subnet flows to test: each collected connected subnet's first host -> every OTHER
+    subnet's first host (both directions), bounded (limit subnets, max_pairs total) and deterministic. Pure."""
+    reps = [ip for _net, ip in subnet_reps(snap, limit)]
+    pairs = []
+    for i, a in enumerate(reps):
+        for j, b in enumerate(reps):
+            if i != j:
+                pairs.append((a, b))
+                if len(pairs) >= max_pairs:
+                    return pairs
+    return pairs
+
+
+def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24) -> dict:
+    """The differential reachability what-if for the --compare cutover validation: classify how COMPUTED
+    reachability changed across a representative set of inter-subnet flows (auto-derived from the OLD/baseline
+    snapshot when `pairs` is None, so it reflects the pre-change topology). COVERAGE-HONEST: only DEFINITIVE
+    verdicts count -- ambiguous / incomplete-collection pairs are 'inconclusive', never a fabricated regression.
+
+    Returns {summary, newly_blocked:[...], newly_reachable:[...], preserved, inconclusive, pairs_tested,
+    subnets_tested, capped}. The headline is newly_blocked -- a flow the change definitively broke. Pure; total."""
+    reps = subnet_reps(old_snap, limit)
+    if pairs is None:
+        pairs = default_pairs(old_snap, limit)
+    diff = reachability_diff(old_snap, new_snap, pairs)
+    summary = diff["summary"]
+    return {
+        "summary": summary,
+        "newly_blocked": [p for p in diff["pairs"] if p["verdict"] == "newly_blocked"],
+        "newly_reachable": [p for p in diff["pairs"] if p["verdict"] == "newly_reachable"],
+        "preserved": summary.get("preserved", 0),
+        "inconclusive": summary.get("inconclusive", 0),
+        "pairs_tested": len(diff["pairs"]),
+        "subnets_tested": len(reps),
+        "capped": len(reps) >= int(limit),
+    }

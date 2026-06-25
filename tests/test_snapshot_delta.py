@@ -68,6 +68,43 @@ def test_delta_tolerates_snapshots_without_computed_keys():
     assert d["verdict"] == "CLEAN" and d["health"]["n_regressed"] == 0 and d["findings"]["n_opened"] == 0
 
 
+def _routes_snap(routes):
+    hosts = list(routes)
+    return {"devices": {h: {} for h in hosts}, "interfaces": {h: {} for h in hosts},
+            "health_scores": [], "punchlist": [], "routes": routes}
+
+
+def test_delta_flags_a_computed_reachability_regression():
+    """W2 live in --compare: a change that removes R1's route to 10.2.2.0/24 newly-blocks a previously-working
+    flow -> the reachability section reports it AND the cutover verdict goes REGRESSED on that alone (no findings
+    / health change involved), proving the differential what-if feeds the gate."""
+    base = {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
+                   {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2"}],
+            "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}
+    after = {k: [r for r in v if not (k == "R1" and r.get("source") == "ospf")] for k, v in base.items()}
+    d = compute_snapshot_delta(_routes_snap(base), _routes_snap(after))
+    assert d["reachability"]["pairs_tested"] >= 1
+    assert len(d["reachability"]["newly_blocked"]) >= 1
+    assert d["verdict"] == "REGRESSED" and "newly blocked" in d["verdict_note"]
+
+
+def test_delta_reachability_section_present_and_empty_without_routes():
+    s = _snap(["sw1"], [{"switch": "sw1", "band": "Good", "score": 80}], [])
+    d = compute_snapshot_delta(s, s)
+    assert d["reachability"]["pairs_tested"] == 0 and d["reachability"]["newly_blocked"] == []
+    assert d["verdict"] == "CLEAN"                       # no routes must NOT fabricate a reachability regression
+
+
+def test_diff_workbook_has_reachability_sheet_and_is_coverage_honest(tmp_path):
+    s = _snap(["sw1"], [{"switch": "sw1", "band": "Good", "score": 80}], [])
+    out = tmp_path / "diff.xlsx"
+    write_diff_workbook(s, s, str(out))
+    wb = load_workbook(str(out))
+    assert "Reachability" in wb.sheetnames
+    # no routes -> explicit 'not assessed', never a false 'no regressions'
+    assert "not assessed" in str(wb["Reachability"].cell(2, 1).value)
+
+
 def test_diff_workbook_has_validation_sheets(tmp_path):
     old = _snap(["sw1"], [{"switch": "sw1", "band": "Good", "score": 80}], [])
     new = _snap(["sw1"], [{"switch": "sw1", "band": "Critical", "score": 20}],
