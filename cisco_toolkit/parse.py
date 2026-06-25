@@ -108,6 +108,7 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
         'i':'isis','su':'static','*':'candidate-default','H':'hsrp'
     }
     current = None
+    current_entry = None        # the code-line entry that following indented 'via' continuation line(s) belong to
     for raw in output.splitlines():
         line = raw.rstrip()
         s = line.strip()
@@ -129,6 +130,7 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
             entry = {'prefix': prefix, 'code': code, 'source': code_map.get(code, code.lower()), 'next_hop': nh, 'out_intf': out_intf, 'raw': s}
             routes[prefix]['entries'].append(entry)
             current = prefix
+            current_entry = entry
             continue
         if current:
             m2 = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
@@ -138,7 +140,22 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                 out_intf = ''
                 if mint and not re.match(r"^\d+\.\d+\.\d+\.\d+$", mint.group(1)):
                     out_intf = normalize_ifname(mint.group(1))
-                routes[current]['entries'].append({'prefix': current, 'code': '', 'source': '', 'next_hop': nh, 'out_intf': out_intf, 'raw': s})
+                # Cisco prints the protocol code ONCE, on the prefix line; a 'via' that wrapped onto its own
+                # (indented) line therefore INHERITS that code/source. Fill the still-next-hop-less code-line
+                # entry in place; any further via line for the same prefix is an ECMP sibling that ALSO inherits
+                # the source -- never emit a sourceless sibling row (which split one route into two, losing the
+                # source<->next-hop pairing for every snap['routes'] consumer incl. the RIB->FIB tracer).
+                if current_entry is not None and not current_entry['next_hop'] \
+                        and current_entry['source'] not in ('connected', 'local'):
+                    current_entry['next_hop'] = nh
+                    if out_intf:
+                        current_entry['out_intf'] = out_intf
+                    current_entry['raw'] = (str(current_entry.get('raw', '')) + ' ' + s).strip()
+                else:
+                    inh_code = current_entry['code'] if current_entry is not None else ''
+                    inh_source = current_entry['source'] if current_entry is not None else ''
+                    routes[current]['entries'].append({'prefix': current, 'code': inh_code, 'source': inh_source,
+                                                       'next_hop': nh, 'out_intf': out_intf, 'raw': s})
     return routes
 
 def parse_copp_drops(output: str) -> list:

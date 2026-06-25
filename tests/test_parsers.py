@@ -565,6 +565,53 @@ def test_parse_ip_routes_connected(cp):
     assert entry["out_intf"] == "Vlan30"
 
 
+def test_parse_ip_routes_wrapped_continuation_merges_into_one_entry(cp):
+    """A route whose [metric] via ... wraps onto the next (indented) line must yield ONE entry carrying BOTH the
+    code-line source AND the continuation next-hop/interface -- not a sourced row + a sourceless sibling row (the
+    split lost reachability recall in the RIB->FIB tracer)."""
+    out = textwrap.dedent("""\
+        Codes: C - connected, O - OSPF
+        C    10.0.0.0/30 is directly connected, GigabitEthernet0/0
+        O    10.0.50.0/24
+                   [110/20] via 10.0.0.2, 00:05:00, GigabitEthernet0/0
+    """)
+    entries = parse.parse_ip_routes(out)["10.0.50.0/24"]["entries"]
+    assert len(entries) == 1
+    assert entries[0]["source"] == "ospf"
+    assert entries[0]["next_hop"] == "10.0.0.2"
+    assert entries[0]["out_intf"] == "Gi0/0"
+
+
+def test_parse_ip_routes_wrapped_ecmp_inherits_source_per_next_hop(cp):
+    """A wrapped route with multiple via continuation lines (ECMP) -> one entry PER next-hop, each INHERITING the
+    code-line source (never a sourceless row)."""
+    out = textwrap.dedent("""\
+        Codes: O - OSPF
+        O    10.0.50.0/24
+                   [110/20] via 10.0.0.2, 00:05:00, GigabitEthernet0/0
+                   [110/20] via 10.0.0.3, 00:05:00, GigabitEthernet0/1
+    """)
+    entries = parse.parse_ip_routes(out)["10.0.50.0/24"]["entries"]
+    assert len(entries) == 2
+    assert all(e["source"] == "ospf" for e in entries)
+    assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.3"}
+    assert {e["out_intf"] for e in entries} == {"Gi0/0", "Gi0/1"}
+
+
+def test_parse_ip_routes_inline_via_plus_continuation_ecmp(cp):
+    """The common inline-via form is unchanged; an additional via continuation line is an ECMP sibling that also
+    inherits the source (so the inline + wrapped forms behave identically)."""
+    out = textwrap.dedent("""\
+        Codes: B - BGP
+        B    192.168.9.0/24 [20/0] via 10.0.0.2, 1d00h, GigabitEthernet0/0
+                   [20/0] via 10.0.0.6, 1d00h, GigabitEthernet0/1
+    """)
+    entries = parse.parse_ip_routes(out)["192.168.9.0/24"]["entries"]
+    assert len(entries) == 2
+    assert all(e["source"] == "bgp" for e in entries)
+    assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.6"}
+
+
 # ---- interface counters (errors) ------------------------------------------- #
 def test_parse_interface_counters(cp):
     out = textwrap.dedent("""\
