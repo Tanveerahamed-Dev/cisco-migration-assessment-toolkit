@@ -117,8 +117,9 @@ _MISSING = object()
 def _device_not_collected(snap: Dict[str, Any], device: str) -> bool:
     """True iff `device` is in the collection blind-spot list with status 'not collected' (a fully un-collected
     device). A 'partial' device (some evidence collected) or a fully-collected one is NOT a blind spot."""
+    want = (device or "").strip().lower()                # device names vary in case (devices.json vs show-text)
     for d in (_dotted(snap, "collection_completeness.devices") or []):
-        if isinstance(d, dict) and d.get("host") == device:
+        if isinstance(d, dict) and (d.get("host") or "").strip().lower() == want:
             return str(d.get("status", "")).strip().lower() == "not collected"
     return False
 
