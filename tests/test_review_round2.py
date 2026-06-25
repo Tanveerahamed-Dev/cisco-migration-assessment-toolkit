@@ -145,3 +145,38 @@ def test_archreview_sheet_distinguishes_crash_from_legit_empty():
     assert "unavailable" not in wb_legit[N].cell(2, 1).value.lower()      # legit-empty keeps its honest grade row
     assert "unavailable" in wb_crash[N].cell(2, 1).value.lower()          # bare {} crash -> disclosed
     assert "unavailable" in wb_sentinel[N].cell(2, 1).value.lower()       # sentinel -> disclosed
+
+
+# ------------------------------------------------------- CROSS-01 / CROSS-02 ---
+def test_crd_and_runbook_device_count_is_canonical_not_raw_len(tmp_path):
+    """CROSS-01/02: crd._evidence_facts and the runbook 'Devices in scope' row recomputed n_devices from raw
+    len(devices) while their sibling n_vlans/n_endpoints read executive_brief.scale canonical-first -- the exact
+    device-count drift seam ssot.py exists to eliminate. Both must read the canonical count (the explorer/deck/
+    HLD value), falling back to len() only pre-brief."""
+    from cisco_toolkit import crd
+    from cisco_toolkit.runbook import write_runbook_docx
+    from docx import Document
+    snap = {"executive_brief": {"scale": {"n_devices": 2, "n_endpoints": 10, "n_vlans": 5}},
+            "devices": {"a": {}, "b": {}, "c": {}, "d": {}}, "health_scores": [], "punchlist": []}
+    assert crd._evidence_facts(snap)["n_devices"] == 2                    # CROSS-01: canonical 2, not len()=4
+    p = tmp_path / "rb.docx"; write_runbook_docx(str(p), snap, "Test")
+    cells = [c.text for t in Document(str(p)).tables for r in t.rows for c in r.cells]
+    i = next(k for k, c in enumerate(cells) if "Devices in scope" in c)
+    assert cells[i + 1] == "2"                                            # CROSS-02: canonical 2, not 4
+
+
+def test_deck_title_scale_renders_dash_not_none_for_null_scale(tmp_path):
+    """DECK_-02: the deck title slide built the scale line with scale.get('n_devices', '—'); dict.get's default
+    only fires when the KEY is ABSENT, so a present-but-null value (uploaded / partially-computed snapshot)
+    rendered the literal 'None devices · None endpoints' on the marquee client slide. Coerce per value -> em-dash."""
+    from cisco_toolkit.deck import write_executive_deck_pptx
+    from pptx import Presentation
+    snap = {"executive_brief": {"scale": {"n_devices": None, "n_endpoints": None, "n_vlans": None},
+                                "posture": {}, "posture_statement": "Review.", "axes": [], "top_gating": []},
+            "devices": {"core1": {}}, "health_scores": [{"switch": "core1", "score": 50, "band": "Fair"}],
+            "punchlist": [], "failure_impact": [], "migration_readiness": [], "move_groups": [], "lifecycle_risk": {}}
+    p = tmp_path / "deck.pptx"; write_executive_deck_pptx(str(p), snap, "Test")
+    blob = " ".join(sh.text_frame.text for sl in Presentation(str(p)).slides
+                    for sh in sl.shapes if sh.has_text_frame)
+    assert "None devices" not in blob and "None endpoints" not in blob
+    assert "— devices" in blob                                           # em-dash, not the literal 'None'

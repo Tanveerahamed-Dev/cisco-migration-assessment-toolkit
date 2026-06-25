@@ -88,7 +88,7 @@ def write_nrfu_docx(output_path: str, snap_dict: Dict[str, Any], label: str) -> 
         ["Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
         ["Snapshot captured", gen],
         ["Engine", engine.ENGINE_SCHEMA_VERSION],
-        ["Devices in scope", scale.get("n_devices") or len(devices)],
+        ["Devices in scope", scale.get("n_devices") if isinstance(scale.get("n_devices"), int) else len(devices)],
     ], widths=[2.2, 4.3])
     doc.add_heading("Sign-off", level=2)
     table(["Role", "Name", "Signature", "Date"], [

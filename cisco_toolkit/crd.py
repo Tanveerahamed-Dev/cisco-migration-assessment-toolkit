@@ -68,7 +68,10 @@ def _evidence_facts(snap: dict) -> dict:
     coll = (snap.get("collection_completeness") or {}).get("summary") or {}
     punch = sorted((snap.get("punchlist") or []), key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
     return {
-        "devices": devices, "n_devices": len(devices),
+        # canonical-first (SSOT) like the n_vlans / n_endpoints reads below -- not a raw len(devices) recount,
+        # which is the device-count drift seam ssot.py was created to eliminate (design.py/engagement.py do this)
+        "devices": devices,
+        "n_devices": (((snap.get("executive_brief") or {}).get("scale") or {}).get("n_devices")) or len(devices),
         # SSOT: the published canonical VLAN count first (the one source design/explorer/webapp/workbook
         # reconcile to), with the local vlan_inventory recount only as the pre-brief fallback (mirrors
         # n_endpoints below + design.py's A5 canonical-first read — closes the recompute drift seam).

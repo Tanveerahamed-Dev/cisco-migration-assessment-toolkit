@@ -642,7 +642,19 @@ def test_nrfu_devices_in_scope_reads_canonical_scale(tmp_path):
     out = str(tmp_path / "nrfu.docx")
     write_nrfu_docx(out, snap, "Unit Test Fleet")
     rows = [c.text for t in Document(out).tables for row in t.rows for c in row.cells]
-    assert "303" in rows           # canonical scale.n_devices, not len(devices)=2
+    i = next(k for k, c in enumerate(rows) if "Devices in scope" in c)
+    assert rows[i + 1] == "303"    # canonical scale.n_devices, not len(devices)=2
+
+    # WEBAP-03: the writer used `scale.get("n_devices") or len(devices)`, so a canonical 0 (a legitimate
+    # all-not-yet-collected inventory, which storage.py preserves with an `is None` check) was masked by the
+    # raw-array recount. A canonical 0 with a non-empty devices map must render 0, not 3.
+    snap0 = dict(snap, devices={"a": {}, "b": {}, "c": {}},
+                 executive_brief={"scale": {"n_devices": 0, "n_vlans": 0, "n_endpoints": 0}})
+    out0 = str(tmp_path / "nrfu0.docx")
+    write_nrfu_docx(out0, snap0, "Unit Test Fleet")
+    rows0 = [c.text for t in Document(out0).tables for row in t.rows for c in row.cells]
+    j = next(k for k, c in enumerate(rows0) if "Devices in scope" in c)
+    assert rows0[j + 1] == "0"     # canonical 0 honoured, NOT len(devices)=3
 
 
 def test_snapshot_meta_n_devices_reads_canonical_scale(client):

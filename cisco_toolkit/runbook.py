@@ -137,7 +137,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     link_centrality = snap_dict.get("link_centrality") or []
     gw = _gateways(snap_dict)
     ep_total, ep_per_vlan, ep_per_switch = _endpoint_census(snap_dict)
-    n_dev = len(devices)
+    _scale_dev = ((snap_dict.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
+    n_dev = _scale_dev if isinstance(_scale_dev, int) else len(devices)   # canonical-first (SSOT), like the endpoint/VLAN reads below
     n_links = len([r for r in link_centrality])  # link records == inter-switch links
     bridges = [r for r in link_centrality if r.get("is_bridge")]
     crit_cl = [f for f in cross_layer if f.get("severity") == "Critical"]
