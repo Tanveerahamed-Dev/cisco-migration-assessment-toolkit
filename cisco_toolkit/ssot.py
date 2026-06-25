@@ -111,6 +111,40 @@ def canonical_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_MISSING = object()
+
+
+def _device_not_collected(snap: Dict[str, Any], device: str) -> bool:
+    """True iff `device` is in the collection blind-spot list with status 'not collected' (a fully un-collected
+    device). A 'partial' device (some evidence collected) or a fully-collected one is NOT a blind spot."""
+    for d in (_dotted(snap, "collection_completeness.devices") or []):
+        if isinstance(d, dict) and d.get("host") == device:
+            return str(d.get("status", "")).strip().lower() == "not collected"
+    return False
+
+
+def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) -> str:
+    """Why is `subject` absent — the coverage-honest core made callable. `subject` is a top-level snapshot
+    section key (e.g. 'fhrp', 'vpc') or a dotted path (e.g. 'executive_brief.scale.n_vlans'); `device` optionally
+    scopes the question to one host. Returns exactly one of:
+      'published'           -- present and non-empty (a real result)
+      'collected_but_empty' -- present but empty/zero (collected; genuinely nothing of this kind found)
+      'not_collected'       -- the axis is absent, OR (device given) that device was never collected -- a BLIND
+                               SPOT, never a clean result. This is the 'not observed never becomes healthy' rule
+                               (the bare show-logging-on-NX-OS false-health class) made into a first-class token.
+    Pure presence/absence logic over the snapshot -- no model, no egress; total (safe on None / bad input)."""
+    snap = snap if isinstance(snap, dict) else {}
+    # A fact about an UN-collected device is a blind spot, regardless of the fleet-level value.
+    if device and _device_not_collected(snap, device):
+        return "not_collected"
+    val = _dotted(snap, subject) if "." in subject else snap.get(subject, _MISSING)
+    if val is _MISSING or val is None:
+        return "not_collected"
+    if not val:                      # present but falsy ([], {}, '', 0) -> collected, nothing found
+        return "collected_but_empty"
+    return "published"
+
+
 def reconcile(snap: Dict[str, Any]) -> List[str]:
     """Return human-readable SSOT violations: a published canonical value that disagrees with an
     independent derivation from the raw evidence. Empty list == every published fact reconciles.
