@@ -1219,3 +1219,19 @@ def test_get_snapshot_section_robust_to_scalar_section(tmp_path):
     assert st.get_snapshot_section(sid, "design_blueprint") == 5           # native int, not a 500
     assert st.get_snapshot_section(sid, "architecture_coverage") == "weird-scalar"
     assert st.get_snapshot_section(sid, "devices") == {"sw1": {}}          # objects still decode
+
+
+def test_reconcile_gate_flags_a_drifting_snapshot(caplog):
+    """W3-5: deliverables.generate runs a fail-soft SSOT pre-emission check — a snapshot whose published facts
+    disagree with the raw evidence is loudly logged before the artifact is written (never silently emitted),
+    but a single drift never blocks the deliverable. Total/fail-open on bad input."""
+    import logging
+    from backend.deliverables import _reconcile_gate
+    assert _reconcile_gate({}, "mop") == []                                # nothing published -> clean
+    assert _reconcile_gate(None, "mop") == []                              # total on bad input, no crash
+    drift = {"executive_brief": {"scale": {"n_devices": 999}},
+             "health_scores": [{"switch": "a"}, {"switch": "b"}]}
+    with caplog.at_level(logging.WARNING):
+        viol = _reconcile_gate(drift, "mop")
+    assert viol and any("n_devices" in v for v in viol)                    # the drift is returned
+    assert any("unreconciled" in r.getMessage() for r in caplog.records)   # ...and loudly logged
