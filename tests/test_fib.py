@@ -275,6 +275,33 @@ def test_odr_admin_distance():
     assert fib._admin_distance("ODR") == 160
 
 
+def test_forwarding_loop_without_escape_is_a_lower_bound():
+    """A routing loop (R1 default->R2, R2 default->R1) must resolve to lower_bound:loop -- never computed:reached
+    and never a fabricated computed:unreachable. (Locks the memoized cycle-detection rewrite.)"""
+    loop = {"routes": {
+        "R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
+               {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.12.2"}],
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"},
+               {"prefix": "0.0.0.0/0", "source": "static", "next_hop": "10.0.12.1"}]}}
+    t = fib.trace_fib_path(loop, "10.1.1.5", "8.8.8.8")
+    assert t["status"] == "lower_bound:loop" and t["reached"] is False and t["computed"] is False
+
+
+def test_ecmp_escape_leg_reaches_despite_a_looping_sibling_leg():
+    """One ECMP leg loops back, the other escapes to the dst -> reached via the escape (R1->R3), since a router
+    load-balances and the flow can take the working leg."""
+    esc = {"routes": {
+        "R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
+               {"prefix": "10.0.13.0/30", "source": "connected"},
+               {"prefix": "9.9.9.0/24", "source": "ospf", "next_hop": "10.0.12.2"},
+               {"prefix": "9.9.9.0/24", "source": "ospf", "next_hop": "10.0.13.3"}],
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"},
+               {"prefix": "9.9.9.0/24", "source": "static", "next_hop": "10.0.12.1"}],   # loops back to R1
+        "R3": [{"prefix": "10.0.13.0/30", "source": "connected"}, {"prefix": "9.9.9.0/24", "source": "connected"}]}}
+    t = fib.trace_fib_path(esc, "10.1.1.5", "9.9.9.9")
+    assert t["status"] == "computed:reached" and [h["host"] for h in t["hops"]] == ["R1", "R3"]
+
+
 def test_real_route_source_codes_map_correctly():
     """Format-fidelity vs REAL AJ snapshot source values (a mix of expanded names AND raw codes with the '*'
     candidate-default marker): 's*' is static, 'o*ia' is OSPF inter-area, '' is unknown. _is_connected and the
