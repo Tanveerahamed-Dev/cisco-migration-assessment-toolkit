@@ -404,7 +404,11 @@ def build_cloud(cmd_to_file: Dict[str, str]) -> dict:
     on-prem fleet never fires); {security_groups: []} when the export is present but nothing is world-open
     (observed / clean). Fail-soft."""
     sgs = _safe_parse(parse_aws_security_groups, _load_cmd_output(cmd_to_file, "aws ec2 describe-security-groups"))
-    if sgs is None:
+    # Coverage-honesty must NOT hinge on 'the parser didn't raise'. _safe_parse returns {} (a truthy non-list)
+    # when the parser raises -- which slipped past an `is None` guard and made build_cloud report
+    # {security_groups: {}}, read downstream as 'cloud observed, nothing world-open' (false-health) instead of
+    # 'not observed'. Only a LIST is a real result; None (no export) and {} (parse crash) both -> not observed.
+    if not isinstance(sgs, list):
         return {}
     return {"security_groups": sgs}
 

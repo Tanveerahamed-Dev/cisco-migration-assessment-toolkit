@@ -2182,6 +2182,15 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
         del wb[ARCHREVIEW_SHEET_NAME]
     ws = wb.create_sheet(ARCHREVIEW_SHEET_NAME)
     A = ar or {}
+    # A CRASHED/absent review (the assembly's _unavailable sentinel, or a bare {} with no summary) must NOT
+    # render as a clean 'grade N/A · 0 conform · 0 not assessable' scorecard -- that reads as 'reviewed, all
+    # fine' when the computation actually failed (false-health). A legit-empty review still carries a summary
+    # (n_not_assessable counts the un-evidenced checks), so this only fires on a true compute failure.
+    if A.get("_unavailable") or not A.get("summary"):
+        ws.cell(1, 1, "Architecture Review — leading-practice conformance scorecard").font = Font(bold=True, size=11)
+        ws.cell(2, 1, "Architecture review unavailable — the conformance computation did not complete for this "
+                      "run; no grade is asserted (see assessment_integrity).").font = Font(size=10)
+        return
     s = A.get("summary") or {}
     HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
     DAT = Font(name="Calibri", size=10)

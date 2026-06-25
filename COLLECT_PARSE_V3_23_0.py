@@ -2247,7 +2247,7 @@ def main():
          "security": all_security, "config_hygiene": all_config_hygiene,
          "operational_drift": _drift, "redistribution": all_redistribution,
          "collection_completeness": collection_completeness, "punchlist": punchlist},
-        _default={})
+        _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty review (cf. executive_brief)
     _run_phase("Architecture Review sheet", write_architecture_review_sheet, wb, architecture_review)
 
     wb.save(out_xlsx)
@@ -2372,6 +2372,10 @@ def main():
         logger.warning("  [INTEGRITY] executive-brief synthesis FAILED; stamping assessment_integrity so "
                        "consumers disclose 'cross-axis synthesis unavailable' rather than zeros.")
         snap_dict["assessment_integrity"] = {"executive_brief": "compute_failed"}
+    if isinstance(architecture_review, dict) and architecture_review.get("_unavailable"):
+        logger.warning("  [INTEGRITY] architecture-review computation FAILED; stamping assessment_integrity so "
+                       "consumers disclose 'architecture review unavailable' rather than a clean grade.")
+        snap_dict.setdefault("assessment_integrity", {})["architecture_review"] = "compute_failed"
     snap_dict["device_dossiers"] = device_dossiers                   # NEW-V3.23.172 (per-asset compound-risk register; reused from the Phase 30d synthesis)
     # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
     # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),
