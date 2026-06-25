@@ -46,6 +46,14 @@ _EOL = [
      "source": "Cisco EOL (Catalyst 3560-CX)", "conf": "derived"},
     {"pat": "WS-C2960CX", "platform": "Catalyst 2960-CX", "eos": "", "ldos": "",
      "source": "Catalyst 2960-CX (newer compact) — verify on Cisco EoX", "conf": "active"},
+    # 3560-C / 2960-C COMPACT series -- same cry-wolf as -CX: WS-C3560CG/WS-C2960CG (and -C/-CPD) share the
+    # classic family's PREFIX but have their OWN, years-later bulletins. Without these rows longest-prefix
+    # matching credited them to the classic 3560/2960 dates and cited the wrong EoL notice (audit-3 L5).
+    # 3560-C HW EoS 2016-10-30 (bulletin c51-736180) -> LDoS = EoS+5yr; 2960-C HW EoS 2020-10-30 (c51-743071).
+    {"pat": "WS-C3560C", "platform": "Catalyst 3560-C", "eos": "2016-10-30", "ldos": "2021-10-31",
+     "source": "Cisco EOL (Catalyst 3560-C, c51-736180)", "conf": "derived"},
+    {"pat": "WS-C2960C", "platform": "Catalyst 2960-C", "eos": "2020-10-30", "ldos": "2025-10-31",
+     "source": "Cisco EOL (Catalyst 2960-C, c51-743071)", "conf": "derived"},
     {"pat": "WS-C2960X", "platform": "Catalyst 2960-X", "eos": "2025-04-30", "ldos": "2030-04-30",
      "source": "Cisco EOL (Catalyst 2960-X)", "conf": "derived"},
     {"pat": "WS-C2960", "platform": "Catalyst 2960", "eos": "2019-10-31", "ldos": "2024-10-31",

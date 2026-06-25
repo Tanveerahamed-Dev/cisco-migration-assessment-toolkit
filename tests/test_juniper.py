@@ -166,3 +166,25 @@ def test_juniper_in_architecture_coverage_registry():
     assert by["juniper"]["observed"] and by["juniper"]["status"] == "finding" and by["juniper"]["channel"] == "ssh"
     none = {c["key"]: c for c in da.compute_architecture_coverage({})["classes"]}
     assert none["juniper"]["status"] == "not-observed"
+
+
+def test_junos_numeric_zero_priority_survives_display_json():
+    """[audit-3 #1 HIGH false-health] real `show chassis cluster status | display json` emits numeric leaves
+    (device-priority, redundancy-group-id) as JSON NUMBERS, not quoted strings. _junos_val's `x[0].get('data','')
+    or ''` collapsed the falsy integer 0 to '' -> priority parsed None -> the 'priority 0 = not ready to accept
+    traffic' HA-degraded detector went SILENT (the self-authored-fixture trap: the test fixture quoted every leaf
+    "data":"0"). 0/0.0 must survive; only None -> ''."""
+    from cisco_toolkit.parse import _junos_val, parse_junos_chassis_cluster
+    assert _junos_val([{"data": 0}]) == "0"          # numeric zero survives (was '')
+    assert _junos_val([{"data": 200}]) == "200"
+    assert _junos_val([{"data": None}]) == ""        # genuine absence still empty
+    assert _junos_val({"data": 0}) == "0"            # bare-dict form too
+    real = ('{"chassis-cluster-status":[{"redundancy-group":[{"redundancy-group-id":[{"data":0}],'
+            '"device-stats":[{"device-name":[{"data":"node0"}],"device-priority":[{"data":200}],'
+            '"redundancy-group-status":[{"data":"primary"}],"monitor-failures":[{"data":"none"}]},'
+            '{"device-name":[{"data":"node1"}],"device-priority":[{"data":0}],'
+            '"redundancy-group-status":[{"data":"secondary"}],"monitor-failures":[{"data":"none"}]}]}]}]}')
+    recs = parse_junos_chassis_cluster(real)
+    node1 = [r for r in recs if r["node"] == "node1"][0]
+    assert node1["priority"] == 0                     # the 'not ready' node — was None (false-health)
+    assert recs[0]["rg"] == "0"                        # control-plane RG0 renders '0', not ''

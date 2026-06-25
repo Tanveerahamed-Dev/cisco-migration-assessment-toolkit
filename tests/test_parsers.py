@@ -2084,3 +2084,53 @@ def test_parse_pim_neighbors_keeps_subinterface_neighbor(cp):
     -> a running PIM domain with no RP read healthy. Validate the BASE interface, keep the full subif name."""
     nb = parse.parse_pim_neighbors("10.0.0.2          GigabitEthernet0/0.10    2d05h/00:01:27    v2    1\n")
     assert len(nb) == 1 and nb[0]["neighbor"] == "10.0.0.2" and "0.10" in nb[0]["interface"]
+
+
+def test_config_hygiene_recognizes_snmp_classmap_crypto_ntp_acl_refs():
+    """[audit-3 #15 format-fidelity] parse_config_hygiene's REF_RX omitted four ubiquitous IOS ACL-reference
+    forms, so a live ACL referenced ONLY via SNMP community / QoS class-map / crypto-map / NTP was reported
+    'unused (defined but never referenced)' -- a flat wrong positive an engineer could act on at cutover."""
+    from cisco_toolkit.parse import parse_config_hygiene
+    cases = {
+        "snmp":     "ip access-list standard MGMT\n permit 10.0.0.0 0.0.0.255\nsnmp-server community s3cr3t RO MGMT\n",
+        "classmap": "ip access-list extended VOICE_ACL\n permit udp any any\nclass-map match-any VOICE\n match access-group name VOICE_ACL\n",
+        "crypto":   "ip access-list extended VPN\n permit ip 10.0.0.0 0.0.0.255 10.1.0.0 0.0.0.255\ncrypto map CMAP 10 ipsec-isakmp\n match address VPN\n",
+        "ntp":      "ip access-list standard NTP\n permit 10.0.0.1\nntp access-group peer NTP\n",
+    }
+    for lbl, cfg in cases.items():
+        h = parse_config_hygiene(cfg)
+        assert [u["name"] for u in (h.get("unused") or [])] == [], f"{lbl}: live ACL wrongly flagged unused"
+    # control: a genuinely-unreferenced ACL is STILL reported unused (the fix must not blanket-suppress)
+    dead = parse_config_hygiene("ip access-list standard DEAD\n permit 10.9.9.9\n")
+    assert [u["name"] for u in (dead.get("unused") or [])] == ["DEAD"]
+
+
+def test_lisp_sessions_parses_ipv6_rloc_peers():
+    """[audit-3 L1 format-fidelity] the peer-row regex matched IPv4 RLOCs only, so an IPv6-underlay SD-Access
+    fabric had every control-plane peer silently dropped (peers:[]), weakening the all-sessions-down evidence."""
+    from cisco_toolkit.parse import parse_lisp_sessions
+    out = parse_lisp_sessions(
+        "Sessions for VRF red, total: 2, established: 0\n"
+        "Peer                           State\n"
+        "2001:DB8::1                    Down\n"
+        "[2001:DB8::2]:4342             Down\n")
+    assert out and out[0]["vrf"] == "red"
+    peers = {p["peer"] for p in out[0]["peers"]}
+    assert "2001:DB8::1" in peers and "2001:DB8::2" in peers     # both IPv6 peers captured (were dropped)
+    # IPv4 still parses identically (with :port split)
+    v4 = parse_lisp_sessions("Sessions for VRF blue, total: 1, established: 1\n10.1.1.1:4342  Up  ...\n")
+    assert v4[0]["peers"][0] == {"peer": "10.1.1.1", "port": "4342", "state": "Up"}
+
+
+def test_eoldb_compact_3560c_2960c_not_classic_family_dates():
+    """[audit-3 L5 format-fidelity] WS-C3560CG / WS-C2960CG compacts shared the classic family PREFIX so
+    longest-prefix matching credited them to the classic 3560/2960 bulletin + past dates. They have their OWN
+    (years-later) EoL notices. The -CX cry-wolf was fixed; -CG/-C/-S were missed."""
+    from cisco_toolkit.eoldb import lifecycle_for
+    cg35 = lifecycle_for("WS-C3560CG-8PC-S")
+    assert cg35["platform"] == "Catalyst 3560-C" and cg35["ldos"] == "2021-10-31"   # NOT Catalyst 3560 / 2018
+    cg29 = lifecycle_for("WS-C2960CG-8TC-L")
+    assert cg29["platform"] == "Catalyst 2960-C" and cg29["ldos"] == "2025-10-31"   # NOT Catalyst 2960 / 2024
+    # the longer -CX prefix still wins (not shadowed by the new -C row), and the bare classic PID is unchanged
+    assert lifecycle_for("WS-C3560CX-12PC-S")["platform"] == "Catalyst 3560-CX"
+    assert lifecycle_for("WS-C3560-48PS")["platform"] == "Catalyst 3560"
