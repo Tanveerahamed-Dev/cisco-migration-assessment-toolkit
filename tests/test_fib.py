@@ -302,6 +302,39 @@ def test_ecmp_escape_leg_reaches_despite_a_looping_sibling_leg():
     assert t["status"] == "computed:reached" and [h["host"] for h in t["hops"]] == ["R1", "R3"]
 
 
+def test_reachability_delta_flags_a_cutover_regression():
+    """W2 live: reachability_delta auto-derives representative inter-subnet pairs from the baseline and flags a
+    flow that a change definitively broke -> the pre-cutover proof, surfaced in the --compare verdict."""
+    before = {"routes": {
+        "R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
+               {"prefix": "10.2.2.0/24", "source": "ospf", "next_hop": "10.0.12.2"}],
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}}
+    after = {"routes": {
+        "R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"}],
+        "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}}
+    d = fib.reachability_delta(before, after)
+    assert d["summary"].get("newly_blocked", 0) >= 1
+    assert any(p["verdict"] == "newly_blocked" and p["src"] == "10.1.1.1" and p["dst"] == "10.2.2.1"
+               for p in d["newly_blocked"])
+    assert d["pairs_tested"] >= 1 and d["subnets_tested"] >= 2
+
+
+def test_reachability_delta_empty_and_total_without_routes():
+    """No routes -> empty (zero pairs), never a crash and never a fabricated regression."""
+    d = fib.reachability_delta({"devices": {"x": {}}}, {"devices": {"x": {}}})
+    assert d["summary"] == {} and d["pairs_tested"] == 0 and d["newly_blocked"] == []
+    assert fib.reachability_delta(None, None)["pairs_tested"] == 0
+
+
+def test_default_pairs_are_deterministic_and_bounded():
+    snap = {"routes": {f"H{i}": [{"prefix": f"10.{i}.0.0/24", "source": "connected"}] for i in range(40)}}
+    p1 = fib.default_pairs(snap, limit=8)
+    p2 = fib.default_pairs(snap, limit=8)
+    assert p1 == p2                                   # deterministic
+    assert 0 < len(p1) <= 8 * 7                        # bounded by limit subnets -> limit*(limit-1) ordered pairs
+    assert all(isinstance(a, str) and isinstance(b, str) and a != b for a, b in p1)
+
+
 def test_real_route_source_codes_map_correctly():
     """Format-fidelity vs REAL AJ snapshot source values (a mix of expanded names AND raw codes with the '*'
     candidate-default marker): 's*' is static, 'o*ia' is OSPF inter-area, '' is unknown. _is_connected and the

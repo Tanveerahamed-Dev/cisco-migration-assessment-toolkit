@@ -81,19 +81,37 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     resolved = sorted((o_find[k] for k in (set(o_find) - set(n_find))), key=_fsort)
     n_opened_high = sum(1 for f in opened if f.get("severity") in ("Critical", "High"))
 
+    # ---- computed reachability what-if (W2): did the change DEFINITIVELY break a previously-working flow? ----
+    # The native RIB->FIB differential (the offline Batfish-peer); coverage-honest, so only definitive
+    # newly_blocked flows count toward the verdict -- ambiguous/incomplete pairs stay 'inconclusive'.
+    try:
+        from cisco_toolkit import fib
+        rdelta = fib.reachability_delta(old, new)
+    except Exception:                                   # never let the cutover diff fail on a reachability hiccup
+        rdelta = {"summary": {}, "newly_blocked": [], "newly_reachable": [], "preserved": 0,
+                  "inconclusive": 0, "pairs_tested": 0, "subnets_tested": 0, "capped": False}
+    n_newly_blocked = len(rdelta.get("newly_blocked") or [])
+
     # ---- verdict ----
     removed_sw = sorted(set(od) - set(nd))
-    if n_opened_high or regressed:
+    if n_opened_high or regressed or n_newly_blocked:
         verdict = "REGRESSED"
-        note = (f"{n_opened_high} new High/Critical finding(s); {len(regressed)} switch(es) dropped a "
-                "health band. Investigate before declaring the cutover good.")
+        bits = []
+        if n_opened_high:
+            bits.append(f"{n_opened_high} new High/Critical finding(s)")
+        if regressed:
+            bits.append(f"{len(regressed)} switch(es) dropped a health band")
+        if n_newly_blocked:
+            bits.append(f"{n_newly_blocked} computed reachability flow(s) newly blocked")
+        note = "; ".join(bits) + ". Investigate before declaring the cutover good."
     elif opened or removed_sw:
         verdict = "REVIEW"
         note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present. "
                 "Confirm these are expected.")
     else:
         verdict = "CLEAN"
-        note = "No health-band regressions and no new findings — post-cutover state is no worse than pre."
+        note = ("No health-band regressions, no new findings, and no computed reachability regressions — "
+                "post-cutover state is no worse than pre.")
 
     def _scn(s):  # SSOT: canonical device count (one source); raw len() only as the pre-brief fallback
         return ((s.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
@@ -105,6 +123,7 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                    "n_regressed": len(regressed), "n_improved": len(improved)},
         "findings": {"opened": opened, "resolved": resolved, "n_opened": len(opened),
                      "n_resolved": len(resolved), "n_opened_high": n_opened_high},
+        "reachability": rdelta,
         "verdict": verdict, "verdict_note": note,
     }
 
@@ -160,6 +179,12 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
         ("Findings opened", "", delta["findings"]["n_opened"],
          f"{delta['findings']['n_opened_high']} High/Critical"),
         ("Findings resolved", "", delta["findings"]["n_resolved"], delta["findings"]["n_resolved"]),
+        ("Reachability flows newly blocked", "",
+         len((delta.get("reachability") or {}).get("newly_blocked") or []),
+         (f"{(delta.get('reachability') or {}).get('pairs_tested', 0)} flow(s) tested / "
+          f"{(delta.get('reachability') or {}).get('subnets_tested', 0)} subnet(s); "
+          f"{(delta.get('reachability') or {}).get('preserved', 0)} preserved, "
+          f"{(delta.get('reachability') or {}).get('inconclusive', 0)} inconclusive")),
     ]
     r = 2
     for m in metrics:
@@ -272,6 +297,27 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     if r == 2:
         ws.cell(row=2, column=1, value="No punch-list findings opened or resolved.").font = DF
     autofit(ws, 5); ws.column_dimensions["E"].width = 70
+
+    # Reachability (W2) — computed RIB->FIB flows the change DEFINITIVELY broke (the offline Batfish-peer what-if).
+    # Coverage-honest: distinguishes 'tested, no regressions' from 'no routes collected -> not assessed'.
+    rd = delta.get("reachability") or {}
+    ws = sheet("Reachability", ["Flow", "Src", "Dst", "Before", "After"])
+    r = 2
+    for label, fill, items in (("NEWLY BLOCKED", "FFC7CE", rd.get("newly_blocked") or []),
+                               ("newly reachable", "C6EFCE", rd.get("newly_reachable") or [])):
+        for p in items:
+            vals = [label, p.get("src", ""), p.get("dst", ""), p.get("old_status", ""), p.get("new_status", "")]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor=fill)
+            r += 1
+    if r == 2:
+        ws.cell(row=2, column=1, value=(
+            f"No computed reachability regressions across {rd.get('pairs_tested', 0)} representative flow(s)."
+            if rd.get("pairs_tested") else
+            "No routes collected — computed reachability not assessed (coverage-honest: this is NOT 'no "
+            "regressions').")).font = DF
+    autofit(ws, 5); ws.column_dimensions["D"].width = 42; ws.column_dimensions["E"].width = 42
 
     wb.save(out_path)
 
