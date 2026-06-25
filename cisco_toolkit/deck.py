@@ -163,10 +163,14 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     if eb.get("_unavailable") or (snap.get("assessment_integrity") or {}).get("executive_brief") == "compute_failed":
         _scale_line = "⚠ Cross-axis synthesis unavailable — see the workbook Executive Brief"
     else:
+        # coerce PER VALUE: dict.get(default) only substitutes when the KEY is absent, so a present-but-null
+        # scale value (an uploaded / partially-computed snapshot) rendered the literal 'None devices' on the
+        # marquee client-facing slide. Show an em-dash for any non-int value instead.
+        _sv = lambda k: (scale.get(k) if isinstance(scale.get(k), int) else "—")
         _ncoll = scale.get("n_collected")
         _coll = f" ({_ncoll} collected)" if isinstance(_ncoll, int) and _ncoll != scale.get("n_devices") else ""
-        _scale_line = (f"{scale.get('n_devices', '—')} devices{_coll} · {scale.get('n_endpoints', '—')} endpoints "
-                       f"· {scale.get('n_vlans', '—')} VLANs in scope")
+        _scale_line = (f"{_sv('n_devices')} devices{_coll} · {_sv('n_endpoints')} endpoints "
+                       f"· {_sv('n_vlans')} VLANs in scope")
     text(s, 0.9, 4.7, W - 1.8, 1.6,
          [[(sub, 14, _ICE, False)], [(_scale_line, 13, _ICE, False)]])
     text(s, 0.9, 6.7, W - 1.8, 0.4,
