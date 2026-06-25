@@ -335,6 +335,45 @@ def test_default_pairs_are_deterministic_and_bounded():
     assert all(isinstance(a, str) and isinstance(b, str) and a != b for a, b in p1)
 
 
+def test_null0_discard_route_is_a_definitive_drop():
+    """[w2-live wave #1 HIGH moat] A Null0/discard route is a FULLY-COLLECTED definitive drop (the router
+    discards the packet), not a lower bound -> computed:unreachable. Distinct from a real-egress interface route
+    (blank next-hop, non-discard interface) which stays a coverage-honest lower bound. Without this a cutover that
+    leaves a blackhole / summary-blackholes a more-specific reads CLEAN."""
+    drop = {"routes": {"R1": [{"prefix": "10.0.1.0/24", "source": "connected"},
+                              {"prefix": "10.2.2.0/24", "source": "static", "next_hop": "", "out_intf": "Null0"}]}}
+    t = fib.trace_fib_path(drop, "10.0.1.1", "10.2.2.5")
+    assert t["status"] == "computed:unreachable" and t["computed"] is True and t["reached"] is False
+    # the BGP blackhole form 'via 0.0.0.0, Null0' (non-blank next-hop) is also a definitive drop
+    bgp = {"routes": {"R1": [{"prefix": "10.0.1.0/24", "source": "connected"},
+                             {"prefix": "10.5.0.0/16", "source": "bgp", "next_hop": "0.0.0.0", "out_intf": "Null0"}]}}
+    assert fib.trace_fib_path(bgp, "10.0.1.1", "10.5.1.1")["status"] == "computed:unreachable"
+    # a real-egress interface route (blank next-hop, NON-discard intf) stays a lower bound -- coverage-honest
+    egress = {"routes": {"R1": [{"prefix": "10.0.1.0/24", "source": "connected"},
+                                {"prefix": "10.2.2.0/24", "source": "static", "next_hop": "", "out_intf": "Gi0/3"}]}}
+    assert fib.trace_fib_path(egress, "10.0.1.1", "10.2.2.5")["status"] == "lower_bound:next_hop_not_collected"
+
+
+def test_subnet_reps_skips_default_route():
+    """[w2-live wave L3] a 0.0.0.0/0 / ::/0 'connected' route is not a probeable subnet -- it must not produce a
+    synthetic 0.0.0.1 rep (which made default-route REMOVAL look like a concrete newly_blocked flow)."""
+    snap = {"routes": {"R1": [{"prefix": "0.0.0.0/0", "source": "connected"},          # a /0 tagged connected
+                              {"prefix": "10.1.1.0/24", "source": "connected"}]}}
+    reps = fib.subnet_reps(snap)
+    assert all(net not in ("0.0.0.0/0", "::/0") for net, _ip in reps)
+    assert any(net == "10.1.1.0/24" for net, _ip in reps)
+
+
+def test_reachability_delta_discloses_bounded_coverage():
+    """[w2-live wave #5/#6/#7/#8 moat] the subnet cap must be DISCLOSED (no silent caps): subnets_total reflects
+    the true count, capped is True, and assessed says whether any flow was actually computed."""
+    snap = {"routes": {f"H{i}": [{"prefix": f"10.{i}.0.0/24", "source": "connected"}] for i in range(30)}}
+    d = fib.reachability_delta(snap, snap, limit=8)
+    assert d["subnets_total"] == 30 and d["subnets_tested"] == 8 and d["capped"] is True and d["assessed"] is True
+    d2 = fib.reachability_delta({"routes": {}}, {"routes": {}})
+    assert d2["assessed"] is False and d2["subnets_total"] == 0 and d2["capped"] is False
+
+
 def test_real_route_source_codes_map_correctly():
     """Format-fidelity vs REAL [HISTORY-REDACTED] snapshot source values (a mix of expanded names AND raw codes with the '*'
     candidate-default marker): 's*' is static, 'o*ia' is OSPF inter-area, '' is unknown. _is_connected and the

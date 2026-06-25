@@ -102,7 +102,41 @@ def test_diff_workbook_has_reachability_sheet_and_is_coverage_honest(tmp_path):
     wb = load_workbook(str(out))
     assert "Reachability" in wb.sheetnames
     # no routes -> explicit 'not assessed', never a false 'no regressions'
-    assert "not assessed" in str(wb["Reachability"].cell(2, 1).value)
+    assert "not assessed" in str(wb["Reachability"].cell(2, 1).value).lower()
+
+
+def test_delta_flags_a_null0_blackhole_cutover_regression():
+    """[w2-live wave #1 HIGH] the textbook cutover regression: NEW adds a more-specific Null0 blackhole that
+    black-holes a previously-reached flow. It must surface as newly_blocked and flip the verdict to REGRESSED --
+    not be swallowed into CLEAN as a lower bound."""
+    base = {"R1": [{"prefix": "10.0.1.0/24", "source": "connected"}, {"prefix": "10.0.0.0/30", "source": "connected"},
+                   {"prefix": "10.0.2.0/24", "source": "static", "next_hop": "10.0.0.2"}],
+            "R2": [{"prefix": "10.0.2.0/24", "source": "connected"}, {"prefix": "10.0.0.0/30", "source": "connected"}]}
+    after = {k: list(v) for k, v in base.items()}
+    after["R2"] = after["R2"] + [{"prefix": "10.0.2.0/25", "source": "static", "next_hop": "", "out_intf": "Null0"}]
+    d = compute_snapshot_delta(_routes_snap(base), _routes_snap(after))
+    assert len(d["reachability"]["newly_blocked"]) >= 1
+    assert d["verdict"] == "REGRESSED" and "newly blocked" in d["verdict_note"]
+
+
+def test_verdict_note_is_coverage_honest_about_reachability():
+    """[w2-live wave #3 moat] the note must NEVER claim 'no computed reachability regressions' when reachability
+    was NOT assessed (no routes) -- that is the exact not-assessed!=healthy violation, at the headline verdict."""
+    d = compute_snapshot_delta({"routes": {}}, {"routes": {}})
+    assert "no computed reachability regressions" not in d["verdict_note"]
+    assert "not assessed" in d["verdict_note"].lower()
+    # when assessed with no regression, the note must disclose it is a bounded SAMPLE, not an absolute pass
+    s = _routes_snap({"R1": [{"prefix": "10.1.1.0/24", "source": "connected"}],
+                      "R2": [{"prefix": "10.2.2.0/24", "source": "connected"}]})
+    note = compute_snapshot_delta(s, s)["verdict_note"]
+    assert "sampl" in note.lower()
+
+
+def test_compute_snapshot_delta_is_total_on_non_dict_snapshots():
+    """[w2-live wave #4 HIGH] the --compare / --trend path must degrade, never raise, on a non-dict snapshot."""
+    for bad in (None, [], 42, "s", True):
+        assert compute_snapshot_delta(bad, {})["verdict"] in ("CLEAN", "REVIEW", "REGRESSED")
+        assert compute_snapshot_delta({}, bad)["verdict"] in ("CLEAN", "REVIEW", "REGRESSED")
 
 
 def test_diff_workbook_has_validation_sheets(tmp_path):
