@@ -101,6 +101,30 @@ def test_trace_stops_when_next_hop_host_not_collected():
     assert [h["host"] for h in t["hops"]] == ["R1"]                                 # got one computed hop, then honest stop
 
 
+def test_trace_resolves_ipv6_link_local_next_hop_with_zone_id():
+    """Cisco prints IPv6 LLA next-hops with an interface zone-id ('fe80::2%Gi0/1'); the '/' in the interface name
+    makes ipaddress.ip_address raise on Python 3.9+ -> the next-hop's host was silently lost
+    (next_hop_not_collected) on any OSPFv3/IS-IS/BGP-over-link-local fabric (the NORMAL case for v6). The zone-id
+    carries no usable info here (no per-zone interface-IP data) and MUST be stripped so the trace reaches
+    end-to-end. (user-reported regression; intermittent by interface type — '%Vlan10' parsed, '%Gi0/1' did not.)"""
+    snap = {"routes": {
+        "R1": [{"prefix": "2001:db8:1::/64", "next_hop": "", "source": "connected"},
+               {"prefix": "fe80::/64", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
+               {"prefix": "::/0", "next_hop": "fe80::2%Gi0/1", "out_intf": "Gi0/1", "source": "static"}],
+        "R2": [{"prefix": "fe80::/64", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
+               {"prefix": "2001:db8:2::/64", "next_hop": "", "source": "connected"}],
+    }}
+    t = fib.trace_fib_path(snap, "2001:db8:1::5", "2001:db8:2::9")
+    assert [h["host"] for h in t["hops"]] == ["R1", "R2"]
+    assert t["status"] == "computed:reached" and t["reached"] is True
+    # consistency: a slash-bearing zone ('%Gi0/1') and a slash-free one ('%Vlan10') must resolve identically
+    ci = fib._connected_index(snap["routes"])
+    assert fib._hosts_owning_ip(ci, "fe80::2%Gi0/1") == fib._hosts_owning_ip(ci, "fe80::2%Vlan10")
+    assert fib._hosts_owning_ip(ci, "fe80::2%Gi0/1") == fib._hosts_owning_ip(ci, "fe80::2")
+    # a zoned DST is also parseable (fib_lookup must strip too)
+    assert fib.fib_lookup(fib.compute_fib(snap["routes"]["R2"]), "fe80::2%Te1/0/1")["match"] == "fe80::/64"
+
+
 def test_trace_total_on_bad_input():
     assert fib.trace_fib_path(None, "1.1.1.1", "2.2.2.2")["computed"] is False
     assert fib.trace_fib_path({}, "1.1.1.1", "2.2.2.2")["status"] == "lower_bound:src_host_not_found"

@@ -11,6 +11,19 @@ import ipaddress
 from typing import List, Optional, Tuple
 
 
+def _ip(s) -> Optional["ipaddress._BaseAddress"]:
+    """Parse an IP that may carry a Cisco zone-id / scope suffix and return an ip_address, or None (never raises).
+    Cisco prints an IPv6 link-local next-hop with the egress interface as a zone-id ('fe80::2%Gi0/1') -- and a '/'
+    in the interface name ('Gi0/1','Te1/0/1','Eth1/1') makes ipaddress.ip_address RAISE on Python 3.9+, while a
+    slash-free one ('%Vlan10','%Port-channel1') parses. So the zone is stripped UNCONDITIONALLY (the engine has no
+    per-zone interface-IP data to use it anyway) -- otherwise a routed-over-link-local v6 fabric (the OSPFv3 /
+    IS-IS / BGP-over-LLA norm) would silently lose reachability recall, intermittently by interface type."""
+    try:
+        return ipaddress.ip_address(str(s).split("%", 1)[0].strip())
+    except ValueError:
+        return None
+
+
 def _admin_distance(source: str) -> int:
     """Cisco administrative distance for a route source (lower wins on an equal-length prefix). Used only as the
     tie-breaker between same-prefix routes; longest-prefix-match always dominates. Tolerant of BOTH the expanded
@@ -71,9 +84,8 @@ def fib_lookup(fib: Fib, dst_ip: str) -> Optional[dict]:
     """The longest-prefix-match route for `dst_ip`, or None if NO route is observed for it (the coverage-honest
     lower bound -- absence of a route is never silently turned into reachability). Returns a copy of the matching
     route dict annotated with {'match': <prefix>, 'computed': True}. Total: a bad dst returns None, never raises."""
-    try:
-        ip = ipaddress.ip_address(str(dst_ip).strip())
-    except ValueError:
+    ip = _ip(dst_ip)
+    if ip is None:
         return None
     for net, _ad, r in (fib or []):
         if ip.version == net.version and ip in net:
@@ -102,9 +114,8 @@ def _hosts_owning_ip(connected_idx: dict, ip_str: str, exclude: str = None) -> l
     enclosing summary), optionally excluding one host. Returns a sorted list -- usually one host, but a transit
     subnet is connected on BOTH ends and a multi-access segment on several, so the caller must treat >1 as
     genuinely ambiguous (a next-hop IP cannot be pinned to one host without interface-IP data) rather than guess."""
-    try:
-        ip = ipaddress.ip_address(str(ip_str).strip())
-    except ValueError:
+    ip = _ip(ip_str)             # tolerates an IPv6 link-local zone-id ('fe80::2%Gi0/1') -- see _ip()
+    if ip is None:
         return []
     matches = []   # (prefixlen, host)
     for host, nets in (connected_idx or {}).items():
