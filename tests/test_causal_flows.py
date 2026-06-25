@@ -253,3 +253,15 @@ def test_design_flow_does_not_mislabel_metric_as_devices():
     vlans = flows["design-vlans"]
     assert vlans["blast"] == 202 and vlans["blast_unit"] == "affected"   # no device list -> neutral, NOT 'devices'
     assert vlans["impact"] == "202 affected by this gap"
+
+
+def test_causal_flows_survives_non_finite_count():
+    """[audit-3 L2 totality] a design decision whose evidence.count is inf/nan (malformed/hostile snapshot) made
+    int(count) raise OverflowError/ValueError -> the webapp /causal_flows endpoint 500'd, breaking the module's
+    documented 'total over ANY dict' invariant."""
+    from cisco_toolkit.causal import compute_causal_flows
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        snap = {"design_blueprint": {"decisions": [
+            {"status": "recommended", "driver": "d", "principle": "p", "recommended_action": "a",
+             "evidence": {"count": bad, "devices": ["sw1"]}}]}}
+        assert isinstance(compute_causal_flows(snap), dict)   # must not raise

@@ -1243,3 +1243,14 @@ def test_build_graph_tolerates_health_row_without_switch_key():
     from webapp.backend.graph import build_graph
     g = build_graph({"devices": {"sw1": {}}, "interfaces": {}, "health_scores": [{"band": "Good", "score": 90}]})
     assert "nodes" in g and all(n["id"] is not None for n in g["nodes"])
+
+
+def test_summarize_survives_nondict_lifecycle_summary():
+    """[audit-3 #13 totality] a snapshot whose lifecycle_risk.summary is a truthy NON-dict (an older engine's
+    'lifecycle not computed' string) survived the `or {}` guard and reached lr.get(...) -> AttributeError -> the
+    unauthenticated upload endpoint 500'd. summarize() must degrade on every field."""
+    from webapp.backend import summary
+    snap = {"devices": {"sw1": {"model": "WS-C3850-48P"}},
+            "lifecycle_risk": {"summary": "lifecycle not computed (older engine)", "per_device": []}}
+    out = summary.summarize(snap)        # must not raise
+    assert isinstance(out, dict) and "lifecycle" in out

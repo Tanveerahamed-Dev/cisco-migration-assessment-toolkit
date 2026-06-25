@@ -227,3 +227,24 @@ def test_redact_preserves_generic_key_and_pass_count():
     out = html.redact_snapshot({"design": {"key": "vlan-100-decision"}, "security": {"pass": 42, "passed": 7}})
     assert out["design"]["key"] == "vlan-100-decision"
     assert out["security"]["pass"] == 42 and out["security"]["passed"] == 7
+
+
+def test_redact_collected_inplace_pseudonymizes_workbook_dataclasses():
+    """[audit-3 #8 HIGH security] --redact pseudonymized the snapshot.json + explorer.html but the always-produced
+    .xlsx (built from the raw InterfaceData/DevicePhysical dataclasses BEFORE redact_snapshot) leaked real serials,
+    mgmt IPs and MACs. redact_collected_inplace must scrub them in place."""
+    from cisco_toolkit.html import redact_collected_inplace
+    from cisco_toolkit.model import InterfaceData, DevicePhysical
+    dp = DevicePhysical(hostname="AAS13-BC", model="WS-C4948E-F", serial_number="CAT1852S14M",
+                        chassis_serial="CAT1852S14M", system_mac="0000.5e00.0108")
+    d = InterfaceData(port="Gi1/0/1", end_host_mac="aabb.ccdd.eeff", svi_ip="10.200.200.1",
+                      current_switch_serial="FOC1949S411")
+    ai = {"AAS13-BC": {"Gi1/0/1": d}}
+    redact_collected_inplace(ai, [dp])
+    blob = " ".join([dp.serial_number, dp.chassis_serial, dp.system_mac,
+                     d.end_host_mac, d.svi_ip, d.current_switch_serial])
+    for real in ("CAT1852S14M", "FOC1949S411", "10.200.200.1", "0000.5e00.0108", "aabb.ccdd.eeff", "aabb:ccdd:eeff"):
+        assert real not in blob, f"real value {real!r} leaked after redaction"
+    assert dp.serial_number.startswith("SN") and d.current_switch_serial.startswith("SN")
+    assert dp.model == "WS-C4948E-F"          # non-PII fields preserved (model is not an IP/MAC/serial)
+    assert dp.hostname == "AAS13-BC"          # hostnames kept (topology survives), same as redact_snapshot

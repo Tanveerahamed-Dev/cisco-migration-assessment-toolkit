@@ -836,3 +836,58 @@ def test_wave_sequencing_endpoint_count_not_exceed_move_group_total():
     ws = analyze.compute_wave_sequencing(ifaces, mg)
     g_ep = mg[0]["endpoints"]
     assert sum(w["hard_cutover_endpoints"] for w in ws) <= g_ep and g_ep == 1
+
+
+def test_find_bridges_iterative_long_chain_matches_bruteforce():
+    """[audit-3 L4 totality] _find_bridges used recursive DFS -> RecursionError on a ~1000+-node simple path
+    (long daisy-chain). Iterative now; verified against an independent brute-force bridge oracle."""
+    from cisco_toolkit.analyze import _find_bridges
+    def brute(adj):
+        edges = {frozenset((u, v)) for u in adj for v in adj[u] if u != v}
+        out = set()
+        for e in edges:
+            a, b = tuple(e)
+            seen, stack = {a}, [a]
+            while stack:
+                x = stack.pop()
+                for w in adj[x]:
+                    if (x == a and w == b) or (x == b and w == a):
+                        continue
+                    if w not in seen:
+                        seen.add(w); stack.append(w)
+            if b not in seen:
+                out.add(e)
+        return out
+    N = 1500
+    chain = {str(i): set() for i in range(N)}
+    for i in range(N - 1):
+        chain[str(i)].add(str(i + 1)); chain[str(i + 1)].add(str(i))
+    assert len(_find_bridges(chain)) == N - 1        # no RecursionError; every chain edge is a bridge
+    cycle = {"a": {"b", "c"}, "b": {"a", "c"}, "c": {"a", "b"}}
+    tadpole = {"a": {"b", "c"}, "b": {"a", "c"}, "c": {"a", "b", "d"}, "d": {"c", "e"}, "e": {"d"}}
+    for g in (cycle, tadpole, chain):
+        assert _find_bridges(g) == brute(g)
+
+
+def test_exec_summary_sheet_no_fabricated_coverage_on_brief_crash():
+    """[audit-3 #2 HIGH false-health] when compute_executive_brief raises, _run_phase wires {'_unavailable':True}.
+    The Exec Summary sheet then fell back to the raw recompute -> claimed full collection coverage (n/n) + an
+    inflated all-rows average (50 vs true 41). It must disclose 'unavailable', like the Architecture Review sheet."""
+    from openpyxl import Workbook
+    import cisco_toolkit.excel as X
+    hs = [{"switch": "a", "band": "Critical", "score": 20}, {"switch": "b", "band": "Poor", "score": 40},
+          {"switch": "c", "band": "Good", "score": 80},
+          {"switch": "d", "band": "Insufficient Data", "score": 90}, {"switch": "e", "band": "Insufficient Data", "score": 90}]
+    wb = Workbook(); X.harden_workbook(wb)
+    X.write_executive_summary_sheet(wb, hs, [], [], [], brief={"_unavailable": True})
+    ws = wb[X.EXEC_SUMMARY_SHEET_NAME]
+    def _val(label):
+        for row in ws.iter_rows(values_only=True):
+            cells = [c for c in row if c not in (None, "")]
+            if cells and str(cells[0]).strip() == label:
+                return " ".join(str(c) for c in cells[1:])
+        return None
+    collected, avg = _val("Switches collected / inventoried"), _val("Average health score")
+    assert collected is not None and "5 / 5" not in collected            # must NOT fabricate full coverage
+    assert "unavailable" in collected.lower() or "—" in collected
+    assert avg is None or "unavailable" in avg.lower() or "—" in avg     # no fabricated clean average on a crash

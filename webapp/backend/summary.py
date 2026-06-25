@@ -125,7 +125,8 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
             readiness[r["readiness"]] += 1
 
     _lr = snap.get("lifecycle_risk")
-    lr = ((_lr if isinstance(_lr, dict) else {}).get("summary")) or {}
+    _lrs = (_lr if isinstance(_lr, dict) else {}).get("summary")    # a truthy NON-dict summary (e.g. an older
+    lr = _lrs if isinstance(_lrs, dict) else {}                     # engine's "not computed" string) must not 500
 
     return {
         "version": snap.get("script_version", ""),

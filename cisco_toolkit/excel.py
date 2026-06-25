@@ -3029,8 +3029,16 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     _ebs = (brief or {}).get("scale") or {}
     _ncoll = _ebs.get("n_collected"); _avgc = _ebp.get("avg_health")
     _sub("Fleet posture")
-    _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
-    _kv("Average health score", f"{_avgc if isinstance(_avgc, (int, float)) else avg} / 100")
+    if isinstance(brief, dict) and brief.get("_unavailable"):
+        # the executive-brief compute RAISED -> _run_phase wired the {'_unavailable':True} sentinel. Do NOT fall
+        # back to the raw recompute: that fabricates full collection coverage (n/n) + an all-rows mean that the
+        # 'Insufficient Data' devices inflate. Disclose the gap, exactly as the Architecture Review sheet does
+        # for the same sentinel (audit-3 #2 false-health).
+        _kv("Switches collected / inventoried", f"— / {n} (executive brief unavailable — compute failed)")
+        _kv("Average health score", "— (executive brief unavailable)")
+    else:
+        _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
+        _kv("Average health score", f"{_avgc if isinstance(_avgc, (int, float)) else avg} / 100")
     _kv("Critical band", bands["Critical"])
     _kv("Poor / Fair", bands["Poor"] + bands["Fair"])
     _kv("Good / Excellent", bands["Good"] + bands["Excellent"])

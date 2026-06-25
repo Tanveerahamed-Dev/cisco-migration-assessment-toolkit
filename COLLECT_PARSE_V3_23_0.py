@@ -439,7 +439,8 @@ from cisco_toolkit.build import (
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_workbook,
-                                write_campaign_workbook, redact_snapshot)   # NEW-V3.23.145 (campaign trend)
+                                write_campaign_workbook, redact_snapshot,
+                                redact_collected_inplace, redact_workbook_cells)   # campaign trend; audit-3 #8 workbook redact
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -1825,6 +1826,14 @@ def main():
             all_acl_hits[k] = all_acl_hits.get(k, 0) + v
     all_igmp_groups = sorted(_igmp_groups, key=lambda ip: tuple(int(o) for o in ip.split(".")))
 
+    # --redact: pseudonymize the COLLECTED dataclasses NOW, before the first sheet writer consumes them, so the
+    # always-produced .xlsx (built from these, before redact_snapshot touches the JSON) is share-safe too. The
+    # snapshot + explorer are redacted later from snap_dict; without this the workbook leaked real serials/IPs/
+    # MACs from the same --redact run (audit-3 #8). Opt-in path only; never on a normal run.
+    if getattr(args, "redact", False):
+        _run_phase("redact collected dataclasses", redact_collected_inplace, all_interfaces, all_device_physical)
+        logger.info("[redact] collected inventory (workbook) serials / IPs / MACs pseudonymized (--redact)")
+
     # Phase 6: Write interface rows to template sheet (each host guarded so one
     # host's write failure can't abort the run before wb.save()).
     logger.info("\n[Phase 6] Writing interface rows ...")
@@ -2250,6 +2259,8 @@ def main():
         _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty review (cf. executive_brief)
     _run_phase("Architecture Review sheet", write_architecture_review_sheet, wb, architecture_review)
 
+    if getattr(args, "redact", False):    # final --redact net: scrub IP/MAC/secrets from computed + raw-config
+        _run_phase("redact workbook cells", redact_workbook_cells, wb)   # sheets the dataclass pass can't reach
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")
     logger.info(f"[OK] Log:   {LOG_FILE}")
