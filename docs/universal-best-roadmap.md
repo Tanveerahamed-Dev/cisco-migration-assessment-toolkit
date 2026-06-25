@@ -10,8 +10,12 @@ anything needing a cloud LLM or risking an unsupported claim was **cut**, not ad
 > item's `file:line` is the **landing site** where it would go, NOT an existing feature (e.g. `--collect-raw-outputs`
 > / `snap['cmd_outputs']` in W3-3 do **not** exist yet — they're the proposed shape). **SHIPPED so far** (2026-06-25,
 > test-first, committed): **W1-1/W1-2** the read-only + no-egress falsifiable guards (`610d3e2`, `tests/test_readonly_and_no_egress.py`);
-> **W3-1 backend** `ssot.abstention_reason()` + **W3-5** the reconcile pre-emission gate (`510129a`). Everything
-> else here is design, sequenced and grounded, awaiting implementation.
+> **W3-1 backend** `ssot.abstention_reason()` + **W3-5** the reconcile pre-emission gate (`510129a`); **the marquee
+> W2-1 + W2-2** — `cisco_toolkit/fib.py`: native longest-prefix-match RIB→FIB resolver + computed path tracer
+> (`d47fce4`) and the differential reachability what-if `reachability_diff()` (`0eb3bbd`), both test-first
+> (`tests/test_fib.py`, 13 tests) and runtime-verified on the real [HISTORY-REDACTED] snapshot. The fib.py library is the complete
+> capability; its `--compare`/explorer **surface wiring** is the next, golden-touching increment. Everything else
+> here is design, sequenced and grounded, awaiting implementation.
 
 ## The thesis — what "universal & best" actually means here
 The waves **verified** that the engine already wins on three things no cloud competitor can match:
@@ -71,8 +75,8 @@ The single gap vs every assurance leader. Native, pure-Python, air-gapped, cover
 
 | # | Item | Grounding | Effort |
 |---|------|-----------|--------|
-| W2-1 | **Native longest-prefix-match RIB→FIB resolver** — upgrade reachability from L2 topology-BFS to computed L3 forwarding | `analyze.py:2145` (`_bfs_forwarding_path`), `:2183-2186` (self-labeled "lower bound — scan-bound topology"); `model.py:52` (`route_next_hop` is a single field today) | **L** |
-| W2-2 | **Differential what-if** — feed `design_blueprint.target_state`/move-groups into the FIB sim, diff current-vs-proposed reachability + segmentation → a pre-cutover **proof** | builds on W2-1 + the proven Flow-Simulator swap-MODEL-clone-restore-in-`finally` pattern; pairs with the existing `--compare OLD NEW` | **L** |
+| W2-1 ✅ **BUILT** (`d47fce4`) | **Native longest-prefix-match RIB→FIB resolver** — upgrade reachability from L2 topology-BFS to computed L3 forwarding | **DONE** in `cisco_toolkit/fib.py` (`compute_fib`/`fib_lookup`/`trace_fib_path`); pure stdlib `ipaddress`, coverage-honest (`computed:reached` / `computed:unreachable` / `lower_bound:*`). The `analyze.py:2186` L2 lower-bound stays; fib is the computed upgrade, [HISTORY-REDACTED]-verified | **L** |
+| W2-2 ✅ **BUILT** (`0eb3bbd`) | **Differential what-if** — diff current-vs-proposed reachability → a pre-cutover **proof** | **DONE** as `reachability_diff(old, new, pairs)` (preserved / newly_blocked / newly_reachable / inconclusive); pairs with the existing `--compare OLD NEW`. Surface wiring into the compare deliverable is the next increment | **L** |
 | W2-3 | **Framework-mapping table** (CIS / NIST 800-53 / DISA-STIG / PCI) over the EXISTING detector corpus — a "proof of compliance" matrix | the 82 `_d_*` detectors already carry `citation`; CIS axis already fires. A mapping dict + renderer, **not** a new check engine | **M** |
 
 **Doctrine guard (W2-1/2):** a resolved path is "computed from collected routes"; any unresolved/partial leg
