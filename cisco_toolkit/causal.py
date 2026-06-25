@@ -16,6 +16,7 @@ Nothing here re-computes a finding: each row renders the engine's own output. Pu
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -162,7 +163,8 @@ def compute_causal_flows(snap: Optional[dict]) -> Dict[str, Any]:
         ev = _as_dict(d.get("evidence"))
         devs = _as_list(ev.get("devices"))
         hosts = [h for h in devs if in_model(h)][:8]
-        cnt = int(ev.get("count")) if isinstance(ev.get("count"), (int, float)) and not isinstance(ev.get("count"), bool) else None
+        _c = ev.get("count")    # require FINITE: int(inf)->OverflowError, int(nan)->ValueError would 500 the route
+        cnt = int(_c) if isinstance(_c, (int, float)) and not isinstance(_c, bool) and math.isfinite(_c) else None
         # BLAST = the affected-DEVICE count (what a blast-radius badge means). The metric `cnt` counts whatever
         # the decision is about -- ports / VLANs / member-legs / trunks / root-elections / move-groups -- and
         # stays in the TITLE with its own unit; labelling `cnt` as 'device(s)' was a LIVE mislabel (e.g. a chip

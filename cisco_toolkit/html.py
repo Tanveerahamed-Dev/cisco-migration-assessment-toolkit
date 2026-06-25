@@ -867,3 +867,96 @@ def redact_snapshot(snap: dict) -> dict:
         return o
 
     return _walk(snap)
+
+
+def _make_redactor():
+    """A fresh, self-consistent pseudonymizer (same scheme as redact_snapshot: IPv4 keeps its /24 grouping;
+    IPv6 -> fd00::; MAC -> 02:..; serial -> SNxxxx). Returns (scrub_str, redact_serial) sharing per-call maps.
+    Shared by redact_collected_inplace + redact_workbook_cells so the --redact workbook is scrubbed everywhere."""
+    ip_map: Dict[str, str] = {}
+    ip6_map: Dict[str, str] = {}
+    mac_map: Dict[str, str] = {}
+    serial_map: Dict[str, str] = {}
+
+    def _ip(m):
+        net = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+        if net not in ip_map:
+            i = len(ip_map); ip_map[net] = f"10.{i // 256}.{i % 256}"
+        return f"{ip_map[net]}.{m.group(4)}"
+
+    def _ip6(m):
+        s = m.group(0)
+        if s not in ip6_map:
+            i = len(ip6_map) + 1; ip6_map[s] = "fd00::%x:%x" % ((i >> 16) & 0xffff, i & 0xffff)
+        return ip6_map[s]
+
+    def _mac(m):
+        key = re.sub(r"[^0-9a-f]", "", m.group(0).lower())
+        if key not in mac_map:
+            i = len(mac_map) + 1
+            mac_map[key] = "02:%02x:%02x:%02x:%02x:%02x" % (
+                (i >> 32) & 255, (i >> 24) & 255, (i >> 16) & 255, (i >> 8) & 255, i & 255)
+        return mac_map[key]
+
+    def scrub(s):
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s))))
+
+    def serial(v):
+        if not v:
+            return v
+        if v not in serial_map:
+            serial_map[v] = f"SN{len(serial_map) + 1:04d}"
+        return serial_map[v]
+
+    return scrub, serial
+
+
+def redact_collected_inplace(all_interfaces: dict, all_device_physical: list) -> None:
+    """Pseudonymize the COLLECTED dataclasses (InterfaceData + DevicePhysical) IN PLACE, so the always-produced
+    .xlsx workbook -- which the sheet builders assemble from these dataclasses BEFORE redact_snapshot ever runs on
+    the JSON -- cannot leak real serials / IPs / MACs under --redact. Serial-named fields -> SNxxxx; every other
+    string -> IP/IPv6/MAC/secret scrub. For the --redact share-safe path only; mutates in place. Never raises.
+    (Sheets built from COMPUTED structures / raw config text, not these dataclasses, are caught separately by
+    redact_workbook_cells.)"""
+    import dataclasses as _dc
+    scrub, serial = _make_redactor()
+
+    def _red_obj(o):
+        try:
+            fields = _dc.fields(o)
+        except TypeError:
+            return                                    # not a dataclass instance -> nothing to redact
+        for f in fields:
+            v = getattr(o, f.name, "")
+            if isinstance(v, str) and v:
+                # serial-named field -> consistent SNxxxx; everything else -> pattern scrub (catches an IP/MAC in
+                # ANY field, so a leak can't hide in a free-text column we forgot to enumerate).
+                setattr(o, f.name,
+                        serial(v) if (f.name in _REDACT_SERIAL_KEYS or f.name.endswith("_serial")) else scrub(v))
+
+    for dp in (all_device_physical or []):
+        _red_obj(dp)
+    for ports in (all_interfaces or {}).values():
+        for d in (ports or {}).values():
+            _red_obj(d)
+
+
+def redact_workbook_cells(wb) -> None:
+    """Final-pass --redact safety net: scrub IPv4/IPv6/MACs/credentials from EVERY cell of an openpyxl workbook,
+    so sheets built from COMPUTED structures (e.g. Subnet Reachability) or RAW config text (Golden-Config Drift)
+    -- which redact_collected_inplace can't reach because they don't come from the collected dataclasses -- cannot
+    leak real addresses/secrets. Serials carry no reliable text pattern, so they are pseudonymized upstream in the
+    dataclasses; this pass covers everything pattern-matchable. Mutates in place; never raises."""
+    scrub, _ = _make_redactor()
+    try:
+        sheets = list(wb.worksheets)
+    except Exception:
+        return
+    for ws in sheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and v:
+                    nv = scrub(v)
+                    if nv != v:
+                        cell.value = nv

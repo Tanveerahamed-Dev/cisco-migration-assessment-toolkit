@@ -780,29 +780,42 @@ def _topology_adjacency(all_interfaces: Dict[str, Dict[str, InterfaceData]]):
 
 def _find_bridges(adj: Dict[str, set]) -> set:
     """Bridge edges (frozenset({a,b})) — links whose removal disconnects the graph (true SPOFs).
-    Classic DFS low-link. Recursion depth is bounded by the longest simple path (campus fleets are
-    tens of switches, well under the interpreter limit)."""
+    Classic DFS low-link, ITERATIVE (explicit stack) so a long simple path — e.g. a 1000+-switch daisy chain —
+    cannot blow the interpreter's recursion limit and crash the whole analysis (it used to RecursionError; the
+    public entry compute_link_centrality took the same chain down)."""
     disc: Dict[str, int] = {}
     low: Dict[str, int] = {}
     bridges: set = set()
     timer = [0]
 
-    def dfs(u: str, parent) -> None:
-        disc[u] = low[u] = timer[0]; timer[0] += 1
-        for v in sorted(adj[u]):
-            if v == parent:
-                continue
-            if v not in disc:
-                dfs(v, u)
-                low[u] = min(low[u], low[v])
-                if low[v] > disc[u]:
-                    bridges.add(frozenset((u, v)))
-            else:
-                low[u] = min(low[u], disc[v])
+    def dfs_iter(root: str) -> None:
+        # each frame is (node, parent, child-iterator). The iterator resumes exactly where it paused, so a node
+        # is finalized (popped) only after ALL its children are fully explored — identical order to the recursion.
+        disc[root] = low[root] = timer[0]; timer[0] += 1
+        stack = [(root, None, iter(sorted(adj[root])))]
+        while stack:
+            u, parent, it = stack[-1]
+            pushed = False
+            for v in it:
+                if v == parent:
+                    continue
+                if v not in disc:                                   # tree edge -> descend
+                    disc[v] = low[v] = timer[0]; timer[0] += 1
+                    stack.append((v, u, iter(sorted(adj[v]))))
+                    pushed = True
+                    break
+                low[u] = min(low[u], disc[v])                       # back edge
+            if not pushed:                                          # u exhausted -> finalize, propagate to parent
+                stack.pop()
+                if stack:
+                    pu = stack[-1][0]
+                    low[pu] = min(low[pu], low[u])
+                    if low[u] > disc[pu]:
+                        bridges.add(frozenset((pu, u)))
 
     for r in sorted(adj):
         if r not in disc:
-            dfs(r, None)
+            dfs_iter(r)
     return bridges
 
 
