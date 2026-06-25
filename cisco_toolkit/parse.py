@@ -98,6 +98,19 @@ def parse_bgp_table(output: str) -> List[str]:
     return sorted(out)
 
 
+def _nxos_route_source(token: str) -> str:
+    """Map an NX-OS 'show ip route' *via source token to the engine's canonical source vocabulary. NX-OS puts the
+    protocol on the via line as a word, often with a process tag: 'direct'/'attached' (connected), 'local',
+    'static', 'ospf-1', 'bgp-65000', 'eigrp-1', 'isis-1', 'rip-1'."""
+    t = str(token or "").strip().lower()
+    if t.startswith("direct") or t == "attached":
+        return "connected"
+    for name in ("local", "static", "ospf", "bgp", "eigrp", "isis", "rip"):
+        if t.startswith(name):
+            return name
+    return t
+
+
 def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
     routes: Dict[str, Dict[str, object]] = {}
     if not output:
@@ -109,6 +122,7 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
     }
     current = None
     current_entry = None        # the code-line entry that following indented 'via' continuation line(s) belong to
+    current_nxos = False        # inside an NX-OS '<prefix>, ubest/mbest:' block (source/next-hop on the *via lines)
     for raw in output.splitlines():
         line = raw.rstrip()
         s = line.strip()
@@ -131,6 +145,31 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
             routes[prefix]['entries'].append(entry)
             current = prefix
             current_entry = entry
+            current_nxos = False
+            continue
+        # NX-OS 'show ip route' prefix line: "<prefix>, ubest/mbest: U/M[, attached]" -- the prefix begins with a
+        # DIGIT (no protocol code); source/next-hop are on the following indented '*via ...' line(s). Without this
+        # the IOS-only code-letter regex above matched NOTHING and an entire real Nexus RIB parsed to zero routes.
+        mnx = re.match(r"^(\d+\.\d+\.\d+\.\d+/\d+),\s*ubest/mbest\b", s, re.IGNORECASE)
+        if mnx:
+            prefix = mnx.group(1)
+            routes.setdefault(prefix, {'entries': []})
+            current, current_entry, current_nxos = prefix, None, True
+            continue
+        if current and current_nxos:
+            # '*via 10.0.10.3, Vlan10, [AD/metric], age, <source>': next-hop after via, the interface is the text
+            # field before [AD/metric], the source is the LAST comma-field. One entry per via line (ECMP).
+            mvia = re.match(r"\*?via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
+            if mvia:
+                parts = [p.strip() for p in s.split(',')]
+                out_intf = ''
+                for p in parts[1:-1]:
+                    if re.match(r"^[A-Za-z]", p) and not p.startswith('['):
+                        out_intf = normalize_ifname(p)
+                        break
+                routes[current]['entries'].append({
+                    'prefix': current, 'code': '', 'source': _nxos_route_source(parts[-1] if parts else ''),
+                    'next_hop': mvia.group(1), 'out_intf': out_intf, 'raw': s})
             continue
         if current:
             m2 = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)

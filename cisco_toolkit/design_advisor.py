@@ -3327,12 +3327,20 @@ def _clamp(v):
 
 def _scorecard(snap, sig):
     out = []
+    # COVERAGE-HONESTY: when part of the estate was NOT collected, the ABSENCE of an observed SPOF / idle link is
+    # uninformative -- the redundancy-bearing core/distribution often sits in the uncollected set. An axis that
+    # infers health from "nothing bad observed" must therefore NOT read 'Strong', and must disclose the gap
+    # (not-observed != healthy -- the false-health class). (multi-domain audit #8)
+    coverage_gap = bool(sig.get("not_collected"))
+    cov_note = (f" [{sig['not_collected']} device(s) NOT collected -- not fully assessed]" if coverage_gap else "")
     # availability
     av = 4 - (2 if sig["no_fhrp"] else 0) - (1 if sig["bridges"] else 0) - (1 if sig["nobackup_high"] else 0)
+    if coverage_gap:
+        av = min(av, 2)                  # absence of observed SPOFs cannot certify 'Strong' on a partial estate
     out.append(_axis_entry("availability", _clamp(av),
                "Weak" if av <= 1 else ("Moderate" if av <= 2 else "Strong"),
                f"{sig['no_fhrp']} no-FHRP VLAN(s); {sig['bridges']} cut-edge link(s); "
-               f"{sig['nobackup_high']} node(s) with no backup path."))
+               f"{sig['nobackup_high']} node(s) with no backup path." + cov_note))
     # convergence
     cv = 4 - (1 if sig["no_fhrp"] else 0) - (1 if sig["stp_blocked"] else 0) - (1 if sig["eol"] else 0)
     out.append(_axis_entry("convergence", _clamp(cv), "Weak" if cv <= 1 else "Moderate",
@@ -3360,8 +3368,10 @@ def _scorecard(snap, sig):
                "Path optimality needs end-to-end routing/forwarding evidence not fully collected."))
     # load_balancing
     lb = _clamp(4 - (2 if sig["stp_blocked"] else 0))
+    if coverage_gap:
+        lb = min(lb, 2)                  # 'no idle blocked links observed' is uninformative on a partial estate
     out.append(_axis_entry("load_balancing", lb, "Weak" if lb <= 2 else "Strong",
-               f"{sig['stp_blocked']} device(s) with idle STP-blocked redundant links."))
+               f"{sig['stp_blocked']} device(s) with idle STP-blocked redundant links." + cov_note))
     # manageability
     mg = _clamp(4 - (1 if sig["mgmt_devices"] else 0) - (1 if sig["vtp_server"] else 0)
                 - (1 if sig["not_collected"] else 0))

@@ -598,6 +598,47 @@ def test_parse_ip_routes_wrapped_ecmp_inherits_source_per_next_hop(cp):
     assert {e["out_intf"] for e in entries} == {"Gi0/0", "Gi0/1"}
 
 
+def test_parse_ip_routes_nxos_ubest_mbest_format(cp):
+    """NX-OS 'show ip route' uses '<prefix>, ubest/mbest:' lines + indented '*via ..., <source>' lines -- the
+    prefix begins with a DIGIT (not a protocol code) and the source is the LAST token on the via line. The
+    IOS-only code-letter regex parsed a real Nexus RIB to ZERO routes (breaking the FIB tracer + SVI enrichment).
+    (multi-domain audit #1)"""
+    out = textwrap.dedent("""\
+        IP Route Table for VRF "default"
+        '*' denotes best ucast next-hop
+
+        10.0.10.0/24, ubest/mbest: 1/0, attached
+            *via 10.0.10.3, Vlan10, [0/0], 1w2d, direct
+        10.0.10.3/32, ubest/mbest: 1/0, attached
+            *via 10.0.10.3, Vlan10, [0/0], 1w2d, local
+        10.20.30.0/24, ubest/mbest: 1/0
+            *via 10.0.0.2, [110/20], 1w2d, ospf-1
+        0.0.0.0/0, ubest/mbest: 1/0
+            *via 10.0.0.1, [1/0], 1w2d, static
+    """)
+    routes = parse.parse_ip_routes(out)
+    assert set(routes) == {"10.0.10.0/24", "10.0.10.3/32", "10.20.30.0/24", "0.0.0.0/0"}
+    conn = routes["10.0.10.0/24"]["entries"][0]
+    assert conn["source"] == "connected" and conn["next_hop"] == "10.0.10.3" and conn["out_intf"] == "Vlan10"
+    ospf = routes["10.20.30.0/24"]["entries"][0]
+    assert ospf["source"] == "ospf" and ospf["next_hop"] == "10.0.0.2"
+    assert routes["0.0.0.0/0"]["entries"][0]["source"] == "static"
+
+
+def test_parse_ip_routes_nxos_ecmp_two_via_lines(cp):
+    """NX-OS lists ECMP as multiple indented *via lines under one prefix -> one entry per next-hop, source from
+    each via line."""
+    out = textwrap.dedent("""\
+        10.50.0.0/16, ubest/mbest: 2/0
+            *via 10.0.0.2, Eth1/1, [110/20], 1w2d, ospf-1
+            *via 10.0.0.6, Eth1/2, [110/20], 1w2d, ospf-1
+    """)
+    entries = parse.parse_ip_routes(out)["10.50.0.0/16"]["entries"]
+    assert len(entries) == 2
+    assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.6"}
+    assert all(e["source"] == "ospf" for e in entries)
+
+
 def test_parse_ip_routes_inline_via_plus_continuation_ecmp(cp):
     """The common inline-via form is unchanged; an additional via continuation line is an ECMP sibling that also
     inherits the source (so the inline + wrapped forms behave identically)."""
