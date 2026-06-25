@@ -8,6 +8,7 @@ import logging
 import pytest
 
 from cisco_toolkit import analyze, portdb, ouidb
+import cisco_toolkit.design_advisor as da
 
 
 # ---------------------------------------------------------------- ANALY-04 ---
@@ -76,3 +77,36 @@ def test_offline_registries_warn_on_load_failure_then_degrade(caplog):
         portdb._DATA = p_orig; portdb._registry.cache_clear()
         ouidb._DATA = o_orig; ouidb._registry.cache_clear(); ouidb.vendor_for_mac.cache_clear()
     assert portdb.service_for_port(179, "tcp") is not None                # restored cleanly
+
+
+# ---------------------------------------------------------------- DETEC-03 ---
+def test_fhrp_no_preempt_fires_only_on_raised_priority_not_default():
+    """DETEC-03: the signal flagged ANY active gateway with preempt off. But HSRP/VRRP/GLBP preemption is OFF
+    BY DEFAULT (and parse_hsrp_detail defaults preempt=False), so every textbook default active group cried
+    wolf. Only a gateway whose operator RAISED its configured priority above 100 deliberately wants to be
+    primary -- without preempt that intended primary won't reclaim after a failover. A default-priority (100)
+    active gateway with no preempt must stay silent."""
+    default = {"fhrp_detail": {"d1": [{"ifname": "Vlan10", "group": "10", "state": "Active",
+                                       "preempt": False, "priority": 100, "cfg_priority": 100,
+                                       "track": [{"obj": "1", "decrement": 10}]}]}}
+    raised = {"fhrp_detail": {"d2": [{"ifname": "Vlan20", "group": "20", "state": "Active",
+                                      "preempt": False, "priority": 110, "cfg_priority": 110,
+                                      "track": [{"obj": "1", "decrement": 10}]}]}}
+    assert da._signals(default)["fhrp_no_preempt"] == []                  # benign default: silent
+    assert da._signals(raised)["fhrp_no_preempt"] == ["d2 Vlan20 grp 20"]  # raised + no preempt: fires
+    assert da._d_fhrp_resilience(default, da._signals(default)) is None    # no other arm fires either
+
+
+# ---------------------------------------------------------------- DETEC-04 ---
+def test_sdwan_control_shortfall_counted_once_per_device():
+    """DETEC-04: vManage repeats the DEVICE-level expected/actual control-connection count on every per-peer
+    row, so a single device short by one made every remaining UP row also satisfy actual<expected -- counting
+    the same shortfall N times. It must be counted ONCE per device; a genuinely-down peer is still per-row."""
+    rows = [{"system_ip": "10.0.0.13", "host_name": "BR13", "peer_type": "vsmart", "state": "up",
+             "expected": 4, "actual": 3} for _ in range(3)]
+    rows.append({"system_ip": "10.0.0.13", "host_name": "BR13", "peer_type": "vbond", "state": "down",
+                 "expected": 4, "actual": 3})
+    cc = da._signals({"sdwan": {"mgr1": {"control_connections": rows}}})["sdwan_control_down"]
+    assert len(cc) == 2, cc                                               # was 4 (one per row); now 1 short + 1 down
+    assert sum("control connections 3/4" in x for x in cc) == 1          # the shortfall: exactly once
+    assert sum("(down)" in x for x in cc) == 1                            # the down peer: still surfaced

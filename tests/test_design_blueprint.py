@@ -1782,7 +1782,9 @@ def test_d_fhrp_resilience_flags_untracked_or_no_preempt_active_gateways():
     import cisco_toolkit.design_advisor as da
     fragile = {"fhrp_detail": {"core1": [
         {"ifname": "Vlan10", "group": "10", "state": "Active", "preempt": True, "track": []},               # no tracking
-        {"ifname": "Vlan20", "group": "20", "state": "Active", "preempt": False, "track": [{"obj": "1"}]},   # no preempt
+        # raised priority (110 > default 100) + no preempt -> the intended primary won't reclaim (DETEC-03:
+        # a DEFAULT-priority no-preempt active group is the benign textbook default and no longer fires).
+        {"ifname": "Vlan20", "group": "20", "state": "Active", "preempt": False, "cfg_priority": 110, "track": [{"obj": "1"}]},
         {"ifname": "Vlan99", "group": "99", "state": "Standby", "preempt": False, "track": []},              # standby -> ignored
     ]}}
     sig = da._signals(fragile)

@@ -167,7 +167,18 @@ def _signals(snap):
             if str(_g.get("state", "")).lower() in ("active", "master"):
                 _tag = f"{_host} {_g.get('ifname', '?')} grp {_g.get('group', '?')}"
                 if not (_g.get("track") or []): sig["fhrp_no_track"].append(_tag)
-                if _g.get("preempt") is False: sig["fhrp_no_preempt"].append(_tag)
+                # HSRP/VRRP/GLBP preemption is OFF BY DEFAULT, so flagging EVERY default active group cried
+                # wolf. Only a gateway whose operator RAISED its configured priority above the 100 default
+                # deliberately wants to be primary -- without preempt it will NOT reclaim the active role after
+                # a failover (a non-deterministic primary). A default-priority (100) active gateway with no
+                # preempt is the benign textbook default and stays silent. cfg_priority unknown -> don't guess.
+                if _g.get("preempt") is False:
+                    try:
+                        _cfgp = int(_g.get("cfg_priority"))
+                    except (TypeError, ValueError):
+                        _cfgp = None
+                    if _cfgp is not None and _cfgp > 100:
+                        sig["fhrp_no_preempt"].append(_tag)
     # VXLAN-EVPN overlay health (snap['overlay'] from build_overlay): VTEP (NVE) peers DOWN partition the
     # fabric. The engine's OWN target fabric was previously blind. Coverage-honest: empty when no NVE.
     sig["nve_peers_down"] = []
@@ -391,11 +402,20 @@ def _signals(snap):
     _sdwan_cc, _sdwan_unreach, _sdwan_omp = [], [], []
     for _sh, _sf in sorted(_sdwan.items()):
         _sf = _as_dict(_sf)
+        _seen_short = set()                       # expected/actual is a DEVICE aggregate repeated per peer row
         for _c in _as_list(_sf.get("control_connections")):
             _c = _as_dict(_c)
             _exp, _act = _c.get("expected"), _c.get("actual")
-            if str(_c.get("state", "")).lower() == "down" or (isinstance(_exp, int) and isinstance(_act, int) and _act < _exp):
-                _sdwan_cc.append(f"{_sh} {_c.get('host_name') or _c.get('system_ip', '?')} -> {_c.get('peer_type', '?')} ({_c.get('state', '')})")
+            if str(_c.get("state", "")).lower() == "down":
+                _sdwan_cc.append(f"{_sh} {_c.get('host_name') or _c.get('system_ip', '?')} -> {_c.get('peer_type', '?')} (down)")
+            elif isinstance(_exp, int) and isinstance(_act, int) and _act < _exp:
+                # vManage repeats the device-level expected/actual control-connection count on EVERY per-peer
+                # row, so a single device short by one made every remaining UP row also satisfy actual<expected
+                # -- counting the same shortfall N times. Count it ONCE per device (system_ip/host_name).
+                _id = _c.get("system_ip") or _c.get("host_name") or "?"
+                if (_sh, _id) not in _seen_short:
+                    _seen_short.add((_sh, _id))
+                    _sdwan_cc.append(f"{_sh} {_c.get('host_name') or _id} -> control connections {_act}/{_exp}")
         for _d in _as_list(_sf.get("devices")):
             if str(_as_dict(_d).get("reachability", "")).lower() == "unreachable":
                 _sdwan_unreach.append(f"{_sh} {_as_dict(_d).get('host_name') or _as_dict(_d).get('system_ip', '?')}")
