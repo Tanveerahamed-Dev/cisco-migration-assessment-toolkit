@@ -196,3 +196,34 @@ def test_bare_key_rule_preserves_structural_follow_words():
     assert _scrub_secrets("pre-shared-key local THEKEY") == "pre-shared-key local <redacted>"   # 'local' kept
     assert _scrub_secrets("pre-shared-key remote OTHERKEY") == "pre-shared-key remote <redacted>"
     assert "13061E010803" not in _scrub_secrets("key 7 13061E010803")          # genuine key still redacted
+
+
+def test_redact_catches_compound_credential_key_names():
+    """[multi-domain audit #6] --redact must catch COMPOUND controller/config credential field names (the real
+    ISE/ACI/SNMP/wireless field names), not only exact-match keys. A secret stored as a JSON value under
+    tacacsSharedSecret / roCommunity / authPassword / wpaPassphrase etc. must not survive."""
+    snap = {"ise_networkdevice": {"name": "agg-1", "tacacsSharedSecret": "TAC-REAL-001", "radiusSharedSecret": "RAD-REAL-002"},
+            "ise_snmp": {"roCommunity": "ROCOMM-REAL", "readCommunity": "RDCOMM-REAL"},
+            "aci_snmpUserP": {"authPassword": "AUTHPW-REAL", "privPassword": "PRIVPW-REAL"},
+            "device_admin": {"enablePassword": "ENABLEPW-REAL", "enableSecret": "ENSEC-REAL"},
+            "wlan": {"wpaPassphrase": "WIFIPSK-REAL"}}
+    blob = json.dumps(html.redact_snapshot(snap))
+    for s in ("TAC-REAL-001", "RAD-REAL-002", "ROCOMM-REAL", "RDCOMM-REAL", "AUTHPW-REAL",
+              "PRIVPW-REAL", "ENABLEPW-REAL", "ENSEC-REAL", "WIFIPSK-REAL"):
+        assert s not in blob, f"{s} leaked through --redact"
+
+
+def test_redact_catches_secret_nested_under_credential_key():
+    """[multi-domain audit #7] a secret one level below a credential-named key ({'apikey':{'value':...}},
+    {'password':{'data':...}}) must be redacted -- the whole subtree under a secret-named key is scrubbed."""
+    snap = {"cfg": {"apikey": {"value": "NESTED-APIKEY-REAL"}},
+            "creds": {"password": {"enc": "type6", "data": "NESTED-PW-REAL"}}}
+    blob = json.dumps(html.redact_snapshot(snap))
+    assert "NESTED-APIKEY-REAL" not in blob and "NESTED-PW-REAL" not in blob
+
+
+def test_redact_preserves_generic_key_and_pass_count():
+    """Regression guard: the generic 'key' structural field and pass/fail COUNT keys must NOT be over-redacted."""
+    out = html.redact_snapshot({"design": {"key": "vlan-100-decision"}, "security": {"pass": 42, "passed": 7}})
+    assert out["design"]["key"] == "vlan-100-decision"
+    assert out["security"]["pass"] == 42 and out["security"]["passed"] == 7

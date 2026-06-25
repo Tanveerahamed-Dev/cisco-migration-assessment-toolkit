@@ -2308,3 +2308,21 @@ def test_mega_corpus_addendum_cited_complete_and_coverage_honest():
             f"{p['id']} must be doctrine (engine_actionable=False) -- none of this state is collected"
     for dom in ("campus-fabric", "wireless", "automation", "dc-compute", "cloud-native"):
         assert design_kb.by_domain(dom), f"new domain {dom!r} must contain principles"
+
+
+def test_scorecard_axes_not_strong_when_estate_partially_uncollected():
+    """[multi-domain audit #8 false-health] the design tradeoff scorecard infers availability / load-balancing
+    from the ABSENCE of observed SPOFs / idle links; on a PARTIAL collection (the redundancy core often
+    uncollected) that absence is uninformative -> it must NOT read 'Strong' and must DISCLOSE the gap. A fully
+    collected estate with no observed SPOFs may still be Strong (no over-correction)."""
+    from cisco_toolkit.design_advisor import _scorecard, _signals
+    partial = {'collection_completeness': {'summary': {'inventory': 303, 'complete': 253, 'not_collected': 50}},
+               'fhrp': [], 'failure_impact': [], 'topology_links': [], 'move_groups': []}
+    sc = {e['axis']: e for e in _scorecard(partial, _signals(partial))}
+    assert sc['availability']['posture'] != 'Strong' and sc['availability']['score'] < 4
+    assert 'not collected' in sc['availability']['evidence'].lower()
+    assert sc['load_balancing']['posture'] != 'Strong'
+    full = {'collection_completeness': {'summary': {'inventory': 10, 'complete': 10, 'not_collected': 0}},
+            'fhrp': [], 'failure_impact': [], 'topology_links': [], 'move_groups': []}
+    scf = {e['axis']: e for e in _scorecard(full, _signals(full))}
+    assert scf['availability']['posture'] == 'Strong'      # full collection, no observed SPOF -> Strong is honest

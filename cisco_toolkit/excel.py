@@ -34,13 +34,22 @@ from cisco_toolkit.textutils import (
 logger = logging.getLogger(__name__)
 
 
+# openpyxl's ILLEGAL_CHARACTERS_RE (used by its own check_string) covers the C0 control chars, but the noncharacters
+# U+FFFE / U+FFFF (and lone surrogates) PASS check_string yet make wb.save() raise ValueError at XML serialization --
+# so a single one in device-derived text still aborts the whole workbook (multi-domain audit #11). Strip them too.
+_XLS_EXTRA_INVALID_RE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + chr(0xFFFE) + chr(0xFFFF) + "]")
+
+
 def _xls_sanitize(value):
-    """Strip the control characters openpyxl rejects (IllegalCharacterError: 0x00-0x08, 0x0B-0x0C, 0x0E-0x1F)
-    from a string; pass non-strings through unchanged. Device-derived free-text (a CDP/LLDP-advertised neighbour
-    name, an interface description, a banner) can carry a BEL/VT/ESC -- collected with errors='ignore', which
-    passes valid-UTF-8 control bytes through -- and a single one aborts the ENTIRE workbook, the one deliverable
-    produced unconditionally (there is no --no-excel)."""
-    return ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
+    """Strip the characters openpyxl rejects from a string; pass non-strings through unchanged. Covers BOTH the C0
+    control chars check_string rejects up front (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F) AND the U+FFFE/U+FFFF
+    noncharacters + lone surrogates that pass check_string but fail wb.save(). Device-derived free-text (a
+    CDP/LLDP neighbour name, an interface description, a banner) -- collected with errors='ignore', which passes
+    valid-UTF-8 control bytes through -- can carry these, and a single one aborts the ENTIRE workbook, the one
+    deliverable produced unconditionally (there is no --no-excel)."""
+    if not isinstance(value, str):
+        return value
+    return _XLS_EXTRA_INVALID_RE.sub("", ILLEGAL_CHARACTERS_RE.sub("", value))
 
 
 def _harden_ws(ws):

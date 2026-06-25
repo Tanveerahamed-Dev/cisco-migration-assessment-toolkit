@@ -151,3 +151,15 @@ def test_diff_workbook_has_validation_sheets(tmp_path):
     assert wb["Summary"].cell(2, 3).value == "REGRESSED"
     hs = [tuple(c.value for c in row) for row in wb["Health Shifts"].iter_rows(min_row=2, max_row=2)]
     assert hs and hs[0][0] == "sw1" and hs[0][1] == "REGRESSED"
+
+
+def test_diff_workbook_survives_unicode_noncharacter_in_device_text(tmp_path):
+    """[multi-domain audit #11] a U+FFFF in device-derived text (it passes openpyxl's check_string but breaks
+    wb.save) must not abort the whole workbook -- the harden guard strips U+FFFE/U+FFFF."""
+    from cisco_toolkit.excel import _xls_sanitize
+    assert _xls_sanitize("x" + chr(0xFFFE) + "y" + chr(0xFFFF) + "z") == "xyz"
+    bad = "host" + chr(0xFFFF)
+    s = {"devices": {bad: {}}, "interfaces": {bad: {}}, "health_scores": [], "punchlist": []}
+    out = tmp_path / "diff.xlsx"
+    write_diff_workbook(s, s, str(out))            # must not raise
+    assert out.exists()

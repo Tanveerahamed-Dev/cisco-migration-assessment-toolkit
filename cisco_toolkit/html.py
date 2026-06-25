@@ -752,6 +752,15 @@ _REDACT_SECRET_KEYS = {
     "credential", "credentials", "privatekey", "sharedsecret", "clientsecret",
 }   # 'pass' deliberately omitted -- it is a pass/fail COUNT key in security summaries, not a secret
 
+# SUBSTRING tokens for a credential-named key -- the real controller/config field names are COMPOUND
+# (tacacsSharedSecret, roCommunity, authPassword, wpaPassphrase, enableSecret), which an EXACT-match against the
+# set above silently missed (multi-domain audit #6). A normalized key CONTAINING any token is a secret bearer.
+# Bare 'key' and 'pass' are NOT tokens (generic structural field / pass-fail count) -- see _is_secret_key.
+_REDACT_SECRET_TOKENS = (
+    "password", "passwd", "passphrase", "secret", "community", "psk", "presharedkey", "sharedsecret",
+    "token", "apikey", "apisecret", "privatekey", "privkey", "credential",
+)
+
 
 def _norm_key(k) -> str:
     return re.sub(r"[_-]", "", str(k or "").lower())
@@ -811,15 +820,36 @@ def redact_snapshot(snap: dict) -> dict:
         return _REDACT_MAC_RE.sub(
             _mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s))))
 
+    def _is_secret_key(key) -> bool:
+        nk = _norm_key(key)
+        if not nk or nk == "key":            # 'key' is a generic structural field name -- never a secret on its own
+            return False
+        return nk in _REDACT_SECRET_KEYS or any(tok in nk for tok in _REDACT_SECRET_TOKENS)
+
+    def _redact_all(o):
+        # Every string leaf under a credential-named container is a secret bearer -- a secret nested one level
+        # below the key ({'apikey':{'value':...}}) must not survive (multi-domain audit #7). Over-redacting
+        # non-secret siblings (e.g. an 'enc: type6' tag) is the safe direction.
+        if isinstance(o, dict): return {k: _redact_all(v) for k, v in o.items()}
+        if isinstance(o, list): return [_redact_all(v) for v in o]
+        if isinstance(o, str): return _REDACT_PLACEHOLDER if o else o
+        return o
+
     def _walk(o, key=None):
         if isinstance(o, dict):
-            return {k: _walk(v, k) for k, v in o.items()}
+            out = {}
+            for k, v in o.items():
+                if isinstance(v, (dict, list)) and _is_secret_key(k):
+                    out[k] = _redact_all(v)                 # secret-named key over a CONTAINER -> scrub every leaf
+                else:
+                    out[k] = _walk(v, k)
+            return out
         if isinstance(o, list):
             return [_walk(v, key) for v in o]
         if isinstance(o, str):
             if key in _REDACT_SERIAL_KEYS: return _serial(o)
             if key == "wild": return o   # ACL wildcard mask is not an address; preserve so post-redact L4 eval stays correct
-            if o and _norm_key(key) in _REDACT_SECRET_KEYS:
+            if o and _is_secret_key(key):
                 return _REDACT_PLACEHOLDER   # a secret stored as a JSON value under a credential-named key
             return _scrub(o)
         return o
