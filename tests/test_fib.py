@@ -331,7 +331,7 @@ def test_default_pairs_are_deterministic_and_bounded():
     p1 = fib.default_pairs(snap, limit=8)
     p2 = fib.default_pairs(snap, limit=8)
     assert p1 == p2                                   # deterministic
-    assert 0 < len(p1) <= 8 * 7                        # bounded by limit subnets -> limit*(limit-1) ordered pairs
+    assert 0 < len(p1) <= 2 * 8 * (2 * 8 - 1)          # bounded by limit subnets x 2 reps each (inter-subnet only)
     assert all(isinstance(a, str) and isinstance(b, str) and a != b for a, b in p1)
 
 
@@ -352,6 +352,29 @@ def test_null0_discard_route_is_a_definitive_drop():
     egress = {"routes": {"R1": [{"prefix": "10.0.1.0/24", "source": "connected"},
                                 {"prefix": "10.2.2.0/24", "source": "static", "next_hop": "", "out_intf": "Gi0/3"}]}}
     assert fib.trace_fib_path(egress, "10.0.1.1", "10.2.2.5")["status"] == "lower_bound:next_hop_not_collected"
+
+
+def test_reachability_delta_catches_an_upper_half_more_specific_drop():
+    """[w2-live wave #2 recall] a cutover that black-holes the UPPER half of a /24 (a more-specific /25 -> Null0)
+    breaks flows to that half but NOT to .1; sampling first+last host per subnet catches it (the .1-only sample
+    silently missed it). The common 'summary/aggregate blackholes part of a subnet' regression class."""
+    base = {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"}, {"prefix": "10.0.12.0/30", "source": "connected"},
+                   {"prefix": "10.2.2.0/24", "source": "static", "next_hop": "10.0.12.2"}],
+            "R2": [{"prefix": "10.0.12.0/30", "source": "connected"}, {"prefix": "10.2.2.0/24", "source": "connected"}]}
+    after = {k: list(v) for k, v in base.items()}
+    after["R2"] = after["R2"] + [{"prefix": "10.2.2.128/25", "source": "static", "next_hop": "", "out_intf": "Null0"}]
+    d = fib.reachability_delta({"routes": base}, {"routes": after})
+    assert any(p["dst"] == "10.2.2.254" and p["verdict"] == "newly_blocked" for p in d["newly_blocked"])
+
+
+def test_subnet_reps_samples_first_and_last_host():
+    """Each subnet contributes its first AND last usable host (deduped), so an upper- or lower-half drop is
+    sampled. /30 -> .1 and .2; /24 -> .1 and .254; a /31 -> its two addresses."""
+    snap = {"routes": {"R1": [{"prefix": "10.2.2.0/24", "source": "connected"},
+                              {"prefix": "10.0.12.0/30", "source": "connected"}]}}
+    reps = fib.subnet_reps(snap)
+    ips = {ip for _net, ip in reps}
+    assert {"10.2.2.1", "10.2.2.254"} <= ips and {"10.0.12.1", "10.0.12.2"} <= ips
 
 
 def test_subnet_reps_skips_default_route():
