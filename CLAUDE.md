@@ -1,12 +1,36 @@
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+This project has a knowledge graph at graphify-out/ (~3974 nodes, after the 2026-06-25 de-pollution that excluded
+the stale `_ref/` engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
+**AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
+NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
+(~434 nodes) because regenerating it needs an LLM call = egress, which the no-egress doctrine forbids. It fuses
+the code + the repo's markdown (CLAUDE.md, docs/, incl. the deep-research corpus under docs/research/). Use it
+FIRST for codebase questions AND for impact analysis before a change — a scoped subgraph beats grep/file-browsing.
+graphify is NOT on PATH — always invoke as `python -m graphify`.
 
 Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- For codebase questions, run `python -m graphify query "<question>"` first. Use `python -m graphify path "<A>" "<B>"`
+  for relationships and `python -m graphify explain "<concept>"` for a focused node + its neighbors. These return a
+  scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep.
+- Use the ADVANCED surface (it is underused — reach for it, don't default to grep sweeps), ALL offline/AST-only:
+  **`python -m graphify affected "<symbol>()"`** is the highest-value verb — reverse blast-radius BEFORE editing a
+  parser / detector / shared symbol, so every downstream caller + deliverable is shown FIRST (directly attacks the
+  recurring parser↔detector / format-fidelity drift bug class). Plus the MCP tools: `god_nodes` (the core
+  abstractions before a refactor), `query_graph`/`shortest_path` (enumerate every call/render site before a
+  cross-surface change so it isn't applied to only some), `graph_stats` + `diagnose multigraph` (health),
+  `benchmark` (the 5–15× token-reduction win).
+- Offline NAVIGATION (replaces the never-existent wiki): `python -m graphify tree` → graphify-out/GRAPH_TREE.html
+  (D3 collapsible tree) and `python -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
+  broad architecture review; `god_nodes` is the fastest map of the core abstractions.
+- EGRESS — do NOT use in this air-gapped repo (they break the no-egress doctrine): `graphify add <url>` (fetches
+  URLs), `graphify label` (calls an LLM), and the MCP `get_pr_impact` / `list_prs` / `triage_prs` (hit live
+  api.github.com — and GitHub is paused). Every other verb (query/path/explain/affected/tree/export/diagnose/
+  update/cluster-only) is fully offline.
+- Keeping the graph current: a Stop hook re-extracts incrementally after .py edits (AST-only, no API cost) — this
+  is what keeps graph.json fresh (it also picks up new docs/*.md alongside a code change). A MANUAL
+  `python -m graphify update .` may REFUSE ("fewer nodes than existing — missing chunk files from a previous
+  session"); that is graphify's SAFETY GUARD, not corruption — do NOT `--force` (it would shrink the good graph).
 
 ## Automated Senior Network Engineer (operating doctrine)
 

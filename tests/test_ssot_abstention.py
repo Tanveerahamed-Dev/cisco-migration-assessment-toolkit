@@ -47,3 +47,14 @@ def test_abstention_is_total_on_bad_input():
     assert ssot.abstention_reason(None, "fhrp") == "not_collected"
     assert ssot.abstention_reason({}, "fhrp") == "not_collected"
     assert ssot.abstention_reason({"fhrp": 0}, "fhrp") == "collected_but_empty"   # zero/empty scalar
+
+
+def test_abstention_device_match_is_case_insensitive():
+    """Device names vary in case between devices.json and CDP/show-text hostnames. A blind-spot device must be
+    recognised regardless of case — else an un-collected device queried with different case escapes the
+    blind-spot guard and its facts read 'published' (false-health). (adversarial-verify finding H-1)"""
+    s = {"collection_completeness": {"devices": [{"host": "Switch-01", "status": "not collected"}]},
+         "vpc": {"domain": 1}}
+    assert ssot.abstention_reason(s, "vpc", device="Switch-01") == "not_collected"   # exact
+    assert ssot.abstention_reason(s, "vpc", device="switch-01") == "not_collected"   # lower
+    assert ssot.abstention_reason(s, "vpc", device="SWITCH-01") == "not_collected"   # upper

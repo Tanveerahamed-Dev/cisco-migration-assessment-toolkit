@@ -4,3 +4,10 @@
 # e.g. webapp/sample_data/build_sample.py — still gets scanned.)
 tests/golden/*.json
 webapp/sample_data/*.json
+
+# 2026-06-25 graph audit: stale duplicate engine copy + the graph's own output dumps were
+# polluting ~30% of nodes (root cause of duplicate god-nodes / ambiguous path matches).
+_ref/
+graphify-out/
+_aci_conv.txt
+graphify-out/memory/
