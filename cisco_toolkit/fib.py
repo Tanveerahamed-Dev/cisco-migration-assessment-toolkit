@@ -322,10 +322,10 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
 
 
 def subnet_reps(snap, limit: int = 24) -> list:
-    """A bounded, deterministic [(network_str, representative_host_ip)] -- one usable host IP per collected
-    CONNECTED subnet (the subnet's first host), sorted by (version, network) and capped at `limit`. Skips /32 &
-    /128 host routes (not a subnet to test) and unusable prefixes. Used to auto-derive the inter-subnet flows the
-    --compare reachability what-if checks. Pure/offline; total."""
+    """A bounded, deterministic [(network_str, representative_host_ip)] -- the FIRST and LAST usable host of each
+    collected CONNECTED subnet (so an upper- OR lower-half more-specific drop is sampled, not just .1), sorted by
+    (version, network) and capped at `limit` DISTINCT subnets. Skips the default route and /32,/128 host routes.
+    Used to auto-derive the inter-subnet flows the --compare reachability what-if checks. Pure/offline; total."""
     snap = snap if isinstance(snap, dict) else {}
     rbh = snap.get("routes") if isinstance(snap.get("routes"), dict) else {}
     nets: dict = {}
@@ -339,31 +339,39 @@ def subnet_reps(snap, limit: int = 24) -> list:
                 continue
             if net.prefixlen == 0 or net.num_addresses < 2:   # skip the default route and /32,/128 host routes
                 continue
-            key = str(net)
-            if key not in nets:
-                try:
-                    nets[key] = str(next(net.hosts()))
-                except StopIteration:
-                    continue
-    ordered = sorted(nets.items(), key=lambda kv: (ipaddress.ip_network(kv[0]).version, ipaddress.ip_network(kv[0])))
-    return ordered[:max(0, int(limit))]
+            nets.setdefault(str(net), net)
+    ordered = sorted(nets.values(), key=lambda n: (n.version, n))[:max(0, int(limit))]
+    reps = []
+    for net in ordered:
+        if net.num_addresses > 2:                             # first/last USABLE host (avoid network & broadcast)
+            ips = [net.network_address + 1, net.broadcast_address - 1]
+        else:                                                 # /31, /127 -- both addresses are usable hosts
+            ips = [net.network_address, net.broadcast_address]
+        seen: set = set()
+        for ip in ips:
+            s = str(ip)
+            if s not in seen:                                 # a degenerate subnet may have first == last
+                seen.add(s)
+                reps.append((str(net), s))
+    return reps
 
 
 def default_pairs(snap, limit: int = 24, max_pairs: int = 400) -> list:
-    """Representative inter-subnet flows to test: each collected connected subnet's first host -> every OTHER
-    subnet's first host (both directions), bounded (limit subnets, max_pairs total) and deterministic. Pure."""
-    reps = [ip for _net, ip in subnet_reps(snap, limit)]
+    """Representative INTER-subnet flows to test: each subnet rep -> every rep in a DIFFERENT subnet (both
+    directions), bounded (limit subnets, max_pairs total) and deterministic. Intra-subnet pairs are skipped
+    (trivially connected). Pure."""
+    reps = subnet_reps(snap, limit)                          # [(net, ip)] -- up to 2 reps per distinct subnet
     pairs = []
-    for i, a in enumerate(reps):
-        for j, b in enumerate(reps):
-            if i != j:
+    for i, (net_i, a) in enumerate(reps):
+        for j, (net_j, b) in enumerate(reps):
+            if i != j and net_i != net_j:                    # inter-subnet only
                 pairs.append((a, b))
                 if len(pairs) >= max_pairs:
                     return pairs
     return pairs
 
 
-def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24) -> dict:
+def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24, max_pairs: int = 400) -> dict:
     """The differential reachability what-if for the --compare cutover validation: classify how COMPUTED
     reachability changed across a representative set of inter-subnet flows (auto-derived from the OLD/baseline
     snapshot when `pairs` is None, so it reflects the pre-change topology). COVERAGE-HONEST: only DEFINITIVE
@@ -379,13 +387,12 @@ def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24) -> dict:
     except (TypeError, ValueError):
         limit = 24
     all_reps = subnet_reps(old_snap, limit=10 ** 9)            # every connected subnet (uncapped) -> the true total
-    subnets_total = len(all_reps)
+    subnets_total = len({net for net, _ip in all_reps})       # DISTINCT subnets (two reps each)
     subnets_tested = min(subnets_total, limit)
     if pairs is None:
-        pairs = default_pairs(old_snap, limit)
+        pairs = default_pairs(old_snap, limit, max_pairs)
     diff = reachability_diff(old_snap, new_snap, pairs)
     summary = diff["summary"]
-    pairs_possible = subnets_tested * (subnets_tested - 1) if subnets_tested > 1 else 0
     return {
         "summary": summary,
         "newly_blocked": [p for p in diff["pairs"] if p["verdict"] == "newly_blocked"],
@@ -396,5 +403,5 @@ def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24) -> dict:
         "subnets_tested": subnets_tested,
         "subnets_total": subnets_total,
         "assessed": len(diff["pairs"]) > 0,
-        "capped": subnets_total > subnets_tested or len(pairs) < pairs_possible,   # DISCLOSED, never silent
+        "capped": subnets_total > subnets_tested or len(pairs) >= max_pairs,   # DISCLOSED, never silent
     }
