@@ -67,21 +67,25 @@ def _evidence_facts(snap: dict) -> dict:
     lc = (snap.get("lifecycle_risk") or {}).get("summary") or {}
     coll = (snap.get("collection_completeness") or {}).get("summary") or {}
     punch = sorted((snap.get("punchlist") or []), key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
+    # isinstance-guard the canonical scale once: a TRUTHY non-dict executive_brief (malformed/slimmed snapshot)
+    # slips through `or {}` and crashes .get('scale') -> the whole CRD silently aborts (audit L4).
+    _eb = snap.get("executive_brief"); _eb_scale = _eb.get("scale") if isinstance(_eb, dict) else None
+    _eb_scale = _eb_scale if isinstance(_eb_scale, dict) else {}
     return {
         # canonical-first (SSOT) like the n_vlans / n_endpoints reads below -- not a raw len(devices) recount,
         # which is the device-count drift seam ssot.py was created to eliminate (design.py/engagement.py do this)
         "devices": devices,
-        "n_devices": (((snap.get("executive_brief") or {}).get("scale") or {}).get("n_devices")) or len(devices),
+        "n_devices": _eb_scale.get("n_devices") or len(devices),
         # SSOT: the published canonical VLAN count first (the one source design/explorer/webapp/workbook
         # reconcile to), with the local vlan_inventory recount only as the pre-brief fallback (mirrors
         # n_endpoints below + design.py's A5 canonical-first read — closes the recompute drift seam).
-        "n_vlans": (((snap.get("executive_brief") or {}).get("scale") or {}).get("n_vlans")) or len(vlan_inventory(snap)),
+        "n_vlans": _eb_scale.get("n_vlans") or len(vlan_inventory(snap)),
         "endpoints": endpoints, "dual": dual, "protos": protos, "fhrp_vlans": fhrp_vlans,
         "vrfs": sorted(vrfs), "n_acl_svis": n_acl_svis, "services": services,
         "mcast": mc, "mcast_active": mcast_active, "lifecycle": lc, "coll": coll, "punch": punch,
         "n_l3": len(l3f),
         # canonical endpoint scale (the published single source) with the access-port tally as fallback
-        "n_endpoints": (((snap.get("executive_brief") or {}).get("scale") or {}).get("n_endpoints")) or endpoints,
+        "n_endpoints": _eb_scale.get("n_endpoints") or endpoints,
     }
 
 

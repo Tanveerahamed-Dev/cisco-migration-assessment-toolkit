@@ -773,10 +773,17 @@ def inscope_subnets(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Set[
         for port, d in ifaces.items():
             if not re.match(r"^Vlan\d+$", port, re.IGNORECASE):
                 continue
-            ipmask = (getattr(d, "svi_ip", "") or "").split()
+            svi = (getattr(d, "svi_ip", "") or "").strip()
+            ipmask = svi.split()
             if len(ipmask) >= 2:
                 try:
                     nets.add(str(ipaddress.ip_network(f"{ipmask[0]}/{ipmask[1]}", strict=False)))
+                    continue
+                except ValueError:
+                    pass
+            if "/" in svi:                                   # NX-OS / IOS-XE slash form 'ip address 10.1.20.1/24'
+                try:
+                    nets.add(str(ipaddress.ip_network(svi, strict=False)))
                     continue
                 except ValueError:
                     pass

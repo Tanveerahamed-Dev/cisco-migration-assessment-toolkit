@@ -327,3 +327,14 @@ def test_crd_design_requirements_enter_traceability_matrix(tmp_path):
     assert "REQ-D-001" in rids, f"REQ-D requirement is orphaned from the §7 matrix; have {rids}"
     row = next(r for r in matrix.rows[1:] if r.cells[0].text == "REQ-D-001")
     assert "§4" in " ".join(c.text for c in row.cells)          # traces to the known HLD §4 design blueprint
+
+
+def test_crd_evidence_facts_tolerates_non_dict_executive_brief(tmp_path):
+    """[multi-domain audit L4] crd.py's chained '(executive_brief or {}).get(scale)' crashed on a TRUTHY non-dict
+    executive_brief (malformed/slimmed snapshot) -> the whole CRD silently aborted. The evidence-facts read and
+    the doc builder must degrade, never raise."""
+    from cisco_toolkit.crd import write_crd_docx, _evidence_facts
+    ev = _evidence_facts({"executive_brief": "oops", "devices": {"sw1": {}}})
+    assert ev["n_devices"] == 1
+    out = str(tmp_path / "crd.docx")
+    write_crd_docx(out, {"executive_brief": "oops", "devices": {"sw1": {}}}, "Test")   # must not raise

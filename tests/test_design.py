@@ -524,3 +524,13 @@ def test_design_doc_robust_to_non_dict_decision(tmp_path):
     out = str(tmp_path / "d.docx")
     write_design_doc_docx(out, snap, "Unit Test Fleet")   # must not raise
     assert os.path.getsize(out) > 0
+
+
+def test_design_doc_tolerates_non_dict_executive_brief(tmp_path):
+    """[multi-domain audit L4] design.py used 'snap.get("executive_brief") or {}' -- a TRUTHY non-dict (a string in
+    a malformed/slimmed snapshot) slipped through and crashed .get('scale'), where the fail-soft siblings degrade.
+    The builder must not raise."""
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, {"executive_brief": "oops", "devices": {"sw1": {}}}, "Test")   # must not raise
+    import os
+    assert os.path.exists(out)

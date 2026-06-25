@@ -334,3 +334,14 @@ def test_n_endpoints_reconciles_with_host_less_endpoint_rows():
             "health_scores": [{"switch": "sw1", "band": "Good", "score": 90}]}
     assert ssot.reconcile(snap) == []                      # producer == verifier -> no spurious violation
     assert ssot.audit(snap) is None
+
+
+def test_reconcile_n_vlans_no_false_violation_on_slimmed_snapshot():
+    """[multi-domain audit #4] a slimmed snapshot (snapshot-reader / diff-reload) publishes n_vlans but strips the
+    raw VLAN arrays -> vlan_inventory() derives 0; the n_vlans check must SKIP (like its siblings, which guard on
+    raw-evidence presence), not flag a false 'ssot_reconciliation: failed'."""
+    from cisco_toolkit import ssot
+    slim = {"executive_brief": {"scale": {"n_devices": 3, "n_vlans": 202}},
+            "health_scores": [{"switch": f"d{i}", "band": "Good", "score": 80} for i in range(3)]}
+    viol = ssot.reconcile(slim)
+    assert not any("n_vlans" in v for v in viol), viol

@@ -4002,6 +4002,8 @@
      "system_ip": "10.10.1.1",
      "host_name": "DC1-cedge",
      "reachability": "reachable",
+     "status": "",
+     "state": "",
      "model": "vedge-C8000V",
      "version": "17.09.03a"
     },
@@ -4009,6 +4011,8 @@
      "system_ip": "10.10.1.99",
      "host_name": "BR99-cedge",
      "reachability": "unreachable",
+     "status": "",
+     "state": "",
      "model": "vedge-C8000V",
      "version": "17.09.03a"
     }

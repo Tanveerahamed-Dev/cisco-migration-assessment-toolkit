@@ -797,3 +797,15 @@ def test_stp_root_findings_skips_mst_instances_not_vlan0(cp):
     rp = parse.parse_spanning_tree_root(pvst)
     acc = cp.stp_root_findings({"SW1": rp}, {})["accidental"]
     assert acc == [{"vlan": "10", "host": "SW1", "priority": 32778}]               # genuine PVST accidental still fires
+
+
+def test_inscope_subnets_handles_nxos_slash_form_svi():
+    """[multi-domain audit #9] NX-OS / IOS-XE SVIs use 'ip address 10.1.20.1/24' (slash form); inscope_subnets
+    parsed only the IOS 'ip <addr> <mask>' space form and dropped the slash form -> route-scope coverage gap for
+    NX-OS L3 segments."""
+    from cisco_toolkit.build import inscope_subnets
+    from cisco_toolkit.model import InterfaceData
+    def one(addr):
+        return {"sw": {"Vlan20": InterfaceData(port="Vlan20", svi_ip=addr)}}
+    assert "10.1.20.0/24" in inscope_subnets(one("10.1.20.1 255.255.255.0"))   # IOS space form (regression)
+    assert "10.1.20.0/24" in inscope_subnets(one("10.1.20.1/24"))              # NX-OS slash form (the fix)

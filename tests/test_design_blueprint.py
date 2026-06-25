@@ -2326,3 +2326,23 @@ def test_scorecard_axes_not_strong_when_estate_partially_uncollected():
             'fhrp': [], 'failure_impact': [], 'topology_links': [], 'move_groups': []}
     scf = {e['axis']: e for e in _scorecard(full, _signals(full))}
     assert scf['availability']['posture'] == 'Strong'      # full collection, no observed SPOF -> Strong is honest
+
+
+def test_single_gateway_spof_reconciles_to_l3_forwarding_evidence():
+    """[multi-domain audit #5 cross-artifact] MULTI-gateway no-FHRP VLANs must NOT be labelled 'single gateway /
+    single-homed SPOF'. The single-gateway SPOF count must reconcile to the per-VLAN gateway evidence
+    (l3_forwarding's 'single-gateway' rows), not the larger no-FHRP count -- the design doc contradicted its own
+    table (52 vs 22 on [HISTORY-REDACTED])."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"fhrp": [{"vid": v, "issues": ["no fhrp"]} for v in (10, 20, 30)],
+            "l3_forwarding": [
+                {"vlan": 10, "svi_ip": "10.0.10.1/24", "switch": "A", "risk": "single-gateway"},
+                {"vlan": 20, "svi_ip": "10.0.20.1/24", "switch": "A", "risk": "no-FHRP"},
+                {"vlan": 20, "svi_ip": "10.0.20.2/24", "switch": "B", "risk": "no-FHRP"},
+                {"vlan": 30, "svi_ip": "10.0.30.1/24", "switch": "A", "risk": "no-FHRP"},
+                {"vlan": 30, "svi_ip": "10.0.30.2/24", "switch": "B", "risk": "no-FHRP"}]}
+    sig = da._signals(snap)
+    assert sig["no_fhrp"] == 3 and sig["single_gw"] == 1          # 3 lack FHRP; only vlan10 is single-homed
+    summary = str(da._d_fhrp(snap, sig))
+    assert "each is a per-VLAN single point of failure" not in summary   # the OLD false 'all no-FHRP = SPOF' claim
+    assert "1" in summary                                        # the reconciled single-homed count is surfaced

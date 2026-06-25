@@ -1632,6 +1632,8 @@ def parse_fortigate_ha_status(output: str) -> dict:
     Tolerant regex; never raises."""
     if not output:
         return {}
+    if isinstance(output, (bytes, bytearray)):              # honour the 'never raises' contract on bytes input
+        output = output.decode("utf-8", "ignore")
     mode_m = re.search(r"^\s*Mode\s*:\s*(.+?)\s*$", output, re.IGNORECASE | re.MULTILINE)
     mode = mode_m.group(1).strip() if mode_m else ""
     if not re.match(r"HA\b", mode, re.IGNORECASE):           # standalone / no HA -> not assessed (coverage-honest)
@@ -1939,19 +1941,36 @@ def parse_sdwan_control_connections(output: str) -> list:
     actual-connections < expected-connections) to a Validator/vBond or Controller/vSmart means the WAN edge
     is losing its overlay control plane (no OMP routes / policy). expected/actual are ints (None if absent).
     [] when no SD-WAN export is present. Tolerant; never raises."""
+    def _int_of(r, *keys):
+        for k in keys:
+            v = r.get(k)
+            if v not in (None, ""):
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    pass
+        return None
+
+    def _str_of(r, *keys):
+        for k in keys:
+            v = r.get(k)
+            if v not in (None, ""):
+                return v
+        return ""
+
     out = []
     for r in _sdwan_data(output):
-        try:
-            exp = int(r.get("expected-connections"))
-        except (TypeError, ValueError):
-            exp = None
-        try:
-            act = int(r.get("actual-connections"))
-        except (TypeError, ValueError):
-            act = None
-        out.append({"system_ip": r.get("system-ip", ""), "host_name": r.get("host-name", ""),
-                    "peer_type": r.get("peer-type", ""), "state": (r.get("state", "") or "").lower(),
-                    "local_color": r.get("local-color", ""), "expected": exp, "actual": act})
+        # Real vManage uses camelCase 'expectedControlConnections' / 'actualControlConnectionsToVsmart' (verified
+        # vs Cisco DevNet 'Get Control Connections' API docs); the prior hyphenated names matched NOTHING on real
+        # data -> exp/act always None -> a control-plane redundancy deficit read silently healthy (audit #3).
+        exp = _int_of(r, "expectedControlConnections", "expected-connections")
+        act = _int_of(r, "actualControlConnectionsToVsmart", "controlConnectionsToVsmarts", "actual-connections")
+        out.append({"system_ip": _str_of(r, "system-ip", "systemIp"),
+                    "host_name": _str_of(r, "host-name", "hostName"),
+                    "peer_type": _str_of(r, "peer-type", "peerType"),
+                    "state": _str_of(r, "state").lower(),
+                    "local_color": _str_of(r, "local-color", "localColor"),
+                    "expected": exp, "actual": act})
     return out
 
 
@@ -1962,8 +1981,13 @@ def parse_sdwan_devices(output: str) -> list:
     Tolerant; never raises."""
     out = []
     for r in _sdwan_data(output):
+        # status (normal|error|...) and state (green|yellow|red) are the controller's OWN health verdict: a
+        # 'reachable' edge can still be status=error / state=red (present-but-broken). Surface both, not just
+        # reachability, so a degraded fabric member is not read healthy (multi-domain audit L2).
         out.append({"system_ip": r.get("system-ip", ""), "host_name": r.get("host-name", ""),
                     "reachability": (r.get("reachability", "") or "").lower(),
+                    "status": (r.get("status", "") or "").lower(),
+                    "state": (r.get("state", "") or "").lower(),
                     "model": r.get("device-model", ""), "version": r.get("version", "")})
     return out
 
