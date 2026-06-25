@@ -2376,3 +2376,21 @@ def test_compute_design_nrfu_total_on_none_decision_id():
     r = compute_design_nrfu({"decisions": [{"status": "recommended"},
                                            {"status": "recommended", "id": None, "recommended_action": None}]})
     assert isinstance(r, dict)
+
+
+def test_aci_move_groups_dedup_across_apic_cluster_controllers():
+    """[audit-3 #10 scale-ssot] a standard APIC cluster is 2-3 controllers and ANY controller's moquery returns
+    the WHOLE cluster-wide MIT, so listing them in devices.json made _aci_move_groups count every tenant/VRF/BD/
+    EPG once PER controller (3x inflation: a 1/1/1/2 fabric rendered 1/3/3/6). The logical census must dedup to
+    ONE per fabric object."""
+    import cisco_toolkit.design_advisor as da
+    census = {"tenants": [{"name": "PROD", "dn": "uni/tn-PROD"}],
+              "vrfs": [{"name": "prod-vrf", "tenant": "PROD", "dn": "uni/tn-PROD/ctx-prod-vrf"}],
+              "bds": [{"name": "bd1", "tenant": "PROD", "dn": "uni/tn-PROD/BD-bd1"}],
+              "epgs": [{"name": "web", "tenant": "PROD"}, {"name": "db", "tenant": "PROD"}]}
+    snap = {"aci": {"apic1": census, "apic2": census, "apic3": census}}   # 3 controllers, identical MIT
+    mg = da._aci_move_groups(snap)
+    assert mg["n_tenants"] == 1 and mg["n_epgs"] == 2                     # NOT 6
+    g = mg["groups"][0]
+    assert g["n_vrfs"] == 1 and g["n_bds"] == 1 and g["n_epgs"] == 2      # NOT 3 / 3 / 6
+    assert sorted(g["epgs"]) == ["db", "web"]                            # no literal duplicates

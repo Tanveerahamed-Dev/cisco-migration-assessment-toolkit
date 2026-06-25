@@ -891,3 +891,18 @@ def test_exec_summary_sheet_no_fabricated_coverage_on_brief_crash():
     assert collected is not None and "5 / 5" not in collected            # must NOT fabricate full coverage
     assert "unavailable" in collected.lower() or "—" in collected
     assert avg is None or "unavailable" in avg.lower() or "—" in avg     # no fabricated clean average on a crash
+
+
+def test_readiness_sheet_discloses_endpoint_mac_is_per_switch_sum():
+    """[audit-3 L3 scale-ssot] the Migration Readiness sheet printed a bare 'N endpoint-MAC(s)' per group whose
+    sum across groups (5160 on AJ) exceeds the canonical distinct n_endpoints (5127) -- a multi-homed MAC counts
+    once per switch. The dedicated move-group sheets disclose '(per-switch sum)'; this sheet must too."""
+    from openpyxl import Workbook
+    import cisco_toolkit.excel as X
+    wb = Workbook(); X.harden_workbook(wb)
+    readiness = [{"group": "Group 1", "switches": ["sw1", "sw2"], "endpoints": 40, "readiness": "READY",
+                  "checks": [], "n_fail": 0, "n_warn": 0}]
+    X.write_migration_readiness_sheet(wb, readiness)
+    blob = " ".join(str(c) for ws in wb.worksheets for row in ws.iter_rows(values_only=True) for c in row if c)
+    assert "40 endpoint-MAC(s)" in blob          # the per-group figure is present
+    assert "per-switch sum" in blob              # ...disclosed as a per-switch sum, not the distinct census
