@@ -4497,14 +4497,15 @@ def compute_design_nrfu(design_blueprint):
             "title": d.get("title", pid),
             "priority": d.get("priority", "Medium"),
             "phase": phase,
-            "description": _NRFU_DESC.get(pid, d.get("recommended_action", d.get("driver", ""))[:400]),
+            "description": _NRFU_DESC.get(pid, (d.get("recommended_action") or d.get("driver") or "")[:400]),
             "pass_criteria": _NRFU_PASS.get(pid,
                 "Verify the recommended pattern is operational as described in the design blueprint."),
             "setup": _NRFU_SETUP.get(pid, _NRFU_SETUP_BY_PHASE.get(phase, "")),
             "devices": _as_list(_as_dict(d.get("evidence")).get("devices")),
             "principle_citation": _as_dict(d.get("principle")).get("citation", ""),
         })
-    items.sort(key=lambda x: (_PHASE_ORDER.get(x["phase"], 9), PRANK.get(x["priority"], 9), x["decision_id"]))
+    items.sort(key=lambda x: (_PHASE_ORDER.get(x["phase"], 9), PRANK.get(x["priority"], 9),
+                              str(x.get("decision_id") or "")))   # a None decision_id must not crash the sort (L4)
     # EVPN-migration acceptance gates (additive, SEPARATE from `items` so the per-decision items<->recommended
     # contract stays exact): when the blueprint carries gated EVPN-migration guardrails, surface them as
     # acceptance verification points (decision_id = guardrail id, pass = the observed basis confirmed). Empty

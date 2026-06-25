@@ -2367,3 +2367,12 @@ def test_gateway_resilience_single_gw_and_no_fhrp_are_disjoint_populations():
     assert da._d_fhrp(only_single, sig2) is not None
     av = {e["axis"]: e for e in da._scorecard(only_single, sig2)}["availability"]
     assert av["posture"] != "Strong" or av["score"] < 4
+
+
+def test_compute_design_nrfu_total_on_none_decision_id():
+    """[audit-2 L4] compute_design_nrfu sorted on a None decision_id (TypeError) and subscripted a None
+    recommended_action; both must degrade."""
+    from cisco_toolkit.design_advisor import compute_design_nrfu
+    r = compute_design_nrfu({"decisions": [{"status": "recommended"},
+                                           {"status": "recommended", "id": None, "recommended_action": None}]})
+    assert isinstance(r, dict)

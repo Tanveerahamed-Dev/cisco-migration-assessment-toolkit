@@ -2077,3 +2077,10 @@ def test_parse_security_nxos_telnet_exec_timeout_snmp(cp):
     assert fnd("snmp-server community SECRET view CUTDOWN rw\n")["insecure-snmp"]["severity"] == "high"
     # regression guard: a genuine read-only community stays medium
     assert fnd("snmp-server community MONITOR RO\n")["insecure-snmp"]["severity"] == "medium"
+
+
+def test_parse_pim_neighbors_keeps_subinterface_neighbor(cp):
+    """[audit-2 #7] a PIM neighbor on an L3 SUBinterface (Gi0/0.10) was dropped (is_valid_iface rejected '.10')
+    -> a running PIM domain with no RP read healthy. Validate the BASE interface, keep the full subif name."""
+    nb = parse.parse_pim_neighbors("10.0.0.2          GigabitEthernet0/0.10    2d05h/00:01:27    v2    1\n")
+    assert len(nb) == 1 and nb[0]["neighbor"] == "10.0.0.2" and "0.10" in nb[0]["interface"]

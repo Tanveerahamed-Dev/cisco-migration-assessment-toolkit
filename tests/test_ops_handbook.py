@@ -132,3 +132,13 @@ def test_missing_docx_is_warning_not_crash(monkeypatch, tmp_path):
     out = tmp_path / "never.docx"
     write_ops_handbook_docx(str(out), {}, "x")            # warns + returns
     assert not out.exists()
+
+
+def test_ops_handbook_tolerates_non_dict_protocol_health_row(tmp_path):
+    """[audit-2 #14] a non-dict row in snap['protocol_health'] crashed write_ops_handbook_docx (.get on a str/None)
+    despite the 'never raises' contract."""
+    from cisco_toolkit.ops import write_ops_handbook_docx
+    out = str(tmp_path / "ops.docx")
+    write_ops_handbook_docx(out, {"devices": {"sw1": None}, "protocol_health": ["STP up", None]}, "bad")  # no raise
+    import os
+    assert os.path.exists(out)

@@ -119,7 +119,8 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
         return add_table(doc, headers, rows, widths, fixed=False)
 
     ev = _evidence_facts(snap)
-    bp = snap.get("design_blueprint") or {}   # NEW: canonical CCDE design blueprint (read, never recompute)
+    _bp = snap.get("design_blueprint")        # isinstance-guard, not `or {}`: a truthy non-dict crashes .get below
+    bp = _bp if isinstance(_bp, dict) else {}   # (audit-2 L5 -- design.py guarded this; crd.py was the gap)
     req_ids: list = []   # (req_id, origin) — feeds the traceability skeleton
 
     def _verify_method(rid):

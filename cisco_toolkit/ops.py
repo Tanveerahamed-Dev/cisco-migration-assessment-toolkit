@@ -55,8 +55,8 @@ def _facts(snap: dict) -> dict:
             continue
     # routing-adjacency + first-hop-redundancy Day-2 health (N36)
     ph2 = _as_list(snap.get("protocol_health"))
-    routing_protos = sorted({str(r.get("protocol", "")).upper() for r in ph2
-                             if str(r.get("protocol", "")).upper() in ("OSPF", "BGP", "EIGRP", "ISIS", "IS-IS")})
+    routing_protos = sorted({str(r.get("protocol", "")).upper() for r in ph2 if isinstance(r, dict)
+                             and str(r.get("protocol", "")).upper() in ("OSPF", "BGP", "EIGRP", "ISIS", "IS-IS")})
     n_proto_high = sum(1 for r in ph2 if isinstance(r, dict) and r.get("severity") in ("High", "Critical"))
     l3f = _as_list(snap.get("l3_forwarding"))
     n_gw = len(l3f)

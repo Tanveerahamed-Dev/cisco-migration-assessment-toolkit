@@ -338,3 +338,12 @@ def test_crd_evidence_facts_tolerates_non_dict_executive_brief(tmp_path):
     assert ev["n_devices"] == 1
     out = str(tmp_path / "crd.docx")
     write_crd_docx(out, {"executive_brief": "oops", "devices": {"sw1": {}}}, "Test")   # must not raise
+
+
+def test_crd_tolerates_non_dict_design_blueprint(tmp_path):
+    """[audit-2 L5] my batch-2 L4 fix guarded design_blueprint in design.py but NOT crd.py -> write_crd_docx still
+    crashed on a truthy non-dict design_blueprint. Now guarded."""
+    out = str(tmp_path / "crd.docx")
+    write_crd_docx(out, {"executive_brief": {}, "design_blueprint": "oops", "devices": {"s": {}}}, "x")  # no raise
+    import os
+    assert os.path.exists(out)
