@@ -103,13 +103,26 @@ def _http_session(verify_tls: bool = True):
     return urllib.request.build_opener(*handlers)
 
 
+def _safe_url(url) -> str:
+    """A URL with any userinfo (user:pass@) stripped, for logging. Credentials embedded in --url
+    (https://user:pass@host) must NEVER reach a log line / disk / console (audit-2 L3). Never raises."""
+    try:
+        p = urllib.parse.urlsplit(str(url))
+        if p.username or p.password:
+            netloc = (p.hostname or "") + (f":{p.port}" if p.port else "")
+            return urllib.parse.urlunsplit((p.scheme, netloc, p.path, p.query, p.fragment))
+    except Exception:                                                # noqa: BLE001
+        pass
+    return str(url)
+
+
 def _post(opener, url: str, data, headers=None, timeout: int = 30):
     """POST (login only). Returns the response object (caller drains it) or None on error (fail-soft)."""
     body = data.encode("utf-8") if isinstance(data, str) else json.dumps(data).encode("utf-8")
     try:
         return opener.open(urllib.request.Request(url, data=body, headers=headers or {}, method="POST"), timeout=timeout)
     except Exception as e:                                            # noqa: BLE001 (collection is best-effort)
-        logger.warning("  [rest] POST %s failed: %s", url, e)
+        logger.warning("  [rest] POST %s failed: %s", _safe_url(url), e)
         return None
 
 
@@ -119,7 +132,7 @@ def _get_text(opener, url: str, headers=None, timeout: int = 30):
         with opener.open(urllib.request.Request(url, headers=headers or {}, method="GET"), timeout=timeout) as r:
             return r.read().decode("utf-8", "ignore")
     except Exception as e:                                            # noqa: BLE001
-        logger.warning("  [rest] GET %s failed: %s", url, e)
+        logger.warning("  [rest] GET %s failed: %s", _safe_url(url), e)
         return None
 
 
@@ -132,7 +145,7 @@ def _get_json(opener, url: str, headers=None, timeout: int = 30):
     try:
         return json.loads(txt)
     except (ValueError, TypeError) as e:
-        logger.warning("  [rest] GET %s returned non-JSON: %s", url, e)
+        logger.warning("  [rest] GET %s returned non-JSON: %s", _safe_url(url), e)
         return None
 
 
@@ -314,6 +327,8 @@ def collect_fmc(base_url: str, username: str, password: str, out_dir: str, verif
         hdrs = getattr(login, "headers", {}) or {}
         token = hdrs.get("X-auth-access-token")
         domains = json.loads(hdrs.get("DOMAINS") or "[]")
+        if not isinstance(domains, list):    # 'DOMAINS: null' parses to None (no exception) -> 'for d in None' (#6)
+            domains = []
     except (ValueError, TypeError, AttributeError):
         domains = []
     finally:

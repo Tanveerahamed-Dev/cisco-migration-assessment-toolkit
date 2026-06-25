@@ -325,7 +325,9 @@ def parse_pim_neighbors(output: str) -> List[dict]:
                 or low.startswith(("b -", "p -", "s -", "g -", "l -", "n -"))):
             continue
         m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+(\S+)", s)
-        if m and is_valid_iface(m.group(2)):
+        # validate the BASE interface so a PIM neighbor on an L3 SUBinterface ('Gi0/0.10') is not dropped -- a
+        # running PIM domain otherwise read as healthy (audit-2 #7); the full subinterface name is preserved.
+        if m and is_valid_iface(m.group(2).split(".")[0]):
             uptime = m.group(3).split("/")[0]        # IOS combines 'Uptime/Expires' in one token; NX-OS is bare
             if _PIM_UPTIME.match(uptime):            # H:M:S OR the abbreviated w/d/h form (2d00h / 1w2d / 15w4d)
                 out.append({"neighbor": m.group(1),

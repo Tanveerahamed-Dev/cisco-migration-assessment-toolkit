@@ -318,3 +318,15 @@ def test_engagement_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "e.docx")
     write_engagement_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_engagement_title_does_not_falsely_claim_full_collection(tmp_path):
+    """[audit-2 #15] 'n_collected or n_devices' turned n_collected==0 into n_devices -> a NOT-collected fleet read
+    '303 collected of 303 inventoried'. Use a proper None check."""
+    from cisco_toolkit.engagement import write_engagement_docx
+    from docx import Document
+    out = str(tmp_path / "eng.docx")
+    write_engagement_docx(out, {"executive_brief": {"scale": {"n_devices": 303, "n_collected": 0}},
+                                "devices": {f"s{i}": {} for i in range(303)}}, "AJ")
+    txt = " ".join(p.text for p in Document(out).paragraphs)
+    assert "0 collected of 303" in txt

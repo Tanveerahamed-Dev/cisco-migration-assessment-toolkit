@@ -289,3 +289,25 @@ def test_collect_fmc_https_only_and_password_safe(monkeypatch, tmp_path):
     assert files
     for p in files:
         assert secret not in open(p, encoding="utf-8").read()
+
+
+def test_rest_collect_safe_url_strips_credentials():
+    """[audit-2 L3] credentials embedded in --url (https://user:pass@host) must NOT reach a log line; _safe_url
+    strips the userinfo while keeping host/path."""
+    from cisco_toolkit.rest_collect import _safe_url
+    s = _safe_url("https://rouser:Sup3rSecret@apic.example/api/class/fvTenant.json")
+    assert "Sup3rSecret" not in s and "rouser" not in s and "apic.example" in s
+    assert _safe_url("https://apic.example/api") == "https://apic.example/api"
+
+
+def test_collect_fmc_tolerates_null_domains_header(tmp_path, monkeypatch):
+    """[audit-2 #6] a 'DOMAINS: null' login header parses to None (no exception) -> 'for d in domains' crashed.
+    collect_fmc must degrade, never raise."""
+    from cisco_toolkit import rest_collect as rc
+    class FakeLogin:
+        headers = {"X-auth-access-token": "TOK", "DOMAINS": "null"}
+        def close(self):
+            pass
+    monkeypatch.setattr(rc, "_post", lambda *a, **k: FakeLogin())
+    monkeypatch.setattr(rc, "_get_json", lambda *a, **k: {"items": []})
+    rc.collect_fmc("https://fmc.example", "u", "p", str(tmp_path))   # must not raise

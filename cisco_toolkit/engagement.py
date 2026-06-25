@@ -212,7 +212,8 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{f.get('n_collected') or f['n_devices']} collected of {f['n_devices']} inventoried  ·  script {snap.get('script_version', '')}"
+                 f"{f.get('n_collected') if f.get('n_collected') is not None else f['n_devices']} collected of "
+                 f"{f['n_devices']} inventoried  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     status = doc.add_paragraph(); status.alignment = WD_ALIGN_PARAGRAPH.CENTER
     st = status.add_run("DRAFT PLAN OF RECORD — the verdict and every gate below are evidence-led "
