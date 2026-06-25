@@ -110,3 +110,38 @@ def test_sdwan_control_shortfall_counted_once_per_device():
     assert len(cc) == 2, cc                                               # was 4 (one per row); now 1 short + 1 down
     assert sum("control connections 3/4" in x for x in cc) == 1          # the shortfall: exactly once
     assert sum("(down)" in x for x in cc) == 1                            # the down peer: still surfaced
+
+
+# ---------------------------------------------------------------- BUILD-02 ---
+def test_build_cloud_coverage_honest_on_parser_crash(tmp_path):
+    """BUILD-02: build_cloud's not-observed contract hinged on `sgs is None`, but _safe_parse returns {} (a
+    truthy non-list) when the parser RAISES -- so a crash produced {security_groups: {}}, read downstream as
+    'cloud observed, nothing world-open' (false-health). A non-list (crash {} or no-export None) must map to
+    not-observed {}; only a real list is a result."""
+    import cisco_toolkit.build as b
+    f = tmp_path / "sg.json"; f.write_text('{"SecurityGroups":[]}')
+    orig = b.parse_aws_security_groups
+    try:
+        b.parse_aws_security_groups = lambda *a: (_ for _ in ()).throw(RecursionError())
+        assert b.build_cloud({"aws ec2 describe-security-groups": str(f)}) == {}        # crash -> not observed
+    finally:
+        b.parse_aws_security_groups = orig
+    assert b.build_cloud({}) == {}                                                      # no export -> not observed
+    assert b.build_cloud({"aws ec2 describe-security-groups": str(f)}) == {"security_groups": []}  # observed clean
+
+
+# ---------------------------------------------------------------- BUILD-03 ---
+def test_archreview_sheet_distinguishes_crash_from_legit_empty():
+    """BUILD-03: a crashed/absent architecture review (_run_phase _default) rendered as a clean 'grade N/A · 0
+    issues' scorecard -- false-health. The sheet must render 'unavailable' for the crash sentinel / bare {},
+    while a legitimately-empty review (which still carries a summary, n_not_assessable counting un-evidenced
+    checks) keeps its honest grade row."""
+    from openpyxl import Workbook
+    from cisco_toolkit.archreview import compute_architecture_review
+    from cisco_toolkit.excel import ARCHREVIEW_SHEET_NAME as N, write_architecture_review_sheet as W
+    wb_legit = Workbook(); W(wb_legit, compute_architecture_review({}))
+    wb_crash = Workbook(); W(wb_crash, {})
+    wb_sentinel = Workbook(); W(wb_sentinel, {"_unavailable": True})
+    assert "unavailable" not in wb_legit[N].cell(2, 1).value.lower()      # legit-empty keeps its honest grade row
+    assert "unavailable" in wb_crash[N].cell(2, 1).value.lower()          # bare {} crash -> disclosed
+    assert "unavailable" in wb_sentinel[N].cell(2, 1).value.lower()       # sentinel -> disclosed
