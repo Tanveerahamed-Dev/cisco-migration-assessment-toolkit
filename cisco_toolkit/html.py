@@ -52,6 +52,8 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     """Migration-validation delta between two snapshots: switch/interface counts, per-switch health-band
     shifts (regressed vs improved), punch-list findings opened vs resolved, and an overall verdict.
     Returns a dict; every section degrades to empty when a snapshot lacks the computed keys."""
+    old = old if isinstance(old, dict) else {}            # total: the --compare/--trend path may hand us a
+    new = new if isinstance(new, dict) else {}            # non-dict (a JSON file that parsed to null/[]/scalar)
     od, nd = old.get("devices", {}) or {}, new.get("devices", {}) or {}
     oi, ni = old.get("interfaces", {}) or {}, new.get("interfaces", {}) or {}
 
@@ -92,6 +94,19 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                   "inconclusive": 0, "pairs_tested": 0, "subnets_tested": 0, "capped": False}
     n_newly_blocked = len(rdelta.get("newly_blocked") or [])
 
+    # Coverage-honest reachability clause -- NEVER an unqualified 'no reachability regressions' (no-silent-caps /
+    # not-assessed!=healthy doctrine). It always discloses either 'NOT assessed' or the BOUNDED sample it tested.
+    if not rdelta.get("assessed"):
+        reach_phrase = ("computed reachability NOT assessed — no routes collected"
+                        if (rdelta.get("subnets_total") or 0) == 0 else
+                        f"computed reachability NOT assessed — only {rdelta.get('subnets_total')} subnet(s) "
+                        "collected, no inter-subnet flow to test")
+    else:
+        cap = ", capped" if rdelta.get("capped") else ""
+        reach_phrase = (f"computed reachability: {n_newly_blocked} of {rdelta.get('pairs_tested', 0)} sampled "
+                        f"inter-subnet flow(s) newly blocked (bounded sample: {rdelta.get('subnets_tested', 0)} of "
+                        f"{rdelta.get('subnets_total', 0)} subnet(s), one representative host each{cap})")
+
     # ---- verdict ----
     removed_sw = sorted(set(od) - set(nd))
     if n_opened_high or regressed or n_newly_blocked:
@@ -101,17 +116,15 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
             bits.append(f"{n_opened_high} new High/Critical finding(s)")
         if regressed:
             bits.append(f"{len(regressed)} switch(es) dropped a health band")
-        if n_newly_blocked:
-            bits.append(f"{n_newly_blocked} computed reachability flow(s) newly blocked")
+        bits.append(reach_phrase)
         note = "; ".join(bits) + ". Investigate before declaring the cutover good."
     elif opened or removed_sw:
         verdict = "REVIEW"
-        note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present. "
-                "Confirm these are expected.")
+        note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present; "
+                f"{reach_phrase}. Confirm these are expected.")
     else:
         verdict = "CLEAN"
-        note = ("No health-band regressions, no new findings, and no computed reachability regressions — "
-                "post-cutover state is no worse than pre.")
+        note = f"No health-band regressions, no new findings; {reach_phrase}."
 
     def _scn(s):  # SSOT: canonical device count (one source); raw len() only as the pre-brief fallback
         return ((s.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
@@ -130,6 +143,8 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
 def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
     SVI Changes) comparing two snapshot_state() dicts."""
+    old = old if isinstance(old, dict) else {}            # total on a non-dict snapshot (parsed null/[]/scalar)
+    new = new if isinstance(new, dict) else {}
     from openpyxl import Workbook
     HF = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     FILL = PatternFill("solid", fgColor="1F497D")
@@ -161,6 +176,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     oi, ni = old.get("interfaces", {}), new.get("interfaces", {})
     od, nd = old.get("devices", {}), new.get("devices", {})
     delta = compute_snapshot_delta(old, new)   # NEW-V3.23.106: migration-validation analysis
+    rd0 = delta.get("reachability") or {}      # W2 reachability what-if (disclose the bounded sample, never silent)
 
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
@@ -179,12 +195,13 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
         ("Findings opened", "", delta["findings"]["n_opened"],
          f"{delta['findings']['n_opened_high']} High/Critical"),
         ("Findings resolved", "", delta["findings"]["n_resolved"], delta["findings"]["n_resolved"]),
-        ("Reachability flows newly blocked", "",
-         len((delta.get("reachability") or {}).get("newly_blocked") or []),
-         (f"{(delta.get('reachability') or {}).get('pairs_tested', 0)} flow(s) tested / "
-          f"{(delta.get('reachability') or {}).get('subnets_tested', 0)} subnet(s); "
-          f"{(delta.get('reachability') or {}).get('preserved', 0)} preserved, "
-          f"{(delta.get('reachability') or {}).get('inconclusive', 0)} inconclusive")),
+        ("Reachability flows newly blocked", "", len(rd0.get("newly_blocked") or []),
+         (f"{rd0.get('pairs_tested', 0)} sampled flow(s) across {rd0.get('subnets_tested', 0)} of "
+          f"{rd0.get('subnets_total', 0)} subnet(s){' (CAPPED — coverage incomplete)' if rd0.get('capped') else ''}, "
+          f"one representative host each; {rd0.get('preserved', 0)} preserved, "
+          f"{rd0.get('inconclusive', 0)} inconclusive"
+          if rd0.get("assessed") else
+          "NOT assessed — no routes collected (this is NOT a statement that reachability is unchanged)")),
     ]
     r = 2
     for m in metrics:
@@ -300,23 +317,28 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
 
     # Reachability (W2) — computed RIB->FIB flows the change DEFINITIVELY broke (the offline Batfish-peer what-if).
     # Coverage-honest: distinguishes 'tested, no regressions' from 'no routes collected -> not assessed'.
-    rd = delta.get("reachability") or {}
     ws = sheet("Reachability", ["Flow", "Src", "Dst", "Before", "After"])
     r = 2
-    for label, fill, items in (("NEWLY BLOCKED", "FFC7CE", rd.get("newly_blocked") or []),
-                               ("newly reachable", "C6EFCE", rd.get("newly_reachable") or [])):
+    for label, fill, items in (("NEWLY BLOCKED", "FFC7CE", rd0.get("newly_blocked") or []),
+                               ("newly reachable", "C6EFCE", rd0.get("newly_reachable") or [])):
         for p in items:
             vals = [label, p.get("src", ""), p.get("dst", ""), p.get("old_status", ""), p.get("new_status", "")]
             for c, v in enumerate(vals, 1):
                 cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
             ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor=fill)
             r += 1
-    if r == 2:
-        ws.cell(row=2, column=1, value=(
-            f"No computed reachability regressions across {rd.get('pairs_tested', 0)} representative flow(s)."
-            if rd.get("pairs_tested") else
-            "No routes collected — computed reachability not assessed (coverage-honest: this is NOT 'no "
-            "regressions').")).font = DF
+    if r == 2:                                            # no regressions to list -> be coverage-honest about WHY
+        if rd0.get("assessed"):
+            msg = (f"No computed reachability regressions across {rd0.get('pairs_tested', 0)} sampled flow(s) "
+                   f"({rd0.get('subnets_tested', 0)} of {rd0.get('subnets_total', 0)} subnet(s), one representative "
+                   f"host each{' — CAPPED, coverage incomplete' if rd0.get('capped') else ''}). Bounded sample: a "
+                   "regression to an untested host or subnet would not appear here.")
+        elif (rd0.get("subnets_total") or 0) == 0:
+            msg = "No routes collected — computed reachability NOT assessed (this is NOT 'no regressions')."
+        else:
+            msg = (f"Only {rd0.get('subnets_total')} subnet(s) collected — no inter-subnet flow to test; "
+                   "computed reachability NOT assessed.")
+        ws.cell(row=2, column=1, value=msg).font = DF
     autofit(ws, 5); ws.column_dimensions["D"].width = 42; ws.column_dimensions["E"].width = 42
 
     wb.save(out_path)
