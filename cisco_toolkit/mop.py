@@ -312,10 +312,29 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
          "Archived with the post-implementation review"),
     ], widths=[2.6, 2.0, 2.2])
 
-    # §2.2 software / image standardization (per in-scope platform) — N24
+    # §2.2 EVPN-migration guardrails — gated, evidence-grounded brownfield->NX-OS-VXLAN-EVPN cutover doctrine.
+    # Silent unless a VXLAN-EVPN fabric is the target; renders the load-bearing, primary-source migration
+    # gotchas (NX-OS 10.2(3) HSRP/DAG gate, the gateway-vMAC pre-step, single-active-L2-interconnect loop
+    # safety, the vPC back-to-back method, rollback triggers) grounded in the fleet's OWN observed evidence.
+    evpn = _as_dict(_as_dict(snap.get("design_blueprint")).get("evpn_migration"))
+    evpn_on = bool(evpn.get("applicable"))
+    if evpn_on:
+        doc.add_heading("2.2 EVPN-migration guardrails (brownfield → NX-OS VXLAN-EVPN)", level=2)
+        doc.add_paragraph(
+            f"The target fabric is NX-OS VXLAN BGP-EVPN ({evpn.get('model_basis', '')}). These migration "
+            "guardrails are grounded in this fleet's own evidence and documented in primary Cisco sources; "
+            "each is an easily-missed cutover failure mode that must be satisfied — or explicitly "
+            "risk-accepted — before the relevant wave.")
+        table(["Guardrail", "Phase", "Severity", "Basis (observed) & action — [source]"],
+              [(g.get("title", ""), g.get("phase", ""), g.get("severity", ""),
+                f"{g.get('basis', '')} — {g.get('detail', '')} [{g.get('source', '')}]")
+               for g in _as_list(evpn.get("guardrails")) if isinstance(g, dict)],
+              widths=[1.7, 0.9, 0.8, 3.4])
+
+    # §2.3/§2.2 software / image standardization (per in-scope platform) — N24 (number follows the EVPN subsection)
     swrisk_pd = [d for d in _as_list(_as_dict(snap.get("software_risk")).get("per_device")) if isinstance(d, dict)]
     if swrisk_pd:
-        doc.add_heading("2.2 Software / image standardization", level=2)
+        doc.add_heading(f"{'2.3' if evpn_on else '2.2'} Software / image standardization", level=2)
         doc.add_paragraph(
             "Before any wave, agree the target NOS image per platform. The current software trains and their "
             "disposition (from the software-advisory screening) are below; the target image is selected at "

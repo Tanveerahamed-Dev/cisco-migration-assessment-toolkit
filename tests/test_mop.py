@@ -452,3 +452,45 @@ def test_mop_robust_to_malformed_uploaded_snapshot(tmp_path):
     }
     write_mop_docx(out, bad, "Malformed Fleet")   # must NOT raise
     assert os.path.isfile(out) and os.path.getsize(out) > 0
+
+
+def _evpn_mig(applicable=True):
+    return {"applicable": applicable,
+            "model_basis": "requirement-confirmed (fabric_operating_model = nxos-evpn)",
+            "summary": "5 EVPN-migration guardrail(s)",
+            "guardrails": ([] if not applicable else [
+                {"id": "evpn-cut-single-active-l2-interconnect", "phase": "cutover-gate", "severity": "Critical",
+                 "title": "Exactly ONE active L2 interconnect (the overlay will NOT break a loop)",
+                 "basis": "2 vPC domain(s); STP present on 3 device(s)",
+                 "detail": "Permit exactly ONE active Layer-2 connection ...", "source": "BRKDCN-2951"},
+                {"id": "evpn-pre-nxos-1023-gateway-coexistence", "phase": "pre-cutover", "severity": "High",
+                 "title": "NX-OS 10.2(3) HSRP↔Anycast-Gateway coexistence gate",
+                 "basis": "1 of 2 NX-OS device(s) run a release below 10.2(3)",
+                 "detail": "Any node that must hold both ... needs NX-OS >= 10.2(3).", "source": "BRKDCN-2951"},
+            ])}
+
+
+def test_mop_renders_evpn_guardrails_when_applicable(tmp_path):
+    """The MOP's §2.2 surfaces the gated EVPN-migration guardrails (heading, the model basis, each guardrail +
+    its primary source); the software subsection then renumbers to 2.3."""
+    snap = _snap()
+    snap["design_blueprint"] = {"evpn_migration": _evpn_mig()}
+    snap["software_risk"] = {"per_device": [{"host": "distB", "train": "9.3", "disposition": "review"}]}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert any(t.startswith("2.2 EVPN-migration guardrails") for t in h2), h2
+    assert any(t.startswith("2.3 Software") for t in h2), h2          # software renumbered below the EVPN block
+    text = _all_text(d)
+    assert "Exactly ONE active L2 interconnect" in text and "BRKDCN-2951" in text
+    assert "requirement-confirmed" in text
+
+
+def test_mop_silent_on_evpn_when_not_applicable(tmp_path):
+    snap = _snap()
+    snap["design_blueprint"] = {"evpn_migration": _evpn_mig(applicable=False)}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    h2 = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 2"]
+    assert not any("EVPN-migration guardrails" in t for t in h2)
