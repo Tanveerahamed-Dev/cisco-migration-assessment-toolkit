@@ -2663,7 +2663,8 @@ def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
         c.alignment = Alignment(horizontal="center")
     r = 2
     for g in readiness:
-        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint-MAC(s))")
+        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint-MAC(s), "
+                          f"per-switch sum)")   # disclose the per-switch sum so it isn't read as the distinct n_endpoints (audit-3 L3)
         c.font = Font(bold=True)
         cs = ws.cell(r, 2, g["readiness"])
         cs.font = Font(bold=True)

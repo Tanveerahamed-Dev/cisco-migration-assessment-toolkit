@@ -4206,6 +4206,11 @@ def _aci_move_groups(snap):
     {} when no ACI logical inventory was collected (coverage-honest -- no ACI evidence, no plan)."""
     aci = _as_dict(snap.get("aci"))
     by_tenant = {}
+    # DEDUP across APIC controllers: the fvTenant/fvCtx/fvBD/fvAEPg census is CLUSTER-WIDE -- any controller's
+    # moquery returns the whole MIT -- so the same object seen via N controllers is ONE fabric object, not N.
+    # Key each by its globally-unique distinguished name (dn), falling back to name when dn is absent (scale-ssot
+    # audit-3 #10: an unconditional .append() per `for _host,_f in aci.items()` inflated counts by the cluster
+    # size, e.g. a 3-controller cluster reported 3x the EPGs/VRFs/BDs with literal duplicate names rendered).
     for _host, _f in aci.items():
         _f = _as_dict(_f)
         for kind in ("tenants", "vrfs", "bds", "epgs"):
@@ -4214,21 +4219,23 @@ def _aci_move_groups(snap):
                 ten = it.get("name") if kind == "tenants" else it.get("tenant")
                 if not ten:
                     continue
-                g = by_tenant.setdefault(ten, {"vrfs": [], "bds": [], "epgs": [], "unenforced_vrfs": []})
+                g = by_tenant.setdefault(ten, {"vrfs": {}, "bds": {}, "epgs": {}, "unenforced_vrfs": set()})
+                nm = it.get("name", "")
+                key = it.get("dn") or nm                  # unique MIT identity -> the cluster multiple collapses
                 if kind == "vrfs":
-                    g["vrfs"].append(it.get("name", ""))
+                    g["vrfs"][key] = nm
                     if it.get("pc_enf_pref") == "unenforced":
-                        g["unenforced_vrfs"].append(it.get("name", ""))
+                        g["unenforced_vrfs"].add(nm)
                 elif kind == "bds":
-                    g["bds"].append(it.get("name", ""))
+                    g["bds"][key] = nm
                 elif kind == "epgs":
-                    g["epgs"].append(it.get("name", ""))
+                    g["epgs"][key] = nm
     if not by_tenant:
         return {}
     groups = []
     for ten, g in by_tenant.items():
         groups.append({"tenant": ten, "n_vrfs": len(g["vrfs"]), "n_bds": len(g["bds"]), "n_epgs": len(g["epgs"]),
-                       "vrfs": sorted(g["vrfs"]), "epgs": sorted(g["epgs"])[:24],
+                       "vrfs": sorted(set(g["vrfs"].values())), "epgs": sorted(set(g["epgs"].values()))[:24],
                        "unenforced_vrfs": sorted(g["unenforced_vrfs"]), "segmentation_gap": bool(g["unenforced_vrfs"])})
     groups.sort(key=lambda x: (-x["n_epgs"], x["tenant"]))   # biggest move group (most EPGs) leads the sequencing
     return {
