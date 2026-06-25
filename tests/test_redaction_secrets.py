@@ -165,3 +165,34 @@ def test_controller_and_inventory_serials_are_redacted():
         assert s not in blob, f"serial leaked under --redact: {s}"
     assert r["aci"]["apic1"]["nodes"][0]["serial"].startswith("SN")
     assert all(v.startswith("SN") for v in r["inventory"]["sw1"]["ps_serials"])
+
+
+def test_ipv6_addresses_are_pseudonymized():
+    """HTML_-01: redact_snapshot pseudonymized IPv4 dotted-quad ONLY -- IPv6 (global, link-local, ::-compressed,
+    embedded in descriptions) passed through --redact untouched, breaking the share-safe contract for any
+    dual-stack / IPv6 fleet. Every IPv6 textual form must be remapped to an fd00::/8 ULA pseudonym, consistently,
+    WITHOUT corrupting MAC remap (a colon-MAC has neither 7 colons nor a '::') or IPv4 remap."""
+    snap = {"a": "2001:db8:10::1", "b": "2001:DB8:10::/64", "c": "FE80::200:FF:FE00:10",
+            "d": "neighbor 2001:db8:10::1 remote-as 65001",
+            "mixed": "host ip 10.20.30.40 mac 00:11:22:33:44:55 v6 2001:db8:abcd::99"}
+    r = html.redact_snapshot(snap)
+    blob = json.dumps(r)
+    for leak in ("2001:db8", "2001:DB8", "FE80::200", "db8:abcd"):
+        assert leak.lower() not in blob.lower(), f"IPv6 survived --redact: {leak}"
+    assert "00:11:22:33:44:55" not in blob          # MAC still redacted (no IPv6/MAC collision)
+    assert "10.20.30.40" not in blob                # IPv4 still redacted
+    assert r["a"].startswith("fd00:")               # consistent ULA pseudonym
+    assert r["a"] == r["d"].split()[1]              # same address -> same pseudonym across fields
+
+
+def test_bare_key_rule_preserves_structural_follow_words():
+    """HTML_-05: the generic bare-'key <secret>' rule treated the token after 'key' as a secret even when it is
+    STRUCTURAL -- 'key chain <NAME>' declares a keychain (the name is not a secret), and because the rules run
+    sequentially over the accumulating string the bare-key rule re-fired on the pre-shared-key rule's output and
+    mangled the 'local'/'remote' direction qualifier. Those structural words must survive; a genuine key still
+    redacts."""
+    from cisco_toolkit.html import _scrub_secrets
+    assert _scrub_secrets("key chain OSPF-KC") == "key chain OSPF-KC"          # 'chain' + name preserved
+    assert _scrub_secrets("pre-shared-key local THEKEY") == "pre-shared-key local <redacted>"   # 'local' kept
+    assert _scrub_secrets("pre-shared-key remote OTHERKEY") == "pre-shared-key remote <redacted>"
+    assert "13061E010803" not in _scrub_secrets("key 7 13061E010803")          # genuine key still redacted
