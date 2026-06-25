@@ -606,6 +606,24 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
 _REDACT_IP_RE = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
 _REDACT_MAC_RE = re.compile(
     r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b")
+# IPv6 (HTML_-01): the IPv4 remap above is dotted-quad ONLY, so IPv6 addresses (global 2001:db8::,
+# link-local fe80::, embedded in descriptions) passed through --redact untouched -- the share-safe contract
+# was broken for any dual-stack / IPv6 fleet. This matches the full 8-group and ::-compressed textual forms
+# but NOT a colon-MAC (which has neither 7 colons nor a '::'), so the MAC remap stays correct regardless of
+# order. Every alternative requires either 7 colons or a '::', and all quantifiers are bounded ({1,7}), so a
+# long hex/colon run cannot induce catastrophic backtracking (ReDoS). An optional %zone-id is consumed.
+_REDACT_IP6_RE = re.compile(
+    r"(?<![:.\w])(?:"
+    r"(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}"                 # x:x:x:x:x:x:x:x  (7 colons; a MAC has 5)
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,7}:"                             # x::  …  x:x:x:x:x:x:x::
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}"             # x::x … x:x:x:x:x:x::x
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}"
+    r"|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}"
+    r"|:(?::[0-9A-Fa-f]{1,4}){1,7}"                             # ::x  ::x:x  (loopback/unspecified-with-suffix)
+    r")(?:%[0-9A-Za-z]+)?(?![:.\w])")
 _REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
                        "current_switch_serial", "neighbor_switch_serial",
                        # controller + inventory serials reach the snapshot under other key names: ACI
@@ -645,8 +663,11 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # inner group absorbs a hash-algorithm label so 'authentication-key|message-digest-key N md5|sha|
     # hmac-sha <DIGEST>' (NTP/OSPF/EIGRP) redacts the DIGEST after it, not the 'md5'/'sha' token -- the
     # latter left the real, offline-crackable digest exposed. Anchored on 'key', so a bare IKE 'hash md5'
-    # algorithm choice (no key-id + secret) is never corrupted.
-    r"(\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(\S+)",
+    # algorithm choice (no key-id + secret) is never corrupted. The negative lookahead keeps STRUCTURAL
+    # follow-words intact: 'key chain <NAME>' declares a keychain (name is not a secret), and the bare rule
+    # runs AFTER the pre-shared-key rule over the accumulating string, so without the guard it re-fired on
+    # 'pre-shared-key local <redacted>' and mangled the 'local'/'remote' direction qualifier.
+    r"(\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(?!chain\b|local\b|remote\b)(\S+)",
     # Non-Cisco vendor config forms: FortiGate 'set passwd|psksecret|password [ENC] <VALUE>' and Junos
     # 'authentication-key|secret "<VALUE>"' -- 'passwd'/'psksecret' are not the whole words 'password'/'secret',
     # so the Cisco patterns above miss them.
@@ -683,6 +704,7 @@ def redact_snapshot(snap: dict) -> dict:
     output and IPs keep their /24 grouping, so topology / ARP / subnet relationships
     survive; hostnames are kept. Pure (stdlib only); the input is not mutated."""
     ip_map: Dict[str, str] = {}
+    ip6_map: Dict[str, str] = {}
     mac_map: Dict[str, str] = {}
     serial_map: Dict[str, str] = {}
 
@@ -691,6 +713,13 @@ def redact_snapshot(snap: dict) -> dict:
         if net not in ip_map:
             i = len(ip_map); ip_map[net] = f"10.{i // 256}.{i % 256}"   # remap /24, keep host octet
         return f"{ip_map[net]}.{m.group(4)}"
+
+    def _ip6(m):
+        s = m.group(0)
+        if s not in ip6_map:                                            # consistent ULA fd00::/8 pseudonym
+            i = len(ip6_map) + 1
+            ip6_map[s] = "fd00::%x:%x" % ((i >> 16) & 0xffff, i & 0xffff)
+        return ip6_map[s]
 
     def _mac(m):
         key = re.sub(r"[^0-9a-f]", "", m.group(0).lower())
@@ -708,9 +737,11 @@ def redact_snapshot(snap: dict) -> dict:
         return serial_map[v]
 
     def _scrub(s):
-        # Strip credentials / community / key material first so a secret token is
-        # replaced wholesale, THEN pseudonymize any remaining IPs / MACs in context.
-        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s)))
+        # Strip credentials / community / key material first so a secret token is replaced wholesale, THEN
+        # pseudonymize any remaining IPv4 / IPv6 / MACs in context. IPv6 is remapped before MAC; the two
+        # patterns are mutually exclusive (a MAC has neither 7 colons nor a '::'), so neither corrupts the other.
+        return _REDACT_MAC_RE.sub(
+            _mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s))))
 
     def _walk(o, key=None):
         if isinstance(o, dict):
