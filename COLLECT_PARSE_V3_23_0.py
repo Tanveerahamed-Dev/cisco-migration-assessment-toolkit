@@ -2398,6 +2398,8 @@ def main():
         if _req:
             snap_dict["requirements_register"] = _req                 # stored so the blueprint stays reproducible from the snapshot alone
             logger.info(f"  [design] requirements register supplied ({', '.join(sorted(_req))}) -> blueprint right-sized")
+        # design_blueprint INCLUDES the gated EVPN-migration guardrails (compute_design_blueprint folds them in
+        # so the published blueprint stays reproducible from the snapshot + the same requirements register).
         snap_dict["design_blueprint"] = compute_design_blueprint(snap_dict, _req or None)
         # design-driven NRFU/ATP checklist, published canonically so the OFFLINE explorer and the webapp
         # read ONE set of phased acceptance items (and their phases) instead of re-deriving them in JS.

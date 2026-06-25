@@ -4275,7 +4275,16 @@ def compute_design_blueprint(snap, requirements=None):
         "coverage": _coverage(snap),
         "doctrine": _doctrine_catalog(),
         "target_state": compute_target_state(snap, req, sig=sig),
+        # Gated, evidence-grounded brownfield->NX-OS-VXLAN-EVPN migration guardrails. Lazy import avoids an
+        # import cycle (evpn_migration imports this module's helpers); folded in HERE (not the assembly) so the
+        # published blueprint stays reproducible from the snapshot + requirements. Silent on a non-EVPN target.
+        "evpn_migration": _evpn_migration_guardrails(snap, req, sig),
     }
+
+
+def _evpn_migration_guardrails(snap, req, sig):
+    from cisco_toolkit.evpn_migration import compute_evpn_migration_guardrails   # lazy: break the import cycle
+    return compute_evpn_migration_guardrails(snap, req, sig=sig)
 
 
 # ----------------------------------------------------------------------------- design-driven NRFU
@@ -4466,9 +4475,24 @@ def compute_design_nrfu(design_blueprint):
             "principle_citation": _as_dict(d.get("principle")).get("citation", ""),
         })
     items.sort(key=lambda x: (_PHASE_ORDER.get(x["phase"], 9), PRANK.get(x["priority"], 9), x["decision_id"]))
+    # EVPN-migration acceptance gates (additive, SEPARATE from `items` so the per-decision items<->recommended
+    # contract stays exact): when the blueprint carries gated EVPN-migration guardrails, surface them as
+    # acceptance verification points (decision_id = guardrail id, pass = the observed basis confirmed). Empty
+    # list on a non-EVPN engagement (coverage-honest).
+    _evpn = _as_dict(design_blueprint.get("evpn_migration"))
+    evpn_acceptance = [{
+        "decision_id": g.get("id", ""),
+        "title": g.get("title", ""),
+        "priority": g.get("severity", "Medium"),
+        "phase": g.get("phase", ""),
+        "description": g.get("detail", ""),
+        "pass_criteria": f"Verify: {g.get('basis', '')}",
+        "principle_citation": g.get("source", ""),
+    } for g in _as_list(_evpn.get("guardrails")) if isinstance(g, dict)] if _evpn.get("applicable") else []
     return {
         "items": items,
         "n_items": len(items),
+        "evpn_acceptance": evpn_acceptance,
         "note": (
             f"Design-driven NRFU/ATP checklist: {len(items)} acceptance-test item(s), one per recommended "
             "design decision, each traceable to the CCDE principle and the evidence that triggered it. "
