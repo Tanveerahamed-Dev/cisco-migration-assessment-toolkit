@@ -262,3 +262,25 @@ def test_parser_to_detector_contract_via_real_build(tmp_path):
     fsnap = {"fhrp_detail": {"core1": build.build_fhrp_detail(_c2f("show standby all", standby))}}
     fsig = da._signals(fsnap)
     assert fsig["fhrp_no_preempt"] == ["core1 Vlan10 grp 10"]            # build_fhrp_detail -> fhrp signal shape agrees
+
+
+def test_runbook_survives_illegal_chars_and_malformed_input(tmp_path):
+    """[audit-2 #5/L2] an XML-illegal char (BEL / U+FFFF) in any device-derived string aborted the WHOLE runbook
+    DOCX at save (the deck ships from the same data); and a None/non-dict snapshot, non-string VLAN, list-valued
+    end_host_mac, or non-dict executive_brief each crashed the render. All must degrade, never raise."""
+    from cisco_toolkit.runbook import write_runbook_docx
+    bad = chr(0xFFFF)
+    cases = [
+        {"devices": {"sw1": {"model": "M" + bad}}, "interfaces": {}, "executive_brief": {"scale": {"n_devices": 1}}},
+        None,
+        {"devices": {"sw1": {}}, "interfaces": {}, "executive_brief": "oops"},
+        {"devices": {"sw1": {}}, "interfaces": {"sw1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": 10,
+                                                                    "end_host_mac": "aaaa.bbbb.cccc"}}}},
+        {"devices": {"sw1": {}}, "interfaces": {"sw1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10",
+                                                                    "end_host_mac": ["aaaa.bbbb.cccc"]}}}},
+    ]
+    for i, snap in enumerate(cases):
+        out = str(tmp_path / f"rb{i}.docx")
+        write_runbook_docx(out, snap, "Run" + bad)          # must not raise
+        import os
+        assert os.path.exists(out)

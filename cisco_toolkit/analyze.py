@@ -904,7 +904,9 @@ def compute_wave_sequencing(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     for host, ifaces in all_interfaces.items():
         macs: set = set()
         for d in ifaces.values():
-            if (d.switchport_mode or "") == "Access":
+            # SAME MAC-eligibility as compute_move_groups (Access AND a numeric VLAN) so a wave's
+            # hard_cutover_endpoints can never EXCEED the group's SSOT endpoint total (audit-2 L1).
+            if (d.switchport_mode or "") == "Access" and str(getattr(d, "vlan", "") or "").isdigit():
                 for m in _split_macs(d.end_host_mac):
                     macs.add(m)
         ep[host] = len(macs)

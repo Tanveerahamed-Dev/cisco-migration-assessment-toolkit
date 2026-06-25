@@ -49,13 +49,15 @@ def _endpoint_census(snap: dict):
         for d in (ports or {}).values():
             if (d.get("switchport_mode") or "") != "Access":
                 continue
-            macs = [m for m in re.split(r"[,\s]+", d.get("end_host_mac") or "") if m]
+            _ehm = d.get("end_host_mac")            # tolerate a list-valued / non-string end_host_mac (L2)
+            _ehm = " ".join(str(x) for x in _ehm) if isinstance(_ehm, list) else str(_ehm or "")
+            macs = [m for m in re.split(r"[,\s]+", _ehm) if m]
             if not macs:
                 continue
             n = len(macs)
             total += n
             per_switch[host] += n
-            vlan = d.get("vlan") or ""
+            vlan = str(d.get("vlan") or "")         # tolerate a non-string vlan (L2)
             if vlan.isdigit():
                 per_vlan[int(vlan)] += n
     return total, per_vlan, per_switch
@@ -86,6 +88,24 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         logger.warning("  Runbook (DOCX) skipped: python-docx not installed "
                        "(pip install python-docx to enable the narrative runbook deliverable).")
         return
+
+    # Input normalization (mirrors the deck's guards): a None / non-dict snapshot must degrade, not raise (L2);
+    # and an XML-illegal control byte (BEL, U+FFFE/U+FFFF) in ANY device-derived string -- collected with
+    # errors='ignore' -- otherwise aborts the WHOLE runbook at docx save (the deck ships from the same data). Strip
+    # every illegal char from the snapshot tree + the label ONCE, up front, reusing the workbook's sanitizer (#5).
+    from cisco_toolkit.excel import _xls_sanitize
+
+    def _clean(o):
+        if isinstance(o, dict):
+            return {k: _clean(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_clean(v) for v in o]
+        return _xls_sanitize(o)
+
+    snap_dict = _clean(snap_dict if isinstance(snap_dict, dict) else {})
+    if not isinstance(snap_dict.get("executive_brief"), dict):    # a truthy non-dict slips '(... or {}).get' (L2)
+        snap_dict["executive_brief"] = {}
+    label = _xls_sanitize(label) if isinstance(label, str) else (str(label) if label is not None else "")
 
     NAVY = RGBColor(0x1F, 0x38, 0x64)
     GREY = RGBColor(0x59, 0x59, 0x59)

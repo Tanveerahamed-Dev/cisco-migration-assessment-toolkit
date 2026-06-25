@@ -820,3 +820,19 @@ def test_endpoint_2110_token_anchored_to_smpte_standard():
         assert _classify_endpoint("", desc, "", "", False)[0] != "Broadcast A/V", desc
     for desc in ("ST-2110 encoder", "SMPTE 2110 gateway", "2110-20 video flow"):
         assert _classify_endpoint("", desc, "", "", False)[0] == "Broadcast A/V", desc
+
+
+def test_wave_sequencing_endpoint_count_not_exceed_move_group_total():
+    """[audit-2 L1] compute_wave_sequencing counted MACs on ANY Access port, but compute_move_groups (the SSOT
+    group endpoint total) requires Access AND a numeric VLAN -> 'hard_cutover_endpoints' could EXCEED the group's
+    own endpoint total (self-contradictory deliverables). Align the predicate so it never exceeds the SSOT."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit import analyze
+    def acc(vlan, mac):
+        d = InterfaceData(); d.switchport_mode = "Access"; d.vlan = vlan; d.end_host_mac = mac
+        return d
+    ifaces = {"sw1": {"Gi1/0/1": acc("10", "aaaa.bbbb.0001"), "Gi1/0/2": acc("", "aaaa.bbbb.0002")}}
+    mg = analyze.compute_move_groups(ifaces)
+    ws = analyze.compute_wave_sequencing(ifaces, mg)
+    g_ep = mg[0]["endpoints"]
+    assert sum(w["hard_cutover_endpoints"] for w in ws) <= g_ep and g_ep == 1
