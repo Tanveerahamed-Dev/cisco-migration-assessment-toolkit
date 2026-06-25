@@ -96,12 +96,26 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
         gsw = rr.get("switches") or []
         share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
         r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
-        # n_fail/n_warn apportion by switch-share too (REVIEW #1: a 1-of-4 slice must not reprint the parent's
-        # full count) BUT a blocking check must never round DOWN to 0 — that would mask a NOT-READY wave's
-        # gate. So a positive share of a positive count contributes at least 1 (round elsewhere).
-        _ef, _ew = _i(rr.get("n_fail")) * share, _i(rr.get("n_warn")) * share
-        r["n_fail"] += max(round(_ef), 1) if _ef > 0 else 0
-        r["n_warn"] += max(round(_ew), 1) if _ew > 0 else 0
+        # n_fail/n_warn: ATTRIBUTE each fail/warn check to the ONE sub-wave that owns its canonical (lowest-sorted)
+        # member switch, so the per-sub-wave counts SUM to the group SSOT. The old share-with-floor reprinted a
+        # 'max(.,1)' on every slice, so an N-way split of a positive count summed toward N ([HISTORY-REDACTED] Group 1's true 3/4
+        # rendered 7/7 across 7 sub-waves) -- a one-source-of-truth break vs migration_readiness (audit-2 #3).
+        checks = [c for c in (rr.get("checks") or [])
+                  if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
+        if checks:
+            gsw_set = set(gsw)
+            for chk in checks:
+                note = str(chk.get("note", ""))
+                members = sorted(s for s in gsw_set if s and s in note)   # group switches named in this check's note
+                owner = members[0] if members else (sorted(gsw)[0] if gsw else None)   # canonical single owner
+                if owner is not None and owner in wsw:                    # this sub-wave owns the check
+                    r["n_fail" if str(chk.get("status")).lower() == "fail" else "n_warn"] += 1
+        else:
+            # older snapshot with no per-check attribution -> apportion by switch-share, never rounding a lone
+            # blocker DOWN to 0 (that would mask a NOT-READY wave's gate). Single-slice correctness preserved.
+            _ef, _ew = _i(rr.get("n_fail")) * share, _i(rr.get("n_warn")) * share
+            r["n_fail"] += max(round(_ef), 1) if _ef > 0 else 0
+            r["n_warn"] += max(round(_ew), 1) if _ew > 0 else 0
         rd = rr.get("readiness")
         if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
             worst = rd

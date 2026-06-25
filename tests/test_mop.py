@@ -494,3 +494,20 @@ def test_mop_silent_on_evpn_when_not_applicable(tmp_path):
     write_mop_docx(out, snap, "Unit Test Fleet")
     h2 = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 2"]
     assert not any("EVPN-migration guardrails" in t for t in h2)
+
+
+def test_mop_check_counts_sum_to_group_ssot_across_subwaves():
+    """[audit-2 #3] a coupled group's fail/warn check counts must SUM across its sub-waves to the group SSOT, not
+    be share-with-floor double-counted ([HISTORY-REDACTED] Group 1's true 3/4 rendered 7/7 across 7 sub-waves). Each check is
+    attributed to the ONE sub-wave owning its canonical member switch."""
+    from cisco_toolkit.mop import _join_group_records
+    readiness = {"G1": {"group": "G1", "switches": ["swA", "swB", "swC", "swD"], "endpoints": 40,
+                        "n_fail": 1, "n_warn": 1, "readiness": "NOT READY",
+                        "checks": [{"status": "fail", "note": "sole gateway on swA, swB (no FHRP)"},
+                                   {"status": "warn", "note": "err-disabled on swC, swD"},
+                                   {"status": "pass", "note": "no inconsistent ports"}]}}
+    w1 = _join_group_records(["G1"], ["swA", "swB"], readiness, {}, {}, {})[0]
+    w2 = _join_group_records(["G1"], ["swC", "swD"], readiness, {}, {}, {})[0]
+    assert w1["n_fail"] + w2["n_fail"] == 1 and w1["n_warn"] + w2["n_warn"] == 1   # each check counted ONCE
+    full = _join_group_records(["G1"], ["swA", "swB", "swC", "swD"], readiness, {}, {}, {})[0]
+    assert full["n_fail"] == 1 and full["n_warn"] == 1                              # whole group -> full SSOT
