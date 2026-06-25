@@ -1181,7 +1181,9 @@ def _signals(snap):
             if not row.get("is_root"):
                 continue
             try:
-                if int(row.get("root_priority")) == 32768 + int(vid):
+                # default priority won on a MAC tiebreak: 32768 + sys-id-ext(=vid) with extended-system-id ON,
+                # or a BARE 32768 with 'no spanning-tree extend system-id' (legacy IOS) -- accept both (audit-3 #14).
+                if int(row.get("root_priority")) in (32768, 32768 + int(vid)):
                     acc += 1
                     acc_hosts.add(host)
             except (TypeError, ValueError):
