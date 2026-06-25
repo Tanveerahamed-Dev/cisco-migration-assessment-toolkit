@@ -286,7 +286,7 @@
     "duplex": "Auto",
     "speed": "Auto",
     "port_type": "10/100/1000BaseTX",
-    "link_type": "",
+    "link_type": "Copper",
     "description": "quarantine",
     "end_host_mac": "",
     "end_host_ip": "",
