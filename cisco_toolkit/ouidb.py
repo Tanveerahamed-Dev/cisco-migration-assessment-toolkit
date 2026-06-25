@@ -10,10 +10,12 @@ To refresh the shipped data (rarely needed): fetch https://www.wireshark.org/dow
 and regenerate the tsv.gz (prefix<TAB>bits<TAB>vendor). Pure stdlib (gzip + re)."""
 import functools
 import gzip
+import logging
 import os
 import re
 
 _DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "oui_registry.tsv.gz")
+_LOG = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=1)
@@ -32,8 +34,11 @@ def _registry() -> dict:
                 except ValueError:
                     continue
                 tables.setdefault(b, {})[hexp] = vendor
-    except Exception:
-        pass
+    except (OSError, EOFError, UnicodeDecodeError) as e:
+        # Surface a load failure ONCE (then lru_cached for the process): a missing/corrupt OUI pack silently
+        # disabling all MAC->vendor resolution is worse than loud. Narrowed from a bare `except Exception` so an
+        # unexpected bug is not swallowed as 'no vendors'.
+        _LOG.warning("ouidb: could not load %s (%s) -- MAC->vendor lookups will be empty", _DATA, e)
     return tables
 
 
