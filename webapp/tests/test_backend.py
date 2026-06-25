@@ -973,6 +973,15 @@ def test_ingest_collection_runs_real_engine(client, tmp_path):
     assert meta["n_devices"] == 3                       # core1 / core2 / access1
     assert meta["ingest"]["devices_json"] == "synthesized"
     assert sorted(meta["ingest"]["devices"]) == ["access1", "core1", "core2"]
+    # WEBAP-02: the headline directory count must equal the fleet actually assessed -- skipped non-round-trippable
+    # folders excluded -- never over-report (here nothing is skipped, so it pins the formula).
+    assert meta["ingest"]["n_device_dirs"] == 3
+    assert (meta["ingest"]["n_device_dirs"]
+            == len(meta["ingest"]["devices"]) - len(meta["ingest"]["skipped_dirs"]))
+    # WEBAP-01: the engine log tail surfaced to the (remote) client must not leak the server working-dir
+    # absolute path; the engine references it (writes its outputs there), so the scrub placeholder must appear.
+    tail = meta["ingest"].get("engine_log_tail", "")
+    assert "<workdir>" in tail and tmp_path.name not in tail
 
     # the stored snapshot is the engine's own: summary derives and the cutover plan synthesizes
     s = meta["summary"]

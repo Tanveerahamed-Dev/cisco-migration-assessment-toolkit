@@ -9,7 +9,7 @@ import DesignBlueprintPanel from "../components/DesignBlueprint";
 import CausalFlowPanel from "../components/CausalFlow";
 
 const HEALTH_TONE = (n: number) => (n >= 80 ? "ok" : n >= 60 ? "watch" : n >= 35 ? "risk" : "crit");
-const GAUGE_COLOR = (n: number) => (n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
+const GAUGE_COLOR = (n: number) => (!Number.isFinite(n) ? "var(--border)" : n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
 
 /* ---------- generic, shape-robust section renderer ---------- */
 function cell(v: any): string {
@@ -231,7 +231,11 @@ export default function SnapshotPage() {
   if (loading) return <div className="container"><Loading /></div>;
   if (error) return <div className="container"><ErrorBox msg={error} /></div>;
   const s = meta!.summary;
-  const avg = typeof s.avg_health === "number" ? s.avg_health : Number(s.avg_health) || 0;
+  // WEBAP-02: when the engine could not compute a fleet average, summarize() emits avg_health as "". Coercing
+  // it with `Number("") || 0` produced a finite 0, so the hero Gauge showed a measured-looking red '0' instead
+  // of its own '—' unknown state. Pass NaN through so the Gauge (Number.isFinite check) renders '—', and
+  // GAUGE_COLOR (now guarded) uses a neutral ring -- mirroring the Dashboard PostureStrip treatment.
+  const avg = typeof s.avg_health === "number" ? s.avg_health : NaN;
   const eol = s.lifecycle?.past_eos;
 
   const tabs = s.sections;
