@@ -1028,7 +1028,11 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     optional) is {host: parse_security()}; each FAILED CIS check deducts via
     config.sec_weights (capped at caps['SEC']). Omitting it (or a host without a
     captured run-config) adds no SEC deduction -- missing posture is never scored as bad."""
-    hosts = sorted(all_interfaces)
+    # Drop a blank/whitespace hostname (a malformed devices.json row that nonetheless collected): it must not
+    # become a scored asset, because compute_collection_completeness ALSO skips `if not host` (analyze.py:998).
+    # Keeping it here made len(health_scores) exceed the inventory count, and ssot.reconcile then false-fired an
+    # assessment_integrity DRIFT alarm on a benign data-entry artifact rather than a real published-fact conflict.
+    hosts = sorted(h for h in all_interfaces if str(h).strip())
     ded: Dict[str, Dict[str, List[Tuple[str, int]]]] = {
         h: {"L1": [], "L3": [], "XL": [], "PROTO": [], "SEC": []} for h in hosts}
 
@@ -4851,10 +4855,15 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
         if rec["conf"] == "active" or (not eos and not ldos):
             band, status, yrs = "Active", "Active (no end-of-life announced)", None
         else:
-            yrs = round((ldos - today).days / 365.25, 1) if ldos else None
+            # Decide the band from the UNROUNDED delta; the rounded `yrs` is for DISPLAY only. Rounding first
+            # let a device genuinely ~1.05 yr out round to 1.0 and fall into Near-LDoS (the band ~18 days too
+            # wide). (Past-LDoS keeps the STRICT `>`: LDoS = Last Day of Support, so support still exists ON
+            # that date -- it becomes past only the day after. test_lifecycle_boundary_drift_guard locks this.)
+            yrs_exact = ((ldos - today).days / 365.25) if ldos else None
+            yrs = round(yrs_exact, 1) if yrs_exact is not None else None
             if ldos and today > ldos:
                 band = "Past-LDoS"; status = f"Past end-of-support (LDoS {rec['ldos']}, {rec['conf']})"
-            elif ldos and yrs is not None and yrs <= 1.0:
+            elif ldos and yrs_exact is not None and 0 <= yrs_exact <= 1.0:
                 band = "Near-LDoS"; status = f"End-of-support within 1 year (LDoS {rec['ldos']}, {rec['conf']})"
             elif eos and today > eos:
                 band = "Past-EoS"; status = f"Past end-of-sale (EoS {rec['eos']}; LDoS {rec['ldos']})"
@@ -5266,6 +5275,11 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             qa_find.setdefault(f.get("host", ""), []).append(f)
     gd_by = {r.get("host"): r for r in ((golden_drift or {}).get("per_device") or [])
              if isinstance(r, dict)}
+    # When fewer than 3 comparable configs exist (majority mode), compute_golden_drift derives NO baseline
+    # (summary.n_baseline == 0) yet still emits per_device rows with n_missing 0 / compliance 100. Those must
+    # read 'na -- no baseline', not 'ok / matches the config baseline' (asserting conformance to a baseline
+    # that was never derived = false-health).
+    _gd_has_baseline = bool((((golden_drift or {}).get("summary")) or {}).get("n_baseline"))
     sec = security or {}
     hyg = config_hygiene or {}
     roots = stp_roots or {}
@@ -5389,6 +5403,8 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         gdr = gd_by.get(host)
         if gdr is None:
             ax("Golden drift", "na", "not in the drift baseline")
+        elif not _gd_has_baseline:
+            ax("Golden drift", "na", "no config baseline derived (need 3+ comparable configs)")
         elif gdr.get("n_missing", 0) >= 5 or gdr.get("compliance_pct", 100) < 70:
             ax("Golden drift", "risk",
                f"{gdr.get('n_missing', 0)} required directive(s) missing "
