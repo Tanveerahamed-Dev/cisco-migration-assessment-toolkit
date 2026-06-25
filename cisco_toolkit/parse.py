@@ -52,9 +52,25 @@ def parse_eigrp_neighbors(output: str) -> List[Dict[str, str]]:
 
 def parse_bgp_summary(output: str) -> List[Dict[str, str]]:
     """'show ip bgp summary' / 'show bgp summary' -> [{neighbor, as, state}].
-    Last column (State/PfxRcd) is the established state or the prefix count."""
+    Last column (State/PfxRcd) is the prefix count (Established) or the BGP state word (Idle/Active/...).
+    A wide Neighbor/AS (a 15-char IPv4, any IPv6 peer, a 4-byte asdot AS) makes IOS/NX-OS WRAP the
+    State/PfxRcd onto an indented continuation line; such rows are stitched back (a short head line +
+    its following numeric continuation) BEFORE the per-row regex, so a wrapped DOWN peer is not dropped
+    (and thus not silently read as healthy by the consumer, which flags any non-numeric State)."""
     rows = []
-    for line in output.splitlines():
+    # --- wrap-stitch pre-pass: join an indented numeric continuation onto a short neighbour head line ---
+    # head = a line whose first token is an IPv4/IPv6 neighbour but which carries fewer than the 10 grid
+    # columns (i.e. the State/PfxRcd wrapped away). IPv6 run is length-bounded (ReDoS-safe, as below).
+    _head = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]+:[0-9A-Fa-f:]{1,44})(?:%\S+)?(?:\s|$)")
+    stitched: List[str] = []
+    for raw in (output or "").splitlines():
+        s = raw.rstrip()
+        if (stitched and re.match(r"^\s+\d", s)
+                and _head.match(stitched[-1].strip()) and len(stitched[-1].split()) < 10):
+            stitched[-1] = stitched[-1].rstrip() + " " + s.strip()   # numeric continuation -> onto the head
+        else:
+            stitched.append(s)
+    for line in stitched:
         # IPv6 neighbour: a LENGTH-BOUNDED hex/colon run (RFC max IPv6 textual length ~45). The old
         # `[0-9A-Fa-f:]+:[0-9A-Fa-f:]+` had two adjacent unbounded `+` groups overlapping on `:`, so a long
         # all-hex/colon line (a garbled/attacker-supplied capture) caused O(n^2) backtracking (ReDoS). Bounding
@@ -1376,7 +1392,7 @@ def parse_ise_nodes(output: str) -> list:
     export / non-JSON. Tolerant; never raises."""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return []
     return [_ise_node(r) for r in _ise_rows(obj) if isinstance(r, dict)]
 
@@ -1395,7 +1411,7 @@ def parse_arista_mlag(output: str) -> dict:
     detector stays coverage-honest -- absence of MLAG is never a finding. Tolerant; never raises."""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return {}
     if not isinstance(obj, dict):
         return {}
@@ -1434,7 +1450,7 @@ def parse_arista_bgp_evpn_summary(output: str) -> list:
     'peerState' and the ONLY healthy value is 'Established'. [] when absent / non-JSON. Tolerant; never raises."""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return []
     if not isinstance(obj, dict):
         return []
@@ -1477,7 +1493,7 @@ def parse_junos_chassis_cluster(output: str) -> list:
     Junos-version nesting/wrapping variants. [] when absent / non-JSON. Never raises."""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return []
     if not isinstance(obj, dict):
         return []
@@ -1517,7 +1533,7 @@ def parse_aws_security_groups(output: str):
     detector applies the sensitive-port filter; this parser is purely structural. Never raises."""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return None
     if not (isinstance(obj, dict) and isinstance(obj.get("SecurityGroups"), list)):
         return None
@@ -1623,7 +1639,7 @@ def _fmc_items(output: str) -> list:
     never raises. (The JSON-ingestion front door for FMC -- analogous to _aci_imdata / _sdwan_data.)"""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return []
     if not isinstance(obj, dict):
         return []
@@ -1733,7 +1749,7 @@ def _aci_imdata(output: str, cls: str) -> list:
     regex-matching it. Tolerant: [] on empty / non-JSON / missing-imdata; never raises."""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return []
     rows = obj.get("imdata") if isinstance(obj, dict) else None
     out = []
@@ -1849,7 +1865,7 @@ def _sdwan_data(output: str) -> list:
     [] on empty / non-JSON / missing-'data'; never raises."""
     try:
         obj = json.loads(output or "")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return []
     rows = obj.get("data") if isinstance(obj, dict) else None
     # Coerce values to strings defensively (no-op on real vManage data) so a malformed export with a
@@ -2782,7 +2798,7 @@ def parse_acls(output: str) -> Dict[str, List[dict]]:
 def _mask_to_wild(mask: str) -> str:
     """IOS subnet mask (255.255.255.0) -> wildcard (0.0.0.255), per-octet inverse."""
     try: return ".".join(str(255 - int(o)) for o in mask.split("."))
-    except (ValueError, TypeError): return mask
+    except (ValueError, TypeError, RecursionError): return mask
 
 def _objgrp_net_member(toks: List[str]):
     """One 'object-group network' member -> {ip,wild} | {rangeStart,rangeEnd} | {group} | None."""

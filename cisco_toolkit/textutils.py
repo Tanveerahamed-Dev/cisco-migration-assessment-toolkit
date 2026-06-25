@@ -81,6 +81,19 @@ def normalize_mac(mac_str: str) -> str:
 
 def detect_link_type(transceiver_or_type: str, speed: str) -> str:
     t = (transceiver_or_type or "").lower()
+    # An absent/empty bay is not a medium: 'No Transceiver' contains the fiber 'er' token (transceiv-ER) and
+    # would mis-read as Fiber. Blank it so classification falls through to the speed heuristic instead.
+    if t.strip() in ("no transceiver", "not present", "unknown", "none", "n/a", "--", ""):
+        t = ""
+    # Copper twisted-pair / RJ45 SFPs (GLC-T, SFP-GE-T, 1000BASE-T, 10GBASE-T) carry an SFP/GLC fiber-family
+    # substring yet are electrically COPPER -- the unambiguous copper markers must win over the generic fiber
+    # list below (else 'glc-t' hits the 'glc' fiber token and is mislabeled Fiber). base-?tx? = BaseT/Base-T/
+    # BaseTX forms; the -t suffix covers GLC-T / SFP-GE-T / SFP-1G-T copper SKUs. (DAC/-CR twinax left to the
+    # form-factor list below, unchanged.)
+    if t and (re.search(r"base-?tx?|rj-?45|10gbase-t|sfp-(?:ge|1g)-t", t)
+              or t.endswith("-t") or "glc-t" in t
+              or any(k in t for k in ("copper", "twinax", "dac"))):
+        return "Copper"
     if any(k in t for k in ["sr","lr","lrm","er","zr","qsfp","sfp","xfp","cfp","glc","-sx","-lx","-lr"]):
         return "Fiber"
     if any(k in t for k in ["copper","cr","dac","twinax","base-t","rj45","-t"]):

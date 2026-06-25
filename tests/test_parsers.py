@@ -850,6 +850,59 @@ def test_parse_bgp_summary_wrapped_ipv6_and_asdot(cp):
     assert by["10.0.0.9"]["as"] == "1.2"
 
 
+def test_parse_bgp_summary_public_stitches_wrapped_down_peer(cp):
+    """PARSE-05: the PUBLIC parse_bgp_summary (what analyze.py:1474 consumes for 'show ip bgp summary') only
+    matched a row whose neighbour AND State/PfxRcd were on ONE physical line. A wide neighbour wraps State onto
+    an indented continuation line; the down (Idle) peer was DROPPED entirely, so analyze (which flags any peer
+    whose State is non-numeric) could never report it -- a missing-DOWN-peer false-health. The stitch pre-pass
+    must recover it WHILE preserving this parser's numeric-state-means-Established contract (distinct from the
+    _parse_bgp_summary_rows helper, which emits the literal word 'Established')."""
+    out = ("Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+           "192.168.250.254 4 65001\n"
+           "                         984    1086       11    0    0 16:16:33 Idle\n"            # wrapped DOWN
+           "10.0.0.1        4   100   50      60        11    0    0 1d02h        7\n")          # single-line UP
+    r = parse.parse_bgp_summary(out)
+    by = {x["neighbor"]: x for x in r}
+    assert set(by) == {"192.168.250.254", "10.0.0.1"}, by
+    assert by["192.168.250.254"]["state"] == "Idle"           # non-numeric -> consumer flags it as down
+    assert by["10.0.0.1"]["state"].isdigit()                  # numeric prefix count -> Established (unchanged)
+    # the analyze consumer's own predicate (analyze.py:1476): exactly the wrapped peer is 'not Established'
+    bad = [p for p in r if not p["state"].isdigit()]
+    assert [p["neighbor"] for p in bad] == ["192.168.250.254"]
+
+
+def test_json_controller_parsers_total_on_deeply_nested_input(cp):
+    """ROBUS-03: the controller-REST JSON parsers document 'Tolerant; never raises' and guard json.loads with
+    `except (ValueError, TypeError)`. But json.loads raises RecursionError (a RuntimeError subclass, NOT a
+    ValueError/TypeError) on deeply-nested input, so it escaped the guard -- and ACI/vManage/ISE exports are
+    attacker-influenceable controller JSON dropped into the collection dir / ingest ZIP. The except now also
+    catches RecursionError so the contract holds."""
+    assert not issubclass(RecursionError, (ValueError, TypeError))   # the gap the guard missed
+    bomb = "[" * 20000 + "]" * 20000
+    # every JSON controller parser must degrade to its empty shape, not propagate
+    assert parse.parse_ise_nodes(bomb) == []
+    assert parse.parse_aci_faults(bomb) == []
+    assert parse.parse_aci_health(bomb) == {}
+
+
+def test_detect_link_type_copper_sfp_not_fiber(cp):
+    """TEXTUTILS-02: copper RJ45/twisted-pair SFPs (GLC-T, SFP-GE-T, 1000BASE-T, 10GBASE-T) carry an SFP/GLC
+    fiber-family substring, so the fiber-keyword list matched them FIRST and labelled them Fiber. And the
+    empty-bay string 'No Transceiver' contains the fiber 'er' token (transceiv-ER), so an unpopulated port
+    read as Fiber too. Copper twisted-pair must win; an absent module must fall through to the speed heuristic.
+    Genuine fiber optics must be UNCHANGED."""
+    from cisco_toolkit.textutils import detect_link_type as d
+    assert d("GLC-T", "") == "Copper"
+    assert d("1000BaseT SFP", "") == "Copper"
+    assert d("10GBASE-T", "") == "Copper"
+    assert d("No Transceiver", "") == ""            # empty bay: not Fiber (was the transceiv-ER false match)
+    assert d("No Transceiver", "10G") == "Fiber"    # ...but speed still classifies when present
+    # fiber optics unchanged
+    assert d("SFP-10G-SR", "") == "Fiber"
+    assert d("1000BASE-SX", "") == "Fiber"
+    assert d("GLC-SX-MM", "") == "Fiber"            # GLC but a fiber SX, not -T
+
+
 def test_parse_bgp_ipv6_summary_wrapped(cp):
     """parse_bgp_ipv6_summary must not drop a wrapped long-IPv6 peer: real 'show bgp ipv6 unicast summary' prints
     a long neighbor on its own line with the V/AS/.../State grid wrapped to the next line; a down (Idle) peer in
