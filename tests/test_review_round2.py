@@ -180,3 +180,85 @@ def test_deck_title_scale_renders_dash_not_none_for_null_scale(tmp_path):
                     for sh in sl.shapes if sh.has_text_frame)
     assert "None devices" not in blob and "None endpoints" not in blob
     assert "— devices" in blob                                           # em-dash, not the literal 'None'
+
+
+# --- shared real 'show vpc' capture: healthy domain, 1 down leg (Po20), 1 UP-but-inconsistent leg (Po30) ---
+_VPC_SHOW = (
+    "vPC domain id                     : 10\n"
+    "Peer status                       : peer adjacency formed ok\n"
+    "vPC keep-alive status             : peer is alive\n"
+    "Configuration consistency status  : success\n"
+    "vPC role                          : primary\n"
+    "Number of vPCs configured         : 3\n\n"
+    "vPC Peer-link status\n"
+    "---------------------------------------------------------------------\n"
+    "id    Port   Status Active vlans\n"
+    "--    ----   ------ --------------\n"
+    "1     Po1    up     1,10,20,30\n\n"
+    "vPC status\n"
+    "----------------------------------------------------------------------------\n"
+    "Id    Port          Status Consistency Reason                Active vlans\n"
+    "--    ------------  ------ ----------- ------                ------------\n"
+    "10    Po10          up     success     success               1,10,20\n"
+    "20    Po20          down   failed      down                  1,20\n"
+    "30    Po30          up     failed      compat-failed         1,30\n")
+
+
+# ---------------------------------------------------------------- TEST-01 ---
+def test_vpc_detector_end_to_end_from_real_parser():
+    """TEST-01: _d_vpc_health had no end-to-end test running the REAL parse_vpc into the detector -- the
+    parser-shape <-> detector-read agreement for vPC was unverified (no 'show vpc' capture in synthetic_fixtures
+    either). A genuinely-degraded vPC (a down member leg + an UP-but-inconsistent leg, on a HEALTHY domain) must
+    fire; an all-up/success fabric stays silent."""
+    from cisco_toolkit import parse
+    snap = {"vpc": {"nx-core1": parse.parse_vpc(_VPC_SHOW)}}
+    sig = da._signals(snap)
+    assert sig["vpc_legs"] == 3 and sig["vpc_legs_down"] == 1 and sig["vpc_legs_incons"] == 1
+    assert sig["vpc_dom_bad"] == 0                            # domain itself healthy (peer ok / cons success)
+    assert da._d_vpc_health(snap, sig) is not None           # fires on the degraded legs
+    clean = (_VPC_SHOW.replace("down   failed      down", "up     success     success")
+                      .replace("up     failed      compat-failed", "up     success     success"))
+    csnap = {"vpc": {"nx-core1": parse.parse_vpc(clean)}}
+    csig = da._signals(csnap)
+    assert csig["vpc_unhealthy"] == 0 and da._d_vpc_health(csnap, csig) is None
+
+
+# ---------------------------------------------------------------- TEST-02 ---
+def test_port_security_detail_nxos_headerless_form():
+    """TEST-02: the NX-OS 'show port-security interface ethernet 1/1' form carries the interface in the COMMAND,
+    not echoed in the body, so a header-less Secure-shutdown block parsed to {} -- and the test bank (IOS-only +
+    {}-on-noise) made that blind spot look correct. Without context the block stays {} (a documented residual,
+    NOT silently 'healthy'); a caller that knows the interface supplies it via default_ifname and the body fields
+    (identical IOS/NX-OS) then parse the err-disabled state."""
+    from cisco_toolkit import parse
+    nxos = ("Port Security                 : Enabled\n"
+            "Port Status                   : Secure-shutdown\n"
+            "Violation Mode                : Shutdown\n"
+            "Security Violation Count      : 7\n")
+    assert parse.parse_port_security_detail(nxos) == {}                  # header-less, no ctx -> not silently healthy
+    r = parse.parse_port_security_detail(nxos, default_ifname="Ethernet1/1")
+    assert r["Eth1/1"]["port_status"] == "secure-shutdown"              # the live-outage state surfaces
+    assert r["Eth1/1"]["enabled"] is True and r["Eth1/1"]["violation_count"] == 7
+    assert "Gi0/1" in parse.parse_port_security_detail("Port: Gi0/1\nPort Security : Enabled\n")   # IOS unchanged
+
+
+# ---------------------------------------------------------------- TEST-03 ---
+def test_parser_to_detector_contract_via_real_build(tmp_path):
+    """TEST-03: no test asserted, AS A CATEGORY, that a detector reads the REAL build/parser output shape -- the
+    hand-built dict fixtures in test_design_blueprint could drift from what build_X actually emits and silently
+    zero a detector. This runs _signals(build_X(real_text)) for switch-native axes so a parser-shape drift fails
+    fast. (vpc was the proven gap in TEST-01; fhrp_detail adds a second axis.)"""
+    from cisco_toolkit import build
+
+    def _c2f(cmd, text):
+        p = tmp_path / (cmd.replace(" ", "_") + ".txt"); p.write_text(text, encoding="utf-8"); return {cmd: str(p)}
+
+    vsnap = {"vpc": {"core1": build.build_vpc(_c2f("show vpc", _VPC_SHOW))}}
+    vsig = da._signals(vsnap)
+    assert vsig["vpc_legs"] == 3 and vsig["vpc_legs_down"] == 1          # build_vpc -> vpc signal shape agrees
+
+    standby = ("Vlan10 - Group 10 (version 2)\n  State is Active\n  Preemption disabled\n"
+               "  Priority 130 (configured 130)\n")                       # raised priority + no preempt (DETEC-03)
+    fsnap = {"fhrp_detail": {"core1": build.build_fhrp_detail(_c2f("show standby all", standby))}}
+    fsig = da._signals(fsnap)
+    assert fsig["fhrp_no_preempt"] == ["core1 Vlan10 grp 10"]            # build_fhrp_detail -> fhrp signal shape agrees

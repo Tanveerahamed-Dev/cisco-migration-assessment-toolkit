@@ -401,17 +401,21 @@ def parse_ntp_status(output: str) -> Dict[str, object]:
     return res if (res["synchronized"] is not None or res["stratum"] is not None) else {}
 
 
-def parse_port_security_detail(output: str) -> Dict[str, dict]:
+def parse_port_security_detail(output: str, default_ifname: Optional[str] = None) -> Dict[str, dict]:
     """Per-interface 'show port-security interface [<if>]' DETAIL -> {ifname: {enabled, port_status,
     violation_mode, violation_count, last_src, last_vlan}}. The summary parser (parse_port_security)
     has NO port-status column, so it cannot tell an err-disabled (Secure-shutdown) port from a healthy one.
     A shutdown-mode violation err-disables the port (Port Status -> 'Secure-shutdown'), stopping ALL traffic
     incl. authorized devices, whereas 'restrict'/'protect' keep the port up (Secure-up) and merely drop+count
     -- so only Secure-shutdown is a live outage, not a raw nonzero counter. Tolerant: {} on empty / non-detail
-    input; never raises. port_status is lower-cased canonical ('secure-shutdown', 'secure-up', 'secure-down')."""
+    input; never raises. port_status is lower-cased canonical ('secure-shutdown', 'secure-up', 'secure-down').
+    `default_ifname` keys a HEADER-LESS block: the NX-OS 'show port-security interface ethernet 1/1' form carries
+    the interface in the COMMAND, not the body (the body fields are identical to IOS), so a caller that knows the
+    interface (from the per-interface command/filename) can pass it; without it a header-less block stays {}."""
     res: Dict[str, dict] = {}
     cur: Optional[str] = None
     pend: Optional[str] = None
+    _dflt = normalize_ifname(default_ifname) if default_ifname else None
     for raw in (output or "").splitlines():
         s = raw.strip()
         if not s:
@@ -424,7 +428,7 @@ def parse_port_security_detail(output: str) -> Dict[str, dict]:
             pend = normalize_ifname(bare.group(1)); continue
         m = re.match(r"^Port\s+Security\s*[:=]\s*(\w+)", s, re.IGNORECASE)
         if m:
-            cur = pend or cur
+            cur = pend or cur or _dflt   # header-less NX-OS block keys under the caller-supplied interface
             pend = None
             if cur is None:
                 continue
