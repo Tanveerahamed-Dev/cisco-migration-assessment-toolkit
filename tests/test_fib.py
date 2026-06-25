@@ -82,10 +82,13 @@ def test_trace_computes_path_across_hosts():
     assert t["hops"][0]["match"] == "0.0.0.0/0" and t["hops"][1]["source"] == "connected"
 
 
-def test_trace_stops_coverage_honest_when_no_route():
+def test_trace_no_route_at_collected_host_is_computed_unreachable():
+    """A collected router with no matching route AND no default definitively DROPS (per its RIB) — that's a
+    COMPUTED unreachable verdict, not a lower bound. (Distinct from next_hop_not_collected, where the trail is
+    genuinely lost to incomplete collection.)"""
     snap = {"routes": {"R1": [{"prefix": "10.1.1.0/24", "next_hop": "", "source": "connected"}]}}
-    t = fib.trace_fib_path(snap, "10.1.1.5", "8.8.8.8")      # no default at R1 -> no route
-    assert t["computed"] is False and t["reached"] is False and t["status"] == "lower_bound:no_route"
+    t = fib.trace_fib_path(snap, "10.1.1.5", "8.8.8.8")      # no default at R1
+    assert t["status"] == "computed:unreachable" and t["computed"] is True and t["reached"] is False
 
 
 def test_trace_stops_when_next_hop_host_not_collected():
@@ -102,6 +105,32 @@ def test_trace_total_on_bad_input():
     assert fib.trace_fib_path(None, "1.1.1.1", "2.2.2.2")["computed"] is False
     assert fib.trace_fib_path({}, "1.1.1.1", "2.2.2.2")["status"] == "lower_bound:src_host_not_found"
     assert fib.trace_fib_path({"routes": "oops"}, "1.1.1.1", "2.2.2.2")["computed"] is False
+
+
+def test_reachability_diff_detects_newly_blocked_regression():
+    """W2-2: the pre-cutover proof. A change that removes R1's default route turns a previously-reachable flow
+    into a definitive drop -> 'newly_blocked' (a regression the what-if catches BEFORE the maintenance window)."""
+    import copy
+    before = _two_router_snap()                                    # R1 --default--> R2 reaches 10.2.2.0/24
+    after = copy.deepcopy(before)
+    after["routes"]["R1"] = [r for r in after["routes"]["R1"] if r["prefix"] != "0.0.0.0/0"]   # drop R1 default
+    pairs = [("10.1.1.5", "10.2.2.9")]
+    d = fib.reachability_diff(before, after, pairs)
+    assert d["pairs"][0]["verdict"] == "newly_blocked" and d["summary"] == {"newly_blocked": 1}
+    assert fib.reachability_diff(before, before, pairs)["summary"] == {"preserved": 1}   # unchanged -> preserved
+
+
+def test_reachability_diff_is_inconclusive_on_a_lower_bound():
+    """If either trace is a lower bound (next hop's host not collected), the verdict is 'inconclusive' — the
+    what-if must never assert preserved/broken on evidence it doesn't have."""
+    s = {"routes": {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"},
+                           {"prefix": "0.0.0.0/0", "next_hop": "172.31.99.1", "source": "static"}]}}
+    assert fib.reachability_diff(s, s, [("10.1.1.5", "8.8.8.8")])["pairs"][0]["verdict"] == "inconclusive"
+
+
+def test_reachability_diff_total_on_bad_pairs():
+    assert fib.reachability_diff({}, {}, None)["summary"] == {}
+    assert fib.reachability_diff({}, {}, [None, ("only-one",), 5])["summary"] == {}   # malformed pairs skipped
 
 
 def test_real_route_source_codes_map_correctly():

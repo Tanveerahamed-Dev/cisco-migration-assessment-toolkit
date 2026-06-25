@@ -149,7 +149,10 @@ def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32) -> dict:
         visited.add(cur)
         m = fib_lookup(fibs.get(cur, []), dst_ip)
         if not m:
-            status = "lower_bound:no_route"
+            # the COLLECTED router has no matching route and no default -> per its RIB it definitively DROPS.
+            # This is a COMPUTED unreachable (a definitive verdict about the collected evidence), distinct from
+            # the lower-bound stops below where the trail is lost to incomplete collection.
+            status = "computed:unreachable"
             break
         hops.append({"host": cur, "match": m["match"], "next_hop": str(m.get("next_hop", "") or ""),
                      "out_intf": str(m.get("out_intf", "") or ""), "source": str(m.get("source", "") or "")})
@@ -167,3 +170,39 @@ def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32) -> dict:
     else:
         status = "lower_bound:loop" if cur in visited else "lower_bound:max_hops"
     return _result(hops, status, False)
+
+
+def reachability_diff(old_snap, new_snap, pairs) -> dict:
+    """Differential what-if over two snapshots (the cisco-assess --compare flow): for each (src_ip, dst_ip) pair,
+    classify how COMPUTED forwarding reachability changed -- the pre-cutover proof that a migration preserves (or
+    breaks) reachability, which Batfish/Forward sell as their flagship and which the engine now does natively and
+    offline.
+
+    COVERAGE-HONEST: a definitive verdict requires BOTH traces to be computed end-to-end (reached, or a
+    definitive computed:unreachable). If EITHER side is a lower bound -- the trail lost to incomplete collection
+    (next_hop_not_collected / ambiguous_next_hop / loop / src_host_not_found) -- the verdict is 'inconclusive',
+    never a false 'preserved' or 'newly_blocked'. Verdicts: preserved | newly_blocked (a REGRESSION: a
+    previously-working flow now drops) | newly_reachable | both_unreachable | inconclusive.
+
+    Returns {pairs:[{src,dst,old_status,new_status,verdict}], summary:{verdict:count}}. Pure/offline; total."""
+    rows, summary = [], {}
+    for pair in (pairs or []):
+        try:
+            src, dst = pair[0], pair[1]
+        except (TypeError, IndexError, KeyError):
+            continue
+        o = trace_fib_path(old_snap, src, dst)
+        n = trace_fib_path(new_snap, src, dst)
+        if not (o["computed"] and n["computed"]):
+            v = "inconclusive"
+        elif o["reached"] and n["reached"]:
+            v = "preserved"
+        elif o["reached"] and not n["reached"]:
+            v = "newly_blocked"
+        elif not o["reached"] and n["reached"]:
+            v = "newly_reachable"
+        else:
+            v = "both_unreachable"
+        rows.append({"src": src, "dst": dst, "old_status": o["status"], "new_status": n["status"], "verdict": v})
+        summary[v] = summary.get(v, 0) + 1
+    return {"pairs": rows, "summary": summary}
