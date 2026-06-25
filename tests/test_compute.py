@@ -906,3 +906,76 @@ def test_readiness_sheet_discloses_endpoint_mac_is_per_switch_sum():
     blob = " ".join(str(c) for ws in wb.worksheets for row in ws.iter_rows(values_only=True) for c in row if c)
     assert "40 endpoint-MAC(s)" in blob          # the per-group figure is present
     assert "per-switch sum" in blob              # ...disclosed as a per-switch sum, not the distinct census
+
+
+def test_exec_brief_fleet_health_assessed_excludes_uncollected():
+    """[audit-3 #6 false-health] 'N switch(es) assessed' counted the Insufficient-Data (uncollected) rows that the
+    average excludes -> 'assessed' overclaimed coverage. It must be the scored count + disclose the uncollected."""
+    from cisco_toolkit.analyze import compute_executive_brief
+    hs = [{"switch": "a", "band": "Critical", "score": 20}, {"switch": "b", "band": "Poor", "score": 40},
+          {"switch": "c", "band": "Good", "score": 80},
+          {"switch": "d", "band": "Insufficient Data", "score": 90}, {"switch": "e", "band": "Insufficient Data", "score": 90}]
+    ax = {a["axis"]: a for a in compute_executive_brief(health_scores=hs)["axes"]}["Fleet health"]
+    assert "3 switch(es) assessed" in ax["detail"] and "5 switch(es) assessed" not in ax["detail"]
+    assert "2 not collected" in ax["detail"]
+
+
+def test_exec_brief_eol_axis_distinguishes_blind_from_verified_clean():
+    """[audit-3 #5 false-health] a fully-unknown-model (blind) fleet reported the SAME 'Low / 0%' as a verified-
+    clean fleet -- the unknowns diluted the denominator. % must be over assessable devices, blind -> Info."""
+    from cisco_toolkit.analyze import compute_lifecycle_risk, compute_executive_brief
+    blind = {a["axis"]: a for a in compute_executive_brief(
+        health_scores=[{"switch": f"CORE-{i:02d}", "band": "Insufficient Data", "score": 90} for i in range(30)],
+        lifecycle_risk=compute_lifecycle_risk({f"CORE-{i:02d}": {"model": "", "sw_version": ""} for i in range(30)}))["axes"]}["Hardware lifecycle (EoL)"]
+    clean = {a["axis"]: a for a in compute_executive_brief(
+        health_scores=[{"switch": f"ACC-{i:02d}", "band": "Good", "score": 85} for i in range(10)],
+        lifecycle_risk=compute_lifecycle_risk({f"ACC-{i:02d}": {"model": "C9300-48P", "sw_version": "17.09.04"} for i in range(10)}))["axes"]}["Hardware lifecycle (EoL)"]
+    assert blind["severity"] == "Info" and "unknown model" in blind["headline"]
+    assert not (blind["headline"] == clean["headline"] and blind["severity"] == clean["severity"])
+
+
+def test_exec_brief_multicast_querier_blind_when_no_mcast_svi():
+    """[audit-3 #12 false-health] AV multicast known present but NO multicast SVI collected -> querier coverage is
+    blind, must NOT read '0 querier gap(s) / Low' (indistinguishable from verified-clean)."""
+    from cisco_toolkit.analyze import compute_multicast_intelligence, compute_executive_brief
+    from cisco_toolkit.model import InterfaceData
+    groups = [{"group": "239.1.1.1", "name": "AV", "broadcast": True, "category": "Broadcast-AV"}]
+    mi = compute_multicast_intelligence({"multicast": {"classified_groups": groups, "igmp_queriers": [], "ptp": {}}},
+                                        {"ACC": {"Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.1")}})
+    ax = {a["axis"]: a for a in compute_executive_brief(health_scores=[{"band": "Good", "score": 85}],
+                                                        multicast_intelligence=mi)["axes"]}["Multicast / timing"]
+    assert ax["severity"] == "Info" and "not assessable" in ax["headline"]
+
+
+def test_stp_accidental_root_flagged_when_ext_id_disabled():
+    """[audit-3 #14 false-health] a bare default-priority 32768 root (ext-id OFF, legacy IOS) was missed; the
+    detector hard-assumed 32768 + sys-id-ext(vlan)."""
+    from cisco_toolkit.parse import parse_spanning_tree_root
+    from cisco_toolkit import analyze
+    legacy = ("VLAN0010\n  Spanning tree enabled protocol ieee\n  Root ID    Priority    32768\n"
+              "             Address     0019.0011.2233\n             This bridge is the root\n"
+              "  Bridge ID  Priority    32768\n             Address     0019.0011.2233\n")
+    f = analyze.stp_root_findings({"core": parse_spanning_tree_root(legacy)}, {"core": {}})
+    assert any(a["vlan"] == "10" for a in f["accidental"])             # bare-32768 now flagged
+    eng = ("VLAN0010\n  Root ID    Priority    4106\n             Address     0019.0011.2233\n"
+           "             This bridge is the root\n  Bridge ID  Priority    4106\n")
+    f2 = analyze.stp_root_findings({"core": parse_spanning_tree_root(eng)}, {"core": {}})
+    assert not f2["accidental"]                                        # engineered 4096+10 -> NOT accidental
+
+
+def test_failure_impact_off_scan_gateway_is_indeterminate_not_no_impact():
+    """[audit-3 #7 false-health] a transit SPOF whose VLAN gateway is on an UNCOLLECTED device was skipped and the
+    switch reported 'No reachability impact' -- a clean bill. It must disclose the off-scan-gateway coverage gap."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_failure_impact
+    def trunk(p, nb, npt, v="10"):
+        return InterfaceData(port=p, cdp_neighbor=nb, neighbor_port=npt, endpoint_type="Switch", trunk_allowed_vlans=v)
+    def ep(p, vl, mac):
+        return InterfaceData(port=p, switchport_mode="Access", vlan=vl, end_host_mac=mac)
+    # GW (gateway) UNCOLLECTED: DIST is the sole transit path for VLAN 10 endpoints on ACC
+    ai = {"DIST": {"Gi0/1": trunk("Gi0/1", "GW", "Gi1/1"), "Gi0/2": trunk("Gi0/2", "ACC", "Gi0/24")},
+          "ACC": {"Gi0/24": trunk("Gi0/24", "DIST", "Gi0/2"), "Gi0/1": ep("Gi0/1", "10", "aaaa.0000.0001"),
+                  "Gi0/2": ep("Gi0/2", "10", "bbbb.0000.0002")}}
+    dist = [r for r in compute_failure_impact(ai) if r["host"] == "DIST"][0]
+    assert dist["off_scan_gw_vlans"] >= 1
+    assert "No reachability impact" not in dist["detail"] and "INDETERMINATE" in dist["detail"]

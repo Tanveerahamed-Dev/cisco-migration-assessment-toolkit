@@ -160,3 +160,20 @@ def test_device_risk_sheet_writer():
     wb2 = openpyxl.Workbook()
     write_device_risk_sheet(wb2, {})
     assert "nothing to register" in str(wb2[DEVICE_RISK_SHEET_NAME].cell(5, 1).value)
+
+
+def test_dossier_critical_health_not_routine_on_info_blast_radius():
+    """[audit-3 #11 false-health] a Critical-health / multi-red-axis switch banded 'Low / No stacked risk —
+    routine' whenever its modeled blast radius was Info (impact=1 collapsed risk_index). Floor by red-axis count."""
+    from cisco_toolkit.analyze import compute_device_dossiers
+    fi = [{"host": "edge9", "severity": "Info", "stranded": 0, "vlans_impacted": 0, "detail": "No reachability impact."}]
+    dA = compute_device_dossiers(health_scores=[{"switch": "edge9", "band": "Critical", "score": 12, "role": "access"}],
+                                 failure_impact=fi)["per_device"][0]
+    assert dA["risk_band"] != "Low" and "routine" not in dA["verdict"].lower()       # Critical health -> not routine
+    dB = compute_device_dossiers(
+        health_scores=[{"switch": "edge9", "band": "Good", "score": 80, "role": "access"}], failure_impact=fi,
+        lifecycle_risk={"per_device": [{"host": "edge9", "model": "WS-C3560", "band": "Past-LDoS"}]},
+        software_risk={"per_device": [{"host": "edge9", "train_band": "Replace/Upgrade", "config_assessable": True}],
+                       "findings": [{"host": "edge9", "severity": "High"}]},
+        security={"edge9": {"findings": [{"status": "fail", "severity": "high"}]}})["per_device"][0]
+    assert dB["risk_band"] in ("Elevated", "Severe") and "routine" not in dB["verdict"].lower()   # 3 red axes

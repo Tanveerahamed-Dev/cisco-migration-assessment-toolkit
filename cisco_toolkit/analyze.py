@@ -673,10 +673,20 @@ def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
     for host in model["hosts"]:
         per_vlan: List[Tuple[int, str, int]] = []   # (vid, status, stranded)
         worst = 99; total_stranded = 0; hard = backup = fhrp = 0
+        off_scan_gw_vlans = 0    # VLANs this host carries/transits whose GATEWAY is off-scan -> impact INDETERMINATE
 
         for vid in sorted(model["vlans"]):
             gw_hosts = [g["host"] for g in model["gw"].get(vid, [])]
             if not gw_hosts:
+                # no in-scan gateway. If this host nonetheless carries OR transits endpoints in the VLAN, removing
+                # it could strand them -- we just can't simulate it (the gateway device was not collected). Record
+                # it as a coverage gap so the roll-up never reports "no impact" by silence: a transit SPOF whose
+                # gateway is off-scan is INDETERMINATE, not benign (audit-3 #7 transit-SPOF false-health).
+                _eph = {h for (h, v), n in model["endpoints"].items() if v == vid and n > 0}
+                _eph |= model["access_presence"].get(vid, set())
+                if _eph and ((host in _eph) or any(
+                        host in (l["a"], l["b"]) and _link_carries(l, vid) for l in model["links"])):
+                    off_scan_gw_vlans += 1
                 continue  # no in-scan gateway -> "stranded from gateway" is N/A (see Findings)
             ep_hosts = {h for (h, v), n in model["endpoints"].items() if v == vid and n > 0}
             ep_hosts |= model["access_presence"].get(vid, set())
@@ -724,7 +734,12 @@ def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
 
         if not per_vlan:
             sev = "Info"
-            detail = "No reachability impact from removing this switch (within the scan)."
+            if off_scan_gw_vlans:
+                detail = (f"Blast radius INDETERMINATE — {off_scan_gw_vlans} VLAN(s) on this switch have an "
+                          "off-scan gateway (gateway device not collected); removal impact not assessable — "
+                          "this is a coverage gap, not a clean bill.")
+            else:
+                detail = "No reachability impact from removing this switch (within the scan)."
         else:
             sev = {0: "High", 1: "Medium", 2: "Low"}.get(worst, "Info")
             order = {"Hard partition": 0, "Backup-covered": 1, "FHRP-covered": 2}
@@ -736,7 +751,7 @@ def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
 
         results.append({"host": host, "severity": sev, "vlans_impacted": len(per_vlan),
                         "stranded": total_stranded, "hard": hard, "backup": backup,
-                        "fhrp": fhrp, "detail": detail})
+                        "fhrp": fhrp, "off_scan_gw_vlans": off_scan_gw_vlans, "detail": detail})
 
     sev_rank = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
     results.sort(key=lambda r: (sev_rank.get(r["severity"], 9), -r["stranded"],
@@ -1841,6 +1856,7 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
 
     summary = {"n_groups": len(groups), "n_av_groups": sum(1 for g in groups if g["on_air"]),
                "n_mac_clashes": len(mac_aliases), "n_querier_gaps": len(gap_vlans),
+               "n_mcast_vlans": len(mcast_vlans),   # collected multicast SVIs -> 0 = querier coverage NOT assessable
                "n_active_switches": mc.get("active_switch_count", 0),
                "n_active_interfaces": mc.get("active_interfaces", 0),
                "n_ptp_clocks": len(ptp), "n_ptp_dormant": len(dormant)}
@@ -2440,7 +2456,11 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
         if rec.get("is_mst"):
             continue
         prio = rec.get("root_priority")
-        if isinstance(prio, int) and prio == 32768 + int(vlan):
+        # default bridge priority won on a MAC tiebreak. With extended-system-id ON (the common case) the field
+        # reads 32768 + sys-id-ext(=vlan); with 'no spanning-tree extend system-id' (legacy IOS) it reads a BARE
+        # 32768 -- accept BOTH, else a legacy ext-id-off accidental root is silently missed (audit-3 #14). A real
+        # PVST vlan>=1 with ext-id ON never lands on exactly 32768, so the bare-32768 arm adds no false positive.
+        if isinstance(prio, int) and prio in (32768, 32768 + int(vlan)):
             accidental.append({"vlan": vlan, "host": host, "priority": prio})
         gws = gw_of.get(vlan)
         if gws and host not in gws:
@@ -5096,16 +5116,24 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
             sev_pl[it["severity"]] += 1
     not_ready = sum(1 for r in mr if r.get("readiness") == "NOT READY")
     lc_tot = lc.get("n_devices", 0)                               # EoL rollup -- shared by the axis + the posture flag
+    lc_unknown = lc.get("n_unknown", 0)                           # devices whose model couldn't be identified (uncollected/unknown PID)
+    lc_known = lc_tot - lc_unknown                                # only KNOWN-model devices are EoL-assessable
     lc_pe = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)        # past-LDoS + near-LDoS = "past/near end-of-support"
-    lc_pct = round(100 * lc_pe / lc_tot) if lc_tot else 0
+    lc_pct = round(100 * lc_pe / lc_known) if lc_known else 0     # % over ASSESSABLE devices, not diluted by unknowns (audit-3 #5)
 
     axes: List[dict] = []
 
     def ax(axis, severity, headline, detail=""):
         axes.append({"axis": axis, "severity": severity, "headline": headline, "detail": detail})
 
+    # 'assessed' is a COVERAGE claim -> count only the genuinely-scored rows (the same set the average is over),
+    # and disclose the never-reached devices. Counting all n (incl. the 'Insufficient Data' uncollected rows) as
+    # assessed beside an average that excludes them was a false coverage claim (audit-3 #6).
+    _n_scored = len(_scored)
+    _n_insuff = bands.get("Insufficient Data", 0)
     ax("Fleet health", "Critical" if n_crit else "High" if n_poor else "Low",
-       f"{avg}/100 avg · {n_crit} Critical, {n_poor} Poor band", f"{n} switch(es) assessed.")
+       f"{avg}/100 avg · {n_crit} Critical, {n_poor} Poor band",
+       f"{_n_scored} switch(es) assessed" + (f"; {_n_insuff} not collected (no evidence)." if _n_insuff else "."))
     ax("Migration punch-list",
        "Critical" if sev_pl["Critical"] else "High" if sev_pl["High"] else "Medium" if pl else "Low",
        f"{len(pl)} item(s) · {sev_pl['Critical']} Critical, {sev_pl['High']} High",
@@ -5120,9 +5148,12 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            "Recommended lowest-risk-first order.")
     if lc.get("n_devices"):
         ax("Hardware lifecycle (EoL)",
-           "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near") else "Low",
+           # 0 known-model devices -> NOT assessable (Info), never 'Low / 0%' by silence: a fleet whose hardware-
+           # critical core is uncollected must not read identically to a verified-clean one (audit-3 #5).
+           "Critical" if lc.get("n_past_ldos") else "High" if lc.get("n_near") else "Info" if not lc_known else "Low",
            f"{lc.get('n_past_ldos', 0)} past end-of-support, {lc.get('n_near', 0)} within 1yr "
-           f"({lc_pct}%)",
+           f"({lc_pct}% of {lc_known} assessable)"
+           + (f" · {lc_unknown} unknown model(s) not assessed" if lc_unknown else ""),
            f"Reference dates from the offline KB; bands are time-relative, computed as-of "
            f"{lc.get('asof') or 'the analysis date'} (they shift as time passes), and an LDoS absent from "
            f"the KB is derived as end-of-sale + 5yr — re-verify on Cisco's EoX portal before acting.")
@@ -5132,11 +5163,18 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            + f"{seg.get('n_oncrit_exposed', 0)} on-air-critical domain(s) not isolated · gateway-ACL "
            f"{seg.get('gateway_acl_coverage', 0)}%", "Current L3 isolation posture.")
     if mi.get("n_groups"):
+        # querier coverage is BLIND when on-air AV multicast is known present yet NO multicast SVI was collected
+        # (the gap signal derives from collected SVIs only) -> report Info / not-assessable, never '0 gaps / Low'
+        # by silence -- so a blind media core doesn't read like a verified-clean one (audit-3 #12).
+        _q_blind = mi.get("n_av_groups", 0) > 0 and not mi.get("n_mcast_vlans", 0)
         ax("Multicast / timing",
            "High" if mi.get("n_mac_clashes") or mi.get("n_querier_gaps")
-           else "Medium" if mi.get("n_ptp_dormant") else "Low",
+           else "Medium" if mi.get("n_ptp_dormant")
+           else "Info" if _q_blind else "Low",
            f"{mi.get('n_mac_clashes', 0)} MAC clash(es) · {mi.get('n_ptp_dormant', 0)}/"
-           f"{mi.get('n_ptp_clocks', 0)} PTP dormant · {mi.get('n_querier_gaps', 0)} querier gap(s)",
+           f"{mi.get('n_ptp_clocks', 0)} PTP dormant · "
+           + ("querier coverage not assessable (no multicast SVI collected)" if _q_blind
+              else f"{mi.get('n_querier_gaps', 0)} querier gap(s)"),
            f"{mi.get('n_av_groups', 0)} broadcast/AV group(s).")
     if rem.get("n_items"):
         ax("Remediation", "Info",
@@ -5559,6 +5597,16 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif "High" in comp_sevs and risk_band in ("Guarded", "Low"):
             risk_band = "Elevated"
 
+        # exposure-only floor: a device with independent RED axes is materially risky even when its MODELED blast
+        # radius is Info -- which on a partially-collected estate usually means its gateway/core was UNcollected
+        # (impact forced to the floor at 1, capping risk_index at <=10 = Guarded), NOT that it is safe to lose. So
+        # floor the band by the red-axis count, and never let a Critical-health box read 'Low / routine': a switch
+        # the health scorer flagged Critical is, at minimum, a watch item in the risk register (audit-3 #11).
+        if n_risk >= 3 and risk_band in ("Low", "Guarded"):
+            risk_band = "Elevated"
+        elif (n_risk >= 2 or state.get("Health") == "risk") and risk_band == "Low":
+            risk_band = "Guarded"
+
         # coverage-honesty: a device with NO collected evidence (no health score -> 'Insufficient
         # Data' band, every risk axis n/a, no risk/watch signal) is NOT low-risk — it is UNASSESSED.
         # Banding it "Low / no stacked risk" would read a collection GAP as a clean bill of health
@@ -5583,6 +5631,11 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif risk_band == "Guarded":
             verdict = ("Watch items only — " + "; ".join(watch_labels or red_labels or ["minor findings"])
                        + ".")
+        elif n_risk:
+            # Low compound risk but a red axis IS present -> not 'routine'. (The band floor above already lifts
+            # Critical-health / 2+-axis devices; this covers a lone non-health red axis on an Info-impact box.)
+            verdict = ("Single red axis, no compounding — " + "; ".join(red_labels)
+                       + f"; {impact_phrase}. Address on its own merits, not as routine.")
         else:
             verdict = "No stacked risk — routine migration handling."
 

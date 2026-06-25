@@ -1693,6 +1693,7 @@
    "n_av_groups": 0,
    "n_mac_clashes": 0,
    "n_querier_gaps": 0,
+   "n_mcast_vlans": 0,
    "n_active_switches": 0,
    "n_active_interfaces": 0,
    "n_ptp_clocks": 0,
@@ -5623,6 +5624,7 @@
    "hard": 2,
    "backup": 0,
    "fhrp": 0,
+   "off_scan_gw_vlans": 0,
    "detail": "VLAN 10: Hard partition (2 ep); VLAN 30: Hard partition (1 ep)"
   },
   {
@@ -5633,6 +5635,7 @@
    "hard": 0,
    "backup": 0,
    "fhrp": 1,
+   "off_scan_gw_vlans": 0,
    "detail": "VLAN 10: FHRP-covered"
   },
   {
@@ -5643,6 +5646,7 @@
    "hard": 0,
    "backup": 0,
    "fhrp": 0,
+   "off_scan_gw_vlans": 0,
    "detail": "No reachability impact from removing this switch (within the scan)."
   }
  ],
