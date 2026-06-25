@@ -78,3 +78,19 @@ def test_campaign_workbook_sheets(tmp_path):
     assert tl.cell(1, 1).value == "Collection" and tl.max_row == 4    # header + 3 collections
     bd = wb["Burndown"]
     assert bd.cell(1, 1).value == "Step" and bd.max_row == 3          # header + 2 steps
+
+
+def test_campaign_trend_not_improving_when_a_device_goes_dark():
+    """[audit-2 #4] a device present then ABSENT across the campaign (gone dark) makes a rising avg-health
+    survivorship-biased; the verdict must NOT read IMPROVING -- it downgrades to MIXED and discloses the dark
+    device (else a failed / decommissioned-without-record device silently reads as improvement)."""
+    from cisco_toolkit.html import compute_campaign_trend
+    def snap(devs, scores):
+        return {"devices": {d: {} for d in devs}, "interfaces": {d: {} for d in devs},
+                "health_scores": [{"switch": s, "band": b, "score": sc} for s, b, sc in scores],
+                "punchlist": [], "executive_brief": {"scale": {"n_devices": len(devs)}}}
+    old = snap(["core1", "core2", "acc1"], [("core1", "Good", 90), ("core2", "Good", 88), ("acc1", "Fair", 70)])
+    new = snap(["core1", "acc1"], [("core1", "Good", 90), ("acc1", "Good", 80)])   # core2 went dark
+    t = compute_campaign_trend([old, new])
+    assert t["verdict"] != "IMPROVING"
+    assert "dark" in t["verdict_note"].lower()

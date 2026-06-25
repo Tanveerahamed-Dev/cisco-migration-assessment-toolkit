@@ -809,3 +809,14 @@ def test_inscope_subnets_handles_nxos_slash_form_svi():
         return {"sw": {"Vlan20": InterfaceData(port="Vlan20", svi_ip=addr)}}
     assert "10.1.20.0/24" in inscope_subnets(one("10.1.20.1 255.255.255.0"))   # IOS space form (regression)
     assert "10.1.20.0/24" in inscope_subnets(one("10.1.20.1/24"))              # NX-OS slash form (the fix)
+
+
+def test_endpoint_2110_token_anchored_to_smpte_standard():
+    """[audit-2 #2] the bare '2110' token matched ANY substring (room/rack/asset numbers 'RM2110','AP-2110'),
+    misclassifying ordinary endpoints as Broadcast A/V at the first-match break. It must match only the
+    SMPTE ST-2110 standard forms."""
+    from cisco_toolkit.analyze import _classify_endpoint
+    for desc in ("Dell-PC RM2110", "HP Printer Rm2110", "Avaya VoIP phone rm2110", "AP-2110-ceiling", "Desk-2110"):
+        assert _classify_endpoint("", desc, "", "", False)[0] != "Broadcast A/V", desc
+    for desc in ("ST-2110 encoder", "SMPTE 2110 gateway", "2110-20 video flow"):
+        assert _classify_endpoint("", desc, "", "", False)[0] == "Broadcast A/V", desc

@@ -1381,15 +1381,22 @@ def _decision(pid, summary, count, axes, fields, priority=None, status="recommen
 
 # ----------------------------------------------------------------------------- detectors (evidence-gated)
 def _d_fhrp(snap, sig):
-    if sig["no_fhrp"] <= 0:
+    # single-gateway SPOFs (one gateway) and no-FHRP multi-gateway VLANs (redundant gateways, no VIP failover) are
+    # DISJOINT populations -- a single-gateway VLAN has no FHRP entry to flag. Report them SEPARATELY and TOTAL
+    # them; never imply one is a subset of the other, and fire on EITHER kind so a single-gateway-only fleet is not
+    # silently read healthy (audit-2 #12/#13/#16 -- corrects the earlier subset-conflation).
+    no_fhrp, single = sig["no_fhrp"], sig.get("single_gw", 0)
+    if no_fhrp <= 0 and single <= 0:
         return None
+    parts = []
+    if single:
+        parts.append(f"{single} single-gateway VLAN(s) (one gateway -- a per-VLAN single point of failure)")
+    if no_fhrp:
+        parts.append(f"{no_fhrp} multi-gateway VLAN(s) without FHRP (no HSRP/VRRP/GLBP -- no automatic VIP failover)")
     return _decision(
         "fhrp-first-hop-gateway-redundancy",
-        f"{sig['no_fhrp']} gateway VLAN(s) have no first-hop redundancy (no HSRP/VRRP/GLBP)"
-        + (f"; {sig['single_gw']} of these are single-homed (one gateway) -- a per-VLAN single point of failure, "
-           "the rest have redundant gateways but no automatic VIP failover."
-           if sig.get("single_gw") else " -- redundant gateways present but no automatic VIP failover."),
-        sig["no_fhrp"], ["availability", "convergence"],
+        f"{no_fhrp + single} gateway VLAN(s) lack full first-hop redundancy: " + "; ".join(parts) + ".",
+        no_fhrp + single, ["availability", "convergence"],
         ["fhrp[].issues", "l3_forwarding[].fhrp", "failure_impact[].fhrp"],
         priority="Critical", driver="Gateway resilience: a VLAN must survive loss of its distribution switch.",
         devices=sig["no_fhrp_devices"])
@@ -3341,16 +3348,18 @@ def _scorecard(snap, sig):
     # (not-observed != healthy -- the false-health class). (multi-domain audit #8)
     coverage_gap = bool(sig.get("not_collected"))
     cov_note = (f" [{sig['not_collected']} device(s) NOT collected -- not fully assessed]" if coverage_gap else "")
-    # availability
-    av = 4 - (2 if sig["no_fhrp"] else 0) - (1 if sig["bridges"] else 0) - (1 if sig["nobackup_high"] else 0)
+    # availability -- penalise on EITHER a single-gateway SPOF or a no-FHRP multi-gateway VLAN (disjoint gateway-
+    # resilience gaps); a single-gateway-only fleet must not score 'Strong' (audit-2 #13).
+    _gw_gap = bool(sig["no_fhrp"] or sig.get("single_gw"))
+    av = 4 - (2 if _gw_gap else 0) - (1 if sig["bridges"] else 0) - (1 if sig["nobackup_high"] else 0)
     if coverage_gap:
         av = min(av, 2)                  # absence of observed SPOFs cannot certify 'Strong' on a partial estate
     out.append(_axis_entry("availability", _clamp(av),
                "Weak" if av <= 1 else ("Moderate" if av <= 2 else "Strong"),
-               f"{sig['no_fhrp']} no-FHRP VLAN(s); {sig['bridges']} cut-edge link(s); "
-               f"{sig['nobackup_high']} node(s) with no backup path." + cov_note))
+               f"{sig.get('single_gw', 0)} single-gateway SPOF VLAN(s); {sig['no_fhrp']} no-FHRP VLAN(s); "
+               f"{sig['bridges']} cut-edge link(s); {sig['nobackup_high']} node(s) with no backup path." + cov_note))
     # convergence
-    cv = 4 - (1 if sig["no_fhrp"] else 0) - (1 if sig["stp_blocked"] else 0) - (1 if sig["eol"] else 0)
+    cv = 4 - (1 if _gw_gap else 0) - (1 if sig["stp_blocked"] else 0) - (1 if sig["eol"] else 0)
     out.append(_axis_entry("convergence", _clamp(cv), "Weak" if cv <= 1 else "Moderate",
                "First-hop, STP and platform age all bound failover time."))
     # scalability
@@ -4097,12 +4106,14 @@ def compute_target_state(snap, requirements=None, sig=None):
             "Recommended", drivers=["dc-bound-layer2-failure-domain", "dc-restrict-vlan-span-routed-access",
                                     "dc-fabric-vxlan-evpn-control-plane"]))
 
-    # 3. Gateway / first-hop resilience -- strong evidence
-    if sig["no_fhrp"]:
+    # 3. Gateway / first-hop resilience -- strong evidence. Fire on EITHER a single-gateway SPOF or a no-FHRP
+    # multi-gateway VLAN (disjoint populations) so a single-gateway-only fleet is not silently dropped (audit-2 #13).
+    if sig["no_fhrp"] or sig.get("single_gw"):
         dims.append(_ts_dim(
             "Gateway / first-hop resilience",
-            f"{sig['no_fhrp']} gateway VLAN(s) without FHRP ({sig.get('single_gw', 0)} single-homed, the rest "
-            "multi-gateway but no VIP failover).",
+            f"{sig.get('single_gw', 0)} single-gateway VLAN(s) (per-VLAN SPOF) + {sig['no_fhrp']} multi-gateway "
+            f"VLAN(s) without FHRP (no VIP failover) = {sig['no_fhrp'] + sig.get('single_gw', 0)} gateway VLAN(s) "
+            "lacking full first-hop redundancy.",
             "Provide first-hop redundancy: in a classic distribution, dual gateways with FHRP (HSRP/VRRP) and "
             "the STP root co-located with the active gateway; in the target VXLAN-EVPN fabric, a DISTRIBUTED "
             "ANYCAST GATEWAY -- the same gateway IP/MAC on every leaf, so first-hop routing is local at the "

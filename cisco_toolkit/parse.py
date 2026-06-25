@@ -3074,10 +3074,18 @@ def parse_security(output: str) -> dict:
 
     snmp_comm: List[dict] = []
     for ln in low:
-        m = re.match(r"^snmp-server community\s+(\S+)(?:\s+(ro|rw))?", ln)
-        if m:
-            snmp_comm.append({"access": m.group(2) or "ro",
-                              "default": m.group(1) in ("public", "private")})
+        m = re.match(r"^snmp-server community\s+(\S+)\b", ln)
+        if not m:
+            continue
+        rest = ln[m.end():]
+        # NX-OS form 'community <name> group <role>' (network-admin/vdc-admin = read-WRITE); IOS form
+        # 'community <name> [view <name>] ro|rw' -- the bare '(ro|rw)?' missed BOTH (audit-2 #10/#11).
+        mg = re.search(r"\bgroup\s+(\S+)", rest)
+        if mg:
+            access = "rw" if mg.group(1).lower() in ("network-admin", "vdc-admin") else "ro"
+        else:
+            access = "rw" if re.search(r"\brw\b", rest) else "ro"
+        snmp_comm.append({"access": access, "default": m.group(1) in ("public", "private")})
 
     risky: List[str] = []
     if has(r"^ip http server\b") and not has(r"^no ip http server\b"):
@@ -3109,9 +3117,11 @@ def parse_security(output: str) -> dict:
                 cur["transport"] = s.replace("transport input", "").strip()
             elif s.startswith("access-class"):
                 cur["access_class"] = True
-            elif re.match(r"^exec-timeout\s+0\s+0\b", s):
-                cur["timeout0"] = True
-    telnet = any("telnet" in b["transport"] or b["transport"] == "all" for b in vty)
+            elif re.match(r"^exec-timeout\s+0(\s+0)?\s*$", s):   # IOS 'exec-timeout 0 0' OR NX-OS single-arg
+                cur["timeout0"] = True                            # 'exec-timeout 0' -- both never time out (#9)
+    # NX-OS enables the telnet SERVER with a global 'feature telnet' (not a 'transport input' under line vty) (#8).
+    telnet_feature = has(r"^feature telnet\b") and not has(r"^no feature telnet\b")
+    telnet = telnet_feature or any("telnet" in b["transport"] or b["transport"] == "all" for b in vty)
     vty_weak = any((not b["access_class"]) or b["timeout0"] for b in vty)
 
     findings: List[dict] = []
@@ -3174,15 +3184,16 @@ def parse_security(output: str) -> dict:
     else:
         add("insecure-snmp", "na", "no SNMP configured.")
 
-    if not vty:
+    if not vty and not telnet_feature:
         add("telnet-enabled", "na", "no VTY lines in this config.")
         add("vty-hardening", "na", "no VTY lines in this config.")
     else:
         add("telnet-enabled", "fail" if telnet else "pass",
-            "a VTY line permits telnet (cleartext management)." if telnet
+            ("the telnet server is enabled ('feature telnet') -- cleartext management." if telnet_feature
+             else "a VTY line permits telnet (cleartext management).") if telnet
             else "VTY transport restricted to SSH.")
         add("vty-hardening", "fail" if vty_weak else "pass",
-            "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0)."
+            "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0)."
             if vty_weak else "VTY lines carry an access-class and a non-zero exec-timeout.")
 
     if risky:

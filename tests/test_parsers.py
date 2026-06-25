@@ -2058,3 +2058,22 @@ def test_parse_sdwan_devices_extracts_status_and_state(cp):
                       "status": "error", "state": "red", "device-model": "vedge-cloud", "version": "20.9"}]}
     rows = parse.parse_sdwan_devices(json.dumps(real))
     assert rows[0]["status"] == "error" and rows[0]["state"] == "red" and rows[0]["reachability"] == "reachable"
+
+
+def test_parse_security_nxos_telnet_exec_timeout_snmp(cp):
+    """[audit-2 #8/#9/#10/#11] NX-OS hardening config must not falsely PASS: 'feature telnet' enables the telnet
+    server; 'exec-timeout 0' (single arg) never times out; SNMP 'group network-admin' is read-WRITE; an IOS
+    'community X view V rw' is read-write. All four read as secure before the fix (false-health)."""
+    def fnd(cfg):
+        return {x["id"]: x for x in parse.parse_security(cfg)["findings"]}
+    # #8 NX-OS 'feature telnet' -> telnet server enabled (FAIL), even with a hardened vty block
+    assert fnd("feature telnet\nline vty\n  exec-timeout 30\n  access-class MGMT in\n")["telnet-enabled"]["status"] == "fail"
+    # #9 NX-OS single-arg 'exec-timeout 0' -> never times out (FAIL); a real non-zero timeout still PASSES
+    assert fnd("line vty\n  access-class MGMT in\n  exec-timeout 0\n")["vty-hardening"]["status"] == "fail"
+    assert fnd("line vty\n  access-class MGMT in\n  exec-timeout 0 30\n")["vty-hardening"]["status"] == "pass"
+    # #10 NX-OS 'group network-admin' = read-write -> High
+    assert fnd("snmp-server community NETMON group network-admin\n")["insecure-snmp"]["severity"] == "high"
+    # #11 IOS 'community X view V rw' = read-write -> High (was misread ro/medium)
+    assert fnd("snmp-server community SECRET view CUTDOWN rw\n")["insecure-snmp"]["severity"] == "high"
+    # regression guard: a genuine read-only community stays medium
+    assert fnd("snmp-server community MONITOR RO\n")["insecure-snmp"]["severity"] == "medium"
