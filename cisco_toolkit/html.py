@@ -431,6 +431,13 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
                                "delta": round(delta, 1), "direction": direction})
         better = sum(1 for r in trajectory if r["direction"] == "improving")
         worse = sum(1 for r in trajectory if r["direction"] == "worsening")
+        # Devices that went DARK across the campaign (present in an earlier collection, absent later). A rising
+        # avg-health is partly SURVIVORSHIP when an unhealthy device drops out of the average, so a campaign that
+        # lost devices cannot read a clean IMPROVING without disclosing them (audit-2 #4 false-health).
+        gone: set = set()
+        for i in range(len(snaps) - 1):
+            gone |= set(snaps[i].get("devices") or {}) - set(snaps[i + 1].get("devices") or {})
+        n_gone = len(gone)
         if trajectory:                                    # comparable metrics exist -> a real verdict
             if better == 0 and worse == 0:
                 verdict = "FLAT"
@@ -440,11 +447,16 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
                 verdict = "REGRESSING"
             else:
                 verdict = "MIXED"
+            if n_gone and verdict in ("IMPROVING", "FLAT"):
+                verdict = "MIXED"                         # devices went dark -> not a clean improvement
         hr = next((r for r in trajectory if r["metric"].startswith("Avg health")), None)
         cr = next((r for r in trajectory if r["metric"].startswith("Critical/High")), None)
         note = (f"Across {len(timeline)} collections: {better} metric(s) improving, {worse} worsening. "
                 + (f"Avg health {hr['first']}→{hr['last']}. " if hr else "")
-                + (f"Critical/High findings {cr['first']}→{cr['last']}." if cr else "")).strip()
+                + (f"Critical/High findings {cr['first']}→{cr['last']}. " if cr else "")
+                + (f"{n_gone} device(s) went DARK (present then absent) -- the health trajectory may be "
+                   "survivorship-biased; confirm these are planned decommissions, not failures." if n_gone else "")
+                ).strip()
 
     return {"timeline": timeline, "steps": steps, "trajectory": trajectory,
             "verdict": verdict, "verdict_note": note}

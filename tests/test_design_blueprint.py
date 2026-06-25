@@ -2346,3 +2346,24 @@ def test_single_gateway_spof_reconciles_to_l3_forwarding_evidence():
     summary = str(da._d_fhrp(snap, sig))
     assert "each is a per-VLAN single point of failure" not in summary   # the OLD false 'all no-FHRP = SPOF' claim
     assert "1" in summary                                        # the reconciled single-homed count is surfaced
+
+
+def test_gateway_resilience_single_gw_and_no_fhrp_are_disjoint_populations():
+    """[audit-2 #16/#12/#13] single-gateway SPOFs and no-FHRP multi-gateway VLANs are DISJOINT (a single-gateway
+    VLAN has no FHRP entry). The blueprint must total them (74 on [HISTORY-REDACTED]), NOT claim 22 is a subset of 52; and the
+    detector + availability penalty must fire on EITHER kind (a single-gateway-only fleet must not read healthy)."""
+    import cisco_toolkit.design_advisor as da
+    snap = {"fhrp": [{"vid": 10, "issues": ["no fhrp"]}, {"vid": 11, "issues": ["no fhrp"]}],
+            "l3_forwarding": [{"vlan": v, "svi_ip": f"10.0.{v}.1/24", "switch": "A", "risk": "single-gateway"}
+                              for v in (20, 21, 22)]}
+    sig = da._signals(snap)
+    assert sig["no_fhrp"] == 2 and sig["single_gw"] == 3
+    summary = str(da._d_fhrp(snap, sig))
+    assert "5" in summary and "of these" not in summary and "of which" not in summary   # total, not a subset claim
+    # #13: a single-gateway-only fleet (no_fhrp==0, single_gw>0) must STILL fire the finding + dent availability
+    only_single = {"l3_forwarding": [{"vlan": 9, "svi_ip": "10.0.9.1/24", "switch": "A", "risk": "single-gateway"}]}
+    sig2 = da._signals(only_single)
+    assert sig2["no_fhrp"] == 0 and sig2["single_gw"] == 1
+    assert da._d_fhrp(only_single, sig2) is not None
+    av = {e["axis"]: e for e in da._scorecard(only_single, sig2)}["availability"]
+    assert av["posture"] != "Strong" or av["score"] < 4

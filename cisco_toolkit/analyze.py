@@ -2139,7 +2139,8 @@ def _find_gateways_for(all_interfaces: Dict[str, Dict[str, InterfaceData]], ip: 
             if match:
                 res.append({"host": host, "vid": svid, "svi_ip": d.svi_ip,
                             "fhrp": d.hsrp_behavior, "source": d.routing_source,
-                            "next_hop": d.route_next_hop, "prefix": d.subnet_primary_route})
+                            "next_hop": d.route_next_hop, "prefix": d.subnet_primary_route,
+                            "vrf": getattr(d, "vrf", "") or ""})    # carried so inter-VLAN can honour VRF isolation
     return res
 
 def _bfs_forwarding_path(model: Dict[str, object], vid, src_host: str, dst_host: str):
@@ -2260,8 +2261,22 @@ def trace_full_flow(src_ip: str, dst_ip: str,
             _add("L3", reachable_src_gw["host"], reachable_src_gw["host"],
                  f"Vlan{src_vid}", det, spof=gw_spof)
             # routing decision toward dst subnet
-            same_router = bool(dst_gws and any(g["host"] == reachable_src_gw["host"] for g in dst_gws))
-            if same_router:
+            same_router_dst_gw = next((g for g in (dst_gws or [])
+                                       if g["host"] == reachable_src_gw["host"]), None)
+            same_router = bool(same_router_dst_gw)
+            src_vrf = (reachable_src_gw.get("vrf") or "").strip().lower()
+            dst_vrf = (same_router_dst_gw.get("vrf") or "").strip().lower() if same_router_dst_gw else ""
+            if same_router and src_vrf != dst_vrf and (src_vrf or dst_vrf):
+                # Both SVIs on the same router but in DIFFERENT VRFs and no route leak is observed -> inter-VLAN
+                # traffic does NOT cross the VRF boundary; the flow is L3-isolated. This is a definitive block per
+                # the collected VRF assignment, NOT 'routed locally' -- the old verdict was a false-health
+                # over-claim from data the engine itself collected (audit-2 #1).
+                partitioned = True
+                _add("L3", reachable_src_gw["host"], reachable_src_gw["host"], "",
+                     f"BLOCKED at VRF boundary: VLAN {src_vid} SVI in VRF '{src_vrf or 'default'}', VLAN {dst_vid} "
+                     f"SVI in VRF '{dst_vrf or 'default'}' -- inter-VLAN routing does not cross VRFs "
+                     "(no route leak observed in the collected config)", spof=False)
+            elif same_router:
                 _add("L3", reachable_src_gw["host"], reachable_src_gw["host"], "",
                      f"inter-VLAN routed locally to VLAN {dst_vid} "
                      f"(source: {reachable_src_gw.get('source','?')})")
@@ -2432,7 +2447,9 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
 _EP_DESC_RULES = [
     (re.compile(r"cam(era)?|cctv|\bptz\b|surveill", re.I), "Camera", 2),
     (re.compile(r"dante|aes67|intercom|\bmic\b|\baudio\b", re.I), "Audio (Dante/AES67)", 2),
-    (re.compile(r"2110|\bsdi\b|playout|ingest|multiview|encoder|decoder|transcode|\bmcr\b|\bpcr\b|on.?air|\bvtr\b", re.I), "Broadcast A/V", 2),
+    # '2110' anchored to the SMPTE ST-2110 standard (st/smpte 2110, or 2110-<part> like 2110-20) -- the bare token
+    # matched any room/rack/asset/VLAN number ('RM2110','AP-2110') and mislabeled ordinary endpoints (audit-2 #2).
+    (re.compile(r"\bst[\s-]?2110\b|\bsmpte[\s-]?2110\b|\b2110-\d|\bsdi\b|playout|ingest|multiview|encoder|decoder|transcode|\bmcr\b|\bpcr\b|on.?air|\bvtr\b", re.I), "Broadcast A/V", 2),
     (re.compile(r"nexis|isilon|\bnas\b|\bsan\b|storage|datastore|\blun\b|netapp|\bemc\b", re.I), "Storage", 2),
     (re.compile(r"esx|vmware|hyper-?v|hypervisor|vcenter|nutanix|\bvm\b", re.I), "VM / Hypervisor", 2),
     (re.compile(r"\bsql\b|oracle|database|\bdb\b|postgres|mysql|mongo", re.I), "Database", 2),

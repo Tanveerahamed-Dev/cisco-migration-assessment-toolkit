@@ -1819,7 +1819,7 @@
     "category": "Security",
     "severity": "Medium",
     "title": "VTY line hardening",
-    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
     "commands": [
      "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
     ],
@@ -1865,7 +1865,7 @@
     "category": "Security",
     "severity": "Medium",
     "title": "VTY line hardening",
-    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
     "commands": [
      "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
     ],
@@ -2071,7 +2071,7 @@
      "category": "Security",
      "severity": "Medium",
      "title": "VTY line hardening",
-     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
      "commands": [
       "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
      ],
@@ -2133,7 +2133,7 @@
      "category": "Security",
      "severity": "Medium",
      "title": "VTY line hardening",
-     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
      "commands": [
       "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
      ],
@@ -3472,7 +3472,7 @@
      "title": "VTY line hardening",
      "severity": "medium",
      "status": "fail",
-     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
      "cis_ref": "CIS 2.2",
      "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
     },
@@ -3581,7 +3581,7 @@
      "title": "VTY line hardening",
      "severity": "medium",
      "status": "fail",
-     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
      "cis_ref": "CIS 2.2",
      "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
     },
@@ -5124,7 +5124,7 @@
    ],
    "wave": "",
    "title": "VTY line hardening",
-   "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+   "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
    "priority": 31
   },
