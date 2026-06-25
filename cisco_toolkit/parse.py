@@ -917,11 +917,19 @@ def parse_lisp_sessions(output: str) -> list:
             continue
         if re.match(r"^Peer\b", s, re.IGNORECASE):   # column header
             continue
-        # data row: 'IP[:port]  State  Up/Down  In/Out  Users' -- State is the 2nd column.
-        pm = re.match(r"^(\d+\.\d+\.\d+\.\d+)(?::(\d+))?\s+(\w+)\b", s)
+        # data row: 'PEER[:port]  State  Up/Down  In/Out  Users' -- State is the 2nd column. PEER is IPv4 OR
+        # IPv6 (an IPv6 SD-Access underlay opens IPv6 RLOC sessions; the old v4-only pattern dropped them all).
+        pm = re.match(r"^(\S+)\s+([A-Za-z]\w*)\b", s)
         if pm:
-            cur["peers"].append({"peer": pm.group(1), "port": pm.group(2) or "",
-                                 "state": pm.group(3).capitalize()})
+            tok, st = pm.group(1), pm.group(2)
+            mb = re.match(r"^\[([0-9A-Fa-f:]+)\]:(\d+)$", tok)            # [IPv6]:port
+            m4 = re.match(r"^(\d+\.\d+\.\d+\.\d+)(?::(\d+))?$", tok)      # IPv4[:port]
+            if mb:
+                cur["peers"].append({"peer": mb.group(1), "port": mb.group(2), "state": st.capitalize()})
+            elif m4:
+                cur["peers"].append({"peer": m4.group(1), "port": m4.group(2) or "", "state": st.capitalize()})
+            elif ":" in tok and re.match(r"^[0-9A-Fa-f:]+$", tok):       # bare IPv6 (no port)
+                cur["peers"].append({"peer": tok, "port": "", "state": st.capitalize()})
     return out
 
 
@@ -1537,10 +1545,15 @@ def _junos_val(x):
     """Unwrap the Junos '| display json' value form. Junos wraps every leaf value as a single-element list of
     {"data": "<v>"} (e.g. "device-priority": [{"data": "100"}]); some versions emit a bare {"data": "<v>"} or
     a plain scalar. Return the string value (stripped), or '' when it cannot be read. Never raises."""
+    # NB: guard None EXPLICITLY, not `or ''` -- a real `| display json` emits numeric leaves (device-priority,
+    # redundancy-group-id) as JSON NUMBERS, and `0 or ''` would collapse the falsy integer 0 to '' (silencing the
+    # 'priority 0 = not ready' HA-degraded detector + corrupting RG0). 0/0.0 must survive; only None -> ''.
     if isinstance(x, list) and x and isinstance(x[0], dict):
-        return str(x[0].get("data", "") or "").strip()
+        v = x[0].get("data", "")
+        return str("" if v is None else v).strip()
     if isinstance(x, dict):
-        return str(x.get("data", "") or "").strip()
+        v = x.get("data", "")
+        return str("" if v is None else v).strip()
     if isinstance(x, (str, int, float)):
         return str(x).strip()
     return ""
@@ -3256,6 +3269,12 @@ def parse_config_hygiene(output: str) -> dict:
         (re.compile(r"\bipv6\s+traffic-filter\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "acl"),
         (re.compile(r"\bip\s+nat\s+(?:inside|outside)\s+source\s+list\s+(\S+)", re.IGNORECASE), "acl"),
         (re.compile(r"\bmatch\s+ip\s+address\s+(?!prefix-list\b)(\S+)", re.IGNORECASE), "acl"),
+        # Four ubiquitous ACL-reference forms previously missed -> an ACL used ONLY via SNMP community / QoS
+        # class-map / crypto-map interesting-traffic / NTP was wrongly reported 'unused' (audit-3 #15).
+        (re.compile(r"\bsnmp-server\s+community\s+\S+\s+(?:view\s+\S+\s+)?(?:ro|rw)\s+(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bmatch\s+access-group\s+(?:name\s+)?(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bmatch\s+address\s+(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bntp\s+access-group\s+(?:peer|serve|serve-only|query-only)\s+(\S+)", re.IGNORECASE), "acl"),
         (re.compile(r"\bredistribute\b.*\broute-map\s+(\S+)", re.IGNORECASE), "route-map"),
         (re.compile(r"\bneighbor\s+\S+\s+route-map\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "route-map"),
         (re.compile(r"\bip\s+policy\s+route-map\s+(\S+)", re.IGNORECASE), "route-map"),
