@@ -3667,6 +3667,11 @@ def parse_show_version(output: str) -> Dict[str, str]:
         m2 = re.match(r"^\s*cisco\s+(Nexus\S*|N\d[Kk]-\S+|\S+)\s+(?:chassis|switch)", line, re.IGNORECASE)
         if m2 and not r["model"]:
             r["model"] = m2.group(1).strip()
+        # NX-OS chassis line 'cisco Nexus9000 C93180YC-EX Chassis' -- the PID sits BETWEEN the family and 'chassis',
+        # so m2 captures only 'Nexus9000'; prefer the specific PID model (multi-domain audit #2).
+        m2c = re.match(r"^\s*cisco\s+Nexus\S*\s+(\S+)\s+chassis", line, re.IGNORECASE)
+        if m2c and (not r["model"] or r["model"].lower().startswith("nexus")):
+            r["model"] = m2c.group(1).strip()
         m3 = re.search(r"(?:system serial number\s*[:=]|processor board id)\s*(\S+)", low)
         if m3 and not r["serial_number"]:
             r["serial_number"] = line.split()[-1].strip()
@@ -3674,7 +3679,10 @@ def parse_show_version(output: str) -> Dict[str, str]:
         if m3b and not r["serial_number"]:
             r["serial_number"] = m3b.group(1).strip()
         m4 = re.search(r"version\s+([\d\.()A-Za-z]+)", line, re.IGNORECASE)
-        if m4 and not r["sw_version"] and any(k in low for k in ("ios","nx-os","nxos","software")):
+        # NOT on a 'BIOS: version ...' line -- 'ios' is a substring of 'BIOS', which made the BIOS string capture
+        # sw_version and lock out the real 'NXOS: version 9.3(10)' line (multi-domain audit #2).
+        if m4 and not r["sw_version"] and not low.startswith("bios") \
+                and any(k in low for k in ("ios", "nx-os", "nxos", "software")):
             r["sw_version"] = m4.group(1).strip().rstrip(",")
         m4b = re.match(r"^\s*system:\s+version\s+(\S+)", line, re.IGNORECASE)
         if m4b:

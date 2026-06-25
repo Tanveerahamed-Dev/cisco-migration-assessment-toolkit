@@ -26,7 +26,7 @@
   "core2": {
    "hostname": "core2",
    "platform": "nxos",
-   "model": "",
+   "model": "C93180YC-EX",
    "serial_number": "FDO12345ABC",
    "chassis_serial": "",
    "sw_version": "",
@@ -5752,7 +5752,7 @@
   },
   {
    "hostname": "core2",
-   "model": "",
+   "model": "C93180YC-EX",
    "total_ports": 5,
    "active_ports": 2,
    "free_ports": 3,

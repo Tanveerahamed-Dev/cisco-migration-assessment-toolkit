@@ -2012,3 +2012,18 @@ def test_parse_bgp_summary_ipv6_is_linear_not_redos(cp):
     assert time.perf_counter() - t < 1.0           # was ~14s
     rows = parse.parse_bgp_summary("2001:db8::1     4 65002  10 10 5 0 0 02:00:00 Idle")
     assert rows and rows[0]["neighbor"] == "2001:db8::1" and rows[0]["state"] == "Idle"
+
+
+def test_parse_show_version_nxos_not_fooled_by_bios_substring(cp):
+    """[multi-domain audit #2] modern NX-OS 'show version' has 'BIOS: version 07.69' then 'NXOS: version 9.3(10)';
+    'ios' as a substring of 'BIOS' made the guard capture the BIOS string as sw_version (corrupting the
+    software-advisory/EoL surface). sw_version must be the NXOS version, and the Nexus chassis model must parse."""
+    out = textwrap.dedent("""\
+        Cisco Nexus Operating System (NX-OS) Software
+          BIOS: version 07.69
+          NXOS: version 9.3(10)
+        cisco Nexus9000 C93180YC-EX Chassis
+    """)
+    r = parse.parse_show_version(out)
+    assert r["sw_version"] == "9.3(10)"
+    assert r["model"] == "C93180YC-EX"
