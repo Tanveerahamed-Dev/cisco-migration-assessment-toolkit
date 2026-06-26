@@ -3360,28 +3360,40 @@ def _scorecard(snap, sig):
                "Weak" if av <= 1 else ("Moderate" if av <= 2 else "Strong"),
                f"{sig.get('single_gw', 0)} single-gateway SPOF VLAN(s); {sig['no_fhrp']} no-FHRP VLAN(s); "
                f"{sig['bridges']} cut-edge link(s); {sig['nobackup_high']} node(s) with no backup path." + cov_note))
-    # convergence
+    # convergence -- absence-inferred (all signals 0 when nothing was collected), so cap + disclose on a partial
+    # estate too, not just availability/load_balancing (audit-4 #6). The cap is a no-op once real deviations
+    # already pull the score to <=2 (e.g. on the real [HISTORY-REDACTED] fleet), so it only bites a clean-sample/large-blind estate.
     cv = 4 - (1 if _gw_gap else 0) - (1 if sig["stp_blocked"] else 0) - (1 if sig["eol"] else 0)
+    if coverage_gap:
+        cv = min(cv, 2)
     out.append(_axis_entry("convergence", _clamp(cv), "Weak" if cv <= 1 else "Moderate",
-               "First-hop, STP and platform age all bound failover time."))
+               "First-hop, STP and platform age all bound failover time." + cov_note))
     # scalability
     sc = 4 - (2 if sig["vlans"] >= 64 else (1 if sig["vlans"] >= _LARGE_L2_VLANS else 0)) - (1 if sig["single_vrf"] else 0)
+    if coverage_gap:
+        sc = min(sc, 2)
     out.append(_axis_entry("scalability", _clamp(sc), "Weak" if sc <= 1 else "Moderate",
-               f"{sig['vlans']} VLAN(s); {'single' if sig['single_vrf'] else 'multiple'} VRF."))
+               f"{sig['vlans']} VLAN(s); {'single' if sig['single_vrf'] else 'multiple'} VRF." + cov_note))
     # modularity
     md = 4 - (1 if sig["single_vrf"] else 0) - (1 if sig["vlans"] >= _LARGE_L2_VLANS else 0)
+    if coverage_gap:
+        md = min(md, 2)
     out.append(_axis_entry("modularity", _clamp(md), "Moderate" if md >= 2 else "Weak",
-               "Fault-domain boundaries are bounded mostly by spanning tree, not by L3 modularity."))
+               "Fault-domain boundaries are bounded mostly by spanning tree, not by L3 modularity." + cov_note))
     # security
     secpen = (2 if sig["mgmt_devices"] else 0) + (1 if sig["harden_devices"] else 0)
     se = _clamp(4 - secpen)
+    if coverage_gap:
+        se = min(se, 2)                  # '0 hardening deviations observed' is uninformative on a partial estate
     out.append(_axis_entry("security", se, "Weak" if se <= 1 else "Moderate",
-               f"{sig['mgmt_devices']} mgmt-plane and {sig['harden_devices']} device-hardening deviation(s)."))
+               f"{sig['mgmt_devices']} mgmt-plane and {sig['harden_devices']} device-hardening deviation(s)." + cov_note))
     # simplicity
     si = 3 - (1 if len(sig["igps"]) >= 2 else 0) - (1 if sig["vtp_server"] else 0)
+    if coverage_gap:
+        si = min(si, 2)
     out.append(_axis_entry("simplicity", _clamp(si), "Moderate",
-               ("mixed IGP; " if len(sig["igps"]) >= 2 else "") + ("VTP active" if sig["vtp_server"] else "")
-               or "no obvious accidental complexity observed."))
+               (("mixed IGP; " if len(sig["igps"]) >= 2 else "") + ("VTP active" if sig["vtp_server"] else "")
+                or "no obvious accidental complexity observed.") + cov_note))
     # optimal_routing (limited evidence)
     out.append(_axis_entry("optimal_routing", 2, "Limited evidence",
                "Path optimality needs end-to-end routing/forwarding evidence not fully collected."))
@@ -3398,8 +3410,10 @@ def _scorecard(snap, sig):
                "AAA/time/logging, VTP exposure and collection coverage drive operability."))
     # cost
     co = _clamp(4 - (2 if sig["eol"] else 0) - (1 if sig["near"] else 0))
+    if coverage_gap:
+        co = min(co, 2)                  # cannot certify 'Comfortable' refresh-CapEx when part of the fleet's lifecycle is unknown
     out.append(_axis_entry("cost", co, "Pressure" if co <= 2 else "Comfortable",
-               f"{sig['eol']} past-LDoS + {sig['near']} near-LDoS asset(s) imply refresh CapEx."))
+               f"{sig['eol']} past-LDoS + {sig['near']} near-LDoS asset(s) imply refresh CapEx." + cov_note))
     return out
 
 
