@@ -2394,3 +2394,19 @@ def test_aci_move_groups_dedup_across_apic_cluster_controllers():
     g = mg["groups"][0]
     assert g["n_vrfs"] == 1 and g["n_bds"] == 1 and g["n_epgs"] == 2      # NOT 3 / 3 / 6
     assert sorted(g["epgs"]) == ["db", "web"]                            # no literal duplicates
+
+
+def test_scorecard_coverage_caps_all_absence_inferred_axes():
+    """[audit-4 #6 false-health] the coverage cap + disclosure were wired to ONLY availability/load_balancing, so
+    convergence/security/cost/scalability/modularity/simplicity scored IDENTICALLY on a near-blind estate vs a
+    verified-clean one (the audit-1 #8 class only half-fixed) -- a blind estate reads a clean posture from absence
+    of evidence."""
+    from cisco_toolkit.design_advisor import _scorecard, _signals
+    def card(nc):
+        snap = {"collection_completeness": {"summary": {"inventory": 2 + nc, "complete": 2, "not_collected": nc}},
+                "health_scores": [{"host": "e1", "role": "access"}, {"host": "e2", "role": "access"}]}
+        return {a["axis"]: (a["score"], a["evidence"]) for a in _scorecard(snap, _signals(snap))}
+    clean, blind = card(0), card(50)
+    for axis in ("convergence", "security", "cost", "scalability", "modularity", "simplicity"):
+        assert clean[axis] != blind[axis], f"{axis} reads identical blind vs clean"   # score and/or evidence differ
+        assert blind[axis][0] <= 2 and "NOT collected" in blind[axis][1]              # capped + discloses the gap
