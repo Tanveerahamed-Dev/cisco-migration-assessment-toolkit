@@ -525,6 +525,19 @@ def write_endpoint_census_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
         for col, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
         r += 1
+    # Disclose the basis vs the canonical evidenced-endpoint total: this sheet lists learned MACs on ALL
+    # host-facing (non-trunk) ports, a SUPERSET of executive_brief.scale.n_endpoints, which counts only ports
+    # explicitly tagged switchport mode 'Access'. Without this the row count silently contradicts the Exec
+    # Summary headline (AJ: 5326 here vs 5127 there) -- the same disclosure the VLAN Census / Migration Readiness
+    # sheets carry (audit-4 #17).
+    n_access = sum(1 for _h, d in rows if (d.switchport_mode or "") == "Access")
+    if len(rows) != n_access:
+        note = ws.cell(r + 1, 1,
+                       f"Basis: {len(rows)} learned-MAC endpoints on host-facing (non-trunk) ports. The canonical "
+                       f"'evidenced endpoints' total (executive_brief.scale.n_endpoints) counts only the {n_access} "
+                       f"on ports explicitly tagged switchport mode 'Access'; the other {len(rows) - n_access} are "
+                       f"real MACs on ports whose access-mode was not tagged 'Access'. The two use different bases.")
+        note.font = Font(name="Calibri", size=9, italic=True, color="808080")
     _census_autofit(ws, len(cols), r - 1)
     logger.info(f"  [OK] '{ENDPOINT_CENSUS_SHEET_NAME}' sheet: {len(rows)} endpoint(s)")
 
