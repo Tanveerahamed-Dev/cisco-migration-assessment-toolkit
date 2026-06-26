@@ -217,3 +217,42 @@ def test_sparse_snapshot_is_tolerated(tmp_path):
     assert out.is_file()
     n, _ = _deck(str(out))
     assert n == 6        # every slide renders except the data-gated lifecycle slide
+
+
+def _deck_text(path):
+    prs = Presentation(path)
+    return "\n".join(sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame)
+
+
+def test_deck_survives_xml_illegal_chars(tmp_path):
+    """[audit-4 #2 totality] a U+FFFE/U+FFFF/lone-surrogate in any device-derived string aborted the whole
+    executive deck at python-pptx save -- the class the workbook/docx are hardened against. _clean (the single
+    text sink) must strip them."""
+    snap = _rich_snap()
+    bad = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800)
+    snap["failure_impact"][0]["host"] = snap["failure_impact"][0]["host"] + bad
+    snap["executive_brief"]["axes"][0]["headline"] = "61/100 " + bad
+    out = str(tmp_path / "d.pptx")
+    write_executive_deck_pptx(out, snap, "[HISTORY-REDACTED]" + bad)     # must not raise
+    Presentation(out)                                    # and open
+
+
+def test_deck_keystone_not_well_distributed_when_blast_radius_blind(tmp_path):
+    """[audit-4 #8 false-health] the keystone slide printed green 'dependency is well distributed' whenever no
+    record had stranded>0 -- including when failure_impact was NEVER computed (absent) or every record is
+    INDETERMINATE (off-scan gateway). Absence/indeterminacy must read as a coverage gap, not a clean bill."""
+    snap_absent = _rich_snap(); snap_absent.pop("failure_impact", None)
+    write_executive_deck_pptx(str(tmp_path / "a.pptx"), snap_absent, "blind")
+    ta = _deck_text(str(tmp_path / "a.pptx"))
+    assert "well distributed" not in ta and ("not assess" in ta.lower() or "not computed" in ta.lower())
+    snap_ind = _rich_snap()
+    snap_ind["failure_impact"] = [{"host": "core1", "severity": "Info", "stranded": 0, "vlans_impacted": 0,
+                                   "off_scan_gw_vlans": 5, "detail": "Blast radius INDETERMINATE — off-scan gateway"}]
+    write_executive_deck_pptx(str(tmp_path / "b.pptx"), snap_ind, "ind")
+    tb = _deck_text(str(tmp_path / "b.pptx"))
+    assert "well distributed" not in tb and "indetermin" in tb.lower()
+    snap_clean = _rich_snap()
+    snap_clean["failure_impact"] = [{"host": "core1", "severity": "Low", "stranded": 0, "vlans_impacted": 0,
+                                     "off_scan_gw_vlans": 0, "detail": "FHRP-covered"}]
+    write_executive_deck_pptx(str(tmp_path / "c.pptx"), snap_clean, "clean")
+    assert "well distributed" in _deck_text(str(tmp_path / "c.pptx"))
