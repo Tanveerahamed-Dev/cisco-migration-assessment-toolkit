@@ -979,3 +979,16 @@ def test_failure_impact_off_scan_gateway_is_indeterminate_not_no_impact():
     dist = [r for r in compute_failure_impact(ai) if r["host"] == "DIST"][0]
     assert dist["off_scan_gw_vlans"] >= 1
     assert "No reachability impact" not in dist["detail"] and "INDETERMINATE" in dist["detail"]
+
+
+def test_endpoint_classify_apc_legal_name_and_truthful_evidence():
+    """[audit-4 #13 format-fidelity] APC's IEEE-registry legal name 'American Power Conversion Corp' (block
+    00C0B7) contains none of the UPS/PDU rule substrings, so real APC UPS endpoints fell through to Unknown with a
+    FALSE 'no vendor signal' evidence string -- contradicted by the row's own vendor column."""
+    from cisco_toolkit.analyze import _classify_endpoint
+    cls, _conf, _ev = _classify_endpoint("American Power Conversion Corp", "", "", "", False)
+    assert cls == "UPS/PDU"                                                   # legal name now classifies
+    _c2, _q2, ev2 = _classify_endpoint("Some Unlisted Maker Inc", "", "", "", False)
+    assert _c2 == "Unknown" and "no vendor" not in ev2.lower() and "Some Unlisted Maker" in ev2   # truthful evidence
+    _c3, _q3, ev3 = _classify_endpoint("", "", "", "", False)
+    assert _c3 == "Unknown" and "no vendor" in ev3.lower()                    # genuinely no signal still says so

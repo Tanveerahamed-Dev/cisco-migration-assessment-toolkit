@@ -2501,7 +2501,8 @@ _EP_DESC_RULES = [
 # Vendor substring -> (class, rank). Unambiguous makers are rank 2; ambiguous (Dell/HP = server OR
 # workstation) are rank 1 so a description/CDP signal wins.
 _EP_VENDOR_RULES = [
-    (("apc", "schneider", "eaton", "tripp", "vertiv", "liebert", "cyberpower"), "UPS/PDU", 2),
+    (("apc", "american power conversion", "schneider", "eaton", "tripp", "vertiv", "liebert", "cyberpower"),
+     "UPS/PDU", 2),   # 'american power conversion' = APC's IEEE-registry LEGAL name (block 00C0B7); 'apc' is not in it
     (("audinate", "lawo", "riedel", "calrec", "digigram"), "Audio (Dante/AES67)", 2),
     (("grass valley", "evs broadcast", "evertz", "ross video", "blackmagic", "newtek", "imagine comm",
       "harmonic", "telestream", "vizrt", "nevion", "dektec", "bridge tech", "tag video", "l-s-b",
@@ -2548,6 +2549,10 @@ def _classify_endpoint(vendor: str, desc: str, plat: str, etype: str, laa: bool)
     if not cands:
         if laa:
             return "VM / Hypervisor", "Inferred-medium", "locally-administered MAC (virtual/randomized)"
+        if vendor:
+            # a vendor WAS resolved from the OUI but matched no class rule -> say so truthfully. The old 'no
+            # vendor signal' string was factually false (contradicted by the row's own vendor column) (audit-4 #13).
+            return "Unknown", "Unknown", f"vendor '{vendor}' (no class rule matched)"
         return "Unknown", "Unknown", "no vendor/description/platform signal"
     rank, cls, ev = max(cands, key=lambda c: c[0])
     return cls, _EP_CONF[rank], ev
