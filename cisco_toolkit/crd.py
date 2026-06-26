@@ -24,6 +24,7 @@ from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # coerce truthy non-dict/list sections
+from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,8 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
                        "(pip install python-docx to enable the requirements-capture deliverable).")
         return
 
-    snap = snap_dict or {}
+    snap = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})   # one bad device byte (noncharacter/surrogate) must not abort the docx
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
     NAVY = RGBColor(0x1F, 0x38, 0x64)
     GREY = RGBColor(0x59, 0x59, 0x59)
     RED = RGBColor(0xB0, 0x2A, 0x1E)
