@@ -11,7 +11,7 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
-from openpyxl.cell.cell import Cell, ILLEGAL_CHARACTERS_RE, MergedCell
+from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -28,28 +28,21 @@ from cisco_toolkit.parse import (
     parse_port_security, parse_show_interface_counters,
 )
 from cisco_toolkit.textutils import (
-    PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS, _split_macs, normalize_ifname, normalize_speed,
+    PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS, _split_macs, normalize_ifname, normalize_speed, xml_safe,
 )
 
 logger = logging.getLogger(__name__)
 
 
-# openpyxl's ILLEGAL_CHARACTERS_RE (used by its own check_string) covers the C0 control chars, but the noncharacters
-# U+FFFE / U+FFFF (and lone surrogates) PASS check_string yet make wb.save() raise ValueError at XML serialization --
-# so a single one in device-derived text still aborts the whole workbook (multi-domain audit #11). Strip them too.
-_XLS_EXTRA_INVALID_RE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + chr(0xFFFE) + chr(0xFFFF) + "]")
-
-
 def _xls_sanitize(value):
     """Strip the characters openpyxl rejects from a string; pass non-strings through unchanged. Covers BOTH the C0
-    control chars check_string rejects up front (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F) AND the U+FFFE/U+FFFF
-    noncharacters + lone surrogates that pass check_string but fail wb.save(). Device-derived free-text (a
-    CDP/LLDP neighbour name, an interface description, a banner) -- collected with errors='ignore', which passes
-    valid-UTF-8 control bytes through -- can carry these, and a single one aborts the ENTIRE workbook, the one
-    deliverable produced unconditionally (there is no --no-excel)."""
-    if not isinstance(value, str):
-        return value
-    return _XLS_EXTRA_INVALID_RE.sub("", ILLEGAL_CHARACTERS_RE.sub("", value))
+    control chars (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F) AND the U+FFFE/U+FFFF noncharacters + lone surrogates that pass
+    openpyxl's check_string but fail wb.save() at XML serialization (multi-domain audit #11). Device-derived
+    free-text (a CDP/LLDP neighbour name, an interface description, a banner) -- collected with errors='ignore',
+    which passes valid-UTF-8 control bytes through -- can carry these, and a single one aborts the ENTIRE workbook,
+    the one deliverable produced unconditionally (there is no --no-excel). Delegates to the shared
+    textutils.xml_safe so the excel + docx generators share ONE implementation of the XML-illegal char set."""
+    return xml_safe(value)
 
 
 def _harden_ws(ws):

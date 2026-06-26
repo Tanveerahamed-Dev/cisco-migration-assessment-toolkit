@@ -534,3 +534,22 @@ def test_design_doc_tolerates_non_dict_executive_brief(tmp_path):
     write_design_doc_docx(out, {"executive_brief": "oops", "devices": {"sw1": {}}}, "Test")   # must not raise
     import os
     assert os.path.exists(out)
+
+
+def test_design_doc_survives_xml_illegal_chars(tmp_path):
+    """A device-derived Unicode noncharacter (U+FFFE/U+FFFF) or lone surrogate (U+D800-DFFF) passes through but
+    aborts the WHOLE design DOCX at XML serialization ('All strings must be XML compatible') -- the same class the
+    excel + runbook generators were hardened against. Every written string must be sanitized. Exercises the
+    direct-paragraph path (keystone host, like the repro), the docmeta table path (model cell), a CDP neighbour
+    name, and the label arg."""
+    import os
+    snap = _snap()
+    bad = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800)   # two noncharacters + a lone surrogate (ASCII-safe source)
+    snap.setdefault("failure_impact", []).insert(
+        0, {"host": "core1" + bad, "stranded": 99, "severity": "High", "vlans_impacted": 3, "detail": "VLAN 10" + bad})
+    snap["interfaces"]["core1"]["Po1"]["cdp_neighbor"] = "dist1" + bad     # direct topology text
+    snap["devices"]["core1"]["model"] = "N9K" + bad                       # inventory TABLE cell (docmeta)
+    out = str(tmp_path / "d.docx")
+    write_design_doc_docx(out, snap, "AJ" + bad)                          # must NOT raise
+    assert os.path.exists(out)
+    Document(out)                                                         # and be a valid, openable .docx

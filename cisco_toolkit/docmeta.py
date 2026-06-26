@@ -16,6 +16,8 @@ unchanged.
 """
 from datetime import datetime
 
+from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (every cell text routes through it)
+
 # Severity ordering shared by the writer family (V3.23.159: hoisted from per-writer copies so the
 # documents sort findings identically; engagement/crd import it — older writers' private copies
 # migrate as they are next touched).
@@ -90,14 +92,14 @@ def add_table(doc, headers, rows, widths=None, *, fixed=True):
     t.style = "Light Grid Accent 1"
     for i, hd in enumerate(headers):
         c = t.rows[0].cells[i]
-        c.text = str(hd)
+        c.text = xml_safe(str(hd))            # sanitize: one XML-illegal char in any cell aborts the whole .docx
         for para in c.paragraphs:
             for run in para.runs:
                 run.bold = True
     for row in rows:
         cells = t.add_row().cells
         for i, v in enumerate(row):
-            cells[i].text = "" if v is None else str(v)
+            cells[i].text = "" if v is None else xml_safe(str(v))
     if widths:
         if fixed:
             t.autofit = False
@@ -118,10 +120,10 @@ def _kv(doc, label, value):
     from docx.shared import RGBColor
 
     p = doc.add_paragraph()
-    r = p.add_run(label)
+    r = p.add_run(xml_safe(label))
     r.bold = True
     r.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
-    p.add_run(" " + (str(value) if value not in (None, "") else "—"))
+    p.add_run(" " + (xml_safe(str(value)) if value not in (None, "") else "—"))
     return p
 
 
