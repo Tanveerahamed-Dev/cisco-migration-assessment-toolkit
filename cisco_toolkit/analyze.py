@@ -1303,9 +1303,12 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
     sole_gw_hosts = set(dep_map["sole_gw"].values())
     band_by_host = {r["switch"]: r["band"] for r in health_scores}
     proto_high: Dict = {}                            # host -> set(protocols at High)
+    routing_collected: set = set()                   # hosts with ANY OSPF/BGP row = routing was collected+parsed
     for rec in (protocol_health or []):
         if rec.get("severity") == "High":
             proto_high.setdefault(rec["switch"], set()).add(rec["protocol"])
+        if rec.get("protocol") in ("OSPF", "BGP"):
+            routing_collected.add(rec.get("switch"))
     xl_crit_hosts = {h for f in (cross_layer or []) if f.get("severity") == "Critical" for h in f.get("hosts", [])}
     # orphan VLAN -> its access switches
     orphan_hosts = set()
@@ -1348,10 +1351,25 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         hit = sorted({h for h in gset if "EtherChannel" in proto_high.get(h, set())})
         checks.append(("Port-channels healthy", R["portchannels_healthy"] if hit else "pass",
                        f"unbundled member on {', '.join(hit)}" if hit else "all members bundled / none"))
-        # 7 routing adjacencies up
+        # 7 routing adjacencies up -- coverage-honest: this is a hard FAIL gate, but it can only fire when an
+        # OSPF/BGP row was COLLECTED. With no routing evidence for ANY switch in the group the adjacency status is
+        # NOT assessable -> 'warn', never a silent 'pass' that reads identical to a verified-up group (the bare
+        # 'show logging'-on-NX-OS false-health class at the cutover gate; audit-4 #7).
         hit = sorted({h for h in gset if proto_high.get(h, set()) & {"OSPF", "BGP"}})
-        checks.append(("Routing adjacencies up", R["routing_adjacencies"] if hit else "pass",
-                       f"down OSPF/BGP neighbor on {', '.join(hit)}" if hit else "all neighbors up / none"))
+        if hit:
+            checks.append(("Routing adjacencies up", R["routing_adjacencies"],
+                           f"down OSPF/BGP neighbor on {', '.join(hit)}"))
+        elif gset & routing_collected:
+            checks.append(("Routing adjacencies up", "pass", "all neighbors up"))
+        elif routing_collected:
+            # routing WAS collected this run but for NO switch in this group -> the fail-gate cannot certify this
+            # group's adjacencies, so 'warn' rather than a silent 'pass' that reads identical to a verified-up
+            # group. Mirrors the Baseline-capture coverage pattern (`gset - baseline_hosts if baseline_hosts`),
+            # so a pure-L2 run with no routing anywhere does not cry wolf on every group (audit-4 #7).
+            checks.append(("Routing adjacencies up", "warn",
+                           "routing not collected for this group — adjacency status not assessable"))
+        else:
+            checks.append(("Routing adjacencies up", "pass", "all neighbors up / none"))
         # 8 no orphan VLANs
         hit = any_in(orphan_hosts)
         checks.append(("No orphan VLANs", R["no_orphan_vlans"] if hit else "pass",

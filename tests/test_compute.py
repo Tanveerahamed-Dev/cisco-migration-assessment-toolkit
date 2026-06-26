@@ -1010,3 +1010,27 @@ def test_endpoint_census_discloses_basis_vs_canonical_n_endpoints():
     X.write_endpoint_census_sheet(wb, ai)
     blob = " ".join(str(c) for row in wb[X.ENDPOINT_CENSUS_SHEET_NAME].iter_rows(values_only=True) for c in row if c)
     assert "n_endpoints" in blob and "Access" in blob              # discloses the basis difference vs the canonical
+
+
+def test_nrfu_routing_adjacencies_warns_when_routing_not_collected():
+    """[audit-4 #7 false-health] 'Routing adjacencies up' is a hard fail-gate, but it could only fire when an
+    OSPF/BGP protocol_health row exists -> a group whose routing was NEVER collected silently PASSED, reading
+    identical to a verified-up group (the bare-show-logging false-health class at the cutover gate). Must WARN
+    (not assessable) on no routing evidence."""
+    from cisco_toolkit.analyze import compute_migration_readiness
+    dm = {"single_fiber": set(), "errdis": set(), "halfdup_up": set(), "sole_gw": {}, "orphan": set(),
+          "access_by_vlan": {}, "model": {"hosts": ["CORE1", "ACC1"]}}
+    mg = [{"switches": ["CORE1", "ACC1"], "endpoints": 100}]
+    hs = [{"switch": "CORE1", "band": "Good"}, {"switch": "ACC1", "band": "Good"}]
+    def rcheck(ph):   # ph = protocol_health (the 7th positional arg)
+        g = compute_migration_readiness({}, mg, hs, [], [], [], ph, dm)[0]
+        return next(c for c in g["checks"] if c["check"] == "Routing adjacencies up")
+    # blind: routing WAS collected this run (host OTHER, outside the group) but NOT for this group's switches ->
+    # the gate can't certify this group -> warn (mirrors the Baseline-capture coverage pattern).
+    blind = rcheck([{"switch": "OTHER", "protocol": "OSPF", "severity": "Info"}])
+    verified = rcheck([{"switch": "CORE1", "protocol": "OSPF", "severity": "Info"}])  # routing collected, up
+    down = rcheck([{"switch": "CORE1", "protocol": "OSPF", "severity": "High"}])      # routing collected, down
+    none_run = rcheck([])                                                             # no routing anywhere -> not in scope
+    assert blind["status"] == "warn" and verified["status"] == "pass" and down["status"] == "fail"
+    assert none_run["status"] == "pass"                                              # pure-L2 run: no cry-wolf
+    assert blind != verified                                                         # blind distinguishable from verified
