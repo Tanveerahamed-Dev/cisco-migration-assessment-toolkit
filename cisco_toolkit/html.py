@@ -32,7 +32,9 @@ def _macset(s: str) -> set:
 # worse?": per-switch health-band shifts and the consolidated punch-list findings that OPENED vs
 # RESOLVED (the punch-list already rolls up all finding sources, deduped + severity-ranked). Pure
 # read of two snapshot_state() dicts; tolerant of older snapshots that lack the computed keys.
-_BAND_RANK = {"Excellent": 0, "Good": 1, "Fair": 2, "Poor": 3, "Critical": 4, "Insufficient Data": 5}
+# 'Insufficient Data' is deliberately ABSENT: it is a coverage state, not a health-scale point (ssot.py:60-63), so
+# transitions into/out of it are handled as coverage_shifts, never ranked as better/worse than a real band.
+_BAND_RANK = {"Excellent": 0, "Good": 1, "Fair": 2, "Poor": 3, "Critical": 4}
 _FIND_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
@@ -58,12 +60,26 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     oi, ni = old.get("interfaces", {}) or {}, new.get("interfaces", {}) or {}
 
     # ---- health-band shifts (per switch present in BOTH runs) ----
-    oh = {r.get("switch"): r for r in (old.get("health_scores") or [])}
-    nh = {r.get("switch"): r for r in (new.get("health_scores") or [])}
+    # isinstance guard: a null element in the list (hand-trimmed / older-schema snapshot fed to --compare/--trend)
+    # must degrade, not AttributeError on r.get (audit-4 #15).
+    oh = {r.get("switch"): r for r in (old.get("health_scores") or []) if isinstance(r, dict)}
+    nh = {r.get("switch"): r for r in (new.get("health_scores") or []) if isinstance(r, dict)}
     regressed: List[dict] = []
     improved: List[dict] = []
+    coverage_shifts: List[dict] = []   # transitions in/out of 'Insufficient Data' (coverage events, not health)
     for sw in sorted(set(oh) & set(nh)):
         ob, nb = oh[sw].get("band", ""), nh[sw].get("band", "")
+        if ob == nb:
+            continue
+        # 'Insufficient Data' is a COVERAGE state, not a point on the health scale (ssot.py:60-63: it never counts
+        # as the worst band). A shift into/out of it is a coverage change, NOT a health improvement/regression --
+        # ranking it worse-than-Critical made 'Insufficient Data -> Critical' read 'improved' + CLEAN, i.e. a
+        # newly-online Critical box certified as an improvement at the cutover gate (audit-4 #5).
+        if ob == "Insufficient Data" or nb == "Insufficient Data":
+            coverage_shifts.append({"switch": sw, "old_band": ob, "new_band": nb,
+                                    "old_score": oh[sw].get("score", ""), "new_score": nh[sw].get("score", ""),
+                                    "kind": "went_dark" if nb == "Insufficient Data" else "newly_assessed"})
+            continue
         orank, nrank = _BAND_RANK.get(ob, 9), _BAND_RANK.get(nb, 9)
         if nrank == orank:
             continue
@@ -71,10 +87,14 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                "old_score": oh[sw].get("score", ""), "new_score": nh[sw].get("score", "")}
         (regressed if nrank > orank else improved).append(row)
     regressed.sort(key=lambda r: -_BAND_RANK.get(r["new_band"], 0))
+    # coverage events that must keep the verdict off CLEAN: a device gone dark (lost visibility at cutover) or one
+    # newly collected and found Critical/Poor (a real problem just revealed).
+    n_went_dark = sum(1 for c in coverage_shifts if c["kind"] == "went_dark")
+    newly_bad = [c for c in coverage_shifts if c["kind"] == "newly_assessed" and c["new_band"] in ("Critical", "Poor")]
 
     # ---- punch-list findings opened vs resolved ----
-    o_find = {_finding_key(f): f for f in (old.get("punchlist") or [])}
-    n_find = {_finding_key(f): f for f in (new.get("punchlist") or [])}
+    o_find = {_finding_key(f): f for f in (old.get("punchlist") or []) if isinstance(f, dict)}
+    n_find = {_finding_key(f): f for f in (new.get("punchlist") or []) if isinstance(f, dict)}
     # fully-deterministic order (set-difference iteration order is unstable): severity, then the
     # finding's stable identity, so two runs of the diff workbook are byte-reproducible.
     def _fsort(f: dict) -> tuple:
@@ -118,10 +138,16 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
             bits.append(f"{len(regressed)} switch(es) dropped a health band")
         bits.append(reach_phrase)
         note = "; ".join(bits) + ". Investigate before declaring the cutover good."
-    elif opened or removed_sw:
+    elif opened or removed_sw or n_went_dark or newly_bad:
         verdict = "REVIEW"
-        note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present; "
-                f"{reach_phrase}. Confirm these are expected.")
+        cov_bits = []
+        if n_went_dark:
+            cov_bits.append(f"{n_went_dark} switch(es) went dark (lost collection — can't be certified)")
+        if newly_bad:
+            cov_bits.append(f"{len(newly_bad)} newly-collected switch(es) found Critical/Poor")
+        note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present"
+                + ("; " + "; ".join(cov_bits) if cov_bits else "")
+                + f"; {reach_phrase}. Confirm these are expected.")
     else:
         verdict = "CLEAN"
         note = f"No health-band regressions, no new findings; {reach_phrase}."
@@ -133,7 +159,8 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                      "added": sorted(set(nd) - set(od)), "removed": removed_sw},
         "interfaces": {"old": sum(len(v) for v in oi.values()), "new": sum(len(v) for v in ni.values())},
         "health": {"regressed": regressed, "improved": improved,
-                   "n_regressed": len(regressed), "n_improved": len(improved)},
+                   "n_regressed": len(regressed), "n_improved": len(improved),
+                   "coverage_shifts": coverage_shifts, "n_coverage_shifts": len(coverage_shifts)},
         "findings": {"opened": opened, "resolved": resolved, "n_opened": len(opened),
                      "n_resolved": len(resolved), "n_opened_high": n_opened_high},
         "reachability": rdelta,
@@ -286,7 +313,10 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     ws = sheet("Health Shifts", ["Switch", "Direction", "Old band", "New band", "Old score", "New score"])
     r = 2
     for direction, rows in (("REGRESSED", delta["health"]["regressed"]),
-                            ("improved", delta["health"]["improved"])):
+                            ("improved", delta["health"]["improved"]),
+                            # in/out of 'Insufficient Data' -> labelled by kind (went dark / newly assessed), never
+                            # silently folded into 'improved' (audit-4 #5)
+                            *(((c["kind"], [c]) for c in delta["health"].get("coverage_shifts", [])))):
         for d in rows:
             vals = [d["switch"], direction, d["old_band"], d["new_band"], d["old_score"], d["new_score"]]
             for c, v in enumerate(vals, 1):

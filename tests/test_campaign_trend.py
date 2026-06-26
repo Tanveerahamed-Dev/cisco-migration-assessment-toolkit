@@ -94,3 +94,30 @@ def test_campaign_trend_not_improving_when_a_device_goes_dark():
     t = compute_campaign_trend([old, new])
     assert t["verdict"] != "IMPROVING"
     assert "dark" in t["verdict_note"].lower()
+
+
+def test_cutover_diff_insufficient_data_is_coverage_not_health_improvement():
+    """[audit-4 #5 false-health] 'Insufficient Data' ranked WORSE than Critical, so a dark device re-collected and
+    found Critical classified as 'improved' + CLEAN -- the single most safety-critical gate reading a newly-online
+    Critical box as an improvement. Insufficient Data is a COVERAGE state, not a health-scale point."""
+    from cisco_toolkit import html
+    base = {"devices": {"A": {}}, "interfaces": {"A": {}}, "punchlist": []}
+    dark = dict(base, health_scores=[{"switch": "A", "band": "Insufficient Data", "score": 90}])
+    crit = dict(base, health_scores=[{"switch": "A", "band": "Critical", "score": 12}])
+    d = html.compute_snapshot_delta(dark, crit)        # newly collected, found Critical
+    assert d["health"]["n_improved"] == 0 and d["verdict"] != "CLEAN"
+    d2 = html.compute_snapshot_delta(crit, dark)       # went dark = coverage loss
+    assert d2["health"]["n_improved"] == 0 and d2["verdict"] != "CLEAN"
+    good = dict(base, health_scores=[{"switch": "A", "band": "Good", "score": 85}])
+    d3 = html.compute_snapshot_delta(crit, good)       # genuine health improvement still counts
+    assert d3["health"]["n_improved"] == 1
+
+
+def test_cutover_diff_survives_null_list_rows():
+    """[audit-4 #15 totality] a null element in health_scores/punchlist (hand-trimmed / older-schema snapshot fed
+    to --compare/--trend) crashed compute_snapshot_delta with AttributeError instead of degrading."""
+    from cisco_toolkit import html
+    old = {"devices": {"A": {}}, "interfaces": {"A": {}},
+           "health_scores": [None, {"switch": "A", "band": "Good", "score": 80}], "punchlist": [None]}
+    new = {"devices": {"A": {}}, "interfaces": {"A": {}}, "health_scores": [], "punchlist": []}
+    assert isinstance(html.compute_snapshot_delta(old, new), dict)   # must not raise
