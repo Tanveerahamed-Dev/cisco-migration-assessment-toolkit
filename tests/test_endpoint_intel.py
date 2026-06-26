@@ -89,3 +89,29 @@ def test_endpoint_dependencies_clusters_dualhomed_validation():
     # per-switch validation: sw1 hosts Server + Storage -> checklist lines + a dual-homed note
     v = dep["per_switch_validation"]["sw1"]
     assert any("Storage" in line for line in v) and any("Dual-homed" in line for line in v)
+
+
+def test_classify_apc_real_registry_name_chained():
+    """[audit-4 #13] CHAIN the real OUI output (not a marketing string): block 00C0B7's genuine IEEE/Wireshark
+    registry name is 'American Power Conversion Corp', which contains NONE of the UPS rule substrings -- so real
+    APC UPS endpoints fell through unclassified (342 rows / 311 Unknown on the [HISTORY-REDACTED] snapshot). The existing fixture
+    feeds 'APC by Schneider Electric', which always matched -- the self-authored fixture that hid the miss."""
+    from cisco_toolkit import ouidb
+    from cisco_toolkit.analyze import _classify_endpoint
+    v = ouidb.vendor_for_mac("00:c0:b7:12:34:56")
+    assert "american power conversion" in v.lower()                       # the REAL registry name, not marketing
+    cls, _conf, ev = _classify_endpoint(v, "", "", "", False)
+    assert cls == "UPS/PDU" and "vendor" in ev and "no vendor" not in ev.lower()   # classifies + truthful evidence
+
+
+def test_classify_resolved_vendor_evidence_never_says_no_vendor():
+    """[audit-4 #13 moat] when a vendor WAS resolved but matched no class rule, the evidence must not claim 'no
+    vendor signal' (the row's own vendor column is populated). 'no vendor/...' is only truthful when vendor is
+    genuinely empty. (On the [HISTORY-REDACTED] snapshot the false string hit 1770/5127 rows, true in 0.)"""
+    from cisco_toolkit.analyze import _classify_endpoint
+    for v in ("American Power Conversion Corp", "Cisco Systems", "DigiBoard", "Myricom", "Mellanox",
+              "Brocade", "Data Direct Networks", "Some Unlisted Maker Inc"):
+        _cls, _conf, ev = _classify_endpoint(v, "", "", "", False)
+        assert "no vendor" not in ev.lower(), f"false 'no vendor' evidence for resolved vendor {v!r}: {ev!r}"
+    _cls, _conf, ev = _classify_endpoint("", "", "", "", False)           # genuinely no vendor -> honest 'no vendor'
+    assert "no vendor" in ev.lower()

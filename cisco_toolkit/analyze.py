@@ -2580,7 +2580,7 @@ def _classify_endpoint(vendor: str, desc: str, plat: str, etype: str, laa: bool)
         if vendor:
             # a vendor WAS resolved from the OUI but matched no class rule -> say so truthfully. The old 'no
             # vendor signal' string was factually false (contradicted by the row's own vendor column) (audit-4 #13).
-            return "Unknown", "Unknown", f"vendor '{vendor}' (no class rule matched)"
+            return "Unknown", "Unknown", f"vendor '{vendor}' resolved but matched no class rule"
         return "Unknown", "Unknown", "no vendor/description/platform signal"
     rank, cls, ev = max(cands, key=lambda c: c[0])
     return cls, _EP_CONF[rank], ev
