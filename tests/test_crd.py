@@ -347,3 +347,22 @@ def test_crd_tolerates_non_dict_design_blueprint(tmp_path):
     write_crd_docx(out, {"executive_brief": {}, "design_blueprint": "oops", "devices": {"s": {}}}, "x")  # no raise
     import os
     assert os.path.exists(out)
+
+
+def test_crd_and_ops_survive_nondict_sections(tmp_path):
+    """[audit-4 #10 totality] a malformed-but-ingest-valid uploaded snapshot (a TRUTHY non-dict section --
+    executive_brief string, collection_completeness/interfaces/lifecycle_risk list-or-string) made write_crd_docx /
+    write_ops_handbook_docx raise AttributeError -> HTTP 500 from the public webapp upload endpoint -- instead of
+    degrading. Every section read must coerce."""
+    from cisco_toolkit.crd import write_crd_docx
+    from cisco_toolkit.ops import write_ops_handbook_docx
+    cases = [
+        {"devices": {}, "executive_brief": "corrupted"},
+        {"devices": {}, "collection_completeness": [1]},
+        {"devices": {}, "interfaces": [1, 2]},
+        {"devices": {}, "routing_neighbors": ["x"], "l3_forwarding": {"k": "v"}, "service_map": "nope",
+         "lifecycle_risk": "nope", "endpoint_dependencies": [1], "punchlist": [None, "x"]},
+    ]
+    for i, snap in enumerate(cases):
+        write_crd_docx(str(tmp_path / f"crd{i}.docx"), snap, "L")            # must not raise
+        write_ops_handbook_docx(str(tmp_path / f"ops{i}.docx"), snap, "L")   # must not raise

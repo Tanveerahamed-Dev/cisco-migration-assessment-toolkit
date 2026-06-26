@@ -37,8 +37,10 @@ def _snap():
              "hard_cutover_endpoints": 12, "sequence": "hard cutover"},
         ],
         "migration_scenarios": {
-            "per_group": [{"group": "Group 1", "scenario": "parallel-run", "why": "dual-homed"},
-                          {"group": "Group 2", "scenario": "phased", "why": "single-homed"}],
+            # [audit-4 #9] the engine emits 'recommended_scenario' (analyze.compute_migration_scenarios), NOT
+            # 'scenario' -- this fixture used the fabricated key that masked the §4.2 wave-table bug.
+            "per_group": [{"group": "Group 1", "recommended_scenario": "parallel-run", "why": "dual-homed"},
+                          {"group": "Group 2", "recommended_scenario": "phased", "why": "single-homed"}],
             "fleet_recommendation": "Parallel-run the dual-homed estate; window the rest.",
             "scenario_counts": {"parallel-run": 1, "phased": 1},
         },

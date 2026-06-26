@@ -23,18 +23,19 @@ from datetime import datetime
 from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # coerce truthy non-dict/list sections
 
 logger = logging.getLogger(__name__)
 
 
 def _evidence_facts(snap: dict) -> dict:
     """Pull the evidence the CRD primes its sections with — all defensive reads of known shapes."""
-    devices = snap.get("devices") or {}
-    ifaces = snap.get("interfaces") or {}
+    devices = _as_dict(snap.get("devices"))
+    ifaces = _as_dict(snap.get("interfaces"))
     endpoints = 0
     vrfs, n_acl_svis = set(), 0
     for host, ports in ifaces.items():
-        for p, d in (ports or {}).items():
+        for p, d in _as_dict(ports).items():
             d = d or {}
             if (d.get("switchport_mode") or "").lower() == "access" and (d.get("end_host_mac") or "").strip():
                 endpoints += 1
@@ -47,26 +48,28 @@ def _evidence_facts(snap: dict) -> dict:
     # endpoint_dependencies.dual_homed (host MAC observed on two switches) — the SAME source the
     # design blueprint's preserve-dual-homed-endpoints decision reads — so the CRD and the HLD agree
     # on one number instead of the CRD reporting a looser per-port dual_connection tally (A1 SSOT fix).
-    dual = len((snap.get("endpoint_dependencies") or {}).get("dual_homed") or [])
-    rn = snap.get("routing_neighbors") or {}
-    protos = sorted({p.upper() for host in rn for p, nbrs in (rn.get(host) or {}).items() if nbrs})
-    l3f = snap.get("l3_forwarding") or []
+    dual = len(_as_list(_as_dict(snap.get("endpoint_dependencies")).get("dual_homed")))
+    rn = _as_dict(snap.get("routing_neighbors"))
+    protos = sorted({p.upper() for host in rn for p, nbrs in _as_dict(rn.get(host)).items() if nbrs})
+    l3f = _as_list(snap.get("l3_forwarding"))
     # Real FHRP only. The parser writes the literal string "none" when no HSRP/VRRP/GLBP is present,
     # and "none".strip() is truthy — so a bare truthiness test mislabels EVERY gateway VLAN as
     # FHRP-protected (a false-redundancy claim). Mirror the engine's canonical gate
     # `(fhrp or "none") != "none"` (analyze.py) so the CRD agrees with the FHRP Consistency sheet.
-    fhrp_vlans = sorted({str(r.get("vlan")) for r in l3f if (r.get("fhrp", "none") or "none") != "none"})
-    svc = snap.get("service_map") or {}
-    services = [s for s in (svc.get("services") or []) if isinstance(s, dict)]
-    mc = svc.get("multicast") or {}
+    fhrp_vlans = sorted({str(r.get("vlan")) for r in l3f
+                         if isinstance(r, dict) and (r.get("fhrp", "none") or "none") != "none"})
+    svc = _as_dict(snap.get("service_map"))
+    services = [s for s in _as_list(svc.get("services")) if isinstance(s, dict)]
+    mc = _as_dict(svc.get("multicast"))
     mcast_active = any((
         int(mc.get("active_interfaces") or 0), int(mc.get("active_switch_count") or 0),
         len(mc.get("classified_groups") or []), len(mc.get("igmp_queriers") or []),
         any((v or {}).get("operational") for v in (mc.get("ptp") or {}).values()),
     ))
-    lc = (snap.get("lifecycle_risk") or {}).get("summary") or {}
-    coll = (snap.get("collection_completeness") or {}).get("summary") or {}
-    punch = sorted((snap.get("punchlist") or []), key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
+    lc = _as_dict(_as_dict(snap.get("lifecycle_risk")).get("summary"))
+    coll = _as_dict(_as_dict(snap.get("collection_completeness")).get("summary"))
+    punch = sorted([i for i in _as_list(snap.get("punchlist")) if isinstance(i, dict)],
+                   key=lambda i: _SEV_RANK.get(i.get("severity"), 5))
     # isinstance-guard the canonical scale once: a TRUTHY non-dict executive_brief (malformed/slimmed snapshot)
     # slips through `or {}` and crashes .get('scale') -> the whole CRD silently aborts (audit L4).
     _eb = snap.get("executive_brief"); _eb_scale = _eb.get("scale") if isinstance(_eb, dict) else None

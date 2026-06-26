@@ -987,21 +987,31 @@ def vlan_inventory(snap: dict):
     drift, and a narrower access-port-only derivation is only ever an explicitly-labelled subset."""
     names: dict = {}
     vids: set = set()
-    for host, ports in (snap.get("interfaces") or {}).items():
-        for d in (ports or {}).values():
+    _ifaces = snap.get("interfaces")
+    for host, ports in (_ifaces if isinstance(_ifaces, dict) else {}).items():   # coerce: a non-dict interfaces
+        for d in (ports if isinstance(ports, dict) else {}).values():            # block must not crash (audit-4 #10)
+            if not isinstance(d, dict):
+                continue
             v = (d.get("vlan") or "").strip()
             if v.isdigit():
                 vids.add(int(v))
                 nm = (d.get("vlan_name") or "").strip()
                 if nm and int(v) not in names:
                     names[int(v)] = nm
-    for r in (snap.get("l3_forwarding") or []):
+    _l3f = snap.get("l3_forwarding")
+    for r in (_l3f if isinstance(_l3f, list) else []):
+        if not isinstance(r, dict):
+            continue
         v = str(r.get("vlan") or "").strip()
         if v.isdigit():
             vids.add(int(v))
     # IGMP-querier-evidenced active VLANs (gateway may be on an uncollected device) -- see docstring.
-    for q in ((((snap.get("service_map") or {}).get("multicast") or {}).get("igmp_queriers")) or []):
-        v = str((q or {}).get("vlan") or "").strip()
+    _svc = snap.get("service_map")
+    _mc = _svc.get("multicast") if isinstance(_svc, dict) else None
+    for q in ((_mc.get("igmp_queriers") if isinstance(_mc, dict) else None) or []):
+        if not isinstance(q, dict):
+            continue
+        v = str(q.get("vlan") or "").strip()
         if v.isdigit():
             vids.add(int(v))
     return [(v, names.get(v, "")) for v in sorted(vids)]
