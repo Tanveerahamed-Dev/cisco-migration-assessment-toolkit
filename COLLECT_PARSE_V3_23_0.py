@@ -1362,10 +1362,10 @@ def main():
                          "oldest first) -> a trend workbook (Campaign Summary verdict + Timeline w/ chart + "
                          "Burndown). Skips collection and the template.")
     ap.add_argument("--redact",          action="store_true",
-                    help="NEW-V3.23.41: pseudonymize IPs / MACs / serial numbers in the snapshot "
-                         "JSON + embedded HTML explorer (consistent, subnet-preserving; hostnames "
-                         "kept) so the single-file deliverable can be shared without leaking real "
-                         "addressing. Default off.")
+                    help="NEW-V3.23.41: pseudonymize IPs / MACs / serial numbers across the WHOLE output "
+                         "bundle -- the snapshot JSON, the HTML explorer, AND the always-produced .xlsx "
+                         "workbook (consistent, subnet-preserving; hostnames kept) -- so every deliverable "
+                         "can be shared without leaking real addressing. Default off.")
     args = ap.parse_args()
 
     if args.debug_arp:

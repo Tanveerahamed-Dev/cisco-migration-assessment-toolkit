@@ -37,7 +37,9 @@ from the runtime pipeline) excluded.
 There is **no AI/LLM inference path and no telemetry** in the engine. The offline Ask-the-Engineer chat
 answers deterministically from the snapshot (it is not a model), as it states in-product
 (`blast_radius_explorer.html`: "fully offline … no cloud, no model, no telemetry"). Redaction
-(`--redact`, `cisco_toolkit/html.py`) one-way-scrubs secrets before any snapshot/log is written.
+(`--redact`, `cisco_toolkit/html.py`) one-way-scrubs IPs / MACs / serials / secrets across **every** emitted
+deliverable — the snapshot JSON, the HTML explorer, and the always-produced `.xlsx` workbook — so no artifact in
+the shared bundle leaks real addressing.
 
 ## Why this is enforced, not asserted
 A "we're secure / we're offline" claim is exactly the kind of unverifiable marketing the engine's
