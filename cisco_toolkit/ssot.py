@@ -180,6 +180,15 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     if "n_collected" in scale and "complete" in cc:
         check("executive_brief.scale.n_collected", scale.get("n_collected"), cc.get("complete"),
               "collection_completeness.summary.complete")
+    # ...and against an INDEPENDENT raw basis, not just the producer-shared sibling summary.complete: the device
+    # list carries ONLY the blind spots ('the report lists only the blind spots', analyze.py), so collected =
+    # inventory - len(devices). Without this, a coordinated off-by-N drift writing the SAME wrong value to both
+    # scale.n_collected and summary.complete passes -- 'blind' silently reads 'fully collected' (audit-4 #11).
+    _cc_devices = _dotted(snap, "collection_completeness.devices")
+    _inv = _as_int(cc.get("inventory"))
+    if "n_collected" in scale and _inv is not None and isinstance(_cc_devices, list):
+        check("executive_brief.scale.n_collected", scale.get("n_collected"), _inv - len(_cc_devices),
+              "collection_completeness.summary.inventory - len(collection_completeness.devices)")
     if "n_endpoints" in scale and endpoints:
         check("executive_brief.scale.n_endpoints", scale.get("n_endpoints"), len(endpoints),
               "len(endpoint_identity)")
@@ -224,6 +233,12 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
 
     # --- lifecycle bands (per_device is the raw basis) ---------------------------------------
     if per_device:
+        # the lifecycle summary republishes the device count (consumed as the EoL rollup total in analyze.py); it
+        # must reconcile to the raw per_device length, else a lifecycle device-count drift diverges silently from
+        # the SSOT device count (audit-4 #12).
+        if "n_devices" in lc:
+            check("lifecycle_risk.summary.n_devices", lc.get("n_devices"), len(per_device),
+                  "len(lifecycle_risk.per_device)")
         for field, band in _LIFECYCLE_BANDS.items():
             if field in lc:
                 cnt = sum(1 for d in per_device if isinstance(d, dict) and d.get("band") == band)
