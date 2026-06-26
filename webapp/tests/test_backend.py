@@ -1254,3 +1254,28 @@ def test_summarize_survives_nondict_lifecycle_summary():
             "lifecycle_risk": {"summary": "lifecycle not computed (older engine)", "per_device": []}}
     out = summary.summarize(snap)        # must not raise
     assert isinstance(out, dict) and "lifecycle" in out
+
+
+def test_section_device_dossiers_recomputes_stale_unassessed(client):
+    """[audit-4 #20 false-health] a pre-V3.23.174 snapshot bands the uncollected fleet 'Low / routine migration
+    handling' instead of 'Unassessed'; /section/device_dossiers served it verbatim (no recompute fallback unlike
+    the sibling sections), so the live AssessHub Risk Register read blind devices as routine. It must recompute
+    server-side when the stored section is stale."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "h", "client": "x"}).json()["id"]
+    snap = {
+        "devices": {"blind1": {}, "good1": {"model": "C9300", "sw_version": "17.9"}},
+        "health_scores": [{"switch": "blind1", "band": "Insufficient Data", "score": 90},
+                          {"switch": "good1", "band": "Good", "score": 85}],
+        "failure_impact": [], "punchlist": [],
+        "device_dossiers": {"summary": {"bands": {"Low": 1, "Guarded": 0, "Elevated": 0, "Severe": 0}},
+                            "per_device": [{"host": "blind1", "risk_band": "Low", "health_band": "Insufficient Data",
+                                            "verdict": "No stacked risk — routine migration handling."}]},
+    }
+    sid = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("s.json", json.dumps(snap).encode(), "application/json")},
+                      data={"label": "stale"}).json()["id"]
+    data = client.get(f"/api/snapshots/{sid}/section/device_dossiers").json()["data"]
+    assert data["summary"]["bands"].get("Unassessed", 0) >= 1            # blind device surfaced, not silently 'Low'
+    blind = next(d for d in data["per_device"] if d["host"] == "blind1")
+    assert blind["risk_band"] == "Unassessed" and "routine" not in blind["verdict"].lower()

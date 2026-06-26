@@ -295,7 +295,28 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         if name not in snap:
             raise HTTPException(404, f"Section '{name}' not present in this snapshot")
-        return {"section": name, "data": snap[name]}
+        data = snap[name]
+        if name == "device_dossiers":
+            # one-source-of-truth, like the sibling heavy sections (archreview/design/...): a pre-V3.23.174
+            # snapshot bands the uncollected fleet 'Low / routine migration handling' instead of 'Unassessed'
+            # (false-health -- a blind device reads identical to a verified-low one). If the stored section is
+            # stale -- uncollected devices exist but it carries NO 'Unassessed' band -- recompute with the current
+            # engine so the live Risk Register surfaces them as a coverage gap (audit-4 #20).
+            _has_blind = any(isinstance(h, dict) and h.get("band") == "Insufficient Data"
+                             for h in (snap.get("health_scores") or []))
+            _bands = (data.get("summary") or {}).get("bands") if isinstance(data, dict) else None
+            if _has_blind and isinstance(_bands, dict) and not _bands.get("Unassessed"):
+                from cisco_toolkit.analyze import compute_device_dossiers
+                data = compute_device_dossiers(
+                    health_scores=snap.get("health_scores"), failure_impact=snap.get("failure_impact"),
+                    lifecycle_risk=snap.get("lifecycle_risk"), software_risk=snap.get("software_risk"),
+                    platform_health=snap.get("platform_health"), syslog_intelligence=snap.get("syslog_intelligence"),
+                    qos_audit=snap.get("qos_audit"), golden_drift=snap.get("golden_drift"),
+                    security=snap.get("security"), config_hygiene=snap.get("config_hygiene"),
+                    stp_roots=snap.get("stp_roots"), vpc=snap.get("vpc"),
+                    physical_health=snap.get("physical_health"), protocol_health=snap.get("protocol_health"),
+                    move_groups=snap.get("move_groups"))
+        return {"section": name, "data": data}
 
     @app.get("/api/snapshots/{snapshot_id}/graph")
     def snapshot_graph(snapshot_id: int) -> Dict[str, Any]:
