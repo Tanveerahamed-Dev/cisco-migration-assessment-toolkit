@@ -3227,7 +3227,9 @@ function _setFlowEndpoint(ep,slot,h){FLOW_PICK=null;
 function modeSummary(m){
   try{
     if(m==="health"){const hs=healthList(); if(!hs.length)return "";
-      const avg=Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/hs.length);
+      // SSOT: same canonical posture.avg_health the drawer headline uses (excludes uncollected rows) -- the raw
+      // recompute inflated the screen-reader announcement to 49 vs the SSOT 41 (audit-3 #9).
+      const avg=(((SNAP||{}).executive_brief||{}).posture||{}).avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/hs.length);
       let nc=0,np=0; hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);
         if(t==="crit")nc++; else if(t==="risk")np++;});
       return ` ${hs.length} switches scored, average ${avg}${nc?`, ${nc} critical`:""}${np?`, ${np} poor`:""}.`;}
@@ -7877,7 +7879,11 @@ function drawHealth(){
         ${myChains.length?`<div class="sec"><h3>Real SPOFs on this switch <span class="ct">${myChains.length}</span></h3>${chainCards(myChains)}</div>`:`<div class="sec"><p class="faint">No structural SPOFs traced to this switch — its low score is driven by the deductions above, not by topology fragility.</p></div>`}`;
     }}
   // overview
-  const n=hs.length, avg=Math.round(hs.reduce((s,r)=>s+r.score,0)/Math.max(1,n));
+  // SSOT: prefer the engine's canonical posture.avg_health (which EXCLUDES uncollected 'Insufficient Data' rows);
+  // the raw recompute over all rows inflated the headline (49 vs 41) by averaging score-90 uncollected devices as
+  // ~healthy -- contradicting the SSOT value rendered just below in the same drawer (audit-3 #9).
+  const n=hs.length, _po=((SNAP||{}).executive_brief||{}).posture||{},
+        avg=_po.avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
   const bands={ok:0,watch:0,risk:0,crit:0};
   hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);if(bands[t]!=null)bands[t]++;});
   const sorted=hs.slice().sort((a,b)=>a.score-b.score);
@@ -8996,7 +9002,15 @@ const ABQ_AUTO=[
  [/health (score|monitor)|err[- ]?disable|error (counter|rate)|interface error/i,()=>{const hs=(SNAP||{}).health_scores||[];if(!hs.length)return null;
    const b={};for(const r of hs)b[r.band]=(b[r.band]||0)+1;return Object.entries(b).map(([k,n])=>k+": "+n).join(" · ");}],
 ];
-function abqAuto(it){for(const [re,fn] of ABQ_AUTO){if(re.test(it.question||"")){try{const s=fn();if(s)return s;}catch(e){}}}return null;}
+// the ABQ_AUTO rules ALL derive from SWITCH (L1-L4) evidence, so they must only auto-answer questions in domains
+// the switch snapshot actually covers. Without this gate an EAP-TLS / load-balancer / firewall question that merely
+// keyword-matches a switch rule (e.g. "lifecycle", "health") got switch EoL/health/software bands as its evidence
+// and was silently removed from the human queue (audit-3 #3 cross-domain contamination).
+const ABQ_SWITCH_DOMAINS=new Set(["Routing & Switching","Design & Architecture","Migration & Cutover",
+  "Operations & Day-2","Data Center","Applications & Dependencies"]);
+function abqAuto(it){
+  if(it&&it.domain&&!ABQ_SWITCH_DOMAINS.has(it.domain))return null;   // appliance/controller/service domain -> no switch evidence
+  for(const [re,fn] of ABQ_AUTO){if(re.test(it.question||"")){try{const s=fn();if(s)return s;}catch(e){}}}return null;}
 const ABQ_ST={auto:'<span class="pill pl-ok">📊 evidence</span>',pass:'<span class="pill pl-ok">✓ pass</span>',
   flag:'<span class="pill pl-crit">⚠ red flag</span>',skip:'<span class="pill pl-watch">skipped</span>'};
 function abqProg(dom){const items=abqDomains().get(dom)||[];const done=items.filter(i=>ABQ.res[i.id]).length;
@@ -9004,7 +9018,9 @@ function abqProg(dom){const items=abqDomains().get(dom)||[];const done=items.fil
     auto:items.filter(i=>(ABQ.res[i.id]||{}).st==="auto").length};}
 function abqStart(dom){const items=abqDomains().get(dom);if(!items)return abRender(abH_qbank());
   ABQ.dom=dom;ABQ.queue=items;ABQ.idx=0;let auto=0;
-  for(const it of items){if(ABQ.res[it.id])continue;const ev=abqAuto(it);if(ev){ABQ.res[it.id]={st:"auto",ev};auto++;}}
+  for(const it of items){if(ABQ.res[it.id])continue;
+    if(it.go_no_go)continue;   // a GO/NO-GO cutover gate needs a HUMAN attestation -> never silently auto-resolve it from a heuristic (audit-3 #4)
+    const ev=abqAuto(it);if(ev){ABQ.res[it.id]={st:"auto",ev};auto++;}}
   abqSave();const p=abqProg(dom);
   abRender({html:`<h4>${esc(dom)} — engagement interview</h4>
     <div>${p.n} senior-engineer questions · <b>${auto}</b> just auto-answered from collected evidence (📊)${p.done-auto>0?` · ${p.done-auto} answered earlier`:""} · ${p.n-p.done} left for the humans in the room.</div>
