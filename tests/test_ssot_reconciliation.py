@@ -345,3 +345,30 @@ def test_reconcile_n_vlans_no_false_violation_on_slimmed_snapshot():
             "health_scores": [{"switch": f"d{i}", "band": "Good", "score": 80} for i in range(3)]}
     viol = ssot.reconcile(slim)
     assert not any("n_vlans" in v for v in viol), viol
+
+
+def test_reconcile_catches_coordinated_n_collected_drift():
+    """[audit-4 #11 false-health] the n_collected check only compared scale.n_collected to the SIBLING
+    summary.complete (both written by the same producer), so a coordinated off-by-N drift writing BOTH wrong
+    passed -- a fleet-wide 'fully collected' overstatement read clean. Reconcile against the independent raw basis:
+    inventory - len(collection_completeness.devices) (the list of blind spots)."""
+    from cisco_toolkit.ssot import reconcile
+    snap = {"executive_brief": {"scale": {"n_devices": 10, "n_collected": 8}},
+            "collection_completeness": {"summary": {"inventory": 10, "complete": 8},
+                                        "devices": [{"hostname": f"d{i}", "status": "not collected"} for i in range(2)]}}
+    assert reconcile(snap) == []                                    # consistent: 10 inv - 2 blind = 8 collected
+    snap["executive_brief"]["scale"]["n_collected"] = 10           # coordinated drift: BOTH say fully collected
+    snap["collection_completeness"]["summary"]["complete"] = 10
+    assert any("n_collected" in x for x in reconcile(snap))        # caught by the independent device-list basis
+
+
+def test_reconcile_catches_lifecycle_n_devices_drift():
+    """[audit-4 #12 scale-ssot] reconcile's lifecycle loop checked band counts but never
+    lifecycle_risk.summary.n_devices -- a CONSUMED duplicate of the device count (analyze.py EoL rollup) -- so a
+    drift in it diverged silently from the SSOT device count."""
+    from cisco_toolkit.ssot import reconcile
+    snap = {"executive_brief": {"scale": {"n_devices": 3}},
+            "lifecycle_risk": {"summary": {"n_devices": 3, "by_band": {}}, "per_device": [{"band": "Active"}] * 3}}
+    assert reconcile(snap) == []
+    snap["lifecycle_risk"]["summary"]["n_devices"] = 42
+    assert any("lifecycle_risk.summary.n_devices" in x for x in reconcile(snap))
