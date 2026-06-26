@@ -38,6 +38,7 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
+from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
 logger = logging.getLogger(__name__)
 
@@ -1051,7 +1052,8 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
                        "(pip install python-docx to enable the architecture-review deliverable).")
         return
 
-    snap = _as_dict(snap_dict)
+    snap = xml_safe_deep(_as_dict(snap_dict))   # one bad device byte (noncharacter/surrogate) must not abort the docx
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
     ar = _as_dict(snap.get("architecture_review"))
     if not _as_list(ar.get("checks")):
         ar = compute_architecture_review(snap)
