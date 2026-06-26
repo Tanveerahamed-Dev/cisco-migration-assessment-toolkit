@@ -992,3 +992,21 @@ def test_endpoint_classify_apc_legal_name_and_truthful_evidence():
     assert _c2 == "Unknown" and "no vendor" not in ev2.lower() and "Some Unlisted Maker" in ev2   # truthful evidence
     _c3, _q3, ev3 = _classify_endpoint("", "", "", "", False)
     assert _c3 == "Unknown" and "no vendor" in ev3.lower()                    # genuinely no signal still says so
+
+
+def test_endpoint_census_discloses_basis_vs_canonical_n_endpoints():
+    """[audit-4 #17 scale-ssot] the Endpoint Census sheet counts learned MACs on ALL non-trunk ports (a superset),
+    while executive_brief.scale.n_endpoints counts only Access-tagged-port endpoints -> the sheet's row count (5326
+    on [HISTORY-REDACTED]) silently contradicted the Exec Summary headline (5127). The sheet must disclose its basis."""
+    from openpyxl import Workbook
+    import cisco_toolkit.excel as X
+    from cisco_toolkit.model import InterfaceData
+    def port(mode, mac):
+        d = InterfaceData(); d.switchport_mode = mode; d.end_host_mac = mac; d.vlan = "10"; return d
+    ai = {"sw1": {"Gi1/0/1": port("Access", "aaaa.0000.0001"),     # canonical n_endpoints
+                  "Gi1/0/2": port("", "bbbb.0000.0002"),           # superset extra (empty switchport, has a MAC)
+                  "Gi1/0/3": port("Trunk", "cccc.0000.0003")}}     # excluded (trunk)
+    wb = Workbook(); wb.remove(wb.active); X.harden_workbook(wb)
+    X.write_endpoint_census_sheet(wb, ai)
+    blob = " ".join(str(c) for row in wb[X.ENDPOINT_CENSUS_SHEET_NAME].iter_rows(values_only=True) for c in row if c)
+    assert "n_endpoints" in blob and "Access" in blob              # discloses the basis difference vs the canonical

@@ -311,3 +311,20 @@ def test_collect_fmc_tolerates_null_domains_header(tmp_path, monkeypatch):
     monkeypatch.setattr(rc, "_post", lambda *a, **k: FakeLogin())
     monkeypatch.setattr(rc, "_get_json", lambda *a, **k: {"items": []})
     rc.collect_fmc("https://fmc.example", "u", "p", str(tmp_path))   # must not raise
+
+
+def test_collect_vmanage_failsoft_on_truncated_login_body(tmp_path):
+    """[audit-4 #18 totality] collect_vmanage did an UNGUARDED login.read() — urllib raises IncompleteRead /
+    ConnectionReset / timeout on a truncated body (TCP reset, proxy drop, controller mid-restart), propagating as
+    a crash instead of returning [] like the sibling collectors. Must fail soft."""
+    import http.client
+    import cisco_toolkit.rest_collect as RC
+    orig_post, orig_gt, orig_gj = RC._post, RC._get_text, RC._get_json
+    try:
+        RC._post = lambda *a, **k: type("R", (), {"read": lambda s: (_ for _ in ()).throw(
+            http.client.IncompleteRead(b"x", 9999)), "close": lambda s: None})()
+        RC._get_text = lambda *a, **k: "TOK"
+        RC._get_json = lambda *a, **k: {"data": []}
+        assert RC.collect_vmanage("https://vmanage.example:8443", "ro", "pw", str(tmp_path)) == []   # no crash
+    finally:
+        RC._post, RC._get_text, RC._get_json = orig_post, orig_gt, orig_gj

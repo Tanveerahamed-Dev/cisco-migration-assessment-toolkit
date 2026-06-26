@@ -218,7 +218,12 @@ def collect_vmanage(base_url: str, username: str, password: str, out_dir: str, v
     if login is None:
         logger.error("  [vManage] login failed — no collection")
         return []
-    body = login.read().decode("utf-8", "ignore") if hasattr(login, "read") else ""
+    try:                                                             # a truncated login body (IncompleteRead /
+        body = login.read().decode("utf-8", "ignore") if hasattr(login, "read") else ""   # ConnectionReset /
+    except Exception as _e:                                          # timeout) must fail soft, not crash the
+        logger.error(f"  [vManage] login response read failed ({type(_e).__name__}) — no collection")  # whole
+        _safe_close(login)                                           # collection (audit-4 #18 — the sibling
+        return []                                                    # collectors all return [] here)
     _safe_close(login)                                               # drained; release the login fd
     if "<html" in (body or "").lower():                              # vManage serves an HTML login page on auth failure
         logger.error("  [vManage] authentication rejected — no collection")
