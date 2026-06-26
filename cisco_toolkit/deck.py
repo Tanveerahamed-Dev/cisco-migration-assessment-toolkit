@@ -11,6 +11,8 @@ failing. Deterministic content; no network, no device data beyond the snapshot.
 """
 import logging
 
+from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (the deck's single text sink)
+
 logger = logging.getLogger(__name__)
 
 # Topic-informed palette (enterprise network risk): a dominant navy with an ice-blue support tone, white
@@ -37,9 +39,11 @@ _BODY = "Calibri"
 
 
 def _clean(s) -> str:
-    """Repair the 'Â·' mojibake that the cross-axis headlines carry for their '·' separator, so the deck
-    reads cleanly regardless of how upstream encoded it."""
-    return (str(s) if s is not None else "").replace("Â·", "·").replace("Â", "")
+    """Repair the 'Â·' mojibake the cross-axis headlines carry for their '·' separator AND strip the XML-illegal
+    chars (C0 controls, U+FFFE/U+FFFF noncharacters, lone surrogates) that abort python-pptx at save -- the same
+    class the workbook/docx are hardened against. _clean is applied to EVERY run's text (the single text sink at
+    text()/chip()), so one bad device byte can no longer lose the whole steering-committee deck."""
+    return xml_safe((str(s) if s is not None else "").replace("Â·", "·").replace("Â", ""))
 
 
 def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> None:
@@ -281,6 +285,9 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     fi = sorted((snap.get("failure_impact") or []),
                 key=lambda r: -(int(r.get("stranded") or 0)))
     keystones = [r for r in fi if int(r.get("stranded") or 0) > 0][:5]
+    # off-scan-gateway records carry no usable blast radius (audit-3 #7); count them so an INDETERMINATE estate
+    # is not mistaken for a well-distributed one (audit-4 #8 false-health).
+    n_indet = sum(1 for r in fi if int(r.get("off_scan_gw_vlans") or 0) > 0)
     text(s, 0.7, 1.95, W - 1.4, 0.5,
          [("Ranked by migration blast radius — the collateral endpoints stranded if the switch drops "
            "during its move. Sequence and protect these first.", 13, _MUTED, False)])
@@ -295,6 +302,15 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
                    (f"   {r.get('vlans_impacted', 0)} VLAN(s) · {r.get('hard', 0)} hard-partitioned", 12, _MUTED, False)],
                   [(_clean(r.get("detail", "")), 11, _INK, False)]], space=1)
             y += 0.92
+    elif not fi or n_indet:
+        # blast radius NOT computed (no failure_impact) or INDETERMINATE (off-scan gateways) -> a coverage gap,
+        # NOT a clean bill. Render muted (not _OK green) so a blind estate never reads as 'well distributed'.
+        msg = ("Blast radius not assessable — the failure-impact analysis was not computed for this snapshot "
+               "(thin or uploaded data). Redundancy is UNKNOWN, not verified well-distributed."
+               if not fi else
+               f"Blast radius INDETERMINATE — {n_indet} switch(es) have an off-scan gateway, so their removal "
+               "impact could not be modelled. This is a coverage gap, not a clean bill of distribution.")
+        text(s, 0.7, y, W - 1.4, 0.9, [(msg, 14, _MUTED, True)])
     else:
         text(s, 0.7, y, W - 1.4, 0.5,
              [("No switch strands collateral endpoints on removal — dependency is well distributed.", 14, _OK, True)])
