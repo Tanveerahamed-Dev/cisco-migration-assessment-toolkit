@@ -1128,7 +1128,11 @@ function parseVlanList(str){const out=new Set();if(!str)return out;
     const m=tok.match(/^(\d+)-(\d+)$/);
     if(m){for(let v=+m[1];v<=+m[2];v++)out.add(v);}else if(/^\d+$/.test(tok))out.add(+tok);}return out;}
 function trunkAllowedSet(str){const s=(str||"").trim().toLowerCase();
-  if(!s||s==="all")return null;if(s==="none")return new Set();return parseVlanList(str);}
+  // A blank allowed-list is 'none'/uncaptured/VTP-off in the engine -- NEVER the all-default (Cisco's all-default
+  // is emitted as '1-4094', which parses to the full set below). So treat blank as allow-NONE, matching the
+  // canonical analyze._link_carries (_vlan_in_ranges(vid,'')==False); the old null='all' over-claimed forwarding
+  // across under-collected trunks the Python model leaves not-carried (audit-4 #14).
+  if(s==="all")return null;if(!s||s==="none")return new Set();return parseVlanList(str);}
 function sviVid(i){const m=(i.port||"").match(/^Vlan(\d+)$/i);if(m)return +m[1];
   if(i.vlan&&/^\d+$/.test(i.vlan))return +i.vlan;return null;}
 function isSvi(i){return /^Vlan\d+$/i.test(i.port||"")||!!(i.svi_ip&&i.svi_ip.trim());}
@@ -1177,7 +1181,16 @@ function buildModel(snap){
         for(const x of fwd)L.fwd.add(x);for(const x of blk)L.blk.add(x);
         if(host===L.a)L.allowedA=allowed;else L.allowedB=allowed;   // per-end allowed list (asymmetry-aware; null = "all", empty Set = "none")
         L.portChannel=L.portChannel||pc;}
-      else{linkKey.set(key,links.length);links.push({a:host,aPort:port,b:nbr,bPort:np,portChannel:pc,fwd,blk,allowedA:allowed,allowedB:undefined});}
+      else{
+        // Pull the FAR end's STP/allowed directly from nbr's reverse interface, so a non-resolving reverse CDP
+        // device-id (site/role-suffixed, e.g. '…-ENDOH', which never creates its own half-link) cannot DROP the
+        // far end's stp_blk_vlans -> a confident forwarding verdict across an STP-blocked trunk the Python model
+        // reads 'blk' (audit-4 #4). Idempotent if the reverse end DOES resolve and merges again above.
+        let allowedB=undefined; const _fd=(ifaces[nbr]||{})[np];
+        if(_fd){for(const x of parseVlanList(_fd.stp_fwd_vlans))fwd.add(x);
+                for(const x of parseVlanList(_fd.stp_blk_vlans)){blk.add(x);vlans.add(x);}
+                allowedB=trunkAllowedSet(_fd.trunk_allowed_vlans);}
+        linkKey.set(key,links.length);links.push({a:host,aPort:port,b:nbr,bPort:np,portChannel:pc,fwd,blk,allowedA:allowed,allowedB});}
       continue;}
     if(isAccessEndpoint(d)){const vid=(d.vlan&&/^\d+$/.test(d.vlan))?+d.vlan:null;if(vid!=null)addEp(host,vid,1);}}
   const adj=new Map(hosts.map(h=>[h,[]]));
@@ -1202,7 +1215,10 @@ function linkCarries(L,vid){
   // the old union-of-allowed hid). null/undefined allowed = "all" (permissive); empty Set = "none".
   if(L.allowedA!=null&&!L.allowedA.has(vid))return "";
   if(L.allowedB!=null&&!L.allowedB.has(vid))return "";
-  if(L.fwd.has(vid))return "fwd";if(L.blk.has(vid))return "blk";return "fwd";}
+  // STP-blocked on EITHER end -> the VLAN does not cross (the blocking port discards), matching the canonical
+  // analyze._link_carries. The old fwd-first order let a VLAN forwarding on one end override a block on the other
+  // (audit-4 #4), so check blk first.
+  if(L.blk.has(vid))return "blk";if(L.fwd.has(vid))return "fwd";return "fwd";}
 function vlanComponents(model,vid,removed=null,backup=false){
   const part=new Set();
   for(const h of model.hosts){if(h===removed)continue;
@@ -4295,6 +4311,18 @@ function flowBetween(s,d){
     F.aclVerdicts=F.aclFlags.map(a=>{const rules=aclRules(a.host,a.name);
       const v=rules?evalAcl(rules,flow,a.host):{action:"indeterminate",rule:null,idx:-1,nobody:true};
       return Object.assign({},a,{verdict:v.action,rule:v.rule,idx:v.idx,implicit:v.implicit,nobody:v.nobody});});}
+  // G2b (audit-4 #1): fold an ACL DENY into the verdict BEFORE claiming delivery. The gateway drops the packet,
+  // so the single-flow headline must read BLOCKED — not the unconditional green 'REACHABLE' it printed while the
+  // engine's OWN evalAcl said deny. This matches the Reachability Matrix (reach = l3 && acl!=='deny') and the
+  // cross-layer ladder, which already fold the deny; only this headline was never updated.
+  const _aclDeny=(F.aclVerdicts||[]).find(v=>v.verdict==="deny");
+  if(_aclDeny){
+    F.reachable=false; F.aclBlocked=true;
+    F.verdict=`BLOCKED — ACL ${_aclDeny.name} on ${shortName(_aclDeny.host)} denies this flow`;
+    F.reason=`ACL ${_aclDeny.name} on ${_aclDeny.host} denies ${FLOW_PROTO}${(FLOW_PROTO==="tcp"||FLOW_PROTO==="udp")?"/"+FLOW_DPORT:""} (${_aclDeny.idx>=0?"rule "+(_aclDeny.idx+1):"implicit deny"}).`;
+    hop("L4",F.reason,true);                                            // the decisive blocking hop (L3/L4 ACL)
+    return F;
+  }
   seg(dv,dgw,d.host);
   hop("L1",`${d.host} · ${d.port} (access, VLAN ${dv}) → endpoint ${d.ip||d.mac}`,false);
   F.mtu=pathMtu(F,s,d); F.reachable=true; F.verdict="REACHABLE — L3 (routed via gateway)";
