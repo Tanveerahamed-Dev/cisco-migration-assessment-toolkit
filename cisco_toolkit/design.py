@@ -24,6 +24,7 @@ from datetime import datetime
 
 from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.textutils import xml_safe, xml_safe_deep
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                        "(pip install python-docx to enable the HLD/LLD design deliverable).")
         return
 
-    snap = snap_dict or {}
+    # Deep-sanitize ALL device-derived text up front so a Unicode noncharacter (U+FFFE/U+FFFF) or lone surrogate
+    # in any field cannot abort the whole DOCX at XML serialization ("All strings must be XML compatible"). Every
+    # string the generator writes -- direct paragraphs (_label_run), tables, the title label -- flows from these.
+    snap = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
     NAVY = RGBColor(0x1F, 0x38, 0x64)
     GREY = RGBColor(0x59, 0x59, 0x59)
     doc = Document()

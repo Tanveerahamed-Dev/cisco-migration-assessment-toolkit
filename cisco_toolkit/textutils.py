@@ -23,6 +23,36 @@ PHYSICAL_IFACE_RE = re.compile(
 _JUNK_IFACE_TOKENS  = {"port","ports","capability","status","native","vlan","name","duplex","speed","type"}
 _TRUNK_STATUS_WORDS = {"trunking","trnk-bndl","notconnect","connected","disabled","suspended"}
 
+# Characters that abort XML serialization (python-docx / openpyxl both serialize to XML): the C0 control chars
+# XML 1.0 forbids -- 0x00-0x08, 0x0B-0x0C, 0x0E-0x1F (tab 0x09 / newline 0x0A / CR 0x0D stay legal) -- plus the
+# U+FFFE / U+FFFF noncharacters and the lone surrogates U+D800-U+DFFF. Device-derived free-text (a CDP/LLDP
+# neighbour name, an interface description, a banner) is collected with errors='ignore', which passes valid-UTF-8
+# control bytes through, so a single one of these still aborts the ENTIRE .docx / .xlsx at save -- with a
+# ValueError "All strings must be XML compatible" (noncharacter) or a UnicodeEncodeError (lone surrogate).
+_XML_ILLEGAL_RE = re.compile(
+    "[\x00-\x08\x0b\x0c\x0e-\x1f" + chr(0xD800) + "-" + chr(0xDFFF) + chr(0xFFFE) + chr(0xFFFF) + "]")
+
+
+def xml_safe(value):
+    """Strip the characters that make XML serialization raise, so one bad byte in device-derived text cannot abort
+    an entire .docx / .xlsx deliverable. Non-strings pass through unchanged (callers stringify when they must).
+    Canonical, shared by the excel + docx generators (excel._xls_sanitize delegates here)."""
+    if not isinstance(value, str):
+        return value
+    return _XML_ILLEGAL_RE.sub("", value)
+
+
+def xml_safe_deep(obj):
+    """Recursively xml_safe() every string in a JSON-like structure (dict keys + values, list items, scalars).
+    A docx/xlsx generator can sanitize the WHOLE snapshot once at entry with this, so no device-derived string --
+    a CDP name nested in interfaces, a hostname used as a dict key, a failure-impact host -- can carry an
+    XML-illegal char into serialization regardless of which field it lands in."""
+    if isinstance(obj, dict):
+        return {xml_safe(k): xml_safe_deep(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [xml_safe_deep(v) for v in obj]
+    return xml_safe(obj)
+
 
 def normalize_ifname(s: str) -> str:
     if not s: return ""

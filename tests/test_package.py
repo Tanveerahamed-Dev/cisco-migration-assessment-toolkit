@@ -430,3 +430,16 @@ def test_collect_global_arp_attribution_is_order_independent(tmp_path):
     assert src1 == src2, (src1, src2)        # same provenance regardless of order
     m = next(iter(arp1))                      # the single normalized MAC key
     assert arp1[m] == "10.0.10.5" and src1[m] == "access-a"   # deterministic winner: 'access-a' < 'access-b'
+
+
+def test_xml_safe_strips_xml_illegal_chars_and_deep_walks():
+    """The shared sanitizer behind the excel + docx generators: strip XML-illegal chars (C0 controls except
+    tab/newline/CR, U+FFFE/U+FFFF noncharacters, lone surrogates), pass non-strings through, and deep-walk a
+    JSON-like structure over both keys and values."""
+    from cisco_toolkit.textutils import xml_safe, xml_safe_deep
+    bad = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800) + chr(0xDFFF) + "\x00\x07\x1f"
+    assert xml_safe("ok" + bad + "x") == "okx"
+    assert xml_safe("keep\ttab\nnl\rcr") == "keep\ttab\nnl\rcr"      # legal XML whitespace preserved
+    assert xml_safe(5) == 5 and xml_safe(None) is None              # non-strings pass through
+    out = xml_safe_deep({"h" + bad: ["a" + bad, {"k": "v" + bad}], "n": 3})
+    assert out == {"h": ["a", {"k": "v"}], "n": 3}                  # keys + values + nesting all cleaned
