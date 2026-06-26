@@ -2134,3 +2134,56 @@ def test_eoldb_compact_3560c_2960c_not_classic_family_dates():
     # the longer -CX prefix still wins (not shadowed by the new -C row), and the bare classic PID is unchanged
     assert lifecycle_for("WS-C3560CX-12PC-S")["platform"] == "Catalyst 3560-CX"
     assert lifecycle_for("WS-C3560-48PS")["platform"] == "Catalyst 3560"
+
+
+def test_parse_ospf_neighbors_p2p_unnumbered_state():
+    """[audit-4 #3 false-health] a point-to-point/unnumbered OSPF neighbor renders State as 'FULL/  -' (the role is
+    a whitespace-separated dash, TWO tokens), which the single-token State regex dropped -> the whole row (incl. a
+    stuck EXSTART fault) vanished, reading identical to a device with no OSPF. The dominant network type on routed
+    cores + ALL WAN links."""
+    from cisco_toolkit.parse import parse_ospf_neighbors
+    hdr = "Neighbor ID     Pri   State           Dead Time   Address         Interface\n"
+    out = parse_ospf_neighbors(hdr +
+                               "10.1.1.2  0  FULL/  -  00:00:39  10.1.12.2  Gi0/1\n"
+                               "10.1.1.3  0  EXSTART/  -  00:00:33  10.1.13.3  Gi0/2\n")
+    by = {r["neighbor"]: r for r in out}
+    assert len(out) == 2
+    assert by["10.1.1.2"]["state"].upper().startswith("FULL") and by["10.1.1.2"]["interface"] == "Gi0/1"
+    assert by["10.1.1.3"]["state"].upper().startswith("EXSTART")          # the stuck fault is kept -> flagged High
+    b = parse_ospf_neighbors(hdr + "10.1.1.4  1  FULL/DR  00:00:31  10.1.14.4  Gi0/3\n")
+    assert b[0]["state"] == "FULL/DR" and b[0]["neighbor"] == "10.1.1.4"  # broadcast form unchanged (no regression)
+
+
+def test_parse_bgp_summary_asdot_4byte_as():
+    """[audit-4 #19 false-health] under 'bgp asnotation dot' the 4-byte AS renders asdot '1.100' (a dot), which the
+    pure-integer AS regex rejected -> the whole peer row (incl. a down Idle peer) dropped -> the down peer read
+    healthy."""
+    from cisco_toolkit.parse import parse_bgp_summary
+    out = parse_bgp_summary("Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd\n"
+                            "10.0.0.2 4 1.100 120 118 5 0 0 01:50:01 4\n"
+                            "10.0.0.3 4 1.101 0 0 1 0 0 never Idle\n")
+    by = {r["neighbor"]: r for r in out}
+    assert len(out) == 2
+    assert by["10.0.0.2"]["as"] == "1.100" and by["10.0.0.2"]["state"] == "4"
+    assert by["10.0.0.3"]["as"] == "1.101" and by["10.0.0.3"]["state"] == "Idle"   # down peer kept
+    # asplain still parses (no regression)
+    p = parse_bgp_summary("Neighbor V AS Up/Down State/PfxRcd\n10.0.0.9 4 65200 never Idle\n")
+    assert p[0]["as"] == "65200" and p[0]["state"] == "Idle"
+
+
+def test_parse_vpc_multiword_consistency_and_reason():
+    """[audit-4 #16 format-fidelity] real NX-OS 'show vpc' member rows carry MULTI-WORD Consistency ('Not
+    Applicable') and Reason ('Consistency Check Not Performed') columns; the single-token-per-column regex
+    truncated consistency to 'not' and folded reason words into active-vlans ('Check Not -') on every down* leg."""
+    from cisco_toolkit.parse import parse_vpc
+    t = ("vPC domain id : 100\nNumber of vPCs configured : 1\n\nvPC status\n"
+         "Id Port Status Consistency Reason Active vlans\n"
+         "-- ---- ------ ----------- ------ ------------\n"
+         "50 Po50 down* Not Applicable Consistency Check Not Performed -\n")
+    v = parse_vpc(t)["vpcs"][0]
+    assert v["consistency"] == "not applicable" and v["vlans"] == "-"        # was 'not' / 'Check Not -'
+    t2 = ("vPC domain id : 100\nNumber of vPCs configured : 1\n\nvPC status\n"
+          "Id Port Status Consistency Reason Active vlans\n"
+          "1 Po1 up success success 1,10,20-23\n")
+    v2 = parse_vpc(t2)["vpcs"][0]
+    assert v2["consistency"] == "success" and v2["vlans"] == "1,10,20-23"    # healthy row unaffected

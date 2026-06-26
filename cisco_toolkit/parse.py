@@ -34,9 +34,14 @@ def parse_ospf_neighbors(output: str) -> List[Dict[str, str]]:
     """'show ip ospf neighbor' -> [{neighbor, state, address, interface}]."""
     rows = []
     for line in output.splitlines():
-        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\S+)\s+\S+\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)", line)
+        # State is '<state>/<role>'. On a point-to-point / unnumbered / sham-link interface (routed cores + ALL
+        # WAN links) the role is a dash SEPARATED BY WHITESPACE -- 'FULL/  -' -> two tokens -- so the State must
+        # match '<word>/<optional-space><role>' too, else the whole row (incl. a stuck EXSTART/  - fault) is
+        # dropped and reads identical to a device with no OSPF (audit-4 #3). Internal whitespace is then collapsed
+        # so the state reads 'FULL/-' (the broadcast 'FULL/DR' form is unchanged).
+        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\S+/\s*\S+|\S+)\s+\S+\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)", line)
         if m:
-            rows.append({"neighbor": m.group(1), "state": m.group(2),
+            rows.append({"neighbor": m.group(1), "state": re.sub(r"\s+", "", m.group(2)),
                          "address": m.group(3), "interface": normalize_ifname(m.group(4))})
     return rows
 
@@ -75,7 +80,9 @@ def parse_bgp_summary(output: str) -> List[Dict[str, str]]:
         # `[0-9A-Fa-f:]+:[0-9A-Fa-f:]+` had two adjacent unbounded `+` groups overlapping on `:`, so a long
         # all-hex/colon line (a garbled/attacker-supplied capture) caused O(n^2) backtracking (ReDoS). Bounding
         # the run to 45 chars makes each line linear while still matching every real IPv6 (incl. `::`-compressed).
-        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]+:[0-9A-Fa-f:]{1,44})\s+\d+\s+(\d+)\s+.*\s(\S+)\s*$", line)
+        # AS column is asplain (\d+) OR asdot 4-byte '1.100' under `bgp asnotation dot` -> allow the dotted form,
+        # else the whole peer row (incl. a down Idle/Active peer) is dropped and reads Established (audit-4 #19).
+        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]+:[0-9A-Fa-f:]{1,44})\s+\d+\s+(\d+(?:\.\d+)?)\s+.*\s(\S+)\s*$", line)
         if m:
             rows.append({"neighbor": m.group(1), "as": m.group(2), "state": m.group(3)})
     return rows
@@ -2545,10 +2552,22 @@ def parse_vpc(output: str) -> dict:
     vs = re.search(r"vPC[ ]status\b.*?\n(.*)$", output, re.IGNORECASE | re.DOTALL)
     if vs:
         for line in vs.group(1).splitlines():
-            m = re.match(r"^\s*(\d+)\s+(Po\S+)\s+(\S+)\s+(\S+)\s+\S+\s+(.*)$", line, re.IGNORECASE)
-            if m:
+            # Columns are 'id Port Status Consistency Reason Active-vlans', but on a real down* leg Consistency is
+            # the TWO-word 'Not Applicable' and Reason is the multi-word 'Consistency Check Not Performed' -- the
+            # old single-\S+-per-column regex truncated consistency to 'not' and folded reason words into vlans
+            # ('Check Not -') fleet-wide (audit-4 #16). Active-vlans is ALWAYS a vlan-list/'-' shaped LAST token
+            # (never a reason word), so split it off, then read Consistency as the known-value prefix of the rest.
+            m = re.match(r"^\s*(\d+)\s+(Po\S+)\s+(\S+)\s+(.*)$", line, re.IGNORECASE)
+            if m and m.group(4).strip():
+                toks = m.group(4).split()
+                vlans = ""
+                if toks and re.fullmatch(r"[\d,\-]+", toks[-1]):
+                    vlans = toks[-1]; toks = toks[:-1]
+                cons_src = " ".join(toks)
+                cm = re.match(r"(Not Applicable|success|failed)", cons_src, re.IGNORECASE)
+                consistency = (cm.group(1) if cm else (toks[0] if toks else "")).lower()
                 out["vpcs"].append({"id": m.group(1), "port": m.group(2), "status": m.group(3).lower(),
-                                    "consistency": m.group(4).lower(), "vlans": m.group(5).strip()})
+                                    "consistency": consistency, "vlans": vlans})
     if out["domain_id"] is None and not out["vpcs"] and not out["peer_link"]:
         return {}
     return out
