@@ -385,7 +385,9 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
             pilot_mark = " (PILOT)" if f["pilot"] and f["pilot"].get("group") == g else ""
             rows.append((str(g) + pilot_mark, len(_as_list(r.get("switches"))),
                          _as_int(r.get("endpoints")), r.get("readiness") or "—",
-                         s.get("scenario") or "—",
+                         # the engine emits 'recommended_scenario' (every other consumer reads it); 'scenario' is a
+                         # key it never emits, so the §4.2 Scenario column was '—' for every wave (audit-4 #9)
+                         s.get("recommended_scenario") or "—",
                          (f"{hard} switch(es) / {_as_int(w.get('hard_cutover_endpoints'))} endpoint(s)"
                           if hard else "none"),
                          len(_as_list(f["by_wave"].get(g)))))
