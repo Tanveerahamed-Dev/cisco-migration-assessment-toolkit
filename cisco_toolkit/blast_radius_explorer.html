@@ -9010,8 +9010,10 @@ const ABQ_AUTO=[
  [/spanning[- ]?tree|stp\b|root (bridge|placement)/i,()=>{const sr=(SNAP||{}).stp_roots||{};if(!Object.keys(sr).length)return null;
    let hosts=0;const dv=new Set();for(const vm of Object.values(sr)){let r=false;for(const [v,x] of Object.entries(vm||{})){if(x&&x.is_root){r=true;if(+x.root_priority>=32768)dv.add(v);}}if(r)hosts++;}
    return `${hosts} in-scan switch(es) hold a root; ${dv.size} VLAN(s) rooted by default election (priority ≥32768)`;}],
- [/fhrp|hsrp|vrrp|first[- ]?hop|standby gateway|gateway redundan/i,()=>{let s=0,c=0;for(const v of MODEL.vlans){const g=MODEL.gateways.get(v);if(!g||!g.size)continue;if(g.size===1)s++;else if(MODEL.fhrp.get(v))c++;}
-   return `${c} VLAN(s) FHRP-covered · ${s} single-gateway (in-scan view)`;}],
+ [/fhrp|hsrp|vrrp|first[- ]?hop|standby gateway|gateway redundan/i,()=>{let s=0,c=0,h=0;for(const v of MODEL.vlans){const g=MODEL.gateways.get(v);if(!g||!g.size)continue;if(g.size===1)s++;else if(MODEL.fhrp.get(v))c++;else h++;}
+   /* audit-5 FH#5: a VLAN with 2+ gateways but NO FHRP is the first-hop-redundancy HAZARD (the abH_fhrpgaps chat
+      surface flags it) -- the old summary counted only c/s and silently dropped these, reading as 'all fine'. */
+   return `${c} VLAN(s) FHRP-covered · ${s} single-gateway · ${h} multi-gateway but NO FHRP — first-hop redundancy gap (in-scan view)`;}],
  [/end[- ]of[- ](life|support)|\beol\b|ldos|lifecycle|hardware (refresh|age)/i,()=>{const sm=((SNAP||{}).lifecycle_risk||{}).summary;if(!sm)return null;
    return Object.entries(sm.by_band||{}).map(([k,n])=>k+": "+n).join(" · ");}],
  [/port (capacity|util|density)|free ports|poe (budget|head)/i,()=>{const c=(SNAP||{}).capacity||[];if(!c.length)return null;
@@ -9036,9 +9038,22 @@ const ABQ_AUTO=[
 // and was silently removed from the human queue (audit-3 #3 cross-domain contamination).
 const ABQ_SWITCH_DOMAINS=new Set(["Routing & Switching","Design & Architecture","Migration & Cutover",
   "Operations & Day-2","Data Center","Applications & Dependencies"]);
+// audit-5 CA#0/FH#14: ABQ_AUTO rules match bare TOPIC keywords, so a question that merely MENTIONS a topic got
+// switch evidence stamped as its answer and was silently removed from the human queue even when the evidence does
+// not actually answer it. Two guards: (1) a process/ownership/planning/attestation question ("who owns…", "what
+// is your standard…", "has … been tested", "how will…") is a HUMAN judgement, never an evidence auto-answer;
+// (2) the STP root-placement rule (ABQ_AUTO[0]) cannot speak to STP PROTECTION (BPDU/Root/Loop Guard, storm-
+// control) -- a different fact than where the root bridge sits. State questions (r&s-01 "which STP mode / where
+// are the root bridges", r&s-03 FHRP deployment, etc.) are unaffected and still auto-answer.
+const ABQ_NON_AUTO=/who (owns|approves|is responsible)|your standard|standard (pre-?check|for |operating|hardening|naming)|how do you (track|enforce|measure|manage|govern)|how is compliance|been (tested|validated|done)\b|validation (has|have|been)|how will\b|will be (enabled|deployed|rolled|re-?routed|used)|do you plan|is it documented|governance|runbook|\braci\b|sign[- ]?off/i;
+const ABQ_STP_PROTECTION=/bpdu|loop guard|storm[- ]control|stp protection/i;
 function abqAuto(it){
   if(it&&it.domain&&!ABQ_SWITCH_DOMAINS.has(it.domain))return null;   // appliance/controller/service domain -> no switch evidence
-  for(const [re,fn] of ABQ_AUTO){if(re.test(it.question||"")){try{const s=fn();if(s)return s;}catch(e){}}}return null;}
+  const q=it.question||"";
+  if(ABQ_NON_AUTO.test(q))return null;                                // process/governance/planning/attestation -> human judgement, not evidence
+  for(const [re,fn] of ABQ_AUTO){if(re.test(q)){
+    if(re===ABQ_AUTO[0][0]&&ABQ_STP_PROTECTION.test(q))continue;      // root-placement rule can't answer BPDU/Root/Loop Guard
+    try{const s=fn();if(s)return s;}catch(e){}}}return null;}
 const ABQ_ST={auto:'<span class="pill pl-ok">📊 evidence</span>',pass:'<span class="pill pl-ok">✓ pass</span>',
   flag:'<span class="pill pl-crit">⚠ red flag</span>',skip:'<span class="pill pl-watch">skipped</span>'};
 function abqProg(dom){const items=abqDomains().get(dom)||[];const done=items.filter(i=>ABQ.res[i.id]).length;
