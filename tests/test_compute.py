@@ -1151,3 +1151,29 @@ def test_framework_coverage_mapping_is_coverage_honest():
     assert "not a full" in fc["note"].lower() and "config" in fc["scope"].lower()
     # rollup counts
     assert fw["NIST"]["n_fail"] >= 2 and fw["NIST"]["n_assessed"] >= 4
+
+
+def test_design_traceability_matrix_is_coverage_honest():
+    """[W3-7] the design TRACEABILITY MATRIX -- one row per RECOMMENDED decision, tracing decision -> CCDE principle
+    (id+title) -> citation -> evidence (summary + snapshot field paths + devices). A pure renderer over the data
+    already on each decision; an uncited decision is flagged '(uncited)', NEVER given a fabricated reference."""
+    from cisco_toolkit.design import build_design_traceability
+    snap = {"design_blueprint": {"decisions": [
+        {"status": "recommended", "title": "Enforce SNMPv3", "priority": "Critical",
+         "principle": {"id": "mgmt-secure-protocols", "title": "Secure management protocols", "citation": "CCDE Session 19"},
+         "evidence": {"summary": "3 device(s) fail", "devices": ["sw1", "sw2", "sw3"],
+                      "fields": ["security[host].findings[].status"]}},
+        {"status": "needs-requirement", "title": "Introduce FHRP", "principle": {}, "evidence": {}},   # excluded: not recommended
+        {"status": "recommended", "title": "Uncited change", "priority": "Low", "principle": {"id": "x"}, "evidence": {}},
+    ]}}
+    rows = build_design_traceability(snap)
+    assert len(rows) == 2                                  # only the recommended decisions are traced
+    r = next(x for x in rows if x["decision"] == "Enforce SNMPv3")
+    assert "mgmt-secure-protocols" in r["principle"] and "Secure management protocols" in r["principle"]
+    assert r["citation"] == "CCDE Session 19"
+    assert "security[host].findings[].status" in r["fields"]
+    assert "sw1" in r["devices"]
+    # coverage-honest: an uncited recommended decision is flagged, never fabricated
+    assert next(x for x in rows if x["decision"] == "Uncited change")["citation"] == "(uncited)"
+    # total on junk input
+    assert build_design_traceability(None) == [] and build_design_traceability({"design_blueprint": "oops"}) == []

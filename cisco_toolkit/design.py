@@ -67,6 +67,34 @@ def _segmentation_facts(snap: dict):
     return vrfs, n_acl_svis, n_svis
 
 
+def build_design_traceability(snap_dict: dict) -> list:
+    """W3-7: the design TRACEABILITY MATRIX -- one row per RECOMMENDED design decision, tracing it to its CCDE
+    principle (id + title), the published citation, and the collected evidence (summary + the snapshot field paths
+    + devices). A pure renderer over data each decision already carries (principle + citation + evidence); NO new
+    compute. COVERAGE-HONEST: a decision with no citation is shown '(uncited)', never given a fabricated reference.
+    Total -- safe on None / a non-dict design_blueprint."""
+    bp = (snap_dict or {}).get("design_blueprint") if isinstance(snap_dict, dict) else None
+    bp = bp if isinstance(bp, dict) else {}
+    rows = []
+    for d in (bp.get("decisions") or []):
+        if not isinstance(d, dict) or d.get("status") != "recommended":
+            continue
+        pr = d.get("principle") if isinstance(d.get("principle"), dict) else {}
+        ev = d.get("evidence") if isinstance(d.get("evidence"), dict) else {}
+        pid = str(pr.get("id") or "").strip()
+        ptitle = str(pr.get("title") or "").strip()
+        rows.append({
+            "decision": str(d.get("title") or "").strip(),
+            "priority": str(d.get("priority") or "").strip(),
+            "principle": (f"{pid} — {ptitle}".strip(" —")) or "(no principle)",
+            "citation": str(pr.get("citation") or "").strip() or "(uncited)",
+            "evidence": str(ev.get("summary") or "").strip(),
+            "fields": ", ".join(f for f in (ev.get("fields") or []) if isinstance(f, str)),
+            "devices": ", ".join(str(x) for x in (ev.get("devices") or [])[:8]),
+        })
+    return rows
+
+
 def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None:
     """Emit the As-Built Network Design Document (HLD + LLD) to `output_path`. Fail-soft: a missing
     python-docx is a warning + skip; any unexpected render error is logged, never raised."""
@@ -564,6 +592,17 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                 table(["Design principle", "Recommended pattern", "Source"],
                       [(it.get("title"), it.get("recommended_action"), it.get("citation")) for it in items],
                       widths=[1.9, 3.0, 1.9])
+
+        trace = build_design_traceability(snap_dict)        # W3-7: design traceability matrix (audit trail)
+        if trace:
+            doc.add_heading("4.5 Design traceability matrix", level=2)
+            doc.add_paragraph(
+                "Audit trail — every recommended decision above, traced to the CCDE principle and published source "
+                "that justify it, plus the collected evidence (and the snapshot field paths) it stands on. A "
+                "decision with no citation is shown '(uncited)', never given a manufactured reference.")
+            table(["Design decision", "CCDE principle", "Citation", "Evidence", "Source fields"],
+                  [(r["decision"], r["principle"], r["citation"], r["evidence"], r["fields"] or "—") for r in trace],
+                  widths=[1.5, 1.6, 1.2, 1.9, 1.6])
     else:
         doc.add_paragraph(
             "The assessment's consolidated punch-list, read as design intent: the changes the target design "
