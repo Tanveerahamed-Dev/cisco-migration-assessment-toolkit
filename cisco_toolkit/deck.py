@@ -151,14 +151,16 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         text(s, 0.7, 0.95, W - 1.4, 0.9, [(title, 32, _WHITE if dark else _NAVY, True)])
 
     # ---------------------------------------------------------------- 1. Title (dark)
+    def _D(x): return x if isinstance(x, dict) else {}    # audit-5 totality: a truthy non-dict section -> {}
+    def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
     s = slide(dark=True)
     rect(s, 0, 0, W, 7.5, _NAVY)
-    eb = snap.get("executive_brief") or {}
-    scale = eb.get("scale") or {}
+    eb = _D(snap.get("executive_brief"))
+    scale = _D(eb.get("scale"))
     text(s, 0.9, 2.0, W - 1.8, 1.6,
          [[("Network Migration", 52, _WHITE, True)], [("Assessment", 52, _ICE, True)]], space=2)
     text(s, 0.9, 3.95, W - 1.8, 0.5, [(label or "Current-state assessment", 18, _ICE, False, True)])
-    posture = eb.get("posture") or {}
+    posture = _D(eb.get("posture"))
     # the canonical posture_statement is ALWAYS non-empty, so the old scale fallback never rendered — the
     # deck showed no fleet scale at all. Always render the canonical scale on a second subtitle line.
     sub = eb.get("posture_statement") or ""
@@ -184,7 +186,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 2. Fleet posture (light)
     s = slide()
     header(s, "Executive summary", "Fleet posture")
-    hs = snap.get("health_scores") or []
+    hs = _R(snap.get("health_scores"))
     band_counts = {}
     for r in hs:
         band_counts[r.get("band", "")] = band_counts.get(r.get("band", ""), 0) + 1
@@ -227,7 +229,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 3. Top risks (light)
     s = slide()
     header(s, "What gates the migration", "Top migration risks")
-    pl = snap.get("punchlist") or []
+    pl = _R(snap.get("punchlist"))
     n_crit = sum(1 for i in pl if i.get("severity") == "Critical")
     n_high = sum(1 for i in pl if i.get("severity") == "High")
     text(s, 0.7, 1.95, W - 1.4, 0.4,
@@ -282,7 +284,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 4. Keystone devices (light)
     s = slide()
     header(s, "Concentrated dependency", "The switches the fleet depends on")
-    fi = sorted((snap.get("failure_impact") or []),
+    fi = sorted(_R(snap.get("failure_impact")),
                 key=lambda r: -(int(r.get("stranded") or 0)))
     keystones = [r for r in fi if int(r.get("stranded") or 0) > 0][:5]
     # off-scan-gateway records carry no usable blast radius (audit-3 #7); count them so an INDETERMINATE estate
@@ -348,7 +350,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 6. Migration waves (light)
     s = slide()
     header(s, "How it sequences", "Migration waves & readiness")
-    mr = snap.get("migration_readiness") or []
+    mr = _R(snap.get("migration_readiness"))
     mg = snap.get("move_groups") or []
     # SSOT: the honest, actionable headline is the SEQUENCED wave count from the design blueprint's
     # wave_plan -- the raw move-group count is the L2 blast-radius partition (one big coupled domain +

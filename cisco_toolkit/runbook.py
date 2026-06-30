@@ -69,6 +69,8 @@ def _gateways(snap: dict):
     forwarding (Unknown). FHRP role from config is Inferred-high."""
     rows = []
     for r in (snap.get("l3_forwarding") or []):
+        if not isinstance(r, dict):
+            continue
         rows.append({
             "vlan": r.get("vlan", ""), "svi_ip": r.get("svi_ip", ""), "owner": r.get("switch", ""),
             "fhrp": r.get("fhrp", ""), "role": r.get("role", ""), "risk": r.get("risk", ""),
@@ -145,16 +147,20 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         return add_table(doc, headers, rows, widths, fixed=False)
 
     # ---- snapshot-derived headline numbers (reconciled; all sections cite these) ----
-    devices = snap_dict.get("devices") or {}
-    hs = snap_dict.get("health_scores") or []
+    # audit-5 totality: a hostile/malformed upload (the webapp deliverable route) can make a section a truthy
+    # non-list / non-dict, or carry a non-dict ELEMENT -> degrade, never raise (like the mop/crd/ops siblings).
+    def _D(x): return x if isinstance(x, dict) else {}
+    def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
+    devices = _D(snap_dict.get("devices"))
+    hs = _R(snap_dict.get("health_scores"))
     bands = Counter(r.get("band", "") for r in hs)
     move_groups = snap_dict.get("move_groups") or []
-    mr = snap_dict.get("migration_readiness") or []
+    mr = _R(snap_dict.get("migration_readiness"))
     ws = snap_dict.get("wave_sequencing") or []
-    cross_layer = snap_dict.get("cross_layer") or []
+    cross_layer = _R(snap_dict.get("cross_layer"))
     punchlist = snap_dict.get("punchlist") or []
-    failure_impact = snap_dict.get("failure_impact") or []
-    link_centrality = snap_dict.get("link_centrality") or []
+    failure_impact = _R(snap_dict.get("failure_impact"))
+    link_centrality = _R(snap_dict.get("link_centrality"))
     gw = _gateways(snap_dict)
     ep_total, ep_per_vlan, ep_per_switch = _endpoint_census(snap_dict)
     _scale_dev = ((snap_dict.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
@@ -836,7 +842,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
     # ===== 8. Shared Infrastructure & Consolidation =====
     doc.add_heading("8. Shared Infrastructure & Consolidation", level=1)
-    cap = snap_dict.get("capacity") or []
+    cap = _R(snap_dict.get("capacity"))
     # HON-runbook-drop-1: exclude devices whose active-port count was never observed (port_util can read 0.0
     # from absent evidence) so an unmeasured switch can't top the "most spare / consolidate first" list.
     low_util = sorted([c for c in cap if isinstance(c.get("port_util"), (int, float))

@@ -69,3 +69,29 @@ def test_compare_diff_tolerates_nondict_device_interface_sections(tmp_path):
     html.write_diff_workbook({"devices": None, "interfaces": None, "health_scores": [], "punchlist": []},
                              {"devices": None, "interfaces": None, "health_scores": [], "punchlist": []}, out)
     assert __import__("os").path.exists(out)
+
+
+def test_docx_family_tolerates_nondict_sections_and_rows(tmp_path):
+    """[#3/#6/#12] runbook/design/deck generators (unlike their hardened mop/crd/ops siblings) raised on a truthy
+    non-dict 'devices'/'executive_brief' section or a non-dict ELEMENT in health_scores / cross_layer /
+    failure_impact / migration_readiness / link_centrality / capacity -- reachable via the unauthenticated webapp
+    deliverable route. Each must degrade and still emit a valid file."""
+    import pytest
+    pytest.importorskip("docx")
+    pytest.importorskip("pptx")
+    from cisco_toolkit import runbook, design, deck
+    hostile = {
+        "devices": [{"hostname": "SW1"}],                              # truthy non-dict (list) section
+        "executive_brief": ["not", "a", "dict"],
+        "health_scores": ["x", None, {"switch": "SW1", "band": "Healthy"}],
+        "cross_layer": [None, 1, {"severity": "Critical"}],
+        "failure_impact": [None, "y", {"host": "SW1", "stranded": 5, "severity": "High"}],
+        "migration_readiness": ["z", None, {"readiness": "NOT READY"}],
+        "link_centrality": [None, {"is_bridge": True}],
+        "capacity": [None, {"hostname": "SW1"}],
+        "l3_forwarding": ["str", None],
+    }
+    runbook.write_runbook_docx(str(tmp_path / "r.docx"), hostile, "AJ")
+    design.write_design_doc_docx(str(tmp_path / "d.docx"), hostile, "AJ")
+    deck.write_executive_deck_pptx(str(tmp_path / "k.pptx"), hostile, "AJ")
+    assert all((tmp_path / f).exists() for f in ("r.docx", "d.docx", "k.pptx"))

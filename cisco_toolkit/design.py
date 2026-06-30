@@ -35,7 +35,7 @@ def _is_l3(host: str, l3_forwarding, routing_neighbors) -> bool:
     """A device participates in L3 if it owns an SVI (appears in l3_forwarding) or runs a routing
     protocol (has any adjacency record). Used for the core/distribution vs access tiering — honest,
     evidence-based (a configured SVI / a routing neighbour is Confirmed), not a guess from hostname."""
-    if any((r.get("switch") == host) for r in (l3_forwarding or [])):
+    if any((r.get("switch") == host) for r in (l3_forwarding or []) if isinstance(r, dict)):
         return True
     rn = (routing_neighbors or {}).get(host) or {}
     return any(rn.get(p) for p in ("ospf", "eigrp", "bgp"))
@@ -100,8 +100,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         return add_table(doc, headers, rows, widths, fixed=False)
 
     # ---- snapshot-derived facts (reconciled to the workbook) ----
-    devices = snap.get("devices") or {}
-    l3f = snap.get("l3_forwarding") or []
+    def _D(x): return x if isinstance(x, dict) else {}    # audit-5 totality: a truthy non-dict section -> {}/[]
+    def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
+    devices = _D(snap.get("devices"))
+    l3f = _R(snap.get("l3_forwarding"))
     rn = snap.get("routing_neighbors") or {}
     stp_roots = snap.get("stp_roots") or {}
     redist = snap.get("redistribution") or {}
@@ -119,10 +121,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     n_multi_gw = sum(1 for _c in _vlan_gw_count.values() if _c >= 2)
     n_fhrp_cfg = len({str(_r.get("vlan") or "") for _r in l3f
                       if str(_r.get("fhrp") or "").strip().lower() not in ("", "none", "-", "—")})
-    capacity = snap.get("capacity") or []
+    capacity = _R(snap.get("capacity"))
     lifecycle = snap.get("lifecycle_risk") or {}
     vpc = snap.get("vpc") or {}
-    failure_impact = snap.get("failure_impact") or []
+    failure_impact = _R(snap.get("failure_impact"))
     punchlist = snap.get("punchlist") or []
     subnet_intel = snap.get("subnet_intelligence") or {}
     svc = snap.get("service_map") or {}
@@ -233,7 +235,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("Access (L2-only)", len(l2_hosts), ", ".join(sorted(l2_hosts)[:30]) or "—"),
     ], widths=[2.2, 0.8, 4.0])
     # keystone devices (concentrated dependency) from failure_impact
-    keystones = sorted((r for r in failure_impact if int(r.get("stranded") or 0) > 0),
+    keystones = sorted((r for r in failure_impact if isinstance(r, dict) and int(r.get("stranded") or 0) > 0),
                        key=lambda r: -int(r.get("stranded") or 0))[:5]
     if keystones:
         _label_run(doc.add_paragraph(), "Concentrated dependency:",
