@@ -8779,6 +8779,49 @@ function abH_help(){return {html:`<h4>What you can ask (all offline, all from th
 function abH_didyoumean(E,q){const opts=E.matches.slice(0,6).map(([h])=>
     `<span class="chip" data-abq="${abAttr(q)} ${abAttr(h)}">${esc(abShort(h))}</span>`).join(" ");
   return {html:`<h4>Which switch did you mean?</h4><div class="ab-acts">${opts}</div>`,acts:[]};}
+/* W3-1 (NotebookLM teardown): first-class [NOT OBSERVED] 3-state abstention -- a faithful JS port of the engine
+   SSOT (cisco_toolkit/ssot.py abstention_reason) so a BLIND SPOT ('not collected') or a real negative ('collected,
+   none found') is never conflated with an NLU miss ('didn't catch that'). Precedent: abH_license. */
+function _abDotted(snap, path){ let cur=snap;
+  for(const hop of String(path).split(".")){ if(!cur||typeof cur!=="object"||Array.isArray(cur)||!(hop in cur))return null; cur=cur[hop]; }
+  return cur; }
+function _abEmptyVal(v){ return v===""||v===0||v===false||(Array.isArray(v)&&v.length===0)||(v&&typeof v==="object"&&!Array.isArray(v)&&Object.keys(v).length===0); }
+function _abDeviceNotCollected(snap, device){ const want=String(device||"").trim().toLowerCase();
+  for(const d of (_abDotted(snap,"collection_completeness.devices")||[])){
+    if(d&&typeof d==="object"&&String(d.host||"").trim().toLowerCase()===want)return String(d.status||"").trim().toLowerCase()==="not collected"; }
+  return false; }
+function abAbstention(subject, device){ const snap=SNAP||{};   // -> 'published' | 'collected_but_empty' | 'not_collected'
+  if(device&&_abDeviceNotCollected(snap,device))return "not_collected";
+  const val=String(subject).indexOf(".")>=0?_abDotted(snap,subject):((snap&&(subject in snap))?snap[subject]:undefined);
+  if(val===undefined||val===null)return "not_collected";
+  if(_abEmptyVal(val))return "collected_but_empty";
+  return "published"; }
+/* assessment axes with NO dedicated chat intent (so a question about them reaches the default branch) -> section
+   key + friendly label. The intent dispatch wins first, so this never shadows a working handler. */
+const AB_SUBJECTS=[
+  [/\bvpc\b|\bmlag\b|peer.?link/i, "vpc", "vPC / MLAG peering"],
+  [/\bqos\b|\bcos\b|\bdscp\b|queu|priority.?queue|policer|marking/i, "qos_audit", "QoS posture"],
+  [/syslog|\blogging\b/i, "syslog_intelligence", "Syslog analysis"],
+  [/multicast|\bigmp\b|\bpim\b|mroute|\bptp\b|dante|2110/i, "multicast_intelligence", "Multicast / timing"],
+  [/platform.?health|environment|power.?suppl|\bpsu\b|\bfan\b|temperatur/i, "platform_health", "Platform / environmental health"],
+  [/duplicate.?ip|overlap|ip.?conflict|address.*conflict/i, "addressing_conflicts", "Addressing conflicts"],
+];
+function abH_notobserved(q, E){
+  for(const [re, section, label] of AB_SUBJECTS){
+    if(re.test(q)){
+      const host=(E&&E.host)||null, r=abAbstention(section, host);
+      if(r==="published")
+        return {html:`<h4>${esc(label)}</h4><div>That evidence <b>was collected</b> — it's in the workbook's ${esc(label)} sheet and the explorer's analysis modes. I don't have a dedicated chat answer for it yet, so I'm pointing you there rather than guessing.</div>`,acts:[{label:"help",run:abAskAct("help")}]};
+      const tag=r==="not_collected"?`<span class="pill pl-watch">NOT OBSERVED · not collected</span>`:`<span class="pill pl-ok">NOT OBSERVED · collected, none found</span>`;
+      const why=r==="not_collected"
+        ?(host?`<b>${esc(shortName(host))}</b> was not collected in this assessment, so its ${esc(label)} is a <b>blind spot</b> — not a clean result`
+              :`<b>${esc(label)}</b> is <b>not part of this collection</b> (the command set didn't capture it, or no device exposed it), so I won't infer it`)
+        :`I checked the collected ${esc(label)} evidence and found <b>none</b> — collected, and genuinely nothing of this kind present (a real negative, not a blind spot)`;
+      return {html:`<h4>${esc(label)} — not observed</h4><div>${tag}</div><div style="margin-top:6px">${why}. <span class="faint">'Not observed' is never 'healthy' — re-collect the relevant commands if this axis is in scope.</span></div>`,acts:[]};
+    }
+  }
+  return null;
+}
 function abH_fallback(){return {html:`<h4>I didn't catch that</h4><div>Try naming a switch, a VLAN, an IP/MAC, or a topic (migration, risk, EoL, software, apps, waves). Type <b>help</b> for examples.</div>`,acts:[{label:"help",run:abAskAct("help")}]};}
 
 /* ---- rich-card helpers (V3.23.179) -------------------------------------- */
@@ -9227,7 +9270,7 @@ function abAnswer(q){const E=abEntities(q);let intent=abIntent(q,E);
     case "waves":return abRender(abH_waves());
     case "epfleet":return abRender(abH_epfleet());
     case "profile":return abRender(abH_profile(E.host));
-    default:return abRender(abH_fallback());}}
+    default:return abRender(abH_notobserved(q,E)||abH_fallback());}}
 function abSubmit(q){abMsg("user",esc(q));
   const reduce=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;
   const typing=abMsg("bot",`<div class="ab-card ab-typing" aria-hidden="true"><i></i><i></i><i></i></div>`);
