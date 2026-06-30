@@ -4098,13 +4098,35 @@ def compute_golden_drift(run_configs: Optional[dict] = None,
                    "enable password", "license ", "ip address ", "ipv6 address ", "snmp-server location",
                    "snmp-server contact", "ntp clock-period", "crypto pki", "certificate ", "description ")
 
+    # 'show running-config' CLI preamble lines (emitted at column 0, but not config directives).
+    _NONCONFIG = ("building configuration", "current configuration")
+
     def _top_lines(text):
         out = set()
+        in_banner = False
+        delim = None
         for raw in (text or "").splitlines():
+            # A 'banner <type> <delim> ... <delim>' body is emitted at COLUMN 0 -- its ASCII-art, the '* … *'
+            # border and the closing delimiter are NOT config directives. Track the banner block and skip its body,
+            # else a fleet-wide banner makes its art a 'required' majority-baseline line -> cry-wolf drift the
+            # instant one device's banner text differs (audit-5 FF#8/#14).
+            if in_banner:
+                if delim and delim in raw:
+                    in_banner = False
+                    delim = None
+                continue
+            bm = re.match(r"banner\s+\S+\s+(\S+)", raw.strip(), re.IGNORECASE)
+            if bm:
+                delim = bm.group(1)
+                if delim not in raw.strip()[bm.end():]:    # multi-line banner: skip the body until the delim recurs
+                    in_banner = True
+                continue
             if raw[:1] in (" ", "\t"):          # skip indented sub-config (interface/etc. = device-specific noise)
                 continue
             n = _norm_cfg_line(raw)
             if not n or n.startswith("!") or n in ("end", "exit"):
+                continue
+            if any(n.startswith(p) for p in _NONCONFIG):   # 'show run' CLI preamble, not a directive (audit-5 FF#14)
                 continue
             if any(n.startswith(p) for p in _STRUCTURAL):
                 continue
