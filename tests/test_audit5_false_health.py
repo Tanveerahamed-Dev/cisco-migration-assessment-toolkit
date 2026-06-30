@@ -162,3 +162,16 @@ def test_inventory_num_power_supplies_excludes_fex():
            'PID: NXA-PAC-650W , VID: V01 , SN: FX1\n')
     r = parse.parse_show_inventory(inv)
     assert r["num_power_supplies"] == 1     # only the parent PSU, not the FEX's
+
+
+def test_endpoint_cluster_counts_distinct_macs_not_rows():
+    """[audit-5 scale-ssot #0] The endpoint cluster 'count' incremented per (host,port) ROW, so the SAME MAC
+    seen on multiple ports/switches inflated the cluster size. It must count DISTINCT MACs."""
+    from cisco_toolkit import analyze
+    rows1 = [{"host": f"sw{i}", "mac": "0000.0000.0001", "ip": "", "vlan": "10", "vendor": "Acme",
+              "endpoint_class": "Server"} for i in range(4)]            # 4 rows, ONE MAC
+    assert not any(c["vendor"] == "Acme" for c in analyze.compute_endpoint_dependencies(rows1)["clusters"])
+    rows2 = [{"host": "sw1", "mac": f"0000.0000.000{i}", "ip": "", "vlan": "10", "vendor": "Acme",
+              "endpoint_class": "Server"} for i in range(3)]            # 3 DISTINCT MACs
+    acme = next(c for c in analyze.compute_endpoint_dependencies(rows2)["clusters"] if c["vendor"] == "Acme")
+    assert acme["count"] == 3
