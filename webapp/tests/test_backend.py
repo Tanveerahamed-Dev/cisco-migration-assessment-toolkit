@@ -228,6 +228,39 @@ def test_cutover_gate_critical_crosslayer_only():
     assert plan["summary"]["verdict"] == "NO-GO"
 
 
+def test_cutover_blind_devices_block_go_and_are_disclosed():
+    """[audit-5 #15] A wave whose readiness is otherwise clean but that contains a device the collection NEVER
+    reached (health band 'Insufficient Data' / data_quality 0) must NOT be gated a confident GO -- an un-assessed
+    device cannot be certified ready -- and the fleet statement must DISCLOSE those devices rather than asserting a
+    confident make-before-break / window posture over them (a blind subsystem must not read like an assessed one)."""
+    from backend import cutover
+
+    base = {
+        "devices": {"sw1": {}, "sw2": {}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1", "sw2"],
+                             "hard_cutover": [], "hard_cutover_endpoints": 0}],
+        "migration_readiness": [{"group": "G1", "switches": ["sw1", "sw2"], "readiness": "READY",
+                                 "n_fail": 0, "n_warn": 0, "checks": []}],
+        "move_groups": [{"switches": ["sw1", "sw2"], "endpoints": 10}],
+    }
+    # sw2 was never collected -> banded 'Insufficient Data', data_quality 0.
+    blind = dict(base, health_scores=[{"switch": "sw1", "band": "Good", "score": 80, "data_quality": 1.0},
+                                      {"switch": "sw2", "band": "Insufficient Data", "score": None, "data_quality": 0.0}])
+    plan = cutover.build_plan(blind)
+    wave = plan["waves"][0]
+    assert wave["n_fail"] == 0                                   # readiness is clean...
+    assert wave["n_blind"] == 1 and "sw2" in wave.get("blind_switches", [])
+    assert wave["gate"] != "GO"                                 # ...but an un-assessed device blocks a confident GO
+    assert plan["summary"]["n_not_assessed"] == 1
+    assert "assess" in plan["summary"]["statement"].lower()     # the statement discloses the coverage gap
+    # control: a fully-collected wave is unaffected.
+    seen = dict(base, health_scores=[{"switch": "sw1", "band": "Good", "score": 80, "data_quality": 1.0},
+                                     {"switch": "sw2", "band": "Good", "score": 75, "data_quality": 1.0}])
+    plan2 = cutover.build_plan(seen)
+    assert plan2["waves"][0]["n_blind"] == 0 and plan2["waves"][0]["gate"] == "GO"
+    assert plan2["summary"]["n_not_assessed"] == 0
+
+
 def test_cutover_robust_to_malformed_snapshot():
     """build_plan must degrade gracefully on a malformed (e.g. uploaded) snapshot: a string `hosts`
     field still matches (not split into characters), and non-numeric counters don't crash."""
