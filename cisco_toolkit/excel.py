@@ -1454,6 +1454,62 @@ def write_security_sheet(wb, all_security: dict) -> None:
                 f"across {nhosts} switch(es)")
 
 
+FRAMEWORK_COVERAGE_SHEET_NAME = "Framework Coverage"   # W2-3: CIS/NIST/PCI/STIG mapping over the existing checks
+
+def write_framework_coverage_sheet(wb, framework_coverage: dict) -> None:
+    """Write the 'Framework Coverage' sheet from compute_framework_coverage() -- the config-evidenced mapping of the
+    engine's hardening checks to CIS / NIST 800-53 / PCI-DSS / DISA-STIG controls (one row per control; status rolls
+    up across hosts and the failing hosts are cited for grounding). COVERAGE-HONEST: the scope caveat is rendered
+    BEFORE any status (so the sheet can never read as a full audit), and a framework that auto-assessed ZERO controls
+    is DISCLOSED as such rather than silently dropped (an empty framework otherwise reads as a fake 'all clear').
+    A 'proof of compliance' matrix over existing checks -- NOT a full framework audit."""
+    fc = framework_coverage if isinstance(framework_coverage, dict) else {}
+    frameworks = fc.get("frameworks") or {}
+    ws = wb.create_sheet(FRAMEWORK_COVERAGE_SHEET_NAME)
+    # Row 1: the coverage-honesty caveat, disclosed up top so a reader sees the scope before any pass/fail.
+    note = fc.get("note") or "Config-evidenced mapping — NOT a full framework audit."
+    scope = fc.get("scope") or ""
+    c0 = ws.cell(1, 1, f"{note}  Scope: {scope}" if scope else note)
+    c0.font = Font(italic=True, color="666666"); ws.merge_cells("A1:F1")
+    for col, h in enumerate(["Framework", "Control", "Status", "Engine Check", "Finding", "Failing Hosts (sample)"], 1):
+        c = ws.cell(2, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    status_fill = {"fail": "F4CCCC", "na": "FFF2CC", "pass": "D9EAD3"}
+    r = 3; total = 0; nfail = 0; nfw = 0
+    for key in ("CIS", "NIST", "PCI", "STIG"):
+        fw = frameworks.get(key) or {}
+        label = fw.get("label") or key
+        controls = fw.get("controls") or []
+        if not controls:
+            # COVERAGE-HONEST: disclose the empty framework (never silently omit -> never a fake 'clear').
+            ws.cell(r, 1, label); ws.cell(r, 2, "—"); ws.cell(r, 3, "—")
+            ws.cell(r, 5, "0 controls auto-assessed from the config check set — not auto-assessed here (not a full audit)")
+            r += 1
+            continue
+        nfw += 1
+        for ctl in controls:
+            st = str(ctl.get("status") or "").lower()
+            ws.cell(r, 1, label)
+            ws.cell(r, 2, ctl.get("control", ""))
+            ws.cell(r, 3, st.upper())
+            ws.cell(r, 4, ctl.get("check", ""))
+            ws.cell(r, 5, ctl.get("title", ""))
+            ws.cell(r, 6, ", ".join(ctl.get("hosts_fail") or []) if st == "fail" else "-")
+            fill = status_fill.get(st)
+            if fill:
+                pf = PatternFill("solid", fgColor=fill)
+                for col in range(1, 7):
+                    ws.cell(r, col).fill = pf
+            if st == "fail":
+                nfail += 1
+            r += 1; total += 1
+    for i, w in enumerate([22, 16, 8, 18, 50, 40], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A3"
+    logger.info(f"  [OK] '{FRAMEWORK_COVERAGE_SHEET_NAME}' sheet: {nfail} fail / {total} control(s) "
+                f"across {nfw} framework(s) with config-evidenced mappings")
+
+
 CONFIG_HYGIENE_SHEET_NAME = "Config Hygiene"   # Batfish-style undefined refs + unused structures (NEW-V3.23.61)
 
 def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:

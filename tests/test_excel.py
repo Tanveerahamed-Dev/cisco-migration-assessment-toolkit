@@ -81,3 +81,46 @@ def test_append_interface_rows_survives_control_char_no_silent_port_drop(tmp_pat
     ports = [ws.cell(r, 2).value for r in range(2, ws.max_row + 1) if ws.cell(r, 2).value]
     assert set(ports) == {"Gi1/0/1", "Gi1/0/2", "Gi1/0/3", "Gi1/0/4"}, ports
     wb.save(str(tmp_path / "if.xlsx"))
+
+
+def test_framework_coverage_sheet_renders_and_is_coverage_honest(tmp_path):
+    """[W2-3 workbook] The Framework Coverage sheet surfaces the CIS/NIST/PCI/STIG compliance matrix in the PRIMARY
+    deliverable. It must (1) render a failing control with its framework, control id, engine check + failing hosts;
+    (2) DISCLOSE the coverage-honesty caveat ('NOT a full framework audit'); (3) NOT silently drop a framework that
+    auto-assessed zero controls -- an empty framework reads as a fake 'all clear' unless it is explicitly disclosed
+    as 0-controls-assessed. The render is tested in isolation from compute_framework_coverage (already tested)."""
+    from cisco_toolkit.excel import harden_workbook, write_framework_coverage_sheet, FRAMEWORK_COVERAGE_SHEET_NAME
+    fc = {
+        "frameworks": {
+            "CIS": {"label": "CIS Cisco Benchmark", "controls": [
+                {"control": "CIS 1.2.1", "check": "weak-enable", "title": "Enable secret is weak",
+                 "status": "fail", "n_fail": 2, "hosts_fail": ["R1", "R2"]},
+                {"control": "CIS 6.1", "check": "no-ntp", "title": "NTP not configured",
+                 "status": "pass", "n_fail": 0, "hosts_fail": []}],
+                "n_assessed": 2, "n_fail": 1},
+            "NIST": {"label": "NIST 800-53 r5", "controls": [
+                {"control": "IA-5", "check": "weak-enable", "title": "Enable secret is weak",
+                 "status": "fail", "n_fail": 2, "hosts_fail": ["R1", "R2"]}], "n_assessed": 1, "n_fail": 1},
+            "PCI": {"label": "PCI-DSS v4.0", "controls": [], "n_assessed": 0, "n_fail": 0},   # empty -> must be disclosed
+            "STIG": {"label": "DISA Cisco NDM STIG", "controls": [], "n_assessed": 0, "n_fail": 0},
+        },
+        "note": "Config-evidenced mapping of the engine's hardening checks to framework controls — NOT a full "
+                "framework audit. Controls outside this check set are not auto-assessed (never assumed 'pass').",
+        "scope": "config-only (show running-config); management-plane hardening controls",
+    }
+    wb = harden_workbook(Workbook())
+    write_framework_coverage_sheet(wb, fc)
+    out = tmp_path / "fc.xlsx"
+    wb.save(str(out))
+    wb2 = load_workbook(str(out))
+    assert FRAMEWORK_COVERAGE_SHEET_NAME in wb2.sheetnames
+    cells = [c.value for row in wb2[FRAMEWORK_COVERAGE_SHEET_NAME].iter_rows()
+             for c in row if isinstance(c.value, str)]
+    joined = "\n".join(cells)
+    assert "CIS 1.2.1" in joined and "weak-enable" in joined        # (1) the failing control rendered
+    assert any("FAIL" == v for v in cells)                          # explicit FAIL status cell
+    assert "R1" in joined and "R2" in joined                        # failing hosts surfaced (grounding)
+    assert "NIST 800-53 r5" in joined                               # the framework label
+    assert "NOT a full framework audit" in joined                   # (2) coverage-honesty disclosed
+    assert "PCI-DSS v4.0" in joined and "DISA Cisco NDM STIG" in joined   # (3) empty frameworks NOT dropped
+    assert "0 control" in joined.lower() or "not auto-assessed" in joined.lower()  # empty disclosed, not fake-clear

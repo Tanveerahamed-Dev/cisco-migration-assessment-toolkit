@@ -366,6 +366,14 @@
   "Finding",
   "CIS / Remediation"
  ],
+ "Framework Coverage": [
+  "Config-evidenced mapping of the engine's hardening checks to framework controls \u2014 NOT a full framework audit. Controls outside this check set are not auto-assessed (never assumed 'pass'); a not-applicable check stays 'na'.  Scope: config-only (show running-config); management-plane hardening controls",
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Config Hygiene": [
   "Switch",
   "Issue",
