@@ -2684,8 +2684,10 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
             sw_classes[host].add(cls)
             if vendor:
                 c = clusters[(vendor, cls)]; c[0].add(host); c[1].add(vlan); c[2] += 1
-            if vlan.isdigit():
-                vlan_cls[vlan][cls] += 1
+        # per-VLAN affinity counts EVERY endpoint INCLUDING Unknown, so a VLAN that is mostly unclassified is not
+        # labelled with the app tier of a tiny KNOWN minority -- the dominant + total stay honest (audit-5 #24).
+        if vlan.isdigit():
+            vlan_cls[vlan][cls] += 1
 
     dual_homed = []
     for mac, sws in mac_sw.items():
