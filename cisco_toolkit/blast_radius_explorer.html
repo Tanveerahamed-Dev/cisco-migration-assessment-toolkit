@@ -8463,6 +8463,7 @@ function abIntent(q,E){const t=abNorm(q);
   if(has(" stpword "))return "stp";
   if(has(" fhrpword "))return E.vlan!=null?"vlanprof":"fhrpgaps";
   if(has(" capword "))return E.host?"profile":"capacity";
+  if(has("compliance","framework","nist","800-53","pci","stig","disa","proof of compliance","benchmark coverage"))return "compliance";
   if(has(" secword "))return "security";
   if(has(" archword "))return "archgrade";
   if(has("design blueprint","blueprint","target state","target-state","design decision","design intent","design recommend","what should the design","how should we design"))return "designblueprint";
@@ -8823,6 +8824,24 @@ const AB_SUBJECTS=[
   [/platform.?health|environment|power.?suppl|\bpsu\b|\bfan\b|temperatur/i, "platform_health", "Platform / environmental health"],
   [/duplicate.?ip|overlap|ip.?conflict|address.*conflict/i, "addressing_conflicts", "Addressing conflicts"],
 ];
+/* W2-3 (framework-mapping): render the CIS/NIST-800-53/PCI-DSS/DISA-STIG 'proof of compliance' matrix from the
+   engine SSOT (snap.framework_coverage = compute_framework_coverage over the existing hardening checks). Filters to
+   one framework if the question names it; coverage-honest -- shows only auto-assessed controls + the 'not a full
+   audit' disclosure, and a not-applicable check stays n/a, never a silent pass. */
+function abH_compliance(q){const fc=(SNAP||{}).framework_coverage;
+  if(!fc||!fc.frameworks)return {html:`<h4>Compliance frameworks</h4><div class="ab-note">No framework-coverage mapping in this snapshot (needs a collected running-config).</div>`,acts:[]};
+  const n=abNorm(q||"");
+  const which=/\bnist\b|800.?53/.test(n)?"NIST":(/\bpci\b/.test(n)?"PCI":(/\bstig\b|disa/.test(n)?"STIG":(/\bcis\b|benchmark/.test(n)?"CIS":null)));
+  const order=which?[which]:["CIS","NIST","PCI","STIG"];
+  let b=`<h4>Compliance — framework coverage</h4><div class="ab-note">${esc(fc.note||"")}</div>`;
+  for(const k of order){const v=fc.frameworks[k]; if(!v)continue;
+    b+=`<div style="margin-top:9px"><b>${esc(v.label)}</b> · <span class="pill pl-${v.n_fail?'crit':'ok'}">${v.n_fail} fail</span> <span class="faint">of ${v.n_assessed} auto-assessed</span></div>`;
+    b+=`<table><tr><th>Control</th><th>Check</th><th>Status</th></tr>`+
+      (v.controls||[]).map(c=>`<tr><td><b>${esc(c.control)}</b></td><td>${esc(c.title)}${c.n_fail?` <span class="faint">(${c.n_fail})</span>`:""}</td><td>${c.status==='fail'?'<span class="pill pl-crit">FAIL</span>':(c.status==='na'?'<span class="pill pl-watch">n/a</span>':'<span class="pill pl-ok">pass</span>')}</td></tr>`).join("")+`</table>`;
+  }
+  b+=`<div class="ab-note">Controls outside this check set are <b>not auto-assessed</b> — never assumed 'pass'. <span class="faint">${esc(fc.scope||"")}.</span></div>`;
+  return {html:b,acts:[{label:"security posture",run:abAskAct("security posture")},{label:"what do I fix first",run:abAskAct("what do I fix first")}]};
+}
 function abH_notobserved(q, E){
   for(const [re, section, label] of AB_SUBJECTS){
     if(re.test(q)){
@@ -9268,6 +9287,7 @@ function abAnswer(q){const E=abEntities(q);let intent=abIntent(q,E);
     case "fhrpgaps":return abRender(abH_fhrpgaps());
     case "capacity":return abRender(abH_capacity());
     case "security":return abRender(abH_security());
+    case "compliance":return abRender(abH_compliance(q));
     case "archgrade":return abRender(abH_archgrade());
     case "designblueprint":return abRender(abH_designblueprint());
     case "fixfirst":return abRender(abH_fixfirst());

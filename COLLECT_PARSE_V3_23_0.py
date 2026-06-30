@@ -326,7 +326,7 @@ from cisco_toolkit.analyze import (
     compute_score_sensitivity, compute_calibration_report, compute_migration_readiness,
     compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
-    stp_root_findings, compute_migration_punchlist,   # NEW-V3.23.62 / .63 (STP root analysis + consolidated punch-list)
+    stp_root_findings, compute_migration_punchlist, compute_framework_coverage,   # NEW-V3.23.62/.63 + W2-3 (framework-mapping matrix)
     compute_hostname_mismatches, reconcile_cdp_neighbor_names,   # NEW-V3.23.68 + audit-5 #1 (split-node reconcile)
     compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
     compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
@@ -2306,6 +2306,7 @@ def main():
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     snap_dict["nat"] = all_nat                                       # NEW-V3.23.50 (NAT inventory: {host:{static,dynamic,pools,inside,outside}})
     snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
+    snap_dict["framework_coverage"] = _run_phase("Framework coverage", compute_framework_coverage, all_security, _default={})  # W2-3 (CIS/NIST/PCI/STIG mapping over existing checks)
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator

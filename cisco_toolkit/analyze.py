@@ -3053,6 +3053,80 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
 
 _PUNCH_RANK = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
 
+# W2-3 (framework-mapping matrix): the engine's existing config-hardening checks (parse._SEC_CHECKS) mapped to the
+# control each one EVIDENCES in NIST 800-53r5 / PCI-DSS v4.0 / DISA Cisco IOS NDM STIG (the CIS ref already rides on
+# each finding). A mapping over EXISTING checks -- NOT a new check engine. Control IDs grounded against the published
+# frameworks (NIST 800-53r5 catalog; PCI-DSS v4.0: 2.2.7 non-console-admin encryption, 8.3.2 password crypto, 10.2
+# audit logs, 10.6 time sync; NIST AC-17(2)/SC-8 = encrypted remote mgmt, AU-8 = time stamps, AU-2/6/12 = audit).
+# Where an exact PCI sub-requirement is uncertain the safe PARENT requirement is used (never a fabricated number);
+# a check with no mapping in a framework is left UNMAPPED -> 'not auto-assessed', never a silent 'pass' (doctrine guard).
+_FRAMEWORK_MAP: Dict[str, Dict[str, str]] = {
+    "password-encryption": {"nist": "IA-5(1)",             "pci": "8.3.2", "stig": "Cisco IOS NDM — password encryption"},
+    "weak-enable":         {"nist": "IA-5(1)",             "pci": "8.3.2", "stig": "Cisco IOS NDM — privileged secret"},
+    "weak-user-pw":        {"nist": "IA-5(1)",             "pci": "8.3.2", "stig": "Cisco IOS NDM — local password storage"},
+    "no-aaa":              {"nist": "AC-2 / IA-2",         "pci": "8.2",   "stig": "Cisco IOS NDM — centralized AAA"},
+    "insecure-snmp":       {"nist": "AC-17(2) / SC-8",     "pci": "2.2.7", "stig": "Cisco IOS NDM — SNMPv3 auth/priv"},
+    "telnet-enabled":      {"nist": "AC-17(2) / SC-8",     "pci": "2.2.7", "stig": "Cisco IOS NDM — encrypted (SSH) management"},
+    "risky-services":      {"nist": "CM-7",                "pci": "2.2",   "stig": "Cisco IOS NDM — disable unused services"},
+    "no-ntp":              {"nist": "AU-8",                "pci": "10.6",  "stig": "Cisco IOS NDM — authenticated time source"},
+    "no-logging":          {"nist": "AU-2 / AU-6 / AU-12", "pci": "10.2",  "stig": "Cisco IOS NDM — audit logging"},
+    "no-banner":           {"nist": "AC-8",                "pci": "",      "stig": "Cisco IOS NDM — login banner"},
+    "vty-hardening":       {"nist": "AC-17 / AC-12",       "pci": "8.2",   "stig": "Cisco IOS NDM — VTY ACL + exec-timeout"},
+}
+_FRAMEWORK_LABELS = {"CIS": "CIS Cisco Benchmark", "NIST": "NIST 800-53 r5",
+                     "PCI": "PCI-DSS v4.0", "STIG": "DISA Cisco IOS NDM STIG"}
+
+
+def compute_framework_coverage(security: Dict[str, dict]) -> dict:
+    """Map the engine's EXISTING config-hardening findings to the control each EVIDENCES in CIS / NIST 800-53 /
+    PCI-DSS / DISA STIG -- a 'proof of compliance' matrix over existing checks, NOT a new check engine. Per
+    control the status rolls up across hosts (ANY fail -> fail; else any pass -> pass; else na). COVERAGE-HONEST:
+    a check with no mapping in a framework is simply absent there ('not auto-assessed'), NEVER a silent 'pass';
+    a not-applicable check stays 'na'. Config-only evidence (show running-config) -- a partial, config-evidenced
+    mapping, NOT a full framework audit. Returns {frameworks:{KEY:{label,controls,n_assessed,n_fail}}, note, scope}."""
+    sec = security if isinstance(security, dict) else {}
+    agg: Dict[str, dict] = {}     # check_id -> rollup across hosts
+    for host, s in sec.items():
+        for f in ((s or {}).get("findings") or []):
+            if not isinstance(f, dict):
+                continue
+            cid = f.get("id") or ""
+            st = str(f.get("status") or "").lower()
+            a = agg.setdefault(cid, {"pass": 0, "fail": 0, "na": 0, "title": f.get("title") or cid,
+                                     "cis": f.get("cis_ref") or "", "hosts_fail": []})
+            if st in ("pass", "fail", "na"):
+                a[st] += 1
+            if st == "fail" and host:
+                a["hosts_fail"].append(host)
+
+    def _rollup(a: dict) -> str:
+        return "fail" if a["fail"] else ("pass" if a["pass"] else "na")
+
+    def _control(fw: str, cid: str, a: dict) -> str:
+        if fw == "CIS":
+            return a["cis"]
+        return (_FRAMEWORK_MAP.get(cid) or {}).get(fw.lower(), "")
+
+    frameworks: Dict[str, dict] = {}
+    for fw in ("CIS", "NIST", "PCI", "STIG"):
+        controls = []
+        for cid, a in sorted(agg.items()):
+            c = _control(fw, cid, a)
+            if not c:                       # no mapping in this framework -> NOT auto-assessed (never a fake pass)
+                continue
+            controls.append({"control": c, "check": cid, "title": a["title"], "status": _rollup(a),
+                             "n_fail": a["fail"], "hosts_fail": sorted(set(a["hosts_fail"]))[:12]})
+        controls.sort(key=lambda x: (0 if x["status"] == "fail" else 1 if x["status"] == "na" else 2, x["control"]))
+        frameworks[fw] = {"label": _FRAMEWORK_LABELS[fw], "controls": controls,
+                          "n_assessed": len(controls),
+                          "n_fail": sum(1 for x in controls if x["status"] == "fail")}
+    return {"frameworks": frameworks,
+            "note": "Config-evidenced mapping of the engine's hardening checks to framework controls — NOT a full "
+                    "framework audit. Controls outside this check set are not auto-assessed (never assumed 'pass'); "
+                    "a not-applicable check stays 'na'.",
+            "scope": "config-only (show running-config); management-plane hardening controls"}
+
+
 # W1-3 (SmartyMe teardown -- per-claim provenance): the single `show` command whose output BACKS each punch-list
 # category's evidence, so a finding can cite 'from: <show cmd>'. Grounded -- every value is a command in the
 # engine's COMMANDS_IOS/NXOS registry (asserted in tests). COMPOSITE / multi-source / meta categories (Cross-layer,
