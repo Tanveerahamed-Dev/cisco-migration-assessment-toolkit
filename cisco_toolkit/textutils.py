@@ -74,6 +74,7 @@ def normalize_ifname(s: str) -> str:
     x = re.sub(r"^HundredGigE",       "Hu",  x, flags=re.IGNORECASE)
     x = re.sub(r"^[Pp]ort-[Cc]hannel","Po",  x)
     x = re.sub(r"^Tunnel",            "Tu",  x, flags=re.IGNORECASE)
+    x = re.sub(r"^Vl(\d+)\b",         r"Vlan\1", x, flags=re.IGNORECASE)   # abbreviated SVI 'Vl10' -> canonical 'Vlan10'
     return x
 
 def is_valid_iface(name: str) -> bool:
