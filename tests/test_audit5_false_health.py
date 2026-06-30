@@ -79,3 +79,19 @@ def test_parse_ptp_clock_ignores_deprecated_command_banner():
     assert parse.parse_ptp_clock("% Unavailable command (deprecated by show ptp local-clock)\n") == {}
     real = parse.parse_ptp_clock("PTP Device Type: boundary-clock\nPTP Device Profile: smpte-2059-2\n")
     assert real and real["device_type"] == "boundary-clock"
+
+
+def test_trunk_native_sheet_no_mismatch_discloses_coverage():
+    """[#6] When there are no native-VLAN mismatches the sheet printed an unqualified 'clean -- No native-VLAN
+    mismatches on inter-switch trunks', reading absence-of-collection as health. It must instead disclose the
+    basis (collected devices only; uncollected not assessed)."""
+    import pytest
+    openpyxl = pytest.importorskip("openpyxl")
+    from cisco_toolkit import excel
+    from cisco_toolkit.model import InterfaceData
+    wb = openpyxl.Workbook()
+    excel.write_trunk_native_sheet(wb, {"sw1": {"Gi0/1": InterfaceData(port="Gi0/1")}})   # no trunks -> no mismatch
+    ws = wb[excel.TRUNK_NATIVE_SHEET_NAME]
+    banner = " ".join(str(ws.cell(2, c).value or "") for c in (1, 2)).lower()
+    assert "not assessed" in banner and ("uncollected" in banner or "collected" in banner)
+    assert banner.strip() != "clean no native-vlan mismatches on inter-switch trunks"
