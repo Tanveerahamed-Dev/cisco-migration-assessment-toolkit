@@ -370,6 +370,7 @@ from cisco_toolkit.excel import (
     write_health_scores_sheet, write_score_sensitivity_sheet, write_calibration_sheet,  # step 23 (+calibration V3.23.47)
     write_nat_sheet,   # NAT inventory V3.23.50
     write_security_sheet,   # Security Posture (CIS-aligned) V3.23.59
+    write_framework_coverage_sheet,   # Framework Coverage (CIS/NIST/PCI/STIG mapping over existing checks) W2-3
     write_config_hygiene_sheet,   # Config Hygiene (undefined refs / unused structures) V3.23.61
     write_stp_roots_sheet,   # STP Root Bridges (accidental root / gateway misalignment) V3.23.62
     write_punchlist_sheet,   # Migration Punch-List (consolidated, severity-ranked) V3.23.63
@@ -2065,6 +2066,8 @@ def main():
     # Phase 30c: NAT Inventory - NEW-V3.23.50 (every static/dynamic NAT rule the migration must recreate)
     _run_phase("NAT Inventory sheet", write_nat_sheet, wb, all_nat)
     _run_phase("Config Compliance sheet", write_security_sheet, wb, all_security)
+    framework_cov = _run_phase("Framework coverage", compute_framework_coverage, all_security, _default={})  # W2-3: computed once here; reused for snap_dict below
+    _run_phase("Framework Coverage sheet", write_framework_coverage_sheet, wb, framework_cov)
     _run_phase("Config Hygiene sheet", write_config_hygiene_sheet, wb, all_config_hygiene)
     _run_phase("STP Root Bridges sheet", write_stp_roots_sheet, wb, all_stp_roots, all_interfaces)
 
@@ -2306,7 +2309,7 @@ def main():
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     snap_dict["nat"] = all_nat                                       # NEW-V3.23.50 (NAT inventory: {host:{static,dynamic,pools,inside,outside}})
     snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
-    snap_dict["framework_coverage"] = _run_phase("Framework coverage", compute_framework_coverage, all_security, _default={})  # W2-3 (CIS/NIST/PCI/STIG mapping over existing checks)
+    snap_dict["framework_coverage"] = framework_cov                 # W2-3 (CIS/NIST/PCI/STIG mapping; computed once at the workbook stage above)
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
