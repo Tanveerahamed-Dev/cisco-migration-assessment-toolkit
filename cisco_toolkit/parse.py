@@ -3708,7 +3708,13 @@ def parse_ptp_clock(output: str) -> dict:
     / 0 ports / no parent -- i.e. PTP is available but the switch is NOT in an active timing hierarchy
     (PTP would be flowing as plain multicast, not boundary-clocked -- a real ST 2110/AES67 finding).
     `locked` is inferred from a small offset-from-master (|offset| < 1us) when present."""
-    if not output or "ptp" not in output.lower():
+    low = output.lower()
+    if not output or "ptp" not in low:
+        return {}
+    # an NX-OS error/deprecation banner ('% Unavailable command (deprecated by show ptp local-clock)',
+    # '% Invalid command') mentions 'ptp' but carries NO clock data -- don't read it as a real PTP clock, or a
+    # switch with no PTP reads as PTP-present (audit-5 #13).
+    if re.search(r"%\s*(?:unavailable|invalid|incomplete|ambiguous|permission|deprecated)", low) or "deprecated by" in low:
         return {}
     r: dict = {"device_type": "", "profile": "", "domain": "", "clock_identity": "", "num_ports": None,
                "grandmaster": "", "offset_ns": None, "mean_path_delay_ns": None,
