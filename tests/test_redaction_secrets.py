@@ -248,3 +248,47 @@ def test_redact_collected_inplace_pseudonymizes_workbook_dataclasses():
     assert dp.serial_number.startswith("SN") and d.current_switch_serial.startswith("SN")
     assert dp.model == "WS-C4948E-F"          # non-PII fields preserved (model is not an IP/MAC/serial)
     assert dp.hostname == "AAS13-BC"          # hostnames kept (topology survives), same as redact_snapshot
+
+
+def test_redact_vendor_enc_passphrase_and_junos_psk_not_stranded():
+    """[audit-5 sec HIGH/MED] The deny-list runs SEQUENTIALLY, so the broad Cisco `password` and bare-`key`
+    rules pre-empted the FortiGate `set password|private-key ENC <x>` and Junos `pre-shared-key ascii-text
+    "<x>"` forms -- capturing the `ENC`/`ascii-text` token as the 'secret' and STRANDING the real hash / blob /
+    PSK after it. `set passphrase <x>` (FortiOS WPA / SSL-VPN) was uncovered entirely. None of the encrypted
+    material may survive, and the surrounding keyword context is preserved."""
+    from cisco_toolkit.html import _scrub_secrets
+    assert _scrub_secrets("set password ENC SH2KpL9mNvBxHash==") == "set password ENC <redacted>"
+    assert _scrub_secrets("set private-key ENC AKxBlob9876") == "set private-key ENC <redacted>"
+    assert _scrub_secrets("set passphrase CorpWiFiP@ssw0rd2026") == "set passphrase <redacted>"
+    assert "MyJunosPSK2026" not in _scrub_secrets('pre-shared-key ascii-text "MyJunosPSK2026"')
+    # regression: the digest forms that RELY on `\\bkey` matching inside the hyphenated keyword must still redact
+    assert _scrub_secrets("ntp authentication-key 1 md5 NtpMd5DigestXYZ") == \
+        "ntp authentication-key 1 md5 <redacted>"
+    assert _scrub_secrets("ip ospf message-digest-key 7 md5 7 OspfMd5DigestABC") == \
+        "ip ospf message-digest-key 7 md5 7 <redacted>"
+    # end-to-end through redact_snapshot
+    snap = {"raw_config": [
+        "set password ENC SH2KpL9mNvBxHash==", "set private-key ENC AKxBlob9876",
+        "set passphrase CorpWiFiP@ssw0rd2026", 'pre-shared-key ascii-text "MyJunosPSK2026"']}
+    blob = json.dumps(html.redact_snapshot(snap))
+    for s in ("SH2KpL9mNvBxHash==", "AKxBlob9876", "CorpWiFiP@ssw0rd2026", "MyJunosPSK2026"):
+        assert s not in blob, f"secret leaked through --redact: {s}"
+
+
+def test_redact_cdp_neighbor_chassis_serial():
+    """[audit-5 sec HIGH] `show cdp neighbors detail` stores 'Device ID: <host>(<SERIAL>)' verbatim in the
+    free-text cdp_neighbor field, which is NOT a serial-named key, so --redact left the real neighbor chassis
+    serial in 564 cells (55 distinct). The parenthesized Cisco serial must be pseudonymized -- and consistently
+    with the SAME serial under serial_number -- while the hostname (topology) is preserved."""
+    snap = {
+        "devices": {"AS01": {"serial_number": "FOC1830R1QS"}},
+        "interfaces": {"AS01": {"Te1/1/3": {
+            "port": "Te1/1/3",
+            "cdp_neighbor": "DS03-BC-CA05R52-AJDOH.broadcast.[HISTORY-REDACTED](FOC1830R1QS)"}}},
+    }
+    r = html.redact_snapshot(snap)
+    cdp = r["interfaces"]["AS01"]["Te1/1/3"]["cdp_neighbor"]
+    assert "FOC1830R1QS" not in json.dumps(r), "real chassis serial leaked via cdp_neighbor"
+    assert cdp.startswith("DS03-BC-CA05R52-AJDOH.broadcast.[HISTORY-REDACTED](")   # hostname kept (topology survives)
+    sn = r["devices"]["AS01"]["serial_number"]
+    assert sn.startswith("SN") and sn in cdp                          # same serial -> same pseudonym both places

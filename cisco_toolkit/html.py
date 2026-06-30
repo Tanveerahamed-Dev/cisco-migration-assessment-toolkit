@@ -758,7 +758,7 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     r"(\bcommunity\s+)(\S+)",
     # Cisco password/secret forms: type-7/type-5 and cleartext, 'enable secret',
     # and 'username <u> password|secret <VALUE>'. The username token is preserved.
-    r"(\bpassword\s+(?:\d+\s+)?)(\S+)",
+    r"(\bpassword\s+(?:(?:ENC|\d+)\s+)?)(\S+)",
     r"(\bsecret\s+(?:\d+\s+)?)(\S+)",
     r"((?:username|user)\s+\S+\s+(?:password|secret)\s+(?:\d+\s+)?)(\S+)",
     # Shared keys. Specific forms FIRST so the generic bare 'key' below cannot consume
@@ -767,7 +767,7 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # IKE pre-shared keys, and 'crypto isakmp key <VALUE> address ...'.
     r"((?:tacacs-server|radius-server)\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)(\S+)",
     r"(key-string\s+(?:\d+\s+)?)(\S+)",
-    r"(pre-shared-key\s+(?:(?:local|remote)\s+)?(?:\d+\s+)?)(\S+)",
+    r"(pre-shared-key\s+(?:(?:local|remote|ascii-text|hexadecimal)\s+)?(?:\d+\s+)?)(\S+)",
     r"(crypto\s+isakmp\s+key\s+(?:\d+\s+)?)(\S+)",
     # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication). The optional
     # inner group absorbs a hash-algorithm label so 'authentication-key|message-digest-key N md5|sha|
@@ -777,11 +777,11 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # follow-words intact: 'key chain <NAME>' declares a keychain (name is not a secret), and the bare rule
     # runs AFTER the pre-shared-key rule over the accumulating string, so without the guard it re-fired on
     # 'pre-shared-key local <redacted>' and mangled the 'local'/'remote' direction qualifier.
-    r"(\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(?!chain\b|local\b|remote\b)(\S+)",
+    r"((?<!private-)(?<!shared-)\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(?!chain\b|local\b|remote\b)(\S+)",
     # Non-Cisco vendor config forms: FortiGate 'set passwd|psksecret|password [ENC] <VALUE>' and Junos
     # 'authentication-key|secret "<VALUE>"' -- 'passwd'/'psksecret' are not the whole words 'password'/'secret',
     # so the Cisco patterns above miss them.
-    r"(set\s+(?:passwd|psksecret|password|private-key)\s+(?:ENC\s+)?)(\S+)",
+    r"(set\s+(?:passwd|psksecret|password|private-key|passphrase)\s+(?:ENC\s+)?)(\S+)",
 )]
 # JSON-VALUE secrets: the controller-REST channels (ACI / ISE / FMC / vManage) and IaC exports store a secret as
 # a VALUE under a key, with no inline keyword for the deny-list regexes above to anchor on. So redact the WHOLE
@@ -802,6 +802,12 @@ _REDACT_SECRET_TOKENS = (
     "password", "passwd", "passphrase", "secret", "community", "psk", "presharedkey", "sharedsecret",
     "token", "apikey", "apisecret", "privatekey", "privkey", "credential",
 )
+
+# CDP/LLDP 'Device ID: <host>(<SERIAL>)' embeds the neighbor's chassis serial in a free-text field that is NOT a
+# serial-named key, so the key-based serial pass missed it (audit-5 sec HIGH: 55 real serials survived --redact).
+# Match a parenthesized Cisco serial (3 letters + 4 digits + 2-6 alnum, e.g. FOC1830R1QS) so it routes through the
+# SAME serial pseudonymizer for a consistent SNxxxx; the SNxxxx pseudonym (2 leading letters) never re-matches.
+_REDACT_CDP_SERIAL_RE = re.compile(r"\(([A-Z]{3}[0-9]{4}[A-Z0-9]{2,6})\)")
 
 
 def _norm_key(k) -> str:
@@ -859,8 +865,8 @@ def redact_snapshot(snap: dict) -> dict:
         # Strip credentials / community / key material first so a secret token is replaced wholesale, THEN
         # pseudonymize any remaining IPv4 / IPv6 / MACs in context. IPv6 is remapped before MAC; the two
         # patterns are mutually exclusive (a MAC has neither 7 colons nor a '::'), so neither corrupts the other.
-        return _REDACT_MAC_RE.sub(
-            _mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s))))
+        s = _REDACT_CDP_SERIAL_RE.sub(lambda m: "(" + _serial(m.group(1)) + ")", _scrub_secrets(s))
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     def _is_secret_key(key) -> bool:
         nk = _norm_key(key)
@@ -929,7 +935,8 @@ def _make_redactor():
         return mac_map[key]
 
     def scrub(s):
-        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s))))
+        s = _REDACT_CDP_SERIAL_RE.sub(lambda m: "(" + serial(m.group(1)) + ")", _scrub_secrets(s))
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     def serial(v):
         if not v:

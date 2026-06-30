@@ -28,6 +28,17 @@ class _FakeResp:
         pass
 
 
+def test_safe_url_preserves_ipv6_brackets_when_stripping_creds():
+    """[audit-5 sec LOW] _safe_url strips embedded userinfo before logging, but urlsplit().hostname returns an
+    IPv6 literal WITHOUT its brackets, so rebuilding host:port yielded an ambiguous / RFC-3986-invalid authority
+    in the [rest] log line. The credential must still be removed (the security-critical property) AND the IPv6
+    literal must keep its brackets so the host:port stays unambiguous."""
+    out = rest_collect._safe_url("https://rouser:S3cret@[2001:db8::1]:9060/ers/config/node")
+    assert "S3cret" not in out and "rouser" not in out      # userinfo stripped
+    assert "[2001:db8::1]:9060" in out                       # brackets restored -> unambiguous host:port
+    assert rest_collect._safe_url("https://u:p@10.0.0.1:443/x") == "https://10.0.0.1:443/x"   # IPv4 unaffected
+
+
 def test_collect_refuses_redirect_downgrade_and_cross_host():
     """Security: a redirect that would leak the credential is REFUSED on TWO vectors. _require_https only guards
     the FIRST hop, but urllib's stock HTTPRedirectHandler follows a 30x and re-sends the session cookie /

@@ -109,7 +109,10 @@ def _safe_url(url) -> str:
     try:
         p = urllib.parse.urlsplit(str(url))
         if p.username or p.password:
-            netloc = (p.hostname or "") + (f":{p.port}" if p.port else "")
+            host = p.hostname or ""
+            if ":" in host:                              # IPv6 literal -> urlsplit strips the []; restore them
+                host = f"[{host}]"
+            netloc = host + (f":{p.port}" if p.port else "")
             return urllib.parse.urlunsplit((p.scheme, netloc, p.path, p.query, p.fragment))
     except Exception:                                                # noqa: BLE001
         pass
