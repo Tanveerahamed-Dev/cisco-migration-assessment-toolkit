@@ -14,3 +14,16 @@ def test_summarize_tolerates_truthy_nonlist_failure_impact():
     from backend.summary import summarize
     for bad in (5, "x", {"k": "v"}, 3.14):
         assert isinstance(summarize({"devices": {"c": {}}, "failure_impact": bad}), dict)
+
+
+def test_summarize_n_critical_reconciles_with_bands_on_corrupt_exec_brief():
+    """[audit-5 cross-artifact #4] When executive_brief is a truthy non-dict, trend_point raises and the
+    try/except yields head={}, so the n_critical card silently defaulted to 0 while the bands chart (from
+    health_scores) correctly showed Critical -- the same screen contradicted itself. n_critical now falls back
+    to the band count."""
+    from backend.summary import summarize
+    s = summarize({"devices": {"sw1": {}, "sw2": {}},
+                   "health_scores": [{"switch": "sw1", "band": "Critical", "score": 10},
+                                     {"switch": "sw2", "band": "Critical", "score": 5}],
+                   "executive_brief": "CORRUPT"})
+    assert s["n_critical"] == s["bands"]["Critical"] == 2
