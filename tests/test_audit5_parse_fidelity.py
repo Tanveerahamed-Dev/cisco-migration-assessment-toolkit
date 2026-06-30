@@ -20,3 +20,31 @@ def test_parse_multicast_info_nxos_verbose_pim_interface():
     assert all("PIM" in v for v in res.values())
     keys = " ".join(res)
     assert "64" in keys and "28" in keys
+
+
+def _sec_findings(cfg):
+    r = __import__("cisco_toolkit.parse", fromlist=["parse"]).parse_security(cfg)
+    fl = r["findings"] if isinstance(r, dict) and "findings" in r else r
+    return {f["id"]: f for f in fl}
+
+
+def test_parse_security_nxos_type5_user_and_password_encryption():
+    """[#2/#3 HIGH] weak_users flagged ANY 'username X password ...', but NX-OS 'username admin password 5
+    <salted-md5>' is Type-5 (STRONG) -- only untyped cleartext / Type-0 / Type-7 is weak.
+    [#12 MED] 'service password-encryption' is an IOS command absent on NX-OS (which encrypts by default), so the
+    CIS check false-FAILED every NX-OS device with an impossible 'cleartext (Type-0)' claim -> must be N/A.
+    Real CS01 shapes."""
+    nxos = ("feature ospf\n"
+            "username admin password 5 $1$/xzLOXP8$cb6hjzRZiOUAmAkP91S930  role network-admin\n"
+            "username swadmin password 5 $1$.2qNwXmh$KYWx8jlR.OCGELDIxtNLi0  role vdc-operator\n")
+    f = _sec_findings(nxos)
+    assert f["weak-user-pw"]["status"] == "pass"        # Type-5 users are strong, not weak
+    assert f["password-encryption"]["status"] == "na"   # not applicable on NX-OS (no false cleartext FAIL)
+    # IOS weak forms still correctly flagged
+    ios = ("service password-encryption\n"
+           "username weakguy password 7 094F471A1A0A\n"
+           "username clearguy password Sup3rCleartext\n")
+    f2 = _sec_findings(ios)
+    assert f2["weak-user-pw"]["status"] == "fail"
+    assert "weakguy" in f2["weak-user-pw"]["detail"] and "clearguy" in f2["weak-user-pw"]["detail"]
+    assert f2["password-encryption"]["status"] == "pass"
