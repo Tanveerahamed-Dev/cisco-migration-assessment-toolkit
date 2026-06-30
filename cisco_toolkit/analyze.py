@@ -2538,6 +2538,15 @@ _EP_DESC_RULES = [
 ]
 # Vendor substring -> (class, rank). Unambiguous makers are rank 2; ambiguous (Dell/HP = server OR
 # workstation) are rank 1 so a description/CDP signal wins.
+# KNOWN LIMITATION (audit-5 FF#7): the shipped Wireshark `manuf` registry consolidates ALL Aruba OUIs under the
+# IEEE legal name 'Hewlett Packard Enterprise' -- NO registry row contains the string 'aruba'. So the 'aruba'
+# substring in the rank-1 Network rule below only matches a NON-registry / custom vendor source; an Aruba AP or
+# switch resolved through the shipped registry carries vendor 'Hewlett Packard Enterprise' and falls to the
+# rank-1 'Server' rule. That is an OVERRIDABLE inference (a description / CDP neighbor / explicit role still wins),
+# not a confident label -- but absent any such signal an OUI-only Aruba device reads as 'Server'. HPE-server vs
+# HPE-Aruba cannot be told apart by vendor STRING alone (the registry erased the distinction); correcting it needs
+# a per-device role signal, not another vendor substring. Do NOT delete the 'aruba' entry: it still classifies a
+# custom/non-registry source that does surface 'aruba'.
 _EP_VENDOR_RULES = [
     (("apc", "american power conversion", "schneider", "eaton", "tripp", "vertiv", "liebert", "cyberpower"),
      "UPS/PDU", 2),   # 'american power conversion' = APC's IEEE-registry LEGAL name (block 00C0B7); 'apc' is not in it
