@@ -3219,6 +3219,22 @@ def parse_security(output: str) -> dict:
     else:
         add("weak-user-pw", "pass", "no Type-0/7 local user passwords.")
 
+    # SNMPv3 user security level: a user with NO 'auth' on ANY of its 'snmp-server user' lines is noAuthNoPriv
+    # (no security at all); md5 / des are weak. The bare PRESENCE of an snmp-server user/group line does NOT
+    # prove auth/priv -- the old check PASSed on presence alone (audit-5 #2/#20).
+    _snmp_users: Dict[str, dict] = {}
+    for ln in low:
+        mu = re.match(r"^snmp-server\s+user\s+(\S+)\b(.*)$", ln)
+        if not mu:
+            continue
+        u = _snmp_users.setdefault(mu.group(1), {"auth": "", "priv": ""})
+        ma = re.search(r"\bauth\s+(md5|sha\S*)\b", mu.group(2))
+        if ma and not u["auth"]: u["auth"] = ma.group(1)
+        mp = re.search(r"\bpriv\s+(aes\S*|3des|des)\b", mu.group(2))
+        if mp and not u["priv"]: u["priv"] = mp.group(1)
+    snmpv3_noauth = sorted(n for n, u in _snmp_users.items() if not u["auth"])
+    snmpv3_weak = sorted(n for n, u in _snmp_users.items() if u["auth"] == "md5" or u["priv"] == "des")
+
     if snmp_comm:
         rw = any(c["access"] == "rw" for c in snmp_comm)
         dflt = any(c["default"] for c in snmp_comm)
@@ -3232,7 +3248,16 @@ def parse_security(output: str) -> dict:
             "; ".join(bits) + " -- v1/v2c carry the community in cleartext.",
             severity="high" if (rw or dflt) else "medium")
     elif snmpv3:
-        add("insecure-snmp", "pass", "SNMPv3 (auth/priv) only -- no v1/v2c communities.")
+        if snmpv3_noauth:
+            add("insecure-snmp", "fail",
+                f"{len(snmpv3_noauth)} SNMPv3 user(s) with NO authentication (noAuthNoPriv): "
+                f"{', '.join(snmpv3_noauth)} -- SNMPv3 without auth provides no security.", severity="high")
+        elif snmpv3_weak:
+            add("insecure-snmp", "pass",
+                f"SNMPv3 only (no v1/v2c), but {len(snmpv3_weak)} user(s) use weak auth/priv (MD5 / DES): "
+                f"{', '.join(snmpv3_weak)} -- prefer SHA + AES.")
+        else:
+            add("insecure-snmp", "pass", "SNMPv3 with auth/priv (SHA/AES) -- no v1/v2c communities.")
     else:
         add("insecure-snmp", "na", "no SNMP configured.")
 
