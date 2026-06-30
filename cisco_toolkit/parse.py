@@ -4226,7 +4226,9 @@ def parse_interface_phy(output: str) -> Dict[str, Dict[str, str]]:
         m = re.search(r"\b(Full|Half|Auto)-duplex\b", text, re.IGNORECASE)
         if m:
             rec["duplex"] = m.group(1).capitalize()
-        m = re.search(r"-duplex,\s*([^,]+?)\s*,", text)        # token between duplex and next comma
+        # token between duplex and the next comma/EOL. [^,\n] (not [^,]) so a duplex line with no trailing comma
+        # can't bleed the following detail lines (Beacon / flow-control ...) into the speed cell (audit-5 #5).
+        m = re.search(r"-duplex,\s*([^,\n]+?)\s*(?:,|\n|$)", text)
         if m:
             rec["speed"] = m.group(1).strip()
         m = re.search(r"media type is\s+(.+)", text, re.IGNORECASE)

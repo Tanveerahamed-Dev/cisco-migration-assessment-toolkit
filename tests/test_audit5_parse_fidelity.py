@@ -189,3 +189,15 @@ def test_config_hygiene_nxos_snmpv3_group_access_acl_is_used():
            "snmp-server group SNMPv3-Group v3 priv notify *tv.FFFF access SNMPv3_Allowed_Managers\n")
     unused = {u["name"] for u in (parse.parse_config_hygiene(cfg).get("unused") or [])}
     assert "SNMPv3_Allowed_Managers" not in unused     # referenced via snmp-server group ... access
+
+
+def test_parse_interface_phy_speed_no_multiline_bleed():
+    """[#5] parse_interface_phy's speed regex used [^,]+? which matches NEWLINES, so the 'Negotiated Speed' cell
+    bled multi-line detail ('10 Gb/s\\n  Beacon is turned off...') into the Physical-Health column. Real CS01."""
+    out = ("Ethernet1/9 is up\n"
+           "  full-duplex, 10 Gb/s, media type is 10G\n"
+           "  Beacon is turned off\n"
+           "  Input flow-control is off\n")
+    sp = next(iter(parse.parse_interface_phy(out).values()))["speed"]
+    assert sp == "10 Gb/s"
+    assert "\n" not in sp and "Beacon" not in sp
