@@ -2588,7 +2588,13 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
         cb = ws.cell(r, 4, d["b_native"]); cb.font = Font(bold=True, color="C00000")
         r += 1
     if r == 2:
-        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No native-VLAN mismatches on inter-switch trunks")
+        # coverage-honest: 'no mismatch' is scoped to the collected devices + observed trunks, NOT a fleet-wide
+        # clean bill of health -- absence of an uncollected far end is not evidence of consistency (audit-5 #6).
+        n_dev = len(all_interfaces or {})
+        ws.cell(2, 1, "no mismatch")
+        ws.cell(2, 2, f"No native-VLAN mismatch found among the inter-switch trunks observed across the {n_dev} "
+                      f"collected device(s). Uncollected devices, and any trunk whose far end was not collected, "
+                      f"are NOT assessed -- this is not a fleet-wide guarantee.")
     for i, w in enumerate([34, 12, 34, 12], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
