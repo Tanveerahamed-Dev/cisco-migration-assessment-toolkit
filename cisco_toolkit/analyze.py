@@ -285,6 +285,42 @@ def compute_hostname_mismatches(all_device_physical: List[Any]) -> List[dict]:
             out.append({"inventory": inv, "reported": rep})
     return out
 
+
+def reconcile_cdp_neighbor_names(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                                 all_device_physical: List[Any]) -> int:
+    """In-place fix for the phantom SPLIT-NODE class (audit-5 cross-artifact #1): a device collected under an
+    inventory name that is a suffix-SHORTER / typo'd form of its OWN configured hostname (DevicePhysical.
+    reported_hostname, from show version) is advertised by its NEIGHBORS over CDP/LLDP under that configured name,
+    which canon-MISSES the inventory key -- so compute_topology_links renders it as a second, duplicate node and
+    build_network_model DROPS the unresolved link (under-counting blast radius). This rewrites those neighbor
+    advertisements back to the inventory key, using each device's OWN configured hostname as the reconciliation
+    key, so the device renders as ONE node and its bidirectional link de-dups to one record.
+
+    OVER-MERGE-SAFE by construction -- a configured name is mapped to an inventory key ONLY when (a) exactly ONE
+    collected device reports it and (b) it is not itself an inventory key. So two genuinely distinct site devices,
+    or FEX modules that report their parent switch's hostname, can NEVER be merged (a wrong merge would silently
+    corrupt every downstream topology / dependency / failure-impact deliverable). Returns the count rewritten."""
+    inv_canon = {_canon_host(h) for h in all_interfaces}
+    claims: Dict[str, set] = {}
+    for dp in (all_device_physical or []):
+        inv = (getattr(dp, "hostname", "") or "").strip()
+        rep = (getattr(dp, "reported_hostname", "") or "").strip()
+        if inv and rep and inv in all_interfaces and _canon_host(inv) != _canon_host(rep):
+            claims.setdefault(_canon_host(rep), set()).add(inv)
+    resolve = {rc: next(iter(invs)) for rc, invs in claims.items()
+               if len(invs) == 1 and rc not in inv_canon}     # unambiguous + not already an inventory key
+    if not resolve:
+        return 0
+    rewritten = 0
+    for ifaces in all_interfaces.values():
+        for d in ifaces.values():
+            nb = (getattr(d, "cdp_neighbor", "") or "").strip()
+            tgt = resolve.get(_canon_host(nb)) if nb else None
+            if tgt and tgt != nb:
+                d.cdp_neighbor = tgt
+                rewritten += 1
+    return rewritten
+
 def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Tuple[str, str, str, str]]:
     """Return (severity, category, scope, detail) findings derived entirely from
     already-parsed InterfaceData + the topology link map. High-signal only."""

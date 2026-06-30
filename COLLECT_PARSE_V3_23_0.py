@@ -327,7 +327,7 @@ from cisco_toolkit.analyze import (
     compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
     stp_root_findings, compute_migration_punchlist,   # NEW-V3.23.62 / .63 (STP root analysis + consolidated punch-list)
-    compute_hostname_mismatches,                       # NEW-V3.23.68 (inventory-name vs configured-hostname)
+    compute_hostname_mismatches, reconcile_cdp_neighbor_names,   # NEW-V3.23.68 + audit-5 #1 (split-node reconcile)
     compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
     compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
     compute_flow_paths,                                # NEW-V3.23.126 (representative end-to-end flow paths; workbook/runbook twin of the Flow Simulator)
@@ -1835,6 +1835,14 @@ def main():
     if getattr(args, "redact", False):
         _run_phase("redact collected dataclasses", redact_collected_inplace, all_interfaces, all_device_physical)
         logger.info("[redact] collected inventory (workbook) serials / IPs / MACs pseudonymized (--redact)")
+
+    # Reconcile phantom split-nodes BEFORE any topology / sheet build: a device collected under a suffix-shorter
+    # inventory name than its OWN configured hostname is advertised by neighbors over CDP under that configured
+    # name; rewrite those advertisements to the inventory key so it renders as ONE node (audit-5 cross-artifact #1).
+    _n_reconciled = _run_phase("reconcile CDP split-node names", reconcile_cdp_neighbor_names,
+                               all_interfaces, all_device_physical, _default=0)
+    if _n_reconciled:
+        logger.info(f"[topology] reconciled {_n_reconciled} CDP advertisement(s) to inventory key(s) (split-node fix)")
 
     # Phase 6: Write interface rows to template sheet (each host guarded so one
     # host's write failure can't abort the run before wb.save()).
