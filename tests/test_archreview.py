@@ -337,6 +337,34 @@ def test_archreview_docx_carries_family_furniture(tmp_path):
     assert "Architecture Review & Conformance Report (.docx)" not in text  # …excluding self
 
 
+def test_archreview_docx_renders_w37_traceability_section(tmp_path):
+    """[W3-7 follow-on] When the snapshot carries recommended design decisions, the Architecture Review gains a
+    'Design Decision Traceability' section — the audit trail behind the conformance grade: each decision traced to
+    its CCDE principle + published citation. COVERAGE-HONEST: a decision with no citation renders '(uncited)', never
+    a fabricated reference; and Hand-Off renumbers to §6 (no numbering gap) only because §5 actually rendered."""
+    snap = _snap()
+    snap["design_blueprint"] = {"tradeoff_scorecard": [], "doctrine": {}, "decisions": [
+        {"status": "recommended", "title": "Enforce SNMPv3 fleet-wide", "priority": "Critical", "domain": "Security",
+         "principle": {"id": "mgmt-secure-protocols", "title": "Secure management protocols",
+                       "citation": "CCDE Session 19"},
+         "evidence": {"summary": "3 device(s) fail management hardening", "devices": ["core1"],
+                      "fields": ["security[host].findings[].status"]}},
+        {"status": "recommended", "title": "Collapse the access daisy-chain", "priority": "High", "domain": "Topology",
+         "principle": {"id": "topo-no-daisy-chain", "title": "No access daisy-chains", "citation": ""},   # uncited
+         "evidence": {"summary": "acc2 is single-homed via acc1", "devices": ["acc2"], "fields": []}},
+    ]}
+    out = str(tmp_path / "ar_trace.docx")
+    write_archreview_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert "5. Design Decision Traceability" in h1                    # the new section rendered
+    assert "6. Hand-Off Into the Document Set" in h1                  # Hand-Off renumbered (no gap)
+    text = _all_text(d)
+    assert "Enforce SNMPv3 fleet-wide" in text and "mgmt-secure-protocols" in text   # decision -> principle traced
+    assert "CCDE Session 19" in text                                  # the published citation surfaced
+    assert "(uncited)" in text                                        # honest: the citation-less decision is flagged
+
+
 def test_archreview_docx_prefers_attached_section(tmp_path):
     """One source of truth: when the CLI attached architecture_review, the writer renders THAT
     (here: a sentinel statement), rather than recomputing."""

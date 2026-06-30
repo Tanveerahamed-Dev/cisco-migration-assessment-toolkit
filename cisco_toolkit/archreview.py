@@ -1199,8 +1199,23 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
             _label_run(doc.add_paragraph(), "Reference:", c.get("reference"), GREY)
             doc.add_paragraph()
 
-    # ===== 5. Hand-off into the document set =====
-    doc.add_heading("5. Hand-Off Into the Document Set", level=1)
+    # ===== 5. Design decision traceability — the audit trail BEHIND the conformance grade =====
+    from cisco_toolkit.design import build_design_traceability   # local import: avoid any module-load cycle
+    trace = build_design_traceability(snap)                      # reads the xml-safe `snap` copy, not the raw arg
+    handoff_sec = 5
+    if trace:
+        doc.add_heading("5. Design Decision Traceability", level=1)
+        doc.add_paragraph(
+            "The audit trail behind the conformance grade — every recommended design decision traced to the CCDE "
+            "principle and published source that justify it, plus the collected evidence it stands on. A decision "
+            "with no citation is shown '(uncited)', never given a manufactured reference.")
+        table(["Design decision", "CCDE principle", "Citation", "Evidence", "Source fields"],
+              [(r["decision"], r["principle"], r["citation"], r["evidence"], r["fields"] or "—") for r in trace],
+              widths=[1.6, 1.7, 1.2, 1.9, 1.5])
+        handoff_sec = 6                                          # renumber Hand-Off only when §5 actually rendered
+
+    # ===== Hand-off into the document set (§5 if no traceability, §6 if it rendered — never a numbering gap) =====
+    doc.add_heading(f"{handoff_sec}. Hand-Off Into the Document Set", level=1)
     doc.add_paragraph(
         "Deviations feed the Target-State Design Recommendations (design document §4) and the "
         "migration punch-list; the priority queue in §1.1 is the working order. The engagement plan "
