@@ -139,3 +139,15 @@ def test_vlan_affinity_includes_unknown_no_minority_label():
     v100 = next(a for a in analyze.compute_endpoint_dependencies(ident)["affinity"] if a["vlan"] == "100")
     assert v100["total"] == 10                   # all 10 counted (9 Unknown + 1 Server), not just the minority
     assert v100["dominant"] == "Unknown"          # the 90% majority, not the 10% Server minority
+
+
+def test_ssot_reconcile_flags_n_domains_drift():
+    """[audit-5 scale-ssot #1/#2] executive_brief.scale.n_domains was published + served via SSOT but had NO
+    reconcile check, so a drift vs its raw basis (len(application_intelligence.domains)) went undetected."""
+    from cisco_toolkit import ssot
+    drift = {"executive_brief": {"scale": {"n_domains": 7}},
+             "application_intelligence": {"domains": [{"id": "d1"}, {"id": "d2"}]}}   # basis 2 != published 7
+    assert any("n_domains" in s for s in ssot.reconcile(drift))
+    ok = {"executive_brief": {"scale": {"n_domains": 2}},
+          "application_intelligence": {"domains": [{"id": "d1"}, {"id": "d2"}]}}
+    assert not any("n_domains" in s for s in ssot.reconcile(ok))
