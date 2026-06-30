@@ -82,3 +82,30 @@ def test_endpoint_vendor_rules_match_real_ieee_names():
     assert cls("00:01:d7") == "Network"     # F5 Inc.
     assert cls("00:80:77") == "Printer"     # Brother industries
     assert cls("00:1a:4d") == "Server"      # Giga-Byte Technology
+
+
+def test_parse_neighbors_cdp_nxos_ipv4_address():
+    """[#21] NX-OS 'show cdp neighbors detail' uses 'IPv4 Address:' (not IOS 'IP address:'), so the mgmt-IP
+    regex missed it -> blank on all 55 real NX-OS devices. Real CS01 shape."""
+    out = ("Device ID:NBR-A.example.tv\n"
+           "Interface: Ethernet1/1,  Port ID (outgoing port): Ethernet1/2\n"
+           "    IPv4 Address: 10.200.200.222\n")
+    rec = next(iter(parse.parse_neighbors_cdp(out).values()))
+    assert rec["mgmt_ip"] == "10.200.200.222"
+
+
+def test_parse_neighbors_lldp_nxos_not_advertised_is_not_a_neighbor_name():
+    """[#6] NX-OS LLDP 'System Name: not advertised' was stored as the neighbor device_id, so the explorer
+    rendered a phantom hub literally labeled 'NOT ADVERTISED' (every name-suppressed neighbour collapsed into
+    one node). The sentinel must become an empty name; real names still captured. Real CS01 shape."""
+    out = ("Chassis id: AAAA\n"
+           "Port id: 11aa.22bb.33cc\n"
+           "Local Port id: Eth1/1\n"
+           "System Name: not advertised\n"
+           "Chassis id: BBBB\n"
+           "Port id: Eth2/2\n"
+           "Local Port id: Eth1/2\n"
+           "System Name: RealNeighbor\n")
+    names = {r["device_id"] for r in parse.parse_neighbors_lldp(out).values()}
+    assert "not advertised" not in {n.lower() for n in names}     # no phantom 'NOT ADVERTISED' hub
+    assert "RealNeighbor" in names                                 # real names still captured
