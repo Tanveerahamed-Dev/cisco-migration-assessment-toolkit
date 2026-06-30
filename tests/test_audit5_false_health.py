@@ -70,3 +70,12 @@ def test_vrrp_abbreviated_vlan_iface_not_dropped():
            "Vl10       1   100 3609   Y   Y   Master  10.10.10.1      10.10.10.254\n")
     r = parse.parse_vrrp_summary(out)
     assert "Vlan10" in r and "VRRP" in r["Vlan10"]         # keyed canonically -> matches the Vlan10 SVI
+
+
+def test_parse_ptp_clock_ignores_deprecated_command_banner():
+    """[#13] 'show ptp clock' on NX-OS can return '% Unavailable command (deprecated by show ptp local-clock)' --
+    that banner mentions 'ptp', so parse_ptp_clock parsed it into a (mostly empty) dict and the device read as
+    PTP-present. An error/deprecation banner -> {} (no PTP); a real clock still parses."""
+    assert parse.parse_ptp_clock("% Unavailable command (deprecated by show ptp local-clock)\n") == {}
+    real = parse.parse_ptp_clock("PTP Device Type: boundary-clock\nPTP Device Profile: smpte-2059-2\n")
+    assert real and real["device_type"] == "boundary-clock"
