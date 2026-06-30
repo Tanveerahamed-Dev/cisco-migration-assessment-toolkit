@@ -1638,6 +1638,61 @@ function demoSnapshot(){
       {host:"ACC-5",compliance_pct:67,n_missing:2,missing:["logging host 10.0.0.20","aaa new-model"]},
     ],
     summary:{mode:"majority",n_devices:6,n_baseline:6,n_drifting:2,avg_compliance_pct:92}},
+  // NEW (orchestration-peer wave, roadmap G1): ACL line-reachability / shadow proof -> Health view aclShadowCard
+  // + 'ACL Shadow Analysis' sheet. The marquee: ACC-3's GUEST_FILTER hides a permit behind an earlier deny (a
+  // DIFFERENT-action shadow — broken intent, nothing logged); DIST-1 has a same-action redundant line; DIST-2
+  // has an empty match-space; ACC-1's non-contiguous wildcard is honestly INDETERMINATE (never called dead).
+  acl_line_reachability:{
+    findings:[
+      {host:"ACC-3",acl:"GUEST_FILTER",line_index:6,action:"permit",reason:"BLOCKING_LINES",blocking_lines:[3],
+       different_action:true,detail:"a permit hidden behind an earlier deny on line 4 — this rule never takes effect",
+       raw:"permit tcp 192.168.30.0 0.0.0.255 any eq 443",source_command:"show running-config",
+       citation:"acls.ACC-3.GUEST_FILTER[6]"},
+      {host:"DIST-1",acl:"MGMT_IN",line_index:4,action:"permit",reason:"BLOCKING_LINES",blocking_lines:[1],
+       different_action:false,detail:"fully covered by earlier line(s) — dead but harmless (same action)",
+       raw:"permit tcp host 10.0.0.50 any eq 22",source_command:"show running-config",
+       citation:"acls.DIST-1.MGMT_IN[4]"},
+      {host:"DIST-2",acl:"INET_OUT",line_index:9,action:"deny",reason:"INDEPENDENTLY_UNMATCHABLE",blocking_lines:[],
+       different_action:false,detail:"empty match-space — source/destination/port sets cannot all be satisfied at once",
+       raw:"deny tcp any eq www any eq www",source_command:"show running-config",
+       citation:"acls.DIST-2.INET_OUT[9]"},
+      {host:"ACC-1",acl:"VOICE_ACL",line_index:3,action:"permit",reason:"INDETERMINATE",blocking_lines:[],
+       different_action:false,detail:"non-contiguous wildcard mask — cannot be proven dead or live offline (abstain)",
+       raw:"permit ip 10.20.0.0 0.0.255.3 any",source_command:"show running-config",
+       citation:"acls.ACC-1.VOICE_ACL[3]"},
+    ],
+    summary:{n_findings:4,n_shadowed:2,n_different_action:1,n_unmatchable:1,n_indeterminate:1,n_bad_reference:0}},
+  // NEW (orchestration-peer wave, roadmap I2): per-feature config compliance -> Health view featureComplianceCard
+  // + 'Feature Compliance' sheet. The golden_drift above decomposed by policy area: services/aaa/logging each
+  // drift on one device; ntp + spanning-tree are aligned fleet-wide.
+  feature_compliance:{
+    features:[
+      {feature:"services",n_baseline:2,n_drifting:1},
+      {feature:"aaa",n_baseline:1,n_drifting:1},
+      {feature:"logging",n_baseline:1,n_drifting:1},
+      {feature:"ntp",n_baseline:1,n_drifting:0},
+      {feature:"spanning-tree",n_baseline:1,n_drifting:0},
+    ],
+    per_device_feature:[
+      {host:"ACC-1",feature:"services",n_baseline:2,n_missing:1,missing:["no ip http server"],status:"drift"},
+      {host:"ACC-5",feature:"logging",n_baseline:1,n_missing:1,missing:["logging host 10.0.0.20"],status:"drift"},
+      {host:"ACC-5",feature:"aaa",n_baseline:1,n_missing:1,missing:["aaa new-model"],status:"drift"},
+    ],
+    summary:{n_features:5,n_rows:30,n_drift_rows:3}},
+  // NEW (orchestration-peer wave, roadmap K1): capture integrity -> Health view captureIntegrityCard + 'Capture
+  // Integrity' sheet. The evidence-trust gate: ACC-5's running-config was truncated (no 'end') and CORE-9K's
+  // 'show version' hit a pager artifact — so any 'clean' verdict on those two is unproven, not healthy.
+  capture_integrity:{
+    findings:[
+      {host:"ACC-5",command:"show running-config",status:"incomplete",
+       reason:"IOS-style running-config has no terminating 'end' near the tail — body looks truncated",
+       evidence:"interface GigabitEthernet1/0/48",source_command:"show running-config",
+       citation:"captures.ACC-5.show running-config"},
+      {host:"CORE-9K",command:"show version",status:"incomplete",
+       reason:"pager artifact at the tail — paging not disabled or capture cut",
+       evidence:" --More-- ",source_command:"show version",citation:"captures.CORE-9K.show version"},
+    ],
+    summary:{n_findings:2,n_incomplete:2,n_error:0,n_empty:0,n_hosts_affected:2}},
   // V3.23.164: syslog intelligence -> Health view syslogCard + 'Syslog Intelligence' sheet. NOS-style log
   // analysis: ACC-3 (the loop-prone closet) flaps a MAC + err-disables a port; DIST-2 logs a PSU alarm;
   // ACC-1 has a flapping uplink; ACC-5's 'show logging' was never collected (declared, not scored).
@@ -5680,6 +5735,79 @@ function goldenDriftCard(){
     `<div class="sub" style="margin-bottom:6px">Per-device compliance vs ${esc(src)} (${s.n_baseline} required directive(s), avg ${s.avg_compliance_pct}%) — the standard config each device is missing. Full detail in the 'Golden-Config Drift' workbook sheet.</div>`+
     rows+`</div>`;
 }
+/* ACL line-reachability / shadow proof (NEW — orchestration-peer wave, roadmap G1, the marquee): an offline,
+   Batfish-style header-space proof of which ACL lines can never match (dead/shadowed), have an empty match-space,
+   or a bad object-group reference. The dangerous case is a DIFFERENT-action shadow — a permit silently hidden
+   behind an earlier deny (intent broken, nothing logged). Coverage-honest: INDETERMINATE (unevaluable) lines are
+   listed, never called dead. Reads SNAP.acl_line_reachability {findings:[{host,acl,line_index,action,reason,
+   different_action,detail,raw}], summary}. One source of truth with the 'ACL Shadow Analysis' workbook sheet.
+   Back-compat: no key -> no card. */
+function aclShadowCard(){
+  const alr=SNAP&&SNAP.acl_line_reachability; if(!alr)return "";
+  const s=alr.summary||{}; const rows=(alr.findings||[]).slice();
+  if(!rows.length)
+    return `<div class="sec"><h3>ACL shadow analysis <span class="badge b-ok">clean</span></h3>`+
+      `<div class="ln faint">✓ No shadowed or unmatchable ACL lines in the collected filters (or no ACLs were collected) — every reachable line can still match traffic.</div></div>`;
+  // most dangerous first: a different-action shadow (permit behind deny), then shadowed, then indeterminate.
+  const sev=f=>f.different_action?0:(f.reason==="INDETERMINATE"?2:1);
+  rows.sort((a,b)=>sev(a)-sev(b));
+  const badge=s.n_different_action>0?`<span class="badge b-crit">${s.n_different_action} silent permit/deny</span>`
+    :s.n_shadowed>0?`<span class="badge b-warn">${s.n_shadowed} shadowed</span>`
+    :`<span class="badge b-watch">${s.n_indeterminate} indeterminate</span>`;
+  const top=rows.slice(0,12).map(f=>{
+    const diff=!!f.different_action;
+    const tok=diff?"pl-crit":(f.reason==="INDETERMINATE"?"pl-watch":"pl-neutral");
+    const tag=diff?"different-action":esc(f.reason||"shadowed");
+    return `<div class="ln"><span class="pill ${tok}">${tag}</span> <span class="mono">${esc(shortName(f.host))}</span>:<span class="mono">${esc(f.acl)}</span> line ${(+f.line_index||0)+1} <span class="faint">${esc(f.action)} — ${esc(f.detail||"")}</span></div>`;
+  }).join("");
+  return `<div class="sec"><h3>ACL shadow analysis ${badge}</h3>`+
+    `<div class="sub" style="margin-bottom:6px">${s.n_shadowed} shadowed · ${s.n_different_action} different-action · ${s.n_unmatchable} unmatchable · ${s.n_bad_reference} bad-ref · ${s.n_indeterminate} indeterminate. Header-space proof of ACL lines that can never match — a different-action shadow is a silently-broken filter intent. Full detail in the 'ACL Shadow Analysis' workbook sheet.</div>`+
+    top+(rows.length>12?`<div class="ln faint">…and ${rows.length-12} more line(s) — see the workbook sheet.</div>`:"")+`</div>`;
+}
+/* Per-feature config compliance (NEW — orchestration-peer wave, roadmap I2): the golden-config drift decomposed
+   by policy AREA (aaa / snmp / logging / spanning-tree / ...), with how many devices drift in each — the
+   per-feature companion to goldenDriftCard's per-device view. Reads SNAP.feature_compliance {features:[{feature,
+   n_baseline,n_drifting}], per_device_feature, summary:{n_features,n_rows,n_drift_rows}}. One source of truth
+   with the 'Feature Compliance' workbook sheet. Back-compat: no key / no baseline -> no card. */
+function featureComplianceCard(){
+  const fc=SNAP&&SNAP.feature_compliance; if(!fc)return "";
+  const feats=(fc.features||[]).slice().sort((a,b)=>(b.n_drifting||0)-(a.n_drifting||0));
+  const s=fc.summary||{}; if(!feats.length)return "";
+  const drift=feats.filter(f=>(f.n_drifting||0)>0);
+  if(!drift.length)
+    return `<div class="sec"><h3>Feature compliance <span class="badge b-ok">aligned</span></h3>`+
+      `<div class="ln faint">✓ All ${feats.length} policy area(s) match the baseline — no per-feature drift.</div></div>`;
+  const max=Math.max(1,...feats.map(f=>f.n_drifting||0));
+  const fr=feats.map(f=>{const nd=f.n_drifting||0;const tok=nd===0?"ok":(nd<=2?"watch":"crit");
+    return `<div class="ln" style="display:flex;align-items:center;gap:7px">`+
+      `<span class="mono" style="min-width:118px">${esc(f.feature)}</span>`+
+      `<span class="bar" style="display:inline-block;width:140px"><i style="width:${Math.round(100*nd/max)}%;background:var(--${tok})"></i></span>`+
+      `<span class="faint" style="font-size:11px;white-space:nowrap">${nd} device(s) drift · ${f.n_baseline} baseline directive(s)</span></div>`;
+  }).join("");
+  return `<div class="sec"><h3>Feature compliance <span class="badge b-crit">${drift.length}/${feats.length} area(s) drift</span></h3>`+
+    `<div class="sub" style="margin-bottom:7px">The golden-config drift decomposed by policy area — which features drift, across how many devices (${s.n_drift_rows} device-feature drift rows). The per-feature companion to the per-device golden-drift card. Full detail in the 'Feature Compliance' workbook sheet.</div>`+
+    fr+`</div>`;
+}
+/* Capture integrity (NEW — orchestration-peer wave, roadmap K1): the truncation / pager / CLI-error guard over
+   every collected command body. A partial capture is a DECLARED blind spot, never silently 'healthy' — this card
+   is the evidence-trust gate under every other finding. Reads SNAP.capture_integrity {findings:[{host,command,
+   status,reason}], summary:{n_findings,n_incomplete,n_error,n_empty,n_hosts_affected}}. One source of truth with
+   the 'Capture Integrity' workbook sheet. Back-compat: no key -> no card. */
+const _CI_PILL={error:"pl-crit",incomplete:"pl-watch",empty:"pl-neutral"};
+function captureIntegrityCard(){
+  const ci=SNAP&&SNAP.capture_integrity; if(!ci)return "";
+  const s=ci.summary||{}; const rows=ci.findings||[];
+  if(!rows.length)
+    return `<div class="sec"><h3>Capture integrity <span class="badge b-ok">complete</span></h3>`+
+      `<div class="ln faint">✓ Every collected command body looks complete — no truncation, pager artifacts or CLI errors. The evidence under the other findings is trustworthy.</div></div>`;
+  const top=rows.slice(0,12).map(f=>{
+    const tok=_CI_PILL[f.status]||"pl-neutral";
+    return `<div class="ln"><span class="pill ${tok}">${esc(f.status)}</span> <span class="mono">${esc(shortName(f.host))}</span> <span class="faint">${esc(f.command)}</span> — ${esc(f.reason||"")}</div>`;
+  }).join("");
+  return `<div class="sec"><h3>Capture integrity <span class="badge b-crit">${s.n_hosts_affected} host${s.n_hosts_affected===1?"":"s"} partial</span></h3>`+
+    `<div class="sub" style="margin-bottom:6px">${s.n_incomplete} incomplete · ${s.n_error} CLI-error · ${s.n_empty} empty capture(s). A partial capture is a blind spot — any 'clean' verdict on these devices is unproven evidence, not a healthy result. Full detail in the 'Capture Integrity' workbook sheet.</div>`+
+    top+(rows.length>12?`<div class="ln faint">…and ${rows.length-12} more — see the workbook sheet.</div>`:"")+`</div>`;
+}
 /* Syslog intelligence (NEW-V3.23.164): the NOS-style operational log analysis. Reads
    SNAP.syslog_intelligence {detections:[{host,label,severity,count,detail,recommendation}],
    per_device, summary:{n_devices,n_collected,total_events,n_detections,hosts_not_collected}}.
@@ -8133,6 +8261,7 @@ function drawHealth(){
     ${punchlistCard()}
     ${driftCard()}
     ${collectionCard()}
+    ${captureIntegrityCard()}
     ${calibrationCard()}
     ${sensitivityCard()}
     ${rootCauseCard()}
@@ -8144,7 +8273,9 @@ function drawHealth(){
     ${chokepointCard()}
     ${securityCard()}
     ${hygieneCard()}
+    ${aclShadowCard()}
     ${goldenDriftCard()}
+    ${featureComplianceCard()}
     ${syslogCard()}
     ${qosCard()}
     ${softwareRiskCard()}
