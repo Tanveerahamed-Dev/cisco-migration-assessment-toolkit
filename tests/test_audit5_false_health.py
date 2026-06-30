@@ -95,3 +95,16 @@ def test_trunk_native_sheet_no_mismatch_discloses_coverage():
     banner = " ".join(str(ws.cell(2, c).value or "") for c in (1, 2)).lower()
     assert "not assessed" in banner and ("uncollected" in banner or "collected" in banner)
     assert banner.strip() != "clean no native-vlan mismatches on inter-switch trunks"
+
+
+def test_config_hygiene_sheet_empty_discloses_coverage():
+    """[#23] An empty Config Hygiene sheet (no undefined/unused issues) showed nothing, reading as a fleet-wide
+    clean bill though only collected devices are assessed. The empty case now discloses the assessed scope."""
+    import pytest
+    openpyxl = pytest.importorskip("openpyxl")
+    from cisco_toolkit import excel
+    wb = openpyxl.Workbook()
+    excel.write_config_hygiene_sheet(wb, {"sw1": {"undefined": [], "unused": [], "summary": {}}})
+    ws = wb[excel.CONFIG_HYGIENE_SHEET_NAME]
+    banner = " ".join(str(ws.cell(2, c).value or "") for c in (1, 2)).lower()
+    assert "not assessed" in banner and "collected running-config" in banner

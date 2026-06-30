@@ -1479,10 +1479,14 @@ def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:
             ws.cell(r, 4, u.get("name", "")); ws.cell(r, 5, "defined but never referenced in the running-config")
             for col in range(1, 6): ws.cell(r, col).fill = unused_fill
             r += 1; nunused += 1
+    nhosts = len([h for h in all_hygiene if all_hygiene[h]])
+    if r == 2:   # no hygiene issues found -> coverage-honest 'no issues', NOT a fleet-wide clean bill (audit-5 #23)
+        ws.cell(2, 1, "no issues")
+        ws.cell(2, 2, f"No undefined-reference / unused-structure issue among the {nhosts} device(s) with a "
+                      f"collected running-config. Devices without a collected running-config are NOT assessed.")
     for i, w in enumerate([14, 26, 16, 26, 64], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
-    nhosts = len([h for h in all_hygiene if all_hygiene[h]])
     logger.info(f"  [OK] '{CONFIG_HYGIENE_SHEET_NAME}' sheet: {nundef} undefined ref(s), "
                 f"{nunused} unused across {nhosts} switch(es)")
 
