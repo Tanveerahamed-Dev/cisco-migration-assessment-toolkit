@@ -2144,7 +2144,7 @@ def main():
     # synthesis of already-collected data; compute once -> sheet + snapshot (one source of truth).
     validation_plan = _run_phase("Validation plan", compute_validation_plan,
                                  all_interfaces, move_groups, all_routing_neighbors, all_stp_roots,
-                                 _dev_platform, _default={})
+                                 _dev_platform, protocol_health=protocol_health, _default={})   # NRFU #18: bundle baseline reflects real (D)/down members, not a blanket all-(P)
     _run_phase("Cutover Validation sheet", write_validation_plan_sheet, wb, validation_plan)
 
     # Phase 30d-quinquies: Golden-config DRIFT - NEW-V3.23.146. Per-device running-config drift vs a baseline:

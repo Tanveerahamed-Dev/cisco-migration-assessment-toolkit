@@ -3911,7 +3911,8 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                             move_groups: Optional[list] = None,
                             routing_neighbors: Optional[dict] = None,
                             stp_roots: Optional[dict] = None,
-                            devices: Optional[dict] = None) -> dict:
+                            devices: Optional[dict] = None,
+                            protocol_health: Optional[list] = None) -> dict:
     """NEW-V3.23.143: per-wave post-cutover validation checklist generated from the current-state topology.
     Each item names the device + the command to run + the EXPECTED good result (captured from the pre-cutover
     state) + why it matters + the severity if it fails. Read-only synthesis; no new collection. Returns
@@ -4016,6 +4017,17 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                     "If the root moves on cutover, the L2 topology reconverges and forwarding paths change.")
 
     # ---- Port-channel / bundle health (a member that doesn't re-bundle drops or halves the uplink). ----
+    # audit-5 NRFU #18: the EXPECTED good state must reflect the REAL pre-cutover bundle, not an idealized
+    # all-(P). compute_protocol_health is the EtherChannel SSOT; a non-Info record means the host ALREADY has a
+    # suspended/down member, so a blanket 'all members (P)' assertion would certify a degraded bundle as healthy
+    # at the post-cutover ATP. Disclose the bad member(s) and raise the check to High.
+    _ph = protocol_health if isinstance(protocol_health, list) else []
+    ec_bad: Dict[str, dict] = {}
+    for r in _ph:
+        if isinstance(r, dict) and r.get("protocol") == "EtherChannel" and str(r.get("severity", "")).strip() in ("High", "Medium"):
+            h = r.get("switch", "")
+            if h and h not in ec_bad:
+                ec_bad[h] = r
     pc_hosts: Dict[str, set] = defaultdict(set)
     for host, ifaces in all_interfaces.items():
         for port, d in ifaces.items():
@@ -4025,11 +4037,22 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     for host in sorted(pc_hosts):
         bundles = sorted(pc_hosts[host])
         cmd = "show port-channel summary" if _plat(host) == "nxos" else "show etherchannel summary"
-        add(host, "Link", "Medium",
-            "Port-channel uplinks bundled",
-            cmd,
-            f"{len(bundles)} bundle(s) ({', '.join(bundles)}) show all members in (P)/bundled state",
-            "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path.")
+        bad = ec_bad.get(host)
+        if bad:
+            _det = str(bad.get("detail") or "").strip()
+            add(host, "Link", "High",
+                "Port-channel members — confirm pre-existing non-bundled member(s)",
+                cmd,
+                f"{len(bundles)} bundle(s) ({', '.join(bundles)}); {bad.get('summary') or 'a member is NOT bundled'}"
+                + (f" — pre-existing: {_det}" if _det else "")
+                + ". Baseline already degraded — do NOT expect all-(P); re-bundle or document the exception before accepting.",
+                "A member already out of the bundle pre-cutover would be silently certified healthy by an 'all members (P)' assertion.")
+        else:
+            add(host, "Link", "Medium",
+                "Port-channel uplinks bundled",
+                cmd,
+                f"{len(bundles)} bundle(s) ({', '.join(bundles)}) show all members in (P)/bundled state",
+                "A member that doesn't re-bundle after cutover halves uplink capacity or drops the path.")
 
     items.sort(key=lambda it: (_validation_wave_key(it["wave"]), _VALIDATION_RANK.get(it["severity"], 9),
                                it["category"], str(it["device"]), it["check"]))
