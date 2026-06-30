@@ -57,3 +57,16 @@ def test_syslog_intelligence_catalyst_sev4_psu_failure_surfaced():
     assert any(d["kind"] == "environment" for d in analyze.compute_syslog_intelligence({"sw1": bad})["detections"])
     ok = "%PLATFORM-4-FANOK: Fan module 1 is OK\n"
     assert not any(d["kind"] == "environment" for d in analyze.compute_syslog_intelligence({"sw1": ok})["detections"])
+
+
+def test_vrrp_abbreviated_vlan_iface_not_dropped():
+    """[#8 HIGH] is_valid_iface rejected the abbreviated SVI form 'Vl10' (only 'Vlan10' passed) and
+    normalize_ifname kept them distinct, so a VRRP/GLBP gateway shown on 'Vl10' in 'show vrrp brief' was silently
+    dropped -> the VLAN read as no-FHRP (a redundant gateway hidden). 'Vl10' now canonicalizes to 'Vlan10'."""
+    assert parse.normalize_ifname("Vl10") == "Vlan10"
+    assert parse.normalize_ifname("Vlan10") == "Vlan10"    # canonical form unchanged
+    assert parse.is_valid_iface("Vl10")
+    out = ("Interface  Grp Pri Time  Own Pre State   Master addr     Group addr\n"
+           "Vl10       1   100 3609   Y   Y   Master  10.10.10.1      10.10.10.254\n")
+    r = parse.parse_vrrp_summary(out)
+    assert "Vlan10" in r and "VRRP" in r["Vlan10"]         # keyed canonically -> matches the Vlan10 SVI
