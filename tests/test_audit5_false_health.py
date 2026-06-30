@@ -127,3 +127,15 @@ def test_campaign_trend_collected_switch_going_dark_is_not_clean_improving():
     t = compute_campaign_trend([c1, c2])
     assert t["verdict"] != "IMPROVING"                    # survivorship -> not a clean improvement
     assert "dark" in t["verdict_note"].lower()
+
+
+def test_vlan_affinity_includes_unknown_no_minority_label():
+    """[#24] Per-VLAN affinity excluded 'Unknown' endpoints from vlan_cls, so a VLAN that is mostly unclassified
+    with a tiny KNOWN minority was labelled with that minority's app tier. Unknown is now counted, so the
+    dominant reflects the true majority and the total is honest."""
+    from cisco_toolkit import analyze
+    ident = [{"host": "sw1", "mac": f"0000.0000.{i:04x}", "ip": "", "vlan": "100", "vendor": "v",
+              "endpoint_class": ("Server" if i == 0 else "Unknown")} for i in range(10)]
+    v100 = next(a for a in analyze.compute_endpoint_dependencies(ident)["affinity"] if a["vlan"] == "100")
+    assert v100["total"] == 10                   # all 10 counted (9 Unknown + 1 Server), not just the minority
+    assert v100["dominant"] == "Unknown"          # the 90% majority, not the 10% Server minority
