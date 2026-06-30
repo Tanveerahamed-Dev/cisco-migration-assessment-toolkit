@@ -5675,7 +5675,7 @@ function punchlistCard(){
   const counts={Critical:0,High:0,Medium:0,Low:0};
   pl.forEach(i=>{ if(counts[i.severity]!=null)counts[i.severity]++; });
   const N=12;
-  const rows=pl.slice(0,N).map(i=>`<div class="ln">${sevPill(i.severity)} <span class="faint">#${i.priority}</span> <b>${esc(i.title)}</b> <span class="faint">· ${esc(i.category)} · ${(i.devices||[]).map(d=>esc(shortName(d))).join(", ")}${i.wave?` · wave ${esc(i.wave)}`:""}</span></div>`).join("");
+  const rows=pl.slice(0,N).map(i=>`<div class="ln">${sevPill(i.severity)} <span class="faint">#${i.priority}</span> <b>${esc(i.title)}</b> <span class="faint">· ${esc(i.category)} · ${(i.devices||[]).map(d=>esc(shortName(d))).join(", ")}${i.wave?` · wave ${esc(i.wave)}`:""}${i.source_command?` · from ${esc(i.source_command)}`:""}</span></div>`).join("");
   const more=pl.length>N?`<div class="ln faint" style="margin-top:4px">…and ${pl.length-N} more — see the full <b>Migration Punch-List</b> workbook sheet.</div>`:"";
   return `<div class="sec"><h3>Migration punch-list <span class="badge b-crit">${pl.length} item${pl.length===1?"":"s"}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">Every finding across all layers, de-duplicated and ranked — work it top-down, by migration wave. <b style="color:var(--crit)">${counts.Critical} critical</b> · ${counts.High} high · ${counts.Medium} medium · ${counts.Low} low.</div>`+
@@ -9021,7 +9021,7 @@ function abH_fixfirst(){const pl=(SNAP||{}).punchlist||[];
   const top=[...pl].sort((a,b)=>(a.priority||9)-(b.priority||9)||(rank[b.severity]||0)-(rank[a.severity]||0)).slice(0,8);
   let b=`<h4>What to fix first (${pl.length} punch-list items)</h4>`;
   b+=`<table><tr><th>#</th><th>Sev</th><th>Item</th><th>Where</th></tr>`+top.map((p,i)=>
-    `<tr><td>${i+1}</td><td>${abPill(p.severity)}</td><td>${esc(p.title||"")}</td><td>${(p.devices&&p.devices[0])?abHostLink(p.devices[0]):"fleet"}${(p.devices||[]).length>1?` +${p.devices.length-1}`:""}</td></tr>`).join("")+`</table>`;
+    `<tr><td>${i+1}</td><td>${abPill(p.severity)}</td><td>${esc(p.title||"")}${p.source_command?` <span class="faint" style="font:10px var(--mono)" title="W1-3 provenance: run this to verify the finding against the device's own evidence">· from <b>${esc(p.source_command)}</b></span>`:""}</td><td>${(p.devices&&p.devices[0])?abHostLink(p.devices[0]):"fleet"}${(p.devices||[]).length>1?` +${p.devices.length-1}`:""}</td></tr>`).join("")+`</table>`;
   b+=abX("Remediation guidance for these",abSteps(top.map(p=>`<b>${esc(p.title||"")}</b> — ${esc(p.remediation||p.detail||"")}`)));
   return {html:b,acts:[
     {label:"Top risky devices",run:abAskAct("top risky devices")},

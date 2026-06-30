@@ -291,6 +291,46 @@ def test_compute_migration_punchlist(cp):
     assert "a-real" in inv[0]["title"] and inv[0]["wave"] == "Wave 1"   # device 'a' is in Wave 1
 
 
+def test_punchlist_source_command_provenance():
+    """[W1-3 / SmartyMe teardown] each punchlist finding whose category has ONE backing show-command carries a
+    grounded source_command (a real command the engine collects); COMPOSITE / multi-source categories (Cross-layer,
+    Protocol, Health, Compound risk, False-health) carry NONE -- provenance where it genuinely exists, silence
+    where it doesn't, so it never becomes a global 'every claim traced' overclaim (the binding critic constraint)."""
+    from cisco_toolkit import analyze
+    cross_layer = [{"severity": "Critical", "hosts": ["a"], "id": "CL-01", "title": "stacked SPOF", "detail": "x"}]
+    security = {"a": {"findings": [{"id": "telnet", "severity": "high", "status": "fail",
+                                    "title": "VTY telnet", "detail": "y", "remediation": "ssh"}]}}
+    hygiene = {"a": {"undefined": [{"kind": "acl", "name": "7", "context": "nat list 7"}], "unused": []}}
+    physical = [{"switch": "a", "risk": "err-disabled"}]
+    l3 = [{"switch": "b", "risk": "single-gateway"}]
+    proto = [{"switch": "a", "protocol": "OSPF", "severity": "High", "detail": "stuck"}]
+    stp = {"accidental": [{"vlan": "30", "host": "b"}]}
+    health = [{"switch": "b", "band": "Critical", "score": 20}]
+    groups = [{"group": "Wave 1", "switches": ["a", "b"]}]
+    pl = analyze.compute_migration_punchlist(cross_layer, security, hygiene, physical, l3, proto, stp, health, groups)
+    cmd = {}
+    for f in pl:
+        cmd.setdefault(f["category"], f.get("source_command"))
+    # single-source categories -> a grounded show-command
+    assert cmd["Security"] == "show running-config"
+    assert cmd["Config hygiene"] == "show running-config"
+    assert cmd["STP"] == "show spanning-tree"
+    assert cmd["L3"] == "show ip route"
+    assert cmd["L1"] == "show interface status"
+    # composite / multi-source -> NO source_command (coverage-honest; never a single fabricated source)
+    assert cmd["Cross-layer"] is None
+    assert cmd["Protocol"] is None
+    assert cmd["Health"] is None
+    # every command the map cites is one the engine actually COLLECTS (grounded provenance, never fabricated)
+    import importlib
+    cp = importlib.import_module("COLLECT_PARSE_V3_23_0")
+    collected = set()
+    for reg in ("COMMANDS_IOS", "COMMANDS_NXOS", "COMMANDS_IOSXR", "COMMANDS_ASA", "COMMANDS_NXOS_ACI", "COMMANDS_CLOUD"):
+        collected |= set(getattr(cp, reg, []) or [])
+    for c in set(analyze._PUNCH_SOURCE_COMMAND.values()):
+        assert c in collected, f"cited source_command not in any COMMANDS_* registry: {c}"
+
+
 def test_compute_hostname_mismatches(cp):
     from cisco_toolkit import analyze
     DP = analyze.DevicePhysical

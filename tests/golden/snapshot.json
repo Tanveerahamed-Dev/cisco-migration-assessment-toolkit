@@ -4813,6 +4813,7 @@
    "title": "Undefined acl '7'",
    "detail": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
+   "source_command": "show running-config",
    "priority": 7
   },
   {
@@ -4826,6 +4827,7 @@
    "title": "Undefined route-map 'OSPF_TO_BGP'",
    "detail": "Referenced (router bgp 65001) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
+   "source_command": "show running-config",
    "priority": 8
   },
   {
@@ -4865,6 +4867,7 @@
    "title": "err disabled",
    "detail": "L1 risk 'err-disabled' on 1 switch(es).",
    "remediation": "",
+   "source_command": "show interface status",
    "priority": 11
   },
   {
@@ -4878,6 +4881,7 @@
    "title": "single gateway",
    "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
    "remediation": "Add gateway / FHRP redundancy.",
+   "source_command": "show ip route",
    "priority": 12
   },
   {
@@ -4891,6 +4895,7 @@
    "title": "MAC address flapping",
    "detail": "2 event(s) in the collected log window.",
    "remediation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window.",
+   "source_command": "show logging",
    "priority": 13
   },
   {
@@ -4904,6 +4909,7 @@
    "title": "Port err-disabled",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port.",
+   "source_command": "show logging",
    "priority": 14
   },
   {
@@ -4930,6 +4936,7 @@
    "title": "Local user password storage",
    "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
    "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
+   "source_command": "show running-config",
    "priority": 16
   },
   {
@@ -4943,6 +4950,7 @@
    "title": "SNMP access",
    "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
    "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
+   "source_command": "show running-config",
    "priority": 17
   },
   {
@@ -4956,6 +4964,7 @@
    "title": "VTY transport (telnet)",
    "detail": "a VTY line permits telnet (cleartext management).",
    "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
+   "source_command": "show running-config",
    "priority": 18
   },
   {
@@ -4969,6 +4978,7 @@
    "title": "Device web UI (ip http server / secure-server)",
    "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
    "remediation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker.",
+   "source_command": "show version",
    "priority": 19
   },
   {
@@ -5008,6 +5018,7 @@
    "title": "single fiber uplink",
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
+   "source_command": "show interface status",
    "priority": 22
   },
   {
@@ -5021,6 +5032,7 @@
    "title": "Duplex mismatch",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
+   "source_command": "show logging",
    "priority": 23
   },
   {
@@ -5034,6 +5046,7 @@
    "title": "Interface flapping",
    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
+   "source_command": "show logging",
    "priority": 24
   },
   {
@@ -5047,6 +5060,7 @@
    "title": "Repeated login failures",
    "detail": "6 failed login(s) in the collected log window.",
    "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
+   "source_command": "show logging",
    "priority": 25
   },
   {
@@ -5074,6 +5088,7 @@
    "title": "STP root != gateway (VLAN 30)",
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
+   "source_command": "show spanning-tree",
    "priority": 27
   },
   {
@@ -5087,6 +5102,7 @@
    "title": "AAA new-model",
    "detail": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
    "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting.",
+   "source_command": "show running-config",
    "priority": 28
   },
   {
@@ -5100,6 +5116,7 @@
    "title": "Password encryption service",
    "detail": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
    "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9.",
+   "source_command": "show running-config",
    "priority": 29
   },
   {
@@ -5113,6 +5130,7 @@
    "title": "Unused / risky services",
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
+   "source_command": "show running-config",
    "priority": 30
   },
   {
@@ -5127,6 +5145,7 @@
    "title": "VTY line hardening",
    "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
+   "source_command": "show running-config",
    "priority": 31
   },
   {
@@ -5152,6 +5171,7 @@
    "title": "No QoS configured anywhere",
    "detail": "None of the 2 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
    "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
+   "source_command": "show policy-map interface",
    "priority": 33
   },
   {
@@ -5165,6 +5185,7 @@
    "title": "Accidental root (VLAN 30)",
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
+   "source_command": "show spanning-tree",
    "priority": 34
   },
   {
@@ -5178,6 +5199,7 @@
    "title": "Logging / audit trail",
    "detail": "no syslog / buffered logging -- no audit trail across the migration.",
    "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail.",
+   "source_command": "show running-config",
    "priority": 35
   },
   {
@@ -5192,6 +5214,7 @@
    "title": "Login banner",
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
+   "source_command": "show running-config",
    "priority": 36
   },
   {
@@ -5205,6 +5228,7 @@
    "title": "NTP time synchronization",
    "detail": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
    "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy.",
+   "source_command": "show running-config",
    "priority": 37
   }
  ],
