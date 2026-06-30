@@ -165,3 +165,15 @@ def test_norm_speed_mbps_multigig():
     assert _norm_speed_mbps("10G") == 10000      # regression: integer G unchanged
     assert _norm_speed_mbps("1000") == 1000      # bare Mbps unchanged
     assert _norm_speed_mbps("auto") == 0
+
+
+def test_parse_mac_table_skips_vpc_peer_link():
+    """[#19] NX-OS 'show mac address-table' shows peer-link-learned MACs with Ports='vPC Peer-Link' (two tokens);
+    the parser took the last token and created a phantom 'Peer-Link' interface, mis-attributing those MACs. The
+    real host is across the vPC peer -- the entry must be skipped."""
+    mac = ("VLAN     MAC Address      Type      age     Secure NTFY Ports\n"
+           "*   64     0000.0c07.ac40   dynamic   0         F      F    Po1\n"
+           "+   64     001b.54c2.3a40   dynamic   0         F      F    vPC Peer-Link\n")
+    r = parse.parse_show_mac_address_table(mac)
+    assert not any("peer" in k.lower() for k in r)    # no phantom Peer-Link interface
+    assert any("Po1" in k for k in r)                  # real port still captured
