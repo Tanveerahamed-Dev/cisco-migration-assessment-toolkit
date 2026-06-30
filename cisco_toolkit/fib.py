@@ -188,22 +188,58 @@ def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32) -> dict:
     computed:unreachable. Pure/offline; total on bad input.
 
     Returns {src, dst, hops:[{host, match, next_hop, out_intf, source}], status, computed:bool, reached:bool}."""
-    fibs, connected = _build(snap)
-    return _trace(fibs, connected, src_ip, dst_ip)
+    fibs, connected, l3_hosts = _build(snap)
+    return _trace(fibs, connected, l3_hosts, src_ip, dst_ip)
+
+
+def _is_l3_router(host, snap, routes) -> bool:
+    """Does `host` make its OWN L3 forwarding decisions (a router) rather than hand off to an upstream default-
+    gateway (an L2 access switch)? A no-match + no-default verdict is a DEFINITIVE drop only for a router; on an
+    L2 access switch the L3 decision belongs to the (usually uncollected) upstream, so it is INDETERMINATE -- a
+    lower bound, not a fabricated drop (audit-5 #0: the old blanket computed:unreachable fabricated newly_blocked
+    cutover regressions across the L2 access tier). Positive L3 evidence, ANY one suffices:
+      - a non-connected route (static / OSPF / BGP / EIGRP / ...) -- the device is actively running IP routing;
+      - a connected /30 or /31 -- a point-to-point ROUTER transit link (an L2 access switch carries a mgmt /24, not a /30);
+      - a routing-protocol adjacency in snap['routing_neighbors'][host];
+      - a gateway SVI for the host in snap['l3_forwarding'].
+    Absent ALL of them (only connected subnets wider than /30) the host is L2-or-ambiguous -> not a definitive drop."""
+    for r in (routes if isinstance(routes, (list, tuple)) else []):
+        if not isinstance(r, dict):
+            continue
+        if not _is_connected(r.get("source")):
+            return True                                   # a learned/static route => the device routes IP
+        try:
+            if int(str(r.get("prefix", "")).split("/")[1]) >= 30:
+                return True                               # a connected /30 or /31 => a router-to-router transit link
+        except (IndexError, ValueError):
+            pass
+    rn = snap.get("routing_neighbors")
+    if isinstance(rn, dict):
+        peers = rn.get(host)
+        if isinstance(peers, dict) and any(peers.get(p) for p in peers):
+            return True                                   # OSPF/BGP/EIGRP adjacency => definitely L3
+        if isinstance(peers, (list, tuple)) and peers:
+            return True
+    l3f = snap.get("l3_forwarding")
+    if isinstance(l3f, list) and any(isinstance(x, dict) and x.get("switch") == host for x in l3f):
+        return True                                       # owns a gateway SVI for a VLAN => routes for that subnet
+    return False
 
 
 def _build(snap):
-    """(fibs, connected) for a snapshot -- the per-host FIBs + the connected-subnet index. Built ONCE so a
-    reachability matrix over many pairs (reachability_diff/reachability_delta) doesn't recompute them per trace."""
+    """(fibs, connected, l3_hosts) for a snapshot -- the per-host FIBs, the connected-subnet index, and the set of
+    hosts that make their own L3 forwarding decisions (audit-5 #0). Built ONCE so a reachability matrix over many
+    pairs (reachability_diff/reachability_delta) doesn't recompute them per trace."""
     snap = snap if isinstance(snap, dict) else {}
     routes_by_host = snap.get("routes") if isinstance(snap.get("routes"), dict) else {}
     fibs = {h: compute_fib(r) for h, r in routes_by_host.items()}
     connected = _connected_index(routes_by_host)
-    return fibs, connected
+    l3_hosts = {h for h in routes_by_host if _is_l3_router(h, snap, routes_by_host.get(h))}
+    return fibs, connected, l3_hosts
 
 
-def _trace(fibs, connected, src_ip, dst_ip):
-    """Core trace over PREBUILT (fibs, connected); coverage-honest semantics per trace_fib_path()."""
+def _trace(fibs, connected, l3_hosts, src_ip, dst_ip):
+    """Core trace over PREBUILT (fibs, connected, l3_hosts); coverage-honest semantics per trace_fib_path()."""
 
     def _result(hops, status, reached):
         return {"src": src_ip, "dst": dst_ip, "hops": hops, "status": status,
@@ -255,7 +291,11 @@ def _trace(fibs, connected, src_ip, dst_ip):
             return ("lower_bound:loop", False, [])         # cycle back-edge -- path-dependent, do not cache
         legs = fib_lookup_all(fibs.get(host, []), dst_ip)
         if not legs:
-            return _cache(host, ("computed:unreachable", False, []))  # no route + no default -> definitive drop
+            if host in l3_hosts:                                       # a router: no match + no default -> definitive drop
+                return _cache(host, ("computed:unreachable", False, []))
+            # an L2 access switch / device with no L3 evidence forwards to an (uncollected) upstream default-gateway
+            # -> its empty match is indeterminate, not a fabricated drop (audit-5 #0).
+            return _cache(host, ("lower_bound:no_l3_routing", False, []))
         computing.add(host)
         best = None
         for m in legs:
@@ -303,14 +343,19 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
 
     Returns {pairs:[{src,dst,old_status,new_status,verdict}], summary:{verdict:count}}. Pure/offline; total."""
     of, nf = _build(old_snap), _build(new_snap)            # build each snapshot's FIB ONCE, not per pair
+    # audit-5 #0: a device's L2/L3 nature is INTRINSIC -- it does not become an L2 access switch when a cutover
+    # removes one of its routes. Classify L3 from the UNION of both snapshots so a router that loses its default/
+    # transit route is still treated as a router (its no-match => a definitive drop = newly_blocked), not demoted
+    # to an indeterminate lower bound that would swallow the very regression --compare exists to catch.
+    l3_union = of[2] | nf[2]
     rows, summary = [], {}
     for pair in (pairs or []):
         try:
             src, dst = pair[0], pair[1]
         except (TypeError, IndexError, KeyError):
             continue
-        o = _trace(of[0], of[1], src, dst)
-        n = _trace(nf[0], nf[1], src, dst)
+        o = _trace(of[0], of[1], l3_union, src, dst)
+        n = _trace(nf[0], nf[1], l3_union, src, dst)
         if not (o["computed"] and n["computed"]):
             v = "inconclusive"
         elif o["reached"] and n["reached"]:

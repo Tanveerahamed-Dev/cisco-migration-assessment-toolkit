@@ -83,12 +83,24 @@ def test_trace_computes_path_across_hosts():
 
 
 def test_trace_no_route_at_collected_host_is_computed_unreachable():
-    """A collected router with no matching route AND no default definitively DROPS (per its RIB) — that's a
-    COMPUTED unreachable verdict, not a lower bound. (Distinct from next_hop_not_collected, where the trail is
-    genuinely lost to incomplete collection.)"""
-    snap = {"routes": {"R1": [{"prefix": "10.1.1.0/24", "next_hop": "", "source": "connected"}]}}
-    t = fib.trace_fib_path(snap, "10.1.1.5", "8.8.8.8")      # no default at R1
+    """An L3 ROUTER with no matching route AND no default definitively DROPS (per its RIB) -- a COMPUTED unreachable
+    verdict. 'Router' is proven by L3 evidence (a static/learned route elsewhere, or a /30 transit link); absent
+    ALL such evidence the host is an L2 access switch whose L3 decision belongs to its (uncollected) upstream
+    default-gateway, so the SAME empty match degrades to a coverage-honest lower bound, not a fabricated drop
+    (audit-5 #0 -- the old blanket computed:unreachable cried newly_blocked across the L2 access tier)."""
+    # An L3 router: a static route elsewhere proves it routes IP -> a genuine, definitive drop for the unmatched dst.
+    router = {"routes": {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"},
+                                {"prefix": "10.9.9.0/24", "next_hop": "10.1.1.2", "source": "static"}]}}
+    t = fib.trace_fib_path(router, "10.1.1.5", "8.8.8.8")
     assert t["status"] == "computed:unreachable" and t["computed"] is True and t["reached"] is False
+    # Same shape but proven a router purely by a /30 point-to-point transit link (no non-connected route needed).
+    p2p = {"routes": {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"},
+                             {"prefix": "10.0.0.0/30", "source": "connected"}]}}
+    assert fib.trace_fib_path(p2p, "10.1.1.5", "8.8.8.8")["status"] == "computed:unreachable"
+    # An L2 access switch (only a connected mgmt /24, no L3 evidence) -> INDETERMINATE, not a definitive drop.
+    l2 = {"routes": {"R1": [{"prefix": "10.1.1.0/24", "source": "connected"}]}}
+    t2 = fib.trace_fib_path(l2, "10.1.1.5", "8.8.8.8")
+    assert t2["status"].startswith("lower_bound") and t2["computed"] is False and t2["reached"] is False
 
 
 def test_trace_fhrp_vip_self_via_local_is_reached():
