@@ -3459,6 +3459,18 @@ function renderDrawer(){
   else if(MODE==="apps")p.innerHTML=drawApps();
   else if(MODE==="review")p.innerHTML=drawReview();
   else if(MODE==="design")p.innerHTML=drawDesign();
+  // W3-4 (NotebookLM Mind-Map): a selected topology node gets a one-click scoped, OFFLINE askbot question about
+  // itself -> opens the askbot with this node's evidence-grounded profile + citation chip. Deterministic, no LLM;
+  // the node click's own behaviour (blast radius / health) is untouched -- this is an added affordance.
+  if(typeof SEL==="string"&&SEL&&!EPSEL&&MODEL.hosts.includes(SEL)){
+    const aff=document.createElement("button");
+    aff.type="button"; aff.className="btn ghost"; aff.dataset.askhost=SEL;
+    aff.style.cssText="width:100%;margin-bottom:8px;border-color:var(--accent);color:var(--accent);font-weight:650";
+    aff.title="Ask the offline engineer about this switch — grounded in this collection's evidence; nothing leaves the file";
+    aff.textContent=`✦ Ask the engineer about ${shortName(SEL)}`;
+    p.insertBefore(aff, p.firstChild);
+  }
+  p.querySelectorAll("[data-askhost]").forEach(b=>b.onclick=()=>{abToggle(true); abSubmit("tell me about "+b.dataset.askhost);});
   // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
   // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
   p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
@@ -8551,6 +8563,11 @@ function abAskAct(q){return ()=>abSubmit(q);}
 /* ---- intent handlers: each returns {html, acts:[{label,run}]} ----------- */
 function abH_profile(h){const d=((SNAP||{}).devices||{})[h]||{};const hs=abHS(h),dos=abDos(h),lr=abLR(h),sr=abSR(h),cap=abCap(h);
   let b=`<h4>${esc(h)}</h4>`;
+  // W3-4 citation chip (reuses the W3-1 abstention primitive): ground the answer in THIS collection's evidence for
+  // THIS device -- a node that was never collected reads as a blind spot, NOT a clean profile.
+  b+=`<div class="ab-note" style="margin:-2px 0 9px">${_abDeviceNotCollected(SNAP||{},h)
+    ?`<span class="pill pl-watch">NOT OBSERVED</span> <b>${esc(abShort(h))}</b> was not collected in this assessment — a blind spot, not a clean profile`
+    :`<span class="pill pl-ok">📊 grounded</span> from <b>${esc(abShort(h))}</b>'s collected evidence in this snapshot — nothing inferred, nothing leaves the file`}</div>`;
   b+=abKv("Model / platform",esc([d.model,d.platform].filter(Boolean).join(" · ")||"not collected"));
   b+=abKv("Software",esc(d.sw_version||(sr||{}).sw_version||"?")+(sr?` ${abPill(sr.train_band)}`:""));
   b+=abKv("Serial",esc(d.serial_number||d.chassis_serial||""));
