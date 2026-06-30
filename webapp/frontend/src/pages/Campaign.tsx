@@ -105,7 +105,11 @@ function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (
 const DIR_ICON: Record<string, string> = { improving: "▲", worsening: "▼", flat: "▬" };
 const DIR_COLOR: Record<string, string> = { improving: "var(--ok)", worsening: "var(--crit)", flat: "var(--text-faint)" };
 const VERDICT_COLOR: Record<string, string> = {
+  // campaign-trend vocabulary (compute_campaign_trend)
   IMPROVING: "var(--ok)", REGRESSING: "var(--crit)", MIXED: "var(--watch)", FLAT: "var(--text-dim)", INSUFFICIENT: "var(--text-faint)",
+  // snapshot_delta vocabulary (compute_snapshot_delta) — the 'Compare two waves' panel reuses this map; without
+  // these keys cmp.verdict (CLEAN/REVIEW/REGRESSED) fell through to a flat dim chip, never colored (audit-5 CA#5).
+  CLEAN: "var(--ok)", REVIEW: "var(--watch)", REGRESSED: "var(--crit)",
 };
 
 function Trend({ id }: { id: number }) {

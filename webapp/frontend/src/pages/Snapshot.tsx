@@ -236,6 +236,10 @@ export default function SnapshotPage() {
   // of its own '—' unknown state. Pass NaN through so the Gauge (Number.isFinite check) renders '—', and
   // GAUGE_COLOR (now guarded) uses a neutral ring -- mirroring the Dashboard PostureStrip treatment.
   const avg = typeof s.avg_health === "number" ? s.avg_health : NaN;
+  // audit-5 FH#22: when the engine computed no fleet health at all (avg_health ""), the fleet is effectively
+  // un-assessed -- the sibling KPI cards must NOT show the green 'ok' tone (0 critical / 0 punch-list / 0 not-ready
+  // reads identically to a verified-clean fleet). Neutralize their tone, mirroring the Gauge's own '—' state.
+  const unknownFleet = !Number.isFinite(avg);
   const eol = s.lifecycle?.past_eos;
 
   const tabs = s.sections;
@@ -261,17 +265,17 @@ export default function SnapshotPage() {
         <div className="panel" style={{ display: "grid", placeItems: "center" }}>
           <Gauge value={avg} color={GAUGE_COLOR(avg)} label="avg health" />
         </div>
-        <div className={`panel kpi ${s.n_critical > 0 ? "crit" : "ok"}`}>
+        <div className={`panel kpi ${unknownFleet ? "" : s.n_critical > 0 ? "crit" : "ok"}`}>
           <div className="l">Critical-band switches</div>
           <div className="v"><CountUp value={s.n_critical} /></div>
           <div className="hint">of {s.n_switches} switches</div>
         </div>
-        <div className={`panel kpi ${HEALTH_TONE(100 - Math.min(100, s.punchlist.crit_high * 8))}`}>
+        <div className={`panel kpi ${unknownFleet ? "" : HEALTH_TONE(100 - Math.min(100, s.punchlist.crit_high * 8))}`}>
           <div className="l">Punch-list (crit/high)</div>
           <div className="v"><CountUp value={s.punchlist.crit_high} /><span className="faint" style={{ fontSize: 16, fontWeight: 600 }}> / <CountUp value={s.punchlist.total} /></span></div>
           <div className="hint">prioritised actions</div>
         </div>
-        <div className={`panel kpi ${s.readiness["NOT READY"] > 0 ? "crit" : s.readiness.CAUTION > 0 ? "watch" : "ok"}`}>
+        <div className={`panel kpi ${unknownFleet ? "" : s.readiness["NOT READY"] > 0 ? "crit" : s.readiness.CAUTION > 0 ? "watch" : "ok"}`}>
           <div className="l">Move-group readiness</div>
           <div className="v" style={{ fontSize: 20, display: "flex", gap: 12 }}>
             <span style={{ color: readyColor("READY") }}>{s.readiness.READY}✓</span>
