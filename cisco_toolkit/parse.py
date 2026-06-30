@@ -3861,7 +3861,7 @@ def _inv_commit(entry: Dict[str, str], result: Dict) -> None:
         any(k in name  for k in ("power supply","psu","ps ","power-supply","power module")) or
         any(k in descr for k in ("power supply","psu","power-supply","power module"))       or
         bool(re.match(r"^(pwr-|n[0-9][kk]-pac|c[0-9]+-pwr|pwrs-|pwr[0-9])", pid_l))
-    )
+    ) and "fex" not in name   # a FEX/child fabric-extender PSU is the FEX's, NOT the parent Nexus chassis's -- counting it inflated num_power_supplies (audit-5 scale-ssot #3)
 
     # Module / linecard: check before chassis to avoid C9300-NM-* matching chassis
     _module_pid = bool(re.match(
