@@ -5924,6 +5924,11 @@ function drawXLayer(){
   }
   const counts={High:0,Medium:0,Low:0,Info:0};
   findings.forEach(f=>{counts[f.severity]=(counts[f.severity]||0)+1;});
+  // audit-5 CA#2: this mode's total = the collector-pipeline SSOT (snap.cross_layer, the SAME set the Causality
+  // view's 'Cross-layer' family counts) PLUS extra correlations derived live here (MTU-mismatch, single-uplink
+  // sole-gateway, relay-behind-VRF, …). Disclose the split so the two surfaces don't read as contradicting each
+  // other -- causal.py's 'cannot disagree' invariant is about the snapshot subset, which both still share exactly.
+  const nSnap=findings.filter(f=>f.source==="snapshot").length, nLive=findings.length-nSnap;
   // V3.23.82: filter the (thousands of) findings by LAYER and/or SEVERITY before the cap, so the mode is
   // navigable — pick "L3" or "High" and the top-N re-ranks within that slice.
   const _xlLayers=f=>(f.layers||[]).map(l=>String(l).toUpperCase());
@@ -5963,7 +5968,8 @@ function drawXLayer(){
       <div class="stat ${counts.Medium?"risk":""}"><div class="v"><span class="num" data-to="${counts.Medium}">0</span></div><div class="k">medium</div></div>
       <div class="stat"><div class="v"><span class="num" data-to="${counts.Low+counts.Info}">0</span></div><div class="k">low / info</div></div>
     </div>
-    <p class="sub" style="margin:10px 0 0">Each finding ties together two or more layers' detector outputs into one ranked risk. <b>Click a card</b> to spotlight the switches it spans on the canvas.</p></div>
+    <p class="sub" style="margin:10px 0 0">Each finding ties together two or more layers' detector outputs into one ranked risk. <b>Click a card</b> to spotlight the switches it spans on the canvas.</p>
+    <p class="faint" style="margin:6px 0 0;font-size:11px">${findings.length} correlated finding(s) = <b>${nSnap}</b> from the collector pipeline (<span class="mono">snap.cross_layer</span> — the SSOT the Causality view's “Cross-layer” family counts) + <b>${nLive}</b> derived live in the explorer (correlations the pipeline doesn't emit). The Causality view counts only the ${nSnap} pipeline finding(s), so the two surfaces agree on that shared subset.</p></div>
     ${filterBar}
     <div class="sec"><h3>Top findings <span class="ct">${shown.length} of ${filtered.length}${(XL_LAYER_FILTER||XL_SEV_FILTER)?` <span class="faint">(filtered from ${findings.length})</span>`:""}</span></h3>${cards||'<p class="faint">No findings match this filter.</p>'}${filtered.length>XL_CARD_CAP?`<div class="ln faint" style="margin-top:8px">…and <b>${filtered.length-XL_CARD_CAP}</b> more — narrow with the filters above, or see the full <b>Cross-Layer Analysis</b> workbook sheet.</div>`:""}</div>`;
 }
