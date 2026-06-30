@@ -50,14 +50,21 @@ def _finding_key(f: dict) -> tuple:
     return (str(f.get("category", "")), str(f.get("title", "")), devs)
 
 
+def _as_dict(x):
+    """A snapshot section coerced to a dict. `... or {}` only guards FALSY values, so a truthy non-dict (a list/
+    scalar from a malformed --compare/--trend snapshot) flowed into .values()/set() and raised (audit-5 totality);
+    `.get(k, {})` likewise returns None for a present-but-null key."""
+    return x if isinstance(x, dict) else {}
+
+
 def compute_snapshot_delta(old: dict, new: dict) -> dict:
     """Migration-validation delta between two snapshots: switch/interface counts, per-switch health-band
     shifts (regressed vs improved), punch-list findings opened vs resolved, and an overall verdict.
     Returns a dict; every section degrades to empty when a snapshot lacks the computed keys."""
     old = old if isinstance(old, dict) else {}            # total: the --compare/--trend path may hand us a
     new = new if isinstance(new, dict) else {}            # non-dict (a JSON file that parsed to null/[]/scalar)
-    od, nd = old.get("devices", {}) or {}, new.get("devices", {}) or {}
-    oi, ni = old.get("interfaces", {}) or {}, new.get("interfaces", {}) or {}
+    od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
+    oi, ni = _as_dict(old.get("interfaces")), _as_dict(new.get("interfaces"))
 
     # ---- health-band shifts (per switch present in BOTH runs) ----
     # isinstance guard: a null element in the list (hand-trimmed / older-schema snapshot fed to --compare/--trend)
@@ -200,8 +207,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
                 if v is not None: mx = max(mx, len(str(v)))
             ws.column_dimensions[get_column_letter(col)].width = min(max(mx + 2, 12), 60)
 
-    oi, ni = old.get("interfaces", {}), new.get("interfaces", {})
-    od, nd = old.get("devices", {}), new.get("devices", {})
+    oi, ni = _as_dict(old.get("interfaces")), _as_dict(new.get("interfaces"))
+    od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
     delta = compute_snapshot_delta(old, new)   # NEW-V3.23.106: migration-validation analysis
     rd0 = delta.get("reachability") or {}      # W2 reachability what-if (disclose the bounded sample, never silent)
 

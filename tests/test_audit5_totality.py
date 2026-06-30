@@ -54,3 +54,18 @@ def test_load_devices_clean_error_on_nondict_entry(tmp_path):
     p.write_text(json.dumps([{"ip": "1.1.1.1", "hostname": "a", "username": "u"}, 42, None]))
     with pytest.raises(ValueError):
         m.load_devices(str(p))
+
+
+def test_compare_diff_tolerates_nondict_device_interface_sections(tmp_path):
+    """[#7/#8] --compare path: compute_snapshot_delta used `... or {}` (guards only FALSY, not a truthy non-dict
+    list) and write_diff_workbook used `.get(k, {})` (returns None for a present-but-null key), so a snapshot
+    whose devices/interfaces section is a list or null crashed with AttributeError / TypeError."""
+    from cisco_toolkit import html
+    # #7: a truthy non-dict (list) section -> compute_snapshot_delta must degrade, not raise
+    d = html.compute_snapshot_delta({"devices": {}, "interfaces": [1, 2]}, {"devices": [3], "interfaces": {}})
+    assert isinstance(d, dict) and "verdict" in d
+    # #8: present-but-null sections -> write_diff_workbook must not raise
+    out = str(tmp_path / "audit5_diff.xlsx")
+    html.write_diff_workbook({"devices": None, "interfaces": None, "health_scores": [], "punchlist": []},
+                             {"devices": None, "interfaces": None, "health_scores": [], "punchlist": []}, out)
+    assert __import__("os").path.exists(out)
