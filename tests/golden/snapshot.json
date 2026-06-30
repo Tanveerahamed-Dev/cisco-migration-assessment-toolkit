@@ -5682,6 +5682,7 @@
     "access1",
     "core2"
    ],
+   "homing_unknown": [],
    "hard_cutover_endpoints": 3,
    "sequence": "2 hard cutover (single-homed, schedule a window) + 1 make-before-break (dual-homed)"
   }

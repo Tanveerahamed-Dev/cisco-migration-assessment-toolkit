@@ -30,3 +30,19 @@ def test_build_network_model_skips_no_ip_svi_gateway():
     }}
     gw = analyze.build_network_model(ai)["gw"]
     assert 1 not in gw and 10 in gw
+
+
+def test_wave_sequencing_uncollected_is_unknown_homing_not_single_homed():
+    """[#7 HIGH] compute_wave_sequencing classified a switch single-homed (hard cutover) when its topology
+    adjacency was empty -- but a NEVER-COLLECTED device has empty adjacency from absence of evidence, not from
+    being single-homed. 50 uncollected AJ devices were labeled 'single-homed -> hard cutover'. Uncollected ->
+    homing UNKNOWN."""
+    from cisco_toolkit import analyze
+    from cisco_toolkit.model import InterfaceData
+    ai = {"collected1": {"Gi0/1": InterfaceData(port="Gi0/1")}}   # collected, no 2nd uplink -> single-homed
+    out = analyze.compute_wave_sequencing(ai, [{"switches": ["collected1", "uncollected1"]}])
+    row = out[0]
+    assert "uncollected1" in row["homing_unknown"]               # never collected -> UNKNOWN
+    assert "uncollected1" not in row["hard_cutover"]
+    assert "collected1" in row["hard_cutover"]                   # genuinely single-homed (collected, no 2nd uplink)
+    assert "UNKNOWN" in row["sequence"]
