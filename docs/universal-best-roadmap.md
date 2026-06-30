@@ -17,8 +17,13 @@ anything needing a cloud LLM or risking an unsupported claim was **cut**, not ad
 > adversarial wave (`99e6072`). **W2 is now LIVE in `--compare` (`70c03c8`):** `compute_snapshot_delta` computes
 > `fib.reachability_delta(old,new)` over auto-derived representative inter-subnet flows and drives the cutover
 > VERDICT to REGRESSED on a definitively `newly_blocked` flow ([HISTORY-REDACTED] self-diff: 400 flows in 0.16s, 0 fabricated
-> regressions). The remaining surface is the **explorer flow-sim** L3 upgrade. Everything else here is design,
-> sequenced and grounded, awaiting implementation.
+> regressions). The **explorer flow-sim L3 upgrade is now DONE** (`6f2e4dc`): `trace_fib_path` ported to
+> self-contained explorer JS (BigInt v4/v6, admin-distance, LPM+ECMP, next-hop-owner join, `_rank`, memoized DFS
+> loop-detect, all 11 statuses) and wired into the flow simulator as a "Network · computed path" L3 rung —
+> byte-identical to Python over 622 cross-check pairs (synthetic edge + 7 adversarial + real [HISTORY-REDACTED]), preview-verified
+> at runtime, guarded by `test_explorer_fib_ssot.py`. The marquee is complete on every surface. The only remaining
+> roadmap item is **W3-3** (`--collect-raw-outputs` → the LINE evidence tier), which is data-gated to a fresh
+> collection with raw-capture + secret-scrub. Everything else here is design, sequenced and grounded.
 
 ## The thesis — what "universal & best" actually means here
 The waves **verified** that the engine already wins on three things no cloud competitor can match:
