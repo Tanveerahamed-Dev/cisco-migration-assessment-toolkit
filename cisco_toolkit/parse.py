@@ -3919,6 +3919,14 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
         if md and not r["total_drawn_w"]: r["total_drawn_w"] = md.group(1)
         me = re.search(r"(?:total power available|remaining)[^:]*:\s*([\d\.]+)\s*[wW]", low)
         if me and not r["total_remaining_w"]: r["total_remaining_w"] = me.group(1)
+        # NX-OS summary is SPACE-aligned (no colon): 'Total Power Capacity   2100.00 W' / 'Total Power Available
+        # 1099.92 W' / 'Total Power Output 1000.08 W'. [^0-9]* skips the gap (or colon) before the number.
+        mcap = re.search(r"total power capacity\b[^0-9]*([\d.]+)\s*w\b", low)
+        if mcap and not r["total_capacity_w"]: r["total_capacity_w"] = mcap.group(1)
+        mav = re.search(r"total power available\b[^0-9]*([\d.]+)\s*w\b", low)
+        if mav and not r["total_remaining_w"]: r["total_remaining_w"] = mav.group(1)
+        mou = re.search(r"total power (?:output|drawn|used)\b[^0-9]*([\d.]+)\s*w\b", low)
+        if mou and not r["total_drawn_w"]: r["total_drawn_w"] = mou.group(1)
         # PS status rows: lines starting with slot number or PS label
         if re.match(r"^\s*\d[AB]?\s+\S", line) or re.match(r"^\s*[Pp][Ss]\d?\s", line):
             if "ok" in low:                               ps_list.append("OK")
@@ -3930,6 +3938,11 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
                 float(r["total_capacity_w"]) - float(r["total_drawn_w"]), 1))
         except Exception as e:
             logger.debug(f"remaining-power calc failed (cap={r['total_capacity_w']} drawn={r['total_drawn_w']}): {e}")  # NEW-V3.23.1
+    if r["total_capacity_w"] and r["total_remaining_w"] and not r["total_drawn_w"]:
+        try:                                          # NX-OS gives capacity + available but no explicit draw line
+            r["total_drawn_w"] = str(round(float(r["total_capacity_w"]) - float(r["total_remaining_w"]), 2))
+        except Exception:
+            pass
     r["ps_status_list"] = ps_list
     # PHYSICAL PSU count = number of PS rows, NOT the count of DISTINCT statuses: two healthy PSUs both 'OK'
     # collapse under set() to 1, so a dual-PSU chassis reported num_ps=1 and a genuinely-redundant box was
@@ -3966,6 +3979,13 @@ def parse_show_environment(output: str) -> Dict[str, str]:
             if "ok" in low or "good" in low:       fan_states.append("OK")
             elif "fail" in low or "fault" in low:  fan_states.append("Failed")
             elif "warn" in low or "minor" in low:  fan_states.append("Warning")
+        # NX-OS 'show environment' Fan table row: '<Chassis-N|Fan-N|PS-N>  <Model>  <Hw>  <status>' (status last).
+        mnxfan = re.match(r"^\s*(?:chassis|fan(?:tray|module)?|ps)[- ]?\d+\s+\S+\s+\S+\s+(ok|fail\w*|fault|absent|shutdown)\b", low)
+        if mnxfan:
+            _st = mnxfan.group(1)
+            if _st == "ok":                                 fan_states.append("OK")
+            elif _st.startswith("fail") or _st == "fault":  fan_states.append("Failed")
+            elif _st == "absent":                           fan_states.append("Absent")
         # Catalyst 'Fantray : Good' (4948E) / 'Fantray 1 : ... status : Good' (4500-X) - only a
         # line that actually carries a health word (skips 'removal timeout', 'consumed by').
         if "fantray" in low and re.search(r"\b(good|ok|failed|fail|fault|bad)\b", low):
