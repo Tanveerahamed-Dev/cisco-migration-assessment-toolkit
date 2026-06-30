@@ -417,9 +417,9 @@ def build_network_model(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> 
     for host, ifaces in all_interfaces.items():
         for port, d in ifaces.items():
             m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
-            if m:
-                vid = int(m.group(1))
-                raw = (d.hsrp_behavior or "").strip()
+            if m and (d.svi_ip or "").strip():   # only a Vlan SVI WITH an IP is a real L3 gateway -- a no-IP SVI
+                vid = int(m.group(1))             # (esp. the universal default Vlan1) is a phantom gateway that
+                raw = (d.hsrp_behavior or "").strip()   # strands access switches into 60 false 'VLAN 1' SPOFs (audit-5 #1)
                 gw.setdefault(vid, []).append({"host": host, "fhrp": bool(raw), "raw": raw})
             if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
                 vid = int(d.vlan)

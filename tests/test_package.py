@@ -137,7 +137,7 @@ def test_analyze_reexported_and_functional(cp):
     assert len(fql) == 1
     assert {fql[0]["a_host"], fql[0]["b_host"]} == {"core1", "acc1"}   # both short, no FQDN node
     # two SVIs for VLAN 20 with no FHRP -> a High "Gateway redundancy" finding.
-    fi = {"sw1": {"Vlan20": ID(port="Vlan20")}, "sw2": {"Vlan20": ID(port="Vlan20")}}
+    fi = {"sw1": {"Vlan20": ID(port="Vlan20", svi_ip="10.0.20.1")}, "sw2": {"Vlan20": ID(port="Vlan20", svi_ip="10.0.20.2")}}
     assert any(sev == "High" and cat == "Gateway redundancy"
                for (sev, cat, scope, detail) in analyze.compute_findings(fi))
     # network-model / blast-radius cluster joined the analyze layer (step 13); their monolith
@@ -150,7 +150,7 @@ def test_analyze_reexported_and_functional(cp):
     for gone in ("_vlan_components", "_link_carries"):
         assert hasattr(analyze, gone) and not hasattr(cp, gone)
     nm = {
-        "sw1": {"Vlan20": ID(port="Vlan20")},   # sole gateway for VLAN 20, no FHRP
+        "sw1": {"Vlan20": ID(port="Vlan20", svi_ip="10.0.20.1")},   # sole gateway for VLAN 20, no FHRP
         "sw2": {"Gi1/0/1": ID(port="Gi1/0/1", switchport_mode="Access", vlan="20",
                               end_host_mac="aaaa.bbbb.cccc")},
     }
