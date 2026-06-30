@@ -46,3 +46,14 @@ def test_wave_sequencing_uncollected_is_unknown_homing_not_single_homed():
     assert "uncollected1" not in row["hard_cutover"]
     assert "collected1" in row["hard_cutover"]                   # genuinely single-homed (collected, no 2nd uplink)
     assert "UNKNOWN" in row["sequence"]
+
+
+def test_syslog_intelligence_catalyst_sev4_psu_failure_surfaced():
+    """[#11 HIGH] The environment-event classifier gated on 'sev <= 3', so the Catalyst 4500/4948 PSU-failure
+    syslog '%...-4-POWERSUPPLYBAD' (severity 4) was silently dropped -- a real hardware failure read as healthy.
+    A sev-4 FAILURE mnemonic now surfaces; benign sev-4 env info (FANOK) still skipped (no cry-wolf)."""
+    from cisco_toolkit import analyze
+    bad = "*Mar  1 00:00:00.000: %C4K_IOSMODPORTMAN-4-POWERSUPPLYBAD: Power supply 1 has failed or been turned off\n"
+    assert any(d["kind"] == "environment" for d in analyze.compute_syslog_intelligence({"sw1": bad})["detections"])
+    ok = "%PLATFORM-4-FANOK: Fan module 1 is OK\n"
+    assert not any(d["kind"] == "environment" for d in analyze.compute_syslog_intelligence({"sw1": ok})["detections"])
