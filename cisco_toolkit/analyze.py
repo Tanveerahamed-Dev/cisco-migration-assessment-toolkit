@@ -4272,7 +4272,10 @@ def compute_syslog_intelligence(all_syslogs: Optional[Dict[str, str]] = None) ->
                 elif (("ENV" in fac or "THERMAL" in fac)
                       or fac.startswith(("PFMA", "NOHMS", "PLATFORM_FEP", "NGWC_PLATFORM_FEP"))   # NX-OS/Cat9K power/FRU
                       or any(t in mn for t in ("FAN", "TEMP", "THERM", "PSU", "POWER",
-                                               "PS_FAIL", "FRU_PS", "PFM_ALERT", "PS_CAPACITY"))) and sev <= 3:
+                                               "PS_FAIL", "FRU_PS", "PFM_ALERT", "PS_CAPACITY"))) and (
+                          sev <= 3 or any(t in mn for t in ("BAD", "FAIL", "FAULT", "REMOV", "SHUT", "DOWN"))):
+                    # a sev-4 hardware FAILURE (Catalyst 4500/4948 '%...-4-POWERSUPPLYBAD') is real -- the old
+                    # 'sev <= 3' gate silently dropped it as healthy (audit-5 #11); benign sev-4 env info (FANOK) skipped.
                     kind = "environment"
                 elif "TCAM" in up and any(t in up for t in ("EXCEED", "EXHAUST", "FULL", "EXCEPTION")):
                     kind = "resource"
