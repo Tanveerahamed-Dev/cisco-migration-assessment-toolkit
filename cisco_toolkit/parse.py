@@ -3099,11 +3099,18 @@ def parse_security(output: str) -> dict:
     logging_on = has(r"^logging (host|buffered|server)\b")
     banner = has(r"^banner (motd|login|exec)\b")
     snmpv3 = has(r"^snmp-server (group|user)\b")
+    # NX-OS has no 'service password-encryption' (an IOS/IOS-XE command) -- it encrypts local passwords by
+    # default (Type-5). Detect the platform so that CIS check is N/A, not a false cleartext FAIL on every Nexus.
+    is_nxos = has(r"^feature\s+\S") or has(r"^boot nxos\b") or has(r"^vdc\s+\S")
 
     weak_users: List[str] = []
     for ln in low:
-        m = re.match(r"^username\s+(\S+)\s+.*\bpassword\b", ln)
-        if m and " secret " not in (" " + ln + " "):
+        m = re.match(r"^username\s+(\S+)\b.*?\bpassword\s+(?:(\d)\s+)?\S", ln)
+        if not m:
+            continue
+        # NX-OS stores 'username X password 5 <salted-md5>' (Type-5, STRONG); Types 5/8/9 are strong hashes.
+        # Only an untyped cleartext or a Type-0 / Type-7 (reversible) local password is weak.
+        if m.group(2) in (None, "0", "7"):
             weak_users.append(m.group(1))
 
     snmp_comm: List[dict] = []
@@ -3167,9 +3174,14 @@ def parse_security(output: str) -> dict:
                          "status": status, "detail": detail, "cis_ref": ref, "remediation": rem})
 
     # Absence-of-a-control -> fail (the hardening baseline is missing).
-    add("password-encryption", "pass" if svc_pwenc else "fail",
-        "'service password-encryption' is set." if svc_pwenc
-        else "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).")
+    if is_nxos:
+        add("password-encryption", "na",
+            "NX-OS encrypts local passwords by default (Type-5) and has no 'service password-encryption' command "
+            "(an IOS/IOS-XE control) -- not applicable on this platform.")
+    else:
+        add("password-encryption", "pass" if svc_pwenc else "fail",
+            "'service password-encryption' is set." if svc_pwenc
+            else "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).")
     add("no-aaa", "pass" if aaa else "fail",
         "central AAA (TACACS+/RADIUS) is configured." if aaa
         else "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- "
