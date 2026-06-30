@@ -109,3 +109,22 @@ def test_parse_neighbors_lldp_nxos_not_advertised_is_not_a_neighbor_name():
     names = {r["device_id"] for r in parse.parse_neighbors_lldp(out).values()}
     assert "not advertised" not in {n.lower() for n in names}     # no phantom 'NOT ADVERTISED' hub
     assert "RealNeighbor" in names                                 # real names still captured
+
+
+def test_parse_redistribution_nxos_direct_and_named_process():
+    """[#10/#17] parse_redistribution's REDIST regex was IOS-only: it matched 'connected' but NOT NX-OS
+    'redistribute direct', and its from-id captured only digits, losing NX-OS named OSPF/EIGRP process tags
+    (e.g. 'router ospf UNDERLAY'). NX-OS CLI shapes."""
+    cfg = ("router ospf UNDERLAY\n"
+           "  redistribute direct route-map RM-CONN\n"
+           "  redistribute bgp 65001 route-map RM-BGP\n"
+           "router eigrp CORE\n"
+           "  redistribute static route-map RM-STAT\n")
+    rows = parse.parse_redistribution(cfg)
+    direct = [r for r in rows if r["from_proto"] == "connected"]   # NX-OS 'direct' normalized to 'connected'
+    assert direct and direct[0]["into_proto"] == "ospf" and direct[0]["into_id"] == "UNDERLAY"
+    assert direct[0]["route_map"] == "RM-CONN"
+    bgp = [r for r in rows if r["from_proto"] == "bgp"]
+    assert bgp and bgp[0]["from_id"] == "65001"                    # named/numeric from-id kept
+    stat = [r for r in rows if r["from_proto"] == "static"]
+    assert stat and stat[0]["into_id"] == "CORE" and stat[0]["route_map"] == "RM-STAT"
