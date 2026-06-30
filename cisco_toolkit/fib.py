@@ -38,6 +38,11 @@ def _admin_distance(source: str) -> int:
     # as directly-attached, fabricating a reached destination (adversarial-wave #4).
     if s in ("c", "l", "local", "connected", "direct", "attached") or s.startswith(("connected", "directlyconnected", "direct", "local")):
         return 0
+    # FHRP virtual IP: installed as a self-referential local host route 'X/32 via X, VlanN, [0/0], vrrp_engine|
+    # hsrp|glbp' -- locally TERMINATED on the master (the packet is delivered, [0/0] + self-via prove it), so it
+    # is a CONNECTED/local route (AD 0), not an unresolvable next-hop (audit-5 #12).
+    if "vrrp" in s or "hsrp" in s or "glbp" in s:
+        return 0
     if "static" in s or s in ("s", "su"):
         return 1
     if "bgp" in s or s == "b":
