@@ -941,21 +941,30 @@ def compute_wave_sequencing(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     out: List[Dict[str, object]] = []
     for gi, g in enumerate(move_groups, 1):
         switches = [str(h) for h in (g.get("switches") or [])]
-        mbb, hard = [], []
+        mbb, hard, unknown = [], [], []
         for h in switches:
-            (mbb if len(adj.get(h, set())) >= 2 else hard).append(h)
+            if h not in (all_interfaces or {}):
+                unknown.append(h)        # NEVER collected -> homing UNKNOWN: empty adjacency is absence of
+            elif len(adj.get(h, set())) >= 2:   # topology evidence, NOT proof of single-homing (audit-5 #7)
+                mbb.append(h)
+            else:
+                hard.append(h)
         hard_ep = sum(ep.get(h, 0) for h in hard)
         if not switches:
             seq = "empty group"
-        elif not hard:
+        elif not hard and not unknown:
             seq = f"all {len(mbb)} switch(es) dual-homed — fully make-before-break (no outage window needed)"
-        elif not mbb:
+        elif not mbb and not unknown:
             seq = f"all {len(hard)} switch(es) single-homed — every cutover needs a maintenance window"
         else:
-            seq = (f"{len(hard)} hard cutover (single-homed, schedule a window) + "
-                   f"{len(mbb)} make-before-break (dual-homed)")
+            bits = []
+            if hard: bits.append(f"{len(hard)} hard cutover (single-homed, schedule a window)")
+            if mbb: bits.append(f"{len(mbb)} make-before-break (dual-homed)")
+            if unknown: bits.append(f"{len(unknown)} homing UNKNOWN (never collected — verify uplinks first)")
+            seq = " + ".join(bits)
         out.append({"group": f"Group {gi}", "make_before_break": sorted(mbb),
-                    "hard_cutover": sorted(hard), "hard_cutover_endpoints": hard_ep, "sequence": seq})
+                    "hard_cutover": sorted(hard), "homing_unknown": sorted(unknown),
+                    "hard_cutover_endpoints": hard_ep, "sequence": seq})
     return out
 
 
