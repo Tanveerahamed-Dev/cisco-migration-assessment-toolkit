@@ -151,3 +151,14 @@ def test_ssot_reconcile_flags_n_domains_drift():
     ok = {"executive_brief": {"scale": {"n_domains": 2}},
           "application_intelligence": {"domains": [{"id": "d1"}, {"id": "d2"}]}}
     assert not any("n_domains" in s for s in ssot.reconcile(ok))
+
+
+def test_inventory_num_power_supplies_excludes_fex():
+    """[audit-5 scale-ssot #3] num_power_supplies counted FEX/child fabric-extender PSUs INTO the parent Nexus
+    -> an over-count. A FEX-named PSU belongs to the FEX, not the parent chassis."""
+    inv = ('NAME: "Chassis", DESCR: "Nexus5548 Chassis"\nPID: N5K-C5548UP , VID: V01 , SN: SSI1\n\n'
+           'NAME: "Power Supply 1", DESCR: "Power Supply"\nPID: N55-PAC-1100W , VID: V01 , SN: PS1\n\n'
+           'NAME: "Fex 101 Power Supply 1", DESCR: "Fabric Extender Power Supply"\n'
+           'PID: NXA-PAC-650W , VID: V01 , SN: FX1\n')
+    r = parse.parse_show_inventory(inv)
+    assert r["num_power_supplies"] == 1     # only the parent PSU, not the FEX's
