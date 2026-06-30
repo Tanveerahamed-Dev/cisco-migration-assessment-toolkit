@@ -2793,7 +2793,11 @@ def _d_flat_l2(snap, sig):
         f"{sig['vlans']} VLANs ride a single (global) VRF across the estate -- an oversized, flat L2 "
         f"fault domain whose failover and blast radius are bounded only by spanning tree.",
         sig["vlans"], ["scalability", "modularity", "convergence"],
-        ["vlan_inventory", "segmentation.vrfs", "executive_brief.scale.n_vlans"],
+        # cite RESOLVABLE snapshot paths only: the VLAN count IS `executive_brief.scale.n_vlans` (where the
+        # computed vlan_inventory() walk is injected) and the single-VRF span IS `segmentation.vrfs`. Do NOT cite
+        # bare `vlan_inventory` -- that's a computed fn, not a snapshot key, so the W3-2 grounding verifier
+        # (causal.evidence_grounding) flags it as a dangling citation.
+        ["segmentation.vrfs", "executive_brief.scale.n_vlans"],
         priority="High", driver="Bound the L2 fault domain: restrict VLAN span / move L3 toward the access edge.")
 
 
