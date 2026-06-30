@@ -2362,6 +2362,10 @@ def parse_show_mac_address_table(output: str) -> Dict[str, List[str]]:
         typ   = parts[idx + 2].lower()
         iface = parts[-1]
         if typ != "dynamic": continue
+        # NX-OS shows peer-link-learned MACs with Ports='vPC Peer-Link' (two tokens) -- those hosts are attached
+        # to the vPC PEER, not locally. Skip so they don't create a phantom 'Peer-Link' interface (audit-5 #19).
+        if iface.lower() == "peer-link" or " ".join(parts[-2:]).lower() == "vpc peer-link":
+            continue
         mac_n = normalize_mac(mac)
         if_n  = normalize_ifname(iface)
         if not mac_n or not if_n: continue
