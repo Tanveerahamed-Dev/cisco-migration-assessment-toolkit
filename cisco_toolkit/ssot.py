@@ -192,6 +192,13 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
     if "n_endpoints" in scale and endpoints:
         check("executive_brief.scale.n_endpoints", scale.get("n_endpoints"), len(endpoints),
               "len(endpoint_identity)")
+    # n_domains (the broadcast/management application domains) was published + served via SSOT but had NO
+    # reconcile check -- a drift vs its raw basis went undetected. It MUST equal len(application_intelligence
+    # .domains), the source compute_application_intelligence counts it from (audit-5 scale-ssot #1/#2).
+    _ai_domains = _dotted(snap, "application_intelligence.domains")
+    if "n_domains" in scale and isinstance(_ai_domains, list) and _ai_domains:
+        check("executive_brief.scale.n_domains", scale.get("n_domains"), len(_ai_domains),
+              "len(application_intelligence.domains)")
     if "n_vlans" in scale:
         try:  # vlan_inventory is the canonical VLAN-in-use derivation; import lazily (avoids cycles)
             from cisco_toolkit.analyze import vlan_inventory
