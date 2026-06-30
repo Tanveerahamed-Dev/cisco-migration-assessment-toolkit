@@ -4291,12 +4291,27 @@ def compute_design_blueprint(snap, requirements=None):
             decisions.append(d)
     decisions += _needs_requirement(snap, sig, req)
 
-    # de-duplicate by id, keeping the highest-priority instance
-    uniq = {}
+    # de-duplicate by id, keeping the highest-priority instance -- but MERGE the loser's evidence (devices /
+    # count / summary) rather than DROPPING it. Two detectors can legitimately address one principle from
+    # DISJOINT angles on different devices (e.g. mgmt-time-sync-logging-baseline fires from the CIS config gap
+    # _d_timesync AND the operational stratum-16 _d_ntp_sync); the old keep-one silently lost the loser's
+    # devices, under-counting the principle's blast radius (audit-5 false-health #3).
+    uniq: dict = {}
     for d in decisions:
         ex = uniq.get(d["id"])
-        if ex is None or PRANK.get(d["priority"], 9) < PRANK.get(ex["priority"], 9):
+        if ex is None:
             uniq[d["id"]] = d
+            continue
+        keep, drop = (d, ex) if PRANK.get(d["priority"], 9) < PRANK.get(ex["priority"], 9) else (ex, d)
+        ek, ed = _as_dict(keep.get("evidence")), _as_dict(drop.get("evidence"))
+        merged = list(dict.fromkeys(list(ek.get("devices") or []) + list(ed.get("devices") or [])))
+        ek["devices"] = merged[:12]
+        ek["count"] = (_as_int(ek.get("count")) or 0) + (_as_int(ed.get("count")) or 0)
+        _sk, _sd = str(ek.get("summary") or ""), str(ed.get("summary") or "")
+        if _sd and _sd not in _sk:
+            ek["summary"] = f"{_sk}  |  also: {_sd}"
+        keep["evidence"] = ek
+        uniq[d["id"]] = keep
     decisions = list(uniq.values())
 
     scorecard = _scorecard(snap, sig)

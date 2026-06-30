@@ -122,6 +122,24 @@ def test_tradeoff_scorecard_covers_axes_and_availability_low():
     assert av["score"] is not None and av["score"] <= 1, "no FHRP + SPOFs => availability scores low"
 
 
+def test_timesync_principle_merges_config_and_operational_evidence():
+    """[audit-5 false-health #3] _d_timesync (CIS config no-ntp/no-logging) and _d_ntp_sync (operational
+    stratum-16 / unsynced) BOTH legitimately fire the one 'mgmt-time-sync-logging-baseline' principle (its KB
+    statement spans NTP configured AND synchronised) from DISJOINT angles on possibly-DIFFERENT devices. The
+    blueprint de-dups decisions by principle id; the old keep-one silently DROPPED the loser's devices,
+    under-counting the principle's blast radius. The dedup must MERGE the evidence so BOTH device sets survive."""
+    snap = {
+        "ntp": {"DEV-A": {"synchronized": False, "stratum": 16}},                   # operational: unsynchronised clock
+        "security": {"DEV-B": {"findings": [{"id": "no-ntp", "status": "fail"}]}},   # CIS config gap: no ntp server
+    }
+    bp = compute_design_blueprint(snap)
+    ts = [d for d in bp["decisions"] if d["id"] == "mgmt-time-sync-logging-baseline"]
+    assert len(ts) == 1, "exactly one principle decision, not two"
+    devs = set(ts[0]["evidence"]["devices"])
+    assert {"DEV-A", "DEV-B"} <= devs, f"both the operational AND config-gap devices must survive the dedup, got {devs}"
+    assert ts[0]["evidence"]["count"] >= 2, "merged count reflects both angles, not just the surviving one"
+
+
 def test_summary_consistency_and_determinism():
     import json
     bp = compute_design_blueprint(_snap())
