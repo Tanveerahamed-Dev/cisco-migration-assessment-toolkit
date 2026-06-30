@@ -128,3 +128,29 @@ def test_parse_redistribution_nxos_direct_and_named_process():
     assert bgp and bgp[0]["from_id"] == "65001"                    # named/numeric from-id kept
     stat = [r for r in rows if r["from_proto"] == "static"]
     assert stat and stat[0]["into_id"] == "CORE" and stat[0]["route_map"] == "RM-STAT"
+
+
+def test_parse_show_environment_power_nxos_budget():
+    """[#15] NX-OS 'show environment power' prints the budget SPACE-aligned ('Total Power Capacity  2100.00 W',
+    no colon), so capacity/draw/remaining were dropped. Real CS01 shape."""
+    out = ("PS  Model                Input Power       Current   Status\n"
+           "1   N55-PAC-1100W-B      AC    1050.00     87.50     ok\n"
+           "2   N55-PAC-1100W-B      AC    1050.00     87.50     ok\n\n"
+           "Total Power Capacity                             2100.00 W\n"
+           "Total Power Available                            1099.92 W\n")
+    r = parse.parse_show_environment_power(out)
+    assert r["total_capacity_w"] == "2100.00"
+    assert r["total_remaining_w"] == "1099.92"
+    assert abs(float(r["total_drawn_w"]) - 1000.08) < 0.1     # capacity - available
+    assert r["num_ps"] == 2
+
+
+def test_parse_show_environment_nxos_fan_table():
+    """[#16] NX-OS 'show environment' Fan-table rows ('Chassis-1 N6K-C6001-FAN-B -- ok', 'PS-1 ... ok') matched
+    no fan rule, so Nexus fan health was entirely lost. Real CS01 shape."""
+    out = ("Fan:\n"
+           "Fan             Model                Hw         Status\n"
+           "Chassis-1       N6K-C6001-FAN-B      --         ok\n"
+           "Chassis-2       N6K-C6001-FAN-B      --         ok\n"
+           "PS-1            N55-PAC-1100W-B      --         ok\n")
+    assert parse.parse_show_environment(out)["fan_status"] == "OK"
