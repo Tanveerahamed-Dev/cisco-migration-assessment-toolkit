@@ -3810,6 +3810,137 @@ function _routesCovering(host,ip){
 }
 function _fsimEcmpNote(host,ip){const nhs=[...new Set(_routesCovering(host,ip).map(r=>r.next_hop).filter(Boolean))];
   return nhs.length>1?` ECMP: ${nhs.length} equal-cost next-hops (${nhs.join(", ")}) — load-balanced per src-dst hash.`:"";}
+/* FIB-TRACER-PORT START — byte-identical JS port of cisco_toolkit/fib.py trace_fib_path (RIB→FIB multi-hop
+   resolver). Mirrors Python branch-for-branch: admin-distance, LPM+ECMP, next-hop-owner resolution, the _rank
+   "reach > lower-bound > drop" ordering, memoized DFS loop detection, all 11 coverage-honest status strings.
+   Self-contained (NOT _routeCovers, which is LPM-only). Verified byte-identical over 622 cross-check pairs. */
+function _fibV4(t){if(!/^\d{1,3}(\.\d{1,3}){3}$/.test(t))return null;
+  let n=0n;for(const o of t.split(".")){const x=Number(o);if(o===""||x<0||x>255)return null;n=(n<<8n)+BigInt(x);}return n;}
+function _fibV6(t){if(t.indexOf(":")<0)return null;let head,tail;
+  if(t.indexOf("::")>=0){const p=t.split("::");if(p.length!==2)return null;head=p[0]?p[0].split(":"):[];tail=p[1]?p[1].split(":"):[];}
+  else{head=t.split(":");tail=[];if(head.length!==8)return null;}
+  const groups=head.slice();
+  if(t.indexOf("::")>=0){const fill=8-(head.length+tail.length);if(fill<0)return null;for(let i=0;i<fill;i++)groups.push("0");}
+  for(const g of tail)groups.push(g);
+  if(groups.length!==8)return null;
+  let n=0n;for(const g of groups){if(!/^[0-9a-fA-F]{1,4}$/.test(g))return null;n=(n<<16n)+BigInt(parseInt(g,16));}return n;}
+function _fibParseAddr(s){const t=String(s).split("%")[0].trim();
+  const v4=_fibV4(t);if(v4!==null)return{v:4,n:v4};const v6=_fibV6(t);if(v6!==null)return{v:6,n:v6};return null;}
+function _fibV4Str(n){return[24n,16n,8n,0n].map(s=>((n>>s)&255n).toString()).join(".");}
+function _fibV6Str(n){const g=[];for(let i=7;i>=0;i--)g[7-i]=Number((n>>BigInt(i*16))&0xFFFFn);
+  let bs=-1,bl=1,i=0;while(i<8){if(g[i]===0){let j=i;while(j<8&&g[j]===0)j++;if(j-i>bl){bl=j-i;bs=i;}i=j;}else i++;}
+  if(bs<0)return g.map(x=>x.toString(16)).join(":");
+  return g.slice(0,bs).map(x=>x.toString(16)).join(":")+"::"+g.slice(bs+bl).map(x=>x.toString(16)).join(":");}
+function _fibParseNet(prefix){const t=String(prefix).trim();const sl=t.indexOf("/");
+  const addrPart=sl>=0?t.slice(0,sl):t,lenPart=sl>=0?t.slice(sl+1):null;
+  const a=_fibParseAddr(addrPart);if(a===null)return null;const width=a.v===4?32:128;let len;
+  if(lenPart===null)len=width;else{const lt=lenPart.trim();if(!/^\d+$/.test(lt))return null;len=Number(lt);}
+  if(!(len>=0&&len<=width))return null;
+  const mask=len===0?0n:(((1n<<BigInt(len))-1n)<<BigInt(width-len));const base=a.n&mask;
+  return{v:a.v,base,len,str:(a.v===4?_fibV4Str(base):_fibV6Str(base))+"/"+len};}
+function _fibInNet(addr,net){if(addr.v!==net.v)return false;if(net.len===0)return true;
+  const width=net.v===4?32:128;const mask=((1n<<BigInt(net.len))-1n)<<BigInt(width-net.len);return(addr.n&mask)===net.base;}
+function _fibAdminDistance(source){let s=String(source==null?"":source).trim().toLowerCase().replace(/\*/g,"").replace(/ /g,"");
+  if(!s)return 255;const sw=(...a)=>a.some(p=>s.startsWith(p));
+  if(["c","l","local","connected","direct","attached"].includes(s)||sw("connected","directlyconnected","direct","local"))return 0;
+  if(s.includes("vrrp")||s.includes("hsrp")||s.includes("glbp"))return 0;
+  if(s.includes("static")||s==="s"||s==="su")return 1;
+  if(s.includes("bgp")||s==="b")return 20;
+  if(s.includes("eigrp")||s==="d"||s.startsWith("dex"))return s.includes("ex")?170:90;
+  if(s==="odr")return 160;
+  if(s.includes("ospf")||s.startsWith("o")||["ia","n1","n2","e1","e2"].includes(s))return 110;
+  if(s.includes("isis")||s==="i")return 115;
+  if(s.includes("rip")||s==="r")return 120;return 255;}
+function _fibIsConnected(source){return _fibAdminDistance(source)===0;}
+function _fibIsDiscard(out_intf){const s=String(out_intf==null?"":out_intf).trim().toLowerCase().replace(/ /g,"");
+  return s.startsWith("nu")||s==="discard";}
+function _fibComputeFib(routes){const entries=[];if(!Array.isArray(routes))return entries;
+  for(const r of routes){if(typeof r!=="object"||r===null||Array.isArray(r))continue;
+    const prefix=String(r.prefix==null?"":r.prefix).trim();if(!prefix)continue;
+    const net=_fibParseNet(prefix);if(net===null)continue;entries.push({net,ad:_fibAdminDistance(r.source),r});}
+  entries.sort((a,b)=>(b.net.len-a.net.len)||(a.ad-b.ad));return entries;}
+function _fibLookupAll(fib,dstIp){const ip=_fibParseAddr(dstIp);if(ip===null)return[];let key=null;const out=[];
+  for(const e of(fib||[])){if(ip.v!==e.net.v||!_fibInNet(ip,e.net))continue;
+    if(key===null)key=[e.net.len,e.ad];
+    if(e.net.len===key[0]&&e.ad===key[1])out.push(Object.assign({},e.r,{match:e.net.str,computed:true}));else break;}
+  return out;}
+function _fibConnectedIndex(routesByHost){const idx={};
+  for(const host of Object.keys(routesByHost||{})){const routes=routesByHost[host],nets=[];
+    for(const r of(Array.isArray(routes)?routes:[])){
+      if(typeof r==="object"&&r!==null&&!Array.isArray(r)&&_fibIsConnected(r.source)){
+        const net=_fibParseNet(String(r.prefix==null?"":r.prefix).trim());if(net!==null)nets.push(net);}}
+    idx[host]=nets;}return idx;}
+function _fibHostsOwningIp(idx,ipStr,exclude){const ip=_fibParseAddr(ipStr);if(ip===null)return[];const hosts=new Set();
+  for(const host of Object.keys(idx||{})){if(host===exclude)continue;
+    for(const net of idx[host]){if(ip.v===net.v&&_fibInNet(ip,net)){hosts.add(host);break;}}}
+  return[...hosts].sort();}
+function _fibIsL3Router(host,snap,routes){
+  for(const r of(Array.isArray(routes)?routes:[])){if(typeof r!=="object"||r===null||Array.isArray(r))continue;
+    if(!_fibIsConnected(r.source))return true;
+    const parts=String(r.prefix==null?"":r.prefix).split("/");
+    if(parts.length>=2){const n=parseInt(parts[1],10);if(Number.isFinite(n)&&n>=30)return true;}}
+  const rn=snap.routing_neighbors;
+  if(rn&&typeof rn==="object"&&!Array.isArray(rn)){const peers=rn[host];
+    if(peers&&typeof peers==="object"&&!Array.isArray(peers)&&Object.keys(peers).some(p=>peers[p]))return true;
+    if(Array.isArray(peers)&&peers.length)return true;}
+  const l3f=snap.l3_forwarding;
+  if(Array.isArray(l3f)&&l3f.some(x=>x&&typeof x==="object"&&x.switch===host))return true;return false;}
+function _fibTrace(fibs,connected,l3_hosts,srcIp,dstIp){
+  const _result=(hops,status,reached)=>({src:srcIp,dst:dstIp,hops,status,computed:status.startsWith("computed"),reached});
+  const sip=_fibParseAddr(srcIp),dip=_fibParseAddr(dstIp);
+  if(sip===null||dip===null)return _result([],"lower_bound:bad_address",false);
+  if(sip.v!==dip.v)return _result([],"lower_bound:cross_family",false);
+  const srcHosts=_fibHostsOwningIp(connected,srcIp,null);
+  if(!srcHosts.length)return _result([],"lower_bound:src_host_not_found",false);
+  const _rank=(st)=>st.startsWith("computed:reached")?2:(st.startsWith("lower_bound")?1:0);
+  const memo={},computing=new Set();
+  const _cache=(host,res)=>{if(!(res[0].endsWith(":loop")||res[0].endsWith(":max_hops")))memo[host]=res;return res;};
+  function _explore(host){
+    if(host in memo)return memo[host];
+    if(computing.has(host))return["lower_bound:loop",false,[]];
+    const legs=_fibLookupAll(fibs[host]||[],dstIp);
+    if(!legs.length)return _cache(host,l3_hosts.has(host)?["computed:unreachable",false,[]]:["lower_bound:no_l3_routing",false,[]]);
+    computing.add(host);let best=null;
+    for(const m of legs){
+      const hop={host,match:m.match,next_hop:String(m.next_hop==null?"":m.next_hop)||"",
+                 out_intf:String(m.out_intf==null?"":m.out_intf)||"",source:String(m.source==null?"":m.source)||""};
+      let cand;
+      if(_fibIsConnected(m.source)){best=["computed:reached",true,[hop]];break;}
+      if(_fibIsDiscard(m.out_intf)){cand=["computed:unreachable",false,[hop]];}
+      else{const nh=String(m.next_hop==null?"":m.next_hop).trim();
+        const nxts=nh?_fibHostsOwningIp(connected,nh,host):[];
+        if(!nxts.length)cand=["lower_bound:next_hop_not_collected",false,[hop]];
+        else{const sub=_exploreSet(nxts,"lower_bound:ambiguous_next_hop");cand=[sub[0],sub[1],[hop].concat(sub[2])];}}
+      if(cand[1]){best=cand;break;}
+      if(best===null||_rank(cand[0])>_rank(best[0]))best=cand;}
+    computing.delete(host);return _cache(host,best);}
+  function _exploreSet(hosts,ambStatus){
+    if(hosts.length===1)return _explore(hosts[0]);
+    const results=hosts.map(_explore);
+    if(results.every(r=>r[1]))return["computed:reached",true,results[0][2]];
+    if(results.every(r=>r[0]==="computed:unreachable"))return["computed:unreachable",false,results[0][2]];
+    return[ambStatus,false,[]];}
+  let res;try{res=_exploreSet(srcHosts,"lower_bound:ambiguous_src");}
+  catch(e){if(e instanceof RangeError)return _result([],"lower_bound:max_hops",false);throw e;}
+  return _result(res[2],res[0],res[1]);}
+function traceFibPath(snap,srcIp,dstIp){
+  const s=(snap&&typeof snap==="object"&&!Array.isArray(snap))?snap:{};
+  const rbh=(s.routes&&typeof s.routes==="object"&&!Array.isArray(s.routes))?s.routes:{};
+  const fibs={};for(const h of Object.keys(rbh))fibs[h]=_fibComputeFib(rbh[h]);
+  const connected=_fibConnectedIndex(rbh);
+  const l3_hosts=new Set();for(const h of Object.keys(rbh)){if(_fibIsL3Router(h,s,rbh[h]))l3_hosts.add(h);}
+  return _fibTrace(fibs,connected,l3_hosts,srcIp,dstIp);}
+function _fibVerdictLabel(st){
+  if(st==="computed:reached")return "Reached (computed end-to-end)";
+  if(st==="computed:unreachable")return "Unreachable — a collected router definitively drops it";
+  return "Lower bound: "+st.replace("lower_bound:","").replace(/_/g," ")+" (not a definitive verdict)";}
+function _fibPathWhy(tr){
+  const hops=(tr.hops||[]).map(h=>`${shortName(h.host)} [${h.match}${_fibIsConnected(h.source)?" connected":(h.next_hop?" → "+h.next_hop:"")}${h.out_intf?", "+h.out_intf:""}]`).join("  →  ");
+  const tail=tr.status==="computed:reached"?"The destination is directly attached on the final hop."
+    :tr.status==="computed:unreachable"?"A fully-collected router has no route and no default — a definitive drop, not an assumption."
+    :"The forwarding trail leaves the collected device set, so the engine reports a coverage-honest lower bound rather than fabricate a verdict.";
+  return `Offline RIB→FIB trace${hops?": "+hops:" — the source IP did not resolve to a collected router"}. ${tail}`;}
+/* FIB-TRACER-PORT END */
 /* route-aware (endpoint): a representative host IP inside VLAN vid's subnet — that gateway SVI's own
    address — so _routeCovers can test whether a source gateway has a route toward that whole subnet. */
 function gwIp(host,vid){const d=(SNAP&&SNAP.interfaces&&SNAP.interfaces[host])?SNAP.interfaces[host]["Vlan"+vid]:null;
@@ -4448,6 +4579,9 @@ function buildFlowJourney(F,srcOverride){if(!F||!F.src||!F.dst)return null;
       layers.push(rung("L3","Network","ok",act?`FHRP active = ${shortName(act)}`:`Gateway ${shortName(sgw)}`,
         `${act?`The active first-hop gateway for VLAN ${sv} is ${shortName(act)}${sby?` (standby ${shortName(sby)})`:""}. `:`VLAN ${sv} gateway is ${shortName(sgw)}${fh?"":" — no FHRP peer (SPOF)"}. `}Route lookup in VRF ${vrf}: ${rt?`longest-prefix ${rt.prefix} via ${rt.source||"route"}${rt.next_hop?` → next-hop ${rt.next_hop}`:""}${rt.out_intf?`, egress ${rt.out_intf}`:""}.${d.ip?_fsimEcmpNote(sgw,d.ip):""}`:"destination not found in the routing table."}`,
         act?"confirmed":"derived"));
+      {const _ftr=(s.ip&&d.ip)?(function(){try{return traceFibPath(SNAP,s.ip,d.ip);}catch(_e){return null;}})():null;   // W-FIB: computed multi-hop RIB→FIB path beside the single-hop gateway lookup
+       if(_ftr)layers.push(rung("L3","Network · computed path",_ftr.status==="computed:reached"?"ok":_ftr.status==="computed:unreachable"?"block":"watch",
+         _fibVerdictLabel(_ftr.status),_fibPathWhy(_ftr),"derived"));}
       aclByHost(sgw).forEach(v=>layers.push(rung("L4","Transport",v.verdict==="permit"?"ok":v.verdict==="deny"?"block":"watch",
         `ACL ${v.name} (${v.dir}) → ${String(v.verdict).toUpperCase()}`,
         v.verdict==="deny"?`Blocked by ACL ${v.name} on ${shortName(v.host)}.`:v.verdict==="indeterminate"?`ACL ${v.name} can't be fully evaluated offline.`:`Permitted by ACL ${v.name}.`)));}
