@@ -2600,8 +2600,10 @@ def _norm_duplex(s: str) -> str:
     return "half" if "half" in s else "full" if "full" in s else ""
 
 def _norm_speed_mbps(s: str) -> int:
-    m = re.search(r"(\d+)\s*(g|m)?", (s or "").lower())
-    return int(m.group(1)) * (1000 if m and m.group(2) == "g" else 1) if m else 0
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(g|m)?", (s or "").lower())   # incl. decimal multigig 2.5G / 5.0G (audit-5 #18)
+    if not m:
+        return 0
+    return int(round(float(m.group(1)) * (1000 if m.group(2) == "g" else 1)))
 
 def compute_duplex_speed_mismatches(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
     """Duplex / speed mismatches on inter-switch links (mirrors the explorer's linkPhyConsistency): the two
