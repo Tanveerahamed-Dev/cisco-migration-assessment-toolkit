@@ -2543,10 +2543,10 @@ _EP_VENDOR_RULES = [
     (("avid",), "Storage", 1),
     (("super micro", "supermicro", "tyan", "inspur", "quanta", "wiwynn"), "Server", 2),
     (("juniper", "arista", "aruba", "ruckus", "ubiquiti", "extreme net", "fortinet", "palo alto",
-      "check point", "f5 net"), "Network", 1),
-    (("canon", "epson", "brother inds", "xerox", "ricoh", "kyocera", "lexmark", "zebra tech"), "Printer", 2),
+      "check point", "f5 net", "f5 inc"), "Network", 1),
+    (("canon", "epson", "brother indus", "xerox", "ricoh", "kyocera", "lexmark", "zebra tech"), "Printer", 2),
     (("polycom", "avaya", "mitel", "yealink", "grandstream"), "Phone", 2),
-    (("dell", "hewlett packard", "hpe", "lenovo", "intel corp", "gigabyte", "asrock", "asustek"),
+    (("dell", "hewlett packard", "hpe", "hp inc", "lenovo", "intel corp", "giga-byte", "asrock", "asustek"),
      "Server", 1),
     (("apple", "microsoft"), "Workstation", 1),
 ]
