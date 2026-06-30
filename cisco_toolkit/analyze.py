@@ -1837,7 +1837,8 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
     mac_aliases.sort(key=lambda a: (not a["has_av"], a["mac"]))
 
     # querier coverage: multicast-active SVI VLANs (PIM/mroute on a VlanN interface) lacking an IGMP querier
-    q_vlans = {str(q.get("vlan", "")).strip() for q in queriers if str(q.get("vlan", "")).strip()}
+    q_vlans = {str(q.get("vlan", "")).strip() for q in queriers
+               if isinstance(q, dict) and str(q.get("vlan", "")).strip()}
     mcast_vlans: set = set()
     for _host, ifaces in (all_interfaces or {}).items():
         for port, d in (ifaces or {}).items():
@@ -4587,7 +4588,7 @@ def _swrisk_train(sw: str, platform: str) -> tuple:
     """Classify a running release string into a cautious lifecycle band:
     (train, band, note). Curated train-level knowledge only -- never an invented
     per-release date; 'verify' wording points at Cisco's published notices."""
-    s = (sw or "").strip()
+    s = str(sw or "").strip()
     if not s:
         return ("(unknown)", "Unknown", "Version not captured -- not assessable.")
     p = (platform or "").lower()
@@ -4700,7 +4701,7 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
     for host in hosts:
         text = (rc.get(host) or "").strip()
         meta = dv.get(host) or {}
-        sw = (meta.get("sw_version") or "").strip()
+        sw = str(meta.get("sw_version") or "").strip()
         platform = ((pf.get(host) or {}).get("platform") or "").strip()
         train, band, tnote = _swrisk_train(sw, platform)
         surfaces: Dict[str, str] = {}
@@ -4928,8 +4929,8 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
     per_device: List[dict] = []
     for host in sorted(devices or {}):
         dv = devices[host] or {}
-        model = (dv.get("model") or "").strip()
-        sw = (dv.get("sw_version") or "").strip()
+        model = str(dv.get("model") or "").strip()
+        sw = str(dv.get("sw_version") or "").strip()
         rec = eoldb.lifecycle_for(model)
         if rec is None:
             per_device.append({"host": host, "model": model or "(unknown)", "platform": "", "sw_version": sw,
