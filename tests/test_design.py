@@ -205,6 +205,29 @@ def test_design_bom_aggregates_by_model(tmp_path):
     assert models == {"N9K-C93180YC", "C9300-48T", "WS-C2960X-48FPD-L"}
 
 
+def test_design_doc_renders_w37_traceability_matrix(tmp_path):
+    """[W3-7] the generated As-Built .docx carries the §4.5 traceability matrix when recommended decisions exist --
+    each traced to its CCDE principle id + published citation + the snapshot source fields."""
+    snap = _snap()
+    snap["design_blueprint"] = {"tradeoff_scorecard": [], "doctrine": {}, "decisions": [
+        {"status": "recommended", "title": "Enforce SNMPv3", "priority": "Critical", "domain": "Security",
+         "driver": "management-plane integrity",
+         "principle": {"id": "mgmt-secure-protocols", "title": "Secure management protocols", "citation": "CCDE Session 19"},
+         "evidence": {"summary": "3 device(s) fail management hardening", "devices": ["core1"],
+                      "fields": ["security[host].findings[].status"]},
+         "recommended_action": "Standardize SNMPv3 + SSH", "alternatives": "local AAA", "tradeoffs": "op lift",
+         "axes": ["security"]},
+    ]}
+    out = str(tmp_path / "trace.docx")
+    write_design_doc_docx(out, snap, "AJ")
+    doc = Document(out)
+    assert any("Design traceability matrix" in p.text for p in doc.paragraphs)   # the §4.5 section renders
+    cells = [c.text for t in doc.tables for row in t.rows for c in row.cells]
+    assert any("mgmt-secure-protocols" in c for c in cells)      # decision traced to its CCDE principle id
+    assert any("CCDE Session 19" in c for c in cells)            # ...and the published citation
+    assert any("security[host].findings[].status" in c for c in cells)   # ...and the snapshot source field
+
+
 def test_design_multicast_section_suppressed_when_no_activity(tmp_path):
     """A multicast dict that exists but carries all-zero counts (non-media fabric, or the commands were
     not collected) gets the fallback message — not an all-zeros 'PTP: 0 of 0' filler paragraph."""
