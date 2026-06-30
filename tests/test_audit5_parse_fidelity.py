@@ -201,3 +201,37 @@ def test_parse_interface_phy_speed_no_multiline_bleed():
     sp = next(iter(parse.parse_interface_phy(out).values()))["speed"]
     assert sp == "10 Gb/s"
     assert "\n" not in sp and "Beacon" not in sp
+
+
+def test_golden_drift_ignores_banner_art_and_cli_preamble():
+    """[audit-5 FF#8/#14] A 'banner motd ^C ... ^C' body (ASCII-art border, the '* [HISTORY-REDACTED]... *' lines, the
+    closing '^C' delimiter) and the 'show running-config' preamble ('Building configuration...' / 'Current
+    configuration : N bytes') are all emitted at COLUMN 0, so the majority-baseline _top_lines wrongly folded them
+    in as required top-level directives -> cry-wolf drift the instant a device's banner text differs. They must NOT
+    enter the auto-derived baseline; the REAL directives still must."""
+    from cisco_toolkit.analyze import compute_golden_drift
+
+    def cfg(site):
+        return ("Building configuration...\n"
+                "Current configuration : 1024 bytes\n"
+                "!\n"
+                "banner motd ^C\n"
+                "********************************\n"
+                "* [HISTORY-REDACTED] MEDIA NETWORK *\n"
+                f"* {site} - authorized access only *\n"
+                "^C\n"
+                "service password-encryption\n"
+                "ip domain-name [HISTORY-REDACTED].net\n")
+
+    rc = {"sw1": cfg("DOHA"), "sw2": cfg("AJDOH"), "sw3": cfg("ARDOH")}
+    base = [str(b).lower() for b in (compute_golden_drift(rc)["baseline"] or [])]
+    joined = " ".join(base)
+    # 'media network' is banner-art-only; '[HISTORY-REDACTED]' alone would false-match the legit 'ip domain-name [HISTORY-REDACTED].net'.
+    assert "media network" not in joined, "banner ASCII-art leaked into the baseline"
+    assert "authorized access" not in joined
+    assert not any(b.startswith("****") for b in base), "banner border line leaked into the baseline"
+    assert "building configuration" not in joined and "current configuration" not in joined, "CLI preamble leaked"
+    assert "^c" not in joined, "the banner delimiter leaked into the baseline"
+    # control: the genuine top-level directives DO form the baseline (we did not over-filter)
+    assert "service password-encryption" in base
+    assert "ip domain-name [HISTORY-REDACTED].net" in base
