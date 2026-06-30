@@ -4292,6 +4292,12 @@ function flowBetween(s,d){
   if(_rt===null){F.verdict="NOT REACHABLE";
     F.reason=`${sgw} has no route to ${d.ip} — the destination is not in its routing table (no covering route, static, or default).`;
     hop("L3",F.reason,true); return F;}
+  // audit-5 FH#4: _routeCovers returns undefined when sgw's routing table was NOT collected (vs null = table
+  // present but no covering route). The old code fell straight through to a confident 'REACHABLE — L3', so the
+  // Reachability Matrix painted a verified-green check for a flow it never actually checked. Flag it as an
+  // ASSUMPTION so the matrix surfaces it as '?' (unknown), not a confident reach, and the why-ladder discloses it.
+  if(d.ip&&_rt===undefined&&!(SNAP&&SNAP.routes&&SNAP.routes[sgw]&&SNAP.routes[sgw].length)){
+    F.routeAssumed=true; hop("L3",`⚠ ${sgw} routing table not collected — L3 reachability to ${d.ip} is ASSUMED, not verified (coverage gap).`,false);}
   seg(sv,s.host,sgw);
   const single=sgwAll.size<2;
   const _via=_rt?`  — via ${_rt.source||"route"} ${_rt.prefix}${_rt.next_hop?(" → "+_rt.next_hop):""}`:"";   // L2: cite the matched route when route data is present
@@ -4956,7 +4962,11 @@ function fmxCompute(reps,denySpec){
       // V3.23.138: a hypothetical deny ACE (for the current L4 tuple) from src VLAN→dst VLAN denies any matching flow.
       if(denySpec&&l3&&(denySpec.srcVlan==="any"||+denySpec.srcVlan===reps[i].vlan)&&(denySpec.dstVlan==="any"||+denySpec.dstVlan===reps[j].vlan))acl="deny";
       const reach=l3&&acl!=="deny";
-      row.push({reach,l3,verdict:F.verdict,unknown:F.verdict==="UNKNOWN",acl}); }
+      // audit-5 FH#4: a flow whose source-gateway routing table was never collected is an ASSUMPTION, not a
+      // verified reach -- render it exactly like an UNKNOWN cell (?), never a confident green check.
+      const assumed=!!F.routeAssumed;
+      row.push(assumed?{reach:false,l3:false,verdict:F.verdict,unknown:true,routeAssumed:true,acl:""}
+                      :{reach,l3,verdict:F.verdict,unknown:F.verdict==="UNKNOWN",acl}); }
     grid.push(row); }
   for(let i=0;i<n;i++)for(let j=0;j<n;j++){ if(i===j)continue; grid[i][j].asym=(!!grid[i][j].reach)!==(!!grid[j][i].reach); }
   return grid;
@@ -5073,7 +5083,7 @@ function renderFlowMatrix(){ const S=FMX; if(!S)return;
       else if(c.reach){cls+="ok"; ch=(c.acl==="indeterminate")?"✓?":"✓";}
       else {cls+="blk"; ch="✗";}
       const asym=(!c.self&&c.asym)?`<span class="asym" title="directional: reachability differs on the return path">⇄</span>`:"";
-      const stateTxt=c.self?"same VLAN":c.unknown?"unknown (VLAN not traceable)"
+      const stateTxt=c.self?"same VLAN":c.unknown?(c.routeAssumed?"unknown — source gateway routing table not collected (L3 reachability assumed, not verified)":"unknown (VLAN not traceable)")
         :aclBlk?"reaches at L3 but BLOCKED at L4 (ACL deny)"
         :c.reach?("reachable"+(c.acl==="indeterminate"?" — L4 ACL indeterminate":""))
         :"blocked";
