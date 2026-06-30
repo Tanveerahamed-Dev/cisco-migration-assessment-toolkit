@@ -60,3 +60,25 @@ def test_parse_show_version_nxos_chassis_pid():
     assert eoldb.lifecycle_for(r["model"]) is not None      # now matches eoldb (was a no-match bare '6001')
     r2 = parse.parse_show_version("  cisco Nexus9000 C93180YC-EX Chassis\n")     # PID-body form
     assert r2["model"] == "N9K-C93180YC-EX", r2["model"]
+
+
+def test_endpoint_vendor_rules_match_real_ieee_names():
+    """[#13/#20] _EP_VENDOR_RULES used substrings that match ZERO entries in the shipped IEEE registry:
+    'f5 net' (registry says 'F5 Inc.'), 'brother inds' ('Brother industries, LTD.'), 'gigabyte' ('Giga-Byte
+    Technology'); and missed 'HP Inc.'. Each recognized vendor silently dropped to Unknown. Grounded in real
+    OUIs from the bundled ouidb."""
+    from cisco_toolkit import analyze, ouidb
+
+    def C(v):
+        return analyze._classify_endpoint(v, "", "", "", False)[0]
+    # the real IEEE legal-name strings (were dead substrings -> Unknown)
+    assert C("F5 Inc.") == "Network"
+    assert C("Brother industries, LTD.") == "Printer"
+    assert C("Giga-Byte Technology Co.,Ltd.") == "Server"
+    assert C("HP Inc.") == "Server"
+    # end-to-end via real OUIs
+    def cls(oui):
+        return analyze._classify_endpoint(ouidb.vendor_for_mac(oui + ":11:22:33"), "", "", "", False)[0]
+    assert cls("00:01:d7") == "Network"     # F5 Inc.
+    assert cls("00:80:77") == "Printer"     # Brother industries
+    assert cls("00:1a:4d") == "Server"      # Giga-Byte Technology
