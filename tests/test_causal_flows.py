@@ -67,6 +67,57 @@ def _by_key(flows, key):
     return next(f for f in flows if f["key"] == key)
 
 
+# ---- W3-2 (NotebookLM teardown): coverage-honest evidence PRECISION tier + grounding verifier ----
+def test_evidence_precision_is_coverage_honest_and_never_fake_line():
+    """[W3-2] evidence_precision returns the finest HONEST, navigable locus: BLOCK (a dotted fields-path that
+    RESOLVES in the snapshot), DEVICE (names hosts), FLEET (aggregate). LINE (a raw show-line) is NEVER emitted --
+    no raw show-text is captured today (--collect-raw-outputs is W3-3), so claiming LINE would be the exact
+    fake-precision NotebookLM warns against. A dotted citation that does NOT resolve is DEMOTED, never granted
+    BLOCK off a dangling reference."""
+    from cisco_toolkit.causal import evidence_precision
+    snap = {"collection_completeness": {"summary": {"not_collected": 50}}, "cross_layer": [{"x": 1}]}
+    assert evidence_precision({"fields": ["collection_completeness.summary.not_collected"]}, snap) == "BLOCK"
+    # a dotted path that does NOT resolve is demoted (no fake BLOCK), falling to the next honest locus
+    assert evidence_precision({"fields": ["collection_completeness.summary.GONE"], "devices": ["sw1"]}, snap) == "DEVICE"
+    assert evidence_precision({"fields": ["punchlist"], "devices": ["sw1"]}, snap) == "DEVICE"      # bare section + device
+    assert evidence_precision({"fields": ["causality"]}, snap) == "FLEET"                            # bare section only
+    assert evidence_precision({}, snap) == "FLEET"
+    assert evidence_precision(None, None) == "FLEET"                                                 # total on junk
+    assert evidence_precision({"fields": ["x.y"]}, None) == "FLEET"     # no snap -> cannot verify -> never fake BLOCK
+
+
+def test_evidence_grounding_flags_a_dangling_citation():
+    """[W3-2 byte-match analog] every cited fields-path must RESOLVE to present data in the snapshot. A flow citing
+    a renamed/dropped key is UNGROUNDED -- the structured analog of NotebookLM's byte-match citation check and a
+    direct guard on our recurring format-fidelity / SSOT-drift defect class. Bracket/wildcard citations
+    (security[host].findings[].status) are verified to their HEAD section (the [] is a per-element wildcard)."""
+    from cisco_toolkit.causal import evidence_grounding
+    snap = {"cross_layer": [{"x": 1}], "punchlist": [], "collection_completeness": {"summary": {"not_collected": 50}},
+            "security": {"sw1": {}}}
+    assert evidence_grounding({"fields": ["cross_layer"]}, snap) == {"grounded": True, "dangling": []}
+    assert evidence_grounding({"fields": ["collection_completeness.summary.not_collected"]}, snap)["grounded"] is True
+    assert evidence_grounding({"fields": ["security[host].findings[].status"]}, snap)["grounded"] is True  # head section present
+    g = evidence_grounding({"fields": ["nope", "collection_completeness.summary.MISSING"]}, snap)
+    assert g["grounded"] is False and set(g["dangling"]) == {"nope", "collection_completeness.summary.MISSING"}
+    assert evidence_grounding({}, snap) == {"grounded": True, "dangling": []}      # nothing cited -> nothing dangling
+    assert evidence_grounding(None, None) == {"grounded": True, "dangling": []}
+
+
+def test_every_live_flow_is_tiered_and_grounding_is_live(result):
+    """Integration: compute_causal_flows attaches a coverage-honest precision tier + grounding to EVERY flow's
+    evidence (the SSOT both the explorer and the webapp render). Never fake LINE; the synthetic fixture exercises
+    both DEVICE (punchlist/design) and FLEET (causality/cross-layer) tiers; and the verifier is LIVE, not a
+    rubber-stamp -- the design flow cites a `security` section absent from this snapshot, so it is flagged
+    ungrounded with the dangling path surfaced."""
+    flows = result["flows"]
+    tiers = {f["evidence"].get("precision") for f in flows}
+    assert tiers <= {"BLOCK", "DEVICE", "FLEET"} and "LINE" not in tiers
+    assert {"DEVICE", "FLEET"} <= tiers
+    assert all(isinstance(f["evidence"].get("grounded"), bool) for f in flows)
+    ungrounded = [f for f in flows if not f["evidence"]["grounded"]]
+    assert any(f["evidence"].get("dangling") for f in ungrounded)   # the design flow's absent `security` citation
+
+
 def test_total_and_family_counts(result):
     # 2 struct + 2 xlayer + 1 design(recommended) + 2 punchlist(non-crosslayer) = 7
     assert result["summary"]["n_flows"] == 7
