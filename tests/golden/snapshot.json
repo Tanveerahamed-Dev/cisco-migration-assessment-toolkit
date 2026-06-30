@@ -3604,6 +3604,469 @@
    }
   }
  },
+ "framework_coverage": {
+  "frameworks": {
+   "CIS": {
+    "label": "CIS Cisco Benchmark",
+    "controls": [
+     {
+      "control": "CIS 1.1.1",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 1.3",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 1.4",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 1.5",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 1.6",
+      "check": "no-banner",
+      "title": "Login banner",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 2.1",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 2.2",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 3.1",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 6.1",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 6.2",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 1.2.1",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 11,
+    "n_fail": 10
+   },
+   "NIST": {
+    "label": "NIST 800-53 r5",
+    "controls": [
+     {
+      "control": "AC-17 / AC-12",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "AC-17(2) / SC-8",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "AC-17(2) / SC-8",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "AC-2 / IA-2",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "AC-8",
+      "check": "no-banner",
+      "title": "Login banner",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "AU-2 / AU-6 / AU-12",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "AU-8",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CM-7",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "IA-5(1)",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "IA-5(1)",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "IA-5(1)",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 11,
+    "n_fail": 10
+   },
+   "PCI": {
+    "label": "PCI-DSS v4.0",
+    "controls": [
+     {
+      "control": "10.2",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "10.6",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "2.2",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "2.2.7",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "2.2.7",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "8.2",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "8.2",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "8.3.2",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "8.3.2",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "8.3.2",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 10,
+    "n_fail": 9
+   },
+   "STIG": {
+    "label": "DISA Cisco IOS NDM STIG",
+    "controls": [
+     {
+      "control": "Cisco IOS NDM \u2014 SNMPv3 auth/priv",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 VTY ACL + exec-timeout",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 audit logging",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 authenticated time source",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 centralized AAA",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 disable unused services",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 encrypted (SSH) management",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 local password storage",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 login banner",
+      "check": "no-banner",
+      "title": "Login banner",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 password encryption",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 privileged secret",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 11,
+    "n_fail": 10
+   }
+  },
+  "note": "Config-evidenced mapping of the engine's hardening checks to framework controls \u2014 NOT a full framework audit. Controls outside this check set are not auto-assessed (never assumed 'pass'); a not-applicable check stays 'na'.",
+  "scope": "config-only (show running-config); management-plane hardening controls"
+ },
  "config_hygiene": {
   "core1": {
    "undefined": [

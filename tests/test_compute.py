@@ -1112,3 +1112,42 @@ def test_nrfu_routing_adjacencies_warns_when_routing_not_collected():
     assert blind["status"] == "warn" and verified["status"] == "pass" and down["status"] == "fail"
     assert none_run["status"] == "pass"                                              # pure-L2 run: no cry-wolf
     assert blind != verified                                                         # blind distinguishable from verified
+
+
+def test_framework_coverage_mapping_is_coverage_honest():
+    """[W2-3] map the engine's EXISTING config-hardening checks to the control each evidences in CIS / NIST 800-53
+    / PCI-DSS / DISA STIG -- a mapping over existing checks, NOT a new check engine. Coverage-honest: a check with
+    no mapping in a framework is NOT auto-assessed there (never a silent 'pass'); a not-applicable check stays
+    'na'; a control ANY host fails rolls up to fail. The output discloses it is a partial, config-evidenced mapping."""
+    from cisco_toolkit import analyze
+    security = {
+        "sw1": {"findings": [
+            {"id": "telnet-enabled", "title": "VTY transport (telnet)", "status": "fail", "cis_ref": "CIS 2.1"},
+            {"id": "no-ntp", "title": "NTP time synchronization", "status": "pass", "cis_ref": "CIS 6.1"},
+            {"id": "weak-enable", "title": "Privileged-EXEC secret", "status": "na", "cis_ref": "CIS 1.2.1"},
+            {"id": "no-banner", "title": "Login banner", "status": "fail", "cis_ref": "CIS 1.6"},
+        ]},
+        "sw2": {"findings": [
+            {"id": "telnet-enabled", "title": "VTY transport (telnet)", "status": "pass", "cis_ref": "CIS 2.1"},
+        ]},
+    }
+    fc = analyze.compute_framework_coverage(security)
+    fw = fc["frameworks"]
+    def ctrl(fwk, check):
+        return next((c for c in fw[fwk]["controls"] if c["check"] == check), None)
+    # telnet -> NIST AC-17(2)/SC-8, PCI 2.2.7, CIS 2.1; ANY host fails -> fail
+    assert "AC-17" in ctrl("NIST", "telnet-enabled")["control"]
+    assert ctrl("PCI", "telnet-enabled")["control"] == "2.2.7"
+    assert ctrl("CIS", "telnet-enabled")["control"] == "CIS 2.1"        # CIS = the finding's own cis_ref (SSOT)
+    assert ctrl("NIST", "telnet-enabled")["status"] == "fail"
+    # no-ntp -> all pass -> pass; NIST AU-8
+    assert ctrl("NIST", "no-ntp")["control"] == "AU-8" and ctrl("NIST", "no-ntp")["status"] == "pass"
+    # weak-enable -> all na -> na, NEVER a silent pass
+    assert ctrl("NIST", "weak-enable")["status"] == "na"
+    # no-banner -> NIST AC-8 present, but NO PCI mapping -> ABSENT from PCI (not auto-assessed), never a fake pass
+    assert ctrl("NIST", "no-banner")["control"] == "AC-8"
+    assert ctrl("PCI", "no-banner") is None
+    # coverage-honest disclosure + scope
+    assert "not a full" in fc["note"].lower() and "config" in fc["scope"].lower()
+    # rollup counts
+    assert fw["NIST"]["n_fail"] >= 2 and fw["NIST"]["n_assessed"] >= 4
