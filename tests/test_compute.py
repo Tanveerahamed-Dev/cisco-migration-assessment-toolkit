@@ -129,7 +129,7 @@ def test_causality_aggregates_transit_and_uplink_per_host():
         return InterfaceData(port=p, switchport_mode="Access", vlan=vlan, end_host_mac=mac)
 
     ai = {
-        "G": {"Vlan10": InterfaceData(port="Vlan10"), "Vlan20": InterfaceData(port="Vlan20"),
+        "G": {"Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.1"), "Vlan20": InterfaceData(port="Vlan20", svi_ip="10.0.20.1"),
               "Gi0/1": trunk("Gi0/1", "T", "Gi0/1")},
         "T": {"Gi0/1": trunk("Gi0/1", "G", "Gi0/1"), "Gi0/2": trunk("Gi0/2", "A", "Gi0/24")},
         "A": {"Gi0/24": trunk("Gi0/24", "T", "Gi0/2"),

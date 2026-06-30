@@ -16,3 +16,17 @@ def test_parse_security_snmpv3_noauth_and_weak():
     fw = _ins("snmp-server user admin network-admin auth md5 0xabc priv 0xabc localizedkey\n")
     assert fw["status"] == "pass" and ("md5" in fw["detail"].lower() or "weak" in fw["detail"].lower())
     assert _ins("snmp-server user U vdc-operator auth sha 0xabc priv aes-128 0xdef localizedkey\n")["status"] == "pass"
+
+
+def test_build_network_model_skips_no_ip_svi_gateway():
+    """[#1 HIGH] build_network_model registered EVERY 'VlanN' SVI as a gateway regardless of an IP, so the
+    universal no-IP Vlan1 interface became a phantom gateway on 243 devices -> 60 false 'VLAN 1: Hard partition'
+    High failure_impact records (stranded:0). Only an SVI WITH an svi_ip is a real L3 gateway."""
+    from cisco_toolkit import analyze
+    from cisco_toolkit.model import InterfaceData
+    ai = {"SW1": {
+        "Vlan1":  InterfaceData(port="Vlan1"),                       # no svi_ip -> NOT a gateway
+        "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.1"),  # real gateway
+    }}
+    gw = analyze.build_network_model(ai)["gw"]
+    assert 1 not in gw and 10 in gw
