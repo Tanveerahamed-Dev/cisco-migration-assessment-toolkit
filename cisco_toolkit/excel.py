@@ -1762,6 +1762,258 @@ def write_golden_drift_sheet(wb, gd: dict) -> None:
                 f"{s.get('n_drifting', 0)} drifting ({mode})")
 
 
+FEATURE_COMPLIANCE_SHEET_NAME = "Feature Compliance"   # roadmap I2 (Nautobot per-feature ConfigCompliance)
+
+def write_feature_compliance_sheet(wb, fc: dict) -> None:
+    """Write 'Feature Compliance' from compute_feature_compliance(): the golden-config drift decomposed per
+    policy FEATURE (aaa / ntp / snmp / logging / ...), with how many devices drift in each. Coverage-honest:
+    a feature with no baseline directives is simply absent (never a fabricated 'compliant')."""
+    if FEATURE_COMPLIANCE_SHEET_NAME in wb.sheetnames:
+        del wb[FEATURE_COMPLIANCE_SHEET_NAME]
+    ws = wb.create_sheet(FEATURE_COMPLIANCE_SHEET_NAME)
+    p = fc or {}
+    feats = p.get("features") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Per-feature config compliance — the golden-config drift decomposed by policy area "
+                      "(which features drift, across how many devices).")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_features', 0)} feature(s) · {s.get('n_drift_rows', 0)} device-feature drift row(s)").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Feature", "Baseline directives", "Devices drifting"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    r = hdr_row + 1
+    for f in feats:
+        nd = f.get("n_drifting", 0)
+        fill = "C6EFCE" if nd == 0 else ("FFEB9C" if nd <= 2 else "FFC7CE")
+        for col, v in enumerate([f.get("feature"), f.get("n_baseline", 0), nd], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left" if col == 1 else "center", vertical="top")
+            if col == 3:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    if not feats:
+        ws.cell(hdr_row + 1, 1, "No golden-config baseline to decompose.").font = DAT
+    for i, w in enumerate([22, 18, 16], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{FEATURE_COMPLIANCE_SHEET_NAME}' sheet: {len(feats)} feature(s)")
+
+
+ACL_SHADOW_SHEET_NAME = "ACL Shadow Analysis"   # roadmap G1 (Batfish-style filterLineReachability, offline)
+
+def write_acl_shadow_sheet(wb, alr: dict) -> None:
+    """Write 'ACL Shadow Analysis' from compute_filter_line_reachability(): each dead/shadowed ACL line with
+    its typed reason, flagging a DIFFERENT-action shadow (a PERMIT silently hidden behind an earlier DENY —
+    the dangerous case). Coverage-honest: INDETERMINATE (unevaluable) lines are listed, never called dead."""
+    if ACL_SHADOW_SHEET_NAME in wb.sheetnames:
+        del wb[ACL_SHADOW_SHEET_NAME]
+    ws = wb.create_sheet(ACL_SHADOW_SHEET_NAME)
+    p = alr or {}
+    rows = p.get("findings") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Offline ACL line-reachability proof — lines that can never match (dead/shadowed), an "
+                      "empty match-space, or a bad object-group reference. A different-action shadow is a "
+                      "silently-broken intent.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_shadowed', 0)} shadowed · {s.get('n_different_action', 0)} different-action · "
+                  f"{s.get('n_unmatchable', 0)} unmatchable · {s.get('n_bad_reference', 0)} bad-ref · "
+                  f"{s.get('n_indeterminate', 0)} indeterminate").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Device", "ACL", "Line #", "Action", "Reason", "Different action", "Detail", "Rule"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+    r = hdr_row + 1
+    for f in rows:
+        diff = bool(f.get("different_action"))
+        fill = "FFC7CE" if diff else ("FFEB9C" if f.get("reason") == "INDETERMINATE" else None)
+        vals = [f.get("host"), f.get("acl"), (f.get("line_index", 0) + 1), f.get("action"),
+                f.get("reason"), ("yes" if diff else "no"), f.get("detail"), f.get("raw")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col == 8 else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (3, 4, 6) else "left", vertical="top", wrap_text=col in (7, 8))
+            if col == 6 and fill:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "No ACL findings (no shadowed/unmatchable lines, or no ACLs collected).").font = DAT
+    for i, w in enumerate([22, 16, 7, 9, 22, 14, 40, 44], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{ACL_SHADOW_SHEET_NAME}' sheet: {len(rows)} finding(s)")
+
+
+EXTERNAL_RECONCILE_SHEET_NAME = "SoT Reconcile"   # roadmap B (declared source-of-truth vs collected evidence)
+
+def write_external_reconcile_sheet(wb, recon: dict) -> None:
+    """Write 'SoT Reconcile' from reconcile_external(): each device that drifts between the DECLARED
+    source-of-truth (a CMDB/NetBox export) and the collected evidence (MISSING / UNDOCUMENTED / MODEL_MISMATCH
+    / IP_DRIFT), plus the coverage-honest UNVERIFIABLE (declared but never collected — a blind spot, never a
+    confirmed match or miss). A fully-reconciling device emits no row."""
+    if EXTERNAL_RECONCILE_SHEET_NAME in wb.sheetnames:
+        del wb[EXTERNAL_RECONCILE_SHEET_NAME]
+    ws = wb.create_sheet(EXTERNAL_RECONCILE_SHEET_NAME)
+    p = recon or {}
+    rows = p.get("rows") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Declared source-of-truth vs collected evidence. UNVERIFIABLE = declared but never "
+                      "collected (a blind spot, never a confirmed match or miss).")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_declared', 0)} declared · {s.get('n_observed', 0)} observed · "
+                  f"{s.get('MISSING_DEVICE', 0)} missing · {s.get('UNDOCUMENTED_DEVICE', 0)} undocumented · "
+                  f"{s.get('MODEL_MISMATCH', 0)} model · {s.get('IP_DRIFT', 0)} ip · "
+                  f"{s.get('UNVERIFIABLE', 0)} unverifiable").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Type", "Device", "Detail"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    _COLOR = {"MISSING_DEVICE": "FFC7CE", "MODEL_MISMATCH": "FFC7CE", "IP_DRIFT": "FFC7CE",
+              "UNDOCUMENTED_DEVICE": "FFEB9C", "UNVERIFIABLE": "D9D9D9"}
+    r = hdr_row + 1
+    for row in rows:
+        t = row.get("type")
+        for col, v in enumerate([t, row.get("host"), row.get("detail")], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col == 3)
+            if col == 1 and t in _COLOR:
+                c.fill = PatternFill("solid", fgColor=_COLOR[t])
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "Declared inventory fully reconciles with the collected evidence.").font = DAT
+    for i, w in enumerate([22, 26, 70], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{EXTERNAL_RECONCILE_SHEET_NAME}' sheet: {len(rows)} drift row(s)")
+
+
+CAPTURE_INTEGRITY_SHEET_NAME = "Capture Integrity"   # roadmap K1 (truncation / pager / CLI-error guard)
+
+def write_capture_integrity_sheet(wb, ci: dict) -> None:
+    """Write 'Capture Integrity' from compute_capture_integrity(): collected command output that looks
+    truncated / paginated / errored, so a partial capture is a declared blind spot, never silently healthy.
+    A clean capture emits no row."""
+    if CAPTURE_INTEGRITY_SHEET_NAME in wb.sheetnames:
+        del wb[CAPTURE_INTEGRITY_SHEET_NAME]
+    ws = wb.create_sheet(CAPTURE_INTEGRITY_SHEET_NAME)
+    p = ci or {}
+    rows = p.get("findings") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Per-capture integrity — collected command output that looks truncated, paginated, or "
+                      "errored. A partial capture is a blind spot, never silently 'healthy'.")
+    b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_hosts_affected', 0)} host(s) affected · {s.get('n_incomplete', 0)} incomplete · "
+                  f"{s.get('n_error', 0)} error · {s.get('n_empty', 0)} empty").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Device", "Command", "Status", "Reason"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    _C = {"error": "FFC7CE", "incomplete": "FFEB9C", "empty": "D9D9D9"}
+    r = hdr_row + 1
+    for f in rows:
+        st = f.get("status")
+        for col, v in enumerate([f.get("host"), f.get("command"), st, f.get("reason")], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col == 4)
+            if col == 3 and st in _C:
+                c.fill = PatternFill("solid", fgColor=_C[st])
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "All collected captures look complete.").font = DAT
+    for i, w in enumerate([22, 26, 12, 60], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{CAPTURE_INTEGRITY_SHEET_NAME}' sheet: {len(rows)} finding(s)")
+
+
+WHATIF_SHEET_NAME = "Failure What-If"   # roadmap G4 (single-snapshot failure-injection)
+
+def write_whatif_sheet(wb, scenarios: list) -> None:
+    """Write 'Failure What-If' from run_scenarios(): per injected node/site failure, how reachability changed —
+    blocked (definitive) vs lost_path (was reached, now unprovable, coverage-honest) vs preserved."""
+    if WHATIF_SHEET_NAME in wb.sheetnames:
+        del wb[WHATIF_SHEET_NAME]
+    ws = wb.create_sheet(WHATIF_SHEET_NAME)
+    rows = scenarios or []
+    b = ws.cell(1, 1, "Failure-injection what-if — remove a node/site in memory and re-run the FIB. 'lost path' "
+                      "= a flow that was reached and is now unprovable (never fabricated as a definite block).")
+    b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{len(rows)} scenario(s)").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Scenario", "Removed", "Blocked", "Lost path", "Preserved", "Inconclusive"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    r = hdr_row + 1
+    for sc in rows:
+        sm = sc.get("summary") or {}
+        removed = ", ".join(sc.get("removed_hosts") or [])
+        vals = [sc.get("name") or removed or "(no match)", removed, sm.get("blocked", 0),
+                sm.get("lost_path", 0), sm.get("preserved", 0), sm.get("inconclusive_other", 0) + sm.get("other", 0)]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left" if col in (1, 2) else "center", vertical="top", wrap_text=col == 2)
+            if col == 3 and sm.get("blocked"):
+                c.fill = PatternFill("solid", fgColor="FFC7CE")
+            if col == 4 and sm.get("lost_path"):
+                c.fill = PatternFill("solid", fgColor="FFEB9C")
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "No scenarios supplied (use --scenario FILE).").font = DAT
+    for i, w in enumerate([26, 26, 10, 11, 11, 13], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{WHATIF_SHEET_NAME}' sheet: {len(rows)} scenario(s)")
+
+
+PATH_INTENTS_SHEET_NAME = "Path Assertions"   # roadmap G3 (named segmentation/path intents)
+
+def write_path_intents_sheet(wb, pa: dict) -> None:
+    """Write 'Path Assertions' from evaluate_path_assertions(): each named REACHES/ISOLATED intent and its
+    verdict (pass / fail / not_observed). Coverage-honest: a lower-bound trace abstains, never a fake verdict."""
+    if PATH_INTENTS_SHEET_NAME in wb.sheetnames:
+        del wb[PATH_INTENTS_SHEET_NAME]
+    ws = wb.create_sheet(PATH_INTENTS_SHEET_NAME)
+    p = pa or {}
+    rows = p.get("results") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Named path / segmentation intents evaluated over the computed FIB. ISOLATED can be "
+                      "PROVEN only by a computed-unreachable trace; a lower bound abstains (not_observed).")
+    b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('pass', 0)} pass · {s.get('fail', 0)} fail · {s.get('not_observed', 0)} not observed").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Intent", "Source", "Destination", "Expect", "Verdict", "Computed status"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    _C = {"fail": "FFC7CE", "not_observed": "D9D9D9", "pass": "C6EFCE"}
+    r = hdr_row + 1
+    for row in rows:
+        vd = row.get("verdict")
+        vals = [row.get("id"), row.get("src"), row.get("dst"), row.get("expect"), vd, row.get("status")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left", vertical="top")
+            if col == 5 and vd in _C:
+                c.fill = PatternFill("solid", fgColor=_C[vd])
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "No path intents supplied (use --path-intents FILE).").font = DAT
+    for i, w in enumerate([20, 18, 18, 12, 14, 28], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{PATH_INTENTS_SHEET_NAME}' sheet: {len(rows)} intent(s)")
+
+
 # Shared severity palette for the V3.23.164-.167 axis sheets (V3.23.171). The four writers each
 # carried a private copy whose High had drifted to F4CCCC -- the colour every ESTABLISHED writer
 # (punch-list, remediation, validation, exec summary) reserves for Critical. One constant, and
