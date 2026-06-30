@@ -118,6 +118,27 @@ def test_every_live_flow_is_tiered_and_grounding_is_live(result):
     assert any(f["evidence"].get("dangling") for f in ungrounded)   # the design flow's absent `security` citation
 
 
+def test_flat_l2_design_flow_grounds_its_vlan_citation():
+    """[regression — W3-2 follow-up] The flat-L2 design decision (dc-restrict-vlan-span-routed-access) must cite
+    RESOLVABLE snapshot paths. It previously also cited `vlan_inventory` -- a COMPUTED count (analyze.vlan_inventory,
+    injected into executive_brief.scale.n_vlans), NOT a snapshot key -- so the grounding verifier flagged the flow
+    ungrounded (dangling=['vlan_inventory']) on the real AJ snapshot. The same claim is already backed by the
+    resolvable executive_brief.scale.n_vlans (the count) + segmentation.vrfs (the single-VRF span), so the dangling
+    computed-value reference must be gone. Drives the REAL detector through the REAL pipeline, so re-introducing the
+    bad citation regresses HERE (a direct guard on the format-fidelity / SSOT-drift defect class)."""
+    from cisco_toolkit.design_advisor import _d_flat_l2
+    dec = _d_flat_l2({}, {"vlans": 202, "single_vrf": True})        # >= _LARGE_L2_VLANS and single global VRF -> fires
+    assert dec is not None and dec["status"] == "recommended"
+    # the snapshot data that actually backs the claim (the canonical count + the VRF list); no `vlan_inventory` key exists
+    snap = {"executive_brief": {"scale": {"n_vlans": 202}},
+            "segmentation": {"vrfs": [{"name": "default"}]},
+            "design_blueprint": {"decisions": [dec]}}
+    flow = _by_key(compute_causal_flows(snap)["flows"], "design-dc-restrict-vlan-span-routed-access")
+    assert flow["evidence"]["grounded"] is True, \
+        f"flat-L2 design flow must ground; dangling={flow['evidence'].get('dangling')}"
+    assert "vlan_inventory" not in (flow["evidence"].get("fields") or [])   # the computed-count reference must be gone
+
+
 def test_total_and_family_counts(result):
     # 2 struct + 2 xlayer + 1 design(recommended) + 2 punchlist(non-crosslayer) = 7
     assert result["summary"]["n_flows"] == 7
