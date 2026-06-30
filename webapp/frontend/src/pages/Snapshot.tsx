@@ -84,6 +84,24 @@ function PunchTable({ rows }: { rows: any[] }) {
   );
 }
 
+/* ---------- orchestration-peer engines (G1 / I2 / K1) ----------
+   Each is a dict {<primary list>, summary}. The generic dict renderer would only show
+   "findings: N item(s)"; instead show the summary as a strip + drill into the primary list as a
+   real table — true parity with the explorer's coverage-honest cards. */
+const ENGINE_PRIMARY: Record<string, string> = {
+  acl_line_reachability: "findings",   // G1 — the shadowed/unmatchable ACL lines
+  feature_compliance: "features",      // I2 — per-policy-area drift rollup
+  capture_integrity: "findings",       // K1 — truncated/paginated/errored captures
+};
+function SummaryStrip({ summary }: { summary: any }) {
+  if (!summary || typeof summary !== "object") return null;
+  const parts = Object.entries(summary)
+    .filter(([, v]) => v !== null && typeof v !== "object")
+    .map(([k, v]) => `${k.replace(/^n_/, "").replace(/_/g, " ")}: ${v}`);
+  if (!parts.length) return null;
+  return <div className="faint" style={{ fontSize: 12, marginBottom: 8 }}>{parts.join("  ·  ")}</div>;
+}
+
 function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const { data, error, loading } = useAsync(() => api.section(snapId, name), [snapId, name]);
   if (loading) return <Loading />;
@@ -91,6 +109,10 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const d = data!.data;
   if (name === "punchlist" && Array.isArray(d)) return <PunchTable rows={d} />;
   if (name === "device_dossiers" && d?.per_device) return <RegisterTable rows={d.per_device} note={d.note} />;
+  if (name in ENGINE_PRIMARY && d && typeof d === "object" && !Array.isArray(d)) {
+    const list = d[ENGINE_PRIMARY[name]];
+    return <div><SummaryStrip summary={d.summary} /><GenericTable data={Array.isArray(list) ? list : d} /></div>;
+  }
   return <GenericTable data={d} />;
 }
 

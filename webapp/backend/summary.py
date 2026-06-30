@@ -42,6 +42,12 @@ SECTION_LABELS: List[tuple] = [
     ("remediation_plan", "Remediation"),
     ("validation_plan", "Validation plan"),
     ("golden_drift", "Config drift"),
+    # NEW (orchestration-peer wave): the three always-on engines the pipeline now emits. Each is a dict
+    # {findings|features:[...], summary} so _section_index counts its inner list (an empty/clean section
+    # hides its own tab, the platform convention). capture_integrity with zero findings = a clean estate.
+    ("feature_compliance", "Feature compliance"),   # I2 — golden-drift decomposed per policy area
+    ("acl_line_reachability", "ACL shadow"),         # G1 — offline ACL line-reachability / shadow proof
+    ("capture_integrity", "Capture integrity"),      # K1 — truncation / pager / CLI-error guard
     # NEW-V3.23.176: the V3.23.164-.167 NOS analytic quartet landed after this list was
     # authored and was unreachable from the web platform (neither tab nor whitelist) --
     # the one-source-of-truth audit's only real gap.

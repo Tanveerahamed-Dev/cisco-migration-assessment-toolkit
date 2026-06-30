@@ -119,6 +119,60 @@ def test_device_risk_register_section(client):
     assert [ranks[d["risk_band"]] for d in rows] == sorted(ranks[d["risk_band"]] for d in rows)
 
 
+def test_orchestration_peer_engine_sections_served(client):
+    """NEW (orchestration-peer wave): the three always-on engines (G1 acl_line_reachability,
+    I2 feature_compliance, K1 capture_integrity) are whitelisted tabs, indexed for visibility, and
+    served with their findings + summary intact -- the marquee different-action shadow survives the
+    round-trip, so the webapp reaches parity with the explorer's coverage-honest cards."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "engines"}).json()["id"]
+    snap = {
+        "script_version": "test", "devices": {"R1": {}}, "health_scores": [],
+        "acl_line_reachability": {
+            "findings": [{"host": "R1", "acl": "GUEST", "line_index": 6, "action": "permit",
+                          "reason": "BLOCKING_LINES", "blocking_lines": [3], "different_action": True,
+                          "detail": "permit hidden behind an earlier deny"}],
+            "summary": {"n_findings": 1, "n_shadowed": 1, "n_different_action": 1,
+                        "n_unmatchable": 0, "n_indeterminate": 0, "n_bad_reference": 0}},
+        "feature_compliance": {
+            "features": [{"feature": "aaa", "n_baseline": 3, "n_drifting": 1}],
+            "per_device_feature": [{"host": "R1", "feature": "aaa", "n_missing": 1, "status": "drift"}],
+            "summary": {"n_features": 1, "n_rows": 1, "n_drift_rows": 1}},
+        "capture_integrity": {
+            "findings": [{"host": "R1", "command": "show running-config", "status": "incomplete",
+                          "reason": "no terminating 'end' near the tail"}],
+            "summary": {"n_findings": 1, "n_incomplete": 1, "n_error": 0, "n_empty": 0, "n_hosts_affected": 1}},
+    }
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                     data={"label": "engines"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    keys = {sec["key"] for sec in client.get(f"/api/snapshots/{sid}").json()["summary"]["sections"]}
+    trio = {"acl_line_reachability", "feature_compliance", "capture_integrity"}
+    assert trio <= keys, f"missing tabs: {trio - keys}"
+    for name in sorted(trio):
+        r = client.get(f"/api/snapshots/{sid}/section/{name}")
+        assert r.status_code == 200, f"{name}: {r.text}"
+        assert r.json()["section"] == name
+        assert isinstance(r.json()["data"].get("summary"), dict)
+
+    # G1 marquee: the dangerous DIFFERENT-action shadow is preserved through store + serve
+    acl = client.get(f"/api/snapshots/{sid}/section/acl_line_reachability").json()["data"]
+    assert acl["findings"][0]["different_action"] is True
+    assert acl["summary"]["n_different_action"] == 1
+
+    # a clean capture estate hides its own tab (zero findings -> not indexed), never a false-green
+    clean = dict(snap, capture_integrity={"findings": [],
+                 "summary": {"n_findings": 0, "n_incomplete": 0, "n_error": 0, "n_empty": 0, "n_hosts_affected": 0}})
+    up2 = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("snap2.json", json.dumps(clean).encode(), "application/json")},
+                      data={"label": "clean"})
+    keys2 = {sec["key"] for sec in client.get(f"/api/snapshots/{up2.json()['id']}").json()["summary"]["sections"]}
+    assert "capture_integrity" not in keys2
+
+
 def test_explorer_render_embeds_snapshot(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/explorer")
