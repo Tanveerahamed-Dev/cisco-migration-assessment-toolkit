@@ -177,3 +177,15 @@ def test_parse_mac_table_skips_vpc_peer_link():
     r = parse.parse_show_mac_address_table(mac)
     assert not any("peer" in k.lower() for k in r)    # no phantom Peer-Link interface
     assert any("Po1" in k for k in r)                  # real port still captured
+
+
+def test_config_hygiene_nxos_snmpv3_group_access_acl_is_used():
+    """[#9 HIGH] NX-OS references the SNMPv3 management ACL via 'snmp-server group <g> v3 <mode> access <ACL>'
+    (and a 'v3 priv notify <oid> access <ACL>' variant), a form missing from the hygiene REF rules, so the ACL
+    was reported 'unused' on 156/253 real devices. Real CS01/AAS shapes."""
+    cfg = ("ip access-list SNMPv3_Allowed_Managers\n"
+           "  10 permit ip 10.0.0.0/8 any\n"
+           "snmp-server group SNMPv3-Group v3 auth access SNMPv3_Allowed_Managers\n"
+           "snmp-server group SNMPv3-Group v3 priv notify *tv.FFFF access SNMPv3_Allowed_Managers\n")
+    unused = {u["name"] for u in (parse.parse_config_hygiene(cfg).get("unused") or [])}
+    assert "SNMPv3_Allowed_Managers" not in unused     # referenced via snmp-server group ... access
