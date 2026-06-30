@@ -154,3 +154,14 @@ def test_parse_show_environment_nxos_fan_table():
            "Chassis-2       N6K-C6001-FAN-B      --         ok\n"
            "PS-1            N55-PAC-1100W-B      --         ok\n")
     assert parse.parse_show_environment(out)["fan_status"] == "OK"
+
+
+def test_norm_speed_mbps_multigig():
+    """[#18] _norm_speed_mbps captured only the integer part, so '2.5G'/'5.0G' multigig dropped the decimal AND
+    the G multiplier -> 2 Mbps instead of 2500 (off by ~1000x), corrupting the rendered Link Duplex-Speed cells."""
+    from cisco_toolkit.excel import _norm_speed_mbps
+    assert _norm_speed_mbps("2.5G") == 2500
+    assert _norm_speed_mbps("5.0Gbps") == 5000
+    assert _norm_speed_mbps("10G") == 10000      # regression: integer G unchanged
+    assert _norm_speed_mbps("1000") == 1000      # bare Mbps unchanged
+    assert _norm_speed_mbps("auto") == 0
