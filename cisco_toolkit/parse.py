@@ -2629,7 +2629,7 @@ def parse_neighbors_cdp(output: str) -> Dict[str, Dict[str, str]]:
             if line.lower().startswith("platform:"):
                 platform_s = line.split(":",1)[1].strip()
                 platform_s = re.split(r",\s*Capabilities", platform_s, 1)[0].strip()
-            ipm = re.search(r"\bip address:\s*(\d+\.\d+\.\d+\.\d+)\b", line, re.IGNORECASE)
+            ipm = re.search(r"\bip(?:v4)?\s+address:\s*(\d+\.\d+\.\d+\.\d+)\b", line, re.IGNORECASE)
             if ipm: mgmt_ip = ipm.group(1)
             if line.lower().startswith("interface:"):
                 mv = re.search(r"Interface:\s*([^,]+)", line, re.IGNORECASE)
@@ -2666,6 +2666,8 @@ def parse_neighbors_lldp(output: str) -> Dict[str, Dict[str, str]]:
                 local = normalize_ifname(m.group(1).strip())
             if ls.lower().startswith("system name:"):
                 sysname = ls.split(":", 1)[1].strip()
+                if sysname.lower() in ("not advertised", "null", "n/a", "-"):
+                    sysname = ""    # NX-OS LLDP sentinel -- not a real neighbor name (avoids a phantom 'NOT ADVERTISED' hub)
             m = re.match(r"^Port id:\s*(.+)$", ls, re.IGNORECASE)              # remote port ('Local Port id:' excluded by the anchor)
             if m and not remote_port:
                 remote_port = normalize_ifname(m.group(1).strip())
