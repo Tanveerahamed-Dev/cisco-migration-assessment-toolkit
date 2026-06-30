@@ -7266,6 +7266,8 @@ function drawCausality(){
   </div>`;
   // evidence chips — coverage-honest: cite source field, devices, CCDE citation, layers, wave
   const ev=sel.evidence||{}; const evChips=[];
+  if(ev.precision)evChips.push(`<span class="cz-chip" title="How precisely this claim is grounded — BLOCK: a specific snapshot path · DEVICE: named host(s) · FLEET: fleet aggregate (LINE, a raw show-command line, is reserved until raw-output capture)"><b>◎ ${esc(ev.precision)}</b></span>`);
+  if(ev.grounded===false)evChips.push(`<span class="cz-chip" style="color:var(--crit);border-color:var(--crit)" title="Citation does not resolve in this snapshot — ${esc((ev.dangling||[]).join(', '))}">⚠ citation unresolved</span>`);
   if(ev.citation)evChips.push(`<span class="cz-chip cite">${esc(ev.citation)}</span>`);
   if(ev.layers)evChips.push(`<span class="cz-chip"><b>layers</b> ${esc(ev.layers)}</span>`);
   if(typeof ev.count==="number")evChips.push(`<span class="cz-chip"><b>${ev.count}</b> device(s)</span>`);
@@ -7390,6 +7392,24 @@ function causalSevToken(s){const t=(s||"").toLowerCase();
      • Design decision   ← SNAP.design_blueprint   (driver→principle→evidence→recommended action)
      • all other families← SNAP.punchlist          (Compound risk, FHRP, Health, STP, Protocol, …)
    Built once per SNAP and cached. ============================================================ */
+// W3-2 (NotebookLM teardown): coverage-honest evidence PRECISION + grounding -- a faithful JS port of the engine
+// SSOT (cisco_toolkit/causal.py evidence_precision / evidence_grounding) so the explorer and webapp can't disagree.
+function _czResolveFieldPath(snap, path){
+  let cur=(snap&&typeof snap==="object")?snap:{}; const p=String(path||"");
+  if(p.indexOf("[")>=0){ const head=p.split("[")[0].split(".")[0].trim();
+    return (head&&cur&&typeof cur==="object"&&cur[head]!=null)?[true,cur[head]]:[false,null]; }
+  for(const seg0 of p.split(".")){ const seg=seg0.trim(); if(!seg)continue;
+    if(cur&&typeof cur==="object"&&!Array.isArray(cur)&&(seg in cur))cur=cur[seg]; else return [false,null]; }
+  return [cur!=null,cur];
+}
+function czEvidenceGrounding(ev,snap){ ev=(ev&&typeof ev==="object")?ev:{};
+  const dangling=(ev.fields||[]).filter(f=>typeof f==="string"&&f&&!_czResolveFieldPath(snap,f)[0]);
+  return {grounded:dangling.length===0, dangling}; }
+function czEvidencePrecision(ev,snap){ ev=(ev&&typeof ev==="object")?ev:{};
+  if(snap&&typeof snap==="object"){ for(const f of (ev.fields||[])){
+    if(typeof f==="string"&&f.indexOf(".")>=0&&_czResolveFieldPath(snap,f)[0])return "BLOCK"; } }
+  if((ev.devices||[]).some(d=>d))return "DEVICE";
+  return "FLEET"; }
 function causalFlows(){
   if(causalFlows._snap===SNAP)return causalFlows._c;
   const out=[];
@@ -7450,6 +7470,11 @@ function causalFlows(){
       evidence:{devices:devs, rank:p.rank, wave:p.wave, fields:["punchlist"]}});});
   out.forEach(f=>{f.sevTok=czSevMeta(f.sev).tok;});
   out.sort((a,b)=>czSevMeta(b.sev).rank-czSevMeta(a.sev).rank || (b.blast||0)-(a.blast||0));
+  // W3-2: stamp each flow's evidence with the coverage-honest precision tier + live grounding (same SSOT as the
+  // engine/webapp -- never fakes LINE; flags a citation whose snapshot path no longer resolves).
+  out.forEach(f=>{ const ev=(f.evidence&&typeof f.evidence==="object")?f.evidence:(f.evidence={});
+    ev.precision=czEvidencePrecision(ev,SNAP); const g=czEvidenceGrounding(ev,SNAP);
+    ev.grounded=g.grounded; if(g.dangling.length)ev.dangling=g.dangling; });
   causalFlows._snap=SNAP; causalFlows._c=out; return out;
 }
 /* the filtered VIEW the Causality mode renders — by family + severity (CAUSAL_FAMILY / CAUSAL_SEV).
