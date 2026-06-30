@@ -472,8 +472,20 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
         # avg-health is partly SURVIVORSHIP when an unhealthy device drops out of the average, so a campaign that
         # lost devices cannot read a clean IMPROVING without disclosing them (audit-2 #4 false-health).
         gone: set = set()
+
+        def _bands(s):
+            return {str(r.get("switch")): str(r.get("band", "")) for r in (s.get("health_scores") or [])
+                    if isinstance(r, dict)}
         for i in range(len(snaps) - 1):
             gone |= set(snaps[i].get("devices") or {}) - set(snaps[i + 1].get("devices") or {})
+            # the engine never DROPS an uncollected device -- it keeps it as an 'Insufficient Data' STUB in
+            # `devices`, so the set-difference above misses a previously-collected switch that went dark; detect
+            # the band transition real-band -> 'Insufficient Data' too, else a campaign that loses its worst
+            # collected switches reads a survivorship-biased IMPROVING (audit-5 #9).
+            b0, b1 = _bands(snaps[i]), _bands(snaps[i + 1])
+            for sw, band in b0.items():
+                if band and band != "Insufficient Data" and b1.get(sw) == "Insufficient Data":
+                    gone.add(sw)
         n_gone = len(gone)
         if trajectory:                                    # comparable metrics exist -> a real verdict
             if better == 0 and worse == 0:
