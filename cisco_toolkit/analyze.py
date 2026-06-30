@@ -2666,7 +2666,7 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
 
     mac_sw: Dict[str, set] = defaultdict(set); mac_meta: Dict[str, dict] = {}
     ip_sw: Dict[str, set] = defaultdict(set); ip_macs: Dict[str, set] = defaultdict(set)
-    clusters: Dict[tuple, list] = defaultdict(lambda: [set(), set(), 0])   # (vendor,class)->[switches,vlans,count]
+    clusters: Dict[tuple, list] = defaultdict(lambda: [set(), set(), set()])   # (vendor,class)->[switches,vlans,DISTINCT macs]
     vlan_cls: Dict[str, Counter] = defaultdict(Counter)
     sw_classes: Dict[str, set] = defaultdict(set)
     sw_has_dualhomed: set = set()
@@ -2683,7 +2683,7 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
         if cls != "Unknown":
             sw_classes[host].add(cls)
             if vendor:
-                c = clusters[(vendor, cls)]; c[0].add(host); c[1].add(vlan); c[2] += 1
+                c = clusters[(vendor, cls)]; c[0].add(host); c[1].add(vlan); c[2].add(mac)
         # per-VLAN affinity counts EVERY endpoint INCLUDING Unknown, so a VLAN that is mostly unclassified is not
         # labelled with the app tier of a tiny KNOWN minority -- the dominant + total stay honest (audit-5 #24).
         if vlan.isdigit():
@@ -2705,8 +2705,9 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
     shared_ip.sort(key=lambda d: d["ip"])
 
     clu = []
-    for (vendor, cls), (sws, vlans, cnt) in clusters.items():
-        if cnt < 3:
+    for (vendor, cls), (sws, vlans, macs) in clusters.items():
+        cnt = len(macs - {""})            # DISTINCT MACs, not (host,port) rows -- a dual-homed / multi-port MAC
+        if cnt < 3:                        # was counted once per row, inflating the cluster size (audit-5 scale-ssot #0)
             continue
         groups = sorted({wave_of.get(s, "") for s in sws} - {""})
         clu.append({"vendor": vendor, "endpoint_class": cls, "count": cnt, "switches": len(sws),
