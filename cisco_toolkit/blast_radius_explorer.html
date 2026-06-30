@@ -8828,7 +8828,7 @@ function abH_capacity(){const cap=(SNAP||{}).capacity||[];
 function abH_security(){const sec=(SNAP||{}).security||{};const hyg=(SNAP||{}).config_hygiene||{};
   const agg=new Map();let nFail=0;
   for(const [h,rec] of Object.entries(sec)){for(const f of ((rec||{}).findings||[])){
-    if(!f||f.status==="pass")continue;nFail++;
+    if(!f||f.status!=="fail")continue;nFail++;/* audit-5 CA#3: na (not-applicable) / info is NOT an open CIS finding -- the engine SSOT (parse_security grade) counts fails only */
     let a=agg.get(f.id);if(!a){a={title:f.title||f.id,sev:f.severity||"info",cis:f.cis_ref||"",hosts:[]};agg.set(f.id,a);}
     a.hosts.push(h);
     const rank={critical:4,high:3,medium:2,warn:2,low:1,info:0};
@@ -9026,7 +9026,7 @@ const ABQ_AUTO=[
  [/syslog|logging (level|host|server)/i,()=>{const sy=(SNAP||{}).syslog_intelligence;return sy&&Object.keys(sy).length?`syslog analysis present in snapshot (see workbook Syslog sheet)`:null;}],
  [/vlan 1\b|default vlan/i,()=>{let n=0;for(const m of MODEL.endpoints.values())n+=m.get(1)||0;return `${n} endpoint(s) observed in VLAN 1`;}],
  [/port[- ]security|dhcp snooping|arp inspection|\bcis\b|harden|password|banner|ssh/i,()=>{const sec=(SNAP||{}).security||{};let f=0;
-   for(const r of Object.values(sec))for(const x of ((r||{}).findings||[]))if(x&&x.status!=="pass")f++;return Object.keys(sec).length?`${f} open CIS-aligned finding(s) across ${Object.keys(sec).length} device(s)`:null;}],
+   for(const r of Object.values(sec))for(const x of ((r||{}).findings||[]))if(x&&x.status==="fail")f++;return Object.keys(sec).length?`${f} open CIS-aligned finding(s) across ${Object.keys(sec).length} device(s)`:null;}],/* audit-5 CA#3: count fails only, not na/info (SSOT parity) */
  [/health (score|monitor)|err[- ]?disable|error (counter|rate)|interface error/i,()=>{const hs=(SNAP||{}).health_scores||[];if(!hs.length)return null;
    const b={};for(const r of hs)b[r.band]=(b[r.band]||0)+1;return Object.entries(b).map(([k,n])=>k+": "+n).join(" · ");}],
 ];
