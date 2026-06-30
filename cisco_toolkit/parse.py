@@ -3393,7 +3393,8 @@ def parse_redistribution(output: str) -> List[dict]:
     into: Optional[tuple] = None                                     # (proto, id) of the current 'router' block
     ROUTER = re.compile(r"^router\s+(ospf|bgp|eigrp|rip|isis)\b\s*(\S+)?", re.IGNORECASE)
     REDIST = re.compile(
-        r"^\s+redistribute\s+(connected|static|ospf|bgp|eigrp|rip|isis)\b\s*(\d+)?(.*)$", re.IGNORECASE)
+        r"^\s+redistribute\s+(connected|direct|static|ospf|bgp|eigrp|rip|isis)\b"
+        r"(?:\s+(?!route-map\b|metric\b|tag\b|subnets\b)(\d+|[A-Za-z][\w-]*))?(.*)$", re.IGNORECASE)
     for raw in output.splitlines():
         m = ROUTER.match(raw)
         if m:
@@ -3405,8 +3406,11 @@ def parse_redistribution(output: str) -> List[dict]:
         rd = REDIST.match(raw)
         if rd:
             rmap = re.search(r"route-map\s+(\S+)", rd.group(3) or "", re.IGNORECASE)
+            _fp = rd.group(1).lower()
+            if _fp == "direct":
+                _fp = "connected"   # NX-OS 'redistribute direct' == IOS 'redistribute connected' (locally-connected routes)
             out.append({"into_proto": into[0], "into_id": into[1],
-                        "from_proto": rd.group(1).lower(), "from_id": (rd.group(2) or "").strip(),
+                        "from_proto": _fp, "from_id": (rd.group(2) or "").strip(),
                         "route_map": rmap.group(1) if rmap else "", "raw": raw.strip()})
     return out
 
