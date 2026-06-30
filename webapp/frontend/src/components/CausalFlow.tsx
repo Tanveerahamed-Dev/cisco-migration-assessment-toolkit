@@ -179,6 +179,20 @@ function FChip({ on, onClick, children, ct }: { on: boolean; onClick: () => void
 function EvidenceChips({ f }: { f: CausalFlowItem }) {
   const ev = f.evidence || {};
   const chips: ReactNode[] = [];
+  // W3-2 (NotebookLM teardown): the coverage-honest grounding signals, computed in the engine SSOT
+  // (causal.evidence_precision / evidence_grounding) so all surfaces agree. Precision = how precisely this claim
+  // is grounded (never the fake-precise LINE without raw show-text); the ⚠ flags a citation whose snapshot path
+  // no longer resolves (the format-fidelity / SSOT-drift guard).
+  if (ev.precision) chips.push(
+    <span key="prec" className="czchip"
+      title="How precisely this claim is grounded — BLOCK: a specific snapshot path · DEVICE: named host(s) · FLEET: fleet aggregate. (LINE, a raw show-command line, is reserved until raw-output capture.)">
+      <b>◎ {ev.precision}</b>
+    </span>);
+  if (ev.grounded === false) chips.push(
+    <span key="ungrounded" className="czchip" style={{ color: "var(--crit)", borderColor: "var(--crit)" }}
+      title={`Citation does not resolve in this snapshot — ${(ev.dangling || []).join(", ")}`}>
+      ⚠ citation unresolved
+    </span>);
   if (ev.citation) chips.push(<span key="cite" className="czchip" style={{ fontFamily: "var(--sans)", fontStyle: "italic" }}>{ev.citation}</span>);
   if (ev.layers) chips.push(<span key="lay" className="czchip"><b>layers</b> {ev.layers}</span>);
   // ev.count is the decision's metric (ports / VLANs / member-legs / ... per the title), NOT a device count --

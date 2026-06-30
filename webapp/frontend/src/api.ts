@@ -379,6 +379,10 @@ export interface CausalFlowItem {
   evidence: {
     summary?: string; count?: number; devices?: string[]; fields?: string[];
     citation?: string; layers?: string; rank?: number; wave?: string;
+    // W3-2 (NotebookLM): coverage-honest grounding, stamped by the engine SSOT (causal.evidence_precision /
+    // evidence_grounding). precision = BLOCK | DEVICE | FLEET (never LINE without raw show-text); grounded=false
+    // + dangling[] flag a citation whose snapshot path no longer resolves.
+    precision?: "BLOCK" | "DEVICE" | "FLEET"; grounded?: boolean; dangling?: string[];
   };
   threats?: string[];     // bowtie: the contributing causes
   top_event?: string;

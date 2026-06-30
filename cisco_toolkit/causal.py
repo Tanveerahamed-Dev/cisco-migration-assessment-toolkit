@@ -107,6 +107,58 @@ def _flow(key: str, family: str, family_label: str, title: str, severity: Any, h
     }
 
 
+# ---- W3-2 (NotebookLM teardown): coverage-honest evidence PRECISION + grounding (offline, deterministic) ----
+def _resolve_field_path(snap: Any, path: str) -> Tuple[bool, Any]:
+    """Does the cited snapshot path RESOLVE to present data? A clean dotted path (a.b.c) is walked in full; a
+    citation with bracket/wildcard segments (security[host].findings[].status) is verified only to its HEAD
+    section (the [] is a per-element wildcard we don't enumerate). Returns (resolved, value)."""
+    cur = snap if isinstance(snap, dict) else {}
+    p = str(path or "")
+    if "[" in p:
+        head = p.split("[", 1)[0].split(".", 1)[0].strip()
+        if head and isinstance(cur, dict) and cur.get(head) is not None:
+            return True, cur[head]
+        return False, None
+    for seg in p.split("."):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if isinstance(cur, dict) and seg in cur:
+            cur = cur[seg]
+        else:
+            return False, None
+    return cur is not None, cur
+
+
+def evidence_grounding(evidence: Any, snap: Any) -> Dict[str, Any]:
+    """Verify every cited snapshot path in evidence['fields'] RESOLVES to present data in this snapshot -- the
+    structured analog of NotebookLM's byte-match citation check, and a direct guard on the recurring format-
+    fidelity / SSOT-drift defect class (a flow citing a renamed/dropped key is an UNGROUNDED claim). Returns
+    {'grounded': bool, 'dangling': [paths that don't resolve]}. Total / offline."""
+    ev = evidence if isinstance(evidence, dict) else {}
+    dangling = [f for f in (ev.get("fields") or [])
+                if isinstance(f, str) and f and not _resolve_field_path(snap, f)[0]]
+    return {"grounded": not dangling, "dangling": dangling}
+
+
+def evidence_precision(evidence: Any, snap: Any = None) -> str:
+    """The finest HONEST, navigable locus the evidence actually carries (NotebookLM 'never fake-precise'):
+      BLOCK  -- a dotted fields-path that RESOLVES in the snapshot (click straight to that structured locus);
+      DEVICE -- names specific host(s) (drill per device);
+      FLEET  -- a coarse aggregate (no resolving path, no device locus).
+    LINE (a raw show-command line) is intentionally NEVER returned: no raw show-text is captured today
+    (--collect-raw-outputs, W3-3), so emitting LINE would claim a precision the evidence cannot back. A dotted
+    citation that does NOT resolve is DEMOTED, never granted BLOCK off a dangling reference."""
+    ev = evidence if isinstance(evidence, dict) else {}
+    if isinstance(snap, dict):
+        for f in (ev.get("fields") or []):
+            if isinstance(f, str) and "." in f and _resolve_field_path(snap, f)[0]:
+                return "BLOCK"
+    if any(d for d in (ev.get("devices") or [])):
+        return "DEVICE"
+    return "FLEET"
+
+
 def compute_causal_flows(snap: Optional[dict]) -> Dict[str, Any]:
     """Return ``{flows, families, summary}`` — the unified, severity-ranked causal-flow list for a snapshot."""
     snap = _as_dict(snap)
@@ -215,6 +267,21 @@ def compute_causal_flows(snap: Optional[dict]) -> Dict[str, Any]:
 
     # severity-rank, then blast magnitude
     flows.sort(key=lambda f: (-_sev_rank(f["severity"]), -(f["blast"] or 0)))
+
+    # W3-2 (NotebookLM): stamp each flow's evidence with its coverage-honest precision tier + a LIVE grounding
+    # check, computed ONCE here so the explorer and the webapp (both read this SSOT) cannot disagree. Additive,
+    # deterministic, offline -- never fakes LINE precision, and flags a citation whose snapshot path no longer
+    # resolves (the format-fidelity / SSOT-drift guard).
+    for f in flows:
+        ev = f.get("evidence")
+        if not isinstance(ev, dict):
+            ev = {}
+            f["evidence"] = ev
+        ev["precision"] = evidence_precision(ev, snap)
+        g = evidence_grounding(ev, snap)
+        ev["grounded"] = g["grounded"]
+        if g["dangling"]:
+            ev["dangling"] = g["dangling"]
 
     # family roster (ordered by criticals then volume)
     fam: Dict[str, Dict[str, Any]] = {}
