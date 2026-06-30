@@ -193,8 +193,14 @@ def collect_apic(base_url: str, username: str, password: str, out_dir: str, veri
     written = []
     for cmd, mo in APIC_CLASSES.items():
         obj = _get_json(opener, f"{base}/api/class/{mo}.json")
-        if obj is not None:
-            written.append(_write(out_dir, cmd, obj))
+        if obj is None:
+            continue
+        # an APIC response whose imdata carries an {'error': ...} MO is a fault / RBAC-denied envelope, NOT class
+        # data -- writing it would let the offline parser read a denied class as collected-but-empty (audit-5 #17).
+        if isinstance(obj, dict) and any(isinstance(m, dict) and "error" in m for m in (obj.get("imdata") or [])):
+            logger.warning("  [APIC] %s returned a fault / RBAC-denied envelope -- not written", mo)
+            continue
+        written.append(_write(out_dir, cmd, obj))
     logger.info("  [APIC] collected %d class export(s) into %s", len(written), out_dir)
     return written
 
@@ -280,9 +286,18 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
     # soft: if ERS is disabled/unreachable the SearchResult is None and the whole block is skipped.
     host = urllib.parse.urlparse(base).hostname or base
     ers_base = f"https://{host}:9060"
-    sr = _get_json(opener, f"{ers_base}/ers/config/node", headers=headers)
-    resources = (sr.get("SearchResult") or {}).get("resources") if isinstance(sr, dict) else None
-    if isinstance(resources, list) and resources:
+    # ALL pages of the node list (ERS paginates via SearchResult.nextPage.href) -- reading only page 1 silently
+    # truncated the node census on a large deployment (audit-5 #16).
+    resources: list = []
+    nxt = f"{ers_base}/ers/config/node"
+    while nxt:
+        sr = _get_json(opener, nxt, headers=headers)
+        page = (sr.get("SearchResult") or {}).get("resources") if isinstance(sr, dict) else None
+        if not isinstance(page, list):
+            break
+        resources.extend(page)
+        nxt = ((sr.get("SearchResult") or {}).get("nextPage") or {}).get("href")
+    if resources:
         ers_nodes = []
         for res in resources:
             rid = res.get("id") if isinstance(res, dict) else None
@@ -294,6 +309,10 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
                 inner = next(iter(detail.values())) if len(detail) == 1 else None
                 node = inner if isinstance(inner, dict) else detail
                 ers_nodes.append(node)
+            else:
+                # a failed per-id detail GET must NOT silently drop the node from the census -- keep the list
+                # summary so the reported node count stays truthful (audit-5 #16).
+                ers_nodes.append(res)
         if ers_nodes:
             written.append(_write(out_dir, "ers/config/node", {"resources": ers_nodes}))
     logger.info("  [ISE] collected %d export(s) into %s", len(written), out_dir)

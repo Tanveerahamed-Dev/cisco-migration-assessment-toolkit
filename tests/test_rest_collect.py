@@ -117,6 +117,50 @@ def test_collect_apic_writes_offline_files_then_parsers_read_them(tmp_path, monk
     assert health["cur"] == 82
 
 
+def test_collect_apic_skips_rbac_denied_error_envelope(tmp_path, monkeypatch):
+    """[audit-5 #17 false-health] An APIC response whose imdata carries an {'error':...} MO is a fault /
+    RBAC-denied envelope, not class data. collect_apic wrote it to disk anyway, so the offline parser read a
+    denied class as collected-but-empty. Such envelopes must NOT be written."""
+    monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: _FakeResp("{}"))
+    monkeypatch.setattr(rest_collect, "_safe_close", lambda *a, **k: None)
+    err = {"totalCount": "1", "imdata": [{"error": {"attributes": {"code": "403", "text": "RBAC denied"}}}]}
+    monkeypatch.setattr(rest_collect, "_get_json", lambda *a, **k: err)
+    assert rest_collect.collect_apic("https://apic.example", "u", "p", str(tmp_path)) == []
+
+
+def test_collect_ise_ers_paginates_and_keeps_node_on_detail_failure(tmp_path, monkeypatch):
+    """[audit-5 #16 false-health] The ISE ERS collector read only page 1 of the node list and silently DROPPED
+    any node whose per-id detail GET failed -> an under-reported node census. It must follow nextPage AND keep
+    the list summary when a detail GET fails."""
+    import json as _json
+
+    def fake_get(opener, url, headers=None, timeout=30):
+        if url.endswith("/ers/config/node"):                       # ERS list page 1
+            return {"SearchResult": {"resources": [{"id": "n1", "name": "A"}, {"id": "n2", "name": "B"}],
+                                     "nextPage": {"href": "https://ise:9060/ers/config/node?page=2"}}}
+        if "page=2" in url:                                        # ERS list page 2
+            return {"SearchResult": {"resources": [{"id": "n3", "name": "C"}]}}
+        if url.endswith("/node/n2"):                               # n2 detail GET FAILS
+            return None
+        if "/ers/config/node/" in url:                             # n1 / n3 detail GET ok
+            rid = url.rsplit("/", 1)[-1]
+            return {"ers-node-data": {"id": rid, "name": rid.upper()}}
+        return {}                                                  # other (Open-API) endpoints
+    monkeypatch.setattr(rest_collect, "_get_json", fake_get)
+    written = rest_collect.collect_ise("https://ise.example", "u", "p", str(tmp_path))
+    found = None
+    for f in written:
+        try:
+            data = _json.load(open(f, encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("resources"), list):
+            ids = {n.get("id") for n in data["resources"] if isinstance(n, dict)}
+            if {"n1", "n2", "n3"} <= ids:
+                found = ids
+    assert found == {"n1", "n2", "n3"}        # p2 followed + n2 kept despite its detail GET failing
+
+
 def test_collect_vmanage_writes_offline_files_then_parsers_read_them(tmp_path, monkeypatch):
     """vManage collector: j_security_check (POST) -> JSESSIONID, fetch the XSRF token, then GET each
     /dataservice endpoint (carrying the X-XSRF-TOKEN header), writing JSON parse_sdwan_* read — mocked HTTP."""
