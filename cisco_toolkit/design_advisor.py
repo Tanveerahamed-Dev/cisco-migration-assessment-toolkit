@@ -51,6 +51,14 @@ def _as_dict(x):
     return x if isinstance(x, dict) else {}
 
 
+def _dict_rows(x):
+    """The dict ELEMENTS of a snapshot list section. _as_list guards the CONTAINER, but compute_design_blueprint
+    runs on UPLOADED snapshots, so a hostile/malformed list can still carry a non-dict element (a bare string /
+    int / None) that a direct per-row `.get()` crashes on (audit-5 totality -> the unguarded webapp /design,
+    /architecture_coverage 500). Every per-row `.get()` loop iterates this, not _as_list."""
+    return [r for r in _as_list(x) if isinstance(r, dict)]
+
+
 def _as_int(x, default=0):
     try:
         return int(x)
@@ -99,7 +107,7 @@ def _vlan_count(snap):
         return len(vlan_inventory(snap))
     except Exception:
         vids = set()
-        for r in _as_list(snap.get("l3_forwarding")):
+        for r in _dict_rows(snap.get("l3_forwarding")):
             vids.add(str(r.get("vlan")))
         return len([v for v in vids if v and v != "None"])
 
@@ -156,20 +164,20 @@ def _signals(snap):
     # 'no FHRP' (a multi-gateway VLAN without HSRP/VRRP has redundant gateways, just no automatic VIP failover, and
     # is NOT a single point of failure). Reconciles the design doc's SPOF claim to its own l3_forwarding table
     # (one source of truth) instead of conflating it with the larger no-FHRP count (multi-domain audit #5).
-    sig["single_gw"] = len({r.get("vlan") for r in _as_list(snap.get("l3_forwarding"))
+    sig["single_gw"] = len({r.get("vlan") for r in _dict_rows(snap.get("l3_forwarding"))
                             if "single-gateway" in str(r.get("risk") or "")})
     broken_fhrp = _broken_fhrp_vlans(snap)
     sig["fhrp_broken"] = len(broken_fhrp)
     sig["fhrp_broken_vids"] = sorted({g.get("vid") for g in broken_fhrp if g.get("vid") is not None})[:12]
     sig["fhrp_broken_devices"] = sorted({m.get("host") for g in broken_fhrp
-                                         for m in _as_list(g.get("members")) if m.get("host")})[:12]
+                                         for m in _dict_rows(g.get("members")) if m.get("host")})[:12]
     # FHRP RESILIENCE from the published detail axis (parse_hsrp_detail -> snap['fhrp_detail']): ACTIVE
     # gateways missing interface tracking or preemption -- the senior red flags the AJ fleet (no FHRP at
     # all) could never surface. Coverage-honest: empty lists when the detail axis is absent.
     sig["fhrp_no_track"] = []; sig["fhrp_no_preempt"] = []
     _fd = snap.get("fhrp_detail")
     for _host, _groups in (_fd.items() if isinstance(_fd, dict) else []):
-        for _g in _as_list(_groups):
+        for _g in _dict_rows(_groups):
             if str(_g.get("state", "")).lower() in ("active", "master"):
                 _tag = f"{_host} {_g.get('ifname', '?')} grp {_g.get('group', '?')}"
                 if not (_g.get("track") or []): sig["fhrp_no_track"].append(_tag)
@@ -190,17 +198,17 @@ def _signals(snap):
     sig["nve_peers_down"] = []
     _ov = snap.get("overlay")
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
-        for _p in _as_list((_o or {}).get("nve_peers")):
+        for _p in _dict_rows((_o or {}).get("nve_peers")):
             if str(_p.get("state", "")).lower() not in ("up", ""):
                 sig["nve_peers_down"].append(f"{_h} {_p.get('peer_ip', '?')}")
     sig["evpn_down"] = []
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
-        for _n in _as_list((_o or {}).get("evpn_neighbors")):
+        for _n in _dict_rows((_o or {}).get("evpn_neighbors")):
             if str(_n.get("state", "")).lower() != "established":
                 sig["evpn_down"].append(f"{_h} {_n.get('neighbor', '?')}")
     sig["nve_vni_down"] = []
     for _h, _o in (_ov.items() if isinstance(_ov, dict) else []):
-        for _v in _as_list((_o or {}).get("nve_vni")):
+        for _v in _dict_rows((_o or {}).get("nve_vni")):
             if str(_v.get("state", "")).lower() != "up":
                 sig["nve_vni_down"].append(f"{_h} VNI {_v.get('vni', '?')}")
     # Control-plane policing (CoPP): a class actively DROPPING punted control-plane traffic. A single CUMULATIVE
@@ -214,7 +222,7 @@ def _signals(snap):
     _copp = snap.get("copp")
     copp_hits = []
     for _ch, _cl in (_copp.items() if isinstance(_copp, dict) else []):
-        for _c in _as_list(_cl):
+        for _c in _dict_rows(_cl):
             if _as_int(_c.get("drops")) <= 0:
                 continue
             _clsl = str(_c.get("class", "?")).lower()
@@ -3655,7 +3663,7 @@ def requirements_from_interview(answers):
 # ---------------------------------------------------------------- candidate target-state architecture
 def _role_counts(snap):
     roles = {}
-    for r in _as_list(snap.get("health_scores")):
+    for r in _dict_rows(snap.get("health_scores")):
         role = str(r.get("role") or "").lower() or "unknown"
         roles[role] = roles.get(role, 0) + 1
     return roles
@@ -3787,7 +3795,7 @@ def _norm_vlan_zones(v):
 def _target_vids(snap):
     counts = _vlan_host_counts(snap)
     vids = {v for v in counts if v and v != 1}
-    for r in _as_list(snap.get("l3_forwarding")):
+    for r in _dict_rows(snap.get("l3_forwarding")):
         v = r.get("vlan")
         if str(v).isdigit() and int(v) != 1:
             vids.add(int(v))
