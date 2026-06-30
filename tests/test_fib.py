@@ -91,6 +91,17 @@ def test_trace_no_route_at_collected_host_is_computed_unreachable():
     assert t["status"] == "computed:unreachable" and t["computed"] is True and t["reached"] is False
 
 
+def test_trace_fhrp_vip_self_via_local_is_reached():
+    """[audit-5 #12] An FHRP virtual IP is installed as a self-referential local host route 'X/32 via X, VlanN,
+    [0/0], vrrp_engine|hsrp|glbp' -- locally TERMINATED on the master (the packet is delivered). It must read as
+    computed:reached, not an unresolvable next-hop lower bound."""
+    snap = {"routes": {"CORE": [
+        {"prefix": "10.203.12.0/24", "next_hop": "", "source": "connected"},
+        {"prefix": "10.203.12.1/32", "next_hop": "10.203.12.1", "source": "vrrp_engine"}]}}
+    t = fib.trace_fib_path(snap, "10.203.12.2", "10.203.12.1")   # src on the /24, dst = the VIP
+    assert t["status"] == "computed:reached" and t["reached"] is True
+
+
 def test_trace_stops_when_next_hop_host_not_collected():
     """R1 routes to a next-hop whose owning router was never collected -> explicit lower bound, not 'reachable'."""
     snap = {"routes": {"R1": [
