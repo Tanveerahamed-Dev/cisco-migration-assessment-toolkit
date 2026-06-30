@@ -108,3 +108,22 @@ def test_config_hygiene_sheet_empty_discloses_coverage():
     ws = wb[excel.CONFIG_HYGIENE_SHEET_NAME]
     banner = " ".join(str(ws.cell(2, c).value or "") for c in (1, 2)).lower()
     assert "not assessed" in banner and "collected running-config" in banner
+
+
+def test_campaign_trend_collected_switch_going_dark_is_not_clean_improving():
+    """[#9 HIGH] The survivorship guard detected only devices REMOVED from 'devices', but the engine keeps an
+    uncollected device as an 'Insufficient Data' STUB in 'devices'. A previously-collected switch going dark
+    (real band -> 'Insufficient Data') raised avg-health (its low score drops out of the average) and read as
+    IMPROVING with no disclosure. The band transition now counts as gone-dark."""
+    from cisco_toolkit.html import compute_campaign_trend
+
+    def snap(hs, avg):
+        return {"devices": {h["switch"]: {} for h in hs}, "interfaces": {}, "health_scores": hs,
+                "punchlist": [], "executive_brief": {"posture": {"avg_health": avg}}}
+    c1 = snap([{"switch": "a", "band": "Critical", "score": 10},
+               {"switch": "b", "band": "Good", "score": 80}], avg=45)
+    c2 = snap([{"switch": "a", "band": "Insufficient Data", "score": 90},   # 'a' went dark, still in devices
+               {"switch": "b", "band": "Good", "score": 80}], avg=85)        # avg rose -> survivorship
+    t = compute_campaign_trend([c1, c2])
+    assert t["verdict"] != "IMPROVING"                    # survivorship -> not a clean improvement
+    assert "dark" in t["verdict_note"].lower()
