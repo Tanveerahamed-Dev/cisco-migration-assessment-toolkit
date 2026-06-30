@@ -133,7 +133,11 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         "n_switches": head.get("n_switches", len(snap.get("devices") or {})),
         "avg_health": head.get("avg_health", ""),
         "bands": _count_by(hs, "band", BANDS),
-        "n_critical": head.get("n_critical", 0),
+        # n_critical must reconcile with the bands chart (both from health_scores): trend_point can silently
+        # yield 0 when executive_brief is a corrupt non-dict (the try/except above swallows the AttributeError),
+        # contradicting the bands chart on the SAME screen -- fall back to the band count (audit-5 cross-artifact #4).
+        "n_critical": head.get("n_critical") if isinstance(head.get("n_critical"), int)
+        else _count_by(hs, "band", BANDS).get("Critical", 0),
         "punchlist": {
             "total": len(pl),
             "by_severity": _count_by(pl, "severity", SEVERITY_ORDER),
