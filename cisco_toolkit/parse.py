@@ -3572,6 +3572,11 @@ def parse_multicast_info(mroute_out: str, pim_out: str) -> Dict[str, str]:
                 mode = _MODE.get((mt.group(3) or "").lower(), "")
                 res.setdefault(intf, []).append("PIM" + (f" {mode}" if mode else ""))
                 continue
+            # NX-OS verbose stanza (the Nexus cores' format): '<Interface>, Interface status: protocol-up/...'
+            mn = re.match(r"^([A-Za-z][\w./-]*?),\s+Interface status:", s)
+            if mn and is_valid_iface(mn.group(1)):
+                res.setdefault(normalize_ifname(mn.group(1)), []).append("PIM enabled")
+                continue
             # Some platforms: '<interface> is up, ... PIM ...'
             mi = re.match(r"^(Vlan\d+|\S+)\s+is\s+(?:up|down)", s, re.IGNORECASE)
             if mi and is_valid_iface(mi.group(1)):
