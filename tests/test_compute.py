@@ -305,6 +305,44 @@ def test_compute_hostname_mismatches(cp):
     assert out[0] == {"inventory": "AS08--BC-CR03R13", "reported": "AS08-BC-CR03R13"}
 
 
+def test_reconcile_cdp_neighbor_resolves_configured_name_split_node():
+    """[audit-5 cross-artifact #1] A device collected under a suffix-SHORTER inventory name than its OWN configured
+    hostname (reported_hostname from show version) is advertised by its neighbors over CDP under that configured
+    name, which canon-MISSES the inventory key -> the device renders as a phantom SPLIT node and its bidirectional
+    link becomes 2 records. reconcile_cdp_neighbor_names rewrites those advertisements back to the inventory key
+    using the device's OWN configured hostname. Over-merge-safe: a configured name claimed by >1 device (e.g. a FEX
+    module reporting its parent's hostname) is NEVER merged (would corrupt every topology/blast-radius consumer)."""
+    from cisco_toolkit import analyze
+    from cisco_toolkit.model import InterfaceData
+    DP = analyze.DevicePhysical
+    # CORE collected as 'CORE-BC' but configured 'CORE-BC-AJDOH'; ACC advertises CORE over CDP by that configured name.
+    all_if = {
+        "CORE-BC": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", cdp_neighbor="ACC-BC", neighbor_port="Gi1/0/24",
+                                             endpoint_type="Switch", speed="1G")},
+        "ACC-BC": {"Gi1/0/24": InterfaceData(port="Gi1/0/24", cdp_neighbor="CORE-BC-AJDOH", neighbor_port="Gi1/0/1",
+                                             endpoint_type="Switch", speed="1G")},
+    }
+    devs = [DP(hostname="CORE-BC", reported_hostname="CORE-BC-AJDOH"),
+            DP(hostname="ACC-BC", reported_hostname="ACC-BC")]
+    before = analyze.compute_topology_links(all_if)
+    hosts_before = {str(r["a_host"]) for r in before} | {str(r["b_host"]) for r in before}
+    assert "CORE-BC-AJDOH" in hosts_before and len(before) == 2          # phantom split node + duplicate link record
+    assert analyze.reconcile_cdp_neighbor_names(all_if, devs) == 1
+    after = analyze.compute_topology_links(all_if)
+    hosts_after = {str(r["a_host"]) for r in after} | {str(r["b_host"]) for r in after}
+    assert "CORE-BC-AJDOH" not in hosts_after                            # phantom gone
+    assert len(after) == 1                                               # bidirectional link is now ONE record
+    # over-merge guard: a configured name claimed by TWO devices (a FEX reporting its parent) is NOT used
+    fex_if = {
+        "PARENT": {"Eth1/1": InterfaceData(port="Eth1/1", cdp_neighbor="NB", endpoint_type="Switch")},
+        "FEX-101": {"Eth1/2": InterfaceData(port="Eth1/2", cdp_neighbor="PARENT-DCDOH", endpoint_type="Switch")},
+    }
+    fex_devs = [DP(hostname="PARENT", reported_hostname="PARENT-DCDOH"),
+                DP(hostname="FEX-101", reported_hostname="PARENT-DCDOH")]   # both claim 'PARENT-DCDOH'
+    assert analyze.reconcile_cdp_neighbor_names(fex_if, fex_devs) == 0      # ambiguous -> no rewrite, no false merge
+    assert fex_if["FEX-101"]["Eth1/2"].cdp_neighbor == "PARENT-DCDOH"       # left untouched
+
+
 # --------------------------------------------------------------------------- #
 # write_executive_summary_sheet (V3.23.75) — one-page landing synthesis
 # --------------------------------------------------------------------------- #
