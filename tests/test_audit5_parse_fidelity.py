@@ -48,3 +48,15 @@ def test_parse_security_nxos_type5_user_and_password_encryption():
     assert f2["weak-user-pw"]["status"] == "fail"
     assert "weakguy" in f2["weak-user-pw"]["detail"] and "clearguy" in f2["weak-user-pw"]["detail"]
     assert f2["password-encryption"]["status"] == "pass"
+
+
+def test_parse_show_version_nxos_chassis_pid():
+    """[#4 HIGH] parse_show_version emitted the bare Nexus marketing token ('6001', 'C93180YC-EX', '56128P') as
+    the model, which eoldb never matches -> wrong EoL on every Nexus. Normalize the 'cisco Nexus <fam> <tok>
+    Chassis' line to the NxK-C<...> PID. Real CS01 shape ('cisco Nexus 6001 Chassis')."""
+    from cisco_toolkit import parse, eoldb
+    r = parse.parse_show_version('Hardware\n  cisco Nexus 6001 Chassis ("Nexus 64 Supervisor")\n')
+    assert r["model"] == "N6K-C6001", r["model"]
+    assert eoldb.lifecycle_for(r["model"]) is not None      # now matches eoldb (was a no-match bare '6001')
+    r2 = parse.parse_show_version("  cisco Nexus9000 C93180YC-EX Chassis\n")     # PID-body form
+    assert r2["model"] == "N9K-C93180YC-EX", r2["model"]

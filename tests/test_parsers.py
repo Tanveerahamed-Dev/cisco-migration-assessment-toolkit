@@ -2026,7 +2026,7 @@ def test_parse_show_version_nxos_not_fooled_by_bios_substring(cp):
     """)
     r = parse.parse_show_version(out)
     assert r["sw_version"] == "9.3(10)"
-    assert r["model"] == "C93180YC-EX"
+    assert r["model"] == "N9K-C93180YC-EX"   # audit-5 #4: the bare C-body 'C93180YC-EX' does NOT match eoldb; only the full NxK-C PID does
 
 
 def test_parse_sdwan_control_connections_real_vmanage_field_names(cp):

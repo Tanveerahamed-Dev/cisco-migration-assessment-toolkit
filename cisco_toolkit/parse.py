@@ -3761,9 +3761,16 @@ def parse_show_version(output: str) -> Dict[str, str]:
             r["model"] = m2.group(1).strip()
         # NX-OS chassis line 'cisco Nexus9000 C93180YC-EX Chassis' -- the PID sits BETWEEN the family and 'chassis',
         # so m2 captures only 'Nexus9000'; prefer the specific PID model (multi-domain audit #2).
-        m2c = re.match(r"^\s*cisco\s+Nexus\S*\s+(\S+)\s+chassis", line, re.IGNORECASE)
+        m2c = re.match(r"^\s*cisco\s+Nexus(\d*)\S*\s+(\S+)\s+chassis", line, re.IGNORECASE)
         if m2c and (not r["model"] or r["model"].lower().startswith("nexus")):
-            r["model"] = m2c.group(1).strip()
+            _fam, _tok = m2c.group(1), m2c.group(2).strip()
+            if re.match(r"^N\d+K-", _tok, re.IGNORECASE):
+                r["model"] = _tok                         # already a full PID (e.g. N6K-C6001-64P)
+            else:
+                # the NX-OS chassis line gives a bare marketing number (6001) or a PID body (C93180YC-EX) that
+                # eoldb can't match -- normalize to the NxK-C<...> PID (audit-5 #4: 6001 -> N6K-C6001).
+                _fd = _fam[:1] if _fam else (_tok[:1] if _tok[:1].isdigit() else "")
+                r["model"] = f"N{_fd}K-{_tok if _tok[:1].upper() == 'C' else 'C' + _tok}" if _fd else _tok
         m3 = re.search(r"(?:system serial number\s*[:=]|processor board id)\s*(\S+)", low)
         if m3 and not r["serial_number"]:
             r["serial_number"] = line.split()[-1].strip()
