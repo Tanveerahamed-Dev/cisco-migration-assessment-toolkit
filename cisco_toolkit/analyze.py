@@ -3053,6 +3053,31 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
 
 _PUNCH_RANK = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
 
+# W1-3 (SmartyMe teardown -- per-claim provenance): the single `show` command whose output BACKS each punch-list
+# category's evidence, so a finding can cite 'from: <show cmd>'. Grounded -- every value is a command in the
+# engine's COMMANDS_IOS/NXOS registry (asserted in tests). COMPOSITE / multi-source / meta categories (Cross-layer,
+# Compound risk, Health, Protocol, False-health) are DELIBERATELY ABSENT: they synthesize several commands, so
+# citing one would be fabricated provenance -- and their absence keeps this from overclaiming 'every finding is
+# traced' (the binding critic constraint). Provenance where it genuinely exists; silence where it doesn't.
+_PUNCH_SOURCE_COMMAND: Dict[str, str] = {
+    "STP": "show spanning-tree",
+    "Security": "show running-config",
+    "Config hygiene": "show running-config",
+    "Inventory": "show version",
+    "Software exposure": "show version",
+    "Operational logs": "show logging",
+    "L3": "show ip route",
+    "Addressing": "show ip interface brief",
+    "QoS": "show policy-map interface",
+    "Multicast/Media": "show ip igmp snooping groups",
+    "Timing/PTP": "show ptp clock",
+    "FHRP": "show standby brief",
+    "L1": "show interface status",
+    "Trunk": "show interface trunk",
+    "Link L1": "show interface status",
+}
+
+
 def compute_migration_punchlist(cross_layer: List[dict],
                                 security: Dict[str, dict],
                                 config_hygiene: Dict[str, dict],
@@ -3088,9 +3113,13 @@ def compute_migration_punchlist(cross_layer: List[dict],
     def add(severity: str, category: str, devices, title: str, detail: str, remediation: str = "") -> None:
         devs = sorted({d for d in devices if d})
         waves = sorted({wave_of.get(d, "") for d in devs} - {""})
-        items.append({"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
-                      "category": category, "devices": devs, "wave": ", ".join(waves),
-                      "title": title, "detail": (detail or "")[:300], "remediation": remediation})
+        it = {"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
+              "category": category, "devices": devs, "wave": ", ".join(waves),
+              "title": title, "detail": (detail or "")[:300], "remediation": remediation}
+        cmd = _PUNCH_SOURCE_COMMAND.get(category)   # W1-3: cite the backing show-command (absent for composite cats)
+        if cmd:
+            it["source_command"] = cmd
+        items.append(it)
 
     for f in (cross_layer or []):                                   # already severity + hosts + title
         add(f.get("severity", "Medium"), "Cross-layer", f.get("hosts", []),
