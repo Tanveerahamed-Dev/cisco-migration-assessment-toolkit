@@ -3309,6 +3309,9 @@ def parse_config_hygiene(output: str) -> dict:
         # Four ubiquitous ACL-reference forms previously missed -> an ACL used ONLY via SNMP community / QoS
         # class-map / crypto-map interesting-traffic / NTP was wrongly reported 'unused' (audit-3 #15).
         (re.compile(r"\bsnmp-server\s+community\s+\S+\s+(?:view\s+\S+\s+)?(?:ro|rw)\s+(\S+)", re.IGNORECASE), "acl"),
+        # NX-OS SNMPv3 applies its management ACL via 'snmp-server group <g> v3 <auth|priv|noauth> access <ACL>'
+        # (also a 'v3 priv notify <oid> access <ACL>' variant) -- missing here -> the ACL read 156x 'unused' (audit-5 #9).
+        (re.compile(r"\bsnmp-server\s+group\s+\S+\s+v3\b.*?\baccess\s+(\S+)", re.IGNORECASE), "acl"),
         (re.compile(r"\bmatch\s+access-group\s+(?:name\s+)?(\S+)", re.IGNORECASE), "acl"),
         (re.compile(r"\bmatch\s+address\s+(\S+)", re.IGNORECASE), "acl"),
         (re.compile(r"\bntp\s+access-group\s+(?:peer|serve|serve-only|query-only)\s+(\S+)", re.IGNORECASE), "acl"),
