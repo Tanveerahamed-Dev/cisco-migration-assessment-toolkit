@@ -37,7 +37,7 @@ def _make_template(path):
     wb.save(path)
 
 
-def _run_pipeline(tmp_path, out_xlsx=None):
+def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     collection = fx.write_collection(str(tmp_path / "collection"))
     devices = tmp_path / "devices.json"
     devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
@@ -46,13 +46,13 @@ def _run_pipeline(tmp_path, out_xlsx=None):
     if out_xlsx is None:
         out_xlsx = tmp_path / "out.xlsx"
 
-    proc = subprocess.run(
-        [sys.executable, SCRIPT,
-         "--no-collect", "--collection-dir", collection,
-         "--devices-file", str(devices), "--template", str(template),
-         "--output", str(out_xlsx), "--no-html", "--workers", "1"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=300,
-    )
+    cmd = [sys.executable, SCRIPT,
+           "--no-collect", "--collection-dir", collection,
+           "--devices-file", str(devices), "--template", str(template),
+           "--output", str(out_xlsx), "--no-html", "--workers", "1"]
+    if extra_args:
+        cmd += list(extra_args)
+    proc = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, f"pipeline failed:\nSTDOUT\n{proc.stdout}\nSTDERR\n{proc.stderr}"
     snap_path = os.path.splitext(str(out_xlsx))[0] + ".snapshot.json"
     assert os.path.isfile(snap_path), "snapshot.json was not produced"
@@ -152,6 +152,82 @@ def test_move_group_endpoint_label_is_honest_per_switch_mac_sum(tmp_path):
                   for v in row if v]
         assert any("Endpoint MACs (per-switch sum)" in v for v in ms_top), \
             f"Migration Scenarios endpoint column not relabeled: {ms_top}"
+    finally:
+        wb.close()
+
+
+def test_run_manifest_emitted_and_sealed(tmp_path):
+    """roadmap D2: the pipeline emits a sealed run-manifest (chain-of-custody) next to the workbook —
+    a hash-chained step ledger + per-artifact sha256 + chain_root that verify_manifest() reconciles."""
+    from cisco_toolkit import manifest as M
+    _snap, xlsx = _run_pipeline(tmp_path)
+    man_path = os.path.splitext(xlsx)[0] + ".run_manifest.json"
+    assert os.path.isfile(man_path), "run_manifest.json was not produced"
+    with open(man_path, encoding="utf-8") as f:
+        man = json.load(f)
+    assert man.get("chain_root") and man.get("artifacts"), "manifest missing seal/artifacts"
+    ok, broken = M.verify_manifest(man)
+    assert ok, f"manifest chain broken at rows {broken}"
+    names = [a["name"] for a in man["artifacts"]]
+    assert any(n.endswith(".snapshot.json") for n in names), f"snapshot not hashed: {names}"
+    assert any(n.endswith(".xlsx") for n in names), f"workbook not hashed: {names}"
+    assert "abstention_ledger" in man        # coverage-honest provenance is part of the seal
+
+
+def test_import_inventory_reconcile(tmp_path):
+    """roadmap B: --import-inventory ingests a declared inventory (CMDB/NetBox CSV) and reconciles it against
+    the collected evidence -> snap['external_reconcile'] + a 'SoT Reconcile' workbook sheet (opt-in)."""
+    inv = tmp_path / "cmdb.csv"
+    inv.write_text("hostname,device_type\nGHOST-NOT-IN-FLEET,C9999\n", encoding="utf-8")
+    snap, xlsx = _run_pipeline(tmp_path, extra_args=["--import-inventory", str(inv)])
+    er = snap.get("external_reconcile")
+    assert er and er.get("summary"), "external_reconcile missing from snapshot"
+    assert er["summary"]["MISSING_DEVICE"] == 1          # the declared ghost is not observed
+    assert er["summary"]["UNDOCUMENTED_DEVICE"] >= 1     # observed devices absent from the (ghost-only) SoT
+    wb = load_workbook(xlsx, read_only=True)
+    try:
+        assert "SoT Reconcile" in wb.sheetnames
+    finally:
+        wb.close()
+
+
+def test_default_run_optin_engines_absent_but_capture_integrity_present(tmp_path):
+    """Opt-in engines (reconcile / what-if / path-intents / assert-pack) add nothing on a default run, so the
+    golden stays untouched; the always-on capture-integrity key + sheet ARE present."""
+    snap, xlsx = _run_pipeline(tmp_path)
+    for key in ("external_reconcile", "whatif", "path_intents", "state_assertions"):
+        assert key not in snap, f"{key} must be opt-in / absent by default"
+    assert "capture_integrity" in snap            # always-on
+    wb = load_workbook(xlsx, read_only=True)
+    try:
+        for sheet in ("SoT Reconcile", "Failure What-If", "Path Assertions"):
+            assert sheet not in wb.sheetnames
+        assert "Capture Integrity" in wb.sheetnames   # always-on
+    finally:
+        wb.close()
+
+
+def test_optin_engines_emit_keys_and_sheets(tmp_path):
+    """roadmap G4 / G3 / A1+H2: --scenario, --path-intents and --assert-pack each compute over the snapshot and
+    emit their result (sheet and/or snapshot key) when supplied."""
+    scen = tmp_path / "scen.json"
+    scen.write_text(json.dumps([{"name": "edge-fail", "failures": [{"type": "node", "id": "no-such-host"}]}]), encoding="utf-8")
+    intents = tmp_path / "intents.json"
+    intents.write_text(json.dumps([{"id": "i1", "src": "10.0.0.1", "dst": "10.0.0.2", "expect": "REACHES"}]), encoding="utf-8")
+    pack = tmp_path / "pack.json"
+    pack.write_text(json.dumps({"assertions": [
+        {"id": "a1", "subject": "collection_completeness", "all_of": [{"type": "contains", "value": "summary"}]}]}), encoding="utf-8")
+    snap, xlsx = _run_pipeline(tmp_path, extra_args=[
+        "--scenario", str(scen), "--path-intents", str(intents), "--assert-pack", str(pack)])
+    assert isinstance(snap.get("whatif"), list)
+    assert "results" in (snap.get("path_intents") or {})
+    sa = snap.get("state_assertions") or {}
+    assert "summary" in sa
+    a1 = [r for r in sa.get("results", []) if r.get("id") == "a1"]
+    assert a1 and a1[0]["status"] == "pass"        # 'collection_completeness' exists -> contains 'summary' -> pass
+    wb = load_workbook(xlsx, read_only=True)
+    try:
+        assert "Failure What-If" in wb.sheetnames and "Path Assertions" in wb.sheetnames
     finally:
         wb.close()
 

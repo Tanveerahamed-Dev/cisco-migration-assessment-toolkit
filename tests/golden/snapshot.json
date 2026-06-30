@@ -5984,6 +5984,119 @@
    }
   }
  },
+ "feature_compliance": {
+  "features": [],
+  "per_device_feature": [],
+  "summary": {
+   "n_features": 0,
+   "n_rows": 0,
+   "n_drift_rows": 0
+  }
+ },
+ "acl_line_reachability": {
+  "findings": [
+   {
+    "line_index": 0,
+    "action": "permit",
+    "raw": "permit tcp object-group MGMT_HOSTS any eq 22",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "unparseable address/port (e.g. non-contiguous wildcard)",
+    "host": "core1",
+    "acl": "MGMT_IN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.MGMT_IN[0]"
+   },
+   {
+    "line_index": 1,
+    "action": "deny",
+    "raw": "deny ip any any",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
+    "host": "core1",
+    "acl": "MGMT_IN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.MGMT_IN[1]"
+   },
+   {
+    "line_index": 0,
+    "action": "permit",
+    "raw": "permit tcp any any established",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "stateful established/reflexive \u2014 forward match depends on connection state",
+    "host": "core1",
+    "acl": "INET_RETURN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.INET_RETURN[0]"
+   },
+   {
+    "line_index": 1,
+    "action": "permit",
+    "raw": "permit tcp 10.0.10.0 0.0.0.255 any eq 443 time-range BUSINESS_HOURS",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "time-range \u2014 active only in a window",
+    "host": "core1",
+    "acl": "INET_RETURN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.INET_RETURN[1]"
+   },
+   {
+    "line_index": 2,
+    "action": "deny",
+    "raw": "deny ip any any",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
+    "host": "core1",
+    "acl": "INET_RETURN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.INET_RETURN[2]"
+   }
+  ],
+  "summary": {
+   "n_findings": 5,
+   "n_shadowed": 0,
+   "n_different_action": 0,
+   "n_unmatchable": 0,
+   "n_indeterminate": 5,
+   "n_bad_reference": 0
+  }
+ },
+ "capture_integrity": {
+  "findings": [
+   {
+    "host": "access1",
+    "command": "show running-config",
+    "status": "incomplete",
+    "reason": "IOS-style running-config has no terminating 'end' near the tail \u2014 body looks truncated",
+    "evidence": "!",
+    "citation": "access1::show running-config"
+   },
+   {
+    "host": "core1",
+    "command": "show running-config",
+    "status": "incomplete",
+    "reason": "IOS-style running-config has no terminating 'end' near the tail \u2014 body looks truncated",
+    "evidence": "!",
+    "citation": "core1::show running-config"
+   }
+  ],
+  "summary": {
+   "n_findings": 2,
+   "n_incomplete": 2,
+   "n_error": 0,
+   "n_empty": 0,
+   "n_hosts_affected": 2
+  }
+ },
  "routes": {
   "core1": [
    {

@@ -395,6 +395,12 @@ from cisco_toolkit.excel import (
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
     write_validation_plan_sheet,                                 # NEW-V3.23.143 (per-wave post-cutover validation checklist)
     write_golden_drift_sheet,                                    # NEW-V3.23.146 (per-device config drift vs baseline)
+    write_feature_compliance_sheet,                             # roadmap I2 (per-feature ConfigCompliance decomposition)
+    write_acl_shadow_sheet,                                     # roadmap G1 (offline ACL line-reachability / shadow proof)
+    write_external_reconcile_sheet,                            # roadmap B (declared source-of-truth vs collected evidence)
+    write_capture_integrity_sheet,                             # roadmap K1 (truncation / pager / CLI-error guard)
+    write_whatif_sheet,                                        # roadmap G4 (single-snapshot failure-injection)
+    write_path_intents_sheet,                                  # roadmap G3 (named segmentation/path intents)
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
@@ -409,6 +415,13 @@ from cisco_toolkit.excel import (
     write_physical_health_sheet, write_flow_trace_sheet, write_flow_paths_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
 )
+from cisco_toolkit.feature_compliance import compute_feature_compliance   # roadmap I2 (per-feature ConfigCompliance)
+from cisco_toolkit.aclcheck import compute_filter_line_reachability       # roadmap G1 (offline ACL shadow proof)
+from cisco_toolkit.external_import import read_inventory_file, reconcile_external   # roadmap B (external SoT reconcile)
+from cisco_toolkit.capture_integrity import compute_capture_integrity   # roadmap K1 (capture-integrity guard)
+from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
+from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
+from cisco_toolkit.assertions import evaluate_pack                      # roadmap A1/H1/H2 (checks-as-data)
 # NEW-V3.23.37-.38 (PHASE 2.7 steps 27-28): the model-construction layer - the per-device
 # InterfaceData builder + switch-level DevicePhysical / switch-identity records + global-ARP
 # enrichment. Homed in cisco_toolkit/build.py; imported back so main() keeps calling them.
@@ -1132,17 +1145,39 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def build_run_manifest(rootdir: str, script_version: str, devices_meta: List[dict], output_xlsx: str, template_file: str, archive_enabled: bool) -> dict:
-    return {
-        "script_version": script_version,
-        "generated_at": datetime.now().isoformat(),
-        "collection_root": os.path.abspath(rootdir),
-        "archive_enabled": bool(archive_enabled),
-        "template_file": os.path.abspath(template_file) if template_file else "",
-        "output_excel": os.path.abspath(output_xlsx) if output_xlsx else "",
-        "device_count": len(devices_meta),
-        "devices": devices_meta,
-    }
+def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
+    """roadmap D2 + J4: a sealed, deterministic chain-of-custody manifest for one assessment run — a
+    hash-chained ledger of the pipeline stages PLUS a per-artifact sha256 of every produced deliverable
+    PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (tamper-evident without any Git
+    dependency). Pure stdlib via cisco_toolkit.manifest; the GAIT-style audit trail, offline."""
+    import glob as _glob
+    from cisco_toolkit import manifest as _manifest, ssot as _ssot
+    try:
+        from cisco_toolkit import __version__ as _schema_version
+    except Exception:
+        _schema_version = "unknown"
+    base = os.path.splitext(os.path.abspath(out_xlsx))[0]
+    out_dir = os.path.dirname(base) or "."
+    base_name = os.path.basename(base)
+    artifacts = {}
+    for path in sorted(_glob.glob(os.path.join(out_dir, base_name + "*"))):
+        if os.path.isfile(path) and not path.endswith(".run_manifest.json"):
+            try:
+                with open(path, "rb") as _fh:
+                    artifacts[os.path.basename(path)] = _manifest.artifact_sha256(_fh.read())
+            except OSError:
+                continue
+    cc = (snap_dict.get("collection_completeness") or {}).get("summary") or {}
+    steps = [
+        {"stage": "collect", "inventory": cc.get("inventory"), "collected": cc.get("complete")},
+        {"stage": "analyze", "punchlist_findings": len(snap_dict.get("punchlist") or [])},
+        {"stage": "deliver", "artifacts": sorted(artifacts)},
+    ]
+    ledger = {subj: _ssot.abstention_reason(snap_dict, subj) for subj in
+              ("fhrp", "vpc", "golden_drift", "feature_compliance", "acl_line_reachability", "framework_coverage")}
+    meta = {"schema_version": _schema_version, "generated_at": datetime.now().isoformat(),
+            "collected_at": snap_dict.get("collected_at"), "abstention_ledger": ledger}
+    return _manifest.build_manifest(meta, artifacts, steps)
 
 
 def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
@@ -1354,6 +1389,19 @@ def main():
                     help="NEW-V3.23.146: a golden-config baseline file (one required directive per line; "
                          "'#' comments and 're:<regex>' supported) for the Golden-Config Drift sheet. "
                          "Omit to auto-derive the baseline from the fleet's majority (de-facto standard).")
+    ap.add_argument("--import-inventory", default=None, metavar="FILE",
+                    help="roadmap B: a declared inventory (CMDB/NetBox/Nautobot CSV or XLSX export) to "
+                         "reconcile against the collected evidence -> a 'SoT Reconcile' sheet + snapshot key. "
+                         "Opt-in (read-only file ingest; never a live API). Off by default.")
+    ap.add_argument("--scenario",        default=None, metavar="FILE",
+                    help="roadmap G4: a JSON failure-injection catalog (a list of {name, failures:[{type:node|site, id}]}) "
+                         "-> a 'Failure What-If' sheet + snapshot key. Opt-in; read-only (the snapshot is mutated in memory).")
+    ap.add_argument("--path-intents",    default=None, metavar="FILE",
+                    help="roadmap G3: a JSON catalog of named path/segmentation intents (a list of {id, src, dst, expect: "
+                         "REACHES|ISOLATED}) evaluated over the computed FIB -> a 'Path Assertions' sheet + snapshot key. Opt-in.")
+    ap.add_argument("--assert-pack",     default=None, metavar="FILE",
+                    help="roadmap A1/H2: a JSON state-assertion check-pack ({assertions:[...]}) evaluated over the "
+                         "snapshot -> a 'state_assertions' snapshot key. Opt-in; coverage-honest ([NOT OBSERVED] abstention).")
     ap.add_argument("--flow-src",        default=None, metavar="IP",
                     help="NEW-V3.19: source endpoint IP for the optional Flow Trace sheet "
                          "(requires --flow-dst).")
@@ -2113,6 +2161,11 @@ def main():
             logger.warning(f"  --golden-config not read ({e}); falling back to the auto-derived majority baseline.")
     golden_drift = _run_phase("Golden-config drift", compute_golden_drift,
                               all_run_configs, _golden_lines, _default={})
+    # roadmap I2: decompose the golden-config drift per policy FEATURE (aaa/ntp/snmp/...). Pure projection of golden_drift.
+    feature_compliance = _run_phase("Feature compliance", compute_feature_compliance, golden_drift, _default={})
+    # roadmap G1: offline Batfish-style ACL line-reachability / shadow proof over the already-parsed ACLs + object-groups.
+    acl_line_reachability = _run_phase("ACL line-reachability", compute_filter_line_reachability,
+                                       {"acls": all_acls, "object_groups": all_object_groups}, _default={})
     # NEW-V3.23.172: the Device Risk Register -- the per-ASSET synthesis. Joins the 11 per-device
     # axes already computed above into one dossier per box (risk_index = topology impact x stacked
     # exposure + named compound patterns CR-01..CR-06), BEFORE the punch-list so the compound
@@ -2163,6 +2216,48 @@ def main():
     # baseline (de-facto standard) -> flag the outliers. Compute once -> sheet + snapshot (one source of truth).
     # Computed ABOVE the punch-list since V3.23.172 (Device Risk Register join); the sheet keeps its slot.
     _run_phase("Golden-Config Drift sheet", write_golden_drift_sheet, wb, golden_drift)
+    _run_phase("Feature Compliance sheet", write_feature_compliance_sheet, wb, feature_compliance)   # roadmap I2
+    _run_phase("ACL Shadow sheet", write_acl_shadow_sheet, wb, acl_line_reachability)                # roadmap G1
+    # roadmap B: opt-in external source-of-truth reconcile (--import-inventory FILE). Off by default -> golden-safe.
+    external_reconcile = None
+    if args.import_inventory:
+        _declared = read_inventory_file(args.import_inventory)
+        external_reconcile = reconcile_external(
+            {"lifecycle_risk": lifecycle_risk, "health_scores": health_scores,
+             "collection_completeness": collection_completeness}, _declared)
+        _run_phase("SoT Reconcile sheet", write_external_reconcile_sheet, wb, external_reconcile)
+        logger.info(f"[Phase 30g] SoT reconcile: {len(_declared)} declared vs "
+                    f"{external_reconcile['summary'].get('n_observed', 0)} observed -> "
+                    f"{external_reconcile['summary'].get('n_rows', 0)} drift row(s) from {args.import_inventory}")
+    # roadmap K1: per-config-body capture-integrity (ALWAYS-ON; reuses all_run_configs -> cheap). Flags truncated/
+    # paginated/errored captures so a partial body abstains downstream instead of being scored healthy.
+    _ci_bodies = {h: {"show running-config": t} for h, t in (all_run_configs or {}).items()}
+    capture_integrity = _run_phase("Capture integrity", compute_capture_integrity, _ci_bodies, _default={})
+    _run_phase("Capture Integrity sheet", write_capture_integrity_sheet, wb, capture_integrity)
+    # roadmap G4: opt-in failure-injection what-if (--scenario FILE). Golden-safe (off by default).
+    whatif_result = None
+    if args.scenario:
+        try:
+            with open(args.scenario, encoding="utf-8") as _sf:
+                _scen = json.load(_sf)
+        except Exception as e:
+            _scen = []
+            logger.warning(f"  --scenario not read ({e}); skipping what-if.")
+        _scen = _scen if isinstance(_scen, list) else (_scen.get("scenarios") or [])
+        whatif_result = run_scenarios({"routes": all_routes}, _scen)
+        _run_phase("Failure What-If sheet", write_whatif_sheet, wb, whatif_result)
+    # roadmap G3: opt-in named path/segmentation intents (--path-intents FILE). Golden-safe.
+    path_intents = None
+    if args.path_intents:
+        try:
+            with open(args.path_intents, encoding="utf-8") as _pf:
+                _intents = json.load(_pf)
+        except Exception as e:
+            _intents = []
+            logger.warning(f"  --path-intents not read ({e}); skipping.")
+        _intents = _intents if isinstance(_intents, list) else (_intents.get("assertions") or _intents.get("intents") or [])
+        path_intents = evaluate_path_assertions({"routes": all_routes}, _intents)
+        _run_phase("Path Assertions sheet", write_path_intents_sheet, wb, path_intents)
 
     # Phase 30d-sexies: Syslog intelligence - NEW-V3.23.164. The NOS-style operational log analysis
     # (Cisco's Network Optimization Service names syslog analysis as an analytic pillar): per-device
@@ -2346,6 +2441,15 @@ def main():
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}
+    snap_dict["feature_compliance"] = feature_compliance             # roadmap I2 (golden-drift decomposed per policy feature)
+    snap_dict["acl_line_reachability"] = acl_line_reachability       # roadmap G1 (offline ACL shadow / dead-line proof)
+    if external_reconcile is not None:                               # roadmap B (opt-in: only when --import-inventory supplied)
+        snap_dict["external_reconcile"] = external_reconcile         # declared source-of-truth vs collected evidence
+    snap_dict["capture_integrity"] = capture_integrity              # roadmap K1 (per-capture truncation/pager/error guard)
+    if whatif_result is not None:                                   # roadmap G4 (opt-in: only when --scenario supplied)
+        snap_dict["whatif"] = whatif_result                         # failure-injection what-if results
+    if path_intents is not None:                                    # roadmap G3 (opt-in: only when --path-intents supplied)
+        snap_dict["path_intents"] = path_intents                    # named path/segmentation intent verdicts
     snap_dict["routes"] = all_routes                                # NEW (route-aware reachability): {host:[{prefix,source,next_hop,out_intf}]}
     snap_dict["routing_neighbors"] = all_routing_neighbors          # NEW (protocol-to-protocol analysis): {host:{ospf:[...],eigrp:[...],bgp:[...]}}
     snap_dict["redistribution"] = all_redistribution                # NEW (protocol-to-protocol analysis): {host:[{into_proto,into_id,from_proto,from_id,route_map,raw}]}
@@ -2455,6 +2559,15 @@ def main():
             snap_dict.setdefault("assessment_integrity", {}).update(_ssot_drift)
     except Exception as e:                                            # fail-soft: a self-check must never break the write
         logger.warning(f"  SSOT self-check skipped (non-fatal): {e}")
+    # roadmap A1/H2: opt-in state-assertion check-pack (--assert-pack FILE), evaluated over the FULL snapshot
+    # (coverage-honest: a subject that was not collected -> [NOT OBSERVED], excluded from the pass/fail denominator).
+    if args.assert_pack:
+        try:
+            with open(args.assert_pack, encoding="utf-8") as _af:
+                _pack = json.load(_af)
+            snap_dict["state_assertions"] = evaluate_pack(snap_dict, _pack if isinstance(_pack, dict) else {"assertions": _pack})
+        except Exception as e:
+            logger.warning(f"  --assert-pack not evaluated ({e}); skipping.")
     try:
         write_json_file(snap_path, snap_dict)
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")
@@ -2565,6 +2678,19 @@ def main():
             write_ops_handbook_docx(oh_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
+
+    # Phase 39: sealed run-manifest chain-of-custody (roadmap D2 + J4). The offline, deterministic answer to a
+    # GAIT-style audit trail: a hash-chained ledger of the pipeline stages + per-artifact sha256 + the
+    # coverage-honest abstention ledger, sealed by chain_root. LAST emit so it hashes every produced artifact.
+    try:
+        _run_manifest = build_run_manifest(out_xlsx, snap_dict)
+        _manifest_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".run_manifest.json"
+        write_json_file(_manifest_path, _run_manifest)
+        logger.info(f"[OK] Run manifest (chain-of-custody): {_manifest_path}  "
+                    f"(chain_root {str(_run_manifest.get('chain_root', ''))[:12]}…, "
+                    f"{len(_run_manifest.get('artifacts') or [])} artifact(s))")
+    except Exception as e:
+        logger.warning(f"  Run manifest write failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
