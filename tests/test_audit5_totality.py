@@ -19,3 +19,38 @@ def test_compute_design_blueprint_tolerates_nondict_section_elements():
     }
     bp = compute_design_blueprint(hostile, {})                       # must NOT raise
     assert isinstance(bp, dict)
+
+
+def test_compute_multicast_intelligence_tolerates_nondict_querier():
+    """[#9] the igmp_queriers comprehension (analyze.py) calls q.get() with no dict-guard, unlike the
+    classified_groups loop right above it -- a None / non-dict querier raised AttributeError instead of degrading."""
+    from cisco_toolkit import analyze
+    out = analyze.compute_multicast_intelligence(
+        {"multicast": {"classified_groups": [], "igmp_queriers": [None, "x", {"vlan": "10"}]}}, None)
+    assert isinstance(out, dict)
+
+
+def test_lifecycle_software_risk_tolerate_nonstring_model_version():
+    """[#10/#11] compute_lifecycle_risk / compute_software_risk promise 'tolerant / never raises', but call
+    .strip() on a raw model/sw_version BEFORE delegating to the str-guarding eoldb.lifecycle_for, so a non-string
+    (an int from a malformed snapshot) raised AttributeError."""
+    from cisco_toolkit import analyze
+    assert analyze.compute_lifecycle_risk({"h": {"model": 12345, "sw_version": 9}}) is not None
+    assert analyze.compute_software_risk(
+        devices={"H": {"model": 1, "sw_version": 2}}, platforms={"H": {"platform": "nxos"}}) is not None
+
+
+def test_load_devices_clean_error_on_nondict_entry(tmp_path):
+    """[#13/#14] load_devices iterated `for d in data: if alias in d`, assuming every list element is a dict; a
+    devices.json that is a list with a bare int / null element raised a cryptic TypeError instead of the clean
+    ValueError the function raises for every other malformed-input case."""
+    import importlib.util
+    import json
+    import pytest
+    spec = importlib.util.spec_from_file_location("cp_load_devices", "COLLECT_PARSE_V3_23_0.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    p = tmp_path / "devices.json"
+    p.write_text(json.dumps([{"ip": "1.1.1.1", "hostname": "a", "username": "u"}, 42, None]))
+    with pytest.raises(ValueError):
+        m.load_devices(str(p))

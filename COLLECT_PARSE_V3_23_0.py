@@ -1070,6 +1070,8 @@ def load_devices(devices_file: str) -> List[dict]:
         "cisco_xe":"ios","xe":"ios","auto":"auto","autodetect":"auto","":"auto",
     }
     for d in data:
+        if not isinstance(d, dict):
+            raise ValueError(f"Each devices.json entry must be a JSON object, got {type(d).__name__}: {d!r}")
         for alias, key in [("host","ip"),("address","ip"),("name","hostname"),
                            ("user","username"),("pass","password"),("secret","password")]:
             if alias in d and key not in d: d[key] = d[alias]
