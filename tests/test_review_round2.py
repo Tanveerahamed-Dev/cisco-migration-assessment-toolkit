@@ -5,8 +5,6 @@ re-emerge. Webapp-side findings live under webapp/tests/.
 """
 import logging
 
-import pytest
-
 from cisco_toolkit import analyze, portdb, ouidb
 import cisco_toolkit.design_advisor as da
 
@@ -47,8 +45,9 @@ def test_near_ldos_band_compares_unrounded_delta():
     `>`). years_to_ldos was ROUNDED before the <= 1.0 band test, so a device genuinely ~1.05 yr from LDoS
     rounded to 1.0 and fell into Near-LDoS (the band ~18 days too wide). The band must use the UNROUNDED
     delta. (Catalyst 3850 LDoS = 2026-10-31.)"""
-    band = lambda asof: analyze.compute_lifecycle_risk(
-        {"sw1": {"model": "WS-C3850-48P"}}, asof=asof)["per_device"][0]["band"]
+    def band(asof):
+        return analyze.compute_lifecycle_risk(
+            {"sw1": {"model": "WS-C3850-48P"}}, asof=asof)["per_device"][0]["band"]
     assert band("2025-10-13") != "Near-LDoS"     # ~1.05 yr out: was Near via rounding (1.0), now Past-EoS
     assert band("2026-06-01") == "Near-LDoS"      # genuinely within 1 yr still Near
     assert band("2026-10-31") == "Near-LDoS"      # LDoS day: last supported day -> Near, not yet Past (strict >)

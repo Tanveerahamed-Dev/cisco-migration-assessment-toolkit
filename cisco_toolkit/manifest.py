@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 GENESIS = "0" * 64
 _RESERVED = ("seq", "prev_sha256", "sha256")

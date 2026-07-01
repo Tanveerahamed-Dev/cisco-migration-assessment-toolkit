@@ -12,7 +12,7 @@ NEVER prove isolation -> `not_observed`. Same for `REACHES` on a lower bound. We
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from . import fib
 
