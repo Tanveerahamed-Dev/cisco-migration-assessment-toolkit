@@ -261,6 +261,182 @@ def compute_topology_links(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
 
 
 # -----------------------------------------------------------------------------
+# EDA-style physical CABLE MAP (SSOT for the explorer + webapp cable-map views).
+# A Nokia-EDA cable map is a node/port/cable graph laid out in role tiers, with
+# op-status colour DERIVED from the underlying interface states (EDA exposes no
+# ready-made per-cable operationalState -- deep-research 2026-07-01). We compute it
+# ONCE here so both front-ends render the identical model and cannot drift.
+#   nodes  = devices (scanned + off-scan CDP peers), tier-assigned, op-status rolled up
+#   cables = physical links from CDP/LLDP; is_pc members bundled into one cable
+#   op_status: 'up' | 'down' | 'unknown'  -- 'unknown' is the coverage-honest
+#     [NOT OBSERVED] state for uncollected devices/ports (never a fake green).
+# -----------------------------------------------------------------------------
+_UP_TIER_ROLES = ("core", "backbone", "superspine", "spine")   # seed the top lane
+
+
+def _port_op_state(d: "InterfaceData") -> str:
+    """Classify one interface's operational state from `show interface status`.
+    Down tokens are tested first because 'notconnect' contains the substring 'connect'."""
+    s = (getattr(d, "status", "") or "").strip().lower()
+    if not s:
+        return "unknown"
+    if ("notconnect" in s or "disab" in s or "err" in s or "absent" in s
+            or "inactive" in s or s == "down"):
+        return "down"
+    if "connect" in s or s == "up":
+        return "up"
+    return "unknown"
+
+
+def _cable_op_state(a_state: str, b_state: str) -> str:
+    """Roll two endpoint states into a cable colour: down wins; else any observed up
+    -> up; else unknown (the coverage-honest [NOT OBSERVED] neutral)."""
+    if a_state == "down" or b_state == "down":
+        return "down"
+    if a_state == "up" or b_state == "up":
+        return "up"
+    return "unknown"
+
+
+def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                      health_scores: Optional[list] = None) -> dict:
+    """Build the EDA-style physical cable map (node/port/cable, role-tiered lanes).
+
+    Tolerant (never raises on odd input -> empty model) and deterministic (the golden
+    freezes it). op-status is coverage-honest: an uncollected device, or a port with no
+    observed status, is 'unknown' (rendered neutral), never silently 'up'.
+    """
+    empty = {"nodes": [], "cables": [], "tiers": [],
+             "summary": {"n_nodes": 0, "n_cables": 0, "n_tiers": 0,
+                         "op": {"up": 0, "down": 0, "unknown": 0}}}
+    if not isinstance(all_interfaces, dict) or not all_interfaces:
+        return empty
+
+    roles: Dict[str, str] = {}
+    for r in (health_scores or []):
+        if isinstance(r, dict) and isinstance(r.get("switch"), str):
+            roles[r["switch"]] = str(r.get("role") or "").strip().lower()
+
+    # canonical -> real scanned hostname, so a CDP id that resolves to a scanned box keys
+    # back to that box (mirrors build_network_model / compute_topology_links).
+    scanned_map = {_canon_host(h): h for h in all_interfaces}
+
+    # 1) raw physical links (deduped one-per-cable) from the shared CDP/LLDP builder.
+    raw: List[dict] = []
+    for L in compute_topology_links(all_interfaces):
+        a_host = scanned_map.get(_canon_host(str(L["a_host"])), str(L["a_host"]))
+        b_host = scanned_map.get(_canon_host(str(L["b_host"])), str(L["b_host"]))
+        if not a_host or not b_host or a_host == b_host:
+            continue
+        a_port = str(L["a_port"])
+        b_port = str(L.get("b_port") or "")
+        da = all_interfaces.get(a_host, {}).get(a_port)
+        db = all_interfaces.get(b_host, {}).get(b_port)
+        is_pc = bool((da and (da.port_channel or "").strip())
+                     or (db and (db.port_channel or "").strip()))
+        raw.append({"a": a_host, "a_port": a_port, "b": b_host, "b_port": b_port, "is_pc": is_pc,
+                    "state": _cable_op_state(_port_op_state(da), _port_op_state(db)),
+                    "confirmation": str(L.get("confirmation") or "")})
+
+    # 2) collapse LAG members (same host-pair, is_pc) into one bundled cable.
+    cables: List[dict] = []
+    bundles: Dict[frozenset, dict] = {}
+    for L in raw:
+        pair = frozenset((L["a"], L["b"]))
+        if L["is_pc"] and pair in bundles:
+            bun = bundles[pair]
+            bun["members"].append({"a_port": L["a_port"], "b_port": L["b_port"]})
+            bun["_states"].append(L["state"])
+            continue
+        cab = {"a": L["a"], "a_port": L["a_port"], "b": L["b"], "b_port": L["b_port"],
+               "is_pc": L["is_pc"], "members": [{"a_port": L["a_port"], "b_port": L["b_port"]}],
+               "confirmation": L["confirmation"], "_states": [L["state"]]}
+        cables.append(cab)
+        if L["is_pc"]:
+            bundles[pair] = cab
+    for cab in cables:
+        st = cab.pop("_states")
+        cab["op_status"] = "down" if "down" in st else ("up" if "up" in st else "unknown")
+
+    # 3) nodes = every host that is a scanned device OR a cable endpoint; ports = only the
+    #    ports that terminate an observed cable (declutter -- deep-research open-Q #2).
+    hosts = set(all_interfaces)
+    for cab in cables:
+        hosts.add(cab["a"])
+        hosts.add(cab["b"])
+    adj: Dict[str, set] = {h: set() for h in hosts}
+    ports: Dict[str, dict] = {h: {} for h in hosts}
+    down_incident: Dict[str, bool] = {h: False for h in hosts}
+    for cab in cables:
+        a, b = cab["a"], cab["b"]
+        adj[a].add(b)
+        adj[b].add(a)
+        if cab["op_status"] == "down":
+            down_incident[a] = True
+            down_incident[b] = True
+        ports[a][cab["a_port"]] = {"name": cab["a_port"], "peer": b, "peer_port": cab["b_port"],
+                                   "op_status": cab["op_status"], "is_pc": cab["is_pc"]}
+        ports[b][cab["b_port"]] = {"name": cab["b_port"], "peer": a, "peer_port": cab["a_port"],
+                                   "op_status": cab["op_status"], "is_pc": cab["is_pc"]}
+
+    # 4) tiers = BFS distance from the top-role seed (core/spine); degree-fallback seed when no
+    #    role evidence (clab-io-draw: highest-degree = top). Mirrors the explorer's roleTiers.
+    seeds = sorted(h for h in hosts if roles.get(h) in _UP_TIER_ROLES)
+    if not seeds and hosts:
+        seeds = [sorted(hosts, key=lambda h: (-len(adj[h]), h))[0]]
+    tier: Dict[str, int] = {h: 0 for h in seeds}
+    frontier = list(seeds)
+    while frontier:
+        nxt: List[str] = []
+        for cur in frontier:
+            for o in adj[cur]:
+                if o not in tier:
+                    tier[o] = tier[cur] + 1
+                    nxt.append(o)
+        frontier = nxt
+    max_t = max(tier.values(), default=0)
+    for h in hosts:                                    # isolated / unreached -> bottom lane
+        tier.setdefault(h, max_t + 1)
+    max_t = max(tier.values(), default=0)
+
+    # within-tier order: barycenter vs the tier above (a few sweeps) to cut crossings.
+    tiers = [sorted(h for h in hosts if tier[h] == k) for k in range(max_t + 1)]
+    for _ in range(4):
+        for k in range(1, len(tiers)):
+            above = {h: i for i, h in enumerate(tiers[k - 1])}
+            scored = []
+            for h in tiers[k]:
+                ns = [above[o] for o in adj[h] if o in above]
+                scored.append((sum(ns) / len(ns) if ns else 1e9, h))
+            tiers[k] = [h for _bc, h in sorted(scored)]
+    order = {h: i for t in tiers for i, h in enumerate(t)}
+
+    # 5) assemble nodes (stable sort by tier, order, host).
+    nodes: List[dict] = []
+    for h in sorted(hosts, key=lambda x: (tier[x], order.get(x, 0), x)):
+        collected = h in all_interfaces
+        badges: List[str] = []
+        if not collected:
+            badges.append("uncollected")             # the [NOT OBSERVED] marker
+        if down_incident[h]:
+            badges.append("links-down")
+        nodes.append({
+            "host": h, "role": roles.get(h, ""), "tier": tier[h], "order": order.get(h, 0),
+            "collected": collected, "op_status": "up" if collected else "unknown",
+            "badges": badges[:3],
+            "ports": sorted(ports[h].values(), key=lambda p: p["name"].lower()),
+        })
+
+    cables.sort(key=lambda c: (c["a"].lower(), str(c["a_port"]).lower(), c["b"].lower()))
+    op_roll = {"up": 0, "down": 0, "unknown": 0}
+    for c in cables:
+        op_roll[c["op_status"]] = op_roll.get(c["op_status"], 0) + 1
+    return {"nodes": nodes, "cables": cables, "tiers": tiers,
+            "summary": {"n_nodes": len(nodes), "n_cables": len(cables),
+                        "n_tiers": len(tiers), "op": op_roll}}
+
+
+# -----------------------------------------------------------------------------
 # Tier 1 #1: Findings / Risk Register  (pure cross-reference of InterfaceData)
 # -----------------------------------------------------------------------------
 _SEV_RANK = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
