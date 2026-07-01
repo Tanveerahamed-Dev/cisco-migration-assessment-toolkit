@@ -11,7 +11,7 @@ function PostureStrip({ c }: { c: Campaign }) {
       <div className="row-flex" style={{ justifyContent: "space-between", marginBottom: 8 }}>
         <span className="faint" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".5px" }}>Latest posture</span>
         <span className="dim" style={{ fontSize: 12 }}>
-          {s.n_switches} switches · avg {s.avg_health || "—"}/100 · {s.punchlist.crit_high} crit/high
+          {s.n_switches} switches · avg {typeof s.avg_health === "number" ? s.avg_health : (s.avg_health || "—")}/100 · {s.punchlist.crit_high} crit/high
         </span>
       </div>
       <SegBar data={s.bands} colorFor={bandColor} />

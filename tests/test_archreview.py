@@ -98,6 +98,20 @@ def test_review_shape_and_rollup():
     assert "grade" in s["statement"].lower() or s["grade"] in s["statement"]
 
 
+def test_archreview_interop_check_flags_multi_nos():
+    """N37: a multi-NOS estate gets an OPS-4 interoperability check (advisory) telling the design to
+    DECLARE its cross-platform dependency surface; a single-NOS fleet conforms."""
+    ar = compute_architecture_review({"devices": {"a": {"platform": "ios"}, "b": {"platform": "ios"},
+                                                  "c": {"platform": "nxos"}}})
+    c = _check(ar, "OPS-4")
+    assert c["verdict"] == "advisory"
+    assert "interoperability" in c["title"].lower()
+    assert "NOS famil" in c["observed"]
+    # a single-NOS fleet conforms
+    ar2 = compute_architecture_review({"devices": {"a": {"platform": "ios"}, "b": {"platform": "ios"}}})
+    assert _check(ar2, "OPS-4")["verdict"] == "conforms"
+
+
 def test_single_gateway_vlan_is_critical_and_tops_the_queue():
     ar = compute_architecture_review(_snap())
     res2 = _check(ar, "RES-2")
@@ -169,6 +183,47 @@ def test_lifecycle_bands_map_to_verdicts():
     assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "critical"
     snap["lifecycle_risk"]["summary"] = {"n_past_eos": 0, "n_past_ldos": 0, "n_near": 0}
     assert _check(compute_architecture_review(snap), "LC-1")["verdict"] == "conforms"
+
+
+def test_lc1_detail_omits_misleading_zero_past_eos():
+    """Coverage-honesty (EoS/LDoS class, same as the campaign-trend fix): the lifecycle bands are
+    EXCLUSIVE, so n_past_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past end-of-sale,
+    so when n_past_eos==0 the LC-1 detail must NOT print '(and 0 past end-of-sale)' (reads as 'nothing is
+    past end-of-sale'); when there ARE EoS-only devices it says 'N more past end-of-sale'."""
+    snap = _snap()
+    snap["lifecycle_risk"]["summary"] = {"n_past_eos": 0, "n_past_ldos": 2, "n_near": 0}
+    snap["lifecycle_risk"]["per_device"] = [{"host": "d1", "band": "Past-LDoS"},
+                                            {"host": "d2", "band": "Past-LDoS"}]
+    obs = _check(compute_architecture_review(snap), "LC-1")["observed"]
+    assert "past LAST-DAY-OF-SUPPORT" in obs
+    assert "0 past end-of-sale" not in obs and "and 0" not in obs
+    snap["lifecycle_risk"]["summary"] = {"n_past_eos": 3, "n_past_ldos": 2, "n_near": 0}
+    obs2 = _check(compute_architecture_review(snap), "LC-1")["observed"]
+    assert "3 more past end-of-sale" in obs2
+
+
+def test_hier2_not_assessable_without_neighbour_evidence():
+    """Conforms-by-silence guard: HIER-2's evidence is the in-fleet CDP/LLDP adjacency map. With
+    interfaces present but NO access-tier neighbour observed, it must grade 'not-assessable', never
+    'conforms' (which would assert a star topology off absent evidence)."""
+    snap = _snap()
+    for ports in snap["interfaces"].values():
+        for d in ports.values():
+            if isinstance(d, dict):
+                d.pop("cdp_neighbor", None); d.pop("lldp_neighbor", None)
+    assert _check(compute_architecture_review(snap), "HIER-2")["verdict"] == "not-assessable"
+
+
+def test_l2_3_not_assessable_without_vlan_evidence():
+    """Conforms-by-silence guard: L2-3's evidence is the access-VLAN / trunk native-VLAN fields. With
+    interfaces present but neither field captured anywhere, it must grade 'not-assessable', never
+    'conforms' (which would assert VLAN-1 hygiene off absent evidence)."""
+    snap = _snap()
+    for ports in snap["interfaces"].values():
+        for d in ports.values():
+            if isinstance(d, dict):
+                d.pop("vlan", None); d.pop("trunk_native_vlan", None)
+    assert _check(compute_architecture_review(snap), "L2-3")["verdict"] == "not-assessable"
 
 
 def test_mixed_images_flagged_per_platform():
@@ -282,6 +337,34 @@ def test_archreview_docx_carries_family_furniture(tmp_path):
     assert "Architecture Review & Conformance Report (.docx)" not in text  # …excluding self
 
 
+def test_archreview_docx_renders_w37_traceability_section(tmp_path):
+    """[W3-7 follow-on] When the snapshot carries recommended design decisions, the Architecture Review gains a
+    'Design Decision Traceability' section — the audit trail behind the conformance grade: each decision traced to
+    its CCDE principle + published citation. COVERAGE-HONEST: a decision with no citation renders '(uncited)', never
+    a fabricated reference; and Hand-Off renumbers to §6 (no numbering gap) only because §5 actually rendered."""
+    snap = _snap()
+    snap["design_blueprint"] = {"tradeoff_scorecard": [], "doctrine": {}, "decisions": [
+        {"status": "recommended", "title": "Enforce SNMPv3 fleet-wide", "priority": "Critical", "domain": "Security",
+         "principle": {"id": "mgmt-secure-protocols", "title": "Secure management protocols",
+                       "citation": "CCDE Session 19"},
+         "evidence": {"summary": "3 device(s) fail management hardening", "devices": ["core1"],
+                      "fields": ["security[host].findings[].status"]}},
+        {"status": "recommended", "title": "Collapse the access daisy-chain", "priority": "High", "domain": "Topology",
+         "principle": {"id": "topo-no-daisy-chain", "title": "No access daisy-chains", "citation": ""},   # uncited
+         "evidence": {"summary": "acc2 is single-homed via acc1", "devices": ["acc2"], "fields": []}},
+    ]}
+    out = str(tmp_path / "ar_trace.docx")
+    write_archreview_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert "5. Design Decision Traceability" in h1                    # the new section rendered
+    assert "6. Hand-Off Into the Document Set" in h1                  # Hand-Off renumbered (no gap)
+    text = _all_text(d)
+    assert "Enforce SNMPv3 fleet-wide" in text and "mgmt-secure-protocols" in text   # decision -> principle traced
+    assert "CCDE Session 19" in text                                  # the published citation surfaced
+    assert "(uncited)" in text                                        # honest: the citation-less decision is flagged
+
+
 def test_archreview_docx_prefers_attached_section(tmp_path):
     """One source of truth: when the CLI attached architecture_review, the writer renders THAT
     (here: a sentinel statement), rather than recomputing."""
@@ -325,3 +408,15 @@ def test_archreview_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "ar.docx")
     write_archreview_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_trunk_allowed_none_is_not_classified_allow_all():
+    """L2-5 inverted cry-wolf: a trunk allowed-VLAN list of 'none' allows NO VLANs -- the INVERSE of
+    'allow ALL VLANs'. It must never be counted as an un-pruned allow-all trunk. With only a 'none' trunk
+    present, the captured-list trunk is maximally pruned, so the check CONFORMS and the observed text never
+    says 'allow ALL VLANs'."""
+    snap = {"devices": {"SW1": {"platform": "ios"}},
+            "interfaces": {"SW1": {"Gi1/0/1": {"switchport_mode": "trunk", "trunk_allowed_vlans": "none"}}}}
+    c = _check(compute_architecture_review(snap), "L2-5")
+    assert "allow ALL VLANs" not in c["observed"], c["observed"]
+    assert c["verdict"] == "conforms", c["verdict"]

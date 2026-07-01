@@ -5,9 +5,11 @@ import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, useAsync } fr
 import TopologyGraph from "../components/TopologyGraph";
 import CutoverPlanner from "../components/CutoverPlanner";
 import ArchReviewPanel from "../components/ArchReview";
+import DesignBlueprintPanel from "../components/DesignBlueprint";
+import CausalFlowPanel from "../components/CausalFlow";
 
 const HEALTH_TONE = (n: number) => (n >= 80 ? "ok" : n >= 60 ? "watch" : n >= 35 ? "risk" : "crit");
-const GAUGE_COLOR = (n: number) => (n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
+const GAUGE_COLOR = (n: number) => (!Number.isFinite(n) ? "var(--border)" : n >= 80 ? "var(--ok)" : n >= 60 ? "var(--watch)" : n >= 35 ? "var(--risk)" : "var(--crit)");
 
 /* ---------- generic, shape-robust section renderer ---------- */
 function cell(v: any): string {
@@ -82,6 +84,27 @@ function PunchTable({ rows }: { rows: any[] }) {
   );
 }
 
+/* ---------- orchestration-peer engines (G1 / I2 / K1) ----------
+   Each is a dict {<primary list>, summary}. The generic dict renderer would only show
+   "findings: N item(s)"; instead show the summary as a strip + drill into the primary list as a
+   real table — true parity with the explorer's coverage-honest cards. */
+const ENGINE_PRIMARY: Record<string, string> = {
+  acl_line_reachability: "findings",   // G1 — the shadowed/unmatchable ACL lines
+  feature_compliance: "features",      // I2 — per-policy-area drift rollup
+  capture_integrity: "findings",       // K1 — truncated/paginated/errored captures
+  state_assertions: "results",         // A1 — check-pack verdicts (opt-in)
+  path_intents: "results",             // G3 — named path-intent verdicts (opt-in)
+  external_reconcile: "rows",          // B  — declared-vs-observed drift rows (opt-in)
+};
+function SummaryStrip({ summary }: { summary: any }) {
+  if (!summary || typeof summary !== "object") return null;
+  const parts = Object.entries(summary)
+    .filter(([, v]) => v !== null && typeof v !== "object")
+    .map(([k, v]) => `${k.replace(/^n_/, "").replace(/_/g, " ")}: ${v}`);
+  if (!parts.length) return null;
+  return <div className="faint" style={{ fontSize: 12, marginBottom: 8 }}>{parts.join("  ·  ")}</div>;
+}
+
 function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const { data, error, loading } = useAsync(() => api.section(snapId, name), [snapId, name]);
   if (loading) return <Loading />;
@@ -89,14 +112,31 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const d = data!.data;
   if (name === "punchlist" && Array.isArray(d)) return <PunchTable rows={d} />;
   if (name === "device_dossiers" && d?.per_device) return <RegisterTable rows={d.per_device} note={d.note} />;
+  if (name === "whatif" && Array.isArray(d)) {
+    // G4 what-if is a LIST of scenarios; flatten each to the Excel sheet's columns (a raw list-of-objects
+    // would JSON-stringify the nested summary). lost_path = was reached, now unprovable (never a fake block).
+    return <GenericTable data={d.map((sc: any) => ({
+      scenario: sc.name || (sc.removed_hosts || []).join(", ") || "(no match)",
+      removed: (sc.removed_hosts || []).join(", ") || "—",
+      blocked: sc.summary?.blocked ?? 0,
+      lost_path: sc.summary?.lost_path ?? 0,
+      preserved: sc.summary?.preserved ?? 0,
+      inconclusive: (sc.summary?.inconclusive_other ?? 0) + (sc.summary?.other ?? 0),
+    }))} />;
+  }
+  if (name in ENGINE_PRIMARY && d && typeof d === "object" && !Array.isArray(d)) {
+    const list = d[ENGINE_PRIMARY[name]];
+    return <div><SummaryStrip summary={d.summary} /><GenericTable data={Array.isArray(list) ? list : d} /></div>;
+  }
   return <GenericTable data={d} />;
 }
 
 /* ---------- Device Risk Register (V3.23.174) ---------- */
 const BAND_COLOR: Record<string, string> = {
   Severe: "var(--crit)", Elevated: "var(--risk)", Guarded: "var(--watch)", Low: "var(--ok)",
+  Unassessed: "var(--text-faint)",   // coverage gap (no evidence collected) — neutral, never the green "ok"
 };
-const BAND_SEV: Record<string, string> = { Severe: "Critical", Elevated: "High", Guarded: "Medium", Low: "Low" };
+const BAND_SEV: Record<string, string> = { Severe: "Critical", Elevated: "High", Guarded: "Medium", Low: "Low", Unassessed: "Info" };
 
 function RegisterTable({ rows, note }: { rows: any[]; note?: string }) {
   return (
@@ -114,7 +154,7 @@ function RegisterTable({ rows, note }: { rows: any[]; note?: string }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{ flex: 1, height: 7, borderRadius: 4, background: "var(--surface-2)", overflow: "hidden" }}>
                     <div style={{ width: `${Math.max(2, Number(d.risk_index) || 0)}%`, height: "100%", borderRadius: 4,
-                                  background: BAND_COLOR[d.risk_band] || "var(--ok)" }} />
+                                  background: BAND_COLOR[d.risk_band] || "var(--text-faint)" }} />
                   </div>
                   <span className="mono" style={{ fontSize: 12, minWidth: 34 }}>{d.risk_index}</span>
                 </div>
@@ -142,14 +182,16 @@ function RiskRegisterPanel({ snapId }: { snapId: number }) {
   const dd = data?.data;
   if (error || !dd?.per_device?.length) return null;   // older snapshots have no register — panel is data-gated
   const bands = dd.summary?.bands || {};
-  const flagged = dd.per_device.filter((d: any) => d.risk_band !== "Low");
+  // Unassessed (no evidence collected) is a coverage gap, not a risk — keep it out of the
+  // risk-flagged rows; it is surfaced as its own count in the panel header instead.
+  const flagged = dd.per_device.filter((d: any) => d.risk_band !== "Low" && d.risk_band !== "Unassessed");
   const shown = (flagged.length ? flagged : dd.per_device).slice(0, 8);
   return (
     <div className="panel">
       <h3>
         Device Risk Register · the senior-engineer read
-        <span className="chip" style={{ marginLeft: 10, color: bands.Severe ? "var(--crit)" : bands.Elevated ? "var(--risk)" : "var(--ok)" }}>
-          {bands.Severe ? `${bands.Severe} Severe` : bands.Elevated ? `${bands.Elevated} Elevated` : "no stacked risk"}
+        <span className="chip" style={{ marginLeft: 10, color: bands.Severe ? "var(--crit)" : bands.Elevated ? "var(--risk)" : bands.Unassessed ? "var(--text-faint)" : "var(--ok)" }}>
+          {bands.Severe ? `${bands.Severe} Severe` : bands.Elevated ? `${bands.Elevated} Elevated` : bands.Unassessed ? `${bands.Unassessed} not assessed` : "no stacked risk"}
         </span>
       </h3>
       <div className="faint" style={{ fontSize: 12, marginBottom: 10 }}>
@@ -226,7 +268,15 @@ export default function SnapshotPage() {
   if (loading) return <div className="container"><Loading /></div>;
   if (error) return <div className="container"><ErrorBox msg={error} /></div>;
   const s = meta!.summary;
-  const avg = typeof s.avg_health === "number" ? s.avg_health : Number(s.avg_health) || 0;
+  // WEBAP-02: when the engine could not compute a fleet average, summarize() emits avg_health as "". Coercing
+  // it with `Number("") || 0` produced a finite 0, so the hero Gauge showed a measured-looking red '0' instead
+  // of its own '—' unknown state. Pass NaN through so the Gauge (Number.isFinite check) renders '—', and
+  // GAUGE_COLOR (now guarded) uses a neutral ring -- mirroring the Dashboard PostureStrip treatment.
+  const avg = typeof s.avg_health === "number" ? s.avg_health : NaN;
+  // audit-5 FH#22: when the engine computed no fleet health at all (avg_health ""), the fleet is effectively
+  // un-assessed -- the sibling KPI cards must NOT show the green 'ok' tone (0 critical / 0 punch-list / 0 not-ready
+  // reads identically to a verified-clean fleet). Neutralize their tone, mirroring the Gauge's own '—' state.
+  const unknownFleet = !Number.isFinite(avg);
   const eol = s.lifecycle?.past_eos;
 
   const tabs = s.sections;
@@ -252,17 +302,17 @@ export default function SnapshotPage() {
         <div className="panel" style={{ display: "grid", placeItems: "center" }}>
           <Gauge value={avg} color={GAUGE_COLOR(avg)} label="avg health" />
         </div>
-        <div className={`panel kpi ${s.n_critical > 0 ? "crit" : "ok"}`}>
+        <div className={`panel kpi ${unknownFleet ? "" : s.n_critical > 0 ? "crit" : "ok"}`}>
           <div className="l">Critical-band switches</div>
           <div className="v"><CountUp value={s.n_critical} /></div>
           <div className="hint">of {s.n_switches} switches</div>
         </div>
-        <div className={`panel kpi ${HEALTH_TONE(100 - Math.min(100, s.punchlist.crit_high * 8))}`}>
+        <div className={`panel kpi ${unknownFleet ? "" : HEALTH_TONE(100 - Math.min(100, s.punchlist.crit_high * 8))}`}>
           <div className="l">Punch-list (crit/high)</div>
           <div className="v"><CountUp value={s.punchlist.crit_high} /><span className="faint" style={{ fontSize: 16, fontWeight: 600 }}> / <CountUp value={s.punchlist.total} /></span></div>
           <div className="hint">prioritised actions</div>
         </div>
-        <div className={`panel kpi ${s.readiness["NOT READY"] > 0 ? "crit" : s.readiness.CAUTION > 0 ? "watch" : "ok"}`}>
+        <div className={`panel kpi ${unknownFleet ? "" : s.readiness["NOT READY"] > 0 ? "crit" : s.readiness.CAUTION > 0 ? "watch" : "ok"}`}>
           <div className="l">Move-group readiness</div>
           <div className="v" style={{ fontSize: 20, display: "flex", gap: 12 }}>
             <span style={{ color: readyColor("READY") }}>{s.readiness.READY}✓</span>
@@ -284,6 +334,10 @@ export default function SnapshotPage() {
         <RiskRegisterPanel snapId={sid} />
 
         <ArchReviewPanel snapId={sid} />
+
+        <DesignBlueprintPanel snapId={sid} />
+
+        <CausalFlowPanel snapId={sid} />
 
         <CutoverPlanner snapId={sid} />
 

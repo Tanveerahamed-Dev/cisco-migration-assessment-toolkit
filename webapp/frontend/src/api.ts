@@ -248,6 +248,157 @@ export interface ArchReview {
   };
 }
 
+// The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint — the SAME object the
+// HLD/LLD DOCX and the explorer ✎ Design mode carry). POST /design with a requirements register re-scores.
+// Architecture-coverage SSOT (engine compute_architecture_coverage — the SAME map the explorer ✎ Design view
+// renders): which architecture CLASSES were observed vs not, across both ingestion channels (ssh / json).
+export interface ArchitectureCoverageClass {
+  key: string; label: string; channel: string; detectors: string[];
+  observed: boolean; n_hosts: number; hosts: string[]; status: string; findings: string[];
+}
+export interface ArchitectureCoverage {
+  classes: ArchitectureCoverageClass[];
+  summary: {
+    n_classes: number; n_observed: number; n_with_findings: number; n_clean: number; n_not_observed: number;
+    by_channel: { ssh: number; json: number };
+  };
+}
+
+export interface DesignDecision {
+  id: string;
+  title: string;
+  domain: string;
+  priority: string;
+  status: string;
+  confidence: string;
+  driver: string;
+  evidence: { summary: string; count: number; devices: string[]; fields: string[] };
+  principle: { id: string; title: string; citation: string };
+  recommended_action: string;
+  alternatives: string;
+  tradeoffs: string;
+  axes: string[];
+  requirements_needed: string[];
+  effective_priority?: number;
+}
+export interface DesignAxisScore {
+  axis: string;
+  label: string;
+  score: number | null;
+  posture: string;
+  evidence: string;
+  target_weight?: number;
+}
+export interface DesignDimension {
+  area: string; current: string; target: string; rationale: string; confidence: string;
+  drivers?: string[]; requirement_needed?: string;
+}
+export interface DesignTargetState {
+  dimensions: DesignDimension[];
+  replacement_bom: { replace_now: [string, number][]; refresh_soon: [string, number][]; n_replace: number; n_refresh: number; note: string };
+  addressing_plan: {
+    status: string; mode?: string; observed_vlans?: number; requirement_needed?: string; note: string;
+    n_census_vlans?: number; n_unsizable?: number;
+    supernet?: string; subnets?: { vlan: number; hosts: number; subnet: string; note?: string; zone?: string }[];
+    zones?: { zone: string; summary: string; n_vlans: number }[]; n_allocated?: number; n_overflow?: number;
+  };
+  wave_plan: {
+    waves: { wave: number; kind: string; n_switches: number; switches: string[]; source_groups: number[] }[];
+    n_waves: number; wave_cap: number; n_move_groups: number; largest_group: number; n_subdivided_groups: number; note: string;
+  };
+  aci_move_groups?: {
+    groups: { tenant: string; n_vrfs: number; n_bds: number; n_epgs: number; vrfs: string[]; epgs: string[]; unenforced_vrfs: string[]; segmentation_gap: boolean }[];
+    n_tenants: number; n_epgs: number; n_segmentation_gaps: number; note: string;
+  };
+  segmentation_plan?: { observed: string; principle?: string; status: string; target: string;
+    requirement_needed?: string; target_zones?: string[] };
+  scope_note?: string;
+}
+export interface DesignBlueprint {
+  decisions: DesignDecision[];
+  tradeoff_scorecard: DesignAxisScore[];
+  target_state?: DesignTargetState;
+  requirements_model: {
+    fields: { key: string; label: string; options?: string[]; example?: unknown; value: unknown }[];
+    open_questions: { id: string; title: string; needs: string[] }[];
+    provided: boolean;
+    note: string;
+  };
+  methodology: string;
+  axes: { key: string; label: string; intent: string }[];
+  summary: {
+    n_decisions: number;
+    n_recommended: number;
+    n_needs_requirement: number;
+    n_critical: number;
+    by_domain: Record<string, number>;
+    requirements_provided: boolean;
+    headline: string;
+  };
+  coverage: { inventory: number; collected: number; not_collected: number; caveat: string };
+}
+
+// Design-driven NRFU/ATP acceptance-test checklist (GET /api/snapshots/{id}/design/nrfu).
+// One item per recommended design decision; traceable to the CCDE principle + affected devices.
+export interface DesignNrfuItem {
+  decision_id: string;
+  title: string;
+  priority: string;
+  phase: "pre-cutover" | "post-cutover-functional" | "post-cutover-operational";
+  description: string;
+  pass_criteria: string;
+  setup: string;
+  devices: string[];
+  principle_citation: string;
+}
+export interface DesignNrfu {
+  items: DesignNrfuItem[];
+  n_items: number;
+  note: string;
+}
+
+// The unified CAUSAL FLOW model (engine compute_causal_flows — the SAME normalization the explorer's
+// Causal Flow mode renders). GET /api/snapshots/{id}/causal_flows. Every finding family as one
+// trigger -> mechanism -> impact -> mitigation story; cross-layer compounds carry shape "bowtie".
+export interface CausalFlowItem {
+  key: string;
+  family: string;
+  family_label: string;
+  icon: string;
+  title: string;
+  severity: string;       // normalised: Critical | High | Medium | Low | Info
+  sev_tok: string;        // crit | risk | watch | accent
+  trigger: string;
+  mechanism: string;
+  impact: string;
+  mitigation: string;
+  hosts: string[];
+  blast: number;          // magnitude -> Sankey connector width
+  blast_unit: string;     // the unit actually matched (endpoints | devices | …) — coverage-honest
+  shape: "linear" | "bowtie";
+  evidence: {
+    summary?: string; count?: number; devices?: string[]; fields?: string[];
+    citation?: string; layers?: string; rank?: number; wave?: string;
+    // W3-2 (NotebookLM): coverage-honest grounding, stamped by the engine SSOT (causal.evidence_precision /
+    // evidence_grounding). precision = BLOCK | DEVICE | FLEET (never LINE without raw show-text); grounded=false
+    // + dangling[] flag a citation whose snapshot path no longer resolves.
+    precision?: "BLOCK" | "DEVICE" | "FLEET"; grounded?: boolean; dangling?: string[];
+  };
+  threats?: string[];     // bowtie: the contributing causes
+  top_event?: string;
+  consequence?: string;
+  confidence?: string;    // design decisions
+  alternatives?: string;
+  tradeoffs?: string;
+  axes?: string[];
+}
+export interface CausalFamily { key: string; label: string; icon: string; n: number; crit: number }
+export interface CausalFlows {
+  flows: CausalFlowItem[];
+  families: CausalFamily[];
+  summary: { n_flows: number; n_families: number; n_critical: number; by_severity: Record<string, number> };
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
@@ -300,6 +451,15 @@ export const api = {
     fetch(`/api/snapshots/${id}/graph`).then((r) => j<{ nodes: any[]; edges: any[] }>(r)),
   cutover: (id: number) => fetch(`/api/snapshots/${id}/cutover`).then((r) => j<CutoverPlan>(r)),
   archreview: (id: number) => fetch(`/api/snapshots/${id}/archreview`).then((r) => j<ArchReview>(r)),
+  design: (id: number) => fetch(`/api/snapshots/${id}/design`).then((r) => j<DesignBlueprint>(r)),
+  architectureCoverage: (id: number) =>
+    fetch(`/api/snapshots/${id}/architecture_coverage`).then((r) => j<ArchitectureCoverage>(r)),
+  designOverlay: (id: number, requirements: Record<string, unknown>) =>
+    post<DesignBlueprint>(`/api/snapshots/${id}/design`, requirements),
+  designNrfu: (id: number) => fetch(`/api/snapshots/${id}/design/nrfu`).then((r) => j<DesignNrfu>(r)),
+  designNrfuOverlay: (id: number, requirements: Record<string, unknown>) =>
+    post<DesignNrfu>(`/api/snapshots/${id}/design/nrfu`, requirements),
+  causalFlows: (id: number) => fetch(`/api/snapshots/${id}/causal_flows`).then((r) => j<CausalFlows>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),

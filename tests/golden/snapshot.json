@@ -26,7 +26,7 @@
   "core2": {
    "hostname": "core2",
    "platform": "nxos",
-   "model": "",
+   "model": "N9K-C93180YC-EX",
    "serial_number": "FDO12345ABC",
    "chassis_serial": "",
    "sw_version": "",
@@ -38,7 +38,7 @@
    "power_drawn_w": "",
    "power_remaining_w": "",
    "num_modules": 0,
-   "total_ports": 2,
+   "total_ports": 5,
    "active_ports": 2,
    "fan_status": "",
    "temperature_status": "",
@@ -286,7 +286,7 @@
     "duplex": "Auto",
     "speed": "Auto",
     "port_type": "10/100/1000BaseTX",
-    "link_type": "",
+    "link_type": "Copper",
     "description": "quarantine",
     "end_host_mac": "",
     "end_host_ip": "",
@@ -797,6 +797,162 @@
     "acl_out": "",
     "mtu": "",
     "dhcp_helpers": ""
+   },
+   "Eth1/47": {
+    "port": "Eth1/47",
+    "status": "",
+    "switchport_mode": "",
+    "vlan": "",
+    "vlan_name": "",
+    "vrf": "",
+    "duplex": "",
+    "speed": "",
+    "port_type": "",
+    "link_type": "",
+    "description": "",
+    "end_host_mac": "",
+    "end_host_ip": "10.0.250.1",
+    "port_channel": "",
+    "port_channel_protocol": "",
+    "stp_blocked": "",
+    "stp_bpduguard": "",
+    "stp_rootguard": "",
+    "poe_status": "",
+    "system_owner": "",
+    "endpoint_type": "Switch",
+    "endpoint_location": "r1",
+    "dual_connection": "",
+    "trunk_native_vlan": "",
+    "trunk_allowed_vlans": "",
+    "trunk_status": "",
+    "arp_source_switch": "",
+    "cdp_neighbor": "wan-edge-rtr1.lab",
+    "current_switch_serial": "FDO12345ABC",
+    "current_switch_ip": "10.0.99.2",
+    "current_switch_vtp_domain": "",
+    "neighbor_switch_serial": "wan-edge-rtr1.lab",
+    "neighbor_switch_ip": "10.0.250.1",
+    "neighbor_switch_vtp_domain": "",
+    "subnet_primary_route": "",
+    "subnet_secondary_routes": "",
+    "route_next_hop": "",
+    "routing_source": "",
+    "hsrp_behavior": "",
+    "multicast_info": "",
+    "svi_ip": "",
+    "stp_fwd_vlans": "",
+    "stp_blk_vlans": "",
+    "stp_other_vlans": "",
+    "neighbor_port": "Gi0/0/1",
+    "neighbor_platform": "cisco ASR1001-X",
+    "acl_in": "",
+    "acl_out": "",
+    "mtu": "",
+    "dhcp_helpers": ""
+   },
+   "Eth1/20": {
+    "port": "Eth1/20",
+    "status": "",
+    "switchport_mode": "",
+    "vlan": "",
+    "vlan_name": "",
+    "vrf": "",
+    "duplex": "",
+    "speed": "",
+    "port_type": "",
+    "link_type": "",
+    "description": "",
+    "end_host_mac": "",
+    "end_host_ip": "10.0.40.20",
+    "port_channel": "",
+    "port_channel_protocol": "",
+    "stp_blocked": "",
+    "stp_bpduguard": "",
+    "stp_rootguard": "",
+    "poe_status": "",
+    "system_owner": "",
+    "endpoint_type": "Switch",
+    "endpoint_location": "",
+    "dual_connection": "",
+    "trunk_native_vlan": "",
+    "trunk_allowed_vlans": "",
+    "trunk_status": "",
+    "arp_source_switch": "",
+    "cdp_neighbor": "SEP00112233AABB",
+    "current_switch_serial": "FDO12345ABC",
+    "current_switch_ip": "10.0.99.2",
+    "current_switch_vtp_domain": "",
+    "neighbor_switch_serial": "SEP00112233AABB",
+    "neighbor_switch_ip": "10.0.40.20",
+    "neighbor_switch_vtp_domain": "",
+    "subnet_primary_route": "",
+    "subnet_secondary_routes": "",
+    "route_next_hop": "",
+    "routing_source": "",
+    "hsrp_behavior": "",
+    "multicast_info": "",
+    "svi_ip": "",
+    "stp_fwd_vlans": "",
+    "stp_blk_vlans": "",
+    "stp_other_vlans": "",
+    "neighbor_port": "Port",
+    "neighbor_platform": "Cisco IP Phone 8845",
+    "acl_in": "",
+    "acl_out": "",
+    "mtu": "",
+    "dhcp_helpers": ""
+   },
+   "Eth1/30": {
+    "port": "Eth1/30",
+    "status": "",
+    "switchport_mode": "",
+    "vlan": "",
+    "vlan_name": "",
+    "vrf": "",
+    "duplex": "",
+    "speed": "",
+    "port_type": "",
+    "link_type": "",
+    "description": "",
+    "end_host_mac": "",
+    "end_host_ip": "10.0.50.30",
+    "port_channel": "",
+    "port_channel_protocol": "",
+    "stp_blocked": "",
+    "stp_bpduguard": "",
+    "stp_rootguard": "",
+    "poe_status": "",
+    "system_owner": "",
+    "endpoint_type": "Switch",
+    "endpoint_location": "r3-",
+    "dual_connection": "",
+    "trunk_native_vlan": "",
+    "trunk_allowed_vlans": "",
+    "trunk_status": "",
+    "arp_source_switch": "",
+    "cdp_neighbor": "AP-floor3-01",
+    "current_switch_serial": "FDO12345ABC",
+    "current_switch_ip": "10.0.99.2",
+    "current_switch_vtp_domain": "",
+    "neighbor_switch_serial": "AP-floor3-01",
+    "neighbor_switch_ip": "10.0.50.30",
+    "neighbor_switch_vtp_domain": "",
+    "subnet_primary_route": "",
+    "subnet_secondary_routes": "",
+    "route_next_hop": "",
+    "routing_source": "",
+    "hsrp_behavior": "",
+    "multicast_info": "",
+    "svi_ip": "",
+    "stp_fwd_vlans": "",
+    "stp_blk_vlans": "",
+    "stp_other_vlans": "",
+    "neighbor_port": "Gi0",
+    "neighbor_platform": "cisco AIR-AP2802I-B-K9",
+    "acl_in": "",
+    "acl_out": "",
+    "mtu": "",
+    "dhcp_helpers": ""
    }
   },
   "access1": {
@@ -1020,6 +1176,8 @@
    "media": "SFP/fiber",
    "input_errors": 0,
    "crc_errors": 0,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "",
    "poe": "",
@@ -1035,6 +1193,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1050,6 +1210,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1065,6 +1227,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1080,6 +1244,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
@@ -1095,6 +1261,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "Po1",
    "poe": "",
@@ -1110,6 +1278,8 @@
    "media": "SFP/fiber",
    "input_errors": 0,
    "crc_errors": 0,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "",
    "poe": "",
@@ -1125,6 +1295,8 @@
    "media": "copper",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "",
    "poe": "",
@@ -1140,6 +1312,8 @@
    "media": "copper",
    "input_errors": 142,
    "crc_errors": 17,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "",
    "poe": "",
@@ -1155,6 +1329,8 @@
    "media": "10g",
    "input_errors": 0,
    "crc_errors": 0,
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": 0,
    "port_channel": "Po1",
    "poe": "",
@@ -1170,8 +1346,61 @@
    "media": "10g",
    "input_errors": "",
    "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
    "output_drops": "",
    "port_channel": "Po1",
+   "poe": "",
+   "risk": "ok",
+   "severity": "Info"
+  },
+  {
+   "switch": "core2",
+   "port": "Eth1/20",
+   "status": "",
+   "speed": "unknown",
+   "duplex": "unknown",
+   "media": "unknown",
+   "input_errors": "",
+   "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
+   "output_drops": "",
+   "port_channel": "",
+   "poe": "",
+   "risk": "ok",
+   "severity": "Info"
+  },
+  {
+   "switch": "core2",
+   "port": "Eth1/30",
+   "status": "",
+   "speed": "unknown",
+   "duplex": "unknown",
+   "media": "unknown",
+   "input_errors": "",
+   "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
+   "output_drops": "",
+   "port_channel": "",
+   "poe": "",
+   "risk": "ok",
+   "severity": "Info"
+  },
+  {
+   "switch": "core2",
+   "port": "Eth1/47",
+   "status": "",
+   "speed": "unknown",
+   "duplex": "unknown",
+   "media": "unknown",
+   "input_errors": "",
+   "crc_errors": "",
+   "output_errors": "",
+   "late_collisions": "",
+   "output_drops": "",
+   "port_channel": "",
    "poe": "",
    "risk": "ok",
    "severity": "Info"
@@ -1464,6 +1693,7 @@
    "n_av_groups": 0,
    "n_mac_clashes": 0,
    "n_querier_gaps": 0,
+   "n_mcast_vlans": 0,
    "n_active_switches": 0,
    "n_active_interfaces": 0,
    "n_ptp_clocks": 0,
@@ -1555,6 +1785,51 @@
     "wave": ""
    },
    {
+    "device": "access1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Medium",
+    "title": "AAA new-model",
+    "why": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
+    "commands": [
+     "! Enable 'aaa new-model' for centralized authentication / authorization / accounting."
+    ],
+    "verify": "show running-config | include no-aaa",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Medium",
+    "title": "Password encryption service",
+    "why": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
+    "commands": [
+     "! Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9."
+    ],
+    "verify": "show running-config | include password-encryption",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Medium",
+    "title": "VTY line hardening",
+    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
+    "commands": [
+     "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
+    ],
+    "verify": "show running-config | include vty-hardening",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
     "device": "core1",
     "platform": "ios",
     "category": "STP",
@@ -1591,7 +1866,7 @@
     "category": "Security",
     "severity": "Medium",
     "title": "VTY line hardening",
-    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+    "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
     "commands": [
      "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
     ],
@@ -1614,6 +1889,51 @@
     "verify": "show spanning-tree vlan 30",
     "caution": "Set a DELIBERATE priority on the INTENDED root only; verify the topology before and after.",
     "source": "stp-accidental",
+    "wave": ""
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Low",
+    "title": "Logging / audit trail",
+    "why": "no syslog / buffered logging -- no audit trail across the migration.",
+    "commands": [
+     "! Configure 'logging host' / 'logging buffered' to retain an audit trail."
+    ],
+    "verify": "show running-config | include no-logging",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Low",
+    "title": "Login banner",
+    "why": "no login / MOTD legal-notice banner.",
+    "commands": [
+     "! Configure a 'banner login' / 'banner motd' legal-notice banner."
+    ],
+    "verify": "show running-config | include no-banner",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
+    "wave": ""
+   },
+   {
+    "device": "access1",
+    "platform": "ios",
+    "category": "Security",
+    "severity": "Low",
+    "title": "NTP time synchronization",
+    "why": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
+    "commands": [
+     "! Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy."
+    ],
+    "verify": "show running-config | include no-ntp",
+    "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+    "source": "cis-security",
     "wave": ""
    },
    {
@@ -1752,7 +2072,7 @@
      "category": "Security",
      "severity": "Medium",
      "title": "VTY line hardening",
-     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
      "commands": [
       "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
      ],
@@ -1781,6 +2101,51 @@
     {
      "device": "access1",
      "platform": "ios",
+     "category": "Security",
+     "severity": "Medium",
+     "title": "AAA new-model",
+     "why": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
+     "commands": [
+      "! Enable 'aaa new-model' for centralized authentication / authorization / accounting."
+     ],
+     "verify": "show running-config | include no-aaa",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Medium",
+     "title": "Password encryption service",
+     "why": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
+     "commands": [
+      "! Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9."
+     ],
+     "verify": "show running-config | include password-encryption",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Medium",
+     "title": "VTY line hardening",
+     "why": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
+     "commands": [
+      "! Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
+     ],
+     "verify": "show running-config | include vty-hardening",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
      "category": "STP",
      "severity": "Low",
      "title": "Accidental root on VLAN 30",
@@ -1793,15 +2158,60 @@
      "caution": "Set a DELIBERATE priority on the INTENDED root only; verify the topology before and after.",
      "source": "stp-accidental",
      "wave": ""
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Low",
+     "title": "Logging / audit trail",
+     "why": "no syslog / buffered logging -- no audit trail across the migration.",
+     "commands": [
+      "! Configure 'logging host' / 'logging buffered' to retain an audit trail."
+     ],
+     "verify": "show running-config | include no-logging",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Low",
+     "title": "Login banner",
+     "why": "no login / MOTD legal-notice banner.",
+     "commands": [
+      "! Configure a 'banner login' / 'banner motd' legal-notice banner."
+     ],
+     "verify": "show running-config | include no-banner",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
+    },
+    {
+     "device": "access1",
+     "platform": "ios",
+     "category": "Security",
+     "severity": "Low",
+     "title": "NTP time synchronization",
+     "why": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
+     "commands": [
+      "! Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy."
+     ],
+     "verify": "show running-config | include no-ntp",
+     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
+     "source": "cis-security",
+     "wave": ""
     }
    ]
   },
   "summary": {
-   "n_items": 10,
+   "n_items": 16,
    "n_devices": 2,
    "by_category": {
     "Config hygiene": 2,
-    "Security": 6,
+    "Security": 12,
     "STP": 2
    },
    "n_high": 5
@@ -2187,6 +2597,12 @@
   "baseline": [],
   "per_device": [
    {
+    "host": "access1",
+    "compliance_pct": 100,
+    "n_missing": 0,
+    "missing": []
+   },
+   {
     "host": "core1",
     "compliance_pct": 100,
     "n_missing": 0,
@@ -2195,7 +2611,7 @@
   ],
   "summary": {
    "mode": "majority",
-   "n_devices": 1,
+   "n_devices": 2,
    "n_baseline": 0,
    "n_drifting": 0,
    "avg_compliance_pct": 100
@@ -2353,15 +2769,15 @@
   "per_device": [
    {
     "host": "access1",
-    "assessable": false,
-    "mode": "not assessable",
+    "assessable": true,
+    "mode": "none",
     "n_class_maps": 0,
     "n_policy_maps": 0,
     "n_attached_if": 0,
     "n_trust_if": 0,
     "n_auto_if": 0,
     "n_voice_if": 0,
-    "posture": "Not assessable \u2014 full running-config not captured."
+    "posture": "No QoS configuration \u2014 all traffic is forwarded best-effort."
    },
    {
     "host": "core1",
@@ -2394,20 +2810,19 @@
     "kind": "best-effort-fleet",
     "label": "No QoS configured anywhere",
     "severity": "Low",
-    "detail": "None of the 1 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
+    "detail": "None of the 2 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
     "recommendation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration."
    }
   ],
   "summary": {
    "n_devices": 3,
-   "n_assessable": 1,
-   "n_not_assessable": 2,
+   "n_assessable": 2,
+   "n_not_assessable": 1,
    "hosts_not_assessable": [
-    "access1",
     "core2"
    ],
    "modes": {
-    "none": 1
+    "none": 2
    },
    "n_voice_ports": 0,
    "n_findings": 1,
@@ -2426,8 +2841,11 @@
     "train": "Classic IOS 15.x",
     "train_band": "Verify EoL",
     "train_note": "Most 15.x trains are past end of software maintenance -- verify the platform's EoL notice and target the published recommended release.",
-    "config_assessable": false,
-    "surfaces": {}
+    "config_assessable": true,
+    "surfaces": {
+     "http-server": "verify",
+     "smart-install": "verify"
+    }
    },
    {
     "host": "core1",
@@ -2507,10 +2925,9 @@
   ],
   "summary": {
    "n_devices": 3,
-   "n_config_assessable": 1,
-   "n_config_not_assessable": 2,
+   "n_config_assessable": 2,
+   "n_config_not_assessable": 1,
    "hosts_config_not_assessable": [
-    "access1",
     "core2"
    ],
    "n_version_known": 2,
@@ -2633,13 +3050,19 @@
   },
   {
    "switch": "access1",
-   "score": 72,
+   "score": 60,
    "band": "Fair",
    "role": "access",
    "criticality": 1.0,
    "deductions": [
     "single-fiber-uplink @ Gi0/1 (-10)",
-    "CL-01 Critical (-18)"
+    "CL-01 Critical (-18)",
+    "password-encryption medium (-3)",
+    "no-aaa medium (-3)",
+    "vty-hardening medium (-3)",
+    "no-ntp low (-1)",
+    "no-logging low (-1)",
+    "no-banner low (-1)"
    ],
    "data_quality": 1.0
   },
@@ -2749,55 +3172,77 @@
  ],
  "score_sensitivity": [
   {
-   "perturbation": "L1 -50%",
-   "group": "l1_weights",
-   "delta_pct": -50,
-   "switches_changed_band": 1,
-   "changed": [
-    "access1"
-   ],
-   "detail": "access1: Fair->Good"
-  },
-  {
-   "perturbation": "XL -50%",
-   "group": "xl_weights",
-   "delta_pct": -50,
-   "switches_changed_band": 1,
-   "changed": [
-    "access1"
-   ],
-   "detail": "access1: Fair->Good"
-  },
-  {
-   "perturbation": "XL -25%",
-   "group": "xl_weights",
-   "delta_pct": -25,
-   "switches_changed_band": 1,
-   "changed": [
-    "access1"
-   ],
-   "detail": "access1: Fair->Good"
-  },
-  {
-   "perturbation": "L1 -25%",
-   "group": "l1_weights",
-   "delta_pct": -25,
-   "switches_changed_band": 0,
-   "changed": [],
-   "detail": "no band changes"
-  },
-  {
    "perturbation": "L1 +25%",
    "group": "l1_weights",
    "delta_pct": 25,
-   "switches_changed_band": 0,
-   "changed": [],
-   "detail": "no band changes"
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Poor"
   },
   {
    "perturbation": "L1 +50%",
    "group": "l1_weights",
    "delta_pct": 50,
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Poor"
+  },
+  {
+   "perturbation": "SEC +25%",
+   "group": "sec_weights",
+   "delta_pct": 25,
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Poor"
+  },
+  {
+   "perturbation": "SEC +50%",
+   "group": "sec_weights",
+   "delta_pct": 50,
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Poor"
+  },
+  {
+   "perturbation": "XL +25%",
+   "group": "xl_weights",
+   "delta_pct": 25,
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Poor"
+  },
+  {
+   "perturbation": "XL +50%",
+   "group": "xl_weights",
+   "delta_pct": 50,
+   "switches_changed_band": 1,
+   "changed": [
+    "access1"
+   ],
+   "detail": "access1: Fair->Poor"
+  },
+  {
+   "perturbation": "L1 -50%",
+   "group": "l1_weights",
+   "delta_pct": -50,
+   "switches_changed_band": 0,
+   "changed": [],
+   "detail": "no band changes"
+  },
+  {
+   "perturbation": "L1 -25%",
+   "group": "l1_weights",
+   "delta_pct": -25,
    "switches_changed_band": 0,
    "changed": [],
    "detail": "no band changes"
@@ -2883,33 +3328,17 @@
    "detail": "no band changes"
   },
   {
-   "perturbation": "SEC +25%",
-   "group": "sec_weights",
-   "delta_pct": 25,
-   "switches_changed_band": 0,
-   "changed": [],
-   "detail": "no band changes"
-  },
-  {
-   "perturbation": "SEC +50%",
-   "group": "sec_weights",
-   "delta_pct": 50,
-   "switches_changed_band": 0,
-   "changed": [],
-   "detail": "no band changes"
-  },
-  {
-   "perturbation": "XL +25%",
+   "perturbation": "XL -50%",
    "group": "xl_weights",
-   "delta_pct": 25,
+   "delta_pct": -50,
    "switches_changed_band": 0,
    "changed": [],
    "detail": "no band changes"
   },
   {
-   "perturbation": "XL +50%",
+   "perturbation": "XL -25%",
    "group": "xl_weights",
-   "delta_pct": 50,
+   "delta_pct": -25,
    "switches_changed_band": 0,
    "changed": [],
    "detail": "no band changes"
@@ -2972,7 +3401,7 @@
      "title": "AAA new-model",
      "severity": "info",
      "status": "pass",
-     "detail": "'aaa new-model' is enabled.",
+     "detail": "central AAA (TACACS+/RADIUS) is configured.",
      "cis_ref": "CIS 1.4",
      "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting."
     },
@@ -3044,7 +3473,7 @@
      "title": "VTY line hardening",
      "severity": "medium",
      "status": "fail",
-     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
      "cis_ref": "CIS 2.2",
      "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
     },
@@ -3064,7 +3493,579 @@
     "na": 0,
     "grade": "weak"
    }
+  },
+  "access1": {
+   "findings": [
+    {
+     "id": "password-encryption",
+     "title": "Password encryption service",
+     "severity": "medium",
+     "status": "fail",
+     "detail": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
+     "cis_ref": "CIS 1.1.1",
+     "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9."
+    },
+    {
+     "id": "no-aaa",
+     "title": "AAA new-model",
+     "severity": "medium",
+     "status": "fail",
+     "detail": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
+     "cis_ref": "CIS 1.4",
+     "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting."
+    },
+    {
+     "id": "no-ntp",
+     "title": "NTP time synchronization",
+     "severity": "low",
+     "status": "fail",
+     "detail": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
+     "cis_ref": "CIS 6.1",
+     "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy."
+    },
+    {
+     "id": "no-logging",
+     "title": "Logging / audit trail",
+     "severity": "low",
+     "status": "fail",
+     "detail": "no syslog / buffered logging -- no audit trail across the migration.",
+     "cis_ref": "CIS 6.2",
+     "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail."
+    },
+    {
+     "id": "no-banner",
+     "title": "Login banner",
+     "severity": "low",
+     "status": "fail",
+     "detail": "no login / MOTD legal-notice banner.",
+     "cis_ref": "CIS 1.6",
+     "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner."
+    },
+    {
+     "id": "weak-enable",
+     "title": "Privileged-EXEC secret",
+     "severity": "info",
+     "status": "na",
+     "detail": "no enable password / secret found in this config.",
+     "cis_ref": "CIS 1.2.1",
+     "remediation": "Use 'enable secret' (Type-8/9), not 'enable password' (Type-0/7)."
+    },
+    {
+     "id": "weak-user-pw",
+     "title": "Local user password storage",
+     "severity": "info",
+     "status": "pass",
+     "detail": "no Type-0/7 local user passwords.",
+     "cis_ref": "CIS 1.3",
+     "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries."
+    },
+    {
+     "id": "insecure-snmp",
+     "title": "SNMP access",
+     "severity": "info",
+     "status": "na",
+     "detail": "no SNMP configured.",
+     "cis_ref": "CIS 3.1",
+     "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES)."
+    },
+    {
+     "id": "telnet-enabled",
+     "title": "VTY transport (telnet)",
+     "severity": "info",
+     "status": "pass",
+     "detail": "VTY transport restricted to SSH.",
+     "cis_ref": "CIS 2.1",
+     "remediation": "Set 'transport input ssh' on every VTY line; disable telnet."
+    },
+    {
+     "id": "vty-hardening",
+     "title": "VTY line hardening",
+     "severity": "medium",
+     "status": "fail",
+     "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
+     "cis_ref": "CIS 2.2",
+     "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line."
+    },
+    {
+     "id": "risky-services",
+     "title": "Unused / risky services",
+     "severity": "info",
+     "status": "pass",
+     "detail": "no risky / unused services enabled.",
+     "cis_ref": "CIS 1.5",
+     "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'."
+    }
+   ],
+   "summary": {
+    "fail": 6,
+    "pass": 3,
+    "na": 2,
+    "grade": "partial"
+   }
   }
+ },
+ "framework_coverage": {
+  "frameworks": {
+   "CIS": {
+    "label": "CIS Cisco Benchmark",
+    "controls": [
+     {
+      "control": "CIS 1.1.1",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 1.3",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 1.4",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 1.5",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 1.6",
+      "check": "no-banner",
+      "title": "Login banner",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 2.1",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 2.2",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 3.1",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "CIS 6.1",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 6.2",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CIS 1.2.1",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 11,
+    "n_fail": 10
+   },
+   "NIST": {
+    "label": "NIST 800-53 r5",
+    "controls": [
+     {
+      "control": "AC-17 / AC-12",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "AC-17(2) / SC-8",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "AC-17(2) / SC-8",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "AC-2 / IA-2",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "AC-8",
+      "check": "no-banner",
+      "title": "Login banner",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "AU-2 / AU-6 / AU-12",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "AU-8",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "CM-7",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "IA-5(1)",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "IA-5(1)",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "IA-5(1)",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 11,
+    "n_fail": 10
+   },
+   "PCI": {
+    "label": "PCI-DSS v4.0",
+    "controls": [
+     {
+      "control": "10.2",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "10.6",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "2.2",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "2.2.7",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "2.2.7",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "8.2",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "8.2",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "8.3.2",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "8.3.2",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "8.3.2",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 10,
+    "n_fail": 9
+   },
+   "STIG": {
+    "label": "DISA Cisco IOS NDM STIG",
+    "controls": [
+     {
+      "control": "Cisco IOS NDM \u2014 SNMPv3 auth/priv",
+      "check": "insecure-snmp",
+      "title": "SNMP access",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 VTY ACL + exec-timeout",
+      "check": "vty-hardening",
+      "title": "VTY line hardening",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 audit logging",
+      "check": "no-logging",
+      "title": "Logging / audit trail",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 authenticated time source",
+      "check": "no-ntp",
+      "title": "NTP time synchronization",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 centralized AAA",
+      "check": "no-aaa",
+      "title": "AAA new-model",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 disable unused services",
+      "check": "risky-services",
+      "title": "Unused / risky services",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 encrypted (SSH) management",
+      "check": "telnet-enabled",
+      "title": "VTY transport (telnet)",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 local password storage",
+      "check": "weak-user-pw",
+      "title": "Local user password storage",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 login banner",
+      "check": "no-banner",
+      "title": "Login banner",
+      "status": "fail",
+      "n_fail": 2,
+      "hosts_fail": [
+       "access1",
+       "core1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 password encryption",
+      "check": "password-encryption",
+      "title": "Password encryption service",
+      "status": "fail",
+      "n_fail": 1,
+      "hosts_fail": [
+       "access1"
+      ]
+     },
+     {
+      "control": "Cisco IOS NDM \u2014 privileged secret",
+      "check": "weak-enable",
+      "title": "Privileged-EXEC secret",
+      "status": "pass",
+      "n_fail": 0,
+      "hosts_fail": []
+     }
+    ],
+    "n_assessed": 11,
+    "n_fail": 10
+   }
+  },
+  "note": "Config-evidenced mapping of the engine's hardening checks to framework controls \u2014 NOT a full framework audit. Controls outside this check set are not auto-assessed (never assumed 'pass'); a not-applicable check stays 'na'.",
+  "scope": "config-only (show running-config); management-plane hardening controls"
  },
  "config_hygiene": {
   "core1": {
@@ -3099,13 +4100,29 @@
     "root_priority": 24586,
     "root_address": "aaaa.0001.0001",
     "is_root": true,
+    "is_mst": false,
     "bridge_priority": 24586
    },
    "30": {
     "root_priority": 32798,
     "root_address": "cccc.0003.0003",
     "is_root": false,
+    "is_mst": false,
     "bridge_priority": 32798
+   }
+  },
+  "core2": {
+   "10": {
+    "root_priority": null,
+    "root_address": "",
+    "is_root": false,
+    "is_mst": false
+   },
+   "20": {
+    "root_priority": null,
+    "root_address": "",
+    "is_root": false,
+    "is_mst": false
    }
   },
   "access1": {
@@ -3113,17 +4130,1061 @@
     "root_priority": 24586,
     "root_address": "aaaa.0001.0001",
     "is_root": false,
+    "is_mst": false,
     "bridge_priority": 32778
    },
    "30": {
     "root_priority": 32798,
     "root_address": "cccc.0003.0003",
     "is_root": true,
+    "is_mst": false,
     "bridge_priority": 32798
    }
   }
  },
  "vpc": {},
+ "fhrp_detail": {
+  "core1": [
+   {
+    "ifname": "Vlan10",
+    "group": "10",
+    "state": "Active",
+    "priority": 110,
+    "cfg_priority": 110,
+    "preempt": true,
+    "preempt_delay": null,
+    "vip": "10.0.10.1",
+    "vmac": "0000.0c07.ac0a",
+    "hello": 3,
+    "hold": 10,
+    "standby_ip": "10.0.10.3",
+    "track": [],
+    "version": 1
+   },
+   {
+    "ifname": "Vlan20",
+    "group": "20",
+    "state": "Standby",
+    "priority": 100,
+    "cfg_priority": 100,
+    "preempt": false,
+    "preempt_delay": null,
+    "vip": "10.0.20.1",
+    "vmac": "0000.0c07.ac14",
+    "hello": null,
+    "hold": null,
+    "standby_ip": "",
+    "track": [],
+    "version": 1
+   }
+  ]
+ },
+ "overlay": {
+  "core2": {
+   "nve_peers": [
+    {
+     "interface": "nve1",
+     "peer_ip": "10.255.0.1",
+     "state": "Up",
+     "learn_type": "CP"
+    },
+    {
+     "interface": "nve1",
+     "peer_ip": "10.255.0.2",
+     "state": "Down",
+     "learn_type": "CP"
+    }
+   ],
+   "evpn_neighbors": [
+    {
+     "neighbor": "10.255.0.254",
+     "as": "65001",
+     "state": "Established",
+     "prefixes": 240
+    },
+    {
+     "neighbor": "10.255.0.253",
+     "as": "65001",
+     "state": "Idle",
+     "prefixes": 0
+    }
+   ],
+   "nve_vni": [
+    {
+     "vni": "10010",
+     "mcast_group": "225.1.1.10",
+     "state": "Up",
+     "mode": "CP",
+     "type": "L2"
+    },
+    {
+     "vni": "50000",
+     "mcast_group": "",
+     "state": "Down",
+     "mode": "CP",
+     "type": "L3"
+    }
+   ]
+  }
+ },
+ "copp": {
+  "core2": [
+   {
+    "class": "MGMT-RATE-LIMIT",
+    "conformed": 177446058,
+    "exceeded": 0,
+    "violated": 4521,
+    "dropped": 0,
+    "drops": 4521
+   },
+   {
+    "class": "copp-system-p-class-critical",
+    "conformed": 88231005,
+    "exceeded": 0,
+    "violated": 9999,
+    "dropped": 0,
+    "drops": 9999
+   }
+  ]
+ },
+ "mpls": {
+  "core1": {
+   "ldp_neighbors": [
+    {
+     "peer": "10.0.255.2",
+     "label_space": "0",
+     "state": "Oper"
+    },
+    {
+     "peer": "10.0.255.9",
+     "label_space": "0",
+     "state": "Nonexistent"
+    }
+   ],
+   "vpnv4_neighbors": [
+    {
+     "neighbor": "10.0.255.2",
+     "as": "65000",
+     "state": "Established",
+     "prefixes": 6
+    },
+    {
+     "neighbor": "10.0.255.9",
+     "as": "65000",
+     "state": "Idle",
+     "prefixes": 0
+    }
+   ],
+   "l2vpn_vcs": [
+    {
+     "local_intf": "Gi1/0/2",
+     "dest": "10.0.255.2",
+     "vc_id": "200",
+     "status": "UP"
+    },
+    {
+     "local_intf": "Gi1/0/3",
+     "dest": "10.0.255.9",
+     "vc_id": "300",
+     "status": "DOWN"
+    }
+   ]
+  }
+ },
+ "aci": {
+  "core2": {
+   "faults": [
+    {
+     "code": "F1394",
+     "severity": "critical",
+     "lc": "raised",
+     "ack": "no",
+     "domain": "infra",
+     "cause": "interface-physical-down",
+     "dn": "topology/pod-1/node-101/sys/phys-[eth1/49]/phys/fault-F1394",
+     "descr": "Port is down, reason:sfp-missing, used by:Fabric"
+    },
+    {
+     "code": "F0321",
+     "severity": "critical",
+     "lc": "raised",
+     "ack": "no",
+     "domain": "infra",
+     "cause": "cluster-health-degraded",
+     "dn": "topology/pod-1/node-1/av/fault-F0321",
+     "descr": "APIC cluster is degraded: leadership diverged"
+    },
+    {
+     "code": "F1234",
+     "severity": "minor",
+     "lc": "raised",
+     "ack": "no",
+     "domain": "tenant",
+     "cause": "config-drift",
+     "dn": "topology/pod-1/node-102/fault-F1234",
+     "descr": "Minor config drift (must stay silent)"
+    },
+    {
+     "code": "F3083",
+     "severity": "major",
+     "lc": "raised",
+     "ack": "yes",
+     "domain": "infra",
+     "cause": "known-accepted",
+     "dn": "topology/pod-1/node-204/fault-F3083",
+     "descr": "Acknowledged major fault (must stay silent)"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "101",
+     "name": "leaf-101",
+     "role": "leaf",
+     "model": "N9K-C93180YC-FX",
+     "serial": "FDO12345ABC",
+     "version": "n9000-16.0(5h)",
+     "fabric_st": "active",
+     "ad_st": "on",
+     "dn": "topology/pod-1/node-101"
+    },
+    {
+     "id": "204",
+     "name": "spine-204",
+     "role": "spine",
+     "model": "N9K-C9336C-FX2",
+     "serial": "FDO99999XYZ",
+     "version": "n9000-16.0(5h)",
+     "fabric_st": "active",
+     "ad_st": "on",
+     "dn": "topology/pod-1/node-204"
+    },
+    {
+     "id": "102",
+     "name": "leaf-102-OLD",
+     "role": "leaf",
+     "model": "N9K-C93180YC-EX",
+     "serial": "FDO55555OLD",
+     "version": "n9000-15.2(7g)",
+     "fabric_st": "decommissioned",
+     "ad_st": "off",
+     "dn": "topology/pod-1/node-102"
+    }
+   ],
+   "health": {
+    "cur": 82,
+    "max_sev": "critical"
+   },
+   "vrfs": [
+    {
+     "name": "prod-vrf",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/ctx-prod-vrf",
+     "pc_enf_pref": "enforced",
+     "pc_enf_dir": "ingress"
+    },
+    {
+     "name": "legacy-vrf",
+     "tenant": "LEGACY",
+     "dn": "uni/tn-LEGACY/ctx-legacy-vrf",
+     "pc_enf_pref": "unenforced",
+     "pc_enf_dir": "ingress"
+    }
+   ],
+   "tenants": [
+    {
+     "name": "PROD",
+     "dn": "uni/tn-PROD"
+    },
+    {
+     "name": "LEGACY",
+     "dn": "uni/tn-LEGACY"
+    },
+    {
+     "name": "common",
+     "dn": "uni/tn-common"
+    }
+   ],
+   "bds": [
+    {
+     "name": "prod-bd",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/BD-prod-bd",
+     "unicast_route": "yes",
+     "arp_flood": "no"
+    },
+    {
+     "name": "legacy-bd",
+     "tenant": "LEGACY",
+     "dn": "uni/tn-LEGACY/BD-legacy-bd",
+     "unicast_route": "no",
+     "arp_flood": "yes"
+    }
+   ],
+   "epgs": [
+    {
+     "name": "web-epg",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/ap-app/epg-web-epg"
+    },
+    {
+     "name": "db-epg",
+     "tenant": "PROD",
+     "dn": "uni/tn-PROD/ap-app/epg-db-epg"
+    },
+    {
+     "name": "legacy-epg",
+     "tenant": "LEGACY",
+     "dn": "uni/tn-LEGACY/ap-legacy/epg-legacy-epg"
+    }
+   ]
+  }
+ },
+ "sdwan": {
+  "core1": {
+   "control_connections": [
+    {
+     "system_ip": "10.10.1.13",
+     "host_name": "BR13-cedge",
+     "peer_type": "vsmart",
+     "state": "down",
+     "local_color": "mpls",
+     "expected": 2,
+     "actual": 0
+    },
+    {
+     "system_ip": "10.10.1.13",
+     "host_name": "BR13-cedge",
+     "peer_type": "vbond",
+     "state": "up",
+     "local_color": "biz-internet",
+     "expected": 1,
+     "actual": 1
+    }
+   ],
+   "devices": [
+    {
+     "system_ip": "10.10.1.1",
+     "host_name": "DC1-cedge",
+     "reachability": "reachable",
+     "status": "",
+     "state": "",
+     "model": "vedge-C8000V",
+     "version": "17.09.03a"
+    },
+    {
+     "system_ip": "10.10.1.99",
+     "host_name": "BR99-cedge",
+     "reachability": "unreachable",
+     "status": "",
+     "state": "",
+     "model": "vedge-C8000V",
+     "version": "17.09.03a"
+    }
+   ],
+   "omp_counters": [
+    {
+     "system_ip": "10.10.1.13",
+     "host_name": "BR13-cedge",
+     "omp_up": 1,
+     "omp_down": 1
+    },
+    {
+     "system_ip": "10.10.1.1",
+     "host_name": "DC1-cedge",
+     "omp_up": 2,
+     "omp_down": 0
+    }
+   ]
+  }
+ },
+ "firewall": {
+  "core1": {
+   "failover": {
+    "enabled": true,
+    "units": [
+     {
+      "host": "this",
+      "role": "Primary",
+      "state": "Active"
+     },
+     {
+      "host": "other",
+      "role": "Secondary",
+      "state": "Failed"
+     }
+    ]
+   },
+   "resource_usage": [
+    {
+     "resource": "SSH",
+     "current": 1,
+     "peak": 3,
+     "limit": 5,
+     "denied": 44,
+     "context": "System"
+    },
+    {
+     "resource": "Conns",
+     "current": 240128,
+     "peak": 279994,
+     "limit": 280000,
+     "denied": 312,
+     "context": "System"
+    },
+    {
+     "resource": "Xlates",
+     "current": 21944,
+     "peak": 40210,
+     "limit": null,
+     "denied": 0,
+     "context": "System"
+    },
+    {
+     "resource": "Hosts",
+     "current": 15955,
+     "peak": 24871,
+     "limit": null,
+     "denied": 0,
+     "context": "System"
+    },
+    {
+     "resource": "Conns [rate]",
+     "current": 62,
+     "peak": 984,
+     "limit": null,
+     "denied": 0,
+     "context": "System"
+    }
+   ]
+  }
+ },
+ "ise": {
+  "core1": {
+   "nodes": [
+    {
+     "hostname": "ise-pan-1",
+     "host": "ise-pan-1.[HISTORY-REDACTED].local",
+     "fqdn": "ise-pan-1.[HISTORY-REDACTED].local",
+     "roles": [
+      "PrimaryAdmin",
+      "PrimaryMonitoring"
+     ],
+     "services": [
+      "Session",
+      "Profiler"
+     ],
+     "node_status": "Connected",
+     "in_deployment": true,
+     "is_pan": true,
+     "is_mnt": true,
+     "is_psn": true,
+     "is_pxgrid": false
+    },
+    {
+     "hostname": "ise-psn-2",
+     "host": "ise-psn-2.[HISTORY-REDACTED].local",
+     "fqdn": "ise-psn-2.[HISTORY-REDACTED].local",
+     "roles": [],
+     "services": [],
+     "node_status": "Disconnected",
+     "in_deployment": true,
+     "is_pan": false,
+     "is_mnt": false,
+     "is_psn": false,
+     "is_pxgrid": false
+    }
+   ]
+  }
+ },
+ "fmc": {
+  "core1": {
+   "devices": [
+    {
+     "name": "[HISTORY-REDACTED]-FTD-01",
+     "host_name": "10.9.9.1",
+     "model": "FTDv",
+     "sw_version": "7.2.5",
+     "is_connected": true,
+     "health_status": "green",
+     "deployment_status": "DEPLOYED"
+    },
+    {
+     "name": "[HISTORY-REDACTED]-FTD-99",
+     "host_name": "10.9.9.99",
+     "model": "FTDv",
+     "sw_version": "7.2.5",
+     "is_connected": false,
+     "health_status": "red",
+     "deployment_status": "WARNING"
+    }
+   ],
+   "ha_pairs": [
+    {
+     "name": "[HISTORY-REDACTED]-FTD-HA-Edge",
+     "primary_status": "Active",
+     "secondary_status": "Failed"
+    }
+   ],
+   "deployable": [
+    {
+     "name": "[HISTORY-REDACTED]-FTD-03",
+     "can_be_deployed": true,
+     "up_to_date": false
+    }
+   ],
+   "ha_status": {
+    "ha_role": "Active",
+    "ha_status": "DEGRADED",
+    "sync_status": "FAILED",
+    "messages": [
+     "Synchronization failed"
+    ]
+   },
+   "server_version": {
+    "server_version": "7.0.0 (build 94)"
+   }
+  }
+ },
+ "arista": {
+  "core2": {
+   "mlag": {
+    "state": "active",
+    "neg_status": "connected",
+    "config_sanity": "inconsistent",
+    "peer_link_status": "up",
+    "local_intf_status": "up",
+    "peer_link": "Port-Channel1000",
+    "peer_address": "10.255.0.8",
+    "domain_id": "MLAG-DC1",
+    "ports_active_full": 46,
+    "ports_active_partial": 0,
+    "ports_inactive": 2,
+    "ports_configured": 0
+   }
+  }
+ },
+ "juniper": {
+  "core2": {
+   "chassis_cluster": [
+    {
+     "rg": "0",
+     "node": "node0",
+     "priority": 100,
+     "status": "primary",
+     "monitor_failures": "None"
+    },
+    {
+     "rg": "0",
+     "node": "node1",
+     "priority": 0,
+     "status": "secondary",
+     "monitor_failures": "None"
+    }
+   ]
+  }
+ },
+ "cloud": {
+  "core1": {
+   "security_groups": [
+    {
+     "group_id": "sg-0pubweb",
+     "group_name": "public-web",
+     "vpc_id": "vpc-aj1",
+     "open_ingress": [
+      {
+       "proto": "tcp",
+       "from_port": 443,
+       "to_port": 443,
+       "cidr": "0.0.0.0/0"
+      }
+     ]
+    },
+    {
+     "group_id": "sg-0bastion",
+     "group_name": "bastion-ssh",
+     "vpc_id": "vpc-aj1",
+     "open_ingress": [
+      {
+       "proto": "tcp",
+       "from_port": 22,
+       "to_port": 22,
+       "cidr": "0.0.0.0/0"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "fortigate": {
+  "core2": {
+   "ha": {
+    "health": "OK",
+    "mode": "HA A-P",
+    "members": [
+     {
+      "name": "FGT-A",
+      "sync": "in-sync"
+     },
+     {
+      "name": "FGT-B",
+      "sync": "out-of-sync"
+     }
+    ]
+   }
+  }
+ },
+ "mroute": {},
+ "lisp": {
+  "core1": {
+   "sessions": [
+    {
+     "vrf": "default",
+     "total": 2,
+     "established": 2,
+     "peers": [
+      {
+       "peer": "10.0.255.2",
+       "port": "4342",
+       "state": "Up"
+      },
+      {
+       "peer": "10.0.255.3",
+       "port": "4342",
+       "state": "Up"
+      }
+     ]
+    },
+    {
+     "vrf": "red",
+     "total": 2,
+     "established": 0,
+     "peers": [
+      {
+       "peer": "10.0.255.2",
+       "port": "4342",
+       "state": "Down"
+      },
+      {
+       "peer": "10.0.255.3",
+       "port": "4342",
+       "state": "Down"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "cts": {
+  "core1": {
+   "environment_data": {
+    "state": "WAITING_RESPONSE",
+    "last_status": "Failed",
+    "sgt_count": 0,
+    "server_count": 0,
+    "lifetime": null
+   }
+  }
+ },
+ "dmvpn": {
+  "core1": {
+   "peers": [
+    {
+     "interface": "Tunnel1",
+     "nbma": "27.27.27.2",
+     "tunnel_ip": "10.0.1.2",
+     "state": "UP",
+     "attrb": "D"
+    },
+    {
+     "interface": "Tunnel1",
+     "nbma": "37.37.37.3",
+     "tunnel_ip": "10.0.1.3",
+     "state": "NHRP",
+     "attrb": "D"
+    },
+    {
+     "interface": "Tunnel1",
+     "nbma": "47.47.47.4",
+     "tunnel_ip": "10.0.1.4",
+     "state": "IKE",
+     "attrb": "D"
+    }
+   ]
+  }
+ },
+ "crypto": {
+  "core1": {
+   "sessions": [
+    {
+     "interface": "Tunnel0",
+     "peer": "10.0.255.2",
+     "status": "UP-ACTIVE"
+    },
+    {
+     "interface": "Tunnel1",
+     "peer": "10.0.255.9",
+     "status": "DOWN-NEGOTIATING"
+    }
+   ]
+  }
+ },
+ "bfd": {
+  "core1": {
+   "sessions": [
+    {
+     "neighbor": "10.0.255.2",
+     "local_disc": "1090519041",
+     "remote_disc": "1090519040",
+     "state": "Up",
+     "interface": "Gi1/0/1"
+    },
+    {
+     "neighbor": "10.0.255.9",
+     "local_disc": "1090519042",
+     "remote_disc": "0",
+     "state": "Down",
+     "interface": "Gi1/0/3"
+    }
+   ]
+  }
+ },
+ "ipv6_nd": {
+  "core1": {
+   "interfaces": [
+    {
+     "interface": "Vlan10",
+     "admin_up": true,
+     "proto_up": true,
+     "ipv6_enabled": true,
+     "link_local": "FE80::200:FF:FE00:10",
+     "link_local_dup": false,
+     "global": [
+      {
+       "addr": "2001:DB8:10::1",
+       "subnet": "2001:DB8:10::/64",
+       "dad_state": "ok"
+      }
+     ]
+    },
+    {
+     "interface": "Vlan30",
+     "admin_up": true,
+     "proto_up": true,
+     "ipv6_enabled": true,
+     "link_local": "FE80::200:FF:FE00:30",
+     "link_local_dup": false,
+     "global": [
+      {
+       "addr": "2001:DB8:30::1",
+       "subnet": "2001:DB8:30::/64",
+       "dad_state": "duplicate"
+      }
+     ]
+    },
+    {
+     "interface": "Gi1/0/24",
+     "admin_up": true,
+     "proto_up": true,
+     "ipv6_enabled": true,
+     "link_local": "FE80::200:FF:FE00:24",
+     "link_local_dup": false,
+     "global": [
+      {
+       "addr": "2001:DB8:FFFE::24",
+       "subnet": "2001:DB8:FFFE::/64",
+       "dad_state": "ok"
+      }
+     ]
+    },
+    {
+     "interface": "Gi1/0/1",
+     "admin_up": true,
+     "proto_up": true,
+     "ipv6_enabled": true,
+     "link_local": "FE80::200:FF:FE00:01",
+     "link_local_dup": false,
+     "global": [
+      {
+       "addr": "2001:DB8:FFFD::1",
+       "subnet": "2001:DB8:FFFD::/64",
+       "dad_state": "tentative"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "ipv6_routing": {
+  "access1": {
+   "route_summary": {
+    "present": true,
+    "total": 8,
+    "by_source": {
+     "connected": 4,
+     "local": 4,
+     "static": 0,
+     "ospf 1": 1,
+     "bgp 65001": 1
+    },
+    "has_default": false
+   },
+   "ospfv3_neighbors": [
+    {
+     "neighbor_id": "10.0.0.1",
+     "pri": "1",
+     "state": "FULL",
+     "role": "DR",
+     "interface": "Vlan10"
+    },
+    {
+     "neighbor_id": "10.0.0.7",
+     "pri": "1",
+     "state": "2WAY",
+     "role": "DROTHER",
+     "interface": "Vlan10"
+    },
+    {
+     "neighbor_id": "10.0.0.9",
+     "pri": "0",
+     "state": "EXSTART",
+     "role": "-",
+     "interface": "GigabitEthernet0/1"
+    }
+   ],
+   "bgp_ipv6_neighbors": [
+    {
+     "neighbor": "2001:DB8:0:1::1",
+     "as": "65001",
+     "state": "Established",
+     "prefixes": 12
+    },
+    {
+     "neighbor": "2001:DB8:0:9::9",
+     "as": "65009",
+     "state": "Active",
+     "prefixes": 0
+    }
+   ]
+  }
+ },
+ "pim": {
+  "core1": {
+   "rp_mapping": {
+    "present": true,
+    "rp_count": 0,
+    "rps": [],
+    "groups": [],
+    "ssm_only": false
+   },
+   "neighbors": [
+    {
+     "neighbor": "10.0.255.2",
+     "interface": "Gi1/0/1",
+     "uptime": "00:42:17"
+    }
+   ]
+  }
+ },
+ "ipv6_fhs": {
+  "access1": {
+   "dualstack": true,
+   "ipv6_svi_vlans": [
+    10
+   ],
+   "ra_guard_policies": [
+    "default"
+   ],
+   "dhcp_guard_policies": [
+    "default"
+   ],
+   "ra_guard_ifaces": [],
+   "dhcp_guard_ifaces": [],
+   "ra_guard_present": false,
+   "dhcp_guard_present": false
+  }
+ },
+ "ntp": {
+  "core1": {
+   "synchronized": false,
+   "stratum": 16,
+   "reference": "",
+   "source": "ios-status"
+  },
+  "core2": {
+   "synchronized": true,
+   "stratum": 2,
+   "reference": "10.255.0.254",
+   "source": "nxos-peer-status"
+  },
+  "access1": {
+   "synchronized": true,
+   "stratum": 3,
+   "reference": "10.0.10.2",
+   "source": "ios-status"
+  }
+ },
+ "port_security": {
+  "access1": {
+   "Gi0/2": {
+    "enabled": true,
+    "port_status": "secure-up",
+    "violation_mode": "Shutdown",
+    "violation_count": 0,
+    "last_src": "aabb.ccdd.ee01",
+    "last_vlan": "10"
+   },
+   "Gi0/3": {
+    "enabled": true,
+    "port_status": "secure-shutdown",
+    "violation_mode": "Shutdown",
+    "violation_count": 3,
+    "last_src": "0011.22aa.0099",
+    "last_vlan": "10"
+   },
+   "Gi0/10": {
+    "enabled": true,
+    "port_status": "secure-up",
+    "violation_mode": "Restrict",
+    "violation_count": 17,
+    "last_src": "aabb.ccdd.ee10",
+    "last_vlan": "30"
+   }
+  }
+ },
+ "storm_control": {
+  "access1": [
+   {
+    "interface": "Gi0/2",
+    "traffic": "broadcast",
+    "filter_state": "Forwarding",
+    "upper": "5.00%",
+    "lower": "5.00%",
+    "current": "0.12%",
+    "action": "None",
+    "configured": true
+   },
+   {
+    "interface": "Gi0/2",
+    "traffic": "multicast",
+    "filter_state": "Forwarding",
+    "upper": "5.00%",
+    "lower": "5.00%",
+    "current": "0.00%",
+    "action": "None",
+    "configured": true
+   },
+   {
+    "interface": "Gi0/3",
+    "traffic": "broadcast",
+    "filter_state": "Forwarding",
+    "upper": "2.00%",
+    "lower": "2.00%",
+    "current": "0.05%",
+    "action": "Shutdown",
+    "configured": true
+   },
+   {
+    "interface": "Gi0/3",
+    "traffic": "multicast",
+    "filter_state": "Forwarding",
+    "upper": "2.00%",
+    "lower": "2.00%",
+    "current": "0.00%",
+    "action": "Trap",
+    "configured": true
+   }
+  ]
+ },
+ "qos_runtime": {
+  "core1": [
+   {
+    "interface": "Gi1/0/24",
+    "policy": "WAN-EDGE-OUT",
+    "class": "VOICE",
+    "priority": true,
+    "drop_pkts": 1840521,
+    "drop_bytes": 0,
+    "output_pkts": 24817400,
+    "police_drop_pkts": 0,
+    "police_drop_bytes": 0
+   },
+   {
+    "interface": "Gi1/0/24",
+    "policy": "WAN-EDGE-OUT",
+    "class": "BULK-DATA",
+    "priority": false,
+    "drop_pkts": 512000,
+    "drop_bytes": 0,
+    "output_pkts": 8400000,
+    "police_drop_pkts": 0,
+    "police_drop_bytes": 0
+   },
+   {
+    "interface": "Gi1/0/24",
+    "policy": "WAN-EDGE-OUT",
+    "class": "class-default",
+    "priority": false,
+    "drop_pkts": 0,
+    "drop_bytes": 0,
+    "output_pkts": 150000,
+    "police_drop_pkts": 0,
+    "police_drop_bytes": 0
+   }
+  ]
+ },
+ "shadow_infra": {
+  "core1": [
+   {
+    "device_id": "core2.lab",
+    "platform": "cisco N9K-C93180YC-EX",
+    "capabilities": "Router Switch",
+    "mgmt_ip": "10.0.99.2",
+    "local_intf": "Po1",
+    "remote_port": "Po1",
+    "proto": "cdp"
+   },
+   {
+    "device_id": "access1.lab",
+    "platform": "cisco WS-C2960X-48",
+    "capabilities": "Switch",
+    "mgmt_ip": "10.0.99.3",
+    "local_intf": "Gi1/0/24",
+    "remote_port": "Gi0/1",
+    "proto": "cdp"
+   }
+  ],
+  "core2": [
+   {
+    "device_id": "core1.lab",
+    "platform": "cisco WS-C3850-24T",
+    "capabilities": "Router Switch",
+    "mgmt_ip": "10.0.99.1",
+    "local_intf": "Po1",
+    "remote_port": "Po1",
+    "proto": "cdp"
+   },
+   {
+    "device_id": "wan-edge-rtr1.lab",
+    "platform": "cisco ASR1001-X",
+    "capabilities": "Router",
+    "mgmt_ip": "10.0.250.1",
+    "local_intf": "Eth1/47",
+    "remote_port": "Gi0/0/1",
+    "proto": "cdp"
+   }
+  ],
+  "access1": [
+   {
+    "device_id": "core1.lab",
+    "platform": "cisco WS-C3850-24T",
+    "capabilities": "Router Switch",
+    "mgmt_ip": "10.0.99.1",
+    "local_intf": "Gi0/1",
+    "remote_port": "Gi1/0/24",
+    "proto": "cdp"
+   }
+  ]
+ },
  "punchlist": [
   {
    "severity": "Critical",
@@ -3215,6 +5276,7 @@
    "title": "Undefined acl '7'",
    "detail": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
+   "source_command": "show running-config",
    "priority": 7
   },
   {
@@ -3228,6 +5290,7 @@
    "title": "Undefined route-map 'OSPF_TO_BGP'",
    "detail": "Referenced (router bgp 65001) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
+   "source_command": "show running-config",
    "priority": 8
   },
   {
@@ -3267,6 +5330,7 @@
    "title": "err disabled",
    "detail": "L1 risk 'err-disabled' on 1 switch(es).",
    "remediation": "",
+   "source_command": "show interface status",
    "priority": 11
   },
   {
@@ -3280,6 +5344,7 @@
    "title": "single gateway",
    "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
    "remediation": "Add gateway / FHRP redundancy.",
+   "source_command": "show ip route",
    "priority": 12
   },
   {
@@ -3293,6 +5358,7 @@
    "title": "MAC address flapping",
    "detail": "2 event(s) in the collected log window.",
    "remediation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window.",
+   "source_command": "show logging",
    "priority": 13
   },
   {
@@ -3306,6 +5372,7 @@
    "title": "Port err-disabled",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port.",
+   "source_command": "show logging",
    "priority": 14
   },
   {
@@ -3332,6 +5399,7 @@
    "title": "Local user password storage",
    "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
    "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
+   "source_command": "show running-config",
    "priority": 16
   },
   {
@@ -3345,6 +5413,7 @@
    "title": "SNMP access",
    "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
    "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
+   "source_command": "show running-config",
    "priority": 17
   },
   {
@@ -3358,6 +5427,7 @@
    "title": "VTY transport (telnet)",
    "detail": "a VTY line permits telnet (cleartext management).",
    "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
+   "source_command": "show running-config",
    "priority": 18
   },
   {
@@ -3371,6 +5441,7 @@
    "title": "Device web UI (ip http server / secure-server)",
    "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
    "remediation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker.",
+   "source_command": "show version",
    "priority": 19
   },
   {
@@ -3410,6 +5481,7 @@
    "title": "single fiber uplink",
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
+   "source_command": "show interface status",
    "priority": 22
   },
   {
@@ -3423,6 +5495,7 @@
    "title": "Duplex mismatch",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
+   "source_command": "show logging",
    "priority": 23
   },
   {
@@ -3436,6 +5509,7 @@
    "title": "Interface flapping",
    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
+   "source_command": "show logging",
    "priority": 24
   },
   {
@@ -3449,6 +5523,7 @@
    "title": "Repeated login failures",
    "detail": "6 failed login(s) in the collected log window.",
    "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
+   "source_command": "show logging",
    "priority": 25
   },
   {
@@ -3476,7 +5551,36 @@
    "title": "STP root != gateway (VLAN 30)",
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
+   "source_command": "show spanning-tree",
    "priority": 27
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Security",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "AAA new-model",
+   "detail": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
+   "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting.",
+   "source_command": "show running-config",
+   "priority": 28
+  },
+  {
+   "severity": "Medium",
+   "rank": 2,
+   "category": "Security",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "Password encryption service",
+   "detail": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
+   "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9.",
+   "source_command": "show running-config",
+   "priority": 29
   },
   {
    "severity": "Medium",
@@ -3489,20 +5593,23 @@
    "title": "Unused / risky services",
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
-   "priority": 28
+   "source_command": "show running-config",
+   "priority": 30
   },
   {
    "severity": "Medium",
    "rank": 2,
    "category": "Security",
    "devices": [
+    "access1",
     "core1"
    ],
    "wave": "",
    "title": "VTY line hardening",
-   "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0).",
+   "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
-   "priority": 29
+   "source_command": "show running-config",
+   "priority": 31
   },
   {
    "severity": "Low",
@@ -3516,7 +5623,7 @@
    "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
    "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
-   "priority": 30
+   "priority": 32
   },
   {
    "severity": "Low",
@@ -3525,9 +5632,10 @@
    "devices": [],
    "wave": "",
    "title": "No QoS configured anywhere",
-   "detail": "None of the 1 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
+   "detail": "None of the 2 assessable device(s) has any active QoS configuration (policies attached, trust, or auto-QoS).",
    "remediation": "The whole assessable fleet runs best-effort. Acceptable for pure data; a documented risk if voice/video/storage rides this network. Record the customer's stance as a CRD requirement before the migration.",
-   "priority": 31
+   "source_command": "show policy-map interface",
+   "priority": 33
   },
   {
    "severity": "Low",
@@ -3540,20 +5648,51 @@
    "title": "Accidental root (VLAN 30)",
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
-   "priority": 32
+   "source_command": "show spanning-tree",
+   "priority": 34
   },
   {
    "severity": "Low",
    "rank": 1,
    "category": "Security",
    "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "Logging / audit trail",
+   "detail": "no syslog / buffered logging -- no audit trail across the migration.",
+   "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail.",
+   "source_command": "show running-config",
+   "priority": 35
+  },
+  {
+   "severity": "Low",
+   "rank": 1,
+   "category": "Security",
+   "devices": [
+    "access1",
     "core1"
    ],
    "wave": "",
    "title": "Login banner",
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
-   "priority": 33
+   "source_command": "show running-config",
+   "priority": 36
+  },
+  {
+   "severity": "Low",
+   "rank": 1,
+   "category": "Security",
+   "devices": [
+    "access1"
+   ],
+   "wave": "",
+   "title": "NTP time synchronization",
+   "detail": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
+   "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy.",
+   "source_command": "show running-config",
+   "priority": 37
   }
  ],
  "operational_drift": [
@@ -3574,11 +5713,11 @@
   "score_stats": {
    "min": 3,
    "max": 100,
-   "mean": 58.3,
-   "median": 72.0,
-   "p25": 37.5,
-   "p75": 86.0,
-   "stdev": 40.8
+   "mean": 54.3,
+   "median": 60.0,
+   "p25": 31.5,
+   "p75": 80.0,
+   "stdev": 39.8
   },
   "band_distribution": [
    {
@@ -3612,7 +5751,7 @@
   "discrimination": 0.68,
   "discrimination_quality": "n/a (too few switches)",
   "suggested_bands": null,
-  "note": "3 switch(es); scores 3-100 (median 72.0). 33% in 'Excellent'. Band discrimination: n/a (too few switches)."
+  "note": "3 switch(es); scores 3-100 (median 60.0). 33% in 'Excellent'. Band discrimination: n/a (too few switches)."
  },
  "acls": {
   "core1": {
@@ -3845,6 +5984,119 @@
    }
   }
  },
+ "feature_compliance": {
+  "features": [],
+  "per_device_feature": [],
+  "summary": {
+   "n_features": 0,
+   "n_rows": 0,
+   "n_drift_rows": 0
+  }
+ },
+ "acl_line_reachability": {
+  "findings": [
+   {
+    "line_index": 0,
+    "action": "permit",
+    "raw": "permit tcp object-group MGMT_HOSTS any eq 22",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "unparseable address/port (e.g. non-contiguous wildcard)",
+    "host": "core1",
+    "acl": "MGMT_IN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.MGMT_IN[0]"
+   },
+   {
+    "line_index": 1,
+    "action": "deny",
+    "raw": "deny ip any any",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
+    "host": "core1",
+    "acl": "MGMT_IN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.MGMT_IN[1]"
+   },
+   {
+    "line_index": 0,
+    "action": "permit",
+    "raw": "permit tcp any any established",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "stateful established/reflexive \u2014 forward match depends on connection state",
+    "host": "core1",
+    "acl": "INET_RETURN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.INET_RETURN[0]"
+   },
+   {
+    "line_index": 1,
+    "action": "permit",
+    "raw": "permit tcp 10.0.10.0 0.0.0.255 any eq 443 time-range BUSINESS_HOURS",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "time-range \u2014 active only in a window",
+    "host": "core1",
+    "acl": "INET_RETURN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.INET_RETURN[1]"
+   },
+   {
+    "line_index": 2,
+    "action": "deny",
+    "raw": "deny ip any any",
+    "reason": "INDETERMINATE",
+    "blocking_lines": [],
+    "different_action": false,
+    "detail": "an earlier unevaluable line may overlap \u2014 cannot prove reachable or dead",
+    "host": "core1",
+    "acl": "INET_RETURN",
+    "source_command": "show running-config",
+    "citation": "acls.core1.INET_RETURN[2]"
+   }
+  ],
+  "summary": {
+   "n_findings": 5,
+   "n_shadowed": 0,
+   "n_different_action": 0,
+   "n_unmatchable": 0,
+   "n_indeterminate": 5,
+   "n_bad_reference": 0
+  }
+ },
+ "capture_integrity": {
+  "findings": [
+   {
+    "host": "access1",
+    "command": "show running-config",
+    "status": "incomplete",
+    "reason": "IOS-style running-config has no terminating 'end' near the tail \u2014 body looks truncated",
+    "evidence": "!",
+    "citation": "access1::show running-config"
+   },
+   {
+    "host": "core1",
+    "command": "show running-config",
+    "status": "incomplete",
+    "reason": "IOS-style running-config has no terminating 'end' near the tail \u2014 body looks truncated",
+    "evidence": "!",
+    "citation": "core1::show running-config"
+   }
+  ],
+  "summary": {
+   "n_findings": 2,
+   "n_incomplete": 2,
+   "n_error": 0,
+   "n_empty": 0,
+   "n_hosts_affected": 2
+  }
+ },
  "routes": {
   "core1": [
    {
@@ -3972,6 +6224,7 @@
    "hard": 2,
    "backup": 0,
    "fhrp": 0,
+   "off_scan_gw_vlans": 0,
    "detail": "VLAN 10: Hard partition (2 ep); VLAN 30: Hard partition (1 ep)"
   },
   {
@@ -3982,6 +6235,7 @@
    "hard": 0,
    "backup": 0,
    "fhrp": 1,
+   "off_scan_gw_vlans": 0,
    "detail": "VLAN 10: FHRP-covered"
   },
   {
@@ -3992,6 +6246,7 @@
    "hard": 0,
    "backup": 0,
    "fhrp": 0,
+   "off_scan_gw_vlans": 0,
    "detail": "No reachability impact from removing this switch (within the scan)."
   }
  ],
@@ -4027,6 +6282,7 @@
     "access1",
     "core2"
    ],
+   "homing_unknown": [],
    "hard_cutover_endpoints": 3,
    "sequence": "2 hard cutover (single-homed, schedule a window) + 1 make-before-break (dual-homed)"
   }
@@ -4087,7 +6343,7 @@
    "poe_remaining_w": "",
    "poe_util": "",
    "flags": [
-    "Port-bound (>=90%)"
+    "Port-bound (>=85%)"
    ]
   },
   {
@@ -4105,18 +6361,16 @@
   },
   {
    "hostname": "core2",
-   "model": "",
-   "total_ports": 2,
+   "model": "N9K-C93180YC-EX",
+   "total_ports": 5,
    "active_ports": 2,
-   "free_ports": 0,
-   "port_util": 100.0,
+   "free_ports": 3,
+   "port_util": 40.0,
    "poe_capacity_w": "",
    "poe_drawn_w": "",
    "poe_remaining_w": "",
    "poe_util": "",
-   "flags": [
-    "Port-bound (>=90%)"
-   ]
+   "flags": []
   }
  ],
  "endpoint_identity": [
@@ -4524,8 +6778,8 @@
      "TENANT_RED"
     ],
     "gateways_with_acl": 2,
-    "isolated": true,
-    "exposure": "Has a dedicated VRF or a gateway ACL."
+    "isolated": false,
+    "exposure": "1 of 3 gateway(s) share the global VRF with no ACL \u2014 reachable from every other domain at L3."
    },
    {
     "domain": "General / Back-office (unclassified)",
@@ -4536,7 +6790,7 @@
     ],
     "gateways_with_acl": 0,
     "isolated": false,
-    "exposure": "Shares the global VRF, no gateway ACL \u2014 reachable from every other domain at L3."
+    "exposure": "2 of 2 gateway(s) share the global VRF with no ACL \u2014 reachable from every other domain at L3."
    }
   ],
   "summary": {
@@ -4606,11 +6860,12 @@
    {
     "key": "Operational readiness & hygiene",
     "verdict": "advisory",
-    "score_pct": 80,
+    "score_pct": 77,
     "checks": [
      "OPS-1",
      "OPS-2",
-     "OPS-3"
+     "OPS-3",
+     "OPS-4"
     ]
    },
    {
@@ -4830,13 +7085,12 @@
     "domain": "Capacity & oversubscription",
     "title": "Port-capacity headroom for growth",
     "verdict": "advisory",
-    "observed": "access1 at 100.0% port utilisation; core2 at 100.0% port utilisation.",
+    "observed": "access1 at 100.0% port utilisation.",
     "implication": "A full closet forces ad-hoc daisy-chaining (see HIER-2) the day a port is needed.",
     "recommendation": "Size replacement hardware with \u226510% spare ports per listed closet.",
     "reference": "Capacity planning \u2014 keep ~10% port headroom per closet",
     "evidence": [
-     "access1",
-     "core2"
+     "access1"
     ]
    },
    {
@@ -4875,11 +7129,22 @@
     "evidence": []
    },
    {
+    "id": "OPS-4",
+    "domain": "Operational readiness & hygiene",
+    "title": "Cross-domain dependencies & interoperability declared",
+    "verdict": "advisory",
+    "observed": "The fleet spans 2 switch NOS families (2\u00d7 IOS, 1\u00d7 NXOS).",
+    "implication": "A multi-NOS estate must keep feature / CLI / automation parity across families, and any cross-family migration (e.g. IOS->NX-OS) is an explicit interoperability step, not a like-for-like swap \u2014 undeclared, it surfaces as a cutover surprise.",
+    "recommendation": "Declare the platform-dependency + interoperability surface in the HLD (the design interoperability footprint) and validate cross-family behaviour during NRFU.",
+    "reference": "Cisco Advanced Services design-review practice \u2014 declare platform dependencies & interop",
+    "evidence": []
+   },
+   {
     "id": "SEC-1",
     "domain": "Security & segmentation",
     "title": "Management-plane hardening (CIS baseline)",
     "verdict": "deviation",
-    "observed": "1 device(s) grade WEAK (a high-severity hardening check fails): core1.",
+    "observed": "1 device(s) grade WEAK (a high-severity hardening check fails): core1; 1 more grade partial.",
     "implication": "A weak management plane (open HTTP/Smart Install, missing AAA, default communities) is the attack surface that turns a migration window into an incident.",
     "recommendation": "Apply the generated remediation snippets to the WEAK devices first \u2014 before any maintenance window publicises change activity.",
     "reference": "CIS Cisco IOS Benchmark \u2014 AAA, NTP, logging, SSHv2/VTY, SNMPv3 hardening",
@@ -4976,17 +7241,6 @@
    },
    {
     "rank": 6,
-    "id": "CAP-2",
-    "domain": "Capacity & oversubscription",
-    "verdict": "advisory",
-    "action": "Size replacement hardware with \u226510% spare ports per listed closet.",
-    "evidence": [
-     "access1",
-     "core2"
-    ]
-   },
-   {
-    "rank": 7,
     "id": "L2-3",
     "domain": "Layer-2 design",
     "verdict": "advisory",
@@ -4994,6 +7248,16 @@
     "evidence": [
      "access1",
      "core1"
+    ]
+   },
+   {
+    "rank": 7,
+    "id": "CAP-2",
+    "domain": "Capacity & oversubscription",
+    "verdict": "advisory",
+    "action": "Size replacement hardware with \u226510% spare ports per listed closet.",
+    "evidence": [
+     "access1"
     ]
    },
    {
@@ -5028,17 +7292,17 @@
    }
   ],
   "summary": {
-   "n_checks": 24,
-   "n_assessable": 21,
+   "n_checks": 25,
+   "n_assessable": 22,
    "n_conforms": 8,
-   "n_advisory": 8,
+   "n_advisory": 9,
    "n_deviation": 4,
    "n_critical": 1,
    "n_not_assessable": 3,
    "score_pct": 71,
    "grade": "C",
    "grade_label": "Material deviations",
-   "statement": "Architecture conformance grade C (71%) \u2014 Material deviations. 8 of 21 assessable checks conform to leading practice; 1 critical and 4 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
+   "statement": "Architecture conformance grade C (71%) \u2014 Material deviations. 8 of 22 assessable checks conform to leading practice; 1 critical and 4 material deviation(s) require remediation, concentrated in: Resiliency & availability, Layer-2 design, Security & segmentation, Lifecycle & software. 3 check(s) were not assessable from this snapshot and are listed in the review scope."
   }
  }
 }

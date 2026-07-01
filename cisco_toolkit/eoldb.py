@@ -38,11 +38,34 @@ _EOL = [
      "source": "Cisco EOL (Catalyst 3650)", "conf": "derived"},
     {"pat": "WS-C3560", "platform": "Catalyst 3560", "eos": "2013-10-31", "ldos": "2018-10-31",
      "source": "Cisco EOL (Catalyst 3560)", "conf": "derived"},
+    # Newer COMPACT SKUs whose PID shares a classic family's prefix but whose lifecycle is YEARS later --
+    # explicit rows so longest-prefix matching credits them instead of inheriting the classic family's past
+    # dates (the cry-wolf: an in-support WS-C3560CX/WS-C2960CX was flagged Past-LDoS). 3560-CX EoS 2024-04-30
+    # (Cisco EoL); 2960-CX is a newer compact still in support -> Active/verify rather than asserting a date.
+    {"pat": "WS-C3560CX", "platform": "Catalyst 3560-CX", "eos": "2024-04-30", "ldos": "2029-04-30",
+     "source": "Cisco EOL (Catalyst 3560-CX)", "conf": "derived"},
+    {"pat": "WS-C2960CX", "platform": "Catalyst 2960-CX", "eos": "", "ldos": "",
+     "source": "Catalyst 2960-CX (newer compact) — verify on Cisco EoX", "conf": "active"},
+    # 3560-C / 2960-C COMPACT series -- same cry-wolf as -CX: WS-C3560CG/WS-C2960CG (and -C/-CPD) share the
+    # classic family's PREFIX but have their OWN, years-later bulletins. Without these rows longest-prefix
+    # matching credited them to the classic 3560/2960 dates and cited the wrong EoL notice (audit-3 L5).
+    # 3560-C HW EoS 2016-10-30 (bulletin c51-736180) -> LDoS = EoS+5yr; 2960-C HW EoS 2020-10-30 (c51-743071).
+    {"pat": "WS-C3560C", "platform": "Catalyst 3560-C", "eos": "2016-10-30", "ldos": "2021-10-31",
+     "source": "Cisco EOL (Catalyst 3560-C, c51-736180)", "conf": "derived"},
+    {"pat": "WS-C2960C", "platform": "Catalyst 2960-C", "eos": "2020-10-30", "ldos": "2025-10-31",
+     "source": "Cisco EOL (Catalyst 2960-C, c51-743071)", "conf": "derived"},
     {"pat": "WS-C2960X", "platform": "Catalyst 2960-X", "eos": "2025-04-30", "ldos": "2030-04-30",
      "source": "Cisco EOL (Catalyst 2960-X)", "conf": "derived"},
     {"pat": "WS-C2960", "platform": "Catalyst 2960", "eos": "2019-10-31", "ldos": "2024-10-31",
      "source": "Cisco EOL (Catalyst 2960)", "conf": "derived"},
-    {"pat": "WS-C6500", "platform": "Catalyst 6500", "eos": "2017-09-30", "ldos": "2022-09-30",
+    # Classic Catalyst 6500-E chassis report their PID with the slot count baked in (WS-C6503-E / WS-C6504-E /
+    # WS-C6506-E / WS-C6509-E / WS-C6509-V-E / WS-C6513-E) -- NONE start with the marketing string 'WS-C6500',
+    # so a single 'WS-C6500' pattern was DEAD (every real 6500 fell to Unknown, emitting no past-LDoS risk).
+    # Match the real chassis stems instead. (The newer 6807-XL / 6800 carry later EoL and are intentionally NOT
+    # folded in here -- doing so under these classic dates would cry-wolf.)
+    {"pat": "WS-C650", "platform": "Catalyst 6500", "eos": "2017-09-30", "ldos": "2022-09-30",
+     "source": "Cisco EOL (Catalyst 6500)", "conf": "derived"},
+    {"pat": "WS-C6513", "platform": "Catalyst 6500", "eos": "2017-09-30", "ldos": "2022-09-30",
      "source": "Cisco EOL (Catalyst 6500)", "conf": "derived"},
     {"pat": "C9300", "platform": "Catalyst 9300", "eos": "", "ldos": "",
      "source": "no EoL announced", "conf": "active"},
@@ -73,6 +96,12 @@ _EOL = [
      "source": "no EoL announced", "conf": "active"},
     {"pat": "N9K", "platform": "Nexus 9000", "eos": "", "ldos": "",
      "source": "no EoL announced", "conf": "active"},
+    # Older Nexus 3000 SKUs the blanket 'N3K -> active' row masked as in-support though they are PAST LDoS
+    # (false-health): N3K-C3048 EoS 2020-08-03, N3K-C3064 EoS 2017-04-28 (Cisco EoL) -> LDoS = EoS + 5y.
+    {"pat": "N3K-C3048", "platform": "Nexus 3048", "eos": "2020-08-03", "ldos": "2025-08-03",
+     "source": "Cisco EOL (Nexus 3048)", "conf": "derived"},
+    {"pat": "N3K-C3064", "platform": "Nexus 3064", "eos": "2017-04-28", "ldos": "2022-04-28",
+     "source": "Cisco EOL (Nexus 3064)", "conf": "derived"},
     {"pat": "N3K", "platform": "Nexus 3000", "eos": "", "ldos": "",
      "source": "no EoL announced", "conf": "active"},
 ]

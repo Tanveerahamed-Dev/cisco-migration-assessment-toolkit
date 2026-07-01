@@ -128,6 +128,17 @@ class Store:
     # -- snapshots ---------------------------------------------------------
     def add_snapshot(self, campaign_id: int, label: str, snapshot: Dict[str, Any],
                      summary: Dict[str, Any]) -> Dict[str, Any]:
+        # SSOT: the canonical inventoried count (executive_brief.scale.n_devices), falling back to
+        # len(devices) ONLY when the canonical field is ABSENT. isinstance-guarded so a truthy non-dict
+        # executive_brief/scale on a malformed upload degrades instead of raising AttributeError (-> a 500
+        # on every upload). `is not None` (NOT `or`) so a legitimate canonical 0 is recorded as 0, not
+        # silently replaced by the len() recount (the project's `or`-masks-zero bug class).
+        _eb = snapshot.get("executive_brief")
+        _scale = _eb.get("scale") if isinstance(_eb, dict) else None
+        _n = _scale.get("n_devices") if isinstance(_scale, dict) else None
+        if _n is None:
+            _dev = snapshot.get("devices")
+            _n = len(_dev) if isinstance(_dev, (dict, list)) else 0
         with self._lock:
             cur = self._conn.execute(
                 """INSERT INTO snapshots(campaign_id, label, uploaded_at, script_version,
@@ -135,7 +146,7 @@ class Store:
                    VALUES (?,?,?,?,?,?,?)""",
                 (campaign_id, label.strip() or "snapshot", _now(),
                  str(snapshot.get("script_version", "")),
-                 len(snapshot.get("devices") or {}),
+                 _n,
                  json.dumps(summary, separators=(",", ":")),
                  json.dumps(snapshot, separators=(",", ":"))),
             )
@@ -183,7 +194,17 @@ class Store:
             return (snap or {}).get(key)
         if row is None or row["sect"] is None:
             return None
-        return json.loads(row["sect"])
+        sect = row["sect"]
+        # json_extract returns a JSON *object/array* as an encoded string, but a JSON SCALAR (string/number/
+        # bool) is returned as the native Python value -- json.loads(int) raises TypeError and json.loads(a bare
+        # string) raises JSONDecodeError, neither caught above, so a section that is a scalar in a malformed
+        # upload (e.g. {"design_blueprint": 5}) 500'd. Only decode an encoded str; return a native scalar as-is.
+        if not isinstance(sect, (str, bytes, bytearray)):
+            return sect
+        try:
+            return json.loads(sect)
+        except (json.JSONDecodeError, ValueError):
+            return sect   # a bare scalar string -> hand back the raw value; callers isinstance-check it
 
     def campaign_exists(self, campaign_id: int) -> bool:
         """Existence check without parsing every snapshot summary (V3.23.159: get_campaign was

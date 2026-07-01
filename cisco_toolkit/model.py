@@ -93,7 +93,7 @@ class DevicePhysical:
     power_remaining_w: str = ""
     num_modules: int = 0
     total_ports: int = 0
-    active_ports: int = 0
+    active_ports: int | None = None   # None = port up/down state NOT observed (distinct from a real 0)
     fan_status: str = ""
     temperature_status: str = ""
     # NEW-V3.23.68: the device's OWN configured hostname (from 'show version' "<host> uptime is").

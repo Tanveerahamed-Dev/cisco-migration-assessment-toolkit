@@ -57,3 +57,31 @@ def test_empty_and_deterministic():
     a = compute_lifecycle_risk(_dev("WS-C4948E-F"), asof=ASOF)
     b = compute_lifecycle_risk(_dev("WS-C4948E-F"), asof=ASOF)
     assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def test_catalyst_6500_real_chassis_pids_match_not_dead_pattern():
+    """A classic Catalyst 6500-E chassis reports its PID with the slot count baked in (WS-C6503-E ...
+    WS-C6513-E) -- none start with the marketing string 'WS-C6500', so the old single 'WS-C6500' pattern was
+    DEAD: every real 6500 fell to band 'Unknown' and emitted NO past-LDoS risk (a long-EoL box read as no-risk).
+    Every real chassis PID must now resolve to Catalyst 6500 and a 6500-E running today must band Past-LDoS."""
+    for pid in ("WS-C6503-E", "WS-C6504-E", "WS-C6506-E", "WS-C6509-E", "WS-C6509-V-E", "WS-C6513-E"):
+        rec = eoldb.lifecycle_for(pid)
+        assert rec is not None and rec["platform"] == "Catalyst 6500", (pid, rec)
+    o = compute_lifecycle_risk({"core6500": {"model": "WS-C6509-V-E", "sw_version": "15.1(2)SY"}}, asof=ASOF)
+    assert o["per_device"][0]["band"] == "Past-LDoS"
+    assert o["summary"]["n_past_ldos"] >= 1 and o["risks"]   # a risk row IS emitted (was [] under the dead pattern)
+
+
+def test_eoldb_compact_sku_prefix_collisions_resolved():
+    """LIFEC-01: compact/newer SKUs share a classic family's startswith-prefix but have a different lifecycle.
+    WS-C3560CX / WS-C2960CX (newer, in support) must NOT inherit the classic 3560/2960 PAST dates (cry-wolf),
+    and the older N3K-C3048 / N3K-C3064 must NOT be masked as 'active' by the blanket 'N3K' row (false-health)."""
+    assert eoldb.lifecycle_for("WS-C3560CX-12PC-S")["platform"] == "Catalyst 3560-CX"
+    assert eoldb.lifecycle_for("WS-C2960CX-8PC-L")["platform"] == "Catalyst 2960-CX"
+    assert eoldb.lifecycle_for("N3K-C3048TP-1GE")["platform"] == "Nexus 3048"
+    assert eoldb.lifecycle_for("N3K-C3064-X")["platform"] == "Nexus 3064"
+    o = compute_lifecycle_risk({"a": {"model": "WS-C3560CX-12PC-S"}, "b": {"model": "WS-C2960CX-8PC-L"},
+                                "c": {"model": "N3K-C3048TP-1GE"}}, asof=ASOF)
+    bands = {d["host"]: d["band"] for d in o["per_device"]}
+    assert bands["a"] != "Past-LDoS" and bands["b"] != "Past-LDoS"   # cry-wolf fixed (in-support compacts)
+    assert bands["c"] == "Past-LDoS"                                  # false-health fixed (old Nexus 3048)

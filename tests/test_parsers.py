@@ -22,6 +22,31 @@ def test_parse_show_interface_status_ios(cp):
     assert res["Gi1/0/5"]["vlan_raw"] == "10"
 
 
+def test_parse_show_interface_status_modern_multigig_short_forms(cp):
+    """Real-format fidelity: modern Catalyst 9300/9400/9500(X) 'show interfaces status' emits the multi-gig
+    short forms Twe (25G), Fi (5G), Tw (2.5G), Ap (AppGigabitEthernet), Fif (50G). The interface regexes only
+    accepted Tw, so every Twe/Fi/Ap/Fif port silently vanished from the port census + topology. (Cisco IOS-XE
+    Catalyst interface docs: 25G=Twe, 5G=Fi, 50G=Fif, 2.5G=Tw, AppGig=Ap.)"""
+    out = textwrap.dedent("""\
+        Port      Name               Status       Vlan       Duplex  Speed Type
+        Gi1/0/1   access-pc          connected    10           full  1000  10/100/1000BaseTX
+        Twe1/0/1  CORE-UPLINK-25G    connected    trunk        full   25G  SFP-25G-SR
+        Tw1/0/3   mgig-camera        connected    20         a-full  2.5G  100/1000/2.5GBaseTX
+        Fi1/0/2   mgig-ap-wifi6      connected    30         a-full    5G  100/1000/2.5G/5GBaseTX
+        Ap1/0/1   app-hosting        connected    40         a-full  1000  App
+        Te1/0/2   legacy-10g         connected    trunk        full   10G  SFP-10G-SR
+    """)
+    res = parse.parse_show_interface_status(out)
+    assert set(res) == {"Gi1/0/1", "Twe1/0/1", "Tw1/0/3", "Fi1/0/2", "Ap1/0/1", "Te1/0/2"}, set(res)
+    # long-form <-> short-form convergence (the rest of the codebase keys on the short token)
+    from cisco_toolkit.textutils import normalize_ifname, is_valid_iface
+    assert normalize_ifname("TwentyFiveGigE1/0/1") == "Twe1/0/1"   # 25G -> Twe, NOT Tw (2.5G)
+    assert normalize_ifname("FiveGigabitEthernet1/0/2") == "Fi1/0/2"
+    assert normalize_ifname("TwoGigabitEthernet1/0/3") == "Tw1/0/3"
+    assert normalize_ifname("AppGigabitEthernet1/0/1") == "Ap1/0/1"
+    assert all(is_valid_iface(p) for p in ("Twe1/0/1", "Fi1/0/2", "Ap1/0/1", "Fif2/0/1"))
+
+
 # ---- run-config: ACL application (L4/ACL flagging) ------------------------- #
 def test_parse_run_config_interface_acl(cp):
     out = textwrap.dedent("""\
@@ -164,6 +189,21 @@ def test_parse_security(cp):
     for cid in ("password-encryption", "no-aaa", "no-ntp", "no-logging", "no-banner"):
         assert by[cid]["status"] == "fail"                            # missing baseline controls
     assert sec["summary"]["grade"] == "weak" and sec["summary"]["fail"] >= 8
+
+
+def test_parse_security_nxos_central_aaa_is_recognized(cp):
+    # NX-OS / IOS-XR enable central AAA WITHOUT 'aaa new-model'. The 'no-aaa' control must PASS, not
+    # falsely report 'authentication is local-only' (the IOS-only-'aaa new-model' false-health class —
+    # a false security finding on every NX-OS device with TACACS+/RADIUS).
+    out = textwrap.dedent("""\
+        feature tacacs+
+        aaa group server tacacs+ ISE
+         server 10.0.0.5
+        aaa authentication login default group ISE
+    """)
+    by = {f["id"]: f for f in parse.parse_security(out)["findings"]}
+    assert by["no-aaa"]["status"] == "pass", by["no-aaa"]["detail"]
+    assert "central AAA" in by["no-aaa"]["detail"]
 
 
 def test_parse_security_hardened(cp):
@@ -525,6 +565,94 @@ def test_parse_ip_routes_connected(cp):
     assert entry["out_intf"] == "Vlan30"
 
 
+def test_parse_ip_routes_wrapped_continuation_merges_into_one_entry(cp):
+    """A route whose [metric] via ... wraps onto the next (indented) line must yield ONE entry carrying BOTH the
+    code-line source AND the continuation next-hop/interface -- not a sourced row + a sourceless sibling row (the
+    split lost reachability recall in the RIB->FIB tracer)."""
+    out = textwrap.dedent("""\
+        Codes: C - connected, O - OSPF
+        C    10.0.0.0/30 is directly connected, GigabitEthernet0/0
+        O    10.0.50.0/24
+                   [110/20] via 10.0.0.2, 00:05:00, GigabitEthernet0/0
+    """)
+    entries = parse.parse_ip_routes(out)["10.0.50.0/24"]["entries"]
+    assert len(entries) == 1
+    assert entries[0]["source"] == "ospf"
+    assert entries[0]["next_hop"] == "10.0.0.2"
+    assert entries[0]["out_intf"] == "Gi0/0"
+
+
+def test_parse_ip_routes_wrapped_ecmp_inherits_source_per_next_hop(cp):
+    """A wrapped route with multiple via continuation lines (ECMP) -> one entry PER next-hop, each INHERITING the
+    code-line source (never a sourceless row)."""
+    out = textwrap.dedent("""\
+        Codes: O - OSPF
+        O    10.0.50.0/24
+                   [110/20] via 10.0.0.2, 00:05:00, GigabitEthernet0/0
+                   [110/20] via 10.0.0.3, 00:05:00, GigabitEthernet0/1
+    """)
+    entries = parse.parse_ip_routes(out)["10.0.50.0/24"]["entries"]
+    assert len(entries) == 2
+    assert all(e["source"] == "ospf" for e in entries)
+    assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.3"}
+    assert {e["out_intf"] for e in entries} == {"Gi0/0", "Gi0/1"}
+
+
+def test_parse_ip_routes_nxos_ubest_mbest_format(cp):
+    """NX-OS 'show ip route' uses '<prefix>, ubest/mbest:' lines + indented '*via ..., <source>' lines -- the
+    prefix begins with a DIGIT (not a protocol code) and the source is the LAST token on the via line. The
+    IOS-only code-letter regex parsed a real Nexus RIB to ZERO routes (breaking the FIB tracer + SVI enrichment).
+    (multi-domain audit #1)"""
+    out = textwrap.dedent("""\
+        IP Route Table for VRF "default"
+        '*' denotes best ucast next-hop
+
+        10.0.10.0/24, ubest/mbest: 1/0, attached
+            *via 10.0.10.3, Vlan10, [0/0], 1w2d, direct
+        10.0.10.3/32, ubest/mbest: 1/0, attached
+            *via 10.0.10.3, Vlan10, [0/0], 1w2d, local
+        10.20.30.0/24, ubest/mbest: 1/0
+            *via 10.0.0.2, [110/20], 1w2d, ospf-1
+        0.0.0.0/0, ubest/mbest: 1/0
+            *via 10.0.0.1, [1/0], 1w2d, static
+    """)
+    routes = parse.parse_ip_routes(out)
+    assert set(routes) == {"10.0.10.0/24", "10.0.10.3/32", "10.20.30.0/24", "0.0.0.0/0"}
+    conn = routes["10.0.10.0/24"]["entries"][0]
+    assert conn["source"] == "connected" and conn["next_hop"] == "10.0.10.3" and conn["out_intf"] == "Vlan10"
+    ospf = routes["10.20.30.0/24"]["entries"][0]
+    assert ospf["source"] == "ospf" and ospf["next_hop"] == "10.0.0.2"
+    assert routes["0.0.0.0/0"]["entries"][0]["source"] == "static"
+
+
+def test_parse_ip_routes_nxos_ecmp_two_via_lines(cp):
+    """NX-OS lists ECMP as multiple indented *via lines under one prefix -> one entry per next-hop, source from
+    each via line."""
+    out = textwrap.dedent("""\
+        10.50.0.0/16, ubest/mbest: 2/0
+            *via 10.0.0.2, Eth1/1, [110/20], 1w2d, ospf-1
+            *via 10.0.0.6, Eth1/2, [110/20], 1w2d, ospf-1
+    """)
+    entries = parse.parse_ip_routes(out)["10.50.0.0/16"]["entries"]
+    assert len(entries) == 2
+    assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.6"}
+    assert all(e["source"] == "ospf" for e in entries)
+
+
+def test_parse_ip_routes_inline_via_plus_continuation_ecmp(cp):
+    """The common inline-via form is unchanged; an additional via continuation line is an ECMP sibling that also
+    inherits the source (so the inline + wrapped forms behave identically)."""
+    out = textwrap.dedent("""\
+        Codes: B - BGP
+        B    192.168.9.0/24 [20/0] via 10.0.0.2, 1d00h, GigabitEthernet0/0
+                   [20/0] via 10.0.0.6, 1d00h, GigabitEthernet0/1
+    """)
+    entries = parse.parse_ip_routes(out)["192.168.9.0/24"]["entries"]
+    assert len(entries) == 2
+    assert all(e["source"] == "bgp" for e in entries)
+    assert {e["next_hop"] for e in entries} == {"10.0.0.2", "10.0.0.6"}
+
+
 # ---- interface counters (errors) ------------------------------------------- #
 def test_parse_interface_counters(cp):
     out = textwrap.dedent("""\
@@ -536,6 +664,21 @@ def test_parse_interface_counters(cp):
     res = parse.parse_show_interface_counters(out)
     assert res["Gi1/0/9"]["input_errors"] == 142
     assert res["Gi1/0/9"]["crc"] == 17
+
+
+def test_parse_interface_counters_captures_output_side_errors(cp):
+    # output errors / late collisions (duplex mismatch) / runts / giants were collected but DISCARDED by
+    # the parser; they are now preserved on the per-interface record (output L1 health for the explorer).
+    out = textwrap.dedent("""\
+        GigabitEthernet1/0/9 is up, line protocol is up
+          MTU 1500 bytes, BW 1000000 Kbit/sec, DLY 10 usec
+             142 input errors, 17 CRC, 0 frame, 0 overrun, 0 ignored
+             5 runts, 2 giants, 0 throttles
+             8 output errors, 3 late collision, 0 deferred
+    """)
+    rec = parse.parse_show_interface_counters(out)["Gi1/0/9"]
+    assert rec["output_errors"] == 8 and rec["late_collisions"] == 3
+    assert rec["runts"] == 5 and rec["giants"] == 2
 
 
 # ---- show environment: Catalyst 4948E / 4500-X PS table -------------------- #
@@ -624,3 +767,1423 @@ def test_parsers_tolerate_empty_and_garbage(cp):
         assert fn("") in ({}, [])
         # random non-matching text must not raise and must yield nothing useful
         assert fn("garbage line\n%% nonsense ????\n") in ({}, [])
+
+
+def test_parse_poe_inline_budget_sums_modules_and_skips_na(cp):
+    """DET-poe-001: the 'show power inline' Module rows carry the PoE budget the per-port parse skips.
+    Sum across stack modules; an n/a-only switch stays UNBUDGETED (no false 0/0 -> poe_util blank)."""
+    two_mod = (
+        "Module   Available     Used     Remaining\n"
+        "          (Watts)     (Watts)    (Watts)\n"
+        "------   ---------   --------   ---------\n"
+        "1          1120.0      156.4       963.6\n"
+        "2          1120.0      171.8       948.2\n")
+    assert parse._parse_poe_inline_budget(two_mod) == {"available": 2240.0, "used": 328.2}
+    na = ("Module   Available     Used     Remaining\n"
+          "1             n/a        n/a         n/a\n")
+    assert parse._parse_poe_inline_budget(na) == {}
+    assert parse._parse_poe_inline_budget("") == {}
+
+
+def test_parse_hsrp_detail_captures_priority_preempt_track(cp):
+    """Universality (FHRP gap): the brief parser keeps only state+VIP, silently dropping priority,
+    preemption and tracking. parse_hsrp_detail reads the FULL 'show standby [all]' so a senior FHRP
+    audit (election, preempt, untracked-active) becomes possible. [HISTORY-REDACTED] has zero FHRP -> this is the first
+    capability proven on a NON-[HISTORY-REDACTED] environment."""
+    out = (
+        "GigabitEthernet0/1 - Group 10\n"
+        "  State is Active\n"
+        "  Virtual IP address is 10.1.1.1\n"
+        "  Active virtual MAC address is 0000.0c07.ac0a\n"
+        "  Hello time 3 sec, hold time 10 sec\n"
+        "  Preemption enabled, delay min 30 secs\n"
+        "  Active router is local\n"
+        "  Standby router is 10.1.1.3, priority 90 (expires in 8.000 sec)\n"
+        "  Priority 110 (configured 110)\n"
+        "    Track object 1 state Up decrement 20\n"
+        "GigabitEthernet0/2 - Group 20\n"
+        "  State is Active\n"
+        "  Virtual IP address is 10.1.2.1\n"
+        "  Active virtual MAC address is 0000.0c07.ac14\n"
+        "  Preemption disabled\n"
+        "  Priority 100 (configured 100)\n"
+        "Vlan50 - Group 50 (version 2)\n"
+        "  State is Standby\n"
+        "  Virtual IP address is 10.1.50.1\n"
+        "  Preemption enabled\n"
+        "  Priority 120 (configured 120)\n")
+    r = parse.parse_hsrp_detail(out)
+    by_grp = {k[1]: v for k, v in r.items()}
+    g10 = by_grp["10"]
+    assert g10["state"] == "Active" and g10["priority"] == 110 and g10["preempt"] is True
+    assert g10["vip"] == "10.1.1.1" and g10["standby_ip"] == "10.1.1.3"
+    assert g10["track"] == [{"obj": "1", "decrement": 20}] and g10["preempt_delay"] == 30
+    g20 = by_grp["20"]
+    # the senior red flags [HISTORY-REDACTED] could never surface: an Active group with NO preemption and NO tracking
+    assert g20["preempt"] is False and g20["track"] == [] and g20["priority"] == 100
+    # HSRPv2 header carries a '(version 2)' suffix -- the group must still be captured (not dropped) + version read.
+    g50 = by_grp["50"]
+    assert g50["state"] == "Standby" and g50["priority"] == 120 and g50["version"] == 2 and g50["preempt"] is True
+    assert parse.parse_hsrp_detail("") == {}
+
+
+def test_parse_ipv6_route_summary_number_first(cp):
+    """parse_ipv6_route_summary must read the real IOS/IOS-XE number-first comma list ('37 local, 35 connected,
+    ...') which sits on its OWN line (not after an inline colon). Previously by_source came back EMPTY so the
+    per-source breakdown was invisible even though the routing table was 'present'."""
+    out = (
+        "IPv6 Routing Table Summary - 257 entries\n"
+        "  37 local, 35 connected, 25 static, 0 RIP, 160 BGP\n"
+        "  Number of prefixes:\n"
+        "    /16: 1, /64: 200, /128: 56\n")
+    r = parse.parse_ipv6_route_summary(out)
+    assert r["present"] is True and r["total"] == 257
+    assert r["by_source"]["local"] == 37 and r["by_source"]["connected"] == 35
+    assert r["by_source"]["static"] == 25 and r["by_source"]["bgp"] == 160 and r["by_source"]["rip"] == 0
+    assert parse.parse_ipv6_route_summary("") == {}
+
+
+def test_parse_pim_rp_mapping_nxos_group_ranges_ssm_only(cp):
+    """NX-OS prints 'Group ranges:' (not IOS 'Group(s)'). The old regex missed it -> groups=[] -> the SSM-only
+    safety valve was dead -> a healthy SSM-only Nexus (0 ASM RP; SSM needs none) FALSE-POSITIVE fired 'PIM up,
+    no RP'. The NX-OS wording must populate groups so ssm_only is recognised and the cry-wolf is suppressed."""
+    nxos_ssm = (
+        "PIM Group-to-RP Mappings and Expiry Times\n"
+        "Group ranges: 232.0.0.0/8\n"
+        "  (SSM)\n")
+    r = parse.parse_pim_rp_mapping(nxos_ssm)
+    assert r["present"] is True and r["rp_count"] == 0
+    assert r["groups"] == ["232.0.0.0/8"] and r["ssm_only"] is True
+
+
+def test_parse_nve_peers_states(cp):
+    """Universality (NX-OS VXLAN-EVPN): the engine was blind to its OWN target fabric. parse_nve_peers reads
+    'show nve peers' so a DOWN VTEP peer (overlay partition) is detectable."""
+    out = (
+        "Interface Peer-IP          State LearnType Uptime   Router-Mac\n"
+        "--------- ---------------  ----- --------- -------- -----------------\n"
+        "nve1      10.0.0.1         Up    CP        00:10:00 n/a\n"
+        "nve1      10.0.0.2         Down  CP        00:00:00 n/a\n")
+    r = parse.parse_nve_peers(out)
+    assert len(r) == 2
+    assert r[0] == {"interface": "nve1", "peer_ip": "10.0.0.1", "state": "Up", "learn_type": "CP"}
+    assert r[1]["state"] == "Down" and r[1]["peer_ip"] == "10.0.0.2"
+    # IOS-XE Catalyst 9000 layout: 'Interface VNI Type Peer-IP RMAC/Num_RTs eVNI state flags uptime' -- the IP is
+    # column 4 (column 2 is the VNI), so the NX-OS regex returned [] for the entire IOS-XE VXLAN-EVPN fleet.
+    iosxe = (
+        "Interface VNI       Type Peer-IP        RMAC/Num_RTs   eVNI    state flags UP time\n"
+        "nve1      50001     L2CP 10.1.1.1       a0b1.c2d3.e4f5 50001   UP    A/M/4 1d05h\n"
+        "nve1      50002     L3CP 10.1.1.2       a0b1.c2d3.e4f6 50002   DOWN  A/-/4 00:00:10\n")
+    byi = {x["peer_ip"]: x for x in parse.parse_nve_peers(iosxe)}
+    assert set(byi) == {"10.1.1.1", "10.1.1.2"}
+    assert byi["10.1.1.1"]["state"] == "Up" and byi["10.1.1.1"]["learn_type"] == "CP"
+    assert byi["10.1.1.2"]["state"] == "Down"
+    assert parse.parse_nve_peers("") == []
+
+
+def test_parse_evpn_summary_states(cp):
+    """Universality (VXLAN-EVPN control plane): parse_evpn_summary reads 'show bgp l2vpn evpn summary' so a
+    non-Established RR session (overlay MAC/IP route exchange broken) is detectable."""
+    out = (
+        "BGP router identifier 10.0.0.7, local AS number 65001\n"
+        "Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "10.0.0.254      4 65001    5000    5000      120    0    0 1d05h    240\n"
+        "10.0.0.253      4 65001       0       0        0    0    0 00:00:00 Idle\n")
+    r = parse.parse_evpn_summary(out)
+    assert len(r) == 2
+    assert r[0] == {"neighbor": "10.0.0.254", "as": "65001", "state": "Established", "prefixes": 240}
+    assert r[1]["state"] == "Idle" and r[1]["prefixes"] == 0
+    assert parse.parse_evpn_summary("") == []
+
+
+def test_parse_bgp_vpnv4_summary_states(cp):
+    """Universality (MPLS L3VPN): parse_bgp_vpnv4_summary reads 'show bgp vpnv4 unicast summary' (same grid as
+    the EVPN/IPv4 summaries) so a non-Established VPNv4 PE peer -- no customer VRF routes exchanged -- is
+    detectable. The 'BGP router identifier' and header rows never become phantom neighbors."""
+    out = (
+        "BGP router identifier 10.0.255.1, local AS number 65000\n"
+        "Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "10.0.255.2      4        65000     842     839       14    0    0 4d05h           6\n"
+        "10.0.255.9      4        65000       0       0        1    0    0 never    Idle\n")
+    r = parse.parse_bgp_vpnv4_summary(out)
+    assert len(r) == 2
+    assert r[0] == {"neighbor": "10.0.255.2", "as": "65000", "state": "Established", "prefixes": 6}
+    assert r[1]["neighbor"] == "10.0.255.9" and r[1]["state"] == "Idle" and r[1]["prefixes"] == 0
+    assert parse.parse_bgp_vpnv4_summary("") == []
+
+
+def test_parse_bgp_summary_wrapped_ipv6_and_asdot(cp):
+    """Refutes the wrapped-row FALSE-HEALTH bug. When the Neighbor/AS columns are wide (a 15-char IPv4, any
+    IPv6 peer, or a 4-byte asdot AS), real 'show bgp ... summary' wraps the State/PfxRcd onto a continuation
+    line. The old parser read the last token of line 1 (an AS number) as the state and fabricated
+    'Established' for a genuinely DOWN peer -- and dropped IPv6 peers entirely (IPv4-only anchor). The down
+    peers must surface as Idle, IPv6/asdot peers must not vanish, and the asdot AS must be captured whole."""
+    out = (
+        "BGP router identifier 10.0.0.7, local AS number 65001\n"
+        "Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        # long 15-char IPv4: Neighbor/V/AS on line 1, stats+State wrap to line 2 (Idle == DOWN)
+        "192.168.250.254 4 65001\n"
+        "                         984    1086       11    0    0 16:16:33 Idle\n"
+        # IPv6 peer: address alone on line 1, the whole grid wraps to line 2 (Idle == DOWN)
+        "FEC0:C0FF:EE00::11:2\n"
+        "                4 65100     984    1086       11    0    0 16:16:33 Idle\n"
+        # asdot 4-byte AS, single line, Established -> AS captured whole ('1.2'), not truncated to '1'
+        "10.0.0.9        4  1.2     5000    5000      120    0    0 1d05h        240\n")
+    r = parse._parse_bgp_summary_rows(out)
+    by = {x["neighbor"]: x for x in r}
+    assert set(by) == {"192.168.250.254", "FEC0:C0FF:EE00::11:2", "10.0.0.9"}, by
+    assert by["192.168.250.254"]["state"] == "Idle" and by["192.168.250.254"]["prefixes"] == 0
+    assert by["FEC0:C0FF:EE00::11:2"]["state"] == "Idle"
+    assert by["10.0.0.9"]["state"] == "Established" and by["10.0.0.9"]["prefixes"] == 240
+    assert by["10.0.0.9"]["as"] == "1.2"
+
+
+def test_parse_bgp_summary_public_stitches_wrapped_down_peer(cp):
+    """PARSE-05: the PUBLIC parse_bgp_summary (what analyze.py:1474 consumes for 'show ip bgp summary') only
+    matched a row whose neighbour AND State/PfxRcd were on ONE physical line. A wide neighbour wraps State onto
+    an indented continuation line; the down (Idle) peer was DROPPED entirely, so analyze (which flags any peer
+    whose State is non-numeric) could never report it -- a missing-DOWN-peer false-health. The stitch pre-pass
+    must recover it WHILE preserving this parser's numeric-state-means-Established contract (distinct from the
+    _parse_bgp_summary_rows helper, which emits the literal word 'Established')."""
+    out = ("Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+           "192.168.250.254 4 65001\n"
+           "                         984    1086       11    0    0 16:16:33 Idle\n"            # wrapped DOWN
+           "10.0.0.1        4   100   50      60        11    0    0 1d02h        7\n")          # single-line UP
+    r = parse.parse_bgp_summary(out)
+    by = {x["neighbor"]: x for x in r}
+    assert set(by) == {"192.168.250.254", "10.0.0.1"}, by
+    assert by["192.168.250.254"]["state"] == "Idle"           # non-numeric -> consumer flags it as down
+    assert by["10.0.0.1"]["state"].isdigit()                  # numeric prefix count -> Established (unchanged)
+    # the analyze consumer's own predicate (analyze.py:1476): exactly the wrapped peer is 'not Established'
+    bad = [p for p in r if not p["state"].isdigit()]
+    assert [p["neighbor"] for p in bad] == ["192.168.250.254"]
+
+
+def test_json_controller_parsers_total_on_deeply_nested_input(cp):
+    """ROBUS-03: the controller-REST JSON parsers document 'Tolerant; never raises' and guard json.loads with
+    `except (ValueError, TypeError)`. But json.loads raises RecursionError (a RuntimeError subclass, NOT a
+    ValueError/TypeError) on deeply-nested input, so it escaped the guard -- and ACI/vManage/ISE exports are
+    attacker-influenceable controller JSON dropped into the collection dir / ingest ZIP. The except now also
+    catches RecursionError so the contract holds."""
+    assert not issubclass(RecursionError, (ValueError, TypeError))   # the gap the guard missed
+    bomb = "[" * 20000 + "]" * 20000
+    # every JSON controller parser must degrade to its empty shape, not propagate
+    assert parse.parse_ise_nodes(bomb) == []
+    assert parse.parse_aci_faults(bomb) == []
+    assert parse.parse_aci_health(bomb) == {}
+
+
+def test_detect_link_type_copper_sfp_not_fiber(cp):
+    """TEXTUTILS-02: copper RJ45/twisted-pair SFPs (GLC-T, SFP-GE-T, 1000BASE-T, 10GBASE-T) carry an SFP/GLC
+    fiber-family substring, so the fiber-keyword list matched them FIRST and labelled them Fiber. And the
+    empty-bay string 'No Transceiver' contains the fiber 'er' token (transceiv-ER), so an unpopulated port
+    read as Fiber too. Copper twisted-pair must win; an absent module must fall through to the speed heuristic.
+    Genuine fiber optics must be UNCHANGED."""
+    from cisco_toolkit.textutils import detect_link_type as d
+    assert d("GLC-T", "") == "Copper"
+    assert d("1000BaseT SFP", "") == "Copper"
+    assert d("10GBASE-T", "") == "Copper"
+    assert d("No Transceiver", "") == ""            # empty bay: not Fiber (was the transceiv-ER false match)
+    assert d("No Transceiver", "10G") == "Fiber"    # ...but speed still classifies when present
+    # fiber optics unchanged
+    assert d("SFP-10G-SR", "") == "Fiber"
+    assert d("1000BASE-SX", "") == "Fiber"
+    assert d("GLC-SX-MM", "") == "Fiber"            # GLC but a fiber SX, not -T
+
+
+def test_parse_bgp_ipv6_summary_wrapped(cp):
+    """parse_bgp_ipv6_summary must not drop a wrapped long-IPv6 peer: real 'show bgp ipv6 unicast summary' prints
+    a long neighbor on its own line with the V/AS/.../State grid wrapped to the next line; a down (Idle) peer in
+    that form previously VANISHED (read as 'no IPv6 BGP'). It must surface as Idle."""
+    out = (
+        "BGP router identifier 10.0.0.7, local AS number 65001\n"
+        "Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "2001:DB8::1     4 65001    5000    5000      120    0    0 1d05h        240\n"
+        "FEC0:C0FF:EE00::11:2\n"
+        "                4 65100     984    1086       11    0    0 16:16:33 Idle\n")
+    by = {x["neighbor"]: x for x in parse.parse_bgp_ipv6_summary(out)}
+    assert by["2001:DB8::1"]["state"] == "Established" and by["2001:DB8::1"]["prefixes"] == 240
+    assert by["FEC0:C0FF:EE00::11:2"]["state"] == "Idle"
+    assert parse.parse_bgp_ipv6_summary("") == []
+
+
+def test_parse_mpls_ldp_neighbors_states(cp):
+    """Universality (MPLS LDP underlay): parse_mpls_ldp_neighbors reads 'show mpls ldp neighbor' so a session
+    not in 'Oper' (no transport label bindings exchanged -> LSPs blackhole) is detectable. The indented TCP /
+    discovery lines and the 'Addresses bound to peer LDP Ident' line never create phantom neighbors."""
+    out = (
+        "Peer LDP Ident: 10.0.255.2:0; Local LDP Ident 10.0.255.1:0\n"
+        "\tTCP connection: 10.0.255.2.646 - 10.0.255.1.11008\n"
+        "\tState: Oper; Msgs sent/rcvd: 842/839; Downstream\n"
+        "\tUp time: 4d05h\n"
+        "\tAddresses bound to peer LDP Ident:\n"
+        "\t  10.0.255.2\n"
+        "Peer LDP Ident: 10.0.255.9:0; Local LDP Ident 10.0.255.1:0\n"
+        "\tState: Nonexistent; Msgs sent/rcvd: 0/0; Downstream\n")
+    r = parse.parse_mpls_ldp_neighbors(out)
+    assert len(r) == 2
+    assert r[0] == {"peer": "10.0.255.2", "label_space": "0", "state": "Oper"}
+    assert r[1]["peer"] == "10.0.255.9" and r[1]["state"] == "Nonexistent"
+    assert parse.parse_mpls_ldp_neighbors("") == []
+
+
+def test_parse_mpls_l2vpn_vc_status(cp):
+    """Universality (MPLS L2VPN/pseudowire): parse_mpls_l2vpn_vc reads 'show mpls l2transport vc' and parses
+    each row from the RIGHT, so a 'Local circuit' value containing spaces still yields the correct VC ID /
+    dest / status, and a DOWN pseudowire (broken customer L2 circuit) is detectable. The header and the dashed
+    separator are skipped (their dest column is not an IPv4 address)."""
+    out = (
+        "Local intf     Local circuit              Dest address    VC ID    Status\n"
+        "-------------  -------------------------  --------------  -------  ----------\n"
+        "Gi1/0/2        Ethernet                   10.0.255.2      200      UP\n"
+        "Gi1/0/3        Ethernet VLAN 300          10.0.255.9      300      DOWN\n"
+        "Gi1/0/4        Ethernet                   10.0.255.10     400      ADMIN DOWN\n")
+    r = parse.parse_mpls_l2vpn_vc(out)
+    assert len(r) == 3
+    assert r[0] == {"local_intf": "Gi1/0/2", "dest": "10.0.255.2", "vc_id": "200", "status": "UP"}
+    assert r[1]["vc_id"] == "300" and r[1]["status"] == "DOWN" and r[1]["dest"] == "10.0.255.9"
+    # the two-word 'ADMIN DOWN' state must be captured WHOLE (the row was previously dropped entirely)
+    assert r[2]["vc_id"] == "400" and r[2]["status"] == "ADMIN DOWN" and r[2]["dest"] == "10.0.255.10"
+    assert parse.parse_mpls_l2vpn_vc("") == []
+
+
+def test_parse_lisp_sessions_states(cp):
+    """Universality (SD-Access LISP fabric): parse_lisp_sessions reads 'show lisp session', keying each
+    'Sessions for VRF <name>, total: N, established: M' block and its 'IP:port State ...' peer rows. The Down
+    VRF (established 0) is distinguishable from the Up VRF by the summary counts, so the all-sessions-down
+    fabric partition is detectable while the indented column header never creates a phantom peer."""
+    out = (
+        "Sessions for VRF default, total: 2, established: 2\n"
+        "Peer                           State      Up/Down        In/Out    Users\n"
+        "10.0.255.2:4342                Up         1d04h          27/9      14\n"
+        "10.0.255.3:4342                Up         1d03h          19/9      14\n"
+        "Sessions for VRF red, total: 2, established: 0\n"
+        "Peer                           State      Up/Down        In/Out    Users\n"
+        "10.0.255.2:4342                Down       never          0/0       0\n"
+        "10.0.255.3:4342                Down       never          0/0       0\n")
+    r = parse.parse_lisp_sessions(out)
+    assert len(r) == 2
+    assert r[0]["vrf"] == "default" and r[0]["total"] == 2 and r[0]["established"] == 2
+    assert len(r[0]["peers"]) == 2
+    assert r[0]["peers"][0] == {"peer": "10.0.255.2", "port": "4342", "state": "Up"}
+    assert r[1]["vrf"] == "red" and r[1]["total"] == 2 and r[1]["established"] == 0
+    assert all(p["state"] == "Down" for p in r[1]["peers"])
+    assert parse.parse_lisp_sessions("") == []
+
+
+def test_parse_cts_environment_data_states(cp):
+    """Universality (Cisco TrustSec / CTS segmentation): parse_cts_environment_data reads the env-data
+    'Current state' so a download that is not COMPLETE (no SGT->policy map -> segmentation blind) is
+    detectable, while a COMPLETE set is recognized as healthy. Critically, a COMPLETE state with DEAD
+    RADIUS servers stays COMPLETE (server status is NOT read), and absent / non-CTS output yields {}."""
+    complete = (
+        "CTS Environment Data\n"
+        "====================\n"
+        "Current state = COMPLETE\n"
+        "Last status = Successful\n"
+        "Local Device SGT:\n"
+        "  SGT tag = 216-22:TrustSec_Devices\n"
+        "Server List Info:\n"
+        "Installed list: CTSServerList1-000B, 2 server(s):\n"
+        " *Server: 10.0.0.10, port 1812, A-ID 3X0P672A296F212FUEC21S27E4A2579N\n"
+        "          Status = DEAD\n"
+        " *Server: 10.0.0.11, port 1812, A-ID 3X08674A806S217FUEC21C24E4A3549N\n"
+        "          Status = DEAD\n"
+        "Security Group Name Table:\n"
+        "    0-07:Unknown    3-00:Network_Services    4-04:Employees    5-00:Contractors\n"
+        "Environment Data Lifetime = 86400 secs\n"
+        "State Machine is running\n")
+    r = parse.parse_cts_environment_data(complete)
+    assert r["state"] == "COMPLETE" and r["last_status"] == "Successful"
+    assert r["sgt_count"] == 4 and r["server_count"] == 2 and r["lifetime"] == 86400
+    broken = (
+        "CTS Environment Data\n"
+        "====================\n"
+        "Current state = WAITING_RESPONSE\n"
+        "Last status = Failed\n"
+        "Environment Data is empty\n"
+        "State Machine is running\n"
+        "Retry_timer (60 secs) is running\n")
+    b = parse.parse_cts_environment_data(broken)
+    assert b["state"] == "WAITING_RESPONSE" and b["last_status"] == "Failed" and b["sgt_count"] == 0
+    # NX-OS: 'Current State : <enum>' uses a COLON separator and an enum token (NOT 'COMPLETE'). The success enum
+    # CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE must NORMALISE to COMPLETE so a fully-downloaded Nexus does not FALSE-fire;
+    # an in-progress enum must stay non-COMPLETE so the detector still flags it. (Verified vs the DevNet NX-API CTS ref.)
+    nxos_done = (
+        "CTS Environment Data\n"
+        "Current State                : CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE\n"
+        "Environment Data Lifetime    : 86400 secs\n")
+    assert parse.parse_cts_environment_data(nxos_done)["state"] == "COMPLETE"
+    nxos_busy = "CTS Environment Data\nCurrent State : CTS_ENV_DNLD_ST_ENV_START\n"
+    nbusy = parse.parse_cts_environment_data(nxos_busy)["state"]
+    assert nbusy and nbusy != "COMPLETE"
+    # Absent / non-CTS -> {} (coverage-honest: nothing to assess).
+    assert parse.parse_cts_environment_data("") == {}
+    assert parse.parse_cts_environment_data("% Invalid input detected at '^' marker.") == {}
+
+
+def test_parse_dmvpn_peers_states(cp):
+    """Universality (DMVPN WAN overlay): parse_dmvpn_peers reads 'show dmvpn' so a tunnel peer NOT in the UP
+    state (NHRP / IKE / down -> no overlay forwarding to that spoke/hub) is detectable. The State token is
+    anchored to the UpDn HH:MM:SS time, so the legend, the column-header row and the dashed separator (none of
+    which carry a time) never create phantom peers; the leading '# Ent' count is optional; 'interface' is
+    carried from the 'Interface: TunnelN' header."""
+    out = (
+        "Legend: Attrb --> S - Static, D - Dynamic, I - Incomplete\n"
+        "        N - NATed, L - Local, X - No Socket\n"
+        "        # Ent --> Number of NHRP entries with same NBMA peer\n"
+        "==========================================================================\n"
+        "\n"
+        "Interface: Tunnel1, IPv4 NHRP Details\n"
+        "Type:Spoke, NHRP Peers:3,\n"
+        "\n"
+        " # Ent  Peer NBMA Addr Peer Tunnel Add State  UpDn Tm Attrb\n"
+        " ----- --------------- --------------- ----- -------- -----\n"
+        "     1 17.17.17.1             10.0.1.1    UP 00:27:26     S\n"
+        "     1 27.27.27.2             10.0.1.2   IKE 00:16:28     S\n"
+        "     1 37.37.37.3             10.0.1.3  NHRP 00:00:04     D\n"
+        "     1 47.47.47.4             10.0.1.4  NHRP 48w0d        D\n"
+        "     1 57.57.57.5             10.0.1.5  NHRP never        D\n")
+    r = parse.parse_dmvpn_peers(out)
+    assert len(r) == 5
+    assert r[0] == {"interface": "Tunnel1", "nbma": "17.17.17.1", "tunnel_ip": "10.0.1.1", "state": "UP", "attrb": "S"}
+    assert r[1]["tunnel_ip"] == "10.0.1.2" and r[1]["state"] == "IKE"
+    assert r[2]["tunnel_ip"] == "10.0.1.3" and r[2]["state"] == "NHRP"
+    # Aged (>=24h -> '48w0d', no HH:MM:SS) and 'never' UpDn times must NOT drop a broken peer (most common real case).
+    assert r[3]["tunnel_ip"] == "10.0.1.4" and r[3]["state"] == "NHRP"
+    assert r[4]["tunnel_ip"] == "10.0.1.5" and r[4]["state"] == "NHRP"
+    # Legend / header / dashed-separator lines must NOT become peers (only the 5 real rows).
+    assert [p["state"] for p in r] == ["UP", "IKE", "NHRP", "NHRP", "NHRP"]
+    assert parse.parse_dmvpn_peers("") == []
+    assert parse.parse_dmvpn_peers("% Incomplete command.") == []
+
+
+def test_parse_crypto_sessions_states(cp):
+    """Universality (IPsec encrypted WAN): parse_crypto_sessions reads 'show crypto session' so a session
+    whose 'Session status' begins with DOWN (no established IKE/IPsec SA -> tunnel down) is detectable. Each
+    'Interface:' opens a new record; the indented IKE SA / IPSEC FLOW / Active SAs lines never create phantom
+    sessions, and the peer is captured without the trailing 'port 500'."""
+    out = (
+        "Crypto session current status\n"
+        "\n"
+        "Interface: Tunnel0\n"
+        "Session status: UP-ACTIVE\n"
+        "Peer: 10.0.255.2 port 500\n"
+        "  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.2/500 Active\n"
+        "  IPSEC FLOW: permit ip 10.0.10.0/255.255.255.0 10.0.20.0/255.255.255.0\n"
+        "        Active SAs: 2, origin: crypto map\n"
+        "Interface: Tunnel1\n"
+        "Session status: DOWN-NEGOTIATING\n"
+        "Peer: 10.0.255.9 port 500\n"
+        "  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.9/500 Inactive\n"
+        "        Active SAs: 0, origin: crypto map\n")
+    r = parse.parse_crypto_sessions(out)
+    assert len(r) == 2
+    assert r[0] == {"interface": "Tunnel0", "peer": "10.0.255.2", "status": "UP-ACTIVE"}
+    assert r[1]["interface"] == "Tunnel1" and r[1]["peer"] == "10.0.255.9" and r[1]["status"] == "DOWN-NEGOTIATING"
+    assert parse.parse_crypto_sessions("") == []
+
+
+def test_parse_bfd_neighbors_state_by_column_not_rhrs(cp):
+    """Universality (BFD fast-failover): parse_bfd_neighbors reads 'show bfd neighbors' and MUST take the
+    State value from the State COLUMN, not the first Up/Down token -- the 'RH/RS' column is also literally
+    Up/Down, so a naive first-token match would misread a healthy row. Covers the NX-OS/IOS-XE layout (with
+    Holdown + trailing Vrf/Type) and proves a Down session is detectable while the Up row stays Up. Empty /
+    'not enabled' input yields []."""
+    out = (
+        "switch# show bfd neighbors\n"
+        "\n"
+        "OurAddr         NeighAddr       LD/RD                 RH/RS           Holdown(mult)     State       Int               Vrf                       Type\n"
+        "10.0.255.1      10.0.255.2      1090519041/1090519040 Up              583(3)            Up          Po10              default                   SH\n"
+        "10.0.255.1      10.0.255.9      1090519042/0          Down            N/A(3)            Down        Eth8/2            default                   SH\n")
+    r = parse.parse_bfd_neighbors(out)
+    assert len(r) == 2
+    by_n = {x["neighbor"]: x for x in r}
+    assert by_n["10.0.255.2"]["state"] == "Up"      # RH/RS Up did NOT bleed into a phantom; real State is Up
+    assert by_n["10.0.255.9"]["state"] == "Down"    # the genuinely broken session
+    assert by_n["10.0.255.2"]["interface"] == "Po10"
+    assert by_n["10.0.255.9"]["local_disc"] == "1090519042" and by_n["10.0.255.9"]["remote_disc"] == "0"
+    # older IOS layout (no OurAddr/Holdown, NeighAddr first) still parses the State column correctly
+    ios = (
+        "NeighAddr                         LD/RD    RH/RS     State     Int\n"
+        "10.0.0.2                           1/1     Up        Up        Fa0/0\n")
+    ri = parse.parse_bfd_neighbors(ios)
+    assert len(ri) == 1 and ri[0]["neighbor"] == "10.0.0.2" and ri[0]["state"] == "Up" and ri[0]["interface"] == "Fa0/0"
+    # Real-world COLUMN DRIFT: a wide 32-bit discriminator overflows the LD/RD column, shifting every right-hand
+    # column past its header position, so reading State by header CHAR-POSITION misreads it (lands on Holdown/Int).
+    # Reading State by TOKEN (the column right after the Holdown paren token) stays correct under any drift.
+    drift = (
+        "OurAddr      NeighAddr    LD/RD       RH/RS   Holdown(mult)   State    Int       Vrf   Type\n"
+        "2.16.2.1     2.16.2.2     1090519042/1090519042   Up    9193(5)    Up     Eth1/1    default  SH\n"
+        "2.16.2.1     2.16.2.3     1090519044/1090519043   Up    8800(5)    Down   Eth2/1    default  SH\n")
+    byd = {x["neighbor"]: x for x in parse.parse_bfd_neighbors(drift)}
+    assert byd["2.16.2.2"]["state"] == "Up" and byd["2.16.2.2"]["interface"] == "Eth1/1"
+    assert byd["2.16.2.3"]["state"] == "Down"   # the genuinely broken session must NOT be misread or lost
+    # REAL Cisco IOS-XE form (per the IOS-XE BFD Config Guide): the RH/RS column renders as 'N(RH)' (e.g. '1(RH)')
+    # -- it ALSO contains parens, so the old 'first token containing ()' Holdown heuristic latched onto RH/RS and
+    # read State one column early; a Down session was then stored as the numeric Holdown -> the BFD-down detector
+    # silently MISSED it (false-health). State must come from the column before Int regardless of the RH/RS form.
+    xe = (
+        "OurAddr      NeighAddr    LD/RD   RH/RS    Holdown(mult)   State   Int\n"
+        "172.16.1.1   172.16.1.3   5/3     1(RH)    134 (3 )        Up      Gi0/0/1\n"
+        "172.16.1.2   172.16.1.9   1/6     0(RH)    0 (3 )          Down    Gi0/0/2\n")
+    bx = {x["neighbor"]: x for x in parse.parse_bfd_neighbors(xe)}
+    assert bx["172.16.1.3"]["state"] == "Up"
+    assert bx["172.16.1.9"]["state"] == "Down"        # NOT swallowed by the '0(RH)' RH/RS paren token
+    assert bx["172.16.1.9"]["interface"] == "Gi0/0/2"
+    assert parse.parse_bfd_neighbors("") == []
+    assert parse.parse_bfd_neighbors("% BFD is not enabled\n") == []
+
+
+def test_parse_ipv6_interface_addrs_dad_state(cp):
+    """Universality (IPv6 addressing / ND): parse_ipv6_interface_addrs reads 'show ipv6 interface' and flags a
+    global address marked [DUPLICATE] (DAD found a clash -> IOS disabled the address) distinctly from a clean
+    address (dad_state 'ok') and a transient [TENTATIVE] address. A duplicate link-local sets link_local_dup.
+    The Description / Joined-group / MTU / ND lines never create phantom addresses, and a single 'Global
+    unicast address(es):' header followed by an indented continuation address yields a second record."""
+    out = (
+        "Vlan10 is up, line protocol is up\n"
+        "  IPv6 is enabled, link-local address is FE80::1\n"
+        "  Description: clean dual-stack SVI\n"
+        "  Global unicast address(es): 2001:DB8:10::1, subnet is 2001:DB8:10::/64\n"
+        "    2001:DB8:10::2, subnet is 2001:DB8:10::/64 [TENTATIVE]\n"
+        "  Joined group address(es): FF02::1 FF02::2\n"
+        "  MTU is 1500 bytes\n"
+        "Vlan30 is up, line protocol is up\n"
+        "  IPv6 is enabled, link-local address is FE80::30 [DUPLICATE]\n"
+        "  Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]\n"
+        "  MTU is 1500 bytes\n"
+        "GigabitEthernet0/2 is administratively down, line protocol is down\n"
+        "  IPv6 is disabled\n"
+    )
+    r = parse.parse_ipv6_interface_addrs(out)
+    by = {x["interface"]: x for x in r}
+    assert set(by) >= {"Vlan10", "Vlan30", "Gi0/2"}
+    # Vlan10: one clean global + one TENTATIVE continuation address; NEITHER is a duplicate
+    v10 = by["Vlan10"]
+    assert v10["link_local_dup"] is False and v10["ipv6_enabled"] is True
+    states10 = {g["addr"]: g["dad_state"] for g in v10["global"]}
+    assert states10 == {"2001:DB8:10::1": "ok", "2001:DB8:10::2": "tentative"}
+    # Vlan30: the global address AND the link-local are DUPLICATE
+    v30 = by["Vlan30"]
+    assert v30["link_local_dup"] is True
+    assert v30["global"] == [{"addr": "1:4::1", "subnet": "1:4::/64", "dad_state": "duplicate"}]
+    # admin-down IPv6-disabled interface: enabled False, no addresses, no false duplicate
+    assert by["Gi0/2"]["ipv6_enabled"] is False and by["Gi0/2"]["global"] == []
+    assert parse.parse_ipv6_interface_addrs("") == []
+
+
+def test_parse_ipv6_interface_addrs_nxos_dad(cp):
+    """parse_ipv6_interface_addrs must read the NX-OS 'show ipv6 interface' format (its '<intf>, Interface
+    status: protocol-.../admin-...' header, the bare 'IPv6 address:' block, and 'IPv6 link-local address:'
+    line all differ from IOS). Previously it returned [] for EVERY Nexus device -> a [DUPLICATE] DAD failure on
+    the Nexus core ([HISTORY-REDACTED]'s DS/CS tier is Nexus) was silently reported as clean."""
+    out = (
+        "Ethernet2/1, Interface status: protocol-up/link-up/admin-up, iod: 36\n"
+        "  IPv6 address:\n"
+        "    2001:db8:1::1/64 [VALID]\n"
+        "    2001:db8:1::99/64 [DUPLICATE]\n"
+        "  IPv6 link-local address: fe80::1 (default) [VALID]\n"
+        "  IPv6 multicast routing is disabled\n"
+        "Vlan20, Interface status: protocol-up/link-up/admin-up, iod: 40\n"
+        "  IPv6 address:\n"
+        "    2001:db8:20::1/64 [VALID]\n"
+        "  IPv6 link-local address: fe80::20 [DUPLICATE]\n")
+    r = parse.parse_ipv6_interface_addrs(out)
+    by = {x["interface"]: x for x in r}
+    assert set(by) >= {"Eth2/1", "Vlan20"}
+    e = by["Eth2/1"]
+    assert e["ipv6_enabled"] is True
+    states = {g["addr"]: g["dad_state"] for g in e["global"]}
+    assert states == {"2001:db8:1::1": "ok", "2001:db8:1::99": "duplicate"}
+    assert e["link_local_dup"] is False
+    # a DUPLICATE link-local (disables IPv6 packet processing on the whole interface) must be flagged
+    assert by["Vlan20"]["link_local_dup"] is True
+
+
+def test_parse_ipv6_routing_plane(cp):
+    """Universality (IPv6 routing plane / dual-stack reachability): the three IPv6 control-plane parsers.
+    parse_ospfv3_neighbors splits the State/role column on '/' so FULL/2WAY (healthy resting states) are
+    distinguishable from a stuck EXSTART; the process header + column header create no phantom neighbors.
+    parse_bgp_ipv6_summary treats a numeric State/PfxRcd as Established and a state WORD (Active) as down.
+    parse_ipv6_route_summary reads the 'N entries' header (the IPv6-routing-active gate). All three return
+    []/{} on empty input (a pure-IPv4 box) and never raise."""
+    ospf = (
+        "            OSPFv3 1 address-family ipv6 (router-id 10.0.0.4)\n"
+        "\n"
+        "Neighbor ID     Pri   State           Dead Time   Interface ID    Interface\n"
+        "10.0.0.1          1   FULL/DR         00:00:37    16              Vlan10\n"
+        "10.0.0.7          1   2WAY/DROTHER    00:00:35    18              Vlan10\n"
+        "10.0.0.9          0   EXSTART/  -     00:00:33    20              GigabitEthernet0/1\n")
+    r = parse.parse_ospfv3_neighbors(ospf)
+    assert len(r) == 3
+    assert r[0] == {"neighbor_id": "10.0.0.1", "pri": "1", "state": "FULL", "role": "DR", "interface": "Vlan10"}
+    assert r[1]["state"] == "2WAY" and r[1]["role"] == "DROTHER"
+    assert r[2]["neighbor_id"] == "10.0.0.9" and r[2]["state"] == "EXSTART"
+    assert parse.parse_ospfv3_neighbors("") == []
+
+    bgp = (
+        "BGP router identifier 10.0.0.4, local AS number 65001\n"
+        "Neighbor                  V         AS  MsgRcvd  MsgSent  TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "2001:DB8:0:1::1           4      65001     3421     3418      15    0    0 1d02h          12\n"
+        "2001:DB8:0:9::9           4      65009        0        0       0    0    0 never    Active\n")
+    b = parse.parse_bgp_ipv6_summary(bgp)
+    assert len(b) == 2
+    assert b[0] == {"neighbor": "2001:DB8:0:1::1", "as": "65001", "state": "Established", "prefixes": 12}
+    assert b[1]["neighbor"] == "2001:DB8:0:9::9" and b[1]["state"] == "Active" and b[1]["prefixes"] == 0
+    assert parse.parse_bgp_ipv6_summary("") == []
+
+    summ = parse.parse_ipv6_route_summary(
+        "IPv6 Routing Table - default - 8 entries\n"
+        "connected       4           0           384         576\n"
+        "ospf 1          1           0           96          144\n")
+    assert summ["present"] is True and summ["total"] == 8
+    assert summ["by_source"].get("connected") == 4
+    assert parse.parse_ipv6_route_summary("") == {}
+
+
+def test_parse_aci_faults_filters_and_normalizes(cp):
+    """Universality (Cisco ACI / JSON-ingestion): parse_aci_faults json-loads an APIC 'moquery -c faultInst'
+    export (imdata[].faultInst.attributes). severity/lc/ack are lower-cased for the detector's filter; a
+    non-JSON or imdata-less payload yields [] (so a non-ACI fleet never cries wolf)."""
+    out = (
+        '{"totalCount": "2", "imdata": ['
+        '{"faultInst": {"attributes": {"code": "F1394", "severity": "critical", "lc": "raised", "ack": "no", "dn": "topology/pod-1/node-101/fault-F1394", "descr": "Port is down"}}},'
+        '{"faultInst": {"attributes": {"code": "F1234", "severity": "Minor", "lc": "raised", "ack": "no", "dn": "x", "descr": "minor"}}}'
+        ']}')
+    r = parse.parse_aci_faults(out)
+    assert len(r) == 2
+    assert r[0]["code"] == "F1394" and r[0]["severity"] == "critical" and r[0]["lc"] == "raised" and r[0]["ack"] == "no"
+    assert r[1]["severity"] == "minor"          # normalized to lower-case
+    assert parse.parse_aci_faults("") == []
+    assert parse.parse_aci_faults("not json at all") == []
+    assert parse.parse_aci_faults("{}") == []
+
+
+def test_parse_aci_fabric_nodes_state(cp):
+    """Universality (Cisco ACI): parse_aci_fabric_nodes reads 'moquery -c fabricNode' so a node whose
+    fabricSt is not active (decommissioned/inactive) is detectable; fabricSt/adSt are lower-cased."""
+    out = (
+        '{"imdata": ['
+        '{"fabricNode": {"attributes": {"id": "101", "name": "leaf-101", "role": "leaf", "fabricSt": "active", "adSt": "on", "dn": "topology/pod-1/node-101"}}},'
+        '{"fabricNode": {"attributes": {"id": "102", "name": "leaf-102-OLD", "role": "leaf", "fabricSt": "Decommissioned", "adSt": "off", "dn": "topology/pod-1/node-102"}}}'
+        ']}')
+    r = parse.parse_aci_fabric_nodes(out)
+    assert len(r) == 2
+    assert r[0]["id"] == "101" and r[0]["fabric_st"] == "active"
+    assert r[1]["name"] == "leaf-102-OLD" and r[1]["fabric_st"] == "decommissioned"
+    assert parse.parse_aci_fabric_nodes("") == []
+
+
+def test_parse_aci_health_score(cp):
+    """Universality (Cisco ACI): parse_aci_health reads 'moquery -c fabricHealthTotal' -> {cur:int, max_sev}.
+    A non-numeric / empty / imdata-less payload yields {} (never a false 'degraded')."""
+    out = '{"imdata": [{"fabricHealthTotal": {"attributes": {"cur": "82", "maxSev": "critical"}}}]}'
+    assert parse.parse_aci_health(out) == {"cur": 82, "max_sev": "critical"}
+    assert parse.parse_aci_health("") == {}
+    assert parse.parse_aci_health('{"imdata": []}') == {}
+
+
+def test_parse_sdwan_control_connections_state(cp):
+    """Universality (Cisco Catalyst SD-WAN / vManage JSON channel): parse_sdwan_control_connections reads the
+    {"data":[...]} envelope so a control connection that is down (or actual < expected) is detectable; state
+    is lower-cased and expected/actual are ints. Non-JSON / empty / data-less -> []."""
+    out = (
+        '{"data": ['
+        '{"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vsmart", "state": "Down", "local-color": "mpls", "expected-connections": 2, "actual-connections": 0},'
+        '{"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vbond", "state": "up", "expected-connections": 1, "actual-connections": 1}'
+        ']}')
+    r = parse.parse_sdwan_control_connections(out)
+    assert len(r) == 2
+    assert r[0]["peer_type"] == "vsmart" and r[0]["state"] == "down" and r[0]["expected"] == 2 and r[0]["actual"] == 0
+    assert r[1]["state"] == "up"
+    assert parse.parse_sdwan_control_connections("") == []
+    assert parse.parse_sdwan_control_connections("not json") == []
+
+
+def test_parse_sdwan_devices_reachability(cp):
+    """Universality (Cisco Catalyst SD-WAN): parse_sdwan_devices reads vManage /dataservice/device so a device
+    the Manager reports unreachable is detectable; reachability is lower-cased. Empty -> []."""
+    out = (
+        '{"data": ['
+        '{"system-ip": "10.10.1.1", "host-name": "DC1-cedge", "reachability": "reachable", "device-model": "vedge-C8000V"},'
+        '{"system-ip": "10.10.1.99", "host-name": "BR99-cedge", "reachability": "Unreachable", "device-model": "vedge-C8000V"}'
+        ']}')
+    r = parse.parse_sdwan_devices(out)
+    assert len(r) == 2
+    assert r[0]["host_name"] == "DC1-cedge" and r[0]["reachability"] == "reachable"
+    assert r[1]["reachability"] == "unreachable"
+    assert parse.parse_sdwan_devices("") == []
+
+
+def test_parse_sdwan_omp_counters(cp):
+    """Universality (Cisco Catalyst SD-WAN OMP): parse_sdwan_omp_counters reads vManage
+    /dataservice/device/counters so an edge with ompPeersDown > 0 (overlay routing degraded) is detectable;
+    omp_up/omp_down are coerced to ints. Empty / non-JSON -> []."""
+    out = (
+        '{"data": ['
+        '{"system-ip": "10.10.1.13", "host-name": "BR13", "ompPeersUp": 1, "ompPeersDown": 1},'
+        '{"system-ip": "10.10.1.1", "host-name": "DC1", "ompPeersUp": 2, "ompPeersDown": 0}'
+        ']}')
+    r = parse.parse_sdwan_omp_counters(out)
+    assert len(r) == 2
+    assert r[0]["host_name"] == "BR13" and r[0]["omp_up"] == 1 and r[0]["omp_down"] == 1
+    assert r[1]["omp_down"] == 0
+    assert parse.parse_sdwan_omp_counters("") == []
+
+
+def test_parse_aci_vrfs_enforcement(cp):
+    """Universality (Cisco ACI logical inventory): parse_aci_vrfs reads 'moquery -c fvCtx' so a VRF with
+    contract enforcement UNENFORCED (default-permit between EPGs) is detectable; the tenant is parsed from the
+    dn (uni/tn-<tenant>/ctx-<name>); pcEnfPref is lower-cased."""
+    out = (
+        '{"imdata": ['
+        '{"fvCtx": {"attributes": {"name": "prod-vrf", "dn": "uni/tn-PROD/ctx-prod-vrf", "pcEnfPref": "enforced"}}},'
+        '{"fvCtx": {"attributes": {"name": "legacy-vrf", "dn": "uni/tn-LEGACY/ctx-legacy-vrf", "pcEnfPref": "Unenforced"}}}'
+        ']}')
+    r = parse.parse_aci_vrfs(out)
+    assert len(r) == 2
+    assert r[0] == {"name": "prod-vrf", "tenant": "PROD", "dn": "uni/tn-PROD/ctx-prod-vrf", "pc_enf_pref": "enforced", "pc_enf_dir": ""}
+    assert r[1]["tenant"] == "LEGACY" and r[1]["pc_enf_pref"] == "unenforced"
+    assert parse.parse_aci_vrfs("") == []
+
+
+def test_parse_aci_logical_census(cp):
+    """Universality (Cisco ACI logical census / move-group scoping): the tenant/BD/EPG inventory parsers read
+    'moquery -c fvTenant/fvBD/fvAEPg'. Pure inventory (the migration move-group units); tenant is parsed from
+    the dn. Empty -> []."""
+    assert parse.parse_aci_tenants('{"imdata":[{"fvTenant":{"attributes":{"name":"PROD","dn":"uni/tn-PROD"}}}]}') == [{"name": "PROD", "dn": "uni/tn-PROD"}]
+    bds = parse.parse_aci_bds('{"imdata":[{"fvBD":{"attributes":{"name":"prod-bd","dn":"uni/tn-PROD/BD-prod-bd","unicastRoute":"yes","arpFlood":"no"}}}]}')
+    assert bds[0]["name"] == "prod-bd" and bds[0]["tenant"] == "PROD" and bds[0]["unicast_route"] == "yes"
+    epgs = parse.parse_aci_epgs('{"imdata":[{"fvAEPg":{"attributes":{"name":"web-epg","dn":"uni/tn-PROD/ap-app/epg-web-epg"}}}]}')
+    assert epgs[0]["name"] == "web-epg" and epgs[0]["tenant"] == "PROD"
+    assert parse.parse_aci_tenants("") == [] and parse.parse_aci_bds("") == [] and parse.parse_aci_epgs("") == []
+
+
+def test_parse_nve_vni_states(cp):
+    """Universality (VXLAN VNI): parse_nve_vni reads 'show nve vni' so a VNI not Up (stranded VLAN/VRF) is detectable."""
+    out = (
+        "Interface VNI      Multicast-group   State Mode Type [BD/VRF]\n"
+        "nve1      10010    225.1.1.10        Up    CP   L2 [10]\n"
+        "nve1      50000    n/a               Down  CP   L3 [vrf-prod]\n")
+    r = parse.parse_nve_vni(out)
+    assert len(r) == 2
+    assert r[0] == {"vni": "10010", "mcast_group": "225.1.1.10", "state": "Up", "mode": "CP", "type": "L2"}
+    assert r[1]["vni"] == "50000" and r[1]["state"] == "Down" and r[1]["mcast_group"] == ""
+    # IOS-XE Catalyst 9000: Type is fused into the Mode (L2CP/L3CP) and the next column is the VLAN/BD number,
+    # so the NX-OS regex (which needs a bare L2/L3 token there) returned [] for every IOS-XE VTEP.
+    iosxe = (
+        "Interface VNI       Multicast-group   VNI state Mode VLAN cfg vrf\n"
+        "nve1      10306     N/A               Up        L3CP 306      CLI\n"
+        "nve1      20100     239.1.1.1         Down      L2CP 100      -\n")
+    byv = {x["vni"]: x for x in parse.parse_nve_vni(iosxe)}
+    assert byv["10306"]["state"] == "Up" and byv["10306"]["type"] == "L3" and byv["10306"]["mode"] == "CP"
+    assert byv["20100"]["state"] == "Down" and byv["20100"]["type"] == "L2" and byv["20100"]["mcast_group"] == "239.1.1.1"
+    assert parse.parse_nve_vni("") == []
+
+
+def test_parse_copp_drops_nxos_and_iosxe(cp):
+    """Universality (control-plane policing): the engine had no CoPP visibility. parse_copp_drops reads
+    'show policy-map [interface] control-plane' on BOTH NX-OS (bytes, module blocks) and IOS/IOS-XE (packets,
+    actions: drop) so a CoPP class actively DROPPING punted traffic (drops > 0) becomes detectable; rate lines
+    and the policer cir/bc config line are never miscounted."""
+    nxos = (
+        "    class-map copp-system-p-class-critical (match-any)\n"
+        "      police cir 36000 kbps bc 250 ms\n"
+        "      module 1:\n"
+        "        conformed 177446058 bytes,\n"
+        "          5-min offered rate 3 bytes/sec\n"
+        "        violated 4521 bytes,\n"
+        "          5-min violate rate 12 bytes/sec\n"
+        "    class-map copp-system-p-class-normal (match-any)\n"
+        "      module 1:\n"
+        "        conformed 88231005 bytes,\n"
+        "        violated 0 bytes,\n")
+    by = {c["class"]: c for c in parse.parse_copp_drops(nxos)}
+    assert by["copp-system-p-class-critical"]["violated"] == 4521
+    assert by["copp-system-p-class-critical"]["drops"] == 4521
+    assert by["copp-system-p-class-normal"]["drops"] == 0
+    assert by["copp-system-p-class-critical"]["conformed"] == 177446058
+    iosxe = (
+        "    Class-map: copp-class-bgp (match-any)\n"
+        "      120 packets, 7680 bytes\n"
+        "      police:\n"
+        "          cir 8000 bps, bc 1500 bytes\n"
+        "        conformed 15 packets, 6210 bytes; actions: transmit\n"
+        "        exceeded 5 packets, 5070 bytes; actions: drop\n"
+        "        violated 2 packets, 140 bytes; actions: drop\n"
+        "    Class-map: class-default (match-any)\n"
+        "        conformed 0 packets, 0 bytes; actions: transmit\n"
+        "        exceeded 0 packets, 0 bytes; actions: drop\n")
+    byx = {c["class"]: c for c in parse.parse_copp_drops(iosxe)}
+    assert byx["copp-class-bgp"]["exceeded"] == 5 and byx["copp-class-bgp"]["violated"] == 2
+    assert byx["copp-class-bgp"]["drops"] == 7 and byx["class-default"]["drops"] == 0
+    # NX-OS one-line module form: 'module N : transmitted X bytes; dropped Y bytes;' -- the drop counter is NOT
+    # at line start, so the old ^-anchored match silently missed it (CoPP-drop blindness on Nexus, CoPP default).
+    nx_oneline = (
+        "    class-map copp-system-p-class-important (match-any)\n"
+        "      police cir 2500 kbps bc 1000 ms\n"
+        "      module 1 : transmitted 13818516 bytes; dropped 84348 bytes;\n"
+        "      module 2 : transmitted 0 bytes; dropped 0 bytes;\n")
+    byo = {c["class"]: c for c in parse.parse_copp_drops(nx_oneline)}
+    assert byo["copp-system-p-class-important"]["dropped"] == 84348
+    assert byo["copp-system-p-class-important"]["drops"] == 84348
+    assert parse.parse_copp_drops("") == [] and parse.parse_copp_drops("% policy-map not configured\n") == []
+
+
+# ============================ architecture-coverage slices (build wave) =========================== #
+def test_parse_pim_rp_mapping_learned_static_ssm_and_broken(cp):
+    """PIM-SM RP learning: parse_pim_rp_mapping reads 'show ip pim rp mapping' across IOS Auto-RP (multi-line),
+    IOS static (single-line), NX-OS multi-RP, header-only (running but 0 RP -> the broken state), and SSM-only
+    (0 RP but HEALTHY). 'present' distinguishes 'collected, no RP' from 'not collected' ({})."""
+    autorp = textwrap.dedent("""\
+        PIM Group-to-RP Mappings
+        Group(s) 224.0.0.0/4
+          RP 10.10.205.20 (?), v2v1
+            Info source: 10.10.105.20 (?), elected via Auto-RP
+                 Uptime: 00:12:02, expires: 00:00:53
+    """)
+    r = parse.parse_pim_rp_mapping(autorp)
+    assert r["present"] is True and r["rp_count"] == 1 and r["rps"][0]["rp"] == "10.10.205.20"
+    assert r["rps"][0]["group"] == "224.0.0.0/4" and r["rps"][0]["source"] == "10.10.105.20" and r["ssm_only"] is False
+    static = "PIM Group-to-RP Mappings\nGroup(s): 224.0.0.0/4, Static RP: 192.168.7.2 (?)\n"
+    rs = parse.parse_pim_rp_mapping(static)
+    assert rs["rp_count"] == 1 and rs["rps"][0]["rp"] == "192.168.7.2" and rs["rps"][0]["group"] == "224.0.0.0/4"
+    nxos = textwrap.dedent("""\
+        PIM Group-to-RP Mappings
+        Group(s) 239.1.0.0/16, uptime: 1d02h, expires: never,
+          RP: 10.0.0.1, (local), via static
+        Group(s) 239.2.0.0/16, uptime: 1d02h, expires: never,
+          RP: 10.0.0.2, via bsr
+    """)
+    rn = parse.parse_pim_rp_mapping(nxos)
+    assert rn["rp_count"] == 2 and {x["rp"] for x in rn["rps"]} == {"10.0.0.1", "10.0.0.2"}
+    broken = parse.parse_pim_rp_mapping("PIM Group-to-RP Mappings\n\n")
+    assert broken["present"] is True and broken["rp_count"] == 0 and broken["ssm_only"] is False
+    ssm = parse.parse_pim_rp_mapping("PIM Group-to-RP Mappings\nGroup(s) 232.0.0.0/8\n  (SSM, no RP required)\n")
+    assert ssm["present"] is True and ssm["rp_count"] == 0 and ssm["ssm_only"] is True
+    assert parse.parse_pim_rp_mapping("") == {} and parse.parse_pim_rp_mapping("% Invalid input detected") == {}
+
+
+def test_parse_pim_neighbors_ios_and_nxos(cp):
+    """parse_pim_neighbors reads 'show ip pim neighbor' on IOS (combined Uptime/Expires) and NX-OS (separate
+    columns), skipping the legend/header, and normalises interfaces to the short canonical form. [] on empty."""
+    ios = textwrap.dedent("""\
+        PIM Neighbor Table
+        Mode: B - Bidir Capable, DR - Designated Router, N - Default DR Priority
+        Neighbor          Interface                Uptime/Expires    Ver   DR
+        Address                                                            Prio/Mode
+        192.168.12.2      GigabitEthernet0/1       00:00:17/00:01:27 v2    1 / DR S P G
+        192.168.14.4      GigabitEthernet0/2       00:00:15/00:01:29 v2    1 / DR S P G
+        3.3.3.3           Tunnel0                  00:16:40/00:01:20 v2    1 / DR S P G
+    """)
+    rows = parse.parse_pim_neighbors(ios)
+    assert len(rows) == 3 and rows[0]["neighbor"] == "192.168.12.2" and rows[0]["interface"] == "Gi0/1"
+    assert rows[0]["uptime"] == "00:00:17"
+    # PIM over a Tunnel (DMVPN/mGRE multicast WAN) must NOT be dropped by the interface-validity gate
+    assert rows[2]["interface"] == "Tu0" and rows[2]["neighbor"] == "3.3.3.3"
+    nxos = textwrap.dedent("""\
+        PIM Neighbor Status for VRF "default"
+        Neighbor       Interface            Uptime    Expires   DR    Bidir-  BFD
+                                                                Priority Capable State
+        192.0.2.2      port-channel2000     03:43:40  00:01:21  1     no      n/a
+        192.0.2.1      Ethernet1/26         03:43:44  00:01:33  1     no      n/a
+    """)
+    rn = parse.parse_pim_neighbors(nxos)
+    assert len(rn) == 2 and rn[0]["interface"] == "Po2000" and rn[1]["interface"] == "Eth1/26"
+    # Real STEADY-STATE uptimes render in the abbreviated week/day/hour form (Cisco shows any uptime >= ~24h this
+    # way: '2d00h', '1w2d', '15w4d') -- the OLD H:M:S-only regex DROPPED these rows, so a long-established PIM
+    # neighbour on a production core went invisible and _d_pim_rp_health mis-read a running domain as 'not running'.
+    steady = textwrap.dedent("""\
+        PIM Neighbor Status for VRF "default"
+        Neighbor       Interface            Uptime    Expires   DR
+        10.2.1.1       Ethernet1/1          2d00h     00:01:15  1
+        10.2.1.2       Ethernet1/2          1w2d      00:01:33  1
+        10.2.1.3       Ethernet1/3          15w4d     00:01:20  1
+    """)
+    rs = parse.parse_pim_neighbors(steady)
+    assert len(rs) == 3                                       # NONE dropped -- the domain IS running
+    assert {r["uptime"] for r in rs} == {"2d00h", "1w2d", "15w4d"}
+    assert rs[0]["interface"] == "Eth1/1"
+    # IOS still combines Uptime/Expires in one slash-token; the abbreviated uptime before the '/' is captured.
+    ios_abbr = "10.3.3.3      GigabitEthernet0/1   1w2d/00:01:20 v2    1 / DR\n"
+    ra = parse.parse_pim_neighbors(ios_abbr)
+    assert len(ra) == 1 and ra[0]["uptime"] == "1w2d"
+    assert parse.parse_pim_neighbors("") == []
+    assert parse.parse_pim_neighbors("PIM Neighbor Table\nNeighbor Interface Uptime\n") == []
+
+
+def test_parse_ipv6_raguard_and_dhcp_guard_policy(cp):
+    """IPv6 first-hop security: 'show ipv6 nd raguard policy' -> policy/device-role/trusted/PORT-VLAN targets;
+    'show ipv6 dhcp guard policy' -> policy/device-role/targets (interface tokens or 'vlan N' list). [] on empty."""
+    ra = textwrap.dedent("""\
+        Policy HOSTS configuration:
+          device-role host
+        Policy HOSTS is applied on the following targets:
+        Target               Type  Policy               Feature        Target range
+        Gi0/2                PORT  HOSTS                RA guard       vlan all
+        Policy UPLINK configuration:
+          device-role router
+          trusted-port
+        Policy UPLINK is applied on the following targets:
+        Target               Type  Policy               Feature        Target range
+        Gi0/1                PORT  UPLINK               RA guard       vlan all
+    """)
+    r = parse.parse_ipv6_raguard_policy(ra)
+    by = {p["policy"]: p for p in r}
+    assert by["HOSTS"]["device_role"] == "host" and by["HOSTS"]["trusted"] is False
+    assert by["HOSTS"]["targets"] == [{"name": "Gi0/2", "type": "PORT"}]
+    assert by["UPLINK"]["device_role"] == "router" and by["UPLINK"]["trusted"] is True
+    assert parse.parse_ipv6_raguard_policy("") == []
+    assert parse.parse_ipv6_raguard_policy("% Invalid input detected at '^' marker.") == []
+    dh = textwrap.dedent("""\
+        Dhcp guard policy: default
+          Device Role: dhcp client
+          Target: Et0/3
+        Dhcp guard policy: test1
+          Device Role: dhcp server
+          Target: vlan 0 vlan 1 vlan 2
+        Dhcp guard policy: test2
+          Device Role: dhcp relay
+          Target: Et0/0 Et0/1
+    """)
+    rd = parse.parse_ipv6_dhcp_guard_policy(dh)
+    byd = {p["policy"]: p for p in rd}
+    assert byd["default"]["device_role"] == "client" and byd["default"]["targets"] == [{"name": "Et0/3", "type": "PORT"}]
+    assert byd["test1"]["device_role"] == "server"
+    assert byd["test1"]["targets"] == [{"name": "0", "type": "VLAN"}, {"name": "1", "type": "VLAN"}, {"name": "2", "type": "VLAN"}]
+    assert byd["test2"]["device_role"] == "relay" and len(byd["test2"]["targets"]) == 2
+    assert parse.parse_ipv6_dhcp_guard_policy("") == []
+
+
+def test_parse_ntp_status_ios_and_nxos(cp):
+    """Clock-sync STATE: IOS 'show ntp status' first line is authoritative (synchronized + stratum + reference;
+    British spelling tolerated); NX-OS 'show ntp peer-status' uses a '*'-selected peer (its 'st' = stratum), and
+    a populated table with NO '*' means unsynchronized (stratum 16). {} on absence (never inferred unsynced)."""
+    bad = ("Clock is unsynchronized, stratum 16, no reference clock\n"
+           "nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18\n")
+    r = parse.parse_ntp_status(bad)
+    assert r["synchronized"] is False and r["stratum"] == 16 and r["source"] == "ios-status"
+    good = "Clock is synchronized, stratum 3, reference is 10.0.10.2\n"
+    g = parse.parse_ntp_status(good)
+    assert g["synchronized"] is True and g["stratum"] == 3 and g["reference"] == "10.0.10.2"
+    assert parse.parse_ntp_status("Clock is synchronised, stratum 2, reference is 1.2.3.4")["synchronized"] is True
+    assert parse.parse_ntp_status("") == {} and parse.parse_ntp_status("% NTP is not enabled.") == {}
+    synced = ("Total peers : 2\n"
+              "* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode\n"
+              "remote               local                st  poll reach delay   vrf\n"
+              "-------------------------------------------------------------------------------\n"
+              "*10.255.0.254        10.255.0.7           2   16   377   0.00107 default\n"
+              "=127.127.1.0         10.255.0.7           8   16   377   0.00000 default\n")
+    rs = parse.parse_ntp_status(synced)
+    assert rs["synchronized"] is True and rs["stratum"] == 2 and rs["reference"] == "10.255.0.254"
+    assert rs["source"] == "nxos-peer-status"
+    nosync = ("Total peers : 1\n"
+              "* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode\n"
+              "remote               local                st  poll reach delay   vrf\n"
+              "-------------------------------------------------------------------------------\n"
+              "=10.255.0.254        10.255.0.7           16  64   0     0.00000 default\n")
+    n = parse.parse_ntp_status(nosync)
+    assert n["synchronized"] is False and n["stratum"] == 16
+    # REAL-FORMAT FIDELITY: a genuinely-unsynchronized NX-OS peer carries NO sync-selection symbol at all
+    # (every peer init/unreachable -> stratum 16, each row prefixed by a SPACE, not '*'/'='/'+'/'-'). The
+    # leading symbol must be OPTIONAL or the whole table goes unrecognised and the device reads as 'absent'
+    # (false-health: a configured-but-unsynced Nexus would silently pass _d_ntp_sync).
+    nosym = ("Total peers : 2\n"
+             "* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode\n"
+             "remote               local                st  poll reach delay   vrf\n"
+             "-------------------------------------------------------------------------------\n"
+             " 10.255.0.254        10.255.0.7           16  64   0     0.00000 default\n"
+             " 10.255.0.253        10.255.0.7           16  64   0     0.00000 default\n")
+    ns = parse.parse_ntp_status(nosym)
+    assert ns["synchronized"] is False and ns["stratum"] == 16, ns
+    assert ns["source"] == "nxos-peer-status"
+
+
+def test_parse_port_security_detail_secure_shutdown_vs_restrict(cp):
+    """Access-edge port-security DETAIL: parse_port_security_detail reads 'show port-security interface' so a
+    shutdown-mode violation -> Port Status 'secure-shutdown' (a live outage with an offending MAC) is captured,
+    distinct from a restrict-mode port that stays 'secure-up' while counting. Interface name precedes each block."""
+    out = (
+        "Port: GigabitEthernet0/3\n"
+        "Port Security              : Enabled\n"
+        "Port Status                : Secure-shutdown\n"
+        "Violation Mode             : Shutdown\n"
+        "Maximum MAC Addresses      : 1\n"
+        "Last Source Address:Vlan   : 0011.22aa.0099:10\n"
+        "Security Violation Count   : 3\n"
+        "Port: GigabitEthernet0/10\n"
+        "Port Security              : Enabled\n"
+        "Port Status                : Secure-up\n"
+        "Violation Mode             : Restrict\n"
+        "Last Source Address:Vlan   : aabb.ccdd.ee10:30\n"
+        "Security Violation Count   : 17\n")
+    r = parse.parse_port_security_detail(out)
+    assert set(r) == {"Gi0/3", "Gi0/10"}
+    g3 = r["Gi0/3"]
+    assert g3["enabled"] is True and g3["port_status"] == "secure-shutdown"
+    assert g3["violation_mode"] == "Shutdown" and g3["violation_count"] == 3
+    assert g3["last_src"] == "0011.22aa.0099" and g3["last_vlan"] == "10"
+    g10 = r["Gi0/10"]
+    assert g10["port_status"] == "secure-up" and g10["violation_mode"] == "Restrict" and g10["violation_count"] == 17
+    assert parse.parse_port_security_detail("") == {}
+    assert parse.parse_port_security_detail("random noise\nnot a detail block") == {}
+
+
+def test_parse_storm_control_actions_and_legacy_form(cp):
+    """Storm-control: the modern 'Action + Type(B/M/U)' form yields the per-traffic action ('None' = the toothless
+    gap, Trap/Shutdown actioned), and the older leading-Type form (no Action column) yields action '' (so the
+    detector, firing only on action 'None', correctly stays silent on that form). configured=True iff Upper present."""
+    out = (
+        "Key: U - Unicast, B - Broadcast, M - Multicast\n"
+        "Interface Filter State   Upper       Lower       Current    Action    Type\n"
+        "--------- ------------- ----------- ----------- ---------- --------- ----\n"
+        "Gi0/2     Forwarding    5.00%       5.00%       0.12%      None      B\n"
+        "Gi0/3     Forwarding    2.00%       2.00%       0.05%      Shutdown  B\n"
+        "Gi0/4     Link Down     50k bps     40k bps     0 bps      Trap      M\n")
+    r = parse.parse_storm_control(out)
+    assert len(r) == 3
+    assert r[0] == {"interface": "Gi0/2", "traffic": "broadcast", "filter_state": "Forwarding",
+                    "upper": "5.00%", "lower": "5.00%", "current": "0.12%", "action": "None", "configured": True}
+    assert r[1]["action"] == "Shutdown" and r[1]["traffic"] == "broadcast"
+    assert r[2]["filter_state"] == "Link Down" and r[2]["action"] == "Trap" and r[2]["upper"] == "50k"
+    assert parse.parse_storm_control("") == []
+    legacy = (
+        "Interface Type    Filter State    Upper       Lower       Current\n"
+        "--------- ------  -------------   ----------- ----------- ----------\n"
+        "Gi0/0/1   Bcast   Blocking        50k bps     40k bps     362.25k bps\n"
+        "Gi0/0/1   Ucast   Forwarding      1.00%       0.50%       1.28%\n")
+    rl = parse.parse_storm_control(legacy)
+    assert len(rl) == 2
+    assert rl[0]["traffic"] == "broadcast" and rl[0]["filter_state"] == "Blocking"
+    assert rl[0]["upper"] == "50k" and rl[0]["action"] == "" and rl[0]["configured"] is True
+    assert rl[1]["traffic"] == "unicast" and rl[1]["action"] == ""
+
+
+def test_parse_policymap_drops_iosxe_and_nxos(cp):
+    """QoS RUNTIME: parse_policymap_drops reads 'show policy-map interface' EGRESS-only across the IOS-XE dialect
+    (priority/LLQ queue drops, bandwidth class, policer 'exceeded' block, clean class) and the NX-OS queuing form
+    ('Class-map (queuing):', 'queue dropped/transmit pkts'). The input direction is ignored."""
+    iosxe = textwrap.dedent("""\
+        GigabitEthernet0/0/0
+
+          Service-policy input: MARK-IN
+
+            Class-map: SCAVENGER-IN (match-any)
+              Queueing
+              (queue depth/total drops/no-buffer drops) 0/999999/0
+              (pkts output/bytes output) 1/1
+
+          Service-policy output: WAN-EDGE-OUT
+
+            Class-map: VOICE (match-any)
+              2348138 packets, 1202246656 bytes
+              Match: dscp ef (46)
+              Queueing
+              priority level 1
+              queue limit 512 packets
+              (queue depth/total drops/no-buffer drops) 49476/44577300/0
+              (pkts output/bytes output) 2348138/1202246656
+
+            Class-map: BULK (match-any)
+              3000453 packets, 262033259 bytes
+              Match: dscp af11 (10)
+              Queueing
+              queue limit 525000 bytes
+              (queue depth/total drops/no-buffer drops) 0/250/0
+              (pkts output/bytes output) 3000454/262033337
+              bandwidth remaining 30%
+
+            Class-map: SCAVENGER (match-any)
+              9000 packets, 8000 bytes
+              police: cir 1000000 bps, bc 31250 bytes
+                conformed 5000 packets, 4000 bytes; action: transmit
+                exceeded 4000 packets, 3500 bytes; action: drop
+                violated 0 packets, 0 bytes; action: drop
+
+            Class-map: class-default (match-any)
+              100 packets, 9000 bytes
+              Queueing
+              queue limit 416 packets
+              (queue depth/total drops/no-buffer drops) 0/0/0
+              (pkts output/bytes output) 100/9000
+    """)
+    r = parse.parse_policymap_drops(iosxe)
+    assert [c["class"] for c in r] == ["VOICE", "BULK", "SCAVENGER", "class-default"]
+    assert all(c["interface"] == "Gi0/0/0" and c["policy"] == "WAN-EDGE-OUT" for c in r)
+    assert r[0]["priority"] is True and r[0]["drop_pkts"] == 44577300 and r[0]["output_pkts"] == 2348138
+    assert r[1]["priority"] is False and r[1]["drop_pkts"] == 250 and r[1]["output_pkts"] == 3000454
+    assert r[2]["police_drop_pkts"] == 4000 and r[2]["police_drop_bytes"] == 3500 and r[2]["drop_pkts"] == 0
+    assert r[3]["drop_pkts"] == 0 and r[3]["output_pkts"] == 100
+    assert parse.parse_policymap_drops("") == [] and parse.parse_policymap_drops("% Incomplete command") == []
+    nxos = textwrap.dedent("""\
+        port-channel6
+        Service-policy (queuing) output: out-q-policy
+
+        Class-map (queuing): q1 (match-any)
+        priority level 1
+        queue dropped pkts: 12345
+        queue dropped bytes: 678900
+        queue transmit pkts: 2175032764
+        queue transmit bytes: 1051188564890
+
+        Class-map (queuing): q-default (match-any)
+        bandwidth percent 49
+        queue dropped pkts: 0
+        queue dropped bytes: 0
+        queue transmit pkts: 518903560636
+    """)
+    rn = parse.parse_policymap_drops(nxos)
+    assert [c["class"] for c in rn] == ["q1", "q-default"]
+    assert all(c["interface"] == "Po6" for c in rn)
+    assert rn[0]["priority"] is True and rn[0]["drop_pkts"] == 12345 and rn[0]["output_pkts"] == 2175032764
+    assert rn[1]["drop_pkts"] == 0 and rn[1]["priority"] is False
+    # IOS 15.x+ LLQ form: the priority class's drop counter is 'b/w exceed drops: N' ON the 'Priority:' line (no
+    # '(queue depth/total drops/...)' line). The 'Priority:' continue used to SKIP it -> a voice/video LLQ shedding
+    # real-time traffic reported 0 drops and the HIGH detector never fired. The co-present aggregate 0/0/0
+    # 'queue stats for all priority classes' line must NOT clobber the captured drops back to 0.
+    llq = textwrap.dedent("""\
+        GigabitEthernet0/1
+          Service-policy output: WAN-OUT
+            Class-map: VOICE (match-any)
+              1000 packets, 640000 bytes
+              Priority: 2000 kbps, burst bytes 50000, b/w exceed drops: 60
+              queue stats for all priority classes:
+                queue limit 512 packets
+                (queue depth/total drops/no-buffer drops) 0/0/0
+            Class-map: class-default (match-any)
+              500 packets, 320000 bytes
+              (queue depth/total drops/no-buffer drops) 0/0/0
+    """)
+    by = {c["class"]: c for c in parse.parse_policymap_drops(llq)}
+    assert by["VOICE"]["priority"] is True and by["VOICE"]["drop_pkts"] == 60
+    assert by["class-default"]["drop_pkts"] == 0
+    # NX-OS ingress queuing (VOQ): 'Service-policy (queuing) input:' with a dropping queue class. The egress-only
+    # _flush gate used to DISCARD it, so Nexus ingress VOQ drops were invisible. It must now be recorded (it is a
+    # NX-OS queuing policy) -- while an IOS-XE *non-queuing* input policy (the SCAVENGER-IN above) stays ignored.
+    nx_ingress = textwrap.dedent("""\
+        Ethernet1/1
+        Service-policy (queuing) input: in-q-policy
+
+        Class-map (queuing): iq1 (match-any)
+        queue dropped pkts: 4242
+        queue transmit pkts: 1000000
+    """)
+    ri = parse.parse_policymap_drops(nx_ingress)
+    assert [c["class"] for c in ri] == ["iq1"]
+    assert ri[0]["drop_pkts"] == 4242 and ri[0]["interface"] == "Eth1/1" and ri[0]["output_pkts"] == 1000000
+
+
+def test_parse_neighbors_detail_cdp_and_lldp_keep_capabilities(cp):
+    """Shadow-infra discovery: parse_neighbors_detail KEEPS the capability codes the topology-link parsers drop
+    (CDP 'Router Switch' words; LLDP 'B,R' letters) so an undocumented switch/router is distinguishable from a
+    CDP/LLDP-speaking phone or AP. [] on empty."""
+    cdp = (
+        "-------------------------\n"
+        "Device ID: dist-core-7.lab\n"
+        "  IP address: 10.0.0.7\n"
+        "Platform: cisco N9K-C93180YC-EX,  Capabilities: Router Switch\n"
+        "Interface: Ethernet1/47,  Port ID (outgoing port): Ethernet1/1\n"
+        "-------------------------\n"
+        "Device ID: SEP00112233AABB\n"
+        "  IP address: 10.0.40.20\n"
+        "Platform: Cisco IP Phone 8845,  Capabilities: Host Phone\n"
+        "Interface: GigabitEthernet1/0/20,  Port ID (outgoing port): Port 1\n")
+    rc = parse.parse_neighbors_detail(cdp, "cdp")
+    assert len(rc) == 2
+    assert rc[0]["device_id"] == "dist-core-7.lab" and rc[0]["capabilities"] == "Router Switch"
+    assert rc[0]["platform"] == "cisco N9K-C93180YC-EX" and rc[0]["local_intf"] == "Eth1/47"
+    assert rc[0]["remote_port"] == "Eth1/1" and rc[0]["mgmt_ip"] == "10.0.0.7" and rc[0]["proto"] == "cdp"
+    assert rc[1]["device_id"] == "SEP00112233AABB" and rc[1]["capabilities"] == "Host Phone"
+    assert parse.parse_neighbors_detail("", "cdp") == []
+    lldp = (
+        "Local Intf: Gi1/0/47\n"
+        "Chassis id: 00aa.bbcc.ddee\n"
+        "Port id: Gi1/0/1\n"
+        "System Name: agg-sw-2\n"
+        "System Description: Cisco IOS Software, C9300\n"
+        "System Capabilities: B,R\n"
+        "Enabled Capabilities: B,R\n"
+        "Management Addresses:\n"
+        "  IP: 10.0.0.8\n"
+        "\n"
+        "Local Intf: Gi1/0/20\n"
+        "Port id: 1\n"
+        "System Name: phone-2\n"
+        "System Capabilities: T\n"
+        "Enabled Capabilities: T\n")
+    rl = parse.parse_neighbors_detail(lldp, "lldp")
+    assert len(rl) == 2
+    assert rl[0]["device_id"] == "agg-sw-2" and rl[0]["capabilities"] == "B,R"
+    assert rl[0]["local_intf"] == "Gi1/0/47" and rl[0]["remote_port"] == "Gi1/0/1" and rl[0]["proto"] == "lldp"
+    assert rl[1]["device_id"] == "phone-2" and rl[1]["capabilities"] == "T"
+    assert parse.parse_neighbors_detail("", "lldp") == []
+
+
+def test_parse_neighbors_detail_nxos(cp):
+    """NX-OS LLDP detail has NO 'Local Intf:' (the local interface is on a 'Local Port id:' line and each block
+    begins with 'Chassis id:'). The old split-on-'Local Intf:' returned ONE Frankenstein record for N neighbours,
+    feeding the shadow-infra detector garbage on every Nexus switch ([HISTORY-REDACTED]'s core is Nexus). NX-OS CDP also reports
+    'IPv4 Address:' (not IOS 'IP address:'). Both must parse one correct record per neighbour."""
+    lldp = (
+        "Chassis id: 547f.eeab.0001\n"
+        "Port id: Ethernet1/1\n"
+        "Local Port id: Eth1/2\n"
+        "System Name: spine-1\n"
+        "System Description: Cisco Nexus Operating System (NX-OS) Software\n"
+        "Enabled Capabilities: B, R\n"
+        "Management Address: 10.0.0.1\n"
+        "\n"
+        "Chassis id: 547f.eeab.0002\n"
+        "Port id: Ethernet2/2\n"
+        "Local Port id: Eth2/2\n"
+        "System Name: leaf-9\n"
+        "System Description: Cisco Nexus 9000\n"
+        "Enabled Capabilities: B, R\n"
+        "Management Address: 10.0.0.9\n")
+    rl = parse.parse_neighbors_detail(lldp, "lldp")
+    assert len(rl) == 2
+    by = {x["local_intf"]: x for x in rl}
+    assert set(by) == {"Eth1/2", "Eth2/2"}
+    assert by["Eth1/2"]["device_id"] == "spine-1" and by["Eth1/2"]["remote_port"] == "Eth1/1"
+    assert by["Eth1/2"]["capabilities"] == "B, R" and by["Eth1/2"]["mgmt_ip"] == "10.0.0.1"
+    assert by["Eth2/2"]["device_id"] == "leaf-9"
+    nxcdp = (
+        "----------------------------------------\n"
+        "Device ID: core-nexus.lab(FOX1234)\n"
+        "  IPv4 Address: 10.0.0.2\n"
+        "Platform: N9K-C9504,  Capabilities: Router Switch\n"
+        "Interface: Ethernet1/1,  Port ID (outgoing port): Ethernet1/2\n")
+    rc = parse.parse_neighbors_detail(nxcdp, "cdp")
+    assert len(rc) == 1 and rc[0]["mgmt_ip"] == "10.0.0.2" and rc[0]["local_intf"] == "Eth1/1"
+
+
+def test_parse_hsrp_detail_nxos_single_line_form(cp):
+    """PARSE-01: NX-OS 'show hsrp detail' packs state+priority+preempt on ONE line ('Local state is Active,
+    priority 110 (Cfged 110), may preempt'); the IOS-XE-only regexes left them empty, so _d_fhrp_resilience
+    (gated on state active/master) never evaluated an NX-OS group."""
+    r = parse.parse_hsrp_detail("Vlan10 - Group 10 (HSRP-V2) (IPv4)\n"
+                                "  Local state is Active, priority 110 (Cfged 100), may preempt\n"
+                                "  Virtual IP address is 10.10.10.1 (Cfged)")
+    rec = r[("Vlan10", "10")]
+    assert rec["state"] == "Active" and rec["priority"] == 110 and rec["cfg_priority"] == 100
+    assert rec["preempt"] is True and rec["vip"] == "10.10.10.1"
+
+
+def test_parse_neighbors_lldp_nxos_chassis_id_split(cp):
+    """PARSE-02: NX-OS 'show lldp neighbors detail' has no 'Local Intf:' delimiter (it uses 'Local Port id:'),
+    so splitting only on 'Local Intf:' collapsed every neighbour into one cross-contaminated record. Mirror the
+    sibling detail parser: split on 'Chassis id:' and read the local from 'Local Port id:'."""
+    nx = ("Chassis id: 547f.eeab.0001\nPort id: Ethernet1/1\nLocal Port id: Eth1/2\nSystem Name: spine-1\n"
+          "Management Address: 10.0.0.1\n\nChassis id: 547f.eeab.0002\nPort id: Ethernet2/2\nLocal Port id: Eth2/2\n"
+          "System Name: leaf-9\nManagement Address: 10.0.0.9\n")
+    g = parse.parse_neighbors_lldp(nx)
+    assert {k: v["device_id"] for k, v in g.items()} == {"Eth1/2": "spine-1", "Eth2/2": "leaf-9"}
+    assert g["Eth1/2"]["remote_port"] == "Eth1/1" and g["Eth2/2"]["mgmt_ip"] == "10.0.0.9"
+    # IOS-XE 'Local Intf:' form still works
+    iosxe = "Local Intf: Gi1/0/1\nSystem Name: ap-01\nPort id: Gi0\nManagement Address: 10.1.1.1\n"
+    assert parse.parse_neighbors_lldp(iosxe)["Gi1/0/1"]["device_id"] == "ap-01"
+
+
+def test_parse_show_environment_power_counts_physical_psus(cp):
+    """PARSE-03: num_ps was len(set(statuses)), so two healthy PSUs both 'Ok' collapsed to 1 -> a dual-PSU
+    chassis was flagged single-PSU (redundancy cry-wolf). Count PSU rows."""
+    r = parse.parse_show_environment_power("Power\nSupply Model Output Capacity Status\n"
+                                           "1 N9K-PAC-650W-B 120 W 650 W Ok\n2 N9K-PAC-650W-B 115 W 650 W Ok\n")
+    assert r["num_ps"] == 2 and r["ps_status_list"] == ["OK", "OK"]
+
+
+def test_parse_igmp_snooping_querier_skips_no_querier_placeholder(cp):
+    """PARSE-04: '0.0.0.0' is the placeholder for NO operational querier, not a live one. Recording it made the
+    VLAN count as querier-covered and silenced the 'no IGMP querier' multicast-gap finding."""
+    assert parse.parse_igmp_snooping_querier("10    10.0.10.1    v2\n30    0.0.0.0    v2\n") == \
+        [{"vlan": "10", "querier": "10.0.10.1"}]
+    # detail form too
+    assert parse.parse_igmp_snooping_querier("Vlan 30: querier\n IP address : 0.0.0.0\n") == []
+
+
+def test_parse_bgp_summary_ipv6_is_linear_not_redos(cp):
+    """ROBUS-01: the IPv6-neighbour alternative had two adjacent unbounded `+` over a colon-overlapping class,
+    so a long all-hex/colon line backtracked O(n^2). The length-bounded form must parse a 32KB junk line fast
+    while still matching a real (incl. ::-compressed) IPv6 neighbour."""
+    import time
+    t = time.perf_counter()
+    parse.parse_bgp_summary("a:" * 16000)
+    assert time.perf_counter() - t < 1.0           # was ~14s
+    rows = parse.parse_bgp_summary("2001:db8::1     4 65002  10 10 5 0 0 02:00:00 Idle")
+    assert rows and rows[0]["neighbor"] == "2001:db8::1" and rows[0]["state"] == "Idle"
+
+
+def test_parse_show_version_nxos_not_fooled_by_bios_substring(cp):
+    """[multi-domain audit #2] modern NX-OS 'show version' has 'BIOS: version 07.69' then 'NXOS: version 9.3(10)';
+    'ios' as a substring of 'BIOS' made the guard capture the BIOS string as sw_version (corrupting the
+    software-advisory/EoL surface). sw_version must be the NXOS version, and the Nexus chassis model must parse."""
+    out = textwrap.dedent("""\
+        Cisco Nexus Operating System (NX-OS) Software
+          BIOS: version 07.69
+          NXOS: version 9.3(10)
+        cisco Nexus9000 C93180YC-EX Chassis
+    """)
+    r = parse.parse_show_version(out)
+    assert r["sw_version"] == "9.3(10)"
+    assert r["model"] == "N9K-C93180YC-EX"   # audit-5 #4: the bare C-body 'C93180YC-EX' does NOT match eoldb; only the full NxK-C PID does
+
+
+def test_parse_sdwan_control_connections_real_vmanage_field_names(cp):
+    """[multi-domain audit #3] real vManage /dataservice/device/control/connections rows use camelCase
+    'expectedControlConnections' + 'actualControlConnectionsToVsmart' (verified vs Cisco DevNet API docs); the
+    parser read hyphenated names -> expected/actual always None -> a control-plane redundancy DEFICIT
+    (actual < expected) was silently read healthy."""
+    import json
+    real = {"data": [{"peer-type": "vsmart", "system-ip": "172.16.255.40", "host-name": "BR40",
+                      "state": "up", "local-color": "mpls",
+                      "expectedControlConnections": 2, "actualControlConnectionsToVsmart": 1}]}
+    rows = parse.parse_sdwan_control_connections(json.dumps(real))
+    assert rows and rows[0]["expected"] == 2 and rows[0]["actual"] == 1 and rows[0]["peer_type"] == "vsmart"
+
+
+def test_parse_fortigate_ha_status_tolerates_bytes(cp):
+    """[multi-domain audit L1] the docstring promises 'never raises'; bytes input made the regex raise TypeError
+    (str pattern vs bytes string). Decode bytes first (siblings accept bytes via json.loads)."""
+    txt = b"Mode: HA A-P\nHA Health Status: OK\nConfiguration Status:\nFGT1(updated 1 seconds ago): in-sync\n"
+    r = parse.parse_fortigate_ha_status(txt)
+    assert r.get("mode", "").startswith("HA") and r["members"][0]["sync"] == "in-sync"
+
+
+def test_parse_sdwan_devices_extracts_status_and_state(cp):
+    """[multi-domain audit L2] a vManage edge can be 'reachable' yet status=error / state=red (a present-but-broken
+    fabric member); parse_sdwan_devices must surface status/state, not just reachability (else read healthy)."""
+    import json
+    real = {"data": [{"system-ip": "172.16.255.40", "host-name": "BR40", "reachability": "reachable",
+                      "status": "error", "state": "red", "device-model": "vedge-cloud", "version": "20.9"}]}
+    rows = parse.parse_sdwan_devices(json.dumps(real))
+    assert rows[0]["status"] == "error" and rows[0]["state"] == "red" and rows[0]["reachability"] == "reachable"
+
+
+def test_parse_security_nxos_telnet_exec_timeout_snmp(cp):
+    """[audit-2 #8/#9/#10/#11] NX-OS hardening config must not falsely PASS: 'feature telnet' enables the telnet
+    server; 'exec-timeout 0' (single arg) never times out; SNMP 'group network-admin' is read-WRITE; an IOS
+    'community X view V rw' is read-write. All four read as secure before the fix (false-health)."""
+    def fnd(cfg):
+        return {x["id"]: x for x in parse.parse_security(cfg)["findings"]}
+    # #8 NX-OS 'feature telnet' -> telnet server enabled (FAIL), even with a hardened vty block
+    assert fnd("feature telnet\nline vty\n  exec-timeout 30\n  access-class MGMT in\n")["telnet-enabled"]["status"] == "fail"
+    # #9 NX-OS single-arg 'exec-timeout 0' -> never times out (FAIL); a real non-zero timeout still PASSES
+    assert fnd("line vty\n  access-class MGMT in\n  exec-timeout 0\n")["vty-hardening"]["status"] == "fail"
+    assert fnd("line vty\n  access-class MGMT in\n  exec-timeout 0 30\n")["vty-hardening"]["status"] == "pass"
+    # #10 NX-OS 'group network-admin' = read-write -> High
+    assert fnd("snmp-server community NETMON group network-admin\n")["insecure-snmp"]["severity"] == "high"
+    # #11 IOS 'community X view V rw' = read-write -> High (was misread ro/medium)
+    assert fnd("snmp-server community SECRET view CUTDOWN rw\n")["insecure-snmp"]["severity"] == "high"
+    # regression guard: a genuine read-only community stays medium
+    assert fnd("snmp-server community MONITOR RO\n")["insecure-snmp"]["severity"] == "medium"
+
+
+def test_parse_pim_neighbors_keeps_subinterface_neighbor(cp):
+    """[audit-2 #7] a PIM neighbor on an L3 SUBinterface (Gi0/0.10) was dropped (is_valid_iface rejected '.10')
+    -> a running PIM domain with no RP read healthy. Validate the BASE interface, keep the full subif name."""
+    nb = parse.parse_pim_neighbors("10.0.0.2          GigabitEthernet0/0.10    2d05h/00:01:27    v2    1\n")
+    assert len(nb) == 1 and nb[0]["neighbor"] == "10.0.0.2" and "0.10" in nb[0]["interface"]
+
+
+def test_config_hygiene_recognizes_snmp_classmap_crypto_ntp_acl_refs():
+    """[audit-3 #15 format-fidelity] parse_config_hygiene's REF_RX omitted four ubiquitous IOS ACL-reference
+    forms, so a live ACL referenced ONLY via SNMP community / QoS class-map / crypto-map / NTP was reported
+    'unused (defined but never referenced)' -- a flat wrong positive an engineer could act on at cutover."""
+    from cisco_toolkit.parse import parse_config_hygiene
+    cases = {
+        "snmp":     "ip access-list standard MGMT\n permit 10.0.0.0 0.0.0.255\nsnmp-server community s3cr3t RO MGMT\n",
+        "classmap": "ip access-list extended VOICE_ACL\n permit udp any any\nclass-map match-any VOICE\n match access-group name VOICE_ACL\n",
+        "crypto":   "ip access-list extended VPN\n permit ip 10.0.0.0 0.0.0.255 10.1.0.0 0.0.0.255\ncrypto map CMAP 10 ipsec-isakmp\n match address VPN\n",
+        "ntp":      "ip access-list standard NTP\n permit 10.0.0.1\nntp access-group peer NTP\n",
+    }
+    for lbl, cfg in cases.items():
+        h = parse_config_hygiene(cfg)
+        assert [u["name"] for u in (h.get("unused") or [])] == [], f"{lbl}: live ACL wrongly flagged unused"
+    # control: a genuinely-unreferenced ACL is STILL reported unused (the fix must not blanket-suppress)
+    dead = parse_config_hygiene("ip access-list standard DEAD\n permit 10.9.9.9\n")
+    assert [u["name"] for u in (dead.get("unused") or [])] == ["DEAD"]
+
+
+def test_lisp_sessions_parses_ipv6_rloc_peers():
+    """[audit-3 L1 format-fidelity] the peer-row regex matched IPv4 RLOCs only, so an IPv6-underlay SD-Access
+    fabric had every control-plane peer silently dropped (peers:[]), weakening the all-sessions-down evidence."""
+    from cisco_toolkit.parse import parse_lisp_sessions
+    out = parse_lisp_sessions(
+        "Sessions for VRF red, total: 2, established: 0\n"
+        "Peer                           State\n"
+        "2001:DB8::1                    Down\n"
+        "[2001:DB8::2]:4342             Down\n")
+    assert out and out[0]["vrf"] == "red"
+    peers = {p["peer"] for p in out[0]["peers"]}
+    assert "2001:DB8::1" in peers and "2001:DB8::2" in peers     # both IPv6 peers captured (were dropped)
+    # IPv4 still parses identically (with :port split)
+    v4 = parse_lisp_sessions("Sessions for VRF blue, total: 1, established: 1\n10.1.1.1:4342  Up  ...\n")
+    assert v4[0]["peers"][0] == {"peer": "10.1.1.1", "port": "4342", "state": "Up"}
+
+
+def test_eoldb_compact_3560c_2960c_not_classic_family_dates():
+    """[audit-3 L5 format-fidelity] WS-C3560CG / WS-C2960CG compacts shared the classic family PREFIX so
+    longest-prefix matching credited them to the classic 3560/2960 bulletin + past dates. They have their OWN
+    (years-later) EoL notices. The -CX cry-wolf was fixed; -CG/-C/-S were missed."""
+    from cisco_toolkit.eoldb import lifecycle_for
+    cg35 = lifecycle_for("WS-C3560CG-8PC-S")
+    assert cg35["platform"] == "Catalyst 3560-C" and cg35["ldos"] == "2021-10-31"   # NOT Catalyst 3560 / 2018
+    cg29 = lifecycle_for("WS-C2960CG-8TC-L")
+    assert cg29["platform"] == "Catalyst 2960-C" and cg29["ldos"] == "2025-10-31"   # NOT Catalyst 2960 / 2024
+    # the longer -CX prefix still wins (not shadowed by the new -C row), and the bare classic PID is unchanged
+    assert lifecycle_for("WS-C3560CX-12PC-S")["platform"] == "Catalyst 3560-CX"
+    assert lifecycle_for("WS-C3560-48PS")["platform"] == "Catalyst 3560"
+
+
+def test_parse_ospf_neighbors_p2p_unnumbered_state():
+    """[audit-4 #3 false-health] a point-to-point/unnumbered OSPF neighbor renders State as 'FULL/  -' (the role is
+    a whitespace-separated dash, TWO tokens), which the single-token State regex dropped -> the whole row (incl. a
+    stuck EXSTART fault) vanished, reading identical to a device with no OSPF. The dominant network type on routed
+    cores + ALL WAN links."""
+    from cisco_toolkit.parse import parse_ospf_neighbors
+    hdr = "Neighbor ID     Pri   State           Dead Time   Address         Interface\n"
+    out = parse_ospf_neighbors(hdr +
+                               "10.1.1.2  0  FULL/  -  00:00:39  10.1.12.2  Gi0/1\n"
+                               "10.1.1.3  0  EXSTART/  -  00:00:33  10.1.13.3  Gi0/2\n")
+    by = {r["neighbor"]: r for r in out}
+    assert len(out) == 2
+    assert by["10.1.1.2"]["state"].upper().startswith("FULL") and by["10.1.1.2"]["interface"] == "Gi0/1"
+    assert by["10.1.1.3"]["state"].upper().startswith("EXSTART")          # the stuck fault is kept -> flagged High
+    b = parse_ospf_neighbors(hdr + "10.1.1.4  1  FULL/DR  00:00:31  10.1.14.4  Gi0/3\n")
+    assert b[0]["state"] == "FULL/DR" and b[0]["neighbor"] == "10.1.1.4"  # broadcast form unchanged (no regression)
+
+
+def test_parse_bgp_summary_asdot_4byte_as():
+    """[audit-4 #19 false-health] under 'bgp asnotation dot' the 4-byte AS renders asdot '1.100' (a dot), which the
+    pure-integer AS regex rejected -> the whole peer row (incl. a down Idle peer) dropped -> the down peer read
+    healthy."""
+    from cisco_toolkit.parse import parse_bgp_summary
+    out = parse_bgp_summary("Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd\n"
+                            "10.0.0.2 4 1.100 120 118 5 0 0 01:50:01 4\n"
+                            "10.0.0.3 4 1.101 0 0 1 0 0 never Idle\n")
+    by = {r["neighbor"]: r for r in out}
+    assert len(out) == 2
+    assert by["10.0.0.2"]["as"] == "1.100" and by["10.0.0.2"]["state"] == "4"
+    assert by["10.0.0.3"]["as"] == "1.101" and by["10.0.0.3"]["state"] == "Idle"   # down peer kept
+    # asplain still parses (no regression)
+    p = parse_bgp_summary("Neighbor V AS Up/Down State/PfxRcd\n10.0.0.9 4 65200 never Idle\n")
+    assert p[0]["as"] == "65200" and p[0]["state"] == "Idle"
+
+
+def test_parse_vpc_multiword_consistency_and_reason():
+    """[audit-4 #16 format-fidelity] real NX-OS 'show vpc' member rows carry MULTI-WORD Consistency ('Not
+    Applicable') and Reason ('Consistency Check Not Performed') columns; the single-token-per-column regex
+    truncated consistency to 'not' and folded reason words into active-vlans ('Check Not -') on every down* leg."""
+    from cisco_toolkit.parse import parse_vpc
+    t = ("vPC domain id : 100\nNumber of vPCs configured : 1\n\nvPC status\n"
+         "Id Port Status Consistency Reason Active vlans\n"
+         "-- ---- ------ ----------- ------ ------------\n"
+         "50 Po50 down* Not Applicable Consistency Check Not Performed -\n")
+    v = parse_vpc(t)["vpcs"][0]
+    assert v["consistency"] == "not applicable" and v["vlans"] == "-"        # was 'not' / 'Check Not -'
+    t2 = ("vPC domain id : 100\nNumber of vPCs configured : 1\n\nvPC status\n"
+          "Id Port Status Consistency Reason Active vlans\n"
+          "1 Po1 up success success 1,10,20-23\n")
+    v2 = parse_vpc(t2)["vpcs"][0]
+    assert v2["consistency"] == "success" and v2["vlans"] == "1,10,20-23"    # healthy row unaffected

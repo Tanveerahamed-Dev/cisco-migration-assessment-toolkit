@@ -11,6 +11,8 @@ failing. Deterministic content; no network, no device data beyond the snapshot.
 """
 import logging
 
+from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (the deck's single text sink)
+
 logger = logging.getLogger(__name__)
 
 # Topic-informed palette (enterprise network risk): a dominant navy with an ice-blue support tone, white
@@ -37,9 +39,11 @@ _BODY = "Calibri"
 
 
 def _clean(s) -> str:
-    """Repair the 'Â·' mojibake that the cross-axis headlines carry for their '·' separator, so the deck
-    reads cleanly regardless of how upstream encoded it."""
-    return (str(s) if s is not None else "").replace("Â·", "·").replace("Â", "")
+    """Repair the 'Â·' mojibake the cross-axis headlines carry for their '·' separator AND strip the XML-illegal
+    chars (C0 controls, U+FFFE/U+FFFF noncharacters, lone surrogates) that abort python-pptx at save -- the same
+    class the workbook/docx are hardened against. _clean is applied to EVERY run's text (the single text sink at
+    text()/chip()), so one bad device byte can no longer lose the whole steering-committee deck."""
+    return xml_safe((str(s) if s is not None else "").replace("Â·", "·").replace("Â", ""))
 
 
 def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> None:
@@ -147,17 +151,35 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         text(s, 0.7, 0.95, W - 1.4, 0.9, [(title, 32, _WHITE if dark else _NAVY, True)])
 
     # ---------------------------------------------------------------- 1. Title (dark)
+    def _D(x): return x if isinstance(x, dict) else {}    # audit-5 totality: a truthy non-dict section -> {}
+    def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
     s = slide(dark=True)
     rect(s, 0, 0, W, 7.5, _NAVY)
-    eb = snap.get("executive_brief") or {}
-    scale = eb.get("scale") or {}
+    eb = _D(snap.get("executive_brief"))
+    scale = _D(eb.get("scale"))
     text(s, 0.9, 2.0, W - 1.8, 1.6,
          [[("Network Migration", 52, _WHITE, True)], [("Assessment", 52, _ICE, True)]], space=2)
     text(s, 0.9, 3.95, W - 1.8, 0.5, [(label or "Current-state assessment", 18, _ICE, False, True)])
-    posture = eb.get("posture") or {}
-    sub = eb.get("posture_statement") or (
-        f"{scale.get('n_devices', '—')} devices · {scale.get('n_endpoints', '—')} endpoints assessed")
-    text(s, 0.9, 4.7, W - 1.8, 1.2, [(sub, 14, _ICE, False)])
+    posture = _D(eb.get("posture"))
+    # the canonical posture_statement is ALWAYS non-empty, so the old scale fallback never rendered — the
+    # deck showed no fleet scale at all. Always render the canonical scale on a second subtitle line.
+    sub = eb.get("posture_statement") or ""
+    # honesty (wave R2-4-02): when the cross-axis synthesis FAILED (sentinel / assessment_integrity flag),
+    # say so on the title slide rather than rendering an em-dash "— devices · — endpoints" as if it were scale.
+    if eb.get("_unavailable") or (snap.get("assessment_integrity") or {}).get("executive_brief") == "compute_failed":
+        _scale_line = "⚠ Cross-axis synthesis unavailable — see the workbook Executive Brief"
+    else:
+        # coerce PER VALUE: dict.get(default) only substitutes when the KEY is absent, so a present-but-null
+        # scale value (an uploaded / partially-computed snapshot) rendered the literal 'None devices' on the
+        # marquee client-facing slide. Show an em-dash for any non-int value instead.
+        def _sv(k):
+            return scale.get(k) if isinstance(scale.get(k), int) else "—"
+        _ncoll = scale.get("n_collected")
+        _coll = f" ({_ncoll} collected)" if isinstance(_ncoll, int) and _ncoll != scale.get("n_devices") else ""
+        _scale_line = (f"{_sv('n_devices')} devices{_coll} · {_sv('n_endpoints')} endpoints "
+                       f"· {_sv('n_vlans')} VLANs in scope")
+    text(s, 0.9, 4.7, W - 1.8, 1.6,
+         [[(sub, 14, _ICE, False)], [(_scale_line, 13, _ICE, False)]])
     text(s, 0.9, 6.7, W - 1.8, 0.4,
          [("Generated offline by the Cisco Migration-Assessment Toolkit — full evidence in the workbook, "
            "explorer & runbook.", 11, (0x9F, 0xB3, 0xE0), False)])
@@ -165,15 +187,17 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 2. Fleet posture (light)
     s = slide()
     header(s, "Executive summary", "Fleet posture")
-    hs = snap.get("health_scores") or []
+    hs = _R(snap.get("health_scores"))
     band_counts = {}
     for r in hs:
         band_counts[r.get("band", "")] = band_counts.get(r.get("band", ""), 0) + 1
     avg = posture.get("avg_health", "—")
     # stat callouts across the full width (generous gaps, no side-by-side columns to overlap)
     stat(s, 0.7, 1.95, f"{avg}", "avg health / 100", _NAVY, w=3.4)
-    stat(s, 5.0, 1.95, posture.get("n_critical", 0), "Critical-band switches", _CRIT, w=3.4)
-    stat(s, 9.3, 1.95, len(hs), "switches assessed", _INK, w=3.3)
+    # false-health guard: if the brief is absent/failed, posture is {} — fall back to the band tally
+    # computed above from health_scores, never a literal 0 that would claim '0 Critical' on a Critical fleet.
+    stat(s, 5.0, 1.95, posture.get("n_critical", band_counts.get("Critical", 0)), "Critical-band switches", _CRIT, w=3.4)
+    stat(s, 9.3, 1.95, len(hs), "switches in scope", _INK, w=3.3)   # 303 inventoried; 50 not collected -> "assessed" overclaims
     # full-width band-distribution bar
     order = ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
     segs = [(band_counts.get(b, 0), _BAND_COLOR.get(b, _MUTED)) for b in order]
@@ -193,11 +217,20 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         text(s, 1.85, y - 0.03, 10.8, 0.5,
              [[(_clean(a.get("axis", "")) + ":  ", 12, _NAVY, True), (_clean(a.get("headline", "")), 12, _INK, False)]])
         y += 0.5
+    # honesty: never silently drop axes — breadcrumb the overflow + how many are Critical/High, so a
+    # 4-row cap can't hide a High/Critical axis (the severity-sorted source means the cap drops the tail).
+    _more = axes[4:]
+    if _more:
+        _more_hi = sum(1 for a in _more if a.get("severity") in ("Critical", "High"))
+        text(s, 0.7, y, 11.8, 0.4,
+             [[(f"+ {len(_more)} more axis headline(s)"
+                + (f" — {_more_hi} at High or above" if _more_hi else "")
+                + " — full set in the workbook Executive Summary.", 10, _MUTED, False)]])
 
     # ---------------------------------------------------------------- 3. Top risks (light)
     s = slide()
     header(s, "What gates the migration", "Top migration risks")
-    pl = snap.get("punchlist") or []
+    pl = _R(snap.get("punchlist"))
     n_crit = sum(1 for i in pl if i.get("severity") == "Critical")
     n_high = sum(1 for i in pl if i.get("severity") == "High")
     text(s, 0.7, 1.95, W - 1.4, 0.4,
@@ -232,7 +265,7 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
              [[(f"{dbands.get('Severe', 0)} Severe · {dbands.get('Elevated', 0)} Elevated  ", 14, _NAVY, True),
                ("— risk index = topology impact × stacked exposure; compound patterns (CR-xx) mark "
                 "independent risks coinciding on one box.", 13, _MUTED, False)]])
-        _BAND_SEV = {"Severe": "Critical", "Elevated": "High", "Guarded": "Medium", "Low": "Low"}
+        _BAND_SEV = {"Severe": "Critical", "Elevated": "High", "Guarded": "Medium", "Low": "Low", "Unassessed": "Info"}
         y = 2.6
         for d in dd_top:
             band = d.get("risk_band", "Low")
@@ -252,9 +285,12 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 4. Keystone devices (light)
     s = slide()
     header(s, "Concentrated dependency", "The switches the fleet depends on")
-    fi = sorted((snap.get("failure_impact") or []),
+    fi = sorted(_R(snap.get("failure_impact")),
                 key=lambda r: -(int(r.get("stranded") or 0)))
     keystones = [r for r in fi if int(r.get("stranded") or 0) > 0][:5]
+    # off-scan-gateway records carry no usable blast radius (audit-3 #7); count them so an INDETERMINATE estate
+    # is not mistaken for a well-distributed one (audit-4 #8 false-health).
+    n_indet = sum(1 for r in fi if int(r.get("off_scan_gw_vlans") or 0) > 0)
     text(s, 0.7, 1.95, W - 1.4, 0.5,
          [("Ranked by migration blast radius — the collateral endpoints stranded if the switch drops "
            "during its move. Sequence and protect these first.", 13, _MUTED, False)])
@@ -269,6 +305,15 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
                    (f"   {r.get('vlans_impacted', 0)} VLAN(s) · {r.get('hard', 0)} hard-partitioned", 12, _MUTED, False)],
                   [(_clean(r.get("detail", "")), 11, _INK, False)]], space=1)
             y += 0.92
+    elif not fi or n_indet:
+        # blast radius NOT computed (no failure_impact) or INDETERMINATE (off-scan gateways) -> a coverage gap,
+        # NOT a clean bill. Render muted (not _OK green) so a blind estate never reads as 'well distributed'.
+        msg = ("Blast radius not assessable — the failure-impact analysis was not computed for this snapshot "
+               "(thin or uploaded data). Redundancy is UNKNOWN, not verified well-distributed."
+               if not fi else
+               f"Blast radius INDETERMINATE — {n_indet} switch(es) have an off-scan gateway, so their removal "
+               "impact could not be modelled. This is a coverage gap, not a clean bill of distribution.")
+        text(s, 0.7, y, W - 1.4, 0.9, [(msg, 14, _MUTED, True)])
     else:
         text(s, 0.7, y, W - 1.4, 0.5,
              [("No switch strands collateral endpoints on removal — dependency is well distributed.", 14, _OK, True)])
@@ -280,11 +325,15 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         s = slide()
         header(s, "A primary migration driver", "Hardware end-of-support exposure")
         n = lsum.get("n_devices", 0)
-        past = lsum.get("n_past_eos", 0) + lsum.get("n_past_ldos", 0)
+        # "Past end-of-support" is the Past-LDoS band ALONE (no TAC) — Past-EoS is end-of-SALE with
+        # the support window still open. Mirror the canonical executive_brief lifecycle axis
+        # (analyze.py:5018) so the deck headline agrees with every other surface (A3 SSOT fix).
+        # Past-EoS is not lost: it keeps its own segment in the band-distribution bar below.
+        past = lsum.get("n_past_ldos", 0)
         near = lsum.get("n_near", 0)
         pct = round(100 * (past + near) / n) if n else 0
         stat(s, 0.7, 2.1, f"{pct}%", "past or nearing end-of-support", _HIGH)
-        stat(s, 3.6, 2.1, lsum.get("n_past_eos", 0) + lsum.get("n_past_ldos", 0), "past end-of-support", _CRIT)
+        stat(s, 3.6, 2.1, past, "past end-of-support", _CRIT)
         stat(s, 6.2, 2.1, near, "within 1 year", _MED)
         lc_order = ["Past-LDoS", "Past-EoS", "Near-LDoS", "Active", "Unknown"]
         byb = lsum.get("by_band") or {}
@@ -302,14 +351,21 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 6. Migration waves (light)
     s = slide()
     header(s, "How it sequences", "Migration waves & readiness")
-    mr = snap.get("migration_readiness") or []
+    mr = _R(snap.get("migration_readiness"))
     mg = snap.get("move_groups") or []
+    # SSOT: the honest, actionable headline is the SEQUENCED wave count from the design blueprint's
+    # wave_plan -- the raw move-group count is the L2 blast-radius partition (one big coupled domain +
+    # singletons), which read as a wave count overstates parallelism (the audit's coverage-honesty fix).
+    wp = (((snap.get("design_blueprint") or {}).get("target_state") or {}).get("wave_plan")) or {}
     tally = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
     for r in mr:
         v = r.get("readiness")
         if v in tally:
             tally[v] += 1
-    stat(s, 0.7, 2.1, len(mg) or len(mr), "move groups", _NAVY)
+    if wp.get("n_waves"):
+        stat(s, 0.7, 2.1, wp["n_waves"], "candidate waves", _NAVY)
+    else:
+        stat(s, 0.7, 2.1, len(mg) or len(mr), "move groups", _NAVY)
     stat(s, 3.3, 2.1, tally["NOT READY"], "NOT READY", _CRIT)
     stat(s, 5.9, 2.1, tally["CAUTION"], "CAUTION", _MED)
     stat(s, 8.5, 2.1, tally["READY"], "READY", _OK)
@@ -323,9 +379,49 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
              [[(_clean(r.get("group", "")) + "  ", 13, _NAVY, True),
                (f"{r.get('n_fail', 0)} blocking · {r.get('n_warn', 0)} warning check(s)", 12, _INK, False)]])
         y += 0.5
-    text(s, 0.7, 6.7, W - 1.4, 0.4,
-         [("Clear the NOT-READY blockers first, biggest blast radius first — then verify each wave with the "
-           "Cutover Validation plan.", 12, _MUTED, False, True)])
+    if wp.get("n_waves"):
+        text(s, 0.7, 6.5, W - 1.4, 0.7,
+             [(f"{wp.get('n_move_groups', len(mg))} L2-coupled move-group(s) — largest a "
+               f"{wp.get('largest_group', 0)}-switch broadcast domain — sequence into {wp['n_waves']} "
+               f"candidate wave(s) of ≤ {wp.get('wave_cap', 40)} switches. Clear the NOT-READY blockers "
+               "first, biggest blast radius first; verify each wave with the Cutover Validation plan.",
+               12, _MUTED, False, True)])
+    else:
+        text(s, 0.7, 6.7, W - 1.4, 0.4,
+             [("Clear the NOT-READY blockers first, biggest blast radius first — then verify each wave with the "
+               "Cutover Validation plan.", 12, _MUTED, False, True)])
+
+    # ------------------------------------------------------- 6b. Target-state design (NEW — design engine)
+    # The CCDE-grounded design blueprint: the recommended target-state decisions + the weakest trade-off
+    # axes. Data-gated — skipped when the snapshot carries no design_blueprint (the SAME object the HLD/LLD
+    # and the dashboards read; one source of truth).
+    bp = snap.get("design_blueprint") or {}
+    bp_rec = [d for d in (bp.get("decisions") or []) if isinstance(d, dict) and d.get("status") == "recommended"]
+    if bp_rec:
+        s = slide()
+        header(s, "CCDE-grounded target state", "The design the migration should adopt")
+        bsum = bp.get("summary") or {}
+        text(s, 0.7, 1.9, W - 1.4, 0.4,
+             [[(f"{bsum.get('n_recommended', len(bp_rec))} design decision(s)  ", 14, _NAVY, True),
+               (f"· {bsum.get('n_critical', 0)} critical · {bsum.get('n_needs_requirement', 0)} need a "
+                "requirement — each traced to a design principle and the trade-off axes it serves.",
+                13, _MUTED, False)]])
+        sc = [a for a in (bp.get("tradeoff_scorecard") or []) if isinstance(a, dict)]
+        weak = [a for a in sc if isinstance(a.get("score"), int) and a.get("score") <= 1][:5]
+        if weak:
+            text(s, 0.7, 2.5, W - 1.4, 0.3, [("WEAKEST TRADE-OFF AXES (0–1 / 4)", 12, _HIGH, True)])
+            x = 0.7
+            for a in weak:
+                chip(s, x, 2.9, _clean(f"{a.get('axis', '')} {a.get('score')}/4"), _CRIT, w=2.0, h=0.32, size=10)
+                x += 2.1
+        y = 3.65
+        for d in bp_rec[:5]:
+            sev = d.get("priority", "Info")
+            chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.34, size=10)
+            text(s, 1.85, y - 0.04, W - 2.6, 0.7,
+                 [[(_clean(d.get("title", "")), 14, _INK, True)],
+                  [(_clean(((d.get("evidence") or {}).get("summary") or "")[:120]), 11, _MUTED, False)]], space=1)
+            y += 0.78
 
     # ---------------------------------------------------------------- 7. Where to start (dark)
     s = slide(dark=True)

@@ -11,7 +11,7 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
-from openpyxl.cell.cell import MergedCell
+from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -28,10 +28,85 @@ from cisco_toolkit.parse import (
     parse_port_security, parse_show_interface_counters,
 )
 from cisco_toolkit.textutils import (
-    PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS, _split_macs, normalize_ifname, normalize_speed,
+    PHYSICAL_IFACE_RE, _TRUNK_STATUS_WORDS, _split_macs, normalize_ifname, normalize_speed, xml_safe,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _xls_sanitize(value):
+    """Strip the characters openpyxl rejects from a string; pass non-strings through unchanged. Covers BOTH the C0
+    control chars (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F) AND the U+FFFE/U+FFFF noncharacters + lone surrogates that pass
+    openpyxl's check_string but fail wb.save() at XML serialization (multi-domain audit #11). Device-derived
+    free-text (a CDP/LLDP neighbour name, an interface description, a banner) -- collected with errors='ignore',
+    which passes valid-UTF-8 control bytes through -- can carry these, and a single one aborts the ENTIRE workbook,
+    the one deliverable produced unconditionally (there is no --no-excel). Delegates to the shared
+    textutils.xml_safe so the excel + docx generators share ONE implementation of the XML-illegal char set."""
+    return xml_safe(value)
+
+
+def _harden_ws(ws):
+    """Wrap one worksheet's cell()/append() so every written string value is sanitized (no IllegalCharacterError)."""
+    _orig_cell, _orig_append = ws.cell, ws.append
+
+    def _cell(*args, **kwargs):
+        if "value" in kwargs:
+            kwargs["value"] = _xls_sanitize(kwargs["value"])
+        elif len(args) >= 3:
+            args = (args[0], args[1], _xls_sanitize(args[2])) + args[3:]
+        return _orig_cell(*args, **kwargs)
+
+    def _append(iterable):
+        if isinstance(iterable, (list, tuple)):
+            iterable = [_xls_sanitize(v) for v in iterable]
+        return _orig_append(iterable)
+
+    ws.cell, ws.append = _cell, _append
+
+
+_CELL_VALUE_GUARDED = False
+
+
+def _install_cell_value_guard():
+    """Sanitize control chars at the openpyxl Cell.value SETTER -- the true write chokepoint. The per-worksheet
+    cell()/append() wraps catch ws.cell(value=...) and ws.append([...]), but a writer that gets a cell and then
+    assigns ``cell.value = val`` DIRECTLY (e.g. append_interface_rows' w() helper) bypasses them -- and a single
+    control char in an interface description there raised IllegalCharacterError mid-loop, which _run_phase (per
+    HOST) swallowed, silently dropping every port written AFTER the offending one from the customer-facing
+    interface census. Guarding the Cell.value setter closes every direct-assignment path at once. Idempotent +
+    process-wide; stripping control chars is always correct for the xlsx format (a no-op on clean strings) and
+    only the WRITE path is touched."""
+    global _CELL_VALUE_GUARDED
+    if _CELL_VALUE_GUARDED:
+        return
+    prop = Cell.value
+    if getattr(prop, "fset", None) is None:                       # defensive: nothing to wrap
+        return
+    Cell.value = property(prop.fget,
+                          lambda self, v: prop.fset(self, _xls_sanitize(v)),
+                          getattr(prop, "fdel", None))
+    _CELL_VALUE_GUARDED = True
+
+
+def harden_workbook(wb):
+    """Make EVERY worksheet in wb sanitize string cell values, so a control character in any device-derived
+    free-text field cannot abort the workbook -- via the Cell.value setter guard (covers DIRECT ``cell.value =``
+    assignment, e.g. append_interface_rows) PLUS per-worksheet cell()/append() wraps on every existing sheet
+    (the template's own) AND every sheet created later via wb.create_sheet. One chokepoint over all ~329
+    cell-write sites + any future one, so the safety can't drift the way a per-site helper would. Returns wb.
+    Call once right after load_workbook()."""
+    _install_cell_value_guard()
+    for ws in wb.worksheets:
+        _harden_ws(ws)
+    _orig_create = wb.create_sheet
+
+    def _create(*args, **kwargs):
+        ws = _orig_create(*args, **kwargs)
+        _harden_ws(ws)
+        return ws
+
+    wb.create_sheet = _create
+    return wb
 
 _CENSUS_HDR_FILL = "1F497D"
 
@@ -372,8 +447,11 @@ VLAN_CENSUS_SHEET_NAME = "VLAN Census"
 ENDPOINT_CENSUS_SHEET_NAME = "Endpoint Census"
 
 def write_vlan_census_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> None:
-    """One row per in-use VLAN (has access ports and/or an SVI), aggregated across all
-    devices: where it lives, access-port and endpoint (MAC) counts, and its gateway/SVI."""
+    """One row per access/SVI VLAN -- the subset of the in-use VLANs that have an access port and/or a
+    collected SVI, aggregated across all devices: where it lives, access-port and endpoint (MAC) counts,
+    and its gateway/SVI. NOTE: this is a labelled SUBSET, not the in-use total -- the canonical "VLANs in
+    use" count (executive_brief.scale.n_vlans, from analyze.vlan_inventory) also includes querier-only
+    VLANs whose gateway sits on an uncollected device, which cannot populate a per-VLAN row here."""
     cols = ["VLAN ID", "Name", "# Switches", "Switches", "# Access Ports", "# Endpoints",
             "Gateway Switch(es)", "Gateway IP", "Subnet", "FHRP"]
     if VLAN_CENSUS_SHEET_NAME in wb.sheetnames:
@@ -447,6 +525,19 @@ def write_endpoint_census_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
         for col, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT; c.alignment = DAT_L
         r += 1
+    # Disclose the basis vs the canonical evidenced-endpoint total: this sheet lists learned MACs on ALL
+    # host-facing (non-trunk) ports, a SUPERSET of executive_brief.scale.n_endpoints, which counts only ports
+    # explicitly tagged switchport mode 'Access'. Without this the row count silently contradicts the Exec
+    # Summary headline ([HISTORY-REDACTED]: 5326 here vs 5127 there) -- the same disclosure the VLAN Census / Migration Readiness
+    # sheets carry (audit-4 #17).
+    n_access = sum(1 for _h, d in rows if (d.switchport_mode or "") == "Access")
+    if len(rows) != n_access:
+        note = ws.cell(r + 1, 1,
+                       f"Basis: {len(rows)} learned-MAC endpoints on host-facing (non-trunk) ports. The canonical "
+                       f"'evidenced endpoints' total (executive_brief.scale.n_endpoints) counts only the {n_access} "
+                       f"on ports explicitly tagged switchport mode 'Access'; the other {len(rows) - n_access} are "
+                       f"real MACs on ports whose access-mode was not tagged 'Access'. The two use different bases.")
+        note.font = Font(name="Calibri", size=9, italic=True, color="808080")
     _census_autofit(ws, len(cols), r - 1)
     logger.info(f"  [OK] '{ENDPOINT_CENSUS_SHEET_NAME}' sheet: {len(rows)} endpoint(s)")
 
@@ -462,7 +553,7 @@ def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
     """Write (or replace) 'Move Groups': one row per migration wave (connected component
     of the shared-VLAN graph), ordered largest-coupling first."""
     cols = ["Group", "# Switches", "Switches", "# Spanning VLANs", "Spanning VLANs",
-            "# Endpoints", "Gateways", "Redundant (STP-blocked) Paths", "Notes"]
+            "# Endpoint MACs (per-switch sum)", "Gateways", "Redundant (STP-blocked) Paths", "Notes"]
     if MOVEGROUP_SHEET_NAME in wb.sheetnames:
         del wb[MOVEGROUP_SHEET_NAME]
     ws = wb.create_sheet(MOVEGROUP_SHEET_NAME)
@@ -566,9 +657,12 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
      exactly as before); flags is a list of "Port-bound (>=90%)" / "PoE-bound (>=80%)"."""
     out: List[dict] = []
     for dp in sorted(all_device_physical, key=lambda d: d.hostname.lower()):
-        total, active = dp.total_ports or 0, dp.active_ports or 0
-        free = max(total - active, 0) if total else ""
-        putil = round(100.0 * active / total, 1) if total else ""
+        total = dp.total_ports or 0
+        active = dp.active_ports                              # None = active-port count NOT observed (distinct from 0)
+        # honesty: a device whose active-port count was not observed must NOT read 0% utilization — it would
+        # then rank first as "most consolidation headroom". Leave util/free blank when active_ports is unknown.
+        free = max(total - active, 0) if (total and active is not None) else ""
+        putil = round(100.0 * active / total, 1) if (total and active is not None) else ""
         cap, drawn = _to_float(dp.power_capacity_w), _to_float(dp.power_drawn_w)
         if dp.power_remaining_w:
             rem = dp.power_remaining_w
@@ -578,7 +672,7 @@ def compute_capacity(all_device_physical: List[DevicePhysical]) -> List[dict]:
             rem = ""
         poe_util = round(100.0 * drawn / cap, 1) if (cap and drawn is not None and cap > 0) else ""
         flags = []
-        if putil != "" and putil >= 90: flags.append("Port-bound (>=90%)")
+        if putil != "" and putil >= 85: flags.append("Port-bound (>=85%)")   # match design_advisor._PORT_UTIL_HOT=85 so workbook + design narrative agree (DET-capacity-04)
         if poe_util != "" and poe_util >= 80: flags.append("PoE-bound (>=80%)")
         out.append({"hostname": dp.hostname, "model": dp.model,
                     "total_ports": total or "", "active_ports": active or "", "free_ports": free,
@@ -753,7 +847,7 @@ def write_migration_scenarios_sheet(wb, scenarios: dict) -> None:
         c = ws.cell(row=1, column=2, value=fleet); c.font = Font(size=10)
         c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
     hdr_row = 3 if fleet else 1
-    cols = ["Move group", "Switches", "Endpoints", "Readiness", "Dual-homed %", "Hard cutovers",
+    cols = ["Move group", "Switches", "Endpoint MACs (per-switch sum)", "Readiness", "Dual-homed %", "Hard cutovers",
             "At-risk eps", "Recommended scenario", "Rationale"]
     for i, h in enumerate(cols, 1):
         cell = ws.cell(row=hdr_row, column=i, value=h)
@@ -1360,6 +1454,62 @@ def write_security_sheet(wb, all_security: dict) -> None:
                 f"across {nhosts} switch(es)")
 
 
+FRAMEWORK_COVERAGE_SHEET_NAME = "Framework Coverage"   # W2-3: CIS/NIST/PCI/STIG mapping over the existing checks
+
+def write_framework_coverage_sheet(wb, framework_coverage: dict) -> None:
+    """Write the 'Framework Coverage' sheet from compute_framework_coverage() -- the config-evidenced mapping of the
+    engine's hardening checks to CIS / NIST 800-53 / PCI-DSS / DISA-STIG controls (one row per control; status rolls
+    up across hosts and the failing hosts are cited for grounding). COVERAGE-HONEST: the scope caveat is rendered
+    BEFORE any status (so the sheet can never read as a full audit), and a framework that auto-assessed ZERO controls
+    is DISCLOSED as such rather than silently dropped (an empty framework otherwise reads as a fake 'all clear').
+    A 'proof of compliance' matrix over existing checks -- NOT a full framework audit."""
+    fc = framework_coverage if isinstance(framework_coverage, dict) else {}
+    frameworks = fc.get("frameworks") or {}
+    ws = wb.create_sheet(FRAMEWORK_COVERAGE_SHEET_NAME)
+    # Row 1: the coverage-honesty caveat, disclosed up top so a reader sees the scope before any pass/fail.
+    note = fc.get("note") or "Config-evidenced mapping — NOT a full framework audit."
+    scope = fc.get("scope") or ""
+    c0 = ws.cell(1, 1, f"{note}  Scope: {scope}" if scope else note)
+    c0.font = Font(italic=True, color="666666"); ws.merge_cells("A1:F1")
+    for col, h in enumerate(["Framework", "Control", "Status", "Engine Check", "Finding", "Failing Hosts (sample)"], 1):
+        c = ws.cell(2, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    status_fill = {"fail": "F4CCCC", "na": "FFF2CC", "pass": "D9EAD3"}
+    r = 3; total = 0; nfail = 0; nfw = 0
+    for key in ("CIS", "NIST", "PCI", "STIG"):
+        fw = frameworks.get(key) or {}
+        label = fw.get("label") or key
+        controls = fw.get("controls") or []
+        if not controls:
+            # COVERAGE-HONEST: disclose the empty framework (never silently omit -> never a fake 'clear').
+            ws.cell(r, 1, label); ws.cell(r, 2, "—"); ws.cell(r, 3, "—")
+            ws.cell(r, 5, "0 controls auto-assessed from the config check set — not auto-assessed here (not a full audit)")
+            r += 1
+            continue
+        nfw += 1
+        for ctl in controls:
+            st = str(ctl.get("status") or "").lower()
+            ws.cell(r, 1, label)
+            ws.cell(r, 2, ctl.get("control", ""))
+            ws.cell(r, 3, st.upper())
+            ws.cell(r, 4, ctl.get("check", ""))
+            ws.cell(r, 5, ctl.get("title", ""))
+            ws.cell(r, 6, ", ".join(ctl.get("hosts_fail") or []) if st == "fail" else "-")
+            fill = status_fill.get(st)
+            if fill:
+                pf = PatternFill("solid", fgColor=fill)
+                for col in range(1, 7):
+                    ws.cell(r, col).fill = pf
+            if st == "fail":
+                nfail += 1
+            r += 1; total += 1
+    for i, w in enumerate([22, 16, 8, 18, 50, 40], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A3"
+    logger.info(f"  [OK] '{FRAMEWORK_COVERAGE_SHEET_NAME}' sheet: {nfail} fail / {total} control(s) "
+                f"across {nfw} framework(s) with config-evidenced mappings")
+
+
 CONFIG_HYGIENE_SHEET_NAME = "Config Hygiene"   # Batfish-style undefined refs + unused structures (NEW-V3.23.61)
 
 def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:
@@ -1385,10 +1535,14 @@ def write_config_hygiene_sheet(wb, all_hygiene: dict) -> None:
             ws.cell(r, 4, u.get("name", "")); ws.cell(r, 5, "defined but never referenced in the running-config")
             for col in range(1, 6): ws.cell(r, col).fill = unused_fill
             r += 1; nunused += 1
+    nhosts = len([h for h in all_hygiene if all_hygiene[h]])
+    if r == 2:   # no hygiene issues found -> coverage-honest 'no issues', NOT a fleet-wide clean bill (audit-5 #23)
+        ws.cell(2, 1, "no issues")
+        ws.cell(2, 2, f"No undefined-reference / unused-structure issue among the {nhosts} device(s) with a "
+                      f"collected running-config. Devices without a collected running-config are NOT assessed.")
     for i, w in enumerate([14, 26, 16, 26, 64], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
-    nhosts = len([h for h in all_hygiene if all_hygiene[h]])
     logger.info(f"  [OK] '{CONFIG_HYGIENE_SHEET_NAME}' sheet: {nundef} undefined ref(s), "
                 f"{nunused} unused across {nhosts} switch(es)")
 
@@ -1606,6 +1760,258 @@ def write_golden_drift_sheet(wb, gd: dict) -> None:
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{GOLDEN_DRIFT_SHEET_NAME}' sheet: {len(pdev)} device(s), "
                 f"{s.get('n_drifting', 0)} drifting ({mode})")
+
+
+FEATURE_COMPLIANCE_SHEET_NAME = "Feature Compliance"   # roadmap I2 (Nautobot per-feature ConfigCompliance)
+
+def write_feature_compliance_sheet(wb, fc: dict) -> None:
+    """Write 'Feature Compliance' from compute_feature_compliance(): the golden-config drift decomposed per
+    policy FEATURE (aaa / ntp / snmp / logging / ...), with how many devices drift in each. Coverage-honest:
+    a feature with no baseline directives is simply absent (never a fabricated 'compliant')."""
+    if FEATURE_COMPLIANCE_SHEET_NAME in wb.sheetnames:
+        del wb[FEATURE_COMPLIANCE_SHEET_NAME]
+    ws = wb.create_sheet(FEATURE_COMPLIANCE_SHEET_NAME)
+    p = fc or {}
+    feats = p.get("features") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Per-feature config compliance — the golden-config drift decomposed by policy area "
+                      "(which features drift, across how many devices).")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_features', 0)} feature(s) · {s.get('n_drift_rows', 0)} device-feature drift row(s)").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Feature", "Baseline directives", "Devices drifting"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    r = hdr_row + 1
+    for f in feats:
+        nd = f.get("n_drifting", 0)
+        fill = "C6EFCE" if nd == 0 else ("FFEB9C" if nd <= 2 else "FFC7CE")
+        for col, v in enumerate([f.get("feature"), f.get("n_baseline", 0), nd], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left" if col == 1 else "center", vertical="top")
+            if col == 3:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    if not feats:
+        ws.cell(hdr_row + 1, 1, "No golden-config baseline to decompose.").font = DAT
+    for i, w in enumerate([22, 18, 16], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{FEATURE_COMPLIANCE_SHEET_NAME}' sheet: {len(feats)} feature(s)")
+
+
+ACL_SHADOW_SHEET_NAME = "ACL Shadow Analysis"   # roadmap G1 (Batfish-style filterLineReachability, offline)
+
+def write_acl_shadow_sheet(wb, alr: dict) -> None:
+    """Write 'ACL Shadow Analysis' from compute_filter_line_reachability(): each dead/shadowed ACL line with
+    its typed reason, flagging a DIFFERENT-action shadow (a PERMIT silently hidden behind an earlier DENY —
+    the dangerous case). Coverage-honest: INDETERMINATE (unevaluable) lines are listed, never called dead."""
+    if ACL_SHADOW_SHEET_NAME in wb.sheetnames:
+        del wb[ACL_SHADOW_SHEET_NAME]
+    ws = wb.create_sheet(ACL_SHADOW_SHEET_NAME)
+    p = alr or {}
+    rows = p.get("findings") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Offline ACL line-reachability proof — lines that can never match (dead/shadowed), an "
+                      "empty match-space, or a bad object-group reference. A different-action shadow is a "
+                      "silently-broken intent.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_shadowed', 0)} shadowed · {s.get('n_different_action', 0)} different-action · "
+                  f"{s.get('n_unmatchable', 0)} unmatchable · {s.get('n_bad_reference', 0)} bad-ref · "
+                  f"{s.get('n_indeterminate', 0)} indeterminate").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Device", "ACL", "Line #", "Action", "Reason", "Different action", "Detail", "Rule"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+    r = hdr_row + 1
+    for f in rows:
+        diff = bool(f.get("different_action"))
+        fill = "FFC7CE" if diff else ("FFEB9C" if f.get("reason") == "INDETERMINATE" else None)
+        vals = [f.get("host"), f.get("acl"), (f.get("line_index", 0) + 1), f.get("action"),
+                f.get("reason"), ("yes" if diff else "no"), f.get("detail"), f.get("raw")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = (MONO if col == 8 else DAT)
+            c.alignment = Alignment(horizontal="center" if col in (3, 4, 6) else "left", vertical="top", wrap_text=col in (7, 8))
+            if col == 6 and fill:
+                c.fill = PatternFill("solid", fgColor=fill)
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "No ACL findings (no shadowed/unmatchable lines, or no ACLs collected).").font = DAT
+    for i, w in enumerate([22, 16, 7, 9, 22, 14, 40, 44], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{ACL_SHADOW_SHEET_NAME}' sheet: {len(rows)} finding(s)")
+
+
+EXTERNAL_RECONCILE_SHEET_NAME = "SoT Reconcile"   # roadmap B (declared source-of-truth vs collected evidence)
+
+def write_external_reconcile_sheet(wb, recon: dict) -> None:
+    """Write 'SoT Reconcile' from reconcile_external(): each device that drifts between the DECLARED
+    source-of-truth (a CMDB/NetBox export) and the collected evidence (MISSING / UNDOCUMENTED / MODEL_MISMATCH
+    / IP_DRIFT), plus the coverage-honest UNVERIFIABLE (declared but never collected — a blind spot, never a
+    confirmed match or miss). A fully-reconciling device emits no row."""
+    if EXTERNAL_RECONCILE_SHEET_NAME in wb.sheetnames:
+        del wb[EXTERNAL_RECONCILE_SHEET_NAME]
+    ws = wb.create_sheet(EXTERNAL_RECONCILE_SHEET_NAME)
+    p = recon or {}
+    rows = p.get("rows") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Declared source-of-truth vs collected evidence. UNVERIFIABLE = declared but never "
+                      "collected (a blind spot, never a confirmed match or miss).")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_declared', 0)} declared · {s.get('n_observed', 0)} observed · "
+                  f"{s.get('MISSING_DEVICE', 0)} missing · {s.get('UNDOCUMENTED_DEVICE', 0)} undocumented · "
+                  f"{s.get('MODEL_MISMATCH', 0)} model · {s.get('IP_DRIFT', 0)} ip · "
+                  f"{s.get('UNVERIFIABLE', 0)} unverifiable").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Type", "Device", "Detail"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    _COLOR = {"MISSING_DEVICE": "FFC7CE", "MODEL_MISMATCH": "FFC7CE", "IP_DRIFT": "FFC7CE",
+              "UNDOCUMENTED_DEVICE": "FFEB9C", "UNVERIFIABLE": "D9D9D9"}
+    r = hdr_row + 1
+    for row in rows:
+        t = row.get("type")
+        for col, v in enumerate([t, row.get("host"), row.get("detail")], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col == 3)
+            if col == 1 and t in _COLOR:
+                c.fill = PatternFill("solid", fgColor=_COLOR[t])
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "Declared inventory fully reconciles with the collected evidence.").font = DAT
+    for i, w in enumerate([22, 26, 70], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{EXTERNAL_RECONCILE_SHEET_NAME}' sheet: {len(rows)} drift row(s)")
+
+
+CAPTURE_INTEGRITY_SHEET_NAME = "Capture Integrity"   # roadmap K1 (truncation / pager / CLI-error guard)
+
+def write_capture_integrity_sheet(wb, ci: dict) -> None:
+    """Write 'Capture Integrity' from compute_capture_integrity(): collected command output that looks
+    truncated / paginated / errored, so a partial capture is a declared blind spot, never silently healthy.
+    A clean capture emits no row."""
+    if CAPTURE_INTEGRITY_SHEET_NAME in wb.sheetnames:
+        del wb[CAPTURE_INTEGRITY_SHEET_NAME]
+    ws = wb.create_sheet(CAPTURE_INTEGRITY_SHEET_NAME)
+    p = ci or {}
+    rows = p.get("findings") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Per-capture integrity — collected command output that looks truncated, paginated, or "
+                      "errored. A partial capture is a blind spot, never silently 'healthy'.")
+    b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('n_hosts_affected', 0)} host(s) affected · {s.get('n_incomplete', 0)} incomplete · "
+                  f"{s.get('n_error', 0)} error · {s.get('n_empty', 0)} empty").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Device", "Command", "Status", "Reason"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    _C = {"error": "FFC7CE", "incomplete": "FFEB9C", "empty": "D9D9D9"}
+    r = hdr_row + 1
+    for f in rows:
+        st = f.get("status")
+        for col, v in enumerate([f.get("host"), f.get("command"), st, f.get("reason")], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col == 4)
+            if col == 3 and st in _C:
+                c.fill = PatternFill("solid", fgColor=_C[st])
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "All collected captures look complete.").font = DAT
+    for i, w in enumerate([22, 26, 12, 60], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{CAPTURE_INTEGRITY_SHEET_NAME}' sheet: {len(rows)} finding(s)")
+
+
+WHATIF_SHEET_NAME = "Failure What-If"   # roadmap G4 (single-snapshot failure-injection)
+
+def write_whatif_sheet(wb, scenarios: list) -> None:
+    """Write 'Failure What-If' from run_scenarios(): per injected node/site failure, how reachability changed —
+    blocked (definitive) vs lost_path (was reached, now unprovable, coverage-honest) vs preserved."""
+    if WHATIF_SHEET_NAME in wb.sheetnames:
+        del wb[WHATIF_SHEET_NAME]
+    ws = wb.create_sheet(WHATIF_SHEET_NAME)
+    rows = scenarios or []
+    b = ws.cell(1, 1, "Failure-injection what-if — remove a node/site in memory and re-run the FIB. 'lost path' "
+                      "= a flow that was reached and is now unprovable (never fabricated as a definite block).")
+    b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{len(rows)} scenario(s)").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Scenario", "Removed", "Blocked", "Lost path", "Preserved", "Inconclusive"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    r = hdr_row + 1
+    for sc in rows:
+        sm = sc.get("summary") or {}
+        removed = ", ".join(sc.get("removed_hosts") or [])
+        vals = [sc.get("name") or removed or "(no match)", removed, sm.get("blocked", 0),
+                sm.get("lost_path", 0), sm.get("preserved", 0), sm.get("inconclusive_other", 0) + sm.get("other", 0)]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left" if col in (1, 2) else "center", vertical="top", wrap_text=col == 2)
+            if col == 3 and sm.get("blocked"):
+                c.fill = PatternFill("solid", fgColor="FFC7CE")
+            if col == 4 and sm.get("lost_path"):
+                c.fill = PatternFill("solid", fgColor="FFEB9C")
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "No scenarios supplied (use --scenario FILE).").font = DAT
+    for i, w in enumerate([26, 26, 10, 11, 11, 13], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{WHATIF_SHEET_NAME}' sheet: {len(rows)} scenario(s)")
+
+
+PATH_INTENTS_SHEET_NAME = "Path Assertions"   # roadmap G3 (named segmentation/path intents)
+
+def write_path_intents_sheet(wb, pa: dict) -> None:
+    """Write 'Path Assertions' from evaluate_path_assertions(): each named REACHES/ISOLATED intent and its
+    verdict (pass / fail / not_observed). Coverage-honest: a lower-bound trace abstains, never a fake verdict."""
+    if PATH_INTENTS_SHEET_NAME in wb.sheetnames:
+        del wb[PATH_INTENTS_SHEET_NAME]
+    ws = wb.create_sheet(PATH_INTENTS_SHEET_NAME)
+    p = pa or {}
+    rows = p.get("results") or []
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "Named path / segmentation intents evaluated over the computed FIB. ISOLATED can be "
+                      "PROVEN only by a computed-unreachable trace; a lower bound abstains (not_observed).")
+    b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
+    ws.cell(2, 1, f"{s.get('pass', 0)} pass · {s.get('fail', 0)} fail · {s.get('not_observed', 0)} not observed").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Intent", "Source", "Destination", "Expect", "Verdict", "Computed status"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    _C = {"fail": "FFC7CE", "not_observed": "D9D9D9", "pass": "C6EFCE"}
+    r = hdr_row + 1
+    for row in rows:
+        vd = row.get("verdict")
+        vals = [row.get("id"), row.get("src"), row.get("dst"), row.get("expect"), vd, row.get("status")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left", vertical="top")
+            if col == 5 and vd in _C:
+                c.fill = PatternFill("solid", fgColor=_C[vd])
+        r += 1
+    if not rows:
+        ws.cell(hdr_row + 1, 1, "No path intents supplied (use --path-intents FILE).").font = DAT
+    for i, w in enumerate([20, 18, 18, 12, 14, 28], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{PATH_INTENTS_SHEET_NAME}' sheet: {len(rows)} intent(s)")
 
 
 # Shared severity palette for the V3.23.164-.167 axis sheets (V3.23.171). The four writers each
@@ -2042,7 +2448,7 @@ def write_lifecycle_risk_sheet(wb, lr: dict) -> None:
     L = lr or {}
     s = L.get("summary") or {}
     ws.cell(1, 1, "Hardware lifecycle (EoL / End-of-Support) — replacement urgency").font = Font(bold=True, size=11)
-    ws.cell(2, 1, f"As of {L.get('asof', '')}: {s.get('n_past_ldos', 0)} past end-of-support · "
+    ws.cell(2, 1, f"Lifecycle bands as of collection date {L.get('asof', '')}: {s.get('n_past_ldos', 0)} past end-of-support · "
                   f"{s.get('n_near', 0)} within 1yr · {s.get('n_active', 0)} active · "
                   f"{s.get('n_unknown', 0)} unknown (of {s.get('n_devices', 0)}).").font = Font(size=10)
     ws.cell(3, 1, L.get("note", "")).font = Font(size=9, italic=True, color="808080")
@@ -2103,6 +2509,15 @@ def write_architecture_review_sheet(wb, ar: dict) -> None:
         del wb[ARCHREVIEW_SHEET_NAME]
     ws = wb.create_sheet(ARCHREVIEW_SHEET_NAME)
     A = ar or {}
+    # A CRASHED/absent review (the assembly's _unavailable sentinel, or a bare {} with no summary) must NOT
+    # render as a clean 'grade N/A · 0 conform · 0 not assessable' scorecard -- that reads as 'reviewed, all
+    # fine' when the computation actually failed (false-health). A legit-empty review still carries a summary
+    # (n_not_assessable counts the un-evidenced checks), so this only fires on a true compute failure.
+    if A.get("_unavailable") or not A.get("summary"):
+        ws.cell(1, 1, "Architecture Review — leading-practice conformance scorecard").font = Font(bold=True, size=11)
+        ws.cell(2, 1, "Architecture review unavailable — the conformance computation did not complete for this "
+                      "run; no grade is asserted (see assessment_integrity).").font = Font(size=10)
+        return
     s = A.get("summary") or {}
     HDR = Font(bold=True, color="FFFFFF", size=10); HFILL = PatternFill("solid", fgColor="434343")
     DAT = Font(name="Calibri", size=10)
@@ -2485,7 +2900,13 @@ def write_trunk_native_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDa
         cb = ws.cell(r, 4, d["b_native"]); cb.font = Font(bold=True, color="C00000")
         r += 1
     if r == 2:
-        ws.cell(2, 1, "clean"); ws.cell(2, 2, "No native-VLAN mismatches on inter-switch trunks")
+        # coverage-honest: 'no mismatch' is scoped to the collected devices + observed trunks, NOT a fleet-wide
+        # clean bill of health -- absence of an uncollected far end is not evidence of consistency (audit-5 #6).
+        n_dev = len(all_interfaces or {})
+        ws.cell(2, 1, "no mismatch")
+        ws.cell(2, 2, f"No native-VLAN mismatch found among the inter-switch trunks observed across the {n_dev} "
+                      f"collected device(s). Uncollected devices, and any trunk whose far end was not collected, "
+                      f"are NOT assessed -- this is not a fleet-wide guarantee.")
     for i, w in enumerate([34, 12, 34, 12], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
@@ -2497,8 +2918,10 @@ def _norm_duplex(s: str) -> str:
     return "half" if "half" in s else "full" if "full" in s else ""
 
 def _norm_speed_mbps(s: str) -> int:
-    m = re.search(r"(\d+)\s*(g|m)?", (s or "").lower())
-    return int(m.group(1)) * (1000 if m and m.group(2) == "g" else 1) if m else 0
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(g|m)?", (s or "").lower())   # incl. decimal multigig 2.5G / 5.0G (audit-5 #18)
+    if not m:
+        return 0
+    return int(round(float(m.group(1)) * (1000 if m.group(2) == "g" else 1)))
 
 def compute_duplex_speed_mismatches(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[dict]:
     """Duplex / speed mismatches on inter-switch links (mirrors the explorer's linkPhyConsistency): the two
@@ -2566,7 +2989,8 @@ def write_migration_readiness_sheet(wb, readiness: List[dict]) -> None:
         c.alignment = Alignment(horizontal="center")
     r = 2
     for g in readiness:
-        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint(s))")
+        c = ws.cell(r, 1, f"{g['group']}  ({len(g['switches'])} switch(es), {g['endpoints']} endpoint-MAC(s), "
+                          f"per-switch sum)")   # disclose the per-switch sum so it isn't read as the distinct n_endpoints (audit-3 L3)
         c.font = Font(bold=True)
         cs = ws.cell(r, 2, g["readiness"])
         cs.font = Font(bold=True)
@@ -2924,13 +3348,38 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         if b in bands:
             bands[b] += 1
     avg = round(sum((x.get("score") or 0) for x in hs) / n) if n else 0
+    # SSOT (QA F1/F2): read the canonical executive_brief block every narrative surface uses -- the local
+    # arithmetic mean overstates vs posture.avg_health (criticality-weighted), and "assessed = 303" overstates
+    # coverage by the 50 not-collected devices vs scale.n_collected. Fall back to the local recompute only if
+    # the brief is absent (legacy snapshot).
+    _ebp = (brief or {}).get("posture") or {}
+    _ebs = (brief or {}).get("scale") or {}
+    _ncoll = _ebs.get("n_collected"); _avgc = _ebp.get("avg_health")
     _sub("Fleet posture")
-    _kv("Switches assessed", n)
-    _kv("Average health score", f"{avg} / 100")
+    if isinstance(brief, dict) and brief.get("_unavailable"):
+        # the executive-brief compute RAISED -> _run_phase wired the {'_unavailable':True} sentinel. Do NOT fall
+        # back to the raw recompute: that fabricates full collection coverage (n/n) + an all-rows mean that the
+        # 'Insufficient Data' devices inflate. Disclose the gap, exactly as the Architecture Review sheet does
+        # for the same sentinel (audit-3 #2 false-health).
+        _kv("Switches collected / inventoried", f"— / {n} (executive brief unavailable — compute failed)")
+        _kv("Average health score", "— (executive brief unavailable)")
+    else:
+        _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
+        _kv("Average health score", f"{_avgc if isinstance(_avgc, (int, float)) else avg} / 100")
     _kv("Critical band", bands["Critical"])
     _kv("Poor / Fair", bands["Poor"] + bands["Fair"])
     _kv("Good / Excellent", bands["Good"] + bands["Excellent"])
     r += 1
+
+    # canonical scope/scale from the published brief (one source — not a raw-array recompute). The sheet
+    # showed band counts but never the fleet scale (the endpoints / VLANs the other deliverables headline).
+    _sc = eb.get("scale") or {}
+    if _sc:
+        _sub("Scope / scale")
+        _kv("Devices inventoried", _sc.get("n_devices"))
+        _kv("Endpoints (evidenced)", _sc.get("n_endpoints"))
+        _kv("VLANs in use", _sc.get("n_vlans"))
+        r += 1
 
     # --- punch-list severity / category breakdown ---
     pl = punchlist or []
@@ -3051,6 +3500,8 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             ie = cnt.get("input_errors", "")
             crc = cnt.get("crc", "")
             od = cnt.get("output_drops", "")
+            oe = cnt.get("output_errors", "")            # output-side L1 (TX errors)
+            lc = cnt.get("late_collisions", "")          # late collisions = duplex mismatch
             pc = d.port_channel or ""
 
             # PoE cell: per-port watts if parseable, else the status word; mark over-budget devices.
@@ -3078,7 +3529,7 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             if (host, port) in single_fiber:
                 flags.append("single-fiber-uplink")
                 if sev != "High": sev = "Medium"
-            if oper_up and (_intpos(ie) or _intpos(crc) or _intpos(od)):
+            if oper_up and (_intpos(ie) or _intpos(crc) or _intpos(od) or _intpos(oe) or _intpos(lc)):
                 flags.append("error-rate-high")
                 if sev != "High": sev = "Medium"
             if not flags:
@@ -3087,6 +3538,7 @@ def write_physical_health_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
             records.append({"switch": host, "port": port, "status": status or "",
                             "speed": speed or "unknown", "duplex": duplex or "unknown",
                             "media": media or "unknown", "input_errors": ie, "crc_errors": crc,
+                            "output_errors": oe, "late_collisions": lc,
                             "output_drops": od, "port_channel": pc, "poe": poe_cell,
                             "risk": "; ".join(flags), "severity": sev})
 

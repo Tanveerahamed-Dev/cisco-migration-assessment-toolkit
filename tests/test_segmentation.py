@@ -64,3 +64,21 @@ def test_empty_and_deterministic():
     a = compute_segmentation(ai, app)
     b = compute_segmentation(ai, app)
     assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def test_segmentation_domain_isolated_requires_all_gateways_protected():
+    """ANALY-03: a domain was marked 'isolated' if ANY ONE gateway had a VRF/ACL, masking sibling gateways in
+    the global VRF with no ACL (reachable from every domain) -- so a real on-air-critical L3 exposure was
+    dropped from the executive Segmentation axis. Isolation must require EVERY gateway protected."""
+    from cisco_toolkit.analyze import compute_segmentation
+    from cisco_toolkit.model import InterfaceData
+    ai = {"SW1": {"Vlan10": InterfaceData(port="Vlan10", svi_ip="10.0.10.1/24", vrf="PROD")},
+          "SW2": {"Vlan20": InterfaceData(port="Vlan20", svi_ip="10.0.20.1/24", vrf="")},        # exposed
+          "SW3": {"Vlan30": InterfaceData(port="Vlan30", svi_ip="10.0.30.1/24", vrf="", acl_in="GUARD")}}
+    app = {"domains": [{"domain": "Media", "tier": "On-air critical", "switches": ["SW1", "SW2"]},
+                       {"domain": "Iso", "tier": "Support", "switches": ["SW3"]}]}
+    out = compute_segmentation(ai, app)
+    media = next(d for d in out["domains"] if d["domain"] == "Media")
+    iso = next(d for d in out["domains"] if d["domain"] == "Iso")
+    assert media["isolated"] is False and "1 of 2" in media["exposure"]   # one exposed gateway surfaces
+    assert iso["isolated"] is True                                         # all-protected domain stays isolated

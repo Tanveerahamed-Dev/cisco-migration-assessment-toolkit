@@ -37,8 +37,10 @@ def _snap():
              "hard_cutover_endpoints": 12, "sequence": "hard cutover"},
         ],
         "migration_scenarios": {
-            "per_group": [{"group": "Group 1", "scenario": "parallel-run", "why": "dual-homed"},
-                          {"group": "Group 2", "scenario": "phased", "why": "single-homed"}],
+            # [audit-4 #9] the engine emits 'recommended_scenario' (analyze.compute_migration_scenarios), NOT
+            # 'scenario' -- this fixture used the fabricated key that masked the §4.2 wave-table bug.
+            "per_group": [{"group": "Group 1", "recommended_scenario": "parallel-run", "why": "dual-homed"},
+                          {"group": "Group 2", "recommended_scenario": "phased", "why": "single-homed"}],
             "fleet_recommendation": "Parallel-run the dual-homed estate; window the rest.",
             "scenario_counts": {"parallel-run": 1, "phased": 1},
         },
@@ -51,7 +53,7 @@ def _snap():
         },
         "executive_brief": {"posture": "Fair", "posture_statement": "Fleet is migratable with care.",
                             "axes": [], "top_gating": ["1 Critical L3-design finding gates cutover"]},
-        "lifecycle_risk": {"summary": {"n_devices": 4, "n_past_eos": 1}},
+        "lifecycle_risk": {"summary": {"n_devices": 4, "n_past_ldos": 1, "n_past_eos": 0}},
         "remediation_plan": {"summary": {"n_items": 5, "n_devices": 2}},
     }
 
@@ -79,6 +81,19 @@ def test_engagement_has_skeleton_sections_and_furniture(tmp_path):
     assert "Assessment workbook (.xlsx)" in text                # related-documents cross-reference
     # self-exclusion: the doc never lists itself in its own related-documents table
     assert "Engagement Workflow & Plan of Record (.docx)" not in text
+
+
+def test_engagement_inventoried_count_reads_canonical_scale(tmp_path):
+    """SSOT: the 'N collected of M inventoried' line must take BOTH figures from the canonical
+    executive_brief.scale (n_collected AND n_devices), not mix a canonical n_collected with a
+    len(devices) recount — which renders a self-contradictory 'collected of <smaller> inventoried'
+    when the inventory exceeds the (smaller) device map. Discriminating fixture: scale says 303
+    devices while the devices map holds 4."""
+    snap = _snap()
+    snap.setdefault("executive_brief", {})["scale"] = {"n_devices": 303, "n_collected": 253}
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Test Fleet")
+    assert "253 collected of 303 inventoried" in _all_text(Document(out))
 
 
 def test_engagement_verdict_holds_on_blockers_and_cites_evidence(tmp_path):
@@ -137,10 +152,26 @@ def test_engagement_raid_is_seeded_from_findings(tmp_path):
     write_engagement_docx(out, _snap(), "Unit Test Fleet")
     text = _all_text(Document(out))
     assert "RSK-001" in text and "VLAN 30 has a single gateway" in text     # risk from punch-list
-    assert "past end-of-support" in text                                    # risk from lifecycle
+    assert "past last-day-of-support (LDoS)" in text                        # risk from lifecycle (LDoS band)
     assert "ISS-001" in text and "show cdp neighbors detail" in text        # issue from blind spot
     assert "ASM-001" in text and "DEP-001" in text                          # assumptions + dependencies
     assert "DEC-001" in text and "PROPOSED" in text                         # decision log seeded
+
+
+def test_engagement_gate_and_raid_key_on_past_ldos_not_past_eos(tmp_path):
+    """A2 (coverage-honesty): the band that LOSES TAC is Past-LDoS, not Past-EoS (end-of-sale,
+    support window still open). A fleet with 152 past-LDoS and 0 past-EoS must surface the 152 in
+    BOTH the go/no-go conditions and the RAID risk — reading n_past_eos (=0) silently drops the 152
+    (the exact [HISTORY-REDACTED] defect). Discriminating fixture: n_past_eos=0 so only an n_past_ldos reader passes."""
+    snap = _snap()
+    snap["lifecycle_risk"] = {"summary": {"n_devices": 303, "n_past_ldos": 152, "n_past_eos": 0,
+                                          "n_near": 61}}
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "152 device(s) are past last-day-of-support (LDoS)" in text       # go/no-go condition
+    assert "152 device(s) past last-day-of-support (LDoS)" in text           # RAID risk row
+    assert "152 device(s) are past end-of-support" not in text               # old conflated wording gone
 
 
 def test_engagement_no_waves_fallback(tmp_path):
@@ -289,3 +320,15 @@ def test_engagement_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "e.docx")
     write_engagement_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_engagement_title_does_not_falsely_claim_full_collection(tmp_path):
+    """[audit-2 #15] 'n_collected or n_devices' turned n_collected==0 into n_devices -> a NOT-collected fleet read
+    '303 collected of 303 inventoried'. Use a proper None check."""
+    from cisco_toolkit.engagement import write_engagement_docx
+    from docx import Document
+    out = str(tmp_path / "eng.docx")
+    write_engagement_docx(out, {"executive_brief": {"scale": {"n_devices": 303, "n_collected": 0}},
+                                "devices": {f"s{i}": {} for i in range(303)}}, "[HISTORY-REDACTED]")
+    txt = " ".join(p.text for p in Document(out).paragraphs)
+    assert "0 collected of 303" in txt

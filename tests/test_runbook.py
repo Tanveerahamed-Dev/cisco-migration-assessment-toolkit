@@ -144,7 +144,8 @@ def test_runbook_has_12_sections_and_reconciles(tmp_path):
     assert exec_rows["Devices in scope"] == "2"
     assert exec_rows["Migration move groups"] == "2"
     assert exec_rows["Punch-list items"] == "1"
-    assert exec_rows["Endpoints (access-port host MACs at snapshot)"] == "3"   # trunk MAC excluded
+    assert exec_rows["Endpoints — access-port host MACs at snapshot (superset of canonical)"] == "3"   # trunk MAC excluded
+    assert "Evidenced endpoints (canonical assessment scale)" in exec_rows   # SSOT-endpoint-deliv-1: canonical headline present
 
 
 def _all_text(doc):
@@ -154,6 +155,18 @@ def _all_text(doc):
         for row in t.rows:
             parts.extend(c.text for c in row.cells)
     return "\n".join(parts)
+
+
+def test_runbook_scope_distinguishes_collected_from_inventory(tmp_path):
+    """Coverage-honesty: §2 Scope must NOT call the device INVENTORY total 'the collected dataset' — it
+    states how many of the inventoried switches were actually collected (collection_completeness.complete)."""
+    snap = _snap()
+    snap["collection_completeness"] = {"summary": {"complete": 2, "inventory": 9}}
+    out = str(tmp_path / "rb_scope.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "present in the collected dataset" not in text   # the inventory-mislabeled-as-collected wording is gone
+    assert "inventoried" in text                            # the honest inventoried/collected framing
 
 
 def test_runbook_renders_device_risk_register_section(tmp_path):
@@ -253,3 +266,36 @@ def test_runbook_failsoft_without_python_docx(monkeypatch, tmp_path):
     write_runbook_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     import os
     assert not os.path.exists(out)                          # nothing written, no crash
+
+
+def test_runbook_endpoint_census_uses_canonical_not_mac_sum(tmp_path):
+    """Single source of truth: §7 surfaces the canonical evidenced-endpoint count
+    (executive_brief.scale.n_endpoints) labeled as endpoints, and labels the access-port MAC sum as
+    MACs -- it must NOT publish the MAC sum under the bare word 'Total endpoints' (which diverges from
+    the family-wide endpoint count)."""
+    snap = _snap()
+    snap["executive_brief"] = {"scale": {"n_devices": 2, "n_endpoints": 99, "n_domains": 1}}
+    out = str(tmp_path / "rb_ep.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Evidenced endpoints: 99" in text          # canonical, labeled as endpoints
+    assert "Access-port host MACs:" in text           # the MAC sum, labeled as MACs
+    assert "Total endpoints:" not in text             # the old bare mislabel is gone
+
+
+def test_runbook_no_fhrp_count_excludes_none_sentinel(tmp_path):
+    """False-health guard (the 'none'-is-truthy bug class): gateways carry fhrp='none' when no FHRP is
+    configured, and 'none'.strip() is truthy — so the §6 'N of M gateways have no FHRP peer' line
+    counted ZERO single-gateway gateways for an all-'none' fleet, the exact inverse of the truth (every
+    gateway single-homed). The no-FHRP test must treat 'none' as no-FHRP."""
+    snap = _snap()
+    snap["l3_forwarding"] = [
+        {"switch": "sw1", "vlan": "10", "svi_ip": "10.0.10.1", "fhrp": "none"},        # no FHRP
+        {"switch": "sw1", "vlan": "20", "svi_ip": "10.0.20.1", "fhrp": "none"},        # no FHRP
+        {"switch": "sw1", "vlan": "30", "svi_ip": "10.0.30.1", "fhrp": "HSRP active"}, # real FHRP
+    ]
+    out = str(tmp_path / "rb_fhrp.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "2 of 3 gateways have no FHRP peer" in text   # the two 'none' gateways, not hidden
+    assert "0 of 3 gateways have no FHRP peer" not in text

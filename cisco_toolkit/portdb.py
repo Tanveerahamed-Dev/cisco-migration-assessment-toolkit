@@ -15,8 +15,11 @@ To refresh the shipped data (rarely needed): `python -m cisco_toolkit.data.gen_p
 import functools
 import gzip
 import ipaddress
+import logging
 import os
 from typing import List, Optional, Tuple
+
+_LOG = logging.getLogger(__name__)
 
 _DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "port_registry.tsv.gz")
 
@@ -50,8 +53,11 @@ def _registry() -> Tuple[dict, List[tuple]]:
                         ports[(int(key), proto)] = rec
                     except ValueError:
                         continue
-    except Exception:
-        pass
+    except (OSError, EOFError, UnicodeDecodeError) as e:
+        # Surface a load failure ONCE (the empty result is then lru_cached for the whole process): a missing or
+        # corrupt shipped pack silently disabling the entire L4-service / multicast axis is worse than loud.
+        # Narrowed from a bare `except Exception` so an UNEXPECTED bug is no longer swallowed as 'no data'.
+        _LOG.warning("portdb: could not load %s (%s) -- L4-service/multicast lookups will be empty", _DATA, e)
     mcast.sort(key=lambda nr: nr[0].prefixlen, reverse=True)  # longest-prefix first
     return ports, mcast
 
