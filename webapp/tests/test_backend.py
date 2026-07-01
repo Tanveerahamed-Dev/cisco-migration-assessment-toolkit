@@ -173,6 +173,49 @@ def test_orchestration_peer_engine_sections_served(client):
     assert "capture_integrity" not in keys2
 
 
+def test_orchestration_peer_optin_sections_served(client):
+    """NEW (orchestration-peer wave): the four OPT-IN engines (A1 state_assertions, G3 path_intents,
+    B external_reconcile, G4 whatif) are whitelisted tabs and served when their key is present -- so a
+    snapshot produced with --assert-pack/--path-intents/--import-inventory/--scenario reaches the webapp.
+    Coverage-honesty survives the round-trip: a not_observed verdict and a lost_path (not a fabricated block)."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "optin"}).json()["id"]
+    snap = {
+        "script_version": "test", "devices": {"R1": {}}, "health_scores": [],
+        "state_assertions": {
+            "results": [{"id": "grade", "title": "grade A/B", "status": "fail", "subject": "security_grade"},
+                        {"id": "vpc", "title": "vPC up", "status": "not_observed", "subject": "vpc", "abstention": "not_collected"}],
+            "summary": {"n_pass": 0, "n_fail": 1, "n_not_observed": 1, "n_assessed": 1, "grade": "fail"}},
+        "path_intents": {
+            "results": [{"id": "pci-iso", "src": "10.0.1.1", "dst": "10.0.2.5", "expect": "ISOLATED",
+                         "verdict": "fail", "status": "computed:reached"}],
+            "summary": {"pass": 0, "fail": 1, "not_observed": 0}},
+        "external_reconcile": {
+            "rows": [{"type": "UNVERIFIABLE", "host": "ACC-5", "detail": "declared but never collected"}],
+            "summary": {"MISSING_DEVICE": 0, "UNDOCUMENTED_DEVICE": 0, "MODEL_MISMATCH": 0,
+                        "IP_DRIFT": 0, "UNVERIFIABLE": 1, "n_declared": 1, "n_observed": 0, "n_rows": 1}},
+        "whatif": [{"name": "Lose DIST-1", "removed_hosts": ["DIST-1"],
+                    "summary": {"blocked": 0, "lost_path": 12, "preserved": 8, "inconclusive_other": 48, "other": 12}}],
+    }
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                     data={"label": "optin"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    keys = {sec["key"] for sec in client.get(f"/api/snapshots/{sid}").json()["summary"]["sections"]}
+    quartet = {"state_assertions", "path_intents", "external_reconcile", "whatif"}
+    assert quartet <= keys, f"missing tabs: {quartet - keys}"
+    for name in sorted(quartet):
+        assert client.get(f"/api/snapshots/{sid}/section/{name}").status_code == 200
+
+    # coverage-honesty preserved through the round-trip
+    sa = client.get(f"/api/snapshots/{sid}/section/state_assertions").json()["data"]
+    assert any(r["status"] == "not_observed" for r in sa["results"])   # a blind spot, not a silent pass
+    wi = client.get(f"/api/snapshots/{sid}/section/whatif").json()["data"]
+    assert isinstance(wi, list) and wi[0]["summary"]["blocked"] == 0 and wi[0]["summary"]["lost_path"] == 12
+
+
 def test_explorer_render_embeds_snapshot(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/explorer")
