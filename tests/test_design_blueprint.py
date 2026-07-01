@@ -2175,9 +2175,7 @@ def _dc_scale_snap(**over):
 def test_fabric_operating_model_is_a_recognised_requirement_key():
     """The new fabric_operating_model WHY-key is recognised on every register path and canonicalised to one
     of {'aci','nxos-evpn'} (free text in, two stable values out); nonsense is dropped, not guessed."""
-    from cisco_toolkit.design_advisor import (REQUIREMENTS_KEYS, requirements_from_interview,
-                                              load_requirements)
-    import json
+    from cisco_toolkit.design_advisor import REQUIREMENTS_KEYS, requirements_from_interview
     assert "fabric_operating_model" in REQUIREMENTS_KEYS
     for raw, want in [("ACI", "aci"), ("apic", "aci"), ("NX-OS EVPN", "nxos-evpn"),
                       ("vxlan-evpn", "nxos-evpn"), ("NDFC", "nxos-evpn"), ("nonsense", None)]:

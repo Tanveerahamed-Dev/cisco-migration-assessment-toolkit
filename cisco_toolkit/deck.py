@@ -172,7 +172,8 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         # coerce PER VALUE: dict.get(default) only substitutes when the KEY is absent, so a present-but-null
         # scale value (an uploaded / partially-computed snapshot) rendered the literal 'None devices' on the
         # marquee client-facing slide. Show an em-dash for any non-int value instead.
-        _sv = lambda k: (scale.get(k) if isinstance(scale.get(k), int) else "—")
+        def _sv(k):
+            return scale.get(k) if isinstance(scale.get(k), int) else "—"
         _ncoll = scale.get("n_collected")
         _coll = f" ({_ncoll} collected)" if isinstance(_ncoll, int) and _ncoll != scale.get("n_devices") else ""
         _scale_line = (f"{_sv('n_devices')} devices{_coll} · {_sv('n_endpoints')} endpoints "

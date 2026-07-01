@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # external column header -> our canonical field. Lower-cased, stripped before lookup.
 _ALIASES = {
