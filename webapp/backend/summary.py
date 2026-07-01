@@ -48,6 +48,11 @@ SECTION_LABELS: List[tuple] = [
     ("feature_compliance", "Feature compliance"),   # I2 — golden-drift decomposed per policy area
     ("acl_line_reachability", "ACL shadow"),         # G1 — offline ACL line-reachability / shadow proof
     ("capture_integrity", "Capture integrity"),      # K1 — truncation / pager / CLI-error guard
+    # the four OPT-IN engines (present only when a flag supplies their input, so a default run hides them):
+    ("state_assertions", "State assertions"),        # A1 — declarative check-pack (--assert-pack)
+    ("path_intents", "Path intents"),                # G3 — named REACHES/ISOLATED intents (--path-intents)
+    ("external_reconcile", "SoT reconcile"),         # B  — declared inventory vs observed (--import-inventory)
+    ("whatif", "Failure what-if"),                   # G4 — failure-injection scenarios (--scenario); a LIST
     # NEW-V3.23.176: the V3.23.164-.167 NOS analytic quartet landed after this list was
     # authored and was unreachable from the web platform (neither tab nor whitelist) --
     # the one-source-of-truth audit's only real gap.

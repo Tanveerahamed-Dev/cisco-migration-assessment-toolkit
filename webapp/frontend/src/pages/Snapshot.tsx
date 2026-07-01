@@ -92,6 +92,9 @@ const ENGINE_PRIMARY: Record<string, string> = {
   acl_line_reachability: "findings",   // G1 — the shadowed/unmatchable ACL lines
   feature_compliance: "features",      // I2 — per-policy-area drift rollup
   capture_integrity: "findings",       // K1 — truncated/paginated/errored captures
+  state_assertions: "results",         // A1 — check-pack verdicts (opt-in)
+  path_intents: "results",             // G3 — named path-intent verdicts (opt-in)
+  external_reconcile: "rows",          // B  — declared-vs-observed drift rows (opt-in)
 };
 function SummaryStrip({ summary }: { summary: any }) {
   if (!summary || typeof summary !== "object") return null;
@@ -109,6 +112,18 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const d = data!.data;
   if (name === "punchlist" && Array.isArray(d)) return <PunchTable rows={d} />;
   if (name === "device_dossiers" && d?.per_device) return <RegisterTable rows={d.per_device} note={d.note} />;
+  if (name === "whatif" && Array.isArray(d)) {
+    // G4 what-if is a LIST of scenarios; flatten each to the Excel sheet's columns (a raw list-of-objects
+    // would JSON-stringify the nested summary). lost_path = was reached, now unprovable (never a fake block).
+    return <GenericTable data={d.map((sc: any) => ({
+      scenario: sc.name || (sc.removed_hosts || []).join(", ") || "(no match)",
+      removed: (sc.removed_hosts || []).join(", ") || "—",
+      blocked: sc.summary?.blocked ?? 0,
+      lost_path: sc.summary?.lost_path ?? 0,
+      preserved: sc.summary?.preserved ?? 0,
+      inconclusive: (sc.summary?.inconclusive_other ?? 0) + (sc.summary?.other ?? 0),
+    }))} />;
+  }
   if (name in ENGINE_PRIMARY && d && typeof d === "object" && !Array.isArray(d)) {
     const list = d[ENGINE_PRIMARY[name]];
     return <div><SummaryStrip summary={d.summary} /><GenericTable data={Array.isArray(list) ? list : d} /></div>;
