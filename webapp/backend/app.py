@@ -327,6 +327,15 @@ def create_app(db_path: str | None = None) -> FastAPI:
         keystones = [k.get("host") for k in (meta["summary"].get("keystones") or []) if k.get("host")]
         return graph.build_graph(snap, keystones)
 
+    @app.get("/api/snapshots/{snapshot_id}/cable_map")
+    def snapshot_cable_map(snapshot_id: int) -> Dict[str, Any]:
+        """EDA-style physical cable map (Python SSOT snap['cable_map']): CDP/LLDP links laid out in role
+        tiers, cables coloured by operational status. Recomputed from evidence for pre-feature snapshots."""
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        return graph.cable_map_from_snapshot(snap)
+
     @app.get("/api/snapshots/{snapshot_id}/cutover")
     def snapshot_cutover(snapshot_id: int) -> Dict[str, Any]:
         """Gated, pilot-first cutover plan (run-of-show) synthesized from the snapshot's migration model."""

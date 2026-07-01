@@ -399,6 +399,26 @@ export interface CausalFlows {
   summary: { n_flows: number; n_families: number; n_critical: number; by_severity: Record<string, number> };
 }
 
+// EDA-style physical CABLE MAP (engine compute_cable_map — the SAME node/port/cable SSOT the explorer's
+// Cable Map mode renders). GET /api/snapshots/{id}/cable_map. Role-tiered lanes; cable op-status is
+// DERIVED from interface state — 'unknown' is the coverage-honest [NOT OBSERVED] neutral (uncollected).
+export type CableOp = "up" | "down" | "unknown";
+export interface CableMapPort { name: string; peer: string; peer_port: string; op_status: CableOp; is_pc: boolean }
+export interface CableMapNode {
+  host: string; role: string; tier: number; order: number;
+  collected: boolean; op_status: CableOp; badges: string[]; ports: CableMapPort[];
+}
+export interface CableMapCable {
+  a: string; a_port: string; b: string; b_port: string;
+  is_pc: boolean; members: Array<{ a_port: string; b_port: string }>; op_status: CableOp; confirmation: string;
+}
+export interface CableMap {
+  nodes: CableMapNode[];
+  cables: CableMapCable[];
+  tiers: string[][];
+  summary: { n_nodes: number; n_cables: number; n_tiers: number; op: Record<CableOp, number> };
+}
+
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
@@ -460,6 +480,7 @@ export const api = {
   designNrfuOverlay: (id: number, requirements: Record<string, unknown>) =>
     post<DesignNrfu>(`/api/snapshots/${id}/design/nrfu`, requirements),
   causalFlows: (id: number) => fetch(`/api/snapshots/${id}/causal_flows`).then((r) => j<CausalFlows>(r)),
+  cableMap: (id: number) => fetch(`/api/snapshots/${id}/cable_map`).then((r) => j<CableMap>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (oldId: number, newId: number) => post<any>("/api/compare", { old_id: oldId, new_id: newId }),

@@ -24,6 +24,7 @@ from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F40
 
 # Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
 canon_host = _analyze._canon_host
+compute_cable_map = _analyze.compute_cable_map   # EDA-style physical cable-map SSOT (explorer + webapp share it)
 trend_point = _html._trend_point
 compute_snapshot_delta = _html.compute_snapshot_delta
 compute_campaign_trend = _html.compute_campaign_trend

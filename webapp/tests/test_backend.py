@@ -265,6 +265,32 @@ def test_graph_endpoint(client):
     assert client.get("/api/snapshots/999999/graph").status_code == 404
 
 
+def test_cable_map_endpoint(client):
+    """EDA-style cable map: role-tiered node/port/cable model, op-status coloured, coverage-honest.
+    (Exercises the rehydration fallback — the demo snapshot predates the cable-map engine.)"""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/cable_map")
+    assert r.status_code == 200
+    cm = r.json()
+    assert cm["nodes"] and cm["cables"] and cm["tiers"], "cable map should have nodes/cables/tiers"
+    hosts = {n["host"] for n in cm["nodes"]}
+    valid = {"up", "down", "unknown"}
+    for n in cm["nodes"]:
+        assert n["op_status"] in valid
+        assert isinstance(n["tier"], int) and isinstance(n["collected"], bool)
+        # an uncollected device is [NOT OBSERVED] neutral, never a fake 'up'
+        if not n["collected"]:
+            assert n["op_status"] == "unknown" and "uncollected" in n["badges"]
+    for c in cm["cables"]:
+        assert c["op_status"] in valid
+        assert c["a"] in hosts and c["b"] in hosts
+    # the summary op rollup accounts for every cable
+    op = cm["summary"]["op"]
+    assert op["up"] + op["down"] + op["unknown"] == len(cm["cables"])
+    # 404 for a missing snapshot
+    assert client.get("/api/snapshots/999999/cable_map").status_code == 404
+
+
 def test_cutover_plan(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/cutover")

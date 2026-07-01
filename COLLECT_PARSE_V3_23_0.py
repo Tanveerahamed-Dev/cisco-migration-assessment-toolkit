@@ -351,6 +351,7 @@ from cisco_toolkit.analyze import (
     compute_device_dossiers,                           # NEW-V3.23.172 (per-asset compound-risk synthesis -- the Device Risk Register)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
+    compute_cable_map,                                 # NEW: EDA-style physical cable-map SSOT (explorer + webapp cable-map views)
 )
 from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
@@ -384,6 +385,7 @@ from cisco_toolkit.excel import (
     write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet, write_link_centrality_sheet,      # step 24 (+Link Centrality V3.23.88)
+    write_cabling_schedule_sheet,                                                               # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
     write_wave_sequencing_sheet,                                                                # NEW-V3.23.89 (cutover sequencing)
     write_endpoint_intelligence_sheet,                          # NEW-V3.23.95 (endpoint vendor + class)
     write_endpoint_dependencies_sheet,                          # NEW-V3.23.96 (clusters / dependencies)
@@ -2175,6 +2177,11 @@ def main():
                                  platform_health, syslog_intelligence, qos_audit, golden_drift,
                                  all_security, all_config_hygiene, all_stp_roots, all_vpc,
                                  physical_health, protocol_health, move_groups, _default={})
+    # EDA-style physical cable map (SSOT for the explorer + webapp cable-map views): a node/port/cable
+    # graph, role-tiered lanes, LAG bundled, op-status DERIVED from interface state (coverage-honest --
+    # uncollected devices/ports are [NOT OBSERVED] neutral, never a fake green).
+    cable_map = _run_phase("Cable map", compute_cable_map, all_interfaces, health_scores, _default={})
+    _run_phase("Cabling Schedule sheet", write_cabling_schedule_sheet, wb, cable_map)   # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
     # NEW-V3.23.117: lifecycle risk is kept as its OWN axis (sheet / cockpit / runbook §4.1), NOT folded into
     # the punch-list -- its band is date-relative, which would make the frozen golden punch-list date-dependent.
     # (The V3.23.172 compound patterns MAY reference the EoL band, but only when stacked with a second
@@ -2400,6 +2407,7 @@ def main():
     snap_dict["platform_health"] = platform_health                   # NEW-V3.23.167 (control-plane CPU/memory capacity screening; reused from Phase 30d-nonies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
+    snap_dict["cable_map"] = cable_map                               # NEW: EDA-style physical cable map (explorer + webapp cable-map views)
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     snap_dict["nat"] = all_nat                                       # NEW-V3.23.50 (NAT inventory: {host:{static,dynamic,pools,inside,outside}})

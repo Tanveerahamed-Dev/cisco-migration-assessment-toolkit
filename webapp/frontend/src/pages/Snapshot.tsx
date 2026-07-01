@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { api, bandColor, readyColor, sevColor, SnapshotMeta } from "../api";
 import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
+import CableMap from "../components/CableMap";
 import CutoverPlanner from "../components/CutoverPlanner";
 import ArchReviewPanel from "../components/ArchReview";
 import DesignBlueprintPanel from "../components/DesignBlueprint";
@@ -346,6 +347,11 @@ export default function SnapshotPage() {
         <div className="panel">
           <h3>Fleet topology · coloured by health band</h3>
           <TopologyGraph snapId={sid} />
+        </div>
+
+        <div className="panel">
+          <h3>Physical cable map · Nokia-EDA style</h3>
+          <CableMap snapId={sid} />
         </div>
 
         <Keystones meta={meta!} />
