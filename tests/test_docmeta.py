@@ -72,6 +72,27 @@ def test_document_control_renders_all_furniture():
     assert "unit testers" in text
 
 
+def test_document_control_separates_collection_from_generation():
+    """Provenance (wave R2-3-01): 'Snapshot captured' is the COLLECTION instant; 'Document generated'
+    is the render time. On a --no-collect re-render these differ and must NOT be conflated."""
+    doc = Document()
+    add_document_control(doc, document="Unit Doc", label="Fleet X", engine_version="V9",
+                         generated_at="2026-06-21T06:58:07", collected_at="2026-06-13T06:32:01",
+                         audience="unit testers")
+    rows = {r.cells[0].text: r.cells[1].text for tbl in doc.tables for r in tbl.rows}
+    assert rows.get("Snapshot captured") == "2026-06-13T06:32:01"   # collection date headlines
+    assert rows.get("Document generated") == "2026-06-21T06:58:07"  # render date is distinct, not conflated
+
+
+def test_document_control_collected_at_falls_back_to_generated():
+    """Back-compat: a snapshot predating collected_at still shows the generation date under
+    'Snapshot captured' (never blank)."""
+    doc = Document()
+    add_document_control(doc, document="Unit Doc", label="Fleet X", generated_at="2026-06-10 09:00")
+    rows = {r.cells[0].text: r.cells[1].text for tbl in doc.tables for r in tbl.rows}
+    assert rows.get("Snapshot captured") == "2026-06-10 09:00"      # fallback preserved
+
+
 def test_related_documents_block_renders_table_and_audience():
     """V3.23.152: the shared family cross-reference block (used by NRFU/PIR directly and by
     add_document_control with intro=True)."""

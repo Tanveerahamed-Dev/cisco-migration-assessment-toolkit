@@ -103,7 +103,7 @@
   "Switches",
   "# Spanning VLANs",
   "Spanning VLANs",
-  "# Endpoints",
+  "# Endpoint MACs (per-switch sum)",
   "Gateways",
   "Redundant (STP-blocked) Paths",
   "Notes"
@@ -366,6 +366,14 @@
   "Finding",
   "CIS / Remediation"
  ],
+ "Framework Coverage": [
+  "Config-evidenced mapping of the engine's hardening checks to framework controls \u2014 NOT a full framework audit. Controls outside this check set are not auto-assessed (never assumed 'pass'); a not-applicable check stays 'na'.  Scope: config-only (show running-config); management-plane hardening controls",
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Config Hygiene": [
   "Switch",
   "Issue",
@@ -438,6 +446,27 @@
   null,
   null
  ],
+ "Feature Compliance": [
+  "Per-feature config compliance \u2014 the golden-config drift decomposed by policy area (which features drift, across how many devices).",
+  null,
+  null
+ ],
+ "ACL Shadow Analysis": [
+  "Offline ACL line-reachability proof \u2014 lines that can never match (dead/shadowed), an empty match-space, or a bad object-group reference. A different-action shadow is a silently-broken intent.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "Capture Integrity": [
+  "Per-capture integrity \u2014 collected command output that looks truncated, paginated, or errored. A partial capture is a blind spot, never silently 'healthy'.",
+  null,
+  null,
+  null
+ ],
  "Syslog Intelligence": [
   "Operational log analysis: 22 event(s) parsed on 2 of 3 device(s) -> 5 detection(s). The log buffer is a bounded recent window, so counts are floors; absence of logs is never scored as absence of problems.",
   null,
@@ -450,7 +479,7 @@
   null
  ],
  "QoS Audit": [
-  "Configured QoS posture from the captured running-configs of 1 of 3 device(s) -> 1 finding(s). Config evidence only (no live queue counters); a device without a full capture is declared not assessable.",
+  "Configured QoS posture from the captured running-configs of 2 of 3 device(s) -> 1 finding(s). Config evidence only (no live queue counters); a device without a full capture is declared not assessable.",
   null,
   null,
   null,
@@ -462,7 +491,7 @@
   null
  ],
  "Software Risk": [
-  "Software risk SCREENING: 3 exposed surface(s) on 1 of 3 config-assessable device(s), joined to landmark public advisories. This is configuration-evidence screening, NOT a vulnerability scan \u2014 validate every running release with the Cisco PSIRT Software Checker.",
+  "Software risk SCREENING: 3 exposed surface(s) on 2 of 3 config-assessable device(s), joined to landmark public advisories. This is configuration-evidence screening, NOT a vulnerability scan \u2014 validate every running release with the Cisco PSIRT Software Checker.",
   null,
   null,
   null,

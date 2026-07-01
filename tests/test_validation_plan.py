@@ -90,7 +90,34 @@ def test_waves_and_summary():
     assert out["banner"]
 
 
+def test_portchannel_check_discloses_a_pre_existing_down_member():
+    """[audit-5 NRFU #18] The port-channel NRFU baseline must not assert 'all members in (P)/bundled' when a
+    member is ALREADY down/suspended pre-cutover -- that bakes a degraded bundle into the accepted good state, so
+    the post-cutover ATP would certify a broken uplink as healthy. When protocol_health (the EtherChannel SSOT)
+    reports a non-Info bundle for the host, the expect string discloses the bad member(s) and the check is High."""
+    mg, rn, stp, devs = _ctx()
+    ph = [{"switch": "acc1", "protocol": "EtherChannel", "severity": "High",
+           "summary": "1 bundle(s), 2 member(s); 1 not bundled", "detail": "Gi1/0/25(D)"}]
+    out = compute_validation_plan(_fabric(), mg, rn, stp, devs, protocol_health=ph)
+    pc = _items(out, category="Link", device="acc1")
+    assert pc, "port-channel check still present"
+    expect = pc[0]["expect"]
+    assert "Gi1/0/25(D)" in expect or "not bundled" in expect.lower()   # discloses the degraded baseline
+    assert "all members in (P)" not in expect                           # NOT the false-healthy assertion
+    assert pc[0]["severity"] == "High"                                  # a degraded baseline is High, not a clean Medium
+    # control: with no protocol_health (or a healthy bundle) the optimistic all-(P) assertion is unchanged.
+    out2 = compute_validation_plan(_fabric(), mg, rn, stp, devs)
+    pc2 = _items(out2, category="Link", device="acc1")
+    assert "all members in (P)" in pc2[0]["expect"] and pc2[0]["severity"] == "Medium"
+    healthy = [{"switch": "acc1", "protocol": "EtherChannel", "severity": "Info", "summary": "1 bundle(s), 2 member(s)", "detail": ""}]
+    out3 = compute_validation_plan(_fabric(), mg, rn, stp, devs, protocol_health=healthy)
+    pc3 = _items(out3, category="Link", device="acc1")
+    assert "all members in (P)" in pc3[0]["expect"] and pc3[0]["severity"] == "Medium"
+
+
 def test_empty_inputs_are_tolerated():
     out = compute_validation_plan({})
     assert out["items"] == [] and out["by_wave"] == {}
     assert out["summary"]["n_items"] == 0
+    # protocol_health is optional and a malformed value must be tolerated, never raise
+    assert compute_validation_plan({}, protocol_health="oops")["items"] == []

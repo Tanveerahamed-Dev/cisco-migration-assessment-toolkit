@@ -19,6 +19,8 @@ import logging
 from datetime import datetime
 
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list
+from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +32,117 @@ def _waves(snap: dict):
     migration_readiness verdict rows (they carry the group name + switch set the validation plan keys
     on); fall back to synthesising 'Group N' from move_groups so the MOP still renders on an older or
     minimal snapshot."""
-    mr = snap.get("migration_readiness") or []
+    mr = [_as_dict(r) for r in _as_list(snap.get("migration_readiness"))]
     if mr:
-        return [(r.get("group") or f"Group {i + 1}", list(r.get("switches") or []))
+        return [(r.get("group") or f"Group {i + 1}", list(_as_list(r.get("switches"))))
                 for i, r in enumerate(mr)]
-    return [(f"Group {i + 1}", list(g.get("switches") or []))
-            for i, g in enumerate(snap.get("move_groups") or [])]
+    return [(f"Group {i + 1}", list(_as_list(_as_dict(g).get("switches"))))
+            for i, g in enumerate(_as_list(snap.get("move_groups")))]
+
+
+def _wave_sections(snap: dict):
+    """Per-WAVE section descriptors keyed on the canonical design_blueprint.target_state.wave_plan (one
+    MOP section per candidate wave). Each wave resolves its per-group records by SWITCH-MEMBERSHIP, never
+    by index (wave_plan.source_groups is a filtered/0-based index while the readiness groups are raw/
+    1-based -- joining by index would misattribute checks). Falls back to _waves() (one section per
+    move-group) when wave_plan is absent, so older/minimal snapshots still render unchanged.
+    Returns (name, switches, kind, group_names)."""
+    wp = _as_dict(_as_dict(_as_dict(snap.get("design_blueprint")).get("target_state")).get("wave_plan"))
+    waves = _as_list(wp.get("waves"))
+    if not waves:
+        return [(name, switches, "move-group", [name]) for name, switches in _waves(snap)]
+    sw2grp = {}
+    for r in _as_list(snap.get("migration_readiness")):
+        r = _as_dict(r)
+        g = r.get("group")
+        for s in _as_list(r.get("switches")):
+            sw2grp.setdefault(s, g)
+    out = []
+    for w in waves:
+        w = _as_dict(w)
+        switches = list(_as_list(w.get("switches")))
+        kind = w.get("kind") or "wave"
+        gnames = []
+        for s in switches:
+            g = sw2grp.get(s)
+            if g and g not in gnames:
+                gnames.append(g)
+        out.append((f"Wave {w.get('wave')} ({kind})", switches, kind, gnames))
+    return out
+
+
+def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group, scen_by_group, val_by_wave):
+    """Union the per-group records across the groups a wave's switches belong to (a coupled-subwave maps to
+    one group; an independent-batch maps to many): worst readiness verdict, fail/warn checks, first
+    non-empty sequencing/scenario, deduped validation checks. Endpoints are APPORTIONED to this wave's
+    switch-share of each group -- a sub-wave is a SLICE, so it must not inherit the parent group's full
+    endpoint total. Single source of truth -- reads the engine's records, never recomputes them."""
+    # Rank the engine's ACTUAL readiness vocabulary -- analyze.compute_migration_readiness emits exactly
+    # {"NOT READY","CAUTION","READY"}. Lower = worse, so the reduce below keeps the worst verdict; an
+    # unknown value defaults high (least-worst) and never masks a real NOT READY.
+    rank = {"not ready": 0, "caution": 1, "ready": 2}
+
+    def _i(x):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return 0
+
+    r = {"endpoints": 0, "n_fail": 0, "n_warn": 0, "readiness": None}
+    seq, scen, val_items, worst, seen = {}, {}, [], None, set()
+    mbb_all, hard_all = [], []   # cutover host split UNIONED across every group in the wave (not just the first)
+    wsw = set(wave_switches or [])
+    for g in gnames:
+        rr = readiness_by_group.get(g) or {}
+        gsw = rr.get("switches") or []
+        share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
+        r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
+        # n_fail/n_warn: ATTRIBUTE each fail/warn check to the ONE sub-wave that owns its canonical (lowest-sorted)
+        # member switch, so the per-sub-wave counts SUM to the group SSOT. The old share-with-floor reprinted a
+        # 'max(.,1)' on every slice, so an N-way split of a positive count summed toward N (AJ Group 1's true 3/4
+        # rendered 7/7 across 7 sub-waves) -- a one-source-of-truth break vs migration_readiness (audit-2 #3).
+        checks = [c for c in (rr.get("checks") or [])
+                  if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
+        if checks:
+            gsw_set = set(gsw)
+            for chk in checks:
+                note = str(chk.get("note", ""))
+                members = sorted(s for s in gsw_set if s and s in note)   # group switches named in this check's note
+                owner = members[0] if members else (sorted(gsw)[0] if gsw else None)   # canonical single owner
+                if owner is not None and owner in wsw:                    # this sub-wave owns the check
+                    r["n_fail" if str(chk.get("status")).lower() == "fail" else "n_warn"] += 1
+        else:
+            # older snapshot with no per-check attribution -> apportion by switch-share, never rounding a lone
+            # blocker DOWN to 0 (that would mask a NOT-READY wave's gate). Single-slice correctness preserved.
+            _ef, _ew = _i(rr.get("n_fail")) * share, _i(rr.get("n_warn")) * share
+            r["n_fail"] += max(round(_ef), 1) if _ef > 0 else 0
+            r["n_warn"] += max(round(_ew), 1) if _ew > 0 else 0
+        rd = rr.get("readiness")
+        if rd and (worst is None or rank.get(str(rd).lower(), 9) < rank.get(str(worst).lower(), 9)):
+            worst = rd
+        gseq = seq_by_group.get(g) or {}
+        if not seq:
+            seq = gseq
+        for _h in (gseq.get("make_before_break") or []):
+            if _h not in mbb_all:
+                mbb_all.append(_h)
+        for _h in (gseq.get("hard_cutover") or []):
+            if _h not in hard_all:
+                hard_all.append(_h)
+        if not scen:
+            scen = scen_by_group.get(g) or {}
+        for v in (val_by_wave.get(g) or []):
+            key = (v.get("device"), v.get("command")) if isinstance(v, dict) else str(v)
+            if key not in seen:
+                seen.add(key)
+                val_items.append(v)
+    r["readiness"] = worst or "—"
+    # Overlay the UNIONED cutover host split so the procedure branches on the WHOLE wave, not just the
+    # representative group (the free-text 'sequence' stays the representative's — descriptive only). Copy
+    # so the engine's record is never mutated (this joiner reads the engine's records, never recomputes).
+    if seq:
+        seq = {**seq, "make_before_break": mbb_all, "hard_cutover": hard_all}
+    return r, seq, scen, val_items
 
 
 def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
@@ -50,7 +157,8 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                        "(pip install python-docx to enable the Method-of-Procedure deliverable).")
         return
 
-    snap = snap_dict or {}
+    snap = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})   # one bad device byte (noncharacter/surrogate) must not abort the docx
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
     NAVY = RGBColor(0x1F, 0x38, 0x64)
     GREY = RGBColor(0x59, 0x59, 0x59)
     RED = RGBColor(0xB0, 0x2A, 0x1E)
@@ -86,16 +194,19 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 doc.add_paragraph(f"{i}. {s}")
 
     # ---- snapshot-derived facts ----
-    devices = snap.get("devices") or {}
-    waves = _waves(snap)
-    readiness_by_group = {r.get("group"): r for r in (snap.get("migration_readiness") or [])}
-    seq_by_group = {r.get("group"): r for r in (snap.get("wave_sequencing") or [])}
-    scen_by_group = {r.get("group"): r
-                     for r in ((snap.get("migration_scenarios") or {}).get("per_group") or [])}
-    val_by_wave = (snap.get("validation_plan") or {}).get("by_wave") or {}
-    fi_by_host = {r.get("host"): r for r in (snap.get("failure_impact") or [])}
-    rem_items = (snap.get("remediation_plan") or {}).get("items") or []
-    punchlist = snap.get("punchlist") or []
+    # Shared coercers (not `or {}`/`or []`, which do NOT guard a truthy non-dict/list) so a malformed
+    # uploaded snapshot -- where a section that should be a list is an object, etc. -- degrades instead of
+    # char-iterating or raising AttributeError mid-render (matching engagement/ops/archreview).
+    devices = _as_dict(snap.get("devices"))
+    waves = _wave_sections(snap)
+    readiness_by_group = {d.get("group"): d for d in (_as_dict(r) for r in _as_list(snap.get("migration_readiness")))}
+    seq_by_group = {d.get("group"): d for d in (_as_dict(r) for r in _as_list(snap.get("wave_sequencing")))}
+    scen_by_group = {d.get("group"): d
+                     for d in (_as_dict(r) for r in _as_list(_as_dict(snap.get("migration_scenarios")).get("per_group")))}
+    val_by_wave = _as_dict(_as_dict(snap.get("validation_plan")).get("by_wave"))
+    fi_by_host = {d.get("host"): d for d in (_as_dict(r) for r in _as_list(snap.get("failure_impact")))}
+    rem_items = [_as_dict(r) for r in _as_list(_as_dict(snap.get("remediation_plan")).get("items"))]
+    punchlist = [_as_dict(r) for r in _as_list(snap.get("punchlist"))]
 
     def _blockers_for(switches):
         sw = set(switches)
@@ -139,6 +250,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     add_document_control(
         doc, document="Migration Method of Procedure (MOP)", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="The implementing engineer(s) executing each maintenance window, the validation / "
                  "war-room lead, and the change manager approving the windows.",
         exclude=("mop",),
@@ -154,21 +266,22 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     # ===== 1. Change overview =====
     doc.add_heading("1. Change Overview", level=1)
     doc.add_paragraph(
-        f"This migration is sequenced into {len(waves)} wave(s) (move groups), each cut over in its own "
-        "maintenance window. The recommended order is: clear all blocking items first, then cut the "
-        "lower-risk waves to build confidence, protecting the highest-blast-radius (keystone) devices.")
+        f"This migration is sequenced into {len(waves)} candidate wave(s) (right-sized from the L2-coupling "
+        "move-groups), each cut over in its own maintenance window. The recommended order is: clear all "
+        "blocking items first, then cut the lower-risk waves to build confidence, protecting the "
+        "highest-blast-radius (keystone) devices.")
     ov_rows = []
-    for name, switches in waves:
-        r = readiness_by_group.get(name, {})
-        seq = seq_by_group.get(name, {})
+    for name, switches, _kind, _gnames in waves:
+        r, seq, _scen, _vi = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
+                                                 scen_by_group, val_by_wave)
         blast = max((int(fi_by_host.get(s, {}).get("stranded") or 0) for s in switches), default=0)
         rem, pl = _blockers_for(switches)
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
                         r.get("readiness", "—"), seq.get("sequence", "—"), blast, len(rem) + len(pl)))
-    table(["Wave", "Devices", "Endpoints", "Readiness", "Strategy", "Max blast", "Blockers"],
+    table(["Wave", "Devices", "Endpoint MACs", "Readiness", "Strategy", "Max blast", "Blockers"],
           ov_rows, widths=[1.5, 0.8, 1.0, 1.2, 1.5, 0.9, 0.9])
 
-    fleet_rec = (snap.get("migration_scenarios") or {}).get("fleet_recommendation")
+    fleet_rec = _as_dict(snap.get("migration_scenarios")).get("fleet_recommendation")
     if fleet_rec:
         _label_run(doc.add_paragraph(), "Fleet-level recommendation:", fleet_rec)
 
@@ -177,7 +290,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     doc.add_paragraph(
         "Complete these once, before the first wave. They are the fleet-wide gating items the assessment "
         "flagged; cutting over before they are resolved or risk-accepted carries the documented risk.")
-    gating = (snap.get("executive_brief") or {}).get("top_gating") or []
+    gating = _as_list(_as_dict(snap.get("executive_brief")).get("top_gating"))
     if gating:
         for g in gating[:6]:
             doc.add_paragraph(g, style="List Bullet")
@@ -215,15 +328,64 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
          "Archived with the post-implementation review"),
     ], widths=[2.6, 2.0, 2.2])
 
+    # §2.2 EVPN-migration guardrails — gated, evidence-grounded brownfield->NX-OS-VXLAN-EVPN cutover doctrine.
+    # Silent unless a VXLAN-EVPN fabric is the target; renders the load-bearing, primary-source migration
+    # gotchas (NX-OS 10.2(3) HSRP/DAG gate, the gateway-vMAC pre-step, single-active-L2-interconnect loop
+    # safety, the vPC back-to-back method, rollback triggers) grounded in the fleet's OWN observed evidence.
+    evpn = _as_dict(_as_dict(snap.get("design_blueprint")).get("evpn_migration"))
+    evpn_on = bool(evpn.get("applicable"))
+    if evpn_on:
+        doc.add_heading("2.2 EVPN-migration guardrails (brownfield → NX-OS VXLAN-EVPN)", level=2)
+        doc.add_paragraph(
+            f"The target fabric is NX-OS VXLAN BGP-EVPN ({evpn.get('model_basis', '')}). These migration "
+            "guardrails are grounded in this fleet's own evidence and documented in primary Cisco sources; "
+            "each is an easily-missed cutover failure mode that must be satisfied — or explicitly "
+            "risk-accepted — before the relevant wave.")
+        table(["Guardrail", "Phase", "Severity", "Basis (observed) & action — [source]"],
+              [(g.get("title", ""), g.get("phase", ""), g.get("severity", ""),
+                f"{g.get('basis', '')} — {g.get('detail', '')} [{g.get('source', '')}]")
+               for g in _as_list(evpn.get("guardrails")) if isinstance(g, dict)],
+              widths=[1.7, 0.9, 0.8, 3.4])
+
+    # §2.3/§2.2 software / image standardization (per in-scope platform) — N24 (number follows the EVPN subsection)
+    swrisk_pd = [d for d in _as_list(_as_dict(snap.get("software_risk")).get("per_device")) if isinstance(d, dict)]
+    if swrisk_pd:
+        doc.add_heading(f"{'2.3' if evpn_on else '2.2'} Software / image standardization", level=2)
+        doc.add_paragraph(
+            "Before any wave, agree the target NOS image per platform. The current software trains and their "
+            "disposition (from the software-advisory screening) are below; the target image is selected at "
+            "detailed design and applied + verified per wave in the staged config and post-cutover checks.")
+        agg: dict = {}
+        for d in swrisk_pd:
+            key = (str(d.get("platform") or "—"), str(d.get("train") or "—"), str(d.get("train_band") or "—"))
+            agg[key] = agg.get(key, 0) + 1
+        rows = sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))
+        table(["Platform", "Current train", "Disposition", "Devices", "Target image"],
+              [(p, tr, band, n, "<confirm>") for (p, tr, band), n in rows][:30],
+              widths=[1.0, 1.5, 1.6, 0.7, 1.4])
+
     # ===== per-wave sections =====
-    for wi, (name, switches) in enumerate(waves, start=3):
-        r = readiness_by_group.get(name, {})
-        seq = seq_by_group.get(name, {})
-        scen = scen_by_group.get(name, {})
+    for wi, (name, switches, _kind, _gnames) in enumerate(waves, start=3):
+        r, seq, scen, _val_items = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
+                                                       scen_by_group, val_by_wave)
         playbook = scen.get("playbook") or {}
         rem, pl = _blockers_for(switches)
         blast = max((int(fi_by_host.get(s, {}).get("stranded") or 0) for s in switches), default=0)
         verdict = r.get("readiness", "—")
+
+        # The constituent move-groups this wave covers (a coupled-subwave maps to ONE group; an
+        # independent-batch may bundle MANY). Each keeps its own strategy/rationale/rollback -- surface
+        # every one, never just the first (the joiner picks a representative seq/scen, but the document
+        # must not silently drop the siblings').
+        wave_groups = [(g, scen_by_group.get(g) or {}, seq_by_group.get(g) or {}) for g in _gnames]
+        wave_groups = [(g, sc, sq) for g, sc, sq in wave_groups if sc or sq]
+        multi = len(wave_groups) > 1
+        if multi:
+            strat_cell = "; ".join(dict.fromkeys(
+                (sq.get("sequence") or sc.get("recommended_scenario") or "").strip()
+                for _g, sc, sq in wave_groups if (sq.get("sequence") or sc.get("recommended_scenario")))) or "—"
+        else:
+            strat_cell = seq.get("sequence") or scen.get("recommended_scenario") or "—"
 
         doc.add_heading(f"{wi}. MOP — {name}", level=1)
 
@@ -231,16 +393,31 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         doc.add_heading(f"{wi}.1 Scope & risk", level=2)
         table(["Field", "Value"], [
             ("Devices in scope", ", ".join(switches) or "—"),
-            ("Endpoints affected", r.get("endpoints", "—")),
+            ("Endpoint MACs (apportioned)", r.get("endpoints", "—")),
             ("Readiness verdict", verdict),
             ("Blocking / warning checks", f"{r.get('n_fail', 0)} / {r.get('n_warn', 0)}"),
-            ("Cutover strategy", seq.get("sequence", scen.get("recommended_scenario", "—"))),
+            ("Cutover strategy", strat_cell),
             ("Max blast radius (endpoints stranded if a device is lost mid-move)", blast),
             ("Maintenance window", "<DATE> <START>–<END>  ·  owner <NAME>  ·  approver <NAME>"),
             ("Rollback decision time", "<HH:MM> — if validation has not passed by this time, roll back"),
         ], widths=[2.6, 4.2])
-        if scen.get("rationale"):
+        if multi:
+            doc.add_paragraph(
+                "This wave bundles several INDEPENDENT move-groups (they share no VLANs, so they may be "
+                "cut in any order within the window — but each must pass its own validation before the "
+                "next). Each keeps its own strategy and rollback:")
+            table(["Move-group", "Strategy", "Why"],
+                  [(g, (sq.get("sequence") or sc.get("recommended_scenario") or "—"),
+                    sc.get("rationale") or "—") for g, sc, sq in wave_groups], widths=[1.4, 1.8, 3.6])
+        elif scen.get("rationale"):
             _label_run(doc.add_paragraph(), "Why this strategy:", scen.get("rationale"))
+        if _kind == "coupled-subwave":
+            _label_run(doc.add_paragraph(), "Shared-L2 coordination (coupled sub-wave):",
+                       "this wave is one slice of an oversized L2-coupled move-group; the sub-waves SHARE "
+                       "VLANs, so they are a SEQUENCE (order matters), not independent cutovers. Keep the "
+                       "shared VLANs trunked/extended across the sibling sub-waves until the whole group "
+                       "is migrated; STP root, FHRP active and trunk allowed-VLAN lists are NOT independent "
+                       "of the siblings.", RED)
 
         # 2.x.2 blockers to clear first
         doc.add_heading(f"{wi}.2 Blockers to clear before this window", level=2)
@@ -266,7 +443,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         doc.add_paragraph(
             "Capture and SAVE the output of these commands before any change, so 'good' is defined by "
             "the pre-change state and the post-cutover checks have a baseline to compare against.")
-        val_items = val_by_wave.get(name) or []
+        val_items = _val_items
         cap_cmds = []
         seen_cap = set()
         for it in val_items:
@@ -288,7 +465,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             "configuration — the legacy side is read from the collected evidence; every <target> "
             "column must be completed by the implementing engineer before the window.")
         map_rows = []
-        ifaces_all = snap.get("interfaces") or {}
+        ifaces_all = _as_dict(snap.get("interfaces"))
         for h in switches:
             for pname, dd in sorted((ifaces_all.get(h) or {}).items()):
                 dd = dd or {}
@@ -297,7 +474,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                                          or (dd.get("end_host_ip") or "").strip()):
                     kind = "Endpoint"
                 elif mode == "trunk" and (dd.get("cdp_neighbor") or "").strip():
-                    kind = f"Uplink → {dd.get('cdp_neighbor')}"
+                    po = (dd.get("port_channel") or "").strip()
+                    # surface bundle membership so redundant uplink pairs (two ports sharing a Po) are explicit
+                    kind = f"Uplink → {dd.get('cdp_neighbor')}" + (f" [{po}]" if po else "")
                 else:
                     continue
                 map_rows.append((h, pname, kind, dd.get("vlan") or "—",
@@ -335,14 +514,19 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
         # 2.x.5 procedure (each step carries its success criterion — the MOP definition)
         doc.add_heading(f"{wi}.5 Cutover procedure", level=2)
-        strategy = (seq.get("sequence") or scen.get("recommended_scenario") or "").lower()
         proc = [("Open the change window and announce start in the war room; confirm rollback owner "
                  "is present.",
                  "roles confirmed; the rollback decision time in §" + f"{wi}.1 is agreed.")]
         if playbook.get("pre"):
             proc.append(("Preparation: " + playbook["pre"].rstrip(". ") + ".",
                          "staging complete with no production-facing change."))
-        if "make-before-break" in strategy or "parallel" in strategy:
+        # classify off the engine's STRUCTURED dual-homed/single-homed split, NOT the free-text 'sequence'
+        # (which for a mixed wave reads "...hard cutover (single-homed) + ...make-before-break (dual-homed)" —
+        # the old substring match flipped the WHOLE wave to make-before-break, applying "keep the legacy leg
+        # as the live fallback" steps to single-homed switches that have NO second path). Make-before-break
+        # is the procedure ONLY when every member is dual-homed; any single-homed member -> hard-cutover flow.
+        mbb_hosts, hard_hosts = (seq.get("make_before_break") or []), (seq.get("hard_cutover") or [])
+        if mbb_hosts and not hard_hosts:
             proc += [
                 ("Build the new/target path BESIDE the existing one (do not remove the legacy path "
                  "yet): stage the target device config and bring up the new uplinks per the §"
@@ -357,7 +541,13 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 ("Once all load is on the new path and validated, decommission the legacy path.",
                  "no endpoint remains on the legacy leg (MAC/ARP tables clean)."),
             ]
-        else:  # hard cutover
+        else:  # any single-homed member present (mixed or pure single-homed) -> scheduled-outage flow
+            if mbb_hosts and hard_hosts:   # MIXED: do the dual-homed make-before-break FIRST, then the outage
+                proc.append((
+                    f"Sequence within the wave: make-before-break the {len(mbb_hosts)} dual-homed switch(es) "
+                    f"first (build beside, keep the legacy leg), THEN take the scheduled outage for the "
+                    f"{len(hard_hosts)} single-homed switch(es) that have no second path.",
+                    "dual-homed members re-homed with no outage before the single-homed window opens."))
             proc += [
                 ("Announce the hard cutover; this wave has a brief outage for the moved endpoints.",
                  "stakeholders acknowledged; the outage clock is started."),
@@ -381,10 +571,15 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         if val_items:
             doc.add_paragraph("Every check must pass. A failure that cannot be corrected in-window "
                               "triggers the rollback in §" + f"{wi}.7.")
-            table(["Category", "Device", "Check", "Command", "Expected (good) result"],
-                  [(it.get("category"), it.get("device"), it.get("check"),
-                    it.get("command"), it.get("expect")) for it in val_items[:40]],
-                  widths=[1.0, 1.0, 1.7, 1.5, 1.6])
+            # surface the severity already on each validation item and order High-first, so the
+            # most critical go/no-go checks survive the 40-row display cap (the rationale `why` and
+            # the full set remain in the Cutover Validation workbook sheet).
+            _vr = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+            vshow = sorted(val_items, key=lambda it: _vr.get(it.get("severity"), 5))[:40]
+            table(["Sev", "Category", "Device", "Check", "Command", "Expected (good) result"],
+                  [(it.get("severity") or "—", it.get("category"), it.get("device"), it.get("check"),
+                    it.get("command"), it.get("expect")) for it in vshow],
+                  widths=[0.5, 0.9, 0.9, 1.6, 1.4, 1.5])
             if len(val_items) > 40:
                 doc.add_paragraph(f"… and {len(val_items) - 40} more check(s); full set in the Cutover "
                                   "Validation workbook sheet.")
@@ -399,13 +594,29 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         rb = [("Declare rollback in the war room and record the trigger (which validation check "
                "failed).",
                "the trigger and time are recorded in the change log.")]
-        if playbook.get("rollback"):
+        if multi:
+            for g, sc, _sq in wave_groups:
+                rbk = (sc.get("playbook") or {}).get("rollback")
+                if rbk:
+                    rb.append((f"{g}: " + rbk.rstrip(". ") + ".",
+                               "this group's endpoints are back on their legacy path."))
+        elif playbook.get("rollback"):
             rb.append("Strategy-specific: " + playbook["rollback"].rstrip(". ") + ".")
-        if "make-before-break" in strategy or "parallel" in strategy:
+        if _kind == "coupled-subwave":
+            rb.append(("Coupled sub-wave: rolling back this sub-wave must NOT strand a sibling sub-wave's "
+                       "shared VLAN — keep the shared VLANs extended on the legacy path and coordinate with "
+                       "any sibling sub-waves already cut over before withdrawing anything.",
+                       "no sibling sub-wave loses a shared VLAN as a result of this rollback."))
+        if mbb_hosts and not hard_hosts:   # pure make-before-break: the legacy path was never torn down
             rb.append(("Move any migrated endpoints back onto the still-live legacy leg; remove the "
                        "new path. Because the legacy path was never torn down, this is non-disruptive.",
                        "all endpoints re-home onto the legacy leg with no loss."))
         else:
+            if mbb_hosts and hard_hosts:   # MIXED: only the dual-homed legs roll back non-disruptively
+                rb.append(("Dual-homed members roll back onto their still-live legacy leg (non-disruptive); "
+                           "the single-homed members need the §" + f"{wi}.3 pre-change config re-applied (a "
+                           "brief outage), since their path was torn down at cutover.",
+                           "dual-homed members re-home with no loss; single-homed members restored from baseline."))
             rb.append(("Re-apply the pre-change configuration captured in §" + f"{wi}.3 to <devices>; "
                        "move uplinks/endpoints back to the legacy ports.",
                        "configuration and cabling match the §" + f"{wi}.3 captured state."))

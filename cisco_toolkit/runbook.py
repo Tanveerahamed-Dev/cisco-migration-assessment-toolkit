@@ -49,13 +49,15 @@ def _endpoint_census(snap: dict):
         for d in (ports or {}).values():
             if (d.get("switchport_mode") or "") != "Access":
                 continue
-            macs = [m for m in re.split(r"[,\s]+", d.get("end_host_mac") or "") if m]
+            _ehm = d.get("end_host_mac")            # tolerate a list-valued / non-string end_host_mac (L2)
+            _ehm = " ".join(str(x) for x in _ehm) if isinstance(_ehm, list) else str(_ehm or "")
+            macs = [m for m in re.split(r"[,\s]+", _ehm) if m]
             if not macs:
                 continue
             n = len(macs)
             total += n
             per_switch[host] += n
-            vlan = d.get("vlan") or ""
+            vlan = str(d.get("vlan") or "")         # tolerate a non-string vlan (L2)
             if vlan.isdigit():
                 per_vlan[int(vlan)] += n
     return total, per_vlan, per_switch
@@ -67,6 +69,8 @@ def _gateways(snap: dict):
     forwarding (Unknown). FHRP role from config is Inferred-high."""
     rows = []
     for r in (snap.get("l3_forwarding") or []):
+        if not isinstance(r, dict):
+            continue
         rows.append({
             "vlan": r.get("vlan", ""), "svi_ip": r.get("svi_ip", ""), "owner": r.get("switch", ""),
             "fhrp": r.get("fhrp", ""), "role": r.get("role", ""), "risk": r.get("risk", ""),
@@ -87,6 +91,24 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                        "(pip install python-docx to enable the narrative runbook deliverable).")
         return
 
+    # Input normalization (mirrors the deck's guards): a None / non-dict snapshot must degrade, not raise (L2);
+    # and an XML-illegal control byte (BEL, U+FFFE/U+FFFF) in ANY device-derived string -- collected with
+    # errors='ignore' -- otherwise aborts the WHOLE runbook at docx save (the deck ships from the same data). Strip
+    # every illegal char from the snapshot tree + the label ONCE, up front, reusing the workbook's sanitizer (#5).
+    from cisco_toolkit.excel import _xls_sanitize
+
+    def _clean(o):
+        if isinstance(o, dict):
+            return {k: _clean(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_clean(v) for v in o]
+        return _xls_sanitize(o)
+
+    snap_dict = _clean(snap_dict if isinstance(snap_dict, dict) else {})
+    if not isinstance(snap_dict.get("executive_brief"), dict):    # a truthy non-dict slips '(... or {}).get' (L2)
+        snap_dict["executive_brief"] = {}
+    label = _xls_sanitize(label) if isinstance(label, str) else (str(label) if label is not None else "")
+
     NAVY = RGBColor(0x1F, 0x38, 0x64)
     GREY = RGBColor(0x59, 0x59, 0x59)
     doc = Document()
@@ -100,7 +122,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         r = p.add_run(label_text)
         r.bold = True
         r.font.color.rgb = color
-        p.add_run(" " + (value if value else "—"))
+        # str()-guard the value (mirrors docmeta._kv): a truthy NON-string value (an int count, a list)
+        # would raise `TypeError: can only concatenate str` here -- the lone family writer missing the guard.
+        p.add_run(" " + (str(value) if value not in (None, "") else "—"))
 
     def finding_block(title, *, severity, scope, observed, interpretation, impact,
                       confidence, unknowns, next_validation, remediation=""):
@@ -123,19 +147,24 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         return add_table(doc, headers, rows, widths, fixed=False)
 
     # ---- snapshot-derived headline numbers (reconciled; all sections cite these) ----
-    devices = snap_dict.get("devices") or {}
-    hs = snap_dict.get("health_scores") or []
+    # audit-5 totality: a hostile/malformed upload (the webapp deliverable route) can make a section a truthy
+    # non-list / non-dict, or carry a non-dict ELEMENT -> degrade, never raise (like the mop/crd/ops siblings).
+    def _D(x): return x if isinstance(x, dict) else {}
+    def _R(x): return [r for r in (x if isinstance(x, list) else []) if isinstance(r, dict)]
+    devices = _D(snap_dict.get("devices"))
+    hs = _R(snap_dict.get("health_scores"))
     bands = Counter(r.get("band", "") for r in hs)
     move_groups = snap_dict.get("move_groups") or []
-    mr = snap_dict.get("migration_readiness") or []
+    mr = _R(snap_dict.get("migration_readiness"))
     ws = snap_dict.get("wave_sequencing") or []
-    cross_layer = snap_dict.get("cross_layer") or []
+    cross_layer = _R(snap_dict.get("cross_layer"))
     punchlist = snap_dict.get("punchlist") or []
-    failure_impact = snap_dict.get("failure_impact") or []
-    link_centrality = snap_dict.get("link_centrality") or []
+    failure_impact = _R(snap_dict.get("failure_impact"))
+    link_centrality = _R(snap_dict.get("link_centrality"))
     gw = _gateways(snap_dict)
     ep_total, ep_per_vlan, ep_per_switch = _endpoint_census(snap_dict)
-    n_dev = len(devices)
+    _scale_dev = ((snap_dict.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
+    n_dev = _scale_dev if isinstance(_scale_dev, int) else len(devices)   # canonical-first (SSOT), like the endpoint/VLAN reads below
     n_links = len([r for r in link_centrality])  # link records == inter-switch links
     bridges = [r for r in link_centrality if r.get("is_bridge")]
     crit_cl = [f for f in cross_layer if f.get("severity") == "Critical"]
@@ -169,6 +198,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         doc, document="Network Assessment & Migration Runbook", label=label,
         engine_version=str(snap_dict.get("script_version", "")),
         generated_at=snap_dict.get("generated_at"),
+        collected_at=snap_dict.get("collected_at"),
         audience="The customer's network engineering and operations teams and the migration war "
                  "room; review owner: the customer's network architecture owner.",
         exclude=("runbook",))
@@ -179,12 +209,16 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
     # ===== 1. Assessment Header & Executive Summary =====
     doc.add_heading("1. Assessment Header & Executive Summary", level=1)
+    _scale = (snap_dict.get("executive_brief") or {}).get("scale") or {}
+    _ep_canon = _scale.get("n_endpoints"); _vl_canon = _scale.get("n_vlans")
     table(["Metric", "Value"], [
         ("Devices in scope", n_dev),
         ("Inter-switch links (CDP/LLDP-derived; Inferred-high)", n_links),
         ("Bridge links (single points of fabric partition)", len(bridges)),
-        ("Endpoints (access-port host MACs at snapshot)", ep_total),
-        ("VLANs with endpoints", len(ep_per_vlan)),
+        ("Evidenced endpoints (canonical assessment scale)", _ep_canon if isinstance(_ep_canon, int) else ep_total),
+        ("Endpoints — access-port host MACs at snapshot (superset of canonical)", ep_total),
+        ("Production VLANs (canonical assessment scale)", _vl_canon if isinstance(_vl_canon, int) else len(ep_per_vlan)),
+        ("VLANs carrying endpoints (subset)", len(ep_per_vlan)),
         ("Gateways (SVIs) observed", len(gw)),
         ("Migration move groups", len(move_groups)),
         ("Health bands (Critical/Poor/Fair/Good/Excellent)",
@@ -213,9 +247,15 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
     # ===== 2. Scope & Data Completeness =====
     doc.add_heading("2. Scope & Data Completeness", level=1)
+    # coverage-honesty: n_dev is the INVENTORY (303), not the collected count (253). Do not call the
+    # inventory total "the collected dataset" — state how many of the inventoried switches were collected.
+    _n_coll = ((snap_dict.get("collection_completeness") or {}).get("summary") or {}).get("complete")
+    _scope = (f"{_n_coll} of {n_dev} inventoried Cisco switches were collected"
+              if isinstance(_n_coll, int) and _n_coll != n_dev
+              else f"the {n_dev} inventoried Cisco switches")
     doc.add_paragraph(
-        f"In scope: the {n_dev} Cisco switches present in the collected dataset and their "
-        "configuration, interface, CDP/LLDP, STP, FHRP/SVI, and routing-adjacency state.")
+        f"In scope: {_scope} and their configuration, interface, CDP/LLDP, STP, FHRP/SVI, "
+        "and routing-adjacency state.")
     doc.add_paragraph("Dataset limits (these bound every claim below):", style="List Bullet")
     _mc_collected = ((snap_dict.get("service_map") or {}).get("multicast") or {}).get("group_level_collected")
     _mc_limit = ("Multicast / PTP group membership IS collected; QoS baselines are not — and PTP lock state "
@@ -294,7 +334,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     if ls.get("n_devices"):
         doc.add_heading("4.1 Hardware lifecycle (EoL / End-of-Support)", level=2)
         doc.add_paragraph(
-            f"As of {lr.get('asof', '')}, of {ls.get('n_devices', 0)} device(s): "
+            f"As of the assessment date {lr.get('asof', '')} (when the evidence was collected), of {ls.get('n_devices', 0)} device(s): "
             f"{ls.get('n_past_ldos', 0)} are PAST Cisco's last day of support (no software fixes / no TAC), "
             f"{ls.get('n_near', 0)} reach end-of-support within a year, {ls.get('n_active', 0)} are active, "
             f"{ls.get('n_unknown', 0)} unknown. End-of-support hardware is a hard migration driver.")
@@ -333,7 +373,10 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     if gw_rows:
         table(["VLAN", "SVI IP (Confirmed)", "Owner (Confirmed)", "FHRP (Inferred-high)", "L3 risk"],
               gw_rows, widths=[0.8, 1.8, 2.6, 1.5, 1.5])
-    n_no_fhrp = sum(1 for g in gw if not (g["fhrp"] or "").strip())
+    # No real FHRP. The parser writes the literal "none" (truthy) when no HSRP/VRRP/GLBP exists, so a
+    # bare `not fhrp.strip()` counted ZERO single-gateway gateways for an all-"none" fleet — the inverse
+    # of the truth. Mirror the engine's canonical `(fhrp or "none") == "none"` no-FHRP gate.
+    n_no_fhrp = sum(1 for g in gw if (g.get("fhrp", "none") or "none") == "none")
     doc.add_paragraph(
         f"{n_no_fhrp} of {len(gw)} gateways have no FHRP peer in scope — single-gateway exposure. "
         "Any VLAN whose gateway is off-scan is gated as Unknown in §12.")
@@ -474,8 +517,10 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                     "switches before the cutover.")
         queriers = mc.get("igmp_queriers") or []
         if queriers:
-            doc.add_paragraph(f"IGMP snooping querier present on {len(queriers)} VLAN(s) "
-                              f"({_CONF_CONFIRMED}); VLANs without a querier risk multicast flooding/pruning.")
+            _q_vlans = len({q.get("vlan") for q in queriers if isinstance(q, dict) and q.get("vlan") is not None})
+            doc.add_paragraph(f"IGMP snooping querier present on {_q_vlans} VLAN(s) "
+                              f"({len(queriers)} querier records; {_CONF_CONFIRMED}); VLANs without a querier "
+                              f"risk multicast flooding/pruning.")
         # media-fabric intelligence (NEW-V3.23.115): MAC-aliasing / querier coverage / PTP tree
         mi = snap_dict.get("multicast_intelligence") or {}
         aliases = mi.get("mac_aliases") or []
@@ -763,12 +808,18 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                "endpoints = access ports carrying at least one learned host MAC. Trunk/uplink MAC-table "
                f"entries are excluded. Presence is {_CONF_CONFIRMED} at snapshot time; absence is "
                f"{_CONF_UNKNOWN} (MAC aging).")
-    doc.add_paragraph(f"Total endpoints: {ep_total} across {len(ep_per_vlan)} VLAN(s) and "
-                      f"{len(ep_per_switch)} switch(es).")
-    doc.add_paragraph("Top VLANs by endpoint count:")
-    table(["VLAN", "Endpoints"], [[v, c] for v, c in ep_per_vlan.most_common(12)], widths=[1.5, 1.5])
-    doc.add_paragraph("Top switches by endpoint count:")
-    table(["Switch", "Endpoints"], [[s, c] for s, c in ep_per_switch.most_common(12)], widths=[4.5, 1.5])
+    ep_canon = ((snap_dict.get("executive_brief") or {}).get("scale") or {}).get("n_endpoints")
+    if ep_canon is not None:
+        doc.add_paragraph(f"Evidenced endpoints: {ep_canon} (canonical, from the assessment scale). "
+                          f"Access-port host MACs: {ep_total} across {len(ep_per_vlan)} VLAN(s) and "
+                          f"{len(ep_per_switch)} switch(es) — one endpoint may present more than one MAC.")
+    else:
+        doc.add_paragraph(f"Access-port host MACs: {ep_total} across {len(ep_per_vlan)} VLAN(s) and "
+                          f"{len(ep_per_switch)} switch(es).")
+    doc.add_paragraph("Top VLANs by access-port MAC count:")
+    table(["VLAN", "MACs"], [[v, c] for v, c in ep_per_vlan.most_common(12)], widths=[1.5, 1.5])
+    doc.add_paragraph("Top switches by access-port MAC count:")
+    table(["Switch", "MACs"], [[s, c] for s, c in ep_per_switch.most_common(12)], widths=[4.5, 1.5])
 
     # vendor + endpoint-type grouping with confidence (a skill first-class output). NEW-V3.23.95.
     ident = snap_dict.get("endpoint_identity") or []
@@ -791,8 +842,11 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
 
     # ===== 8. Shared Infrastructure & Consolidation =====
     doc.add_heading("8. Shared Infrastructure & Consolidation", level=1)
-    cap = snap_dict.get("capacity") or []
-    low_util = sorted([c for c in cap if isinstance(c.get("port_util"), (int, float))],
+    cap = _R(snap_dict.get("capacity"))
+    # HON-runbook-drop-1: exclude devices whose active-port count was never observed (port_util can read 0.0
+    # from absent evidence) so an unmeasured switch can't top the "most spare / consolidate first" list.
+    low_util = sorted([c for c in cap if isinstance(c.get("port_util"), (int, float))
+                       and str(c.get("active_ports", "")).strip().isdigit()],
                       key=lambda c: c.get("port_util") or 0)[:10]
     doc.add_paragraph("Spare port capacity (consolidation candidates — lowest port utilisation):")
     table(["Switch", "Model", "Active/Total", "Port util %"],

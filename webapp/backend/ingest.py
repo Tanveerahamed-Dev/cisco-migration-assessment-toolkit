@@ -243,6 +243,11 @@ def run_collection_zip(raw: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         duration = round(time.monotonic() - t0, 1)
         log_tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
                              .splitlines()[-12:])
+        # WEBAP-01: this tail is surfaced to the (possibly remote, unauthenticated) uploader via the API 500
+        # detail AND the success report. Strip the server-side working-directory absolute path so an engine
+        # breadcrumb cannot disclose the server's filesystem layout. The engine runs with cwd=workdir and writes
+        # its outputs under it, so paths in its output are workdir-rooted.
+        log_tail = log_tail.replace(str(workdir), "<workdir>")
         if proc.returncode != 0:
             raise EngineRunError(f"Engine exited with code {proc.returncode}. Log tail:\n{log_tail}")
 
@@ -261,7 +266,11 @@ def run_collection_zip(raw: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
         report = {
             "n_archive_files": n_files,
-            "n_device_dirs": len(device_dirs),
+            # WEBAP-02: the headline count must not exceed the fleet actually assessed. Non-round-trippable
+            # folder names are dropped into skipped_dirs (the engine would resolve their hostname to a different
+            # folder), so counting them here over-reported the assessed device count -- the exact n-count drift
+            # the project guards against. Report the addressable directories (skipped excluded; still disclosed).
+            "n_device_dirs": len(device_dirs) - len(skipped_dirs),
             "devices": device_dirs,
             "skipped_dirs": skipped_dirs,
             "devices_json": provenance,

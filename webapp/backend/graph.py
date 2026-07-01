@@ -16,9 +16,17 @@ from . import engine
 
 def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> Dict[str, Any]:
     canon = engine.canon_host
-    ifaces = snap.get("interfaces") or {}
-    health = {r.get("switch"): r for r in (snap.get("health_scores") or []) if isinstance(r, dict)}
-    node_ids = set(ifaces.keys()) | set(health.keys()) | set((snap.get("devices") or {}).keys())
+    # isinstance-guard, not `or {}`: a TRUTHY non-dict (a JSON string/list in a malformed upload that passed the
+    # 'devices' in snap gate) would slip through `or {}` and crash .keys() -> an unhandled 500 on /graph.
+    _ifaces = snap.get("interfaces")
+    ifaces = _ifaces if isinstance(_ifaces, dict) else {}
+    _devices = snap.get("devices")
+    devices = _devices if isinstance(_devices, dict) else {}
+    # require a STRING 'switch' key: a row without one would inject a None node id and make sorted(node_ids)
+    # raise TypeError (str vs None) -> an unhandled 500 on /graph (multi-domain audit #10).
+    health = {r.get("switch"): r for r in (snap.get("health_scores") or [])
+              if isinstance(r, dict) and isinstance(r.get("switch"), str)}
+    node_ids = set(ifaces.keys()) | set(health.keys()) | set(devices.keys())
     ks = set(keystones or [])
 
     # Edges from CDP neighbours, undirected + de-duped, only between known switch nodes.

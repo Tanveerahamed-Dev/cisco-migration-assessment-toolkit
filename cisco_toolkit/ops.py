@@ -22,6 +22,7 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict
 from cisco_toolkit.docmeta import as_list as _as_list
+from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,17 @@ def _facts(snap: dict) -> dict:
             sec_fail += int(s.get("fail") or 0)
         except (TypeError, ValueError):
             continue
+    # routing-adjacency + first-hop-redundancy Day-2 health (N36)
+    ph2 = _as_list(snap.get("protocol_health"))
+    routing_protos = sorted({str(r.get("protocol", "")).upper() for r in ph2 if isinstance(r, dict)
+                             and str(r.get("protocol", "")).upper() in ("OSPF", "BGP", "EIGRP", "ISIS", "IS-IS")})
+    n_proto_high = sum(1 for r in ph2 if isinstance(r, dict) and r.get("severity") in ("High", "Critical"))
+    l3f = _as_list(snap.get("l3_forwarding"))
+    n_gw = len(l3f)
+    n_fhrp = sum(1 for r in l3f if isinstance(r, dict) and (str(r.get("fhrp", "none")) or "none") != "none")
     return {"devices": devices, "keystones": keystones[:5], "si": si, "ph": ph,
-            "gd": gd, "qa": qa, "sr": sr, "lc": lc, "n_sec_fail": sec_fail}
+            "gd": gd, "qa": qa, "sr": sr, "lc": lc, "n_sec_fail": sec_fail,
+            "routing_protos": routing_protos, "n_proto_high": n_proto_high, "n_gw": n_gw, "n_fhrp": n_fhrp}
 
 
 def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
@@ -69,7 +79,8 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
                        "(pip install python-docx to enable the Operate-phase deliverable).")
         return
 
-    snap = snap_dict or {}
+    snap = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})   # one bad device byte (noncharacter/surrogate) must not abort the docx
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
     NAVY = RGBColor(0x1F, 0x38, 0x64)
     GREY = RGBColor(0x59, 0x59, 0x59)
     doc = Document()
@@ -102,8 +113,9 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     sub = doc.add_paragraph(); sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sr2 = sub.add_run(label); sr2.font.size = Pt(13); sr2.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _ncoll = _as_dict(_as_dict(snap.get("executive_brief")).get("scale")).get("n_collected")   # coerce: a truthy non-dict eb/scale must not crash (audit-4 #10)
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{len(devices)} devices in evidence scope  ·  script {snap.get('script_version', '')}"
+                 f"{_ncoll if isinstance(_ncoll, int) else len(devices)} collected of {len(devices)} inventoried  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     doc.add_paragraph()
     note = doc.add_paragraph()
@@ -119,6 +131,7 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     add_document_control(
         doc, document="Operations Handbook", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="The customer's NOC / operations team (primary users), the network owner "
                  "(standards and escalation authority) and the delivery engineer handing over.",
         exclude=("opshandbook",),
@@ -216,6 +229,33 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     else:
         absent("CPU/memory capacity output",
                "re-run the collection to capture the control-plane baseline.")
+
+    # ---- 3.3 routing-adjacency & first-hop-redundancy health (Day-2 monitored items, N36) ----
+    doc.add_heading("3.3 Routing-adjacency & first-hop-redundancy health", level=2)
+    doc.add_paragraph(
+        "Beyond CIS / syslog / capacity, the operate phase continuously watches the control plane's "
+        "routing adjacencies and gateway redundancy — a silent adjacency drop or a lost FHRP peer is an "
+        "outage waiting for the next failure.")
+    r36 = []
+    if ev["routing_protos"]:
+        r36.append(("Routing adjacencies", ", ".join(ev["routing_protos"]),
+                    "Baseline the neighbour list per device; alert on any adjacency leaving Full/Up and on "
+                    "flap counts."))
+    else:
+        r36.append(("Routing adjacencies", "none observed (L2-forwarded fleet)",
+                    "If routing is introduced in the target design, add adjacency-state + flap monitoring."))
+    if ev["n_gw"]:
+        if ev["n_fhrp"]:
+            r36.append(("First-hop redundancy", f"{ev['n_fhrp']} of {ev['n_gw']} gateway SVI(s) FHRP-protected",
+                        "Alert on HSRP/VRRP/GLBP active↔standby transitions and track-decrement events."))
+        else:
+            r36.append(("First-hop redundancy", f"0 of {ev['n_gw']} gateway SVI(s) — none observed",
+                        "No FHRP state to monitor today; introducing gateway redundancy is a design "
+                        "recommendation — then alarm on active/standby transitions."))
+    if ev["n_proto_high"]:
+        r36.append(("Protocol-health findings", f"{ev['n_proto_high']} flagged High at assessment",
+                    "Re-verify post-cutover and monitor for recurrence (see the punch-list)."))
+    table(["Monitored item", "Observed", "Day-2 alerting"], r36, widths=[1.5, 2.2, 2.8])
 
     # ===== 4. Operational standards & drift control =====
     doc.add_heading("4. Operational Standards & Drift Control", level=1)

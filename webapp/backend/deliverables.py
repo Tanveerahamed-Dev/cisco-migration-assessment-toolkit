@@ -10,12 +10,31 @@ deps; if a lib is absent the matching deliverable reports unavailable rather tha
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
 from typing import Dict
 
 from . import engine  # noqa: F401  (import bootstraps sys.path so cisco_toolkit.* resolves)
+
+logger = logging.getLogger(__name__)
+
+
+def _reconcile_gate(snap: dict, kind: str) -> list:
+    """Fail-soft SSOT pre-emission check (universal-best roadmap W3-5): never SILENTLY emit a deliverable from
+    a snapshot whose published facts disagree with the raw evidence. Logs the violations (the snapshot's
+    assessment_integrity already carries the machine-readable disclosure that the deliverables render); it never
+    blocks the emit -- a single benign drift must not wedge the whole deliverable set. Total/fail-open."""
+    try:
+        from cisco_toolkit import ssot
+        violations = ssot.reconcile(snap if isinstance(snap, dict) else {})
+    except Exception:
+        return []
+    if violations:
+        logger.warning("[SSOT] %s deliverable generated from a snapshot with %d unreconciled fact(s): %s",
+                       kind, len(violations), violations[:3])
+    return violations
 
 _DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -73,6 +92,7 @@ def generate(kind: str, snap: dict, label: str, *, gates: dict | None = None) ->
     `gates` is the campaign's recorded gate sign-offs — consumed only by the engagement plan of
     record (its §4.3 as-signed trail); every other writer is a pure snapshot read."""
     spec = SPECS[kind]
+    _reconcile_gate(snap, kind)   # W3-5: loudly flag a drifting snapshot before emit (fail-soft, never blocks)
     if kind == "engagement":
         from cisco_toolkit.engagement import write_engagement_docx as write
     elif kind == "crd":

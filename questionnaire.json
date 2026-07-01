@@ -37,7 +37,8 @@
     "rationale": "Aggressive SLAs may require additional resiliency or rollback planning; chronic SLA breaches indicate underlying design or operations issues.",
     "evidence": "SLA documents, KPI dashboards, incident reports from ITSM, discussion with service owner.",
     "red_flag": "We do not track MTTR or SLA or We rarely meet our SLAs but nothing has been done.",
-    "go_no_go": false
+    "go_no_go": false,
+    "requirement_key": "availability_tier"
   },
   {
     "id": "ops-05",
@@ -199,7 +200,6 @@
     "red_flag": "We open a generic ticket and wait or We do not have clear demarcation diagrams.",
     "go_no_go": false
   },
-
   {
     "id": "design-01",
     "domain": "Design & Architecture",
@@ -318,7 +318,8 @@
     "rationale": "Underestimating growth leads to renumbering, hardware replacement, or massive rework.",
     "evidence": "Capacity planning documents, IP addressing plan, hardware lifecycle roadmap.",
     "red_flag": "We do not have growth projections or We are almost out of VLANs/IPv4 space.",
-    "go_no_go": false
+    "go_no_go": false,
+    "requirement_key": "growth_horizon"
   },
   {
     "id": "design-13",
@@ -348,7 +349,8 @@
     "rationale": "Weak or inconsistent segmentation increases attack surface and complicates audits.",
     "evidence": "Security architecture docs, VRF config, firewall policy, ISE/SGT deployment plan.",
     "red_flag": "Mostly by VLAN only or Segmentation is ad-hoc via scattered ACLs.",
-    "go_no_go": false
+    "go_no_go": false,
+    "requirement_key": "data_classification"
   },
   {
     "id": "design-16",
@@ -400,7 +402,6 @@
     "red_flag": "All traffic including management goes over the same VLAN/VRF with no restrictions.",
     "go_no_go": false
   },
-
   {
     "id": "mig-01",
     "domain": "Migration & Cutover",
@@ -601,7 +602,6 @@
     "red_flag": "We will decide ad-hoc in the bridge with no guiding principle.",
     "go_no_go": true
   },
-
   {
     "id": "r&s-01",
     "domain": "Routing & Switching",
@@ -750,7 +750,8 @@
     "rationale": "Missing fast convergence can cause noticeable outages for voice, trading, or OT.",
     "evidence": "show bfd neighbors, show ip ospf interface, show ip route, platform HA configs.",
     "red_flag": "We use default timers or No BFD anywhere for low-latency apps.",
-    "go_no_go": false
+    "go_no_go": false,
+    "requirement_key": "convergence_budget_ms"
   },
   {
     "id": "r&s-16",
@@ -802,7 +803,6 @@
     "red_flag": "We rely on best-effort or Users complain but we have no SLOs.",
     "go_no_go": false
   },
-
   {
     "id": "dc-01",
     "domain": "Data Center",
@@ -1003,7 +1003,6 @@
     "red_flag": "We do not define oversubscription; we add links when things feel slow.",
     "go_no_go": false
   },
-
   {
     "id": "apps-01",
     "domain": "Applications & Dependencies",
@@ -1012,7 +1011,8 @@
     "rationale": "Without clear app owners, you cannot validate behavior, schedule downtime, or triage issues during cutover.",
     "evidence": "CMDB/service catalog, app portfolio, interviews with app owners and business relationship managers.",
     "red_flag": "We do not have an app catalog or Ownership is unclear for many critical apps.",
-    "go_no_go": false
+    "go_no_go": false,
+    "requirement_key": "critical_apps"
   },
   {
     "id": "apps-02",
@@ -1204,7 +1204,6 @@
     "red_flag": "App teams are not required to attend or No defined tests; we will rely on pings.",
     "go_no_go": true
   },
-
   {
     "id": "fw-01",
     "domain": "Firewall & Segmentation",
@@ -1405,7 +1404,6 @@
     "red_flag": "Rollback means manually undoing rules and reconfiguring interfaces with no timing estimate.",
     "go_no_go": true
   },
-
   {
     "id": "vpn-01",
     "domain": "VPN",
@@ -1606,7 +1604,6 @@
     "red_flag": "Rollback is not fully documented or tested.",
     "go_no_go": true
   },
-
   {
     "id": "dns-01",
     "domain": "DNS / DHCP / IPAM",
@@ -1807,7 +1804,6 @@
     "red_flag": "We will just shut down the old servers after the change window with no monitoring period.",
     "go_no_go": true
   },
-
   {
     "id": "lb-01",
     "domain": "Load Balancers",
@@ -2008,7 +2004,6 @@
     "red_flag": "We have no defined fallback other than making changes manually during incident.",
     "go_no_go": true
   },
-
   {
     "id": "catc-01",
     "domain": "Catalyst Center",
@@ -2209,7 +2204,6 @@
     "red_flag": "Engineers are free to use CLI or Catalyst Center with no policy on precedence.",
     "go_no_go": true
   },
-
   {
     "id": "ise-01",
     "domain": "ISE / NAC",

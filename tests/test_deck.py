@@ -56,6 +56,41 @@ def _deck(path):
     return n, txt
 
 
+def test_deck_title_slide_always_shows_canonical_scale(tmp_path):
+    """The title slide must ALWAYS surface the canonical fleet scale (devices/endpoints/VLANs). Previously
+    scale rendered only as a FALLBACK for an empty posture_statement — which is canonically never empty —
+    so the deck showed no fleet scale at all."""
+    out = tmp_path / "deck_scale.pptx"
+    snap = _rich_snap()
+    snap["executive_brief"]["scale"] = {"n_devices": 303, "n_endpoints": 5127, "n_vlans": 202}
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _, txt = _deck(str(out))
+    assert "303 devices" in txt and "5127 endpoints" in txt and "202 VLANs" in txt
+
+
+def test_deck_discloses_failed_brief_not_false_zeros(tmp_path):
+    """R2-4-02: a FAILED cross-axis brief (assessment_integrity flag / _unavailable sentinel) must be
+    DISCLOSED on the deck, and the Critical-band count must still come from health_scores -- never a silent
+    em-dash scale line nor a false '0 Critical'."""
+    snap = {
+        "executive_brief": {"_unavailable": True},
+        "assessment_integrity": {"executive_brief": "compute_failed"},
+        "health_scores": [
+            {"switch": "core1", "score": 8, "band": "Critical"},
+            {"switch": "core2", "score": 11, "band": "Critical"},
+            {"switch": "acc1", "score": 90, "band": "Excellent"},
+        ],
+        "punchlist": [], "failure_impact": [], "migration_readiness": [], "move_groups": [],
+        "lifecycle_risk": {"summary": {}},
+    }
+    out = tmp_path / "deck_failed_brief.pptx"
+    write_executive_deck_pptx(str(out), snap, "Fleet X")
+    _n, txt = _deck(str(out))
+    assert "unavailable" in txt.lower()      # the synthesis failure is disclosed on the title slide
+    assert "Critical: 2" in txt              # the REAL Critical count surfaces from the band tally, not 0
+    assert "— devices" not in txt            # no silent em-dash scale line masquerading as fleet scale
+
+
 def test_deck_has_all_slides_and_key_content(tmp_path):
     out = tmp_path / "deck.pptx"
     write_executive_deck_pptx(str(out), _rich_snap(), "Test fleet")
@@ -69,6 +104,22 @@ def test_deck_has_all_slides_and_key_content(tmp_path):
     assert "end-of-support" in txt.lower()                             # 5 lifecycle
     assert "NOT READY" in txt and "Group 1" in txt                     # 6 waves
     assert "Where to start" in txt                                     # 7 recommendation
+
+
+def test_deck_lifecycle_past_end_of_support_is_ldos_not_eos(tmp_path):
+    """A3 (SSOT/coverage-honesty): the 'past end-of-support' headline must read n_past_ldos ALONE
+    (matching the canonical executive_brief lifecycle axis, analyze.py:5018), NOT n_past_eos +
+    n_past_ldos. Past-EoS is end-of-SALE (support window still open). Fixture: 152 LDoS + 40 EoS +
+    61 near of 303 → headline 152 and 70% past/nearing; the old conflation rendered 192 / 83%."""
+    snap = _rich_snap()
+    snap["lifecycle_risk"] = {"summary": {
+        "n_devices": 303, "n_past_ldos": 152, "n_past_eos": 40, "n_near": 61, "n_active": 50,
+        "by_band": {"Past-LDoS": 152, "Past-EoS": 40, "Near-LDoS": 61, "Active": 50}}}
+    out = tmp_path / "deck.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert "152" in txt and "70%" in txt           # n_past_ldos headline + (152+61)/303 pct
+    assert "192" not in txt and "83%" not in txt    # old n_past_eos+n_past_ldos conflation gone
 
 
 def test_deck_gains_riskiest_assets_slide_with_register(tmp_path):
@@ -96,6 +147,61 @@ def test_deck_gains_riskiest_assets_slide_with_register(tmp_path):
     assert "CR-01" in txt and "Stabilize or replace" in txt
 
 
+def test_deck_gains_target_state_design_slide(tmp_path):
+    """NEW: a snapshot carrying the design_blueprint renders the extra 'target-state design' slide (8
+    total); the back-compat 7-slide pin above proves the slide is data-gated (the design engine's
+    compute_design_blueprint), never empty filler — the SAME blueprint behind the HLD/LLD and dashboards."""
+    snap = _rich_snap()
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 2, "n_recommended": 2, "n_needs_requirement": 1, "n_critical": 1,
+                    "headline": "2 design decisions."},
+        "tradeoff_scorecard": [{"axis": "availability", "label": "High availability", "score": 0,
+                                "posture": "Weak", "evidence": "no FHRP"}],
+        "decisions": [
+            {"id": "fhrp-first-hop-gateway-redundancy", "title": "Introduce first-hop redundancy",
+             "priority": "Critical", "status": "recommended", "evidence": {"summary": "52 VLANs without FHRP"},
+             "principle": {"citation": "CCDE In Depth — HA"}, "recommended_action": "HSRP/VRRP"},
+            {"id": "x", "title": "Right-size availability", "priority": "High", "status": "needs-requirement",
+             "evidence": {"summary": ""}, "principle": {"citation": "CCDE"},
+             "requirements_needed": ["availability_tier"]},
+        ],
+        "coverage": {"caveat": "grounded only in collected evidence"},
+    }
+    out = tmp_path / "deck_design.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    n, txt = _deck(str(out))
+    assert n == 8, f"expected 8 slides with the design blueprint, got {n}"
+    assert "design the migration should adopt" in txt.lower() or "target state" in txt.lower()
+    assert "Introduce first-hop redundancy" in txt
+
+
+def test_deck_migration_slide_surfaces_honest_wave_count(tmp_path):
+    """B1 (audit fix): when the snapshot carries the design wave_plan, the 'How it sequences' slide must
+    headline the honest SEQUENCED wave count (design_blueprint.target_state.wave_plan.n_waves) -- not the
+    raw move-group count presented as if it were parallelizable waves. A 60-switch L2-coupled domain is
+    ONE set sliced into sequenced sub-waves, not 6 parallel waves; the slide must say so."""
+    snap = _rich_snap()
+    snap["move_groups"] = ([{"switches": [f"s{i}" for i in range(60)]}]
+                           + [{"switches": [f"t{j}"]} for j in range(5)])   # 1x60 + 5 singletons = 6 groups
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 1, "n_recommended": 1, "n_needs_requirement": 0, "n_critical": 1,
+                    "headline": "1 critical recommended."},
+        "tradeoff_scorecard": [], "coverage": {},
+        "decisions": [{"id": "fhrp-first-hop-gateway-redundancy", "title": "Introduce FHRP",
+                       "priority": "Critical", "status": "recommended",
+                       "evidence": {"summary": "x"}, "principle": {"citation": "CCDE"}}],
+        "target_state": {"wave_plan": {"n_waves": 3, "n_move_groups": 6, "largest_group": 60,
+                                       "wave_cap": 40, "waves": [], "note": "n"}},
+    }
+    out = tmp_path / "deck_waves.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    low = txt.lower()
+    assert "candidate wave" in low, "slide must surface the honest sequenced wave count label"
+    # the honest relationship (move-groups -> sequenced waves) must be disclosed, not just the raw 6
+    assert "sequence" in low and "60" in txt, "must disclose the largest L2 domain sequences into waves"
+
+
 def test_deck_cleans_mojibake(tmp_path):
     snap = {"executive_brief": {"axes": [{"axis": "X", "severity": "High", "headline": "a Â· b"}],
                                 "top_gating": []}}
@@ -111,3 +217,42 @@ def test_sparse_snapshot_is_tolerated(tmp_path):
     assert out.is_file()
     n, _ = _deck(str(out))
     assert n == 6        # every slide renders except the data-gated lifecycle slide
+
+
+def _deck_text(path):
+    prs = Presentation(path)
+    return "\n".join(sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame)
+
+
+def test_deck_survives_xml_illegal_chars(tmp_path):
+    """[audit-4 #2 totality] a U+FFFE/U+FFFF/lone-surrogate in any device-derived string aborted the whole
+    executive deck at python-pptx save -- the class the workbook/docx are hardened against. _clean (the single
+    text sink) must strip them."""
+    snap = _rich_snap()
+    bad = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800)
+    snap["failure_impact"][0]["host"] = snap["failure_impact"][0]["host"] + bad
+    snap["executive_brief"]["axes"][0]["headline"] = "61/100 " + bad
+    out = str(tmp_path / "d.pptx")
+    write_executive_deck_pptx(out, snap, "AJ" + bad)     # must not raise
+    Presentation(out)                                    # and open
+
+
+def test_deck_keystone_not_well_distributed_when_blast_radius_blind(tmp_path):
+    """[audit-4 #8 false-health] the keystone slide printed green 'dependency is well distributed' whenever no
+    record had stranded>0 -- including when failure_impact was NEVER computed (absent) or every record is
+    INDETERMINATE (off-scan gateway). Absence/indeterminacy must read as a coverage gap, not a clean bill."""
+    snap_absent = _rich_snap(); snap_absent.pop("failure_impact", None)
+    write_executive_deck_pptx(str(tmp_path / "a.pptx"), snap_absent, "blind")
+    ta = _deck_text(str(tmp_path / "a.pptx"))
+    assert "well distributed" not in ta and ("not assess" in ta.lower() or "not computed" in ta.lower())
+    snap_ind = _rich_snap()
+    snap_ind["failure_impact"] = [{"host": "core1", "severity": "Info", "stranded": 0, "vlans_impacted": 0,
+                                   "off_scan_gw_vlans": 5, "detail": "Blast radius INDETERMINATE — off-scan gateway"}]
+    write_executive_deck_pptx(str(tmp_path / "b.pptx"), snap_ind, "ind")
+    tb = _deck_text(str(tmp_path / "b.pptx"))
+    assert "well distributed" not in tb and "indetermin" in tb.lower()
+    snap_clean = _rich_snap()
+    snap_clean["failure_impact"] = [{"host": "core1", "severity": "Low", "stranded": 0, "vlans_impacted": 0,
+                                     "off_scan_gw_vlans": 0, "detail": "FHRP-covered"}]
+    write_executive_deck_pptx(str(tmp_path / "c.pptx"), snap_clean, "clean")
+    assert "well distributed" in _deck_text(str(tmp_path / "c.pptx"))

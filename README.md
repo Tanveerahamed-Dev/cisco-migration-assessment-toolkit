@@ -156,9 +156,10 @@ Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
 `--output FILE` (override the workbook name), `--golden-config FILE` (a config
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace
-sheet between two endpoints), and `--redact` (pseudonymize IPs / MACs / serials in the snapshot +
-explorer — consistent and subnet-preserving, hostnames kept — so the single-file
-deliverable can be shared without leaking real addressing). See
+sheet between two endpoints), and `--redact` (pseudonymize IPs / MACs / serials across the
+**whole output bundle** — the snapshot JSON, the HTML explorer, **and** the always-produced
+`.xlsx` workbook — consistent and subnet-preserving, hostnames kept — so every deliverable can
+be shared without leaking real addressing). See
 [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) for the full feature set.
 
 ### Devices file
