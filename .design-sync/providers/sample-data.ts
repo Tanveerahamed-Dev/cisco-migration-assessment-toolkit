@@ -39,7 +39,7 @@ const GRAPH = {
 const CABLE_MAP = {
   nodes: [
     {
-      host: "MBG-CORE-01", role: "core", tier: 0, order: 0, collected: true, op_status: "up", badges: [],
+      host: "MBG-CORE-01", role: "core", kind: "switch", tier: 0, order: 0, collected: true, op_status: "up", badges: [],
       ports: [
         { name: "Po1", peer: "MBG-CORE-02", peer_port: "Po1", op_status: "up", is_pc: true },
         { name: "Te1/0/1", peer: "MBG-DS-01", peer_port: "Te1/1/1", op_status: "up", is_pc: false },
@@ -47,7 +47,7 @@ const CABLE_MAP = {
       ],
     },
     {
-      host: "MBG-CORE-02", role: "core", tier: 0, order: 1, collected: true, op_status: "up", badges: [],
+      host: "MBG-CORE-02", role: "core", kind: "switch", tier: 0, order: 1, collected: true, op_status: "up", badges: [],
       ports: [
         { name: "Po1", peer: "MBG-CORE-01", peer_port: "Po1", op_status: "up", is_pc: true },
         { name: "Te1/0/1", peer: "MBG-DS-01", peer_port: "Te1/1/2", op_status: "up", is_pc: false },
@@ -55,7 +55,7 @@ const CABLE_MAP = {
       ],
     },
     {
-      host: "MBG-DS-01", role: "distribution", tier: 1, order: 0, collected: true, op_status: "up", badges: [],
+      host: "MBG-DS-01", role: "distribution", kind: "switch", tier: 1, order: 0, collected: true, op_status: "up", badges: [],
       ports: [
         { name: "Te1/1/1", peer: "MBG-CORE-01", peer_port: "Te1/0/1", op_status: "up", is_pc: false },
         { name: "Te1/1/2", peer: "MBG-CORE-02", peer_port: "Te1/0/1", op_status: "up", is_pc: false },
@@ -65,7 +65,7 @@ const CABLE_MAP = {
       ],
     },
     {
-      host: "MBG-DS-02", role: "distribution", tier: 1, order: 1, collected: true, op_status: "up", badges: ["links-down"],
+      host: "MBG-DS-02", role: "distribution", kind: "switch", tier: 1, order: 1, collected: true, op_status: "up", badges: ["links-down"],
       ports: [
         { name: "Te1/1/1", peer: "MBG-CORE-01", peer_port: "Te1/0/2", op_status: "up", is_pc: false },
         { name: "Te1/1/2", peer: "MBG-CORE-02", peer_port: "Te1/0/2", op_status: "up", is_pc: false },
@@ -77,60 +77,73 @@ const CABLE_MAP = {
       ],
     },
     {
-      host: "STU-AS-01", role: "access", tier: 2, order: 0, collected: true, op_status: "up", badges: [],
+      host: "STU-AS-01", role: "access", kind: "switch", tier: 2, order: 0, collected: true, op_status: "up", badges: [],
       ports: [
+        { name: "Gi1/0/1", peer: "STU-AP-01", peer_port: "Gi0", op_status: "up", is_pc: false },
         { name: "Gi1/0/49", peer: "MBG-DS-01", peer_port: "Gi1/0/1", op_status: "up", is_pc: false },
         { name: "Gi1/0/50", peer: "MBG-DS-02", peer_port: "Gi1/0/1", op_status: "up", is_pc: false },
       ],
     },
     {
-      host: "STU-AS-02", role: "access", tier: 2, order: 1, collected: true, op_status: "up", badges: ["links-down"],
+      host: "STU-AS-02", role: "access", kind: "switch", tier: 2, order: 1, collected: true, op_status: "up", badges: ["links-down"],
       ports: [
         { name: "Gi1/0/49", peer: "MBG-DS-01", peer_port: "Gi1/0/2", op_status: "up", is_pc: false },
         { name: "Gi1/0/50", peer: "MBG-DS-02", peer_port: "Gi1/0/2", op_status: "down", is_pc: false },
       ],
     },
     {
-      host: "STU-AS-03", role: "access", tier: 2, order: 2, collected: true, op_status: "down", badges: ["links-down"],
+      host: "STU-AS-03", role: "access", kind: "switch", tier: 2, order: 2, collected: true, op_status: "down", badges: ["links-down"],
       ports: [
         { name: "Gi1/0/49", peer: "MBG-DS-02", peer_port: "Gi1/0/3", op_status: "down", is_pc: false },
       ],
     },
     {
-      host: "NOC-AS-01", role: "access", tier: 2, order: 3, collected: true, op_status: "up", badges: [],
+      host: "NOC-AS-01", role: "access", kind: "switch", tier: 2, order: 3, collected: true, op_status: "up", badges: [],
       ports: [
+        { name: "Gi1/0/1", peer: "NOC-PHONE-01", peer_port: "Gi0", op_status: "up", is_pc: false },
         { name: "Gi1/0/49", peer: "MBG-DS-01", peer_port: "Gi1/0/3", op_status: "up", is_pc: false },
         { name: "Gi1/0/50", peer: "MBG-DS-02", peer_port: "Gi1/0/4", op_status: "up", is_pc: false },
       ],
     },
     {
-      host: "CAM-AS-01", role: "access", tier: 2, order: 4, collected: false, op_status: "unknown", badges: ["uncollected"],
+      host: "CAM-AS-01", role: "access", kind: "switch", tier: 2, order: 4, collected: false, op_status: "unknown", badges: ["uncollected"],
       ports: [
         { name: "Gi1/0/49", peer: "MBG-DS-02", peer_port: "Gi1/0/5", op_status: "unknown", is_pc: false },
       ],
     },
+    {
+      host: "STU-AP-01", role: "edge", kind: "ap", tier: 3, order: 0, collected: true, op_status: "up", badges: [],
+      ports: [{ name: "Gi0", peer: "STU-AS-01", peer_port: "Gi1/0/1", op_status: "up", is_pc: false }],
+    },
+    {
+      host: "NOC-PHONE-01", role: "edge", kind: "phone", tier: 3, order: 1, collected: true, op_status: "up", badges: [],
+      ports: [{ name: "Gi0", peer: "NOC-AS-01", peer_port: "Gi1/0/1", op_status: "up", is_pc: false }],
+    },
   ],
   cables: [
-    { a: "MBG-CORE-01", a_port: "Po1", b: "MBG-CORE-02", b_port: "Po1", is_pc: true, members: [{ a_port: "Te1/1/1", b_port: "Te1/1/1" }, { a_port: "Te1/1/2", b_port: "Te1/1/2" }], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-CORE-01", a_port: "Te1/0/1", b: "MBG-DS-01", b_port: "Te1/1/1", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-CORE-01", a_port: "Te1/0/2", b: "MBG-DS-02", b_port: "Te1/1/1", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-CORE-02", a_port: "Te1/0/1", b: "MBG-DS-01", b_port: "Te1/1/2", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-CORE-02", a_port: "Te1/0/2", b: "MBG-DS-02", b_port: "Te1/1/2", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-DS-01", a_port: "Gi1/0/1", b: "STU-AS-01", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-DS-02", a_port: "Gi1/0/1", b: "STU-AS-01", b_port: "Gi1/0/50", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-DS-01", a_port: "Gi1/0/2", b: "STU-AS-02", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-DS-02", a_port: "Gi1/0/2", b: "STU-AS-02", b_port: "Gi1/0/50", is_pc: false, members: [], op_status: "down", confirmation: "both-seen" },
-    { a: "MBG-DS-02", a_port: "Gi1/0/3", b: "STU-AS-03", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "down", confirmation: "one-side" },
-    { a: "MBG-DS-01", a_port: "Gi1/0/3", b: "NOC-AS-01", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-DS-02", a_port: "Gi1/0/4", b: "NOC-AS-01", b_port: "Gi1/0/50", is_pc: false, members: [], op_status: "up", confirmation: "both-seen" },
-    { a: "MBG-DS-02", a_port: "Gi1/0/5", b: "CAM-AS-01", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "unknown", confirmation: "cdp-only" },
+    { a: "MBG-CORE-01", a_port: "Po1", b: "MBG-CORE-02", b_port: "Po1", is_pc: true, members: [{ a_port: "Te1/1/1", b_port: "Te1/1/1" }, { a_port: "Te1/1/2", b_port: "Te1/1/2" }], op_status: "up", confirmation: "both-seen", speed: "10G" },
+    { a: "MBG-CORE-01", a_port: "Te1/0/1", b: "MBG-DS-01", b_port: "Te1/1/1", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "10G" },
+    { a: "MBG-CORE-01", a_port: "Te1/0/2", b: "MBG-DS-02", b_port: "Te1/1/1", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "10G" },
+    { a: "MBG-CORE-02", a_port: "Te1/0/1", b: "MBG-DS-01", b_port: "Te1/1/2", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "10G" },
+    { a: "MBG-CORE-02", a_port: "Te1/0/2", b: "MBG-DS-02", b_port: "Te1/1/2", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "10G" },
+    { a: "MBG-DS-01", a_port: "Gi1/0/1", b: "STU-AS-01", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "1000" },
+    { a: "MBG-DS-02", a_port: "Gi1/0/1", b: "STU-AS-01", b_port: "Gi1/0/50", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "1000" },
+    { a: "MBG-DS-01", a_port: "Gi1/0/2", b: "STU-AS-02", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "1000" },
+    { a: "MBG-DS-02", a_port: "Gi1/0/2", b: "STU-AS-02", b_port: "Gi1/0/50", is_pc: false, members: [], op_status: "down", confirmation: "both-seen", speed: "a-1000" },
+    { a: "MBG-DS-02", a_port: "Gi1/0/3", b: "STU-AS-03", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "down", confirmation: "one-side", speed: "" },
+    { a: "MBG-DS-01", a_port: "Gi1/0/3", b: "NOC-AS-01", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "1000" },
+    { a: "MBG-DS-02", a_port: "Gi1/0/4", b: "NOC-AS-01", b_port: "Gi1/0/50", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "1000" },
+    { a: "MBG-DS-02", a_port: "Gi1/0/5", b: "CAM-AS-01", b_port: "Gi1/0/49", is_pc: false, members: [], op_status: "unknown", confirmation: "cdp-only", speed: "" },
+    { a: "STU-AS-01", a_port: "Gi1/0/1", b: "STU-AP-01", b_port: "Gi0", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "1000" },
+    { a: "NOC-AS-01", a_port: "Gi1/0/1", b: "NOC-PHONE-01", b_port: "Gi0", is_pc: false, members: [], op_status: "up", confirmation: "both-seen", speed: "100" },
   ],
   tiers: [
     ["MBG-CORE-01", "MBG-CORE-02"],
     ["MBG-DS-01", "MBG-DS-02"],
     ["STU-AS-01", "STU-AS-02", "STU-AS-03", "NOC-AS-01", "CAM-AS-01"],
+    ["STU-AP-01", "NOC-PHONE-01"],
   ],
-  summary: { n_nodes: 9, n_cables: 13, n_tiers: 3, op: { up: 10, down: 2, unknown: 1 } },
+  summary: { n_nodes: 11, n_cables: 15, n_tiers: 4, op: { up: 12, down: 2, unknown: 1 } },
 };
 
 const CAUSAL_FLOWS = {
