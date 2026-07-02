@@ -16,8 +16,15 @@ no live network needed to read them:
   **keystone devices** the fleet most depends on (by migration blast radius),
   and per-move-group readiness;
 - an interactive single-file **Network Migration Explorer** (the
-  `blast_radius_explorer.html` viewer) with eight analysis modes and a graphical
+  `blast_radius_explorer.html` viewer) with 13 analysis modes and a graphical
   **Risk cockpit** that distils thousands of findings into "fix these first."
+
+The engine is **multi-vendor**: Cisco IOS / IOS-XE / NX-OS over SSH show-text plus
+JSON controller-REST ingestion (Cisco ACI/APIC, Catalyst SD-WAN/vManage, ISE, FMC),
+Arista EOS, Juniper SRX, Fortinet FortiGate, and AWS security-group exports — and it
+carries a set of offline **proof engines** (ACL shadow-proofs, RIB→FIB path traces,
+capture integrity, parse-yield telemetry, state assertions, chain-of-custody manifest)
+whose verdicts are coverage-honest: absence of evidence is never reported as health.
 
 Underneath sit a per-switch **health score (0–100)**, a per-move-group
 **migration-readiness verdict** (`READY` / `CAUTION` / `NOT READY`), a
@@ -34,7 +41,7 @@ consolidated severity-ranked **migration punch-list**, and a blast-radius
 |------|------------|
 | [`COLLECT_PARSE_V3_23_0.py`](COLLECT_PARSE_V3_23_0.py) | The toolkit — collects over SSH (netmiko), parses, scores health, computes migration readiness, and writes the workbook + explorer. |
 | [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) | Documentation for the current version (health scoring, the 10-check readiness checklist, the HTML Health mode) plus the change log. |
-| [`cisco_toolkit/blast_radius_explorer.html`](cisco_toolkit/blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot — topology graph plus eight analysis modes (Blast radius, Path trace, Compare, Flow, **Health** w/ the Risk cockpit, Protocols, Cross-Layer, Causality). The live snapshot is baked into a copy of this template on every run. (Lives inside the package so it ships in a wheel.) |
+| [`cisco_toolkit/blast_radius_explorer.html`](cisco_toolkit/blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot — topology graph plus 13 analysis modes (Blast radius, Path trace, Compare, Flow, **Health** w/ the Risk cockpit, Protocols, Cross-Layer, Causal Flow, Waves, Apps, Review, Design, Cable Map). The live snapshot is baked into a copy of this template on every run. (Lives inside the package so it ships in a wheel.) |
 | [`compass_artifact_..._markdown1.md`](compass_artifact_wf-4178d659-b124-4412-9854-fc7bea5b9094_text_markdown1.md) | Design playbook — best-practice layout, color, and interaction redesign for the Explorer. |
 | [`compass_artifact_..._markdown.md`](compass_artifact_wf-6d4cf577-c82e-4281-8744-55bdc473f75d_text_markdown.md) | Hardening playbook — parsing robustness, collection, scoring validation, and an accessible Explorer. |
 
