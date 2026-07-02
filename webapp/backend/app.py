@@ -7,6 +7,7 @@ so the whole platform runs from one origin in production.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -14,10 +15,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -106,6 +107,33 @@ class GateIn(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+# --- client-data confidentiality (Plan A / Tier-1 #4) -------------------------------
+# The snapshots served here are CLIENT data (topology, IPs, serials, parsed configs).
+# Browser vector: CORS is localhost-origin-only (the dev UI proxies /api same-origin, so
+# even that rarely applies); internet-origin pages get no readable responses and no
+# approved preflights. Network vector: without ASSESSHUB_TOKEN the API serves LOOPBACK
+# clients only; setting the token (required for any non-loopback bind) gates every /api
+# route behind `Authorization: Bearer <token>`. /api/health stays open as a liveness
+# probe — it carries no client data.
+_LOCALHOST_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+
+def _cors_origins() -> List[str]:
+    """Extra allowed origins, comma-separated in ASSESSHUB_CORS_ORIGINS (advanced setups
+    only — e.g. a reverse-proxied UI on another host). Empty by default."""
+    raw = os.environ.get("ASSESSHUB_CORS_ORIGINS", "")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def _client_is_loopback(request: Request) -> bool:
+    """True when the ASGI peer is loopback (or an in-process test harness, which has no
+    real socket). Deliberately conservative: an unknown/forwarded peer is NOT loopback."""
+    host = getattr(request.client, "host", None)
+    if host is None or host == "testclient":
+        return True
+    return host == "::1" or host.startswith("127.")
+
+
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
     try:
         snap = json.loads(raw.decode("utf-8"))
@@ -135,8 +163,36 @@ def create_app(db_path: str | None = None) -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+        allow_origins=_cors_origins(),                 # env extras only; empty by default
+        allow_origin_regex=_LOCALHOST_ORIGIN_RE,       # localhost on any port — never '*'
+        allow_methods=["*"], allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _api_access_guard(request: Request, call_next):
+        """Registered AFTER (so wrapping OUTSIDE) CORSMiddleware; skips OPTIONS so
+        preflights fall through to CORS. Token set -> Bearer required on all /api;
+        token unset -> /api is loopback-only. Health/liveness stays open."""
+        path = request.url.path
+        if (request.method == "OPTIONS" or not path.startswith("/api/")
+                or path == "/api/health"):
+            return await call_next(request)
+        token = os.environ.get("ASSESSHUB_TOKEN", "")
+        if token:
+            supplied = request.headers.get("authorization", "")
+            if not hmac.compare_digest(supplied.encode("utf-8", "replace"),
+                                       f"Bearer {token}".encode("utf-8")):
+                return JSONResponse({"detail": "This AssessHub requires an API token: "
+                                               "send 'Authorization: Bearer <ASSESSHUB_TOKEN>'."},
+                                    status_code=401)
+        elif not _client_is_loopback(request):
+            return JSONResponse({"detail": "AssessHub serves loopback clients only until an API "
+                                           "token is configured — set ASSESSHUB_TOKEN on the server "
+                                           "and send it as 'Authorization: Bearer <token>' to enable "
+                                           "non-local access to client data."},
+                                status_code=403)
+        return await call_next(request)
+
     app.state.store = store
 
     # -- meta --------------------------------------------------------------
