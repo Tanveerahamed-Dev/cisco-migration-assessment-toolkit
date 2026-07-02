@@ -3085,6 +3085,7 @@
     "order": 0,
     "collected": true,
     "op_status": "up",
+    "kind": "device",
     "badges": [],
     "ports": [
      {
@@ -3124,6 +3125,7 @@
     "order": 0,
     "collected": false,
     "op_status": "unknown",
+    "kind": "ap",
     "badges": [
      "uncollected"
     ],
@@ -3144,6 +3146,7 @@
     "order": 1,
     "collected": false,
     "op_status": "unknown",
+    "kind": "phone",
     "badges": [
      "uncollected"
     ],
@@ -3164,6 +3167,7 @@
     "order": 2,
     "collected": true,
     "op_status": "up",
+    "kind": "device",
     "badges": [],
     "ports": [
      {
@@ -3189,6 +3193,7 @@
     "order": 3,
     "collected": false,
     "op_status": "unknown",
+    "kind": "router",
     "badges": [
      "uncollected"
     ],
@@ -3209,6 +3214,7 @@
     "order": 0,
     "collected": true,
     "op_status": "up",
+    "kind": "device",
     "badges": [],
     "ports": [
      {
@@ -3234,6 +3240,7 @@
     "order": 0,
     "collected": false,
     "op_status": "unknown",
+    "kind": "ap",
     "badges": [
      "uncollected"
     ],
@@ -3261,6 +3268,7 @@
       "b_port": "Gi0"
      }
     ],
+    "speed": "100",
     "confirmation": "One end (access1)",
     "op_status": "up"
    },
@@ -3276,6 +3284,7 @@
       "b_port": "Gi0/1"
      }
     ],
+    "speed": "1000",
     "confirmation": "Both ends",
     "op_status": "up"
    },
@@ -3291,6 +3300,7 @@
       "b_port": "Po1"
      }
     ],
+    "speed": "2000",
     "confirmation": "Both ends",
     "op_status": "up"
    },
@@ -3306,6 +3316,7 @@
       "b_port": "Port"
      }
     ],
+    "speed": "",
     "confirmation": "One end (core2)",
     "op_status": "unknown"
    },
@@ -3321,6 +3332,7 @@
       "b_port": "Gi0"
      }
     ],
+    "speed": "",
     "confirmation": "One end (core2)",
     "op_status": "unknown"
    },
@@ -3336,6 +3348,7 @@
       "b_port": "Gi0/0/1"
      }
     ],
+    "speed": "",
     "confirmation": "One end (core2)",
     "op_status": "unknown"
    }

@@ -354,12 +354,14 @@ def test_cable_map_endpoint(client):
     for n in cm["nodes"]:
         assert n["op_status"] in valid
         assert isinstance(n["tier"], int) and isinstance(n["collected"], bool)
+        assert isinstance(n.get("kind"), str) and n["kind"]      # evidence-based kind (fabric-only filter input)
         # an uncollected device is [NOT OBSERVED] neutral, never a fake 'up'
         if not n["collected"]:
             assert n["op_status"] == "unknown" and "uncollected" in n["badges"]
     for c in cm["cables"]:
         assert c["op_status"] in valid
         assert c["a"] in hosts and c["b"] in hosts
+        assert "speed" in c                                       # link speed surfaces on every cable
     # the summary op rollup accounts for every cable
     op = cm["summary"]["op"]
     assert op["up"] + op["down"] + op["unknown"] == len(cm["cables"])
