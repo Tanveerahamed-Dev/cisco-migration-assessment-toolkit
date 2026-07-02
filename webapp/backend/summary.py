@@ -64,6 +64,12 @@ SECTION_LABELS: List[tuple] = [
     ("endpoint_identity", "Endpoints"),
     ("lifecycle_risk", "Lifecycle / EoL"),
     ("collection_completeness", "Collection completeness"),
+    # Plan A / Tier-1 #3: the zero-parse yield ledger (cmdio.parse_yield_report, published in every
+    # snapshot). Lives under the Collection Completeness sheet in the workbook -- same adjacency here.
+    # Dict {summary, per_parser, events, events_truncated}: _section_index counts `events` (its first
+    # inner list), so a run where every content-bearing command parsed hides the tab (the platform
+    # convention) -- telemetry about the PARSER, never a device verdict.
+    ("parse_yield", "Parse yield"),
 ]
 
 
