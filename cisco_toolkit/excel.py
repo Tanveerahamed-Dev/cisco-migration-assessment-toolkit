@@ -1254,10 +1254,15 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
 
 COLLECTION_COMPLETENESS_SHEET_NAME = "Collection Completeness"   # NEW-V3.23.109
 
-def write_collection_completeness_sheet(wb, cc: dict) -> None:
+def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict] = None) -> None:
     """Write the 'Collection Completeness' sheet from compute_collection_completeness(): the
     pre-assessment blind-spot list -- inventory devices that were not collected / only partially
-    collected, and which essential commands are missing. Lead row is the summary."""
+    collected, and which essential commands are missing. Lead row is the summary.
+
+    Plan A / Tier-1 #3: a PARSE YIELD section follows the device rows — commands that returned
+    real content but whose parser produced 0 entities (collected-but-unparsed evidence; a
+    possible platform-variant format gap, NEVER a device verdict). Appended BELOW the existing
+    layout so the frozen sheet-schema header row is untouched."""
     ws = wb.create_sheet(COLLECTION_COMPLETENESS_SHEET_NAME)
     s = (cc or {}).get("summary") or {}
     ws.cell(1, 1, "Inventory").font = Font(bold=True)
@@ -1283,11 +1288,53 @@ def write_collection_completeness_sheet(wb, cc: dict) -> None:
             if col == 1 and d.get("status") in fill:
                 c.fill = PatternFill("solid", fgColor=fill[d["status"]])
                 c.font = Font(bold=True)
-    for i, w in enumerate([15, 34, 13, 46], 1):
+
+    # --- Parse Yield (zero-parse telemetry) — below the device rows, schema-neutral ---
+    py = parse_yield or {}
+    ps = py.get("summary") or {}
+    events = py.get("events") or []
+    mbe = {n for n, c in (py.get("per_parser") or {}).items()
+           if isinstance(c, dict) and c.get("may_be_empty")}
+    r0 = 3 + max(len(rows), 1) + 2
+    t = ws.cell(r0, 1, "Parse Yield — content in, 0 entities out")
+    t.font = Font(bold=True)
+    ws.cell(r0, 3, f"suspect {ps.get('zero_yield_suspect', 0)} · expected-empty "
+                   f"{ps.get('zero_yield_expected', 0)} · parser errors {ps.get('parse_errors', 0)} — "
+                   "collected-but-unparsed evidence (possible parser format gap), "
+                   "NEVER a device health verdict").font = Font(italic=True)
+    sub = ["Class", "Parser", "Device", "Command", "Lines in"]
+    for col, h in enumerate(sub, 1):
+        c = ws.cell(r0 + 1, col, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343")
+    if not events:
+        ws.cell(r0 + 2, 1, f"None — {ps.get('parsers_called', 0)} parser(s) ran; every "
+                           "content-bearing command yielded entities (or is expected-empty).")
+    r = r0 + 2
+    for ev in events:
+        klass = ("parser ERROR" if ev.get("error")
+                 else "expected-empty" if ev.get("parser") in mbe
+                 else "SUSPECT format gap")
+        vals = [klass, ev.get("parser", ""), ev.get("device", ""), ev.get("cmd", ""),
+                ev.get("lines_in", "")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v)
+            if col == 1 and klass != "expected-empty":
+                c.fill = PatternFill("solid", fgColor="F4CCCC")
+                c.font = Font(bold=True)
+        r += 1
+    if py.get("events_truncated"):
+        ws.cell(r, 1, "… event list truncated at the cap — per-parser counters above carry "
+                      "the full counts").font = Font(italic=True)
+
+    # widths serve BOTH stacked sections (Status/Class, Device/Parser, quality/Device,
+    # missing-commands/Command, -/Lines-in) — D keeps the original 46 for the long lists
+    for i, w in enumerate([21, 34, 24, 46, 10], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A4"
     logger.info(f"  [OK] '{COLLECTION_COMPLETENESS_SHEET_NAME}' sheet: {len(rows)} blind spot(s) "
-                f"of {s.get('inventory', 0)} inventory device(s)")
+                f"of {s.get('inventory', 0)} inventory device(s); parse-yield suspects: "
+                f"{ps.get('zero_yield_suspect', 0)}")
 
 
 HEALTH_SCORES_SHEET_NAME = "Health Scores"

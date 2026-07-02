@@ -118,6 +118,21 @@ python -m uvicorn backend.app:app --app-dir webapp --port 8000
 Open <http://127.0.0.1:8000>, click **“Open a sample fleet”**, and explore — the sample is the
 bundled demo snapshot, no live network needed.
 
+### Access model (client data lives here)
+
+Snapshots are **client data** (topology, IPs, serials, parsed configs), so the API is
+locked down by default:
+
+- **Zero-config localhost** — with no token configured, `/api` answers **loopback clients
+  only**; CORS allows **localhost origins only** (never `*`). The workflows above are
+  unchanged.
+- **Any non-local access needs a token** — set `ASSESSHUB_TOKEN=<secret>` on the server
+  and send `Authorization: Bearer <secret>`; once set, the token is required on every
+  `/api` route (only the `/api/health` liveness probe stays open). Add trusted extra UI
+  origins with `ASSESSHUB_CORS_ORIGINS=https://host1,https://host2` if you reverse-proxy.
+- The embedded explorer renders in a **sandboxed iframe without `allow-same-origin`**, so
+  even its own scripts cannot reach this app's API or storage.
+
 ### Dev mode (hot reload)
 
 One command runs both servers (FastAPI autoreload + Vite HMR) and stops both on Ctrl+C:

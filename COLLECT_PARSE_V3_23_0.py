@@ -356,8 +356,9 @@ from cisco_toolkit.analyze import (
 from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
-# build); only _CISCO_ERRORS stays (platform detection reuses it).
-from cisco_toolkit.cmdio import _CISCO_ERRORS
+# build); only _CISCO_ERRORS stays (platform detection reuses it). Plan A / Tier-1 #3
+# adds the zero-parse yield ledger (reset at run start, published as snap['parse_yield']).
+from cisco_toolkit.cmdio import _CISCO_ERRORS, parse_yield_report, reset_parse_ledger
 # NEW-V3.23.30 (PHASE 2.7 step 20): the Excel layer's shared sheet/header helpers; imported
 # back so the write_* sheet builders + main()'s template-fill keep working unchanged.
 from cisco_toolkit.excel import (
@@ -456,7 +457,8 @@ from cisco_toolkit.build import (
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_workbook,
                                 write_campaign_workbook, redact_snapshot,
-                                redact_collected_inplace, redact_workbook_cells)   # campaign trend; audit-3 #8 workbook redact
+                                redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
+                                redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -1419,6 +1421,13 @@ def main():
                          "bundle -- the snapshot JSON, the HTML explorer, AND the always-produced .xlsx "
                          "workbook (consistent, subnet-preserving; hostnames kept) -- so every deliverable "
                          "can be shared without leaking real addressing. Default off.")
+    ap.add_argument("--redact-collection", action="store_true",
+                    help="Plan A Tier-1 #5: scrub SECRET VALUES (passwords / SNMP communities / keys) "
+                         "IN PLACE across the raw collection dir's .txt captures, AFTER analysis "
+                         "completes (this run reads the originals). Values only -- IPs / hostnames are "
+                         "kept so the dir stays analyzable and remains the --compare/--trend source; "
+                         "nothing is deleted. Idempotent. Rewritten captures will no longer match "
+                         "archive hashes recorded at collection time (deliberate). Default off.")
     args = ap.parse_args()
 
     if args.debug_arp:
@@ -1583,6 +1592,9 @@ def main():
         return hostname, platform, cmd_to_file
 
     # Phase 1: Collect
+    # Fresh zero-parse ledger per run (webapp ingest reuses this pipeline in-process, so
+    # the ledger must never carry a previous run's events into this snapshot).
+    reset_parse_ledger()
     workers = max(1, min(args.workers, len(devices)))
     logger.info(f"\n[Phase 1] Collecting {len(devices)} device(s) with {workers} parallel worker(s) ...")
     all_cmd_to_files: Dict[str, Dict[str,str]] = {}
@@ -1606,6 +1618,13 @@ def main():
         all_devices_meta.append((hostname, platform, cmd_to_file))
 
     logger.info(f"  Collection complete: {len(all_devices_meta)}/{len(devices)} succeeded.")
+    # Plan A / Tier-1 #5 — say it on EVERY run, loudly: the raw captures are the one output
+    # --redact never touches, and they hold running-configs with cleartext secrets.
+    logger.warning(f"  [SENSITIVE] Raw collection dir holds CLEARTEXT device output "
+                   f"(running-configs can embed passwords / SNMP communities / keys): {root_dir} "
+                   f"-- --redact protects the DELIVERABLES only; once analysis is final, scrub the "
+                   f"raw captures in place with --redact-collection (kept, never auto-deleted -- "
+                   f"it is the --compare/--trend source).")
 
     # Phase 2: Global ARP
     logger.info("\n[Phase 2] Building global ARP table ...")
@@ -2061,7 +2080,11 @@ def main():
     _inventory_hosts = [d.get("hostname", "") for d in devices]
     collection_completeness = _run_phase("Collection completeness", compute_collection_completeness,
                                          _inventory_hosts, all_cmd_to_files, _default={})
-    _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb, collection_completeness)
+    # parse_yield_report() here and at snapshot assembly return IDENTICAL content: all parsing
+    # is complete before either runs, and the sheet writers call no _safe_parse (excel.py only
+    # loads raw text for its 3 re-parse sheets), so the ledger is quiescent between the two.
+    _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb,
+               collection_completeness, parse_yield_report())
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
@@ -2454,6 +2477,7 @@ def main():
     if external_reconcile is not None:                               # roadmap B (opt-in: only when --import-inventory supplied)
         snap_dict["external_reconcile"] = external_reconcile         # declared source-of-truth vs collected evidence
     snap_dict["capture_integrity"] = capture_integrity              # roadmap K1 (per-capture truncation/pager/error guard)
+    snap_dict["parse_yield"] = parse_yield_report()                 # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
     if whatif_result is not None:                                   # roadmap G4 (opt-in: only when --scenario supplied)
         snap_dict["whatif"] = whatif_result                         # failure-injection what-if results
     if path_intents is not None:                                    # roadmap G3 (opt-in: only when --path-intents supplied)
@@ -2699,6 +2723,18 @@ def main():
                     f"{len(_run_manifest.get('artifacts') or [])} artifact(s))")
     except Exception as e:
         logger.warning(f"  Run manifest write failed (non-fatal): {e}")
+
+    # Phase 40: opt-in raw-capture secret scrub (Plan A / Tier-1 #5). Deliberately the VERY
+    # last step: every deliverable above was built from the ORIGINAL captures, and the sealed
+    # manifest is already written. Secret VALUES only — the dir stays analyzable/--compare-able.
+    if getattr(args, "redact_collection", False):
+        try:
+            _scanned, _changed = redact_collection_dir(root_dir)
+            logger.info(f"[OK] redact-collection: scrubbed secret values in {_changed} of "
+                        f"{_scanned} raw capture file(s) under {root_dir} (in place, idempotent; "
+                        f"IPs/hostnames kept)")
+        except Exception as e:
+            logger.warning(f"  redact-collection failed (non-fatal; raw dir unchanged): {e}")
 
 
 if __name__ == "__main__":

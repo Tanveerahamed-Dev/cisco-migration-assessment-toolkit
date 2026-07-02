@@ -6389,6 +6389,676 @@
    "n_hosts_affected": 2
   }
  },
+ "parse_yield": {
+  "summary": {
+   "parsers_called": 88,
+   "zero_yield_suspect": 0,
+   "zero_yield_expected": 5,
+   "parse_errors": 0,
+   "note": "Zero-yield = the command returned CONTENT but its parser produced 0 entities: collected-but-unparsed evidence, a possible platform-variant format gap in the parser \u2014 never a device state verdict. Absent or error-captured commands are the Collection Completeness axis's domain and are not counted here."
+  },
+  "per_parser": {
+   "parse_aci_bds": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_aci_epgs": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_aci_fabric_nodes": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_aci_faults": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_aci_health": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_aci_tenants": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_aci_vrfs": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_acl_hitcounts": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_acls": {
+    "calls": 3,
+    "with_content": 2,
+    "zero_yield": 1,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_arista_bgp_evpn_summary": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_arista_mlag": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_asa_failover": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_asa_resource_usage": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_aws_security_groups": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_bfd_neighbors": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_bgp_ipv6_summary": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_bgp_summary": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_bgp_table": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_bgp_vpnv4_summary": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_config_hygiene": {
+    "calls": 3,
+    "with_content": 2,
+    "zero_yield": 1,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_copp_drops": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_cpu_utilization": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_crypto_sessions": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_cts_environment_data": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_dmvpn_peers": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_eigrp_neighbors": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_etherchannel_summary_members": {
+    "calls": 2,
+    "with_content": 2,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_evpn_summary": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_fmc_deployable": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_fmc_devices": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_fmc_ha_pairs": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_fmc_ha_status": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_fmc_server_version": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_fortigate_ha_status": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_glbp_summary": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_hsrp_detail": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_hsrp_summary": {
+    "calls": 3,
+    "with_content": 2,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_igmp_groups": {
+    "calls": 6,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_igmp_snooping_querier": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ip_routes": {
+    "calls": 6,
+    "with_content": 4,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ipv6_dhcp_guard_policy": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ipv6_interface_addrs": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ipv6_raguard_policy": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ipv6_route_summary": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ise_nodes": {
+    "calls": 5,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_junos_chassis_cluster": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_lisp_sessions": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_memory_stats": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_mpls_l2vpn_vc": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_mpls_ldp_neighbors": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_mroute_entries": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_multicast_info": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_nat": {
+    "calls": 3,
+    "with_content": 2,
+    "zero_yield": 1,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_neighbors_cdp": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_neighbors_detail": {
+    "calls": 6,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ntp_status": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_nve_peers": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_nve_vni": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_object_groups": {
+    "calls": 3,
+    "with_content": 2,
+    "zero_yield": 1,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_ospf_neighbors": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ospfv3_neighbors": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_pim_neighbors": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_pim_rp_mapping": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_policymap_drops": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_port_security_detail": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_portchannel_protocol_from_summary": {
+    "calls": 2,
+    "with_content": 2,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_ptp_clock": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_redistribution": {
+    "calls": 3,
+    "with_content": 2,
+    "zero_yield": 1,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_run_config_interfaces": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_sdwan_control_connections": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_sdwan_devices": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_sdwan_omp_counters": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_security": {
+    "calls": 3,
+    "with_content": 2,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_show_interface_status": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_show_interface_switchport": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_show_interface_trunk_table": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_show_mac_address_table": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_show_power_inline": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_show_vrf_interface": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_spanning_tree_blockedports": {
+    "calls": 6,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": true
+   },
+   "parse_spanning_tree_detail": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_spanning_tree_root": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_spanning_tree_states": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_storm_control": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_system_resources": {
+    "calls": 3,
+    "with_content": 1,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_vlan_brief": {
+    "calls": 3,
+    "with_content": 3,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_vpc": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   },
+   "parse_vrrp_summary": {
+    "calls": 3,
+    "with_content": 0,
+    "zero_yield": 0,
+    "errors": 0,
+    "may_be_empty": false
+   }
+  },
+  "events": [
+   {
+    "parser": "parse_acls",
+    "device": "access1",
+    "cmd": "show running-config",
+    "file": "show_running-config.txt",
+    "lines_in": 34,
+    "error": false
+   },
+   {
+    "parser": "parse_config_hygiene",
+    "device": "access1",
+    "cmd": "show running-config",
+    "file": "show_running-config.txt",
+    "lines_in": 34,
+    "error": false
+   },
+   {
+    "parser": "parse_nat",
+    "device": "access1",
+    "cmd": "show running-config",
+    "file": "show_running-config.txt",
+    "lines_in": 34,
+    "error": false
+   },
+   {
+    "parser": "parse_object_groups",
+    "device": "access1",
+    "cmd": "show running-config",
+    "file": "show_running-config.txt",
+    "lines_in": 34,
+    "error": false
+   },
+   {
+    "parser": "parse_redistribution",
+    "device": "access1",
+    "cmd": "show running-config",
+    "file": "show_running-config.txt",
+    "lines_in": 34,
+    "error": false
+   }
+  ],
+  "events_truncated": false
+ },
  "routes": {
   "core1": [
    {
