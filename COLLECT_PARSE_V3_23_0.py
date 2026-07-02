@@ -1049,7 +1049,13 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
 # =============================================================================
 # DEVICES LOADER
 # =============================================================================
-def load_devices(devices_file: str) -> List[dict]:
+def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
+    # FIX-V3.23.177: allow_prompt gates ONLY the interactive getpass fallback (chain step 4).
+    # main() passes allow_prompt=not args.no_collect: an offline re-analysis never opens SSH,
+    # so blocking the whole pipeline on a TTY password prompt for credentials that are never
+    # used hung real runs (password-less devices.json + TTY stdin, perf harness 2026-07-02).
+    # The non-blocking env chain (steps 1-3) always runs; default True keeps every other
+    # caller -- and live collection -- on the full V3.23.1 behaviour.
     if not os.path.isfile(devices_file):
         raise FileNotFoundError(f"Devices file not found: {devices_file}")
     with open(devices_file, "r", encoding="utf-8-sig") as f:
@@ -1103,6 +1109,7 @@ def load_devices(devices_file: str) -> List[dict]:
         #   2) per-entry  "password_env": "VAR"   -> os.environ["VAR"]
         #   3) global      $CISCO_PASS
         #   4) (after the loop) a secure getpass prompt, only on an interactive TTY
+        #      AND only when prompting is allowed (live collection; never --no-collect)
         pw = d.get("password") or ""
         if not pw and d.get("password_env"):
             pw = os.environ.get(d["password_env"], "")
@@ -1118,7 +1125,12 @@ def load_devices(devices_file: str) -> List[dict]:
     # logs the auth failure and, per V3.23.1, does not retry it). Prompt once per username.
     need_pw = [d for d in data if not d["password"]]
     if need_pw:
-        if sys.stdin.isatty():
+        if not allow_prompt:
+            # FIX-V3.23.177: offline run -- credentials are never used, so neither block on a
+            # prompt nor nag about $CISCO_PASS; leave them blank with a debug breadcrumb only.
+            logger.debug(f"  {len(need_pw)} device(s) without a password; offline run "
+                         f"(--no-collect) never uses credentials - not prompting.")
+        elif sys.stdin.isatty():
             import getpass
             by_user: Dict[str, str] = {}
             for d in need_pw:
@@ -1477,7 +1489,7 @@ def main():
     if not os.path.exists(args.template):
         raise FileNotFoundError(f"Template not found: {args.template}")
 
-    devices = load_devices(args.devices_file)
+    devices = load_devices(args.devices_file, allow_prompt=not args.no_collect)  # FIX-V3.23.177: --no-collect must never block on a TTY password prompt
     stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_xlsx = args.output or DEFAULT_OUTPUT_FILE.format(stamp)
 
