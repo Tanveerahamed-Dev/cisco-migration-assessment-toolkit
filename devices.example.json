@@ -1,0 +1,21 @@
+[
+  {
+    "hostname": "CORE-SW-01",
+    "ip": "10.0.0.1",
+    "username": "assess-ro",
+    "password_env": "CORE_SW_PASS",
+    "platform": "cisco_xe"
+  },
+  {
+    "hostname": "DIST-SW-01",
+    "ip": "10.0.0.2",
+    "username": "assess-ro",
+    "platform": "cisco_nxos"
+  },
+  {
+    "hostname": "ACCESS-SW-01",
+    "ip": "10.0.0.3",
+    "username": "assess-ro",
+    "platform": "auto"
+  }
+]
