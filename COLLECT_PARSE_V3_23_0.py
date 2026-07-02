@@ -285,7 +285,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 'from dataclasses import dataclass, field' moved to cisco_toolkit.analyze with
 # ScoringConfig (PHASE 2.7 step 10) - the monolith's last dataclass user.
 from datetime import datetime
-from typing import Dict, List   # Optional dropped step 28 (build_interfaces moved); Tuple step 27
+from typing import Callable, Dict, List, NamedTuple, Optional   # Callable/NamedTuple/Optional: the Tier-2 #8 axis registry
 
 # 'from openpyxl.cell.cell import MergedCell' dropped (step 26): its only user,
 # append_interface_rows, moved to cisco_toolkit.excel.
@@ -1355,6 +1355,123 @@ def _run_phase(label, fn, *args, _default=None, **kwargs):
         return _default
 
 
+# =============================================================================
+# PER-DEVICE AXIS REGISTRY (Plan A / Tier-2 #8)
+# =============================================================================
+# ONE entry wires a per-device evidence axis through Phase 5.6. The accumulator
+# declaration + build-loop stanza (+ its log line) used to be hand-parallel code
+# sites per axis — the drift generator that kept finished axes dark for months
+# (see cisco_toolkit/summary.py's NOS-quartet note). Follows the _DETECTORS
+# precedent (design_advisor). The snap-assign site stays explicit at snapshot
+# assembly; tests/test_axis_registry.py enforces that every registry key ships
+# in the golden snapshot, so forgetting that site fails the suite.
+#   key         store name AND (except the three transient feeds) the snap key
+#   builder     per-device fn(cmd_to_file) -> value
+#   tag/log     the Phase-5.6 log line, preserved verbatim (log=None: silent)
+#   keep        None = keep truthy; callable = custom predicate (pim / PROTO)
+#   keep_always True = record EVERY host ('' / all-empty declares not-collected)
+class _AxisSpec(NamedTuple):
+    key: str
+    builder: Callable
+    tag: str
+    log: Optional[Callable]
+    keep: Optional[Callable]
+    keep_always: bool
+
+
+_PER_DEVICE_AXES: List[_AxisSpec] = [
+    _AxisSpec("run_configs", read_run_config, "RC", None, None, False),                  # NEW-V3.23.146 (golden-config drift feed)
+    _AxisSpec("syslogs", read_syslog_log, "SYSLOG", None, None, True),                   # NEW-V3.23.164 (every host recorded so not-collected is declared)
+    _AxisSpec("platform_metrics", build_platform_metrics, "PLAT", None, None, True),     # NEW-V3.23.167 (all-empty members = not collected)
+    _AxisSpec("acls", build_acls, "ACL",
+              lambda v: f"{len(v)} access-list(s) parsed", None, False),
+    _AxisSpec("object_groups", build_object_groups, "ACL",
+              lambda v: f"{len(v)} object-group(s) parsed", None, False),
+    _AxisSpec("nat", build_nat, "NAT",
+              lambda v: f"{len(v.get('static', []))} static, "
+                        f"{len(v.get('dynamic', []))} dynamic rule(s)", None, False),
+    _AxisSpec("security", build_security, "SEC",
+              lambda v: f"{v.get('summary', {}).get('fail', 0)} fail / "
+                        f"{len(v.get('findings', []))} check(s) ({v.get('summary', {}).get('grade', '')})",
+              None, False),
+    _AxisSpec("config_hygiene", build_config_hygiene, "HYGIENE",
+              lambda v: f"{v.get('summary', {}).get('undefined', 0)} undefined ref(s), "
+                        f"{v.get('summary', {}).get('unused', 0)} unused structure(s)", None, False),
+    _AxisSpec("stp_roots", build_stp_roots, "STP",
+              lambda v: f"root bridge info for {len(v)} VLAN(s)", None, False),
+    _AxisSpec("vpc", build_vpc, "vPC",
+              lambda v: f"domain {v.get('domain_id')} role {v.get('role') or '?'}, "
+                        f"{len(v.get('vpcs', []))} vPC(s)", None, False),
+    _AxisSpec("fhrp_detail", build_fhrp_detail, "FHRP",
+              lambda v: f"{len(v)} HSRP group(s) (detail)", None, False),
+    _AxisSpec("overlay", build_overlay, "VXLAN",
+              lambda v: f"{len(v.get('nve_peers', []))} NVE peer(s)", None, False),
+    _AxisSpec("copp", build_copp, "CoPP",
+              lambda v: f"{len(v)} control-plane class(es)", None, False),
+    _AxisSpec("mpls", build_mpls, "MPLS",
+              lambda v: f"{len(v.get('ldp_neighbors', []))} LDP session(s), "
+                        f"{len(v.get('vpnv4_neighbors', []))} VPNv4 peer(s), "
+                        f"{len(v.get('l2vpn_vcs', []))} L2VPN VC(s)", None, False),
+    # universal architecture coverage + multi-vendor + controller-REST axes (silent by
+    # design: their evidence is optional exports, absent on most fleets)
+    _AxisSpec("lisp", build_lisp, "LISP", None, None, False),
+    _AxisSpec("cts", build_cts, "CTS", None, None, False),
+    _AxisSpec("dmvpn", build_dmvpn, "DMVPN", None, None, False),
+    _AxisSpec("crypto", build_crypto, "CRYPTO", None, None, False),
+    _AxisSpec("bfd", build_bfd, "BFD", None, None, False),
+    _AxisSpec("aci", build_aci, "ACI", None, None, False),
+    _AxisSpec("sdwan", build_sdwan, "SDWAN", None, None, False),
+    _AxisSpec("firewall", build_firewall, "FW", None, None, False),
+    _AxisSpec("ise", build_ise, "ISE", None, None, False),
+    _AxisSpec("fmc", build_fmc, "FMC", None, None, False),
+    _AxisSpec("arista", build_arista, "ARISTA", None, None, False),                      # MULTI-VENDOR ({} on a Cisco device)
+    _AxisSpec("juniper", build_juniper, "JUNIPER", None, None, False),                   # MULTI-VENDOR ({} on a non-Juniper device)
+    _AxisSpec("cloud", build_cloud, "CLOUD", None, None, False),                         # PUBLIC CLOUD ({} when no cloud export)
+    _AxisSpec("fortigate", build_fortigate, "FGT", None, None, False),                   # MULTI-VENDOR ({} on a non-FortiGate device)
+    _AxisSpec("mroute", build_mroute, "MROUTE", None, None, False),                      # CISCO DEPTH ({} when no mroute table)
+    _AxisSpec("ipv6_nd", build_ipv6_nd, "V6ND", None, None, False),
+    _AxisSpec("ipv6_routing", build_ipv6_routing, "V6RT", None, None, False),
+    _AxisSpec("pim", build_pim, "PIM",
+              lambda v: f"{len(v.get('neighbors', []))} neighbor(s), "
+                        f"{(v.get('rp_mapping') or {}).get('rp_count', 0)} RP(s)",
+              lambda v: bool(v.get("rp_mapping") or v.get("neighbors")), False),
+    _AxisSpec("ipv6_fhs", build_ipv6_fhs, "V6FHS",
+              lambda v: f"dualstack={v.get('dualstack')} ra_guard={v.get('ra_guard_present')}",
+              None, False),
+    _AxisSpec("ntp", build_ntp, "NTP",
+              lambda v: f"synchronized={v.get('synchronized')} stratum={v.get('stratum')}",
+              None, False),
+    _AxisSpec("port_security", build_port_security_detail, "PSEC",
+              lambda v: f"{len(v)} secured port(s)", None, False),
+    _AxisSpec("storm_control", build_storm_control, "STORM",
+              lambda v: f"{len(v)} storm-control rule(s)", None, False),
+    _AxisSpec("qos_runtime", build_qos_runtime, "QOSRT",
+              lambda v: f"{len(v)} egress class(es)", None, False),
+    _AxisSpec("shadow_infra", build_undocumented_neighbors, "SHADOW",
+              lambda v: f"{len(v)} infra neighbour(s) seen", None, False),
+    _AxisSpec("routing_neighbors", build_routing_neighbors, "PROTO",
+              lambda v: f"{len(v['ospf'])} OSPF, {len(v['eigrp'])} EIGRP, "
+                        f"{len(v['bgp'])} BGP adjacency(ies)",
+              lambda v: any(v.values()), False),
+    _AxisSpec("redistribution", build_redistribution, "PROTO",
+              lambda v: f"{len(v)} redistribution edge(s)", None, False),
+]
+
+
+def _run_per_device_axes(stores: Dict[str, dict], hostname: str, cmd_to_file: Dict[str, str],
+                         specs: Optional[List[_AxisSpec]] = None) -> None:
+    """Phase-5.6 driver: run every registered builder for ONE device in registry order,
+    honoring each axis's keep semantics; the per-axis log line fires only when kept."""
+    for sp in (_PER_DEVICE_AXES if specs is None else specs):
+        v = sp.builder(cmd_to_file)
+        kept = True if sp.keep_always else (bool(sp.keep(v)) if sp.keep else bool(v))
+        if not kept:
+            continue
+        stores[sp.key][hostname] = v
+        if sp.log is not None:
+            logger.info(f"  [{sp.tag}] {hostname}: {sp.log(v)}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=f"Cisco Migration Extractor V{__version__}")
     ap.add_argument("--devices-file",   default=None,
@@ -1703,196 +1820,56 @@ def main():
                     f"PSU={dp.num_power_supplies}  "
                     f"cap={dp.power_capacity_w}  draw={dp.power_drawn_w}")
 
-    # Phase 5.6: ACL definitions (L4 allow/deny sim) - parsed from the already-collected
-    # run-config; emitted into the snapshot below so the explorer can evaluate flows offline.
-    all_acls: Dict[str, dict] = {}
-    all_object_groups: Dict[str, dict] = {}
-    all_nat: Dict[str, dict] = {}                                    # NEW-V3.23.50 (NAT inventory)
-    all_security: Dict[str, dict] = {}                               # NEW-V3.23.59 (CIS-aligned security posture)
-    all_config_hygiene: Dict[str, dict] = {}                         # NEW-V3.23.61 (undefined refs / unused structures)
-    all_stp_roots: Dict[str, dict] = {}                              # NEW-V3.23.62 (per-VLAN STP root bridge)
-    all_vpc: Dict[str, dict] = {}                                    # NEW-V3.23.125 (vPC / MLAG status per device)
-    all_fhrp_detail: Dict[str, list] = {}                            # FHRP detail (show standby) per device -> snap['fhrp_detail']
-    all_overlay: Dict[str, dict] = {}                                # VXLAN-EVPN overlay (show nve peers) per device -> snap['overlay']
-    all_copp: Dict[str, list] = {}                                   # CoPP drop counters (show policy-map control-plane) per device -> snap['copp']
-    all_mpls: Dict[str, dict] = {}                                   # SP/MPLS service-plane state (LDP/VPNv4/L2VPN) per device -> snap['mpls']
-    all_aci: Dict[str, dict] = {}                              # Cisco ACI (APIC JSON export) -> snap['aci']
-    all_sdwan: Dict[str, dict] = {}                            # Cisco Catalyst SD-WAN (vManage JSON export) -> snap['sdwan']
-    all_firewall: Dict[str, dict] = {}                         # Cisco firewall (ASA/FTD failover) HA -> snap['firewall']
-    all_ise: Dict[str, dict] = {}                              # Cisco ISE (Identity Services Engine) deployment -> snap['ise']
-    all_fmc: Dict[str, dict] = {}                              # Cisco Secure Firewall Mgmt Center (FMC) -> snap['fmc']
-    all_arista: Dict[str, dict] = {}                           # MULTI-VENDOR: Arista EOS MLAG -> snap['arista'] (first non-Cisco vendor axis)
-    all_juniper: Dict[str, dict] = {}                          # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> snap['juniper'] (second non-Cisco vendor axis)
-    all_cloud: Dict[str, dict] = {}                            # PUBLIC CLOUD: AWS security-group exposure -> snap['cloud'] (first cloud-domain axis)
-    all_fortigate: Dict[str, dict] = {}                        # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -> snap['fortigate'] (third non-Cisco vendor axis)
-    all_mroute: Dict[str, dict] = {}                           # CISCO DEPTH: multicast RPF state ((S,G) Null IIF) -> snap['mroute']
-    all_lisp: Dict[str, dict] = {}                             # universal arch coverage -> snap['lisp']
-    all_cts: Dict[str, dict] = {}                             # universal arch coverage -> snap['cts']
-    all_dmvpn: Dict[str, dict] = {}                             # universal arch coverage -> snap['dmvpn']
-    all_crypto: Dict[str, dict] = {}                             # universal arch coverage -> snap['crypto']
-    all_bfd: Dict[str, dict] = {}                             # universal arch coverage -> snap['bfd']
-    all_ipv6_nd: Dict[str, dict] = {}                             # universal arch coverage -> snap['ipv6_nd']
-    all_ipv6_routing: Dict[str, dict] = {}                             # universal arch coverage -> snap['ipv6_routing']
-    all_pim: Dict[str, dict] = {}                                    # PIM-SM control plane (RP mapping / neighbor) per device -> snap['pim']
-    all_ipv6_fhs: Dict[str, dict] = {}                               # IPv6 first-hop security posture per device -> snap['ipv6_fhs']
-    all_ntp: Dict[str, dict] = {}                                    # NTP clock-sync STATE per device -> snap['ntp']
-    all_port_security: Dict[str, dict] = {}                          # access-edge port-security DETAIL per device -> snap['port_security']
-    all_storm_control: Dict[str, list] = {}                          # storm-control action state per device -> snap['storm_control']
-    all_qos_runtime: Dict[str, list] = {}                            # QoS runtime egress drops per device -> snap['qos_runtime']
-    all_shadow_infra: Dict[str, list] = {}                           # undocumented infra CDP/LLDP neighbours per device -> snap['shadow_infra']
-    all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
-    all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
-    all_run_configs: Dict[str, str] = {}                             # NEW-V3.23.146 (raw running-config for golden-config drift)
-    all_syslogs: Dict[str, str] = {}                                 # NEW-V3.23.164 (raw 'show logging' for syslog intelligence; '' = not collected)
-    all_platform_metrics: Dict[str, dict] = {}                       # NEW-V3.23.167 (CPU/memory/system facts; all-empty = not collected)
+    # Phase 5.6: per-device evidence axes — REGISTRY-DRIVEN (Plan A / Tier-2 #8). Each
+    # axis is ONE _PER_DEVICE_AXES entry above main() (the old accumulator decl + loop
+    # stanza + log line were 3 hand-parallel sites per axis — the drift class that kept
+    # finished axes dark); the per-axis log lines are preserved verbatim via the specs'
+    # formatters. The aliases below keep every downstream consumer (computes / sheet
+    # writers / snapshot assigns) reference-identical — this swap is contract-invisible,
+    # proven by the golden suite passing with NO UPDATE_GOLDEN.
+    _axis_stores: Dict[str, dict] = {sp.key: {} for sp in _PER_DEVICE_AXES}
     for hostname, platform, cmd_to_file in all_devices_meta:
-        rc_text = read_run_config(cmd_to_file)                       # NEW-V3.23.146
-        if rc_text:
-            all_run_configs[hostname] = rc_text
-        all_syslogs[hostname] = read_syslog_log(cmd_to_file)         # NEW-V3.23.164 (every host recorded so not-collected is declared)
-        all_platform_metrics[hostname] = build_platform_metrics(cmd_to_file)  # NEW-V3.23.167 (all-empty members = not collected)
-        acls = build_acls(cmd_to_file)
-        if acls:
-            all_acls[hostname] = acls
-            logger.info(f"  [ACL] {hostname}: {len(acls)} access-list(s) parsed")
-        og = build_object_groups(cmd_to_file)
-        if og:
-            all_object_groups[hostname] = og
-            logger.info(f"  [ACL] {hostname}: {len(og)} object-group(s) parsed")
-        nat = build_nat(cmd_to_file)
-        if nat:
-            all_nat[hostname] = nat
-            logger.info(f"  [NAT] {hostname}: {len(nat.get('static', []))} static, "
-                        f"{len(nat.get('dynamic', []))} dynamic rule(s)")
-        sec = build_security(cmd_to_file)
-        if sec:
-            all_security[hostname] = sec
-            _summ = sec.get("summary", {})
-            logger.info(f"  [SEC] {hostname}: {_summ.get('fail', 0)} fail / "
-                        f"{len(sec.get('findings', []))} check(s) ({_summ.get('grade', '')})")
-        hyg = build_config_hygiene(cmd_to_file)
-        if hyg:
-            all_config_hygiene[hostname] = hyg
-            _hs = hyg.get("summary", {})
-            logger.info(f"  [HYGIENE] {hostname}: {_hs.get('undefined', 0)} undefined ref(s), "
-                        f"{_hs.get('unused', 0)} unused structure(s)")
-        stp_roots = build_stp_roots(cmd_to_file)
-        if stp_roots:
-            all_stp_roots[hostname] = stp_roots
-            logger.info(f"  [STP] {hostname}: root bridge info for {len(stp_roots)} VLAN(s)")
-        vpc = build_vpc(cmd_to_file)
-        if vpc:
-            all_vpc[hostname] = vpc
-            logger.info(f"  [vPC] {hostname}: domain {vpc.get('domain_id')} role {vpc.get('role') or '?'}, "
-                        f"{len(vpc.get('vpcs', []))} vPC(s)")
-        fhrp_det = build_fhrp_detail(cmd_to_file)
-        if fhrp_det:
-            all_fhrp_detail[hostname] = fhrp_det
-            logger.info(f"  [FHRP] {hostname}: {len(fhrp_det)} HSRP group(s) (detail)")
-        overlay = build_overlay(cmd_to_file)
-        if overlay:
-            all_overlay[hostname] = overlay
-            logger.info(f"  [VXLAN] {hostname}: {len(overlay.get('nve_peers', []))} NVE peer(s)")
-        copp = build_copp(cmd_to_file)
-        if copp:
-            all_copp[hostname] = copp
-            logger.info(f"  [CoPP] {hostname}: {len(copp)} control-plane class(es)")
-        mpls = build_mpls(cmd_to_file)
-        if mpls:
-            all_mpls[hostname] = mpls
-            logger.info(f"  [MPLS] {hostname}: {len(mpls.get('ldp_neighbors', []))} LDP session(s), "
-                        f"{len(mpls.get('vpnv4_neighbors', []))} VPNv4 peer(s), "
-                        f"{len(mpls.get('l2vpn_vcs', []))} L2VPN VC(s)")
-        _lisp = build_lisp(cmd_to_file)
-        if _lisp:
-            all_lisp[hostname] = _lisp
-        _cts = build_cts(cmd_to_file)
-        if _cts:
-            all_cts[hostname] = _cts
-        _dmvpn = build_dmvpn(cmd_to_file)
-        if _dmvpn:
-            all_dmvpn[hostname] = _dmvpn
-        _crypto = build_crypto(cmd_to_file)
-        if _crypto:
-            all_crypto[hostname] = _crypto
-        _bfd = build_bfd(cmd_to_file)
-        if _bfd:
-            all_bfd[hostname] = _bfd
-        _aci = build_aci(cmd_to_file)
-        if _aci:
-            all_aci[hostname] = _aci
-        _sdwan = build_sdwan(cmd_to_file)
-        if _sdwan:
-            all_sdwan[hostname] = _sdwan
-        _firewall = build_firewall(cmd_to_file)
-        if _firewall:
-            all_firewall[hostname] = _firewall
-        _ise = build_ise(cmd_to_file)
-        if _ise:
-            all_ise[hostname] = _ise
-        _fmc = build_fmc(cmd_to_file)
-        if _fmc:
-            all_fmc[hostname] = _fmc
-        _arista = build_arista(cmd_to_file)   # MULTI-VENDOR: Arista EOS MLAG (device-native JSON; {} on a Cisco device)
-        if _arista:
-            all_arista[hostname] = _arista
-        _juniper = build_juniper(cmd_to_file)   # MULTI-VENDOR: Juniper Junos SRX chassis-cluster ({} on a non-Juniper device)
-        if _juniper:
-            all_juniper[hostname] = _juniper
-        _cloud = build_cloud(cmd_to_file)   # PUBLIC CLOUD: AWS security-group exposure ({} when no cloud export)
-        if _cloud:
-            all_cloud[hostname] = _cloud
-        _fortigate = build_fortigate(cmd_to_file)   # MULTI-VENDOR: Fortinet FortiGate HA ({} on a non-FortiGate / standalone device)
-        if _fortigate:
-            all_fortigate[hostname] = _fortigate
-        _mroute = build_mroute(cmd_to_file)   # CISCO DEPTH: multicast RPF state ({} when no mroute table)
-        if _mroute:
-            all_mroute[hostname] = _mroute
-        _ipv6_nd = build_ipv6_nd(cmd_to_file)
-        if _ipv6_nd:
-            all_ipv6_nd[hostname] = _ipv6_nd
-        _ipv6_routing = build_ipv6_routing(cmd_to_file)
-        if _ipv6_routing:
-            all_ipv6_routing[hostname] = _ipv6_routing
-        pim = build_pim(cmd_to_file)
-        if pim.get("rp_mapping") or pim.get("neighbors"):
-            all_pim[hostname] = pim
-            logger.info(f"  [PIM] {hostname}: {len(pim.get('neighbors', []))} neighbor(s), "
-                        f"{(pim.get('rp_mapping') or {}).get('rp_count', 0)} RP(s)")
-        ipv6_fhs = build_ipv6_fhs(cmd_to_file)
-        if ipv6_fhs:
-            all_ipv6_fhs[hostname] = ipv6_fhs
-            logger.info(f"  [V6FHS] {hostname}: dualstack={ipv6_fhs.get('dualstack')} "
-                        f"ra_guard={ipv6_fhs.get('ra_guard_present')}")
-        ntp = build_ntp(cmd_to_file)
-        if ntp:
-            all_ntp[hostname] = ntp
-            logger.info(f"  [NTP] {hostname}: synchronized={ntp.get('synchronized')} stratum={ntp.get('stratum')}")
-        psec = build_port_security_detail(cmd_to_file)
-        if psec:
-            all_port_security[hostname] = psec
-            logger.info(f"  [PSEC] {hostname}: {len(psec)} secured port(s)")
-        storm = build_storm_control(cmd_to_file)
-        if storm:
-            all_storm_control[hostname] = storm
-            logger.info(f"  [STORM] {hostname}: {len(storm)} storm-control rule(s)")
-        qos_rt = build_qos_runtime(cmd_to_file)
-        if qos_rt:
-            all_qos_runtime[hostname] = qos_rt
-            logger.info(f"  [QOSRT] {hostname}: {len(qos_rt)} egress class(es)")
-        shadow = build_undocumented_neighbors(cmd_to_file)
-        if shadow:
-            all_shadow_infra[hostname] = shadow
-            logger.info(f"  [SHADOW] {hostname}: {len(shadow)} infra neighbour(s) seen")
-        rn = build_routing_neighbors(cmd_to_file)
-        if any(rn.values()):
-            all_routing_neighbors[hostname] = rn
-            logger.info(f"  [PROTO] {hostname}: {len(rn['ospf'])} OSPF, "
-                        f"{len(rn['eigrp'])} EIGRP, {len(rn['bgp'])} BGP adjacency(ies)")
-        redist = build_redistribution(cmd_to_file)
-        if redist:
-            all_redistribution[hostname] = redist
-            logger.info(f"  [PROTO] {hostname}: {len(redist)} redistribution edge(s)")
+        _run_per_device_axes(_axis_stores, hostname, cmd_to_file)
+    all_run_configs = _axis_stores["run_configs"]            # NEW-V3.23.146 (raw running-config for golden-config drift)
+    all_syslogs = _axis_stores["syslogs"]                    # NEW-V3.23.164 (raw 'show logging'; '' = not collected)
+    all_platform_metrics = _axis_stores["platform_metrics"]  # NEW-V3.23.167 (CPU/memory/system facts)
+    all_acls = _axis_stores["acls"]
+    all_object_groups = _axis_stores["object_groups"]
+    all_nat = _axis_stores["nat"]
+    all_security = _axis_stores["security"]
+    all_config_hygiene = _axis_stores["config_hygiene"]
+    all_stp_roots = _axis_stores["stp_roots"]
+    all_vpc = _axis_stores["vpc"]
+    all_fhrp_detail = _axis_stores["fhrp_detail"]
+    all_overlay = _axis_stores["overlay"]
+    all_copp = _axis_stores["copp"]
+    all_mpls = _axis_stores["mpls"]
+    all_lisp = _axis_stores["lisp"]
+    all_cts = _axis_stores["cts"]
+    all_dmvpn = _axis_stores["dmvpn"]
+    all_crypto = _axis_stores["crypto"]
+    all_bfd = _axis_stores["bfd"]
+    all_aci = _axis_stores["aci"]
+    all_sdwan = _axis_stores["sdwan"]
+    all_firewall = _axis_stores["firewall"]
+    all_ise = _axis_stores["ise"]
+    all_fmc = _axis_stores["fmc"]
+    all_arista = _axis_stores["arista"]
+    all_juniper = _axis_stores["juniper"]
+    all_cloud = _axis_stores["cloud"]
+    all_fortigate = _axis_stores["fortigate"]
+    all_mroute = _axis_stores["mroute"]
+    all_ipv6_nd = _axis_stores["ipv6_nd"]
+    all_ipv6_routing = _axis_stores["ipv6_routing"]
+    all_pim = _axis_stores["pim"]
+    all_ipv6_fhs = _axis_stores["ipv6_fhs"]
+    all_ntp = _axis_stores["ntp"]
+    all_port_security = _axis_stores["port_security"]
+    all_storm_control = _axis_stores["storm_control"]
+    all_qos_runtime = _axis_stores["qos_runtime"]
+    all_shadow_infra = _axis_stores["shadow_infra"]
+    all_routing_neighbors = _axis_stores["routing_neighbors"]
+    all_redistribution = _axis_stores["redistribution"]
 
     # Phase 5.7: routing tables (route-aware reachability) - parsed from the already-collected
     # 'show ip route', scoped to the in-scope gateway subnets so the embedded snapshot stays small.
