@@ -1958,14 +1958,17 @@ def write_capture_integrity_sheet(wb, ci: dict) -> None:
                       "errored. A partial capture is a blind spot, never silently 'healthy'.")
     b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, f"{s.get('n_hosts_affected', 0)} host(s) affected · {s.get('n_incomplete', 0)} incomplete · "
-                  f"{s.get('n_error', 0)} error · {s.get('n_empty', 0)} empty").font = Font(size=10)
+                  f"{s.get('n_error', 0)} error · {s.get('n_empty', 0)} empty · "
+                  f"{s.get('n_unverified_prompt', 0)} unverified-prompt (timing-fallback capture — "
+                  f"completeness unproven)").font = Font(size=10)
     hdr_row = 4
     for i, h in enumerate(["Device", "Command", "Status", "Reason"], 1):
         c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
         c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.freeze_panes = ws.cell(hdr_row + 1, 1)
     DAT = Font(name="Calibri", size=10)
-    _C = {"error": "FFC7CE", "incomplete": "FFEB9C", "empty": "D9D9D9"}
+    _C = {"error": "FFC7CE", "incomplete": "FFEB9C", "empty": "D9D9D9",
+          "unverified_prompt": "BDD7EE"}   # Tier-2 #6: ok-looking body, prompt never confirmed
     r = hdr_row + 1
     for f in rows:
         st = f.get("status")

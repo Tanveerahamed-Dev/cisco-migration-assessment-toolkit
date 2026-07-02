@@ -1067,7 +1067,7 @@
 <div class="modal" id="help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts"><div class="box">
   <span class="close" id="helpClose" role="button" tabindex="0" aria-label="Close">✕</span>
   <h2>Keyboard shortcuts</h2>
-  <div class="krow"><span>Switch modes</span><span class="kbd">1</span> … <span class="kbd">7</span></div>
+  <div class="krow"><span>Switch modes</span><span id="kbdModes"><!-- generated from the MODES registry --></span></div>
   <div class="krow"><span>Focus search</span><span class="kbd">/</span></div>
   <div class="krow"><span>Fit to screen</span><span class="kbd">F</span></div>
   <div class="krow"><span>Reset layout (clear pins)</span><span class="kbd">R</span></div>
@@ -2404,7 +2404,77 @@ function markActiveChip(){
 function setVlan(v){VLAN=v;markActiveChip();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps","review","design","cablemap"];
+/* MODES-REGISTRY START — ONE entry per explorer mode (Plan A / Tier-2 #9).
+   Everything mode-shaped derives from this table: HASH_MODES + MODE_BY_KEY, the
+   keyboard shortcuts (+ the generated help chips), setMode's announcement label,
+   setHint, setModeTag, setLegend. Adding a mode = ONE entry here + its toolbar
+   button (static HTML, pinned by tests/test_explorer_modes_registry.py) + its
+   repaint/renderDrawer branches (mode BEHAVIOR stays colocated there on purpose).
+   kbd: the historic digit bindings 1–8 are preserved verbatim; the five modes
+   that never had shortcuts got collision-free mnemonics (x/w/p/v/d — the letters
+   f/t/g/m/a/r are reserved by other actions). hint/legend are closures because
+   they read live state (TRACE_SRC / MODEL_B / selections) at render time. */
+const MODES=[
+ {key:"blast",kbd:"1",gl:"◎",btn:"Blast radius",label:"Blast radius",
+  tag:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
+  hint:()=>`Click a switch to <b>simulate its removal</b>`,
+  legend:()=>ln("var(--text-faint)","forwarding link","fwd")+ln("var(--watch)","STP-blocked","blocked")+ln("var(--crit)","impacted link","sev")+bx("var(--crit)","removed / stranded","removed")},
+ {key:"trace",kbd:"2",gl:"↝",btn:"Path trace",label:"Path trace",
+  tag:"Trace the east-west L2 path for a VLAN and flag every single point of failure on it.",
+  hint:()=>TRACE_SRC?(TRACE_DST?`Path traced — click a new <b>source</b> to restart`:`Now click a <b>destination</b>`):`Click a <b>source</b> switch, then a <b>destination</b>`,
+  legend:()=>ln("var(--accent)","active path","path")+ln("var(--risk)","SPOF link","spof")+ln("var(--ok)","backup exists","blocked")+bx("var(--risk)","SPOF switch","spof")},
+ {key:"compare",kbd:"3",gl:"⇄",btn:"Compare",label:"Compare",
+  tag:"Diff two snapshots: which SPOFs were resolved, which were introduced.",
+  hint:()=>MODEL_B?`Diff loaded — <b>red</b> regressed, <b>green</b> improved`:`Load a second snapshot to <b>compare</b>`,
+  legend:()=>bx("var(--crit)","regressed","regressed")+bx("var(--ok)","improved","improved")+bx("var(--crit)","removed","removed")},
+ {key:"flow",kbd:"4",gl:"⚡",btn:"Flow",label:"Flow",
+  tag:"The collector's full-stack endpoint→gateway path with per-hop risk.",
+  hint:()=>FLOW_SRC?(FLOW_DST?`Flow ready — click <b>▶ Simulate</b>, or a new <b>source</b> switch to restart`:`Now click a <b>destination</b> switch`):`Type an IP/MAC above, or <b>click a source then a destination</b> switch to simulate`,
+  legend:()=>ln("var(--accent)","flow path","flowpath")+bx("var(--risk)","SPOF hop","spof")},
+ {key:"health",kbd:"5",gl:"✚",btn:"Health",label:"Health",
+  tag:"Per-switch 0–100 health and per-group migration readiness.",
+  hint:()=>`Click a switch for its <b>health breakdown</b>`,
+  legend:()=>bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit")+`<div class="row faint" style="margin-top:3px">◕ node ring fills with the 0–100 score</div>`},
+ {key:"protocols",kbd:"6",gl:"⌥",btn:"Protocols",label:"Protocols",
+  tag:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
+  hint:()=>`Click a switch for its <b>routing-protocol profile</b>`,
+  legend:()=>bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp")},
+ {key:"xlayer",kbd:"x",gl:"⌗",btn:"Cross-Layer",label:"Cross-Layer analysis",
+  tag:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
+  hint:()=>`Click a finding to <b>highlight the switches it spans</b>`,
+  legend:()=>bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`},
+ {key:"causality",kbd:"7",gl:"⤳",btn:"Causal Flow",label:"Causal Flow",
+  tag:"Root-cause → impact: every finding family — structural SPOFs, cross-layer compounds, CCDE design decisions and the migration punch-list — as an animated trigger→mechanism→impact→mitigation flow (bowtie for multi-cause compounds), with blast magnitude on the connectors and evidence on demand.",
+  hint:()=>`Filter by family/severity, then select a finding to <b>animate its causal flow</b>`,
+  legend:()=>bx("var(--crit)","affected device(s)","")+`<div class="row faint" style="margin-top:3px">Select a finding in the panel — the devices it implicates are ringed here and its trigger→mitigation flow animates.</div>`},
+ {key:"waves",kbd:"w",gl:"⇉",btn:"Waves",label:"Migration waves",
+  tag:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict.",
+  hint:()=>WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
+  legend:()=>bx("var(--accent)","switches in the selected group","")+`<div class="row faint" style="margin-top:3px">Click a move-group card to spotlight its shared-VLAN L2 domain.</div>`},
+ {key:"apps",kbd:"p",gl:"▦",btn:"Apps",label:"Application domains",
+  tag:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk.",
+  hint:()=>APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`,
+  legend:()=>bx("var(--accent)","switches in the selected domain","")+`<div class="row faint" style="margin-top:3px">Click an application-domain card to spotlight its switches; tiers run <b>On-air critical</b> → <b>Production</b> → <b>Support</b>.</div>`},
+ {key:"review",kbd:"v",gl:"☑",btn:"Review",label:"Architecture review",
+  tag:"The senior-engineer design review: leading-practice conformance verdicts per design domain (A–F grade), each finding citing its evidence, impact and the rule it deviates from.",
+  hint:()=>AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`,
+  legend:()=>bx("var(--crit)","critical deviation","")+bx("var(--risk)","deviation","")+bx("var(--watch)","advisory","")+bx("var(--ok)","conforms","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>worst verdict naming them</b>; click a finding to spotlight its evidence.</div>`},
+ {key:"design",kbd:"d",gl:"✎",btn:"Design",label:"Design blueprint",
+  tag:"The CCDE-grounded target-state design blueprint: evidence-gated design decisions traced to a design principle and the trade-off axes they serve, a trade-off scorecard, and the open requirement questions — the same design_blueprint the HLD/LLD reads.",
+  hint:()=>DES_SEL!=null?(_desSelHasDevices()?`Affected devices highlighted — click the decision again or the background to clear`:`This decision is <b>fleet / VLAN-scoped</b> — no per-host spotlight. Click it again or the background to clear`):`Click a design decision to <b>spotlight the devices it affects</b>`,
+  legend:()=>bx("var(--crit)","critical decision","")+bx("var(--risk)","high","")+bx("var(--watch)","medium","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>highest-priority decision naming them</b>; click a decision to spotlight the devices it affects.</div>`},
+ {key:"cablemap",kbd:"8",gl:"⇅",btn:"Cable Map",label:"Cable Map",
+  tag:"Physical cabling map (Nokia-EDA style): CDP/LLDP links laid out in role tiers, cables coloured by operational status. Grey / dashed = [NOT OBSERVED] (uncollected). Click a node or cable for per-port detail.",
+  hint:()=>CM_SEL?`Selected — click it again or the background to clear`:`Click a <b>node</b> or a <b>cable</b> for its detail`,
+  legend:()=>ln("var(--ok)","link up","")+ln("var(--crit)","link down","")+ln("var(--text-faint)","[NOT OBSERVED] / uncollected","")+bx("var(--accent)","selected node","")+`<div class="row faint" style="margin-top:3px">Lanes are role tiers; ━ thick = port-channel. Click a node or cable for its detail.</div>`},
+];
+const MODE_BY_KEY={}; MODES.forEach(mm=>MODE_BY_KEY[mm.key]=mm);
+const HASH_MODES=MODES.map(mm=>mm.key);
+// the help overlay's mode-shortcut chips derive from the registry (the old static
+// row had drifted to "1 … 7" while 8 bindings existed and 5 modes had none at all)
+(function(){const el=document.getElementById("kbdModes");
+  if(el)el.innerHTML=MODES.map(mm=>`<span class="kbd" title="${mm.btn}">${mm.kbd.toUpperCase()}</span>`).join(" ");})();
+/* MODES-REGISTRY END */
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -3528,61 +3598,24 @@ function setMode(m){const _prevMode=MODE; MODE=m; _lastBlastSel=null;   // a mod
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causal Flow",waves:"Migration waves",apps:"Application domains",review:"Architecture review",design:"Design blueprint",cablemap:"Cable Map"}[m]||m)+" mode."+modeSummary(m));
+  srAnnounce((MODE_BY_KEY[m]?MODE_BY_KEY[m].label:m)+" mode."+modeSummary(m));   // label from the MODES registry
   writeHash();}
 
 /* =====================================================================
    HINTS / MODE TAG / LEGEND
    ===================================================================== */
 function _desSelHasDevices(){if(DES_SEL==null)return false;const bp=designBlueprint();const d=bp&&bp.decisions&&bp.decisions[DES_SEL];return !!(d&&d.evidence&&(d.evidence.devices||[]).length);}
-function setHint(){const h=document.getElementById("hint");const m={
-  blast:`Click a switch to <b>simulate its removal</b>`,
-  trace:TRACE_SRC?(TRACE_DST?`Path traced — click a new <b>source</b> to restart`:`Now click a <b>destination</b>`):`Click a <b>source</b> switch, then a <b>destination</b>`,
-  compare:MODEL_B?`Diff loaded — <b>red</b> regressed, <b>green</b> improved`:`Load a second snapshot to <b>compare</b>`,
-  flow:FLOW_SRC?(FLOW_DST?`Flow ready — click <b>▶ Simulate</b>, or a new <b>source</b> switch to restart`:`Now click a <b>destination</b> switch`):`Type an IP/MAC above, or <b>click a source then a destination</b> switch to simulate`,
-  health:`Click a switch for its <b>health breakdown</b>`,
-  protocols:`Click a switch for its <b>routing-protocol profile</b>`,
-  xlayer:`Click a finding to <b>highlight the switches it spans</b>`,
-  causality:`Filter by family/severity, then select a finding to <b>animate its causal flow</b>`,
-  waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
-  apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`,
-  review:AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`,
-  design:DES_SEL!=null?(_desSelHasDevices()?`Affected devices highlighted — click the decision again or the background to clear`:`This decision is <b>fleet / VLAN-scoped</b> — no per-host spotlight. Click it again or the background to clear`):`Click a design decision to <b>spotlight the devices it affects</b>`,
-  cablemap:CM_SEL?`Selected — click it again or the background to clear`:`Click a <b>node</b> or a <b>cable</b> for its detail`}[MODE];
+function setHint(){const h=document.getElementById("hint");
+  const m=MODE_BY_KEY[MODE].hint();   // per-mode hint lives in the MODES registry (state-aware closure)
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
-  const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
-    trace:"Trace the east-west L2 path for a VLAN and flag every single point of failure on it.",
-    compare:"Diff two snapshots: which SPOFs were resolved, which were introduced.",
-    flow:"The collector's full-stack endpoint→gateway path with per-hop risk.",
-    health:"Per-switch 0–100 health and per-group migration readiness.",
-    protocols:"Routing-protocol topology: boundaries, redistribution, and adjacency health.",
-    xlayer:"Correlated L1–L4 findings: where two layers' weaknesses compound into one real risk.",
-    causality:"Root-cause → impact: every finding family — structural SPOFs, cross-layer compounds, CCDE design decisions and the migration punch-list — as an animated trigger→mechanism→impact→mitigation flow (bowtie for multi-cause compounds), with blast magnitude on the connectors and evidence on demand.",
-    waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict.",
-    apps:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk.",
-    review:"The senior-engineer design review: leading-practice conformance verdicts per design domain (A–F grade), each finding citing its evidence, impact and the rule it deviates from.",
-    design:"The CCDE-grounded target-state design blueprint: evidence-gated design decisions traced to a design principle and the trade-off axes they serve, a trade-off scorecard, and the open requirement questions — the same design_blueprint the HLD/LLD reads.",
-    cablemap:"Physical cabling map (Nokia-EDA style): CDP/LLDP links laid out in role tiers, cables coloured by operational status. Grey / dashed = [NOT OBSERVED] (uncollected). Click a node or cable for per-port detail."}[MODE];
-  el.textContent=t;}
+  el.textContent=MODE_BY_KEY[MODE].tag;}   // per-mode description lives in the MODES registry
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
 function ln(cls,label,hl){return `<div class="row"${hlAttr(hl)}><span class="sw swln" style="border-top-color:${cls}"></span>${label}</div>`;}
 function bx(color,label,hl){return `<div class="row"${hlAttr(hl)}><span class="swbox" style="border-color:${color};background:color-mix(in srgb,${color} 18%,transparent)"></span>${label}</div>`;}
 function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend — ${MODE}</h4>`;
-  if(MODE==="blast")h+=ln("var(--text-faint)","forwarding link","fwd")+ln("var(--watch)","STP-blocked","blocked")+ln("var(--crit)","impacted link","sev")+bx("var(--crit)","removed / stranded","removed");
-  else if(MODE==="trace")h+=ln("var(--accent)","active path","path")+ln("var(--risk)","SPOF link","spof")+ln("var(--ok)","backup exists","blocked")+bx("var(--risk)","SPOF switch","spof");
-  else if(MODE==="compare")h+=bx("var(--crit)","regressed","regressed")+bx("var(--ok)","improved","improved")+bx("var(--crit)","removed","removed");
-  else if(MODE==="flow")h+=ln("var(--accent)","flow path","flowpath")+bx("var(--risk)","SPOF hop","spof");
-  else if(MODE==="health")h+=bx("var(--ok)","good (75–100)","band-ok")+bx("var(--watch)","fair (60–74)","band-watch")+bx("var(--risk)","poor (40–59)","band-risk")+bx("var(--crit)","critical (<40)","band-crit")+`<div class="row faint" style="margin-top:3px">◕ node ring fills with the 0–100 score</div>`;
-  else if(MODE==="protocols")h+=bx("var(--accent)","redistribution point","redist")+bx("var(--ok)","runs a routing protocol","runs")+bx("var(--crit)","stuck adjacency","stuck")+ln("var(--ok)","OSPF adjacency","adj-ospf")+ln("var(--accent)","EIGRP adjacency","adj-eigrp");
-  else if(MODE==="xlayer")h+=bx("var(--accent)","switches in the selected finding","xlsel")+`<div class="row faint" style="margin-top:3px">Click a finding card to spotlight the switches it spans.</div>`;
-  else if(MODE==="causality"){h+=bx("var(--crit)","affected device(s)","")+`<div class="row faint" style="margin-top:3px">Select a finding in the panel — the devices it implicates are ringed here and its trigger→mitigation flow animates.</div>`;}
-  else if(MODE==="waves"){h+=bx("var(--accent)","switches in the selected group","")+`<div class="row faint" style="margin-top:3px">Click a move-group card to spotlight its shared-VLAN L2 domain.</div>`;}
-  else if(MODE==="apps"){h+=bx("var(--accent)","switches in the selected domain","")+`<div class="row faint" style="margin-top:3px">Click an application-domain card to spotlight its switches; tiers run <b>On-air critical</b> → <b>Production</b> → <b>Support</b>.</div>`;}
-  else if(MODE==="review"){h+=bx("var(--crit)","critical deviation","")+bx("var(--risk)","deviation","")+bx("var(--watch)","advisory","")+bx("var(--ok)","conforms","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>worst verdict naming them</b>; click a finding to spotlight its evidence.</div>`;}
-  else if(MODE==="design"){h+=bx("var(--crit)","critical decision","")+bx("var(--risk)","high","")+bx("var(--watch)","medium","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>highest-priority decision naming them</b>; click a decision to spotlight the devices it affects.</div>`;}
-  else if(MODE==="cablemap"){h+=ln("var(--ok)","link up","")+ln("var(--crit)","link down","")+ln("var(--text-faint)","[NOT OBSERVED] / uncollected","")+bx("var(--accent)","selected node","")+`<div class="row faint" style="margin-top:3px">Lanes are role tiers; ━ thick = port-channel. Click a node or cable for its detail.</div>`;}
+  h+=MODE_BY_KEY[MODE].legend();   // per-mode legend rows live in the MODES registry
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -8887,10 +8920,10 @@ window.addEventListener("drop",e=>{e.preventDefault();drop.classList.remove("on"
 // keyboard
 window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   const k=e.key.toLowerCase();
-  if(k==="1")setMode("blast");else if(k==="2")setMode("trace");else if(k==="3")setMode("compare");
-  else if(k==="4")setMode("flow");else if(k==="5")setMode("health");else if(k==="6")setMode("protocols");
-  else if(k==="7")setMode("causality");
-  else if(k==="8")setMode("cablemap");
+  // mode shortcuts walk the MODES registry (Tier-2 #9) — digits 1–8 preserved verbatim,
+  // and the five previously shortcut-less modes (x/w/p/v/d) fell out of the table for free
+  const _kbdMode=MODES.find(mm=>mm.kbd===k);
+  if(_kbdMode)setMode(_kbdMode.key);
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
   else if(k==="g")toggleTableView();
   else if(k==="m")toggleMinimap();
