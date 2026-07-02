@@ -116,3 +116,33 @@ def test_build_server_registers_the_expected_tools(rich):
 def test_build_server_ok_on_empty_snapshot():
     pytest.importorskip("mcp")
     assert M.build_server({}) is not None      # wiring must not touch snapshot contents at build time
+
+
+def test_each_tool_call_returns_its_pure_function_output(rich):
+    """Refute a wrapper mis-binding: drive every tool THROUGH the server and assert it returns
+    exactly its pure-function output -- proving each of the seven near-identical wrappers is
+    wired to the RIGHT pure fn and passes its arguments through (registration alone can't)."""
+    pytest.importorskip("mcp")
+    import asyncio
+
+    def _reassemble(res, expected):
+        # FastMCP emits ONE text block per element for a LIST return, a single block for a dict.
+        # Reassemble against the expected shape so the comparison reflects the tool's logical value.
+        content = res[0] if isinstance(res, tuple) else res
+        parsed = [json.loads(b.text) for b in content]
+        return parsed if isinstance(expected, list) else (parsed[0] if parsed else None)
+
+    server = M.build_server(rich)
+    host = M.list_devices(rich)[0]["host"]
+    cases = [
+        ("overview", {}, M.overview(rich)),
+        ("list_devices", {}, M.list_devices(rich)),
+        ("architecture_coverage", {}, M.architecture_coverage(rich)),
+        ("top_findings", {"limit": 5}, M.top_findings(rich, 5)),
+        ("failure_impact", {"limit": 5}, M.failure_impact(rich, 5)),
+        ("chokepoints", {"limit": 5}, M.chokepoints(rich, 5)),
+        ("device_detail", {"host": host}, M.device_detail(rich, host)),
+    ]
+    for name, args, expected in cases:
+        got = _reassemble(asyncio.run(server.call_tool(name, args)), expected)
+        assert got == expected, f"tool {name!r} returned {got!r} != its pure output {expected!r}"
