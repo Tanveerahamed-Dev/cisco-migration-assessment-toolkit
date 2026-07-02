@@ -290,6 +290,7 @@
   "Inventory",
   3,
   "complete 3 \u00b7 partial 0 \u00b7 NOT collected 0 \u2014 these are assessment blind spots, re-collect before relying on the report",
+  null,
   null
  ],
  "Health Scores": [
