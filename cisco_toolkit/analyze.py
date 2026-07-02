@@ -9,6 +9,7 @@ The `compute_*` functions themselves follow in later steps (they entangle with t
 fill-colour maps (`_READY_FILL`/`_STATUS_FILL`) and sheet-name constants stay
 behind too - they belong to the excel layer, not the data analysis."""
 import re
+from functools import lru_cache
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -740,14 +741,23 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
 # build_network_model is the shared graph; the two compute_* derive blast radius.
 # The Excel sheet-name + fill constants and the write_* sheets stay in the monolith.
 # =============================================================================
-def _vlan_in_ranges(vid: int, s: str) -> bool:
-    """True if integer VLAN id `vid` falls in a Cisco range string like '10,20-23,40'.
-    Membership-only (no enumeration), so a '1-4094' trunk-allowed list never explodes."""
+# The VLAN-range PARSE is memoized (Tier-2 #12): the same range strings (trunk-allowed / stp-fwd/blk
+# lists) are tested against every VLAN on every link in the O(H x V x link) failure-impact / topology
+# loops, so re-splitting on each call was the one measured superlinear term. Keyed on the raw string.
+_VLAN_ALL = object()   # sentinel spec: matches every VLAN id (an 'all' / '1-4094' list)
+
+
+@lru_cache(maxsize=8192)
+def _parse_vlan_ranges(s: str):
+    """Parse a Cisco VLAN-range string into a hashable membership spec: the _VLAN_ALL sentinel, or a
+    tuple of (lo, hi) inclusive ranges (a single vid is (v, v)). Membership-only -- never enumerated,
+    so '1-4094' stays cheap. Same semantics as the old inline parse (malformed range tokens skipped)."""
     s = (s or "").strip().lower()
     if not s or s in ("none", "--", "n/a"):
-        return False
+        return ()
     if s in ("all", "1-4094"):
-        return True
+        return _VLAN_ALL
+    ranges = []
     for tok in re.split(r"[,\s]+", s):
         if not tok:
             continue
@@ -756,11 +766,20 @@ def _vlan_in_ranges(vid: int, s: str) -> bool:
                 lo, hi = (int(x) for x in tok.split("-", 1))
             except ValueError:
                 continue
-            if lo <= vid <= hi:
-                return True
-        elif tok.isdigit() and int(tok) == vid:
-            return True
-    return False
+            ranges.append((lo, hi))
+        elif tok.isdigit():
+            v = int(tok)
+            ranges.append((v, v))
+    return tuple(ranges)
+
+
+def _vlan_in_ranges(vid: int, s: str) -> bool:
+    """True if integer VLAN id `vid` falls in a Cisco range string like '10,20-23,40'.
+    Membership-only (no enumeration), so a '1-4094' trunk-allowed list never explodes."""
+    spec = _parse_vlan_ranges(s)
+    if spec is _VLAN_ALL:
+        return True
+    return any(lo <= vid <= hi for lo, hi in spec)
 
 
 def build_network_model(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Dict[str, object]:

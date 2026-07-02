@@ -20,7 +20,7 @@ name = "cisco-migration-assessment-toolkit"
 # `cisco_toolkit.__version__` ("3.23.0"): that constant is the snapshot-SCHEMA version baked into the
 # golden data contract (`script_version` in every snapshot), and bumping it would churn the frozen
 # golden. See the change log ("In-code version 3.23.0") and tests/test_pipeline_golden.py.
-version = "3.23.176"
+version = "3.24.0"
 description = "Evidence-led Cisco L1-L4 network migration-assessment toolkit: one offline SSH collection produces a multi-sheet Excel workbook, an interactive single-file topology explorer, and a DOCX runbook."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -54,11 +54,17 @@ docx = ["python-docx>=1.1,<2"]
 pptx = ["python-pptx>=0.6,<2"]
 # Test / lint / type tooling (report-only mypy baseline; ruff gates correctness rules).
 dev = ["pytest>=8,<10", "ruff>=0.5", "mypy>=1.8"]
+# The Model Context Protocol server is optional: it exposes READ-ONLY query tools over a
+# already-produced snapshot.json (offline, no egress). The base engine never imports `mcp`
+# unless this extra is installed; cisco_toolkit.mcp_server guards the import at call time.
+mcp = ["mcp>=1.28,<2"]
 
 [project.scripts]
 # Stable command -> the existing main() in the (versioned-filename) entry module. No refactor required:
 # `main()` is a plain function and the module's __main__ guard already just calls it.
 cisco-assess = "COLLECT_PARSE_V3_23_0:main"
+# Optional MCP server over a produced snapshot.json (needs the [mcp] extra). Read-only, offline.
+cisco-mcp-server = "cisco_toolkit.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit"
