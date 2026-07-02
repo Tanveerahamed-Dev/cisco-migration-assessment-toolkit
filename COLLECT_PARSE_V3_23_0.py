@@ -356,8 +356,9 @@ from cisco_toolkit.analyze import (
 from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
-# build); only _CISCO_ERRORS stays (platform detection reuses it).
-from cisco_toolkit.cmdio import _CISCO_ERRORS
+# build); only _CISCO_ERRORS stays (platform detection reuses it). Plan A / Tier-1 #3
+# adds the zero-parse yield ledger (reset at run start, published as snap['parse_yield']).
+from cisco_toolkit.cmdio import _CISCO_ERRORS, parse_yield_report, reset_parse_ledger
 # NEW-V3.23.30 (PHASE 2.7 step 20): the Excel layer's shared sheet/header helpers; imported
 # back so the write_* sheet builders + main()'s template-fill keep working unchanged.
 from cisco_toolkit.excel import (
@@ -1583,6 +1584,9 @@ def main():
         return hostname, platform, cmd_to_file
 
     # Phase 1: Collect
+    # Fresh zero-parse ledger per run (webapp ingest reuses this pipeline in-process, so
+    # the ledger must never carry a previous run's events into this snapshot).
+    reset_parse_ledger()
     workers = max(1, min(args.workers, len(devices)))
     logger.info(f"\n[Phase 1] Collecting {len(devices)} device(s) with {workers} parallel worker(s) ...")
     all_cmd_to_files: Dict[str, Dict[str,str]] = {}
@@ -2061,7 +2065,11 @@ def main():
     _inventory_hosts = [d.get("hostname", "") for d in devices]
     collection_completeness = _run_phase("Collection completeness", compute_collection_completeness,
                                          _inventory_hosts, all_cmd_to_files, _default={})
-    _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb, collection_completeness)
+    # parse_yield_report() here and at snapshot assembly return IDENTICAL content: all parsing
+    # is complete before either runs, and the sheet writers call no _safe_parse (excel.py only
+    # loads raw text for its 3 re-parse sheets), so the ledger is quiescent between the two.
+    _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb,
+               collection_completeness, parse_yield_report())
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
@@ -2454,6 +2462,7 @@ def main():
     if external_reconcile is not None:                               # roadmap B (opt-in: only when --import-inventory supplied)
         snap_dict["external_reconcile"] = external_reconcile         # declared source-of-truth vs collected evidence
     snap_dict["capture_integrity"] = capture_integrity              # roadmap K1 (per-capture truncation/pager/error guard)
+    snap_dict["parse_yield"] = parse_yield_report()                 # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
     if whatif_result is not None:                                   # roadmap G4 (opt-in: only when --scenario supplied)
         snap_dict["whatif"] = whatif_result                         # failure-injection what-if results
     if path_intents is not None:                                    # roadmap G3 (opt-in: only when --path-intents supplied)
