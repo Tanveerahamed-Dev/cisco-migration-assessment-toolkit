@@ -6386,6 +6386,7 @@
    "n_incomplete": 2,
    "n_error": 0,
    "n_empty": 0,
+   "n_unverified_prompt": 0,
    "n_hosts_affected": 2
   }
  },

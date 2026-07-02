@@ -421,7 +421,10 @@ from cisco_toolkit.excel import (
 from cisco_toolkit.feature_compliance import compute_feature_compliance   # roadmap I2 (per-feature ConfigCompliance)
 from cisco_toolkit.aclcheck import compute_filter_line_reachability       # roadmap G1 (offline ACL shadow proof)
 from cisco_toolkit.external_import import read_inventory_file, reconcile_external   # roadmap B (external SoT reconcile)
-from cisco_toolkit.capture_integrity import compute_capture_integrity   # roadmap K1 (capture-integrity guard)
+# roadmap K1 guard, widened Tier-2 #6: the entry feeds the STREAMING path API (all captures);
+# the in-memory dict API (compute_capture_integrity) remains the module's direct-use surface.
+from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_paths,
+                                             load_capture_meta, CAPTURE_META_FILENAME)
 from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
 from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
 from cisco_toolkit.assertions import evaluate_pack                      # roadmap A1/H1/H2 (checks-as-data)
@@ -849,6 +852,12 @@ _SLOW_CMDS = {"show running-config", "show cdp neighbors detail",
               "show interface trunk", "show interfaces trunk",
               "show interfaces", "show interface"}  # NEW-V15 (full counter dumps)
 
+# Plan A / Tier-2 #6: per-thread flag for the LAST send_cmd call — True when it fell back
+# to send_command_timing (prompt never confirmed => the capture's completeness is unproven).
+# collect() reads it after each command and persists the set as the _capture_meta.json
+# sidecar, so an offline re-analysis can still flag those captures `unverified_prompt`.
+_SEND_TRANSPORT = threading.local()
+
 def send_cmd(dev, cmd: str) -> str:
     # FIX (C2): prefer pattern-based send_command() (waits for the device prompt)
     # over send_command_timing(), which can return early/truncated output that is
@@ -856,12 +865,15 @@ def send_cmd(dev, cmd: str) -> str:
     # Fall back to the timing-based read only if the prompt pattern isn't matched,
     # so behaviour is no worse than before on edge cases.
     timeout = 300 if any(s in cmd for s in _SLOW_CMDS) else 120
+    _SEND_TRANSPORT.fallback = False
     try:
         return dev.send_command(cmd, read_timeout=timeout) or ""
     except Exception as e:
         logger.warning(f"Command '{cmd}' pattern-read failed ({e}); retrying timing-based")
         try:
-            return dev.send_command_timing(cmd, read_timeout=timeout) or ""
+            out = dev.send_command_timing(cmd, read_timeout=timeout) or ""
+            _SEND_TRANSPORT.fallback = True     # only a SUCCESSFUL timing read is an unverified capture
+            return out
         except Exception as e2:
             logger.warning(f"Command failed '{cmd}': {e2}")
             return ""
@@ -892,11 +904,14 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
     cmds = list(dict.fromkeys(cmds + extra_cmds))
     paths: Dict[str, str] = {}
     command_index: List[dict] = []
+    fallback_cmds: Dict[str, str] = {}   # Tier-2 #6: prompt-unverified captures this device
     started = datetime.now().isoformat()
 
     for cmd in cmds:
         logger.info(f"  Executing: {cmd}")
         out = send_cmd(dev, cmd)
+        if getattr(_SEND_TRANSPORT, "fallback", False):
+            fallback_cmds[cmd] = "timing_fallback"
         fn  = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_") + ".txt"
         p   = os.path.join(out_dir, fn)
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -933,6 +948,19 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
         }
         write_json_file(os.path.join(out_dir, "device_info.json"), device_info)
         write_json_file(os.path.join(out_dir, "command_index.json"), {"commands": command_index})
+
+    # Tier-2 #6: persist which captures were prompt-unverified (send_command_timing
+    # fallback) so offline re-analysis can flag them `unverified_prompt`. Written only
+    # when non-empty; the offline loader keys captures by KNOWN command names, so this
+    # sidecar can never be read as a capture. Fail-soft: a sidecar write error never
+    # loses the collection.
+    if fallback_cmds:
+        try:
+            write_json_file(os.path.join(out_dir, CAPTURE_META_FILENAME), fallback_cmds)
+            logger.info(f"  [capture-meta] {len(fallback_cmds)} prompt-unverified capture(s) "
+                        f"recorded in {CAPTURE_META_FILENAME}")
+        except Exception as e:
+            logger.warning(f"  capture-meta write failed (non-fatal): {e}")
 
     return paths
 
@@ -2259,10 +2287,21 @@ def main():
         logger.info(f"[Phase 30g] SoT reconcile: {len(_declared)} declared vs "
                     f"{external_reconcile['summary'].get('n_observed', 0)} observed -> "
                     f"{external_reconcile['summary'].get('n_rows', 0)} drift row(s) from {args.import_inventory}")
-    # roadmap K1: per-config-body capture-integrity (ALWAYS-ON; reuses all_run_configs -> cheap). Flags truncated/
-    # paginated/errored captures so a partial body abstains downstream instead of being scored healthy.
-    _ci_bodies = {h: {"show running-config": t} for h, t in (all_run_configs or {}).items()}
-    capture_integrity = _run_phase("Capture integrity", compute_capture_integrity, _ci_bodies, _default={})
+    # roadmap K1, WIDENED in Plan A / Tier-2 #6: capture-integrity now inspects EVERY collected capture
+    # (all ~160 commands/device via all_cmd_to_files), not just run-config — streamed one body at a time
+    # so the fleet's raw output is never held in memory at once. The per-device _capture_meta.json
+    # sidecar (live-collect) adds `unverified_prompt` for timing-fallback captures; absent meta (every
+    # older collection) makes no prompt claim. Together with snap['parse_yield'] this separates
+    # "collection problem" (zero-yield + non-ok capture) from "parser format gap" (zero-yield + clean).
+    _ci_meta: Dict[str, Dict[str, str]] = {}
+    for _h, _c2f in (all_cmd_to_files or {}).items():
+        for _p in (_c2f or {}).values():
+            _m = load_capture_meta(os.path.dirname(_p))
+            if _m:
+                _ci_meta[_h] = _m
+            break                                   # one device dir per host — first path suffices
+    capture_integrity = _run_phase("Capture integrity", compute_capture_integrity_from_paths,
+                                   all_cmd_to_files, _ci_meta, _default={})
     _run_phase("Capture Integrity sheet", write_capture_integrity_sheet, wb, capture_integrity)
     # roadmap G4: opt-in failure-injection what-if (--scenario FILE). Golden-safe (off by default).
     whatif_result = None

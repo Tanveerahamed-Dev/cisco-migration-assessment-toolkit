@@ -13,8 +13,18 @@ text inspection; no device contact, no LLM.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+# Live-collect sidecar (Plan A / Tier-2 #6): collect() persists {command: "timing_fallback"}
+# per device dir for every capture that fell back to netmiko send_command_timing (prompt
+# never confirmed -> completeness unproven). The offline loader builds cmd_to_file from
+# KNOWN command names, so this sidecar can never be mistaken for a capture. Coverage-honest
+# by construction: a collection with NO meta file (everything collected before this
+# feature) simply makes no prompt-verification claim.
+CAPTURE_META_FILENAME = "_capture_meta.json"
 
 # A pager prompt at the tail (paging not disabled / capture cut): '--More--', ' --More-- ',
 # '--More(35%)--', '-- More --', '<--- More --->' — case-insensitive.
@@ -76,30 +86,90 @@ def inspect_capture(command: str, body: str) -> Dict[str, Any]:
     return {"status": "ok", "reason": "", "evidence": ""}
 
 
-def compute_capture_integrity(host_cmd_bodies: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
-    """Inspect every collected body -> {findings:[non-ok only], summary:{…}}.
+_STATUS_ORDER = {"error": 0, "incomplete": 1, "empty": 2, "unverified_prompt": 3}
 
-    `host_cmd_bodies` is {host: {command: body_text}}. Returns one finding per non-ok body, each with a
-    citation; the summary counts incomplete / error / empty and the number of distinct affected hosts.
-    """
-    findings: List[dict] = []
-    affected: set = set()
-    for host, cmds in (host_cmd_bodies or {}).items():
-        for command, body in (cmds or {}).items():
-            r = inspect_capture(command, body)
-            if r["status"] == "ok":
-                continue
-            affected.add(host)
-            findings.append({
-                "host": host, "command": command, "status": r["status"], "reason": r["reason"],
-                "evidence": r["evidence"], "citation": "%s::%s" % (host, command),
-            })
-    findings.sort(key=lambda f: ({"error": 0, "incomplete": 1, "empty": 2}.get(f["status"], 9), f["host"], f["command"]))
+
+def _finding(host: str, command: str, r: Dict[str, Any]) -> dict:
+    return {"host": host, "command": command, "status": r["status"], "reason": r["reason"],
+            "evidence": r["evidence"], "citation": "%s::%s" % (host, command)}
+
+
+def _package(findings: List[dict]) -> Dict[str, Any]:
+    """Shared result shape for both feed APIs: severity-sorted findings + summary."""
+    findings.sort(key=lambda f: (_STATUS_ORDER.get(f["status"], 9), f["host"], f["command"]))
     summary = {
         "n_findings": len(findings),
         "n_incomplete": sum(1 for f in findings if f["status"] == "incomplete"),
         "n_error": sum(1 for f in findings if f["status"] == "error"),
         "n_empty": sum(1 for f in findings if f["status"] == "empty"),
-        "n_hosts_affected": len(affected),
+        "n_unverified_prompt": sum(1 for f in findings if f["status"] == "unverified_prompt"),
+        "n_hosts_affected": len({f["host"] for f in findings}),
     }
     return {"findings": findings, "summary": summary}
+
+
+def load_capture_meta(dev_dir: str) -> Dict[str, str]:
+    """The device dir's collection sidecar ({command: "timing_fallback"}), or {} when
+    absent/corrupt — fail-soft: a broken sidecar never breaks analysis, it just means
+    no prompt-verification claim can be made."""
+    try:
+        p = os.path.join(dev_dir or "", CAPTURE_META_FILENAME)
+        if not os.path.isfile(p):
+            return {}
+        with open(p, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
+
+
+def compute_capture_integrity(host_cmd_bodies: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+    """Inspect every collected body -> {findings:[non-ok only], summary:{…}}.
+
+    `host_cmd_bodies` is {host: {command: body_text}}. Returns one finding per non-ok body, each with a
+    citation; the summary counts each status class and the number of distinct affected hosts.
+    """
+    findings: List[dict] = []
+    for host, cmds in (host_cmd_bodies or {}).items():
+        for command, body in (cmds or {}).items():
+            r = inspect_capture(command, body)
+            if r["status"] != "ok":
+                findings.append(_finding(host, command, r))
+    return _package(findings)
+
+
+def compute_capture_integrity_from_paths(
+        host_cmd_paths: Dict[str, Dict[str, str]],
+        host_cmd_meta: Optional[Dict[str, Dict[str, str]]] = None) -> Dict[str, Any]:
+    """The widened pipeline feed (Plan A / Tier-2 #6): inspect EVERY collected capture —
+    {host: {command: FILE_PATH}} (all_cmd_to_files), streamed ONE body at a time so the
+    whole fleet's raw output (hundreds of MB) is never held in memory at once.
+
+    A missing/unreadable file is SKIPPED (not-collected is Collection Completeness's
+    domain — no verdict is fabricated about a body never seen). `host_cmd_meta`
+    ({host: {command: "timing_fallback"}}, from the per-device sidecar) adds the
+    weaker `unverified_prompt` finding for captures whose body LOOKS ok but whose
+    prompt was never confirmed; a visibly-broken body keeps its stronger primary
+    status. No meta -> no prompt claim (coverage-honest for older collections)."""
+    findings: List[dict] = []
+    meta_all = host_cmd_meta or {}
+    for host, cmd_paths in (host_cmd_paths or {}).items():
+        host_meta = meta_all.get(host) or {}
+        for command, path in (cmd_paths or {}).items():
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    body = f.read()
+            except Exception:
+                continue                     # not collected/readable -> completeness's domain
+            r = inspect_capture(command, body)
+            if r["status"] != "ok":
+                findings.append(_finding(host, command, r))
+            elif host_meta.get(command) == "timing_fallback":
+                findings.append(_finding(host, command, {
+                    "status": "unverified_prompt",
+                    "reason": "captured via the send_command_timing fallback — the device "
+                              "prompt was never confirmed, so an ok-looking body may still "
+                              "be silently truncated; treat as unproven-complete",
+                    "evidence": "collection sidecar: timing_fallback",
+                }))
+    return _package(findings)
