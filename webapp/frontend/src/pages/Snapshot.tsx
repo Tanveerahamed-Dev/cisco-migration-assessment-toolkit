@@ -106,6 +106,60 @@ function SummaryStrip({ summary }: { summary: any }) {
   return <div className="faint" style={{ fontSize: 12, marginBottom: 8 }}>{parts.join("  ·  ")}</div>;
 }
 
+/* ---------- Parse yield (Plan A / Tier-1 #3) ----------
+   snap.parse_yield = the cmdio zero-parse ledger: a command that returned real CONTENT but whose parser
+   produced 0 entities is collected-but-unparsed evidence (a possible platform-variant format gap in the
+   parser) — NEVER a device verdict, so the class column ranks evidence-trust, not device health. The
+   note renders VERBATIM from the engine (one wording across workbook / explorer / webapp). */
+const PY_CLASS = (ev: any, mbe: Set<string>) =>
+  ev?.error ? "parser ERROR" : mbe.has(ev?.parser) ? "expected-empty" : "SUSPECT format gap";
+const PY_SEV: Record<string, string> = { "parser ERROR": "Critical", "SUSPECT format gap": "High", "expected-empty": "Info" };
+const PY_ORD: Record<string, number> = { "SUSPECT format gap": 0, "parser ERROR": 1, "expected-empty": 2 };
+
+function ParseYieldPane({ data }: { data: any }) {
+  const s = data?.summary || {};
+  const mbe = new Set<string>(Object.entries(data?.per_parser || {})
+    .filter(([, c]: [string, any]) => c && (c as any).may_be_empty).map(([n]) => n));
+  const events: any[] = Array.isArray(data?.events) ? data.events : [];
+  const rows = events.slice().sort((a, b) => (PY_ORD[PY_CLASS(a, mbe)] ?? 9) - (PY_ORD[PY_CLASS(b, mbe)] ?? 9));
+  return (
+    <div>
+      <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>
+        parsers called: {s.parsers_called ?? "—"} ·{" "}
+        <span style={{ color: (s.zero_yield_suspect || 0) > 0 ? "var(--crit)" : undefined }}>
+          suspect: {s.zero_yield_suspect ?? 0}
+        </span>{" "}
+        · expected-empty: {s.zero_yield_expected ?? 0} · parser errors: {s.parse_errors ?? 0}
+      </div>
+      {s.note && <div className="faint" style={{ fontSize: 11, marginBottom: 10 }}>{s.note}</div>}
+      <div style={{ overflow: "auto" }}>
+        <table className="tbl">
+          <thead><tr><th>Class</th><th>Parser</th><th>Device</th><th>Command</th><th className="num">Lines in</th></tr></thead>
+          <tbody>
+            {rows.map((ev: any, i: number) => {
+              const klass = PY_CLASS(ev, mbe);
+              return (
+                <tr key={i}>
+                  <td><SevChip sev={PY_SEV[klass]} label={klass} /></td>
+                  <td className="mono">{ev.parser || "—"}</td>
+                  <td className="mono">{ev.device || "—"}</td>
+                  <td className="dim">{ev.cmd || "—"}</td>
+                  <td className="num">{ev.lines_in ?? "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {data?.events_truncated && (
+        <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
+          … event list truncated at the cap — the per-parser counters carry the full counts.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const { data, error, loading } = useAsync(() => api.section(snapId, name), [snapId, name]);
   if (loading) return <Loading />;
@@ -113,6 +167,7 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const d = data!.data;
   if (name === "punchlist" && Array.isArray(d)) return <PunchTable rows={d} />;
   if (name === "device_dossiers" && d?.per_device) return <RegisterTable rows={d.per_device} note={d.note} />;
+  if (name === "parse_yield" && d && typeof d === "object" && !Array.isArray(d)) return <ParseYieldPane data={d} />;
   if (name === "whatif" && Array.isArray(d)) {
     // G4 what-if is a LIST of scenarios; flatten each to the Excel sheet's columns (a raw list-of-objects
     // would JSON-stringify the nested summary). lost_path = was reached, now unprovable (never a fake block).

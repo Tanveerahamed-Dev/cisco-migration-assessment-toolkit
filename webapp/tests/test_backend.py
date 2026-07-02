@@ -216,6 +216,82 @@ def test_orchestration_peer_optin_sections_served(client):
     assert isinstance(wi, list) and wi[0]["summary"]["blocked"] == 0 and wi[0]["summary"]["lost_path"] == 12
 
 
+def test_parse_yield_section_served(client):
+    """Plan A / Tier-1 #3 surfacing: snap['parse_yield'] (the zero-parse yield ledger the workbook's
+    Collection Completeness sheet already renders) is a whitelisted, indexed tab and is served intact --
+    the summary counts (zero_yield_suspect / expected / errors), the events table, and the engine's
+    coverage-honest note VERBATIM (collected-but-unparsed evidence = a possible parser format gap,
+    never a device verdict). A run where every content-bearing command parsed (no events) hides its
+    own tab -- the platform convention -- so the telemetry never reads like a device finding."""
+    import json
+
+    from cisco_toolkit import cmdio
+    note = cmdio.parse_yield_report()["summary"]["note"]   # the engine's own wording (SSOT, no paraphrase)
+
+    cid = client.post("/api/campaigns", json={"name": "parse-yield"}).json()["id"]
+    snap = {
+        "script_version": "test", "devices": {"N9K-1": {}}, "health_scores": [],
+        "parse_yield": {
+            "summary": {"parsers_called": 3, "zero_yield_suspect": 1, "zero_yield_expected": 1,
+                        "parse_errors": 1, "note": note},
+            "per_parser": {
+                # the marquee class: a real NX-OS RIB printed 220 lines yet parsed to 0 routes
+                "parse_ip_routes": {"calls": 1, "with_content": 1, "zero_yield": 1, "errors": 0,
+                                    "may_be_empty": False},
+                "parse_acl_hitcounts": {"calls": 1, "with_content": 1, "zero_yield": 1, "errors": 0,
+                                        "may_be_empty": True},
+                "parse_vpc": {"calls": 1, "with_content": 1, "zero_yield": 0, "errors": 1,
+                              "may_be_empty": False},
+            },
+            "events": [
+                {"parser": "parse_ip_routes", "device": "N9K-1", "cmd": "show ip route vrf all",
+                 "file": "show_ip_route_vrf_all.txt", "lines_in": 220, "error": False},
+                {"parser": "parse_acl_hitcounts", "device": "N9K-1", "cmd": "show access-lists",
+                 "file": "show_access-lists.txt", "lines_in": 12, "error": False},
+                {"parser": "parse_vpc", "device": "N9K-1", "cmd": "show vpc",
+                 "file": "show_vpc.txt", "lines_in": 40, "error": True},
+            ],
+            "events_truncated": False,
+        },
+    }
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                     data={"label": "py"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    # tabbed (indexed by the events list -- the section's meaningful inner list) ...
+    secs = {s["key"]: s for s in client.get(f"/api/snapshots/{sid}").json()["summary"]["sections"]}
+    assert "parse_yield" in secs, f"parse_yield tab missing: {sorted(secs)}"
+    assert secs["parse_yield"]["count"] == 3
+    assert secs["parse_yield"]["label"] == "Parse yield"
+    # ... and fetchable, with the ledger intact
+    r = client.get(f"/api/snapshots/{sid}/section/parse_yield")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    s = d["summary"]
+    assert (s["zero_yield_suspect"], s["zero_yield_expected"], s["parse_errors"]) == (1, 1, 1)
+    assert s["note"] == note                          # verbatim engine wording survives the round-trip
+    assert "never a device" in s["note"]
+    assert d["per_parser"]["parse_acl_hitcounts"]["may_be_empty"] is True   # drives the class column
+    assert len(d["events"]) == 3 and d["events"][0]["parser"]
+
+    # the /api/meta contract carries the label the tab bar renders
+    labels = {sl["key"]: sl["label"] for sl in client.get("/api/meta").json()["section_labels"]}
+    assert labels.get("parse_yield") == "Parse yield"
+
+    # a fully-parsed run (no events) hides its own tab -- telemetry, never a device verdict
+    clean = dict(snap, parse_yield={
+        "summary": {"parsers_called": 90, "zero_yield_suspect": 0, "zero_yield_expected": 0,
+                    "parse_errors": 0, "note": note},
+        "per_parser": {}, "events": [], "events_truncated": False})
+    up2 = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("clean.json", json.dumps(clean).encode(), "application/json")},
+                      data={"label": "clean"})
+    keys2 = {s["key"] for s in client.get(f"/api/snapshots/{up2.json()['id']}").json()["summary"]["sections"]}
+    assert "parse_yield" not in keys2
+
+
 def test_explorer_render_embeds_snapshot(client):
     snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
     r = client.get(f"/api/snapshots/{snap_id}/explorer")
