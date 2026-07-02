@@ -967,6 +967,39 @@ def _make_redactor():
     return scrub, serial
 
 
+def redact_collection_dir(collection_dir: str) -> tuple:
+    """Plan A / Tier-1 #5: scrub SECRET VALUES (passwords / communities / keys — the same
+    conservative _scrub_secrets deny-list --redact uses) IN PLACE across every collected
+    .txt capture under collection_dir. Values only: IPs / hostnames / interfaces are KEPT
+    so the dir stays analyzable with --no-collect and remains the --compare/--trend
+    source; nothing is ever deleted. Idempotent (the placeholder never re-matches).
+    Returns (txt_files_scanned, files_changed). Fail-soft per file — one unreadable
+    capture never aborts the scrub of the rest. Note: rewritten captures will no longer
+    match archive hashes recorded at collection time (deliberate, opt-in)."""
+    scanned = changed = 0
+    for root, _dirs, files in os.walk(collection_dir or ""):
+        for fn in files:
+            if not fn.endswith(".txt"):
+                continue
+            p = os.path.join(root, fn)
+            try:
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+            except Exception as e:
+                logger.debug(f"redact_collection_dir: unreadable {p}: {e}")
+                continue
+            scanned += 1
+            scrubbed = _scrub_secrets(text)
+            if scrubbed != text:
+                try:
+                    with open(p, "w", encoding="utf-8") as f:
+                        f.write(scrubbed)
+                    changed += 1
+                except Exception as e:
+                    logger.warning(f"redact_collection_dir: could not rewrite {p}: {e}")
+    return scanned, changed
+
+
 def redact_collected_inplace(all_interfaces: dict, all_device_physical: list) -> None:
     """Pseudonymize the COLLECTED dataclasses (InterfaceData + DevicePhysical) IN PLACE, so the always-produced
     .xlsx workbook -- which the sheet builders assemble from these dataclasses BEFORE redact_snapshot ever runs on
