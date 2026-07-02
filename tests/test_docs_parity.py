@@ -1,0 +1,52 @@
+"""Docs-parity gate (Plan A / Tier-2 #10) — the product surface must describe the
+actual product.
+
+The class this pins: the README froze at "eight analysis modes / Cisco-only" while the
+explorer grew to thirteen modes and the engine went multi-vendor — adoption-facing text
+drifting from shipped reality. Counts and mode names are DERIVED from the explorer's
+MODES registry, so a future mode addition fails this test until the README catches up."""
+import pathlib
+import re
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+README = (ROOT / "README.md").read_text(encoding="utf-8")
+
+
+def _registry_modes():
+    expl = (ROOT / "cisco_toolkit" / "blast_radius_explorer.html").read_text(encoding="utf-8")
+    block = re.search(r"MODES-REGISTRY START.*?const MODES\s*=\s*\[(.*?)\n\];", expl, re.S).group(1)
+    keys = re.findall(r'\bkey:"([a-z0-9_]+)"', block)
+    btns = re.findall(r'\bbtn:"([^"]+)"', block)
+    return keys, btns
+
+
+def test_readme_mode_count_matches_the_registry():
+    keys, _ = _registry_modes()
+    assert f"{len(keys)} analysis modes" in README, \
+        f"README must state the real mode count ({len(keys)}) — derived from the MODES registry"
+    assert "eight analysis modes" not in README, "the stale 'eight analysis modes' claim returned"
+
+
+def test_readme_explorer_row_names_every_mode():
+    """The artifact-table row (a Markdown '|' row, not the intro bullet) must name every
+    mode the registry carries — the exact row that had frozen at eight names."""
+    _, btns = _registry_modes()
+    rows = [ln for ln in README.splitlines()
+            if ln.lstrip().startswith("|") and "blast_radius_explorer.html" in ln]
+    assert rows, "README lost the explorer artifact-table row"
+    assert any(all(b in row for b in btns) for row in rows), \
+        f"no README explorer row names every mode; wanted all of {btns}"
+
+
+def test_readme_declares_the_multivendor_surface():
+    for vendor in ("Arista", "Juniper", "FortiGate", "AWS", "ACI", "SD-WAN"):
+        assert vendor in README, f"README must name the {vendor} ingestion surface"
+
+
+def test_product_files_exist():
+    assert (ROOT / "LICENSE").is_file(), "LICENSE is missing (all-rights-reserved must be formal)"
+    lic = (ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert "All rights reserved" in lic
+    assert (ROOT / "CHANGELOG.md").is_file(), "CHANGELOG.md is missing"
+    ch = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "Unreleased" in ch and "v3.23.176" in ch
