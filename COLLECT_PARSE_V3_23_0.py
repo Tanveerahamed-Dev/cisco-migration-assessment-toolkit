@@ -1342,17 +1342,32 @@ def _empty_dep_map() -> dict:
             "orphan": set(), "model": {"hosts": set()}}
 
 
+# Measure-first perf harness (Plan A / Tier-2 #11): every _run_phase call is timed here,
+# chronologically, and main() writes the ledger as a .phase_timings.json SIDECAR next to
+# the workbook — golden-neutral by construction (never a snapshot key). This is the hard
+# predecessor of any perf work: no restructure without before/after numbers from THIS ledger.
+_PHASE_TIMINGS: List[dict] = []
+
+
 def _run_phase(label, fn, *args, _default=None, **kwargs):
     """FIX (resilience): run a pre-save phase so a failure LOGS AND CONTINUES
     instead of aborting the whole run before wb.save() (extends the FIX-V14-1
     'guard and continue' idea from Phase 6 to every phase). Returns the phase's
-    result, or _default if it raised. Happy-path behaviour is unchanged."""
+    result, or _default if it raised. Happy-path behaviour is unchanged.
+    Tier-2 #11: each call is timed into _PHASE_TIMINGS (ok=False on a failure,
+    so a fast-because-it-crashed phase can never read as a fast phase)."""
+    _t0 = time.perf_counter()
+    _ok = True
     try:
         return fn(*args, **kwargs)
     except Exception as e:
+        _ok = False
         logger.error(f"  [SKIP] Phase '{label}' failed: {e!r}; "
                      f"continuing so the workbook still saves.")
         return _default
+    finally:
+        _PHASE_TIMINGS.append({"phase": str(label),
+                               "seconds": round(time.perf_counter() - _t0, 4), "ok": _ok})
 
 
 # =============================================================================
@@ -1740,6 +1755,7 @@ def main():
     # Fresh zero-parse ledger per run (webapp ingest reuses this pipeline in-process, so
     # the ledger must never carry a previous run's events into this snapshot).
     reset_parse_ledger()
+    del _PHASE_TIMINGS[:]        # fresh perf ledger per run, same reasoning (Tier-2 #11)
     workers = max(1, min(args.workers, len(devices)))
     logger.info(f"\n[Phase 1] Collecting {len(devices)} device(s) with {workers} parallel worker(s) ...")
     all_cmd_to_files: Dict[str, Dict[str,str]] = {}
@@ -2751,6 +2767,22 @@ def main():
                         f"IPs/hostnames kept)")
         except Exception as e:
             logger.warning(f"  redact-collection failed (non-fatal; raw dir unchanged): {e}")
+
+    # Phase 41: perf sidecar (Plan A / Tier-2 #11 — the measure-first harness). A SEPARATE
+    # .phase_timings.json next to the workbook, chronological, golden-neutral (never a
+    # snapshot key; written after the manifest seal like the Phase-40 scrub). Sweep runner:
+    # `python tests/perf_scale.py 100 300 600 1000`.
+    try:
+        _pt_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".phase_timings.json"
+        _pt = {"n_devices": len(all_devices_meta), "workers": workers,
+               "total_seconds": round(sum(p["seconds"] for p in _PHASE_TIMINGS), 3),
+               "phases": list(_PHASE_TIMINGS)}
+        write_json_file(_pt_path, _pt)
+        _slowest = max(_PHASE_TIMINGS, key=lambda p: p["seconds"], default={"phase": "-", "seconds": 0})
+        logger.info(f"[OK] Phase timings: {_pt_path}  ({len(_PHASE_TIMINGS)} timed phase(s), "
+                    f"slowest: {_slowest['phase']} {_slowest['seconds']}s)")
+    except Exception as e:
+        logger.warning(f"  phase-timings write failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
