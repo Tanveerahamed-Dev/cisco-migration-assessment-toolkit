@@ -9,7 +9,6 @@ RETURNED CONTENT but its parser produced 0 entities, that is recorded as a
 collected-but-unparsed event — a possible format-fidelity gap, NEVER a device verdict.
 Absent / error captures stay the Collection Completeness axis's domain and must NOT be
 counted here (that would be cry-wolf)."""
-import os
 import threading
 
 import pytest

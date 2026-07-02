@@ -457,7 +457,8 @@ from cisco_toolkit.build import (
 # building/serializing the snapshot + emitting the HTML + diff outputs.
 from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_workbook,
                                 write_campaign_workbook, redact_snapshot,
-                                redact_collected_inplace, redact_workbook_cells)   # campaign trend; audit-3 #8 workbook redact
+                                redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
+                                redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -1420,6 +1421,13 @@ def main():
                          "bundle -- the snapshot JSON, the HTML explorer, AND the always-produced .xlsx "
                          "workbook (consistent, subnet-preserving; hostnames kept) -- so every deliverable "
                          "can be shared without leaking real addressing. Default off.")
+    ap.add_argument("--redact-collection", action="store_true",
+                    help="Plan A Tier-1 #5: scrub SECRET VALUES (passwords / SNMP communities / keys) "
+                         "IN PLACE across the raw collection dir's .txt captures, AFTER analysis "
+                         "completes (this run reads the originals). Values only -- IPs / hostnames are "
+                         "kept so the dir stays analyzable and remains the --compare/--trend source; "
+                         "nothing is deleted. Idempotent. Rewritten captures will no longer match "
+                         "archive hashes recorded at collection time (deliberate). Default off.")
     args = ap.parse_args()
 
     if args.debug_arp:
@@ -1610,6 +1618,13 @@ def main():
         all_devices_meta.append((hostname, platform, cmd_to_file))
 
     logger.info(f"  Collection complete: {len(all_devices_meta)}/{len(devices)} succeeded.")
+    # Plan A / Tier-1 #5 — say it on EVERY run, loudly: the raw captures are the one output
+    # --redact never touches, and they hold running-configs with cleartext secrets.
+    logger.warning(f"  [SENSITIVE] Raw collection dir holds CLEARTEXT device output "
+                   f"(running-configs can embed passwords / SNMP communities / keys): {root_dir} "
+                   f"-- --redact protects the DELIVERABLES only; once analysis is final, scrub the "
+                   f"raw captures in place with --redact-collection (kept, never auto-deleted -- "
+                   f"it is the --compare/--trend source).")
 
     # Phase 2: Global ARP
     logger.info("\n[Phase 2] Building global ARP table ...")
@@ -2708,6 +2723,18 @@ def main():
                     f"{len(_run_manifest.get('artifacts') or [])} artifact(s))")
     except Exception as e:
         logger.warning(f"  Run manifest write failed (non-fatal): {e}")
+
+    # Phase 40: opt-in raw-capture secret scrub (Plan A / Tier-1 #5). Deliberately the VERY
+    # last step: every deliverable above was built from the ORIGINAL captures, and the sealed
+    # manifest is already written. Secret VALUES only — the dir stays analyzable/--compare-able.
+    if getattr(args, "redact_collection", False):
+        try:
+            _scanned, _changed = redact_collection_dir(root_dir)
+            logger.info(f"[OK] redact-collection: scrubbed secret values in {_changed} of "
+                        f"{_scanned} raw capture file(s) under {root_dir} (in place, idempotent; "
+                        f"IPs/hostnames kept)")
+        except Exception as e:
+            logger.warning(f"  redact-collection failed (non-fatal; raw dir unchanged): {e}")
 
 
 if __name__ == "__main__":

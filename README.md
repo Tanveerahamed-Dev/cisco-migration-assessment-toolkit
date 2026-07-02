@@ -167,7 +167,9 @@ be shared without leaking real addressing). See
 A JSON file — accepted as an array, a single object, or one object per line.
 Each entry needs `ip`, `hostname`, and `username` (common aliases like `host`,
 `name`, and `user` are accepted). `platform` is optional and autodetected when
-omitted (`ios` / `nxos` / `auto`).
+omitted (`ios` / `nxos` / `auto`). Start from
+[`devices.example.json`](devices.example.json) — it shows the recommended,
+password-free shape.
 
 ```json
 [
@@ -176,15 +178,29 @@ omitted (`ios` / `nxos` / `auto`).
 ]
 ```
 
-**Passwords** resolve in this order, so secrets need not live in the file:
+**Keep passwords OUT of the file — the environment chain is the default.**
+Passwords resolve in this order:
 
-1. an explicit `"password"` on the entry,
-2. `"password_env": "VAR"` — read from that environment variable,
-3. the global `$CISCO_PASS` environment variable,
-4. a secure `getpass` prompt (interactive terminals only).
+1. `"password_env": "VAR"` on the entry — read from that environment variable,
+2. the global `$CISCO_PASS` environment variable (one read-only account fleet-wide),
+3. a secure `getpass` prompt (interactive terminals only),
+4. an explicit `"password"` on the entry — supported for back-compat, **discouraged**:
+   `devices.json` then holds live credentials in cleartext on disk.
 
 Authentication failures are **never** retried (this avoids account lockout);
 transient connection/timeout failures are retried with backoff.
+
+### Secrets at rest — the raw collection directory
+
+The collection directory holds the devices' **verbatim output**, running-configs
+included — passwords, SNMP communities, and keys in **cleartext**. `--redact` makes the
+*deliverables* share-safe but deliberately never touches this evidence dir (it is the
+`--compare` / `--trend` source), and every run now prints a `[SENSITIVE]` warning naming
+it. Once analysis is final, scrub the raw captures in place with **`--redact-collection`**:
+it replaces secret *values* with the same conservative deny-list `--redact` uses, keeps
+IPs/hostnames/interfaces so the dir stays analyzable, is idempotent, and never deletes
+anything. (Scrubbed captures will no longer match any archive hashes recorded at
+collection time — that modification is the point, and it is opt-in.)
 
 ## Reading the results
 
