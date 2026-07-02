@@ -64,6 +64,131 @@ _TL = threading.local()    # .last_load = (cmd, path, chars, lines) — load→p
 _UNATTRIBUTED = "[unattributed]"
 
 
+# === PARSER_CONTRACTS =============================================================
+# The command -> parser CONTRACT for the SSH `show`-command channel (the CLI-text surface
+# that suffers the recurring "collected-but-unparsed / format-fidelity" drift this module's
+# ledger exists to catch). Each key is a literal command dispatched via
+# _load_cmd_output(cmd_to_file, ...) in build.py; each value is the tuple of parse_*
+# functions that consume it -- usually one, but `show running-config` legitimately feeds
+# several feature-section parsers and `show ip mroute` two. Variant spellings that fall
+# back to the same output map to the same parser tuple.
+#
+# This is an AS-BUILT / coverage contract, NOT the runtime dispatcher -- build.py still
+# calls the parsers directly. tests/test_parser_contracts.py reconciles this dict against
+# build.py's own source (every named parser exists & is callable; no phantom command;
+# every inline `_safe_parse(parse_X, _load_cmd_output(cmd_to_file, "show ..."))` is
+# registered with parse_X) so the two cannot silently drift. Deliberately scoped to
+# `show ` commands: the controller-REST / cloud channels (moquery, dataservice/, api/,
+# aws, get system ...) are a structured-JSON path with different failure modes and are
+# out of this contract. A handful of `show` reads with no dedicated parse_* (raw syslog
+# logfile, `show ip interface brief` mgmt-IP scrape) are intentionally absent too.
+PARSER_CONTRACTS = {
+    # platform / control-plane health & identity
+    "show processes cpu": ("parse_cpu_utilization",),
+    "show processes memory": ("parse_memory_stats",),
+    "show system resources": ("parse_system_resources",),
+    "show version": ("parse_show_version",),
+    "show inventory": ("parse_show_inventory",),
+    "show module": ("parse_show_module_count",),
+    "show environment": ("parse_show_environment",),
+    "show environment all": ("parse_show_environment",),
+    "show environment power": ("parse_show_environment_power",),
+    "show power": ("parse_show_environment_power",),
+    "show power inline": ("parse_show_power_inline",),
+    "show vtp status": ("parse_vtp_status",),
+    # running-config: one command, many feature-section parsers
+    "show running-config": ("parse_acls", "parse_object_groups", "parse_nat", "parse_security",
+                            "parse_config_hygiene", "parse_redistribution", "parse_run_config_interfaces"),
+    "show running-config | section ^interface": ("parse_run_config_interfaces",),
+    # spanning-tree / redundancy
+    "show spanning-tree": ("parse_spanning_tree_root",),
+    "show spanning-tree blockedports": ("parse_spanning_tree_blockedports",),
+    "show spanning-tree inconsistentports": ("parse_spanning_tree_blockedports",),
+    "show vpc": ("parse_vpc",),
+    "show standby all": ("parse_hsrp_detail",),
+    "show standby": ("parse_hsrp_detail",),
+    "show standby brief": ("parse_hsrp_summary",),
+    "show hsrp brief": ("parse_hsrp_summary",),
+    "show hsrp all": ("parse_hsrp_summary",),
+    "show vrrp brief": ("parse_vrrp_summary",),
+    "show glbp brief": ("parse_glbp_summary",),
+    # overlay (VXLAN / EVPN) & SP/MPLS
+    "show nve peers": ("parse_nve_peers",),
+    "show nve vni": ("parse_nve_vni",),
+    "show bgp l2vpn evpn summary": ("parse_evpn_summary",),
+    "show mpls ldp neighbor": ("parse_mpls_ldp_neighbors",),
+    "show bgp vpnv4 unicast summary": ("parse_bgp_vpnv4_summary",),
+    "show mpls l2transport vc": ("parse_mpls_l2vpn_vc",),
+    # SD-Access / TrustSec / tunnels / crypto
+    "show lisp session": ("parse_lisp_sessions",),
+    "show cts environment-data": ("parse_cts_environment_data",),
+    "show dmvpn": ("parse_dmvpn_peers",),
+    "show crypto session": ("parse_crypto_sessions",),
+    # firewall (ASA) & multi-vendor
+    "show failover": ("parse_asa_failover",),
+    "show resource usage": ("parse_asa_resource_usage",),
+    "show mlag": ("parse_arista_mlag",),
+    "show bgp evpn summary": ("parse_arista_bgp_evpn_summary",),
+    "show chassis cluster status": ("parse_junos_chassis_cluster",),
+    # multicast & timing
+    "show ip mroute": ("parse_mroute_entries", "parse_multicast_info"),
+    "show ip pim rp mapping": ("parse_pim_rp_mapping",),
+    "show ip pim neighbor": ("parse_pim_neighbors",),
+    "show ip pim interface": ("parse_multicast_info",),
+    "show ip igmp snooping querier": ("parse_igmp_snooping_querier",),
+    "show ptp clock": ("parse_ptp_clock",),
+    "show ptp parent": ("parse_ptp_clock",),
+    # BFD & IPv6
+    "show bfd neighbors": ("parse_bfd_neighbors",),
+    "show ipv6 interface": ("parse_ipv6_interface_addrs",),
+    "show ipv6 route summary": ("parse_ipv6_route_summary",),
+    "show ospfv3 neighbor": ("parse_ospfv3_neighbors",),
+    "show ipv6 ospf neighbor": ("parse_ospfv3_neighbors",),
+    "show bgp ipv6 unicast summary": ("parse_bgp_ipv6_summary",),
+    "show ipv6 nd raguard policy": ("parse_ipv6_raguard_policy",),
+    "show ipv6 dhcp guard policy": ("parse_ipv6_dhcp_guard_policy",),
+    # routing control & data plane
+    "show ip ospf neighbor": ("parse_ospf_neighbors",),
+    "show ip eigrp neighbors": ("parse_eigrp_neighbors",),
+    "show ip bgp summary": ("parse_bgp_summary",),
+    "show bgp summary": ("parse_bgp_summary",),
+    "show ip route": ("parse_ip_routes",),
+    "show ip route vrf all": ("parse_ip_routes",),
+    "show ip bgp": ("parse_bgp_table",),
+    "show bgp ipv4 unicast": ("parse_bgp_table",),
+    # NTP / access-edge / QoS
+    "show ntp status": ("parse_ntp_status",),
+    "show ntp peer-status": ("parse_ntp_status",),
+    "show port-security interface": ("parse_port_security_detail",),
+    "show storm-control": ("parse_storm_control",),
+    "show policy-map interface": ("parse_policymap_drops",),
+    "show policy-map interface control-plane": ("parse_copp_drops",),
+    "show ip access-lists": ("parse_acl_hitcounts",),
+    # adjacency discovery
+    "show cdp neighbors detail": ("parse_neighbors_detail",),
+    "show lldp neighbors detail": ("parse_neighbors_detail",),
+    # interfaces / switchport / VRF / port-channel / MAC / VLAN
+    "show interface status": ("parse_show_interface_status",),
+    "show interface switchport": ("parse_show_interface_switchport",),
+    "show interfaces switchport": ("parse_show_interface_switchport",),
+    "show interface trunk": ("parse_show_interface_trunk_table",),
+    "show interfaces trunk": ("parse_show_interface_trunk_table",),
+    "show vrf interface": ("parse_show_vrf_interface",),
+    "show ip vrf interface": ("parse_show_vrf_interface",),
+    "show ip vrf interfaces": ("parse_show_vrf_interface",),
+    "show port-channel summary": ("parse_portchannel_protocol_from_summary",),
+    "show etherchannel summary": ("parse_portchannel_protocol_from_summary",),
+    "show mac address-table": ("parse_show_mac_address_table",),
+    "show vlan brief": ("parse_vlan_brief",),
+}
+
+
+def parser_for(cmd):
+    """The parse_* function name(s) that consume `cmd`, or () if it is not a registered
+    `show`-channel command. Read-only convenience over PARSER_CONTRACTS."""
+    return PARSER_CONTRACTS.get(cmd, ())
+
+
 def reset_parse_ledger() -> None:
     """Start-of-run reset (also clears this thread's pairing stash)."""
     global _EVENTS_TRUNCATED

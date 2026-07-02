@@ -840,6 +840,10 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # 'community <VALUE>' form (host/group/trap lines).
     r"(snmp-server\s+community\s+)(\S+)",
     r"(\bcommunity\s+)(\S+)",
+    # 'snmp-server host <ip> [vrf X] [traps|informs] version {1|2c} <COMMUNITY>' -- the trap-host community is a
+    # bare positional token with NO 'community' keyword to anchor on, so the two patterns above missed it and it
+    # shipped verbatim under --redact (leak-corpus K4). v3 uses a username (not a secret), so only 1|2c match.
+    r"(snmp-server\s+host\s+\S+\s+(?:vrf\s+\S+\s+)?(?:(?:traps?|informs?)\s+)?version\s+(?:1|2c)\s+)(\S+)",
     # Cisco password/secret forms: type-7/type-5 and cleartext, 'enable secret',
     # and 'username <u> password|secret <VALUE>'. The username token is preserved.
     r"(\bpassword\s+(?:(?:ENC|\d+)\s+)?)(\S+)",
