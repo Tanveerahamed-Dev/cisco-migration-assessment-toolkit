@@ -1174,10 +1174,16 @@ def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
     return data
 
 
-def write_json_file(path: str, data: dict) -> None:
+def write_json_file(path: str, data: dict, compact: bool = False) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        # NEW-Tier3#14: the SNAPSHOT is written compact (a pure size win — every consumer json.loads it
+        # and compares PARSED objects, so byte formatting is invisible to the golden/--compare contract);
+        # debug artifacts (run_manifest / phase_timings) stay indented (human-readable) by default.
+        if compact:
+            json.dump(data, f, separators=(",", ":"), ensure_ascii=False)
+        else:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def file_sha256(path: str) -> str:
@@ -2645,7 +2651,7 @@ def main():
         except Exception as e:
             logger.warning(f"  --assert-pack not evaluated ({e}); skipping.")
     try:
-        write_json_file(snap_path, snap_dict)
+        write_json_file(snap_path, snap_dict, compact=True)   # Tier3#14: minified on disk (parsed-compare consumers)
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")
     except Exception as e:
         logger.warning(f"  Snapshot write failed: {e}")
