@@ -43,3 +43,12 @@ devices.json
 
 # graphify knowledge-graph output (generated; regenerate with the graphify skill)
 graphify-out/
+.gstack/
+
+# design-sync (claude.ai/design converter) — staged scripts, build output, machine state.
+# The durable set (.design-sync/config.json, NOTES.md, conventions.md, previews/, docs/, overrides/) IS committed.
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
