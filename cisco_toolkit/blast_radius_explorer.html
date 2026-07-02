@@ -1016,6 +1016,7 @@
       <button data-mode="apps" aria-pressed="false"><span class="gl" aria-hidden="true">▦</span>Apps</button>
       <button data-mode="review" aria-pressed="false"><span class="gl" aria-hidden="true">☑</span>Review</button>
       <button data-mode="design" aria-pressed="false"><span class="gl" aria-hidden="true">✎</span>Design</button>
+      <button data-mode="cablemap" aria-pressed="false"><span class="gl" aria-hidden="true">⇅</span>Cable Map</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -2335,6 +2336,7 @@ function layoutModel(){
   return {hosts,links,adj};
 }
 function computeLayout(){
+  if(MODE==="cablemap"){buildCableMapSvg(); return;}   // cable map computes its own tier-lane layout
   const lm=layoutModel();
   const r = LAYOUT==="radial"? radialLayout(lm) : layeredLayout(lm);
   POS=r.pos; LOGICAL={w:r.logicalW,h:r.logicalH};
@@ -2402,7 +2404,7 @@ function markActiveChip(){
 function setVlan(v){VLAN=v;markActiveChip();if(MODE==="trace")computeTrace();repaint();renderDrawer();writeHash();}
 
 /* ---- URL-hash shareable/bookmarkable state (works on file://; no localStorage) ---- */
-const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps","review","design"];
+const HASH_MODES=["blast","trace","compare","flow","health","protocols","xlayer","causality","waves","apps","review","design","cablemap"];
 let APPLYING_HASH=false;   // re-entrancy guard for readHash()
 function writeHash(){
   try{
@@ -2451,6 +2453,7 @@ function el(tag,attrs){const e=document.createElementNS(SVGNS,tag);
   for(const k in attrs)e.setAttribute(k,attrs[k]);return e;}
 
 function buildSvg(){
+  if(MODE==="cablemap")return buildCableMapSvg();   // bespoke full-canvas cable map (its own #vp render)
   clearPathAnim();           // the SVG (and any packet/rAF) is about to be rebuilt — no leaked loop
   const s=svg(); s.innerHTML="";
   const defs=el("defs",{});
@@ -2584,6 +2587,153 @@ function fitView(){const st=document.getElementById("stage");const W=st.clientWi
 function screenToLogical(px,py){const r=svg().getBoundingClientRect();
   return {x:(px-r.left-view.tx)/view.k, y:(py-r.top-view.ty)/view.k};}
 
+/* =====================================================================
+   CABLE MAP — Nokia-EDA-style physical topology (bespoke full-canvas mode).
+   Renders SNAP.cable_map (the Python SSOT): role-tiered lanes, node rects with
+   port stubs, and cables anchored to ports + coloured by op-status
+   (up=--ok, down=--crit, unknown/[NOT OBSERVED]=--text-faint, dashed). Reuses the
+   #vp pan/zoom + fitView; guarded in buildSvg/computeLayout/repaint so the
+   circle-graph overlays (severityHalo / search / VLAN-focus) never run on it.
+   ===================================================================== */
+let CM_SEL=null, CM_ORIENT="v", CM_POS={}, CM_ANCH={}, cmNodeEls={}, cmCableEls=[];   // CM_ORIENT: 'v'=tiers top→bottom (default), 'h'=left→right
+const CM_OPCOL={up:"var(--ok)",down:"var(--crit)",unknown:"var(--text-faint)"};
+const CM_NW=190, CM_NH=54, CM_GX=60, CM_GY=140, CM_PAD=90;   // node box + lane gaps
+function cableMapModel(){const cm=(SNAP&&SNAP.cable_map)||null;
+  return (cm&&Array.isArray(cm.nodes)&&Array.isArray(cm.cables)&&Array.isArray(cm.tiers))?cm
+    :{nodes:[],cables:[],tiers:[],summary:{n_nodes:0,n_cables:0,n_tiers:0,op:{up:0,down:0,unknown:0}}};}
+function cableMapLayout(cm){
+  CM_POS={}; CM_ANCH={};
+  const V=CM_ORIENT!=="h";                                  // vertical (tiers top→bottom) vs horizontal (left→right)
+  const alongStep=(V?CM_NW:CM_NH)+CM_GX, depthStep=(V?CM_NH:CM_NW)+CM_GY;
+  const tiers=cm.tiers, nodeByHost={}; cm.nodes.forEach(n=>nodeByHost[n.host]=n);
+  const widest=Math.max(1,...tiers.map(t=>t.length));
+  const span=(widest-1)*alongStep;
+  tiers.forEach((t,k)=>{const rowSpan=(t.length-1)*alongStep, off=(span-rowSpan)/2;
+    t.forEach((h,i)=>{const along=CM_PAD+off+i*alongStep, depth=CM_PAD+k*depthStep;
+      CM_POS[h]=V?{x:along,y:depth}:{x:depth,y:along};});});
+  const alongTot=CM_PAD*2+span, depthTot=CM_PAD*2+(tiers.length-1)*depthStep+(V?CM_NH:CM_NW);
+  LOGICAL=V?{w:Math.max(640,alongTot),h:Math.max(360,depthTot)}:{w:Math.max(640,depthTot),h:Math.max(360,alongTot)};
+  // port anchors: spread each node's cabled ports along the tier-facing edge (top/bottom if vertical, left/right if horizontal).
+  cm.nodes.forEach(n=>{const p=CM_POS[n.host]; if(!p)return; CM_ANCH[n.host]={};
+    const near=[],far=[];                                   // 'near' = peer in a LOWER tier index (up / left), 'far' = higher (down / right)
+    (n.ports||[]).forEach(pt=>{const peer=nodeByHost[pt.peer]; const peerTier=peer?peer.tier:n.tier+1;
+      (peerTier<n.tier?near:far).push(pt);});
+    const place=(arr,sign)=>{arr.forEach((pt,i)=>{const frac=(i+1)/(arr.length+1);
+      CM_ANCH[n.host][pt.name]=V?{x:p.x-CM_NW/2+frac*CM_NW, y:p.y+sign*CM_NH/2}
+                                :{x:p.x+sign*CM_NW/2, y:p.y-CM_NH/2+frac*CM_NH};});};
+    place(near,-1); place(far,1);});
+  return nodeByHost;
+}
+function cmCablePath(a,b){if(CM_ORIENT==="h"){const mx=(a.x+b.x)/2; return `M${a.x},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}`;}
+  const my=(a.y+b.y)/2; return `M${a.x},${a.y} C${a.x},${my} ${b.x},${my} ${b.x},${b.y}`;}
+function cmToggleOrient(){CM_ORIENT=CM_ORIENT==="h"?"v":"h"; if(MODE==="cablemap"){computeLayout(); fitView(); renderDrawer();
+  srAnnounce("Cable map orientation "+(CM_ORIENT==="h"?"horizontal":"vertical"));}}
+function cmTierRole(cm,k){const rs={}; cm.nodes.filter(n=>n.tier===k).forEach(n=>{if(n.role)rs[n.role]=(rs[n.role]||0)+1;});
+  const top=Object.entries(rs).sort((a,b)=>b[1]-a[1])[0]; return top?top[0]:"";}
+function buildCableMapSvg(){
+  clearPathAnim(); const cm=cableMapModel();
+  const s=svg(); s.innerHTML=""; s.appendChild(el("defs",{}));
+  const vp=el("g",{id:"vp"}); s.appendChild(vp);
+  const glanes=el("g",{id:"cmlanes"}), gcab=el("g",{id:"cmcables"}), gnod=el("g",{id:"cmnodes"});
+  vp.appendChild(glanes); vp.appendChild(gcab); vp.appendChild(gnod);
+  cmNodeEls={}; cmCableEls=[];
+  if(!cm.nodes.length){LOGICAL={w:820,h:320};
+    const t=el("text",{x:"70",y:"90",fill:"var(--text-dim)","font-size":"15"});
+    t.textContent="No cable map — this snapshot has no CDP/LLDP topology links.";
+    vp.appendChild(t); applyTransform(); return;}
+  const nodeByHost=cableMapLayout(cm);
+  // tier lane bands + labels (behind everything)
+  const _V=CM_ORIENT!=="h";
+  cm.tiers.forEach((t,k)=>{if(!t.length)return; const p0=CM_POS[t[0]];
+    const rn=cmTierRole(cm,k), lblTxt="TIER "+k+(rn?" · "+rn.toUpperCase():"");
+    if(_V){glanes.appendChild(el("rect",{x:"0",y:String(p0.y-CM_NH/2-18),width:String(LOGICAL.w),height:String(CM_NH+36),
+        fill:k%2?"var(--surface-2)":"transparent",opacity:"0.55"}));
+      const lbl=el("text",{x:"16",y:String(p0.y-CM_NH/2-24),fill:"var(--text-faint)","font-size":"11","font-weight":"700"}); lbl.textContent=lblTxt; glanes.appendChild(lbl);}
+    else{glanes.appendChild(el("rect",{x:String(p0.x-CM_NW/2-18),y:"0",width:String(CM_NW+36),height:String(LOGICAL.h),
+        fill:k%2?"var(--surface-2)":"transparent",opacity:"0.55"}));
+      const lbl=el("text",{x:String(p0.x-CM_NW/2-14),y:"20",fill:"var(--text-faint)","font-size":"11","font-weight":"700"}); lbl.textContent=lblTxt; glanes.appendChild(lbl);}});
+  // cables (under nodes) — anchored to the specific ports, coloured by op-status
+  cm.cables.forEach((c,i)=>{const aA=(CM_ANCH[c.a]||{})[c.a_port]||CM_POS[c.a], aB=(CM_ANCH[c.b]||{})[c.b_port]||CM_POS[c.b];
+    if(!aA||!aB)return; const col=CM_OPCOL[c.op_status]||CM_OPCOL.unknown;
+    const path=el("path",{d:cmCablePath(aA,aB),fill:"none",stroke:col,
+      "stroke-width":String(c.is_pc?4.5:2),"stroke-opacity":"0.82","stroke-linecap":"round"});
+    if(c.op_status==="unknown")path.setAttribute("stroke-dasharray","5 5");
+    path.style.cursor="pointer";
+    path.addEventListener("click",ev=>{ev.stopPropagation(); cmSelect({kind:"cable",i});});
+    gcab.appendChild(path); cmCableEls.push({c,path,i});});
+  // nodes — rounded rects with an op-status dot, badges, and port stubs on the tier-facing edges
+  cm.nodes.forEach(n=>{const p=CM_POS[n.host]; if(!p)return;
+    const g=el("g",{class:"cmnode",transform:`translate(${p.x},${p.y})`,role:"button",tabindex:"-1"});
+    g.setAttribute("aria-label",`${n.host}, ${n.collected?"collected":"not collected"}, role ${n.role||"unknown"}, tier ${n.tier}, ${(n.ports||[]).length} cabled ports, status ${n.op_status}`);
+    const body=el("rect",{x:String(-CM_NW/2),y:String(-CM_NH/2),rx:"9",width:String(CM_NW),height:String(CM_NH),
+      fill:"var(--surface)",stroke:n.collected?"var(--border-strong)":"var(--text-faint)","stroke-width":n.collected?"1.6":"1.4"});
+    if(!n.collected)body.setAttribute("stroke-dasharray","4 4");
+    g.appendChild(body);
+    g.appendChild(el("circle",{cx:String(-CM_NW/2+14),cy:String(-CM_NH/2+14),r:"5",
+      fill:CM_OPCOL[n.op_status]||CM_OPCOL.unknown,stroke:"var(--surface)","stroke-width":"1.5"}));
+    const nm=el("text",{x:"0",y:"-2","text-anchor":"middle","font-size":"13","font-weight":"700",fill:"var(--text)"});
+    nm.textContent=shortName(n.host); g.appendChild(nm);
+    const sub=el("text",{x:"0",y:"15","text-anchor":"middle","font-size":"10.5",fill:"var(--text-dim)"});
+    sub.textContent=(n.role||"—")+" · T"+n.tier+" · "+(n.ports||[]).length+"p"; g.appendChild(sub);
+    (n.badges||[]).slice(0,3).forEach((b,bi)=>{const bc=b==="uncollected"?"var(--text-faint)":b==="links-down"?"var(--crit)":"var(--watch)";
+      g.appendChild(el("circle",{cx:String(CM_NW/2-13-bi*13),cy:String(-CM_NH/2+13),r:"4",fill:bc}));});
+    Object.entries(CM_ANCH[n.host]||{}).forEach(([pn,a])=>{const port=(n.ports||[]).find(pp=>pp.name===pn);
+      g.appendChild(el("rect",{x:String(a.x-p.x-3),y:String(a.y-p.y-3),width:"6",height:"6",rx:"1.5",
+        fill:CM_OPCOL[port?port.op_status:"unknown"],stroke:"var(--surface)","stroke-width":"1"}));});
+    g.style.cursor="pointer";
+    g.addEventListener("click",ev=>{ev.stopPropagation(); cmSelect({kind:"node",id:n.host});});
+    gnod.appendChild(g); cmNodeEls[n.host]={g,body,n};});
+  applyTransform(); paintCableMap();
+}
+function cmSelect(sel){CM_SEL=sel; paintCableMap(); renderDrawer();
+  srAnnounce(sel.kind==="node"?("Selected node "+sel.id):"Selected cable");}
+function paintCableMap(){
+  const selHost=CM_SEL&&CM_SEL.kind==="node"?CM_SEL.id:null, selCab=CM_SEL&&CM_SEL.kind==="cable"?CM_SEL.i:null;
+  const cm=cableMapModel(), nbrs=new Set();
+  if(selHost!=null){nbrs.add(selHost); cm.cables.forEach(c=>{if(c.a===selHost)nbrs.add(c.b); if(c.b===selHost)nbrs.add(c.a);});}
+  Object.entries(cmNodeEls).forEach(([h,o])=>{const on=selHost==null||nbrs.has(h);
+    o.g.style.opacity=on?"1":"0.26";
+    o.body.setAttribute("stroke",h===selHost?"var(--accent)":(o.n.collected?"var(--border-strong)":"var(--text-faint)"));
+    o.body.setAttribute("stroke-width",h===selHost?"2.6":(o.n.collected?"1.6":"1.4"));});
+  cmCableEls.forEach(({c,path,i})=>{const touch=selHost==null||c.a===selHost||c.b===selHost, isSel=selCab===i;
+    path.style.opacity=(selHost!=null&&!touch)?"0.1":(isSel?"1":"0.82");
+    path.setAttribute("stroke-width",isSel?String(c.is_pc?6:3.5):String(c.is_pc?4.5:2));});
+}
+function drawCableMap(){
+  const cm=cableMapModel(), op=(cm.summary&&cm.summary.op)||{up:0,down:0,unknown:0};
+  const dot=c=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c};margin-right:5px"></span>`;
+  const kv=(k,v)=>`<div class="row" style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:2px 0"><span class="faint">${k}</span><b style="text-align:right">${v}</b></div>`;
+  const mono='font-family:var(--mono,ui-monospace,monospace)';
+  let h=`<div class="drawer-sec"><h3 style="margin:0 0 6px">Cable Map</h3>
+    <div class="faint" style="font-size:12px;margin-bottom:8px">Physical CDP/LLDP cabling in role tiers. Cable colour = link operational status; dashed / grey = <b>[NOT OBSERVED]</b> (uncollected).</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-bottom:6px">
+      <span>${dot("var(--ok)")}${op.up} up</span><span>${dot("var(--crit)")}${op.down} down</span><span>${dot("var(--text-faint)")}${op.unknown} not observed</span></div>
+    <div class="faint" style="font-size:11.5px">${cm.summary.n_nodes} nodes · ${cm.summary.n_cables} cables · ${cm.summary.n_tiers} tiers</div>
+    <div style="margin-top:8px"><button class="btn ghost" data-cm-orient="1" style="padding:4px 10px">⇅ ${CM_ORIENT==="h"?"Horizontal":"Vertical"} layout — switch</button></div></div>`;
+  if(CM_SEL&&CM_SEL.kind==="node"){const n=cm.nodes.find(x=>x.host===CM_SEL.id);
+    if(n){h+=`<div class="drawer-sec" style="margin-top:10px"><h4 style="margin:0 0 6px">${esc(n.host)}</h4>`
+      +kv("Status",`<span style="color:${CM_OPCOL[n.op_status]}">${n.op_status}${n.collected?"":" · [NOT OBSERVED]"}</span>`)
+      +kv("Role / tier",`${esc(n.role||"—")} · T${n.tier}`)+kv("Cabled ports",(n.ports||[]).length)
+      +((n.badges||[]).length?kv("Flags",esc(n.badges.join(", "))):"");
+      if((n.ports||[]).length){h+=`<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px">
+        <thead><tr style="color:var(--text-faint);text-align:left"><th>Local</th><th>Peer</th><th>Peer port</th><th>Status</th></tr></thead><tbody>`;
+        (n.ports||[]).forEach(pt=>{h+=`<tr><td style="${mono}">${esc(pt.name)}</td><td>${esc(pt.peer)}</td><td style="${mono}">${esc(pt.peer_port||"—")}</td><td style="color:${CM_OPCOL[pt.op_status]}">${pt.op_status}${pt.is_pc?" · LAG":""}</td></tr>`;});
+        h+=`</tbody></table>`;}
+      h+=`</div>`;}}
+  else if(CM_SEL&&CM_SEL.kind==="cable"){const c=cm.cables[CM_SEL.i];
+    if(c){h+=`<div class="drawer-sec" style="margin-top:10px"><h4 style="margin:0 0 6px">Cable</h4>`
+      +kv(esc(c.a),`<span style="${mono}">${esc(c.a_port)}</span>`)
+      +kv(esc(c.b),`<span style="${mono}">${esc(c.b_port)}</span>`)
+      +kv("Status",`<span style="color:${CM_OPCOL[c.op_status]}">${c.op_status}</span>`)
+      +kv("Type",c.is_pc?`Port-channel · ${c.members.length} members`:"Single link")
+      +kv("Seen",esc(c.confirmation||"—"));
+      if(c.is_pc&&c.members.length>1){h+=`<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px"><thead><tr style="color:var(--text-faint);text-align:left"><th>Member A</th><th>Member B</th></tr></thead><tbody>`;
+        c.members.forEach(m=>{h+=`<tr><td style="${mono}">${esc(m.a_port)}</td><td style="${mono}">${esc(m.b_port)}</td></tr>`;});h+=`</tbody></table>`;}
+      h+=`</div>`;}}
+  else h+=`<div class="faint" style="font-size:12px;margin-top:10px">Click a node or a cable for its detail.</div>`;
+  return h;
+}
+
 /* ---- mini-map overview navigator ----
    Scales the whole LOGICAL canvas into a small fixed box (aspect-preserved,
    letterboxed), draws faint edges + a dot per node, and a rectangle marking the
@@ -2601,6 +2751,7 @@ function minimapScale(box){       // logical->box scale + centering offset (lett
   return {s,ox,oy};
 }
 function renderMinimap(){
+  if(MODE==="cablemap")return;   // the minimap tracks the circle-graph POS, not the cable-map layout
   const mm=document.getElementById("minimap"); if(!mm||mm.classList.contains("hidden"))return;
   if(!MODEL||!LOGICAL.w||!LOGICAL.h)return;            // no-op before the graph exists
   const box=minimapBox(); if(!box)return;
@@ -2780,7 +2931,9 @@ function severityHalo(){
     n.sevHalo=c;});
 }
 function repaint(){
-  if(!MODEL)return; clearFx(); baseEdge();
+  if(!MODEL)return;
+  if(MODE==="cablemap"){paintCableMap(); setHint(); setModeTag(); setLegend(); return;}   // own paint + chrome (skip the circle-graph overlays)
+  clearFx(); baseEdge();
   if(MODE==="blast")paintBlast();
   else if(MODE==="trace")paintTrace();
   else if(MODE==="compare")paintCompare();
@@ -3308,6 +3461,7 @@ function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="apps"&&APP_SEL!=null){APP_SEL=null;repaint();renderDrawer();}
   else if(MODE==="review"&&AR_SEL!=null){AR_SEL=null;repaint();renderDrawer();}
   else if(MODE==="design"&&DES_SEL!=null){DES_SEL=null;repaint();renderDrawer();}
+  else if(MODE==="cablemap"&&CM_SEL){CM_SEL=null;paintCableMap();renderDrawer();}
   else if(MODE==="flow"&&(FLOW_SRC||FLOW_DST)){FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null;repaint();renderDrawer();}
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
@@ -3353,10 +3507,15 @@ function modeSummary(m){
     if(m==="design"){const bp=designBlueprint(); if(!bp)return "";
       const s=bp.summary||{};
       return ` ${s.n_decisions||0} design decision${(s.n_decisions||0)===1?"":"s"}${s.n_critical?`, ${s.n_critical} critical`:""}${s.n_needs_requirement?`, ${s.n_needs_requirement} need a requirement`:""}.`;}
+    if(m==="cablemap"){const cm=cableMapModel(); const o=(cm.summary&&cm.summary.op)||{}; if(!cm.summary||!cm.summary.n_nodes)return "";
+      return ` ${cm.summary.n_nodes} nodes, ${cm.summary.n_cables} cables${o.down?`, ${o.down} down`:""}${o.unknown?`, ${o.unknown} not observed`:""}.`;}
   }catch(e){}
   return "";
 }
-function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
+function setMode(m){const _prevMode=MODE; MODE=m; _lastBlastSel=null;   // a mode change re-arms the blast wave (re-entering blast replays it)
+  if(m!=="cablemap")CM_SEL=null;                    // a cable-map selection only lives in that mode
+  if(m==="cablemap"||_prevMode==="cablemap"){computeLayout(); if(m==="cablemap")fitView();
+    const _mm=document.getElementById("minimap"); if(_mm)_mm.style.display=(m==="cablemap")?"none":"";}   // rebuild the SVG on enter/leave; the minimap tracks the circle graph, so hide it here
   document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");
     if(on&&b.scrollIntoView)b.scrollIntoView({block:"nearest",inline:"nearest"});});   // the strip scrolls on laptop widths — keep the active tab visible
   if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
@@ -3369,7 +3528,7 @@ function setMode(m){MODE=m; _lastBlastSel=null;   // a mode change re-arms the b
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
   repaint(); renderDrawer();
-  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causal Flow",waves:"Migration waves",apps:"Application domains",review:"Architecture review",design:"Design blueprint"}[m]||m)+" mode."+modeSummary(m));
+  srAnnounce(({blast:"Blast radius",trace:"Path trace",compare:"Compare",flow:"Flow",health:"Health",protocols:"Protocols",xlayer:"Cross-Layer analysis",causality:"Causal Flow",waves:"Migration waves",apps:"Application domains",review:"Architecture review",design:"Design blueprint",cablemap:"Cable Map"}[m]||m)+" mode."+modeSummary(m));
   writeHash();}
 
 /* =====================================================================
@@ -3388,7 +3547,8 @@ function setHint(){const h=document.getElementById("hint");const m={
   waves:WAVE_SEL!=null?`Group highlighted — click it again or the background to clear`:`Click a move group to <b>spotlight its switches</b>`,
   apps:APP_SEL!=null?`Domain highlighted — click it again or the background to clear`:`Click an application domain to <b>spotlight its switches</b>`,
   review:AR_SEL!=null?`Evidence highlighted — click the finding again or the background to clear`:`Click a finding to <b>spotlight its evidence hosts</b>`,
-  design:DES_SEL!=null?(_desSelHasDevices()?`Affected devices highlighted — click the decision again or the background to clear`:`This decision is <b>fleet / VLAN-scoped</b> — no per-host spotlight. Click it again or the background to clear`):`Click a design decision to <b>spotlight the devices it affects</b>`}[MODE];
+  design:DES_SEL!=null?(_desSelHasDevices()?`Affected devices highlighted — click the decision again or the background to clear`:`This decision is <b>fleet / VLAN-scoped</b> — no per-host spotlight. Click it again or the background to clear`):`Click a design decision to <b>spotlight the devices it affects</b>`,
+  cablemap:CM_SEL?`Selected — click it again or the background to clear`:`Click a <b>node</b> or a <b>cable</b> for its detail`}[MODE];
   h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
 function setModeTag(){const el=document.getElementById("modetag");
   const t={blast:"Pull a switch from the fabric and see, per VLAN, what hard-partitions vs. heals.",
@@ -3402,7 +3562,8 @@ function setModeTag(){const el=document.getElementById("modetag");
     waves:"Migration move groups: shared-VLAN domains that must cut over together, each with a READY / CAUTION / NOT-READY verdict.",
     apps:"Application domains: switches grouped into workloads (media fabric, audio, storage, robotics, …) by role/PTP/endpoint-class, each with a criticality tier and standards-grounded migration risk.",
     review:"The senior-engineer design review: leading-practice conformance verdicts per design domain (A–F grade), each finding citing its evidence, impact and the rule it deviates from.",
-    design:"The CCDE-grounded target-state design blueprint: evidence-gated design decisions traced to a design principle and the trade-off axes they serve, a trade-off scorecard, and the open requirement questions — the same design_blueprint the HLD/LLD reads."}[MODE];
+    design:"The CCDE-grounded target-state design blueprint: evidence-gated design decisions traced to a design principle and the trade-off axes they serve, a trade-off scorecard, and the open requirement questions — the same design_blueprint the HLD/LLD reads.",
+    cablemap:"Physical cabling map (Nokia-EDA style): CDP/LLDP links laid out in role tiers, cables coloured by operational status. Grey / dashed = [NOT OBSERVED] (uncollected). Click a node or cable for per-port detail."}[MODE];
   el.textContent=t;}
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
 function hlAttr(hl){return hl?` tabindex="0" role="button" data-hl="${hl}" aria-label="highlight ${hl} on the graph"`:"";}
@@ -3421,6 +3582,7 @@ function setLegend(){const L=document.getElementById("legend");let h=`<h4>Legend
   else if(MODE==="apps"){h+=bx("var(--accent)","switches in the selected domain","")+`<div class="row faint" style="margin-top:3px">Click an application-domain card to spotlight its switches; tiers run <b>On-air critical</b> → <b>Production</b> → <b>Support</b>.</div>`;}
   else if(MODE==="review"){h+=bx("var(--crit)","critical deviation","")+bx("var(--risk)","deviation","")+bx("var(--watch)","advisory","")+bx("var(--ok)","conforms","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>worst verdict naming them</b>; click a finding to spotlight its evidence.</div>`;}
   else if(MODE==="design"){h+=bx("var(--crit)","critical decision","")+bx("var(--risk)","high","")+bx("var(--watch)","medium","")+`<div class="row faint" style="margin-top:3px">Nodes tint by the <b>highest-priority decision naming them</b>; click a decision to spotlight the devices it affects.</div>`;}
+  else if(MODE==="cablemap"){h+=ln("var(--ok)","link up","")+ln("var(--crit)","link down","")+ln("var(--text-faint)","[NOT OBSERVED] / uncollected","")+bx("var(--accent)","selected node","")+`<div class="row faint" style="margin-top:3px">Lanes are role tiers; ━ thick = port-channel. Click a node or cable for its detail.</div>`;}
   h+=`<div class="row faint" style="margin-top:5px">━ thick = port-channel (×N members)</div>`;
   L.innerHTML=h;
   clearLegendHighlight(); wireLegendHover();}
@@ -3552,6 +3714,7 @@ function renderDrawer(){
   else if(MODE==="apps")p.innerHTML=drawApps();
   else if(MODE==="review")p.innerHTML=drawReview();
   else if(MODE==="design")p.innerHTML=drawDesign();
+  else if(MODE==="cablemap")p.innerHTML=drawCableMap();
   // W3-4 (NotebookLM Mind-Map): a selected topology node gets a one-click scoped, OFFLINE askbot question about
   // itself -> opens the askbot with this node's evidence-grounded profile + citation chip. Deterministic, no LLM;
   // the node click's own behaviour (blast radius / health) is untouched -- this is an added affordance.
@@ -3564,6 +3727,7 @@ function renderDrawer(){
     p.insertBefore(aff, p.firstChild);
   }
   p.querySelectorAll("[data-askhost]").forEach(b=>b.onclick=()=>{abToggle(true); abSubmit("tell me about "+b.dataset.askhost);});
+  p.querySelectorAll("[data-cm-orient]").forEach(b=>b.onclick=cmToggleOrient);
   // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
   // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
   p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
@@ -8726,6 +8890,7 @@ window.addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;
   if(k==="1")setMode("blast");else if(k==="2")setMode("trace");else if(k==="3")setMode("compare");
   else if(k==="4")setMode("flow");else if(k==="5")setMode("health");else if(k==="6")setMode("protocols");
   else if(k==="7")setMode("causality");
+  else if(k==="8")setMode("cablemap");
   else if(k==="f")fitView();else if(k==="t")document.getElementById("themeBtn").click();
   else if(k==="g")toggleTableView();
   else if(k==="m")toggleMinimap();

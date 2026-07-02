@@ -389,6 +389,16 @@
   "VLAN gateway(s)",
   "Aligned?"
  ],
+ "Cabling Schedule": [
+  "Switch A",
+  "Port A",
+  "Switch B",
+  "Port B",
+  "Type",
+  "LAG Members",
+  "Op-Status",
+  "Seen"
+ ],
  "Migration Punch-List": [
   "#",
   "Severity",

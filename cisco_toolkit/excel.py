@@ -3244,6 +3244,51 @@ def write_link_centrality_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
                 f"{sum(1 for x in rows if x['is_bridge'])} bridge(s)")
 
 
+CABLING_SCHEDULE_SHEET_NAME = "Cabling Schedule"
+
+
+def write_cabling_schedule_sheet(wb, cable_map: dict) -> None:
+    """Write (or replace) 'Cabling Schedule': one row per physical cable from the EDA-style cable-map
+    SSOT (compute_cable_map) -- the same node/port/cable model the explorer + webapp render. It carries
+    each link's OPERATIONAL status (coverage-honest: an uncollected / unobserved end is '[NOT OBSERVED]',
+    never a fake 'Up') and bundles port-channel members into one row."""
+    cols = ["Switch A", "Port A", "Switch B", "Port B", "Type", "LAG Members", "Op-Status", "Seen"]
+    if CABLING_SCHEDULE_SHEET_NAME in wb.sheetnames:
+        del wb[CABLING_SCHEDULE_SHEET_NAME]
+    ws = wb.create_sheet(CABLING_SCHEDULE_SHEET_NAME)
+    _census_header(ws, cols)
+    cables = (cable_map or {}).get("cables") or []
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="center")
+    DAT_C = Alignment(horizontal="center", vertical="center")
+    op_label = {"up": "Up", "down": "Down", "unknown": "[NOT OBSERVED]"}
+    op_fill = {"up": PatternFill("solid", fgColor="D9EAD3"),      # green
+               "down": PatternFill("solid", fgColor="F4CCCC"),    # red
+               "unknown": PatternFill("solid", fgColor="EFEFEF")}  # neutral grey ([NOT OBSERVED])
+    r = 2
+    for c in cables:
+        if not isinstance(c, dict):
+            continue
+        is_pc = bool(c.get("is_pc"))
+        op = str(c.get("op_status") or "unknown")
+        vals = [c.get("a", ""), c.get("a_port", ""), c.get("b", ""), c.get("b_port", ""),
+                "Port-channel" if is_pc else "Single",
+                len(c.get("members") or []) if is_pc else "",
+                op_label.get(op, op), c.get("confirmation", "")]
+        for col, v in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=col, value=v)
+            cell.font = DAT_FONT
+            cell.alignment = DAT_C if col in (5, 6, 7) else DAT_L
+            if col == 7:
+                cell.fill = op_fill.get(op, op_fill["unknown"])
+        r += 1
+    if r == 2:
+        ws.cell(2, 1, "-")
+        ws.cell(2, 2, "No CDP/LLDP cabling detected")
+    _census_autofit(ws, len(cols), r - 1)
+    logger.info(f"  [OK] '{CABLING_SCHEDULE_SHEET_NAME}' sheet: {len(cables)} cable(s)")
+
+
 WAVE_SEQUENCING_SHEET_NAME = "Wave Sequencing"
 
 def write_wave_sequencing_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData]],

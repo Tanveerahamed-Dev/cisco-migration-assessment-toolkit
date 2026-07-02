@@ -3076,6 +3076,298 @@
    "data_quality": 1.0
   }
  ],
+ "cable_map": {
+  "nodes": [
+   {
+    "host": "core2",
+    "role": "distribution",
+    "tier": 0,
+    "order": 0,
+    "collected": true,
+    "op_status": "up",
+    "badges": [],
+    "ports": [
+     {
+      "name": "Eth1/20",
+      "peer": "SEP00112233AABB",
+      "peer_port": "Port",
+      "op_status": "unknown",
+      "is_pc": false
+     },
+     {
+      "name": "Eth1/30",
+      "peer": "AP-floor3-01",
+      "peer_port": "Gi0",
+      "op_status": "unknown",
+      "is_pc": false
+     },
+     {
+      "name": "Eth1/47",
+      "peer": "wan-edge-rtr1.lab",
+      "peer_port": "Gi0/0/1",
+      "op_status": "unknown",
+      "is_pc": false
+     },
+     {
+      "name": "Po1",
+      "peer": "core1",
+      "peer_port": "Po1",
+      "op_status": "up",
+      "is_pc": true
+     }
+    ]
+   },
+   {
+    "host": "AP-floor3-01",
+    "role": "",
+    "tier": 1,
+    "order": 0,
+    "collected": false,
+    "op_status": "unknown",
+    "badges": [
+     "uncollected"
+    ],
+    "ports": [
+     {
+      "name": "Gi0",
+      "peer": "core2",
+      "peer_port": "Eth1/30",
+      "op_status": "unknown",
+      "is_pc": false
+     }
+    ]
+   },
+   {
+    "host": "SEP00112233AABB",
+    "role": "",
+    "tier": 1,
+    "order": 1,
+    "collected": false,
+    "op_status": "unknown",
+    "badges": [
+     "uncollected"
+    ],
+    "ports": [
+     {
+      "name": "Port",
+      "peer": "core2",
+      "peer_port": "Eth1/20",
+      "op_status": "unknown",
+      "is_pc": false
+     }
+    ]
+   },
+   {
+    "host": "core1",
+    "role": "distribution",
+    "tier": 1,
+    "order": 2,
+    "collected": true,
+    "op_status": "up",
+    "badges": [],
+    "ports": [
+     {
+      "name": "Gi1/0/24",
+      "peer": "access1",
+      "peer_port": "Gi0/1",
+      "op_status": "up",
+      "is_pc": false
+     },
+     {
+      "name": "Po1",
+      "peer": "core2",
+      "peer_port": "Po1",
+      "op_status": "up",
+      "is_pc": true
+     }
+    ]
+   },
+   {
+    "host": "wan-edge-rtr1.lab",
+    "role": "",
+    "tier": 1,
+    "order": 3,
+    "collected": false,
+    "op_status": "unknown",
+    "badges": [
+     "uncollected"
+    ],
+    "ports": [
+     {
+      "name": "Gi0/0/1",
+      "peer": "core2",
+      "peer_port": "Eth1/47",
+      "op_status": "unknown",
+      "is_pc": false
+     }
+    ]
+   },
+   {
+    "host": "access1",
+    "role": "access",
+    "tier": 2,
+    "order": 0,
+    "collected": true,
+    "op_status": "up",
+    "badges": [],
+    "ports": [
+     {
+      "name": "Gi0/1",
+      "peer": "core1",
+      "peer_port": "Gi1/0/24",
+      "op_status": "up",
+      "is_pc": false
+     },
+     {
+      "name": "Gi0/2",
+      "peer": "AP-floor1",
+      "peer_port": "Gi0",
+      "op_status": "up",
+      "is_pc": false
+     }
+    ]
+   },
+   {
+    "host": "AP-floor1",
+    "role": "",
+    "tier": 3,
+    "order": 0,
+    "collected": false,
+    "op_status": "unknown",
+    "badges": [
+     "uncollected"
+    ],
+    "ports": [
+     {
+      "name": "Gi0",
+      "peer": "access1",
+      "peer_port": "Gi0/2",
+      "op_status": "up",
+      "is_pc": false
+     }
+    ]
+   }
+  ],
+  "cables": [
+   {
+    "a": "access1",
+    "a_port": "Gi0/2",
+    "b": "AP-floor1",
+    "b_port": "Gi0",
+    "is_pc": false,
+    "members": [
+     {
+      "a_port": "Gi0/2",
+      "b_port": "Gi0"
+     }
+    ],
+    "confirmation": "One end (access1)",
+    "op_status": "up"
+   },
+   {
+    "a": "core1",
+    "a_port": "Gi1/0/24",
+    "b": "access1",
+    "b_port": "Gi0/1",
+    "is_pc": false,
+    "members": [
+     {
+      "a_port": "Gi1/0/24",
+      "b_port": "Gi0/1"
+     }
+    ],
+    "confirmation": "Both ends",
+    "op_status": "up"
+   },
+   {
+    "a": "core1",
+    "a_port": "Po1",
+    "b": "core2",
+    "b_port": "Po1",
+    "is_pc": true,
+    "members": [
+     {
+      "a_port": "Po1",
+      "b_port": "Po1"
+     }
+    ],
+    "confirmation": "Both ends",
+    "op_status": "up"
+   },
+   {
+    "a": "core2",
+    "a_port": "Eth1/20",
+    "b": "SEP00112233AABB",
+    "b_port": "Port",
+    "is_pc": false,
+    "members": [
+     {
+      "a_port": "Eth1/20",
+      "b_port": "Port"
+     }
+    ],
+    "confirmation": "One end (core2)",
+    "op_status": "unknown"
+   },
+   {
+    "a": "core2",
+    "a_port": "Eth1/30",
+    "b": "AP-floor3-01",
+    "b_port": "Gi0",
+    "is_pc": false,
+    "members": [
+     {
+      "a_port": "Eth1/30",
+      "b_port": "Gi0"
+     }
+    ],
+    "confirmation": "One end (core2)",
+    "op_status": "unknown"
+   },
+   {
+    "a": "core2",
+    "a_port": "Eth1/47",
+    "b": "wan-edge-rtr1.lab",
+    "b_port": "Gi0/0/1",
+    "is_pc": false,
+    "members": [
+     {
+      "a_port": "Eth1/47",
+      "b_port": "Gi0/0/1"
+     }
+    ],
+    "confirmation": "One end (core2)",
+    "op_status": "unknown"
+   }
+  ],
+  "tiers": [
+   [
+    "core2"
+   ],
+   [
+    "AP-floor3-01",
+    "SEP00112233AABB",
+    "core1",
+    "wan-edge-rtr1.lab"
+   ],
+   [
+    "access1"
+   ],
+   [
+    "AP-floor1"
+   ]
+  ],
+  "summary": {
+   "n_nodes": 7,
+   "n_cables": 6,
+   "n_tiers": 4,
+   "op": {
+    "up": 3,
+    "down": 0,
+    "unknown": 3
+   }
+  }
+ },
  "migration_readiness": [
   {
    "group": "Group 1",
