@@ -115,7 +115,7 @@ def _record_yield(fn, args, result, error: bool) -> None:
         text = next((a for a in args if isinstance(a, str)), None)
         chars = len(text) if text else 0
         lines = (text.count("\n") + 1) if text else 0
-        with_content = bool(text) and bool(text.strip()) and (
+        with_content = text is not None and bool(text.strip()) and (
             lines >= MIN_CONTENT_LINES or chars >= MIN_CONTENT_CHARS)
         entities = len(result) if isinstance(result, (dict, list, tuple, set)) else None
         with _YIELD_LOCK:
