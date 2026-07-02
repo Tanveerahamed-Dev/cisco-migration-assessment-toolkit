@@ -1,0 +1,33 @@
+{
+  "pkg": "assesshub-frontend",
+  "projectId": "81dfe070-906d-445b-a821-1d100a3e969d",
+  "globalName": "AssessHub",
+  "readmeHeader": ".design-sync/conventions.md",
+  "shape": "package",
+  "entry": "./webapp/frontend/ds.entry.ts",
+  "srcDir": "src",
+  "tsconfig": "tsconfig.json",
+  "cssEntry": "src/styles.css",
+  "docsDir": "../../.design-sync/docs",
+  "extraEntries": ["../../.design-sync/providers/demo.tsx"],
+  "provider": { "component": "DemoDataProvider" },
+  "overrides": { "Kpi": { "cardMode": "column" } },
+  "componentSrcMap": {
+    "Kpi": "src/components/ui.tsx",
+    "Gauge": "src/components/ui.tsx",
+    "SegBar": "src/components/ui.tsx",
+    "Bars": "src/components/ui.tsx",
+    "SevChip": "src/components/ui.tsx",
+    "CountUp": "src/components/ui.tsx",
+    "Loading": "src/components/ui.tsx",
+    "ErrorBox": "src/components/ui.tsx",
+    "ErrorBoundary": "src/components/ErrorBoundary.tsx",
+    "TopologyGraph": "src/components/TopologyGraph.tsx",
+    "CableMap": "src/components/CableMap.tsx",
+    "CausalFlowPanel": "src/components/CausalFlow.tsx",
+    "CutoverPlanner": "src/components/CutoverPlanner.tsx",
+    "DesignBlueprintPanel": "src/components/DesignBlueprint.tsx",
+    "ArchReviewPanel": "src/components/ArchReview.tsx",
+    "DemoDataProvider": "../../.design-sync/providers/demo.tsx"
+  }
+}
