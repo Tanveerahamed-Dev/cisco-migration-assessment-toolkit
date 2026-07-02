@@ -4,7 +4,9 @@ Release-level highlights. The complete, engineering-grade change history (one da
 per change, with verification evidence) lives in
 [`COLLECT_PARSE_V3_23_0.md → Change Log`](COLLECT_PARSE_V3_23_0.md#change-log).
 
-## [Unreleased] — Plan A (EVOLVE) Move-0 + Tier-1 + Tier-2 + Tier-3
+## [Unreleased]
+
+## [v3.24.0] — 2026-07-02 — Plan A (EVOLVE) Move-0 + Tier-1 + Tier-2 + Tier-3
 
 Hardening + instrumentation tranche executed in the load-bearing order of
 `IMPROVEMENT_AND_GREENFIELD_PLANS.md`.
