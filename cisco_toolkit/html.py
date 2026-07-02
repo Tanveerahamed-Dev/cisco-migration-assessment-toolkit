@@ -134,18 +134,40 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                         f"inter-subnet flow(s) newly blocked (bounded sample: {rdelta.get('subnets_tested', 0)} of "
                         f"{rdelta.get('subnets_total', 0)} subnet(s), one representative host each{cap})")
 
+    # ---- physical cabling delta (the EDA cable-map SSOT, diffed) ----
+    # A cable DOWN across the change window is a hard physical regression; '-> unknown' is a coverage
+    # event ('no longer observed'), never a down. Pre-cable-map snapshots rehydrate from interfaces.
+    try:
+        from cisco_toolkit.analyze import cable_map_of_snapshot, compute_cable_map_diff
+        cdelta = compute_cable_map_diff(cable_map_of_snapshot(old), cable_map_of_snapshot(new))
+    except Exception:                                   # never let the cutover diff fail on the cable pass
+        cdelta = {"assessed": False, "added": [], "removed": [], "status_changes": [],
+                  "members_changed": [], "summary": {}}
+    _cs = cdelta.get("summary") or {}
+    n_cables_down = int(_cs.get("n_went_down") or 0)
+    n_cables_changed = (int(_cs.get("n_added") or 0) + int(_cs.get("n_removed") or 0)
+                        + int(_cs.get("n_members_changed") or 0) + int(_cs.get("n_no_longer_observed") or 0))
+    if not cdelta.get("assessed"):
+        cable_phrase = ("physical cabling NOT assessed — no CDP/LLDP links in either snapshot "
+                        "(NOT a statement that cabling is unchanged)")
+    else:
+        cable_phrase = (f"physical cabling: {_cs.get('n_added', 0)} cable(s) added, "
+                        f"{_cs.get('n_removed', 0)} removed, {n_cables_down} went DOWN, "
+                        f"{_cs.get('n_no_longer_observed', 0)} no longer observed")
+
     # ---- verdict ----
     removed_sw = sorted(set(od) - set(nd))
-    if n_opened_high or regressed or n_newly_blocked:
+    if n_opened_high or regressed or n_newly_blocked or n_cables_down:
         verdict = "REGRESSED"
         bits = []
         if n_opened_high:
             bits.append(f"{n_opened_high} new High/Critical finding(s)")
         if regressed:
             bits.append(f"{len(regressed)} switch(es) dropped a health band")
+        bits.append(cable_phrase)
         bits.append(reach_phrase)
         note = "; ".join(bits) + ". Investigate before declaring the cutover good."
-    elif opened or removed_sw or n_went_dark or newly_bad:
+    elif opened or removed_sw or n_went_dark or newly_bad or n_cables_changed:
         verdict = "REVIEW"
         cov_bits = []
         if n_went_dark:
@@ -154,10 +176,10 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
             cov_bits.append(f"{len(newly_bad)} newly-collected switch(es) found Critical/Poor")
         note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present"
                 + ("; " + "; ".join(cov_bits) if cov_bits else "")
-                + f"; {reach_phrase}. Confirm these are expected.")
+                + f"; {cable_phrase}; {reach_phrase}. Confirm these are expected.")
     else:
         verdict = "CLEAN"
-        note = f"No health-band regressions, no new findings; {reach_phrase}."
+        note = f"No health-band regressions, no new findings; {cable_phrase}; {reach_phrase}."
 
     def _scn(s):  # SSOT: canonical device count (one source); raw len() only as the pre-brief fallback
         return ((s.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
@@ -171,6 +193,7 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
         "findings": {"opened": opened, "resolved": resolved, "n_opened": len(opened),
                      "n_resolved": len(resolved), "n_opened_high": n_opened_high},
         "reachability": rdelta,
+        "cabling": cdelta,
         "verdict": verdict, "verdict_note": note,
     }
 
@@ -211,6 +234,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
     delta = compute_snapshot_delta(old, new)   # NEW-V3.23.106: migration-validation analysis
     rd0 = delta.get("reachability") or {}      # W2 reachability what-if (disclose the bounded sample, never silent)
+    cd0 = (delta.get("cabling") or {}).get("summary") or {}   # physical cable delta (EDA cable-map SSOT)
 
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
@@ -236,6 +260,12 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
           f"{rd0.get('inconclusive', 0)} inconclusive"
           if rd0.get("assessed") else
           "NOT assessed — no routes collected (this is NOT a statement that reachability is unchanged)")),
+        ("Physical cables changed", "", "",
+         (f"{cd0.get('n_added', 0)} added, {cd0.get('n_removed', 0)} removed, "
+          f"{cd0.get('n_went_down', 0)} went DOWN, {cd0.get('n_no_longer_observed', 0)} no longer observed, "
+          f"{cd0.get('n_members_changed', 0)} LAG membership change(s)"
+          if (delta.get("cabling") or {}).get("assessed") else
+          "NOT assessed — no CDP/LLDP links in either snapshot (NOT a statement that cabling is unchanged)")),
     ]
     r = 2
     for m in metrics:
@@ -377,6 +407,41 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
                    "computed reachability NOT assessed.")
         ws.cell(row=2, column=1, value=msg).font = DF
     autofit(ws, 5); ws.column_dimensions["D"].width = 42; ws.column_dimensions["E"].width = 42
+
+    # Cabling Changes — the EDA cable-map SSOT diffed: physical cables added / removed / op-status
+    # flips + LAG membership changes. Coverage-honest: '-> unknown' reads 'no longer observed' (a
+    # coverage event, never a down), and a snapshot pair with no CDP/LLDP links reads NOT ASSESSED.
+    cd = delta.get("cabling") or {}
+    ws = sheet("Cabling Changes", ["Change", "Switch A", "Port A", "Switch B", "Port B", "Status", "Note"])
+    cab_rows: list = []
+    if not cd.get("assessed"):
+        cab_rows.append(("NOT ASSESSED", "", "", "", "", "",
+                         "no CDP/LLDP links in either snapshot — NOT a statement that cabling is unchanged"))
+    else:
+        for c0 in cd.get("status_changes") or []:
+            cab_rows.append(("Status changed", c0.get("a", ""), c0.get("a_port", ""), c0.get("b", ""),
+                             c0.get("b_port", ""), f"{c0.get('from', '')} -> {c0.get('to', '')}",
+                             c0.get("classification", "")))
+        for label, items in (("Cable added", cd.get("added") or []), ("Cable removed", cd.get("removed") or [])):
+            for c0 in items:
+                cab_rows.append((label, c0.get("a", ""), c0.get("a_port", ""), c0.get("b", ""),
+                                 c0.get("b_port", ""), c0.get("op_status", ""),
+                                 f"port-channel, {len(c0.get('members') or [])} member(s)" if c0.get("is_pc") else ""))
+        for m0 in cd.get("members_changed") or []:
+            cab_rows.append(("LAG members changed", m0.get("a", ""), m0.get("a_port", ""), m0.get("b", ""),
+                             m0.get("b_port", ""), f"{m0.get('old_members', 0)} -> {m0.get('new_members', 0)} member(s)",
+                             "a port-channel leg was added or removed"))
+        if not cab_rows:
+            cab_rows.append(("No changes", "", "", "", "", "",
+                             f"{(cd.get('summary') or {}).get('n_unchanged', 0)} cable(s) compared, unchanged"))
+    r = 2
+    for vals in cab_rows:
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+        if str(vals[5]).endswith("-> down"):
+            ws.cell(row=r, column=6).fill = PatternFill("solid", fgColor="FFC7CE")
+        r += 1
+    autofit(ws, 7); ws.column_dimensions["G"].width = 55
 
     wb.save(out_path)
 

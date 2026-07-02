@@ -298,6 +298,54 @@ def _cable_op_state(a_state: str, b_state: str) -> str:
     return "unknown"
 
 
+# Node-kind classification for the cable map's fabric-only declutter. The load-bearing evidence
+# is the advertised PLATFORM string, not endpoint_type: infer_endpoint_type classifies ANY
+# 'cisco …' platform as 'Switch' (that is precisely how cisco APs / IP phones pass
+# _is_infra_neighbor and enter the map), so only the platform can tell them apart. Rules:
+#   * platform evidence OUTRANKS endpoint_type evidence (specific beats derived);
+#   * across observers, the STRONGEST claim wins infra-first (an AP-looking platform from one
+#     observer never demotes a node another observer identifies as a switch — hiding is the
+#     risky direction);
+#   * the front-ends may hide only POSITIVELY-identified edge gear (ap/phone/endpoint);
+#     'unknown' always stays visible.
+_KIND_RANK = ("switch", "router", "firewall", "ap", "phone", "endpoint", "unknown")
+_EPTYPE_TO_KIND = {"switch": "switch", "router": "router", "firewall": "firewall",
+                   "access point": "ap", "ip phone": "phone",
+                   "server": "endpoint", "camera": "endpoint", "printer": "endpoint",
+                   "ups/pdu": "endpoint", "storage": "endpoint"}
+_PLATFORM_KIND_TOKENS = (   # checked in order; specific device families before generic infra
+    ("phone", ("phone",)),
+    ("ap", ("air-", "aironet", "access point", " wap")),
+    ("firewall", ("asa", "firepower", "ftd", "fortigate", "palo")),
+    ("endpoint", ("camera", "cctv", "printer")),
+    ("router", ("asr", "isr", "csr", "ncs")),
+    ("switch", ("nexus", "catalyst", "ws-c", "n9k", "n7k", "n5k", "n3k")),
+)
+
+
+def _kind_from_platform(platform: str) -> str:
+    s = str(platform or "").lower()
+    if not s:
+        return ""
+    for kind, tokens in _PLATFORM_KIND_TOKENS:
+        if any(t in s for t in tokens):
+            return kind
+    return ""
+
+
+def _node_kind(ep_types: Optional[list], platforms: Optional[list] = None) -> str:
+    plat_kinds = {k for k in (_kind_from_platform(p) for p in (platforms or [])) if k}
+    if plat_kinds:
+        for k in _KIND_RANK:
+            if k in plat_kinds:
+                return k
+    ep_kinds = {_EPTYPE_TO_KIND.get(str(t or "").strip().lower(), "unknown") for t in (ep_types or [])}
+    for k in _KIND_RANK:
+        if k in ep_kinds:
+            return k
+    return "unknown"
+
+
 def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                       health_scores: Optional[list] = None) -> dict:
     """Build the EDA-style physical cable map (node/port/cable, role-tiered lanes).
@@ -322,7 +370,11 @@ def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     scanned_map = {_canon_host(h): h for h in all_interfaces}
 
     # 1) raw physical links (deduped one-per-cable) from the shared CDP/LLDP builder.
+    #    ep_ev collects the endpoint_type EVIDENCE each observing side reports about its peer,
+    #    so an off-scan node classifies from what the fleet actually said it was.
     raw: List[dict] = []
+    ep_ev: Dict[str, List[str]] = {}
+    plat_ev: Dict[str, List[str]] = {}
     for L in compute_topology_links(all_interfaces):
         a_host = scanned_map.get(_canon_host(str(L["a_host"])), str(L["a_host"]))
         b_host = scanned_map.get(_canon_host(str(L["b_host"])), str(L["b_host"]))
@@ -334,8 +386,15 @@ def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         db = all_interfaces.get(b_host, {}).get(b_port)
         is_pc = bool((da and (da.port_channel or "").strip())
                      or (db and (db.port_channel or "").strip()))
+        if da is not None:
+            ep_ev.setdefault(b_host, []).append(da.endpoint_type or "")
+            plat_ev.setdefault(b_host, []).append(da.neighbor_platform or "")
+        if db is not None:
+            ep_ev.setdefault(a_host, []).append(db.endpoint_type or "")
+            plat_ev.setdefault(a_host, []).append(db.neighbor_platform or "")
         raw.append({"a": a_host, "a_port": a_port, "b": b_host, "b_port": b_port, "is_pc": is_pc,
                     "state": _cable_op_state(_port_op_state(da), _port_op_state(db)),
+                    "speed": str(L.get("speed") or ""),
                     "confirmation": str(L.get("confirmation") or "")})
 
     # 2) collapse LAG members (same host-pair, is_pc) into one bundled cable.
@@ -347,9 +406,12 @@ def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             bun = bundles[pair]
             bun["members"].append({"a_port": L["a_port"], "b_port": L["b_port"]})
             bun["_states"].append(L["state"])
+            if not bun["speed"] and L["speed"]:
+                bun["speed"] = L["speed"]           # backfill like compute_topology_links does
             continue
         cab = {"a": L["a"], "a_port": L["a_port"], "b": L["b"], "b_port": L["b_port"],
                "is_pc": L["is_pc"], "members": [{"a_port": L["a_port"], "b_port": L["b_port"]}],
+               "speed": L["speed"],
                "confirmation": L["confirmation"], "_states": [L["state"]]}
         cables.append(cab)
         if L["is_pc"]:
@@ -423,6 +485,7 @@ def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         nodes.append({
             "host": h, "role": roles.get(h, ""), "tier": tier[h], "order": order.get(h, 0),
             "collected": collected, "op_status": "up" if collected else "unknown",
+            "kind": "device" if collected else _node_kind(ep_ev.get(h), plat_ev.get(h)),
             "badges": badges[:3],
             "ports": sorted(ports[h].values(), key=lambda p: p["name"].lower()),
         })
@@ -434,6 +497,99 @@ def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     return {"nodes": nodes, "cables": cables, "tiers": tiers,
             "summary": {"n_nodes": len(nodes), "n_cables": len(cables),
                         "n_tiers": len(tiers), "op": op_roll}}
+
+
+def cable_map_of_snapshot(snap: Optional[dict]) -> dict:
+    """Cable map for a STORED snapshot dict: prefer the engine-computed snap['cable_map']; for a
+    snapshot that predates the cable-map engine, rehydrate the stored dict-interfaces back into
+    InterfaceData (dropping unknown legacy keys) and recompute. Tolerant: anything else -> empty
+    model. One rehydration SSOT — the --compare delta and the webapp endpoint both call this."""
+    import dataclasses
+    snap = snap if isinstance(snap, dict) else {}
+    cm = snap.get("cable_map")
+    if isinstance(cm, dict) and isinstance(cm.get("nodes"), list):
+        # schema-staleness probe (device_dossiers precedent, webapp app.py): a stored section from a
+        # pre-kind/speed engine is RECOMPUTED from the evidence when available, so newer features
+        # (fabric filter, link speed) work on old uploads; with no evidence it still beats nothing.
+        _n0 = next((n for n in cm["nodes"] if isinstance(n, dict)), None)
+        _c0 = next((c for c in (cm.get("cables") or []) if isinstance(c, dict)), None)
+        current = (_n0 is None or "kind" in _n0) and (_c0 is None or "speed" in _c0)
+        if current or not isinstance(snap.get("interfaces"), dict):
+            return cm
+    fields = {f.name for f in dataclasses.fields(InterfaceData)}
+    raw = snap.get("interfaces")
+    ifaces: Dict[str, Dict[str, InterfaceData]] = {}
+    if isinstance(raw, dict):
+        for host, ports_ in raw.items():
+            if not isinstance(ports_, dict):
+                continue
+            ifaces[host] = {p: InterfaceData(**{k: v for k, v in (d or {}).items() if k in fields})
+                            for p, d in ports_.items() if isinstance(d, dict)}
+    return compute_cable_map(ifaces, snap.get("health_scores"))
+
+
+def compute_cable_map_diff(old_cm: Optional[dict], new_cm: Optional[dict]) -> dict:
+    """Physical-cabling delta for --compare: cables added / removed / op-status transitions + LAG
+    member-count changes, keyed on the UNDIRECTED cable identity (the sorted host|port pair), so a
+    link reported from the other side on the second run is the SAME cable, not an add+remove.
+
+    Coverage-honest: a transition to 'unknown' is 'no longer observed' (a coverage event) — NEVER
+    counted as a down; and a missing side, or zero cables on both sides, yields assessed=False —
+    never a silent 'no cabling changes'."""
+    empty_sum = {"n_old": 0, "n_new": 0, "n_added": 0, "n_removed": 0, "n_status_changed": 0,
+                 "n_went_down": 0, "n_restored": 0, "n_no_longer_observed": 0,
+                 "n_members_changed": 0, "n_unchanged": 0}
+    out: dict = {"assessed": False, "added": [], "removed": [], "status_changes": [],
+                 "members_changed": [], "summary": dict(empty_sum)}
+    if not isinstance(old_cm, dict) or not isinstance(new_cm, dict):
+        return out
+
+    def _key(c: dict) -> tuple:
+        return tuple(sorted([f"{str(c.get('a', '')).lower()}|{str(c.get('a_port', '')).lower()}",
+                             f"{str(c.get('b', '')).lower()}|{str(c.get('b_port', '')).lower()}"]))
+
+    def _index(cm: dict) -> Dict[tuple, dict]:
+        return {_key(c): c for c in (cm.get("cables") or []) if isinstance(c, dict)}
+
+    o, n = _index(old_cm), _index(new_cm)
+    if not o and not n:
+        return out
+    out["assessed"] = True
+    s = out["summary"]
+    s["n_old"], s["n_new"] = len(o), len(n)
+    out["added"] = [n[k] for k in sorted(set(n) - set(o))]
+    out["removed"] = [o[k] for k in sorted(set(o) - set(n))]
+    for k in sorted(set(o) & set(n)):
+        oc, nc = o[k], n[k]
+        fo, to = str(oc.get("op_status") or "unknown"), str(nc.get("op_status") or "unknown")
+        changed = fo != to
+        if changed:
+            if to == "down":
+                cls = "went down"
+            elif to == "unknown":
+                cls = "no longer observed"       # coverage event, not a down
+            elif fo == "down":
+                cls = "restored"
+            else:
+                cls = "newly observed up"        # unknown -> up: visibility gained, not a repair
+            out["status_changes"].append({"a": nc.get("a", ""), "a_port": nc.get("a_port", ""),
+                                          "b": nc.get("b", ""), "b_port": nc.get("b_port", ""),
+                                          "is_pc": bool(nc.get("is_pc")),
+                                          "from": fo, "to": to, "classification": cls})
+            s["n_went_down"] += 1 if to == "down" else 0
+            s["n_restored"] += 1 if cls == "restored" else 0
+            s["n_no_longer_observed"] += 1 if cls == "no longer observed" else 0
+        om, nm = len(oc.get("members") or []), len(nc.get("members") or [])
+        if (oc.get("is_pc") or nc.get("is_pc")) and om != nm:
+            out["members_changed"].append({"a": nc.get("a", ""), "a_port": nc.get("a_port", ""),
+                                           "b": nc.get("b", ""), "b_port": nc.get("b_port", ""),
+                                           "old_members": om, "new_members": nm})
+        elif not changed:
+            s["n_unchanged"] += 1
+    s["n_added"], s["n_removed"] = len(out["added"]), len(out["removed"])
+    s["n_status_changed"] = len(out["status_changes"])
+    s["n_members_changed"] = len(out["members_changed"])
+    return out
 
 
 # -----------------------------------------------------------------------------

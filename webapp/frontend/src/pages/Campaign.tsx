@@ -294,6 +294,9 @@ export default function CampaignPage() {
                     <div>Resolved: <b style={{ color: "var(--ok)" }}>{cmp.findings?.n_resolved ?? "—"}</b></div>
                     <div>Regressed: <b style={{ color: "var(--crit)" }}>{cmp.health?.n_regressed ?? "—"}</b></div>
                     <div>Improved: <b style={{ color: "var(--ok)" }}>{cmp.health?.n_improved ?? "—"}</b></div>
+                    {/* physical cabling delta (EDA cable-map SSOT) — coverage-honest: 'not assessed' is disclosed, never a silent zero */}
+                    <div>Cables ±: <b>{cmp.cabling?.assessed ? `${cmp.cabling.summary?.n_added ?? 0} added / ${cmp.cabling.summary?.n_removed ?? 0} removed` : "not assessed"}</b></div>
+                    <div>Cables down: <b style={{ color: (cmp.cabling?.summary?.n_went_down ?? 0) > 0 ? "var(--crit)" : "var(--ok)" }}>{cmp.cabling?.assessed ? (cmp.cabling.summary?.n_went_down ?? 0) : "—"}</b></div>
                   </div>
                 </div>
               )}

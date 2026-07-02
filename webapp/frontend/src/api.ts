@@ -407,10 +407,12 @@ export interface CableMapPort { name: string; peer: string; peer_port: string; o
 export interface CableMapNode {
   host: string; role: string; tier: number; order: number;
   collected: boolean; op_status: CableOp; badges: string[]; ports: CableMapPort[];
+  kind: string;   // device | switch | router | firewall | ap | phone | endpoint | unknown (platform-evidence based)
 }
 export interface CableMapCable {
   a: string; a_port: string; b: string; b_port: string;
   is_pc: boolean; members: Array<{ a_port: string; b_port: string }>; op_status: CableOp; confirmation: string;
+  speed: string;  // verbatim from `show interface status` (e.g. "1000", "a-1000", "10G")
 }
 export interface CableMap {
   nodes: CableMapNode[];
