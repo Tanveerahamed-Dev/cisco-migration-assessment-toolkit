@@ -82,6 +82,11 @@ cisco_toolkit = ["data/*.tsv.gz", "blast_radius_explorer.html"]
 
 [tool.coverage.run]
 source = ["cisco_toolkit"]
+# The 2700-line entry module joined the measured surface in Plan A / Move-0.2 (it is
+# exercised in-process by tests/test_pipeline_inprocess.py driving main() directly).
+# source_pkgs (not source): a top-level MODULE is an importable name, not a directory —
+# and pytest-cov's --cov=<pkg> flags override `source` but leave source_pkgs intact.
+source_pkgs = ["COLLECT_PARSE_V3_23_0"]
 omit = ["cisco_toolkit/data/gen_port_registry.py"]   # offline data-generator script, not runtime code
 
 [tool.coverage.report]

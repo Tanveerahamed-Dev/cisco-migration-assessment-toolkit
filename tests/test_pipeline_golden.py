@@ -8,6 +8,12 @@ reviewed change:
 
     UPDATE_GOLDEN=1 python -m pytest tests/test_pipeline_golden.py
 
+Harness guarantees (pinned by tests/test_golden_guard.py — Plan A / Move-0.1):
+- a MISSING golden FAILS (it is a broken contract, never a fresh baseline);
+- UPDATE_GOLDEN=1 refuses to SHRINK the contract vs the git-HEAD baseline
+  (removed snapshot sections / sheets / header cells) unless the removal is
+  made explicit with ALLOW_GOLDEN_SHRINK=1.
+
 Determinism: we run with --workers 1 (sequential) and strip the only volatile
 field (`generated_at`) before comparing.
 """
@@ -24,7 +30,6 @@ import synthetic_fixtures as fx
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
 GOLDEN_DIR = os.path.join(ROOT, "tests", "golden")
-UPDATE = os.environ.get("UPDATE_GOLDEN") == "1"
 
 
 def _make_template(path):
@@ -97,19 +102,65 @@ def _sheet_schema(xlsx_path):
     return schema
 
 
+def _git_head_golden(name):
+    """The golden as committed at git HEAD — the shrink guard's baseline. None when it
+    is not tracked there (brand-new golden) or git is unavailable: nothing to shrink
+    against, so the guard stands down rather than blocking legitimate first baselines."""
+    try:
+        proc = subprocess.run(["git", "show", f"HEAD:tests/golden/{name}"], cwd=ROOT,
+                              capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            return None
+        return json.loads(proc.stdout)
+    except Exception:
+        return None
+
+
+def _contract_shrinkage(name, baseline, produced):
+    """Contract surface REMOVED between the HEAD golden and its replacement: top-level
+    keys (snapshot sections / workbook sheets) always; for the sheet schema also header
+    cells lost from a retained sheet. Additions and value changes are the additive norm
+    and are not shrinkage (exact equality is the golden assertion's job)."""
+    if not isinstance(baseline, dict) or not isinstance(produced, dict):
+        return []
+    lost = [f"top-level key removed: {k!r}" for k in baseline if k not in produced]
+    if name == "sheet_schema.json":
+        for sheet, header in baseline.items():
+            new_header = produced.get(sheet)
+            if isinstance(header, list) and isinstance(new_header, list):
+                lost += [f"sheet {sheet!r} lost header {h!r}"
+                         for h in header if h not in new_header]
+    return lost
+
+
 def _golden(name, produced):
     path = os.path.join(GOLDEN_DIR, name)
-    if UPDATE or not os.path.isfile(path):
-        os.makedirs(GOLDEN_DIR, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            # sort_keys=False: preserve meaningful order (snapshot key order is
-            # code-defined; Excel sheet order is the workbook tab order).
-            json.dump(produced, f, indent=1, sort_keys=False)
-        if not UPDATE:
-            pytest.skip(f"generated initial golden {name}; re-run to assert")
-        return None
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    if os.environ.get("UPDATE_GOLDEN") != "1":
+        if not os.path.isfile(path):
+            pytest.fail(
+                f"golden {name} is MISSING — refusing to auto-generate a fresh baseline "
+                f"(that would silently re-bless the contract). Restore it "
+                f"(git checkout -- tests/golden/{name}) or regenerate deliberately with "
+                f"UPDATE_GOLDEN=1.", pytrace=False)
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    # UPDATE_GOLDEN=1: a deliberate re-baseline — but refuse to silently SHRINK the
+    # contract vs git HEAD; removals must be explicit (ALLOW_GOLDEN_SHRINK=1).
+    baseline = _git_head_golden(name)
+    if baseline is not None and os.environ.get("ALLOW_GOLDEN_SHRINK") != "1":
+        lost = _contract_shrinkage(name, baseline, produced)
+        if lost:
+            pytest.fail(
+                f"UPDATE_GOLDEN would SHRINK the {name} contract vs git HEAD:\n  - "
+                + "\n  - ".join(lost)
+                + "\nRemoving contract surface must be explicit: re-run with "
+                  "ALLOW_GOLDEN_SHRINK=1 after review.", pytrace=False)
+    os.makedirs(GOLDEN_DIR, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        # sort_keys=False: preserve meaningful order (snapshot key order is
+        # code-defined; Excel sheet order is the workbook tab order).
+        json.dump(produced, f, indent=1, sort_keys=False)
+    return None
 
 
 def test_snapshot_matches_golden(tmp_path):

@@ -71,8 +71,12 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     snap_path = os.path.splitext(str(out_xlsx))[0] + ".snapshot.json"
     assert os.path.isfile(snap_path), "snapshot.json was not written"
     snap = json.loads(open(snap_path, encoding="utf-8").read())
-    for key in ("devices", "interfaces", "health_scores", "punchlist", "causality", "executive_brief"):
+    for key in ("devices", "interfaces", "health_scores", "punchlist", "causality", "executive_brief",
+                "parse_yield"):   # Plan A / Tier-1 #3: the zero-parse ledger ships in every snapshot
         assert key in snap, f"snapshot missing computed key {key!r}"
+    # the ledger must be a REAL run's ledger (parsers were called), with its coverage-honest note
+    assert snap["parse_yield"]["summary"]["parsers_called"] > 0
+    assert "never a device" in snap["parse_yield"]["summary"]["note"]
     # Provenance (wave R2-1-01 / R2-3-01): the snapshot records WHEN THE EVIDENCE WAS COLLECTED, and the
     # lifecycle EoL bands are pinned to THAT instant (not wall-clock-at-regen) so a re-render reproduces
     # them deterministically. collected_at is threaded into compute_lifecycle_risk as its asof.
