@@ -3302,7 +3302,7 @@ def write_cabling_schedule_sheet(wb, cable_map: dict) -> None:
     SSOT (compute_cable_map) -- the same node/port/cable model the explorer + webapp render. It carries
     each link's OPERATIONAL status (coverage-honest: an uncollected / unobserved end is '[NOT OBSERVED]',
     never a fake 'Up') and bundles port-channel members into one row."""
-    cols = ["Switch A", "Port A", "Switch B", "Port B", "Type", "LAG Members", "Op-Status", "Seen"]
+    cols = ["Switch A", "Port A", "Switch B", "Port B", "Speed", "Type", "LAG Members", "Op-Status", "Seen"]
     if CABLING_SCHEDULE_SHEET_NAME in wb.sheetnames:
         del wb[CABLING_SCHEDULE_SHEET_NAME]
     ws = wb.create_sheet(CABLING_SCHEDULE_SHEET_NAME)
@@ -3322,14 +3322,15 @@ def write_cabling_schedule_sheet(wb, cable_map: dict) -> None:
         is_pc = bool(c.get("is_pc"))
         op = str(c.get("op_status") or "unknown")
         vals = [c.get("a", ""), c.get("a_port", ""), c.get("b", ""), c.get("b_port", ""),
+                c.get("speed", ""),
                 "Port-channel" if is_pc else "Single",
                 len(c.get("members") or []) if is_pc else "",
                 op_label.get(op, op), c.get("confirmation", "")]
         for col, v in enumerate(vals, 1):
             cell = ws.cell(row=r, column=col, value=v)
             cell.font = DAT_FONT
-            cell.alignment = DAT_C if col in (5, 6, 7) else DAT_L
-            if col == 7:
+            cell.alignment = DAT_C if col in (5, 6, 7, 8) else DAT_L
+            if col == 8:
                 cell.fill = op_fill.get(op, op_fill["unknown"])
         r += 1
     if r == 2:

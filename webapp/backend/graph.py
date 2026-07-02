@@ -82,24 +82,9 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
 def cable_map_from_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:
     """EDA-style physical cable map for the webapp cable-map view.
 
-    Prefers the engine-computed SSOT (snap['cable_map']); for snapshots generated before that
-    engine existed, recompute it from the stored interface evidence so old uploads still render.
-    Coverage-honest either way — an uncollected device stays [NOT OBSERVED], never a fake green.
+    Thin pass-through to the engine's cable_map_of_snapshot — the ONE rehydration SSOT the
+    --compare delta also uses: prefer the engine-computed snap['cable_map'], else recompute from
+    the stored interface evidence so pre-feature uploads still render. Coverage-honest either
+    way — an uncollected device stays [NOT OBSERVED], never a fake green.
     """
-    cm = snap.get("cable_map")
-    if isinstance(cm, dict) and isinstance(cm.get("nodes"), list):
-        return cm
-    # Fallback: rehydrate the stored dict-interfaces into InterfaceData and recompute. Tolerant of an
-    # older snapshot whose asdict shape differs from the current dataclass (keep only known fields).
-    import dataclasses
-    from cisco_toolkit.model import InterfaceData
-    fields = {f.name for f in dataclasses.fields(InterfaceData)}
-    raw = snap.get("interfaces")
-    ifaces: Dict[str, Dict[str, Any]] = {}
-    if isinstance(raw, dict):
-        for host, ports in raw.items():
-            if not isinstance(ports, dict):
-                continue
-            ifaces[host] = {p: InterfaceData(**{k: v for k, v in (d or {}).items() if k in fields})
-                            for p, d in ports.items() if isinstance(d, dict)}
-    return engine.compute_cable_map(ifaces, snap.get("health_scores"))
+    return engine.cable_map_of_snapshot(snap)
