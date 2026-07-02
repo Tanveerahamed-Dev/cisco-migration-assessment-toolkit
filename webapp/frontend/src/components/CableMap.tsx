@@ -19,6 +19,35 @@ function majorityRole(cm: CableMapModel, k: number) {
   const top = Object.entries(rs).sort((a, b) => b[1] - a[1])[0];
   return top ? top[0] : "";
 }
+
+// Fleet-scale declutter (same semantics as the explorer's cablemap view): fabric-only hides
+// positively-identified edge endpoints (AP / phone) — switches, routers and unknowns always stay;
+// tier focus keeps one lane + its direct peers. Empty lanes compact (tier remapped on COPIES).
+const EDGE_KINDS = new Set(["ap", "phone", "endpoint"]);
+type FilteredModel = CableMapModel & { _raw: { n: number; c: number } };
+function filterModel(cm: CableMapModel, fabricOnly: boolean, tierSel: number | null): FilteredModel {
+  let nodes = cm.nodes, cables = cm.cables;
+  if (fabricOnly) {
+    const hide = new Set(nodes.filter((n) => EDGE_KINDS.has(n.kind)).map((n) => n.host));
+    if (hide.size) {
+      nodes = nodes.filter((n) => !hide.has(n.host));
+      cables = cables.filter((c) => !hide.has(c.a) && !hide.has(c.b));
+    }
+  }
+  if (tierSel != null) {
+    const inTier = new Set(nodes.filter((n) => n.tier === tierSel).map((n) => n.host));
+    cables = cables.filter((c) => inTier.has(c.a) || inTier.has(c.b));
+    const keep = new Set(inTier); cables.forEach((c) => { keep.add(c.a); keep.add(c.b); });
+    nodes = nodes.filter((n) => keep.has(n.host));
+  }
+  const live = new Set(nodes.map((n) => n.host));
+  const remap = new Map<number, number>(); let next = 0;
+  cm.tiers.forEach((t, k) => { if (t.some((h) => live.has(h))) remap.set(k, next++); });
+  const tiers: string[][] = []; remap.forEach((nk, k) => { tiers[nk] = cm.tiers[k].filter((h) => live.has(h)); });
+  if (nodes !== cm.nodes || tierSel != null)
+    nodes = nodes.map((n) => (remap.has(n.tier) ? { ...n, tier: remap.get(n.tier)! } : n));
+  return { ...cm, nodes, cables, tiers, _raw: { n: cm.nodes.length, c: cm.cables.length } };
+}
 function cablePath(a: Pos, b: Pos, orient: "v" | "h") {
   if (orient === "h") { const mx = (a.x + b.x) / 2; return `M${a.x},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}`; }
   const my = (a.y + b.y) / 2; return `M${a.x},${a.y} C${a.x},${my} ${b.x},${my} ${b.x},${b.y}`;
@@ -65,16 +94,23 @@ function layout(cm: CableMapModel, orient: "v" | "h") {
 export default function CableMap({ snapId }: { snapId: number }) {
   const g = useAsync(() => api.cableMap(snapId), [snapId]);
   const [orient, setOrient] = useState<"v" | "h">("v");
-  const view = useMemo(() => (g.data && g.data.nodes.length ? layout(g.data, orient) : null), [g.data, orient]);
+  const [fabricOnly, setFabricOnly] = useState(false);
+  const [tierSel, setTierSel] = useState<number | null>(null);
+  const model = useMemo(
+    () => (g.data && g.data.nodes.length ? filterModel(g.data, fabricOnly, tierSel) : null),
+    [g.data, fabricOnly, tierSel],
+  );
+  const view = useMemo(() => (model ? layout(model, orient) : null), [model, orient]);
   const [sel, setSel] = useState<{ kind: "node" | "cable"; id: string | number } | null>(null);
   const [t, setT] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
 
   if (g.loading) return <Loading label="Building cable map…" />;
   if (g.error) return <ErrorBox msg={g.error} />;
-  const cm = g.data;
-  if (!cm || !cm.nodes.length || !view)
+  const raw = g.data;
+  if (!raw || !raw.nodes.length || !model || !view)
     return <div className="faint" style={{ fontSize: 13 }}>No cable map — this snapshot has no CDP/LLDP topology links.</div>;
+  const cm = model;   // everything below renders the FILTERED view; `raw` keeps the fleet totals
 
   const { pos, anch, W, H, V } = view;
   const nodeByHost: Record<string, CableMapNode> = {}; cm.nodes.forEach((n) => (nodeByHost[n.host] = n));
@@ -104,12 +140,43 @@ export default function CableMap({ snapId }: { snapId: number }) {
             {cm.summary.op.up} up · {cm.summary.op.down} down · {cm.summary.op.unknown} not observed
           </span>
           <button className="btn ghost" style={{ padding: "4px 9px" }} onClick={() => { setOrient((o) => (o === "h" ? "v" : "h")); setT({ x: 0, y: 0, k: 1 }); }}>⇅ {orient === "h" ? "Horizontal" : "Vertical"}</button>
+          <button className="btn ghost"
+            style={{ padding: "4px 9px", ...(fabricOnly ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}) }}
+            title="Hide positively-identified edge endpoints (APs / IP phones). Switches, routers and unknowns always stay."
+            onClick={() => { setFabricOnly((v) => !v); setSel(null); }}>{fabricOnly ? "☑" : "☐"} Fabric only</button>
           <button className="btn ghost" style={{ padding: "4px 9px" }} onClick={() => setT({ x: 0, y: 0, k: 1 })}>Reset view</button>
           {sel && <button className="btn ghost" style={{ padding: "4px 9px" }} onClick={() => setSel(null)}>Clear</button>}
         </div>
       </div>
 
+      <div className="row-flex" style={{ gap: 4, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+        <span className="faint" style={{ fontSize: 11 }}>TIER</span>
+        <button className="btn ghost" style={{ padding: "2px 8px", fontSize: 11, ...(tierSel == null ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}) }}
+          onClick={() => { setTierSel(null); setSel(null); }}>ALL</button>
+        {raw.tiers.map((tr, k) => {
+          if (!tr.length) return null;
+          const role = majorityRole(raw, k);
+          return (
+            <button key={k} className="btn ghost" title={`${tr.length} node(s)`}
+              style={{ padding: "2px 8px", fontSize: 11, ...(tierSel === k ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}) }}
+              onClick={() => { setTierSel((s) => (s === k ? null : k)); setSel(null); }}>
+              T{k}{role ? " · " + role.toUpperCase() : ""}
+            </button>
+          );
+        })}
+        {(fabricOnly || tierSel != null) && (
+          <span className="faint" style={{ fontSize: 11 }}>
+            · showing <b>{cm.nodes.length}</b>/{cm._raw.n} nodes, <b>{cm.cables.length}</b>/{cm._raw.c} cables
+          </span>
+        )}
+      </div>
+
       <div style={{ position: "relative", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)", overflow: "hidden" }}>
+        {cm.nodes.length === 0 && (
+          <div className="faint" style={{ position: "absolute", top: 12, left: 12, fontSize: 12 }}>
+            Every node is hidden by the current filter — clear the tier / fabric filters above.
+          </div>
+        )}
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", maxHeight: "72vh", display: "block", cursor: drag.current ? "grabbing" : "grab" }}
           onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onClick={() => setSel(null)}>
           <g transform={`translate(${t.x},${t.y}) scale(${t.k})`}>
@@ -181,7 +248,7 @@ export default function CableMap({ snapId }: { snapId: number }) {
                   <b className="mono" style={{ fontSize: 13 }}>{selNode.host}</b>
                 </div>
                 <div className="dim">Status: <b style={{ color: OPCOL[selNode.op_status] }}>{selNode.op_status}{selNode.collected ? "" : " · [NOT OBSERVED]"}</b></div>
-                <div className="dim">Role / tier: {selNode.role || "—"} · T{selNode.tier}</div>
+                <div className="dim">Role / tier: {selNode.role || "—"} · T{selNode.tier} · kind {selNode.kind || "—"}</div>
                 <div className="dim">Cabled ports: {selNode.ports.length}{selNode.badges.length ? " · " + selNode.badges.join(", ") : ""}</div>
                 {selNode.ports.length > 0 && (
                   <table className="tbl" style={{ marginTop: 8, fontSize: 11 }}>
@@ -199,7 +266,7 @@ export default function CableMap({ snapId }: { snapId: number }) {
                 <b style={{ fontSize: 13 }}>Cable</b>
                 <div className="dim mono" style={{ marginTop: 4 }}>{selCable.a} · {selCable.a_port}</div>
                 <div className="dim mono">{selCable.b} · {selCable.b_port}</div>
-                <div className="dim" style={{ marginTop: 4 }}>Status: <b style={{ color: OPCOL[selCable.op_status] }}>{selCable.op_status}</b></div>
+                <div className="dim" style={{ marginTop: 4 }}>Status: <b style={{ color: OPCOL[selCable.op_status] }}>{selCable.op_status}</b>{selCable.speed ? <> · speed <b>{selCable.speed}</b></> : null}</div>
                 <div className="dim">{selCable.is_pc ? `Port-channel · ${selCable.members.length} members` : "Single link"}{selCable.confirmation ? " · " + selCable.confirmation : ""}</div>
               </>
             )}

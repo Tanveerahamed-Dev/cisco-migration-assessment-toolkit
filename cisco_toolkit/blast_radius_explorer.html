@@ -2682,11 +2682,43 @@ function screenToLogical(px,py){const r=svg().getBoundingClientRect();
    circle-graph overlays (severityHalo / search / VLAN-focus) never run on it.
    ===================================================================== */
 let CM_SEL=null, CM_ORIENT="v", CM_POS={}, CM_ANCH={}, cmNodeEls={}, cmCableEls=[];   // CM_ORIENT: 'v'=tiers top→bottom (default), 'h'=left→right
+let CM_FABRIC=false, CM_TIER=null, CM_VIEW=null;   // fleet-scale declutter: fabric-only + tier focus; CM_VIEW = the filtered model the canvas renders
+const CM_EDGE_KINDS=new Set(["ap","phone","endpoint"]);   // only POSITIVELY-identified edge gear may be hidden — switch/router/unknown always stay
 const CM_OPCOL={up:"var(--ok)",down:"var(--crit)",unknown:"var(--text-faint)"};
 const CM_NW=190, CM_NH=54, CM_GX=60, CM_GY=140, CM_PAD=90;   // node box + lane gaps
 function cableMapModel(){const cm=(SNAP&&SNAP.cable_map)||null;
   return (cm&&Array.isArray(cm.nodes)&&Array.isArray(cm.cables)&&Array.isArray(cm.tiers))?cm
     :{nodes:[],cables:[],tiers:[],summary:{n_nodes:0,n_cables:0,n_tiers:0,op:{up:0,down:0,unknown:0}}};}
+/* filtered VIEW of the raw model: fabric-only drops positively-identified edge endpoints (ap/phone),
+   tier focus keeps one lane + its direct peers; empty lanes are compacted (tier remapped on COPIES so
+   the raw SSOT is never mutated). This is what makes the map usable on a 400-node fleet. */
+function cableMapView(){
+  const raw=cableMapModel();
+  let nodes=raw.nodes, cables=raw.cables;
+  if(CM_FABRIC){
+    const hide=new Set(nodes.filter(n=>CM_EDGE_KINDS.has(n.kind)).map(n=>n.host));
+    if(hide.size){nodes=nodes.filter(n=>!hide.has(n.host)); cables=cables.filter(c=>!hide.has(c.a)&&!hide.has(c.b));}
+  }
+  if(CM_TIER!=null){
+    const inTier=new Set(nodes.filter(n=>n.tier===CM_TIER).map(n=>n.host));
+    cables=cables.filter(c=>inTier.has(c.a)||inTier.has(c.b));
+    const keep=new Set(inTier); cables.forEach(c=>{keep.add(c.a); keep.add(c.b);});
+    nodes=nodes.filter(n=>keep.has(n.host));
+  }
+  const live=new Set(nodes.map(n=>n.host));
+  const remap=new Map(); let next=0;
+  raw.tiers.forEach((t,k)=>{if(t.some(h=>live.has(h)))remap.set(k,next++);});
+  const tiers=[]; remap.forEach((nk,k)=>{tiers[nk]=raw.tiers[k].filter(h=>live.has(h));});
+  if(nodes!==raw.nodes||CM_TIER!=null)
+    nodes=nodes.map(n=>remap.has(n.tier)?Object.assign({},n,{tier:remap.get(n.tier)}):n);
+  return {nodes,cables,tiers,summary:raw.summary,_raw:{n:raw.nodes.length,c:raw.cables.length}};
+}
+function cmSetFabric(on){CM_FABRIC=!!on; CM_SEL=null;
+  if(MODE==="cablemap"){computeLayout(); fitView(); renderDrawer();
+    srAnnounce(CM_FABRIC?"Fabric only — access-point and phone endpoints hidden.":"Showing all cable-map nodes.");}}
+function cmSetTier(t){CM_TIER=t; CM_SEL=null;
+  if(MODE==="cablemap"){computeLayout(); fitView(); renderDrawer();
+    srAnnounce(t==null?"All tiers shown.":"Tier "+t+" focus — that lane plus its direct peers.");}}
 function cableMapLayout(cm){
   CM_POS={}; CM_ANCH={};
   const V=CM_ORIENT!=="h";                                  // vertical (tiers top→bottom) vs horizontal (left→right)
@@ -2717,7 +2749,7 @@ function cmToggleOrient(){CM_ORIENT=CM_ORIENT==="h"?"v":"h"; if(MODE==="cablemap
 function cmTierRole(cm,k){const rs={}; cm.nodes.filter(n=>n.tier===k).forEach(n=>{if(n.role)rs[n.role]=(rs[n.role]||0)+1;});
   const top=Object.entries(rs).sort((a,b)=>b[1]-a[1])[0]; return top?top[0]:"";}
 function buildCableMapSvg(){
-  clearPathAnim(); const cm=cableMapModel();
+  clearPathAnim(); const cm=CM_VIEW=cableMapView();
   const s=svg(); s.innerHTML=""; s.appendChild(el("defs",{}));
   const vp=el("g",{id:"vp"}); s.appendChild(vp);
   const glanes=el("g",{id:"cmlanes"}), gcab=el("g",{id:"cmcables"}), gnod=el("g",{id:"cmnodes"});
@@ -2775,7 +2807,7 @@ function cmSelect(sel){CM_SEL=sel; paintCableMap(); renderDrawer();
   srAnnounce(sel.kind==="node"?("Selected node "+sel.id):"Selected cable");}
 function paintCableMap(){
   const selHost=CM_SEL&&CM_SEL.kind==="node"?CM_SEL.id:null, selCab=CM_SEL&&CM_SEL.kind==="cable"?CM_SEL.i:null;
-  const cm=cableMapModel(), nbrs=new Set();
+  const cm=CM_VIEW||cableMapView(), nbrs=new Set();
   if(selHost!=null){nbrs.add(selHost); cm.cables.forEach(c=>{if(c.a===selHost)nbrs.add(c.b); if(c.b===selHost)nbrs.add(c.a);});}
   Object.entries(cmNodeEls).forEach(([h,o])=>{const on=selHost==null||nbrs.has(h);
     o.g.style.opacity=on?"1":"0.26";
@@ -2786,7 +2818,7 @@ function paintCableMap(){
     path.setAttribute("stroke-width",isSel?String(c.is_pc?6:3.5):String(c.is_pc?4.5:2));});
 }
 function drawCableMap(){
-  const cm=cableMapModel(), op=(cm.summary&&cm.summary.op)||{up:0,down:0,unknown:0};
+  const raw=cableMapModel(), cm=CM_VIEW||cableMapView(), op=(cm.summary&&cm.summary.op)||{up:0,down:0,unknown:0};
   const dot=c=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c};margin-right:5px"></span>`;
   const kv=(k,v)=>`<div class="row" style="display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:2px 0"><span class="faint">${k}</span><b style="text-align:right">${v}</b></div>`;
   const mono='font-family:var(--mono,ui-monospace,monospace)';
@@ -2795,11 +2827,22 @@ function drawCableMap(){
     <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-bottom:6px">
       <span>${dot("var(--ok)")}${op.up} up</span><span>${dot("var(--crit)")}${op.down} down</span><span>${dot("var(--text-faint)")}${op.unknown} not observed</span></div>
     <div class="faint" style="font-size:11.5px">${cm.summary.n_nodes} nodes · ${cm.summary.n_cables} cables · ${cm.summary.n_tiers} tiers</div>
-    <div style="margin-top:8px"><button class="btn ghost" data-cm-orient="1" style="padding:4px 10px">⇅ ${CM_ORIENT==="h"?"Horizontal":"Vertical"} layout — switch</button></div></div>`;
+    <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn ghost" data-cm-orient="1" style="padding:4px 10px">⇅ ${CM_ORIENT==="h"?"Horizontal":"Vertical"} layout — switch</button>
+      <button class="btn ghost" data-cm-fabric="1" aria-pressed="${CM_FABRIC?"true":"false"}"
+        style="padding:4px 10px${CM_FABRIC?";border-color:var(--accent);color:var(--accent)":""}"
+        title="Hide positively-identified edge endpoints (APs / IP phones). Switches, routers and unknowns always stay — hiding is the risky direction.">${CM_FABRIC?"☑":"☐"} Fabric only</button>
+    </div>
+    <div style="margin-top:7px;display:flex;gap:4px;flex-wrap:wrap;align-items:center"><span class="faint" style="font-size:10.5px">TIER</span> ${(()=>{
+      let chips=`<button type="button" class="chip${CM_TIER==null?" on":""}" data-cm-tier="all">ALL</button>`;
+      raw.tiers.forEach((t,k)=>{if(!t.length)return; const rn=cmTierRole(raw,k);
+        chips+=`<button type="button" class="chip${CM_TIER===k?" on":""}" data-cm-tier="${k}" title="${t.length} node(s)${rn?" · mostly "+esc(rn):""}">T${k}${rn?" · "+esc(rn.toUpperCase()):""}</button>`;});
+      return chips;})()}</div>
+    ${(CM_FABRIC||CM_TIER!=null)?`<div class="faint" style="font-size:11.5px;margin-top:6px">Showing <b>${cm.nodes.length}</b> of ${cm._raw.n} nodes · <b>${cm.cables.length}</b> of ${cm._raw.c} cables</div>`:""}</div>`;
   if(CM_SEL&&CM_SEL.kind==="node"){const n=cm.nodes.find(x=>x.host===CM_SEL.id);
     if(n){h+=`<div class="drawer-sec" style="margin-top:10px"><h4 style="margin:0 0 6px">${esc(n.host)}</h4>`
       +kv("Status",`<span style="color:${CM_OPCOL[n.op_status]}">${n.op_status}${n.collected?"":" · [NOT OBSERVED]"}</span>`)
-      +kv("Role / tier",`${esc(n.role||"—")} · T${n.tier}`)+kv("Cabled ports",(n.ports||[]).length)
+      +kv("Role / tier",`${esc(n.role||"—")} · T${n.tier}`)+kv("Kind",esc(n.kind||"—"))+kv("Cabled ports",(n.ports||[]).length)
       +((n.badges||[]).length?kv("Flags",esc(n.badges.join(", "))):"");
       if((n.ports||[]).length){h+=`<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px">
         <thead><tr style="color:var(--text-faint);text-align:left"><th>Local</th><th>Peer</th><th>Peer port</th><th>Status</th></tr></thead><tbody>`;
@@ -2811,6 +2854,7 @@ function drawCableMap(){
       +kv(esc(c.a),`<span style="${mono}">${esc(c.a_port)}</span>`)
       +kv(esc(c.b),`<span style="${mono}">${esc(c.b_port)}</span>`)
       +kv("Status",`<span style="color:${CM_OPCOL[c.op_status]}">${c.op_status}</span>`)
+      +kv("Speed",esc(c.speed||"—"))
       +kv("Type",c.is_pc?`Port-channel · ${c.members.length} members`:"Single link")
       +kv("Seen",esc(c.confirmation||"—"));
       if(c.is_pc&&c.members.length>1){h+=`<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px"><thead><tr style="color:var(--text-faint);text-align:left"><th>Member A</th><th>Member B</th></tr></thead><tbody>`;
@@ -3777,6 +3821,8 @@ function renderDrawer(){
   }
   p.querySelectorAll("[data-askhost]").forEach(b=>b.onclick=()=>{abToggle(true); abSubmit("tell me about "+b.dataset.askhost);});
   p.querySelectorAll("[data-cm-orient]").forEach(b=>b.onclick=cmToggleOrient);
+  p.querySelectorAll("[data-cm-fabric]").forEach(b=>b.onclick=()=>cmSetFabric(!CM_FABRIC));
+  p.querySelectorAll("[data-cm-tier]").forEach(b=>b.onclick=()=>cmSetTier(b.dataset.cmTier==="all"?null:+b.dataset.cmTier));
   // V3.23.72: Risk-cockpit tier -> toggle-highlight that whole tier's switches on the topology (dim the
   // rest). Updates the row's active state in place (no full re-render) so the drawer scroll is preserved.
   p.querySelectorAll("[data-tier-hosts]").forEach(r=>r.onclick=()=>{
