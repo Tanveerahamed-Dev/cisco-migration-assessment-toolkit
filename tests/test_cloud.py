@@ -11,6 +11,7 @@ to a SENSITIVE admin port (SSH/RDP/DB/...) or to ALL ports/protocols -- the host
 internet. SILENT for a SG open only on 80/443 (a legitimate public web tier), for internal-only rules, and for
 no SG export. Surfaces the EXPOSURE ('open to the world'), never claims a vulnerability. JSON shape per the AWS
 EC2 DescribeSecurityGroups API."""
+import functools
 import os
 import sys
 
@@ -115,6 +116,41 @@ def test_build_cloud_offline(tmp_path):
     out = build.build_cloud({"aws ec2 describe-security-groups": str(d / "aws_ec2_describe-security-groups.txt")})
     assert isinstance(out.get("security_groups"), list) and any(s["group_id"] == "sg-0adm01" for s in out["security_groups"])
     assert build.build_cloud({}) == {}                     # no export -> not observed
+
+
+def test_build_cloud_parser_crash_reads_as_not_observed(monkeypatch, tmp_path):
+    """A parser CRASH must read as 'not observed' ({}), NEVER as {"security_groups": []} (which
+    reads downstream as 'cloud observed, nothing world-open' = false-health). Coverage-honesty must
+    not hinge on 'the parser didn't raise' (build.build_cloud). Regression guard for the Plan-A #16
+    typed-defaults interaction: _safe_parse's crash fallback for a LIST parser is [] (a list), which
+    would slip past build_cloud's `isinstance(sgs, list)` guard -- so build_cloud must pin a non-list
+    crash default that the guard converts back to not-observed."""
+    d = tmp_path / "aws-acct"
+    d.mkdir()
+    f = d / "aws_ec2_describe-security-groups.txt"
+    f.write_text(_OPEN_SSH, encoding="utf-8")              # a PRESENT export -- we HAVE data, the parser crashes on it
+    # Stand in for the REAL parser crashing. functools.wraps preserves __name__, so _safe_parse's
+    # _empty_for resolves the registered LIST shape -- faithfully reproducing the real crash fallback
+    # ([]), not a mock artefact. Patch build's OWN reference (build_cloud calls the name bound in
+    # build.py's namespace; patching parse.* would not reach it).
+    @functools.wraps(parse.parse_aws_security_groups)
+    def _boom(*a, **k):
+        raise ValueError("simulated parser crash")
+    monkeypatch.setattr(build, "parse_aws_security_groups", _boom)
+    out = build.build_cloud({"aws ec2 describe-security-groups": str(f)})
+    assert out == {}, f"parser crash must be 'not observed' ({{}}), got {out!r}"
+
+
+def test_build_cloud_present_but_clean_stays_observed_empty_list(tmp_path):
+    """The counterexample that keeps the crash fix honest: a PRESENT export with nothing world-open
+    parses to [] and must stay {"security_groups": []} (observed / clean) -- distinct from the
+    not-observed {}. Hardening the crash path must not collapse a genuine empty result."""
+    d = tmp_path / "aws-acct"
+    d.mkdir()
+    f = d / "aws_ec2_describe-security-groups.txt"
+    f.write_text(_INTERNAL, encoding="utf-8")             # SSH from 10/8 only -> parser returns [] (nothing world-open)
+    out = build.build_cloud({"aws ec2 describe-security-groups": str(f)})
+    assert out == {"security_groups": []}                 # observed/clean, DISTINCT from not-observed {}
 
 
 # ----------------------------------------------------------------------------- detector: FIRES on exposure
