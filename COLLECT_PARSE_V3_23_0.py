@@ -462,6 +462,7 @@ from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_
                                 write_campaign_workbook, redact_snapshot,
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
+from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
 from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
@@ -2766,6 +2767,21 @@ def main():
             write_ops_handbook_docx(oh_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
+
+    # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases, extracted behind the typed
+    # AnalysisContext carrier. Golden-neutral -- a pure move; the stage body is byte-identical.
+    _stage_finalize(AnalysisContext(args=args, out_xlsx=out_xlsx, root_dir=root_dir,
+                                    all_devices_meta=all_devices_meta, workers=workers, snap_dict=snap_dict))
+
+
+def _stage_finalize(ctx: "AnalysisContext") -> None:
+    """Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases -- run-manifest
+    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41). A true LEAF:
+    nothing downstream reads its outputs, which is why it is the safest first extraction. Reads the
+    context's out_xlsx / snap_dict / root_dir / args / all_devices_meta / workers + the module-global
+    _PHASE_TIMINGS; the body below is byte-identical to the inline block it replaced."""
+    out_xlsx, snap_dict, root_dir, args = ctx.out_xlsx, ctx.snap_dict, ctx.root_dir, ctx.args
+    all_devices_meta, workers = ctx.all_devices_meta, ctx.workers
 
     # Phase 39: sealed run-manifest chain-of-custody (roadmap D2 + J4). The offline, deterministic answer to a
     # GAIT-style audit trail: a hash-chained ledger of the pipeline stages + per-artifact sha256 + the
