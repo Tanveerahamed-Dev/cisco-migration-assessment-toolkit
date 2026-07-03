@@ -371,4 +371,4 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
 
     doc.save(output_path)
     logger.info(f"[Phase 38] Operations handbook (DOCX) written: {output_path} "
-                f"({len(devices)} devices in scope)")
+                f"({_ninv if isinstance(_ninv, int) else len(devices)} devices in scope)")   # canonical n_devices (reuse title's read); len() only pre-brief (CROSS-03)
