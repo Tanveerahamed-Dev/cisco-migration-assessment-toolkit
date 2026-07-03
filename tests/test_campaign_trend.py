@@ -6,8 +6,13 @@ from openpyxl import load_workbook
 from cisco_toolkit.html import compute_campaign_trend, write_campaign_workbook
 
 
-def _snap(date, avg, bands, punch, not_ready, eos):
-    """bands: {band: count} -> health_scores with stable switch names; punch: list of (severity, title)."""
+def _snap(date, avg, bands, punch, not_ready, ldos):
+    """bands: {band: count} -> health_scores with stable switch names; punch: list of (severity, title).
+    ldos = n_past_ldos (past last-day-of-support = the engine's canonical "past end-of-support", the
+    migration-critical unsupported count the brief/deck/explorer headline). n_past_eos (past end-of-SALE,
+    still supported) is PINNED to 0 here so the 'Past end-of-support' trajectory metric can read as
+    'improving' ONLY if it sources n_past_ldos, never n_past_eos -- guards the EoS/LDoS silent-drop class
+    (a fleet can be 0 past-EoS yet have 152 past-LDoS; reading the wrong field hides every unsupported box)."""
     hs, i = [], 0
     for band, cnt in bands.items():
         for _ in range(cnt):
@@ -18,7 +23,7 @@ def _snap(date, avg, bands, punch, not_ready, eos):
         "health_scores": hs,
         "punchlist": [{"severity": s, "category": "X", "title": t, "devices": ["sw0"]} for (s, t) in punch],
         "migration_readiness": [{"readiness": "NOT READY", "switches": ["sw0"]} for _ in range(not_ready)],
-        "lifecycle_risk": {"summary": {"n_past_eos": eos}},
+        "lifecycle_risk": {"summary": {"n_past_ldos": ldos, "n_past_eos": 0}},
         "executive_brief": {"posture": {"avg_health": avg}},
     }
 
@@ -73,3 +78,46 @@ def test_campaign_workbook_sheets(tmp_path):
     assert tl.cell(1, 1).value == "Collection" and tl.max_row == 4    # header + 3 collections
     bd = wb["Burndown"]
     assert bd.cell(1, 1).value == "Step" and bd.max_row == 3          # header + 2 steps
+
+
+def test_campaign_trend_not_improving_when_a_device_goes_dark():
+    """[audit-2 #4] a device present then ABSENT across the campaign (gone dark) makes a rising avg-health
+    survivorship-biased; the verdict must NOT read IMPROVING -- it downgrades to MIXED and discloses the dark
+    device (else a failed / decommissioned-without-record device silently reads as improvement)."""
+    from cisco_toolkit.html import compute_campaign_trend
+    def snap(devs, scores):
+        return {"devices": {d: {} for d in devs}, "interfaces": {d: {} for d in devs},
+                "health_scores": [{"switch": s, "band": b, "score": sc} for s, b, sc in scores],
+                "punchlist": [], "executive_brief": {"scale": {"n_devices": len(devs)}}}
+    old = snap(["core1", "core2", "acc1"], [("core1", "Good", 90), ("core2", "Good", 88), ("acc1", "Fair", 70)])
+    new = snap(["core1", "acc1"], [("core1", "Good", 90), ("acc1", "Good", 80)])   # core2 went dark
+    t = compute_campaign_trend([old, new])
+    assert t["verdict"] != "IMPROVING"
+    assert "dark" in t["verdict_note"].lower()
+
+
+def test_cutover_diff_insufficient_data_is_coverage_not_health_improvement():
+    """[audit-4 #5 false-health] 'Insufficient Data' ranked WORSE than Critical, so a dark device re-collected and
+    found Critical classified as 'improved' + CLEAN -- the single most safety-critical gate reading a newly-online
+    Critical box as an improvement. Insufficient Data is a COVERAGE state, not a health-scale point."""
+    from cisco_toolkit import html
+    base = {"devices": {"A": {}}, "interfaces": {"A": {}}, "punchlist": []}
+    dark = dict(base, health_scores=[{"switch": "A", "band": "Insufficient Data", "score": 90}])
+    crit = dict(base, health_scores=[{"switch": "A", "band": "Critical", "score": 12}])
+    d = html.compute_snapshot_delta(dark, crit)        # newly collected, found Critical
+    assert d["health"]["n_improved"] == 0 and d["verdict"] != "CLEAN"
+    d2 = html.compute_snapshot_delta(crit, dark)       # went dark = coverage loss
+    assert d2["health"]["n_improved"] == 0 and d2["verdict"] != "CLEAN"
+    good = dict(base, health_scores=[{"switch": "A", "band": "Good", "score": 85}])
+    d3 = html.compute_snapshot_delta(crit, good)       # genuine health improvement still counts
+    assert d3["health"]["n_improved"] == 1
+
+
+def test_cutover_diff_survives_null_list_rows():
+    """[audit-4 #15 totality] a null element in health_scores/punchlist (hand-trimmed / older-schema snapshot fed
+    to --compare/--trend) crashed compute_snapshot_delta with AttributeError instead of degrading."""
+    from cisco_toolkit import html
+    old = {"devices": {"A": {}}, "interfaces": {"A": {}},
+           "health_scores": [None, {"switch": "A", "band": "Good", "score": 80}], "punchlist": [None]}
+    new = {"devices": {"A": {}}, "interfaces": {"A": {}}, "health_scores": [], "punchlist": []}
+    assert isinstance(html.compute_snapshot_delta(old, new), dict)   # must not raise

@@ -255,6 +255,84 @@ Interface   Grp  Pri P State    Active          Standby         Virtual IP
 Vl10        10   110 P Active   local           10.0.10.3       10.0.10.1
 Vl20        20   100   Standby  10.0.20.3       local           10.0.20.1
 """,
+    # FHRP DETAIL (universality): the active Vl10 gateway has preempt but NO interface tracking -- the
+    # classic gap _d_fhrp_resilience now catches. [HISTORY-REDACTED] ran zero FHRP, so this fixture is the first to prove
+    # the engine ASSESSES first-hop redundancy end-to-end.
+    "show standby all": """\
+Vlan10 - Group 10
+  State is Active
+  Virtual IP address is 10.0.10.1
+  Active virtual MAC address is 0000.0c07.ac0a
+  Hello time 3 sec, hold time 10 sec
+  Preemption enabled
+  Active router is local
+  Standby router is 10.0.10.3, priority 100 (expires in 9.000 sec)
+  Priority 110 (configured 110)
+Vlan20 - Group 20
+  State is Standby
+  Virtual IP address is 10.0.20.1
+  Active virtual MAC address is 0000.0c07.ac14
+  Preemption disabled
+  Standby router is local
+  Active router is 10.0.20.3, priority 110
+  Priority 100 (configured 100)
+""",
+    # PIM-SM control plane: core1 RUNS sparse-mode (a live PIM neighbor toward core2) but 'show ip pim rp
+    # mapping' learned NO RP -> ASM (*,G) shared trees can't form -> _d_pim_rp_health FIRES (running +
+    # collected + 0 RP + not SSM-only). The header is present so the axis is unambiguously COLLECTED.
+    "show ip pim neighbor": """\
+PIM Neighbor Table
+Mode: B - Bidir Capable, DR - Designated Router, N - Default DR Priority,
+      P - Proxy Capable, S - State Refresh Capable, G - GenID Capable
+Neighbor          Interface                Uptime/Expires    Ver   DR
+Address                                                            Prio/Mode
+10.0.255.2        GigabitEthernet1/0/1     00:42:17/00:01:31 v2    1 / DR S P G
+""",
+    "show ip pim rp mapping": """\
+PIM Group-to-RP Mappings
+
+""",
+    # NTP clock-sync STATE: core1 has 'ntp server' configured (config-only CIS no-ntp PASSES) yet the
+    # operational clock is UNSYNCHRONIZED at stratum 16 -> _d_ntp_sync catches what the config check cannot.
+    "show ntp status": """\
+Clock is unsynchronized, stratum 16, no reference clock
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+reference time is 00000000.00000000 (00:00:00.000 UTC Mon Jan 1 1900)
+clock offset is 0.0000 msec, root delay is 0.00 msec
+root dispersion is 15.91 msec, peer dispersion is 0.00 msec
+""",
+    # QoS RUNTIME: core1's egress PRIORITY (LLQ) class is congestion-dropping real-time traffic, and a data
+    # class is shedding >1% of its load -> _d_qos_runtime_drops fires HIGH. class-default is clean (no cry-wolf).
+    "show policy-map interface": """\
+GigabitEthernet1/0/24
+
+  Service-policy output: WAN-EDGE-OUT
+
+    Class-map: VOICE (match-any)
+      24817400 packets, 4765747200 bytes
+      Match: dscp ef (46)
+      Queueing
+      priority level 1
+      queue limit 512 packets
+      (queue depth/total drops/no-buffer drops) 511/1840521/0
+      (pkts output/bytes output) 24817400/4765747200
+
+    Class-map: BULK-DATA (match-any)
+      8400000 packets, 6048000000 bytes
+      Match: dscp af11 (10)
+      Queueing
+      queue limit 2000 packets
+      (queue depth/total drops/no-buffer drops) 1998/512000/0
+      (pkts output/bytes output) 8400000/6048000000
+      bandwidth remaining 30%
+
+    Class-map: class-default (match-any)
+      150000 packets, 18000000 bytes
+      Queueing
+      queue limit 416 packets
+      (queue depth/total drops/no-buffer drops) 0/0/0
+      (pkts output/bytes output) 150000/18000000
+""",
     "show ip route": """\
 Codes: C - connected, L - local, O - OSPF, B - BGP, S - static
 Gateway of last resort is 10.0.10.254 to network 0.0.0.0
@@ -343,12 +421,340 @@ Processor Pool Total:  690885376 Used:  168148848 Free:  522736528
  PID  TTY  Allocated      Freed    Holding    Getbufs    Retbufs Process
    0    0  295427864   95758288  185940776          0          0 *Init*
 """,
+    # SP/MPLS universality: core1 acts as an MPLS PE with a broken LDP session, a non-Established VPNv4
+    # peer, and a DOWN pseudowire.  Each fires one of the three MPLS detectors end-to-end.
+    # _d_mpls_ldp_health FIRES: core1 <-> 10.0.255.9 LDP session is Nonexistent (no label bindings).
+    # _d_mpls_l3vpn_health FIRES: core1 <-> 10.0.255.9 VPNv4 BGP peer is Idle (no VPN routes).
+    # _d_mpls_l2vpn_health FIRES: VC 300 (core1 <-> 10.0.255.9) is DOWN (customer L2 circuit broken).
+    # The healthy peers (Oper LDP, Established VPNv4, UP VC 200) confirm coverage-honest silence.
+    "show mpls ldp neighbor": """\
+Peer LDP Ident: 10.0.255.2:0; Local LDP Ident 10.0.255.1:0
+\tTCP connection: 10.0.255.2.646 - 10.0.255.1.11008
+\tState: Oper; Msgs sent/rcvd: 842/839; Downstream
+\tUp time: 4d05h
+\tLDP discovery sources:
+\t  GigabitEthernet1/0/1, Src IP addr: 10.0.255.2
+\tAddresses bound to peer LDP Ident:
+\t  10.0.255.2
+Peer LDP Ident: 10.0.255.9:0; Local LDP Ident 10.0.255.1:0
+\tTCP connection: (none)
+\tState: Nonexistent; Msgs sent/rcvd: 0/0; Downstream
+\tUp time: never
+""",
+    "show bgp vpnv4 unicast summary": """\
+BGP router identifier 10.0.255.1, local AS number 65000
+BGP table version is 14, main routing table version 14
+Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+10.0.255.2      4        65000     842     839       14    0    0 4d05h           6
+10.0.255.9      4        65000       0       0        1    0    0 never    Idle
+""",
+    "show mpls l2transport vc": """\
+Local intf     Local circuit              Dest address    VC ID    Status
+-------------  -------------------------  --------------  -------  ----------
+Gi1/0/2        Ethernet                   10.0.255.2      200      UP
+Gi1/0/3        Ethernet VLAN 300          10.0.255.9      300      DOWN
+""",
+    # Cisco SD-Access LISP fabric control-plane (universality): core1 is an IOS-XE fabric node. VRF 'red' has
+    # 2 reliable-transport sessions to the control-plane nodes (map-server/map-resolver, port 4342) but ZERO
+    # established (both peers Down) -> _d_lisp_fabric_session_down FIRES (red overlay partitioned: cannot register
+    # or resolve EID-to-RLOC). The healthy companion VRF 'default' (2 sessions, 2 established, both peers Up) in
+    # the SAME output proves coverage-honest silence -- a node with established>=1 is NOT flagged, so the single
+    # firing comes only from the all-down VRF, not from any individual Down row.
+    "show lisp session": """\
+Sessions for VRF default, total: 2, established: 2
+Peer                           State      Up/Down        In/Out    Users
+10.0.255.2:4342                Up         1d04h          27/9      14
+10.0.255.3:4342                Up         1d03h          19/9      14
+Sessions for VRF red, total: 2, established: 0
+Peer                           State      Up/Down        In/Out    Users
+10.0.255.2:4342                Down       never          0/0       0
+10.0.255.3:4342                Down       never          0/0       0
+""",
+    # Cisco TrustSec / CTS universality: core1 (IOS-XE) is a TrustSec node whose environment-data download
+    # never completed -> _d_cts_environment_data_health FIRES (Current state = WAITING_RESPONSE, not
+    # COMPLETE; SGT/SGACL map absent -> group-based segmentation blind). The healthy COMPLETE companion +
+    # the absent-CTS case are proved in test_d_cts_environment_data_health_fires_on_non_complete_only and in
+    # access1 (which carries no 'show cts environment-data' at all -> snap['cts'] omits it -> silent).
+    "show cts environment-data": """\
+CTS Environment Data
+====================
+Current state = WAITING_RESPONSE
+Last status = Failed
+Environment Data is empty
+State Machine is running
+Retry_timer (60 secs) is running
+""",
+    # DMVPN WAN-overlay universality (mGRE/NHRP): core1 acts as a DMVPN hub. Tunnel1 peer 10.0.1.3 (NBMA
+    # 37.37.37.3) is stuck in NHRP state and 10.0.1.4 (NBMA 47.47.47.4) is stuck in IKE -> _d_dmvpn_tunnel_health
+    # FIRES (broken spoke tunnels: no overlay forwarding to those sites). The healthy peers (10.0.1.2 UP) prove
+    # coverage-honest silence -- an all-UP hub never over-fires.
+    "show dmvpn": """\
+Legend: Attrb --> S - Static, D - Dynamic, I - Incomplete
+        N - NATed, L - Local, X - No Socket
+        # Ent --> Number of NHRP entries with same NBMA peer
+        NHS Status: E --> Expecting Replies, R --> Responding, W --> Waiting
+        UpDn Time --> Up or Down Time for a Tunnel
+==========================================================================
+
+Interface: Tunnel1, IPv4 NHRP Details
+Type:Hub, NHRP Peers:3,
+
+ # Ent  Peer NBMA Addr Peer Tunnel Add State  UpDn Tm Attrb
+ ----- --------------- --------------- ----- -------- -----
+     1 27.27.27.2             10.0.1.2    UP 00:28:32     D
+     1 37.37.37.3             10.0.1.3  NHRP 00:00:04     D
+     1 47.47.47.4             10.0.1.4   IKE 00:00:09     D
+""",
+    # IPsec encrypted-WAN universality: core1 is an IOS site-to-site IPsec hub with two crypto sessions.
+    # _d_crypto_session_health FIRES: Tunnel1 -> 10.0.255.9 is DOWN-NEGOTIATING (no established IKE/IPsec SA,
+    # the spoke behind it is cut off). The healthy companion Tunnel0 -> 10.0.255.2 is UP-ACTIVE and must NOT
+    # fire (proves coverage-honest silence on an established tunnel).
+    "show crypto session": """\
+Crypto session current status
+
+Interface: Tunnel0
+Session status: UP-ACTIVE
+Peer: 10.0.255.2 port 500
+  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.2/500 Active
+  IPSEC FLOW: permit ip 10.0.10.0/255.255.255.0 10.0.20.0/255.255.255.0
+        Active SAs: 2, origin: crypto map
+Interface: Tunnel1
+Session status: DOWN-NEGOTIATING
+Peer: 10.0.255.9 port 500
+  IKEv2 SA: local 10.0.255.1/500 remote 10.0.255.9/500 Inactive
+  IPSEC FLOW: permit ip 10.0.10.0/255.255.255.0 10.0.30.0/255.255.255.0
+        Active SAs: 0, origin: crypto map
+""",
+    # BFD fast-failover (universality): core1 runs BFD with one session DOWN and one UP -> _d_bfd_session_health
+    # fires on the Down session only. The Down session (10.0.255.9 on Gi1/0/3) means sub-second failover for its
+    # client protocol is broken; the Up session (10.0.255.2 on Gi1/0/1) is the healthy companion that proves the
+    # detector does NOT over-fire. Note the 'RH/RS' column is also literally Up/Down -- the parser must read the
+    # later 'State' column by position, not the first Up/Down token, or it would misread the healthy row.
+    "show bfd neighbors": """\
+OurAddr         NeighAddr       LD/RD                 RH/RS           Holdown(mult)     State       Int
+10.0.255.1      10.0.255.2      1090519041/1090519040 Up              583(3)            Up          Gi1/0/1
+10.0.255.1      10.0.255.9      1090519042/0          Down            N/A(3)            Down        Gi1/0/3
+""",
+    # Cisco firewall HA (universality, SSH show-text channel): core1 stands in as a Secure Firewall ASA/FTD
+    # whose failover is ENABLED ('Failover On') but the standby peer is FAILED -> _d_firewall_ha_degraded
+    # FIRES (the HA pair has no working standby; a firewall in the data path is a single point of failure --
+    # the firewall analogue of the config-present-but-operationally-broken false-health trap). 'This host'
+    # Active is the healthy companion; a standalone 'Failover Off' box and the TRANSIENT sync states are
+    # proved silent (no cry-wolf) in tests/test_firewall.py. Grounded in the ASA 'show failover' format.
+    "show failover": """\
+Failover On
+Failover unit Primary
+Failover LAN Interface: FAILOVER GigabitEthernet0/2 (up)
+Unit Poll frequency 1 seconds, holdtime 15 seconds
+Interface Poll frequency 5 seconds, holdtime 25 seconds
+Interface Policy 1
+Monitored Interfaces 3 of 1050 maximum
+Version: Ours 9.16(3)23, Mate 9.16(3)23
+Last Failover at: 12:00:00 UTC Jan 1 2026
+        This host: Primary - Active
+                Active time: 102233 (sec)
+                  Interface outside (203.0.113.1): Normal (Monitored)
+                  Interface inside (10.0.0.1): Normal (Monitored)
+        Other host: Secondary - Failed
+                Active time: 0 (sec)
+                  Interface outside (203.0.113.2): Normal (Waiting)
+                  Interface inside (10.0.0.2): Normal (Waiting)
+""",
+    # Cisco firewall capacity (universality): core1's 'show resource usage' shows the data-plane Conns resource
+    # DENYING at peak (Denied 312, peak right at the 280000 Limit) -> _d_firewall_resource_exhaustion FIRES (the
+    # box dropped connections at its limit -- a hard sizing signal for the migration). The SSH row (Denied 44 =
+    # failed mgmt logins) and the '[rate]' row are administrative/rate and correctly EXCLUDED (no cry-wolf).
+    "show resource usage": """\
+Resource          Current     Peak       Limit       Denied  Context
+SSH                     1        3           5           44   System
+Conns               240128   279994      280000          312   System
+Xlates               21944    40210         N/A            0   System
+Hosts                15955    24871         N/A            0   System
+Conns [rate]           62      984         N/A            0   System
+""",
+    # Cisco ISE (universality, Open API JSON-ingestion channel): core1 stands in as the ISE Primary Admin
+    # query host for an offline 'GET /api/v1/deployment/node' export. ise-psn-2 is NOT Connected ->
+    # _d_ise_node_unreachable FIRES; only ise-pan-1 carries the Policy Service ('Session') in a 2-node
+    # deployment -> _d_ise_psn_no_redundancy FIRES (single PSN); and no SecondaryAdmin/SecondaryMonitoring is
+    # present -> _d_ise_admin_monitoring_redundancy FIRES. A single-node STANDALONE would NOT fire these (the
+    # >=2-node gate, proved in tests/test_ise.py). The Open API LIST wraps rows in {"response":[...]}.
+    "api/v1/deployment/node": """\
+{
+  "response": [
+    {"hostname": "ise-pan-1", "fqdn": "ise-pan-1.[HISTORY-REDACTED].local", "roles": ["PrimaryAdmin", "PrimaryMonitoring"], "services": ["Session", "Profiler"], "nodeStatus": "Connected"},
+    {"hostname": "ise-psn-2", "fqdn": "ise-psn-2.[HISTORY-REDACTED].local", "roles": [], "services": [], "nodeStatus": "Disconnected"}
+  ],
+  "version": "1.0.0"
+}
+""",
+    # Cisco Secure Firewall Mgmt Center (FMC, universality, JSON channel): core1 stands in as the FMC query
+    # host. devicerecords has [HISTORY-REDACTED]-FTD-99 isConnected=false+red -> _d_fmc_device_disconnected; ftddevicehapairs
+    # has a Failed secondary -> _d_ftd_ha_degraded; deployabledevices is non-empty -> _d_fmc_deployment_pending;
+    # fmchastatuses overallStatus DEGRADED -> _d_fmc_manager_ha_degraded (real FMCHAStatus schema: overallStatus
+    # /syncStatus, healthy value 'GOOD'; a transient IN_PROGRESS sync or 'Disabled' HA stays silent -- proved in
+    # tests/test_fmc.py.) List endpoints wrap rows in {"items":[...]}.
+    "api/fmc_config/v1/devices/devicerecords": """\
+{"items": [
+  {"name": "[HISTORY-REDACTED]-FTD-01", "hostName": "10.9.9.1", "model": "FTDv", "sw_version": "7.2.5", "isConnected": true, "healthStatus": "green", "deploymentStatus": "DEPLOYED"},
+  {"name": "[HISTORY-REDACTED]-FTD-99", "hostName": "10.9.9.99", "model": "FTDv", "sw_version": "7.2.5", "isConnected": false, "healthStatus": "red", "deploymentStatus": "WARNING"}
+], "paging": {"count": 2}}
+""",
+    "api/fmc_config/v1/devicehapairs/ftddevicehapairs": """\
+{"items": [
+  {"name": "[HISTORY-REDACTED]-FTD-HA-Edge", "primaryStatus": {"currentStatus": "Active"}, "secondaryStatus": {"currentStatus": "Failed"}}
+], "paging": {"count": 1}}
+""",
+    "api/fmc_config/v1/deployment/deployabledevices": """\
+{"items": [
+  {"name": "[HISTORY-REDACTED]-FTD-03", "canBeDeployed": true, "upToDate": false, "device": {"name": "[HISTORY-REDACTED]-FTD-03"}}
+], "paging": {"count": 1}}
+""",
+    "api/fmc_config/v1/integration/fmchastatuses": """\
+{"items": [
+  {"overallStatus": "DEGRADED", "syncStatus": "FAILED", "fmcPrimary": {"role": "Active"}, "fmcSecondary": {"role": "Failed"}, "haStatusMessages": ["Synchronization failed"]}
+], "paging": {"count": 1}}
+""",
+    # FMC server version 7.0.0 is OLDER than the managed FTDs (7.2.5) -> _d_fmc_version_inversion FIRES (Cisco
+    # mandates FMC >= every managed device). A 7.4.x FMC would stay silent. Platform namespace (not domain).
+    "api/fmc_platform/v1/info/serverversion": """\
+{"items": [{"serverVersion": "7.0.0 (build 94)", "geoVersion": "2024-01-01-001", "vdbVersion": "build 357"}]}
+""",
+    # IPv6 addressing / neighbor-discovery readiness (universality): core1 is a dual-stack distribution
+    # switch. Vlan30's GLOBAL IPv6 address is in the DUPLICATE state ([DUPLICATE]) -- DAD (RFC 4862) found the
+    # address already in use, so IOS disabled it -> _d_ipv6_dad_duplicate FIRES on Vlan30 only. The HEALTHY
+    # companions (Vlan10 with a clean global address, and Gi1/0/24 also clean) prove the detector does NOT
+    # over-fire on a normal dual-stack interface; the TENTATIVE entry on Gi1/0/1 proves a transient DAD state
+    # is correctly IGNORED. Grounded verbatim in the Cisco IPv6 command-reference sample output.
+    "show ipv6 interface": """\
+Vlan10 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:10
+  Global unicast address(es): 2001:DB8:10::1, subnet is 2001:DB8:10::/64
+  Joined group address(es): FF02::1 FF02::2 FF02::1:FF00:1
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+  Hosts use stateless autoconfig for addresses.
+Vlan30 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:30
+  Global unicast address(es): 2001:DB8:30::1, subnet is 2001:DB8:30::/64 [DUPLICATE]
+  Joined group address(es): FF02::1 FF02::2 FF02::1:FF00:1
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+  Hosts use stateless autoconfig for addresses.
+GigabitEthernet1/0/24 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:24
+  Global unicast address(es): 2001:DB8:FFFE::24, subnet is 2001:DB8:FFFE::/64
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+GigabitEthernet1/0/1 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::200:FF:FE00:01
+  Global unicast address(es): 2001:DB8:FFFD::1, subnet is 2001:DB8:FFFD::/64 [TENTATIVE]
+  MTU is 1500 bytes
+  ND DAD is enabled, number of DAD attempts: 1
+""",
+    # Cisco Catalyst SD-WAN (universality, vManage JSON-ingestion channel): core1 stands in as the vManage
+    # Manager query host for an offline /dataservice export. control/connections has a DOWN vsmart connection
+    # (actual 0 of expected 2) -> _d_sdwan_control_connection_down FIRES; the UP vbond connection (1/1) proves
+    # the detector stays silent on a healthy connection. /device reports BR99-cedge UNREACHABLE ->
+    # _d_sdwan_device_unreachable FIRES; the reachable DC1-cedge stays silent. (vManage wraps rows in
+    # {"data":[...]}, distinct from ACI's imdata envelope.) Schema grounded in the Catalyst SD-WAN Manager API.
+    "dataservice/device/control/connections": """\
+{
+  "data": [
+    {"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vsmart", "state": "down", "local-color": "mpls", "remote-color": "default", "controlProtocol": "dtls", "expected-connections": 2, "actual-connections": 0, "uptime": "0:00:00:00"},
+    {"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "peer-type": "vbond", "state": "up", "local-color": "biz-internet", "controlProtocol": "dtls", "expected-connections": 1, "actual-connections": 1, "uptime": "12:04:33:10"}
+  ]
+}
+""",
+    "dataservice/device": """\
+{
+  "data": [
+    {"system-ip": "10.10.1.1", "host-name": "DC1-cedge", "reachability": "reachable", "device-model": "vedge-C8000V", "version": "17.09.03a", "device-type": "vedge"},
+    {"system-ip": "10.10.1.99", "host-name": "BR99-cedge", "reachability": "unreachable", "device-model": "vedge-C8000V", "version": "17.09.03a", "device-type": "vedge"}
+  ]
+}
+""",
+    # Cisco Catalyst SD-WAN OMP (deeper modeling): /dataservice/device/counters reports per-edge OMP peer
+    # counts. BR13-cedge has ompPeersDown=1 (overlay routing degraded -- missing some TLOCs/prefixes even
+    # though its control connection is up) -> _d_sdwan_omp_peer_down FIRES; DC1-cedge (ompPeersDown=0) is the
+    # healthy companion that proves no over-firing. OMP runs over the control connections, so this is a
+    # DISTINCT signal from sdwan-control-connection-down.
+    "dataservice/device/counters": """\
+{
+  "data": [
+    {"system-ip": "10.10.1.13", "host-name": "BR13-cedge", "ompPeersUp": 1, "ompPeersDown": 1, "vsmartControlConnections": 1, "bfdSessionsUp": 4, "bfdSessionsDown": 0},
+    {"system-ip": "10.10.1.1", "host-name": "DC1-cedge", "ompPeersUp": 2, "ompPeersDown": 0, "vsmartControlConnections": 2, "bfdSessionsUp": 8, "bfdSessionsDown": 0}
+  ]
+}
+""",
+    # PUBLIC CLOUD (AWS, universality): core1 ALSO stands in as an AWS account query host for an offline
+    # 'aws ec2 describe-security-groups' export -- the FIRST cloud-domain axis, proving the engine extends
+    # beyond on-prem multi-vendor to public cloud (account-as-device, the same offline JSON pattern as the
+    # ACI/ISE/FMC controllers). sg-0bastion opens SSH(22) to 0.0.0.0/0 -> _d_cloud_sg_open_ingress FIRES (CIS
+    # 5.2 -- admin port exposed to the whole internet). sg-0pubweb opens only 443 to the world -> a legitimate
+    # public web tier that must STAY SILENT (no cry-wolf) -- proved alongside the internal-only case in
+    # tests/test_cloud.py. JSON shape per the AWS EC2 DescribeSecurityGroups API.
+    "aws ec2 describe-security-groups": """\
+{"SecurityGroups": [
+  {"GroupId": "sg-0pubweb", "GroupName": "public-web", "VpcId": "vpc-aj1", "IpPermissions": [
+    {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0"}], "Ipv6Ranges": []}
+  ]},
+  {"GroupId": "sg-0bastion", "GroupName": "bastion-ssh", "VpcId": "vpc-aj1", "IpPermissions": [
+    {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "ssh open to the world"}], "Ipv6Ranges": []}
+  ]}
+]}
+""",
 }
 
 # --------------------------------------------------------------------------- #
 # core2 - NX-OS core switch
 # --------------------------------------------------------------------------- #
 _CORE2 = {
+    # VXLAN-EVPN overlay (universality): core2 is a VTEP with one peer DOWN -> _d_nve_peer_health fires.
+    # The engine's own target fabric was blind until parse_nve_peers / build_overlay.
+    "show nve peers": """\
+Interface Peer-IP          State LearnType Uptime   Router-Mac
+--------- ---------------  ----- --------- -------- -----------------
+nve1      10.255.0.1       Up    CP        1d05h    5e00.0005.0007
+nve1      10.255.0.2       Down  CP        00:00:00 n/a
+""",
+    # BGP-EVPN control plane (universality): one RR session Idle -> _d_evpn_rr_health fires (overlay route
+    # exchange dark even though an NVE data-plane peer is Up).
+    "show bgp l2vpn evpn summary": """\
+BGP summary information for VRF default, address family L2VPN EVPN
+BGP router identifier 10.255.0.7, local AS number 65001
+Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+10.255.0.254    4 65001    5000    5000      120    0    0 1d05h    240
+10.255.0.253    4 65001       0       0        0    0    0 00:00:00 Idle
+""",
+    # VXLAN VNI bindings (universality): L3VNI 50000 Down -> _d_nve_vni_health fires (VRF stranded).
+    "show nve vni": """\
+Interface VNI      Multicast-group   State Mode Type [BD/VRF]
+nve1      10010    225.1.1.10        Up    CP   L2 [10]
+nve1      50000    n/a               Down  CP   L3 [vrf-prod]
+""",
+    # CoPP drop state (universality): a USER-defined CoPP class (MGMT-RATE-LIMIT) is actively dropping (violated
+    # 4521) -> _d_copp_drops fires (the operator's own policy discarding). The NX-OS default strict-profile
+    # class-critical shows a CUMULATIVE violated counter (9999, normal microburst accumulation over uptime) and
+    # must stay SILENT -- a single lifetime counter cannot prove a flood, so default-profile copp-system-* classes
+    # are not single-sample findings (the DETEC-01 cry-wolf fix).
+    "show policy-map interface control-plane": """\
+Control Plane
+
+  Service-policy input: copp-policy-custom
+
+    class-map MGMT-RATE-LIMIT (match-any)
+      police cir 36000 kbps bc 250 ms
+      module 1:
+        conformed 177446058 bytes,
+          5-min offered rate 3 bytes/sec
+        violated 4521 bytes,
+          5-min violate rate 12 bytes/sec
+    class-map copp-system-p-class-critical (match-any)
+      police cir 680 kbps bc 250 ms
+      module 1:
+        conformed 88231005 bytes,
+        violated 9999 bytes,
+""",
     "show interface status": """\
 --------------------------------------------------------------------------------
 Port          Name               Status    Vlan      Duplex  Speed   Type
@@ -423,12 +829,40 @@ Interface        Role Sts Cost      Prio.Nbr Type
 ---------------- ---- --- --------- -------- ----
 Po1              Desg FWD 1         128.4096 P2p
 """,
+    # core1.lab is an assessed device (in scan); wan-edge-rtr1.lab is an INFRA router (Capabilities: Router)
+    # NOT in the inventory -> undocumented 'shadow' infrastructure -> _d_shadow_infra fires. The CDP-speaking
+    # IP phone (Host Phone) and access point (Trans-Bridge) are EDGE devices and must be IGNORED (no cry-wolf).
     "show cdp neighbors detail": """\
 ----------------------------------------
 Device ID: core1.lab
   IP address: 10.0.99.1
 Platform: cisco WS-C3850-24T,  Capabilities: Router Switch
 Interface: port-channel1,  Port ID (outgoing port): Port-channel1
+----------------------------------------
+Device ID: wan-edge-rtr1.lab
+  IP address: 10.0.250.1
+Platform: cisco ASR1001-X,  Capabilities: Router
+Interface: Ethernet1/47,  Port ID (outgoing port): GigabitEthernet0/0/1
+----------------------------------------
+Device ID: SEP00112233AABB
+  IP address: 10.0.40.20
+Platform: Cisco IP Phone 8845,  Capabilities: Host Phone
+Interface: Ethernet1/20,  Port ID (outgoing port): Port 1
+----------------------------------------
+Device ID: AP-floor3-01
+  IP address: 10.0.50.30
+Platform: cisco AIR-AP2802I-B-K9,  Capabilities: Trans-Bridge
+Interface: Ethernet1/30,  Port ID (outgoing port): GigabitEthernet0
+""",
+    # NTP clock-sync STATE (NX-OS): a '*'-selected peer at stratum 2 -> core2 is SYNCHRONIZED -> _d_ntp_sync
+    # stays SILENT for core2 (proves the detector does not over-fire on a healthy clock).
+    "show ntp peer-status": """\
+Total peers : 2
+* - selected for sync, + - peer mode(active), - - peer mode(passive), = - polled in client mode
+remote               local                st  poll reach delay   vrf
+-------------------------------------------------------------------------------
+*10.255.0.254        10.255.0.7           2   16   377   0.00107 default
+=127.127.1.0         10.255.0.7           8   16   377   0.00000 default
 """,
     "show mac address-table": """\
 Legend:
@@ -486,6 +920,142 @@ Load average:   1 minute: 0.28   5 minutes: 0.31   15 minutes: 0.32
 Processes   :   720 total, 1 running
 CPU states  :   3.5% user,   4.1% kernel,   92.4% idle
 Memory usage:   16400932K total,   7322120K used,   9078812K free
+""",
+    # Cisco ACI (universality, JSON-ingestion channel): core2 stands in as the APIC query host for an offline
+    # APIC export (moquery -o json). faultInst has TWO raised+unacked critical faults (F1394 fabric port down,
+    # F0321 cluster degraded) -> _d_aci_critical_faults FIRES on 2; the minor fault (F1234) and the ACKED major
+    # (F3083) prove the severity+ack filter stays silent. fabricNode has a decommissioned ghost (leaf-102-OLD)
+    # -> _d_aci_node_not_active FIRES on 1 (the two active nodes stay silent). fabricHealthTotal cur=82 (<90)
+    # -> _d_aci_fabric_health_degraded FIRES. Schema grounded in the APIC REST/faults guides (docs/arch-wave).
+    "moquery -c faultInst": """\
+{
+  "totalCount": "4",
+  "imdata": [
+    {"faultInst": {"attributes": {"code": "F1394", "severity": "critical", "lc": "raised", "ack": "no", "domain": "infra", "cause": "interface-physical-down", "dn": "topology/pod-1/node-101/sys/phys-[eth1/49]/phys/fault-F1394", "descr": "Port is down, reason:sfp-missing, used by:Fabric"}}},
+    {"faultInst": {"attributes": {"code": "F0321", "severity": "critical", "lc": "raised", "ack": "no", "domain": "infra", "cause": "cluster-health-degraded", "dn": "topology/pod-1/node-1/av/fault-F0321", "descr": "APIC cluster is degraded: leadership diverged"}}},
+    {"faultInst": {"attributes": {"code": "F1234", "severity": "minor", "lc": "raised", "ack": "no", "domain": "tenant", "cause": "config-drift", "dn": "topology/pod-1/node-102/fault-F1234", "descr": "Minor config drift (must stay silent)"}}},
+    {"faultInst": {"attributes": {"code": "F3083", "severity": "major", "lc": "raised", "ack": "yes", "domain": "infra", "cause": "known-accepted", "dn": "topology/pod-1/node-204/fault-F3083", "descr": "Acknowledged major fault (must stay silent)"}}}
+  ]
+}
+""",
+    "moquery -c fabricNode": """\
+{
+  "totalCount": "3",
+  "imdata": [
+    {"fabricNode": {"attributes": {"dn": "topology/pod-1/node-101", "id": "101", "name": "leaf-101", "role": "leaf", "model": "N9K-C93180YC-FX", "serial": "FDO12345ABC", "version": "n9000-16.0(5h)", "fabricSt": "active", "adSt": "on"}}},
+    {"fabricNode": {"attributes": {"dn": "topology/pod-1/node-204", "id": "204", "name": "spine-204", "role": "spine", "model": "N9K-C9336C-FX2", "serial": "FDO99999XYZ", "version": "n9000-16.0(5h)", "fabricSt": "active", "adSt": "on"}}},
+    {"fabricNode": {"attributes": {"dn": "topology/pod-1/node-102", "id": "102", "name": "leaf-102-OLD", "role": "leaf", "model": "N9K-C93180YC-EX", "serial": "FDO55555OLD", "version": "n9000-15.2(7g)", "fabricSt": "decommissioned", "adSt": "off"}}}
+  ]
+}
+""",
+    "moquery -c fabricHealthTotal": """\
+{
+  "totalCount": "1",
+  "imdata": [
+    {"fabricHealthTotal": {"attributes": {"dn": "topology/HDfabricOverallHealth5min-0", "cur": "82", "twScore": "82", "maxSev": "critical"}}}
+  ]
+}
+""",
+    # Cisco ACI logical inventory (move-group scoping): fvCtx = the VRFs/routing contexts. legacy-vrf has
+    # pcEnfPref=unenforced (contract enforcement OFF -> default-permit between all its EPGs) -> the segmentation
+    # posture detector _d_aci_vrf_unenforced FIRES; the enforced prod-vrf is the healthy companion (silent).
+    "moquery -c fvCtx": """\
+{
+  "totalCount": "2",
+  "imdata": [
+    {"fvCtx": {"attributes": {"name": "prod-vrf", "dn": "uni/tn-PROD/ctx-prod-vrf", "pcEnfPref": "enforced", "pcEnfDir": "ingress"}}},
+    {"fvCtx": {"attributes": {"name": "legacy-vrf", "dn": "uni/tn-LEGACY/ctx-legacy-vrf", "pcEnfPref": "unenforced", "pcEnfDir": "ingress"}}}
+  ]
+}
+""",
+    # Cisco ACI logical CENSUS (move-group-scoping inventory -- pure facts, no detector): the tenants, bridge
+    # domains and EPGs are the migration move-group units. Published into snap['aci'] for the deliverables /
+    # any future wave-planner; not a broken-state, so it never fires a finding.
+    "moquery -c fvTenant": """\
+{
+  "totalCount": "3",
+  "imdata": [
+    {"fvTenant": {"attributes": {"name": "PROD", "dn": "uni/tn-PROD"}}},
+    {"fvTenant": {"attributes": {"name": "LEGACY", "dn": "uni/tn-LEGACY"}}},
+    {"fvTenant": {"attributes": {"name": "common", "dn": "uni/tn-common"}}}
+  ]
+}
+""",
+    "moquery -c fvBD": """\
+{
+  "totalCount": "2",
+  "imdata": [
+    {"fvBD": {"attributes": {"name": "prod-bd", "dn": "uni/tn-PROD/BD-prod-bd", "unicastRoute": "yes", "arpFlood": "no"}}},
+    {"fvBD": {"attributes": {"name": "legacy-bd", "dn": "uni/tn-LEGACY/BD-legacy-bd", "unicastRoute": "no", "arpFlood": "yes"}}}
+  ]
+}
+""",
+    "moquery -c fvAEPg": """\
+{
+  "totalCount": "3",
+  "imdata": [
+    {"fvAEPg": {"attributes": {"name": "web-epg", "dn": "uni/tn-PROD/ap-app/epg-web-epg"}}},
+    {"fvAEPg": {"attributes": {"name": "db-epg", "dn": "uni/tn-PROD/ap-app/epg-db-epg"}}},
+    {"fvAEPg": {"attributes": {"name": "legacy-epg", "dn": "uni/tn-LEGACY/ap-legacy/epg-legacy-epg"}}}
+  ]
+}
+""",
+    # MULTI-VENDOR (Arista EOS, universality): core2 ALSO stands in as an Arista EOS spine exporting
+    # 'show mlag | json' -- the FIRST non-Cisco vendor axis, proving the engine assesses ANY vendor's core
+    # redundancy construct, not just Cisco. MLAG is Arista's dual-active primitive (the analogue of Cisco vPC).
+    # This domain is CONFIGURED (state active) but DEGRADED: configSanity 'inconsistent' (the analogue of a vPC
+    # Type-1 consistency failure -- SUSPENDS the affected VLANs) AND 2 Inactive member ports -> the detector
+    # _d_arista_mlag_degraded FIRES end-to-end. A healthy 'consistent' domain, the transient 'connecting'
+    # bring-up state, and a 'disabled' (not-configured) box stay SILENT -- proved in tests/test_arista.py.
+    "show mlag": """\
+{
+  "state": "active",
+  "negStatus": "connected",
+  "peerLinkStatus": "up",
+  "localIntfStatus": "up",
+  "configSanity": "inconsistent",
+  "peerLink": "Port-Channel1000",
+  "peerAddress": "10.255.0.8",
+  "domainId": "MLAG-DC1",
+  "reloadDelay": 300,
+  "portsErrdisabled": false,
+  "mlagPorts": {"Disabled": 0, "Active-partial": 0, "Inactive": 2, "Configured": 0, "Active-full": 46}
+}
+""",
+    # MULTI-VENDOR (Juniper Junos, universality): core2 ALSO stands in as a Juniper SRX chassis cluster exporting
+    # 'show chassis cluster status | display json' -- the SECOND non-Cisco vendor axis, proving the adapter
+    # pattern generalises beyond Arista (a different NOS, a different deeply-nested JSON dialect where every
+    # value is wrapped [{"data": "<v>"}]). RG0's secondary (node1) is at PRIORITY 0 -- it is configured into the
+    # cluster but NOT ready to accept traffic, so RG0 has no working standby (the SRX false-health trap, the
+    # analogue of a Cisco firewall failover pair with a Failed unit) -> _d_junos_chassis_cluster_degraded FIRES.
+    # A healthy primary+secondary pair and a standalone SRX stay SILENT -- proved in tests/test_juniper.py.
+    "show chassis cluster status": """\
+{"chassis-cluster-status": [
+  {"redundancy-group": [
+    {"redundancy-group-id": [{"data": "0"}], "device-stats": [
+      {"device-name": [{"data": "node0"}], "device-priority": [{"data": "100"}], "redundancy-group-status": [{"data": "primary"}], "preempt": [{"data": "no"}], "monitor-failures": [{"data": "None"}]},
+      {"device-name": [{"data": "node1"}], "device-priority": [{"data": "0"}], "redundancy-group-status": [{"data": "secondary"}], "preempt": [{"data": "no"}], "monitor-failures": [{"data": "None"}]}
+    ]}
+  ]}
+]}
+""",
+    # MULTI-VENDOR (Fortinet FortiGate, universality): core2 ALSO stands in as a FortiGate HA cluster exporting
+    # 'get system ha status' -- the THIRD non-Cisco vendor axis. The secondary (FGT-B) is OUT-OF-SYNC: its
+    # configuration checksum no longer matches the primary, so the standby holds a DIVERGENT ruleset and a
+    # failover would enforce the wrong policy (the firewall-HA config-present-but-broken trap, the analogue of a
+    # Cisco ASA failover pair with a stale standby) -> _d_fortigate_ha_degraded FIRES. A healthy all-in-sync
+    # cluster and a standalone FortiGate stay SILENT -- proved in tests/test_fortinet.py.
+    "get system ha status": """\
+HA Health Status: OK
+Model: FortiGate-100F
+Mode: HA A-P
+Group: 10
+Cluster Uptime: 45 days 3:14:22
+Configuration Status:
+  FGT-A(updated 2 seconds ago): in-sync
+  FGT-B(updated 9 seconds ago): out-of-sync
+Primary     : FGT-A, serial number FG100FTK00000001
+Secondary   : FGT-B, serial number FG100FTK00000002
 """,
 }
 
@@ -549,6 +1119,125 @@ interface GigabitEthernet0/3
 interface GigabitEthernet0/10
  description srv-backup
  switchport access vlan 30
+""",
+    # IPv6 first-hop security: access1 is OBSERVABLY dual-stack (an IPv6 SVI on Vlan10) with host-facing
+    # access ports (Gi0/2/3 vlan 10, Gi0/10 vlan 30) but NO RA-Guard -> _d_ipv6_fhs FIRES (rogue-RA gateway
+    # hijack, RFC 6104). build_ipv6_fhs reads the FULL run-config for the dual-stack signal; the FHS
+    # show-commands return a defined-but-UNATTACHED policy (which does NOT protect). core1/core2 are IPv4-only
+    # / no full run-config -> {} (silent), so EXACTLY ONE switch fires.
+    "show running-config": """\
+!
+hostname access1
+!
+ipv6 unicast-routing
+!
+interface GigabitEthernet0/1
+ description uplink-to-core1
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+interface GigabitEthernet0/2
+ description ap-floor1
+ switchport access vlan 10
+ switchport mode access
+ spanning-tree portfast
+interface GigabitEthernet0/3
+ description phone-201
+ switchport access vlan 10
+ switchport mode access
+interface GigabitEthernet0/10
+ description srv-backup
+ switchport access vlan 30
+ switchport mode access
+interface Vlan10
+ description USERS
+ ip address 10.0.10.4 255.255.255.0
+ ipv6 address 2001:DB8:10::4/64
+interface Vlan30
+ description SERVERS
+ ip address 10.0.30.4 255.255.255.0
+!
+line vty 0 4
+ transport input ssh
+!
+""",
+    "show ipv6 nd raguard policy": """\
+RA guard configured policies:
+
+Policy default configuration:
+  device-role host
+""",
+    "show ipv6 dhcp guard policy": """\
+DHCP guard configured policies:
+
+Dhcp guard policy: default
+  Device Role: dhcp client
+""",
+    # ACCESS-EDGE port-security DETAIL: Gi0/3 (phone port) is ERR-DISABLED by a shutdown-mode violation ->
+    # Port Status 'Secure-shutdown' -> _d_port_security_errdisable FIRES, naming the offending MAC. Gi0/2 is a
+    # clean Secure-up port; Gi0/10 is RESTRICT mode with a nonzero violation COUNT but stays Secure-up -> must
+    # NOT fire (the detector keys on the shutdown STATE, not the counter).
+    "show port-security interface": """\
+Port: GigabitEthernet0/2
+Port Security              : Enabled
+Port Status                : Secure-up
+Violation Mode             : Shutdown
+Aging Time                 : 0 mins
+Aging Type                 : Absolute
+SecureStatic Address Aging : Disabled
+Maximum MAC Addresses      : 2
+Total MAC Addresses        : 1
+Configured MAC Addresses   : 0
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : aabb.ccdd.ee01:10
+Security Violation Count   : 0
+
+Port: GigabitEthernet0/3
+Port Security              : Enabled
+Port Status                : Secure-shutdown
+Violation Mode             : Shutdown
+Aging Time                 : 0 mins
+Aging Type                 : Absolute
+SecureStatic Address Aging : Disabled
+Maximum MAC Addresses      : 1
+Total MAC Addresses        : 1
+Configured MAC Addresses   : 0
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : 0011.22aa.0099:10
+Security Violation Count   : 3
+
+Port: GigabitEthernet0/10
+Port Security              : Enabled
+Port Status                : Secure-up
+Violation Mode             : Restrict
+Aging Time                 : 0 mins
+Aging Type                 : Absolute
+SecureStatic Address Aging : Disabled
+Maximum MAC Addresses      : 1
+Total MAC Addresses        : 1
+Configured MAC Addresses   : 0
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : aabb.ccdd.ee10:30
+Security Violation Count   : 17
+""",
+    # Storm-control action audit: Gi0/2 has a configured broadcast/multicast threshold but action 'None' -- a
+    # storm is dropped SILENTLY -> _d_storm_control_action fires. Gi0/3 is correctly actioned (Shutdown/Trap)
+    # and Gi0/1 has no storm-control at all (absent) -> both stay silent (coverage-honest).
+    "show storm-control": """\
+Key: U - Unicast, B - Broadcast, M - Multicast
+Interface Filter State   Upper       Lower       Current    Action    Type
+--------- ------------- ----------- ----------- ---------- --------- ----
+Gi0/2     Forwarding    5.00%       5.00%       0.12%      None      B
+Gi0/2     Forwarding    5.00%       5.00%       0.00%      None      M
+Gi0/3     Forwarding    2.00%       2.00%       0.05%      Shutdown  B
+Gi0/3     Forwarding    2.00%       2.00%       0.00%      Trap      M
+""",
+    # NTP clock-sync STATE (IOS): access1's clock IS synchronized (stratum 3) -> _d_ntp_sync stays SILENT for
+    # access1 (proves the detector fires only on the genuinely-unsynchronized core1).
+    "show ntp status": """\
+Clock is synchronized, stratum 3, reference is 10.0.10.2
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+reference time is E1A2B3C4.00000000 (12:00:00.000 UTC Mon Jun 1 2026)
+clock offset is 0.5000 msec, root delay is 1.20 msec
 """,
     "show spanning-tree": """\
 VLAN0010
@@ -639,6 +1328,39 @@ Log Buffer (4096 bytes):
 *May 30 22:14:09.551: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: root] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
 *May 30 22:14:16.808: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: root] [Source: 10.0.99.77] [localport: 22] [Reason: Login Authentication Failed]
 *Jun  1 08:00:09.121: %SYS-5-CONFIG_I: Configured from console by svc-audit on vty0 (10.0.99.50)
+""",
+# IPv6 routing plane (dual-stack reachability): access1 is already dual-stack (ipv6 unicast-routing + IPv6 SVIs
+# in its run-config). It runs OSPFv3 and IPv6 BGP. _d_ipv6_routing_adjacency FIRES on TWO observed stuck
+# adjacencies: OSPFv3 neighbor 10.0.0.9 is EXSTART (MTU-mismatch stuck -> no IPv6 LSDB sync) and IPv6 BGP peer
+# 2001:DB8:0:9::9 is Active (never Established -> no IPv6 routes). The healthy companions prove coverage-honest
+# silence: 10.0.0.1 FULL/DR and 10.0.0.7 2WAY/DROTHER (2WAY is the INTENTIONAL DROTHER<->DROTHER steady state,
+# must NOT fire) and IPv6 BGP peer 2001:DB8:0:1::1 with PfxRcd 12 (Established). 'show ipv6 route summary' is the
+# routing-active GATE (census only -- never a firing signal). core1/core2 emit none of these -> {} (silent), so
+# EXACTLY ONE switch fires.
+"show ipv6 route summary": """\
+IPv6 Routing Table - default - 8 entries
+Route Source    Networks    Subnets     Overhead    Memory (bytes)
+connected       4           0           384         576
+local           4           0           384         576
+static          0           0           0           0
+ospf 1          1           0           96          144
+bgp 65001       1           0           96          144
+Total           10          0           960         1440
+""",
+"show ospfv3 neighbor": """\
+            OSPFv3 1 address-family ipv6 (router-id 10.0.0.4)
+
+Neighbor ID     Pri   State           Dead Time   Interface ID    Interface
+10.0.0.1          1   FULL/DR         00:00:37    16              Vlan10
+10.0.0.7          1   2WAY/DROTHER    00:00:35    18              Vlan10
+10.0.0.9          0   EXSTART/  -     00:00:33    20              GigabitEthernet0/1
+""",
+"show bgp ipv6 unicast summary": """\
+BGP router identifier 10.0.0.4, local AS number 65001
+BGP table version is 15, main routing table version 15
+Neighbor                  V         AS  MsgRcvd  MsgSent  TblVer  InQ OutQ Up/Down  State/PfxRcd
+2001:DB8:0:1::1           4      65001     3421     3418      15    0    0 1d02h          12
+2001:DB8:0:9::9           4      65009        0        0       0    0    0 never    Active
 """,
 }
 

@@ -26,6 +26,7 @@ from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
+from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,12 @@ def _workflow_facts(snap: dict) -> dict:
             "sc": sc, "sc_by": sc_by, "by_wave": by_wave, "csum": csum,
             "coll_present": coll_present, "blind": blind,
             "brief": brief, "lc": lc, "rem": rem, "notready": notready, "pilot": pilot,
-            "n_devices": len(_as_dict(snap.get("devices")))}
+            # SSOT: read the canonical inventory count first (the same source n_collected reads), with
+            # the local len(devices) only as a pre-brief fallback — else "N collected of M inventoried"
+            # mixes a canonical n_collected with a recount and can render "253 collected of 3 inventoried".
+            "n_devices": (((_as_dict(snap.get("executive_brief")).get("scale")) or {}).get("n_devices")
+                          or len(_as_dict(snap.get("devices")))),
+            "n_collected": ((_as_dict(snap.get("executive_brief")).get("scale")) or {}).get("n_collected")}
 
 
 def _verdict(f: dict) -> tuple:
@@ -143,9 +149,12 @@ def _verdict(f: dict) -> tuple:
     if n_high:
         conds.append(f"{n_high} High punch-list item(s) should be remediated or explicitly "
                      "risk-accepted before the go/no-go gate.")
+    if _as_int(f["lc"].get("n_past_ldos")):
+        conds.append(f"{f['lc']['n_past_ldos']} device(s) are past last-day-of-support (LDoS) — no "
+                     "TAC escalation path during the windows; stage spares or replace first.")
     if _as_int(f["lc"].get("n_past_eos")):
-        conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-support — no TAC escalation "
-                     "path during the windows; stage spares or replace first.")
+        conds.append(f"{f['lc']['n_past_eos']} device(s) are past end-of-sale (EoS), support window "
+                     "closing — plan a refresh before they reach last-day-of-support.")
     if n_crit or f["notready"]:
         return "HOLD", conds
     if conds:
@@ -173,7 +182,8 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                        "(pip install python-docx to enable the plan-of-record deliverable).")
         return
 
-    snap = snap_dict or {}
+    snap = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})   # one bad device byte (noncharacter/surrogate) must not abort the docx
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
     NAVY = RGBColor(0x1F, 0x38, 0x64)
     GREY = RGBColor(0x59, 0x59, 0x59)
     RED = RGBColor(0xB0, 0x2A, 0x1E)
@@ -204,7 +214,8 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{f['n_devices']} devices in evidence scope  ·  script {snap.get('script_version', '')}"
+                 f"{f.get('n_collected') if f.get('n_collected') is not None else f['n_devices']} collected of "
+                 f"{f['n_devices']} inventoried  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     status = doc.add_paragraph(); status.alignment = WD_ALIGN_PARAGRAPH.CENTER
     st = status.add_run("DRAFT PLAN OF RECORD — the verdict and every gate below are evidence-led "
@@ -224,6 +235,7 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     add_document_control(
         doc, document="Engagement Workflow & Plan of Record", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="The delivery engineer running the engagement, the customer's project sponsor and "
                  "network owner (gate signatories), and the project / change manager who owns the "
                  "calendar and the RAID cadence.",
@@ -375,7 +387,9 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
             pilot_mark = " (PILOT)" if f["pilot"] and f["pilot"].get("group") == g else ""
             rows.append((str(g) + pilot_mark, len(_as_list(r.get("switches"))),
                          _as_int(r.get("endpoints")), r.get("readiness") or "—",
-                         s.get("scenario") or "—",
+                         # the engine emits 'recommended_scenario' (every other consumer reads it); 'scenario' is a
+                         # key it never emits, so the §4.2 Scenario column was '—' for every wave (audit-4 #9)
+                         s.get("recommended_scenario") or "—",
                          (f"{hard} switch(es) / {_as_int(w.get('hard_cutover_endpoints'))} endpoint(s)"
                           if hard else "none"),
                          len(_as_list(f["by_wave"].get(g)))))
@@ -468,9 +482,9 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
             risks.append((i.get("severity"), i.get("title") or "—",
                           "punch-list: " + (i.get("category") or "—"),
                           "Remediate before the owning wave's T-14 checkpoint"))
-    if _as_int(f["lc"].get("n_past_eos")):
-        risks.append(("High", f"{f['lc']['n_past_eos']} device(s) past end-of-support in the "
-                              "migration path", "lifecycle risk",
+    if _as_int(f["lc"].get("n_past_ldos")):
+        risks.append(("High", f"{f['lc']['n_past_ldos']} device(s) past last-day-of-support (LDoS) "
+                              "in the migration path", "lifecycle risk",
                       "Stage spares / replace before their wave; no TAC path otherwise"))
     hard_total = sum(_as_int(w.get("hard_cutover_endpoints")) for w in f["ws_by"].values())
     if hard_total:

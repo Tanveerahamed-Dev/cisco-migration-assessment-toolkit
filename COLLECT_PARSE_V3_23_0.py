@@ -285,7 +285,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 'from dataclasses import dataclass, field' moved to cisco_toolkit.analyze with
 # ScoringConfig (PHASE 2.7 step 10) - the monolith's last dataclass user.
 from datetime import datetime
-from typing import Dict, List   # Optional dropped step 28 (build_interfaces moved); Tuple step 27
+from typing import Callable, Dict, List, NamedTuple, Optional   # Callable/NamedTuple/Optional: the Tier-2 #8 axis registry
 
 # 'from openpyxl.cell.cell import MergedCell' dropped (step 26): its only user,
 # append_interface_rows, moved to cisco_toolkit.excel.
@@ -315,6 +315,7 @@ from cisco_toolkit import __version__
 # ScoringConfig / SCORING / _host_role are NOT re-exported anymore (step 15 moved their last
 # monolith users, the scoring compute_*); _health_band stays (write_health_scores_sheet uses it).
 from cisco_toolkit.analyze import (
+    vlan_inventory,        # NEW: canonical VLAN inventory — single source of truth for the dashboards' VLAN count
     compute_move_groups,   # _health_band dropped (step 23): write_health_scores_sheet moved to excel
     # compute_topology_links / compute_findings dropped (step 22): their last monolith users
     # (write_topology_sheet / write_findings_sheet) moved to excel.
@@ -325,8 +326,8 @@ from cisco_toolkit.analyze import (
     compute_score_sensitivity, compute_calibration_report, compute_migration_readiness,
     compute_protocol_health,   # _poe_device_util / _physical_uplink_index dropped (step 25): phy writer moved
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
-    stp_root_findings, compute_migration_punchlist,   # NEW-V3.23.62 / .63 (STP root analysis + consolidated punch-list)
-    compute_hostname_mismatches,                       # NEW-V3.23.68 (inventory-name vs configured-hostname)
+    stp_root_findings, compute_migration_punchlist, compute_framework_coverage,   # NEW-V3.23.62/.63 + W2-3 (framework-mapping matrix)
+    compute_hostname_mismatches, reconcile_cdp_neighbor_names,   # NEW-V3.23.68 + audit-5 #1 (split-node reconcile)
     compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
     compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
     compute_flow_paths,                                # NEW-V3.23.126 (representative end-to-end flow paths; workbook/runbook twin of the Flow Simulator)
@@ -350,11 +351,14 @@ from cisco_toolkit.analyze import (
     compute_device_dossiers,                           # NEW-V3.23.172 (per-asset compound-risk synthesis -- the Device Risk Register)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
+    compute_cable_map,                                 # NEW: EDA-style physical cable-map SSOT (explorer + webapp cable-map views)
 )
+from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
-# build); only _CISCO_ERRORS stays (platform detection reuses it).
-from cisco_toolkit.cmdio import _CISCO_ERRORS
+# build); only _CISCO_ERRORS stays (platform detection reuses it). Plan A / Tier-1 #3
+# adds the zero-parse yield ledger (reset at run start, published as snap['parse_yield']).
+from cisco_toolkit.cmdio import _CISCO_ERRORS, parse_yield_report, reset_parse_ledger
 # NEW-V3.23.30 (PHASE 2.7 step 20): the Excel layer's shared sheet/header helpers; imported
 # back so the write_* sheet builders + main()'s template-fill keep working unchanged.
 from cisco_toolkit.excel import (
@@ -368,6 +372,7 @@ from cisco_toolkit.excel import (
     write_health_scores_sheet, write_score_sensitivity_sheet, write_calibration_sheet,  # step 23 (+calibration V3.23.47)
     write_nat_sheet,   # NAT inventory V3.23.50
     write_security_sheet,   # Security Posture (CIS-aligned) V3.23.59
+    write_framework_coverage_sheet,   # Framework Coverage (CIS/NIST/PCI/STIG mapping over existing checks) W2-3
     write_config_hygiene_sheet,   # Config Hygiene (undefined refs / unused structures) V3.23.61
     write_stp_roots_sheet,   # STP Root Bridges (accidental root / gateway misalignment) V3.23.62
     write_punchlist_sheet,   # Migration Punch-List (consolidated, severity-ranked) V3.23.63
@@ -381,6 +386,7 @@ from cisco_toolkit.excel import (
     write_migration_readiness_sheet,
     write_interface_health_sheet, write_security_posture_sheet, write_routing_adjacency_sheet,  # step 24
     write_causality_chains_sheet, write_failure_impact_sheet, write_link_centrality_sheet,      # step 24 (+Link Centrality V3.23.88)
+    write_cabling_schedule_sheet,                                                               # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
     write_wave_sequencing_sheet,                                                                # NEW-V3.23.89 (cutover sequencing)
     write_endpoint_intelligence_sheet,                          # NEW-V3.23.95 (endpoint vendor + class)
     write_endpoint_dependencies_sheet,                          # NEW-V3.23.96 (clusters / dependencies)
@@ -392,6 +398,12 @@ from cisco_toolkit.excel import (
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
     write_validation_plan_sheet,                                 # NEW-V3.23.143 (per-wave post-cutover validation checklist)
     write_golden_drift_sheet,                                    # NEW-V3.23.146 (per-device config drift vs baseline)
+    write_feature_compliance_sheet,                             # roadmap I2 (per-feature ConfigCompliance decomposition)
+    write_acl_shadow_sheet,                                     # roadmap G1 (offline ACL line-reachability / shadow proof)
+    write_external_reconcile_sheet,                            # roadmap B (declared source-of-truth vs collected evidence)
+    write_capture_integrity_sheet,                             # roadmap K1 (truncation / pager / CLI-error guard)
+    write_whatif_sheet,                                        # roadmap G4 (single-snapshot failure-injection)
+    write_path_intents_sheet,                                  # roadmap G3 (named segmentation/path intents)
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
@@ -406,6 +418,16 @@ from cisco_toolkit.excel import (
     write_physical_health_sheet, write_flow_trace_sheet, write_flow_paths_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
 )
+from cisco_toolkit.feature_compliance import compute_feature_compliance   # roadmap I2 (per-feature ConfigCompliance)
+from cisco_toolkit.aclcheck import compute_filter_line_reachability       # roadmap G1 (offline ACL shadow proof)
+from cisco_toolkit.external_import import read_inventory_file, reconcile_external   # roadmap B (external SoT reconcile)
+# roadmap K1 guard, widened Tier-2 #6: the entry feeds the STREAMING path API (all captures);
+# the in-memory dict API (compute_capture_integrity) remains the module's direct-use surface.
+from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_paths,
+                                             load_capture_meta, CAPTURE_META_FILENAME)
+from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
+from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
+from cisco_toolkit.assertions import evaluate_pack                      # roadmap A1/H1/H2 (checks-as-data)
 # NEW-V3.23.37-.38 (PHASE 2.7 steps 27-28): the model-construction layer - the per-device
 # InterfaceData builder + switch-level DevicePhysical / switch-identity records + global-ARP
 # enrichment. Homed in cisco_toolkit/build.py; imported back so main() keeps calling them.
@@ -416,7 +438,19 @@ from cisco_toolkit.build import (
     read_run_config,   # NEW-V3.23.146 (raw running-config text for golden-config drift)
     read_syslog_log,   # NEW-V3.23.164 (raw 'show logging' text for syslog intelligence)
     build_platform_metrics,   # NEW-V3.23.167 (CPU/memory/system-resources facts for platform health)
-    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_routing_neighbors,
+    build_routes, inscope_subnets, scope_routes, build_bgp_received, build_nat, build_security, build_config_hygiene, build_stp_roots, build_vpc, build_fhrp_detail, build_overlay, build_copp, build_mpls, build_routing_neighbors,
+    build_lisp, build_cts, build_dmvpn, build_crypto, build_bfd, build_ipv6_nd, build_ipv6_routing,   # universal arch coverage
+    build_aci,   # Cisco ACI (APIC JSON-ingestion channel)
+    build_sdwan,   # Cisco Catalyst SD-WAN (vManage JSON-ingestion channel)
+    build_firewall,   # Cisco firewall (ASA / Secure Firewall Threat Defense) HA -- SSH show-text channel
+    build_ise,   # Cisco ISE (Identity Services Engine deployment) -- JSON controller-REST channel
+    build_fmc,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
+    build_arista,   # MULTI-VENDOR: Arista EOS MLAG -- the FIRST non-Cisco vendor channel (device-native JSON)
+    build_juniper,   # MULTI-VENDOR: Juniper Junos SRX chassis-cluster HA -- the SECOND non-Cisco vendor channel ('| display json')
+    build_cloud,   # PUBLIC CLOUD: AWS security-group exposure -- the FIRST cloud-domain channel (account-as-device JSON export)
+    build_fortigate,   # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -- the THIRD non-Cisco vendor channel ('get system ha status')
+    build_mroute,   # CISCO DEPTH: multicast RPF integrity -- (S,G) Null incoming-interface from 'show ip mroute'
+    build_pim, build_ipv6_fhs, build_ntp, build_port_security_detail, build_storm_control, build_qos_runtime, build_undocumented_neighbors,
     build_igmp_groups, build_igmp_queriers, build_ptp, build_acl_hits,   # NEW-V3.23.102 (multicast / PTP / ACL-hit collection)
     build_redistribution,
 )
@@ -424,8 +458,12 @@ from cisco_toolkit.build import (
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
-from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_workbook,
-                                write_campaign_workbook, redact_snapshot)   # NEW-V3.23.145 (campaign trend)
+from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_explorer, write_diff_workbook,
+                                write_campaign_workbook, redact_snapshot,
+                                redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
+                                redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
+from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
+from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -480,6 +518,41 @@ COMMANDS_NXOS = [
     "show port-channel summary",
     "show etherchannel summary",
     "show vpc",                          # NEW-V3.23.125 (vPC / MLAG peer confirmation for the flow simulator)
+    "show nve peers",                    # VXLAN-EVPN VTEP peer state -> build_overlay / _d_nve_peer_health
+    "show bgp l2vpn evpn summary",       # BGP-EVPN control plane (MAC/IP route exchange) -> _d_evpn_rr_health
+    "show nve vni",                      # VXLAN VNI (VLAN/VRF<->VNI) binding state -> _d_nve_vni_health
+    "show policy-map interface control-plane",  # CoPP drop counters (NX-OS) -> build_copp / _d_copp_drops
+    "show mpls ldp neighbor",            # SP/MPLS: LDP transport-underlay session state -> build_mpls / _d_mpls_ldp_health
+    "show bgp vpnv4 unicast summary",    # SP/MPLS: L3VPN VPNv4 PE-PE control-plane -> build_mpls / _d_mpls_l3vpn_health
+    "show mpls l2transport vc",          # SP/MPLS: L2VPN/AToM pseudowire VC state -> build_mpls / _d_mpls_l2vpn_health
+    "show bfd neighbors",                # BFD fast-failover (both platforms) -> build_bfd / _d_bfd_session_health
+    "show ipv6 route summary",           # IPv6 routing-active gate (both platforms) -> build_ipv6_routing
+    "show bgp ipv6 unicast summary",     # IPv6 BGP peers (both platforms) -> build_ipv6_routing / _d_ipv6_routing_adjacency
+    "moquery -c faultInst",              # Cisco ACI (APIC JSON export) -> build_aci / _d_aci_critical_faults
+    "moquery -c fabricNode",             # Cisco ACI fabric inventory (APIC JSON) -> build_aci / _d_aci_node_not_active
+    "moquery -c fabricHealthTotal",      # Cisco ACI fabric health score (APIC JSON) -> build_aci / _d_aci_fabric_health_degraded
+    "moquery -c fvCtx",                  # Cisco ACI VRF inventory + enforcement (APIC JSON) -> build_aci / _d_aci_vrf_unenforced
+    "moquery -c fvTenant",               # Cisco ACI tenant census (APIC JSON) -> build_aci (move-group scoping)
+    "moquery -c fvBD",                   # Cisco ACI bridge-domain census (APIC JSON) -> build_aci (move-group scoping)
+    "moquery -c fvAEPg",                 # Cisco ACI EPG census (APIC JSON) -> build_aci (finest move-group unit)
+    "show failover",                     # Cisco firewall (ASA / Secure Firewall Threat Defense) HA -> build_firewall / _d_firewall_ha_degraded
+    "show resource usage",               # Cisco firewall (ASA/FTD) resource capacity -> build_firewall / _d_firewall_resource_exhaustion
+    "api/v1/deployment/node",            # Cisco ISE (Identity Services Engine) deployment nodes -> build_ise / _d_ise_*
+    "ers/config/node",                   # Cisco ISE ERS-channel fallback export -> build_ise (registered so --no-collect re-reads a collected ERS-only cluster, not 'not-observed')
+    "api/fmc_config/v1/devices/devicerecords",            # Cisco FMC device inventory + health -> build_fmc / _d_fmc_device_disconnected
+    "api/fmc_config/v1/devicehapairs/ftddevicehapairs",   # Cisco FMC FTD HA pairs -> build_fmc / _d_ftd_ha_degraded
+    "api/fmc_config/v1/deployment/deployabledevices",     # Cisco FMC staged-deploy state -> build_fmc / _d_fmc_deployment_pending
+    "api/fmc_config/v1/integration/fmchastatuses",        # Cisco FMC manager-HA -> build_fmc / _d_fmc_manager_ha_degraded
+    "api/fmc_platform/v1/info/serverversion",             # Cisco FMC server version (vs managed FTD) -> build_fmc / _d_fmc_version_inversion
+    "show policy-map interface",         # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
+    "show ip pim rp mapping",            # PIM-SM learned RP -> build_pim / _d_pim_rp_health
+    "show ip pim neighbor",              # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
+    "show ipv6 nd raguard policy",       # IPv6 first-hop security: RA-Guard -> build_ipv6_fhs / _d_ipv6_fhs
+    "show ipv6 dhcp guard policy",       # IPv6 first-hop security: DHCPv6-Guard -> build_ipv6_fhs
+    "show ntp status",                   # NTP clock-sync STATE (IOS form) -> build_ntp / _d_ntp_sync
+    "show ntp peer-status",              # NTP clock-sync STATE (NX-OS peer table) -> build_ntp
+    "show port-security interface",      # access-edge port-security DETAIL (Secure-shutdown) -> build_port_security_detail / _d_port_security_errdisable
+    "show storm-control",                # storm-control action audit (toothless 'None') -> build_storm_control / _d_storm_control_action
     "show spanning-tree",                # NEW-V14.5 (confirmed per-VLAN STP state)
     "show spanning-tree blockedports",
     "show spanning-tree inconsistentports",
@@ -555,6 +628,32 @@ COMMANDS_IOS = [
     "show ip route",             # NEW-V14.2 wiring (per-SVI routing enrichment)
     "show vtp status",           # NEW-V14.2 wiring (VTP domain identity)
     "show standby brief",        # NEW-V14.2 wiring (gateway / HSRP behavior)
+    "show standby all",          # FHRP DETAIL (election/preempt/tracking) -> build_fhrp_detail / _d_fhrp_resilience
+    "show policy-map control-plane",  # CoPP drop counters (IOS / IOS-XE) -> build_copp / _d_copp_drops
+    "show mpls ldp neighbor",     # SP/MPLS: LDP transport-underlay session state -> build_mpls / _d_mpls_ldp_health
+    "show bgp vpnv4 unicast summary",  # SP/MPLS: L3VPN VPNv4 PE-PE control-plane -> build_mpls / _d_mpls_l3vpn_health
+    "show mpls l2transport vc",   # SP/MPLS: L2VPN/AToM pseudowire VC state -> build_mpls / _d_mpls_l2vpn_health
+    "show lisp session",  # universal arch coverage
+    "show cts environment-data",  # universal arch coverage
+    "show dmvpn",  # universal arch coverage
+    "show crypto session",  # universal arch coverage
+    "show bfd neighbors",  # universal arch coverage
+    "show ipv6 interface",  # universal arch coverage
+    "show ipv6 route summary",  # universal arch coverage
+    "show ospfv3 neighbor",  # universal arch coverage
+    "show ipv6 ospf neighbor",  # classic-IOS OSPFv3 form (build_ipv6_routing falls back to it; collect it or OSPFv3 is blind on classic IOS)
+    "show bgp ipv6 unicast summary",  # universal arch coverage
+    "dataservice/device/control/connections",  # Cisco Catalyst SD-WAN (vManage JSON) -> build_sdwan / _d_sdwan_control_connection_down
+    "dataservice/device",             # Cisco Catalyst SD-WAN device reachability (vManage JSON) -> build_sdwan / _d_sdwan_device_unreachable
+    "dataservice/device/counters",    # Cisco Catalyst SD-WAN OMP peer counters (vManage JSON) -> build_sdwan / _d_sdwan_omp_peer_down
+    "show policy-map interface",  # QoS RUNTIME egress queue/policer drops -> build_qos_runtime / _d_qos_runtime_drops
+    "show ip pim rp mapping",     # PIM-SM learned RP -> build_pim / _d_pim_rp_health
+    "show ip pim neighbor",       # PIM-SM neighbor adjacency (proof sparse-mode is live) -> build_pim
+    "show ipv6 nd raguard policy",  # IPv6 first-hop security: RA-Guard -> build_ipv6_fhs / _d_ipv6_fhs
+    "show ipv6 dhcp guard policy",  # IPv6 first-hop security: DHCPv6-Guard -> build_ipv6_fhs
+    "show ntp status",            # NTP clock-sync STATE (IOS form) -> build_ntp / _d_ntp_sync
+    "show port-security interface",  # access-edge port-security DETAIL (Secure-shutdown) -> build_port_security_detail / _d_port_security_errdisable
+    "show storm-control",         # storm-control action audit (toothless 'None') -> build_storm_control / _d_storm_control_action
     "show vrrp brief",           # NEW-V14.6 (VRRP gateways)
     "show glbp brief",           # NEW-V14.6 (GLBP gateways)
     "show ip mroute",            # NEW-V14.2 wiring (multicast info)
@@ -581,6 +680,29 @@ COMMANDS_IOS = [
     "show processes memory",          # NEW-V3.23.167 (processor-pool memory - platform health)
 ]
 
+# MULTI-VENDOR (Arista EOS): device-native JSON commands ('show ... | json'). Deliberately kept OFF the Cisco
+# live-collection lists (COMMANDS_NXOS/IOS) -- they are folded into the OFFLINE analysis union (the --no-collect
+# path) so a captured Arista 'show mlag' is read and assessed, WITHOUT making the Cisco collector issue
+# Arista-only commands. Live Arista collection (an arista_eos netmiko driver) is a follow-on; offline is the
+# universal entry point and needs only this.
+COMMANDS_ARISTA = [
+    "show mlag",                         # Arista MLAG (multi-chassis link agg) state -> build_arista / _d_arista_mlag_degraded
+    "show bgp evpn summary",             # Arista BGP-EVPN overlay control plane -> build_arista / _d_arista_evpn_degraded
+]
+# MULTI-VENDOR (Juniper Junos): device-native JSON via 'show ... | display json'. Same offline-only fold as
+# COMMANDS_ARISTA (kept off the Cisco live lists); a captured 'show chassis cluster status' is read and assessed.
+COMMANDS_JUNIPER = [
+    "show chassis cluster status",       # Juniper SRX chassis-cluster HA state -> build_juniper / _d_junos_chassis_cluster_degraded
+]
+# PUBLIC CLOUD (AWS): a cloud account is added as a 'device' (like the ACI/ISE/FMC controllers); its read-only
+# export drops into the SAME offline pipeline. Folded into the offline union only (no live collection here).
+COMMANDS_CLOUD = [
+    "aws ec2 describe-security-groups",  # AWS security-group exposure -> build_cloud / _d_cloud_sg_open_ingress
+]
+# MULTI-VENDOR (Fortinet FortiGate): CLI show-text, captured per-device; folded into the offline union only.
+COMMANDS_FORTINET = [
+    "get system ha status",              # FortiGate HA cluster-sync state -> build_fortigate / _d_fortigate_ha_degraded
+]
 COMMANDS_ALL = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
 
 # Interface regex constants moved to cisco_toolkit.textutils (PHASE 2.7 step 1);
@@ -732,6 +854,12 @@ _SLOW_CMDS = {"show running-config", "show cdp neighbors detail",
               "show interface trunk", "show interfaces trunk",
               "show interfaces", "show interface"}  # NEW-V15 (full counter dumps)
 
+# Plan A / Tier-2 #6: per-thread flag for the LAST send_cmd call — True when it fell back
+# to send_command_timing (prompt never confirmed => the capture's completeness is unproven).
+# collect() reads it after each command and persists the set as the _capture_meta.json
+# sidecar, so an offline re-analysis can still flag those captures `unverified_prompt`.
+_SEND_TRANSPORT = threading.local()
+
 def send_cmd(dev, cmd: str) -> str:
     # FIX (C2): prefer pattern-based send_command() (waits for the device prompt)
     # over send_command_timing(), which can return early/truncated output that is
@@ -739,12 +867,15 @@ def send_cmd(dev, cmd: str) -> str:
     # Fall back to the timing-based read only if the prompt pattern isn't matched,
     # so behaviour is no worse than before on edge cases.
     timeout = 300 if any(s in cmd for s in _SLOW_CMDS) else 120
+    _SEND_TRANSPORT.fallback = False
     try:
         return dev.send_command(cmd, read_timeout=timeout) or ""
     except Exception as e:
         logger.warning(f"Command '{cmd}' pattern-read failed ({e}); retrying timing-based")
         try:
-            return dev.send_command_timing(cmd, read_timeout=timeout) or ""
+            out = dev.send_command_timing(cmd, read_timeout=timeout) or ""
+            _SEND_TRANSPORT.fallback = True     # only a SUCCESSFUL timing read is an unverified capture
+            return out
         except Exception as e2:
             logger.warning(f"Command failed '{cmd}': {e2}")
             return ""
@@ -775,11 +906,14 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
     cmds = list(dict.fromkeys(cmds + extra_cmds))
     paths: Dict[str, str] = {}
     command_index: List[dict] = []
+    fallback_cmds: Dict[str, str] = {}   # Tier-2 #6: prompt-unverified captures this device
     started = datetime.now().isoformat()
 
     for cmd in cmds:
         logger.info(f"  Executing: {cmd}")
         out = send_cmd(dev, cmd)
+        if getattr(_SEND_TRANSPORT, "fallback", False):
+            fallback_cmds[cmd] = "timing_fallback"
         fn  = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_") + ".txt"
         p   = os.path.join(out_dir, fn)
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -816,6 +950,19 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
         }
         write_json_file(os.path.join(out_dir, "device_info.json"), device_info)
         write_json_file(os.path.join(out_dir, "command_index.json"), {"commands": command_index})
+
+    # Tier-2 #6: persist which captures were prompt-unverified (send_command_timing
+    # fallback) so offline re-analysis can flag them `unverified_prompt`. Written only
+    # when non-empty; the offline loader keys captures by KNOWN command names, so this
+    # sidecar can never be read as a capture. Fail-soft: a sidecar write error never
+    # loses the collection.
+    if fallback_cmds:
+        try:
+            write_json_file(os.path.join(out_dir, CAPTURE_META_FILENAME), fallback_cmds)
+            logger.info(f"  [capture-meta] {len(fallback_cmds)} prompt-unverified capture(s) "
+                        f"recorded in {CAPTURE_META_FILENAME}")
+        except Exception as e:
+            logger.warning(f"  capture-meta write failed (non-fatal): {e}")
 
     return paths
 
@@ -932,7 +1079,13 @@ def collect(hostname: str, platform: str, dev, out_dir: str,
 # =============================================================================
 # DEVICES LOADER
 # =============================================================================
-def load_devices(devices_file: str) -> List[dict]:
+def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
+    # FIX-V3.23.177: allow_prompt gates ONLY the interactive getpass fallback (chain step 4).
+    # main() passes allow_prompt=not args.no_collect: an offline re-analysis never opens SSH,
+    # so blocking the whole pipeline on a TTY password prompt for credentials that are never
+    # used hung real runs (password-less devices.json + TTY stdin, perf harness 2026-07-02).
+    # The non-blocking env chain (steps 1-3) always runs; default True keeps every other
+    # caller -- and live collection -- on the full V3.23.1 behaviour.
     if not os.path.isfile(devices_file):
         raise FileNotFoundError(f"Devices file not found: {devices_file}")
     with open(devices_file, "r", encoding="utf-8-sig") as f:
@@ -971,6 +1124,8 @@ def load_devices(devices_file: str) -> List[dict]:
         "cisco_xe":"ios","xe":"ios","auto":"auto","autodetect":"auto","":"auto",
     }
     for d in data:
+        if not isinstance(d, dict):
+            raise ValueError(f"Each devices.json entry must be a JSON object, got {type(d).__name__}: {d!r}")
         for alias, key in [("host","ip"),("address","ip"),("name","hostname"),
                            ("user","username"),("pass","password"),("secret","password")]:
             if alias in d and key not in d: d[key] = d[alias]
@@ -984,6 +1139,7 @@ def load_devices(devices_file: str) -> List[dict]:
         #   2) per-entry  "password_env": "VAR"   -> os.environ["VAR"]
         #   3) global      $CISCO_PASS
         #   4) (after the loop) a secure getpass prompt, only on an interactive TTY
+        #      AND only when prompting is allowed (live collection; never --no-collect)
         pw = d.get("password") or ""
         if not pw and d.get("password_env"):
             pw = os.environ.get(d["password_env"], "")
@@ -999,7 +1155,12 @@ def load_devices(devices_file: str) -> List[dict]:
     # logs the auth failure and, per V3.23.1, does not retry it). Prompt once per username.
     need_pw = [d for d in data if not d["password"]]
     if need_pw:
-        if sys.stdin.isatty():
+        if not allow_prompt:
+            # FIX-V3.23.177: offline run -- credentials are never used, so neither block on a
+            # prompt nor nag about $CISCO_PASS; leave them blank with a debug breadcrumb only.
+            logger.debug(f"  {len(need_pw)} device(s) without a password; offline run "
+                         f"(--no-collect) never uses credentials - not prompting.")
+        elif sys.stdin.isatty():
             import getpass
             by_user: Dict[str, str] = {}
             for d in need_pw:
@@ -1015,10 +1176,16 @@ def load_devices(devices_file: str) -> List[dict]:
     return data
 
 
-def write_json_file(path: str, data: dict) -> None:
+def write_json_file(path: str, data: dict, compact: bool = False) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        # NEW-Tier3#14: the SNAPSHOT is written compact (a pure size win — every consumer json.loads it
+        # and compares PARSED objects, so byte formatting is invisible to the golden/--compare contract);
+        # debug artifacts (run_manifest / phase_timings) stay indented (human-readable) by default.
+        if compact:
+            json.dump(data, f, separators=(",", ":"), ensure_ascii=False)
+        else:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def file_sha256(path: str) -> str:
@@ -1030,17 +1197,67 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def build_run_manifest(rootdir: str, script_version: str, devices_meta: List[dict], output_xlsx: str, template_file: str, archive_enabled: bool) -> dict:
-    return {
-        "script_version": script_version,
-        "generated_at": datetime.now().isoformat(),
-        "collection_root": os.path.abspath(rootdir),
-        "archive_enabled": bool(archive_enabled),
-        "template_file": os.path.abspath(template_file) if template_file else "",
-        "output_excel": os.path.abspath(output_xlsx) if output_xlsx else "",
-        "device_count": len(devices_meta),
-        "devices": devices_meta,
-    }
+def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
+    """roadmap D2 + J4: a sealed, deterministic chain-of-custody manifest for one assessment run — a
+    hash-chained ledger of the pipeline stages PLUS a per-artifact sha256 of every produced deliverable
+    PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (tamper-evident without any Git
+    dependency). Pure stdlib via cisco_toolkit.manifest; the GAIT-style audit trail, offline."""
+    import glob as _glob
+    from cisco_toolkit import manifest as _manifest, ssot as _ssot
+    try:
+        from cisco_toolkit import __version__ as _schema_version
+    except Exception:
+        _schema_version = "unknown"
+    base = os.path.splitext(os.path.abspath(out_xlsx))[0]
+    out_dir = os.path.dirname(base) or "."
+    base_name = os.path.basename(base)
+    artifacts = {}
+    for path in sorted(_glob.glob(os.path.join(out_dir, base_name + "*"))):
+        if os.path.isfile(path) and not path.endswith(".run_manifest.json"):
+            try:
+                with open(path, "rb") as _fh:
+                    artifacts[os.path.basename(path)] = _manifest.artifact_sha256(_fh.read())
+            except OSError:
+                continue
+    cc = (snap_dict.get("collection_completeness") or {}).get("summary") or {}
+    steps = [
+        {"stage": "collect", "inventory": cc.get("inventory"), "collected": cc.get("complete")},
+        {"stage": "analyze", "punchlist_findings": len(snap_dict.get("punchlist") or [])},
+        {"stage": "deliver", "artifacts": sorted(artifacts)},
+    ]
+    ledger = {subj: _ssot.abstention_reason(snap_dict, subj) for subj in
+              ("fhrp", "vpc", "golden_drift", "feature_compliance", "acl_line_reachability", "framework_coverage")}
+    meta = {"schema_version": _schema_version, "generated_at": datetime.now().isoformat(),
+            "collected_at": snap_dict.get("collected_at"), "abstention_ledger": ledger}
+    return _manifest.build_manifest(meta, artifacts, steps)
+
+
+def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
+    """Provenance: the instant the EVIDENCE was collected (NOT wall-clock-at-regen). Returns
+    (iso_datetime, defaulted). A live run stamps now() -- collection IS happening now. A
+    `--no-collect` re-analysis instead RECOVERS the original collection time so re-rendering old
+    evidence reproduces the original lifecycle bands + cover date byte-for-byte: first from the
+    `YYYYMMDD_HHMMSS` stamp in the collection-dir name (how every run names its dir), else the
+    earliest member-file mtime, else -- last resort -- now() flagged `defaulted=True` so the caller
+    can disclose that the collection date was unknown. Pure read; no side effects."""
+    if not no_collect:
+        return datetime.now().isoformat(), False
+    base = os.path.basename(os.path.normpath(collection_dir or root_dir or ""))
+    m = re.search(r"(\d{8})_(\d{6})", base)
+    if m:
+        try:
+            return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").isoformat(), False
+        except ValueError:
+            pass
+    d = collection_dir or root_dir or ""
+    try:
+        mtimes = [os.path.getmtime(os.path.join(dp, f))
+                  for dp, _dirs, files in os.walk(d) for f in files]
+        if mtimes:
+            return datetime.fromtimestamp(min(mtimes)).isoformat(), False
+    except OSError:
+        pass
+    return datetime.now().isoformat(), True
 
 # =============================================================================
 # V3.15.0 ADDITIONS - new analysis outputs (Tier 1) + new collection (Tier 2).
@@ -1145,17 +1362,149 @@ def _empty_dep_map() -> dict:
             "orphan": set(), "model": {"hosts": set()}}
 
 
+# Measure-first perf harness (Plan A / Tier-2 #11): every _run_phase call is timed here,
+# chronologically, and main() writes the ledger as a .phase_timings.json SIDECAR next to
+# the workbook — golden-neutral by construction (never a snapshot key). This is the hard
+# predecessor of any perf work: no restructure without before/after numbers from THIS ledger.
+_PHASE_TIMINGS: List[dict] = []
+
+
 def _run_phase(label, fn, *args, _default=None, **kwargs):
     """FIX (resilience): run a pre-save phase so a failure LOGS AND CONTINUES
     instead of aborting the whole run before wb.save() (extends the FIX-V14-1
     'guard and continue' idea from Phase 6 to every phase). Returns the phase's
-    result, or _default if it raised. Happy-path behaviour is unchanged."""
+    result, or _default if it raised. Happy-path behaviour is unchanged.
+    Tier-2 #11: each call is timed into _PHASE_TIMINGS (ok=False on a failure,
+    so a fast-because-it-crashed phase can never read as a fast phase)."""
+    _t0 = time.perf_counter()
+    _ok = True
     try:
         return fn(*args, **kwargs)
     except Exception as e:
+        _ok = False
         logger.error(f"  [SKIP] Phase '{label}' failed: {e!r}; "
                      f"continuing so the workbook still saves.")
         return _default
+    finally:
+        _PHASE_TIMINGS.append({"phase": str(label),
+                               "seconds": round(time.perf_counter() - _t0, 4), "ok": _ok})
+
+
+# =============================================================================
+# PER-DEVICE AXIS REGISTRY (Plan A / Tier-2 #8)
+# =============================================================================
+# ONE entry wires a per-device evidence axis through Phase 5.6. The accumulator
+# declaration + build-loop stanza (+ its log line) used to be hand-parallel code
+# sites per axis — the drift generator that kept finished axes dark for months
+# (see cisco_toolkit/summary.py's NOS-quartet note). Follows the _DETECTORS
+# precedent (design_advisor). The snap-assign site stays explicit at snapshot
+# assembly; tests/test_axis_registry.py enforces that every registry key ships
+# in the golden snapshot, so forgetting that site fails the suite.
+#   key         store name AND (except the three transient feeds) the snap key
+#   builder     per-device fn(cmd_to_file) -> value
+#   tag/log     the Phase-5.6 log line, preserved verbatim (log=None: silent)
+#   keep        None = keep truthy; callable = custom predicate (pim / PROTO)
+#   keep_always True = record EVERY host ('' / all-empty declares not-collected)
+class _AxisSpec(NamedTuple):
+    key: str
+    builder: Callable
+    tag: str
+    log: Optional[Callable]
+    keep: Optional[Callable]
+    keep_always: bool
+
+
+_PER_DEVICE_AXES: List[_AxisSpec] = [
+    _AxisSpec("run_configs", read_run_config, "RC", None, None, False),                  # NEW-V3.23.146 (golden-config drift feed)
+    _AxisSpec("syslogs", read_syslog_log, "SYSLOG", None, None, True),                   # NEW-V3.23.164 (every host recorded so not-collected is declared)
+    _AxisSpec("platform_metrics", build_platform_metrics, "PLAT", None, None, True),     # NEW-V3.23.167 (all-empty members = not collected)
+    _AxisSpec("acls", build_acls, "ACL",
+              lambda v: f"{len(v)} access-list(s) parsed", None, False),
+    _AxisSpec("object_groups", build_object_groups, "ACL",
+              lambda v: f"{len(v)} object-group(s) parsed", None, False),
+    _AxisSpec("nat", build_nat, "NAT",
+              lambda v: f"{len(v.get('static', []))} static, "
+                        f"{len(v.get('dynamic', []))} dynamic rule(s)", None, False),
+    _AxisSpec("security", build_security, "SEC",
+              lambda v: f"{v.get('summary', {}).get('fail', 0)} fail / "
+                        f"{len(v.get('findings', []))} check(s) ({v.get('summary', {}).get('grade', '')})",
+              None, False),
+    _AxisSpec("config_hygiene", build_config_hygiene, "HYGIENE",
+              lambda v: f"{v.get('summary', {}).get('undefined', 0)} undefined ref(s), "
+                        f"{v.get('summary', {}).get('unused', 0)} unused structure(s)", None, False),
+    _AxisSpec("stp_roots", build_stp_roots, "STP",
+              lambda v: f"root bridge info for {len(v)} VLAN(s)", None, False),
+    _AxisSpec("vpc", build_vpc, "vPC",
+              lambda v: f"domain {v.get('domain_id')} role {v.get('role') or '?'}, "
+                        f"{len(v.get('vpcs', []))} vPC(s)", None, False),
+    _AxisSpec("fhrp_detail", build_fhrp_detail, "FHRP",
+              lambda v: f"{len(v)} HSRP group(s) (detail)", None, False),
+    _AxisSpec("overlay", build_overlay, "VXLAN",
+              lambda v: f"{len(v.get('nve_peers', []))} NVE peer(s)", None, False),
+    _AxisSpec("copp", build_copp, "CoPP",
+              lambda v: f"{len(v)} control-plane class(es)", None, False),
+    _AxisSpec("mpls", build_mpls, "MPLS",
+              lambda v: f"{len(v.get('ldp_neighbors', []))} LDP session(s), "
+                        f"{len(v.get('vpnv4_neighbors', []))} VPNv4 peer(s), "
+                        f"{len(v.get('l2vpn_vcs', []))} L2VPN VC(s)", None, False),
+    # universal architecture coverage + multi-vendor + controller-REST axes (silent by
+    # design: their evidence is optional exports, absent on most fleets)
+    _AxisSpec("lisp", build_lisp, "LISP", None, None, False),
+    _AxisSpec("cts", build_cts, "CTS", None, None, False),
+    _AxisSpec("dmvpn", build_dmvpn, "DMVPN", None, None, False),
+    _AxisSpec("crypto", build_crypto, "CRYPTO", None, None, False),
+    _AxisSpec("bfd", build_bfd, "BFD", None, None, False),
+    _AxisSpec("aci", build_aci, "ACI", None, None, False),
+    _AxisSpec("sdwan", build_sdwan, "SDWAN", None, None, False),
+    _AxisSpec("firewall", build_firewall, "FW", None, None, False),
+    _AxisSpec("ise", build_ise, "ISE", None, None, False),
+    _AxisSpec("fmc", build_fmc, "FMC", None, None, False),
+    _AxisSpec("arista", build_arista, "ARISTA", None, None, False),                      # MULTI-VENDOR ({} on a Cisco device)
+    _AxisSpec("juniper", build_juniper, "JUNIPER", None, None, False),                   # MULTI-VENDOR ({} on a non-Juniper device)
+    _AxisSpec("cloud", build_cloud, "CLOUD", None, None, False),                         # PUBLIC CLOUD ({} when no cloud export)
+    _AxisSpec("fortigate", build_fortigate, "FGT", None, None, False),                   # MULTI-VENDOR ({} on a non-FortiGate device)
+    _AxisSpec("mroute", build_mroute, "MROUTE", None, None, False),                      # CISCO DEPTH ({} when no mroute table)
+    _AxisSpec("ipv6_nd", build_ipv6_nd, "V6ND", None, None, False),
+    _AxisSpec("ipv6_routing", build_ipv6_routing, "V6RT", None, None, False),
+    _AxisSpec("pim", build_pim, "PIM",
+              lambda v: f"{len(v.get('neighbors', []))} neighbor(s), "
+                        f"{(v.get('rp_mapping') or {}).get('rp_count', 0)} RP(s)",
+              lambda v: bool(v.get("rp_mapping") or v.get("neighbors")), False),
+    _AxisSpec("ipv6_fhs", build_ipv6_fhs, "V6FHS",
+              lambda v: f"dualstack={v.get('dualstack')} ra_guard={v.get('ra_guard_present')}",
+              None, False),
+    _AxisSpec("ntp", build_ntp, "NTP",
+              lambda v: f"synchronized={v.get('synchronized')} stratum={v.get('stratum')}",
+              None, False),
+    _AxisSpec("port_security", build_port_security_detail, "PSEC",
+              lambda v: f"{len(v)} secured port(s)", None, False),
+    _AxisSpec("storm_control", build_storm_control, "STORM",
+              lambda v: f"{len(v)} storm-control rule(s)", None, False),
+    _AxisSpec("qos_runtime", build_qos_runtime, "QOSRT",
+              lambda v: f"{len(v)} egress class(es)", None, False),
+    _AxisSpec("shadow_infra", build_undocumented_neighbors, "SHADOW",
+              lambda v: f"{len(v)} infra neighbour(s) seen", None, False),
+    _AxisSpec("routing_neighbors", build_routing_neighbors, "PROTO",
+              lambda v: f"{len(v['ospf'])} OSPF, {len(v['eigrp'])} EIGRP, "
+                        f"{len(v['bgp'])} BGP adjacency(ies)",
+              lambda v: any(v.values()), False),
+    _AxisSpec("redistribution", build_redistribution, "PROTO",
+              lambda v: f"{len(v)} redistribution edge(s)", None, False),
+]
+
+
+def _run_per_device_axes(stores: Dict[str, dict], hostname: str, cmd_to_file: Dict[str, str],
+                         specs: Optional[List[_AxisSpec]] = None) -> None:
+    """Phase-5.6 driver: run every registered builder for ONE device in registry order,
+    honoring each axis's keep semantics; the per-axis log line fires only when kept."""
+    for sp in (_PER_DEVICE_AXES if specs is None else specs):
+        v = sp.builder(cmd_to_file)
+        kept = True if sp.keep_always else (bool(sp.keep(v)) if sp.keep else bool(v))
+        if not kept:
+            continue
+        stores[sp.key][hostname] = v
+        if sp.log is not None:
+            logger.info(f"  [{sp.tag}] {hostname}: {sp.log(v)}")
 
 
 def main():
@@ -1166,6 +1515,12 @@ def main():
     ap.add_argument("--output",          default="")
     ap.add_argument("--no-collect",      action="store_true")
     ap.add_argument("--collection-dir",  default="")
+    ap.add_argument("--requirements",    default="",
+                    help="Path to a design requirements register (JSON: availability_tier, critical_apps, "
+                         "convergence_budget_ms, growth_horizon, fabric_operating_model, constraints, "
+                         "data_classification, address_space, vlan_zones). Supplied, it right-sizes the "
+                         "published design_blueprint (the WHY) so every deliverable reflects the requirements; "
+                         "absent, the blueprint surfaces the open requirement questions.")
     ap.add_argument("--debug-headers",   action="store_true")
     ap.add_argument("--workers",         type=int, default=5,
                     help="Parallel SSH workers (default 5; use 1 for sequential)")
@@ -1218,6 +1573,19 @@ def main():
                     help="NEW-V3.23.146: a golden-config baseline file (one required directive per line; "
                          "'#' comments and 're:<regex>' supported) for the Golden-Config Drift sheet. "
                          "Omit to auto-derive the baseline from the fleet's majority (de-facto standard).")
+    ap.add_argument("--import-inventory", default=None, metavar="FILE",
+                    help="roadmap B: a declared inventory (CMDB/NetBox/Nautobot CSV or XLSX export) to "
+                         "reconcile against the collected evidence -> a 'SoT Reconcile' sheet + snapshot key. "
+                         "Opt-in (read-only file ingest; never a live API). Off by default.")
+    ap.add_argument("--scenario",        default=None, metavar="FILE",
+                    help="roadmap G4: a JSON failure-injection catalog (a list of {name, failures:[{type:node|site, id}]}) "
+                         "-> a 'Failure What-If' sheet + snapshot key. Opt-in; read-only (the snapshot is mutated in memory).")
+    ap.add_argument("--path-intents",    default=None, metavar="FILE",
+                    help="roadmap G3: a JSON catalog of named path/segmentation intents (a list of {id, src, dst, expect: "
+                         "REACHES|ISOLATED}) evaluated over the computed FIB -> a 'Path Assertions' sheet + snapshot key. Opt-in.")
+    ap.add_argument("--assert-pack",     default=None, metavar="FILE",
+                    help="roadmap A1/H2: a JSON state-assertion check-pack ({assertions:[...]}) evaluated over the "
+                         "snapshot -> a 'state_assertions' snapshot key. Opt-in; coverage-honest ([NOT OBSERVED] abstention).")
     ap.add_argument("--flow-src",        default=None, metavar="IP",
                     help="NEW-V3.19: source endpoint IP for the optional Flow Trace sheet "
                          "(requires --flow-dst).")
@@ -1229,10 +1597,17 @@ def main():
                          "oldest first) -> a trend workbook (Campaign Summary verdict + Timeline w/ chart + "
                          "Burndown). Skips collection and the template.")
     ap.add_argument("--redact",          action="store_true",
-                    help="NEW-V3.23.41: pseudonymize IPs / MACs / serial numbers in the snapshot "
-                         "JSON + embedded HTML explorer (consistent, subnet-preserving; hostnames "
-                         "kept) so the single-file deliverable can be shared without leaking real "
-                         "addressing. Default off.")
+                    help="NEW-V3.23.41: pseudonymize IPs / MACs / serial numbers across the WHOLE output "
+                         "bundle -- the snapshot JSON, the HTML explorer, AND the always-produced .xlsx "
+                         "workbook (consistent, subnet-preserving; hostnames kept) -- so every deliverable "
+                         "can be shared without leaking real addressing. Default off.")
+    ap.add_argument("--redact-collection", action="store_true",
+                    help="Plan A Tier-1 #5: scrub SECRET VALUES (passwords / SNMP communities / keys) "
+                         "IN PLACE across the raw collection dir's .txt captures, AFTER analysis "
+                         "completes (this run reads the originals). Values only -- IPs / hostnames are "
+                         "kept so the dir stays analyzable and remains the --compare/--trend source; "
+                         "nothing is deleted. Idempotent. Rewritten captures will no longer match "
+                         "archive hashes recorded at collection time (deliberate). Default off.")
     args = ap.parse_args()
 
     if args.debug_arp:
@@ -1282,7 +1657,7 @@ def main():
     if not os.path.exists(args.template):
         raise FileNotFoundError(f"Template not found: {args.template}")
 
-    devices = load_devices(args.devices_file)
+    devices = load_devices(args.devices_file, allow_prompt=not args.no_collect)  # FIX-V3.23.177: --no-collect must never block on a TTY password prompt
     stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_xlsx = args.output or DEFAULT_OUTPUT_FILE.format(stamp)
 
@@ -1296,6 +1671,8 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(out_xlsx)) or ".", exist_ok=True)
 
     wb = load_workbook(args.template)
+    from cisco_toolkit.excel import harden_workbook
+    harden_workbook(wb)   # every sheet sanitizes control chars -> one device-text field can't abort the workbook
     ws = wb.active
     logger.info(f"[OK] Loaded template: {args.template}")
 
@@ -1331,6 +1708,17 @@ def main():
     os.makedirs(root_dir, exist_ok=True)
     logger.info(f"[OK] Collection directory: {root_dir}")
 
+    # Provenance (wave R2-1-01 / R2-3-01): pin the lifecycle EoL bands + the deliverable "Snapshot
+    # captured" date to WHEN THE EVIDENCE WAS COLLECTED, not the wall-clock day this pipeline runs. On a
+    # --no-collect re-analysis collected_at is recovered from the collection-dir stamp, so a "frozen"
+    # assessment reproduces its bands + cover date byte-for-byte instead of drifting against today.
+    collected_at, _collected_at_defaulted = _derive_collected_at(args.no_collect, args.collection_dir, root_dir)
+    if _collected_at_defaulted:
+        logger.warning("  [PROVENANCE] collection date could not be determined from %r; "
+                       "'Snapshot captured' falls back to generation time.", root_dir)
+    else:
+        logger.info(f"  [PROVENANCE] evidence collected_at = {collected_at}")
+
     _progress_lock = threading.Lock()
     _done_count    = [0]
 
@@ -1348,7 +1736,7 @@ def main():
             if platform in ("auto",""):
                 platform = detect_platform_from_files(dev_dir)
                 logger.info(f"  [{hostname}] Auto-detected platform: {platform}")
-            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS))
+            all_cmds = list(dict.fromkeys(COMMANDS_NXOS + COMMANDS_IOS + COMMANDS_ARISTA + COMMANDS_JUNIPER + COMMANDS_CLOUD + COMMANDS_FORTINET))
             for cmd in all_cmds:
                 fn    = cmd.replace(" ","_").replace("|","_").replace("^","").replace("/","_")+".txt"
                 fpath = os.path.join(dev_dir, fn)
@@ -1384,6 +1772,10 @@ def main():
         return hostname, platform, cmd_to_file
 
     # Phase 1: Collect
+    # Fresh zero-parse ledger per run (webapp ingest reuses this pipeline in-process, so
+    # the ledger must never carry a previous run's events into this snapshot).
+    reset_parse_ledger()
+    del _PHASE_TIMINGS[:]        # fresh perf ledger per run, same reasoning (Tier-2 #11)
     workers = max(1, min(args.workers, len(devices)))
     logger.info(f"\n[Phase 1] Collecting {len(devices)} device(s) with {workers} parallel worker(s) ...")
     all_cmd_to_files: Dict[str, Dict[str,str]] = {}
@@ -1407,6 +1799,13 @@ def main():
         all_devices_meta.append((hostname, platform, cmd_to_file))
 
     logger.info(f"  Collection complete: {len(all_devices_meta)}/{len(devices)} succeeded.")
+    # Plan A / Tier-1 #5 — say it on EVERY run, loudly: the raw captures are the one output
+    # --redact never touches, and they hold running-configs with cleartext secrets.
+    logger.warning(f"  [SENSITIVE] Raw collection dir holds CLEARTEXT device output "
+                   f"(running-configs can embed passwords / SNMP communities / keys): {root_dir} "
+                   f"-- --redact protects the DELIVERABLES only; once analysis is final, scrub the "
+                   f"raw captures in place with --redact-collection (kept, never auto-deleted -- "
+                   f"it is the --compare/--trend source).")
 
     # Phase 2: Global ARP
     logger.info("\n[Phase 2] Building global ARP table ...")
@@ -1457,69 +1856,56 @@ def main():
                     f"PSU={dp.num_power_supplies}  "
                     f"cap={dp.power_capacity_w}  draw={dp.power_drawn_w}")
 
-    # Phase 5.6: ACL definitions (L4 allow/deny sim) - parsed from the already-collected
-    # run-config; emitted into the snapshot below so the explorer can evaluate flows offline.
-    all_acls: Dict[str, dict] = {}
-    all_object_groups: Dict[str, dict] = {}
-    all_nat: Dict[str, dict] = {}                                    # NEW-V3.23.50 (NAT inventory)
-    all_security: Dict[str, dict] = {}                               # NEW-V3.23.59 (CIS-aligned security posture)
-    all_config_hygiene: Dict[str, dict] = {}                         # NEW-V3.23.61 (undefined refs / unused structures)
-    all_stp_roots: Dict[str, dict] = {}                              # NEW-V3.23.62 (per-VLAN STP root bridge)
-    all_vpc: Dict[str, dict] = {}                                    # NEW-V3.23.125 (vPC / MLAG status per device)
-    all_routing_neighbors: Dict[str, dict] = {}                      # protocol-to-protocol analysis (OSPF/EIGRP/BGP adjacencies)
-    all_redistribution: Dict[str, list] = {}                         # protocol-to-protocol analysis (redistribution edges)
-    all_run_configs: Dict[str, str] = {}                             # NEW-V3.23.146 (raw running-config for golden-config drift)
-    all_syslogs: Dict[str, str] = {}                                 # NEW-V3.23.164 (raw 'show logging' for syslog intelligence; '' = not collected)
-    all_platform_metrics: Dict[str, dict] = {}                       # NEW-V3.23.167 (CPU/memory/system facts; all-empty = not collected)
+    # Phase 5.6: per-device evidence axes — REGISTRY-DRIVEN (Plan A / Tier-2 #8). Each
+    # axis is ONE _PER_DEVICE_AXES entry above main() (the old accumulator decl + loop
+    # stanza + log line were 3 hand-parallel sites per axis — the drift class that kept
+    # finished axes dark); the per-axis log lines are preserved verbatim via the specs'
+    # formatters. The aliases below keep every downstream consumer (computes / sheet
+    # writers / snapshot assigns) reference-identical — this swap is contract-invisible,
+    # proven by the golden suite passing with NO UPDATE_GOLDEN.
+    _axis_stores: Dict[str, dict] = {sp.key: {} for sp in _PER_DEVICE_AXES}
     for hostname, platform, cmd_to_file in all_devices_meta:
-        rc_text = read_run_config(cmd_to_file)                       # NEW-V3.23.146
-        if rc_text:
-            all_run_configs[hostname] = rc_text
-        all_syslogs[hostname] = read_syslog_log(cmd_to_file)         # NEW-V3.23.164 (every host recorded so not-collected is declared)
-        all_platform_metrics[hostname] = build_platform_metrics(cmd_to_file)  # NEW-V3.23.167 (all-empty members = not collected)
-        acls = build_acls(cmd_to_file)
-        if acls:
-            all_acls[hostname] = acls
-            logger.info(f"  [ACL] {hostname}: {len(acls)} access-list(s) parsed")
-        og = build_object_groups(cmd_to_file)
-        if og:
-            all_object_groups[hostname] = og
-            logger.info(f"  [ACL] {hostname}: {len(og)} object-group(s) parsed")
-        nat = build_nat(cmd_to_file)
-        if nat:
-            all_nat[hostname] = nat
-            logger.info(f"  [NAT] {hostname}: {len(nat.get('static', []))} static, "
-                        f"{len(nat.get('dynamic', []))} dynamic rule(s)")
-        sec = build_security(cmd_to_file)
-        if sec:
-            all_security[hostname] = sec
-            _summ = sec.get("summary", {})
-            logger.info(f"  [SEC] {hostname}: {_summ.get('fail', 0)} fail / "
-                        f"{len(sec.get('findings', []))} check(s) ({_summ.get('grade', '')})")
-        hyg = build_config_hygiene(cmd_to_file)
-        if hyg:
-            all_config_hygiene[hostname] = hyg
-            _hs = hyg.get("summary", {})
-            logger.info(f"  [HYGIENE] {hostname}: {_hs.get('undefined', 0)} undefined ref(s), "
-                        f"{_hs.get('unused', 0)} unused structure(s)")
-        stp_roots = build_stp_roots(cmd_to_file)
-        if stp_roots:
-            all_stp_roots[hostname] = stp_roots
-            logger.info(f"  [STP] {hostname}: root bridge info for {len(stp_roots)} VLAN(s)")
-        vpc = build_vpc(cmd_to_file)
-        if vpc:
-            all_vpc[hostname] = vpc
-            logger.info(f"  [vPC] {hostname}: domain {vpc.get('domain_id')} role {vpc.get('role') or '?'}, "
-                        f"{len(vpc.get('vpcs', []))} vPC(s)")
-        rn = build_routing_neighbors(cmd_to_file)
-        if any(rn.values()):
-            all_routing_neighbors[hostname] = rn
-            logger.info(f"  [PROTO] {hostname}: {len(rn['ospf'])} OSPF, "
-                        f"{len(rn['eigrp'])} EIGRP, {len(rn['bgp'])} BGP adjacency(ies)")
-        redist = build_redistribution(cmd_to_file)
-        if redist:
-            all_redistribution[hostname] = redist
-            logger.info(f"  [PROTO] {hostname}: {len(redist)} redistribution edge(s)")
+        _run_per_device_axes(_axis_stores, hostname, cmd_to_file)
+    all_run_configs = _axis_stores["run_configs"]            # NEW-V3.23.146 (raw running-config for golden-config drift)
+    all_syslogs = _axis_stores["syslogs"]                    # NEW-V3.23.164 (raw 'show logging'; '' = not collected)
+    all_platform_metrics = _axis_stores["platform_metrics"]  # NEW-V3.23.167 (CPU/memory/system facts)
+    all_acls = _axis_stores["acls"]
+    all_object_groups = _axis_stores["object_groups"]
+    all_nat = _axis_stores["nat"]
+    all_security = _axis_stores["security"]
+    all_config_hygiene = _axis_stores["config_hygiene"]
+    all_stp_roots = _axis_stores["stp_roots"]
+    all_vpc = _axis_stores["vpc"]
+    all_fhrp_detail = _axis_stores["fhrp_detail"]
+    all_overlay = _axis_stores["overlay"]
+    all_copp = _axis_stores["copp"]
+    all_mpls = _axis_stores["mpls"]
+    all_lisp = _axis_stores["lisp"]
+    all_cts = _axis_stores["cts"]
+    all_dmvpn = _axis_stores["dmvpn"]
+    all_crypto = _axis_stores["crypto"]
+    all_bfd = _axis_stores["bfd"]
+    all_aci = _axis_stores["aci"]
+    all_sdwan = _axis_stores["sdwan"]
+    all_firewall = _axis_stores["firewall"]
+    all_ise = _axis_stores["ise"]
+    all_fmc = _axis_stores["fmc"]
+    all_arista = _axis_stores["arista"]
+    all_juniper = _axis_stores["juniper"]
+    all_cloud = _axis_stores["cloud"]
+    all_fortigate = _axis_stores["fortigate"]
+    all_mroute = _axis_stores["mroute"]
+    all_ipv6_nd = _axis_stores["ipv6_nd"]
+    all_ipv6_routing = _axis_stores["ipv6_routing"]
+    all_pim = _axis_stores["pim"]
+    all_ipv6_fhs = _axis_stores["ipv6_fhs"]
+    all_ntp = _axis_stores["ntp"]
+    all_port_security = _axis_stores["port_security"]
+    all_storm_control = _axis_stores["storm_control"]
+    all_qos_runtime = _axis_stores["qos_runtime"]
+    all_shadow_infra = _axis_stores["shadow_infra"]
+    all_routing_neighbors = _axis_stores["routing_neighbors"]
+    all_redistribution = _axis_stores["redistribution"]
 
     # Phase 5.7: routing tables (route-aware reachability) - parsed from the already-collected
     # 'show ip route', scoped to the in-scope gateway subnets so the embedded snapshot stays small.
@@ -1552,6 +1938,22 @@ def main():
         for k, v in build_acl_hits(cmd_to_file).items():
             all_acl_hits[k] = all_acl_hits.get(k, 0) + v
     all_igmp_groups = sorted(_igmp_groups, key=lambda ip: tuple(int(o) for o in ip.split(".")))
+
+    # --redact: pseudonymize the COLLECTED dataclasses NOW, before the first sheet writer consumes them, so the
+    # always-produced .xlsx (built from these, before redact_snapshot touches the JSON) is share-safe too. The
+    # snapshot + explorer are redacted later from snap_dict; without this the workbook leaked real serials/IPs/
+    # MACs from the same --redact run (audit-3 #8). Opt-in path only; never on a normal run.
+    if getattr(args, "redact", False):
+        _run_phase("redact collected dataclasses", redact_collected_inplace, all_interfaces, all_device_physical)
+        logger.info("[redact] collected inventory (workbook) serials / IPs / MACs pseudonymized (--redact)")
+
+    # Reconcile phantom split-nodes BEFORE any topology / sheet build: a device collected under a suffix-shorter
+    # inventory name than its OWN configured hostname is advertised by neighbors over CDP under that configured
+    # name; rewrite those advertisements to the inventory key so it renders as ONE node (audit-5 cross-artifact #1).
+    _n_reconciled = _run_phase("reconcile CDP split-node names", reconcile_cdp_neighbor_names,
+                               all_interfaces, all_device_physical, _default=0)
+    if _n_reconciled:
+        logger.info(f"[topology] reconciled {_n_reconciled} CDP advertisement(s) to inventory key(s) (split-node fix)")
 
     # Phase 6: Write interface rows to template sheet (each host guarded so one
     # host's write failure can't abort the run before wb.save()).
@@ -1709,7 +2111,8 @@ def main():
     # offline eoldb KB (a top reason orgs migrate). asof defaults to now (the assessment date). Compute once
     # -> sheet + snapshot + punch-list fold.
     _dev_lifecycle = {dp.hostname: {"model": dp.model, "sw_version": dp.sw_version} for dp in all_device_physical}
-    lifecycle_risk = _run_phase("Lifecycle risk", compute_lifecycle_risk, _dev_lifecycle, _default={})
+    lifecycle_risk = _run_phase("Lifecycle risk", compute_lifecycle_risk, _dev_lifecycle,
+                                asof=collected_at, _default={})   # provenance: bands as-of collection, not regen-day
     _run_phase("Lifecycle Risk sheet", write_lifecycle_risk_sheet, wb, lifecycle_risk)
 
     # Phase 27d: Collection completeness (NEW-V3.23.109). The pre-assessment blind-spot report -- which
@@ -1718,7 +2121,11 @@ def main():
     _inventory_hosts = [d.get("hostname", "") for d in devices]
     collection_completeness = _run_phase("Collection completeness", compute_collection_completeness,
                                          _inventory_hosts, all_cmd_to_files, _default={})
-    _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb, collection_completeness)
+    # parse_yield_report() here and at snapshot assembly return IDENTICAL content: all parsing
+    # is complete before either runs, and the sheet writers call no _safe_parse (excel.py only
+    # loads raw text for its 3 re-parse sheets), so the ledger is quiescent between the two.
+    _run_phase("Collection Completeness sheet", write_collection_completeness_sheet, wb,
+               collection_completeness, parse_yield_report())
 
     # Phase 28: Health Scores - NEW-V3.23 (synthesises L1/L3/cross-layer/protocol findings)
     logger.info("\n[Phase 28] Writing Health Scores sheet ...")
@@ -1773,6 +2180,8 @@ def main():
     # Phase 30c: NAT Inventory - NEW-V3.23.50 (every static/dynamic NAT rule the migration must recreate)
     _run_phase("NAT Inventory sheet", write_nat_sheet, wb, all_nat)
     _run_phase("Config Compliance sheet", write_security_sheet, wb, all_security)
+    framework_cov = _run_phase("Framework coverage", compute_framework_coverage, all_security, _default={})  # W2-3: computed once here; reused for snap_dict below
+    _run_phase("Framework Coverage sheet", write_framework_coverage_sheet, wb, framework_cov)
     _run_phase("Config Hygiene sheet", write_config_hygiene_sheet, wb, all_config_hygiene)
     _run_phase("STP Root Bridges sheet", write_stp_roots_sheet, wb, all_stp_roots, all_interfaces)
 
@@ -1818,29 +2227,48 @@ def main():
             logger.warning(f"  --golden-config not read ({e}); falling back to the auto-derived majority baseline.")
     golden_drift = _run_phase("Golden-config drift", compute_golden_drift,
                               all_run_configs, _golden_lines, _default={})
+    # roadmap I2: decompose the golden-config drift per policy FEATURE (aaa/ntp/snmp/...). Pure projection of golden_drift.
+    feature_compliance = _run_phase("Feature compliance", compute_feature_compliance, golden_drift, _default={})
+    # roadmap G1: offline Batfish-style ACL line-reachability / shadow proof over the already-parsed ACLs + object-groups.
+    acl_line_reachability = _run_phase("ACL line-reachability", compute_filter_line_reachability,
+                                       {"acls": all_acls, "object_groups": all_object_groups}, _default={})
     # NEW-V3.23.172: the Device Risk Register -- the per-ASSET synthesis. Joins the 11 per-device
     # axes already computed above into one dossier per box (risk_index = topology impact x stacked
     # exposure + named compound patterns CR-01..CR-06), BEFORE the punch-list so the compound
     # findings fold into the decision layer (and reach every downstream surface via snap["punchlist"]).
-    device_dossiers = _run_phase("Device risk register", compute_device_dossiers,
-                                 health_scores, failure_impact, lifecycle_risk, software_risk,
-                                 platform_health, syslog_intelligence, qos_audit, golden_drift,
-                                 all_security, all_config_hygiene, all_stp_roots, all_vpc,
-                                 physical_health, protocol_health, move_groups, _default={})
+    # Plan-A #15 strangler (Stage-3 positional collapse): thread the analyze-stage synthesis feeds
+    # through the typed AnalysisContext and read them back via the thin ctx-adapters, so the three
+    # WIDE compute_* below stop threading 15/19/14 locals positionally through _run_phase (a silent
+    # reorder could corrupt them). _actx is populated per-consumer as each feed becomes available;
+    # the public compute_* keep their explicit-arg signatures (see the adapters just after main()).
+    _actx = AnalysisContext(
+        health_scores=health_scores, failure_impact=failure_impact, lifecycle_risk=lifecycle_risk,
+        software_risk=software_risk, platform_health=platform_health,
+        syslog_intelligence=syslog_intelligence, qos_audit=qos_audit, golden_drift=golden_drift,
+        all_security=all_security, all_config_hygiene=all_config_hygiene,
+        all_stp_roots=all_stp_roots, all_vpc=all_vpc, physical_health=physical_health,
+        protocol_health=protocol_health, move_groups=move_groups)
+    device_dossiers = _run_phase("Device risk register", _device_dossiers, _actx, _default={})
+    # EDA-style physical cable map (SSOT for the explorer + webapp cable-map views): a node/port/cable
+    # graph, role-tiered lanes, LAG bundled, op-status DERIVED from interface state (coverage-honest --
+    # uncollected devices/ports are [NOT OBSERVED] neutral, never a fake green).
+    cable_map = _run_phase("Cable map", compute_cable_map, all_interfaces, health_scores, _default={})
+    _run_phase("Cabling Schedule sheet", write_cabling_schedule_sheet, wb, cable_map)   # EDA-style cable schedule (op-status + LAG) from the cable-map SSOT
     # NEW-V3.23.117: lifecycle risk is kept as its OWN axis (sheet / cockpit / runbook §4.1), NOT folded into
     # the punch-list -- its band is date-relative, which would make the frozen golden punch-list date-dependent.
     # (The V3.23.172 compound patterns MAY reference the EoL band, but only when stacked with a second
     # independent risk axis -- the synthetic golden fleet's models are outside the EoL KB, so the frozen
     # golden punch-list stays date-free.)
-    punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
-                           cross_layer, all_security, all_config_hygiene, physical_health,
-                           l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
-                           l2=_l2, hostname_mismatches=_hostname_mismatches, drift=_drift,
-                           ptp_readiness=_ptp_readiness, media_risks=_media_risks,
-                           syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,           # NEW-V3.23.169
-                           software_risk=software_risk, platform_health=platform_health,           # NEW-V3.23.169
-                           device_dossiers=device_dossiers,                                        # NEW-V3.23.172
-                           _default=[])
+    _actx.device_dossiers = device_dossiers          # feed the just-computed dossiers into the punch-list
+    _actx.cross_layer = cross_layer
+    _actx.l3_forwarding = l3_forwarding
+    _actx.stp_findings = _stp_findings
+    _actx.l2 = _l2
+    _actx.hostname_mismatches = _hostname_mismatches
+    _actx.drift = _drift
+    _actx.ptp_readiness = _ptp_readiness
+    _actx.media_risks = _media_risks
+    punchlist = _run_phase("Migration Punch-List", _punchlist, _actx, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
     _run_phase("Device Risk Register sheet", write_device_risk_sheet, wb, device_dossiers)
 
@@ -1860,7 +2288,7 @@ def main():
     # synthesis of already-collected data; compute once -> sheet + snapshot (one source of truth).
     validation_plan = _run_phase("Validation plan", compute_validation_plan,
                                  all_interfaces, move_groups, all_routing_neighbors, all_stp_roots,
-                                 _dev_platform, _default={})
+                                 _dev_platform, protocol_health=protocol_health, _default={})   # NRFU #18: bundle baseline reflects real (D)/down members, not a blanket all-(P)
     _run_phase("Cutover Validation sheet", write_validation_plan_sheet, wb, validation_plan)
 
     # Phase 30d-quinquies: Golden-config DRIFT - NEW-V3.23.146. Per-device running-config drift vs a baseline:
@@ -1868,6 +2296,59 @@ def main():
     # baseline (de-facto standard) -> flag the outliers. Compute once -> sheet + snapshot (one source of truth).
     # Computed ABOVE the punch-list since V3.23.172 (Device Risk Register join); the sheet keeps its slot.
     _run_phase("Golden-Config Drift sheet", write_golden_drift_sheet, wb, golden_drift)
+    _run_phase("Feature Compliance sheet", write_feature_compliance_sheet, wb, feature_compliance)   # roadmap I2
+    _run_phase("ACL Shadow sheet", write_acl_shadow_sheet, wb, acl_line_reachability)                # roadmap G1
+    # roadmap B: opt-in external source-of-truth reconcile (--import-inventory FILE). Off by default -> golden-safe.
+    external_reconcile = None
+    if args.import_inventory:
+        _declared = read_inventory_file(args.import_inventory)
+        external_reconcile = reconcile_external(
+            {"lifecycle_risk": lifecycle_risk, "health_scores": health_scores,
+             "collection_completeness": collection_completeness}, _declared)
+        _run_phase("SoT Reconcile sheet", write_external_reconcile_sheet, wb, external_reconcile)
+        logger.info(f"[Phase 30g] SoT reconcile: {len(_declared)} declared vs "
+                    f"{external_reconcile['summary'].get('n_observed', 0)} observed -> "
+                    f"{external_reconcile['summary'].get('n_rows', 0)} drift row(s) from {args.import_inventory}")
+    # roadmap K1, WIDENED in Plan A / Tier-2 #6: capture-integrity now inspects EVERY collected capture
+    # (all ~160 commands/device via all_cmd_to_files), not just run-config — streamed one body at a time
+    # so the fleet's raw output is never held in memory at once. The per-device _capture_meta.json
+    # sidecar (live-collect) adds `unverified_prompt` for timing-fallback captures; absent meta (every
+    # older collection) makes no prompt claim. Together with snap['parse_yield'] this separates
+    # "collection problem" (zero-yield + non-ok capture) from "parser format gap" (zero-yield + clean).
+    _ci_meta: Dict[str, Dict[str, str]] = {}
+    for _h, _c2f in (all_cmd_to_files or {}).items():
+        for _p in (_c2f or {}).values():
+            _m = load_capture_meta(os.path.dirname(_p))
+            if _m:
+                _ci_meta[_h] = _m
+            break                                   # one device dir per host — first path suffices
+    capture_integrity = _run_phase("Capture integrity", compute_capture_integrity_from_paths,
+                                   all_cmd_to_files, _ci_meta, _default={})
+    _run_phase("Capture Integrity sheet", write_capture_integrity_sheet, wb, capture_integrity)
+    # roadmap G4: opt-in failure-injection what-if (--scenario FILE). Golden-safe (off by default).
+    whatif_result = None
+    if args.scenario:
+        try:
+            with open(args.scenario, encoding="utf-8") as _sf:
+                _scen = json.load(_sf)
+        except Exception as e:
+            _scen = []
+            logger.warning(f"  --scenario not read ({e}); skipping what-if.")
+        _scen = _scen if isinstance(_scen, list) else (_scen.get("scenarios") or [])
+        whatif_result = run_scenarios({"routes": all_routes}, _scen)
+        _run_phase("Failure What-If sheet", write_whatif_sheet, wb, whatif_result)
+    # roadmap G3: opt-in named path/segmentation intents (--path-intents FILE). Golden-safe.
+    path_intents = None
+    if args.path_intents:
+        try:
+            with open(args.path_intents, encoding="utf-8") as _pf:
+                _intents = json.load(_pf)
+        except Exception as e:
+            _intents = []
+            logger.warning(f"  --path-intents not read ({e}); skipping.")
+        _intents = _intents if isinstance(_intents, list) else (_intents.get("assertions") or _intents.get("intents") or [])
+        path_intents = evaluate_path_assertions({"routes": all_routes}, _intents)
+        _run_phase("Path Assertions sheet", write_path_intents_sheet, wb, path_intents)
 
     # Phase 30d-sexies: Syslog intelligence - NEW-V3.23.164. The NOS-style operational log analysis
     # (Cisco's Network Optimization Service names syslog analysis as an analytic pillar): per-device
@@ -1927,13 +2408,29 @@ def main():
     # NEW-V3.23.120: the cross-axis migration brief -- one headline per assessment axis (the 7 new axes +
     # health + punch-list + readiness) rolled up into one decision-grade synthesis. Compute once -> the
     # Executive Summary sheet leads with it + snapshot.
-    executive_brief = _run_phase("Executive brief", compute_executive_brief,
-                                 health_scores, punchlist, migration_readiness, application_intelligence,
-                                 lifecycle_risk, segmentation, multicast_intelligence, remediation_plan,
-                                 syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,      # NEW-V3.23.169
-                                 software_risk=software_risk, platform_health=platform_health,      # NEW-V3.23.169
-                                 device_dossiers=device_dossiers,                                   # NEW-V3.23.172
-                                 _default={})
+    _actx.punchlist = punchlist                      # feed the just-computed punch-list into the brief
+    _actx.migration_readiness = migration_readiness
+    _actx.application_intelligence = application_intelligence
+    _actx.segmentation = segmentation
+    _actx.multicast_intelligence = multicast_intelligence
+    _actx.remediation_plan = remediation_plan
+    _actx.endpoint_identity = endpoint_identity      # SSOT: n_endpoints == len(endpoint_identity)
+    executive_brief = _run_phase("Executive brief", _executive_brief, _actx,
+                                 _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty brief (wave R2-4-01)
+    # SSOT: inject the canonical VLAN count (vlan_inventory) into the brief's scale HERE, BEFORE the
+    # Executive Summary sheet reads it. At this point interfaces are still InterfaceData OBJECTS (the dict
+    # serialization happens during snapshot assembly, after the workbook), so build the minimal vlan/
+    # vlan_name dict vlan_inventory reads. The snapshot re-injects the same value at assembly (idempotent).
+    if isinstance(executive_brief, dict) and isinstance(executive_brief.get("scale"), dict):
+        _ifd = {h: {p: {"vlan": getattr(d, "vlan", ""), "vlan_name": getattr(d, "vlan_name", "")}
+                    for p, d in (ports or {}).items()}
+                for h, ports in (all_interfaces or {}).items()}
+        executive_brief["scale"]["n_vlans"] = len(vlan_inventory(
+            {"interfaces": _ifd, "l3_forwarding": l3_forwarding, "service_map": service_map}))
+        # ...and the genuinely-COLLECTED count HERE too (QA F1), so the Exec Summary Fleet-posture block reads
+        # canonical n_collected (253 of 303 inventoried) instead of a local recompute. collection_completeness
+        # is already computed (Phase 27d). Assembly re-injects the same value at snapshot time (idempotent).
+        executive_brief["scale"]["n_collected"] = ((collection_completeness or {}).get("summary") or {}).get("complete")
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
                health_scores, punchlist, migration_readiness, failure_impact,   # NEW-V3.23.91: reuse precomputed fi
                brief=executive_brief)
@@ -1959,9 +2456,11 @@ def main():
          "security": all_security, "config_hygiene": all_config_hygiene,
          "operational_drift": _drift, "redistribution": all_redistribution,
          "collection_completeness": collection_completeness, "punchlist": punchlist},
-        _default={})
+        _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty review (cf. executive_brief)
     _run_phase("Architecture Review sheet", write_architecture_review_sheet, wb, architecture_review)
 
+    if getattr(args, "redact", False):    # final --redact net: scrub IP/MAC/secrets from computed + raw-config
+        _run_phase("redact workbook cells", redact_workbook_cells, wb)   # sheets the dataclass pass can't reach
     wb.save(out_xlsx)
     logger.info(f"\n[OK] Saved: {out_xlsx}")
     logger.info(f"[OK] Log:   {LOG_FILE}")
@@ -1975,6 +2474,7 @@ def main():
         logger.warning(f"  Topology diagram write failed: {e}")
     snap_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".snapshot.json"
     snap_dict = snapshot_state(all_interfaces, all_device_physical)  # CHANGED-V3.17: capture for reuse (JSON + HTML)
+    snap_dict["collected_at"] = collected_at                         # provenance: evidence collection instant (vs generated_at = regen time)
     snap_dict["physical_health"] = physical_health                   # NEW-V3.18
     snap_dict["l3_forwarding"] = l3_forwarding                       # NEW-V3.20
     snap_dict["cross_layer"] = cross_layer                           # NEW-V3.21
@@ -1992,18 +2492,58 @@ def main():
     snap_dict["platform_health"] = platform_health                   # NEW-V3.23.167 (control-plane CPU/memory capacity screening; reused from Phase 30d-nonies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
     snap_dict["health_scores"] = health_scores                       # NEW-V3.23
+    snap_dict["cable_map"] = cable_map                               # NEW: EDA-style physical cable map (explorer + webapp cable-map views)
     snap_dict["migration_readiness"] = migration_readiness           # NEW-V3.23
     snap_dict["score_sensitivity"] = score_sensitivity               # NEW-V3.23.5
     snap_dict["nat"] = all_nat                                       # NEW-V3.23.50 (NAT inventory: {host:{static,dynamic,pools,inside,outside}})
     snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
+    snap_dict["framework_coverage"] = framework_cov                 # W2-3 (CIS/NIST/PCI/STIG mapping; computed once at the workbook stage above)
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator
+    snap_dict["fhrp_detail"] = all_fhrp_detail                       # full HSRP election/preempt/tracking detail -> _d_fhrp_resilience (first non-[HISTORY-REDACTED] coverage)
+    snap_dict["overlay"] = all_overlay                               # VXLAN-EVPN overlay (NVE peers) -> _d_nve_peer_health (engine's own target fabric, was blind)
+    snap_dict["copp"] = all_copp                                     # CoPP drop counters -> _d_copp_drops (control-plane policing health)
+    snap_dict["mpls"] = all_mpls                                     # SP/MPLS service-plane (LDP/VPNv4/L2VPN) -> _d_mpls_ldp_health/_d_mpls_l3vpn_health/_d_mpls_l2vpn_health
+    snap_dict["aci"] = all_aci                                         # Cisco ACI (APIC JSON-ingestion channel) -> _d_aci_critical_faults/_d_aci_node_not_active/_d_aci_fabric_health_degraded
+    snap_dict["sdwan"] = all_sdwan                                     # Cisco Catalyst SD-WAN (vManage JSON channel) -> _d_sdwan_control_connection_down/_d_sdwan_device_unreachable
+    snap_dict["firewall"] = all_firewall                              # Cisco firewall (ASA/FTD failover) HA -> _d_firewall_ha_degraded (SSH show-text channel)
+    snap_dict["ise"] = all_ise                                        # Cisco ISE (Identity Services Engine deployment) -> _d_ise_* (JSON controller-REST channel)
+    snap_dict["fmc"] = all_fmc                                        # Cisco Secure Firewall Mgmt Center (FMC) -> _d_ftd_*/_d_fmc_* (JSON controller-REST channel)
+    snap_dict["arista"] = all_arista                                  # MULTI-VENDOR: Arista EOS MLAG -> _d_arista_mlag_degraded (device-native JSON; the first non-Cisco vendor axis)
+    snap_dict["juniper"] = all_juniper                               # MULTI-VENDOR: Juniper Junos SRX chassis-cluster -> _d_junos_chassis_cluster_degraded (the second non-Cisco vendor axis)
+    snap_dict["cloud"] = all_cloud                                   # PUBLIC CLOUD: AWS security-group exposure -> _d_cloud_sg_open_ingress (the first cloud-domain axis)
+    snap_dict["fortigate"] = all_fortigate                           # MULTI-VENDOR: Fortinet FortiGate HA cluster sync -> _d_fortigate_ha_degraded (the third non-Cisco vendor axis)
+    snap_dict["mroute"] = all_mroute                                 # CISCO DEPTH: multicast RPF integrity -> _d_mcast_rpf_failure ((S,G) Null incoming-interface)
+    snap_dict["lisp"] = all_lisp                                       # universal arch coverage
+    snap_dict["cts"] = all_cts                                       # universal arch coverage
+    snap_dict["dmvpn"] = all_dmvpn                                       # universal arch coverage
+    snap_dict["crypto"] = all_crypto                                       # universal arch coverage
+    snap_dict["bfd"] = all_bfd                                       # universal arch coverage
+    snap_dict["ipv6_nd"] = all_ipv6_nd                                       # universal arch coverage
+    snap_dict["ipv6_routing"] = all_ipv6_routing                                       # universal arch coverage
+    snap_dict["pim"] = all_pim                                       # PIM-SM RP/neighbor -> _d_pim_rp_health (multicast resilience)
+    snap_dict["ipv6_fhs"] = all_ipv6_fhs                             # IPv6 first-hop security -> _d_ipv6_fhs (rogue-RA gateway hijack)
+    snap_dict["ntp"] = all_ntp                                       # NTP clock-sync STATE -> _d_ntp_sync (unsynchronized clock)
+    snap_dict["port_security"] = all_port_security                   # port-security DETAIL -> _d_port_security_errdisable (Secure-shutdown)
+    snap_dict["storm_control"] = all_storm_control                   # storm-control action -> _d_storm_control_action (toothless rule)
+    snap_dict["qos_runtime"] = all_qos_runtime                       # QoS runtime egress drops -> _d_qos_runtime_drops
+    snap_dict["shadow_infra"] = all_shadow_infra                     # undocumented infra neighbours -> _d_shadow_infra
     snap_dict["punchlist"] = punchlist                              # NEW-V3.23.63 (consolidated severity-ranked migration punch-list)
     snap_dict["operational_drift"] = _drift                         # NEW-V3.23.93 (false-health / operational-drift findings; also folded into the punch-list)
     snap_dict["calibration"] = calibration                           # NEW-V3.23.47 (fleet band-discrimination diagnostic)
     snap_dict["acls"] = all_acls                                     # NEW (L4 ACL sim): {host:{name:[rule,...]}}
     snap_dict["object_groups"] = all_object_groups                  # NEW (L4 depth): {host:{name:{kind,members}}}
+    snap_dict["feature_compliance"] = feature_compliance             # roadmap I2 (golden-drift decomposed per policy feature)
+    snap_dict["acl_line_reachability"] = acl_line_reachability       # roadmap G1 (offline ACL shadow / dead-line proof)
+    if external_reconcile is not None:                               # roadmap B (opt-in: only when --import-inventory supplied)
+        snap_dict["external_reconcile"] = external_reconcile         # declared source-of-truth vs collected evidence
+    snap_dict["capture_integrity"] = capture_integrity              # roadmap K1 (per-capture truncation/pager/error guard)
+    snap_dict["parse_yield"] = parse_yield_report()                 # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
+    if whatif_result is not None:                                   # roadmap G4 (opt-in: only when --scenario supplied)
+        snap_dict["whatif"] = whatif_result                         # failure-injection what-if results
+    if path_intents is not None:                                    # roadmap G3 (opt-in: only when --path-intents supplied)
+        snap_dict["path_intents"] = path_intents                    # named path/segmentation intent verdicts
     snap_dict["routes"] = all_routes                                # NEW (route-aware reachability): {host:[{prefix,source,next_hop,out_intf}]}
     snap_dict["routing_neighbors"] = all_routing_neighbors          # NEW (protocol-to-protocol analysis): {host:{ospf:[...],eigrp:[...],bgp:[...]}}
     snap_dict["redistribution"] = all_redistribution                # NEW (protocol-to-protocol analysis): {host:[{into_proto,into_id,from_proto,from_id,route_map,raw}]}
@@ -2037,6 +2577,28 @@ def main():
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
+    # Single source of truth: publish the canonical VLAN count (the same `vlan_inventory` derivation the
+    # design / CRD deliverables read) into the brief's scale block, so every consumer — workbook, explorer,
+    # webapp — reads ONE value instead of re-counting VLANs in JS/TS (which drifts: explorer ~176 vs 172).
+    _ebscale = snap_dict["executive_brief"].get("scale") if isinstance(snap_dict.get("executive_brief"), dict) else None
+    if isinstance(_ebscale, dict):
+        _ebscale["n_vlans"] = len(vlan_inventory(snap_dict))
+        # publish the genuinely-COLLECTED subset alongside scale so coverage-honesty surfaces (deck /
+        # engagement / ops / workbook) read ONE canonical "253 of 303 collected" instead of re-deriving it
+        # or mislabelling the 303 inventory as "assessed / evidence scope". (SSOT-device-deliv-06)
+        _ebscale["n_collected"] = ((snap_dict.get("collection_completeness") or {}).get("summary") or {}).get("complete")
+    # Integrity (wave R2-4-01): if the cross-axis brief synthesis FAILED, _run_phase returned the sentinel
+    # default and scale/posture/axes are absent. Disclose it as a machine-readable flag so consumers
+    # (deck / explorer / webapp) surface "cross-axis synthesis unavailable" instead of rendering the
+    # missing numbers as healthy zeros -- the assembly-level analogue of the device false-health class.
+    if isinstance(executive_brief, dict) and executive_brief.get("_unavailable"):
+        logger.warning("  [INTEGRITY] executive-brief synthesis FAILED; stamping assessment_integrity so "
+                       "consumers disclose 'cross-axis synthesis unavailable' rather than zeros.")
+        snap_dict["assessment_integrity"] = {"executive_brief": "compute_failed"}
+    if isinstance(architecture_review, dict) and architecture_review.get("_unavailable"):
+        logger.warning("  [INTEGRITY] architecture-review computation FAILED; stamping assessment_integrity so "
+                       "consumers disclose 'architecture review unavailable' rather than a clean grade.")
+        snap_dict.setdefault("assessment_integrity", {})["architecture_review"] = "compute_failed"
     snap_dict["device_dossiers"] = device_dossiers                   # NEW-V3.23.172 (per-asset compound-risk register; reused from the Phase 30d synthesis)
     # NEW-V3.23.160: the senior-engineer design review. V3.23.161: REUSES the object computed in
     # Phase 30f for the workbook sheet (one source of truth — sheet, snapshot and DOCX agree),
@@ -2048,8 +2610,65 @@ def main():
     if args.redact:                                                  # NEW-V3.23.41
         snap_dict = redact_snapshot(snap_dict)
         logger.info("  [redact] snapshot IPs / MACs / serials pseudonymized (--redact)")
+    # NEW: the canonical CCDE-grounded target-state DESIGN BLUEPRINT (the senior-network-design-engineer
+    # layer). Computed LAST, from the fully-assembled (and, under --redact, already-redacted) snap_dict, so
+    # the design DOCX / explorer / webapp all read ONE blueprint instead of re-deriving design intent. It
+    # folds the date-relative lifecycle/EoL evidence, so it is excluded from the frozen golden like
+    # executive_brief / device_dossiers; the SSOT publish is locked by tests/test_pipeline_inprocess.py.
     try:
-        write_json_file(snap_path, snap_dict)
+        from cisco_toolkit.design_advisor import load_requirements
+        _req = load_requirements(getattr(args, "requirements", "") or "")
+        if _req:
+            snap_dict["requirements_register"] = _req                 # stored so the blueprint stays reproducible from the snapshot alone
+            logger.info(f"  [design] requirements register supplied ({', '.join(sorted(_req))}) -> blueprint right-sized")
+        # design_blueprint INCLUDES the gated EVPN-migration guardrails (compute_design_blueprint folds them in
+        # so the published blueprint stays reproducible from the snapshot + the same requirements register).
+        snap_dict["design_blueprint"] = compute_design_blueprint(snap_dict, _req or None)
+        # design-driven NRFU/ATP checklist, published canonically so the OFFLINE explorer and the webapp
+        # read ONE set of phased acceptance items (and their phases) instead of re-deriving them in JS.
+        # Derived purely from design_blueprint -> excluded from the golden + publish-locked alongside it.
+        snap_dict["design_nrfu"] = compute_design_nrfu(snap_dict["design_blueprint"])
+        # Architecture-coverage SSOT: which architecture CLASSES were observed vs not, and what fired -- one
+        # source the deliverables/explorer/webapp read instead of re-deriving coverage. Reads design_blueprint
+        # + the per-axis snapshot keys; excluded from the golden (date-relative via the blueprint) like it.
+        snap_dict["architecture_coverage"] = compute_architecture_coverage(snap_dict)
+        # Coverage matrix (Plan-A #5): compose the four coverage sources -- collection / capture / parse /
+        # architecture -- into ONE per-(device, axis) first-class table (recomputes no device state, just
+        # projects the published verdicts). Reads architecture_coverage above, so it inherits the
+        # blueprint's date-relativity -> excluded from the golden + publish-locked alongside it.
+        snap_dict["coverage_matrix"] = compute_coverage_matrix(snap_dict)
+    except Exception as e:                                            # fail-soft: never break the snapshot write
+        logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
+    # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
+    # fixtures, never on a real customer snapshot. Reconcile the published canonical facts against
+    # their raw-evidence derivation NOW, on the fully-assembled snap_dict, and ONLY on drift disclose
+    # it via the existing assessment_integrity channel (which the deck/explorer already surface) +
+    # an [INTEGRITY] warning. A clean run stamps nothing -> no false alarm, no golden churn. (ssot.audit)
+    try:
+        from cisco_toolkit import ssot as _ssot
+        _ssot_drift = _ssot.audit(snap_dict)
+        # Positive self-verification badge for the dashboards (golden-excluded with executive_brief):
+        # an always-present client-facing trust signal that the published headline facts were
+        # reconciled to the raw evidence, distinct from the drift-only assessment_integrity channel.
+        if isinstance(snap_dict.get("executive_brief"), dict):
+            snap_dict["executive_brief"]["ssot"] = _ssot.summary(snap_dict)
+        if _ssot_drift:
+            logger.warning(f"  [INTEGRITY] {_ssot_drift['n_violations']} published fact(s) do not reconcile "
+                           f"to the raw evidence; disclosing in assessment_integrity: {_ssot_drift['violations'][:3]}")
+            snap_dict.setdefault("assessment_integrity", {}).update(_ssot_drift)
+    except Exception as e:                                            # fail-soft: a self-check must never break the write
+        logger.warning(f"  SSOT self-check skipped (non-fatal): {e}")
+    # roadmap A1/H2: opt-in state-assertion check-pack (--assert-pack FILE), evaluated over the FULL snapshot
+    # (coverage-honest: a subject that was not collected -> [NOT OBSERVED], excluded from the pass/fail denominator).
+    if args.assert_pack:
+        try:
+            with open(args.assert_pack, encoding="utf-8") as _af:
+                _pack = json.load(_af)
+            snap_dict["state_assertions"] = evaluate_pack(snap_dict, _pack if isinstance(_pack, dict) else {"assertions": _pack})
+        except Exception as e:
+            logger.warning(f"  --assert-pack not evaluated ({e}); skipping.")
+    try:
+        write_json_file(snap_path, sparsify_interfaces(snap_dict), compact=True)   # Tier3#14 minified + #14-Phase2 sparse interfaces on disk
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")
     except Exception as e:
         logger.warning(f"  Snapshot write failed: {e}")
@@ -2158,6 +2777,119 @@ def main():
             write_ops_handbook_docx(oh_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
+
+    # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases. Reuse the ONE analyze-stage
+    # carrier (_actx, unconditionally built above) instead of a second fresh AnalysisContext -- the
+    # strangler converging on a single typed carrier threaded through the pipeline. Set the
+    # finalize-only handles it reads (config + the assembled snapshot); golden-neutral, same values.
+    _actx.args = args
+    _actx.out_xlsx = out_xlsx
+    _actx.root_dir = root_dir
+    _actx.all_devices_meta = all_devices_meta
+    _actx.workers = workers
+    _actx.snap_dict = snap_dict
+    _stage_finalize(_actx)
+
+
+def _stage_finalize(ctx: "AnalysisContext") -> None:
+    """Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases -- run-manifest
+    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41). A true LEAF:
+    nothing downstream reads its outputs, which is why it is the safest first extraction. Reads the
+    context's out_xlsx / snap_dict / root_dir / args / all_devices_meta / workers + the module-global
+    _PHASE_TIMINGS; the body below is byte-identical to the inline block it replaced."""
+    out_xlsx, snap_dict, root_dir, args = ctx.out_xlsx, ctx.snap_dict, ctx.root_dir, ctx.args
+    all_devices_meta, workers = ctx.all_devices_meta, ctx.workers
+
+    # Phase 39: sealed run-manifest chain-of-custody (roadmap D2 + J4). The offline, deterministic answer to a
+    # GAIT-style audit trail: a hash-chained ledger of the pipeline stages + per-artifact sha256 + the
+    # coverage-honest abstention ledger, sealed by chain_root. LAST emit so it hashes every produced artifact.
+    try:
+        _run_manifest = build_run_manifest(out_xlsx, snap_dict)
+        _manifest_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".run_manifest.json"
+        write_json_file(_manifest_path, _run_manifest)
+        logger.info(f"[OK] Run manifest (chain-of-custody): {_manifest_path}  "
+                    f"(chain_root {str(_run_manifest.get('chain_root', ''))[:12]}…, "
+                    f"{len(_run_manifest.get('artifacts') or [])} artifact(s))")
+    except Exception as e:
+        logger.warning(f"  Run manifest write failed (non-fatal): {e}")
+
+    # Phase 40: opt-in raw-capture secret scrub (Plan A / Tier-1 #5). Deliberately the VERY
+    # last step: every deliverable above was built from the ORIGINAL captures, and the sealed
+    # manifest is already written. Secret VALUES only — the dir stays analyzable/--compare-able.
+    if getattr(args, "redact_collection", False):
+        try:
+            _scanned, _changed = redact_collection_dir(root_dir)
+            logger.info(f"[OK] redact-collection: scrubbed secret values in {_changed} of "
+                        f"{_scanned} raw capture file(s) under {root_dir} (in place, idempotent; "
+                        f"IPs/hostnames kept)")
+        except Exception as e:
+            logger.warning(f"  redact-collection failed (non-fatal; raw dir unchanged): {e}")
+
+    # Phase 41: perf sidecar (Plan A / Tier-2 #11 — the measure-first harness). A SEPARATE
+    # .phase_timings.json next to the workbook, chronological, golden-neutral (never a
+    # snapshot key; written after the manifest seal like the Phase-40 scrub). Sweep runner:
+    # `python tests/perf_scale.py 100 300 600 1000`.
+    try:
+        _pt_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".phase_timings.json"
+        _pt = {"n_devices": len(all_devices_meta), "workers": workers,
+               "total_seconds": round(sum(p["seconds"] for p in _PHASE_TIMINGS), 3),
+               "phases": list(_PHASE_TIMINGS)}
+        write_json_file(_pt_path, _pt)
+        _slowest = max(_PHASE_TIMINGS, key=lambda p: p["seconds"], default={"phase": "-", "seconds": 0})
+        logger.info(f"[OK] Phase timings: {_pt_path}  ({len(_PHASE_TIMINGS)} timed phase(s), "
+                    f"slowest: {_slowest['phase']} {_slowest['seconds']}s)")
+    except Exception as e:
+        logger.warning(f"  phase-timings write failed (non-fatal): {e}")
+
+
+# =============================================================================
+# STAGE-3 (analyze) CTX-ADAPTERS  (Plan-A #15 strangler -- the positional collapse)
+# =============================================================================
+# The three WIDE analyze-stage syntheses used to thread 15/19/14 locals positionally through
+# _run_phase -- the fragile call-shape a silent reorder could corrupt (the format-fidelity /
+# positional-drift bug class). Each adapter reads the typed AnalysisContext and forwards to the
+# UNCHANGED public compute_* by KEYWORD (named -> reorder-proof; it also documents the
+# main-local -> parameter renames such as all_security -> security). The public functions keep
+# their explicit-arg signatures, so the webapp / excel / the ~40 direct-call tests are untouched;
+# ONLY main() reads from ctx. Module-private (leading underscore) so test_package's surface
+# contract is unchanged. Golden-neutral: the same values reach compute_* in the same order.
+def _device_dossiers(ctx: "AnalysisContext") -> dict:
+    """Ctx-adapter for the Device Risk Register (was 15 positional args at 'Device risk register')."""
+    return compute_device_dossiers(
+        health_scores=ctx.health_scores, failure_impact=ctx.failure_impact,
+        lifecycle_risk=ctx.lifecycle_risk, software_risk=ctx.software_risk,
+        platform_health=ctx.platform_health, syslog_intelligence=ctx.syslog_intelligence,
+        qos_audit=ctx.qos_audit, golden_drift=ctx.golden_drift,
+        security=ctx.all_security, config_hygiene=ctx.all_config_hygiene,
+        stp_roots=ctx.all_stp_roots, vpc=ctx.all_vpc,
+        physical_health=ctx.physical_health, protocol_health=ctx.protocol_health,
+        move_groups=ctx.move_groups)
+
+
+def _punchlist(ctx: "AnalysisContext") -> list:
+    """Ctx-adapter for the Migration Punch-List (was 9 positional + 10 keyword args)."""
+    return compute_migration_punchlist(
+        cross_layer=ctx.cross_layer, security=ctx.all_security, config_hygiene=ctx.all_config_hygiene,
+        physical_health=ctx.physical_health, l3_forwarding=ctx.l3_forwarding,
+        protocol_health=ctx.protocol_health, stp_findings=ctx.stp_findings,
+        health_scores=ctx.health_scores, move_groups=ctx.move_groups,
+        l2=ctx.l2, hostname_mismatches=ctx.hostname_mismatches, drift=ctx.drift,
+        ptp_readiness=ctx.ptp_readiness, media_risks=ctx.media_risks,
+        syslog_intelligence=ctx.syslog_intelligence, qos_audit=ctx.qos_audit,
+        software_risk=ctx.software_risk, platform_health=ctx.platform_health,
+        device_dossiers=ctx.device_dossiers)
+
+
+def _executive_brief(ctx: "AnalysisContext") -> dict:
+    """Ctx-adapter for the cross-axis Executive Brief (was 8 positional + 6 keyword args)."""
+    return compute_executive_brief(
+        health_scores=ctx.health_scores, punchlist=ctx.punchlist,
+        migration_readiness=ctx.migration_readiness,
+        application_intelligence=ctx.application_intelligence, lifecycle_risk=ctx.lifecycle_risk,
+        segmentation=ctx.segmentation, multicast_intelligence=ctx.multicast_intelligence,
+        remediation_plan=ctx.remediation_plan, syslog_intelligence=ctx.syslog_intelligence,
+        qos_audit=ctx.qos_audit, software_risk=ctx.software_risk, platform_health=ctx.platform_health,
+        device_dossiers=ctx.device_dossiers, endpoint_identity=ctx.endpoint_identity)
 
 
 if __name__ == "__main__":

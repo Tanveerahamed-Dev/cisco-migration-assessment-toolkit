@@ -7,6 +7,7 @@ so the whole platform runs from one origin in production.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -14,10 +15,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -41,6 +42,7 @@ _ALLOWED_SECTIONS = {k for k, _ in summary.SECTION_LABELS} | {
     "devices", "interfaces", "stp_roots", "routing_neighbors", "subnet_intelligence",
     "endpoint_dependencies", "migration_scenarios", "operational_drift", "security",
     "config_hygiene", "service_map", "addressing_conflicts", "calibration", "score_sensitivity",
+    "design_blueprint", "architecture_coverage",
 }
 
 
@@ -105,6 +107,33 @@ class GateIn(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+# --- client-data confidentiality (Plan A / Tier-1 #4) -------------------------------
+# The snapshots served here are CLIENT data (topology, IPs, serials, parsed configs).
+# Browser vector: CORS is localhost-origin-only (the dev UI proxies /api same-origin, so
+# even that rarely applies); internet-origin pages get no readable responses and no
+# approved preflights. Network vector: without ASSESSHUB_TOKEN the API serves LOOPBACK
+# clients only; setting the token (required for any non-loopback bind) gates every /api
+# route behind `Authorization: Bearer <token>`. /api/health stays open as a liveness
+# probe — it carries no client data.
+_LOCALHOST_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+
+def _cors_origins() -> List[str]:
+    """Extra allowed origins, comma-separated in ASSESSHUB_CORS_ORIGINS (advanced setups
+    only — e.g. a reverse-proxied UI on another host). Empty by default."""
+    raw = os.environ.get("ASSESSHUB_CORS_ORIGINS", "")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def _client_is_loopback(request: Request) -> bool:
+    """True when the ASGI peer is loopback (or an in-process test harness, which has no
+    real socket). Deliberately conservative: an unknown/forwarded peer is NOT loopback."""
+    host = getattr(request.client, "host", None)
+    if host is None or host == "testclient":
+        return True
+    return host == "::1" or host.startswith("127.")
+
+
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
     try:
         snap = json.loads(raw.decode("utf-8"))
@@ -134,8 +163,36 @@ def create_app(db_path: str | None = None) -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+        allow_origins=_cors_origins(),                 # env extras only; empty by default
+        allow_origin_regex=_LOCALHOST_ORIGIN_RE,       # localhost on any port — never '*'
+        allow_methods=["*"], allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _api_access_guard(request: Request, call_next):
+        """Registered AFTER (so wrapping OUTSIDE) CORSMiddleware; skips OPTIONS so
+        preflights fall through to CORS. Token set -> Bearer required on all /api;
+        token unset -> /api is loopback-only. Health/liveness stays open."""
+        path = request.url.path
+        if (request.method == "OPTIONS" or not path.startswith("/api/")
+                or path == "/api/health"):
+            return await call_next(request)
+        token = os.environ.get("ASSESSHUB_TOKEN", "")
+        if token:
+            supplied = request.headers.get("authorization", "")
+            if not hmac.compare_digest(supplied.encode("utf-8", "replace"),
+                                       f"Bearer {token}".encode("utf-8")):
+                return JSONResponse({"detail": "This AssessHub requires an API token: "
+                                               "send 'Authorization: Bearer <ASSESSHUB_TOKEN>'."},
+                                    status_code=401)
+        elif not _client_is_loopback(request):
+            return JSONResponse({"detail": "AssessHub serves loopback clients only until an API "
+                                           "token is configured — set ASSESSHUB_TOKEN on the server "
+                                           "and send it as 'Authorization: Bearer <token>' to enable "
+                                           "non-local access to client data."},
+                                status_code=403)
+        return await call_next(request)
+
     app.state.store = store
 
     # -- meta --------------------------------------------------------------
@@ -233,7 +290,17 @@ def create_app(db_path: str | None = None) -> FastAPI:
                               label: str = Form("")) -> Dict[str, Any]:
         if not store.get_campaign(campaign_id):
             raise HTTPException(404, "Campaign not found")
-        snap = _parse_snapshot_bytes(await file.read())
+        # Hard size cap (chunked) like the sibling /ingest endpoint -- `await file.read()` with no bound let a
+        # multi-GB upload exhaust server memory before parsing (a trivial DoS on an unauthenticated POST).
+        chunks: List[bytes] = []
+        received = 0
+        while chunk := await file.read(1024 * 1024):
+            received += len(chunk)
+            if received > ingest.MAX_ARCHIVE_BYTES:
+                raise HTTPException(
+                    413, f"Snapshot exceeds the {ingest.MAX_ARCHIVE_BYTES // (1024 * 1024)} MB upload limit")
+            chunks.append(chunk)
+        snap = _parse_snapshot_bytes(b"".join(chunks))
         lbl = label.strip() or (file.filename or "snapshot").rsplit(".", 1)[0]
         return store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
 
@@ -284,7 +351,28 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         if name not in snap:
             raise HTTPException(404, f"Section '{name}' not present in this snapshot")
-        return {"section": name, "data": snap[name]}
+        data = snap[name]
+        if name == "device_dossiers":
+            # one-source-of-truth, like the sibling heavy sections (archreview/design/...): a pre-V3.23.174
+            # snapshot bands the uncollected fleet 'Low / routine migration handling' instead of 'Unassessed'
+            # (false-health -- a blind device reads identical to a verified-low one). If the stored section is
+            # stale -- uncollected devices exist but it carries NO 'Unassessed' band -- recompute with the current
+            # engine so the live Risk Register surfaces them as a coverage gap (audit-4 #20).
+            _has_blind = any(isinstance(h, dict) and h.get("band") == "Insufficient Data"
+                             for h in (snap.get("health_scores") or []))
+            _bands = (data.get("summary") or {}).get("bands") if isinstance(data, dict) else None
+            if _has_blind and isinstance(_bands, dict) and not _bands.get("Unassessed"):
+                from cisco_toolkit.analyze import compute_device_dossiers
+                data = compute_device_dossiers(
+                    health_scores=snap.get("health_scores"), failure_impact=snap.get("failure_impact"),
+                    lifecycle_risk=snap.get("lifecycle_risk"), software_risk=snap.get("software_risk"),
+                    platform_health=snap.get("platform_health"), syslog_intelligence=snap.get("syslog_intelligence"),
+                    qos_audit=snap.get("qos_audit"), golden_drift=snap.get("golden_drift"),
+                    security=snap.get("security"), config_hygiene=snap.get("config_hygiene"),
+                    stp_roots=snap.get("stp_roots"), vpc=snap.get("vpc"),
+                    physical_health=snap.get("physical_health"), protocol_health=snap.get("protocol_health"),
+                    move_groups=snap.get("move_groups"))
+        return {"section": name, "data": data}
 
     @app.get("/api/snapshots/{snapshot_id}/graph")
     def snapshot_graph(snapshot_id: int) -> Dict[str, Any]:
@@ -294,6 +382,15 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         keystones = [k.get("host") for k in (meta["summary"].get("keystones") or []) if k.get("host")]
         return graph.build_graph(snap, keystones)
+
+    @app.get("/api/snapshots/{snapshot_id}/cable_map")
+    def snapshot_cable_map(snapshot_id: int) -> Dict[str, Any]:
+        """EDA-style physical cable map (Python SSOT snap['cable_map']): CDP/LLDP links laid out in role
+        tiers, cables coloured by operational status. Recomputed from evidence for pre-feature snapshots."""
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        return graph.cable_map_from_snapshot(snap)
 
     @app.get("/api/snapshots/{snapshot_id}/cutover")
     def snapshot_cutover(snapshot_id: int) -> Dict[str, Any]:
@@ -319,6 +416,146 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 raise HTTPException(404, "Snapshot not found")
             ar = compute_architecture_review(snap)
         return ar
+
+    _fallback_bp: Dict[int, Any] = {}
+
+    def _fallback_blueprint(snapshot_id: int, snap: Dict[str, Any]) -> Dict[str, Any]:
+        """The design_blueprint computed on the fly for a snapshot that doesn't store one, MEMOISED by id. The
+        four read endpoints below (causal_flows / design / architecture_coverage / nrfu) each fall back to this
+        when the stored section is absent; a stored snapshot is immutable (the Store exposes no update), so this
+        pure function of the snapshot + its STORED requirements is identical on every request -- compute it once
+        per snapshot instead of re-running compute_design_blueprint on each panel load. The POST overlays use a
+        REQUEST-supplied register and deliberately bypass this cache."""
+        cached = _fallback_bp.get(snapshot_id)
+        if cached is None:
+            from cisco_toolkit.design_advisor import compute_design_blueprint
+            cached = compute_design_blueprint(snap, snap.get("requirements_register") or {})
+            if len(_fallback_bp) < 256:        # bound memory; immutable snapshots mean an entry never goes stale
+                _fallback_bp[snapshot_id] = cached
+        return cached
+
+    @app.get("/api/snapshots/{snapshot_id}/causal_flows")
+    def snapshot_causal_flows(snapshot_id: int) -> Dict[str, Any]:
+        """Unified CAUSAL FLOW model (engine compute_causal_flows) — every finding family rendered as one
+        trigger -> mechanism -> impact -> mitigation story (cross-layer compounds become a bowtie). This is
+        the SAME normalization the explorer's Causal Flow mode shows; computed server-side so the dashboard
+        never re-derives causal intent (one source of truth). For a snapshot that already carries a
+        design_blueprint this matches the explorer exactly; for one that doesn't, the blueprint is computed on
+        the fly (same fallback the /design endpoint uses) so the design-decision family is still present —
+        keeping the webapp internally consistent with its own /design panel."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        # compute design_blueprint when the stored snapshot lacks one (honouring any published requirements),
+        # so the design-decision family appears — a no-op for engagement snapshots that already store it.
+        bp = snap.get("design_blueprint")
+        if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
+            try:
+                snap = dict(snap)
+                snap["design_blueprint"] = _fallback_blueprint(snapshot_id, snap)
+            except Exception:
+                pass  # design couldn't be computed -> fall through; the other families still render
+        from cisco_toolkit.causal import compute_causal_flows
+        try:
+            return compute_causal_flows(snap)
+        except Exception as exc:  # defense-in-depth: the engine fn is hardened to be total over any dict,
+            raise HTTPException(500, f"causal-flow computation failed: {exc}")  # but never leak a raw stack
+
+    @app.get("/api/snapshots/{snapshot_id}/design")
+    def snapshot_design(snapshot_id: int) -> Dict[str, Any]:
+        """The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint) — the SAME
+        object the HLD/LLD DOCX and the explorer Design mode read. Prefers the stored design_blueprint
+        section; computes server-side with the same engine function otherwise (one source of truth)."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        bp = store.get_snapshot_section(snapshot_id, "design_blueprint")
+        if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
+            snap = store.get_snapshot(snapshot_id)
+            if snap is None:
+                raise HTTPException(404, "Snapshot not found")
+            # honour the register the CLI published with the snapshot so the fallback recompute is the SAME
+            # right-sized blueprint the stored section would have been (not an un-right-sized one)
+            bp = _fallback_blueprint(snapshot_id, snap)
+        return bp
+
+    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage")
+    def snapshot_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
+        """Architecture-coverage SSOT (engine compute_architecture_coverage): which architecture CLASSES were
+        OBSERVED vs not, across both ingestion channels (ssh show-text / json controller-REST), and what fired
+        -- the SAME map the explorer's ✎Design view renders. Coverage-honest: 'not-observed' is NOT 'healthy'.
+        Prefers the stored section; computes server-side with the same engine function otherwise (one source of
+        truth -- the dashboard never re-derives coverage)."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        cov = store.get_snapshot_section(snapshot_id, "architecture_coverage")
+        if not (isinstance(cov, dict) and isinstance(cov.get("classes"), list)):
+            from cisco_toolkit.design_advisor import compute_architecture_coverage
+            snap = store.get_snapshot(snapshot_id)
+            if snap is None:
+                raise HTTPException(404, "Snapshot not found")
+            if not isinstance(snap.get("design_blueprint"), dict):
+                snap["design_blueprint"] = _fallback_blueprint(snapshot_id, snap)
+            cov = compute_architecture_coverage(snap)
+        return cov
+
+    @app.post("/api/snapshots/{snapshot_id}/design")
+    def design_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """Interactive requirements overlay: recompute the blueprint right-sized to a requirements
+        register (availability_tier / critical_apps / convergence_budget_ms / growth_horizon /
+        fabric_operating_model / constraints / data_classification / address_space / vlan_zones). The
+        right-sizing logic lives ONLY here (Python, the same compute_design_blueprint the CLI runs) —
+        the dashboard never re-derives design intent.
+
+        The body is EITHER a typed requirements register OR the engagement interview's tagged answers
+        wrapped as {"interview_answers": {...}} — the latter mapped through the SAME
+        requirements_from_interview bridge the CLI uses, so interview output closes the requirements loop
+        here too (one normalisation path, no second mapper)."""
+        from cisco_toolkit.design_advisor import (compute_design_blueprint,
+                                                  requirements_from_interview)
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        body = requirements or {}
+        register = (requirements_from_interview(body["interview_answers"])
+                    if isinstance(body.get("interview_answers"), dict) else body)
+        return compute_design_blueprint(snap, register or {})
+
+    @app.get("/api/snapshots/{snapshot_id}/design/nrfu")
+    def design_nrfu(snapshot_id: int) -> Dict[str, Any]:
+        """Design-driven NRFU/ATP acceptance-test checklist derived from the recommended design
+        decisions. One structured item per decision, traceable to the CCDE principle, the evidence
+        that triggered it, and the specific devices the NRFU engineer must verify. Items are phased
+        across three cutover stages: pre-cutover → post-cutover-functional → post-cutover-operational.
+        The right-sizing logic lives only in Python — the dashboard never re-derives test items."""
+        from cisco_toolkit.design_advisor import compute_design_nrfu
+        nrfu = store.get_snapshot_section(snapshot_id, "design_nrfu")   # canonical, published by the engine
+        if isinstance(nrfu, dict) and isinstance(nrfu.get("items"), list):
+            return nrfu
+        bp = store.get_snapshot_section(snapshot_id, "design_blueprint")
+        if not (isinstance(bp, dict) and isinstance(bp.get("decisions"), list)):
+            snap = store.get_snapshot(snapshot_id)
+            if snap is None:
+                raise HTTPException(404, "Snapshot not found")
+            bp = _fallback_blueprint(snapshot_id, snap)
+        return compute_design_nrfu(bp)
+
+    @app.post("/api/snapshots/{snapshot_id}/design/nrfu")
+    def design_nrfu_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
+        """Right-size the NRFU/ATP checklist to a requirements register (or {"interview_answers": {...}}),
+        so the dashboard NRFU tab reflects right-sizing rather than the baseline. SSOT: derived server-side
+        from the SAME overlay blueprint POST /design returns (compute_design_blueprint -> compute_design_nrfu)
+        — the dashboard never re-derives test items or their phases."""
+        from cisco_toolkit.design_advisor import (compute_design_blueprint, compute_design_nrfu,
+                                                  requirements_from_interview)
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:
+            raise HTTPException(404, "Snapshot not found")
+        body = requirements or {}
+        register = (requirements_from_interview(body["interview_answers"])
+                    if isinstance(body.get("interview_answers"), dict) else body)
+        return compute_design_nrfu(compute_design_blueprint(snap, register or {}))
 
     # -- execution runs (war room) ------------------------------------------
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:

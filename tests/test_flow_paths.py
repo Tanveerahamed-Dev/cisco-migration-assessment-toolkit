@@ -53,3 +53,33 @@ def test_empty_identity_yields_no_flows(monkeypatch):
     out = az.compute_flow_paths({}, [])
     assert out["flows"] == [] and out["summary"]["n_flows"] == 0
     assert out["summary"]["n_at_risk"] == 0
+
+
+def test_trace_full_flow_blocks_cross_vrf_inter_vlan():
+    """[audit-2 #1] two endpoints whose gateway SVIs are in DIFFERENT VRFs (no route leak) are L3-isolated;
+    trace_full_flow must NOT report 'inter-VLAN routed locally' LOW-risk -- it must mark the flow partitioned
+    (blocked at the VRF boundary). Cross-VRF reachability was a false-health over-claim from collected evidence."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit import analyze
+
+    def acc(v, ip, mac):
+        d = InterfaceData(); d.switchport_mode = "Access"; d.vlan = str(v); d.end_host_ip = ip; d.end_host_mac = mac
+        return d
+
+    def svi(ip, pfx, vrf):
+        d = InterfaceData(); d.svi_ip = ip; d.subnet_primary_route = pfx; d.vrf = vrf; d.routing_source = "connected"
+        return d
+
+    def trunk():
+        d = InterfaceData(); d.switchport_mode = "Trunk"; d.trunk_allowed_vlans = "10,20"
+        return d
+
+    def fleet(v20):
+        base = {"Gi1/0/1": acc(10, "10.0.10.5", "aaaa.bbbb.0001"), "Gi1/0/2": acc(20, "10.0.20.5", "aaaa.bbbb.0002"),
+                "Vlan10": svi("10.0.10.1", "10.0.10.0/24", "RED"), "Vlan20": v20, "Te1/1": trunk()}
+        return {"CORE1": dict(base), "CORE2": dict(base)}
+
+    cross = fleet(svi("10.0.20.1", "10.0.20.0/24", "BLUE"))     # src VRF RED, dst VRF BLUE -> isolated
+    assert analyze.trace_full_flow("10.0.10.5", "10.0.20.5", cross)["summary"]["partitioned"] is True
+    same = fleet(svi("10.0.20.1", "10.0.20.0/24", "RED"))       # same VRF -> routes locally (regression guard)
+    assert analyze.trace_full_flow("10.0.10.5", "10.0.20.5", same)["summary"]["partitioned"] is False

@@ -32,7 +32,9 @@ def _macset(s: str) -> set:
 # worse?": per-switch health-band shifts and the consolidated punch-list findings that OPENED vs
 # RESOLVED (the punch-list already rolls up all finding sources, deduped + severity-ranked). Pure
 # read of two snapshot_state() dicts; tolerant of older snapshots that lack the computed keys.
-_BAND_RANK = {"Excellent": 0, "Good": 1, "Fair": 2, "Poor": 3, "Critical": 4, "Insufficient Data": 5}
+# 'Insufficient Data' is deliberately ABSENT: it is a coverage state, not a health-scale point (ssot.py:60-63), so
+# transitions into/out of it are handled as coverage_shifts, never ranked as better/worse than a real band.
+_BAND_RANK = {"Excellent": 0, "Good": 1, "Fair": 2, "Poor": 3, "Critical": 4}
 _FIND_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
@@ -48,20 +50,43 @@ def _finding_key(f: dict) -> tuple:
     return (str(f.get("category", "")), str(f.get("title", "")), devs)
 
 
+def _as_dict(x):
+    """A snapshot section coerced to a dict. `... or {}` only guards FALSY values, so a truthy non-dict (a list/
+    scalar from a malformed --compare/--trend snapshot) flowed into .values()/set() and raised (audit-5 totality);
+    `.get(k, {})` likewise returns None for a present-but-null key."""
+    return x if isinstance(x, dict) else {}
+
+
 def compute_snapshot_delta(old: dict, new: dict) -> dict:
     """Migration-validation delta between two snapshots: switch/interface counts, per-switch health-band
     shifts (regressed vs improved), punch-list findings opened vs resolved, and an overall verdict.
     Returns a dict; every section degrades to empty when a snapshot lacks the computed keys."""
-    od, nd = old.get("devices", {}) or {}, new.get("devices", {}) or {}
-    oi, ni = old.get("interfaces", {}) or {}, new.get("interfaces", {}) or {}
+    old = old if isinstance(old, dict) else {}            # total: the --compare/--trend path may hand us a
+    new = new if isinstance(new, dict) else {}            # non-dict (a JSON file that parsed to null/[]/scalar)
+    od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
+    oi, ni = _as_dict(old.get("interfaces")), _as_dict(new.get("interfaces"))
 
     # ---- health-band shifts (per switch present in BOTH runs) ----
-    oh = {r.get("switch"): r for r in (old.get("health_scores") or [])}
-    nh = {r.get("switch"): r for r in (new.get("health_scores") or [])}
+    # isinstance guard: a null element in the list (hand-trimmed / older-schema snapshot fed to --compare/--trend)
+    # must degrade, not AttributeError on r.get (audit-4 #15).
+    oh = {r.get("switch"): r for r in (old.get("health_scores") or []) if isinstance(r, dict)}
+    nh = {r.get("switch"): r for r in (new.get("health_scores") or []) if isinstance(r, dict)}
     regressed: List[dict] = []
     improved: List[dict] = []
+    coverage_shifts: List[dict] = []   # transitions in/out of 'Insufficient Data' (coverage events, not health)
     for sw in sorted(set(oh) & set(nh)):
         ob, nb = oh[sw].get("band", ""), nh[sw].get("band", "")
+        if ob == nb:
+            continue
+        # 'Insufficient Data' is a COVERAGE state, not a point on the health scale (ssot.py:60-63: it never counts
+        # as the worst band). A shift into/out of it is a coverage change, NOT a health improvement/regression --
+        # ranking it worse-than-Critical made 'Insufficient Data -> Critical' read 'improved' + CLEAN, i.e. a
+        # newly-online Critical box certified as an improvement at the cutover gate (audit-4 #5).
+        if ob == "Insufficient Data" or nb == "Insufficient Data":
+            coverage_shifts.append({"switch": sw, "old_band": ob, "new_band": nb,
+                                    "old_score": oh[sw].get("score", ""), "new_score": nh[sw].get("score", ""),
+                                    "kind": "went_dark" if nb == "Insufficient Data" else "newly_assessed"})
+            continue
         orank, nrank = _BAND_RANK.get(ob, 9), _BAND_RANK.get(nb, 9)
         if nrank == orank:
             continue
@@ -69,10 +94,14 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
                "old_score": oh[sw].get("score", ""), "new_score": nh[sw].get("score", "")}
         (regressed if nrank > orank else improved).append(row)
     regressed.sort(key=lambda r: -_BAND_RANK.get(r["new_band"], 0))
+    # coverage events that must keep the verdict off CLEAN: a device gone dark (lost visibility at cutover) or one
+    # newly collected and found Critical/Poor (a real problem just revealed).
+    n_went_dark = sum(1 for c in coverage_shifts if c["kind"] == "went_dark")
+    newly_bad = [c for c in coverage_shifts if c["kind"] == "newly_assessed" and c["new_band"] in ("Critical", "Poor")]
 
     # ---- punch-list findings opened vs resolved ----
-    o_find = {_finding_key(f): f for f in (old.get("punchlist") or [])}
-    n_find = {_finding_key(f): f for f in (new.get("punchlist") or [])}
+    o_find = {_finding_key(f): f for f in (old.get("punchlist") or []) if isinstance(f, dict)}
+    n_find = {_finding_key(f): f for f in (new.get("punchlist") or []) if isinstance(f, dict)}
     # fully-deterministic order (set-difference iteration order is unstable): severity, then the
     # finding's stable identity, so two runs of the diff workbook are byte-reproducible.
     def _fsort(f: dict) -> tuple:
@@ -81,34 +110,98 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
     resolved = sorted((o_find[k] for k in (set(o_find) - set(n_find))), key=_fsort)
     n_opened_high = sum(1 for f in opened if f.get("severity") in ("Critical", "High"))
 
+    # ---- computed reachability what-if (W2): did the change DEFINITIVELY break a previously-working flow? ----
+    # The native RIB->FIB differential (the offline Batfish-peer); coverage-honest, so only definitive
+    # newly_blocked flows count toward the verdict -- ambiguous/incomplete pairs stay 'inconclusive'.
+    try:
+        from cisco_toolkit import fib
+        rdelta = fib.reachability_delta(old, new)
+    except Exception:                                   # never let the cutover diff fail on a reachability hiccup
+        rdelta = {"summary": {}, "newly_blocked": [], "newly_reachable": [], "preserved": 0,
+                  "inconclusive": 0, "pairs_tested": 0, "subnets_tested": 0, "capped": False}
+    n_newly_blocked = len(rdelta.get("newly_blocked") or [])
+
+    # Coverage-honest reachability clause -- NEVER an unqualified 'no reachability regressions' (no-silent-caps /
+    # not-assessed!=healthy doctrine). It always discloses either 'NOT assessed' or the BOUNDED sample it tested.
+    if not rdelta.get("assessed"):
+        reach_phrase = ("computed reachability NOT assessed — no routes collected"
+                        if (rdelta.get("subnets_total") or 0) == 0 else
+                        f"computed reachability NOT assessed — only {rdelta.get('subnets_total')} subnet(s) "
+                        "collected, no inter-subnet flow to test")
+    else:
+        cap = ", capped" if rdelta.get("capped") else ""
+        reach_phrase = (f"computed reachability: {n_newly_blocked} of {rdelta.get('pairs_tested', 0)} sampled "
+                        f"inter-subnet flow(s) newly blocked (bounded sample: {rdelta.get('subnets_tested', 0)} of "
+                        f"{rdelta.get('subnets_total', 0)} subnet(s), one representative host each{cap})")
+
+    # ---- physical cabling delta (the EDA cable-map SSOT, diffed) ----
+    # A cable DOWN across the change window is a hard physical regression; '-> unknown' is a coverage
+    # event ('no longer observed'), never a down. Pre-cable-map snapshots rehydrate from interfaces.
+    try:
+        from cisco_toolkit.analyze import cable_map_of_snapshot, compute_cable_map_diff
+        cdelta = compute_cable_map_diff(cable_map_of_snapshot(old), cable_map_of_snapshot(new))
+    except Exception:                                   # never let the cutover diff fail on the cable pass
+        cdelta = {"assessed": False, "added": [], "removed": [], "status_changes": [],
+                  "members_changed": [], "summary": {}}
+    _cs = cdelta.get("summary") or {}
+    n_cables_down = int(_cs.get("n_went_down") or 0)
+    n_cables_changed = (int(_cs.get("n_added") or 0) + int(_cs.get("n_removed") or 0)
+                        + int(_cs.get("n_members_changed") or 0) + int(_cs.get("n_no_longer_observed") or 0))
+    if not cdelta.get("assessed"):
+        cable_phrase = ("physical cabling NOT assessed — no CDP/LLDP links in either snapshot "
+                        "(NOT a statement that cabling is unchanged)")
+    else:
+        cable_phrase = (f"physical cabling: {_cs.get('n_added', 0)} cable(s) added, "
+                        f"{_cs.get('n_removed', 0)} removed, {n_cables_down} went DOWN, "
+                        f"{_cs.get('n_no_longer_observed', 0)} no longer observed")
+
     # ---- verdict ----
     removed_sw = sorted(set(od) - set(nd))
-    if n_opened_high or regressed:
+    if n_opened_high or regressed or n_newly_blocked or n_cables_down:
         verdict = "REGRESSED"
-        note = (f"{n_opened_high} new High/Critical finding(s); {len(regressed)} switch(es) dropped a "
-                "health band. Investigate before declaring the cutover good.")
-    elif opened or removed_sw:
+        bits = []
+        if n_opened_high:
+            bits.append(f"{n_opened_high} new High/Critical finding(s)")
+        if regressed:
+            bits.append(f"{len(regressed)} switch(es) dropped a health band")
+        bits.append(cable_phrase)
+        bits.append(reach_phrase)
+        note = "; ".join(bits) + ". Investigate before declaring the cutover good."
+    elif opened or removed_sw or n_went_dark or newly_bad or n_cables_changed:
         verdict = "REVIEW"
-        note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present. "
-                "Confirm these are expected.")
+        cov_bits = []
+        if n_went_dark:
+            cov_bits.append(f"{n_went_dark} switch(es) went dark (lost collection — can't be certified)")
+        if newly_bad:
+            cov_bits.append(f"{len(newly_bad)} newly-collected switch(es) found Critical/Poor")
+        note = (f"{len(opened)} new finding(s); {len(removed_sw)} switch(es) no longer present"
+                + ("; " + "; ".join(cov_bits) if cov_bits else "")
+                + f"; {cable_phrase}; {reach_phrase}. Confirm these are expected.")
     else:
         verdict = "CLEAN"
-        note = "No health-band regressions and no new findings — post-cutover state is no worse than pre."
+        note = f"No health-band regressions, no new findings; {cable_phrase}; {reach_phrase}."
 
+    def _scn(s):  # SSOT: canonical device count (one source); raw len() only as the pre-brief fallback
+        return ((s.get("executive_brief") or {}).get("scale") or {}).get("n_devices")
     return {
-        "switches": {"old": len(od), "new": len(nd),
+        "switches": {"old": _scn(old) or len(od), "new": _scn(new) or len(nd),
                      "added": sorted(set(nd) - set(od)), "removed": removed_sw},
         "interfaces": {"old": sum(len(v) for v in oi.values()), "new": sum(len(v) for v in ni.values())},
         "health": {"regressed": regressed, "improved": improved,
-                   "n_regressed": len(regressed), "n_improved": len(improved)},
+                   "n_regressed": len(regressed), "n_improved": len(improved),
+                   "coverage_shifts": coverage_shifts, "n_coverage_shifts": len(coverage_shifts)},
         "findings": {"opened": opened, "resolved": resolved, "n_opened": len(opened),
                      "n_resolved": len(resolved), "n_opened_high": n_opened_high},
+        "reachability": rdelta,
+        "cabling": cdelta,
         "verdict": verdict, "verdict_note": note,
     }
 
 def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
     SVI Changes) comparing two snapshot_state() dicts."""
+    old = old if isinstance(old, dict) else {}            # total on a non-dict snapshot (parsed null/[]/scalar)
+    new = new if isinstance(new, dict) else {}
     from openpyxl import Workbook
     HF = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
     FILL = PatternFill("solid", fgColor="1F497D")
@@ -117,6 +210,8 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     NONE = "\u2205"  # empty marker
 
     wb = Workbook(); wb.remove(wb.active)
+    from cisco_toolkit.excel import harden_workbook
+    harden_workbook(wb)   # sanitize control chars in device-derived text -> no IllegalCharacterError abort
 
     def sheet(title, cols):
         ws = wb.create_sheet(title)
@@ -135,9 +230,11 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
                 if v is not None: mx = max(mx, len(str(v)))
             ws.column_dimensions[get_column_letter(col)].width = min(max(mx + 2, 12), 60)
 
-    oi, ni = old.get("interfaces", {}), new.get("interfaces", {})
-    od, nd = old.get("devices", {}), new.get("devices", {})
+    oi, ni = _as_dict(old.get("interfaces")), _as_dict(new.get("interfaces"))
+    od, nd = _as_dict(old.get("devices")), _as_dict(new.get("devices"))
     delta = compute_snapshot_delta(old, new)   # NEW-V3.23.106: migration-validation analysis
+    rd0 = delta.get("reachability") or {}      # W2 reachability what-if (disclose the bounded sample, never silent)
+    cd0 = (delta.get("cabling") or {}).get("summary") or {}   # physical cable delta (EDA cable-map SSOT)
 
     # Summary (leads with the cutover-validation VERDICT)
     ws = sheet("Summary", ["Metric", "Old", "New", "Delta"])
@@ -156,6 +253,19 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
         ("Findings opened", "", delta["findings"]["n_opened"],
          f"{delta['findings']['n_opened_high']} High/Critical"),
         ("Findings resolved", "", delta["findings"]["n_resolved"], delta["findings"]["n_resolved"]),
+        ("Reachability flows newly blocked", "", len(rd0.get("newly_blocked") or []),
+         (f"{rd0.get('pairs_tested', 0)} sampled flow(s) across {rd0.get('subnets_tested', 0)} of "
+          f"{rd0.get('subnets_total', 0)} subnet(s){' (CAPPED — coverage incomplete)' if rd0.get('capped') else ''}, "
+          f"one representative host each; {rd0.get('preserved', 0)} preserved, "
+          f"{rd0.get('inconclusive', 0)} inconclusive"
+          if rd0.get("assessed") else
+          "NOT assessed — no routes collected (this is NOT a statement that reachability is unchanged)")),
+        ("Physical cables changed", "", "",
+         (f"{cd0.get('n_added', 0)} added, {cd0.get('n_removed', 0)} removed, "
+          f"{cd0.get('n_went_down', 0)} went DOWN, {cd0.get('n_no_longer_observed', 0)} no longer observed, "
+          f"{cd0.get('n_members_changed', 0)} LAG membership change(s)"
+          if (delta.get("cabling") or {}).get("assessed") else
+          "NOT assessed — no CDP/LLDP links in either snapshot (NOT a statement that cabling is unchanged)")),
     ]
     r = 2
     for m in metrics:
@@ -240,7 +350,10 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     ws = sheet("Health Shifts", ["Switch", "Direction", "Old band", "New band", "Old score", "New score"])
     r = 2
     for direction, rows in (("REGRESSED", delta["health"]["regressed"]),
-                            ("improved", delta["health"]["improved"])):
+                            ("improved", delta["health"]["improved"]),
+                            # in/out of 'Insufficient Data' -> labelled by kind (went dark / newly assessed), never
+                            # silently folded into 'improved' (audit-4 #5)
+                            *(((c["kind"], [c]) for c in delta["health"].get("coverage_shifts", [])))):
         for d in rows:
             vals = [d["switch"], direction, d["old_band"], d["new_band"], d["old_score"], d["new_score"]]
             for c, v in enumerate(vals, 1):
@@ -269,6 +382,67 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
         ws.cell(row=2, column=1, value="No punch-list findings opened or resolved.").font = DF
     autofit(ws, 5); ws.column_dimensions["E"].width = 70
 
+    # Reachability (W2) — computed RIB->FIB flows the change DEFINITIVELY broke (the offline Batfish-peer what-if).
+    # Coverage-honest: distinguishes 'tested, no regressions' from 'no routes collected -> not assessed'.
+    ws = sheet("Reachability", ["Flow", "Src", "Dst", "Before", "After"])
+    r = 2
+    for label, fill, items in (("NEWLY BLOCKED", "FFC7CE", rd0.get("newly_blocked") or []),
+                               ("newly reachable", "C6EFCE", rd0.get("newly_reachable") or [])):
+        for p in items:
+            vals = [label, p.get("src", ""), p.get("dst", ""), p.get("old_status", ""), p.get("new_status", "")]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+            ws.cell(row=r, column=1).fill = PatternFill("solid", fgColor=fill)
+            r += 1
+    if r == 2:                                            # no regressions to list -> be coverage-honest about WHY
+        if rd0.get("assessed"):
+            msg = (f"No computed reachability regressions across {rd0.get('pairs_tested', 0)} sampled flow(s) "
+                   f"({rd0.get('subnets_tested', 0)} of {rd0.get('subnets_total', 0)} subnet(s), one representative "
+                   f"host each{' — CAPPED, coverage incomplete' if rd0.get('capped') else ''}). Bounded sample: a "
+                   "regression to an untested host or subnet would not appear here.")
+        elif (rd0.get("subnets_total") or 0) == 0:
+            msg = "No routes collected — computed reachability NOT assessed (this is NOT 'no regressions')."
+        else:
+            msg = (f"Only {rd0.get('subnets_total')} subnet(s) collected — no inter-subnet flow to test; "
+                   "computed reachability NOT assessed.")
+        ws.cell(row=2, column=1, value=msg).font = DF
+    autofit(ws, 5); ws.column_dimensions["D"].width = 42; ws.column_dimensions["E"].width = 42
+
+    # Cabling Changes — the EDA cable-map SSOT diffed: physical cables added / removed / op-status
+    # flips + LAG membership changes. Coverage-honest: '-> unknown' reads 'no longer observed' (a
+    # coverage event, never a down), and a snapshot pair with no CDP/LLDP links reads NOT ASSESSED.
+    cd = delta.get("cabling") or {}
+    ws = sheet("Cabling Changes", ["Change", "Switch A", "Port A", "Switch B", "Port B", "Status", "Note"])
+    cab_rows: list = []
+    if not cd.get("assessed"):
+        cab_rows.append(("NOT ASSESSED", "", "", "", "", "",
+                         "no CDP/LLDP links in either snapshot — NOT a statement that cabling is unchanged"))
+    else:
+        for c0 in cd.get("status_changes") or []:
+            cab_rows.append(("Status changed", c0.get("a", ""), c0.get("a_port", ""), c0.get("b", ""),
+                             c0.get("b_port", ""), f"{c0.get('from', '')} -> {c0.get('to', '')}",
+                             c0.get("classification", "")))
+        for label, items in (("Cable added", cd.get("added") or []), ("Cable removed", cd.get("removed") or [])):
+            for c0 in items:
+                cab_rows.append((label, c0.get("a", ""), c0.get("a_port", ""), c0.get("b", ""),
+                                 c0.get("b_port", ""), c0.get("op_status", ""),
+                                 f"port-channel, {len(c0.get('members') or [])} member(s)" if c0.get("is_pc") else ""))
+        for m0 in cd.get("members_changed") or []:
+            cab_rows.append(("LAG members changed", m0.get("a", ""), m0.get("a_port", ""), m0.get("b", ""),
+                             m0.get("b_port", ""), f"{m0.get('old_members', 0)} -> {m0.get('new_members', 0)} member(s)",
+                             "a port-channel leg was added or removed"))
+        if not cab_rows:
+            cab_rows.append(("No changes", "", "", "", "", "",
+                             f"{(cd.get('summary') or {}).get('n_unchanged', 0)} cable(s) compared, unchanged"))
+    r = 2
+    for vals in cab_rows:
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+        if str(vals[5]).endswith("-> down"):
+            ws.cell(row=r, column=6).fill = PatternFill("solid", fgColor="FFC7CE")
+        r += 1
+    autofit(ws, 7); ws.column_dimensions["G"].width = 55
+
     wb.save(out_path)
 
 
@@ -294,19 +468,26 @@ def _trend_point(snap: dict) -> dict:
         if r.get("readiness") in readiness:
             readiness[r["readiness"]] += 1
     lr = (snap.get("lifecycle_risk") or {}).get("summary") or {}
-    avg = ((snap.get("executive_brief") or {}).get("posture") or {}).get("avg_health")
+    _eb = snap.get("executive_brief") or {}
+    _scale = _eb.get("scale") or {}
+    _posture = _eb.get("posture") or {}
+    avg = _posture.get("avg_health")
     if avg is None and scores:
         avg = round(sum(scores) / len(scores), 1)
     ts = snap.get("generated_at") or ""
     return {
         "date": ts[:10], "generated_at": ts, "version": snap.get("script_version", ""),
-        "n_switches": len(snap.get("devices") or {}),
+        # SSOT: prefer the engine's canonical scale / posture; the local len()/band-tally is a fallback only.
+        "n_switches": _scale.get("n_devices") if _scale.get("n_devices") is not None else len(snap.get("devices") or {}),
         "avg_health": avg if avg is not None else "",
-        "n_critical": bands.get("Critical", 0),
+        "n_critical": _posture.get("n_critical") if _posture.get("n_critical") is not None else bands.get("Critical", 0),
         "n_punchlist": len(pl),
         "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")),
         "n_not_ready": readiness["NOT READY"],
-        "past_eos": lr.get("n_past_eos", "") if lr else "",
+        # "Past end-of-support" = Past-LDoS (no TAC / no fixes) — the migration-critical count the
+        # brief/deck/explorer/workbook all headline. NOT Past-EoS (end-of-SALE, still supported): reading
+        # n_past_eos here showed 0 while 152 boxes were past support (the EoS/LDoS silent-drop class).
+        "past_ldos": lr.get("n_past_ldos", "") if lr else "",
     }
 
 
@@ -316,7 +497,7 @@ _TREND_METRICS = (("Avg health / 100", "avg_health", False),
                   ("Punch-list items", "n_punchlist", True),
                   ("Critical/High findings", "n_crit_high", True),
                   ("NOT READY groups", "n_not_ready", True),
-                  ("Past end-of-support", "past_eos", True))
+                  ("Past end-of-support", "past_ldos", True))
 
 
 def compute_campaign_trend(snapshots: List[dict]) -> dict:
@@ -352,6 +533,25 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
                                "delta": round(delta, 1), "direction": direction})
         better = sum(1 for r in trajectory if r["direction"] == "improving")
         worse = sum(1 for r in trajectory if r["direction"] == "worsening")
+        # Devices that went DARK across the campaign (present in an earlier collection, absent later). A rising
+        # avg-health is partly SURVIVORSHIP when an unhealthy device drops out of the average, so a campaign that
+        # lost devices cannot read a clean IMPROVING without disclosing them (audit-2 #4 false-health).
+        gone: set = set()
+
+        def _bands(s):
+            return {str(r.get("switch")): str(r.get("band", "")) for r in (s.get("health_scores") or [])
+                    if isinstance(r, dict)}
+        for i in range(len(snaps) - 1):
+            gone |= set(snaps[i].get("devices") or {}) - set(snaps[i + 1].get("devices") or {})
+            # the engine never DROPS an uncollected device -- it keeps it as an 'Insufficient Data' STUB in
+            # `devices`, so the set-difference above misses a previously-collected switch that went dark; detect
+            # the band transition real-band -> 'Insufficient Data' too, else a campaign that loses its worst
+            # collected switches reads a survivorship-biased IMPROVING (audit-5 #9).
+            b0, b1 = _bands(snaps[i]), _bands(snaps[i + 1])
+            for sw, band in b0.items():
+                if band and band != "Insufficient Data" and b1.get(sw) == "Insufficient Data":
+                    gone.add(sw)
+        n_gone = len(gone)
         if trajectory:                                    # comparable metrics exist -> a real verdict
             if better == 0 and worse == 0:
                 verdict = "FLAT"
@@ -361,11 +561,16 @@ def compute_campaign_trend(snapshots: List[dict]) -> dict:
                 verdict = "REGRESSING"
             else:
                 verdict = "MIXED"
+            if n_gone and verdict in ("IMPROVING", "FLAT"):
+                verdict = "MIXED"                         # devices went dark -> not a clean improvement
         hr = next((r for r in trajectory if r["metric"].startswith("Avg health")), None)
         cr = next((r for r in trajectory if r["metric"].startswith("Critical/High")), None)
         note = (f"Across {len(timeline)} collections: {better} metric(s) improving, {worse} worsening. "
                 + (f"Avg health {hr['first']}→{hr['last']}. " if hr else "")
-                + (f"Critical/High findings {cr['first']}→{cr['last']}." if cr else "")).strip()
+                + (f"Critical/High findings {cr['first']}→{cr['last']}. " if cr else "")
+                + (f"{n_gone} device(s) went DARK (present then absent) -- the health trajectory may be "
+                   "survivorship-biased; confirm these are planned decommissions, not failures." if n_gone else "")
+                ).strip()
 
     return {"timeline": timeline, "steps": steps, "trajectory": trajectory,
             "verdict": verdict, "verdict_note": note}
@@ -384,6 +589,8 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
 
     trend = compute_campaign_trend(snapshots)
     wb = Workbook(); wb.remove(wb.active)
+    from cisco_toolkit.excel import harden_workbook
+    harden_workbook(wb)   # sanitize control chars in device-derived text -> no IllegalCharacterError abort
 
     def sheet(title, cols):
         ws = wb.create_sheet(title)
@@ -425,10 +632,10 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
 
     # ---- Timeline (one row per collection) + a trajectory line chart ----
     cols = ["Collection", "Date", "Version", "Switches", "Avg Health", "Critical",
-            "Punch-list", "Crit/High", "NOT READY", "Past-EoS"]
+            "Punch-list", "Crit/High", "NOT READY", "Past end-of-support"]
     ws = sheet("Timeline", cols)
     keys = ["collection", "date", "version", "n_switches", "avg_health", "n_critical",
-            "n_punchlist", "n_crit_high", "n_not_ready", "past_eos"]
+            "n_punchlist", "n_crit_high", "n_not_ready", "past_ldos"]
     for i, pt in enumerate(trend["timeline"], start=2):
         for c, k in enumerate(keys, 1):
             cell = ws.cell(row=i, column=c, value=pt.get(k, "")); cell.font = DF
@@ -477,6 +684,23 @@ def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         "interfaces": {host: {port: dataclasses.asdict(d) for port, d in ifaces.items()}
                        for host, ifaces in all_interfaces.items()},
     }
+
+
+def sparsify_interfaces(snap: dict) -> dict:
+    """Return a SHALLOW copy of `snap` whose `interfaces` subtree drops every field equal to its
+    empty-string default (Tier-3 #14 Phase-2). Every InterfaceData field defaults to '', so
+    dropping '' values is lossless -- InterfaceData.from_sparse restores the omitted fields on read
+    (~70% of the interface field-cells are '' on a real fleet). Confined to `interfaces`: `devices`
+    (DevicePhysical) has non-'' defaults and stays dense. Applied ONLY to the on-disk snapshot; the
+    in-memory snap_dict every in-process consumer reads is left untouched, so this changes nothing
+    about the pipeline's behaviour -- only the persisted file's size."""
+    ifaces = snap.get("interfaces")
+    if not isinstance(ifaces, dict):
+        return snap
+    sparse = {host: {port: {k: v for k, v in rec.items() if v != ""}
+                     for port, rec in ports.items() if isinstance(rec, dict)}
+              for host, ports in ifaces.items() if isinstance(ports, dict)}
+    return {**snap, "interfaces": sparse}
 
 
 # -----------------------------------------------------------------------------
@@ -593,8 +817,32 @@ def write_html_explorer(output_path: str, snap_dict: dict, label: str) -> None:
 _REDACT_IP_RE = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
 _REDACT_MAC_RE = re.compile(
     r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b|\b(?:[0-9A-Fa-f]{4}\.){2}[0-9A-Fa-f]{4}\b")
+# IPv6 (HTML_-01): the IPv4 remap above is dotted-quad ONLY, so IPv6 addresses (global 2001:db8::,
+# link-local fe80::, embedded in descriptions) passed through --redact untouched -- the share-safe contract
+# was broken for any dual-stack / IPv6 fleet. This matches the full 8-group and ::-compressed textual forms
+# but NOT a colon-MAC (which has neither 7 colons nor a '::'), so the MAC remap stays correct regardless of
+# order. Every alternative requires either 7 colons or a '::', and all quantifiers are bounded ({1,7}), so a
+# long hex/colon run cannot induce catastrophic backtracking (ReDoS). An optional %zone-id is consumed.
+_REDACT_IP6_RE = re.compile(
+    r"(?<![:.\w])(?:"
+    r"(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}"                 # x:x:x:x:x:x:x:x  (7 colons; a MAC has 5)
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,7}:"                             # x::  …  x:x:x:x:x:x:x::
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}"             # x::x … x:x:x:x:x:x::x
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}"
+    r"|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}"
+    r"|:(?::[0-9A-Fa-f]{1,4}){1,7}"                             # ::x  ::x:x  (loopback/unspecified-with-suffix)
+    r")(?:%[0-9A-Za-z]+)?(?![:.\w])")
 _REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
-                       "current_switch_serial", "neighbor_switch_serial"}
+                       "current_switch_serial", "neighbor_switch_serial",
+                       # controller + inventory serials reach the snapshot under other key names: ACI
+                       # fabric-node 'serial' (parse_aci_fabric_nodes -> snap['aci'].nodes) and the
+                       # power-supply 'ps_serials' list (parse_show_inventory). Without these they leaked
+                       # verbatim under --redact (a bare serial matches no inline secret form). 'ps_serials'
+                       # is a LIST -- _walk recurses each string item with the same key, so each is redacted.
+                       "serial", "ps_serials", "sn"}
 
 # Credential deny-list: conservatively match KNOWN secret-bearing config/output forms
 # (IOS / IOS-XE / NX-OS, case-insensitive) and replace ONLY the secret token with a
@@ -609,9 +857,13 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # 'community <VALUE>' form (host/group/trap lines).
     r"(snmp-server\s+community\s+)(\S+)",
     r"(\bcommunity\s+)(\S+)",
+    # 'snmp-server host <ip> [vrf X] [traps|informs] version {1|2c} <COMMUNITY>' -- the trap-host community is a
+    # bare positional token with NO 'community' keyword to anchor on, so the two patterns above missed it and it
+    # shipped verbatim under --redact (leak-corpus K4). v3 uses a username (not a secret), so only 1|2c match.
+    r"(snmp-server\s+host\s+\S+\s+(?:vrf\s+\S+\s+)?(?:(?:traps?|informs?)\s+)?version\s+(?:1|2c)\s+)(\S+)",
     # Cisco password/secret forms: type-7/type-5 and cleartext, 'enable secret',
     # and 'username <u> password|secret <VALUE>'. The username token is preserved.
-    r"(\bpassword\s+(?:\d+\s+)?)(\S+)",
+    r"(\bpassword\s+(?:(?:ENC|\d+)\s+)?)(\S+)",
     r"(\bsecret\s+(?:\d+\s+)?)(\S+)",
     r"((?:username|user)\s+\S+\s+(?:password|secret)\s+(?:\d+\s+)?)(\S+)",
     # Shared keys. Specific forms FIRST so the generic bare 'key' below cannot consume
@@ -620,11 +872,51 @@ _REDACT_SECRET_RES = [re.compile(p, re.I) for p in (
     # IKE pre-shared keys, and 'crypto isakmp key <VALUE> address ...'.
     r"((?:tacacs-server|radius-server)\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)(\S+)",
     r"(key-string\s+(?:\d+\s+)?)(\S+)",
-    r"(pre-shared-key\s+(?:(?:local|remote)\s+)?(?:\d+\s+)?)(\S+)",
+    r"(pre-shared-key\s+(?:(?:local|remote|ascii-text|hexadecimal)\s+)?(?:\d+\s+)?)(\S+)",
     r"(crypto\s+isakmp\s+key\s+(?:\d+\s+)?)(\S+)",
-    # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication).
-    r"(\bkey\s+(?:\d+\s+)?)(\S+)",
+    # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication). The optional
+    # inner group absorbs a hash-algorithm label so 'authentication-key|message-digest-key N md5|sha|
+    # hmac-sha <DIGEST>' (NTP/OSPF/EIGRP) redacts the DIGEST after it, not the 'md5'/'sha' token -- the
+    # latter left the real, offline-crackable digest exposed. Anchored on 'key', so a bare IKE 'hash md5'
+    # algorithm choice (no key-id + secret) is never corrupted. The negative lookahead keeps STRUCTURAL
+    # follow-words intact: 'key chain <NAME>' declares a keychain (name is not a secret), and the bare rule
+    # runs AFTER the pre-shared-key rule over the accumulating string, so without the guard it re-fired on
+    # 'pre-shared-key local <redacted>' and mangled the 'local'/'remote' direction qualifier.
+    r"((?<!private-)(?<!shared-)\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(?!chain\b|local\b|remote\b)(\S+)",
+    # Non-Cisco vendor config forms: FortiGate 'set passwd|psksecret|password [ENC] <VALUE>' and Junos
+    # 'authentication-key|secret "<VALUE>"' -- 'passwd'/'psksecret' are not the whole words 'password'/'secret',
+    # so the Cisco patterns above miss them.
+    r"(set\s+(?:passwd|psksecret|password|private-key|passphrase)\s+(?:ENC\s+)?)(\S+)",
 )]
+# JSON-VALUE secrets: the controller-REST channels (ACI / ISE / FMC / vManage) and IaC exports store a secret as
+# a VALUE under a key, with no inline keyword for the deny-list regexes above to anchor on. So redact the WHOLE
+# value when its key is a known secret-bearing name. Keys are normalized (lowercased, '_'/'-' stripped) before
+# the lookup. 'key' is deliberately EXCLUDED -- it is a generic structural field name across the snapshot (causal
+# flows, design decisions) and the inline 'key <val>' CLI form is already covered above.
+_REDACT_SECRET_KEYS = {
+    "password", "passwd", "pwd", "passphrase", "secret", "psksecret", "presharedkey", "psk",
+    "token", "authtoken", "accesstoken", "apikey", "apisecret", "community", "snmpcommunity",
+    "credential", "credentials", "privatekey", "sharedsecret", "clientsecret",
+}   # 'pass' deliberately omitted -- it is a pass/fail COUNT key in security summaries, not a secret
+
+# SUBSTRING tokens for a credential-named key -- the real controller/config field names are COMPOUND
+# (tacacsSharedSecret, roCommunity, authPassword, wpaPassphrase, enableSecret), which an EXACT-match against the
+# set above silently missed (multi-domain audit #6). A normalized key CONTAINING any token is a secret bearer.
+# Bare 'key' and 'pass' are NOT tokens (generic structural field / pass-fail count) -- see _is_secret_key.
+_REDACT_SECRET_TOKENS = (
+    "password", "passwd", "passphrase", "secret", "community", "psk", "presharedkey", "sharedsecret",
+    "token", "apikey", "apisecret", "privatekey", "privkey", "credential",
+)
+
+# CDP/LLDP 'Device ID: <host>(<SERIAL>)' embeds the neighbor's chassis serial in a free-text field that is NOT a
+# serial-named key, so the key-based serial pass missed it (audit-5 sec HIGH: 55 real serials survived --redact).
+# Match a parenthesized Cisco serial (3 letters + 4 digits + 2-6 alnum, e.g. FOC1830R1QS) so it routes through the
+# SAME serial pseudonymizer for a consistent SNxxxx; the SNxxxx pseudonym (2 leading letters) never re-matches.
+_REDACT_CDP_SERIAL_RE = re.compile(r"\(([A-Z]{3}[0-9]{4}[A-Z0-9]{2,6})\)")
+
+
+def _norm_key(k) -> str:
+    return re.sub(r"[_-]", "", str(k or "").lower())
 
 
 def _scrub_secrets(s: str) -> str:
@@ -642,6 +934,7 @@ def redact_snapshot(snap: dict) -> dict:
     output and IPs keep their /24 grouping, so topology / ARP / subnet relationships
     survive; hostnames are kept. Pure (stdlib only); the input is not mutated."""
     ip_map: Dict[str, str] = {}
+    ip6_map: Dict[str, str] = {}
     mac_map: Dict[str, str] = {}
     serial_map: Dict[str, str] = {}
 
@@ -650,6 +943,13 @@ def redact_snapshot(snap: dict) -> dict:
         if net not in ip_map:
             i = len(ip_map); ip_map[net] = f"10.{i // 256}.{i % 256}"   # remap /24, keep host octet
         return f"{ip_map[net]}.{m.group(4)}"
+
+    def _ip6(m):
+        s = m.group(0)
+        if s not in ip6_map:                                            # consistent ULA fd00::/8 pseudonym
+            i = len(ip6_map) + 1
+            ip6_map[s] = "fd00::%x:%x" % ((i >> 16) & 0xffff, i & 0xffff)
+        return ip6_map[s]
 
     def _mac(m):
         key = re.sub(r"[^0-9a-f]", "", m.group(0).lower())
@@ -667,19 +967,171 @@ def redact_snapshot(snap: dict) -> dict:
         return serial_map[v]
 
     def _scrub(s):
-        # Strip credentials / community / key material first so a secret token is
-        # replaced wholesale, THEN pseudonymize any remaining IPs / MACs in context.
-        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP_RE.sub(_ip, _scrub_secrets(s)))
+        # Strip credentials / community / key material first so a secret token is replaced wholesale, THEN
+        # pseudonymize any remaining IPv4 / IPv6 / MACs in context. IPv6 is remapped before MAC; the two
+        # patterns are mutually exclusive (a MAC has neither 7 colons nor a '::'), so neither corrupts the other.
+        s = _REDACT_CDP_SERIAL_RE.sub(lambda m: "(" + _serial(m.group(1)) + ")", _scrub_secrets(s))
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
+
+    def _is_secret_key(key) -> bool:
+        nk = _norm_key(key)
+        if not nk or nk == "key":            # 'key' is a generic structural field name -- never a secret on its own
+            return False
+        return nk in _REDACT_SECRET_KEYS or any(tok in nk for tok in _REDACT_SECRET_TOKENS)
+
+    def _redact_all(o):
+        # Every string leaf under a credential-named container is a secret bearer -- a secret nested one level
+        # below the key ({'apikey':{'value':...}}) must not survive (multi-domain audit #7). Over-redacting
+        # non-secret siblings (e.g. an 'enc: type6' tag) is the safe direction.
+        if isinstance(o, dict): return {k: _redact_all(v) for k, v in o.items()}
+        if isinstance(o, list): return [_redact_all(v) for v in o]
+        if isinstance(o, str): return _REDACT_PLACEHOLDER if o else o
+        return o
 
     def _walk(o, key=None):
         if isinstance(o, dict):
-            return {k: _walk(v, k) for k, v in o.items()}
+            out = {}
+            for k, v in o.items():
+                if isinstance(v, (dict, list)) and _is_secret_key(k):
+                    out[k] = _redact_all(v)                 # secret-named key over a CONTAINER -> scrub every leaf
+                else:
+                    out[k] = _walk(v, k)
+            return out
         if isinstance(o, list):
             return [_walk(v, key) for v in o]
         if isinstance(o, str):
             if key in _REDACT_SERIAL_KEYS: return _serial(o)
             if key == "wild": return o   # ACL wildcard mask is not an address; preserve so post-redact L4 eval stays correct
+            if o and _is_secret_key(key):
+                return _REDACT_PLACEHOLDER   # a secret stored as a JSON value under a credential-named key
             return _scrub(o)
         return o
 
     return _walk(snap)
+
+
+def _make_redactor():
+    """A fresh, self-consistent pseudonymizer (same scheme as redact_snapshot: IPv4 keeps its /24 grouping;
+    IPv6 -> fd00::; MAC -> 02:..; serial -> SNxxxx). Returns (scrub_str, redact_serial) sharing per-call maps.
+    Shared by redact_collected_inplace + redact_workbook_cells so the --redact workbook is scrubbed everywhere."""
+    ip_map: Dict[str, str] = {}
+    ip6_map: Dict[str, str] = {}
+    mac_map: Dict[str, str] = {}
+    serial_map: Dict[str, str] = {}
+
+    def _ip(m):
+        net = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+        if net not in ip_map:
+            i = len(ip_map); ip_map[net] = f"10.{i // 256}.{i % 256}"
+        return f"{ip_map[net]}.{m.group(4)}"
+
+    def _ip6(m):
+        s = m.group(0)
+        if s not in ip6_map:
+            i = len(ip6_map) + 1; ip6_map[s] = "fd00::%x:%x" % ((i >> 16) & 0xffff, i & 0xffff)
+        return ip6_map[s]
+
+    def _mac(m):
+        key = re.sub(r"[^0-9a-f]", "", m.group(0).lower())
+        if key not in mac_map:
+            i = len(mac_map) + 1
+            mac_map[key] = "02:%02x:%02x:%02x:%02x:%02x" % (
+                (i >> 32) & 255, (i >> 24) & 255, (i >> 16) & 255, (i >> 8) & 255, i & 255)
+        return mac_map[key]
+
+    def scrub(s):
+        s = _REDACT_CDP_SERIAL_RE.sub(lambda m: "(" + serial(m.group(1)) + ")", _scrub_secrets(s))
+        return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
+
+    def serial(v):
+        if not v:
+            return v
+        if v not in serial_map:
+            serial_map[v] = f"SN{len(serial_map) + 1:04d}"
+        return serial_map[v]
+
+    return scrub, serial
+
+
+def redact_collection_dir(collection_dir: str) -> tuple:
+    """Plan A / Tier-1 #5: scrub SECRET VALUES (passwords / communities / keys — the same
+    conservative _scrub_secrets deny-list --redact uses) IN PLACE across every collected
+    .txt capture under collection_dir. Values only: IPs / hostnames / interfaces are KEPT
+    so the dir stays analyzable with --no-collect and remains the --compare/--trend
+    source; nothing is ever deleted. Idempotent (the placeholder never re-matches).
+    Returns (txt_files_scanned, files_changed). Fail-soft per file — one unreadable
+    capture never aborts the scrub of the rest. Note: rewritten captures will no longer
+    match archive hashes recorded at collection time (deliberate, opt-in)."""
+    scanned = changed = 0
+    for root, _dirs, files in os.walk(collection_dir or ""):
+        for fn in files:
+            if not fn.endswith(".txt"):
+                continue
+            p = os.path.join(root, fn)
+            try:
+                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+            except Exception as e:
+                logger.debug(f"redact_collection_dir: unreadable {p}: {e}")
+                continue
+            scanned += 1
+            scrubbed = _scrub_secrets(text)
+            if scrubbed != text:
+                try:
+                    with open(p, "w", encoding="utf-8") as f:
+                        f.write(scrubbed)
+                    changed += 1
+                except Exception as e:
+                    logger.warning(f"redact_collection_dir: could not rewrite {p}: {e}")
+    return scanned, changed
+
+
+def redact_collected_inplace(all_interfaces: dict, all_device_physical: list) -> None:
+    """Pseudonymize the COLLECTED dataclasses (InterfaceData + DevicePhysical) IN PLACE, so the always-produced
+    .xlsx workbook -- which the sheet builders assemble from these dataclasses BEFORE redact_snapshot ever runs on
+    the JSON -- cannot leak real serials / IPs / MACs under --redact. Serial-named fields -> SNxxxx; every other
+    string -> IP/IPv6/MAC/secret scrub. For the --redact share-safe path only; mutates in place. Never raises.
+    (Sheets built from COMPUTED structures / raw config text, not these dataclasses, are caught separately by
+    redact_workbook_cells.)"""
+    import dataclasses as _dc
+    scrub, serial = _make_redactor()
+
+    def _red_obj(o):
+        try:
+            fields = _dc.fields(o)
+        except TypeError:
+            return                                    # not a dataclass instance -> nothing to redact
+        for f in fields:
+            v = getattr(o, f.name, "")
+            if isinstance(v, str) and v:
+                # serial-named field -> consistent SNxxxx; everything else -> pattern scrub (catches an IP/MAC in
+                # ANY field, so a leak can't hide in a free-text column we forgot to enumerate).
+                setattr(o, f.name,
+                        serial(v) if (f.name in _REDACT_SERIAL_KEYS or f.name.endswith("_serial")) else scrub(v))
+
+    for dp in (all_device_physical or []):
+        _red_obj(dp)
+    for ports in (all_interfaces or {}).values():
+        for d in (ports or {}).values():
+            _red_obj(d)
+
+
+def redact_workbook_cells(wb) -> None:
+    """Final-pass --redact safety net: scrub IPv4/IPv6/MACs/credentials from EVERY cell of an openpyxl workbook,
+    so sheets built from COMPUTED structures (e.g. Subnet Reachability) or RAW config text (Golden-Config Drift)
+    -- which redact_collected_inplace can't reach because they don't come from the collected dataclasses -- cannot
+    leak real addresses/secrets. Serials carry no reliable text pattern, so they are pseudonymized upstream in the
+    dataclasses; this pass covers everything pattern-matchable. Mutates in place; never raises."""
+    scrub, _ = _make_redactor()
+    try:
+        sheets = list(wb.worksheets)
+    except Exception:
+        return
+    for ws in sheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and v:
+                    nv = scrub(v)
+                    if nv != v:
+                        cell.value = nv

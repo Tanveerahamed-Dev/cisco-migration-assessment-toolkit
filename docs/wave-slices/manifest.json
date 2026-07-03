@@ -1,0 +1,74 @@
+[
+ {
+  "key": "copp",
+  "buildable": "yes",
+  "green": true,
+  "axis": "copp",
+  "cmd": "show policy-map interface control-plane ",
+  "has_parser": true,
+  "has_detector": true
+ },
+ {
+  "key": "ipv6_fhs",
+  "buildable": "needs-collection",
+  "green": true,
+  "axis": "pim",
+  "cmd": "show ip pim rp mapping\nshow ip pim neigh",
+  "has_parser": true,
+  "has_detector": true
+ },
+ {
+  "key": "undoc_nbr",
+  "buildable": "needs-collection",
+  "green": true,
+  "axis": "qos_runtime",
+  "cmd": "show policy-map interface",
+  "has_parser": true,
+  "has_detector": true
+ },
+ {
+  "key": "multicast",
+  "buildable": "yes",
+  "green": true,
+  "axis": "ipv6_fhs",
+  "cmd": "show ipv6 nd raguard policy\nshow ipv6 dh",
+  "has_parser": true,
+  "has_detector": true
+ },
+ {
+  "key": "qos_rt",
+  "buildable": "needs-collection",
+  "green": true,
+  "axis": "storm_control",
+  "cmd": "show storm-control",
+  "has_parser": true,
+  "has_detector": true
+ },
+ {
+  "key": "storm",
+  "buildable": "yes",
+  "green": true,
+  "axis": "shadow_infra",
+  "cmd": "show cdp neighbors detail / show lldp ne",
+  "has_parser": true,
+  "has_detector": true
+ },
+ {
+  "key": "ntp",
+  "buildable": "needs-collection",
+  "green": true,
+  "axis": "ntp",
+  "cmd": "show ntp status",
+  "has_parser": true,
+  "has_detector": true
+ },
+ {
+  "key": "portsec",
+  "buildable": "needs-collection",
+  "green": true,
+  "axis": "port_security",
+  "cmd": "show port-security interface",
+  "has_parser": true,
+  "has_detector": true
+ }
+]

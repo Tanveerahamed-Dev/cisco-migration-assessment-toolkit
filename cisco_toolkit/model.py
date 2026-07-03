@@ -4,7 +4,8 @@ verbatim from COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 9 (behaviour
 byte-identical). `InterfaceData` is the per-port record; `DevicePhysical` is the
 per-switch physical inventory record. The scoring tunables (`ScoringConfig`) stay
 with the analyze layer - they are not part of the passed-around data model."""
-from dataclasses import dataclass
+import enum
+from dataclasses import dataclass, fields
 
 
 # =============================================================================
@@ -71,6 +72,15 @@ class InterfaceData:
     # relay, or whose relay server isn't routable from the gateway (a classic silent post-cutover black-hole).
     dhcp_helpers: str = ""
 
+    @classmethod
+    def from_sparse(cls, d) -> "InterfaceData":
+        """Rehydrate a possibly-sparse interface record: unknown / legacy keys are dropped, and any
+        field the sparse encoder OMITTED (because it equalled the '' default) is restored to that
+        default. Lossless inverse of html.sparsify_interfaces for any record dataclasses.asdict()
+        produced -- the one decode SSOT the --compare delta and the webapp endpoint both go through."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in (d or {}).items() if k in known})
+
 
 # =============================================================================
 # DATA MODEL - DevicePhysical (NEW-V12)
@@ -93,10 +103,57 @@ class DevicePhysical:
     power_remaining_w: str = ""
     num_modules: int = 0
     total_ports: int = 0
-    active_ports: int = 0
+    active_ports: int | None = None   # None = port up/down state NOT observed (distinct from a real 0)
     fan_status: str = ""
     temperature_status: str = ""
     # NEW-V3.23.68: the device's OWN configured hostname (from 'show version' "<host> uptime is").
     # Compared against `hostname` (the inventory/collection key) to flag inventory typos that
     # otherwise surface as a phantom split node in the topology (e.g. 'AS08--' vs real 'AS08-').
     reported_hostname: str = ""
+
+
+# =============================================================================
+# VERDICT ADT - abstention as a TYPE, not a per-module string convention
+# =============================================================================
+class Verdict(str, enum.Enum):
+    """A four-way outcome for any verify / abstention surface. str-mixin, so
+    ``json.dumps(Verdict.PROVEN) == '"proven"'`` -- a Verdict-typed field written into a
+    snapshot dict is byte-identical to the hand-written string it replaces (purely additive,
+    never a serialization change). Generalizes the coverage-honest ``active_ports: int | None``
+    idiom above: NOT_OBSERVED is a distinct value, never silently a pass."""
+    PROVEN = "proven"                 # affirmatively demonstrated from collected evidence
+    REFUTED = "refuted"               # affirmatively disproven (a definitive negative)
+    NOT_OBSERVED = "not_observed"     # a blind spot -- never silently a pass (the coverage-honest core)
+    INDETERMINATE = "indeterminate"   # evidence present but insufficient to decide
+
+    # A bare `str, Enum` inherits Enum.__str__/__format__ -> "Verdict.PROVEN"; override them to the str value
+    # ("proven") so str() / f-string / %s all match the .value / json.dumps paths -- keeping a RAW member
+    # interchangeable with the hand-written string everywhere, so a future surface that interpolates a Verdict
+    # into a snapshot string / Excel cell / HTML can't silently emit "Verdict.PROVEN". (Explicit defs, not
+    # `__str__ = str.__str__`, so the self-type matches the Enum override signature under mypy.)
+    def __str__(self) -> str:
+        return str.__str__(self)
+
+    def __format__(self, format_spec: str) -> str:
+        return str.__format__(self, format_spec)
+
+    @classmethod
+    def from_acl_reason(cls, reason: str) -> "Verdict":
+        """Map an aclcheck finding ``reason`` to a Verdict: a dead / unmatchable line is REFUTED
+        (its reachability is disproven), while a bad-reference / stateful / fragmented / overlap
+        case is INDETERMINATE (cannot decide). A REACHABLE line emits no finding, so it never
+        reaches here -- absence of a finding is the implicit PROVEN-reachable case."""
+        if (reason or "").upper() in ("BLOCKING_LINES", "INDEPENDENTLY_UNMATCHABLE"):
+            return cls.REFUTED
+        return cls.INDETERMINATE
+
+
+@dataclass(frozen=True)
+class Judgment:
+    """An optional evidence-carrying wrapper around a Verdict (additive; nothing must adopt it
+    yet). Lets a future verify surface attach its grounding -- the native reason token + a
+    snapshot / computed-path citation -- beside the typed verdict, in one audited place."""
+    verdict: Verdict
+    reason: str = ""       # the surface's native token, e.g. "BLOCKING_LINES"
+    citation: str = ""     # snapshot path / computed-path grounding
+    detail: str = ""

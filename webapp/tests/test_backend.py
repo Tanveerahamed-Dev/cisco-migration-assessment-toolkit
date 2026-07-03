@@ -66,6 +66,29 @@ def test_section_slice_and_guard(client):
     assert client.get(f"/api/snapshots/{snap_id}/section/not_a_section").status_code == 400
 
 
+def test_architecture_coverage_endpoint(client):
+    """The architecture-coverage SSOT is served (computed server-side with the SAME engine function the
+    explorer/CLI use -- the dashboard never re-derives coverage). The class count is locked to the engine's
+    OWN registry (drift-proof: when the engine adds an architecture class the webapp contract moves with it,
+    so the lock can never silently fall stale the way a hardcoded number does)."""
+    import cisco_toolkit.design_advisor as da
+    n_ssh = sum(1 for _axis, _label, ch, _pids in da._ARCH_COVERAGE_REGISTRY if ch == "ssh")
+    n_json = sum(1 for _axis, _label, ch, _pids in da._ARCH_COVERAGE_REGISTRY if ch == "json")
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/architecture_coverage")
+    assert r.status_code == 200
+    cov = r.json()
+    # Cross-surface SSOT: the served count == the engine's canonical registry (and is internally consistent).
+    assert isinstance(cov.get("classes"), list)
+    assert cov["summary"]["n_classes"] == len(da._ARCH_COVERAGE_REGISTRY) == len(cov["classes"])
+    assert cov["summary"]["by_channel"]["json"] == n_json and cov["summary"]["by_channel"]["ssh"] == n_ssh
+    by = {c["key"]: c for c in cov["classes"]}
+    assert by["aci"]["channel"] == "json" and by["sdwan"]["channel"] == "json"
+    # coverage-honest: every class is observed-and-status or not-observed (never silently 'healthy')
+    assert all(c["status"] in ("finding", "clean", "not-observed") for c in cov["classes"])
+    assert client.get("/api/snapshots/999999/architecture_coverage").status_code == 404
+
+
 def test_nos_quartet_sections_reachable(client):
     """NEW-V3.23.176: the syslog / QoS / software-risk / platform-health axes (V3.23.164-.167)
     are tabbed AND fetchable -- the one-source-of-truth audit found them unreachable from the
@@ -94,6 +117,179 @@ def test_device_risk_register_section(client):
     assert rows and {"host", "risk_band", "risk_index", "verdict"} <= set(rows[0])
     ranks = {"Severe": 0, "Elevated": 1, "Guarded": 2, "Low": 3}
     assert [ranks[d["risk_band"]] for d in rows] == sorted(ranks[d["risk_band"]] for d in rows)
+
+
+def test_orchestration_peer_engine_sections_served(client):
+    """NEW (orchestration-peer wave): the three always-on engines (G1 acl_line_reachability,
+    I2 feature_compliance, K1 capture_integrity) are whitelisted tabs, indexed for visibility, and
+    served with their findings + summary intact -- the marquee different-action shadow survives the
+    round-trip, so the webapp reaches parity with the explorer's coverage-honest cards."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "engines"}).json()["id"]
+    snap = {
+        "script_version": "test", "devices": {"R1": {}}, "health_scores": [],
+        "acl_line_reachability": {
+            "findings": [{"host": "R1", "acl": "GUEST", "line_index": 6, "action": "permit",
+                          "reason": "BLOCKING_LINES", "blocking_lines": [3], "different_action": True,
+                          "detail": "permit hidden behind an earlier deny"}],
+            "summary": {"n_findings": 1, "n_shadowed": 1, "n_different_action": 1,
+                        "n_unmatchable": 0, "n_indeterminate": 0, "n_bad_reference": 0}},
+        "feature_compliance": {
+            "features": [{"feature": "aaa", "n_baseline": 3, "n_drifting": 1}],
+            "per_device_feature": [{"host": "R1", "feature": "aaa", "n_missing": 1, "status": "drift"}],
+            "summary": {"n_features": 1, "n_rows": 1, "n_drift_rows": 1}},
+        "capture_integrity": {
+            "findings": [{"host": "R1", "command": "show running-config", "status": "incomplete",
+                          "reason": "no terminating 'end' near the tail"}],
+            "summary": {"n_findings": 1, "n_incomplete": 1, "n_error": 0, "n_empty": 0, "n_hosts_affected": 1}},
+    }
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                     data={"label": "engines"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    keys = {sec["key"] for sec in client.get(f"/api/snapshots/{sid}").json()["summary"]["sections"]}
+    trio = {"acl_line_reachability", "feature_compliance", "capture_integrity"}
+    assert trio <= keys, f"missing tabs: {trio - keys}"
+    for name in sorted(trio):
+        r = client.get(f"/api/snapshots/{sid}/section/{name}")
+        assert r.status_code == 200, f"{name}: {r.text}"
+        assert r.json()["section"] == name
+        assert isinstance(r.json()["data"].get("summary"), dict)
+
+    # G1 marquee: the dangerous DIFFERENT-action shadow is preserved through store + serve
+    acl = client.get(f"/api/snapshots/{sid}/section/acl_line_reachability").json()["data"]
+    assert acl["findings"][0]["different_action"] is True
+    assert acl["summary"]["n_different_action"] == 1
+
+    # a clean capture estate hides its own tab (zero findings -> not indexed), never a false-green
+    clean = dict(snap, capture_integrity={"findings": [],
+                 "summary": {"n_findings": 0, "n_incomplete": 0, "n_error": 0, "n_empty": 0, "n_hosts_affected": 0}})
+    up2 = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("snap2.json", json.dumps(clean).encode(), "application/json")},
+                      data={"label": "clean"})
+    keys2 = {sec["key"] for sec in client.get(f"/api/snapshots/{up2.json()['id']}").json()["summary"]["sections"]}
+    assert "capture_integrity" not in keys2
+
+
+def test_orchestration_peer_optin_sections_served(client):
+    """NEW (orchestration-peer wave): the four OPT-IN engines (A1 state_assertions, G3 path_intents,
+    B external_reconcile, G4 whatif) are whitelisted tabs and served when their key is present -- so a
+    snapshot produced with --assert-pack/--path-intents/--import-inventory/--scenario reaches the webapp.
+    Coverage-honesty survives the round-trip: a not_observed verdict and a lost_path (not a fabricated block)."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "optin"}).json()["id"]
+    snap = {
+        "script_version": "test", "devices": {"R1": {}}, "health_scores": [],
+        "state_assertions": {
+            "results": [{"id": "grade", "title": "grade A/B", "status": "fail", "subject": "security_grade"},
+                        {"id": "vpc", "title": "vPC up", "status": "not_observed", "subject": "vpc", "abstention": "not_collected"}],
+            "summary": {"n_pass": 0, "n_fail": 1, "n_not_observed": 1, "n_assessed": 1, "grade": "fail"}},
+        "path_intents": {
+            "results": [{"id": "pci-iso", "src": "10.0.1.1", "dst": "10.0.2.5", "expect": "ISOLATED",
+                         "verdict": "fail", "status": "computed:reached"}],
+            "summary": {"pass": 0, "fail": 1, "not_observed": 0}},
+        "external_reconcile": {
+            "rows": [{"type": "UNVERIFIABLE", "host": "ACC-5", "detail": "declared but never collected"}],
+            "summary": {"MISSING_DEVICE": 0, "UNDOCUMENTED_DEVICE": 0, "MODEL_MISMATCH": 0,
+                        "IP_DRIFT": 0, "UNVERIFIABLE": 1, "n_declared": 1, "n_observed": 0, "n_rows": 1}},
+        "whatif": [{"name": "Lose DIST-1", "removed_hosts": ["DIST-1"],
+                    "summary": {"blocked": 0, "lost_path": 12, "preserved": 8, "inconclusive_other": 48, "other": 12}}],
+    }
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                     data={"label": "optin"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    keys = {sec["key"] for sec in client.get(f"/api/snapshots/{sid}").json()["summary"]["sections"]}
+    quartet = {"state_assertions", "path_intents", "external_reconcile", "whatif"}
+    assert quartet <= keys, f"missing tabs: {quartet - keys}"
+    for name in sorted(quartet):
+        assert client.get(f"/api/snapshots/{sid}/section/{name}").status_code == 200
+
+    # coverage-honesty preserved through the round-trip
+    sa = client.get(f"/api/snapshots/{sid}/section/state_assertions").json()["data"]
+    assert any(r["status"] == "not_observed" for r in sa["results"])   # a blind spot, not a silent pass
+    wi = client.get(f"/api/snapshots/{sid}/section/whatif").json()["data"]
+    assert isinstance(wi, list) and wi[0]["summary"]["blocked"] == 0 and wi[0]["summary"]["lost_path"] == 12
+
+
+def test_parse_yield_section_served(client):
+    """Plan A / Tier-1 #3 surfacing: snap['parse_yield'] (the zero-parse yield ledger the workbook's
+    Collection Completeness sheet already renders) is a whitelisted, indexed tab and is served intact --
+    the summary counts (zero_yield_suspect / expected / errors), the events table, and the engine's
+    coverage-honest note VERBATIM (collected-but-unparsed evidence = a possible parser format gap,
+    never a device verdict). A run where every content-bearing command parsed (no events) hides its
+    own tab -- the platform convention -- so the telemetry never reads like a device finding."""
+    import json
+
+    from cisco_toolkit import cmdio
+    note = cmdio.parse_yield_report()["summary"]["note"]   # the engine's own wording (SSOT, no paraphrase)
+
+    cid = client.post("/api/campaigns", json={"name": "parse-yield"}).json()["id"]
+    snap = {
+        "script_version": "test", "devices": {"N9K-1": {}}, "health_scores": [],
+        "parse_yield": {
+            "summary": {"parsers_called": 3, "zero_yield_suspect": 1, "zero_yield_expected": 1,
+                        "parse_errors": 1, "note": note},
+            "per_parser": {
+                # the marquee class: a real NX-OS RIB printed 220 lines yet parsed to 0 routes
+                "parse_ip_routes": {"calls": 1, "with_content": 1, "zero_yield": 1, "errors": 0,
+                                    "may_be_empty": False},
+                "parse_acl_hitcounts": {"calls": 1, "with_content": 1, "zero_yield": 1, "errors": 0,
+                                        "may_be_empty": True},
+                "parse_vpc": {"calls": 1, "with_content": 1, "zero_yield": 0, "errors": 1,
+                              "may_be_empty": False},
+            },
+            "events": [
+                {"parser": "parse_ip_routes", "device": "N9K-1", "cmd": "show ip route vrf all",
+                 "file": "show_ip_route_vrf_all.txt", "lines_in": 220, "error": False},
+                {"parser": "parse_acl_hitcounts", "device": "N9K-1", "cmd": "show access-lists",
+                 "file": "show_access-lists.txt", "lines_in": 12, "error": False},
+                {"parser": "parse_vpc", "device": "N9K-1", "cmd": "show vpc",
+                 "file": "show_vpc.txt", "lines_in": 40, "error": True},
+            ],
+            "events_truncated": False,
+        },
+    }
+    up = client.post(f"/api/campaigns/{cid}/snapshots",
+                     files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                     data={"label": "py"})
+    assert up.status_code == 201, up.text
+    sid = up.json()["id"]
+
+    # tabbed (indexed by the events list -- the section's meaningful inner list) ...
+    secs = {s["key"]: s for s in client.get(f"/api/snapshots/{sid}").json()["summary"]["sections"]}
+    assert "parse_yield" in secs, f"parse_yield tab missing: {sorted(secs)}"
+    assert secs["parse_yield"]["count"] == 3
+    assert secs["parse_yield"]["label"] == "Parse yield"
+    # ... and fetchable, with the ledger intact
+    r = client.get(f"/api/snapshots/{sid}/section/parse_yield")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    s = d["summary"]
+    assert (s["zero_yield_suspect"], s["zero_yield_expected"], s["parse_errors"]) == (1, 1, 1)
+    assert s["note"] == note                          # verbatim engine wording survives the round-trip
+    assert "never a device" in s["note"]
+    assert d["per_parser"]["parse_acl_hitcounts"]["may_be_empty"] is True   # drives the class column
+    assert len(d["events"]) == 3 and d["events"][0]["parser"]
+
+    # the /api/meta contract carries the label the tab bar renders
+    labels = {sl["key"]: sl["label"] for sl in client.get("/api/meta").json()["section_labels"]}
+    assert labels.get("parse_yield") == "Parse yield"
+
+    # a fully-parsed run (no events) hides its own tab -- telemetry, never a device verdict
+    clean = dict(snap, parse_yield={
+        "summary": {"parsers_called": 90, "zero_yield_suspect": 0, "zero_yield_expected": 0,
+                    "parse_errors": 0, "note": note},
+        "per_parser": {}, "events": [], "events_truncated": False})
+    up2 = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("clean.json", json.dumps(clean).encode(), "application/json")},
+                      data={"label": "clean"})
+    keys2 = {s["key"] for s in client.get(f"/api/snapshots/{up2.json()['id']}").json()["summary"]["sections"]}
+    assert "parse_yield" not in keys2
 
 
 def test_explorer_render_embeds_snapshot(client):
@@ -143,6 +339,34 @@ def test_graph_endpoint(client):
     assert any(n.get("band") for n in g["nodes"])
     # 404 for a missing snapshot
     assert client.get("/api/snapshots/999999/graph").status_code == 404
+
+
+def test_cable_map_endpoint(client):
+    """EDA-style cable map: role-tiered node/port/cable model, op-status coloured, coverage-honest.
+    (Exercises the rehydration fallback — the demo snapshot predates the cable-map engine.)"""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/cable_map")
+    assert r.status_code == 200
+    cm = r.json()
+    assert cm["nodes"] and cm["cables"] and cm["tiers"], "cable map should have nodes/cables/tiers"
+    hosts = {n["host"] for n in cm["nodes"]}
+    valid = {"up", "down", "unknown"}
+    for n in cm["nodes"]:
+        assert n["op_status"] in valid
+        assert isinstance(n["tier"], int) and isinstance(n["collected"], bool)
+        assert isinstance(n.get("kind"), str) and n["kind"]      # evidence-based kind (fabric-only filter input)
+        # an uncollected device is [NOT OBSERVED] neutral, never a fake 'up'
+        if not n["collected"]:
+            assert n["op_status"] == "unknown" and "uncollected" in n["badges"]
+    for c in cm["cables"]:
+        assert c["op_status"] in valid
+        assert c["a"] in hosts and c["b"] in hosts
+        assert "speed" in c                                       # link speed surfaces on every cable
+    # the summary op rollup accounts for every cable
+    op = cm["summary"]["op"]
+    assert op["up"] + op["down"] + op["unknown"] == len(cm["cables"])
+    # 404 for a missing snapshot
+    assert client.get("/api/snapshots/999999/cable_map").status_code == 404
 
 
 def test_cutover_plan(client):
@@ -203,6 +427,39 @@ def test_cutover_gate_critical_crosslayer_only():
     assert wave["n_fail"] == 0 and wave["critical_crosslayer"]      # readiness clean, cross-layer hit
     assert wave["gate"] == "NO-GO"
     assert plan["summary"]["verdict"] == "NO-GO"
+
+
+def test_cutover_blind_devices_block_go_and_are_disclosed():
+    """[audit-5 #15] A wave whose readiness is otherwise clean but that contains a device the collection NEVER
+    reached (health band 'Insufficient Data' / data_quality 0) must NOT be gated a confident GO -- an un-assessed
+    device cannot be certified ready -- and the fleet statement must DISCLOSE those devices rather than asserting a
+    confident make-before-break / window posture over them (a blind subsystem must not read like an assessed one)."""
+    from backend import cutover
+
+    base = {
+        "devices": {"sw1": {}, "sw2": {}},
+        "wave_sequencing": [{"group": "G1", "make_before_break": ["sw1", "sw2"],
+                             "hard_cutover": [], "hard_cutover_endpoints": 0}],
+        "migration_readiness": [{"group": "G1", "switches": ["sw1", "sw2"], "readiness": "READY",
+                                 "n_fail": 0, "n_warn": 0, "checks": []}],
+        "move_groups": [{"switches": ["sw1", "sw2"], "endpoints": 10}],
+    }
+    # sw2 was never collected -> banded 'Insufficient Data', data_quality 0.
+    blind = dict(base, health_scores=[{"switch": "sw1", "band": "Good", "score": 80, "data_quality": 1.0},
+                                      {"switch": "sw2", "band": "Insufficient Data", "score": None, "data_quality": 0.0}])
+    plan = cutover.build_plan(blind)
+    wave = plan["waves"][0]
+    assert wave["n_fail"] == 0                                   # readiness is clean...
+    assert wave["n_blind"] == 1 and "sw2" in wave.get("blind_switches", [])
+    assert wave["gate"] != "GO"                                 # ...but an un-assessed device blocks a confident GO
+    assert plan["summary"]["n_not_assessed"] == 1
+    assert "assess" in plan["summary"]["statement"].lower()     # the statement discloses the coverage gap
+    # control: a fully-collected wave is unaffected.
+    seen = dict(base, health_scores=[{"switch": "sw1", "band": "Good", "score": 80, "data_quality": 1.0},
+                                     {"switch": "sw2", "band": "Good", "score": 75, "data_quality": 1.0}])
+    plan2 = cutover.build_plan(seen)
+    assert plan2["waves"][0]["n_blind"] == 0 and plan2["waves"][0]["gate"] == "GO"
+    assert plan2["summary"]["n_not_assessed"] == 0
 
 
 def test_cutover_robust_to_malformed_snapshot():
@@ -343,6 +600,173 @@ def test_archreview_endpoint(client):
     assert client.get("/api/snapshots/999999/archreview").status_code == 404
 
 
+def test_design_blueprint_endpoint_and_requirements_overlay(client):
+    """The CCDE-grounded design blueprint endpoint — the SAME compute_design_blueprint object the HLD/LLD
+    DOCX and the explorer Design mode read. GET returns the evidence-grounded baseline (every decision
+    cites a CCDE principle); POSTing a requirements register right-sizes (re-scores) every decision. The
+    right-sizing logic lives only in Python — one source of truth across script and dashboard."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/design")
+    assert r.status_code == 200, r.text
+    bp = r.json()
+    assert isinstance(bp["decisions"], list)
+    assert len(bp["tradeoff_scorecard"]) >= 1
+    for k in ("summary", "requirements_model", "coverage", "axes"):
+        assert k in bp, k
+    for d in bp["decisions"]:
+        for k in ("id", "title", "priority", "status", "evidence", "principle", "axes"):
+            assert k in d, (d.get("id"), k)
+        assert d["principle"]["citation"], d.get("id")    # every decision cites a CCDE source
+    # NEW (target_state surfaces the dashboards render — SAME object the HLD §5 reads, no client recompute)
+    ts = bp["target_state"]
+    for k in ("dimensions", "replacement_bom", "addressing_plan", "wave_plan", "segmentation_plan"):
+        assert k in ts, k
+    assert isinstance(ts["dimensions"], list)
+    assert {"n_replace", "n_refresh", "replace_now", "refresh_soon"} <= set(ts["replacement_bom"])
+    assert ts["addressing_plan"].get("status") in ("candidate", "needs-requirement")
+    assert {"waves", "n_waves", "wave_cap"} <= set(ts["wave_plan"])
+    # segmentation_plan is the field the dashboards' "Target segmentation" block reads (SSOT, no client recompute)
+    assert ts["segmentation_plan"].get("status") in ("candidate", "needs-requirement")
+    assert ts["segmentation_plan"].get("observed") and ts["segmentation_plan"].get("target")
+    # requirements overlay: supplying a register re-scores (effective_priority) every decision
+    r2 = client.post(f"/api/snapshots/{snap_id}/design",
+                     json={"availability_tier": "gold", "critical_apps": ["voice"], "growth_horizon": "3y"})
+    assert r2.status_code == 200, r2.text
+    bp2 = r2.json()
+    assert all("effective_priority" in d for d in bp2["decisions"])
+    assert "target_state" in bp2                          # the overlay (server-computed) carries target_state too
+    # the stored section is also reachable through the generic section reader (SSOT)
+    assert client.get(f"/api/snapshots/{snap_id}/section/design_blueprint").status_code in (200, 404)
+    assert client.get("/api/snapshots/999999/design").status_code == 404
+
+
+def test_design_overlay_accepts_interview_answers(client):
+    """C1 (audit fix): the requirements loop closes from the engagement INTERVIEW too. POSTing
+    {"interview_answers": {...}} maps the typed answers through the SAME requirements_from_interview
+    bridge the CLI references, then recomputes server-side — so interview output is no longer a dead path
+    (the bridge previously had no production caller). One right-sizing source: Python."""
+    def _status(bp, did):
+        return next((d["status"] for d in bp["decisions"] if d["id"] == did), None)
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    base = client.get(f"/api/snapshots/{snap_id}/design").json()
+    # the defense-in-depth decision is an OPEN question until a data_classification requirement is supplied
+    assert _status(base, "security-defense-in-depth-segmentation") == "needs-requirement"
+    r = client.post(f"/api/snapshots/{snap_id}/design", json={"interview_answers": {
+        "availability_tier": "Gold", "critical_apps": "voice, video", "growth_horizon": "double in 3y",
+        "data_classification": ["restricted", "internal"], "convergence_budget_ms": "200"}})
+    assert r.status_code == 200, r.text
+    bp = r.json()
+    assert all("effective_priority" in d for d in bp["decisions"]), "answers must be applied (re-scored)"
+    # discriminating check: this only flips if data_classification was genuinely EXTRACTED from the
+    # interview answers (a raw {"interview_answers": {...}} register would leave it needs-requirement)
+    assert _status(bp, "security-defense-in-depth-segmentation") == "recommended", \
+        "interview answers must be mapped via requirements_from_interview, not treated as a raw register"
+
+
+def test_design_overlay_resolves_fabric_operating_model_choice(client):
+    """SSOT interactivity: the DC fabric operating-model CHOICE (Cisco ACI vs standalone NX-OS VXLAN-EVPN)
+    is requirement-gated. POSTing fabric_operating_model flips it from open-question to recommended through
+    the SAME compute_design_blueprint the CLI/HLD run — the dashboard never re-derives the choice (and free
+    text like 'ACI' is canonicalised server-side, not in the browser)."""
+    def _status(bp, did):
+        return next((d["status"] for d in bp["decisions"] if d["id"] == did), None)
+    pid = "dc-fabric-aci-vs-nxos-evpn-operating-model"
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    base = client.get(f"/api/snapshots/{snap_id}/design").json()
+    assert _status(base, pid) == "needs-requirement"          # open question until the WHY is supplied
+    r = client.post(f"/api/snapshots/{snap_id}/design", json={"fabric_operating_model": "ACI"})
+    assert r.status_code == 200, r.text
+    assert _status(r.json(), pid) == "recommended"            # resolved server-side via the same engine
+
+
+def test_design_nrfu_endpoint(client):
+    """Design-driven NRFU/ATP endpoint: GET /api/snapshots/{id}/design/nrfu returns a structured
+    acceptance-test checklist derived from the recommended design decisions — one item per decision,
+    phased across pre-cutover / post-cutover-functional / post-cutover-operational. Every item must
+    carry decision_id, title, priority, phase, description, pass_criteria, devices, principle_citation
+    and trace back to a recommended decision from the baseline blueprint (SSOT: Python only)."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/design/nrfu")
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert "items" in result and "n_items" in result and "note" in result
+    assert result["n_items"] == len(result["items"])
+    required = {"decision_id", "title", "priority", "phase", "description",
+                "pass_criteria", "devices", "principle_citation"}
+    for item in result["items"]:
+        missing = required - set(item)
+        assert not missing, f"NRFU item {item.get('decision_id')} missing keys: {missing}"
+    # all items trace to recommended decisions from the same blueprint
+    bp = client.get(f"/api/snapshots/{snap_id}/design").json()
+    rec_ids = {d["id"] for d in bp["decisions"] if d["status"] == "recommended"}
+    for item in result["items"]:
+        assert item["decision_id"] in rec_ids, (
+            f"NRFU item {item['decision_id']} does not trace to a recommended decision"
+        )
+    # phases are the expected values
+    valid_phases = {"pre-cutover", "post-cutover-functional", "post-cutover-operational"}
+    for item in result["items"]:
+        assert item["phase"] in valid_phases, f"unknown phase: {item['phase']}"
+    # 404 on unknown snapshot
+    assert client.get("/api/snapshots/999999/design/nrfu").status_code == 404
+
+
+def test_design_nrfu_overlay_reflects_requirements(client):
+    """REVIEW #13: POST /api/snapshots/{id}/design/nrfu right-sizes the NRFU checklist to a requirements
+    register — a design decision that flips needs-requirement -> recommended under the overlay appears as a
+    NEW NRFU item, so the dashboard NRFU tab reflects right-sizing (not the stale baseline). SSOT: the NRFU
+    is derived (server-side) from the SAME overlay blueprint POST /design returns, never re-derived in JS."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    base_nrfu = client.get(f"/api/snapshots/{snap_id}/design/nrfu").json()
+    base_ids = {it["decision_id"] for it in base_nrfu["items"]}
+    reg = {"availability_tier": "gold", "growth_horizon": "double the campus in 3 years",
+           "data_classification": ["PCI", "corp"], "critical_apps": ["voice"]}
+    r = client.post(f"/api/snapshots/{snap_id}/design/nrfu", json=reg)
+    assert r.status_code == 200, r.text
+    over = r.json()
+    assert "items" in over and over["n_items"] == len(over["items"])
+    over_ids = {it["decision_id"] for it in over["items"]}
+    # SSOT: every overlay NRFU item traces to a recommended decision of the OVERLAY blueprint
+    rec_over = {d["id"] for d in client.post(f"/api/snapshots/{snap_id}/design", json=reg).json()["decisions"]
+                if d["status"] == "recommended"}
+    assert over_ids <= rec_over
+    # right-sizing had an effect: the overlay flipped at least one decision, and the NRFU reflects it
+    rec_base = {d["id"] for d in client.get(f"/api/snapshots/{snap_id}/design").json()["decisions"]
+                if d["status"] == "recommended"}
+    assert rec_over != rec_base, "requirements should flip at least one open design question"
+    assert over_ids != base_ids, "the NRFU checklist must reflect right-sizing, not the baseline"
+    # also accepts the interview-answers wrapper (same bridge as POST /design)
+    assert client.post(f"/api/snapshots/{snap_id}/design/nrfu",
+                       json={"interview_answers": {"availability_tier": "gold"}}).status_code == 200
+    assert client.post("/api/snapshots/999999/design/nrfu", json=reg).status_code == 404
+
+
+def test_design_overlay_address_space_unlocks_ip_plan(client):
+    """SSOT fix: POSTing address_space to /design recomputes the blueprint with a CANDIDATE
+    addressing_plan (status='candidate') — the IP plan must go from needs-requirement to a live
+    candidate allocation. Verifies the webapp requirements form can now supply address_space
+    (previously missing from the DesignBlueprint.tsx form, so the IP plan stayed permanently gated).
+    Also confirms n_census_vlans and n_unsizable are present on both the needs-requirement and
+    candidate paths."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    # baseline: no address_space -> needs-requirement
+    base = client.get(f"/api/snapshots/{snap_id}/design").json()
+    ap_base = base["target_state"]["addressing_plan"]
+    assert ap_base["status"] == "needs-requirement"
+    assert "n_census_vlans" in ap_base and "n_unsizable" in ap_base, (
+        "n_census_vlans / n_unsizable must be present even when needs-requirement"
+    )
+    # with address_space -> candidate
+    r = client.post(f"/api/snapshots/{snap_id}/design",
+                    json={"address_space": "10.0.0.0/16"})
+    assert r.status_code == 200, r.text
+    bp2 = r.json()
+    ap2 = bp2["target_state"]["addressing_plan"]
+    assert ap2["status"] == "candidate", "address_space must unlock the IP plan to candidate"
+    assert isinstance(ap2.get("subnets"), list) and len(ap2["subnets"]) > 0, "candidate plan must have subnets"
+    assert "n_census_vlans" in ap2 and "n_unsizable" in ap2
+
+
 def test_cutover_deliverable_content(client):
     """The Cutover Plan DOCX is the one deliverable with no engine-side test — validate it actually
     renders the plan (headings + tables), not just that it's a >1KB zip."""
@@ -429,6 +853,140 @@ def test_nrfu_deliverable_content(client):
     all_rows = [c.text for t in doc.tables for row in t.rows for c in row.cells]
     assert any("NRFU-II-" in c for c in all_rows)                # generated test IDs
     assert any("show " in c for c in all_rows)                   # runnable commands
+
+
+def test_nrfu_devices_in_scope_reads_canonical_scale(tmp_path):
+    """C9 (SSOT): the NRFU 'Devices in scope' header must read the canonical executive_brief.scale —
+    the published single source the explorer/deck/HLD read — not a local len(devices) recompute. The
+    web-layer NRFU writer was the last surface recounting fleet scale. Discriminating fixture: scale
+    says 303 while the raw devices array holds 2, so a recompute regression renders 2, not 303."""
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+    snap = {
+        "script_version": "V3.23.0",
+        "devices": {"a": {}, "b": {}},
+        "executive_brief": {"scale": {"n_devices": 303, "n_vlans": 202, "n_endpoints": 5127}},
+        "collection_completeness": {"summary": {"inventory": 303, "complete": 250, "not_collected": 53}},
+        "lifecycle_risk": {"per_device": []}, "validation_plan": {"items": []},
+        "service_map": {"services": []}, "application_intelligence": {"domains": []},
+        "multicast_intelligence": {}, "design_blueprint": {"decisions": [], "design_nrfu": {"items": []}},
+    }
+    out = str(tmp_path / "nrfu.docx")
+    write_nrfu_docx(out, snap, "Unit Test Fleet")
+    rows = [c.text for t in Document(out).tables for row in t.rows for c in row.cells]
+    i = next(k for k, c in enumerate(rows) if "Devices in scope" in c)
+    assert rows[i + 1] == "303"    # canonical scale.n_devices, not len(devices)=2
+
+    # WEBAP-03: the writer used `scale.get("n_devices") or len(devices)`, so a canonical 0 (a legitimate
+    # all-not-yet-collected inventory, which storage.py preserves with an `is None` check) was masked by the
+    # raw-array recount. A canonical 0 with a non-empty devices map must render 0, not 3.
+    snap0 = dict(snap, devices={"a": {}, "b": {}, "c": {}},
+                 executive_brief={"scale": {"n_devices": 0, "n_vlans": 0, "n_endpoints": 0}})
+    out0 = str(tmp_path / "nrfu0.docx")
+    write_nrfu_docx(out0, snap0, "Unit Test Fleet")
+    rows0 = [c.text for t in Document(out0).tables for row in t.rows for c in row.cells]
+    j = next(k for k, c in enumerate(rows0) if "Devices in scope" in c)
+    assert rows0[j + 1] == "0"     # canonical 0 honoured, NOT len(devices)=3
+
+
+def test_snapshot_meta_n_devices_reads_canonical_scale(client):
+    """SSOT (python<->dashboard): the stored snapshot-meta n_devices (shown in the dashboard's snapshot
+    list) must read the canonical executive_brief.scale.n_devices, not a server-side len(devices) recount.
+    Discriminating fixture: scale says 303 while the raw devices array holds only 2."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "scale"}).json()["id"]
+    snap = {"script_version": "V3.23.0", "devices": {"a": {}, "b": {}},
+            "health_scores": [{"switch": "a", "band": "Good", "score": 80}],
+            "executive_brief": {"scale": {"n_devices": 303, "n_vlans": 202, "n_endpoints": 5127},
+                                "posture": {"avg_health": 80, "n_critical": 0}}}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "scale-test"})
+    assert r.status_code == 201, r.text
+    assert r.json()["n_devices"] == 303          # canonical scale.n_devices, NOT len(devices)=2
+
+
+def test_upload_robust_to_truthy_non_list_sections(client):
+    """Robustness (malformed-upload DoS): summarize() runs on every upload and reads health_scores /
+    punchlist / migration_readiness. `(snap.get(k) or [])` only coerces FALSY values, so a truthy
+    NON-list (e.g. an int) flowed into a list-comprehension and raised TypeError -> an unhandled HTTP 500
+    on a structurally-valid-but-hostile upload. It must now degrade to 201 (empty section)."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "robust-list"}).json()["id"]
+    snap = {"devices": {"sw1": {}}, "health_scores": 5, "punchlist": "oops",
+            "migration_readiness": {"not": "a list"}}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "hostile"})
+    assert r.status_code == 201, r.text          # was 500 before the _as_list coercion
+
+
+def test_add_snapshot_robust_to_truthy_non_dict_executive_brief(client):
+    """Robustness: a snapshot whose health_scores is a valid list (so summarize() succeeds) but whose
+    executive_brief is a truthy NON-dict ('CORRUPT') reaches Store.add_snapshot, whose canonical
+    n_devices read chained .get() through `(executive_brief or {})` -- which does NOT guard a truthy
+    non-dict -> AttributeError -> HTTP 500. It must now degrade to 201."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "robust-eb"}).json()["id"]
+    snap = {"devices": {"sw1": {}}, "health_scores": [{"switch": "sw1", "band": "Good", "score": 80}],
+            "executive_brief": "CORRUPT"}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "corrupt-eb"})
+    assert r.status_code == 201, r.text          # was 500 before the isinstance guard
+    assert r.json()["n_devices"] == 1            # falls back to len(devices) when scale is unreadable
+
+
+def test_snapshot_meta_n_devices_canonical_zero_not_recounted(client):
+    """SSOT `or`-masks-zero: a snapshot canonically publishing n_devices == 0 (an empty-inventory
+    collection) that nonetheless carries a non-empty raw devices map must record the CANONICAL 0, not
+    fall through `0 or len(devices)` to the client-side recount. Requires the `is not None` fix."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "zero"}).json()["id"]
+    snap = {"devices": {"sw1": {}, "sw2": {}, "sw3": {}},
+            "executive_brief": {"scale": {"n_devices": 0}}}
+    r = client.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("snap.json", json.dumps(snap).encode(), "application/json")},
+                    data={"label": "zero-canonical"})
+    assert r.status_code == 201, r.text
+    assert r.json()["n_devices"] == 0            # canonical 0, NOT len(devices)=3
+
+
+def test_nrfu_carries_design_traceability_and_scope_limits(tmp_path):
+    """N29+N30: the NRFU/ATP must trace its coverage back to the target-state design decisions, and
+    state its SCOPE LIMITS (what it does NOT validate). A needs-requirement design area + not-collected
+    devices are explicit coverage boundaries, not silent gaps."""
+    pytest.importorskip("docx")
+    from docx import Document
+
+    from backend.nrfu_docx import write_nrfu_docx
+    snap = {
+        "script_version": "V3.23.0", "devices": {"a": {}, "b": {}},
+        "executive_brief": {"scale": {"n_devices": 303}},
+        "collection_completeness": {"summary": {"inventory": 303, "complete": 250, "not_collected": 50}},
+        "lifecycle_risk": {"per_device": []}, "validation_plan": {"items": []},
+        "service_map": {"services": []}, "application_intelligence": {"domains": []},
+        "multicast_intelligence": {}, "software_risk": {"summary": {"n_config_not_assessable": 50}},
+        "design_blueprint": {"decisions": [
+            {"id": "fhrp-first-hop-gateway-redundancy", "title": "Introduce first-hop gateway redundancy",
+             "domain": "availability", "priority": "Critical", "status": "recommended"},
+            {"id": "dc-three-tier-vs-collapsed-core", "title": "Three-tier vs collapsed core",
+             "domain": "dc-fabric", "priority": "High", "status": "needs-requirement"}]},
+        "design_nrfu": {"items": [
+            {"decision_id": "fhrp-first-hop-gateway-redundancy", "phase": "post-cutover-functional"}]},
+    }
+    out = str(tmp_path / "nrfu.docx")
+    write_nrfu_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    heads = [p.text for p in d.paragraphs if p.style.name.startswith("Heading")]
+    text = "\n".join(p.text for p in d.paragraphs)
+    rows = [c.text for t in d.tables for r in t.rows for c in r.cells]
+    assert any("coverage" in h.lower() and "scope" in h.lower() for h in heads), heads
+    assert "Introduce first-hop gateway redundancy" in rows                 # recommended decision traced
+    assert any("not testable" in r.lower() for r in rows)                   # needs-requirement flagged (N30)
+    assert "50" in text and ("not validated" in text.lower() or "not collected" in text.lower())  # N29 scope limit
 
 
 def test_execution_run_lifecycle(client):
@@ -649,6 +1207,15 @@ def test_ingest_collection_runs_real_engine(client, tmp_path):
     assert meta["n_devices"] == 3                       # core1 / core2 / access1
     assert meta["ingest"]["devices_json"] == "synthesized"
     assert sorted(meta["ingest"]["devices"]) == ["access1", "core1", "core2"]
+    # WEBAP-02: the headline directory count must equal the fleet actually assessed -- skipped non-round-trippable
+    # folders excluded -- never over-report (here nothing is skipped, so it pins the formula).
+    assert meta["ingest"]["n_device_dirs"] == 3
+    assert (meta["ingest"]["n_device_dirs"]
+            == len(meta["ingest"]["devices"]) - len(meta["ingest"]["skipped_dirs"]))
+    # WEBAP-01: the engine log tail surfaced to the (remote) client must not leak the server working-dir
+    # absolute path; the engine references it (writes its outputs there), so the scrub placeholder must appear.
+    tail = meta["ingest"].get("engine_log_tail", "")
+    assert "<workdir>" in tail and tmp_path.name not in tail
 
     # the stored snapshot is the engine's own: summary derives and the cutover plan synthesizes
     s = meta["summary"]
@@ -732,3 +1299,217 @@ def test_bad_upload_rejected(client):
                     files={"file": ("bad.json", b"not json", "application/json")},
                     data={"label": "bad"})
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Single-source-of-truth: the dashboard reader must trust the engine's canonical
+# executive_brief.scale / .posture, NOT re-derive the headline numbers from the raw
+# arrays. These fixtures make canonical DISAGREE with what a recompute would yield,
+# so the asserted values can only come from the canonical block — any regression to
+# a client-side recount turns them red. (Engine side is locked by
+# tests/test_pipeline_inprocess.py; this is the webapp half of the contract.)
+# ---------------------------------------------------------------------------
+
+def _divergent_snap():
+    """A snapshot whose canonical brief deliberately disagrees with the raw arrays:
+    len(devices)=3 / avg(scores)=80.0 / Critical-band tally=1, but the brief says
+    42 / 63.4 / 5. A canonical-first reader returns the brief's numbers."""
+    return {
+        "script_version": "V3.23.0",
+        "generated_at": "2026-06-18T00:00:00",
+        "devices": {"a": {}, "b": {}, "c": {}},                       # fallback n_switches == 3
+        "health_scores": [                                            # fallback avg == 80.0, Critical tally == 1
+            {"host": "a", "score": 90, "band": "Good"},
+            {"host": "b", "score": 80, "band": "Fair"},
+            {"host": "c", "score": 70, "band": "Critical"},
+        ],
+        "punchlist": [{"severity": "High", "category": "L2"},
+                      {"severity": "Low", "category": "Hygiene"}],
+        "executive_brief": {                                         # the canonical source of truth
+            "scale": {"n_devices": 42, "n_domains": 9, "n_endpoints": 5127, "n_vlans": 172},
+            "posture": {"avg_health": 63.4, "n_critical": 5, "n_poor": 2, "worst_band": "Poor"},
+            "axes": [], "top_gating": [], "posture_statement": "—",
+        },
+    }
+
+
+def test_trend_point_honors_canonical_scale_posture_over_recompute():
+    """SSOT: trend_point must read executive_brief.scale/.posture, not recount the raw arrays."""
+    from backend import engine
+    tp = engine.trend_point(_divergent_snap())
+    assert tp["n_switches"] == 42, "n_switches must be scale.n_devices (canonical), not len(devices)=3"
+    assert tp["avg_health"] == 63.4, "avg_health must be posture.avg_health, not avg(scores)=80.0"
+    assert tp["n_critical"] == 5, "n_critical must be posture.n_critical, not the Critical-band tally=1"
+
+
+def test_summarize_projects_the_canonical_headline():
+    """SSOT: the API-facing summary projection inherits the canonical headline (it re-uses trend_point)."""
+    from backend.summary import summarize
+    s = summarize(_divergent_snap())
+    assert s["n_switches"] == 42 and s["avg_health"] == 63.4 and s["n_critical"] == 5
+
+
+def test_summarize_near_eos_reads_canonical_n_near():
+    """Coverage-honesty: the dashboard summary's near-end-of-support figure must read the canonical
+    lifecycle field n_near (Near-LDoS). It previously read a non-existent n_near_eos, silently
+    blanking the count while past_eos/past_ldos rendered — a half-shown lifecycle posture."""
+    from backend.summary import summarize
+    life = summarize({"lifecycle_risk": {"summary": {"n_past_ldos": 152, "n_past_eos": 0, "n_near": 61}}})["lifecycle"]
+    assert life["near_eos"] == 61, life
+    assert life["past_ldos"] == 152 and life["past_eos"] == 0
+
+
+def test_trend_point_falls_back_when_brief_absent():
+    """Back-compat: a pre-brief snapshot (no executive_brief) still resolves via the local recompute,
+    so the canonical-first read degrades gracefully instead of returning blanks."""
+    from backend import engine
+    snap = _divergent_snap()
+    snap.pop("executive_brief")
+    tp = engine.trend_point(snap)
+    assert tp["n_switches"] == 3 and tp["avg_health"] == 80.0 and tp["n_critical"] == 1
+
+
+def test_causal_flows_endpoint(client):
+    """The unified Causal Flow model (engine compute_causal_flows) — the SAME normalization the explorer's
+    Causal Flow mode renders, served so the dashboard never re-derives causal intent. Cross-layer once."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/causal_flows")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["summary"]["n_flows"] > 0
+    fams = {f["key"] for f in body["families"]}
+    assert "struct" in fams and "xlayer" in fams              # structural SPOFs + cross-layer always present
+    # every flow carries the four narrative stages + the magnitude / shape contract the UI renders
+    f0 = body["flows"][0]
+    for k in ("trigger", "mechanism", "impact", "mitigation", "severity",
+              "blast", "blast_unit", "shape", "family_label", "icon"):
+        assert k in f0, f"flow missing {k}"
+    # cross-layer compounds promote to a bowtie
+    assert any(f["shape"] == "bowtie" for f in body["flows"])
+    # keys unique END-TO-END (cross_layer CL-xx ids repeat — locks the index-based-key fix at the wire)
+    keys = [f["key"] for f in body["flows"]]
+    assert len(keys) == len(set(keys)), "flow keys must be unique at the endpoint"
+    # the cross-layer VLAN magnitude reaches the response ("N VLANs", not "1 device")
+    assert any(f["blast_unit"] in ("VLAN", "VLANs") for f in body["flows"]), "cross-layer VLAN magnitude must surface"
+    # de-dup: the punch-list 'Cross-layer' rows are NOT re-emitted (only the cross_layer array feeds xlayer)
+    assert not any(f["family"] == "Cross-layer" for f in body["flows"])
+    n_xlayer = sum(1 for f in body["flows"] if f["family"] == "xlayer")
+    cl = client.get(f"/api/snapshots/{snap_id}/section/cross_layer")
+    if cl.status_code == 200:
+        assert n_xlayer == len(cl.json()["data"]), "xlayer count must equal cross_layer length (no double-count)"
+    # 404 for a missing snapshot
+    assert client.get("/api/snapshots/999999/causal_flows").status_code == 404
+
+
+def test_causal_flows_total_over_malformed_snapshot():
+    """The engine fn the /causal_flows route calls must be TOTAL over any dict — a malformed-but-truthy
+    container field (a string where a list is expected, an unhashable severity) must NOT raise, else the
+    route 500s. Mirrors the JS Array.isArray defensiveness; the route also has a try/except backstop."""
+    from cisco_toolkit.causal import compute_causal_flows
+    for bad in [
+        {"causality": "notalist"}, {"cross_layer": "x"}, {"punchlist": "x"},
+        {"design_blueprint": {"decisions": "x"}}, {"devices": "x"},
+        {"causality": [{"severity": {"a": 1}, "hosts": ["a"]}]},   # unhashable severity
+        {"punchlist": [{"category": "X", "devices": "notalist", "detail": 12345}]},
+    ]:
+        r = compute_causal_flows(bad)
+        assert r["summary"]["n_flows"] >= 0 and isinstance(r["flows"], list)
+
+
+def test_causal_flows_computes_design_family_like_design_endpoint(client):
+    """Internal consistency: the /causal_flows route computes design_blueprint on the fly when the snapshot
+    didn't store one (exactly as /design does), so the design-decision family appears. The sample carries NO
+    stored design_blueprint but yields recommended decisions — and the count MUST equal /design's recommended
+    decisions (cross-endpoint single-source-of-truth)."""
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    body = client.get(f"/api/snapshots/{snap_id}/causal_flows").json()
+    fams = {f["key"] for f in body["families"]}
+    assert "design" in fams, "design family must be present (computed when not stored, like /design)"
+    n_design = sum(1 for f in body["flows"] if f["family"] == "design")
+    assert n_design > 0
+    bp = client.get(f"/api/snapshots/{snap_id}/design").json()
+    rec = sum(1 for d in bp["decisions"] if d.get("status") == "recommended")
+    assert n_design == rec, f"causal-flow design family ({n_design}) must equal /design recommended ({rec})"
+
+
+def test_build_graph_robust_to_non_dict_interfaces_devices():
+    """WEBAP-02: build_graph used `snap.get("interfaces") or {}` / `(snap.get("devices") or {})` -- a TRUTHY
+    non-dict (a JSON string/list in a malformed upload) slipped through and .keys() raised AttributeError -> an
+    unhandled 500 on GET /graph. It must degrade instead."""
+    from webapp.backend.graph import build_graph
+    g = build_graph({"interfaces": "oops", "devices": [1, 2, 3], "health_scores": "nope"})   # must not raise
+    assert isinstance(g, dict) and "nodes" in g and "edges" in g
+
+
+def test_get_snapshot_section_robust_to_scalar_section(tmp_path):
+    """WEBAP-01: get_snapshot_section json.loads()'d sqlite json_extract output, but a JSON SCALAR section
+    (string/number) comes back as the native value -- json.loads(int) raised TypeError and json.loads(a bare
+    string) raised JSONDecodeError, neither caught -> 500. A scalar section must be returned, not raise."""
+    from webapp.backend.storage import Store
+    st = Store(str(tmp_path / "t.db"))
+    cid = st.create_campaign("c", "cust")["id"]
+    snap = {"devices": {"sw1": {}}, "design_blueprint": 5, "architecture_coverage": "weird-scalar"}
+    sid = st.add_snapshot(cid, "s", snap, {"n_switches": 1})["id"]
+    assert st.get_snapshot_section(sid, "design_blueprint") == 5           # native int, not a 500
+    assert st.get_snapshot_section(sid, "architecture_coverage") == "weird-scalar"
+    assert st.get_snapshot_section(sid, "devices") == {"sw1": {}}          # objects still decode
+
+
+def test_reconcile_gate_flags_a_drifting_snapshot(caplog):
+    """W3-5: deliverables.generate runs a fail-soft SSOT pre-emission check — a snapshot whose published facts
+    disagree with the raw evidence is loudly logged before the artifact is written (never silently emitted),
+    but a single drift never blocks the deliverable. Total/fail-open on bad input."""
+    import logging
+    from backend.deliverables import _reconcile_gate
+    assert _reconcile_gate({}, "mop") == []                                # nothing published -> clean
+    assert _reconcile_gate(None, "mop") == []                              # total on bad input, no crash
+    drift = {"executive_brief": {"scale": {"n_devices": 999}},
+             "health_scores": [{"switch": "a"}, {"switch": "b"}]}
+    with caplog.at_level(logging.WARNING):
+        viol = _reconcile_gate(drift, "mop")
+    assert viol and any("n_devices" in v for v in viol)                    # the drift is returned
+    assert any("unreconciled" in r.getMessage() for r in caplog.records)   # ...and loudly logged
+
+
+def test_build_graph_tolerates_health_row_without_switch_key():
+    """[multi-domain audit #10] a health_scores row lacking a string 'switch' key injected a None node id and made
+    sorted(node_ids) raise TypeError (str vs None) -> an unhandled 500 on /graph."""
+    from webapp.backend.graph import build_graph
+    g = build_graph({"devices": {"sw1": {}}, "interfaces": {}, "health_scores": [{"band": "Good", "score": 90}]})
+    assert "nodes" in g and all(n["id"] is not None for n in g["nodes"])
+
+
+def test_summarize_survives_nondict_lifecycle_summary():
+    """[audit-3 #13 totality] a snapshot whose lifecycle_risk.summary is a truthy NON-dict (an older engine's
+    'lifecycle not computed' string) survived the `or {}` guard and reached lr.get(...) -> AttributeError -> the
+    unauthenticated upload endpoint 500'd. summarize() must degrade on every field."""
+    from webapp.backend import summary
+    snap = {"devices": {"sw1": {"model": "WS-C3850-48P"}},
+            "lifecycle_risk": {"summary": "lifecycle not computed (older engine)", "per_device": []}}
+    out = summary.summarize(snap)        # must not raise
+    assert isinstance(out, dict) and "lifecycle" in out
+
+
+def test_section_device_dossiers_recomputes_stale_unassessed(client):
+    """[audit-4 #20 false-health] a pre-V3.23.174 snapshot bands the uncollected fleet 'Low / routine migration
+    handling' instead of 'Unassessed'; /section/device_dossiers served it verbatim (no recompute fallback unlike
+    the sibling sections), so the live AssessHub Risk Register read blind devices as routine. It must recompute
+    server-side when the stored section is stale."""
+    import json
+    cid = client.post("/api/campaigns", json={"name": "h", "client": "x"}).json()["id"]
+    snap = {
+        "devices": {"blind1": {}, "good1": {"model": "C9300", "sw_version": "17.9"}},
+        "health_scores": [{"switch": "blind1", "band": "Insufficient Data", "score": 90},
+                          {"switch": "good1", "band": "Good", "score": 85}],
+        "failure_impact": [], "punchlist": [],
+        "device_dossiers": {"summary": {"bands": {"Low": 1, "Guarded": 0, "Elevated": 0, "Severe": 0}},
+                            "per_device": [{"host": "blind1", "risk_band": "Low", "health_band": "Insufficient Data",
+                                            "verdict": "No stacked risk — routine migration handling."}]},
+    }
+    sid = client.post(f"/api/campaigns/{cid}/snapshots",
+                      files={"file": ("s.json", json.dumps(snap).encode(), "application/json")},
+                      data={"label": "stale"}).json()["id"]
+    data = client.get(f"/api/snapshots/{sid}/section/device_dossiers").json()["data"]
+    assert data["summary"]["bands"].get("Unassessed", 0) >= 1            # blind device surfaced, not silently 'Low'
+    blind = next(d for d in data["per_device"] if d["host"] == "blind1")
+    assert blind["risk_band"] == "Unassessed" and "routine" not in blind["verdict"].lower()

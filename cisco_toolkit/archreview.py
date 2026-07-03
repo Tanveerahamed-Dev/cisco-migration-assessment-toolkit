@@ -38,6 +38,7 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
+from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,14 @@ def compute_architecture_review(snap: dict) -> dict:
             "No interface/neighbour data in the snapshot.", "—",
             "Re-collect with CDP/LLDP output included.",
             "Cisco campus design — each access switch homes to the distribution layer")
+    elif not any(adj.get(h) for h in l2_hosts):
+        # conforms-by-silence guard: interfaces are present but NO access-tier CDP/LLDP neighbour was
+        # observed, so daisy-chaining cannot be assessed — never grade 'conforms' off absent evidence.
+        add("HIER-2", D1, "No daisy-chained access switches", "not-assessable",
+            "No in-fleet CDP/LLDP neighbour was observed on the access tier — daisy-chaining cannot be "
+            "assessed from this evidence.", "—",
+            "Re-collect with CDP/LLDP output on the access switches.",
+            "Cisco campus design — each access switch homes to the distribution layer")
     elif chains:
         add("HIER-2", D1, "No daisy-chained access switches", "deviation",
             f"{len(chains)} access-to-access inter-switch link(s): "
@@ -421,17 +430,34 @@ def compute_architecture_review(snap: dict) -> dict:
             "Cisco campus design — PortFast + BPDU Guard on every edge port")
 
     v1_access, v1_native = [], []
+    has_access_vlan = has_native = False                  # evidence-capture: was the field present at all?
     for host, ports in interfaces.items():
         for p, d in _as_dict(ports).items():
             d = _as_dict(d)
             mode = str(d.get("switchport_mode") or "").lower()
-            if mode == "access" and str(d.get("vlan") or "").strip() == "1":
-                v1_access.append(host)
-            if mode == "trunk" and str(d.get("trunk_native_vlan") or "").strip() == "1":
-                v1_native.append(host)
+            _av = str(d.get("vlan") or "").strip()
+            _nv = str(d.get("trunk_native_vlan") or "").strip()
+            if mode == "access":
+                if _av:
+                    has_access_vlan = True
+                if _av == "1":
+                    v1_access.append(host)
+            if mode == "trunk":
+                if _nv:
+                    has_native = True
+                if _nv == "1":
+                    v1_native.append(host)
     if not interfaces:
         add("L2-3", D3, "VLAN 1 not used for user traffic", "not-assessable",
             "No interface data in the snapshot.", "—", "Re-collect.",
+            "Cisco hardening guidance — keep user traffic and trunk native VLAN off VLAN 1")
+    elif not (has_access_vlan or has_native):
+        # conforms-by-silence guard: interfaces present but neither the access-VLAN nor the trunk
+        # native-VLAN field was captured anywhere — VLAN-1 usage cannot be assessed off absent evidence.
+        add("L2-3", D3, "VLAN 1 not used for user traffic", "not-assessable",
+            "Interfaces are present but no access-VLAN or trunk native-VLAN field was captured — "
+            "VLAN-1 usage cannot be assessed from this evidence.", "—",
+            "Re-collect with access-VLAN / trunk native-VLAN detail.",
             "Cisco hardening guidance — keep user traffic and trunk native VLAN off VLAN 1")
     elif v1_access:
         add("L2-3", D3, "VLAN 1 not used for user traffic", "deviation",
@@ -507,7 +533,7 @@ def compute_architecture_review(snap: dict) -> dict:
             av = str(d.get("trunk_allowed_vlans") or "").strip().lower()
             if av:
                 pruned_data += 1
-                if av in ("all", "1-4094", "none") or av.startswith("1-4094"):
+                if av in ("all", "1-4094") or av.startswith("1-4094"):   # 'none' = allows NO VLANs (the INVERSE of allow-all): never an un-pruned trunk
                     allow_all += 1
                     allow_all_hosts.add(host)
     if trunks == 0 or pruned_data == 0:
@@ -790,6 +816,29 @@ def compute_architecture_review(snap: dict) -> dict:
             "—",
             "Assessment doctrine — state collection blind spots explicitly")
 
+    # OPS-4 · cross-domain dependencies & interoperability (N37): declare the multi-NOS interop surface
+    _nos = {}
+    for d in _as_dict(snap.get("devices")).values():
+        fam = str(_as_dict(d).get("platform") or "").strip().lower() or "unknown"
+        _nos[fam] = _nos.get(fam, 0) + 1
+    _fams = {k: v for k, v in _nos.items() if k != "unknown"}
+    if len(_fams) >= 2:
+        _mix = ", ".join(f"{v}× {k.upper()}" for k, v in sorted(_fams.items(), key=lambda x: -x[1]))
+        add("OPS-4", D6, "Cross-domain dependencies & interoperability declared", "advisory",
+            f"The fleet spans {len(_fams)} switch NOS families ({_mix}).",
+            "A multi-NOS estate must keep feature / CLI / automation parity across families, and any "
+            "cross-family migration (e.g. IOS->NX-OS) is an explicit interoperability step, not a "
+            "like-for-like swap — undeclared, it surfaces as a cutover surprise.",
+            "Declare the platform-dependency + interoperability surface in the HLD (the design "
+            "interoperability footprint) and validate cross-family behaviour during NRFU.",
+            "Cisco Advanced Services design-review practice — declare platform dependencies & interop")
+    elif _fams:
+        add("OPS-4", D6, "Cross-domain dependencies & interoperability declared", "conforms",
+            f"The fleet is a single NOS family ({next(iter(_fams)).upper()}), simplifying interoperability.",
+            "A homogeneous NOS estate minimises cross-platform interoperability risk.",
+            "Keep the single-family footprint where practical; declare any new platform's dependencies.",
+            "Cisco Advanced Services design-review practice — declare platform dependencies & interop")
+
     # ---------------- D7 · Security & segmentation ----------------
     D7 = "Security & segmentation"
     sec = _as_dict(snap.get("security"))
@@ -879,8 +928,12 @@ def compute_architecture_review(snap: dict) -> dict:
             "Cisco EoX policy — no TAC/software support past last-day-of-support")
     elif n_ldos:
         add("LC-1", D8, "No hardware past end-of-support", "critical",
-            f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT (and {n_eos} past end-of-sale): "
-            + _ev(lc_dev) + ".",
+            f"{n_ldos} device(s) are past LAST-DAY-OF-SUPPORT"
+            # bands are EXCLUSIVE: n_eos is the Past-EoS-ONLY count. Every Past-LDoS device is ALSO past
+            # end-of-sale, so a bare "(and 0 past end-of-sale)" reads as "nothing is past EoS" — omit it
+            # when 0, and say "more" when >0 (the additional EoS-only devices).
+            + (f" (and {n_eos} more past end-of-sale)" if n_eos else "")
+            + ": " + _ev(lc_dev) + ".",
             "Past LDoS there is NO TAC escalation path and no software fix — a fault during a "
             "migration window on these devices has no vendor backstop.",
             "Replace (not upgrade) the LDoS devices as the first migration waves; stage spares for "
@@ -999,7 +1052,8 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
                        "(pip install python-docx to enable the architecture-review deliverable).")
         return
 
-    snap = _as_dict(snap_dict)
+    snap = xml_safe_deep(_as_dict(snap_dict))   # one bad device byte (noncharacter/surrogate) must not abort the docx
+    label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
     ar = _as_dict(snap.get("architecture_review"))
     if not _as_list(ar.get("checks")):
         ar = compute_architecture_review(snap)
@@ -1051,6 +1105,7 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     add_document_control(
         doc, document="Architecture Review & Conformance Report", label=label,
         engine_version=str(snap.get("script_version", "")), generated_at=snap.get("generated_at"),
+        collected_at=snap.get("collected_at"),
         audience="Customer architecture owners and the engagement's design authority; consumed by "
                  "the HLD/LLD as target-state input and by the engagement plan as gate evidence.",
         exclude=("archreview",),
@@ -1144,8 +1199,23 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
             _label_run(doc.add_paragraph(), "Reference:", c.get("reference"), GREY)
             doc.add_paragraph()
 
-    # ===== 5. Hand-off into the document set =====
-    doc.add_heading("5. Hand-Off Into the Document Set", level=1)
+    # ===== 5. Design decision traceability — the audit trail BEHIND the conformance grade =====
+    from cisco_toolkit.design import build_design_traceability   # local import: avoid any module-load cycle
+    trace = build_design_traceability(snap)                      # reads the xml-safe `snap` copy, not the raw arg
+    handoff_sec = 5
+    if trace:
+        doc.add_heading("5. Design Decision Traceability", level=1)
+        doc.add_paragraph(
+            "The audit trail behind the conformance grade — every recommended design decision traced to the CCDE "
+            "principle and published source that justify it, plus the collected evidence it stands on. A decision "
+            "with no citation is shown '(uncited)', never given a manufactured reference.")
+        table(["Design decision", "CCDE principle", "Citation", "Evidence", "Source fields"],
+              [(r["decision"], r["principle"], r["citation"], r["evidence"], r["fields"] or "—") for r in trace],
+              widths=[1.6, 1.7, 1.2, 1.9, 1.5])
+        handoff_sec = 6                                          # renumber Hand-Off only when §5 actually rendered
+
+    # ===== Hand-off into the document set (§5 if no traceability, §6 if it rendered — never a numbering gap) =====
+    doc.add_heading(f"{handoff_sec}. Hand-Off Into the Document Set", level=1)
     doc.add_paragraph(
         "Deviations feed the Target-State Design Recommendations (design document §4) and the "
         "migration punch-list; the priority queue in §1.1 is the working order. The engagement plan "

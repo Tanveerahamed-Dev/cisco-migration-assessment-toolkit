@@ -105,7 +105,11 @@ function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (
 const DIR_ICON: Record<string, string> = { improving: "▲", worsening: "▼", flat: "▬" };
 const DIR_COLOR: Record<string, string> = { improving: "var(--ok)", worsening: "var(--crit)", flat: "var(--text-faint)" };
 const VERDICT_COLOR: Record<string, string> = {
+  // campaign-trend vocabulary (compute_campaign_trend)
   IMPROVING: "var(--ok)", REGRESSING: "var(--crit)", MIXED: "var(--watch)", FLAT: "var(--text-dim)", INSUFFICIENT: "var(--text-faint)",
+  // snapshot_delta vocabulary (compute_snapshot_delta) — the 'Compare two waves' panel reuses this map; without
+  // these keys cmp.verdict (CLEAN/REVIEW/REGRESSED) fell through to a flat dim chip, never colored (audit-5 CA#5).
+  CLEAN: "var(--ok)", REVIEW: "var(--watch)", REGRESSED: "var(--crit)",
 };
 
 function Trend({ id }: { id: number }) {
@@ -290,6 +294,9 @@ export default function CampaignPage() {
                     <div>Resolved: <b style={{ color: "var(--ok)" }}>{cmp.findings?.n_resolved ?? "—"}</b></div>
                     <div>Regressed: <b style={{ color: "var(--crit)" }}>{cmp.health?.n_regressed ?? "—"}</b></div>
                     <div>Improved: <b style={{ color: "var(--ok)" }}>{cmp.health?.n_improved ?? "—"}</b></div>
+                    {/* physical cabling delta (EDA cable-map SSOT) — coverage-honest: 'not assessed' is disclosed, never a silent zero */}
+                    <div>Cables ±: <b>{cmp.cabling?.assessed ? `${cmp.cabling.summary?.n_added ?? 0} added / ${cmp.cabling.summary?.n_removed ?? 0} removed` : "not assessed"}</b></div>
+                    <div>Cables down: <b style={{ color: (cmp.cabling?.summary?.n_went_down ?? 0) > 0 ? "var(--crit)" : "var(--ok)" }}>{cmp.cabling?.assessed ? (cmp.cabling.summary?.n_went_down ?? 0) : "—"}</b></div>
                   </div>
                 </div>
               )}

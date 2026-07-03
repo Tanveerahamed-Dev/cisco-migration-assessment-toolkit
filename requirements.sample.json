@@ -1,0 +1,14 @@
+{
+  "_comment": "Design REQUIREMENTS REGISTER (the WHY). Pass to the engine with --requirements requirements.json; it right-sizes the published design_blueprint so every deliverable (HLD/CRD/deck/explorer) reflects the requirements. Absent, the blueprint surfaces these as open questions rather than assuming. Only the keys below are recognised; omit any you have not gathered yet.",
+  "_comment_address_space": "address_space (a supernet) UNLOCKS the candidate net-new IP plan (target_state.addressing_plan §5.3): each VLAN gets a /24 within it. vlan_zones (an explicit {VLAN-id: zone} map) additionally makes it ZONE-AWARE — one contiguous summarisable block per zone. Zones are NEVER inferred from data_classification names; supply vlan_zones to assign them.",
+  "requirements": {
+    "availability_tier": "gold",
+    "critical_apps": ["voice", "video", "ERP"],
+    "convergence_budget_ms": 200,
+    "growth_horizon": "3 years, +50% access ports, new DC block",
+    "constraints": ["budget-limited", "installed-base reuse where possible", "PCI scope must stay isolated"],
+    "data_classification": ["PCI", "corporate", "guest", "OT"],
+    "address_space": "10.0.0.0/13",
+    "vlan_zones": {"10": "PCI", "20": "PCI", "30": "corporate", "40": "guest", "50": "OT"}
+  }
+}
