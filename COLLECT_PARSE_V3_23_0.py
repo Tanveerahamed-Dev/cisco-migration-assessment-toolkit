@@ -462,6 +462,7 @@ from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_
                                 write_campaign_workbook, redact_snapshot,
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
+from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -2620,6 +2621,11 @@ def main():
         # source the deliverables/explorer/webapp read instead of re-deriving coverage. Reads design_blueprint
         # + the per-axis snapshot keys; excluded from the golden (date-relative via the blueprint) like it.
         snap_dict["architecture_coverage"] = compute_architecture_coverage(snap_dict)
+        # Coverage matrix (Plan-A #5): compose the four coverage sources -- collection / capture / parse /
+        # architecture -- into ONE per-(device, axis) first-class table (recomputes no device state, just
+        # projects the published verdicts). Reads architecture_coverage above, so it inherits the
+        # blueprint's date-relativity -> excluded from the golden + publish-locked alongside it.
+        snap_dict["coverage_matrix"] = compute_coverage_matrix(snap_dict)
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
     # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
