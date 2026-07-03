@@ -6,6 +6,45 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.25.0] — 2026-07-03 — Plan-A remainder wave (8 items) + project SSOT registry
+
+The tail of the Plan-A backlog (Tier-2/3 remainder + the greenfield north-star's additive first
+steps), plus a project-wide single-source-of-truth registry.
+
+### Correctness & types
+- **Typed parser defaults**: `_safe_parse` returns each parser's OWN empty shape via a frozen
+  `PARSER_RETURN_SHAPE` (55 dict / 47 list / 2 str / 1 int) — closing the `{}`-vs-`[]` hazard at its
+  root; a totality + `build.py` call-site anti-drift test keeps it from ever drifting.
+- **`Verdict` ADT** (`Proven | Refuted | NotObserved | Indeterminate`, a str-mixin enum in `model.py`)
+  makes abstention a TYPE, not a per-module string convention; threaded additively into the ACL
+  shadow-proof findings (the other verify surfaces migrate behind it next).
+- **ntc-templates CI referee** widened from 3 IOS commands to 7 across IOS **and** NX-OS
+  (superset-only; a TextFSM error on an off-shape fixture → skip, never a false fail).
+
+### Coverage & footprint
+- **Coverage-as-a-first-class row**: `snap['coverage_matrix']` composes the four coverage sources
+  (collection / capture / parse / architecture) into one per-(device, axis) table — coverage-honest
+  (abstention explicit, never a fabricated "covered").
+- The on-disk snapshot's `interfaces` subtree is **sparse-encoded** (~70% of its fields are empty
+  defaults), losslessly restored via `InterfaceData.from_sparse` on read; the workbook and every
+  consumer are unaffected (the in-memory snapshot stays dense).
+
+### Performance & structure
+- The shared `_link_carries` primitive on the failure-impact / causality hot path is **memoized
+  per-model** (`_carry`) — a provably output-neutral drop from O(H·V·L) to O(V·L).
+- **Typed `AnalysisContext`** (`cisco_toolkit/context.py`) is introduced as the strangler seam for
+  the 1300-line `main()`; the leaf finalize stage is extracted onto it (`_stage_finalize`),
+  golden-neutral. The remaining stages migrate move by move.
+- **Rig/KB hygiene**: an offline `gen_oui_registry.py` (parses a local Wireshark `manuf`; refuses a
+  URL — no-egress), an `eoldb` provenance/review-vintage guard, and `.claude/worktrees/` excluded
+  from graphify.
+
+### Governance
+- **Project SSOT registry** at `docs/ssot.md` — "one index, many owners": the single map of where
+  the authoritative truth for every fact lives (reference, never restate), with a
+  `test_ssot_registry.py` integrity gate that fails if a pointer rots, folded into graphify, and
+  referenced from `CLAUDE.md`.
+
 ## [v3.24.0] — 2026-07-02 — Plan A (EVOLVE) Move-0 + Tier-1 + Tier-2 + Tier-3
 
 Hardening + instrumentation tranche executed in the load-bearing order of
