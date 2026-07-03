@@ -24,3 +24,22 @@ def test_sample_fleet_carries_every_golden_section():
         f"(python webapp/sample_data/build_sample.py); missing section(s): {missing}")
     # sanity: it is a real multi-device demo, not a stub
     assert len(sample.get("devices") or {}) >= 10
+
+
+def test_sample_fleet_carries_engine_subfields_the_superset_check_is_blind_to():
+    """Post-v3.25.1 SSOT sweep — guard the two drift classes the top-level key-superset check CANNOT catch,
+    both of which really froze once (the 2026-07-02 sample missed the 2026-07-03 waves):
+      1. `coverage_matrix` — the engine publishes it unconditionally, but it is golden-EXCLUDED (date-relative
+         via the blueprint), so `set(golden) - set(sample)` never requires it.
+      2. `verdict` on every ACL finding — a SUB-field inside the existing `acl_line_reachability` key, invisible
+         to a top-level-key diff.
+    A stale sample now fails HERE (regenerate build_sample.py), not silently."""
+    sample = json.loads((ROOT / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
+                         ).read_text(encoding="utf-8"))
+    assert "coverage_matrix" in sample, \
+        "sample missing the engine-published coverage_matrix block — regenerate build_sample.py"
+    acl = (sample.get("acl_line_reachability") or {}).get("findings") or []
+    missing = [f.get("citation") for f in acl if "verdict" not in f]
+    assert acl and not missing, (
+        "ACL findings must all carry the engine's Verdict ADT `verdict` field (stale sample — regenerate "
+        f"build_sample.py); offenders: {missing or 'no ACL findings in the demo'}")

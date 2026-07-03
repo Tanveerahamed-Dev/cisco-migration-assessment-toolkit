@@ -1645,19 +1645,19 @@ function demoSnapshot(){
   // has an empty match-space; ACC-1's non-contiguous wildcard is honestly INDETERMINATE (never called dead).
   acl_line_reachability:{
     findings:[
-      {host:"ACC-3",acl:"GUEST_FILTER",line_index:6,action:"permit",reason:"BLOCKING_LINES",blocking_lines:[3],
+      {host:"ACC-3",acl:"GUEST_FILTER",line_index:6,action:"permit",reason:"BLOCKING_LINES",verdict:"refuted",blocking_lines:[3],
        different_action:true,detail:"a permit hidden behind an earlier deny on line 4 — this rule never takes effect",
        raw:"permit tcp 192.168.30.0 0.0.0.255 any eq 443",source_command:"show running-config",
        citation:"acls.ACC-3.GUEST_FILTER[6]"},
-      {host:"DIST-1",acl:"MGMT_IN",line_index:4,action:"permit",reason:"BLOCKING_LINES",blocking_lines:[1],
+      {host:"DIST-1",acl:"MGMT_IN",line_index:4,action:"permit",reason:"BLOCKING_LINES",verdict:"refuted",blocking_lines:[1],
        different_action:false,detail:"fully covered by earlier line(s) — dead but harmless (same action)",
        raw:"permit tcp host 10.0.0.50 any eq 22",source_command:"show running-config",
        citation:"acls.DIST-1.MGMT_IN[4]"},
-      {host:"DIST-2",acl:"INET_OUT",line_index:9,action:"deny",reason:"INDEPENDENTLY_UNMATCHABLE",blocking_lines:[],
+      {host:"DIST-2",acl:"INET_OUT",line_index:9,action:"deny",reason:"INDEPENDENTLY_UNMATCHABLE",verdict:"refuted",blocking_lines:[],
        different_action:false,detail:"empty match-space — source/destination/port sets cannot all be satisfied at once",
        raw:"deny tcp any eq www any eq www",source_command:"show running-config",
        citation:"acls.DIST-2.INET_OUT[9]"},
-      {host:"ACC-1",acl:"VOICE_ACL",line_index:3,action:"permit",reason:"INDETERMINATE",blocking_lines:[],
+      {host:"ACC-1",acl:"VOICE_ACL",line_index:3,action:"permit",reason:"INDETERMINATE",verdict:"indeterminate",blocking_lines:[],
        different_action:false,detail:"non-contiguous wildcard mask — cannot be proven dead or live offline (abstain)",
        raw:"permit ip 10.20.0.0 0.0.255.3 any",source_command:"show running-config",
        citation:"acls.ACC-1.VOICE_ACL[3]"},
