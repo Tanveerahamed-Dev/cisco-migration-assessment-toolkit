@@ -4,6 +4,7 @@ verbatim from COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 9 (behaviour
 byte-identical). `InterfaceData` is the per-port record; `DevicePhysical` is the
 per-switch physical inventory record. The scoring tunables (`ScoringConfig`) stay
 with the analyze layer - they are not part of the passed-around data model."""
+import enum
 from dataclasses import dataclass
 
 
@@ -100,3 +101,39 @@ class DevicePhysical:
     # Compared against `hostname` (the inventory/collection key) to flag inventory typos that
     # otherwise surface as a phantom split node in the topology (e.g. 'AS08--' vs real 'AS08-').
     reported_hostname: str = ""
+
+
+# =============================================================================
+# VERDICT ADT - abstention as a TYPE, not a per-module string convention
+# =============================================================================
+class Verdict(str, enum.Enum):
+    """A four-way outcome for any verify / abstention surface. str-mixin, so
+    ``json.dumps(Verdict.PROVEN) == '"proven"'`` -- a Verdict-typed field written into a
+    snapshot dict is byte-identical to the hand-written string it replaces (purely additive,
+    never a serialization change). Generalizes the coverage-honest ``active_ports: int | None``
+    idiom above: NOT_OBSERVED is a distinct value, never silently a pass."""
+    PROVEN = "proven"                 # affirmatively demonstrated from collected evidence
+    REFUTED = "refuted"               # affirmatively disproven (a definitive negative)
+    NOT_OBSERVED = "not_observed"     # a blind spot -- never silently a pass (the coverage-honest core)
+    INDETERMINATE = "indeterminate"   # evidence present but insufficient to decide
+
+    @classmethod
+    def from_acl_reason(cls, reason: str) -> "Verdict":
+        """Map an aclcheck finding ``reason`` to a Verdict: a dead / unmatchable line is REFUTED
+        (its reachability is disproven), while a bad-reference / stateful / fragmented / overlap
+        case is INDETERMINATE (cannot decide). A REACHABLE line emits no finding, so it never
+        reaches here -- absence of a finding is the implicit PROVEN-reachable case."""
+        if (reason or "").upper() in ("BLOCKING_LINES", "INDEPENDENTLY_UNMATCHABLE"):
+            return cls.REFUTED
+        return cls.INDETERMINATE
+
+
+@dataclass(frozen=True)
+class Judgment:
+    """An optional evidence-carrying wrapper around a Verdict (additive; nothing must adopt it
+    yet). Lets a future verify surface attach its grounding -- the native reason token + a
+    snapshot / computed-path citation -- beside the typed verdict, in one audited place."""
+    verdict: Verdict
+    reason: str = ""       # the surface's native token, e.g. "BLOCKING_LINES"
+    citation: str = ""     # snapshot path / computed-path grounding
+    detail: str = ""
