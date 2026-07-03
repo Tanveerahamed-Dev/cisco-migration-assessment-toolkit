@@ -12,6 +12,11 @@ End-of-Life portal before a procurement decision.
 """
 from typing import Optional
 
+# Curation vintage: the date this table was last reviewed against Cisco's EoX bulletins (git-tracked).
+# Surfaced so a stale 'active' row (a product that has since gone end-of-sale) is AUDITABLE against a
+# known review date, never silently trusted forever. Bump it whenever the rows below are re-verified.
+_EOL_REVIEWED = "2026-06-26"
+
 # pat = uppercase model PREFIX; longest matching prefix wins (a specific PID beats its family).
 # eos/ldos = ISO dates ('' = n/a / active). source cites the Cisco bulletin. conf: confirmed | derived | active.
 _EOL = [
