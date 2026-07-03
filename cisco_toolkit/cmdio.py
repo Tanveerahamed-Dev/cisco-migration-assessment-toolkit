@@ -189,6 +189,65 @@ def parser_for(cmd):
     return PARSER_CONTRACTS.get(cmd, ())
 
 
+# === PARSER_RETURN_SHAPE ==========================================================
+# Every parse_* in cisco_toolkit.parse -> its empty-container SHAPE, so _safe_parse's
+# fail-soft fallback returns the RIGHT empty default for the parser instead of a hard-wired
+# {} (the "{}-vs-[] hazard": a list-returning parser that RAISED used to yield {}, which is
+# the wrong empty shape and can corrupt a downstream consumer expecting a list). Frozen here
+# because cmdio is a leaf module and must not import parse; tests/test_parser_return_shapes.py
+# reconciles this table against the live return annotations AND the build.py call-site
+# defaults, so it can never silently drift from reality.
+_DICT_PARSERS = (
+    "parse_aci_health", "parse_acls", "parse_arista_mlag", "parse_asa_failover", "parse_auth_sessions",
+    "parse_config_hygiene", "parse_cpu_utilization", "parse_cts_environment_data",
+    "parse_dhcp_snooping_binding", "parse_etherchannel_protocol_ios", "parse_etherchannel_summary_members",
+    "parse_fmc_ha_status", "parse_fmc_server_version", "parse_fortigate_ha_status", "parse_glbp_summary",
+    "parse_hsrp_detail", "parse_hsrp_summary", "parse_interface_phy", "parse_ip_routes",
+    "parse_ipv6_route_summary", "parse_memory_stats", "parse_multicast_info", "parse_nat",
+    "parse_neighbors_cdp", "parse_neighbors_lldp", "parse_ntp_status", "parse_object_groups",
+    "parse_pim_rp_mapping", "parse_port_security", "parse_port_security_detail",
+    "parse_portchannel_protocol_from_summary", "parse_ptp_clock", "parse_qos_config",
+    "parse_run_config_interfaces", "parse_security", "parse_show_environment", "parse_show_environment_power",
+    "parse_show_interface_counters", "parse_show_interface_status", "parse_show_interface_switchport",
+    "parse_show_interface_trunk_table", "parse_show_inventory", "parse_show_ip_arp",
+    "parse_show_mac_address_table", "parse_show_power_inline", "parse_show_version", "parse_show_vrf_interface",
+    "parse_spanning_tree_blockedports", "parse_spanning_tree_detail", "parse_spanning_tree_root",
+    "parse_spanning_tree_states", "parse_system_resources", "parse_vlan_brief", "parse_vpc",
+    "parse_vrrp_summary",
+)
+_LIST_PARSERS = (
+    "parse_aci_bds", "parse_aci_epgs", "parse_aci_fabric_nodes", "parse_aci_faults", "parse_aci_tenants",
+    "parse_aci_vrfs", "parse_acl_hitcounts", "parse_arista_bgp_evpn_summary", "parse_asa_resource_usage",
+    "parse_aws_security_groups",   # annotation-less (list-or-None), guarded by an isinstance at its call site
+    "parse_bfd_neighbors", "parse_bgp_ipv6_summary",
+    # the neighbour parsers return List[Dict[...]] (a LIST of dicts, not a dict) -- their call sites `or []`:
+    "parse_bgp_summary", "parse_eigrp_neighbors", "parse_neighbors_detail", "parse_ospf_neighbors",
+    "parse_bgp_table", "parse_bgp_vpnv4_summary", "parse_copp_drops", "parse_crypto_sessions",
+    "parse_dmvpn_peers", "parse_evpn_summary", "parse_fmc_deployable", "parse_fmc_devices",
+    "parse_fmc_ha_pairs", "parse_igmp_groups", "parse_igmp_snooping_querier", "parse_ipv6_dhcp_guard_policy",
+    "parse_ipv6_interface_addrs", "parse_ipv6_raguard_policy", "parse_ise_nodes", "parse_junos_chassis_cluster",
+    "parse_lisp_sessions", "parse_mpls_l2vpn_vc", "parse_mpls_ldp_neighbors", "parse_mroute_entries",
+    "parse_nve_peers", "parse_nve_vni", "parse_ospfv3_neighbors", "parse_pim_neighbors",
+    "parse_policymap_drops", "parse_redistribution", "parse_sdwan_control_connections", "parse_sdwan_devices",
+    "parse_sdwan_omp_counters", "parse_storm_control", "parse_syslog_events",
+)
+PARSER_RETURN_SHAPE = {
+    **{n: "dict" for n in _DICT_PARSERS},
+    **{n: "list" for n in _LIST_PARSERS},
+    # scalar parsers (called directly, never via _safe_parse's default path) -- registered for totality:
+    "parse_switch_mgmt_ip": "str", "parse_vtp_status": "str", "parse_show_module_count": "int",
+}
+
+_EMPTY_BY_SHAPE = {"dict": dict, "list": list, "str": str, "int": int}
+
+
+def _empty_for(fn) -> object:
+    """The correct empty default for parser `fn` on a fail-soft miss: a fresh {} / [] / '' / 0
+    by its registered return shape. Unknown parsers fall back to {} -- the historical default,
+    so this is strictly backward-compatible."""
+    return _EMPTY_BY_SHAPE.get(PARSER_RETURN_SHAPE.get(getattr(fn, "__name__", ""), "dict"), dict)()
+
+
 def reset_parse_ledger() -> None:
     """Start-of-run reset (also clears this thread's pairing stash)."""
     global _EVENTS_TRUNCATED
@@ -294,15 +353,16 @@ def _load_cmd_output(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
 
 def _safe_parse(fn, *args, _default=None):
     """FIX-V3.23.6 (P1): run a section parser fail-soft. If it raises on a
-    malformed/unexpected block, log a breadcrumb and return _default ({} unless
-    given) so build_interfaces keeps the rest of the device's data instead of
-    losing the whole device to one bad section. Happy path is unchanged - the
-    parsers already return {} on empty input, so wrapping is value-preserving."""
+    malformed/unexpected block, log a breadcrumb and return _default so build_interfaces
+    keeps the rest of the device's data instead of losing the whole device to one bad
+    section. When no _default is given the fallback is the parser's OWN empty shape
+    (_empty_for: [] for a list parser, {} for a dict parser) rather than a blanket {},
+    closing the {}-vs-[] hazard. Happy path is unchanged - value-preserving."""
     try:
         result = fn(*args)
     except Exception as e:
         logger.warning(f"  [parse] {getattr(fn, '__name__', repr(fn))} failed: {e!r}; section skipped")
-        result = {} if _default is None else _default
+        result = _empty_for(fn) if _default is None else _default
         _record_yield(fn, args, result, error=True)
         return result
     _record_yield(fn, args, result, error=False)

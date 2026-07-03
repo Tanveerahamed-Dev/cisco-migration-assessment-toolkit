@@ -88,6 +88,9 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     # architecture_coverage is derived from design_blueprint (its findings shift with the date-relative blueprint)
     # -> exclude it too; its SSOT publish is locked by tests/test_pipeline_inprocess.py. (architecture coverage)
     snap.pop("architecture_coverage", None)
+    # coverage_matrix (Plan-A #5) is COMPOSED from architecture_coverage -> inherits its date-relativity;
+    # exclude it too, its SSOT publish is locked in tests/test_pipeline_inprocess.py. (coverage matrix)
+    snap.pop("coverage_matrix", None)
     return snap, str(out_xlsx)
 
 

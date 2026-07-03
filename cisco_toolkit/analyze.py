@@ -505,7 +505,6 @@ def cable_map_of_snapshot(snap: Optional[dict]) -> dict:
     snapshot that predates the cable-map engine, rehydrate the stored dict-interfaces back into
     InterfaceData (dropping unknown legacy keys) and recompute. Tolerant: anything else -> empty
     model. One rehydration SSOT — the --compare delta and the webapp endpoint both call this."""
-    import dataclasses
     snap = snap if isinstance(snap, dict) else {}
     cm = snap.get("cable_map")
     if isinstance(cm, dict) and isinstance(cm.get("nodes"), list):
@@ -517,14 +516,13 @@ def cable_map_of_snapshot(snap: Optional[dict]) -> dict:
         current = (_n0 is None or "kind" in _n0) and (_c0 is None or "speed" in _c0)
         if current or not isinstance(snap.get("interfaces"), dict):
             return cm
-    fields = {f.name for f in dataclasses.fields(InterfaceData)}
     raw = snap.get("interfaces")
     ifaces: Dict[str, Dict[str, InterfaceData]] = {}
     if isinstance(raw, dict):
         for host, ports_ in raw.items():
             if not isinstance(ports_, dict):
                 continue
-            ifaces[host] = {p: InterfaceData(**{k: v for k, v in (d or {}).items() if k in fields})
+            ifaces[host] = {p: InterfaceData.from_sparse(d)   # restores '' defaults for sparse-encoded records
                             for p, d in ports_.items() if isinstance(d, dict)}
     return compute_cable_map(ifaces, snap.get("health_scores"))
 
@@ -851,6 +849,22 @@ def _link_carries(link: Dict[str, object], vid: int) -> str:
     return "fwd" if (a_allow and b_allow) else ""
 
 
+def _carry(model: Dict[str, object], link: Dict[str, object], vid: int) -> str:
+    """`_link_carries` memoized on the model for the compute's lifetime (Plan-A #12). The (link, vid)
+    classification is a PURE function -- independent of removed_host -- yet the failure-impact /
+    causality loops re-ask the same (link, vid) once per removed-host iteration (O(H) times for one
+    answer). Caching it on the model (built fresh per compute, so no id reuse across computes)
+    removes that H factor WITHOUT changing any result -- caching a pure function cannot. Keyed on
+    (vid, id(link)); link objects are stable within one model, and '' (not-carried) is a real cached
+    value distinct from the None 'absent' sentinel."""
+    cache = model.setdefault("_carry_cache", {})
+    key = (vid, id(link))
+    rel = cache.get(key)
+    if rel is None:
+        rel = cache[key] = _link_carries(link, vid)
+    return rel
+
+
 def _vlan_components(model: Dict[str, object], vid: int,
                      removed_host: Optional[str] = None,
                      include_backup: bool = False) -> List[set]:
@@ -867,7 +881,7 @@ def _vlan_components(model: Dict[str, object], vid: int,
         a, b = link["a"], link["b"]
         if removed_host in (a, b):
             continue
-        rel = _link_carries(link, vid)
+        rel = _carry(model, link, vid)
         if rel == "fwd" or (include_backup and rel == "blk"):
             adj.setdefault(a, set()); adj.setdefault(b, set())
             adj[a].add(b); adj[b].add(a)
@@ -1016,8 +1030,8 @@ def compute_causality_chains(all_interfaces: Dict[str, Dict[str, InterfaceData]]
         for vid in sorted(host_vlans):
             if host in [g["host"] for g in model["gw"].get(vid, [])]:
                 continue  # gateway is local; uplink loss doesn't strand it from L3
-            carrying = [l for l in host_links if _link_carries(l, vid) == "fwd"]
-            backups  = [l for l in host_links if _link_carries(l, vid) == "blk"]
+            carrying = [l for l in host_links if _carry(model, l, vid) == "fwd"]
+            backups  = [l for l in host_links if _carry(model, l, vid) == "blk"]
             if len(carrying) == 1 and not backups and not carrying[0]["is_pc"]:
                 l = carrying[0]
                 far = l["b"] if l["a"] == host else l["a"]
@@ -1072,7 +1086,7 @@ def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
                 _eph = {h for (h, v), n in model["endpoints"].items() if v == vid and n > 0}
                 _eph |= model["access_presence"].get(vid, set())
                 if _eph and ((host in _eph) or any(
-                        host in (l["a"], l["b"]) and _link_carries(l, vid) for l in model["links"])):
+                        host in (l["a"], l["b"]) and _carry(model, l, vid) for l in model["links"])):
                     off_scan_gw_vlans += 1
                 continue  # no in-scan gateway -> "stranded from gateway" is N/A (see Findings)
             ep_hosts = {h for (h, v), n in model["endpoints"].items() if v == vid and n > 0}
@@ -1082,7 +1096,7 @@ def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
             surviving_gw = [h for h in gw_hosts if h != host]
             any_fhrp = any(g["fhrp"] for g in model["gw"].get(vid, []))
             touches = (host in gw_hosts) or (host in ep_hosts) or any(
-                host in (l["a"], l["b"]) and _link_carries(l, vid) for l in model["links"])
+                host in (l["a"], l["b"]) and _carry(model, l, vid) for l in model["links"])
             if not touches:
                 continue
 
