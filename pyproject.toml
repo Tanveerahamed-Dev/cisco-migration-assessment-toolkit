@@ -20,7 +20,7 @@ name = "cisco-migration-assessment-toolkit"
 # `cisco_toolkit.__version__` ("3.23.0"): that constant is the snapshot-SCHEMA version baked into the
 # golden data contract (`script_version` in every snapshot), and bumping it would churn the frozen
 # golden. See the change log ("In-code version 3.23.0") and tests/test_pipeline_golden.py.
-version = "3.24.0"
+version = "3.25.0"
 description = "Evidence-led Cisco L1-L4 network migration-assessment toolkit: one offline SSH collection produces a multi-sheet Excel workbook, an interactive single-file topology explorer, and a DOCX runbook."
 readme = "README.md"
 requires-python = ">=3.10"
