@@ -128,6 +128,17 @@
   svg{width:100%; height:100%; display:block; cursor:grab}
   svg.grabbing{cursor:grabbing}
 
+  /* ---- 3D fabric canvas (V3.23.181): WebGL-free, painter's-algorithm projected topology.
+     A single .mode3d class on the stage swaps the SVG graph + mini-map out for the canvas;
+     overlays (search, legend, hint, mode tag) stay live on top. ---- */
+  #g3d{position:absolute; inset:0; width:100%; height:100%; display:none; z-index:3;
+    touch-action:none; cursor:grab}
+  #g3d.grabbing{cursor:grabbing}
+  #g3d[hidden]{display:none}
+  .stage.mode3d #svg{display:none}
+  .stage.mode3d #minimap{display:none !important}
+  .stage.mode3d #g3d{display:block}
+
   /* ---- table view (alternate data-equivalent of the graph) ---- */
   #tableView{position:absolute; inset:0; z-index:6; overflow:auto; background:var(--surface);
     padding:14px 16px 18px}
@@ -994,6 +1005,64 @@
     /* 5. Avoid awkward page breaks through cards / rows */
     .sec, .card, table, tr{break-inside:avoid}
   }
+
+  /* =====================================================================
+     V3.23.181 — DEPTH & GLASS REFRESH. An additive, token-driven layer that
+     elevates the existing chrome without forking the palette: frosted
+     translucent panels (backdrop-blur), layered elevation shadows, gradient
+     accents and a soft glow on the active lens. Placed last so it augments
+     the base rules; every value is a token, so the light theme and the 3D
+     canvas read identically. Motion-free → reduced-motion-safe.
+     ===================================================================== */
+  :root{
+    --glass:    color-mix(in srgb, var(--surface) 74%, transparent);
+    --glass-2:  color-mix(in srgb, var(--surface-2) 66%, transparent);
+    --glass-border: color-mix(in srgb, #ffffff 10%, transparent);
+    --glow:     color-mix(in srgb, var(--accent) 60%, transparent);
+    --accent-grad: linear-gradient(135deg, color-mix(in srgb, var(--accent) 92%, #ffffff), var(--accent-dim));
+    --elev-1: 0 1px 2px rgba(0,0,0,.28), 0 4px 14px rgba(0,0,0,.32);
+    --elev-2: 0 2px 6px rgba(0,0,0,.34), 0 16px 42px rgba(0,0,0,.50);
+    --blur: 14px;
+  }
+  [data-theme="light"]{
+    --glass:    color-mix(in srgb, var(--surface) 80%, transparent);
+    --glass-2:  color-mix(in srgb, var(--surface-2) 74%, transparent);
+    --glass-border: color-mix(in srgb, #1b2530 12%, transparent);
+    --elev-1: 0 1px 2px rgba(40,55,80,.10), 0 4px 14px rgba(40,55,80,.10);
+    --elev-2: 0 2px 8px rgba(40,55,80,.12), 0 16px 40px rgba(40,55,80,.16);
+  }
+  /* frosted header + drawer rail */
+  header{ background:color-mix(in srgb, var(--surface) 82%, transparent);
+    backdrop-filter:blur(var(--blur)) saturate(1.3); -webkit-backdrop-filter:blur(var(--blur)) saturate(1.3); }
+  aside{ background:color-mix(in srgb, var(--surface) 86%, transparent);
+    backdrop-filter:blur(var(--blur)) saturate(1.2); -webkit-backdrop-filter:blur(var(--blur)) saturate(1.2);
+    border-left-color:var(--glass-border); }
+  /* segmented mode switcher: glass trough + gradient/glow active lens */
+  .modes{ background:var(--glass-2); border-color:var(--glass-border);
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); box-shadow:var(--elev-1); }
+  .modes button.on{ background:var(--accent-grad); color:#fff;
+    box-shadow:0 1px 2px rgba(0,0,0,.30), 0 0 0 1px color-mix(in srgb,var(--accent) 45%, transparent), 0 6px 18px -6px var(--glow); }
+  [data-theme="light"] .modes button.on{ color:#fff; box-shadow:0 1px 2px rgba(40,55,80,.18), 0 6px 18px -7px var(--glow); }
+  .modes button.on .gl{ opacity:1 }
+  /* floating overlay panels — search / legend / hint / mode tag (chips trigger stays neutral) */
+  .panelbox:not(.chips){ background:var(--glass); border-color:var(--glass-border);
+    backdrop-filter:blur(var(--blur)) saturate(1.2); -webkit-backdrop-filter:blur(var(--blur)) saturate(1.2);
+    box-shadow:var(--elev-2); }
+  /* hover tooltip + VLAN popover — frosted cards */
+  #tip, .vlan-pop{ background:var(--glass); border-color:var(--glass-border);
+    backdrop-filter:blur(var(--blur)) saturate(1.3); -webkit-backdrop-filter:blur(var(--blur)) saturate(1.3);
+    box-shadow:var(--elev-2); }
+  /* buttons lift on hover; primary becomes a gradient with glow */
+  .btn:hover{ box-shadow:var(--elev-1) }
+  .btn.primary, .btn.primary:hover{ background:var(--accent-grad); box-shadow:0 6px 18px -6px var(--glow), var(--elev-1) }
+  /* brand mark → gradient chip with a glow ring */
+  .brand .mark{ background:var(--accent-grad); box-shadow:0 0 0 3px var(--accent-soft), 0 0 14px -2px var(--glow) }
+  /* stage: keep the dotted grid, float it over a soft radial depth wash (2-D modes; 3-D paints its own) */
+  .stage{ background:
+      radial-gradient(120% 90% at 50% -12%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 58%),
+      radial-gradient(var(--grid) 1px, transparent 1px),
+      var(--bg);
+    background-size:auto, 26px 26px, auto; }
 </style>
 </head>
 <body>
@@ -1017,6 +1086,7 @@
       <button data-mode="review" aria-pressed="false"><span class="gl" aria-hidden="true">☑</span>Review</button>
       <button data-mode="design" aria-pressed="false"><span class="gl" aria-hidden="true">✎</span>Design</button>
       <button data-mode="cablemap" aria-pressed="false"><span class="gl" aria-hidden="true">⇅</span>Cable Map</button>
+      <button data-mode="3d" aria-pressed="false" title="3D fabric — orbit the topology in true 3D (V3.23.181)"><span class="gl" aria-hidden="true">⬡</span>3D</button>
     </div>
     <div class="grow"></div>
     <div class="tools">
@@ -1046,6 +1116,7 @@
         <div class="panelbox modetag" id="modetag"></div>
       </div>
       <svg id="svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Network topology graph"></svg>
+      <canvas id="g3d" aria-label="Interactive 3D network topology" role="img" hidden></canvas>
       <div id="lensLabel" role="status" aria-live="polite" hidden></div>
       <div id="tip" role="tooltip" hidden></div>
       <div id="tableView" tabindex="-1" hidden></div>
@@ -2483,6 +2554,10 @@ const MODES=[
   tag:"Physical cabling map (Nokia-EDA style): CDP/LLDP links laid out in role tiers, cables coloured by operational status. Grey / dashed = [NOT OBSERVED] (uncollected). Click a node or cable for per-port detail.",
   hint:()=>CM_SEL?`Selected — click it again or the background to clear`:`Click a <b>node</b> or a <b>cable</b> for its detail`,
   legend:()=>ln("var(--ok)","link up","")+ln("var(--crit)","link down","")+ln("var(--text-faint)","[NOT OBSERVED] / uncollected","")+bx("var(--accent)","selected node","")+`<div class="row faint" style="margin-top:3px">Lanes are role tiers; ━ thick = port-channel. Click a node or cable for its detail.</div>`},
+ {key:"3d",kbd:"o",gl:"⬡",btn:"3D",label:"3D fabric",
+   tag:"A true 3-D view of the fabric: device tiers stacked as rings — core / distribution up top, access below. Drag to orbit, scroll to zoom, click a switch for its health breakdown.",
+   hint:()=>SEL?`<b>${esc(shortName(SEL))}</b> selected — its links light up. Click empty space to clear`:`<b>Orbit</b> the fabric — click a switch for its health`,
+   legend:()=>bx("var(--ok)","good","")+bx("var(--watch)","fair","")+bx("var(--risk)","poor","")+bx("var(--crit)","critical","")+`<div class="row faint" style="margin-top:3px">Each <b>switch chassis</b> tints by health (2U = core / dist on the upper rings, 1U = access below). Drag to orbit.</div>`},
 ];
 const MODE_BY_KEY={}; MODES.forEach(mm=>MODE_BY_KEY[mm.key]=mm);
 const HASH_MODES=MODES.map(mm=>mm.key);
@@ -2667,7 +2742,8 @@ function applyTransform(){const vp=document.getElementById("vp");
   if(vp){vp.setAttribute("transform",`translate(${view.tx},${view.ty}) scale(${view.k})`);
     vp.classList.toggle("lod-far", view.k<0.55);}   // LoD: shed secondary labels when zoomed out
   if(typeof updateMinimapRect==="function")updateMinimapRect();}
-function fitView(){const st=document.getElementById("stage");const W=st.clientWidth,H=st.clientHeight;
+function fitView(){if(MODE==="3d"&&typeof G3D!=="undefined"){G3D.fit();return;}   // V3.23.181: Fit reframes the 3D camera instead of the SVG viewport
+  const st=document.getElementById("stage");const W=st.clientWidth,H=st.clientHeight;
   const k=Math.min(W/LOGICAL.w,H/LOGICAL.h)*0.92; view.k=Math.max(0.25,Math.min(k,1.6));
   view.tx=(W-LOGICAL.w*view.k)/2; view.ty=(H-LOGICAL.h*view.k)/2; applyTransform();}
 function screenToLogical(px,py){const r=svg().getBoundingClientRect();
@@ -3076,6 +3152,7 @@ function repaint(){
   else if(MODE==="apps")paintApps();
   else if(MODE==="review")paintReview();
   else if(MODE==="design")paintDesign();
+  else if(MODE==="3d"){if(typeof G3D!=="undefined")G3D.render();}   // V3.23.181: 3D canvas renderer (SVG painters are skipped)
   severityHalo();   // U8: severity-colored pulsing halos behind critical/SPOF nodes (every mode)
   applySearch(); paintEndpointReach(); setHint(); setModeTag(); setLegend();
   applyVlanFocus();   // per-VLAN isolation: fade switches not on the selected VLAN (after all paints)
@@ -3583,7 +3660,7 @@ function onNodeClick(h){const i=NAV.indexOf(h); if(i>=0){NAVI=i; setRoving();} E
   if(MODE==="trace"){pickTrace(h);
     srAnnounce(TRACE_SRC&&TRACE_DST?`Path traced from ${TRACE_SRC} to ${TRACE_DST}.`:(TRACE_SRC?`Source ${TRACE_SRC} selected; choose a destination.`:"Selection cleared."));}
   else if(MODE==="flow"){pickFlow(h);}
-  else if(MODE==="blast"||MODE==="health"||MODE==="protocols"){SEL=(SEL===h)?null:h;repaint();renderDrawer();writeHash();
+  else if(MODE==="blast"||MODE==="health"||MODE==="protocols"||MODE==="3d"){SEL=(SEL===h)?null:h;repaint();renderDrawer();writeHash();
     srAnnounce(SEL?`${h} selected. ${deviceRole(MODEL,h)==="core"?"Core / distribution":"Access"} switch, ${epTotalOf(h)} hosts.`:`${h} deselected.`);}}
 function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="xlayer"&&XLSEL){XLSEL=null;repaint();renderDrawer();}
@@ -3593,6 +3670,7 @@ function onBgClick(){if(MODE==="trace"){if(TRACE_SRC||TRACE_DST)clearTrace();}
   else if(MODE==="design"&&DES_SEL!=null){DES_SEL=null;repaint();renderDrawer();}
   else if(MODE==="cablemap"&&CM_SEL){CM_SEL=null;paintCableMap();renderDrawer();}
   else if(MODE==="flow"&&(FLOW_SRC||FLOW_DST)){FLOW_SRC=FLOW_DST=FLOWRES=FLOW_PICK=null;repaint();renderDrawer();}
+  else if(MODE==="3d"&&SEL){SEL=null;repaint();renderDrawer();writeHash();}   // V3.23.181: empty-space click clears the 3D selection
   else if(SEL||EPSEL){SEL=null;EPSEL=null;repaint();renderDrawer();writeHash();}}
 function computeTrace(){TRACE=(TRACE_SRC&&TRACE_DST)?tracePath(MODEL,traceVid(),TRACE_SRC,TRACE_DST,false):null;}
 function pickTrace(h){if(!TRACE_SRC){TRACE_SRC=h;}else if(!TRACE_DST){if(h!==TRACE_SRC)TRACE_DST=h;}
@@ -3648,7 +3726,7 @@ function setMode(m){const _prevMode=MODE; MODE=m; _lastBlastSel=null;   // a mod
     const _mm=document.getElementById("minimap"); if(_mm)_mm.style.display=(m==="cablemap")?"none":"";}   // rebuild the SVG on enter/leave; the minimap tracks the circle graph, so hide it here
   document.querySelectorAll("#modes button").forEach(b=>{const on=b.dataset.mode===m; b.classList.toggle("on",on); b.setAttribute("aria-pressed",on?"true":"false");
     if(on&&b.scrollIntoView)b.scrollIntoView({block:"nearest",inline:"nearest"});});   // the strip scrolls on laptop widths — keep the active tab visible
-  if(m!=="blast"&&m!=="health"&&m!=="protocols")SEL=null;
+  if(m!=="blast"&&m!=="health"&&m!=="protocols"&&m!=="3d")SEL=null;
   if(m!=="xlayer"){XLSEL=null; XL_LAYER_FILTER=null; XL_SEV_FILTER=null;}   // U1: cross-layer highlight + filters only live in their mode
   if(m!=="health")TIER_FOCUS=null;   // V3.23.72: a cockpit tier highlight only lives in Health mode
   if(m!=="waves")WAVE_SEL=null;   // V3.23.86: a move-group highlight only lives in Waves mode
@@ -3657,6 +3735,7 @@ function setMode(m){const _prevMode=MODE; MODE=m; _lastBlastSel=null;   // a mod
   if(m!=="design")DES_SEL=null;   // a design-decision evidence spotlight only lives in Design mode
   if(m==="compare"&&!MODEL_B){/* prompt handled in drawer */}
   if(m==="trace")computeTrace();
+  if(typeof G3D!=="undefined"){if(m==="3d")G3D.enter(); else G3D.leave();}   // V3.23.181: swap the 3D canvas in/out before painting
   repaint(); renderDrawer();
   srAnnounce((MODE_BY_KEY[m]?MODE_BY_KEY[m].label:m)+" mode."+modeSummary(m));   // label from the MODES registry
   writeHash();}
@@ -3667,7 +3746,7 @@ function setMode(m){const _prevMode=MODE; MODE=m; _lastBlastSel=null;   // a mod
 function _desSelHasDevices(){if(DES_SEL==null)return false;const bp=designBlueprint();const d=bp&&bp.decisions&&bp.decisions[DES_SEL];return !!(d&&d.evidence&&(d.evidence.devices||[]).length);}
 function setHint(){const h=document.getElementById("hint");
   const m=MODE_BY_KEY[MODE].hint();   // per-mode hint lives in the MODES registry (state-aware closure)
-  h.innerHTML=m+`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`;}
+  h.innerHTML=m+(MODE==="3d"?`  ·  <span class="kbd">drag</span> orbit  <span class="kbd">scroll</span> zoom`:`  ·  <span class="kbd">drag</span> pan  <span class="kbd">scroll</span> zoom`);}
 function setModeTag(){const el=document.getElementById("modetag");
   el.textContent=MODE_BY_KEY[MODE].tag;}   // per-mode description lives in the MODES registry
 /* optional 3rd arg `hl` makes the row an interactive hover-highlight control (data-hl="<kind>") */
@@ -3806,6 +3885,7 @@ function renderDrawer(){
   else if(MODE==="waves")p.innerHTML=drawWaves();
   else if(MODE==="apps")p.innerHTML=drawApps();
   else if(MODE==="review")p.innerHTML=drawReview();
+  else if(MODE==="3d")p.innerHTML=drawHealth();   // V3.23.181: the 3D fabric is health-coloured → reuse the Risk-cockpit drawer
   else if(MODE==="design")p.innerHTML=drawDesign();
   else if(MODE==="cablemap")p.innerHTML=drawCableMap();
   // W3-4 (NotebookLM Mind-Map): a selected topology node gets a one-click scoped, OFFLINE askbot question about
@@ -8819,6 +8899,7 @@ function downloadBlob(blob,filename){
 }
 
 function exportSvg(){
+  if(MODE==="3d"){srAnnounce("SVG export is unavailable in 3D view — use PNG (▦) instead.");return;}   // V3.23.181
   const str=buildStandaloneSvg();
   const blob=new Blob([str],{type:"image/svg+xml;charset=utf-8"});
   downloadBlob(blob,"topology.svg");
@@ -8828,6 +8909,7 @@ function exportSvg(){
 // Rasterize the standalone SVG to PNG via an offscreen <canvas>. Returns a Promise so the
 // async path is testable; resolves with the PNG Blob (or rejects on image-load failure).
 function exportPng(){
+  if(MODE==="3d"&&typeof G3D!=="undefined")return G3D.exportPng();   // V3.23.181: rasterize the 3D canvas directly
   const str=buildStandaloneSvg();
   const vb=exportViewBox();          // same bounds the SVG was built with
   const W=vb.w, H=vb.h;
@@ -8854,6 +8936,309 @@ function exportPng(){
     img.src="data:image/svg+xml;charset=utf-8,"+encodeURIComponent(str);
   }).catch(err=>{srAnnounce("Could not export topology as PNG"); throw err;});
 }
+
+/* =====================================================================
+   3D FABRIC (V3.23.181) — a dependency-free, canvas-projected 3-D view
+   of the topology, added as an additive mode beside the SVG lenses so the
+   file stays a single offline HTML (no three.js / WebGL / CDN).
+
+   • Layout: reuse roleTiers() — each device tier becomes a horizontal RING
+     stacked along Y (core/distribution on top, access below). Validated
+     practice: a tiered Z-axis de-clutters dense fabrics and exposes the
+     hierarchy that a flat hairball hides.
+   • Camera: orbit (drag = yaw/pitch) with release INERTIA, dolly (wheel), and a
+     smooth fly-to that re-frames the switch you select. Perspective projection +
+     painter's-algorithm depth sort.
+   • Glyphs: every node is a true 3-D RACK-MOUNT SWITCH CHASSIS (2U for core/dist,
+     1U for access) — back-face-culled shaded boxes with a front-panel row of RJ45
+     ports + lit status LEDs — not an abstract dot.
+   • Cinematics (all hand-rolled on a 2-D canvas, still zero-dep): additive BLOOM
+     glow (light-emitting chassis via 'lighter' compositing, intensity by health/role/
+     selection), DIRECTIONAL per-face lighting, curved bezier edges carrying flowing
+     ENERGY PARTICLES, a horizon FLOOR-GRID under the lowest tier, an ambient
+     STARFIELD, and depth fog.
+   • Reuse: healthList()/healthBandToken() for band colour, #tip + tipNodeHTML
+     for hover, onNodeClick()/onBgClick() for selection, downloadBlob for PNG.
+   • Theme-aware (reads live CSS vars each frame) and reduced-motion-safe (no idle
+     auto-orbit, no inertia, no particle flow, fly-to snaps — static but interactive).
+   ===================================================================== */
+const G3D=(function(){
+  let cv=null, ctx=null, cs=null, dpr=1, cw=0, ch=0;
+  let nodes=[], edges=[], byHost={}, health={}, stars=[];
+  let yaw=0.62, pitch=0.42, dist=900, target=[0,0,0];   // orbit camera (spherical) + look-at target
+  let vy=0, vp=0, lastMx=0, lastMy=0;                    // orbit inertia (momentum after release)
+  let tween=null, lastSel=null;                          // camera fly-to + selection-change tracking
+  let raf=0, dirty=true, dragging=false, autospin=true, bound=false;
+  let hover=null, downX=0, downY=0, moved=false, ro=null, mo=null;
+  const FOV=Math.PI/3.4, MIN_D=200, MAX_D=4200, GAP=170;
+
+  /* --- tiny vec3 + colour helpers --- */
+  const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1; return [a[0]/l,a[1]/l,a[2]/l];};
+  const clamp=(v,lo,hi)=>v<lo?lo:v>hi?hi:v;
+  function col(tok){return (cs?cs.getPropertyValue("--"+tok).trim():"")||"#808080";}
+  function hexToRgb(h){h=(h||"").trim(); if(h[0]!=="#")return [128,128,128];
+    h=h.slice(1); if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    const n=parseInt(h,16); return isNaN(n)?[128,128,128]:[(n>>16)&255,(n>>8)&255,n&255];}
+  const mix=(a,b,t)=>[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+  const rgba=(c,a)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a==null?1:clamp(a,0,1)})`;
+  function bandRgb(h){const r=health[h];
+    const tok=r?(r.band?healthBandToken(r.band):scoreToken(r.score)):"neutral";
+    return tok==="neutral"?hexToRgb(col("text-faint")):hexToRgb(col(tok));}
+  const LIGHT=norm([-0.45,0.82,0.36]);                   // key light (world space) → sphere shading
+  const easeOut=t=>1-Math.pow(1-t,3);
+  const lerp3=(a,b,t)=>[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+  // real physical-port count from the device's interface census (drives the front-panel density);
+  // falls back to endpoint count, then a role default. Capped at 48 (a face-plate's worth).
+  function physPorts(h){
+    const ifs=SNAP&&SNAP.interfaces&&SNAP.interfaces[h];
+    if(ifs&&typeof ifs==="object"){ let n=0;
+      for(const k in ifs){ if(/^(gi|te|fa|fo|hu|tw|eth)/i.test(k) && !/^(vlan|po|lo|tu|nu|mgmt|bdi|nve|fab|null|loop)/i.test(k)) n++; }
+      if(n) return Math.min(48,n); }
+    const ep=epTotalOf(h); if(ep>0) return Math.min(48,Math.max(8,ep));
+    return deviceRole(MODEL,h)==="core"?24:48;
+  }
+
+  /* --- build the 3-D scene from the live MODEL (tiers → stacked rings) --- */
+  function build(){
+    nodes=[]; edges=[]; byHost={}; health={};
+    if(!MODEL||!MODEL.hosts||!MODEL.hosts.length)return;
+    (healthList()||[]).forEach(r=>health[r.switch]=r);
+    const lm=layoutModel();                       // same adjacency the SVG layout uses (ghost-safe)
+    const {tier}=roleTiers(lm);
+    let maxT=0; MODEL.hosts.forEach(h=>maxT=Math.max(maxT, tier.get(h)||0));
+    const byT={}; MODEL.hosts.forEach(h=>{const t=tier.get(h)||0; (byT[t]=byT[t]||[]).push(h);});
+    for(let t=0;t<=maxT;t++){
+      const arr=(byT[t]||[]).slice().sort((a,b)=>a.localeCompare(b));
+      const n=arr.length, y=(maxT/2 - t)*GAP, R=n<=1?0:Math.max(130, n*27);
+      arr.forEach((h,i)=>{
+        let x=0,z=0;
+        if(n>1){const ang=(i/n)*Math.PI*2; x=Math.cos(ang)*R; z=Math.sin(ang)*R;}
+        const deg=distinctDeg(MODEL,h), core=deviceRole(MODEL,h)==="core";
+        const nd={h,x,y,z, r0:(core?15:10)+Math.min(8,deg*1.2), core, tier:t, ports:physPorts(h)};
+        nodes.push(nd); byHost[h]=nd;
+      });
+    }
+    for(const e of aggregateEdges()){const a=byHost[e.a], b=byHost[e.b]; if(!a||!b)continue;
+      // curved control point: bow the link outward from the Y axis + lift slightly, so edges arc in 3-D
+      const mx=(a.x+b.x)/2, my=(a.y+b.y)/2, mz=(a.z+b.z)/2, rad=Math.hypot(mx,mz)||1;
+      const bow=Math.min(120, Math.hypot(b.x-a.x,b.y-a.y,b.z-a.z)*0.22);
+      edges.push({a,b, c:[mx+(mx/rad)*bow, my+bow*0.5, mz+(mz/rad)*bow], ph:Math.random()});
+    }
+    // ambient starfield in a far shell — parallax + atmosphere as the camera orbits
+    stars=[]; for(let i=0;i<150;i++){ const u=Math.random()*2-1, th=Math.random()*Math.PI*2, rr=2400+Math.random()*1800, s=Math.sqrt(1-u*u);
+      stars.push([Math.cos(th)*s*rr, u*rr*0.7, Math.sin(th)*s*rr, 0.2+Math.random()*0.6]); }
+  }
+
+  /* --- one rendered frame --- */
+  function draw(){
+    if(!ctx)return;
+    const now=reducedMotion()?0:performance.now()*0.001;
+    const cp=Math.cos(pitch), sp=Math.sin(pitch), cyw=Math.cos(yaw), syw=Math.sin(yaw);
+    const eye=[target[0]+dist*cp*syw, target[1]+dist*sp, target[2]+dist*cp*cyw];
+    const fwd=norm([target[0]-eye[0],target[1]-eye[1],target[2]-eye[2]]);   // look at the orbit target
+    const right=norm(cross(fwd,[0,1,0])), up=cross(right,fwd);
+    const f=(ch/2)/Math.tan(FOV/2), ox=cw/2, oy=ch/2;
+    const proj=p=>{const dx=p[0]-eye[0],dy=p[1]-eye[1],dz=p[2]-eye[2];
+      const cz=dx*fwd[0]+dy*fwd[1]+dz*fwd[2]; if(cz<=1)return null;
+      const sx2=dx*right[0]+dy*right[1]+dz*right[2], sy2=dx*up[0]+dy*up[1]+dz*up[2];
+      return {sx:ox+f*sx2/cz, sy:oy-f*sy2/cz, z:cz, sc:f/cz};};
+    for(const nd of nodes)nd._p=proj([nd.x,nd.y,nd.z]);
+    let zmin=1e9,zmax=-1e9; for(const nd of nodes)if(nd._p){zmin=Math.min(zmin,nd._p.z);zmax=Math.max(zmax,nd._p.z);}
+    const zr=Math.max(1,zmax-zmin), fog=z=>1-Math.min(0.8,((z-zmin)/zr)*0.85);
+    const lsx=dot(LIGHT,right), lsy=dot(LIGHT,up);          // light in screen space → specular offset
+
+    const bg=hexToRgb(col("bg")), s2=hexToRgb(col("surface-2"));
+    ctx.setTransform(dpr,0,0,dpr,0,0); ctx.globalCompositeOperation="source-over"; ctx.clearRect(0,0,cw,ch);
+    let g=ctx.createRadialGradient(ox,oy*0.68,40,ox,oy,Math.max(cw,ch)*0.92);
+    g.addColorStop(0,rgba(mix(s2,bg,0.2),1)); g.addColorStop(1,rgba(bg,1));
+    ctx.fillStyle=g; ctx.fillRect(0,0,cw,ch);
+
+    // starfield (additive, faint, parallax)
+    const starc=hexToRgb(col("text-faint")); ctx.globalCompositeOperation="lighter";
+    for(const s of stars){ const P=proj(s); if(!P)continue; ctx.fillStyle=rgba(starc, s[3]*fog(P.z)*0.5); ctx.fillRect(P.sx,P.sy,1.3,1.3); }
+    ctx.globalCompositeOperation="source-over";
+
+    // horizon floor-grid — concentric rings on a plane below the lowest tier (grounds the 3-D)
+    let ymin=1e9; for(const nd of nodes)ymin=Math.min(ymin,nd.y); if(!isFinite(ymin))ymin=0;
+    const fy=ymin-60, gridc=hexToRgb(col("accent")), SEG=48; ctx.lineWidth=1;
+    for(let ring=1;ring<=5;ring++){ const rr=ring*95; ctx.beginPath(); let started=false, vis=0;
+      for(let s=0;s<=SEG;s++){ const ang=(s/SEG)*Math.PI*2, P=proj([Math.cos(ang)*rr, fy, Math.sin(ang)*rr]);
+        if(!P){started=false;continue;} if(!started){ctx.moveTo(P.sx,P.sy);started=true;} else ctx.lineTo(P.sx,P.sy); vis++; }
+      if(vis){ ctx.strokeStyle=rgba(gridc, 0.05+0.018*(5-ring)); ctx.stroke(); } }
+    // contact light-pools — each chassis casts a soft band-tinted glow onto the floor, grounding it
+    ctx.globalCompositeOperation="lighter";
+    for(const nd of nodes){ const cu=nd.r0*0.42;
+      const Pc=proj([nd.x,fy,nd.z]), Px=proj([nd.x+cu*3.4,fy,nd.z]), Pz=proj([nd.x,fy,nd.z+cu*2.2]);
+      if(!Pc||!Px||!Pz)continue;
+      const rx=Math.max(3,Math.hypot(Px.sx-Pc.sx,Px.sy-Pc.sy)), rz=Math.max(2,Math.hypot(Pz.sx-Pc.sx,Pz.sy-Pc.sy));
+      const pc=bandRgb(nd.h); ctx.save(); ctx.translate(Pc.sx,Pc.sy); ctx.scale(1, rz/rx);
+      const sg=ctx.createRadialGradient(0,0,0,0,0,rx); sg.addColorStop(0,rgba(pc,0.13*fog(Pc.z))); sg.addColorStop(1,rgba(pc,0));
+      ctx.fillStyle=sg; ctx.beginPath(); ctx.arc(0,0,rx,0,7); ctx.fill(); ctx.restore(); }
+    ctx.globalCompositeOperation="source-over";
+
+    const focus=SEL||hover, nb=new Set();
+    if(focus){nb.add(focus); for(const ed of edges){if(ed.a.h===focus)nb.add(ed.b.h); if(ed.b.h===focus)nb.add(ed.a.h);}}
+    const eCol=hexToRgb(col("border-strong")), accent=hexToRgb(col("accent")), textc=hexToRgb(col("text")), dimc=hexToRgb(col("text-dim"));
+
+    // ---- curved bezier edges + flowing energy particles, far → near ----
+    const de=edges.filter(ed=>ed.a._p&&ed.b._p); for(const ed of de)ed._c=proj(ed.c);
+    de.sort((p,q)=>(q.a._p.z+q.b._p.z)-(p.a._p.z+p.b._p.z)).forEach(ed=>{
+      const A=ed.a._p,B=ed.b._p,C=ed._c||A, lit=focus&&(ed.a.h===focus||ed.b.h===focus), fa=fog((A.z+B.z)/2);
+      let c=eCol, a=0.24*fa; if(focus){ if(lit){c=accent; a=0.9*fa;} else a=0.05; }
+      ctx.strokeStyle=rgba(c,a); ctx.lineWidth=Math.max(0.6,(lit?2.4:1.0)*((A.sc+B.sc)/2));
+      ctx.beginPath(); ctx.moveTo(A.sx,A.sy); ctx.quadraticCurveTo(C.sx,C.sy,B.sx,B.sy); ctx.stroke();
+      if(now && (!focus || lit)){ const cnt=lit?3:1, spd=lit?0.5:0.26; ctx.globalCompositeOperation="lighter";
+        for(let k=0;k<cnt;k++){ const tt=((now*spd+ed.ph+k/cnt)%1), it=1-tt;
+          const bx=it*it*A.sx+2*it*tt*C.sx+tt*tt*B.sx, by=it*it*A.sy+2*it*tt*C.sy+tt*tt*B.sy;
+          const pr=Math.max(1.4,(it*A.sc+tt*B.sc)*1.7), pc=lit?accent:mix(c,[255,255,255],0.35);
+          const pg=ctx.createRadialGradient(bx,by,0,bx,by,pr); pg.addColorStop(0,rgba(pc,(lit?0.95:0.5)*fa)); pg.addColorStop(1,rgba(pc,0));
+          ctx.fillStyle=pg; ctx.beginPath(); ctx.arc(bx,by,pr,0,7); ctx.fill(); }
+        ctx.globalCompositeOperation="source-over"; }
+    });
+
+    const order=nodes.filter(n=>n._p).sort((p,q)=>q._p.z-p._p.z);
+    const imp=nd=>{ let v=0.16; const r=health[nd.h], tok=r?(r.band?healthBandToken(r.band):scoreToken(r.score)):"neutral";
+      if(tok==="crit")v+=0.5; else if(tok==="risk")v+=0.26; if(nd.core)v+=0.26; if(nd.h===hover)v+=0.4; if(nd.h===SEL)v+=0.7; return v; };
+
+    // ---- additive bloom glow pass (light-emitting nodes) ----
+    ctx.globalCompositeOperation="lighter";
+    for(const nd of order){ const P=nd._p; if(focus&&!nb.has(nd.h))continue; const r=Math.max(2.2,nd.r0*P.sc), fa=fog(P.z), I=imp(nd);
+      const gc=nd.h===SEL?accent:bandRgb(nd.h), gr=r*(1.9+I*2.3), gg=ctx.createRadialGradient(P.sx,P.sy,r*0.35,P.sx,P.sy,gr);
+      gg.addColorStop(0,rgba(gc,(0.13+I*0.4)*fa)); gg.addColorStop(0.5,rgba(gc,(0.05+I*0.13)*fa)); gg.addColorStop(1,rgba(gc,0));
+      ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(P.sx,P.sy,gr,0,7); ctx.fill(); }
+    ctx.globalCompositeOperation="source-over";
+
+    // ---- 3-D switch CHASSIS — rack-mount boxes (2U core/dist, 1U access) with front-panel
+    //      RJ45 ports + lit status LEDs; back-face culled, per-face directional shading. far → near ----
+    const lerpS=(A,B,t)=>({sx:A.sx+(B.sx-A.sx)*t, sy:A.sy+(B.sy-A.sy)*t});
+    const okc=hexToRgb(col("ok")), portc=hexToRgb(col("bg"));
+    for(const nd of order){
+      const P=nd._p, fa=fog(P.z), dim=focus&&!nb.has(nd.h), seld=nd.h===SEL;
+      const base=bandRgb(nd.h), lo=mix(base,[0,0,0],0.62), litCol=mix(base,[255,255,255],0.22), a=dim?0.42:Math.min(1,fa+0.08);
+      const u=nd.r0*0.42, hw=u*3.0, hh=(nd.core?u*1.5:u*0.95), hd=u*1.9;     // half-extents (world units)
+      const cor=(ix,iy,iz)=>proj([nd.x+ix*hw, nd.y+iy*hh, nd.z+iz*hd]);
+      // V index = (ix?4:0)+(iy?2:0)+(iz?1:0)
+      const V=[cor(-1,-1,-1),cor(-1,-1,1),cor(-1,1,-1),cor(-1,1,1),cor(1,-1,-1),cor(1,-1,1),cor(1,1,-1),cor(1,1,1)];
+      const FACES=[
+        {nx:1,ny:0,nz:0, q:[4,6,7,5], port:0}, {nx:-1,ny:0,nz:0,q:[0,2,3,1], port:0},
+        {nx:0,ny:1,nz:0, q:[2,6,7,3], port:0}, {nx:0,ny:-1,nz:0,q:[0,4,5,1], port:0},
+        {nx:0,ny:0,nz:1, q:[1,5,7,3], port:1}, {nx:0,ny:0,nz:-1,q:[0,4,6,2], port:1},
+      ];
+      const faces=[];
+      for(const F of FACES){ const tx=eye[0]-(nd.x+F.nx*hw), ty=eye[1]-(nd.y+F.ny*hh), tz=eye[2]-(nd.z+F.nz*hd);
+        if(F.nx*tx+F.ny*ty+F.nz*tz<=0)continue;                              // back-face cull
+        const p0=V[F.q[0]],p1=V[F.q[1]],p2=V[F.q[2]],p3=V[F.q[3]]; if(!p0||!p1||!p2||!p3)continue;
+        const br=0.42+0.58*Math.max(0,F.nx*LIGHT[0]+F.ny*LIGHT[1]+F.nz*LIGHT[2]);   // diffuse term
+        faces.push({F,p0,p1,p2,p3, cz:(p0.z+p2.z)/2, col:mix(lo,litCol,br)});
+      }
+      faces.sort((p,q)=>q.cz-p.cz);
+      for(const fc of faces){ const c=dim?mix(fc.col,bg,0.62):fc.col;
+        ctx.beginPath(); ctx.moveTo(fc.p0.sx,fc.p0.sy); ctx.lineTo(fc.p1.sx,fc.p1.sy); ctx.lineTo(fc.p2.sx,fc.p2.sy); ctx.lineTo(fc.p3.sx,fc.p3.sy); ctx.closePath();
+        ctx.fillStyle=rgba(c,a); ctx.fill();
+        ctx.lineWidth=seld?1.4:0.7; ctx.strokeStyle=seld?rgba(textc,0.9*a):rgba(mix(c,[0,0,0],0.45),0.65*a); ctx.stroke();
+        if(fc.F.port && P.sc>0.45 && !dim){    // front panel: face-plate, rack ears, health LEDs, mgmt, real RJ45 count, SFP cages
+          const bz=(u0,v0)=>{ const tp=lerpS(fc.p0,fc.p1,u0), bt=lerpS(fc.p3,fc.p2,u0); return lerpS(tp,bt,v0); };
+          const quad=(pts,fill)=>{ ctx.beginPath(); for(let i=0;i<pts.length;i++){ const q=bz(pts[i][0],pts[i][1]); i?ctx.lineTo(q.sx,q.sy):ctx.moveTo(q.sx,q.sy); } ctx.closePath(); ctx.fillStyle=fill; ctx.fill(); };
+          const gA=bz(0.24,0.5), gB=bz(0.80,0.5), gridW=Math.max(2,Math.hypot(gB.sx-gA.sx,gB.sy-gA.sy)), ds=Math.max(0.55,Math.min(1.8,gridW/22));
+          const dot=(uu,vv,w,hh,fill)=>{ const p=bz(uu,vv); ctx.fillStyle=fill; ctx.fillRect(p.sx-w*ds/2,p.sy-hh*ds/2,w*ds,hh*ds); };
+          quad([[0.05,0.2],[0.95,0.2],[0.95,0.82],[0.05,0.82]], rgba(mix(fc.col,[0,0,0],0.64),a));         // dark face-plate
+          const ear=rgba(mix(fc.col,[255,255,255],0.18),a);
+          quad([[0.05,0.16],[0.10,0.16],[0.10,0.86],[0.05,0.86]], ear); quad([[0.90,0.16],[0.95,0.16],[0.95,0.86],[0.90,0.86]], ear);   // rack ears
+          const hr=health[nd.h], tok=hr?(hr.band?healthBandToken(hr.band):scoreToken(hr.score)):"neutral", sled=tok==="neutral"?okc:hexToRgb(col(tok));
+          dot(0.135,0.37,1.5,1.5, rgba(sled,0.95*a));                                                      // SYS LED → health colour
+          dot(0.135,0.63,1.5,1.5, rgba(okc, ((now?(Math.floor(now*3)%2):1)?0.95:0.3)*a));                  // ACT LED (blink)
+          dot(0.205,0.5,1.8,2.4, rgba(mix(hexToRgb(col("accent")),[255,255,255],0.15),0.9*a));             // mgmt port
+          const ports=Math.max(8,Math.min(48,nd.ports||24)), cols=Math.ceil(ports/2), pw=Math.max(0.7,gridW/cols*0.6);
+          for(let i=0;i<ports;i++){ const cc=i%cols, rw=(i/cols)|0, p=bz(0.24+(cc+0.5)/cols*0.56, 0.4+rw*0.26);
+            const on=((i*3+Math.floor((now||0)*2.0))%11===0);
+            ctx.fillStyle=on?rgba(okc,0.95*a):rgba(portc,0.85*a); ctx.fillRect(p.sx-pw/2,p.sy-1.2*ds/2,pw,1.2*ds); }
+          for(let s=0;s<2;s++){ const on=((s+Math.floor((now||0)*1.3))%2===0);                             // SFP+ uplink cages
+            dot(0.84+s*0.062,0.5,2.6,1.9, on?rgba(mix(okc,[255,255,255],0.25),0.92*a):rgba(mix(portc,[255,255,255],0.18),0.85*a)); }
+        }
+      }
+      // top-front edge catches the key light → a crisp chassis silhouette
+      if(V[3]&&V[7]&&!dim){ ctx.beginPath(); ctx.moveTo(V[3].sx,V[3].sy); ctx.lineTo(V[7].sx,V[7].sy);
+        ctx.strokeStyle=rgba(mix(base,[255,255,255],0.6),0.5*a); ctx.lineWidth=1; ctx.stroke(); }
+      // selection / hover ring + label, anchored on the projected centre
+      const ringR=Math.max(8, hw*P.sc*1.25);
+      if(nd.h===hover&&!seld){ ctx.beginPath(); ctx.arc(P.sx,P.sy,ringR,0,7); ctx.strokeStyle=rgba(accent,0.9); ctx.lineWidth=1.6; ctx.stroke(); }
+      if(seld){ ctx.beginPath(); ctx.arc(P.sx,P.sy,ringR+3,0,7); ctx.strokeStyle=rgba(accent,0.9); ctx.lineWidth=1.5; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]); }
+      if(P.sc>0.5&&!dim){ ctx.font=`${Math.max(9,Math.min(13,Math.round(11*P.sc)))}px ui-monospace, Menlo, Consolas, monospace`;
+        ctx.textAlign="center"; ctx.textBaseline="top"; const ly=P.sy+ringR+1;
+        ctx.fillStyle=rgba(bg,Math.min(0.65,fa)); ctx.fillText(shortName(nd.h),P.sx+0.6,ly+0.6);
+        ctx.fillStyle=rgba(seld?textc:dimc,Math.min(1,fa)); ctx.fillText(shortName(nd.h),P.sx,ly); }
+    }
+  }
+
+  /* --- picking: nearest chassis under the cursor, front-most wins --- */
+  function pickAt(px,py){let best=null,bz=1e9;
+    for(const nd of nodes){const P=nd._p; if(!P)continue;
+      const r=Math.max(8,nd.r0*1.25*P.sc)+5, dx=px-P.sx, dy=py-P.sy;        // hit radius ~ chassis half-width
+      if(dx*dx+dy*dy<=r*r && P.z<bz){best=nd; bz=P.z;}}
+    return best?best.h:null;}
+
+  /* --- camera fly-to: ease the orbit target + dolly to frame the selected switch --- */
+  function frameAll(){ let max=130; for(const n of nodes)max=Math.max(max,Math.hypot(n.x,n.y,n.z)); return clamp((max+90)/Math.tan(FOV/2)*1.15,MIN_D,MAX_D); }
+  function stepTween(){ if(!tween)return; const t=Math.min(1,(performance.now()-tween.t0)/tween.dur), e=easeOut(t);
+    target=lerp3(tween.fromT,tween.toT,e); dist=tween.fromD+(tween.toD-tween.fromD)*e; if(t>=1)tween=null; }
+  function flyToSel(){ if(SEL===lastSel)return; lastSel=SEL;
+    const nd=SEL?nodes.find(n=>n.h===SEL):null, toT=nd?[nd.x,nd.y,nd.z]:[0,0,0], fitD=frameAll(), toD=nd?clamp(fitD*0.55,MIN_D,MAX_D):fitD;
+    if(reducedMotion()){ target=toT.slice(); dist=toD; } else tween={t0:performance.now(),dur:760,fromT:target.slice(),toT,fromD:dist,toD}; }
+
+  /* --- render loop: orbit inertia + fly-to + particle/star animation; draws only when needed --- */
+  function loop(){ raf=0; if(MODE!=="3d")return; const rm=reducedMotion(); let anim=false;
+    if(tween){ if(rm){ target=tween.toT.slice(); dist=tween.toD; tween=null; } else { stepTween(); anim=true; } }
+    if(!dragging && !rm){
+      if(autospin && !SEL && !hover){ yaw+=0.0016; anim=true; }
+      if(Math.abs(vy)>1e-4||Math.abs(vp)>1e-4){ yaw+=vy; pitch=clamp(pitch+vp,-1.45,1.45); vy*=0.90; vp*=0.90; anim=true; } else { vy=vp=0; }
+    }
+    if(!rm) anim=true;                                   // particles + starfield animate every frame
+    if(anim||dirty){ draw(); dirty=false; }
+    raf=requestAnimationFrame(loop);
+  }
+  function kick(){ if(!raf && MODE==="3d") raf=requestAnimationFrame(loop); }
+  function poke(){ dirty=true; kick(); }
+
+  function resize(){ if(!cv)return; const st=cv.parentElement, r=st.getBoundingClientRect();
+    cw=Math.max(1,r.width); ch=Math.max(1,r.height); dpr=Math.min(2,window.devicePixelRatio||1);
+    cv.width=Math.round(cw*dpr); cv.height=Math.round(ch*dpr); cv.style.width=cw+"px"; cv.style.height=ch+"px"; dirty=true; }
+
+  function fit(){ target=[0,0,0]; tween=null; vy=vp=0; dist=frameAll(); poke(); }
+
+  function bindOnce(){ if(bound)return; bound=true;
+    cv=document.getElementById("g3d"); if(!cv)return; ctx=cv.getContext("2d"); cs=getComputedStyle(document.documentElement);
+    cv.addEventListener("pointerdown",e=>{ dragging=true; autospin=false; tween=null; vy=vp=0; moved=false; downX=e.clientX; downY=e.clientY; lastMx=lastMy=0;
+      cv.classList.add("grabbing"); try{cv.setPointerCapture(e.pointerId);}catch(_){} hideTip(); });
+    cv.addEventListener("pointermove",e=>{
+      if(dragging){ const dx=e.clientX-downX, dy=e.clientY-downY, mvx=e.movementX||0, mvy=e.movementY||0;
+        if(mvx||mvy){ yaw+=mvx*0.01; pitch=clamp(pitch+mvy*0.01,-1.45,1.45); lastMx=mvx; lastMy=mvy; poke(); }
+        if(dx*dx+dy*dy>16)moved=true; return; }
+      const h=pickAt(e.offsetX,e.offsetY);
+      if(h!==hover){ hover=h; poke(); }
+      if(hover){ showTip(tipNodeHTML(hover)); placeTip(e.offsetX,e.offsetY); } else hideTip();
+    });
+    const end=e=>{ if(!dragging)return; dragging=false; cv.classList.remove("grabbing"); try{cv.releasePointerCapture(e.pointerId);}catch(_){}
+      if(moved && !reducedMotion()){ vy=clamp(lastMx*0.01,-0.13,0.13); vp=clamp(lastMy*0.01,-0.13,0.13); kick(); }   // release momentum
+      if(!moved){ const h=pickAt(e.offsetX,e.offsetY); if(h)onNodeClick(h); else onBgClick(); } };
+    cv.addEventListener("pointerup",end);
+    cv.addEventListener("pointerleave",()=>{ hover=null; hideTip(); poke(); });
+    cv.addEventListener("wheel",e=>{ e.preventDefault(); dist=clamp(dist*(e.deltaY>0?1.1:0.9),MIN_D,MAX_D); poke(); },{passive:false});
+    ro=new ResizeObserver(()=>resize()); ro.observe(cv.parentElement);
+    mo=new MutationObserver(()=>poke()); mo.observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+    document.addEventListener("visibilitychange",()=>{ if(document.hidden){ if(raf){cancelAnimationFrame(raf);raf=0;} } else if(MODE==="3d")poke(); });
+  }
+
+  function enter(){ const st=document.getElementById("stage"); if(st)st.classList.add("mode3d");
+    bindOnce(); if(!cv)return; cv.hidden=false; build(); resize(); fit(); autospin=true; poke(); }
+  function leave(){ const st=document.getElementById("stage"); if(st)st.classList.remove("mode3d");
+    if(raf){cancelAnimationFrame(raf);raf=0;} dragging=false; hover=null; if(cv){cv.classList.remove("grabbing"); cv.hidden=true;} hideTip(); }
+  function render(){ if(MODE!=="3d"||!cv)return; build(); flyToSel(); poke(); }   // state/data changed → rebuild, frame selection, repaint
+  function exportPng(){ if(!cv)return; try{ build(); draw(); cv.toBlob(b=>{ if(b){downloadBlob(b,"topology-3d.png"); srAnnounce("Exported 3D topology as PNG");} else srAnnounce("Could not export 3D view"); },"image/png"); }catch(_){ srAnnounce("Could not export 3D view"); } }
+
+  return {enter, leave, render, fit, resize, exportPng};
+})();
 
 /* =====================================================================
    HOVER / FOCUS TOOLTIPS — node, link & endpoint facts on the canvas.

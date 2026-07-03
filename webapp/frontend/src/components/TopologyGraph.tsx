@@ -1,10 +1,14 @@
-import { useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import {
   forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation,
   type SimulationNodeDatum,
 } from "d3-force";
 import { api, bandColor } from "../api";
 import { ErrorBox, Loading, useAsync } from "./ui";
+
+// The 3D fabric is code-split: it pulls three.js + react-force-graph-3d (~750KB gzip), so it loads
+// only when the user toggles 3D. The SVG 2D view below stays the eager default + reduced-motion path.
+const Topology3D = lazy(() => import("./Topology3D"));
 
 interface GNode extends SimulationNodeDatum {
   id: string; band: string; score: number | null; role: string; degree: number; keystone: boolean;
@@ -40,6 +44,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   const view = useMemo(() => (g.data ? layout(g.data) : null), [g.data]);
   const [hover, setHover] = useState<string | null>(null);
   const [sel, setSel] = useState<string | null>(null);
+  const [mode, setMode] = useState<"2d" | "3d">("2d");
   const [t, setT] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
 
@@ -72,6 +77,29 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   };
   const onUp = () => { drag.current = null; };
 
+  const segBtn = (m: "2d" | "3d", label: string) => (
+    <button
+      className="btn ghost"
+      aria-pressed={mode === m}
+      style={{ padding: "4px 11px", borderRadius: 0, fontWeight: 650,
+        background: mode === m ? "linear-gradient(135deg, var(--accent), var(--accent-dim))" : "transparent",
+        color: mode === m ? "#fff" : "var(--text-dim)" }}
+      onClick={() => setMode(m)}
+    >{label}</button>
+  );
+
+  const selPanel = (glass: boolean) => selNode && (
+    <div style={{ position: "absolute", top: 10, right: 10, background: glass ? "color-mix(in srgb, var(--surface) 80%, transparent)" : "var(--surface)", backdropFilter: glass ? "blur(12px)" : undefined, border: "1px solid var(--border-strong)", borderRadius: 9, padding: "10px 13px", boxShadow: "var(--shadow)", maxWidth: 240, fontSize: 12 }}>
+      <div className="row-flex" style={{ gap: 8, marginBottom: 6 }}>
+        <span className="sw" style={{ width: 11, height: 11, borderRadius: 3, background: bandColor(selNode.band || "") }} />
+        <b className="mono" style={{ fontSize: 14 }}>{selNode.id}</b>
+      </div>
+      <div className="dim">Band: <b style={{ color: "var(--text)" }}>{selNode.band || "—"}</b> · score {selNode.score ?? "—"}/100</div>
+      <div className="dim">Role: {selNode.role || "—"}</div>
+      <div className="dim">{selDeg} link{selDeg === 1 ? "" : "s"}{selNode.keystone ? " · keystone" : ""}</div>
+    </div>
+  );
+
   // audit-5 FH#21: derive the legend from the bands actually present, so the engine's 'Insufficient Data' band
   // (uncollected devices — e.g. 50 of the 303 AJ fleet) is EXPLAINED rather than silently absent from the legend
   // while those nodes still render. Canonical order; fall back to the standard five if none match.
@@ -88,12 +116,24 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
           ))}
           <span className="item"><span style={{ width: 16, height: 0, borderTop: "2px solid var(--crit)", display: "inline-block" }} /> single point of failure</span>
         </div>
-        <div className="row-flex" style={{ gap: 6 }}>
-          <button className="btn ghost" style={{ padding: "4px 9px" }} onClick={() => setT({ x: 0, y: 0, k: 1 })}>Reset view</button>
+        <div className="row-flex" style={{ gap: 8 }}>
+          <div className="row-flex" style={{ gap: 0, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }} role="group" aria-label="Topology view mode">
+            {segBtn("2d", "2D")}
+            {segBtn("3d", "3D")}
+          </div>
+          {mode === "2d" && <button className="btn ghost" style={{ padding: "4px 9px" }} onClick={() => setT({ x: 0, y: 0, k: 1 })}>Reset view</button>}
           {sel && <button className="btn ghost" style={{ padding: "4px 9px" }} onClick={() => setSel(null)}>Clear selection</button>}
         </div>
       </div>
 
+      {mode === "3d" ? (
+        <div style={{ position: "relative" }}>
+          <Suspense fallback={<div style={{ height: 480, display: "grid", placeItems: "center", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)" }}><Loading label="Loading 3D engine…" /></div>}>
+            <Topology3D raw={g.data!} sel={sel} onPick={(id) => setSel((s) => (s === id ? null : id))} />
+          </Suspense>
+          {selPanel(true)}
+        </div>
+      ) : (
       <div style={{ position: "relative", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)", overflow: "hidden" }}>
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block", cursor: drag.current ? "grabbing" : "grab" }}
           onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={() => { onUp(); setHover(null); }}>
@@ -124,20 +164,13 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
             })}
           </g>
         </svg>
-        {selNode && (
-          <div style={{ position: "absolute", top: 10, right: 10, background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: 9, padding: "10px 13px", boxShadow: "var(--shadow)", maxWidth: 240, fontSize: 12 }}>
-            <div className="row-flex" style={{ gap: 8, marginBottom: 6 }}>
-              <span className="sw" style={{ width: 11, height: 11, borderRadius: 3, background: bandColor(selNode.band || "") }} />
-              <b className="mono" style={{ fontSize: 14 }}>{selNode.id}</b>
-            </div>
-            <div className="dim">Band: <b style={{ color: "var(--text)" }}>{selNode.band || "—"}</b> · score {selNode.score ?? "—"}/100</div>
-            <div className="dim">Role: {selNode.role || "—"}</div>
-            <div className="dim">{selDeg} link{selDeg === 1 ? "" : "s"}{selNode.keystone ? " · keystone" : ""}</div>
-          </div>
-        )}
+        {selPanel(false)}
       </div>
+      )}
       <div className="faint" style={{ fontSize: 11, marginTop: 8 }}>
-        {view.nodes.length} nodes · {view.links.length} links · click a node to trace its blast radius · scroll to zoom, drag to pan.
+        {view.nodes.length} switches · {view.links.length} links · {mode === "3d"
+          ? "true-3D fabric — drag to orbit, scroll to zoom, click a switch to focus."
+          : "click a node to trace its blast radius · scroll to zoom, drag to pan."}
       </div>
     </div>
   );

@@ -54,3 +54,23 @@
   --gate-GO: var(--ok); --gate-CONDITIONALGO: var(--watch); --gate-NOGO: var(--crit);
   --gate-SLIPPED: var(--watch); /* gate-board sign-off state (V3.23.159) */
 }
+
+/* V3.23.181 — depth & glass tokens, mirrored from the explorer's refresh so AssessHub and the
+   deep explorer read as one product: frosted translucent surfaces, layered elevation, accent glow. */
+:root {
+  --glass: color-mix(in srgb, var(--surface) 74%, transparent);
+  --glass-2: color-mix(in srgb, var(--surface-2) 66%, transparent);
+  --glass-border: color-mix(in srgb, #ffffff 10%, transparent);
+  --glow: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-grad: linear-gradient(135deg, color-mix(in srgb, var(--accent) 92%, #ffffff), var(--accent-dim));
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .28), 0 4px 14px rgba(0, 0, 0, .32);
+  --elev-2: 0 2px 6px rgba(0, 0, 0, .34), 0 16px 42px rgba(0, 0, 0, .50);
+  --blur: 14px;
+}
+[data-theme="light"] {
+  --glass: color-mix(in srgb, var(--surface) 80%, transparent);
+  --glass-2: color-mix(in srgb, var(--surface-2) 74%, transparent);
+  --glass-border: color-mix(in srgb, #1b2530 12%, transparent);
+  --elev-1: 0 1px 2px rgba(40, 55, 80, .10), 0 4px 14px rgba(40, 55, 80, .10);
+  --elev-2: 0 2px 8px rgba(40, 55, 80, .12), 0 16px 40px rgba(40, 55, 80, .16);
+}
