@@ -6,6 +6,8 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.25.2] — 2026-07-03 — SSOT sweep + Plan-A #15 Stage-3 refactor
+
 ### Fixed
 - **SSOT sweep (post-v3.25.1)** — a project single-source-of-truth verification found and closed three drifts:
   - **Ops-Handbook + MOP titles recomputed the inventoried device count** as a bare `len(snap['devices'])`
@@ -19,6 +21,15 @@ per change, with verification evidence) lives in
     ACL rows.
   - **Freshness guard hardened** — `test_sample_fleet.py` now also asserts `coverage_matrix` presence and a
     `verdict` on every ACL finding (the sub-field / golden-excluded drift the key-superset check was blind to).
+
+### Refactor
+- **Plan-A #15 Stage-3 (positional collapse)** — the three wide analyze-stage syntheses in
+  `COLLECT_PARSE.main()` (`compute_device_dossiers` / `compute_migration_punchlist` / `compute_executive_brief`,
+  formerly 15/19/14 positional args threaded through `_run_phase`) now forward through the typed
+  `AnalysisContext` carrier **by keyword** (reorder-proof) via thin ctx-adapters. The public `compute_*` keep
+  their explicit signatures (webapp / excel / ~40 direct-call tests untouched); only `main()` reads from the
+  carrier. Behavior-preserving — golden byte-unchanged, arg-mapping AST-verified 1:1, pinned by a
+  distinct-sentinel `test_context_adapters`.
 
 ## [v3.25.1] — 2026-07-03 — post-review coverage-honesty fixes + hardening
 
