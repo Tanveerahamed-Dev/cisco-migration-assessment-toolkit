@@ -6,6 +6,12 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.25.1] — 2026-07-03 — post-review coverage-honesty fixes + hardening
+
+Adversarial review of the v3.25.0 wave (PR #277 + #278). One live cloud false-health
+(BUILD-02) plus a cluster of coverage_matrix false-health / correctness fixes and
+type/tool hardening — every fix test-first, `tests/golden/snapshot.json` byte-unchanged.
+
 ### Fixed
 - **`build_cloud` coverage-honesty on a parser crash**: the v3.25.0 typed-parser-defaults change made
   `_safe_parse` return a list parser's registered empty shape (`[]`) on a raise — which slips past
