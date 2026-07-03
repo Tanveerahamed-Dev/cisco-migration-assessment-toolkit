@@ -17,3 +17,20 @@ graphify-out/memory/
 # pollution the _ref/ copy caused). Ignore the whole tree — worktree pruning still leaves the
 # 3 named claude/* checkouts, and their copies must never enter the graph.
 .claude/worktrees/
+
+# 2026-07-03 audit: untracked scratch + side-engagement dirs were diluting the graph ~27% (~1.9k
+# of 6.9k nodes) and outranking real engine symbols in queries. None is repo SOURCE:
+#   ds-bundle/ + .ds-sync/  = AssessHub design-sync OUTPUT bundle (the real webapp source is webapp/)
+#   Syntys_DC_Design/       = Qatar DC side-engagement deliverables (its own SSOT: syntys/ssot.py)
+#   compass_artifact_*.md   = deep-research artifact dumps
+#   scratch_* / CHAT_SUMMARY = working scratch;  _verify_nrfu.py = a root scratch NRFU probe
+# (The graph's own graphify-out/ dumps are already excluded above.)
+ds-bundle/
+.ds-sync/
+.gstack/
+Syntys_DC_Design/
+compass_artifact_*.md
+scratch_*.js
+scratch_*.txt
+CHAT_SUMMARY.md
+_verify_nrfu.py

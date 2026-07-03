@@ -1,7 +1,9 @@
 ## graphify
 
-This project has a knowledge graph at graphify-out/ (~3974 nodes, after the 2026-06-25 de-pollution that excluded
-the stale `_ref/` engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
+This project has a knowledge graph at graphify-out/ (~5147 nodes, after the 2026-07-03 de-pollution that also
+excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (design-sync output), `Syntys_DC_Design/`,
+`compass_artifact_*`, `scratch_*` — which had diluted it ~27%; the earlier 2026-06-25 pass excluded the stale `_ref/`
+engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
 NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
 (~434 nodes) because regenerating it needs an LLM call = egress, which the no-egress doctrine forbids. It fuses
@@ -30,7 +32,21 @@ Rules:
 - Keeping the graph current: a Stop hook re-extracts incrementally after .py edits (AST-only, no API cost) — this
   is what keeps graph.json fresh (it also picks up new docs/*.md alongside a code change). A MANUAL
   `python -m graphify update .` may REFUSE ("fewer nodes than existing — missing chunk files from a previous
-  session"); that is graphify's SAFETY GUARD, not corruption — do NOT `--force` (it would shrink the good graph).
+  session"); that is graphify's SAFETY GUARD, not corruption — do NOT `--force` past an ACCIDENTAL shrink (it
+  would drop good nodes). The one legit `--force` is an INTENTIONAL de-pollution: after adding non-source dirs
+  to `.graphifyignore` (the tool's own "use after refactors that delete code" case), back up graph.json, run
+  `update . --force`, then verify the only nodes dropped are the excluded paths (precedent: 2026-07-03 cleanup
+  removed ~1.9k scratch/side-engagement nodes; 2026-06-25 removed the `_ref/` copy).
+
+## Single source of truth (SSOT)
+
+Before hardcoding or restating ANY shared fact (device counts, VLANs, versions, #decisions, prices),
+consult **`docs/ssot.md`** — the project-wide registry mapping every fact-domain to its ONE authoritative
+owner ("one index, many owners", not a mega-file). Read the fact from its owner; a copy is a *cache* and
+must cite the owner. Assessment headline facts carry the mechanical contract (`cisco_toolkit/ssot.py` +
+`docs/ssot-contract.md`, CI-enforced via `ssot.reconcile`); `tests/test_ssot_registry.py` guards the
+registry's own pointers from rotting. Adding a new source of truth = register it in `docs/ssot.md`, and
+add a reconcile guard if it overlaps an existing fact. This is Law 1 of the Deliverable Excellence Standard.
 
 ## Automated Senior Network Engineer (operating doctrine)
 
