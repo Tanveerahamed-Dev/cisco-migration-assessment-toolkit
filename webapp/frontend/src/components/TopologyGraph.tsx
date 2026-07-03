@@ -100,11 +100,18 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
     </div>
   );
 
+  // audit-5 FH#21: derive the legend from the bands actually present, so the engine's 'Insufficient Data' band
+  // (uncollected devices — e.g. 50 of the 303 AJ fleet) is EXPLAINED rather than silently absent from the legend
+  // while those nodes still render. Canonical order; fall back to the standard five if none match.
+  const _bandsPresent = ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
+    .filter((b) => view.nodes.some((n) => (n.band || "") === b));
+  const legendBands = _bandsPresent.length ? _bandsPresent : ["Excellent", "Good", "Fair", "Poor", "Critical"];
+
   return (
     <div>
       <div className="spread" style={{ marginBottom: 10 }}>
         <div className="legend" style={{ margin: 0 }}>
-          {["Excellent", "Good", "Fair", "Poor", "Critical"].map((b) => (
+          {legendBands.map((b) => (
             <span className="item" key={b}><span className="sw" style={{ background: bandColor(b) }} /> {b}</span>
           ))}
           <span className="item"><span style={{ width: 16, height: 0, borderTop: "2px solid var(--crit)", display: "inline-block" }} /> single point of failure</span>

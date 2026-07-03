@@ -13,15 +13,36 @@ from cisco_toolkit.cmdio import _load_cmd_output, _safe_parse
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _compress_vlans, infer_endpoint_type, parse_etherchannel_protocol_ios,
-    parse_etherchannel_summary_members, parse_glbp_summary, parse_hsrp_summary,
+    parse_etherchannel_summary_members, parse_glbp_summary, parse_hsrp_detail, parse_hsrp_summary,
     parse_ip_routes, parse_multicast_info, parse_neighbors_cdp, parse_neighbors_lldp,
     parse_portchannel_protocol_from_summary, parse_run_config_interfaces,
-    parse_show_environment, parse_show_environment_power, parse_show_interface_status,
+    parse_show_environment, parse_show_environment_power, _parse_poe_inline_budget,
+    parse_show_interface_status,
     parse_show_interface_switchport, parse_show_interface_trunk_table, parse_show_inventory,
     parse_show_ip_arp, parse_show_mac_address_table, parse_show_module_count,
     parse_show_power_inline, parse_show_version, parse_show_vrf_interface,
     parse_spanning_tree_blockedports, parse_spanning_tree_detail, parse_spanning_tree_states,
-    parse_spanning_tree_root, parse_vpc,
+    parse_spanning_tree_root, parse_vpc, parse_nve_peers, parse_evpn_summary, parse_nve_vni, parse_copp_drops,
+    parse_bgp_vpnv4_summary, parse_mpls_ldp_neighbors, parse_mpls_l2vpn_vc,   # SP/MPLS: L3VPN VPNv4 / LDP underlay / L2VPN pseudowire
+    parse_lisp_sessions, parse_cts_environment_data, parse_dmvpn_peers, parse_crypto_sessions, parse_bfd_neighbors, parse_ipv6_interface_addrs, parse_ipv6_route_summary, parse_ospfv3_neighbors, parse_bgp_ipv6_summary,   # universal arch coverage: SD-Access/CTS/DMVPN/IPsec/BFD/IPv6
+    parse_aci_faults, parse_aci_fabric_nodes, parse_aci_health, parse_aci_vrfs,   # Cisco ACI (APIC JSON-ingestion channel)
+    parse_aci_tenants, parse_aci_bds, parse_aci_epgs,                # Cisco ACI logical census (tenant/BD/EPG move-group units)
+    parse_sdwan_control_connections, parse_sdwan_devices, parse_sdwan_omp_counters,   # Cisco Catalyst SD-WAN (vManage JSON channel)
+    parse_asa_failover, parse_asa_resource_usage,                    # Cisco firewall (ASA / Secure Firewall Threat Defense) HA + resource capacity -- SSH show-text channel
+    parse_ise_nodes,                                                 # Cisco ISE (Identity Services Engine) deployment -- JSON controller-REST channel
+    parse_arista_mlag, parse_arista_bgp_evpn_summary,                # multi-vendor: Arista EOS MLAG + BGP-EVPN overlay (device-native JSON; first non-Cisco vendor)
+    parse_junos_chassis_cluster,                                     # multi-vendor: Juniper Junos SRX chassis-cluster HA (the SECOND non-Cisco vendor; '| display json')
+    parse_aws_security_groups,                                       # public cloud: AWS security-group exposure (the FIRST cloud-domain axis)
+    parse_fortigate_ha_status,                                       # multi-vendor: Fortinet FortiGate HA cluster sync (the THIRD non-Cisco vendor)
+    parse_mroute_entries,                                            # Cisco depth: multicast RPF integrity ((S,G) Null incoming-interface)
+    parse_fmc_devices, parse_fmc_ha_pairs, parse_fmc_deployable, parse_fmc_ha_status, parse_fmc_server_version,   # Cisco Secure Firewall Mgmt Center (FMC) -- JSON controller-REST channel
+    parse_pim_rp_mapping, parse_pim_neighbors,                        # PIM-SM control plane (RP / neighbor)
+    parse_ipv6_raguard_policy, parse_ipv6_dhcp_guard_policy,          # IPv6 first-hop security (RA-Guard / DHCPv6-Guard)
+    parse_ntp_status,                                                 # NTP clock-sync STATE (stratum 16 / unsynchronized)
+    parse_port_security_detail,                                       # access-edge port-security DETAIL (Secure-shutdown)
+    parse_storm_control,                                             # storm-control action (toothless 'None' rule)
+    parse_policymap_drops,                                           # QoS runtime: egress queue/policer drops
+    parse_neighbors_detail,                                          # CDP/LLDP detail w/ capability codes (shadow infra)
     parse_switch_mgmt_ip, parse_vlan_brief, parse_vrrp_summary, parse_vtp_status,
     parse_acls, parse_object_groups, parse_nat, parse_security, parse_config_hygiene,
     parse_cpu_utilization, parse_memory_stats, parse_system_resources,   # NEW-V3.23.167 (platform health)
@@ -119,6 +140,543 @@ def build_vpc(cmd_to_file: Dict[str, str]) -> dict:
     {domain_id, role, peer_status, keepalive_status, vpcs:[...]}; {} when the device runs no vPC.
     Fail-soft. CONFIRMS MLAG peer pairs (vs topology inference) for the flow simulator."""
     return _safe_parse(parse_vpc, _load_cmd_output(cmd_to_file, "show vpc")) or {}
+
+
+def build_fhrp_detail(cmd_to_file: Dict[str, str]) -> list:
+    """Full first-hop-redundancy state for THIS device from 'show standby [all]' DETAIL (parse_hsrp_detail):
+    [{ifname, group, state, priority, cfg_priority, preempt, preempt_delay, vip, vmac, standby_ip, track}].
+    [] when the device runs no HSRP. The brief form (interface hsrp_behavior) keeps only state+VIP; this
+    carries the election / preempt / tracking fields a senior FHRP audit needs (the AJ fleet ran no FHRP,
+    so this is the first capability proven on a non-AJ environment). Fail-soft via _safe_parse."""
+    d = _safe_parse(parse_hsrp_detail, _load_cmd_output(cmd_to_file, "show standby all", "show standby")) or {}
+    return [{"ifname": k[0], "group": k[1], **v} for k, v in d.items()]
+
+
+def build_overlay(cmd_to_file: Dict[str, str]) -> dict:
+    """VXLAN-EVPN overlay state for THIS device from 'show nve peers': {nve_peers:[{interface, peer_ip,
+    state, learn_type}]}. {} when the device runs no NVE/VXLAN. The engine's OWN target fabric was blind;
+    a down VTEP peer partitions the overlay for every VNI it serves. Fail-soft via _safe_parse."""
+    peers = _safe_parse(parse_nve_peers, _load_cmd_output(cmd_to_file, "show nve peers")) or []
+    evpn = _safe_parse(parse_evpn_summary, _load_cmd_output(cmd_to_file, "show bgp l2vpn evpn summary")) or []
+    vni = _safe_parse(parse_nve_vni, _load_cmd_output(cmd_to_file, "show nve vni")) or []
+    out = {}
+    if peers: out["nve_peers"] = peers
+    if evpn: out["evpn_neighbors"] = evpn
+    if vni: out["nve_vni"] = vni
+    return out
+
+
+def build_copp(cmd_to_file: Dict[str, str]) -> list:
+    """Control-plane-policing drop state for THIS device from 'show policy-map interface control-plane'
+    (NX-OS) or 'show policy-map control-plane' (IOS / IOS-XE), via parse_copp_drops:
+    [{class, conformed, exceeded, violated, dropped, drops}]. [] when no CoPP policy. A class with drops > 0
+    means the policer is actively discarding punted control-plane traffic. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_copp_drops, _load_cmd_output(
+        cmd_to_file, "show policy-map interface control-plane", "show policy-map control-plane")) or []
+
+
+def build_mpls(cmd_to_file: Dict[str, str]) -> dict:
+    """SP/MPLS service-plane state for THIS device -> {ldp_neighbors, vpnv4_neighbors, l2vpn_vcs}. Covers the
+    three planes an MPLS PE assessment must see: the LDP transport underlay ('show mpls ldp neighbor'), the
+    L3VPN control plane ('show bgp vpnv4 unicast summary'), and L2VPN pseudowires ('show mpls l2transport
+    vc'). {} when the device runs no MPLS. A not-Oper LDP session, a not-Established VPNv4 peer, or a DOWN
+    pseudowire each breaks the service riding it. Fail-soft via _safe_parse."""
+    ldp = _safe_parse(parse_mpls_ldp_neighbors, _load_cmd_output(cmd_to_file, "show mpls ldp neighbor")) or []
+    vpnv4 = _safe_parse(parse_bgp_vpnv4_summary, _load_cmd_output(cmd_to_file, "show bgp vpnv4 unicast summary")) or []
+    l2vc = _safe_parse(parse_mpls_l2vpn_vc, _load_cmd_output(cmd_to_file, "show mpls l2transport vc")) or []
+    out = {}
+    if ldp:
+        out["ldp_neighbors"] = ldp
+    if vpnv4:
+        out["vpnv4_neighbors"] = vpnv4
+    if l2vc:
+        out["l2vpn_vcs"] = l2vc
+    return out
+
+
+def build_aci(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco ACI controller-fabric state for THIS query host from an offline APIC export -> {faults, nodes,
+    health}. This is the JSON-INGESTION channel: ACI/APIC fabrics are not assessable via device 'show' text,
+    so a read-only APIC export (moquery -o json / REST /api/class/*.json saved into the collection dir) is
+    read through the SAME _load_cmd_output path and json-normalized (no regex). A raised/unacknowledged
+    critical-or-major faultInst, a fabricNode whose fabricSt is not active, or a degraded fabricHealthTotal
+    are present, controller-reported broken-states. {} when no ACI export is present (a non-ACI fleet never
+    fires). Fail-soft via _safe_parse."""
+    faults = _safe_parse(parse_aci_faults, _load_cmd_output(cmd_to_file, "moquery -c faultInst")) or []
+    nodes = _safe_parse(parse_aci_fabric_nodes, _load_cmd_output(cmd_to_file, "moquery -c fabricNode")) or []
+    health = _safe_parse(parse_aci_health, _load_cmd_output(cmd_to_file, "moquery -c fabricHealthTotal")) or {}
+    vrfs = _safe_parse(parse_aci_vrfs, _load_cmd_output(cmd_to_file, "moquery -c fvCtx")) or []
+    # logical census (move-group-scoping inventory; not broken-states): tenants / bridge-domains / EPGs.
+    tenants = _safe_parse(parse_aci_tenants, _load_cmd_output(cmd_to_file, "moquery -c fvTenant")) or []
+    bds = _safe_parse(parse_aci_bds, _load_cmd_output(cmd_to_file, "moquery -c fvBD")) or []
+    epgs = _safe_parse(parse_aci_epgs, _load_cmd_output(cmd_to_file, "moquery -c fvAEPg")) or []
+    out = {}
+    if faults:
+        out["faults"] = faults
+    if nodes:
+        out["nodes"] = nodes
+    if health:
+        out["health"] = health
+    if vrfs:
+        out["vrfs"] = vrfs
+    if tenants:
+        out["tenants"] = tenants
+    if bds:
+        out["bds"] = bds
+    if epgs:
+        out["epgs"] = epgs
+    return out
+
+
+def build_sdwan(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco Catalyst SD-WAN (vManage / SD-WAN Manager) overlay state for THIS query host from an offline
+    vManage export -> {control_connections, devices}. The JSON-ingestion channel (the overlay state lives in
+    the Manager's NMS database, not the edge CLI): GET /dataservice/device/control/connections and
+    /dataservice/device, saved into the collection dir, are read through the SAME _load_cmd_output path and
+    json-normalized. A control connection that is down (or actual < expected) or a device the Manager reports
+    unreachable is a present broken-state. {} when no SD-WAN export is present. Fail-soft via _safe_parse."""
+    conns = _safe_parse(parse_sdwan_control_connections,
+                        _load_cmd_output(cmd_to_file, "dataservice/device/control/connections")) or []
+    devs = _safe_parse(parse_sdwan_devices, _load_cmd_output(cmd_to_file, "dataservice/device")) or []
+    omp = _safe_parse(parse_sdwan_omp_counters, _load_cmd_output(cmd_to_file, "dataservice/device/counters")) or []
+    out = {}
+    if conns:
+        out["control_connections"] = conns
+    if devs:
+        out["devices"] = devs
+    if omp:
+        out["omp_counters"] = omp
+    return out
+
+
+def build_lisp(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco SD-Access LISP fabric control-plane state for THIS device -> {sessions:[per-VRF blocks]}. Reads
+    'show lisp session' (IOS-XE): each fabric edge/border opens a reliable-transport session to every control-
+    plane node (map-server / map-resolver, port 4342) over which it registers and resolves EID-to-RLOC mappings.
+    The published per-VRF summary (total / established) lets _d_lisp_fabric_session_down fire ONLY when a VRF has
+    sessions configured (total>=1) yet ZERO established -- a genuine fabric control-plane partition for that node
+    -- while a benign single Down peer (idle border/edge) keeps established>=1 and stays silent. {} when the
+    device runs no SD-Access / LISP. Fail-soft via _safe_parse."""
+    sessions = _safe_parse(parse_lisp_sessions,
+                           _load_cmd_output(cmd_to_file, "show lisp session"), _default=[]) or []
+    out = {}
+    if sessions:
+        out["sessions"] = sessions
+    return out
+
+
+def build_cts(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco TrustSec environment-data download state for THIS device -> {environment_data: {...}} or {}.
+    'show cts environment-data' reports the state machine that pulls the SGT->name table / SGACL policy from
+    Cisco ISE; the env-data download is the prerequisite for ANY group-based (SGT/SGACL) enforcement. {} when
+    the device runs no CTS (command absent / not configured) -- coverage-honest, so a non-TrustSec fleet never
+    fires. A 'Current state' that is not COMPLETE means the SGT-to-policy data is stale or was never
+    downloaded, so segmentation is blind/unenforced. Fail-soft via _safe_parse."""
+    env = _safe_parse(parse_cts_environment_data,
+                      _load_cmd_output(cmd_to_file, "show cts environment-data")) or {}
+    out = {}
+    if env:
+        out["environment_data"] = env
+    return out
+
+
+def build_dmvpn(cmd_to_file: Dict[str, str]) -> dict:
+    """DMVPN WAN-overlay (mGRE/NHRP) state for THIS device -> {peers: [{interface, nbma, tunnel_ip, state,
+    attrb}]}. Reads 'show dmvpn' (IOS / IOS-XE only -- DMVPN is not an NX-OS feature, so a Nexus box simply has
+    no capture and publishes {}). A peer whose State is not UP (NHRP / IKE / down) is a broken spoke/hub tunnel:
+    no overlay forwarding to that site. {} when the device runs no DMVPN. Fail-soft via _safe_parse."""
+    peers = _safe_parse(parse_dmvpn_peers, _load_cmd_output(cmd_to_file, "show dmvpn")) or []
+    out = {}
+    if peers:
+        out["peers"] = peers
+    return out
+
+
+def build_crypto(cmd_to_file: Dict[str, str]) -> dict:
+    """IPsec encrypted-WAN session state for THIS device -> {sessions: [{interface, peer, status}]}. Reads
+    'show crypto session' (IOS / IOS-XE site-to-site IPsec, crypto-map or VTI). Each entry is one IKE/IPsec
+    peering; a status that begins with DOWN (DOWN / DOWN-NEGOTIATING) means the IKE/IPsec SA is not
+    established, so the encrypted tunnel is down. {} when the device runs no IPsec (no sessions parsed).
+    Fail-soft via _safe_parse."""
+    sessions = _safe_parse(parse_crypto_sessions, _load_cmd_output(cmd_to_file, "show crypto session")) or []
+    out = {}
+    if sessions:
+        out["sessions"] = sessions
+    return out
+
+
+def build_firewall(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco firewall (ASA / Secure Firewall Threat Defense) state for THIS device -> {failover, resource_usage}.
+    Reads 'show failover' (classic ASA over SSH; FTD reaches the same LINA CLI via 'system support diagnostic-cli')
+    -- the HA/failover state machine -- and 'show resource usage' -- per-resource Current/Peak/Limit/Denied for
+    the capacity-sizing axis (a Denied>0 or near-Limit Peak on a data-plane resource is observed exhaustion). A pair with failover ENABLED but a unit Failed / Disabled or the peer
+    Not Detected has no working standby, so a firewall in the data path is a single point of failure (the
+    config-present-but-operationally-broken false-health trap). {} when the device is not a firewall / runs no
+    failover (the command errors or is absent) -- coverage-honest, so a switch fleet never fires. Fail-soft."""
+    fo = _safe_parse(parse_asa_failover, _load_cmd_output(cmd_to_file, "show failover")) or {}
+    res = _safe_parse(parse_asa_resource_usage, _load_cmd_output(cmd_to_file, "show resource usage")) or []
+    out = {}
+    if fo:
+        out["failover"] = fo
+    if res:
+        out["resource_usage"] = res
+    return out
+
+
+def build_ise(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco ISE (Identity Services Engine) deployment state for THIS query host from a read-only Open API
+    export -> {nodes: [...]}. The JSON-ingestion channel (like ACI/SD-WAN): ISE is a controller cluster, not
+    a CLI-`show` device, so 'GET /api/v1/deployment/node' (saved into the collection dir) is read through the
+    SAME _load_cmd_output path and json-normalized. The node list carries each node's personas (roles /
+    services) and reachability (nodeStatus) -- a node not Connected, a lone Policy Service node, or a missing
+    Secondary Admin/Monitoring are present, controller-reported gaps. {} when no ISE export. Fail-soft."""
+    nodes = _safe_parse(parse_ise_nodes, _load_cmd_output(cmd_to_file, "api/v1/deployment/node")) or []
+    if not nodes:                                          # ERS fallback (the consolidated /ers/config/node export)
+        nodes = _safe_parse(parse_ise_nodes, _load_cmd_output(cmd_to_file, "ers/config/node")) or []
+    out = {}
+    if nodes:
+        out["nodes"] = nodes
+    return out
+
+
+def build_fmc(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco Secure Firewall Management Center (FMC) state for THIS query host from a read-only REST export ->
+    {devices, ha_pairs, deployable, ha_status}. The JSON-ingestion channel (like ACI/SD-WAN/ISE): an FMC
+    manages an FTD fleet centrally, so for an FMC-managed fleet the controller -- not the device CLI -- is the
+    source of truth. Reads the four migration-relevant endpoint exports (devicerecords, ftddevicehapairs,
+    deployabledevices, fmchastatuses) through the SAME _load_cmd_output path, json-normalized. {} when no FMC
+    export. Fail-soft."""
+    devs = _safe_parse(parse_fmc_devices, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/devices/devicerecords")) or []
+    ha = _safe_parse(parse_fmc_ha_pairs, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/devicehapairs/ftddevicehapairs")) or []
+    dep = _safe_parse(parse_fmc_deployable, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/deployment/deployabledevices")) or []
+    has = _safe_parse(parse_fmc_ha_status, _load_cmd_output(cmd_to_file, "api/fmc_config/v1/integration/fmchastatuses")) or {}
+    sv = _safe_parse(parse_fmc_server_version, _load_cmd_output(cmd_to_file, "api/fmc_platform/v1/info/serverversion")) or {}
+    out = {}
+    if devs:
+        out["devices"] = devs
+    if ha:
+        out["ha_pairs"] = ha
+    if dep:
+        out["deployable"] = dep
+    if has:
+        out["ha_status"] = has
+    if sv:
+        out["server_version"] = sv
+    return out
+
+
+def build_arista(cmd_to_file: Dict[str, str]) -> dict:
+    """Arista EOS multi-vendor state for THIS device -> {mlag: {...}, evpn: [...]}. The FIRST non-Cisco vendor
+    channel: EOS is JSON-native, so 'show mlag | json' (MLAG -- the dual-active analogue of Cisco vPC) and
+    'show bgp evpn summary | json' (the BGP-EVPN/VXLAN overlay control plane -- the analogue of the Cisco NX-OS
+    'show bgp l2vpn evpn summary') are captured per-device (like the Cisco show-text classes) and json-normalized
+    by parse_arista_mlag / parse_arista_bgp_evpn_summary. {} when the device runs neither (no capture, MLAG
+    'disabled', no EVPN peers) -- coverage-honest, so a Cisco switch fleet never fires. Fail-soft."""
+    mlag = _safe_parse(parse_arista_mlag, _load_cmd_output(cmd_to_file, "show mlag")) or {}
+    evpn = _safe_parse(parse_arista_bgp_evpn_summary, _load_cmd_output(cmd_to_file, "show bgp evpn summary")) or []
+    out = {}
+    if mlag:
+        out["mlag"] = mlag
+    if evpn:
+        out["evpn"] = evpn
+    return out
+
+
+def build_juniper(cmd_to_file: Dict[str, str]) -> dict:
+    """Juniper Junos multi-vendor state for THIS device -> {chassis_cluster: [...]}. The SECOND non-Cisco vendor
+    channel, proving the adapter pattern generalises beyond Arista: Junos exposes structured state via 'show ...
+    | display json', captured per-device and normalised by parse_junos_chassis_cluster. SRX chassis cluster is
+    Juniper's stateful-firewall HA -- the analogue of the Cisco firewall 'show failover'. {} when the device is
+    not a chassis cluster / runs no HA (no capture, or 'Chassis cluster is not enabled') -- coverage-honest, so
+    a Cisco/Arista fleet never fires. Fail-soft."""
+    cc = _safe_parse(parse_junos_chassis_cluster, _load_cmd_output(cmd_to_file, "show chassis cluster status")) or []
+    out = {}
+    if cc:
+        out["chassis_cluster"] = cc
+    return out
+
+
+def build_cloud(cmd_to_file: Dict[str, str]) -> dict:
+    """Public-cloud (AWS) network-exposure state for THIS account -> {security_groups: [...]}. The FIRST
+    cloud-domain axis: a cloud account is added as a 'device' (like the ACI/ISE/FMC controllers), and its
+    read-only 'aws ec2 describe-security-groups' export is read through the SAME _load_cmd_output path and
+    json-normalised by parse_aws_security_groups. {} when there is no cloud export (coverage-honest, so an
+    on-prem fleet never fires); {security_groups: []} when the export is present but nothing is world-open
+    (observed / clean). Fail-soft."""
+    sgs = _safe_parse(parse_aws_security_groups, _load_cmd_output(cmd_to_file, "aws ec2 describe-security-groups"), _default={})
+    # shape-sentinel: Coverage-honesty must NOT hinge on 'the parser didn't raise'. Since Plan-A #16,
+    # _safe_parse's DEFAULT crash fallback for a list parser is its registered shape -- [] -- which is itself a
+    # list and would slip past the isinstance guard below, making build_cloud report {security_groups: []},
+    # read downstream as 'cloud observed, nothing world-open' (false-health) instead of 'not observed'. So we
+    # pin _default={}: a non-list crash sentinel (deliberately OFF the registry 'list' shape) that never
+    # escapes -- the guard converts it to not-observed. `_default` fires ONLY on a raise, so a genuine clean []
+    # on the happy path is preserved (unlike `or []`/`or {}`, which would collapse it). Only a LIST is a real
+    # result; None (no export) and the {} crash-sentinel both -> not observed.
+    if not isinstance(sgs, list):
+        return {}
+    return {"security_groups": sgs}
+
+
+def build_fortigate(cmd_to_file: Dict[str, str]) -> dict:
+    """Fortinet FortiGate multi-vendor state for THIS device -> {ha: {...}}. The THIRD non-Cisco vendor channel:
+    FortiGate exposes its HA cluster state via 'get system ha status' (CLI show-text), captured per-device and
+    normalised by parse_fortigate_ha_status. FortiGate HA is the firewall HA pair -- the analogue of the Cisco
+    ASA/FTD 'show failover'. {} when the device is not an HA cluster (standalone) / runs no HA -- coverage-honest,
+    so a Cisco / Arista / Juniper fleet never fires. Fail-soft."""
+    ha = _safe_parse(parse_fortigate_ha_status, _load_cmd_output(cmd_to_file, "get system ha status")) or {}
+    out = {}
+    if ha:
+        out["ha"] = ha
+    return out
+
+
+def build_mroute(cmd_to_file: Dict[str, str]) -> dict:
+    """Cisco multicast RPF state for THIS device from 'show ip mroute' -> {n_entries, rpf_failures:[{source,
+    group, oil_count}]}, or {} when no mroute table. rpf_failures lists ONLY the (S,G) source-tree entries with
+    a Null incoming (RPF) interface AND a NON-ZERO RPF neighbour -- the genuinely anomalous blackhole. TWO benign
+    Null-IIF classes are deliberately excluded so the detector cannot cry wolf:
+      * (*,G) shared-tree entries (locally-joined / well-known / SSM groups -- 36 of them across the AJ fleet); and
+      * an (S,G) whose 'RPF nbr' is 0.0.0.0, which per Cisco means THIS router is the source (a local source / PIM
+        register / SPT-pending) -- a normal, expected Null IIF, NOT an RPF failure (a real RPF failure shows a valid
+        mismatched interface or dropped packets, never (S,G)+Null+RPF-0.0.0.0).
+    {} when no multicast is running -- coverage-honest. Fail-soft."""
+    entries = _safe_parse(parse_mroute_entries, _load_cmd_output(cmd_to_file, "show ip mroute")) or []
+    if not entries:
+        return {}
+    rpf = [{"source": e.get("source"), "group": e.get("group"), "oil_count": e.get("oil_count", 0)}
+           for e in entries
+           if e.get("source") not in ("*", "", None) and str(e.get("iif", "")).strip().lower() == "null"
+           and str(e.get("rpf_nbr", "")).strip() not in ("", "0.0.0.0")]   # RPF 0.0.0.0 == local source (benign)
+    return {"n_entries": len(entries), "rpf_failures": rpf}
+
+
+def build_bfd(cmd_to_file: Dict[str, str]) -> dict:
+    """BFD fast-failover session state for THIS device -> {sessions: [{neighbor, local_disc, remote_disc,
+    state, interface}]}. BFD provides sub-second forwarding-path failure detection for its client protocols
+    (OSPF/BGP/EIGRP/HSRP/static); a session in the Down state means that fast-failover is broken and the
+    client has fallen back to its native (multi-second) convergence timers. {} when the device runs no BFD
+    (so a non-BFD box never publishes the axis and the detector stays silent). Fail-soft via _safe_parse."""
+    sessions = _safe_parse(parse_bfd_neighbors, _load_cmd_output(cmd_to_file, "show bfd neighbors")) or []
+    out = {}
+    if sessions:
+        out["sessions"] = sessions
+    return out
+
+
+def build_ipv6_nd(cmd_to_file: Dict[str, str]) -> dict:
+    """IPv6 addressing / neighbor-discovery readiness for THIS device from 'show ipv6 interface'
+    (parse_ipv6_interface_addrs) -> {interfaces:[{interface, admin_up, proto_up, ipv6_enabled, link_local,
+    link_local_dup, global:[{addr, subnet, dad_state}]}]}. {} when the device shows no IPv6 at all -- a pure
+    IPv4 box contributes nothing and the DAD detector never cries wolf over it. A global address in dad_state
+    'duplicate' (or a duplicate link-local) is the OBSERVED broken state: DAD positively detected an address
+    clash, so Cisco set the address to DUPLICATE and stopped using it -- a hard L3 fault on a dual-stack
+    interface. Fail-soft via _safe_parse."""
+    ifaces = _safe_parse(parse_ipv6_interface_addrs,
+                         _load_cmd_output(cmd_to_file, "show ipv6 interface")) or []
+    out = {}
+    if ifaces:
+        out["interfaces"] = ifaces
+    return out
+
+
+def build_ipv6_routing(cmd_to_file: Dict[str, str]) -> dict:
+    """IPv6 routing-plane state for THIS device -> {route_summary, ospfv3_neighbors, bgp_ipv6_neighbors}. Covers the
+    dual-stack reachability control plane: the IPv6 RIB census ('show ipv6 route summary', the routing-active GATE),
+    OSPFv3 adjacencies ('show ospfv3 neighbor'), and IPv6 BGP peers ('show bgp ipv6 unicast summary'). {} when the
+    device runs no IPv6 routing at all -> a pure-IPv4 box contributes nothing and the detector never cries wolf. An
+    OSPFv3 neighbor stuck in a transient state (not FULL and not 2WAY), or an IPv6 BGP peer not Established, each
+    means that dual-stack adjacency exchanges no IPv6 routes. Fail-soft via _safe_parse."""
+    rsum = _safe_parse(parse_ipv6_route_summary,
+                       _load_cmd_output(cmd_to_file, "show ipv6 route summary")) or {}
+    ospfv3 = _safe_parse(parse_ospfv3_neighbors,
+                         _load_cmd_output(cmd_to_file, "show ospfv3 neighbor", "show ipv6 ospf neighbor")) or []
+    bgp6 = _safe_parse(parse_bgp_ipv6_summary,
+                       _load_cmd_output(cmd_to_file, "show bgp ipv6 unicast summary")) or []
+    out = {}
+    if rsum:
+        out["route_summary"] = rsum
+    if ospfv3:
+        out["ospfv3_neighbors"] = ospfv3
+    if bgp6:
+        out["bgp_ipv6_neighbors"] = bgp6
+    return out
+
+
+def build_pim(cmd_to_file: Dict[str, str]) -> dict:
+    """PIM-SM control-plane facts for the multicast-resilience detector -> {rp_mapping, neighbors}:
+      rp_mapping = parse_pim_rp_mapping('show ip pim rp mapping')  -- learned-RP summary
+                   ({} when uncollected; {present, rp_count, rps, groups, ssm_only} otherwise)
+      neighbors  = parse_pim_neighbors('show ip pim neighbor')     -- [{neighbor, interface, uptime}]
+    'PIM running but no RP' (rp_mapping.present True, rp_count 0) is distinct from 'PIM not collected'
+    ({}). Fail-soft via _safe_parse."""
+    return {
+        "rp_mapping": _safe_parse(parse_pim_rp_mapping,
+                                  _load_cmd_output(cmd_to_file, "show ip pim rp mapping")) or {},
+        "neighbors": _safe_parse(parse_pim_neighbors,
+                                 _load_cmd_output(cmd_to_file, "show ip pim neighbor")) or [],
+    }
+
+
+def build_ipv6_fhs(cmd_to_file: Dict[str, str]) -> dict:
+    """IPv6 first-hop-security posture for THIS device, fusing the dedicated FHS show-commands
+    ('show ipv6 nd raguard policy', 'show ipv6 dhcp guard policy') with the already-collected
+    'show running-config' (the most reliable, platform-agnostic evidence of dual-stack + per-interface
+    attachment). {} when the device shows no IPv6 at all -> a pure-IPv4 device contributes nothing and the
+    detector never cries wolf over it. Fail-soft via _safe_parse."""
+    rag = _safe_parse(parse_ipv6_raguard_policy,
+                      _load_cmd_output(cmd_to_file, "show ipv6 nd raguard policy")) or []
+    dhg = _safe_parse(parse_ipv6_dhcp_guard_policy,
+                      _load_cmd_output(cmd_to_file, "show ipv6 dhcp guard policy")) or []
+    run = _load_cmd_output(cmd_to_file, "show running-config") or ""
+
+    ipv6_svi_vlans: List[int] = []
+    ra_if: Set[str] = set()
+    dhg_if: Set[str] = set()
+    cur_if = ""
+    cur_is_svi = False
+    cur_has_v6 = False
+    for raw in run.splitlines():
+        m = re.match(r"^\s*interface\s+(\S+)", raw, re.IGNORECASE)
+        if m:
+            cur_if = normalize_ifname(m.group(1))
+            cur_is_svi = bool(re.match(r"^(Vlan|Vl)\d+$", m.group(1), re.IGNORECASE))
+            cur_has_v6 = False
+            continue
+        if not cur_if:
+            continue
+        low = raw.strip().lower()
+        if low.startswith("ipv6 address ") and "autoconfig" not in low:
+            if cur_is_svi and not cur_has_v6:
+                mvid = re.match(r"^(?:Vlan|Vl)(\d+)$", cur_if, re.IGNORECASE)
+                if mvid:
+                    ipv6_svi_vlans.append(int(mvid.group(1)))
+                cur_has_v6 = True
+        if re.match(r"^ipv6 nd raguard\b", low):
+            ra_if.add(cur_if)
+        if re.match(r"^ipv6 dhcp guard\b", low):
+            dhg_if.add(cur_if)
+
+    for pol in rag:
+        for t in pol.get("targets", []):
+            if t.get("type") == "PORT" and t.get("name"):
+                ra_if.add(t["name"])
+    for pol in dhg:
+        for t in pol.get("targets", []):
+            if t.get("type") == "PORT" and t.get("name"):
+                dhg_if.add(t["name"])
+
+    ra_policy_names = sorted({p.get("policy") for p in rag if p.get("policy")})
+    dhg_policy_names = sorted({p.get("policy") for p in dhg if p.get("policy")})
+    ra_vlan_attached = any(t.get("type") == "VLAN" for p in rag for t in p.get("targets", []))
+    dhg_vlan_attached = any(t.get("type") == "VLAN" for p in dhg for t in p.get("targets", []))
+
+    ra_present = bool(ra_if) or ra_vlan_attached
+    dhg_present = bool(dhg_if) or dhg_vlan_attached
+    dualstack = bool(ipv6_svi_vlans)
+
+    if not dualstack and not ra_present and not dhg_present and not ra_policy_names and not dhg_policy_names:
+        return {}
+    return {
+        "dualstack": dualstack,
+        "ipv6_svi_vlans": sorted(set(ipv6_svi_vlans)),
+        "ra_guard_policies": ra_policy_names,
+        "dhcp_guard_policies": dhg_policy_names,
+        "ra_guard_ifaces": sorted(ra_if),
+        "dhcp_guard_ifaces": sorted(dhg_if),
+        "ra_guard_present": ra_present,
+        "dhcp_guard_present": dhg_present,
+    }
+
+
+def build_ntp(cmd_to_file: Dict[str, str]) -> dict:
+    """Clock-synchronization STATE for THIS device from 'show ntp status' (IOS/IOS-XE) or, on NX-OS where that
+    command carries no sync line, 'show ntp peer-status' (parse_ntp_status) -> {synchronized, stratum,
+    reference, source}. {} when the device returned no NTP output (so a never-collected device is ABSENT from
+    snap['ntp'] rather than counted unsynchronized). The OPERATIONAL complement to the config-only CIS no-ntp
+    check. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_ntp_status,
+                       _load_cmd_output(cmd_to_file, "show ntp status", "show ntp peer-status")) or {}
+
+
+def build_port_security_detail(cmd_to_file: Dict[str, str]) -> dict:
+    """Access-edge port-security state for THIS device from 'show port-security interface' DETAIL
+    (parse_port_security_detail): {ifname: {enabled, port_status, violation_mode, violation_count, last_src,
+    last_vlan}}. {} when the device runs no port-security or the detail form was not collected. An err-disabled
+    (Secure-shutdown) secured port -- a live access outage -- was previously invisible to the design layer (the
+    summary form has no port-status column). Fail-soft via _safe_parse."""
+    return _safe_parse(parse_port_security_detail,
+                       _load_cmd_output(cmd_to_file, "show port-security interface")) or {}
+
+
+def build_storm_control(cmd_to_file: Dict[str, str]) -> list:
+    """Per-interface traffic-storm-control state for THIS device from 'show storm-control' (parse_storm_control):
+    [{interface, traffic, filter_state, upper, lower, current, action, configured}]. [] when the device runs no
+    storm-control. The senior gap (-> _d_storm_control_action) is a CONFIGURED rule whose action is None -- it
+    drops a storm silently with no trap and no err-disable. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_storm_control, _load_cmd_output(cmd_to_file, "show storm-control")) or []
+
+
+def build_qos_runtime(cmd_to_file: Dict[str, str]) -> list:
+    """QoS RUNTIME health for THIS device from 'show policy-map interface' (parse_policymap_drops):
+    [{interface, policy, class, priority, drop_pkts, drop_bytes, output_pkts, police_drop_pkts,
+    police_drop_bytes}] -- one row per EGRESS class/queue. [] when no service-policy is attached (or the command
+    was not collected). The runtime complement to build/parse_qos_config (which only proves a policy EXISTS):
+    a class with significant egress drops means the configured QoS is shedding the very traffic its intent
+    classified. Fail-soft via _safe_parse."""
+    return _safe_parse(parse_policymap_drops,
+                       _load_cmd_output(cmd_to_file, "show policy-map interface")) or []
+
+
+# Explicit switch/router model families, used ONLY when a neighbour advertises no capabilities (a bare
+# LLDP neighbour). Deliberately NARROW -- it must NOT match a Cisco IP phone or access point, so we do NOT
+# key off the bare word 'cisco' the way infer_endpoint_type does (that maps every Cisco box to 'Switch').
+_INFRA_PLATFORM_RE = re.compile(
+    r"(\bnexus|\bcatalyst|\bn[0-9]k\b|\bc9[0-9]{3}|\bc3[0-9]{3}|\bc2[0-9]{3}|\bws-c[23456]|"
+    r"\basr[0-9]|\bisr[0-9]|\bcsr[0-9]|\bncs[- ]?[0-9]|\bcisco[ -][0-9]{4}\b)", re.IGNORECASE)
+
+
+def _neighbor_is_infra(rec: Dict[str, str]) -> bool:
+    """Classify a CDP/LLDP neighbour record (parse_neighbors_detail) as INFRASTRUCTURE (a switch/router in
+    the L2/L3 path) vs an EDGE device (phone / access-point / host / WLC). The advertised CAPABILITIES are
+    AUTHORITATIVE when present (a device that says it is a phone/AP/host is not silently re-read as a switch
+    via its platform string):
+      * CDP capabilities (full words): infra iff 'Switch' or 'Router' appears.
+      * LLDP enabled-capabilities (letters): infra iff 'R' (Router) or 'B' (Bridge) is set AND 'W' (WLAN-AP)
+        is NOT (an AP sets only W; a switch advertises B).
+      * Only when NO capabilities are advertised do we fall back to an explicit switch/router PLATFORM family
+        (_INFRA_PLATFORM_RE) -- never the greedy 'cisco'-substring rule.
+    A neighbour with neither an infra capability nor an infra platform is treated as NON-infra."""
+    caps = (rec.get("capabilities") or "").strip()
+    proto = (rec.get("proto") or "cdp").lower()
+    if caps:
+        if proto == "lldp":
+            tokens = {t.strip().upper() for t in re.split(r"[,\s]+", caps) if t.strip()}
+            return ("R" in tokens or "B" in tokens) and "W" not in tokens
+        low = caps.lower()
+        return bool(re.search(r"\bswitch\b", low) or re.search(r"\brouter\b", low))
+    return bool(_INFRA_PLATFORM_RE.search(rec.get("platform", "") or ""))
+
+
+def build_undocumented_neighbors(cmd_to_file: Dict[str, str]) -> list:
+    """INFRASTRUCTURE CDP/LLDP neighbours of THIS device, parsed from the already-collected
+    'show cdp neighbors detail' + 'show lldp neighbors detail' (parse_neighbors_detail) and filtered to
+    switches/routers via _neighbor_is_infra. Returns [{device_id, platform, capabilities, mgmt_ip,
+    local_intf, remote_port, proto}] -- the candidate set the shadow-infra detector reconciles against the
+    assessed inventory. Edge devices (phones / APs / hosts) are excluded here. [] when the device advertises no
+    infra neighbour. No NEW collected command. Fail-soft via _safe_parse."""
+    cdp = _safe_parse(parse_neighbors_detail, _load_cmd_output(cmd_to_file, "show cdp neighbors detail"), "cdp") or []
+    lldp = _safe_parse(parse_neighbors_detail, _load_cmd_output(cmd_to_file, "show lldp neighbors detail"), "lldp") or []
+    out = []
+    seen = set()
+    for rec in list(cdp) + list(lldp):
+        if not _neighbor_is_infra(rec):
+            continue
+        key = ((rec.get("device_id") or "").strip().lower(), (rec.get("local_intf") or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(rec)
+    return out
 
 
 def build_routing_neighbors(cmd_to_file: Dict[str, str]) -> dict:
@@ -219,10 +777,17 @@ def inscope_subnets(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Set[
         for port, d in ifaces.items():
             if not re.match(r"^Vlan\d+$", port, re.IGNORECASE):
                 continue
-            ipmask = (getattr(d, "svi_ip", "") or "").split()
+            svi = (getattr(d, "svi_ip", "") or "").strip()
+            ipmask = svi.split()
             if len(ipmask) >= 2:
                 try:
                     nets.add(str(ipaddress.ip_network(f"{ipmask[0]}/{ipmask[1]}", strict=False)))
+                    continue
+                except ValueError:
+                    pass
+            if "/" in svi:                                   # NX-OS / IOS-XE slash form 'ip address 10.1.20.1/24'
+                try:
+                    nets.add(str(ipaddress.ip_network(svi, strict=False)))
                     continue
                 except ValueError:
                     pass
@@ -312,6 +877,18 @@ def build_device_physical(hostname: str, platform: str,
         if ps_list:
             dp.ps_status = " / ".join(list(dict.fromkeys(ps_list)))
 
+    # PoE budget fallback (DET-poe-001): access stacks report their inline-power budget only in the
+    # 'show power inline' Module rows ('1  1120.0  0.0  1120.0'), which 'show environment power' above
+    # never sees -- so poe_util read 0/303 fleet-wide. When the env-power parse left it blank, sum the
+    # inline Module rows so PoE utilisation is real (n/a-only / non-PoE modules stay blank, not a false 0).
+    if not str(dp.power_capacity_w).strip():
+        _poe_inline = _load_cmd_output(cmd_to_file, "show power inline")
+        if _poe_inline:
+            _pb = _parse_poe_inline_budget(_poe_inline)
+            if _pb.get("available"):
+                dp.power_capacity_w = f"{_pb['available']} W"
+                dp.power_drawn_w = f"{_pb.get('used', 0.0)} W"
+
     mod_out = _load_cmd_output(cmd_to_file, "show module")
     if mod_out and dp.num_modules == 0:
         dp.num_modules = parse_show_module_count(mod_out)
@@ -339,8 +916,14 @@ def build_device_physical(hostname: str, platform: str,
                 if PHYSICAL_IFACE_RE.match(normalize_ifname(p))
                 and not normalize_ifname(p).startswith("Po")]
     dp.total_ports  = len(physical)
-    dp.active_ports = sum(1 for p in physical
-                          if interfaces[p].status in ("connected","up"))
+    # Coverage-honest active-port count: if NO physical port carries an observed link status (the
+    # device's port up/down state was not collected — e.g. no 'show interfaces status'), the active
+    # count is UNKNOWN -> None, not 0. A false 0 renders 0% utilization / all-ports-free and ranks the
+    # device first as "most consolidation headroom" on the Capacity sheet. compute_capacity already
+    # blanks util/free for a None count (test_compute_capacity_blanks_util_when_active_ports_unobserved).
+    _status_seen = any((interfaces[p].status or "").strip() for p in physical)
+    dp.active_ports = (sum(1 for p in physical if interfaces[p].status in ("connected", "up"))
+                       if _status_seen else None)
     return dp
 
 
@@ -380,7 +963,15 @@ def collect_global_arp(all_cmd_to_files: Dict[str, Dict[str, str]],
     """
     global_arp:        Dict[str, str] = {}
     global_arp_source: Dict[str, str] = {}   # NEW-V11
-    for hostname, cmd_to_file in all_cmd_to_files.items():
+    # Iterate in a DETERMINISTIC host order. all_cmd_to_files is populated in thread-COMPLETION order under
+    # multi-worker collection (COLLECT_PARSE as_completed), so the first-writer-wins attribution below would
+    # otherwise pick a different end_host_ip (on a MAC->IP conflict) and a different arp_source_switch
+    # provenance run-to-run for the SAME evidence -- a reproducibility break on two persisted/displayed fields.
+    # Sorting by hostname makes it order-independent ('lowest hostname wins' the tie). (Genuine MAC->IP conflicts
+    # -- a moved host / overlapping-VRF ARP -- are inherently ambiguous; a subnet-containment tie-break is not
+    # available here because interfaces/SVIs are parsed AFTER this phase, and it would not disambiguate the
+    # common case where each switch reports an IP in its own connected subnet.)
+    for hostname, cmd_to_file in sorted(all_cmd_to_files.items()):
         _ARP_CMDS   = ["show ip arp vrf all", "show ip arp", "show ip arp detail"]
         device_new   = 0
         device_total = 0

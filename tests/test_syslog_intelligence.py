@@ -61,6 +61,20 @@ def test_macflap_and_errdisable_detected_high():
     assert det["err-disable"]["recommendation"]            # doctrine attached
 
 
+def test_optic_and_lacp_syslog_kinds():
+    """DET-syslog-3: SFF8472 DOM violations / unsupported transceivers -> 'optic-degraded' (High); LACP
+    member suspended / incompatible -> 'lacp-error' (High); a benign LACP bundle-up must NOT flag."""
+    optic = ("*Jun  9 01:00:00.001: %SFF8472-5-THRESHOLD_VIOLATION: Te1/49: Rx power high alarm\n"
+             "*Jun  9 01:00:01.002: %PLATFORM-4-UNSUPPORTED_TRANSCEIVER: Transceiver on Gi1/0/1 is not supported\n")
+    ok = compute_syslog_intelligence({"sw1": optic})
+    assert "optic-degraded" in _kinds(ok, "sw1")
+    assert {d["kind"]: d for d in ok["detections"]}["optic-degraded"]["severity"] == "High"
+    lacp = "*Jun  9 01:00:02.003: %ETH_PORT_CHANNEL-5-PORT_SUSPENDED: Te1/1 suspended in Po1 (incompatible)\n"
+    assert "lacp-error" in _kinds(compute_syslog_intelligence({"sw1": lacp}), "sw1")
+    benign = "*Jun  9 01:00:03.004: %ETH_PORT_CHANNEL-5-PORT_UP: Te1/2 is up in port-channel Po1\n"
+    assert "lacp-error" not in _kinds(compute_syslog_intelligence({"sw1": benign}), "sw1")
+
+
 def test_link_flap_threshold_is_per_interface():
     one_flap = "*Jun  2 03:15:03.220: %LINK-3-UPDOWN: Interface Gi1/0/9, changed state to down\n"
     below = compute_syslog_intelligence({"sw1": one_flap * (_SYSLOG_LINK_FLAP_MIN - 1)})
@@ -90,6 +104,22 @@ def test_environment_resource_stp_guard_and_reload():
     # High detections sort before Medium
     assert [d["severity"] for d in si["detections"]] == sorted(
         [d["severity"] for d in si["detections"]], key={"High": 0, "Medium": 1}.get)
+
+
+def test_login_fail_detects_nxos_aaa_authentication_failed():
+    # NX-OS / AAA auth failures use %AUTHPRIV/%DAEMON '... authentication failed', NOT IOS %SEC_LOGIN —
+    # the IOS-only "LOGIN in fac and FAIL in mn" match was blind to a fleet of real auth-failure events.
+    fail = "2026 Jun 9 12:00:02 nx1 %AUTHPRIV-3-SYSTEM_MSG: pam_aaa:Authentication failed for user admin - login\n"
+    assert "login-fail" not in _kinds(compute_syslog_intelligence({"nx1": fail * (_SYSLOG_LOGIN_FAIL_MIN - 1)}))
+    at = compute_syslog_intelligence({"nx1": fail * _SYSLOG_LOGIN_FAIL_MIN})
+    assert "login-fail" in _kinds(at, "nx1")
+
+
+def test_environment_detects_nxos_power_supply_failure():
+    # NX-OS / Cat9K power-supply failures (%PFMA/%NOHMS/%PLATFORM_FEP ... PS_FAIL) must classify as
+    # 'environment'; the IOS-only ENV/THERMAL facility match silently missed them.
+    log = "2026 Jun 9 12:00:02 nx1 %PFMA-2-PS_FAIL: Power supply 1 failed or removed\n"
+    assert "environment" in _kinds(compute_syslog_intelligence({"nx1": log}), "nx1")
 
 
 def test_login_fail_threshold():

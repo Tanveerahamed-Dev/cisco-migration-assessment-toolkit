@@ -16,8 +16,15 @@ no live network needed to read them:
   **keystone devices** the fleet most depends on (by migration blast radius),
   and per-move-group readiness;
 - an interactive single-file **Network Migration Explorer** (the
-  `blast_radius_explorer.html` viewer) with eight analysis modes and a graphical
+  `blast_radius_explorer.html` viewer) with 13 analysis modes and a graphical
   **Risk cockpit** that distils thousands of findings into "fix these first."
+
+The engine is **multi-vendor**: Cisco IOS / IOS-XE / NX-OS over SSH show-text plus
+JSON controller-REST ingestion (Cisco ACI/APIC, Catalyst SD-WAN/vManage, ISE, FMC),
+Arista EOS, Juniper SRX, Fortinet FortiGate, and AWS security-group exports — and it
+carries a set of offline **proof engines** (ACL shadow-proofs, RIB→FIB path traces,
+capture integrity, parse-yield telemetry, state assertions, chain-of-custody manifest)
+whose verdicts are coverage-honest: absence of evidence is never reported as health.
 
 Underneath sit a per-switch **health score (0–100)**, a per-move-group
 **migration-readiness verdict** (`READY` / `CAUTION` / `NOT READY`), a
@@ -34,7 +41,7 @@ consolidated severity-ranked **migration punch-list**, and a blast-radius
 |------|------------|
 | [`COLLECT_PARSE_V3_23_0.py`](COLLECT_PARSE_V3_23_0.py) | The toolkit — collects over SSH (netmiko), parses, scores health, computes migration readiness, and writes the workbook + explorer. |
 | [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) | Documentation for the current version (health scoring, the 10-check readiness checklist, the HTML Health mode) plus the change log. |
-| [`cisco_toolkit/blast_radius_explorer.html`](cisco_toolkit/blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot — topology graph plus eight analysis modes (Blast radius, Path trace, Compare, Flow, **Health** w/ the Risk cockpit, Protocols, Cross-Layer, Causality). The live snapshot is baked into a copy of this template on every run. (Lives inside the package so it ships in a wheel.) |
+| [`cisco_toolkit/blast_radius_explorer.html`](cisco_toolkit/blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot — topology graph plus 14 analysis modes (Blast radius, Path trace, Compare, Flow, **Health** w/ the Risk cockpit, Protocols, Cross-Layer, Causal Flow, Waves, Apps, Review, Design, Cable Map, 3D). The live snapshot is baked into a copy of this template on every run. (Lives inside the package so it ships in a wheel.) |
 | [`compass_artifact_..._markdown1.md`](compass_artifact_wf-4178d659-b124-4412-9854-fc7bea5b9094_text_markdown1.md) | Design playbook — best-practice layout, color, and interaction redesign for the Explorer. |
 | [`compass_artifact_..._markdown.md`](compass_artifact_wf-6d4cf577-c82e-4281-8744-55bdc473f75d_text_markdown.md) | Hardening playbook — parsing robustness, collection, scoring validation, and an accessible Explorer. |
 
@@ -156,9 +163,10 @@ Useful flags: `--workers N` (parallel SSH workers, default 5; `1` = sequential),
 `--output FILE` (override the workbook name), `--golden-config FILE` (a config
 baseline for the **Golden-Config Drift** sheet — omit to auto-derive it from the
 fleet majority), `--flow-src IP` / `--flow-dst IP` (add an optional flow-trace
-sheet between two endpoints), and `--redact` (pseudonymize IPs / MACs / serials in the snapshot +
-explorer — consistent and subnet-preserving, hostnames kept — so the single-file
-deliverable can be shared without leaking real addressing). See
+sheet between two endpoints), and `--redact` (pseudonymize IPs / MACs / serials across the
+**whole output bundle** — the snapshot JSON, the HTML explorer, **and** the always-produced
+`.xlsx` workbook — consistent and subnet-preserving, hostnames kept — so every deliverable can
+be shared without leaking real addressing). See
 [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) for the full feature set.
 
 ### Devices file
@@ -166,7 +174,9 @@ deliverable can be shared without leaking real addressing). See
 A JSON file — accepted as an array, a single object, or one object per line.
 Each entry needs `ip`, `hostname`, and `username` (common aliases like `host`,
 `name`, and `user` are accepted). `platform` is optional and autodetected when
-omitted (`ios` / `nxos` / `auto`).
+omitted (`ios` / `nxos` / `auto`). Start from
+[`devices.example.json`](devices.example.json) — it shows the recommended,
+password-free shape.
 
 ```json
 [
@@ -175,15 +185,29 @@ omitted (`ios` / `nxos` / `auto`).
 ]
 ```
 
-**Passwords** resolve in this order, so secrets need not live in the file:
+**Keep passwords OUT of the file — the environment chain is the default.**
+Passwords resolve in this order:
 
-1. an explicit `"password"` on the entry,
-2. `"password_env": "VAR"` — read from that environment variable,
-3. the global `$CISCO_PASS` environment variable,
-4. a secure `getpass` prompt (interactive terminals only).
+1. `"password_env": "VAR"` on the entry — read from that environment variable,
+2. the global `$CISCO_PASS` environment variable (one read-only account fleet-wide),
+3. a secure `getpass` prompt (interactive terminals only),
+4. an explicit `"password"` on the entry — supported for back-compat, **discouraged**:
+   `devices.json` then holds live credentials in cleartext on disk.
 
 Authentication failures are **never** retried (this avoids account lockout);
 transient connection/timeout failures are retried with backoff.
+
+### Secrets at rest — the raw collection directory
+
+The collection directory holds the devices' **verbatim output**, running-configs
+included — passwords, SNMP communities, and keys in **cleartext**. `--redact` makes the
+*deliverables* share-safe but deliberately never touches this evidence dir (it is the
+`--compare` / `--trend` source), and every run now prints a `[SENSITIVE]` warning naming
+it. Once analysis is final, scrub the raw captures in place with **`--redact-collection`**:
+it replaces secret *values* with the same conservative deny-list `--redact` uses, keeps
+IPs/hostnames/interfaces so the dir stays analyzable, is idempotent, and never deletes
+anything. (Scrubbed captures will no longer match any archive hashes recorded at
+collection time — that modification is the point, and it is opt-in.)
 
 ## Reading the results
 

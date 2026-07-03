@@ -156,12 +156,29 @@ def _window_minutes(n_hard_switches: int, hard_endpoints: int) -> int:
     return mobilisation + per_switch_cut_verify + per_endpoint_settle + validation_rollback_buffer
 
 
-def _gate(n_fail: int, n_warn: int, n_crit_cl: int, n_high_remediation: int) -> str:
+def _gate(n_fail: int, n_warn: int, n_crit_cl: int, n_high_remediation: int, n_blind: int = 0) -> str:
     if n_fail > 0 or n_crit_cl > 0:
         return GATE_NOGO
-    if n_warn > 0 or n_high_remediation > 0:
+    # audit-5 #15: a device the collection never reached (band 'Insufficient Data') cannot be certified ready, so
+    # a wave containing one is never a confident GO -- it is CONDITIONAL pending collection (coverage-honest).
+    if n_warn > 0 or n_high_remediation > 0 or n_blind > 0:
         return GATE_COND
     return GATE_GO
+
+
+def _blind_hosts(snap: Dict[str, Any]) -> set:
+    """Hosts the collection never reached -- health band 'Insufficient Data' / data_quality 0. A cutover wave
+    cannot be confidently gated for a device that was never assessed; the plan surfaces them rather than folding
+    them in as fully-plannable hard-cutover waves with the same verdict as an assessed wave (audit-5 #15)."""
+    out: set = set()
+    for r in _rows(snap, "health_scores"):
+        band = str(r.get("band", "")).strip().lower()
+        dq = r.get("data_quality")
+        if band.startswith("insufficient") or (isinstance(dq, (int, float)) and not isinstance(dq, bool) and dq <= 0):
+            h = r.get("switch") or r.get("host")
+            if h:
+                out.add(h)
+    return out
 
 
 def _blockers(readiness: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -287,6 +304,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     rem_by_device = (snap.get("remediation_plan") or {}).get("by_device") or {}
     val_by_wave = (snap.get("validation_plan") or {}).get("by_wave") or {}
     keystones = _keystone_hosts(snap)
+    blind_hosts = _blind_hosts(snap)
 
     waves: List[Dict[str, Any]] = []
     for seq in seq_rows:
@@ -295,6 +313,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         mbb = list(seq.get("make_before_break") or [])
         hard = list(seq.get("hard_cutover") or [])
         switches = set(_wave_switches(seq, readiness))
+        wblind = sorted(switches & blind_hosts)
         mg = _match_move_group(switches, move_groups)
 
         hard_ep = _int(seq.get("hard_cutover_endpoints"))
@@ -308,7 +327,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         n_high_rem = sum(1 for r in remediation if r.get("severity") in ("Critical", "High"))
         validation = _wave_validation(group, val_by_wave)
         window = _window_minutes(len(hard), hard_ep)
-        gate = _gate(n_fail, n_warn, len(crit_cl), n_high_rem)
+        gate = _gate(n_fail, n_warn, len(crit_cl), n_high_rem, len(wblind))
         strategy = "mixed" if (mbb and hard) else ("hard-cutover" if hard else "make-before-break")
 
         waves.append({
@@ -331,6 +350,8 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
             "keystones": sorted(switches & keystones),
             "n_fail": n_fail,
             "n_warn": n_warn,
+            "n_blind": len(wblind),
+            "blind_switches": wblind,
             "blockers": blockers,
             "critical_crosslayer": crit_cl,
             "remediation": remediation,
@@ -356,6 +377,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     total_window = sum(w["est_window_minutes"] for w in waves)
     n_mbb = sum(len(w["make_before_break"]) for w in waves)
     n_hard = sum(len(w["hard_cutover"]) for w in waves)
+    n_not_assessed = sum(_int(w.get("n_blind")) for w in waves)
 
     summary = {
         "verdict": fleet_gate,
@@ -364,6 +386,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         "n_endpoints": sum(w["endpoints"] for w in waves),
         "n_make_before_break": n_mbb,
         "n_hard_cutover": n_hard,
+        "n_not_assessed": n_not_assessed,
         "hard_cutover_endpoints": total_hard_ep,
         "est_window_minutes": total_window,
         "est_window_label": _fmt_minutes(total_window),
@@ -391,9 +414,14 @@ _METHODOLOGY: List[str] = [
 def _fleet_statement(verdict: str, waves: List[Dict[str, Any]], n_mbb: int, n_hard: int,
                      total_window: int) -> str:
     n_nogo = sum(1 for w in waves if w["gate"] == GATE_NOGO)
+    n_blind = sum(_int(w.get("n_blind")) for w in waves)
     parts = [f"Cutover posture: {verdict}."]
     if not waves:
         return "No migration waves were derived from this snapshot."
+    if n_blind:
+        parts.append(f"{n_blind} device(s) were NOT assessed (collection incomplete) -- they cannot be certified "
+                     f"ready, so their wave(s) are gated CONDITIONAL pending collection and this posture is a LOWER "
+                     f"BOUND, not a clean bill of health.")
     if n_nogo:
         parts.append(f"{n_nogo} of {len(waves)} wave(s) are NO-GO until their gating checks are cleared.")
     parts.append(f"{n_mbb} switch(es) migrate make-before-break (zero outage); "

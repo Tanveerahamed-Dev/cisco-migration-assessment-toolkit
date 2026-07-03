@@ -2,6 +2,8 @@
 the module is skipped when it is absent (the generator fails soft the same way). These tests pin the
 one-section-per-wave structure, the change-overview reconciliation, the reuse of the existing validation
 plan as the post-cutover checks, the blocker surfacing, and the fail-soft path."""
+import os
+
 import pytest
 
 docx = pytest.importorskip("docx")  # skip the file if the optional dep is absent
@@ -54,10 +56,15 @@ def _snap():
             ],
             "by_wave": {
                 "Group 1": [
+                    {"category": "Hygiene", "device": "distA", "check": "login banner present",
+                     "command": "show banner login", "expect": "MOTD shown", "wave": "Group 1",
+                     "severity": "Low", "why": "cosmetic / compliance"},
                     {"category": "Gateway", "device": "distA", "check": "VLAN 10 gateway up",
-                     "command": "show ip interface brief", "expect": "10.0.10.1 up/up", "wave": "Group 1"},
+                     "command": "show ip interface brief", "expect": "10.0.10.1 up/up", "wave": "Group 1",
+                     "severity": "High", "why": "VLAN 10 endpoints lose their gateway if this SVI is down"},
                     {"category": "FHRP", "device": "distA", "check": "HSRP role",
-                     "command": "show standby brief", "expect": "Active/Standby", "wave": "Group 1"},
+                     "command": "show standby brief", "expect": "Active/Standby", "wave": "Group 1",
+                     "severity": "Medium"},
                 ],
                 "Group 2": [
                     {"category": "Reachability", "device": "acc1", "check": "gateway reachable",
@@ -115,6 +122,71 @@ def test_mop_reuses_validation_plan_as_checks(tmp_path):
     # strategy drives the procedure wording: make-before-break vs hard cutover
     assert "BESIDE" in text or "beside" in text
     assert "hard cutover" in text.lower()
+
+
+def test_mop_mixed_homing_wave_is_not_classified_pure_make_before_break(tmp_path):
+    """A wave with BOTH dual-homed (make_before_break) and single-homed (hard_cutover) members must not be
+    classified pure make-before-break off the free-text 'sequence' — single-homed switches have no second
+    path. The procedure sequences the dual-homed MBB first then takes the scheduled outage; the rollback
+    flags the single-homed members' rollback as a brief outage, not 'non-disruptive'."""
+    snap = _snap()
+    g1 = snap["wave_sequencing"][0]                     # was pure MBB (make_before_break=[distA, distB])
+    g1["hard_cutover"] = ["accSingle"]                  # now MIXED
+    g1["sequence"] = "2 make-before-break (dual-homed) + 1 hard cutover (single-homed)"
+    out = str(tmp_path / "mop_mixed.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "make-before-break the 2 dual-homed" in text          # dual-homed MBB sequenced FIRST
+    assert "scheduled outage" in text.lower()                    # then the single-homed outage (not pure MBB)
+    assert "brief outage" in text.lower()                        # rollback honesty for the single-homed members
+
+
+def test_mop_validation_table_surfaces_severity_high_first(tmp_path):
+    """N23: the §N.6 go/no-go table must surface each check's severity (already on every
+    validation_plan item) and order High-first, so the most critical checks survive the per-wave
+    display cap. The fixture lists a Low check BEFORE a High one, so a regression that keeps source
+    order renders Low first."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    vtabs = [t for t in d.tables if t.rows and t.rows[0].cells[0].text == "Sev"]
+    assert vtabs, "no §N.6 validation table with a leading 'Sev' column"
+    w1 = next((t for t in vtabs if any("VLAN 10 gateway up" in c.text for r in t.rows for c in r.cells)), None)
+    assert w1 is not None, "wave-1 validation table not found"
+    sevs = [r.cells[0].text for r in w1.rows[1:]]
+    assert "High" in sevs and "Low" in sevs and sevs.index("High") < sevs.index("Low"), sevs
+
+
+def test_mop_port_mapping_surfaces_portchannel_redundancy(tmp_path):
+    """N27: the §x.4 port-mapping must surface uplink port-channel membership so redundant uplink
+    pairs are explicit — two uplink ports on one switch sharing a Po bundle read as a redundant pair."""
+    snap = _snap()
+    snap["interfaces"] = {
+        "distA": {
+            "Te1/1": {"switchport_mode": "Trunk", "cdp_neighbor": "core1", "port_channel": "Po40"},
+            "Te1/2": {"switchport_mode": "Trunk", "cdp_neighbor": "core1", "port_channel": "Po40"},
+        },
+    }
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert text.count("[Po40]") >= 2          # both uplink legs tagged with their bundle
+
+
+def test_mop_software_standardization_table(tmp_path):
+    """N24: the MOP §2 states the per-platform software standardization (current train + disposition)
+    from the software-advisory screening, so the cutover team knows which platforms need an upgrade."""
+    snap = _snap()
+    snap["software_risk"] = {"per_device": [
+        {"host": "a", "platform": "nxos", "sw_version": "6.0", "train": "NX-OS 6.x", "train_band": "Replace/Upgrade"},
+        {"host": "b", "platform": "ios", "sw_version": "15.2", "train": "IOS 15.2", "train_band": "Acceptable"}]}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    heads = [p.text for p in d.paragraphs if p.style.name.startswith("Heading")]
+    text = _all_text(d)
+    assert any("Software" in h and ("standardization" in h.lower() or "image" in h.lower()) for h in heads), heads
+    assert "NX-OS 6.x" in text and "Replace/Upgrade" in text     # current train + disposition surfaced
 
 
 def test_mop_surfaces_blockers_and_rollback(tmp_path):
@@ -195,3 +267,247 @@ def test_mop_failsoft_without_python_docx(monkeypatch, tmp_path):
     out = str(tmp_path / "m.docx")
     write_mop_docx(out, _snap(), "Unit Test Fleet")   # must not raise
     assert not os.path.exists(out)
+
+
+def test_mop_join_apportions_endpoints_to_subwave():
+    """AUDIT FIX: a coupled sub-wave (a SLICE of a larger move-group) must NOT inherit the parent group's
+    full endpoint total — apportion by the sub-wave's switch share. A full-coverage wave keeps the total."""
+    from cisco_toolkit.mop import _join_group_records
+    rbg = {"Group 1": {"group": "Group 1", "switches": ["a", "b", "c", "d"], "endpoints": 400,
+                       "n_fail": 0, "n_warn": 2, "readiness": "CAUTION"}}
+    r1, *_ = _join_group_records(["Group 1"], ["a"], rbg, {}, {}, {})       # 1 of 4 switches
+    assert r1["endpoints"] == 100                                          # 400 * 1/4, NOT 400
+    r4, *_ = _join_group_records(["Group 1"], ["a", "b", "c", "d"], rbg, {}, {}, {})
+    assert r4["endpoints"] == 400                                          # full coverage -> full total
+
+
+def test_mop_join_unions_cutover_split_across_groups():
+    """A batch wave spans MULTIPLE groups; the cutover host split (make_before_break / hard_cutover)
+    must UNION across all of them, not just the first/representative group. Else a wave mixing a
+    dual-homed group (make-before-break) with a single-homed group (hard cutover) reads only the first
+    group's split — taking the wrong procedure branch and silently dropping the other group's switches."""
+    from cisco_toolkit.mop import _join_group_records
+    seq_by_group = {"G1": {"make_before_break": ["a", "b"], "hard_cutover": []},
+                    "G2": {"make_before_break": [], "hard_cutover": ["c"]}}
+    rbg = {"G1": {"switches": ["a", "b"]}, "G2": {"switches": ["c"]}}
+    _r, seq, _scen, _val = _join_group_records(["G1", "G2"], ["a", "b", "c"], rbg, seq_by_group, {}, {})
+    assert set(seq.get("make_before_break") or []) == {"a", "b"}
+    assert set(seq.get("hard_cutover") or []) == {"c"}     # the single-homed group is NOT dropped -> branch is correct
+
+
+def _snap_waves():
+    """_snap() + a canonical wave_plan: Group 1 (distA,distB) sliced into 2 coupled-subwaves; Group 2
+    (acc1) as an independent-batch — 3 waves."""
+    snap = _snap()
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "waves": [
+            {"wave": 1, "kind": "coupled-subwave", "n_switches": 1, "switches": ["distA"], "source_groups": [0]},
+            {"wave": 2, "kind": "coupled-subwave", "n_switches": 1, "switches": ["distB"], "source_groups": [0]},
+            {"wave": 3, "kind": "independent-batch", "n_switches": 1, "switches": ["acc1"], "source_groups": [1]},
+        ],
+        "n_waves": 3, "wave_cap": 40, "n_move_groups": 2, "largest_group": 2, "n_subdivided_groups": 1,
+        "note": "candidate waves"}}}
+    return snap
+
+
+def test_mop_sections_keyed_to_wave_plan(tmp_path):
+    """F2: with a canonical wave_plan the MOP emits one section per WAVE (wave-keyed title), not one per
+    move-group/readiness row."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap_waves(), "Unit Test Fleet")
+    h1 = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 1"]
+    assert any(t == "3. MOP — Wave 1 (coupled-subwave)" for t in h1), h1
+    assert any(t == "4. MOP — Wave 2 (coupled-subwave)" for t in h1), h1
+    assert any(t == "5. MOP — Wave 3 (independent-batch)" for t in h1), h1
+    assert not any("MOP — Group 1" in t for t in h1)             # NOT keyed on move-groups when wave_plan present
+
+
+def test_mop_coupled_subwave_surfaces_shared_vlan_caveat(tmp_path):
+    """F2 honesty: coupled-subwave sections carry the shared-L2/VLAN SEQUENCE caveat; an independent-batch
+    wave does not."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap_waves(), "Unit Test Fleet")
+    d = Document(out)
+    paras = [p.text for p in d.paragraphs]
+    # the caveat appears (coupled sub-wave shares VLANs, is a SEQUENCE)
+    assert any("coupled sub-wave" in t.lower() and "SEQUENCE" in t for t in paras), paras[:0] or "no caveat"
+    assert sum(1 for t in paras if "Shared-L2 coordination" in t) >= 2   # one per coupled-subwave (waves 1 & 2)
+
+
+def test_mop_reads_wave_plan_not_recompute(tmp_path):
+    """F2 REFUTATION / SSOT mutation guard: a wave_plan grouping move_groups would NEVER produce
+    (distA + acc1 together) must render verbatim — proving the MOP reads wave_plan, not a re-slice of
+    move_groups."""
+    snap = _snap()
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "waves": [
+            {"wave": 1, "kind": "independent-batch", "n_switches": 2, "switches": ["distA", "acc1"], "source_groups": [0, 1]},
+            {"wave": 2, "kind": "coupled-subwave", "n_switches": 1, "switches": ["distB"], "source_groups": [0]},
+        ],
+        "n_waves": 2, "wave_cap": 40, "n_move_groups": 2, "largest_group": 2, "n_subdivided_groups": 0, "note": "x"}}}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any("Wave 1 (independent-batch)" in t for t in h1) and any("Wave 2 (coupled-subwave)" in t for t in h1)
+    assert not any("MOP — Group 1" in t for t in h1)             # not recomputed from move_groups
+    assert "distA, acc1" in _all_text(d)                          # wave 1 co-locates distA+acc1 (impossible from a move-group recompute)
+
+
+def test_mop_join_worst_readiness_uses_real_vocabulary():
+    """REVIEW #2: the worst-verdict reducer must rank the engine's ACTUAL readiness values
+    (NOT READY worse than CAUTION worse than READY). The old rank map keyed on a fictional
+    vocabulary so 'NOT READY' fell to the default and lost to 'READY'/'CAUTION'."""
+    from cisco_toolkit.mop import _join_group_records
+    base = {"switches": ["x"], "endpoints": 10, "n_fail": 0, "n_warn": 0}
+    rbg = {"G1": {**base, "group": "G1", "switches": ["a"], "readiness": "NOT READY", "n_fail": 1},
+           "G2": {**base, "group": "G2", "switches": ["b"], "readiness": "READY"}}
+    r, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg, {}, {}, {})
+    assert r["readiness"] == "NOT READY", r["readiness"]            # NOT 'READY'
+    rbg2 = {"G1": rbg["G1"], "G2": {**rbg["G2"], "readiness": "CAUTION"}}
+    r2, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg2, {}, {}, {})
+    assert r2["readiness"] == "NOT READY", r2["readiness"]          # NOT READY beats CAUTION
+    rbg3 = {"G1": {**rbg["G1"], "readiness": "READY", "n_fail": 0}, "G2": {**rbg["G2"], "readiness": "CAUTION"}}
+    r3, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg3, {}, {}, {})
+    assert r3["readiness"] == "CAUTION", r3["readiness"]            # CAUTION beats READY
+    rbg4 = {"G1": {**rbg["G1"], "readiness": "READY", "n_fail": 0}, "G2": {**rbg["G2"], "readiness": "READY"}}
+    r4, *_ = _join_group_records(["G1", "G2"], ["a", "b"], rbg4, {}, {}, {})
+    assert r4["readiness"] == "READY", r4["readiness"]              # READY only when ALL ready
+
+
+def test_mop_join_apportions_fail_warn_to_subwave():
+    """REVIEW #1: n_fail/n_warn, like endpoints, must apportion to a coupled sub-wave's switch share —
+    a 1-of-4 slice must not reprint the parent group's full blocking/warning counts."""
+    from cisco_toolkit.mop import _join_group_records
+    rbg = {"G1": {"group": "G1", "switches": ["a", "b", "c", "d"], "endpoints": 400,
+                  "n_fail": 4, "n_warn": 8, "readiness": "NOT READY"}}
+    r1, *_ = _join_group_records(["G1"], ["a"], rbg, {}, {}, {})            # 1 of 4
+    assert (r1["n_fail"], r1["n_warn"]) == (1, 2), (r1["n_fail"], r1["n_warn"])
+    r4, *_ = _join_group_records(["G1"], ["a", "b", "c", "d"], rbg, {}, {}, {})
+    assert (r4["n_fail"], r4["n_warn"]) == (4, 8), (r4["n_fail"], r4["n_warn"])   # full coverage -> full
+
+
+def test_mop_join_never_masks_a_blocker_via_rounding():
+    """Coverage-honesty: a SINGLE blocking check on a large group must not round to 0 in a small coupled
+    sub-wave (1*0.25=0.25 -> round 0) — that would show a NOT-READY wave with '0 blockers'. A positive
+    share of a positive count contributes at least 1, so the gate can never be silently masked."""
+    from cisco_toolkit.mop import _join_group_records
+    rbg = {"G1": {"group": "G1", "switches": ["a", "b", "c", "d"], "n_fail": 1, "n_warn": 1,
+                  "readiness": "NOT READY"}}
+    r1, *_ = _join_group_records(["G1"], ["a"], rbg, {}, {}, {})            # 1 of 4 -> 0.25 must NOT mask to 0
+    assert r1["n_fail"] == 1 and r1["n_warn"] == 1, (r1["n_fail"], r1["n_warn"])
+
+
+def test_mop_batch_wave_surfaces_all_group_strategies_and_rollbacks(tmp_path):
+    """REVIEW #4: an independent-batch wave bundling several move-groups must surface EVERY group's
+    cutover strategy + rationale + rollback, not only the first non-empty group's (the old joiner kept
+    only the first, silently dropping the rest)."""
+    snap = _snap()
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "waves": [{"wave": 1, "kind": "independent-batch", "n_switches": 3,
+                   "switches": ["distA", "distB", "acc1"], "source_groups": [0, 1]}],
+        "n_waves": 1, "wave_cap": 40, "n_move_groups": 2, "largest_group": 2,
+        "n_subdivided_groups": 0, "note": "x"}}}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    # Group 2's rationale + rollback (previously DROPPED because Group 1 was the first non-empty record)
+    assert "single-homed access edge" in text                 # Group 2 rationale
+    assert "re-cable to legacy port" in text                  # Group 2 rollback
+    # Group 1's are still present
+    assert "dual-homed — build beside" in text                # Group 1 rationale
+    assert "fail back to the legacy leg" in text              # Group 1 rollback
+
+
+def test_mop_endpoint_figure_labeled_as_mac_sum(tmp_path):
+    """REVIEW #14: the per-wave endpoint figure is an apportioned per-switch-MAC sum; label it so
+    (consistent with excel.py's B3 relabel), not the bare 'Endpoints'."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Endpoint MACs" in text
+
+
+def test_mop_robust_to_malformed_uploaded_snapshot(tmp_path):
+    """Robustness (webapp raw-upload path): a hand-edited / hostile snapshot can pass the webapp
+    validator (which only checks a top-level 'devices' key) with sections that are the WRONG truthy type
+    -- migration_readiness as an object, punchlist devices as a string, etc. The old `or {}`/`or []`
+    idioms do NOT guard a truthy non-dict/non-list, so write_mop_docx char-iterated or raised
+    AttributeError mid-render. With the shared docmeta coercers it must degrade and still produce a doc
+    (matching engagement/ops/archreview + the webapp cutover hardening)."""
+    out = str(tmp_path / "mop_malformed.docx")
+    bad = {
+        "devices": {"SW1": {"platform": "ios"}},
+        "migration_readiness": {"group": "G1", "switches": ["SW1"]},   # object, not a list
+        "move_groups": "oops",                                          # string, not a list
+        "wave_sequencing": {"k": "v"},
+        "migration_scenarios": "nope",
+        "validation_plan": [1, 2, 3],
+        "failure_impact": "str",
+        "remediation_plan": {"items": "notalist"},
+        "punchlist": [{"severity": "High", "category": "X", "title": "t", "devices": "SW1"}],
+        "software_risk": "x",
+        "executive_brief": 5,
+        "interfaces": "bad",
+    }
+    write_mop_docx(out, bad, "Malformed Fleet")   # must NOT raise
+    assert os.path.isfile(out) and os.path.getsize(out) > 0
+
+
+def _evpn_mig(applicable=True):
+    return {"applicable": applicable,
+            "model_basis": "requirement-confirmed (fabric_operating_model = nxos-evpn)",
+            "summary": "5 EVPN-migration guardrail(s)",
+            "guardrails": ([] if not applicable else [
+                {"id": "evpn-cut-single-active-l2-interconnect", "phase": "cutover-gate", "severity": "Critical",
+                 "title": "Exactly ONE active L2 interconnect (the overlay will NOT break a loop)",
+                 "basis": "2 vPC domain(s); STP present on 3 device(s)",
+                 "detail": "Permit exactly ONE active Layer-2 connection ...", "source": "BRKDCN-2951"},
+                {"id": "evpn-pre-nxos-1023-gateway-coexistence", "phase": "pre-cutover", "severity": "High",
+                 "title": "NX-OS 10.2(3) HSRP↔Anycast-Gateway coexistence gate",
+                 "basis": "1 of 2 NX-OS device(s) run a release below 10.2(3)",
+                 "detail": "Any node that must hold both ... needs NX-OS >= 10.2(3).", "source": "BRKDCN-2951"},
+            ])}
+
+
+def test_mop_renders_evpn_guardrails_when_applicable(tmp_path):
+    """The MOP's §2.2 surfaces the gated EVPN-migration guardrails (heading, the model basis, each guardrail +
+    its primary source); the software subsection then renumbers to 2.3."""
+    snap = _snap()
+    snap["design_blueprint"] = {"evpn_migration": _evpn_mig()}
+    snap["software_risk"] = {"per_device": [{"host": "distB", "train": "9.3", "disposition": "review"}]}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert any(t.startswith("2.2 EVPN-migration guardrails") for t in h2), h2
+    assert any(t.startswith("2.3 Software") for t in h2), h2          # software renumbered below the EVPN block
+    text = _all_text(d)
+    assert "Exactly ONE active L2 interconnect" in text and "BRKDCN-2951" in text
+    assert "requirement-confirmed" in text
+
+
+def test_mop_silent_on_evpn_when_not_applicable(tmp_path):
+    snap = _snap()
+    snap["design_blueprint"] = {"evpn_migration": _evpn_mig(applicable=False)}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    h2 = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 2"]
+    assert not any("EVPN-migration guardrails" in t for t in h2)
+
+
+def test_mop_check_counts_sum_to_group_ssot_across_subwaves():
+    """[audit-2 #3] a coupled group's fail/warn check counts must SUM across its sub-waves to the group SSOT, not
+    be share-with-floor double-counted (AJ Group 1's true 3/4 rendered 7/7 across 7 sub-waves). Each check is
+    attributed to the ONE sub-wave owning its canonical member switch."""
+    from cisco_toolkit.mop import _join_group_records
+    readiness = {"G1": {"group": "G1", "switches": ["swA", "swB", "swC", "swD"], "endpoints": 40,
+                        "n_fail": 1, "n_warn": 1, "readiness": "NOT READY",
+                        "checks": [{"status": "fail", "note": "sole gateway on swA, swB (no FHRP)"},
+                                   {"status": "warn", "note": "err-disabled on swC, swD"},
+                                   {"status": "pass", "note": "no inconsistent ports"}]}}
+    w1 = _join_group_records(["G1"], ["swA", "swB"], readiness, {}, {}, {})[0]
+    w2 = _join_group_records(["G1"], ["swC", "swD"], readiness, {}, {}, {})[0]
+    assert w1["n_fail"] + w2["n_fail"] == 1 and w1["n_warn"] + w2["n_warn"] == 1   # each check counted ONCE
+    full = _join_group_records(["G1"], ["swA", "swB", "swC", "swD"], readiness, {}, {}, {})[0]
+    assert full["n_fail"] == 1 and full["n_warn"] == 1                              # whole group -> full SSOT

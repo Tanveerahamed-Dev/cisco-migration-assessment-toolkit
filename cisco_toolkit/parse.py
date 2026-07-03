@@ -1,6 +1,7 @@
 """Pure show-command parsers + column primitives. Depends only on `re`, stdlib
 typing, and cisco_toolkit.textutils (the leaf layer). Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 2 (behaviour byte-identical)."""
+import json
 import logging
 import re
 from typing import Dict, List, Optional, Tuple
@@ -33,9 +34,14 @@ def parse_ospf_neighbors(output: str) -> List[Dict[str, str]]:
     """'show ip ospf neighbor' -> [{neighbor, state, address, interface}]."""
     rows = []
     for line in output.splitlines():
-        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\S+)\s+\S+\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)", line)
+        # State is '<state>/<role>'. On a point-to-point / unnumbered / sham-link interface (routed cores + ALL
+        # WAN links) the role is a dash SEPARATED BY WHITESPACE -- 'FULL/  -' -> two tokens -- so the State must
+        # match '<word>/<optional-space><role>' too, else the whole row (incl. a stuck EXSTART/  - fault) is
+        # dropped and reads identical to a device with no OSPF (audit-4 #3). Internal whitespace is then collapsed
+        # so the state reads 'FULL/-' (the broadcast 'FULL/DR' form is unchanged).
+        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+)\s+\d+\s+(\S+/\s*\S+|\S+)\s+\S+\s+(\d+\.\d+\.\d+\.\d+)\s+(\S+)", line)
         if m:
-            rows.append({"neighbor": m.group(1), "state": m.group(2),
+            rows.append({"neighbor": m.group(1), "state": re.sub(r"\s+", "", m.group(2)),
                          "address": m.group(3), "interface": normalize_ifname(m.group(4))})
     return rows
 
@@ -51,10 +57,32 @@ def parse_eigrp_neighbors(output: str) -> List[Dict[str, str]]:
 
 def parse_bgp_summary(output: str) -> List[Dict[str, str]]:
     """'show ip bgp summary' / 'show bgp summary' -> [{neighbor, as, state}].
-    Last column (State/PfxRcd) is the established state or the prefix count."""
+    Last column (State/PfxRcd) is the prefix count (Established) or the BGP state word (Idle/Active/...).
+    A wide Neighbor/AS (a 15-char IPv4, any IPv6 peer, a 4-byte asdot AS) makes IOS/NX-OS WRAP the
+    State/PfxRcd onto an indented continuation line; such rows are stitched back (a short head line +
+    its following numeric continuation) BEFORE the per-row regex, so a wrapped DOWN peer is not dropped
+    (and thus not silently read as healthy by the consumer, which flags any non-numeric State)."""
     rows = []
-    for line in output.splitlines():
-        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]+:[0-9A-Fa-f:]+)\s+\d+\s+(\d+)\s+.*\s(\S+)\s*$", line)
+    # --- wrap-stitch pre-pass: join an indented numeric continuation onto a short neighbour head line ---
+    # head = a line whose first token is an IPv4/IPv6 neighbour but which carries fewer than the 10 grid
+    # columns (i.e. the State/PfxRcd wrapped away). IPv6 run is length-bounded (ReDoS-safe, as below).
+    _head = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]+:[0-9A-Fa-f:]{1,44})(?:%\S+)?(?:\s|$)")
+    stitched: List[str] = []
+    for raw in (output or "").splitlines():
+        s = raw.rstrip()
+        if (stitched and re.match(r"^\s+\d", s)
+                and _head.match(stitched[-1].strip()) and len(stitched[-1].split()) < 10):
+            stitched[-1] = stitched[-1].rstrip() + " " + s.strip()   # numeric continuation -> onto the head
+        else:
+            stitched.append(s)
+    for line in stitched:
+        # IPv6 neighbour: a LENGTH-BOUNDED hex/colon run (RFC max IPv6 textual length ~45). The old
+        # `[0-9A-Fa-f:]+:[0-9A-Fa-f:]+` had two adjacent unbounded `+` groups overlapping on `:`, so a long
+        # all-hex/colon line (a garbled/attacker-supplied capture) caused O(n^2) backtracking (ReDoS). Bounding
+        # the run to 45 chars makes each line linear while still matching every real IPv6 (incl. `::`-compressed).
+        # AS column is asplain (\d+) OR asdot 4-byte '1.100' under `bgp asnotation dot` -> allow the dotted form,
+        # else the whole peer row (incl. a down Idle/Active peer) is dropped and reads Established (audit-4 #19).
+        m = re.match(r"\s*(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f]+:[0-9A-Fa-f:]{1,44})\s+\d+\s+(\d+(?:\.\d+)?)\s+.*\s(\S+)\s*$", line)
         if m:
             rows.append({"neighbor": m.group(1), "as": m.group(2), "state": m.group(3)})
     return rows
@@ -77,6 +105,19 @@ def parse_bgp_table(output: str) -> List[str]:
     return sorted(out)
 
 
+def _nxos_route_source(token: str) -> str:
+    """Map an NX-OS 'show ip route' *via source token to the engine's canonical source vocabulary. NX-OS puts the
+    protocol on the via line as a word, often with a process tag: 'direct'/'attached' (connected), 'local',
+    'static', 'ospf-1', 'bgp-65000', 'eigrp-1', 'isis-1', 'rip-1'."""
+    t = str(token or "").strip().lower()
+    if t.startswith("direct") or t == "attached":
+        return "connected"
+    for name in ("local", "static", "ospf", "bgp", "eigrp", "isis", "rip"):
+        if t.startswith(name):
+            return name
+    return t
+
+
 def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
     routes: Dict[str, Dict[str, object]] = {}
     if not output:
@@ -87,6 +128,8 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
         'i':'isis','su':'static','*':'candidate-default','H':'hsrp'
     }
     current = None
+    current_entry = None        # the code-line entry that following indented 'via' continuation line(s) belong to
+    current_nxos = False        # inside an NX-OS '<prefix>, ubest/mbest:' block (source/next-hop on the *via lines)
     for raw in output.splitlines():
         line = raw.rstrip()
         s = line.strip()
@@ -108,6 +151,32 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
             entry = {'prefix': prefix, 'code': code, 'source': code_map.get(code, code.lower()), 'next_hop': nh, 'out_intf': out_intf, 'raw': s}
             routes[prefix]['entries'].append(entry)
             current = prefix
+            current_entry = entry
+            current_nxos = False
+            continue
+        # NX-OS 'show ip route' prefix line: "<prefix>, ubest/mbest: U/M[, attached]" -- the prefix begins with a
+        # DIGIT (no protocol code); source/next-hop are on the following indented '*via ...' line(s). Without this
+        # the IOS-only code-letter regex above matched NOTHING and an entire real Nexus RIB parsed to zero routes.
+        mnx = re.match(r"^(\d+\.\d+\.\d+\.\d+/\d+),\s*ubest/mbest\b", s, re.IGNORECASE)
+        if mnx:
+            prefix = mnx.group(1)
+            routes.setdefault(prefix, {'entries': []})
+            current, current_entry, current_nxos = prefix, None, True
+            continue
+        if current and current_nxos:
+            # '*via 10.0.10.3, Vlan10, [AD/metric], age, <source>': next-hop after via, the interface is the text
+            # field before [AD/metric], the source is the LAST comma-field. One entry per via line (ECMP).
+            mvia = re.match(r"\*?via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
+            if mvia:
+                parts = [p.strip() for p in s.split(',')]
+                out_intf = ''
+                for p in parts[1:-1]:
+                    if re.match(r"^[A-Za-z]", p) and not p.startswith('['):
+                        out_intf = normalize_ifname(p)
+                        break
+                routes[current]['entries'].append({
+                    'prefix': current, 'code': '', 'source': _nxos_route_source(parts[-1] if parts else ''),
+                    'next_hop': mvia.group(1), 'out_intf': out_intf, 'raw': s})
             continue
         if current:
             m2 = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
@@ -117,8 +186,1936 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                 out_intf = ''
                 if mint and not re.match(r"^\d+\.\d+\.\d+\.\d+$", mint.group(1)):
                     out_intf = normalize_ifname(mint.group(1))
-                routes[current]['entries'].append({'prefix': current, 'code': '', 'source': '', 'next_hop': nh, 'out_intf': out_intf, 'raw': s})
+                # Cisco prints the protocol code ONCE, on the prefix line; a 'via' that wrapped onto its own
+                # (indented) line therefore INHERITS that code/source. Fill the still-next-hop-less code-line
+                # entry in place; any further via line for the same prefix is an ECMP sibling that ALSO inherits
+                # the source -- never emit a sourceless sibling row (which split one route into two, losing the
+                # source<->next-hop pairing for every snap['routes'] consumer incl. the RIB->FIB tracer).
+                if current_entry is not None and not current_entry['next_hop'] \
+                        and current_entry['source'] not in ('connected', 'local'):
+                    current_entry['next_hop'] = nh
+                    if out_intf:
+                        current_entry['out_intf'] = out_intf
+                    current_entry['raw'] = (str(current_entry.get('raw', '')) + ' ' + s).strip()
+                else:
+                    inh_code = current_entry['code'] if current_entry is not None else ''
+                    inh_source = current_entry['source'] if current_entry is not None else ''
+                    routes[current]['entries'].append({'prefix': current, 'code': inh_code, 'source': inh_source,
+                                                       'next_hop': nh, 'out_intf': out_intf, 'raw': s})
     return routes
+
+def parse_copp_drops(output: str) -> list:
+    """'show policy-map interface control-plane' (NX-OS) / 'show policy-map control-plane' (IOS / IOS-XE)
+    -> [{class, conformed, exceeded, violated, dropped, drops}] per CoPP class. `drops` = the total
+    control-plane traffic DISCARDED by the policer for that class (exceeded + violated + dropped). A class
+    with drops > 0 means the box is actively policing/dropping punted control-plane traffic -- a mistuned
+    policer or a control-plane flood/CPU-pressure event (protocol packets can be silently starved).
+    Counters are PACKETS on IOS/IOS-XE and BYTES on NX-OS (module blocks summed per class); the firing
+    condition (drops > 0) is platform-agnostic. [] when no CoPP policy is applied. Tolerant; never raises."""
+    out: list = []
+    cur = None
+
+    def _flush():
+        if cur is not None:
+            cur["drops"] = cur["exceeded"] + cur["violated"] + cur["dropped"]
+            out.append(cur)
+
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        h = re.match(r"^[Cc]lass-?map:?\s+(\S+)\s*\(match-", s)
+        if h:
+            _flush()
+            cur = {"class": h.group(1), "conformed": 0, "exceeded": 0, "violated": 0, "dropped": 0, "drops": 0}
+            continue
+        if cur is None:
+            continue
+        if re.match(r"^police\b", s, re.IGNORECASE):
+            continue
+        # Scan ANYWHERE in the line (not just line-start) and allow multiple counters per line, so the NX-OS
+        # one-line 'module N : transmitted X bytes; dropped Y bytes;' form (counter mid-line) is captured -- not
+        # only the split-line NX-OS / classic IOS-XE forms. ('transmitted' is intentionally not summed.)
+        for kw, num in re.findall(r"\b(conformed|exceeded|violated|dropped)\s+(\d+)\s+(?:packets|bytes)\b", s, re.IGNORECASE):
+            cur[kw.lower()] += int(num)
+    _flush()
+    return out
+
+
+# --- PIM-SM control-plane (RP mapping + neighbor adjacency) ------------------ #
+# These read 'show ip pim rp mapping' and 'show ip pim neighbor' (IOS / IOS-XE /
+# NX-OS). The pair powers the multicast-resilience detector: PIM sparse-mode that
+# is *running* (>=1 neighbor) but has learned NO RP means ASM (*,G) shared trees
+# cannot be built -- multicast forwarding is broken (RFC 7761). SSM (232.0.0.0/8)
+# needs no RP, so an SSM-only domain is NOT a finding. Tolerant: empty/absent -> {}/[].
+_PIM_RP_LINE_RE = re.compile(r"\bRP[:\s]+(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE)
+_PIM_GROUP_RE = re.compile(r"(?:Group\(s\)|Group ranges?)[:\s]+(\d+\.\d+\.\d+\.\d+/\d+)", re.IGNORECASE)
+_PIM_INFOSRC_RE = re.compile(r"Info source:\s*(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE)
+
+
+def parse_pim_rp_mapping(output: str) -> dict:
+    """'show ip pim rp mapping' (IOS/IOS-XE/NX-OS) -> a learned-RP summary:
+    {present, rp_count, rps:[{group, rp, source}], groups:[...], ssm_only}.
+
+    `present`  -- the command actually ran (header / any RP / any Group seen), so an
+                  empty {} unambiguously means 'not collected', never 'no RP'.
+    `rp_count` -- distinct RP unicast addresses learned (static + Auto-RP + BSR).
+    `ssm_only` -- True when the ONLY group range(s) mapped are inside SSM (232.0.0.0/8)
+                  and zero RPs are learned: SSM needs no RP, so this is HEALTHY, not broken.
+    {} when no PIM RP-mapping output (absent / Cisco error)."""
+    if not output or "rp" not in output.lower() and "group(s)" not in output.lower():
+        return {}
+    low = output.lower()
+    present = ("group-to-rp" in low or "group(s)" in low
+               or "rp-mapping" in low or "rp mapping" in low or "rp:" in low or "rp " in low)
+    if not present:
+        return {}
+    rps: List[dict] = []
+    groups: List[str] = []
+    seen_rp: set = set()
+    cur_group = ""
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        gms = _PIM_GROUP_RE.findall(s)                     # NX-OS may list multiple comma-separated ranges per line
+        if gms:
+            cur_group = gms[0]
+            for g in gms:
+                if g not in groups:
+                    groups.append(g)
+        rm = _PIM_RP_LINE_RE.search(s)
+        if rm:
+            rp = rm.group(1)
+            sm = _PIM_INFOSRC_RE.search(s)
+            grp = cur_group
+            inline_g = _PIM_GROUP_RE.search(s)
+            if inline_g:
+                grp = inline_g.group(1)
+            rps.append({"group": grp, "rp": rp, "source": (sm.group(1) if sm else "")})
+            seen_rp.add(rp)
+            continue
+        ism = _PIM_INFOSRC_RE.search(s)
+        if ism and rps and not rps[-1]["source"]:
+            rps[-1]["source"] = ism.group(1)
+
+    def _is_ssm(cidr: str) -> bool:
+        try:
+            return cidr.split(".")[0] == "232"
+        except Exception:
+            return False
+    ssm_only = bool(groups) and all(_is_ssm(g) for g in groups) and not seen_rp
+    return {"present": True, "rp_count": len(seen_rp), "rps": rps,
+            "groups": groups, "ssm_only": ssm_only}
+
+
+# Cisco uptime token: H:M:S, OR the abbreviated week/day/hour/min/sec form (2d00h, 1w2d, 15w4d, 5y1w, 3d01h)
+# Cisco prints for any uptime >= ~24h. Anchoring the PIM-neighbour row to ONLY H:M:S dropped every steady-state
+# neighbour (the normal production-core state), blinding the PIM-running signal.
+_PIM_UPTIME = re.compile(r"^(?:\d+:\d+:\d+|\d+[smhdwy](?:\d+[smhdwy]){0,2})$")
+
+
+def parse_pim_neighbors(output: str) -> List[dict]:
+    """'show ip pim neighbor' (IOS/IOS-XE/NX-OS) -> [{neighbor, interface, uptime}].
+    [] when none (no adjacencies) or absent. The mode-legend / header / 'VRF' banner
+    lines are skipped. Interfaces are normalised to the engine's short canonical form."""
+    out: List[dict] = []
+    if not output:
+        return out
+    for raw in output.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if (low.startswith(("neighbor", "address", "mode:", "pim neighbor", "interface"))
+                or "designated router" in low or "dr priority" in low
+                or low.startswith(("b -", "p -", "s -", "g -", "l -", "n -"))):
+            continue
+        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\S+)\s+(\S+)", s)
+        # validate the BASE interface so a PIM neighbor on an L3 SUBinterface ('Gi0/0.10') is not dropped -- a
+        # running PIM domain otherwise read as healthy (audit-2 #7); the full subinterface name is preserved.
+        if m and is_valid_iface(m.group(2).split(".")[0]):
+            uptime = m.group(3).split("/")[0]        # IOS combines 'Uptime/Expires' in one token; NX-OS is bare
+            if _PIM_UPTIME.match(uptime):            # H:M:S OR the abbreviated w/d/h form (2d00h / 1w2d / 15w4d)
+                out.append({"neighbor": m.group(1),
+                            "interface": normalize_ifname(m.group(2)),
+                            "uptime": uptime})
+    return out
+
+
+def parse_ipv6_raguard_policy(output: str) -> list:
+    """'show ipv6 nd raguard policy' (IOS / IOS-XE / NX-OS IPv6 first-hop security) ->
+    [{policy, device_role, trusted, targets:[{name, type}]}]. RA-Guard blocks rogue / spoofed Router
+    Advertisements at the L2 access edge -- without it a single bogus RA hijacks the default gateway for the
+    whole segment (RFC 6104 / RFC 4861 gateway-hijack -> MITM/DoS). [] when the device runs no RA-Guard (or
+    the command is unsupported). Tolerant; never raises. normalize_ifname canonicalises PORT targets."""
+    out: list = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        m = re.match(r"^(?:RA guard )?Policy\s+(\S+)\s+configuration\s*:?\s*$", s, re.IGNORECASE)
+        if m:
+            cur = {"policy": m.group(1), "device_role": "", "trusted": False, "targets": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"^device-role\s+(\S+)", s, re.IGNORECASE)
+        if m:
+            cur["device_role"] = m.group(1).lower(); continue
+        if re.match(r"^trusted-port\b", s, re.IGNORECASE):
+            cur["trusted"] = True; continue
+        mt = re.match(r"^(\S+(?:\s+\d[\d,\- ]*)?)\s+(PORT|VLAN)\s+(\S+)\s+RA guard\b", s, re.IGNORECASE)
+        if mt:
+            ttype = mt.group(2).upper()
+            tname = mt.group(1).strip()
+            name = normalize_ifname(tname) if ttype == "PORT" else tname
+            owner = next((p for p in out if p["policy"] == mt.group(3)), cur)
+            owner["targets"].append({"name": name, "type": ttype})
+    return out
+
+
+def parse_ipv6_dhcp_guard_policy(output: str) -> list:
+    """'show ipv6 dhcp guard policy' (IPv6 first-hop security) -> [{policy, device_role, targets:[{name,type}]}].
+    DHCPv6-Guard blocks DHCPv6 reply/advertise messages from unauthorised servers/relays at the access edge
+    (rogue-DHCPv6 -> address theft / MITM). [] when no DHCPv6-Guard. Tolerant; never raises."""
+    out: list = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        m = re.match(r"^Dhcp guard policy\s*:?\s*(\S+)", s, re.IGNORECASE)
+        if m:
+            cur = {"policy": m.group(1), "device_role": "", "targets": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"^Device Role\s*:?\s*(?:dhcp\s+)?(\S+)", s, re.IGNORECASE)
+        if m:
+            cur["device_role"] = m.group(1).lower(); continue
+        m = re.match(r"^Target\s*:?\s*(.+)$", s, re.IGNORECASE)
+        if m:
+            rest = m.group(1).strip()
+            vlans = re.findall(r"vlan\s+(\d+)", rest, re.IGNORECASE)
+            if vlans:
+                for v in vlans:
+                    cur["targets"].append({"name": v, "type": "VLAN"})
+            else:
+                for tok in rest.split():
+                    cur["targets"].append({"name": normalize_ifname(tok), "type": "PORT"})
+    return out
+
+
+def parse_ntp_status(output: str) -> Dict[str, object]:
+    """Clock-synchronization STATE from 'show ntp status' (IOS/IOS-XE) OR 'show ntp peer-status' (NX-OS) ->
+    {synchronized: True|False|None, stratum: int|None, reference: str, source: str}. The OPERATIONAL complement
+    to the config-only `no-ntp` CIS check: a device can have NTP configured yet be UNSYNCHRONIZED (stratum 16).
+
+    IOS/IOS-XE: 'Clock is synchronized, stratum 7, reference is 10.0.0.10' (first line authoritative).
+    NX-OS: 'show ntp status' has no sync line, so it is derived from 'show ntp peer-status' -- a '*'-prefixed
+    row is the peer selected for sync; its 'st' column is the system stratum (16 = none).
+
+    Coverage-honest: returns {} when there is NO NTP output at all (absence is NOT unsynchronized). synchronized
+    stays None when neither shape is present, so a device is never inferred unsynced from silence. Never raises."""
+    text = output or ""
+    if not text.strip():
+        return {}
+    res: Dict[str, object] = {"synchronized": None, "stratum": None, "reference": "", "source": ""}
+
+    m = re.search(r"Clock is (un)?synchroni[sz]ed", text, re.IGNORECASE)
+    if m:
+        res["synchronized"] = (m.group(1) is None)
+        res["source"] = "ios-status"
+        ms = re.search(r"\bstratum\s+(\d+)", text, re.IGNORECASE)
+        if ms:
+            res["stratum"] = int(ms.group(1))
+        mr = re.search(r"reference is\s+(\S+)", text, re.IGNORECASE)
+        if mr:
+            res["reference"] = mr.group(1).rstrip(",")
+        return res
+
+    saw_table = False
+    for raw in text.splitlines():
+        s = raw.strip()
+        # The leading sync-selection symbol is OPTIONAL: a genuinely-unsynchronized peer (init/unreachable,
+        # stratum 16) carries NO symbol -- its row is space-prefixed, and `.strip()` above removes that space,
+        # leaving the IP at column 0. Requiring a mandatory '[*+=-]' here made the whole table unrecognised on
+        # such a device, so a configured-but-unsynced NX-OS clock read as 'absent' (false-health). The sync
+        # verdict keys on sym=='*' below, never on the row merely being present.
+        pm = re.match(r"^([*+=-]?)\s*(\d+\.\d+\.\d+\.\d+)\s+(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:.]+)\s+(\d+)\b", s)
+        if not pm:
+            continue
+        saw_table = True
+        sym, remote, st = pm.group(1), pm.group(2), int(pm.group(3))
+        if sym == "*":
+            res["synchronized"] = True
+            res["stratum"] = st
+            res["reference"] = remote
+            res["source"] = "nxos-peer-status"
+    if saw_table:
+        res["source"] = res["source"] or "nxos-peer-status"
+        if res["synchronized"] is None:
+            res["synchronized"] = False
+            res["stratum"] = 16
+        return res
+
+    return res if (res["synchronized"] is not None or res["stratum"] is not None) else {}
+
+
+def parse_port_security_detail(output: str, default_ifname: Optional[str] = None) -> Dict[str, dict]:
+    """Per-interface 'show port-security interface [<if>]' DETAIL -> {ifname: {enabled, port_status,
+    violation_mode, violation_count, last_src, last_vlan}}. The summary parser (parse_port_security)
+    has NO port-status column, so it cannot tell an err-disabled (Secure-shutdown) port from a healthy one.
+    A shutdown-mode violation err-disables the port (Port Status -> 'Secure-shutdown'), stopping ALL traffic
+    incl. authorized devices, whereas 'restrict'/'protect' keep the port up (Secure-up) and merely drop+count
+    -- so only Secure-shutdown is a live outage, not a raw nonzero counter. Tolerant: {} on empty / non-detail
+    input; never raises. port_status is lower-cased canonical ('secure-shutdown', 'secure-up', 'secure-down').
+    `default_ifname` keys a HEADER-LESS block: the NX-OS 'show port-security interface ethernet 1/1' form carries
+    the interface in the COMMAND, not the body (the body fields are identical to IOS), so a caller that knows the
+    interface (from the per-interface command/filename) can pass it; without it a header-less block stays {}."""
+    res: Dict[str, dict] = {}
+    cur: Optional[str] = None
+    pend: Optional[str] = None
+    _dflt = normalize_ifname(default_ifname) if default_ifname else None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        hm = re.match(r"^(?:Secure\s+Port|Port|Interface)\s*[:=]\s*(\S+)\s*$", s, re.IGNORECASE)
+        if hm and is_valid_iface(hm.group(1)):
+            pend = normalize_ifname(hm.group(1)); continue
+        bare = re.match(r"^(\S+)$", s)
+        if bare and is_valid_iface(bare.group(1)) and PHYSICAL_IFACE_RE.match(normalize_ifname(bare.group(1))):
+            pend = normalize_ifname(bare.group(1)); continue
+        m = re.match(r"^Port\s+Security\s*[:=]\s*(\w+)", s, re.IGNORECASE)
+        if m:
+            cur = pend or cur or _dflt   # header-less NX-OS block keys under the caller-supplied interface
+            pend = None
+            if cur is None:
+                continue
+            res.setdefault(cur, {"enabled": False, "port_status": "", "violation_mode": "",
+                                 "violation_count": 0, "last_src": "", "last_vlan": ""})
+            res[cur]["enabled"] = m.group(1).strip().lower() == "enabled"
+            continue
+        if cur is None or cur not in res:
+            continue
+        r = res[cur]
+        m = re.match(r"^Port\s+Status\s*[:=]\s*(\S+)", s, re.IGNORECASE)
+        if m: r["port_status"] = m.group(1).strip().lower(); continue
+        m = re.match(r"^Violation\s+Mode\s*[:=]\s*(\w+)", s, re.IGNORECASE)
+        if m: r["violation_mode"] = m.group(1).strip().capitalize(); continue
+        m = re.match(r"^Security\s+Violation\s+Count\s*[:=]\s*(\d+)", s, re.IGNORECASE)
+        if m: r["violation_count"] = int(m.group(1)); continue
+        m = re.match(r"^Last\s+Source\s+Address(?::Vlan)?\s*[:=]\s*([0-9a-fA-F.:]+?)(?::(\d+))?\s*$", s, re.IGNORECASE)
+        if m:
+            r["last_src"] = m.group(1)
+            if m.group(2): r["last_vlan"] = m.group(2)
+            continue
+    return res
+
+
+_STORM_TYPE_WORD = {"B": "broadcast", "M": "multicast", "U": "unicast",
+                    "BCAST": "broadcast", "MCAST": "multicast", "UCAST": "unicast",
+                    "BROADCAST": "broadcast", "MULTICAST": "multicast", "UNICAST": "unicast"}
+
+
+def parse_storm_control(output: str) -> list:
+    """'show storm-control' -> [{interface, traffic, filter_state, upper, lower, current, action, configured}].
+    The per-traffic ACTION decides what happens when the storm crosses the rising threshold -- 'Shutdown'
+    err-disables the port, 'Trap' raises an SNMP notification, and 'None' SILENTLY drops the excess with no
+    operator visibility. The senior gap (-> _d_storm_control_action) is a configured rule whose action is None.
+    `configured` is True when a real Upper threshold is present (the rule exists), so a port simply ABSENT from
+    the output is never flagged. Tolerant of the modern Action+Type form and the older no-Action form (action
+    ''). [] on empty / non-storm-control input; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s or s.lower().startswith(("key:", "interface", "---")):
+            continue
+        toks = s.split()
+        if len(toks) < 2 or not is_valid_iface(toks[0]):
+            continue
+        ifname = normalize_ifname(toks[0])
+        rest = toks[1:]
+        traffic = ""
+        if rest and rest[-1].upper() in _STORM_TYPE_WORD and len(rest[-1]) == 1:
+            traffic = _STORM_TYPE_WORD[rest.pop().upper()]
+        if not traffic and rest and rest[0].upper() in _STORM_TYPE_WORD:
+            traffic = _STORM_TYPE_WORD[rest.pop(0).upper()]
+        action = ""
+        if rest and rest[-1].lower() in ("none", "trap", "shutdown"):
+            action = rest.pop().capitalize()
+        nums = [t for t in rest if re.match(r"^[\d.]+[a-z%]*$", t, re.IGNORECASE)]
+        upper = nums[0] if len(nums) >= 1 else ""
+        lower = nums[1] if len(nums) >= 2 else ""
+        current = nums[2] if len(nums) >= 3 else (nums[-1] if nums else "")
+        state_words = []
+        for t in rest:
+            if re.match(r"^[\d.]+[a-z%]*$", t, re.IGNORECASE):
+                break
+            state_words.append(t)
+        out.append({"interface": ifname, "traffic": traffic,
+                    "filter_state": " ".join(state_words), "upper": upper, "lower": lower,
+                    "current": current, "action": action, "configured": bool(upper)})
+    return out
+
+
+# 'show policy-map interface' RUNTIME statistics regexes (egress queue/policer drops). Validated against
+# Cisco's genieparser golden corpus + IOS-XE/NX-OS QoS guides. The drops line is identical for bandwidth and
+# priority (LLQ) classes on modern IOS-XE; priority/policer context is tracked by the line-driven state machine.
+_PM_IFACE_RE   = re.compile(r"^([A-Za-z][\w./-]*\d[\w./-]*)\s*$")
+_PM_SVCPOL_RE  = re.compile(r"^Service-policy\s+(?:\((?P<kind>[^)]*)\)\s+)?(?P<dir>input|output)\s*:\s*(?P<name>\S+)",
+                            re.IGNORECASE)
+_PM_CLASS_RE   = re.compile(r"^Class-map(?:\s+\((?P<kind>[^)]*)\))?\s*:\s*(?P<name>\S+)", re.IGNORECASE)
+_PM_QDROPS_RE  = re.compile(r"\(queue depth/total drops/no-buffer drops\)\s+(\d+)/(\d+)/(\d+)", re.IGNORECASE)
+_PM_PRIDROPS_RE = re.compile(r"\(total drops/bytes drops\)\s+(\d+)/(\d+)", re.IGNORECASE)
+_PM_OUTPUT_RE  = re.compile(r"\(pkts output/bytes output\)\s+(\d+)/(\d+)", re.IGNORECASE)
+_PM_PRIORITY_RE = re.compile(r"^(?:priority(?:\s+level\s+\d+)?\b|Strict Priority|Priority:)", re.IGNORECASE)
+_PM_BWEXCEED_RE = re.compile(r"b/w\s+exceed\s+drops:\s*(\d+)", re.IGNORECASE)   # IOS 15.x+ LLQ priority-class drops
+_PM_POLICE_RE  = re.compile(r"^police\b", re.IGNORECASE)
+_PM_EXCEEDED_RE = re.compile(r"^exceeded\s+(\d+)\s+packets,\s+(\d+)\s+bytes", re.IGNORECASE)
+_PM_VIOLATED_RE = re.compile(r"^violated\s+(\d+)\s+packets,\s+(\d+)\s+bytes", re.IGNORECASE)
+_PM_NX_CLASS_RE = re.compile(r"^Class-map\s+\(queuing\)\s*:\s*(?P<name>\S+)", re.IGNORECASE)
+_PM_NX_DROP_RE = re.compile(r"^queue\s+dropped\s+pkts\s*:\s*(\d+)", re.IGNORECASE)
+_PM_NX_DROPB_RE = re.compile(r"^queue\s+dropped\s+bytes\s*:\s*(\d+)", re.IGNORECASE)
+_PM_NX_TX_RE   = re.compile(r"^queue\s+transmit\s+pkts\s*:\s*(\d+)", re.IGNORECASE)
+
+
+def parse_policymap_drops(output: str) -> list:
+    """'show policy-map interface' RUNTIME stats -> one record per EGRESS class/queue that has data:
+    [{interface, policy, class, priority(bool), drop_pkts, drop_bytes, output_pkts, police_drop_pkts,
+    police_drop_bytes}]. The QoS-RUNTIME complement to parse_qos_config (which only proves a policy EXISTS):
+    a class with significant egress drops means the queue/policer is shedding the very traffic the intent
+    classified. Only the OUTPUT (egress) direction is recorded. Both IOS/IOS-XE and NX-OS queuing dialects are
+    parsed. Tolerant: [] on empty / non-policy-map input; never raises."""
+    out: list = []
+    iface = ""
+    egress = False
+    policy = ""
+    cur: Optional[dict] = None
+    in_police = False
+    nx_queuing = False                  # the current service-policy is a NX-OS '(queuing)' policy
+
+    def _flush():
+        # NX-OS queuing drops are real on INGRESS too (VOQ), so record a NX-OS queuing class regardless of
+        # direction; an IOS-XE non-queuing input policy stays egress-only (egress=False, nx_queuing=False -> dropped).
+        if cur is not None and (egress or nx_queuing) and iface:
+            out.append(cur)
+
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        mi = _PM_IFACE_RE.match(s)
+        if mi and not s.lower().startswith(("class-map", "service-policy", "police", "queueing",
+                                            "queue", "match", "priority", "bandwidth", "exceeded",
+                                            "conformed", "violated")):
+            _flush(); cur = None; in_police = False; nx_queuing = False
+            iface = normalize_ifname(mi.group(1)); egress = False; policy = ""
+            continue
+        msp = _PM_SVCPOL_RE.match(s)
+        if msp:
+            _flush(); cur = None; in_police = False
+            egress = msp.group("dir").lower() == "output"
+            nx_queuing = "queuing" in (msp.group("kind") or "").lower()
+            policy = msp.group("name")
+            continue
+        mnc = _PM_NX_CLASS_RE.match(s)
+        mc = mnc or _PM_CLASS_RE.match(s)
+        if mc:
+            _flush(); in_police = False
+            cur = {"interface": iface, "policy": policy, "class": mc.group("name"),
+                   "priority": False, "drop_pkts": 0, "drop_bytes": 0, "output_pkts": 0,
+                   "police_drop_pkts": 0, "police_drop_bytes": 0}
+            continue
+        if cur is None:
+            continue
+        m = _PM_BWEXCEED_RE.search(s)        # IOS 15.x+ LLQ drop counter on the 'Priority: ... b/w exceed drops: N'
+        if m:                                 # line; the _PM_PRIORITY_RE continue below would otherwise SKIP it
+            cur["priority"] = True
+            cur["drop_pkts"] = max(cur["drop_pkts"], int(m.group(1)))
+            continue
+        if _PM_PRIORITY_RE.match(s):
+            cur["priority"] = True
+            continue
+        if _PM_POLICE_RE.match(s):
+            in_police = True
+            continue
+        m = _PM_QDROPS_RE.search(s)
+        if m:
+            # max(), not assign: a later aggregate 'queue stats for all priority classes' 0/0/0 line must not
+            # clobber a real 'b/w exceed drops' value already captured for an LLQ class.
+            cur["drop_pkts"] = max(cur["drop_pkts"], int(m.group(2))); continue
+        m = _PM_PRIDROPS_RE.search(s)
+        if m:
+            cur["priority"] = True
+            cur["drop_pkts"] = int(m.group(1)); cur["drop_bytes"] = int(m.group(2)); continue
+        m = _PM_OUTPUT_RE.search(s)
+        if m:
+            cur["output_pkts"] = int(m.group(1)); continue
+        if in_police:
+            m = _PM_EXCEEDED_RE.match(s)
+            if m:
+                cur["police_drop_pkts"] += int(m.group(1)); cur["police_drop_bytes"] += int(m.group(2)); continue
+            m = _PM_VIOLATED_RE.match(s)
+            if m:
+                cur["police_drop_pkts"] += int(m.group(1)); cur["police_drop_bytes"] += int(m.group(2)); continue
+        m = _PM_NX_DROP_RE.match(s)
+        if m:
+            cur["drop_pkts"] = int(m.group(1)); continue
+        m = _PM_NX_DROPB_RE.match(s)
+        if m:
+            cur["drop_bytes"] = int(m.group(1)); continue
+        m = _PM_NX_TX_RE.match(s)
+        if m:
+            cur["output_pkts"] = int(m.group(1)); continue
+    _flush()
+    return out
+
+
+# CDP advertises capabilities as FULL WORDS on the Platform line ("Capabilities: Router Switch IGMP");
+# LLDP advertises them as SINGLE LETTERS in "Enabled Capabilities: B,R". Capturing the raw capability string
+# is what lets the shadow-infra detector tell an undocumented DISTRIBUTION SWITCH from a CDP-speaking phone or
+# AP. CDP codes: R Router, T Trans-Bridge, B Source-Route-Bridge, S Switch, H Host, I IGMP, r Repeater, P Phone.
+# LLDP codes: R Router, B Bridge, T Telephone, C DOCSIS, W WLAN-AP, P Repeater, S Station, O Other.
+def parse_neighbors_detail(output: str, proto: str = "cdp") -> List[Dict[str, str]]:
+    """'show cdp neighbors detail' (proto='cdp') / 'show lldp neighbors detail' (proto='lldp') ->
+    [{device_id, platform, capabilities, mgmt_ip, local_intf, remote_port, proto}] -- ONE record per
+    discovered neighbour, KEEPING the capability codes the topology-link parsers discard. [] on empty /
+    unrecognised input; tolerant, never raises. Reuses the already-collected CDP/LLDP detail (no new command)."""
+    out: List[Dict[str, str]] = []
+    if not output:
+        return out
+    if (proto or "").lower() == "lldp":
+        # IOS/IOS-XE blocks begin with 'Local Intf:'; NX-OS has none and begins each block with 'Chassis id:'
+        # (its local interface is on a 'Local Port id:' line). Split on whichever delimits THIS output so an
+        # NX-OS capture is not collapsed into one Frankenstein record spanning every neighbour.
+        iosxe = bool(re.search(r"(?im)^\s*Local Intf:", output))
+        blocks = (re.split(r"\n\s*Local Intf:\s*", "\n" + output) if iosxe
+                  else re.split(r"(?im)^(?=[ \t]*Chassis id:)", output))
+        for ch in blocks:
+            ch = ch.strip()
+            if not ch:
+                continue
+            rec = {"device_id": "", "platform": "", "capabilities": "", "mgmt_ip": "",
+                   "local_intf": "", "remote_port": "", "proto": "lldp"}
+            # IOS-XE: the split consumed 'Local Intf:', so the block's first token IS the local interface.
+            if iosxe:
+                rec["local_intf"] = normalize_ifname(ch.splitlines()[0].strip().split()[0])
+            sys_caps = ""
+            for line in ch.splitlines():
+                ls = line.strip()
+                m = re.match(r"^Local Port id:\s*(.+)$", ls, re.IGNORECASE)   # NX-OS local interface (by LABEL)
+                if m and not rec["local_intf"]:
+                    rec["local_intf"] = normalize_ifname(m.group(1).strip())
+                m = re.match(r"^System Name:\s*(.+)$", ls, re.IGNORECASE)
+                if m:
+                    rec["device_id"] = m.group(1).strip()
+                m = re.match(r"^Port id:\s*(.+)$", ls, re.IGNORECASE)         # remote port ('Local Port id:' excluded)
+                if m and not rec["remote_port"]:
+                    rec["remote_port"] = normalize_ifname(m.group(1).strip())
+                m = re.match(r"^System Description:\s*(.+)$", ls, re.IGNORECASE)
+                if m and not rec["platform"]:
+                    rec["platform"] = m.group(1).strip()
+                m = re.match(r"^Enabled Capabilities:\s*(.+)$", ls, re.IGNORECASE)
+                if m:
+                    rec["capabilities"] = m.group(1).strip()
+                m = re.match(r"^System Capabilities:\s*(.+)$", ls, re.IGNORECASE)
+                if m:
+                    sys_caps = m.group(1).strip()
+                # mgmt IP: NX-OS 'Management Address: x'; IOS-XE 'Management Addresses:' then an indented 'IP: x'
+                m = re.search(r"\b(\d+\.\d+\.\d+\.\d+)\b", ls)
+                if m and not rec["mgmt_ip"] and ("management" in ls.lower() or re.match(r"^IP:\s", ls, re.IGNORECASE)):
+                    rec["mgmt_ip"] = m.group(1)
+            if not rec["capabilities"]:
+                rec["capabilities"] = sys_caps
+            caps = rec["capabilities"].upper().replace("N/A", "").strip()
+            if rec["local_intf"] and (rec["device_id"] or caps):
+                out.append(rec)
+        return out
+    for sec in re.split(r"-{5,}", output):
+        sec = sec.strip()
+        if not sec:
+            continue
+        rec = {"device_id": "", "platform": "", "capabilities": "", "mgmt_ip": "",
+               "local_intf": "", "remote_port": "", "proto": "cdp"}
+        for line in sec.splitlines():
+            ls = line.strip()
+            if ls.lower().startswith("device id:"):
+                rec["device_id"] = ls.split(":", 1)[1].strip()
+            pm = re.match(r"^Platform:\s*(.*)$", ls, re.IGNORECASE)
+            if pm:
+                body = pm.group(1)
+                cm = re.search(r"Capabilities:\s*(.+)$", body, re.IGNORECASE)
+                if cm:
+                    rec["capabilities"] = cm.group(1).strip()
+                rec["platform"] = re.split(r",\s*Capabilities", body, 1)[0].strip()
+            ipm = re.search(r"\b(?:ip address|ipv4 address):\s*(\d+\.\d+\.\d+\.\d+)\b", ls, re.IGNORECASE)
+            if ipm and not rec["mgmt_ip"]:
+                rec["mgmt_ip"] = ipm.group(1)
+            if ls.lower().startswith("interface:"):
+                mv = re.search(r"Interface:\s*([^,]+)", ls, re.IGNORECASE)
+                if mv:
+                    rec["local_intf"] = normalize_ifname(mv.group(1).strip())
+                pp = re.search(r"Port ID\s*\(outgoing port\):\s*(\S+)", ls, re.IGNORECASE)
+                if pp:
+                    rec["remote_port"] = normalize_ifname(pp.group(1).strip())
+        if rec["device_id"] or rec["capabilities"]:
+            out.append(rec)
+    return out
+
+
+def parse_nve_vni(output: str) -> list:
+    """'show nve vni' (NX-OS VXLAN) -> [{vni, mcast_group, state, mode, type}]. The L2 (VLAN<->VNI) and L3
+    (VRF<->L3VNI) bindings on this VTEP; State Up = the VNI is operational. A VNI not Up strands its VLAN/VRF
+    on the local VTEP (no overlay reachability for that segment). [] when no NVE. Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        # NX-OS: 'Interface VNI Multicast-group State Mode(CP/DP) Type(L2/L3) [BD/VRF]'
+        m = re.match(r"^\s*nve\d+\s+(\d+)\s+(\S+)\s+(\w+)\s+(\w+)\s+(L[23])\b", raw, re.IGNORECASE)
+        if m:
+            mc = m.group(2)
+            out.append({"vni": m.group(1), "mcast_group": "" if mc.lower() in ("n/a", "--", "unknown") else mc,
+                        "state": m.group(3).capitalize(), "mode": m.group(4).upper(), "type": m.group(5).upper()})
+            continue
+        # IOS-XE Catalyst 9000: 'Interface VNI Multicast-group State Mode(L2CP/L3CP) vlan vrf' -- Type is fused
+        # into the Mode token and the column after it is the VLAN/BD number (not an L2/L3 type token).
+        m2 = re.match(r"^\s*nve\d+\s+(\d+)\s+(\S+)\s+(\w+)\s+L([23])CP\b", raw, re.IGNORECASE)
+        if m2:
+            mc = m2.group(2)
+            out.append({"vni": m2.group(1), "mcast_group": "" if mc.lower() in ("n/a", "--", "unknown") else mc,
+                        "state": m2.group(3).capitalize(), "mode": "CP", "type": "L" + m2.group(4)})
+    return out
+
+
+def _parse_bgp_summary_rows(output: str) -> list:
+    """Shared parser for the standard BGP neighbor summary grid (address-family agnostic) that
+    'show bgp <afi> <safi> summary' prints identically for l2vpn evpn, vpnv4 unicast, ipv4 unicast, etc.:
+    'Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd' -> [{neighbor, as, state, prefixes}].
+    'state' is 'Established' when the final column is a prefix count, else the literal BGP state word
+    (Idle/Active/Connect/OpenSent/OpenConfirm). A wide Neighbor/AS (a 15-char IPv4, any IPv6 peer, or a
+    4-byte asdot AS) makes IOS/NX-OS WRAP the State/PfxRcd onto a continuation line; rows are stitched back
+    (head line + following numeric continuation) so a wrapped DOWN peer is never read as Established and IPv6
+    peers are not dropped. Tolerant; never raises."""
+    # a neighbor row STARTS with an IPv4 or IPv6 address as its first token (then optionally a %zone-id)
+    head = re.compile(r"^(\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)(?:%\S+)?(?:\s|$)")
+    out = []
+    cur = None
+
+    def _flush(toks):
+        if not toks or len(toks) < 10:        # the full grid is 10 columns; a header/partial fragment is dropped
+            return
+        last = toks[-1]
+        out.append({"neighbor": toks[0], "as": toks[2],
+                    "state": "Established" if last.isdigit() else last,
+                    "prefixes": int(last) if last.isdigit() else 0})
+
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if head.match(s):
+            _flush(cur)
+            cur = s.split()
+        elif cur is not None and len(cur) < 10 and re.match(r"^\d", s):
+            cur.extend(s.split())             # wrapped continuation: the numeric stats + State/PfxRcd
+    _flush(cur)
+    return out
+
+
+def parse_evpn_summary(output: str) -> list:
+    """'show bgp l2vpn evpn summary' -> [{neighbor, as, state, prefixes}]. The BGP-EVPN control plane that
+    distributes VXLAN MAC/IP (Type-2) and prefix (Type-5) routes between VTEPs; a neighbor not Established
+    means no overlay route exchange with that peer (the data plane can be Up while the control plane is
+    dark). State = 'Established' when the last column is a prefix count, else the BGP state word. []
+    when EVPN is not running. Tolerant; never raises."""
+    return _parse_bgp_summary_rows(output)
+
+
+def parse_bgp_vpnv4_summary(output: str) -> list:
+    """'show bgp vpnv4 unicast summary' (MPLS L3VPN PE) -> [{neighbor, as, state, prefixes}]. The MP-BGP
+    VPNv4 control plane carries per-VRF customer prefixes between PE routers; a neighbor not 'Established'
+    means no VPN routes are exchanged with that PE, so every VRF depending on it loses its remote sites
+    (the LDP/data plane can be Up while VPNv4 is dark). Same neighbor grid as the EVPN/IPv4 summaries.
+    Tolerant; never raises."""
+    return _parse_bgp_summary_rows(output)
+
+
+def parse_mpls_ldp_neighbors(output: str) -> list:
+    """'show mpls ldp neighbor' (IOS / IOS-XE) -> [{peer, label_space, state}] per LDP adjacency. LDP
+    distributes the transport labels for the MPLS underlay; the operational state is 'Oper'. Any other
+    state (Nonexistent, Initialized, OpenSent, OpenRec) means the session is not exchanging label bindings,
+    so LSPs through that peer -- and the L3VPN/L2VPN services riding them -- blackhole. [] when no MPLS/LDP
+    is configured. Tolerant; never raises."""
+    out = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        m = re.match(r"^Peer LDP Ident:\s*(\d+\.\d+\.\d+\.\d+):(\d+)", s, re.IGNORECASE)
+        if m:
+            if cur is not None:
+                out.append(cur)
+            cur = {"peer": m.group(1), "label_space": m.group(2), "state": ""}
+            continue
+        if cur is None:
+            continue
+        st = re.match(r"^State:\s*(\w+)", s, re.IGNORECASE)
+        if st:
+            cur["state"] = st.group(1)
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def parse_mpls_l2vpn_vc(output: str) -> list:
+    """'show mpls l2transport vc' (IOS / IOS-XE AToM/EoMPLS) -> [{local_intf, dest, vc_id, status}] per L2VPN
+    pseudowire. Status is UP (forwarding), DOWN (the pseudowire is signalled down -- the customer L2 circuit
+    is broken), or STANDBY (a healthy backup PW). The 'Local circuit' column contains spaces, so each data
+    row is parsed from the RIGHT (status, VC ID, dest IP) with the first token as the local interface; a row
+    whose dest is not an IPv4 address (header / separator) is skipped. [] when no L2VPN VC is configured.
+    Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s or re.match(r"^Local\s+intf", s, re.IGNORECASE):
+            continue
+        toks = s.split()
+        if len(toks) < 4:
+            continue
+        # Anchor on the VC ID = the rightmost all-digit token preceded by an IPv4 dest; everything to its right
+        # is the status, so a two-word 'ADMIN DOWN' state is captured WHOLE instead of dropping the row entirely.
+        vc_i = next((i for i in range(len(toks) - 1, 1, -1)
+                     if toks[i].isdigit() and re.match(r"^\d+\.\d+\.\d+\.\d+$", toks[i - 1])), -1)
+        if vc_i < 0 or vc_i >= len(toks) - 1:
+            continue
+        out.append({"local_intf": toks[0], "dest": toks[vc_i - 1],
+                    "vc_id": toks[vc_i], "status": " ".join(toks[vc_i + 1:])})
+    return out
+
+
+def parse_lisp_sessions(output: str) -> list:
+    """'show lisp session' (IOS-XE SD-Access fabric) -> [{vrf, total, established, peers:[{peer, port, state}]}]
+    per VRF block. Each fabric node opens a LISP reliable-transport (TCP) session to every control-plane node
+    (map-server / map-resolver, port 4342); registrations and EID-to-RLOC resolution ride those sessions. The
+    summary line 'Sessions for VRF <name>, total: N, established: M' is the device's OWN count of configured vs
+    established sessions, and each peer row is 'IP[:port] State Up/Down In/Out Users' with State Up or Down.
+    COVERAGE-HONESTY: a lone Down peer is NORMAL on a border that imports no routes or an edge with no endpoints
+    (nothing to register on that session) -- so the down-peer list is carried as raw evidence, NOT a verdict;
+    the detector keys off the summary counts (total>=1 & established==0 = every CP session down), never off a
+    single Down row. [] when no LISP session output is present. Tolerant; never raises."""
+    out = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        m = re.match(r"^Sessions\s+for\s+VRF\s+(\S+?),?\s+total:\s*(\d+),\s*established:\s*(\d+)",
+                     s, re.IGNORECASE)
+        if m:
+            cur = {"vrf": m.group(1), "total": int(m.group(2)),
+                   "established": int(m.group(3)), "peers": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        if re.match(r"^Peer\b", s, re.IGNORECASE):   # column header
+            continue
+        # data row: 'PEER[:port]  State  Up/Down  In/Out  Users' -- State is the 2nd column. PEER is IPv4 OR
+        # IPv6 (an IPv6 SD-Access underlay opens IPv6 RLOC sessions; the old v4-only pattern dropped them all).
+        pm = re.match(r"^(\S+)\s+([A-Za-z]\w*)\b", s)
+        if pm:
+            tok, st = pm.group(1), pm.group(2)
+            mb = re.match(r"^\[([0-9A-Fa-f:]+)\]:(\d+)$", tok)            # [IPv6]:port
+            m4 = re.match(r"^(\d+\.\d+\.\d+\.\d+)(?::(\d+))?$", tok)      # IPv4[:port]
+            if mb:
+                cur["peers"].append({"peer": mb.group(1), "port": mb.group(2), "state": st.capitalize()})
+            elif m4:
+                cur["peers"].append({"peer": m4.group(1), "port": m4.group(2) or "", "state": st.capitalize()})
+            elif ":" in tok and re.match(r"^[0-9A-Fa-f:]+$", tok):       # bare IPv6 (no port)
+                cur["peers"].append({"peer": tok, "port": "", "state": st.capitalize()})
+    return out
+
+
+def parse_cts_environment_data(output: str) -> dict:
+    """'show cts environment-data' (IOS-XE & NX-OS TrustSec) -> {} when CTS is not configured / absent,
+    else {state, last_status, sgt_count, server_count, lifetime}. The environment-data download is the
+    state machine that pulls the SGT->name table (and SGACL policy) from Cisco ISE; 'Current state =
+    COMPLETE' (with 'Last status = Successful') is the only fully-downloaded/valid state. Any other state
+    (START, WAITING_RESPONSE, WAITING_PAC, ...) means the SGT-to-policy data is stale or was never
+    downloaded, so group-based segmentation has no map to enforce (default-permit) -- the device is blind.
+
+    Read ONLY the env-data 'Current state' / 'Last status' lines and the size of the 'Security Group Name
+    Table'. The per-server 'Status = DEAD' line is deliberately IGNORED: a device can hold a COMPLETE,
+    cached environment-data set while its RADIUS/ISE servers later go DEAD (verified against Cisco docs /
+    field output), so server liveness is NOT an env-data-validity signal and must not drive this detector.
+    Tolerant: returns {} when no env-data block is present; never raises."""
+    text = output or ""
+    # Anchor on the env-data block header; a box with no CTS env-data prints neither this nor 'Current state'.
+    if not re.search(r"^\s*(?:CTS|TS)\s+Environment\s+Data\b", text, re.IGNORECASE | re.MULTILINE) \
+            and not re.search(r"^\s*Current state\s*[=:]", text, re.IGNORECASE | re.MULTILINE):
+        return {}
+    res = {"state": "", "last_status": "", "sgt_count": 0, "server_count": 0, "lifetime": None}
+    m = re.search(r"^\s*Current state\s*[=:]\s*(\S+)", text, re.IGNORECASE | re.MULTILINE)
+    if m:
+        st = m.group(1).strip().upper()
+        # IOS-XE prints 'COMPLETE' with '='; NX-OS prints the download-state ENUM with a ':' separator
+        # (CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE = the success/valid state, verified vs the DevNet NX-API CTS ref).
+        # Normalise the NX-OS success enum to COMPLETE so the COMPLETE-is-healthy detector does NOT false-fire
+        # on a fully-downloaded Nexus; any in-progress enum stays non-COMPLETE so it is still flagged.
+        res["state"] = "COMPLETE" if st in ("COMPLETE", "CTS_ENV_DNLD_ST_ENV_DOWNLOAD_DONE") else st
+    m = re.search(r"^\s*Last status\s*[=:]\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
+    if m:
+        res["last_status"] = m.group(1).strip()
+    m = re.search(r"Lifetime\s*=\s*(\d+)", text, re.IGNORECASE)
+    if m:
+        res["lifetime"] = int(m.group(1))
+    # SGT->name entries look like '0-07:Unknown' / '4-04:Employees' (tag '-' generation ':' name), one or
+    # more per line in the 'Security Group Name Table'. Count distinct leading SGT tags actually present.
+    _tbl = text.split("Security Group Name Table", 1)   # count only the policy SGT name table,
+    sgts = set(re.findall(r"(?:^|\s)(\d+)-[0-9a-fA-F]+:\S+", _tbl[1])) if len(_tbl) == 2 else set()
+    res["sgt_count"] = len(sgts)   # never the device's own Local Device SGT line
+    # RADIUS server lines: ' *Server: 10.10.10.1, port 1812, A-ID ...'. Count them (informational only).
+    res["server_count"] = len(re.findall(r"^\s*\*?Server:\s*\d+\.\d+\.\d+\.\d+", text, re.MULTILINE))
+    # A state line with no recognizable value is not a usable signal -> treat as absent.
+    if not res["state"]:
+        return {}
+    return res
+
+
+def parse_dmvpn_peers(output: str) -> list:
+    """'show dmvpn' (IOS / IOS-XE DMVPN mGRE/NHRP overlay) -> [{interface, nbma, tunnel_ip, state, attrb}]
+    per NHRP/tunnel peer entry. 'State' is the per-peer tunnel session state: UP is the ONLY fully-established
+    (healthy) state; NHRP (stuck resolving the next-hop), IKE (stuck in IPsec/IKE negotiation) and down each
+    mean that spoke/hub DMVPN tunnel is broken (no overlay forwarding to that peer). Each data row carries two
+    addresses (Peer NBMA Addr, Peer Tunnel Add) followed by State and the UpDn time (HH:MM:SS); the State token
+    is anchored to the immediately-following HH:MM:SS time, which lets the legend / column-header / dashed-
+    separator lines (none of which carry a HH:MM:SS time) be skipped. The leading '# Ent' count is optional
+    (continuation rows for multi-network peers omit it), so it is not required by the row regex; 'interface' is
+    carried from the most recent 'Interface: TunnelN' header. [] when the device runs no DMVPN ('show dmvpn'
+    absent / '% Incomplete command' / no peer rows). Tolerant; never raises."""
+    out = []
+    cur_if = ""
+    # Peer NBMA / Peer Tunnel are IPv4 (sample) or IPv6 NBMA on dual-stack; match either, then anchor State to
+    # the UpDn HH:MM:SS time so only real peer rows match.  Attrb (trailing letters) is optional / best-effort.
+    addr = r"[0-9A-Fa-f:.]+"
+    # UpDn Tm is HH:MM:SS (<24h) OR a Cisco compact uptime (1d05h / 3w0d / 48w0d / 2y34w) OR 'never'. Anchor
+    # State to it so legend / header / separator lines (which carry no such token) are skipped -- while an
+    # aged or never-up broken peer (the SINGLE most common real broken case) is NOT silently dropped.
+    updn = r"(?:\d{1,2}:\d{2}:\d{2}|\d+[ywd]\d+[ywdh]|\d+[ywdhms]|never)"
+    row = re.compile(
+        r"^\s*(?:\d+\s+)?(" + addr + r")\s+(" + addr + r")\s+"   # Peer NBMA Addr, Peer Tunnel Add
+        r"([A-Za-z]+)\s+"                                          # State (UP / NHRP / IKE / down)
+        + updn +                                                  # UpDn Tm (anchor)
+        r"(?:\s+([A-Za-z0-9]+))?")                                 # Attrb (optional)
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        h = re.match(r"^Interface:\s*(\S+?),", s, re.IGNORECASE)   # 'Interface: Tunnel1, IPv4 NHRP Details'
+        if h:
+            cur_if = h.group(1)
+            continue
+        m = row.match(s)
+        if not m:
+            continue
+        nbma, tun, state = m.group(1), m.group(2), m.group(3)
+        # Guard: at least one of the two address columns must look like a real NBMA/tunnel address (contain a
+        # '.' or ':'), so a stray two-word alpha line can never be mistaken for a peer row.
+        if "." not in (nbma + tun) and ":" not in (nbma + tun):
+            continue
+        out.append({"interface": cur_if, "nbma": nbma, "tunnel_ip": tun,
+                    "state": state, "attrb": (m.group(4) or "")})
+    return out
+
+
+def parse_crypto_sessions(output: str) -> list:
+    """'show crypto session' (IOS / IOS-XE site-to-site IPsec) -> [{interface, peer, status}] per crypto
+    session. A crypto session is the IKE + IPsec SA bundle to one peer; the operational health is the
+    'Session status:' field. UP-ACTIVE (passing data) / UP-IDLE (established, idle) / UP-NO-IKE (IPsec SAs
+    up, IKE re-keying) are all UP states -- the encrypted tunnel exists. DOWN and DOWN-NEGOTIATING mean the
+    IKE/IPsec SA is not established, so the tunnel is down and carries nothing. Each 'Interface:' opens a new
+    record; 'Peer:' (first token after the label, before any 'port') and 'Session status:' fill it. [] when
+    the device runs no IPsec / the command produced nothing. Tolerant; never raises."""
+    out = []
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        m = re.match(r"^Interface:\s*(\S+)", s, re.IGNORECASE)
+        if m:
+            if cur is not None:
+                out.append(cur)
+            cur = {"interface": m.group(1), "peer": "", "status": ""}
+            continue
+        if cur is None:
+            continue
+        st = re.match(r"^Session status:\s*(\S+)", s, re.IGNORECASE)
+        if st:
+            cur["status"] = st.group(1).upper()
+            continue
+        pr = re.match(r"^Peer:\s*(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
+        if pr and not cur["peer"]:
+            cur["peer"] = pr.group(1)
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+_BFD_STATE_WORDS = {"up", "down", "admindown", "init", "fail", "none", "np"}   # BFD session-state vocabulary
+
+
+def parse_bfd_neighbors(output: str) -> list:
+    """'show bfd neighbors' (IOS / IOS-XE / NX-OS) -> [{neighbor, local_disc, remote_disc, state, interface}]
+    per BFD session. BFD gives a client protocol (OSPF/BGP/EIGRP/HSRP/static) sub-second forwarding-path
+    failure detection; a session in the Up state is protecting its clients. A session in the Down state means
+    the fast-failover path is broken -- the client falls back to its native (multi-second) timers, so a link
+    failure no longer converges in milliseconds. AdminDown (operator-disabled) is captured but is NOT a
+    forwarding failure.
+
+    Two real on-the-wire layouts exist and BOTH are handled by anchoring on the header line and reading the
+    'State' column BY POSITION (never the FIRST Up/Down token, because the 'RH/RS' column is also literally
+    'Up'/'Down' and would otherwise be misread):
+      * IOS:            'NeighAddr  LD/RD  RH/RS  State  Int'
+      * IOS-XE / NX-OS: 'OurAddr  NeighAddr  LD/RD  RH/RS  Holdown(mult)  State  Int [Vrf  Type]'
+    NX-OS adds trailing Vrf/Type (SH/MH) columns and may leave Int blank for a multihop session. [] when the
+    device runs no BFD ('% BFD is not enabled' / no header / empty). Tolerant; never raises."""
+    lines = (output or "").splitlines()
+    hdr_idx = -1
+    cols = {}
+    for i, raw in enumerate(lines):
+        # The header is the line carrying both 'NeighAddr' and 'State' (case-insensitive).
+        if re.search(r"NeighAddr", raw, re.IGNORECASE) and re.search(r"\bState\b", raw, re.IGNORECASE):
+            cols = extract_fixed_cols(raw, [
+                ("OurAddr", "ouraddr"), ("NeighAddr", "neighaddr"), ("LD/RD", "ldrd"),
+                ("RH/RS", "rhrs"), ("Holdown", "holdown"), ("State", "state"),
+                ("Int", "interface"), ("Vrf", "vrf"), ("Type", "type"),
+            ])
+            hdr_idx = i
+            break
+    out = []
+    if hdr_idx < 0 or "state" not in cols or "neighaddr" not in cols:
+        return out
+    ip_re = re.compile(r"^(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]+:[0-9A-Fa-f:]+)$")
+    for raw in lines[hdr_idx + 1:]:
+        s = raw.strip()
+        if not s or set(s) <= {"-"}:
+            continue
+        toks = s.split()
+        # Anchor on the LD/RD discriminator pair (digits/digits): immune to the column DRIFT a wide 32-bit
+        # discriminator causes (header char-position slicing otherwise misreads State as the Holdown ')' or Int).
+        ld_i = next((i for i, t in enumerate(toks) if re.match(r"^\d+/\d+$", t)), -1)
+        if ld_i < 1 or not ip_re.match(toks[ld_i - 1]):     # need an IP NeighAddr immediately before LD/RD
+            continue
+        ld, _, rd = toks[ld_i].partition("/")
+        rest = toks[ld_i + 1:]                               # RH/RS [Holdown(mult)] State [Int] [Vrf Type]
+        # State is the column immediately BEFORE the interface -- true for EVERY layout ('... State Int [Vrf Type]').
+        # The interface is the first interface-shaped token in rest. This is immune both to the real IOS/IOS-XE
+        # RH/RS 'N(RH)' form (e.g. '1(RH)', which ALSO contains parens, so the old 'first token with ()' Holdown
+        # heuristic latched onto RH/RS and read State one column early -- a Down session became a number and the
+        # detector silently missed it) and to discriminator-width column drift. Fallbacks for a blank-Int multihop
+        # row: the rightmost BFD state keyword, then the legacy after-Holdown-paren position.
+        iface_j = next((j for j, t in enumerate(rest) if is_valid_iface(t)), -1)
+        if iface_j > 0:
+            st_j = iface_j - 1
+        else:
+            st_j = next((j for j in range(len(rest) - 1, -1, -1)
+                         if rest[j].strip().lower() in _BFD_STATE_WORDS), -1)
+            if st_j < 0:
+                hold_j = next((j for j, t in enumerate(rest) if "(" in t and ")" in t), -1)
+                st_j = hold_j + 1 if hold_j >= 0 else 1
+        if not (0 <= st_j < len(rest)):
+            continue
+        iface = normalize_ifname(rest[iface_j]) if iface_j >= 0 else ""
+        out.append({"neighbor": toks[ld_i - 1], "local_disc": ld, "remote_disc": rd,
+                    "state": rest[st_j], "interface": iface})
+    return out
+
+
+def parse_ipv6_interface_addrs(output: str) -> list:
+    """'show ipv6 interface' (IOS / IOS-XE) -> one record per L3 interface that has IPv6 enabled:
+    [{interface, admin_up, proto_up, ipv6_enabled, link_local, link_local_dup, global:[{addr, subnet,
+    dad_state}]}]. dad_state is 'ok' (no marker), 'duplicate' (a [DUPLICATE]/[DUP] marker -> DAD positively
+    detected an address clash, so Cisco sets the address to DUPLICATE and STOPS using it), or 'tentative'
+    (a [TENTATIVE] marker -> DAD still in progress, transient -- NOT a fault). A duplicate LINK-LOCAL disables
+    IPv6 packet processing on the whole interface (link_local_dup=True). [] when the device shows no IPv6 at
+    all (a pure-IPv4 box contributes nothing, so nothing can cry wolf). Tolerant; never raises.
+
+    Header line: 'GigabitEthernet0/1 is up, line protocol is up' (or 'administratively down'); IPv6 enabled
+    line: 'IPv6 is enabled, link-local address is FE80::130 [DUPLICATE]'; address line:
+    'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'. A single 'Global unicast
+    address(es):' header may be followed by additional indented address-only continuation lines, each its own
+    record. Grounded verbatim in the Cisco IPv6 command reference / config-guide sample output."""
+    out: list = []
+    cur = None
+
+    def _dad(tail: str) -> str:
+        t = (tail or "").upper()
+        if "[DUPLICATE]" in t or "[DUP]" in t:
+            return "duplicate"
+        if "[TENTATIVE]" in t or "[TEN]" in t:
+            return "tentative"
+        return "ok"
+
+    # 'Global unicast address(es):' may carry the first address on the same line OR start a list whose
+    # addresses are on the following indented continuation lines; track that we are inside that block.
+    in_global = False
+    nx_addr = False                                          # inside an NX-OS bare 'IPv6 address:' block
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s:
+            in_global = nx_addr = False
+            continue
+        # IOS / IOS-XE interface header: '<ifname> is [administratively ]up/down, line protocol is up/down'
+        mh = re.match(r"^(\S+)\s+is\s+(administratively\s+down|up|down),"
+                      r"\s+line protocol is\s+(up|down)", s, re.IGNORECASE)
+        # NX-OS interface header: '<ifname>, Interface status: protocol-up/link-up/admin-up, iod: N'
+        mnx = re.match(r"^(\S+),\s+Interface status:\s+protocol-(up|down)/link-\S+/admin-(up|down)", s, re.IGNORECASE)
+        if mh or mnx:
+            if cur is not None:
+                out.append(cur)
+            if mh:
+                cur = {"interface": normalize_ifname(mh.group(1)),
+                       "admin_up": mh.group(2).lower() == "up", "proto_up": mh.group(3).lower() == "up",
+                       "ipv6_enabled": False, "link_local": "", "link_local_dup": False, "global": []}
+            else:   # NX-OS lists an interface in 'show ipv6 interface' ONLY when IPv6 is enabled on it
+                cur = {"interface": normalize_ifname(mnx.group(1)),
+                       "admin_up": mnx.group(3).lower() == "up", "proto_up": mnx.group(2).lower() == "up",
+                       "ipv6_enabled": True, "link_local": "", "link_local_dup": False, "global": []}
+            in_global = nx_addr = False
+            continue
+        if cur is None:
+            continue
+        # IOS: 'IPv6 is enabled/disabled[, link-local address is FE80::130 [DUPLICATE]]' (the verb itself may be
+        # tentative/duplicate when the link-local fails DAD)
+        ml = re.match(r"^IPv6 is (enabled|disabled|tentative|duplicate)(?:,\s*link-local address is\s+(\S+)(.*))?$",
+                      s, re.IGNORECASE)
+        if ml:
+            cur["ipv6_enabled"] = ml.group(1).lower() != "disabled"
+            if ml.group(2):
+                cur["link_local"] = ml.group(2)
+                cur["link_local_dup"] = _dad(ml.group(3)) == "duplicate" or ml.group(1).lower() == "duplicate"
+            in_global = nx_addr = False
+            continue
+        # NX-OS: 'IPv6 link-local address: fe80::1 (default) [VALID]'
+        mnl = re.match(r"^IPv6 link-local address:\s+(\S+)(?:\s+\([^)]*\))?\s*(\[[^\]]*\])?", s, re.IGNORECASE)
+        if mnl:
+            cur["link_local"] = mnl.group(1)
+            cur["link_local_dup"] = _dad(mnl.group(2) or "") == "duplicate"
+            in_global = nx_addr = False
+            continue
+        # IOS: 'Global unicast address(es): 1:4::1, subnet is 1:4::/64 [DUPLICATE]'  (first addr inline)
+        mg = re.match(r"^Global unicast address\(es\):\s*(.+)$", s, re.IGNORECASE)
+        if mg:
+            in_global = True
+            nx_addr = False
+            rest = mg.group(1).strip()
+            if rest:  # an address sits on the header line itself
+                _addr_line(cur, rest, _dad)
+            continue
+        # NX-OS: bare 'IPv6 address:' header, with the addresses on the FOLLOWING indented lines
+        if re.match(r"^IPv6 address:\s*$", s, re.IGNORECASE):
+            nx_addr = True
+            in_global = False
+            continue
+        # NX-OS indented address line: '2001:db8:1::1/64 [VALID|DUPLICATE|TENTATIVE]'
+        if nx_addr:
+            mna = re.match(r"^([0-9A-Fa-f:]+)/(\d+)\s*(\[[^\]]*\])?", s)
+            if mna and ":" in mna.group(1):
+                cur["global"].append({"addr": mna.group(1), "subnet": "", "dad_state": _dad(mna.group(3) or "")})
+                continue
+            nx_addr = False     # a non-address line ends the NX-OS address block
+        # IOS indented address-only continuation under the Global block:
+        #   '1:5::1, subnet is 1:5::/64 [DUPLICATE]'  or  '1:5::1 [TENTATIVE]'
+        if in_global and re.match(r"^[0-9A-Fa-f:]+(?:,|\s|$)", s):
+            _addr_line(cur, s, _dad)
+            continue
+        # any other field line ends the continuation contexts but keeps the interface block open
+        in_global = nx_addr = False
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _addr_line(cur: dict, rest: str, _dad) -> None:
+    """Parse one global-unicast address fragment ('<addr>, subnet is <pfx> [MARK]' or '<addr> [MARK]')
+    into cur['global']. A fragment whose first token is not an IPv6 address is ignored (defensive)."""
+    m = re.match(r"^([0-9A-Fa-f:]+)(?:,\s*subnet is\s+(\S+?))?\s*(\[[^\]]*\])?\s*$", rest)
+    if not m or ":" not in m.group(1):
+        return
+    cur["global"].append({"addr": m.group(1), "subnet": (m.group(2) or ""),
+                          "dad_state": _dad(m.group(3) or "")})
+
+
+def parse_ipv6_route_summary(output: str) -> dict:
+    """'show ipv6 route summary' (IOS / IOS-XE / NX-OS) -> {present, total, by_source:{name:count}, has_default}.
+    The summary header is 'IPv6 Routing Table - <vrf>? - N entries' followed by per-source 'name: N (subnets|total)'
+    lines (connected/local/static/RIP/OSPF/BGP/EIGRP/...). This is the IPv6-routing-active GATE, not a fault by
+    itself: a device that runs no IPv6 routing emits nothing -> {} so the detector never cries wolf. has_default is
+    True only if an explicit '::/0' line is present in the source breakdown (most boxes summarise without it, so it
+    is NOT used as a firing signal -- recorded for context only). Tolerant; never raises; {} when absent."""
+    out = {"present": False, "total": 0, "by_source": {}, "has_default": False}
+    txt = output or ""
+    if not txt.strip():
+        return {}
+    # Header: 'IPv6 Routing Table - 21 entries' or 'IPv6 Routing Table - default - 21 entries'
+    mh = re.search(r"IPv6 Routing Table.*?-\s*(\d+)\s+entries", txt, re.IGNORECASE)
+    if not mh:
+        return {}
+    out["present"] = True
+    out["total"] = int(mh.group(1))
+    # Inline form: '... entries: 4 connected, 2 static, 0 RIP, 1 OSPF, 0 BGP'
+    tail = txt[mh.end():]
+    minl = re.match(r"\s*:\s*(.+)", tail.splitlines()[0] if tail.splitlines() else "")
+    if minl:
+        for piece in minl.group(1).split(","):
+            m = re.match(r"\s*(\d+)\s+([A-Za-z][\w /-]*?)\s*$", piece)
+            if m:
+                out["by_source"][m.group(2).strip().lower()] = int(m.group(1))
+    # Block form: 'connected: 4' / 'local: 6' / 'static: 2 (5 subnets)' on their own lines
+    for raw in tail.splitlines():
+        m = re.match(r"\s*([A-Za-z][\w /-]*?)\s*:\s*(\d+)\b", raw)
+        if m and "entries" not in m.group(1).lower():
+            out["by_source"][m.group(1).strip().lower()] = int(m.group(2))
+    # Columnar table form: 'connected  4  0  384  576' (Route Source/Networks/Subnets/Overhead/Memory)
+    for raw in tail.splitlines():
+        mc = re.match(r"\s*([A-Za-z][\w ]*?)\s+(\d+)\s+\d+\s+\d+\s+\d+\s*$", raw)
+        if mc and mc.group(1).strip().lower() not in ("total", "route source"):
+            out["by_source"].setdefault(mc.group(1).strip().lower(), int(mc.group(2)))
+    # Number-first comma list on its OWN line: '  37 local, 35 connected, 25 static, 0 RIP, 160 BGP' (the real
+    # IOS/IOS-XE 'show ipv6 route summary' form; the inline branch above only fires when the list trails a colon).
+    for raw in tail.splitlines():
+        if ":" in raw:                              # skip 'Number of prefixes:' and the '/NN: c' prefix-length lines
+            continue
+        for piece in raw.split(","):
+            mnf = re.match(r"\s*(\d+)\s+([A-Za-z][\w /-]*?)\s*$", piece)
+            if mnf:
+                out["by_source"].setdefault(mnf.group(2).strip().lower(), int(mnf.group(1)))
+    if "::/0" in txt:
+        out["has_default"] = True
+    return out
+
+
+def parse_ospfv3_neighbors(output: str) -> list:
+    """'show ospfv3 neighbor' / 'show ipv6 ospf neighbor' (IOS / IOS-XE) -> [{neighbor_id, pri, state, role,
+    interface}] per OSPFv3 adjacency. The State column carries a role suffix: 'FULL/DR', 'FULL/BDR', 'FULL/  -',
+    '2WAY/DROTHER', 'EXSTART/  -', etc.; state is the token LEFT of '/', role the token right of it (normalised,
+    '-' kept). FULL and 2WAY are the two healthy resting states (2WAY is the intentional DROTHER<->DROTHER state on
+    a broadcast segment); INIT/ATTEMPT/EXSTART/EXCHANGE/LOADING/DOWN are transient-stuck (broken/forming adjacency,
+    e.g. MTU mismatch sticks EXSTART, a one-way hello sticks INIT). The OSPFv3 process header line and the column
+    header never create phantom neighbors (their first token is not a router-id). [] when no OSPFv3 is configured.
+    Tolerant; never raises."""
+    out = []
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        if not s or re.match(r"^(OSPFv3|Neighbor ID)\b", s, re.IGNORECASE):
+            continue
+        # <router-id> <pri> <STATE/ROLE> <dead-time> <if-id> <interface>
+        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+([A-Za-z0-9-]+)\s*/\s*([A-Za-z0-9-]+)\s+\S+\s+\S+\s+(\S+)", s)
+        if not m:
+            continue
+        out.append({"neighbor_id": m.group(1), "pri": m.group(2),
+                    "state": m.group(3).upper(), "role": m.group(4),
+                    "interface": m.group(5)})
+    return out
+
+
+def parse_bgp_ipv6_summary(output: str) -> list:
+    """'show bgp ipv6 unicast summary' (IOS / IOS-XE / NX-OS) -> [{neighbor, as, state, prefixes}] per IPv6 BGP
+    peer. The session is Established ONLY when the final 'State/PfxRcd' column is NUMERIC (the accepted-prefix
+    count); any state WORD there (Idle / Active / Connect / OpenSent / OpenConfirm / Idle(Admin)) means the peer
+    is not Established and exchanges no IPv6 routes. The 'Neighbor' value is an IPv6 address that, when long,
+    wraps to its own line with the grid on the next line; both the single-line and wrapped forms are handled
+    (delegated to the shared BGP-summary row parser). [] when no IPv6 BGP is configured. Tolerant; never raises."""
+    return _parse_bgp_summary_rows(output)
+
+
+# --- Cisco firewall (ASA / Secure Firewall Threat Defense) -- SSH show-text channel -----------------------
+def parse_asa_failover(output: str) -> dict:
+    """'show failover' (classic ASA over SSH; FTD runs the identical LINA command from its CLI / via 'system
+    support diagnostic-cli') -> {enabled: bool, units: [{host, role, [group], state}]}. The header line is
+    'Failover On' or 'Failover Off'. TWO layouts are handled: ACTIVE/STANDBY reports the state inline as
+    'This host: <Primary|Secondary> - <State>' / 'Other host: ...'; ACTIVE/ACTIVE reports the role on the
+    'This/Other host' line and then a per-failover-group state as 'Group <n>  State:  <State>' beneath it
+    (each group is Active on one peer in a healthy A/A pair). State is the HA state-machine value: Active /
+    Standby Ready are healthy; Failed / Not Detected / Disabled are SETTLED broken (no working standby);
+    Negotiation / Cold Standby / Sync Config / Sync File System / Bulk Sync / App Sync are TRANSIENT bring-up
+    / resync states. `enabled` reflects On/Off so a standalone firewall (Failover Off) is coverage-honestly
+    'observed, no HA configured' -- NOT a fault. {} when the text is not 'show failover' output (e.g. a
+    switch's '% Invalid input'). Tolerant; never raises."""
+    text = output if isinstance(output, str) else ""
+    on = re.search(r"(?mi)^\s*Failover\s+On\b", text) is not None
+    off = re.search(r"(?mi)^\s*Failover\s+Off\b", text) is not None
+    if not on and not off:
+        return {}
+    units = []
+    cur_host, cur_role = None, ""
+    for line in text.splitlines():
+        # Active/Standby: role + state inline ('This host: Primary - Active'). Active/Active: role only here.
+        m = re.match(r"(?i)\s*(This|Other)\s+host\s*[:\-]\s*(Primary|Secondary)?\s*(?:-\s*([A-Za-z][A-Za-z ]*?))?\s*$", line)
+        if m:
+            cur_host = m.group(1).lower()
+            cur_role = (m.group(2) or "").strip()
+            st = re.sub(r"\s+", " ", m.group(3) or "").strip()
+            if st:
+                units.append({"host": cur_host, "role": cur_role, "state": st})
+            continue
+        # Active/Active: per-failover-group state under the current host ('Group 1   State:   Active').
+        g = re.match(r"(?i)\s*Group\s+(\d+)\s+State\s*:\s*([A-Za-z][A-Za-z ]*?)\s*$", line)
+        if g and cur_host:
+            st = re.sub(r"\s+", " ", g.group(2)).strip()
+            if st:
+                units.append({"host": cur_host, "role": cur_role, "group": g.group(1), "state": st})
+    out = {"enabled": on}
+    if units:
+        out["units"] = units
+    return out
+
+
+def parse_asa_resource_usage(output: str) -> list:
+    """'show resource usage' (ASA / FTD LINA) -> [{resource, current, peak, limit, denied, context}] per row.
+    Columns are Resource | Current | Peak | Limit | Denied | Context, but the Resource name can carry spaces
+    and a bracketed suffix ('Conns [rate]', 'Syslogs [rate]'), so each row is parsed from the RIGHT: the last
+    five fields are Current Peak Limit Denied Context, and everything before them is the resource name. Limit
+    is an int or None ('N/A' / unlimited). A 'Denied' > 0 on a data-plane resource is an OBSERVED refusal (the
+    box hit its Limit and dropped conns/xlates); a Peak near a numeric Limit is approaching exhaustion. [] when
+    not resource-usage output -- the header row is auto-skipped (its trailing fields aren't numeric). Token-
+    based (immune to column drift), tolerant; never raises."""
+    def _int(x):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return None
+    out = []
+    for line in (output.splitlines() if isinstance(output, str) else []):
+        toks = line.split()
+        if len(toks) < 6:
+            continue
+        cur, peak, denied = _int(toks[-5]), _int(toks[-4]), _int(toks[-2])
+        if cur is None or peak is None or denied is None:     # header / non-data row
+            continue
+        out.append({"resource": " ".join(toks[:-5]).strip(), "current": cur, "peak": peak,
+                    "limit": _int(toks[-3]), "denied": denied, "context": toks[-1]})
+    return out
+
+
+# --- Cisco ISE (Identity Services Engine) -- JSON controller-REST channel -------------------------------
+def _ise_rows(obj) -> list:
+    """Extract the list of node dicts from ANY ISE node envelope: Open API {"response":[...]|{...}} (list or
+    single), the ERS list {"SearchResult":{"resources":[...]}}, the consolidated {"resources":[...]} the
+    collector writes, a single-key-wrapped ERS detail ({"ers-node-data":{...}}), or a bare node dict. A bare
+    top-level ARRAY is deliberately refused (no documented ISE endpoint returns one). Tolerant; never raises."""
+    if not isinstance(obj, dict):                          # a bare top-level ARRAY is NOT a documented ISE
+        return []                                          # shape -- refuse it (assuming it fabricates nodes)
+    if isinstance(obj.get("response"), list):
+        return obj["response"]                              # Open API list
+    if isinstance(obj.get("response"), dict):
+        return [obj["response"]]                            # Open API single node
+    sr = obj.get("SearchResult")
+    if isinstance(sr, dict) and isinstance(sr.get("resources"), list):
+        return sr["resources"]                             # ERS list (id/name/link rows -- degraded)
+    if isinstance(obj.get("resources"), list):
+        return obj["resources"]                            # consolidated ERS per-id details
+    if len(obj) == 1:                                       # a single resource wrapped one level
+        v = next(iter(obj.values()))
+        if isinstance(v, dict):
+            return [v]
+    _node_keys = ("hostname", "fqdn", "name", "roles", "services", "nodeStatus",
+                  "primaryPapNode", "papNode", "nodeServiceTypes", "inDeployment")
+    return [obj] if any(k in obj for k in _node_keys) else []   # a bare node dict (only if it looks like one)
+
+
+def _ise_node(r: dict) -> dict:
+    """Normalize ONE ISE node dict -- Open API (roles[]/services[]/nodeStatus) OR ERS (primaryPapNode /
+    papNode / pxGridNode / nodeServiceTypes / inDeployment) -- into a unified record. ERS booleans are mapped
+    to the same roles[]/services[] vocabulary so the detectors read one shape; ERS has NO reachability field,
+    so node_status is '' for ERS (coverage-honest -- Open API's nodeStatus is the only reachability source).
+    Persona booleans (is_pan/is_mnt/is_psn/is_pxgrid) + in_deployment are derived uniformly."""
+    fqdn = str(r.get("fqdn") or r.get("hostname") or r.get("name") or "")
+    if "primaryPapNode" in r or "papNode" in r or "nodeServiceTypes" in r or "inDeployment" in r:  # ERS shape
+        roles = (["PrimaryAdmin"] if r.get("primaryPapNode") is True
+                 else (["SecondaryAdmin"] if r.get("papNode") is True else []))
+        svcs = [s.strip() for s in str(r.get("nodeServiceTypes", "") or "").split(",") if s.strip()]
+        if r.get("pxGridNode") is True and not any(s.lower() == "pxgrid" for s in svcs):
+            svcs.append("pxGrid")
+        node_status = ""                                    # ERS Node resource exposes no reachability
+        in_dep = r.get("inDeployment") is True
+    else:                                                   # Open API shape
+        rr, ss = r.get("roles"), r.get("services")
+        roles = [str(x) for x in rr if x is not None] if isinstance(rr, list) else []
+        svcs = [str(x) for x in ss if x is not None] if isinstance(ss, list) else []
+        node_status = str(r.get("nodeStatus", "") or "")
+        in_dep = True                                       # present in the deployment-node list
+    _rl = [x.lower() for x in roles]
+    _sl = [x.lower() for x in svcs]
+    return {"hostname": str(r.get("hostname") or fqdn or ""), "host": fqdn, "fqdn": fqdn,
+            "roles": roles, "services": svcs, "node_status": node_status, "in_deployment": in_dep,
+            "is_pan": any("admin" in x for x in _rl), "is_mnt": any("monitoring" in x for x in _rl),
+            "is_psn": any(x == "session" for x in _sl), "is_pxgrid": any("pxgrid" in x for x in _sl)}
+
+
+def parse_ise_nodes(output: str) -> list:
+    """ISE deployment nodes from EITHER controller-REST channel -> unified per-node records {hostname, host,
+    fqdn, roles, services, node_status, in_deployment, is_pan, is_mnt, is_psn, is_pxgrid}.
+      * Open API (ISE 3.1+, HTTPS/443): GET /api/v1/deployment/node -> {"response":[...]} (list) / {...}
+        (single). roles[] = PrimaryAdmin/SecondaryAdmin/PrimaryMonitoring/SecondaryMonitoring; services[] =
+        Session(=PSN)/Profiler/DeviceAdmin/pxGrid/SXP/PassiveID; nodeStatus = reachability ('Connected'=ok).
+      * ERS (HTTPS/9060, closed by default): GET /ers/config/node -> {"SearchResult":{"resources":[...]}}
+        then per-id GET /ers/config/node/{id} with boolean personas (primaryPapNode/papNode/pxGridNode) +
+        nodeServiceTypes; mapped to the same roles[]/services[]. ERS exposes no reachability -> node_status ''.
+    Both envelopes + a bare/wrapped node + the consolidated {"resources":[...]} are handled. [] when no ISE
+    export / non-JSON. Tolerant; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return []
+    return [_ise_node(r) for r in _ise_rows(obj) if isinstance(r, dict)]
+
+
+# --- multi-vendor: Arista EOS (the FIRST non-Cisco NOS) -- 'show mlag | json' device-native JSON ----------
+def parse_arista_mlag(output: str) -> dict:
+    """Arista EOS MLAG (multi-chassis link aggregation) state from 'show mlag | json' / eAPI -> a normalized
+    dict, or {} when MLAG is not configured / not present. MLAG is Arista's dual-active redundancy primitive
+    -- the direct analogue of Cisco vPC -- so this is the first NON-Cisco vendor axis the engine assesses.
+    EOS is JSON-native ('show ... | json'), so this is a robust json.loads (no regex-fidelity risk). Fields
+    (per the EOS 'show mlag' model): state (disabled|inactive|active|primary|secondary|connecting), negStatus
+    (connected when the peers agree), peerLinkStatus / localIntfStatus (up|down), configSanity
+    (consistent|inconsistent -- the analogue of the vPC Type-1 consistency check; inconsistent silently
+    SUSPENDS the affected VLANs), and mlagPorts (counts keyed by Active-full / Active-partial / Inactive /
+    Configured / Disabled). Returns {} when state is absent or 'disabled' (MLAG not configured), so the
+    detector stays coverage-honest -- absence of MLAG is never a finding. Tolerant; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    state = str(obj.get("state", "") or "").strip().lower()
+    if not state or state == "disabled":
+        return {}                                          # MLAG not configured -- coverage-honest absence
+    ports = obj.get("mlagPorts") if isinstance(obj.get("mlagPorts"), dict) else {}
+
+    def _ct(key):
+        v = ports.get(key)
+        return v if isinstance(v, int) else 0
+
+    return {
+        "state": state,
+        "neg_status": str(obj.get("negStatus", "") or "").strip().lower(),
+        "config_sanity": str(obj.get("configSanity", "") or "").strip().lower(),
+        "peer_link_status": str(obj.get("peerLinkStatus", "") or "").strip().lower(),
+        "local_intf_status": str(obj.get("localIntfStatus", "") or "").strip().lower(),
+        "peer_link": str(obj.get("peerLink", "") or ""),
+        "peer_address": str(obj.get("peerAddress", "") or ""),
+        "domain_id": str(obj.get("domainId", "") or ""),
+        "ports_active_full": _ct("Active-full"),
+        "ports_active_partial": _ct("Active-partial"),
+        "ports_inactive": _ct("Inactive"),
+        "ports_configured": _ct("Configured"),
+    }
+
+
+def parse_arista_bgp_evpn_summary(output: str) -> list:
+    """Arista EOS 'show bgp evpn summary | json' -> [{vrf, peer, state, asn}] per EVPN BGP peer, or [] when no
+    BGP-EVPN is configured / not present. This is the overlay CONTROL plane of an Arista BGP-EVPN/VXLAN fabric --
+    the direct analogue of the Cisco NX-OS 'show bgp l2vpn evpn summary' the engine already reads
+    (_d_evpn_rr_health). EOS is JSON-native, so this is a robust json.loads (no regex-fidelity risk). Structure
+    (verified against the Arista BGP-summary eAPI shape): {"vrfs": {"<vrf>": {"peers": {"<ip>": {"peerState":
+    "Established"|Idle|Active|Connect|OpenSent|OpenConfirm, "peerAsn": "<asn>"}}}}}; the per-peer field is
+    'peerState' and the ONLY healthy value is 'Established'. [] when absent / non-JSON. Tolerant; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+    out = []
+    vrfs = obj.get("vrfs")
+    for vrf, vd in (vrfs.items() if isinstance(vrfs, dict) else []):
+        if not isinstance(vd, dict):
+            continue
+        peers = vd.get("peers")
+        for ip, pd in (peers.items() if isinstance(peers, dict) else []):
+            pd = pd if isinstance(pd, dict) else {}
+            out.append({"vrf": str(vrf), "peer": str(ip),
+                        "state": str(pd.get("peerState", "") or "").strip(),
+                        # EOS BGP-summary JSON names the peer AS 'asn' in most builds and 'peerAsn' in some;
+                        # read either (display only -- the detector keys on 'state', so this never gates a finding).
+                        "asn": str(pd.get("asn", "") or pd.get("peerAsn", "") or "").strip()})
+    return out
+
+
+# --- multi-vendor: Juniper Junos (the SECOND non-Cisco NOS) -- 'show ... | display json' device-native JSON --
+def _junos_val(x):
+    """Unwrap the Junos '| display json' value form. Junos wraps every leaf value as a single-element list of
+    {"data": "<v>"} (e.g. "device-priority": [{"data": "100"}]); some versions emit a bare {"data": "<v>"} or
+    a plain scalar. Return the string value (stripped), or '' when it cannot be read. Never raises."""
+    # NB: guard None EXPLICITLY, not `or ''` -- a real `| display json` emits numeric leaves (device-priority,
+    # redundancy-group-id) as JSON NUMBERS, and `0 or ''` would collapse the falsy integer 0 to '' (silencing the
+    # 'priority 0 = not ready' HA-degraded detector + corrupting RG0). 0/0.0 must survive; only None -> ''.
+    if isinstance(x, list) and x and isinstance(x[0], dict):
+        v = x[0].get("data", "")
+        return str("" if v is None else v).strip()
+    if isinstance(x, dict):
+        v = x.get("data", "")
+        return str("" if v is None else v).strip()
+    if isinstance(x, (str, int, float)):
+        return str(x).strip()
+    return ""
+
+
+def parse_junos_chassis_cluster(output: str) -> list:
+    """Juniper Junos 'show chassis cluster status | display json' -> [{rg, node, priority:int|None, status,
+    monitor_failures}] per (redundancy-group, node), or [] when the device is not a chassis cluster / not
+    present. SRX chassis cluster is Juniper's stateful-firewall HA -- the analogue of the Cisco firewall 'show
+    failover'. Junos '| display json' is deeply nested and wraps every value as [{"data": "<v>"}]; this walks
+    chassis-cluster-status[].redundancy-group[].device-stats[] tolerantly (see _junos_val) so it survives the
+    Junos-version nesting/wrapping variants. [] when absent / non-JSON. Never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+    out = []
+    for block in (obj.get("chassis-cluster-status") if isinstance(obj.get("chassis-cluster-status"), list) else []):
+        if not isinstance(block, dict):
+            continue
+        for rg in (block.get("redundancy-group") if isinstance(block.get("redundancy-group"), list) else []):
+            if not isinstance(rg, dict):
+                continue
+            rg_id = _junos_val(rg.get("redundancy-group-id"))
+            for dev in (rg.get("device-stats") if isinstance(rg.get("device-stats"), list) else []):
+                if not isinstance(dev, dict):
+                    continue
+                pr = _junos_val(dev.get("device-priority"))
+                out.append({
+                    "rg": rg_id,
+                    "node": _junos_val(dev.get("device-name")),
+                    "priority": int(pr) if pr.lstrip("-").isdigit() else None,
+                    "status": _junos_val(dev.get("redundancy-group-status")).lower(),
+                    "monitor_failures": _junos_val(dev.get("monitor-failures")),
+                })
+    return out
+
+
+# --- public cloud: AWS (the FIRST cloud-domain axis) -- 'aws ec2 describe-security-groups' JSON -------------
+_CLOUD_OPEN_V4 = "0.0.0.0/0"
+_CLOUD_OPEN_V6 = "::/0"
+
+
+def parse_aws_security_groups(output: str):
+    """AWS 'aws ec2 describe-security-groups' JSON -> [{group_id, group_name, vpc_id, open_ingress:[{proto,
+    from_port, to_port, cidr}]}] -- one entry per security group that has at least one INBOUND rule open to the
+    whole internet (an IpRanges CidrIp 0.0.0.0/0 or an Ipv6Ranges CidrIpv6 ::/0). Returns [] when the export is
+    present but NOTHING is world-open (observed / clean), and None when there is no / an invalid export (so the
+    axis stays coverage-honestly 'not observed', never 'healthy'). Per the EC2 DescribeSecurityGroups API. The
+    detector applies the sensitive-port filter; this parser is purely structural. Never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if not (isinstance(obj, dict) and isinstance(obj.get("SecurityGroups"), list)):
+        return None
+    out = []
+    for sg in obj["SecurityGroups"]:
+        if not isinstance(sg, dict):
+            continue
+        open_rules = []
+        for perm in (sg.get("IpPermissions") if isinstance(sg.get("IpPermissions"), list) else []):
+            if not isinstance(perm, dict):
+                continue
+            v4 = any(isinstance(r, dict) and r.get("CidrIp") == _CLOUD_OPEN_V4
+                     for r in (perm.get("IpRanges") if isinstance(perm.get("IpRanges"), list) else []))
+            v6 = any(isinstance(r, dict) and r.get("CidrIpv6") == _CLOUD_OPEN_V6
+                     for r in (perm.get("Ipv6Ranges") if isinstance(perm.get("Ipv6Ranges"), list) else []))
+            if v4 or v6:
+                open_rules.append({"proto": str(perm.get("IpProtocol", "") or ""),
+                                   "from_port": perm.get("FromPort"), "to_port": perm.get("ToPort"),
+                                   "cidr": _CLOUD_OPEN_V4 if v4 else _CLOUD_OPEN_V6})
+        if open_rules:
+            out.append({"group_id": str(sg.get("GroupId", "") or ""),
+                        "group_name": str(sg.get("GroupName", "") or ""),
+                        "vpc_id": str(sg.get("VpcId", "") or ""), "open_ingress": open_rules})
+    return out
+
+
+# --- multi-vendor: Fortinet FortiGate (the THIRD non-Cisco NOS) -- 'get system ha status' show-text ---------
+def parse_fortigate_ha_status(output: str) -> dict:
+    """Fortinet FortiGate 'get system ha status' -> {health, mode, members:[{name, sync}]}, or {} when the
+    device is not an HA cluster (standalone) / not present. FortiGate HA is the firewall HA pair -- the analogue
+    of the Cisco ASA/FTD 'show failover'. The decisive lines (version-stable): 'HA Health Status: OK|WARNING',
+    'Mode: HA A-P|HA A-A|Standalone', and a 'Configuration Status:' section listing each member as
+    '<id>(updated N seconds ago): in-sync|out-of-sync' (a config-checksum dump that, when it differs between
+    members, reads out-of-sync). Returns {} unless Mode indicates an HA cluster AND at least one member line is
+    present, so a standalone box (Mode: Standalone, no Configuration Status) is coverage-honestly never assessed.
+    Tolerant regex; never raises."""
+    if not output:
+        return {}
+    if isinstance(output, (bytes, bytearray)):              # honour the 'never raises' contract on bytes input
+        output = output.decode("utf-8", "ignore")
+    mode_m = re.search(r"^\s*Mode\s*:\s*(.+?)\s*$", output, re.IGNORECASE | re.MULTILINE)
+    mode = mode_m.group(1).strip() if mode_m else ""
+    if not re.match(r"HA\b", mode, re.IGNORECASE):           # standalone / no HA -> not assessed (coverage-honest)
+        return {}
+    members = []
+    for m in re.finditer(r"^\s*([^\s(]+)\(updated\s+[^)]*\):\s*(in-sync|out-of-sync)",
+                         output, re.IGNORECASE | re.MULTILINE):
+        members.append({"name": m.group(1).strip(), "sync": m.group(2).strip().lower()})
+    if not members:
+        return {}
+    health_m = re.search(r"^\s*HA Health Status\s*:\s*(\S+)", output, re.IGNORECASE | re.MULTILINE)
+    return {"health": (health_m.group(1).strip() if health_m else ""), "mode": mode, "members": members}
+
+
+# --- Cisco multicast depth: 'show ip mroute' -> per-entry RPF state (the #1 multicast outage class) ----------
+def parse_mroute_entries(output: str) -> list:
+    """'show ip mroute' (NX-OS / IOS) -> [{source, group, iif, oil_count}] per mroute entry. source is '*' for a
+    (*,G) shared-tree entry or a unicast IP for an (S,G) source-tree entry; iif is the Incoming interface (the
+    RPF interface toward the source) or 'Null' when no RPF path exists; oil_count is the outgoing-interface count
+    (NX-OS '(count: N)'; 0 on IOS, where it is not on the header). Handles both NX-OS
+    ('(src/32, grp/32), uptime: ...') and IOS ('(src, grp), .../..., flags') entry headers plus their shared
+    'Incoming interface: X, RPF nbr ...' line. [] when no mroute table. Tolerant; never raises.
+
+    Coverage-honesty note: a (*,G) entry legitimately shows 'Incoming interface: Null' on NX-OS for locally-
+    joined / well-known / SSM groups, so a Null IIF is NOT by itself an outage -- only an (S,G) (a specific
+    source) with a Null IIF is an unambiguous RPF failure. This parser is purely structural; the detector applies
+    that gate."""
+    if not output:
+        return []
+    entries, cur = [], None
+    for line in output.splitlines():
+        m = re.match(r"^\(([^,]+),\s*([^)]+)\)", line)
+        if m:
+            if cur is not None:
+                entries.append(cur)
+            cur = {"source": m.group(1).strip().split("/")[0],
+                   "group": m.group(2).strip().split("/")[0].rstrip(","),
+                   "iif": "", "rpf_nbr": "", "oil_count": 0}
+            continue
+        if cur is None:
+            continue
+        mi = re.search(r"Incoming interface:\s*([^\s,]+)", line, re.IGNORECASE)
+        if mi:
+            cur["iif"] = mi.group(1).strip()
+        # RPF nbr is on the same line ('Incoming interface: Null, RPF nbr: 0.0.0.0'). 0.0.0.0 means the source is
+        # LOCAL (this router originates the stream) -- a benign Null IIF, NOT an RPF failure; the detector uses it.
+        mr = re.search(r"RPF nbr:?\s+([0-9.]+)", line, re.IGNORECASE)
+        if mr:
+            cur["rpf_nbr"] = mr.group(1).strip()
+        if mi or mr:
+            continue
+        mo = re.search(r"Outgoing interface list:\s*\(count:\s*(\d+)\)", line, re.IGNORECASE)
+        if mo:
+            cur["oil_count"] = int(mo.group(1))
+    if cur is not None:
+        entries.append(cur)
+    return entries
+
+
+# --- Cisco Secure Firewall Management Center (FMC / Firepower Management Center) -- JSON controller-REST ---
+def _fmc_items(output: str) -> list:
+    """FMC REST list responses wrap rows as {"items":[...], "paging":{...}, "links":{...}}; single-object
+    endpoints (fmchastatuses, serverversion) return the object directly. Return the list of dict rows for a
+    list response, or [the object] for a single-object response. Tolerant: [] on empty / non-JSON / non-dict;
+    never raises. (The JSON-ingestion front door for FMC -- analogous to _aci_imdata / _sdwan_data.)"""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return []
+    if not isinstance(obj, dict):
+        return []
+    items = obj.get("items")
+    if isinstance(items, list):
+        return [x for x in items if isinstance(x, dict)]
+    # An FMC *list* endpoint that is EMPTY can come back as a paging/links envelope with NO 'items' key (the
+    # standard empty-list shape). That is an EMPTY list, not a data row -- returning [obj] here fabricated a
+    # phantom row (e.g. a fully-deployed fleet read as '1 device with staged undeployed changes', a cry-wolf).
+    # Only a genuine single-OBJECT endpoint (fmchastatuses / serverversion -- which carry neither 'paging' nor
+    # 'links') is wrapped as [obj].
+    if "paging" in obj or "links" in obj:
+        return []
+    return [obj]                                          # single-object endpoint (no 'items' wrapper)
+
+
+def parse_fmc_devices(output: str) -> list:
+    """FMC GET .../devices/devicerecords?expanded=true -> [{name, host_name, model, sw_version, is_connected,
+    health_status, deployment_status}] per managed FTD. isConnected is the FTD<->FMC management channel (bool);
+    healthStatus is green|yellow|red|black|blue (red = active health alert; black/blue = no-data/unknown,
+    NOT a failure). [] when no FMC export. Tolerant; never raises."""
+    out = []
+    for d in _fmc_items(output):
+        out.append({"name": str(d.get("name") or d.get("hostName") or ""),
+                    "host_name": str(d.get("hostName", "") or ""), "model": str(d.get("model", "") or ""),
+                    "sw_version": str(d.get("sw_version", "") or ""),
+                    "is_connected": d.get("isConnected") if isinstance(d.get("isConnected"), bool) else None,
+                    "health_status": str(d.get("healthStatus", "") or "").lower(),
+                    "deployment_status": str(d.get("deploymentStatus", "") or "")})
+    return out
+
+
+def parse_fmc_ha_pairs(output: str) -> list:
+    """FMC GET .../devicehapairs/ftddevicehapairs?expanded=true -> [{name, primary_status, secondary_status}]
+    per FTD HA pair. currentStatus (nested in primaryStatus/secondaryStatus) is Active|Standby (healthy) |
+    Failed|Not Detected (broken) | Disabled (INTENTIONAL operator-suspended HA -- not a failure) | Negotiation
+    (transient). [] when no HA pairs / no FMC export. Tolerant; never raises."""
+    out = []
+    for h in _fmc_items(output):
+        ps = h.get("primaryStatus") if isinstance(h.get("primaryStatus"), dict) else {}
+        ss = h.get("secondaryStatus") if isinstance(h.get("secondaryStatus"), dict) else {}
+        out.append({"name": str(h.get("name", "") or ""),
+                    "primary_status": str(ps.get("currentStatus", "") or ""),
+                    "secondary_status": str(ss.get("currentStatus", "") or "")})
+    return out
+
+
+def parse_fmc_deployable(output: str) -> list:
+    """FMC GET .../deployment/deployabledevices?expanded=true -> [{name, can_be_deployed, up_to_date}] per
+    device with STAGED, undeployed config changes (the running config != the FMC's intended config). An EMPTY
+    list ('items':[]) means every device is fully deployed/in-sync. [] when no FMC export. Tolerant; never raises."""
+    out = []
+    for d in _fmc_items(output):
+        dev = d.get("device") if isinstance(d.get("device"), dict) else {}
+        name = str(d.get("name") or dev.get("name") or "")
+        if not name:                  # a real deployable row always names its device; skip a nameless phantom
+            continue                  # (belt-and-braces with the _fmc_items list-envelope guard above)
+        out.append({"name": name,
+                    "can_be_deployed": d.get("canBeDeployed") if isinstance(d.get("canBeDeployed"), bool) else None,
+                    "up_to_date": d.get("upToDate") if isinstance(d.get("upToDate"), bool) else None})
+    return out
+
+
+def parse_fmc_ha_status(output: str) -> dict:
+    """FMC GET .../integration/fmchastatuses -> {ha_role, ha_status, sync_status, messages} -- the FMC's OWN
+    high-availability (the management plane). Per the FMC REST API the FMCHAStatus object carries
+    ``overallStatus`` (the HEALTHY value is 'GOOD'; DEGRADED / SPLIT_BRAIN / FAILED are bad) + ``syncStatus``
+    ('GOOD' healthy; 'IN_PROGRESS'/'PAUSED' are transient/suspended, 'FAILED' is bad) + ``fmcPrimary`` /
+    ``fmcSecondary`` (each {role: Active|Standby}) + ``haStatusMessages``. ha_status<-overallStatus,
+    sync_status<-syncStatus, ha_role<-the Active side's role (display only). {} when the FMC is standalone (the
+    list endpoint returns no items) -- coverage-honest: absence of FMC-HA is not a failure. Tolerant; never raises.
+
+    (NB: the earlier shape read fmcHARole/haStatus/peerReachability -- keys that do NOT exist on a real FMC; on a
+    healthy GOOD/GOOD pair that yielded sync_status='GOOD' and the detector cried wolf. This reads the real keys.)"""
+    items = _fmc_items(output)
+    if not items or not isinstance(items[0], dict):
+        return {}
+    a = items[0]
+    role = ""
+    for side in ("fmcPrimary", "fmcSecondary"):
+        r = a.get(side)
+        if isinstance(r, dict) and str(r.get("role", "")).strip().lower() == "active":
+            role = str(r.get("role", "") or "")
+            break
+    msgs = a.get("haStatusMessages")
+    return {"ha_role": role, "ha_status": str(a.get("overallStatus", "") or ""),
+            "sync_status": str(a.get("syncStatus", "") or ""),
+            "messages": [str(m) for m in msgs] if isinstance(msgs, list) else []}
+
+
+def parse_fmc_server_version(output: str) -> dict:
+    """FMC GET /api/fmc_platform/v1/info/serverversion -> {server_version} (e.g. '7.4.1 (build 172)'). Cisco
+    requires the FMC to run a version >= every managed FTD, so reconciling serverVersion against the device
+    sw_versions catches the FMC-older-than-a-managed-device misconfiguration. {} when no FMC export. Tolerant."""
+    items = _fmc_items(output)
+    if not items:
+        return {}
+    return {"server_version": str(items[0].get("serverVersion", "") or "")}
+
+
+def _aci_imdata(output: str, cls: str) -> list:
+    """Extract the list of `attributes` dicts for one MO class from an APIC export -- the JSON that
+    'moquery -c <cls> -o json' (or the REST GET /api/class/<cls>.json) returns: {totalCount, imdata:[{<cls>:
+    {attributes:{...}}}]}. 'imdata' is the response container (not a class). This is the JSON-ingestion
+    front door for controller-based fabrics (ACI/APIC): the engine reads the export file as text via the
+    SAME _load_cmd_output path the show-text parsers use, and these normalizers json.load it instead of
+    regex-matching it. Tolerant: [] on empty / non-JSON / missing-imdata; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return []
+    rows = obj.get("imdata") if isinstance(obj, dict) else None
+    out = []
+    for it in rows or []:
+        mo = it.get(cls) if isinstance(it, dict) else None
+        attrs = mo.get("attributes") if isinstance(mo, dict) else None
+        if isinstance(attrs, dict):
+            # APIC attribute VALUES are strings on the wire; coerce defensively so a malformed export with a
+            # non-string value can never make a downstream .lower()/re.search raise (no-op on real data).
+            out.append({k: ("" if v is None else str(v)) for k, v in attrs.items()})
+    return out
+
+
+def parse_aci_faults(output: str) -> list:
+    """APIC 'moquery -c faultInst -o json' / REST /api/class/faultInst.json -> [{code, severity, lc, ack,
+    domain, cause, dn, descr}] per active fault. The APIC fault list IS the fabric's current broken-state
+    inventory; severity is warning|minor|major|critical, lc (lifecycle) is soaking|raised|raised-clearing|
+    retaining, ack is yes|no. A raised (lc=raised), unacknowledged (ack=no) critical/major fault is an
+    active service-affecting condition. [] when no ACI export is present. Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "faultInst"):
+        out.append({"code": a.get("code", ""), "severity": (a.get("severity", "") or "").lower(),
+                    "lc": (a.get("lc", "") or "").lower(), "ack": (a.get("ack", "") or "").lower(),
+                    "domain": a.get("domain", ""), "cause": a.get("cause", ""),
+                    "dn": a.get("dn", ""), "descr": a.get("descr", "")})
+    return out
+
+
+def parse_aci_fabric_nodes(output: str) -> list:
+    """APIC 'moquery -c fabricNode -o json' / REST /api/class/fabricNode.json -> [{id, name, role, model,
+    serial, version, fabric_st, ad_st, dn}] per fabric node. role is leaf|spine|controller; fabricSt is the
+    OPERATIONAL state active|inactive|disabled|decommissioned; adSt is the ADMIN state on|off. A node present
+    in the MIT but with fabricSt not 'active' is a ghost/decommissioned asset or an admin-vs-operational
+    divergence. [] when no ACI export is present. Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fabricNode"):
+        out.append({"id": a.get("id", ""), "name": a.get("name", ""), "role": a.get("role", ""),
+                    "model": a.get("model", ""), "serial": a.get("serial", ""), "version": a.get("version", ""),
+                    "fabric_st": (a.get("fabricSt", "") or "").lower(),
+                    "ad_st": (a.get("adSt", "") or "").lower(), "dn": a.get("dn", "")})
+    return out
+
+
+def parse_aci_health(output: str) -> dict:
+    """APIC 'moquery -c fabricHealthTotal -o json' / REST /api/class/fabricHealthTotal.json -> {cur, max_sev}
+    -- the fabric-wide rollup health score (cur, 0-100) and the worst contributing severity (maxSev). {} when
+    no ACI export is present or cur is non-numeric. Tolerant; never raises."""
+    rows = _aci_imdata(output, "fabricHealthTotal")
+    if not rows:
+        return {}
+    a = rows[0]
+    try:
+        cur = int(a.get("cur"))
+    except (TypeError, ValueError):
+        return {}
+    return {"cur": cur, "max_sev": (a.get("maxSev", "") or "").lower()}
+
+
+def parse_aci_vrfs(output: str) -> list:
+    """APIC 'moquery -c fvCtx' / REST /api/class/fvCtx.json -> [{name, tenant, dn, pc_enf_pref, pc_enf_dir}]
+    per VRF. fvCtx is the ACI routing context (the L3 segmentation boundary) and a primary migration
+    move-group unit -- you migrate a fabric tenant/VRF at a time. pcEnfPref is 'enforced' (contracts / SGACLs
+    applied between EPGs) or 'unenforced' (NO enforcement -- default-permit, every EPG in the VRF talks
+    freely). The tenant is parsed from the dn (uni/tn-<tenant>/ctx-<name>). [] when no ACI export is present.
+    Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fvCtx"):
+        dn = a.get("dn", "")
+        mt = re.search(r"/tn-([^/]+)/", dn)
+        out.append({"name": a.get("name", ""), "tenant": mt.group(1) if mt else "", "dn": dn,
+                    "pc_enf_pref": (a.get("pcEnfPref", "") or "").lower(),
+                    "pc_enf_dir": (a.get("pcEnfDir", "") or "").lower()})
+    return out
+
+
+def parse_aci_tenants(output: str) -> list:
+    """APIC 'moquery -c fvTenant' -> [{name, dn}] per tenant (the top-level ACI admin/policy container and a
+    coarse migration move-group boundary). CENSUS only -- pure inventory, no broken-state (a tenant is not
+    'wrong'). [] when no ACI export. Tolerant; never raises."""
+    return [{"name": a.get("name", ""), "dn": a.get("dn", "")} for a in _aci_imdata(output, "fvTenant")]
+
+
+def parse_aci_bds(output: str) -> list:
+    """APIC 'moquery -c fvBD' -> [{name, tenant, dn, unicast_route, arp_flood}] per Bridge Domain (the ACI L2
+    forwarding domain, ~ a VLAN/segment; a migration move-group unit). CENSUS; the route/flood flags are
+    informational context. [] when no ACI export. Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fvBD"):
+        dn = a.get("dn", "")
+        mt = re.search(r"/tn-([^/]+)/", dn)
+        out.append({"name": a.get("name", ""), "tenant": mt.group(1) if mt else "", "dn": dn,
+                    "unicast_route": (a.get("unicastRoute", "") or "").lower(),
+                    "arp_flood": (a.get("arpFlood", "") or "").lower()})
+    return out
+
+
+def parse_aci_epgs(output: str) -> list:
+    """APIC 'moquery -c fvAEPg' -> [{name, tenant, dn}] per EPG (Endpoint Group -- the ACI segmentation unit
+    that groups endpoints by policy; the FINEST migration move-group unit). CENSUS. [] when no ACI export.
+    Tolerant; never raises."""
+    out = []
+    for a in _aci_imdata(output, "fvAEPg"):
+        dn = a.get("dn", "")
+        mt = re.search(r"/tn-([^/]+)/", dn)
+        out.append({"name": a.get("name", ""), "tenant": mt.group(1) if mt else "", "dn": dn})
+    return out
+
+
+def _sdwan_data(output: str) -> list:
+    """Catalyst SD-WAN Manager (vManage) /dataservice/* responses wrap their rows in {"data":[...]} -- flat
+    JSON objects, NOT the ACI imdata/attributes envelope. The JSON-ingestion front door for the SD-WAN
+    controller fabric (the overlay state lives in the Manager's NMS database, not the edge CLI). Tolerant:
+    [] on empty / non-JSON / missing-'data'; never raises."""
+    try:
+        obj = json.loads(output or "")
+    except (ValueError, TypeError, RecursionError):
+        return []
+    rows = obj.get("data") if isinstance(obj, dict) else None
+    # Coerce values to strings defensively (no-op on real vManage data) so a malformed export with a
+    # non-string state/reachability can never make a downstream .lower() raise; int reads re-parse the string.
+    return [{k: ("" if v is None else str(v)) for k, v in r.items()} for r in (rows or []) if isinstance(r, dict)]
+
+
+def parse_sdwan_control_connections(output: str) -> list:
+    """vManage GET /dataservice/device/control/connections JSON -> [{system_ip, host_name, peer_type, state,
+    local_color, expected, actual}] per control connection. state is up|down; a down connection (or
+    actual-connections < expected-connections) to a Validator/vBond or Controller/vSmart means the WAN edge
+    is losing its overlay control plane (no OMP routes / policy). expected/actual are ints (None if absent).
+    [] when no SD-WAN export is present. Tolerant; never raises."""
+    def _int_of(r, *keys):
+        for k in keys:
+            v = r.get(k)
+            if v not in (None, ""):
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    pass
+        return None
+
+    def _str_of(r, *keys):
+        for k in keys:
+            v = r.get(k)
+            if v not in (None, ""):
+                return v
+        return ""
+
+    out = []
+    for r in _sdwan_data(output):
+        # Real vManage uses camelCase 'expectedControlConnections' / 'actualControlConnectionsToVsmart' (verified
+        # vs Cisco DevNet 'Get Control Connections' API docs); the prior hyphenated names matched NOTHING on real
+        # data -> exp/act always None -> a control-plane redundancy deficit read silently healthy (audit #3).
+        exp = _int_of(r, "expectedControlConnections", "expected-connections")
+        act = _int_of(r, "actualControlConnectionsToVsmart", "controlConnectionsToVsmarts", "actual-connections")
+        out.append({"system_ip": _str_of(r, "system-ip", "systemIp"),
+                    "host_name": _str_of(r, "host-name", "hostName"),
+                    "peer_type": _str_of(r, "peer-type", "peerType"),
+                    "state": _str_of(r, "state").lower(),
+                    "local_color": _str_of(r, "local-color", "localColor"),
+                    "expected": exp, "actual": act})
+    return out
+
+
+def parse_sdwan_devices(output: str) -> list:
+    """vManage GET /dataservice/device JSON -> [{system_ip, host_name, reachability, model, version}] per
+    fabric device. reachability is reachable|unreachable -- the controller's own verdict on each WAN edge; an
+    unreachable device is one the Manager has lost management/control contact with. [] when no SD-WAN export.
+    Tolerant; never raises."""
+    out = []
+    for r in _sdwan_data(output):
+        # status (normal|error|...) and state (green|yellow|red) are the controller's OWN health verdict: a
+        # 'reachable' edge can still be status=error / state=red (present-but-broken). Surface both, not just
+        # reachability, so a degraded fabric member is not read healthy (multi-domain audit L2).
+        out.append({"system_ip": r.get("system-ip", ""), "host_name": r.get("host-name", ""),
+                    "reachability": (r.get("reachability", "") or "").lower(),
+                    "status": (r.get("status", "") or "").lower(),
+                    "state": (r.get("state", "") or "").lower(),
+                    "model": r.get("device-model", ""), "version": r.get("version", "")})
+    return out
+
+
+def parse_sdwan_omp_counters(output: str) -> list:
+    """vManage GET /dataservice/device/counters JSON -> [{system_ip, host_name, omp_up, omp_down}] per WAN
+    edge. The Manager's OWN count of OMP (Overlay Management Protocol) peers up vs down. OMP runs OVER the
+    control connections and distributes the overlay routes / TLOCs / service routes between edges and the
+    controllers; an edge with OMP peers DOWN is missing overlay routing even when its control connections are
+    up (so traffic to the affected prefixes blackholes). [] when no SD-WAN counters export is present.
+    Tolerant; never raises."""
+    out = []
+    for r in _sdwan_data(output):
+        def _i(k):
+            try:
+                return int(r.get(k))
+            except (TypeError, ValueError):
+                return None
+        out.append({"system_ip": r.get("system-ip", ""), "host_name": r.get("host-name", ""),
+                    "omp_up": _i("ompPeersUp"), "omp_down": _i("ompPeersDown")})
+    return out
+
+
+def parse_nve_peers(output: str) -> list:
+    """'show nve peers' (NX-OS AND IOS-XE Catalyst 9000 VXLAN) -> [{interface, peer_ip, state, learn_type}].
+    State Up/Down; learn-type CP (control-plane / BGP-EVPN) vs DP (flood-and-learn). A down VTEP peer partitions
+    the overlay. Two on-wire layouts: NX-OS 'Interface Peer-IP State LearnType ...' (the local IP is column 2)
+    and IOS-XE 'Interface VNI Type(L2/L3CP) Peer-IP RMAC/Num_RTs eVNI state flags uptime' (column 2 is the VNI,
+    the IP is column 4). [] when the device runs no NVE/VXLAN. Tolerant; never raises."""
+    out = []
+    ip = r"(?:\d+\.\d+\.\d+\.\d+|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)"
+    for raw in (output or "").splitlines():
+        # NX-OS: 'Interface Peer-IP State [LearnType] ...' -- the peer IP is the 2nd token
+        m = re.match(r"^\s*(nve\d+)\s+(" + ip + r")\s+(\w+)(?:\s+(\w+))?", raw, re.IGNORECASE)
+        if m:
+            out.append({"interface": m.group(1).lower(), "peer_ip": m.group(2),
+                        "state": m.group(3).capitalize(), "learn_type": (m.group(4) or "").upper()})
+            continue
+        # IOS-XE Catalyst 9000: 'Interface VNI Type(L2/L3CP) Peer-IP RMAC/Num_RTs eVNI state flags uptime'
+        m2 = re.match(r"^\s*(nve\d+)\s+\d+\s+L[23]CP\s+(" + ip + r")\s+\S+\s+\d+\s+(\w+)", raw, re.IGNORECASE)
+        if m2:
+            out.append({"interface": m2.group(1).lower(), "peer_ip": m2.group(2),
+                        "state": m2.group(3).capitalize(), "learn_type": "CP"})
+    return out
+
+
+def parse_hsrp_detail(output: str) -> Dict[tuple, dict]:
+    """Full 'show standby [all]' DETAIL -> {(ifname, group): {state, priority, cfg_priority, preempt,
+    preempt_delay, vip, vmac, hello, hold, standby_ip, track:[{obj,decrement}], version}}. The brief
+    parser (parse_hsrp_summary) keeps only state+VIP; this captures the fields a senior FHRP audit needs
+    -- election (priority/preempt), failure-awareness (tracking) -- the AJ fleet (no FHRP) never exercised.
+    Tolerant: {} on empty / non-detail input; never raises."""
+    res: Dict[tuple, dict] = {}
+    cur = None
+    for raw in (output or "").splitlines():
+        s = raw.strip()
+        h = re.match(r"^(\S+)\s+-\s+Group\s+(\d+)\b", s)             # 'Gi0/1 - Group 10' / 'Vlan50 - Group 50 (version 2)'
+        if h:
+            cur = (normalize_ifname(h.group(1)), h.group(2))
+            ver = re.search(r"\(version\s+(\d+)\)", s)               # HSRPv2 headers carry a '(version N)' suffix
+            res[cur] = {"state": "", "priority": None, "cfg_priority": None, "preempt": False,
+                        "preempt_delay": None, "vip": "", "vmac": "", "hello": None, "hold": None,
+                        "standby_ip": "", "track": [], "version": int(ver.group(1)) if ver else 1}
+            continue
+        if cur is None:
+            continue
+        r = res[cur]
+        # NX-OS 'show hsrp detail' packs state + priority + preempt onto ONE line, e.g.
+        #   'Local state is Active, priority 110 (Cfged 110), may preempt'
+        # (IOS-XE uses separate 'State is ...' / 'Priority ...' / 'Preemption ...' lines below). Without this
+        # the NX-OS group's state/priority/preempt stayed unset, so _d_fhrp_resilience -- gated on state
+        # active/master -- never evaluated an NX-OS group.
+        mn = re.match(r"^Local state is (\w+)", s, re.IGNORECASE)
+        if mn:
+            r["state"] = mn.group(1).capitalize()
+            mp = re.search(r"priority\s+(\d+)(?:\s*\(Cfged\s+(\d+)\))?", s, re.IGNORECASE)
+            if mp:
+                r["priority"] = int(mp.group(1))
+                r["cfg_priority"] = int(mp.group(2)) if mp.group(2) else int(mp.group(1))
+            r["preempt"] = bool(re.search(r"\bmay\s+preempt\b", s, re.IGNORECASE))
+            continue
+        m = re.match(r"^State is (\w+)", s)
+        if m: r["state"] = m.group(1); continue
+        m = re.search(r"Virtual IP address is (\d+\.\d+\.\d+\.\d+)", s)
+        if m: r["vip"] = m.group(1); continue
+        m = re.search(r"virtual MAC address is ([0-9a-fA-F.]+)", s)
+        if m and not r["vmac"]: r["vmac"] = m.group(1); continue
+        m = re.search(r"Hello time (\d+) sec, hold time (\d+) sec", s)
+        if m: r["hello"], r["hold"] = int(m.group(1)), int(m.group(2)); continue
+        if s.startswith("Preemption enabled"):
+            r["preempt"] = True
+            md = re.search(r"delay min (\d+)", s)
+            if md: r["preempt_delay"] = int(md.group(1))
+            continue
+        if s.startswith("Preemption disabled"):
+            r["preempt"] = False; continue
+        m = re.match(r"^Priority (\d+)(?:\s*\(configured (\d+)\))?", s)
+        if m:
+            r["priority"] = int(m.group(1))
+            r["cfg_priority"] = int(m.group(2)) if m.group(2) else int(m.group(1)); continue
+        m = re.search(r"Track object (\S+) state \w+ decrement (\d+)", s)
+        if m: r["track"].append({"obj": m.group(1), "decrement": int(m.group(2))}); continue
+        m = re.search(r"Standby router is (\d+\.\d+\.\d+\.\d+)", s)
+        if m: r["standby_ip"] = m.group(1); continue
+    return res
+
 
 def parse_hsrp_summary(output: str) -> Dict[str, str]:
     res: Dict[str, str] = {}
@@ -365,6 +2362,10 @@ def parse_show_mac_address_table(output: str) -> Dict[str, List[str]]:
         typ   = parts[idx + 2].lower()
         iface = parts[-1]
         if typ != "dynamic": continue
+        # NX-OS shows peer-link-learned MACs with Ports='vPC Peer-Link' (two tokens) -- those hosts are attached
+        # to the vPC PEER, not locally. Skip so they don't create a phantom 'Peer-Link' interface (audit-5 #19).
+        if iface.lower() == "peer-link" or " ".join(parts[-2:]).lower() == "vpc peer-link":
+            continue
         mac_n = normalize_mac(mac)
         if_n  = normalize_ifname(iface)
         if not mac_n or not if_n: continue
@@ -483,6 +2484,9 @@ def parse_spanning_tree_root(output: str) -> Dict[str, dict]:
         if vm:
             cur = vm.group(1) or vm.group(2)
             raw_recs.setdefault(cur, {})
+            # group(2) matches an MST header ('MST0'), so the key is an MST INSTANCE number, not a VLAN id;
+            # group(1) is a real PVST/RPVST VLAN. Tag it so stp_root_findings doesn't treat instance 0 as VLAN 0.
+            raw_recs[cur]["is_mst"] = bool(vm.group(2))
             section = None
             continue
         if cur is None:
@@ -505,7 +2509,7 @@ def parse_spanning_tree_root(output: str) -> Dict[str, dict]:
         ra, ba = r.get("root_address"), r.get("bridge_address")
         is_root = bool(r.get("is_root")) or (bool(ra) and ra == ba)
         rec: dict = {"root_priority": r.get("root_priority"),
-                     "root_address": ra or "", "is_root": is_root}
+                     "root_address": ra or "", "is_root": is_root, "is_mst": bool(r.get("is_mst"))}
         if "bridge_priority" in r:
             rec["bridge_priority"] = r["bridge_priority"]
         out[vlan] = rec
@@ -552,10 +2556,22 @@ def parse_vpc(output: str) -> dict:
     vs = re.search(r"vPC[ ]status\b.*?\n(.*)$", output, re.IGNORECASE | re.DOTALL)
     if vs:
         for line in vs.group(1).splitlines():
-            m = re.match(r"^\s*(\d+)\s+(Po\S+)\s+(\S+)\s+(\S+)\s+\S+\s+(.*)$", line, re.IGNORECASE)
-            if m:
+            # Columns are 'id Port Status Consistency Reason Active-vlans', but on a real down* leg Consistency is
+            # the TWO-word 'Not Applicable' and Reason is the multi-word 'Consistency Check Not Performed' -- the
+            # old single-\S+-per-column regex truncated consistency to 'not' and folded reason words into vlans
+            # ('Check Not -') fleet-wide (audit-4 #16). Active-vlans is ALWAYS a vlan-list/'-' shaped LAST token
+            # (never a reason word), so split it off, then read Consistency as the known-value prefix of the rest.
+            m = re.match(r"^\s*(\d+)\s+(Po\S+)\s+(\S+)\s+(.*)$", line, re.IGNORECASE)
+            if m and m.group(4).strip():
+                toks = m.group(4).split()
+                vlans = ""
+                if toks and re.fullmatch(r"[\d,\-]+", toks[-1]):
+                    vlans = toks[-1]; toks = toks[:-1]
+                cons_src = " ".join(toks)
+                cm = re.match(r"(Not Applicable|success|failed)", cons_src, re.IGNORECASE)
+                consistency = (cm.group(1) if cm else (toks[0] if toks else "")).lower()
                 out["vpcs"].append({"id": m.group(1), "port": m.group(2), "status": m.group(3).lower(),
-                                    "consistency": m.group(4).lower(), "vlans": m.group(5).strip()})
+                                    "consistency": consistency, "vlans": vlans})
     if out["domain_id"] is None and not out["vpcs"] and not out["peer_link"]:
         return {}
     return out
@@ -617,7 +2633,7 @@ def parse_neighbors_cdp(output: str) -> Dict[str, Dict[str, str]]:
             if line.lower().startswith("platform:"):
                 platform_s = line.split(":",1)[1].strip()
                 platform_s = re.split(r",\s*Capabilities", platform_s, 1)[0].strip()
-            ipm = re.search(r"\bip address:\s*(\d+\.\d+\.\d+\.\d+)\b", line, re.IGNORECASE)
+            ipm = re.search(r"\bip(?:v4)?\s+address:\s*(\d+\.\d+\.\d+\.\d+)\b", line, re.IGNORECASE)
             if ipm: mgmt_ip = ipm.group(1)
             if line.lower().startswith("interface:"):
                 mv = re.search(r"Interface:\s*([^,]+)", line, re.IGNORECASE)
@@ -631,21 +2647,38 @@ def parse_neighbors_cdp(output: str) -> Dict[str, Dict[str, str]]:
 
 def parse_neighbors_lldp(output: str) -> Dict[str, Dict[str, str]]:
     res: Dict[str, Dict[str, str]] = {}
-    for ch in re.split(r"\n\s*Local Intf:\s*", "\n" + output):
+    if not output:
+        return res
+    # IOS/IOS-XE 'show lldp neighbors detail' blocks begin with 'Local Intf:'; NX-OS has NO such line and begins
+    # each block with 'Chassis id:' (its local interface is on a 'Local Port id:' line). Splitting only on
+    # 'Local Intf:' (the old code) collapsed an NX-OS capture into ONE Frankenstein record -- 'local' became the
+    # literal first token 'Chassis', and System Name / Port id / Management Address from DIFFERENT neighbours
+    # were mixed into it, so every real NX-OS adjacency was lost from the topology. Mirror parse_neighbors_detail.
+    iosxe = bool(re.search(r"(?im)^\s*Local Intf:", output))
+    blocks = (re.split(r"\n\s*Local Intf:\s*", "\n" + output) if iosxe
+              else re.split(r"(?im)^(?=[ \t]*Chassis id:)", output))
+    for ch in blocks:
         ch = ch.strip()
         if not ch: continue
-        local   = normalize_ifname(ch.splitlines()[0].strip().split()[0])
+        # IOS-XE: the split consumed 'Local Intf:', so the block's first token IS the local interface.
+        local = normalize_ifname(ch.splitlines()[0].strip().split()[0]) if iosxe else ""
         sysname = mgmt = remote_port = ""
         for line in ch.splitlines():
             ls = line.strip()
+            m = re.match(r"^Local Port id:\s*(.+)$", ls, re.IGNORECASE)        # NX-OS local interface (by label)
+            if m and not local:
+                local = normalize_ifname(m.group(1).strip())
             if ls.lower().startswith("system name:"):
-                sysname = ls.split(":",1)[1].strip()
-            if ls.lower().startswith("port id:"):
-                remote_port = normalize_ifname(ls.split(":",1)[1].strip())
+                sysname = ls.split(":", 1)[1].strip()
+                if sysname.lower() in ("not advertised", "null", "n/a", "-"):
+                    sysname = ""    # NX-OS LLDP sentinel -- not a real neighbor name (avoids a phantom 'NOT ADVERTISED' hub)
+            m = re.match(r"^Port id:\s*(.+)$", ls, re.IGNORECASE)              # remote port ('Local Port id:' excluded by the anchor)
+            if m and not remote_port:
+                remote_port = normalize_ifname(m.group(1).strip())
             if ls.lower().startswith("management address:"):
                 ipm = re.search(r"(\d+\.\d+\.\d+\.\d+)", ls)
                 if ipm: mgmt = ipm.group(1)
-        if local:
+        if local and is_valid_iface(local) and (sysname or remote_port):
             res[local] = {"device_id": sysname, "platform": "", "mgmt_ip": mgmt,
                           "remote_port": remote_port}
     return res
@@ -889,7 +2922,7 @@ def parse_acls(output: str) -> Dict[str, List[dict]]:
 def _mask_to_wild(mask: str) -> str:
     """IOS subnet mask (255.255.255.0) -> wildcard (0.0.0.255), per-octet inverse."""
     try: return ".".join(str(255 - int(o)) for o in mask.split("."))
-    except (ValueError, TypeError): return mask
+    except (ValueError, TypeError, RecursionError): return mask
 
 def _objgrp_net_member(toks: List[str]):
     """One 'object-group network' member -> {ip,wild} | {rangeStart,rangeEnd} | {group} | None."""
@@ -1063,24 +3096,43 @@ def parse_security(output: str) -> dict:
     svc_pwenc = has(r"^service password-encryption\b")
     enable_secret = has(r"^enable secret\b")
     enable_pw = has(r"^enable password\b")
-    aaa = has(r"^aaa new-model\b")
+    # NOS-aware: IOS/IOS-XE use 'aaa new-model'; NX-OS / IOS-XR enable central AAA via
+    # 'aaa authentication login default group ...' / 'aaa group server tacacs+|radius' (no 'new-model').
+    aaa = (has(r"^aaa new-model\b")
+           or has(r"^aaa authentication login default group\b")
+           or has(r"^aaa group server (tacacs\+|radius)\b"))
     ntp = has(r"^ntp (server|peer)\b")
     logging_on = has(r"^logging (host|buffered|server)\b")
     banner = has(r"^banner (motd|login|exec)\b")
     snmpv3 = has(r"^snmp-server (group|user)\b")
+    # NX-OS has no 'service password-encryption' (an IOS/IOS-XE command) -- it encrypts local passwords by
+    # default (Type-5). Detect the platform so that CIS check is N/A, not a false cleartext FAIL on every Nexus.
+    is_nxos = has(r"^feature\s+\S") or has(r"^boot nxos\b") or has(r"^vdc\s+\S")
 
     weak_users: List[str] = []
     for ln in low:
-        m = re.match(r"^username\s+(\S+)\s+.*\bpassword\b", ln)
-        if m and " secret " not in (" " + ln + " "):
+        m = re.match(r"^username\s+(\S+)\b.*?\bpassword\s+(?:(\d)\s+)?\S", ln)
+        if not m:
+            continue
+        # NX-OS stores 'username X password 5 <salted-md5>' (Type-5, STRONG); Types 5/8/9 are strong hashes.
+        # Only an untyped cleartext or a Type-0 / Type-7 (reversible) local password is weak.
+        if m.group(2) in (None, "0", "7"):
             weak_users.append(m.group(1))
 
     snmp_comm: List[dict] = []
     for ln in low:
-        m = re.match(r"^snmp-server community\s+(\S+)(?:\s+(ro|rw))?", ln)
-        if m:
-            snmp_comm.append({"access": m.group(2) or "ro",
-                              "default": m.group(1) in ("public", "private")})
+        m = re.match(r"^snmp-server community\s+(\S+)\b", ln)
+        if not m:
+            continue
+        rest = ln[m.end():]
+        # NX-OS form 'community <name> group <role>' (network-admin/vdc-admin = read-WRITE); IOS form
+        # 'community <name> [view <name>] ro|rw' -- the bare '(ro|rw)?' missed BOTH (audit-2 #10/#11).
+        mg = re.search(r"\bgroup\s+(\S+)", rest)
+        if mg:
+            access = "rw" if mg.group(1).lower() in ("network-admin", "vdc-admin") else "ro"
+        else:
+            access = "rw" if re.search(r"\brw\b", rest) else "ro"
+        snmp_comm.append({"access": access, "default": m.group(1) in ("public", "private")})
 
     risky: List[str] = []
     if has(r"^ip http server\b") and not has(r"^no ip http server\b"):
@@ -1112,9 +3164,11 @@ def parse_security(output: str) -> dict:
                 cur["transport"] = s.replace("transport input", "").strip()
             elif s.startswith("access-class"):
                 cur["access_class"] = True
-            elif re.match(r"^exec-timeout\s+0\s+0\b", s):
-                cur["timeout0"] = True
-    telnet = any("telnet" in b["transport"] or b["transport"] == "all" for b in vty)
+            elif re.match(r"^exec-timeout\s+0(\s+0)?\s*$", s):   # IOS 'exec-timeout 0 0' OR NX-OS single-arg
+                cur["timeout0"] = True                            # 'exec-timeout 0' -- both never time out (#9)
+    # NX-OS enables the telnet SERVER with a global 'feature telnet' (not a 'transport input' under line vty) (#8).
+    telnet_feature = has(r"^feature telnet\b") and not has(r"^no feature telnet\b")
+    telnet = telnet_feature or any("telnet" in b["transport"] or b["transport"] == "all" for b in vty)
     vty_weak = any((not b["access_class"]) or b["timeout0"] for b in vty)
 
     findings: List[dict] = []
@@ -1126,12 +3180,18 @@ def parse_security(output: str) -> dict:
                          "status": status, "detail": detail, "cis_ref": ref, "remediation": rem})
 
     # Absence-of-a-control -> fail (the hardening baseline is missing).
-    add("password-encryption", "pass" if svc_pwenc else "fail",
-        "'service password-encryption' is set." if svc_pwenc
-        else "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).")
+    if is_nxos:
+        add("password-encryption", "na",
+            "NX-OS encrypts local passwords by default (Type-5) and has no 'service password-encryption' command "
+            "(an IOS/IOS-XE control) -- not applicable on this platform.")
+    else:
+        add("password-encryption", "pass" if svc_pwenc else "fail",
+            "'service password-encryption' is set." if svc_pwenc
+            else "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).")
     add("no-aaa", "pass" if aaa else "fail",
-        "'aaa new-model' is enabled." if aaa
-        else "no 'aaa new-model' -- authentication is local-only / line-based.")
+        "central AAA (TACACS+/RADIUS) is configured." if aaa
+        else "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- "
+             "authentication is local-only / line-based.")
     add("no-ntp", "pass" if ntp else "fail",
         "NTP server configured." if ntp
         else "no NTP server -- clock drift makes logs and certificate validity untrustworthy.")
@@ -1159,6 +3219,22 @@ def parse_security(output: str) -> dict:
     else:
         add("weak-user-pw", "pass", "no Type-0/7 local user passwords.")
 
+    # SNMPv3 user security level: a user with NO 'auth' on ANY of its 'snmp-server user' lines is noAuthNoPriv
+    # (no security at all); md5 / des are weak. The bare PRESENCE of an snmp-server user/group line does NOT
+    # prove auth/priv -- the old check PASSed on presence alone (audit-5 #2/#20).
+    _snmp_users: Dict[str, dict] = {}
+    for ln in low:
+        mu = re.match(r"^snmp-server\s+user\s+(\S+)\b(.*)$", ln)
+        if not mu:
+            continue
+        u = _snmp_users.setdefault(mu.group(1), {"auth": "", "priv": ""})
+        ma = re.search(r"\bauth\s+(md5|sha\S*)\b", mu.group(2))
+        if ma and not u["auth"]: u["auth"] = ma.group(1)
+        mp = re.search(r"\bpriv\s+(aes\S*|3des|des)\b", mu.group(2))
+        if mp and not u["priv"]: u["priv"] = mp.group(1)
+    snmpv3_noauth = sorted(n for n, u in _snmp_users.items() if not u["auth"])
+    snmpv3_weak = sorted(n for n, u in _snmp_users.items() if u["auth"] == "md5" or u["priv"] == "des")
+
     if snmp_comm:
         rw = any(c["access"] == "rw" for c in snmp_comm)
         dflt = any(c["default"] for c in snmp_comm)
@@ -1172,19 +3248,29 @@ def parse_security(output: str) -> dict:
             "; ".join(bits) + " -- v1/v2c carry the community in cleartext.",
             severity="high" if (rw or dflt) else "medium")
     elif snmpv3:
-        add("insecure-snmp", "pass", "SNMPv3 (auth/priv) only -- no v1/v2c communities.")
+        if snmpv3_noauth:
+            add("insecure-snmp", "fail",
+                f"{len(snmpv3_noauth)} SNMPv3 user(s) with NO authentication (noAuthNoPriv): "
+                f"{', '.join(snmpv3_noauth)} -- SNMPv3 without auth provides no security.", severity="high")
+        elif snmpv3_weak:
+            add("insecure-snmp", "pass",
+                f"SNMPv3 only (no v1/v2c), but {len(snmpv3_weak)} user(s) use weak auth/priv (MD5 / DES): "
+                f"{', '.join(snmpv3_weak)} -- prefer SHA + AES.")
+        else:
+            add("insecure-snmp", "pass", "SNMPv3 with auth/priv (SHA/AES) -- no v1/v2c communities.")
     else:
         add("insecure-snmp", "na", "no SNMP configured.")
 
-    if not vty:
+    if not vty and not telnet_feature:
         add("telnet-enabled", "na", "no VTY lines in this config.")
         add("vty-hardening", "na", "no VTY lines in this config.")
     else:
         add("telnet-enabled", "fail" if telnet else "pass",
-            "a VTY line permits telnet (cleartext management)." if telnet
+            ("the telnet server is enabled ('feature telnet') -- cleartext management." if telnet_feature
+             else "a VTY line permits telnet (cleartext management).") if telnet
             else "VTY transport restricted to SSH.")
         add("vty-hardening", "fail" if vty_weak else "pass",
-            "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 0)."
+            "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0)."
             if vty_weak else "VTY lines carry an access-class and a non-zero exec-timeout.")
 
     if risky:
@@ -1245,6 +3331,15 @@ def parse_config_hygiene(output: str) -> dict:
         (re.compile(r"\bipv6\s+traffic-filter\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "acl"),
         (re.compile(r"\bip\s+nat\s+(?:inside|outside)\s+source\s+list\s+(\S+)", re.IGNORECASE), "acl"),
         (re.compile(r"\bmatch\s+ip\s+address\s+(?!prefix-list\b)(\S+)", re.IGNORECASE), "acl"),
+        # Four ubiquitous ACL-reference forms previously missed -> an ACL used ONLY via SNMP community / QoS
+        # class-map / crypto-map interesting-traffic / NTP was wrongly reported 'unused' (audit-3 #15).
+        (re.compile(r"\bsnmp-server\s+community\s+\S+\s+(?:view\s+\S+\s+)?(?:ro|rw)\s+(\S+)", re.IGNORECASE), "acl"),
+        # NX-OS SNMPv3 applies its management ACL via 'snmp-server group <g> v3 <auth|priv|noauth> access <ACL>'
+        # (also a 'v3 priv notify <oid> access <ACL>' variant) -- missing here -> the ACL read 156x 'unused' (audit-5 #9).
+        (re.compile(r"\bsnmp-server\s+group\s+\S+\s+v3\b.*?\baccess\s+(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bmatch\s+access-group\s+(?:name\s+)?(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bmatch\s+address\s+(\S+)", re.IGNORECASE), "acl"),
+        (re.compile(r"\bntp\s+access-group\s+(?:peer|serve|serve-only|query-only)\s+(\S+)", re.IGNORECASE), "acl"),
         (re.compile(r"\bredistribute\b.*\broute-map\s+(\S+)", re.IGNORECASE), "route-map"),
         (re.compile(r"\bneighbor\s+\S+\s+route-map\s+(\S+)\s+(?:in|out)\b", re.IGNORECASE), "route-map"),
         (re.compile(r"\bip\s+policy\s+route-map\s+(\S+)", re.IGNORECASE), "route-map"),
@@ -1330,7 +3425,8 @@ def parse_redistribution(output: str) -> List[dict]:
     into: Optional[tuple] = None                                     # (proto, id) of the current 'router' block
     ROUTER = re.compile(r"^router\s+(ospf|bgp|eigrp|rip|isis)\b\s*(\S+)?", re.IGNORECASE)
     REDIST = re.compile(
-        r"^\s+redistribute\s+(connected|static|ospf|bgp|eigrp|rip|isis)\b\s*(\d+)?(.*)$", re.IGNORECASE)
+        r"^\s+redistribute\s+(connected|direct|static|ospf|bgp|eigrp|rip|isis)\b"
+        r"(?:\s+(?!route-map\b|metric\b|tag\b|subnets\b)(\d+|[A-Za-z][\w-]*))?(.*)$", re.IGNORECASE)
     for raw in output.splitlines():
         m = ROUTER.match(raw)
         if m:
@@ -1342,8 +3438,11 @@ def parse_redistribution(output: str) -> List[dict]:
         rd = REDIST.match(raw)
         if rd:
             rmap = re.search(r"route-map\s+(\S+)", rd.group(3) or "", re.IGNORECASE)
+            _fp = rd.group(1).lower()
+            if _fp == "direct":
+                _fp = "connected"   # NX-OS 'redistribute direct' == IOS 'redistribute connected' (locally-connected routes)
             out.append({"into_proto": into[0], "into_id": into[1],
-                        "from_proto": rd.group(1).lower(), "from_id": (rd.group(2) or "").strip(),
+                        "from_proto": _fp, "from_id": (rd.group(2) or "").strip(),
                         "route_map": rmap.group(1) if rmap else "", "raw": raw.strip()})
     return out
 
@@ -1523,6 +3622,11 @@ def parse_multicast_info(mroute_out: str, pim_out: str) -> Dict[str, str]:
                 mode = _MODE.get((mt.group(3) or "").lower(), "")
                 res.setdefault(intf, []).append("PIM" + (f" {mode}" if mode else ""))
                 continue
+            # NX-OS verbose stanza (the Nexus cores' format): '<Interface>, Interface status: protocol-up/...'
+            mn = re.match(r"^([A-Za-z][\w./-]*?),\s+Interface status:", s)
+            if mn and is_valid_iface(mn.group(1)):
+                res.setdefault(normalize_ifname(mn.group(1)), []).append("PIM enabled")
+                continue
             # Some platforms: '<interface> is up, ... PIM ...'
             mi = re.match(r"^(Vlan\d+|\S+)\s+is\s+(?:up|down)", s, re.IGNORECASE)
             if mi and is_valid_iface(mi.group(1)):
@@ -1575,10 +3679,15 @@ def parse_igmp_snooping_querier(output: str) -> List[dict]:
             cur_vlan = mv.group(1)
         mip = re.search(r"IP address\s*[:=]\s*(\d+\.\d+\.\d+\.\d+)", s, re.IGNORECASE)
         if mip and cur_vlan:
-            out.append({"vlan": cur_vlan, "querier": mip.group(1)}); cur_vlan = ""; continue
+            # '0.0.0.0' is the placeholder NX-OS/IOS print when NO querier is operational/elected -- it is the
+            # absence of a querier, not a live one, so it must NOT be recorded (else the VLAN counts as
+            # querier-covered and the 'no IGMP querier' multicast gap is silently suppressed).
+            if mip.group(1) != "0.0.0.0":
+                out.append({"vlan": cur_vlan, "querier": mip.group(1)})
+            cur_vlan = ""; continue
         # table form: '10    10.0.10.1    v2    ...'
         mt = re.match(r"^(\d+)\s+(\d+\.\d+\.\d+\.\d+)\b", s)
-        if mt:
+        if mt and mt.group(2) != "0.0.0.0":
             out.append({"vlan": mt.group(1), "querier": mt.group(2)})
     # de-dup (vlan,querier)
     seen, uniq = set(), []
@@ -1599,7 +3708,13 @@ def parse_ptp_clock(output: str) -> dict:
     / 0 ports / no parent -- i.e. PTP is available but the switch is NOT in an active timing hierarchy
     (PTP would be flowing as plain multicast, not boundary-clocked -- a real ST 2110/AES67 finding).
     `locked` is inferred from a small offset-from-master (|offset| < 1us) when present."""
-    if not output or "ptp" not in output.lower():
+    low = output.lower()
+    if not output or "ptp" not in low:
+        return {}
+    # an NX-OS error/deprecation banner ('% Unavailable command (deprecated by show ptp local-clock)',
+    # '% Invalid command') mentions 'ptp' but carries NO clock data -- don't read it as a real PTP clock, or a
+    # switch with no PTP reads as PTP-present (audit-5 #13).
+    if re.search(r"%\s*(?:unavailable|invalid|incomplete|ambiguous|permission|deprecated)", low) or "deprecated by" in low:
         return {}
     r: dict = {"device_type": "", "profile": "", "domain": "", "clock_identity": "", "num_ports": None,
                "grandmaster": "", "offset_ns": None, "mean_path_delay_ns": None,
@@ -1688,6 +3803,18 @@ def parse_show_version(output: str) -> Dict[str, str]:
         m2 = re.match(r"^\s*cisco\s+(Nexus\S*|N\d[Kk]-\S+|\S+)\s+(?:chassis|switch)", line, re.IGNORECASE)
         if m2 and not r["model"]:
             r["model"] = m2.group(1).strip()
+        # NX-OS chassis line 'cisco Nexus9000 C93180YC-EX Chassis' -- the PID sits BETWEEN the family and 'chassis',
+        # so m2 captures only 'Nexus9000'; prefer the specific PID model (multi-domain audit #2).
+        m2c = re.match(r"^\s*cisco\s+Nexus(\d*)\S*\s+(\S+)\s+chassis", line, re.IGNORECASE)
+        if m2c and (not r["model"] or r["model"].lower().startswith("nexus")):
+            _fam, _tok = m2c.group(1), m2c.group(2).strip()
+            if re.match(r"^N\d+K-", _tok, re.IGNORECASE):
+                r["model"] = _tok                         # already a full PID (e.g. N6K-C6001-64P)
+            else:
+                # the NX-OS chassis line gives a bare marketing number (6001) or a PID body (C93180YC-EX) that
+                # eoldb can't match -- normalize to the NxK-C<...> PID (audit-5 #4: 6001 -> N6K-C6001).
+                _fd = _fam[:1] if _fam else (_tok[:1] if _tok[:1].isdigit() else "")
+                r["model"] = f"N{_fd}K-{_tok if _tok[:1].upper() == 'C' else 'C' + _tok}" if _fd else _tok
         m3 = re.search(r"(?:system serial number\s*[:=]|processor board id)\s*(\S+)", low)
         if m3 and not r["serial_number"]:
             r["serial_number"] = line.split()[-1].strip()
@@ -1695,7 +3822,10 @@ def parse_show_version(output: str) -> Dict[str, str]:
         if m3b and not r["serial_number"]:
             r["serial_number"] = m3b.group(1).strip()
         m4 = re.search(r"version\s+([\d\.()A-Za-z]+)", line, re.IGNORECASE)
-        if m4 and not r["sw_version"] and any(k in low for k in ("ios","nx-os","nxos","software")):
+        # NOT on a 'BIOS: version ...' line -- 'ios' is a substring of 'BIOS', which made the BIOS string capture
+        # sw_version and lock out the real 'NXOS: version 9.3(10)' line (multi-domain audit #2).
+        if m4 and not r["sw_version"] and not low.startswith("bios") \
+                and any(k in low for k in ("ios", "nx-os", "nxos", "software")):
             r["sw_version"] = m4.group(1).strip().rstrip(",")
         m4b = re.match(r"^\s*system:\s+version\s+(\S+)", line, re.IGNORECASE)
         if m4b:
@@ -1731,7 +3861,7 @@ def _inv_commit(entry: Dict[str, str], result: Dict) -> None:
         any(k in name  for k in ("power supply","psu","ps ","power-supply","power module")) or
         any(k in descr for k in ("power supply","psu","power-supply","power module"))       or
         bool(re.match(r"^(pwr-|n[0-9][kk]-pac|c[0-9]+-pwr|pwrs-|pwr[0-9])", pid_l))
-    )
+    ) and "fex" not in name   # a FEX/child fabric-extender PSU is the FEX's, NOT the parent Nexus chassis's -- counting it inflated num_power_supplies (audit-5 scale-ssot #3)
 
     # Module / linecard: check before chassis to avoid C9300-NM-* matching chassis
     _module_pid = bool(re.match(
@@ -1827,6 +3957,14 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
         if md and not r["total_drawn_w"]: r["total_drawn_w"] = md.group(1)
         me = re.search(r"(?:total power available|remaining)[^:]*:\s*([\d\.]+)\s*[wW]", low)
         if me and not r["total_remaining_w"]: r["total_remaining_w"] = me.group(1)
+        # NX-OS summary is SPACE-aligned (no colon): 'Total Power Capacity   2100.00 W' / 'Total Power Available
+        # 1099.92 W' / 'Total Power Output 1000.08 W'. [^0-9]* skips the gap (or colon) before the number.
+        mcap = re.search(r"total power capacity\b[^0-9]*([\d.]+)\s*w\b", low)
+        if mcap and not r["total_capacity_w"]: r["total_capacity_w"] = mcap.group(1)
+        mav = re.search(r"total power available\b[^0-9]*([\d.]+)\s*w\b", low)
+        if mav and not r["total_remaining_w"]: r["total_remaining_w"] = mav.group(1)
+        mou = re.search(r"total power (?:output|drawn|used)\b[^0-9]*([\d.]+)\s*w\b", low)
+        if mou and not r["total_drawn_w"]: r["total_drawn_w"] = mou.group(1)
         # PS status rows: lines starting with slot number or PS label
         if re.match(r"^\s*\d[AB]?\s+\S", line) or re.match(r"^\s*[Pp][Ss]\d?\s", line):
             if "ok" in low:                               ps_list.append("OK")
@@ -1838,8 +3976,16 @@ def parse_show_environment_power(output: str) -> Dict[str, object]:
                 float(r["total_capacity_w"]) - float(r["total_drawn_w"]), 1))
         except Exception as e:
             logger.debug(f"remaining-power calc failed (cap={r['total_capacity_w']} drawn={r['total_drawn_w']}): {e}")  # NEW-V3.23.1
+    if r["total_capacity_w"] and r["total_remaining_w"] and not r["total_drawn_w"]:
+        try:                                          # NX-OS gives capacity + available but no explicit draw line
+            r["total_drawn_w"] = str(round(float(r["total_capacity_w"]) - float(r["total_remaining_w"]), 2))
+        except Exception:
+            pass
     r["ps_status_list"] = ps_list
-    r["num_ps"] = len(set(ps_list))
+    # PHYSICAL PSU count = number of PS rows, NOT the count of DISTINCT statuses: two healthy PSUs both 'OK'
+    # collapse under set() to 1, so a dual-PSU chassis reported num_ps=1 and a genuinely-redundant box was
+    # flagged single-PSU (cry-wolf). ps_status_list keeps the per-row statuses for display.
+    r["num_ps"] = len(ps_list)
     return r
 
 
@@ -1871,6 +4017,13 @@ def parse_show_environment(output: str) -> Dict[str, str]:
             if "ok" in low or "good" in low:       fan_states.append("OK")
             elif "fail" in low or "fault" in low:  fan_states.append("Failed")
             elif "warn" in low or "minor" in low:  fan_states.append("Warning")
+        # NX-OS 'show environment' Fan table row: '<Chassis-N|Fan-N|PS-N>  <Model>  <Hw>  <status>' (status last).
+        mnxfan = re.match(r"^\s*(?:chassis|fan(?:tray|module)?|ps)[- ]?\d+\s+\S+\s+\S+\s+(ok|fail\w*|fault|absent|shutdown)\b", low)
+        if mnxfan:
+            _st = mnxfan.group(1)
+            if _st == "ok":                                 fan_states.append("OK")
+            elif _st.startswith("fail") or _st == "fault":  fan_states.append("Failed")
+            elif _st == "absent":                           fan_states.append("Absent")
         # Catalyst 'Fantray : Good' (4948E) / 'Fantray 1 : ... status : Good' (4500-X) - only a
         # line that actually carries a health word (skips 'removal timeout', 'consumed by').
         if "fantray" in low and re.search(r"\b(good|ok|failed|fail|fault|bad)\b", low):
@@ -1946,6 +4099,7 @@ def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
             return
         text = "\n".join(lines)
         rec: Dict[str, object] = {"oper": "", "input_errors": "", "crc": "",
+                                  "output_errors": "", "late_collisions": "", "runts": "", "giants": "",
                                   "output_drops": "", "last_input": "", "last_output": ""}
         mhdr = re.match(r"^\S+\s+is\s+([A-Za-z ]+?)(?:,|$)", lines[0])
         if mhdr: rec["oper"] = mhdr.group(1).strip()
@@ -1953,6 +4107,14 @@ def parse_show_interface_counters(output: str) -> Dict[str, Dict[str, object]]:
         if m: rec["input_errors"] = int(m.group(1))
         m = re.search(r"(\d+)\s+CRC", text)
         if m: rec["crc"] = int(m.group(1))
+        # output-side L1 health (was collected but discarded): TX errors, late collisions (duplex mismatch),
+        # runts/giants (framing) — preserved so the explorer interface view + future detectors can read them.
+        for _fld, _pat in (("output_errors", r"(\d+)\s+output error"),
+                           ("late_collisions", r"(\d+)\s+late collision"),
+                           ("runts", r"(\d+)\s+runts"), ("giants", r"(\d+)\s+giants")):
+            _m = re.search(_pat, text)
+            if _m:
+                rec[_fld] = int(_m.group(1))
         m = re.search(r"Total output drops:\s*(\d+)", text)
         if m:
             rec["output_drops"] = int(m.group(1))
@@ -2095,7 +4257,9 @@ def parse_interface_phy(output: str) -> Dict[str, Dict[str, str]]:
         m = re.search(r"\b(Full|Half|Auto)-duplex\b", text, re.IGNORECASE)
         if m:
             rec["duplex"] = m.group(1).capitalize()
-        m = re.search(r"-duplex,\s*([^,]+?)\s*,", text)        # token between duplex and next comma
+        # token between duplex and the next comma/EOL. [^,\n] (not [^,]) so a duplex line with no trailing comma
+        # can't bleed the following detail lines (Beacon / flow-control ...) into the speed cell (audit-5 #5).
+        m = re.search(r"-duplex,\s*([^,\n]+?)\s*(?:,|\n|$)", text)
         if m:
             rec["speed"] = m.group(1).strip()
         m = re.search(r"media type is\s+(.+)", text, re.IGNORECASE)
@@ -2134,6 +4298,21 @@ def _parse_poe_watts(output: str) -> Dict[str, float]:
             except ValueError:
                 pass
     return res
+
+
+def _parse_poe_inline_budget(output: str) -> Dict[str, float]:
+    """Total PoE budget from the 'show power inline' Module-summary rows (one per stack member):
+    '<module>  <available>  <used>  <remaining>' watts, e.g. '1   1120.0   0.0   1120.0'. Sums across
+    modules; 'n/a' rows (a non-PoE module) are skipped. Returns {'available','used'} only when at least
+    one real module row was seen, else {} -- so an n/a-only / non-PoE switch stays UNBUDGETED (poe_util
+    blank) rather than reading a false 0/0. (DET-poe-001: the budget the per-port parse never captured.)"""
+    avail = used = 0.0
+    seen = False
+    for line in output.splitlines():
+        m = re.match(r"^\s*\d+\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s*$", line)
+        if m:
+            avail += float(m.group(1)); used += float(m.group(2)); seen = True
+    return {"available": round(avail, 1), "used": round(used, 1)} if seen else {}
 
 
 # =============================================================================

@@ -24,7 +24,7 @@ def test_empty_inputs_yield_empty_register():
     dd = compute_device_dossiers()
     assert dd["per_device"] == []
     assert dd["summary"]["n_devices"] == 0
-    assert dd["summary"]["bands"] == {"Severe": 0, "Elevated": 0, "Guarded": 0, "Low": 0}
+    assert dd["summary"]["bands"] == {"Severe": 0, "Elevated": 0, "Guarded": 0, "Low": 0, "Unassessed": 0}
     assert "not assessed" in dd["note"]
 
 
@@ -45,6 +45,24 @@ def test_healthy_device_lands_low_and_na_axes_never_count():
     assert states["Health"] == "ok"
     assert d["n_na"] >= 5                    # most axes carry no evidence here
     assert d["verdict"].startswith("No stacked risk")
+
+
+def test_fully_unassessed_device_is_not_a_clean_bill_of_health():
+    """Coverage-honesty: a device with NO collected evidence (health band 'Insufficient Data', every
+    risk axis n/a, no risk/watch signal) must NOT be labeled 'No stacked risk — routine migration
+    handling' / Low — that reads a collection GAP as a clean assessment (the exact false-health the
+    doctrine forbids). It gets a distinct 'Unassessed' band + an honest verdict. On AJ this is the 50
+    not-collected devices. Distinct from the assessed-clean case above (band 'Excellent', Health=ok)."""
+    dd = compute_device_dossiers(
+        health_scores=[{"switch": "darkbox", "score": None, "band": "Insufficient Data",
+                        "role": "access", "criticality": 1.0, "deductions": []}])
+    (d,) = dd["per_device"]
+    assert d["health_band"] == "Insufficient Data"
+    assert d["n_risk"] == 0 and d["n_watch"] == 0
+    assert d["risk_band"] == "Unassessed", d["risk_band"]
+    assert not d["verdict"].startswith("No stacked risk")
+    assert ("not assess" in d["verdict"].lower()) or ("collection gap" in d["verdict"].lower())
+    assert dd["summary"]["bands"].get("Unassessed") == 1
 
 
 def test_compound_eol_keystone_fires_and_floors_the_band():
@@ -142,3 +160,20 @@ def test_device_risk_sheet_writer():
     wb2 = openpyxl.Workbook()
     write_device_risk_sheet(wb2, {})
     assert "nothing to register" in str(wb2[DEVICE_RISK_SHEET_NAME].cell(5, 1).value)
+
+
+def test_dossier_critical_health_not_routine_on_info_blast_radius():
+    """[audit-3 #11 false-health] a Critical-health / multi-red-axis switch banded 'Low / No stacked risk —
+    routine' whenever its modeled blast radius was Info (impact=1 collapsed risk_index). Floor by red-axis count."""
+    from cisco_toolkit.analyze import compute_device_dossiers
+    fi = [{"host": "edge9", "severity": "Info", "stranded": 0, "vlans_impacted": 0, "detail": "No reachability impact."}]
+    dA = compute_device_dossiers(health_scores=[{"switch": "edge9", "band": "Critical", "score": 12, "role": "access"}],
+                                 failure_impact=fi)["per_device"][0]
+    assert dA["risk_band"] != "Low" and "routine" not in dA["verdict"].lower()       # Critical health -> not routine
+    dB = compute_device_dossiers(
+        health_scores=[{"switch": "edge9", "band": "Good", "score": 80, "role": "access"}], failure_impact=fi,
+        lifecycle_risk={"per_device": [{"host": "edge9", "model": "WS-C3560", "band": "Past-LDoS"}]},
+        software_risk={"per_device": [{"host": "edge9", "train_band": "Replace/Upgrade", "config_assessable": True}],
+                       "findings": [{"host": "edge9", "severity": "High"}]},
+        security={"edge9": {"findings": [{"status": "fail", "severity": "high"}]}})["per_device"][0]
+    assert dB["risk_band"] in ("Elevated", "Severe") and "routine" not in dB["verdict"].lower()   # 3 red axes

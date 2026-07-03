@@ -16,6 +16,14 @@ SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
 _SEV_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
 BANDS = ["Excellent", "Good", "Fair", "Poor", "Critical"]
 
+
+def _as_list(v: Any) -> List[Any]:
+    """Coerce a snapshot section to a list. `(snap.get(k) or [])` only guards falsy values; a truthy
+    NON-list (an int/str/dict in a malformed or hostile upload) would flow into a list-comprehension and
+    raise TypeError -- summarize() runs on every upload, so that escapes as an HTTP 500. Returning [] for a
+    non-list degrades gracefully, honouring this function's `Every field degrades gracefully` contract."""
+    return v if isinstance(v, list) else []
+
 # Detail sections the web UI can render as tabs, in display order. (key, human label)
 SECTION_LABELS: List[tuple] = [
     ("punchlist", "Punch-list"),
@@ -34,6 +42,17 @@ SECTION_LABELS: List[tuple] = [
     ("remediation_plan", "Remediation"),
     ("validation_plan", "Validation plan"),
     ("golden_drift", "Config drift"),
+    # NEW (orchestration-peer wave): the three always-on engines the pipeline now emits. Each is a dict
+    # {findings|features:[...], summary} so _section_index counts its inner list (an empty/clean section
+    # hides its own tab, the platform convention). capture_integrity with zero findings = a clean estate.
+    ("feature_compliance", "Feature compliance"),   # I2 — golden-drift decomposed per policy area
+    ("acl_line_reachability", "ACL shadow"),         # G1 — offline ACL line-reachability / shadow proof
+    ("capture_integrity", "Capture integrity"),      # K1 — truncation / pager / CLI-error guard
+    # the four OPT-IN engines (present only when a flag supplies their input, so a default run hides them):
+    ("state_assertions", "State assertions"),        # A1 — declarative check-pack (--assert-pack)
+    ("path_intents", "Path intents"),                # G3 — named REACHES/ISOLATED intents (--path-intents)
+    ("external_reconcile", "SoT reconcile"),         # B  — declared inventory vs observed (--import-inventory)
+    ("whatif", "Failure what-if"),                   # G4 — failure-injection scenarios (--scenario); a LIST
     # NEW-V3.23.176: the V3.23.164-.167 NOS analytic quartet landed after this list was
     # authored and was unreachable from the web platform (neither tab nor whitelist) --
     # the one-source-of-truth audit's only real gap.
@@ -45,6 +64,12 @@ SECTION_LABELS: List[tuple] = [
     ("endpoint_identity", "Endpoints"),
     ("lifecycle_risk", "Lifecycle / EoL"),
     ("collection_completeness", "Collection completeness"),
+    # Plan A / Tier-1 #3: the zero-parse yield ledger (cmdio.parse_yield_report, published in every
+    # snapshot). Lives under the Collection Completeness sheet in the workbook -- same adjacency here.
+    # Dict {summary, per_parser, events, events_truncated}: _section_index counts `events` (its first
+    # inner list), so a run where every content-bearing command parsed hides the tab (the platform
+    # convention) -- telemetry about the PARSER, never a device verdict.
+    ("parse_yield", "Parse yield"),
 ]
 
 
@@ -66,10 +91,11 @@ def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
 
     Prefer the engine's own executive-brief keystones; else derive from failure_impact
     (stranded endpoints, severity), which is always present."""
-    eb = snap.get("executive_brief") or {}
+    eb = snap.get("executive_brief")
+    eb = eb if isinstance(eb, dict) else {}      # a truthy non-dict section must not raise (malformed upload)
     if isinstance(eb.get("keystones"), list) and eb["keystones"]:
         return eb["keystones"][:top]
-    fi = [r for r in (snap.get("failure_impact") or []) if isinstance(r, dict)]
+    fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
     fi.sort(key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99),
                            -int(r.get("stranded", 0) or 0)))
     return [{
@@ -101,25 +127,34 @@ def _section_index(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
     """Headline + breakdowns used by the dashboard cards. Every field degrades gracefully."""
-    hs = [r for r in (snap.get("health_scores") or []) if isinstance(r, dict)]
-    pl = [r for r in (snap.get("punchlist") or []) if isinstance(r, dict)]
-    mr = [r for r in (snap.get("migration_readiness") or []) if isinstance(r, dict)]
+    hs = [r for r in _as_list(snap.get("health_scores")) if isinstance(r, dict)]
+    pl = [r for r in _as_list(snap.get("punchlist")) if isinstance(r, dict)]
+    mr = [r for r in _as_list(snap.get("migration_readiness")) if isinstance(r, dict)]
 
-    head = engine.trend_point(snap)  # re-use the engine's headline extractor
+    try:
+        head = engine.trend_point(snap)  # re-use the engine's headline extractor
+    except Exception:
+        head = {}                        # a malformed upload must degrade, not 500 the dashboard summary
 
     readiness = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
     for r in mr:
         if r.get("readiness") in readiness:
             readiness[r["readiness"]] += 1
 
-    lr = (snap.get("lifecycle_risk") or {}).get("summary") or {}
+    _lr = snap.get("lifecycle_risk")
+    _lrs = (_lr if isinstance(_lr, dict) else {}).get("summary")    # a truthy NON-dict summary (e.g. an older
+    lr = _lrs if isinstance(_lrs, dict) else {}                     # engine's "not computed" string) must not 500
 
     return {
         "version": snap.get("script_version", ""),
         "n_switches": head.get("n_switches", len(snap.get("devices") or {})),
         "avg_health": head.get("avg_health", ""),
         "bands": _count_by(hs, "band", BANDS),
-        "n_critical": head.get("n_critical", 0),
+        # n_critical must reconcile with the bands chart (both from health_scores): trend_point can silently
+        # yield 0 when executive_brief is a corrupt non-dict (the try/except above swallows the AttributeError),
+        # contradicting the bands chart on the SAME screen -- fall back to the band count (audit-5 cross-artifact #4).
+        "n_critical": head.get("n_critical") if isinstance(head.get("n_critical"), int)
+        else _count_by(hs, "band", BANDS).get("Critical", 0),
         "punchlist": {
             "total": len(pl),
             "by_severity": _count_by(pl, "severity", SEVERITY_ORDER),
@@ -130,7 +165,7 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         "keystones": _keystones(snap),
         "lifecycle": {
             "past_eos": lr.get("n_past_eos", ""),
-            "near_eos": lr.get("n_near_eos", ""),
+            "near_eos": lr.get("n_near", ""),          # canonical Near-LDoS count (was a non-existent n_near_eos -> always blank)
             "past_ldos": lr.get("n_past_ldos", ""),
         } if lr else {},
         "sections": _section_index(snap),
