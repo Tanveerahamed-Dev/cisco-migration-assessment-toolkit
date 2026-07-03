@@ -1,5 +1,8 @@
 # Single Source of Truth (SSOT) contract
 
+> This is the **assessment-facts** contract — one domain of the project-wide SSOT registry.
+> For the full map of every fact-domain and its owner, see [`docs/ssot.md`](ssot.md).
+
 The assessment publishes each **headline fact exactly once** and every downstream surface — the
 DOCX/PPTX/XLSX deliverables, the HTML explorer, the campaign trend, and the AssessHub web
 dashboard — **reads** that one canonical value. No surface recomputes a headline number from the
