@@ -6,6 +6,12 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.25.1] — 2026-07-03 — post-review coverage-honesty fixes + hardening
+
+Adversarial review of the v3.25.0 wave (PR #277 + #278). One live cloud false-health
+(BUILD-02) plus a cluster of coverage_matrix false-health / correctness fixes and
+type/tool hardening — every fix test-first, `tests/golden/snapshot.json` byte-unchanged.
+
 ### Fixed
 - **`build_cloud` coverage-honesty on a parser crash**: the v3.25.0 typed-parser-defaults change made
   `_safe_parse` return a list parser's registered empty shape (`[]`) on a raise — which slips past
@@ -17,6 +23,27 @@ per change, with verification evidence) lives in
   (a `shape-sentinel` marker + a pin-test scoping the exemption to exactly that site), and a pre-existing
   crash test whose `lambda` mock masked the real list-shape fallback (so it passed regardless) is made
   faithful. Found by adversarial review of the v3.25.0 wave.
+- **`coverage_matrix` false-health — a not-collected device no longer vanishes** (PR #279): the matrix joined
+  the (device × axis) grid on `snap['devices']`, which is built only from hosts that COLLECTED — so a device
+  the collection never reached (unreachable / auth-fail) emitted zero rows and read as fully covered (on the
+  AJ fleet, all 50 of 303/253 not-collected devices would disappear). The join is now the inventory UNION
+  (`snap['devices'] ∪ collection_completeness`), and a never-reached host abstains `not_collected` on every
+  base axis (its capture/parse "covered-by-silence" inference is invalid).
+- **`coverage_matrix` inventory join hardened** (PR #282): an architecture-coverage row is emitted only for a
+  host that IS an inventory device; an observed class contributing no inventory device collapses to one
+  `(fleet)` covered row — guarding a malformed/bare struct-keyed controller axis (`{faults:.., nodes:..}`)
+  from leaking fake `device='faults'` rows into `by_device` and the covered count.
+- **`coverage_matrix` correctness**: the synthetic `(fleet)` row no longer pollutes `by_device` (it is
+  not a device); `summary.n_axes` counts the coverage *dimensions* (collection/capture/parse/architecture),
+  not each architecture key (was ~32 on a real fleet); a parse-axis event keyed by the FS-sanitized
+  collection-dir basename is mapped back to the raw inventory host, so a hostname with an FS-reserved char
+  no longer silently reads "covered"; and `set(devices)` is hoisted out of the per-event loop.
+- **`Verdict` string-safety**: `__str__`/`__format__` pinned to `str`'s, so `str()`/f-string/`%s` yield the
+  bare value (`"proven"`) not `"Verdict.PROVEN"` — safe for any future surface that interpolates a raw member.
+- **`gen_oui_registry`**: a bare-filename `--out` no longer crashes on `os.makedirs('')`, and a leading
+  space no longer defeats the no-egress URL refusal.
+- **Test hardening**: two coverage guards that silently asserted nothing on the shipped fixtures are now
+  synthetic and always-run — the `_carry` `''`-cache sentinel and the collection false-health guard.
 
 ## [v3.25.0] — 2026-07-03 — Plan-A remainder wave (8 items) + project SSOT registry
 

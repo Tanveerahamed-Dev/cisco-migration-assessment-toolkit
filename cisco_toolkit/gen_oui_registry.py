@@ -63,7 +63,9 @@ def parse_manuf(lines) -> Iterator[Tuple[str, int, str]]:
 
 def write_registry(rows: Iterator[Tuple[str, int, str]], out_path: str) -> int:
     """Write ``(prefix, bits, vendor)`` rows to a gzipped TSV. Returns the row count written."""
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    out_dir = os.path.dirname(out_path)
+    if out_dir:                                     # bare filename -> dirname is '' -> os.makedirs('') raises
+        os.makedirs(out_dir, exist_ok=True)
     n = 0
     with gzip.open(out_path, "wt", encoding="utf-8", newline="\n") as f:
         for hexp, bits, vendor in rows:
@@ -79,7 +81,7 @@ def main(argv=None) -> None:
     ap.add_argument("manuf", help="path to a local Wireshark 'manuf' file (already downloaded; NOT a URL)")
     ap.add_argument("--out", default=_DEFAULT_OUT, help="output tsv.gz (default: the shipped pack)")
     args = ap.parse_args(argv)
-    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", args.manuf):
+    if re.match(r"^\s*[a-zA-Z][a-zA-Z0-9+.-]*://", args.manuf):     # \s*: a leading space must not defeat the refusal
         sys.exit("refusing a URL — download 'manuf' on a trusted host and pass the LOCAL path (no-egress doctrine).")
     with open(args.manuf, encoding="utf-8", errors="replace") as f:
         n = write_registry(parse_manuf(f), args.out)
