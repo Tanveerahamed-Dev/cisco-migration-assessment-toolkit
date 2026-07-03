@@ -2236,11 +2236,19 @@ def main():
     # axes already computed above into one dossier per box (risk_index = topology impact x stacked
     # exposure + named compound patterns CR-01..CR-06), BEFORE the punch-list so the compound
     # findings fold into the decision layer (and reach every downstream surface via snap["punchlist"]).
-    device_dossiers = _run_phase("Device risk register", compute_device_dossiers,
-                                 health_scores, failure_impact, lifecycle_risk, software_risk,
-                                 platform_health, syslog_intelligence, qos_audit, golden_drift,
-                                 all_security, all_config_hygiene, all_stp_roots, all_vpc,
-                                 physical_health, protocol_health, move_groups, _default={})
+    # Plan-A #15 strangler (Stage-3 positional collapse): thread the analyze-stage synthesis feeds
+    # through the typed AnalysisContext and read them back via the thin ctx-adapters, so the three
+    # WIDE compute_* below stop threading 15/19/14 locals positionally through _run_phase (a silent
+    # reorder could corrupt them). _actx is populated per-consumer as each feed becomes available;
+    # the public compute_* keep their explicit-arg signatures (see the adapters just after main()).
+    _actx = AnalysisContext(
+        health_scores=health_scores, failure_impact=failure_impact, lifecycle_risk=lifecycle_risk,
+        software_risk=software_risk, platform_health=platform_health,
+        syslog_intelligence=syslog_intelligence, qos_audit=qos_audit, golden_drift=golden_drift,
+        all_security=all_security, all_config_hygiene=all_config_hygiene,
+        all_stp_roots=all_stp_roots, all_vpc=all_vpc, physical_health=physical_health,
+        protocol_health=protocol_health, move_groups=move_groups)
+    device_dossiers = _run_phase("Device risk register", _device_dossiers, _actx, _default={})
     # EDA-style physical cable map (SSOT for the explorer + webapp cable-map views): a node/port/cable
     # graph, role-tiered lanes, LAG bundled, op-status DERIVED from interface state (coverage-honest --
     # uncollected devices/ports are [NOT OBSERVED] neutral, never a fake green).
@@ -2251,15 +2259,16 @@ def main():
     # (The V3.23.172 compound patterns MAY reference the EoL band, but only when stacked with a second
     # independent risk axis -- the synthetic golden fleet's models are outside the EoL KB, so the frozen
     # golden punch-list stays date-free.)
-    punchlist = _run_phase("Migration Punch-List", compute_migration_punchlist,
-                           cross_layer, all_security, all_config_hygiene, physical_health,
-                           l3_forwarding, protocol_health, _stp_findings, health_scores, move_groups,
-                           l2=_l2, hostname_mismatches=_hostname_mismatches, drift=_drift,
-                           ptp_readiness=_ptp_readiness, media_risks=_media_risks,
-                           syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,           # NEW-V3.23.169
-                           software_risk=software_risk, platform_health=platform_health,           # NEW-V3.23.169
-                           device_dossiers=device_dossiers,                                        # NEW-V3.23.172
-                           _default=[])
+    _actx.device_dossiers = device_dossiers          # feed the just-computed dossiers into the punch-list
+    _actx.cross_layer = cross_layer
+    _actx.l3_forwarding = l3_forwarding
+    _actx.stp_findings = _stp_findings
+    _actx.l2 = _l2
+    _actx.hostname_mismatches = _hostname_mismatches
+    _actx.drift = _drift
+    _actx.ptp_readiness = _ptp_readiness
+    _actx.media_risks = _media_risks
+    punchlist = _run_phase("Migration Punch-List", _punchlist, _actx, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
     _run_phase("Device Risk Register sheet", write_device_risk_sheet, wb, device_dossiers)
 
@@ -2399,13 +2408,14 @@ def main():
     # NEW-V3.23.120: the cross-axis migration brief -- one headline per assessment axis (the 7 new axes +
     # health + punch-list + readiness) rolled up into one decision-grade synthesis. Compute once -> the
     # Executive Summary sheet leads with it + snapshot.
-    executive_brief = _run_phase("Executive brief", compute_executive_brief,
-                                 health_scores, punchlist, migration_readiness, application_intelligence,
-                                 lifecycle_risk, segmentation, multicast_intelligence, remediation_plan,
-                                 syslog_intelligence=syslog_intelligence, qos_audit=qos_audit,      # NEW-V3.23.169
-                                 software_risk=software_risk, platform_health=platform_health,      # NEW-V3.23.169
-                                 device_dossiers=device_dossiers,                                   # NEW-V3.23.172
-                                 endpoint_identity=endpoint_identity,   # SSOT: n_endpoints == len(endpoint_identity)
+    _actx.punchlist = punchlist                      # feed the just-computed punch-list into the brief
+    _actx.migration_readiness = migration_readiness
+    _actx.application_intelligence = application_intelligence
+    _actx.segmentation = segmentation
+    _actx.multicast_intelligence = multicast_intelligence
+    _actx.remediation_plan = remediation_plan
+    _actx.endpoint_identity = endpoint_identity      # SSOT: n_endpoints == len(endpoint_identity)
+    executive_brief = _run_phase("Executive brief", _executive_brief, _actx,
                                  _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty brief (wave R2-4-01)
     # SSOT: inject the canonical VLAN count (vlan_inventory) into the brief's scale HERE, BEFORE the
     # Executive Summary sheet reads it. At this point interfaces are still InterfaceData OBJECTS (the dict
@@ -2768,10 +2778,17 @@ def main():
         except Exception as e:
             logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
 
-    # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases, extracted behind the typed
-    # AnalysisContext carrier. Golden-neutral -- a pure move; the stage body is byte-identical.
-    _stage_finalize(AnalysisContext(args=args, out_xlsx=out_xlsx, root_dir=root_dir,
-                                    all_devices_meta=all_devices_meta, workers=workers, snap_dict=snap_dict))
+    # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases. Reuse the ONE analyze-stage
+    # carrier (_actx, unconditionally built above) instead of a second fresh AnalysisContext -- the
+    # strangler converging on a single typed carrier threaded through the pipeline. Set the
+    # finalize-only handles it reads (config + the assembled snapshot); golden-neutral, same values.
+    _actx.args = args
+    _actx.out_xlsx = out_xlsx
+    _actx.root_dir = root_dir
+    _actx.all_devices_meta = all_devices_meta
+    _actx.workers = workers
+    _actx.snap_dict = snap_dict
+    _stage_finalize(_actx)
 
 
 def _stage_finalize(ctx: "AnalysisContext") -> None:
@@ -2823,6 +2840,56 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
                     f"slowest: {_slowest['phase']} {_slowest['seconds']}s)")
     except Exception as e:
         logger.warning(f"  phase-timings write failed (non-fatal): {e}")
+
+
+# =============================================================================
+# STAGE-3 (analyze) CTX-ADAPTERS  (Plan-A #15 strangler -- the positional collapse)
+# =============================================================================
+# The three WIDE analyze-stage syntheses used to thread 15/19/14 locals positionally through
+# _run_phase -- the fragile call-shape a silent reorder could corrupt (the format-fidelity /
+# positional-drift bug class). Each adapter reads the typed AnalysisContext and forwards to the
+# UNCHANGED public compute_* by KEYWORD (named -> reorder-proof; it also documents the
+# main-local -> parameter renames such as all_security -> security). The public functions keep
+# their explicit-arg signatures, so the webapp / excel / the ~40 direct-call tests are untouched;
+# ONLY main() reads from ctx. Module-private (leading underscore) so test_package's surface
+# contract is unchanged. Golden-neutral: the same values reach compute_* in the same order.
+def _device_dossiers(ctx: "AnalysisContext") -> dict:
+    """Ctx-adapter for the Device Risk Register (was 15 positional args at 'Device risk register')."""
+    return compute_device_dossiers(
+        health_scores=ctx.health_scores, failure_impact=ctx.failure_impact,
+        lifecycle_risk=ctx.lifecycle_risk, software_risk=ctx.software_risk,
+        platform_health=ctx.platform_health, syslog_intelligence=ctx.syslog_intelligence,
+        qos_audit=ctx.qos_audit, golden_drift=ctx.golden_drift,
+        security=ctx.all_security, config_hygiene=ctx.all_config_hygiene,
+        stp_roots=ctx.all_stp_roots, vpc=ctx.all_vpc,
+        physical_health=ctx.physical_health, protocol_health=ctx.protocol_health,
+        move_groups=ctx.move_groups)
+
+
+def _punchlist(ctx: "AnalysisContext") -> list:
+    """Ctx-adapter for the Migration Punch-List (was 9 positional + 10 keyword args)."""
+    return compute_migration_punchlist(
+        cross_layer=ctx.cross_layer, security=ctx.all_security, config_hygiene=ctx.all_config_hygiene,
+        physical_health=ctx.physical_health, l3_forwarding=ctx.l3_forwarding,
+        protocol_health=ctx.protocol_health, stp_findings=ctx.stp_findings,
+        health_scores=ctx.health_scores, move_groups=ctx.move_groups,
+        l2=ctx.l2, hostname_mismatches=ctx.hostname_mismatches, drift=ctx.drift,
+        ptp_readiness=ctx.ptp_readiness, media_risks=ctx.media_risks,
+        syslog_intelligence=ctx.syslog_intelligence, qos_audit=ctx.qos_audit,
+        software_risk=ctx.software_risk, platform_health=ctx.platform_health,
+        device_dossiers=ctx.device_dossiers)
+
+
+def _executive_brief(ctx: "AnalysisContext") -> dict:
+    """Ctx-adapter for the cross-axis Executive Brief (was 8 positional + 6 keyword args)."""
+    return compute_executive_brief(
+        health_scores=ctx.health_scores, punchlist=ctx.punchlist,
+        migration_readiness=ctx.migration_readiness,
+        application_intelligence=ctx.application_intelligence, lifecycle_risk=ctx.lifecycle_risk,
+        segmentation=ctx.segmentation, multicast_intelligence=ctx.multicast_intelligence,
+        remediation_plan=ctx.remediation_plan, syslog_intelligence=ctx.syslog_intelligence,
+        qos_audit=ctx.qos_audit, software_risk=ctx.software_risk, platform_health=ctx.platform_health,
+        device_dossiers=ctx.device_dossiers, endpoint_identity=ctx.endpoint_identity)
 
 
 if __name__ == "__main__":
