@@ -24,7 +24,7 @@ guard is a latent drift bug (this is Law 1 of the Deliverable Excellence Standar
 | **Architecture coverage** (29-class detector map) | `snap['architecture_coverage']` | read the block | webapp SSOT lock |
 | **Project decisions / state / lessons / how-to-work** | cross-session memory — `.claude/.../memory/*.md` + `MEMORY.md` index | read `MEMORY.md` (one-line hooks) → topic files | ⚠️ **hand-maintained — the one un-mechanized owner** |
 | **Operating doctrine / PPDIOO gates / guardrails / entrypoints** | `CLAUDE.md` | read it | convention |
-| **Release version** | `pyproject.toml :: version` (currently 3.25.1) — bump at **tag time only** | — | partial |
+| **Release version** | `pyproject.toml :: version` (currently 3.25.2) — bump at **tag time only** | — | partial |
 | **Schema version** | `cisco_toolkit.__version__` (currently 3.23.0) — **decoupled from release by design** | — | intentional decouple (do **not** reconcile equal to release) |
 | **Release history / what shipped** | `CHANGELOG.md` | read it | convention |
 | **Run provenance / chain-of-custody** | `cisco_toolkit/manifest.py` (append-only, hash-chained ledger) | the sealed run-manifest | tamper-evident by hash chain |
