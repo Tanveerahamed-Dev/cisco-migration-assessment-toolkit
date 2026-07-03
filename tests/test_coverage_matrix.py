@@ -72,6 +72,46 @@ def test_not_observed_arch_classes_are_fleet_abstentions():
     assert len(fhrp) == 1 and fhrp[0]["device"] == "sw1" and fhrp[0]["state"] == "covered"
 
 
+def test_struct_keyed_observed_arch_axis_emits_no_struct_field_device_rows():
+    """PR #277 adversarial follow-up (companion to PR #279): coverage-honest join against the inventory.
+    A JSON controller axis is published `{host: {faults, nodes, ...}}`, so architecture_coverage's `hosts`
+    are controller hostnames. But if a malformed / bare struct-keyed axis (`{faults:.., nodes:..}`) ever
+    reached the matrix, `hosts` would be the axis's STRUCTURAL FIELDS -- leaking fake device rows
+    (device='faults' / device='nodes'), all 'covered', into by_device and the covered count. A struct key
+    is NOT a device: no such row may appear; the observed class collapses to ONE '(fleet)' covered row
+    (the axis WAS observed -- coverage != health)."""
+    struct_keys = ["devices", "fabric_health", "faults", "nodes", "summary"]   # none is an inventory member
+    snap = {"devices": {"sw1": {}, "sw2": {}},
+            "architecture_coverage": {"classes": [
+                {"key": "aci", "label": "Cisco ACI (APIC fabric)", "observed": True, "status": "finding",
+                 "findings": ["aci-critical-fault-raised"], "hosts": struct_keys},
+            ]}}
+    cm = compute_coverage_matrix(snap)
+    aci_rows = [r for r in cm["rows"] if r["axis"] == "aci"]
+    leaked = sorted(set(struct_keys) & {r["device"] for r in aci_rows})
+    assert not leaked, f"struct-field(s) leaked as device rows: {leaked}"
+    assert not (set(struct_keys) & set(cm["by_device"])), "struct fields polluted by_device"
+    assert len(aci_rows) == 1 and aci_rows[0]["device"] == "(fleet)"
+    assert aci_rows[0]["state"] == "covered" and aci_rows[0]["is_abstention"] is False
+
+
+def test_host_keyed_observed_arch_axis_still_emits_per_real_device_rows():
+    """The struct-key guard must NOT over-collapse the host-keyed norm: an observed axis whose hosts ARE
+    inventory devices (every ssh axis, and a controller axis attributed to a collected host -- e.g. the
+    golden's aci under 'core2') still emits one covered row per REAL device."""
+    snap = {"devices": {"core1": {}, "core2": {}},
+            "architecture_coverage": {"classes": [
+                {"key": "aci", "label": "Cisco ACI", "observed": True, "status": "finding",
+                 "findings": ["aci-critical-fault-raised"], "hosts": ["core2"]},
+                {"key": "fhrp_detail", "label": "FHRP", "observed": True, "status": "clean",
+                 "hosts": ["core1", "core2"]},
+            ]}}
+    cm = compute_coverage_matrix(snap)
+    aci = [r for r in cm["rows"] if r["axis"] == "aci"]
+    assert len(aci) == 1 and aci[0]["device"] == "core2" and aci[0]["state"] == "covered"
+    assert sorted(r["device"] for r in cm["rows"] if r["axis"] == "fhrp_detail") == ["core1", "core2"]
+
+
 def test_deterministic_and_degrades_on_empty():
     snap = {"devices": {"b": {}, "a": {}}, "collection_completeness": {"devices": []},
             "capture_integrity": {"findings": []}, "parse_yield": {"events": []}}

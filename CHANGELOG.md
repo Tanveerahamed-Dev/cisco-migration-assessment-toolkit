@@ -6,6 +6,15 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Coverage-honesty
+- **Coverage-matrix inventory join hardened**: `compute_coverage_matrix` emits an architecture
+  coverage row only for a host that IS an inventory device; an observed class that contributes no
+  inventory device collapses to a single `(fleet)` covered row. This guards against a malformed /
+  bare struct-keyed controller axis (`{faults:.., nodes:..}`) leaking fake device rows
+  (`device='faults'` / `'nodes'`) into `by_device` and the covered count. Render-only and
+  golden-neutral (the JSON controller axes are published `{host: {...}}`, so real fleets are
+  unaffected); companion to the PR #279 coverage_matrix false-health fix.
+
 ## [v3.25.0] — 2026-07-03 — Plan-A remainder wave (8 items) + project SSOT registry
 
 The tail of the Plan-A backlog (Tier-2/3 remainder + the greenfield north-star's additive first

@@ -108,14 +108,27 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- architecture axes: observed class -> a covered row per host (a fired detector still means the
     # axis WAS observed; coverage != health); not-observed class -> one fleet-level abstention row.
+    # Coverage-honest JOIN against the inventory: a class's `hosts` are trustworthy as DEVICE identifiers
+    # only when they are inventory members. The JSON controller axes (aci/sdwan/ise/fmc) are published
+    # `{host: {...}}`, so `hosts` are controller hostnames -- but a malformed / bare struct-keyed axis
+    # (`{faults:.., nodes:..}`) would make `hosts` the axis's STRUCTURAL FIELDS, leaking fake device rows
+    # (device='faults' / device='nodes'), all 'covered', into by_device and the covered count. So emit a
+    # per-host row only for a host that IS a real inventory device; if an observed class contributes no
+    # inventory device, collapse it to a single '(fleet)' covered row (observed -> coverage != health).
+    # (companion to PR #279)
+    device_set = set(devices)
     for c in _l(_d(snap.get("architecture_coverage")).get("classes")):
         if not isinstance(c, dict):
             continue
         key = c.get("key") or "?"
         if c.get("observed"):
             ev = ", ".join(_l(c.get("findings"))) if c.get("status") == "finding" else ""
-            for host in _l(c.get("hosts")):
-                rows.append(_row(host, key, "architecture", "covered", "architecture_coverage", ev))
+            real_hosts = [h for h in _l(c.get("hosts")) if h in device_set]
+            if real_hosts:
+                for host in real_hosts:
+                    rows.append(_row(host, key, "architecture", "covered", "architecture_coverage", ev))
+            else:
+                rows.append(_row("(fleet)", key, "architecture", "covered", "architecture_coverage", ev))
         else:
             rows.append(_row("(fleet)", key, "architecture", "not_observed", "architecture_coverage",
                              str(c.get("label", ""))))
