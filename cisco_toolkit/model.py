@@ -126,6 +126,17 @@ class Verdict(str, enum.Enum):
     NOT_OBSERVED = "not_observed"     # a blind spot -- never silently a pass (the coverage-honest core)
     INDETERMINATE = "indeterminate"   # evidence present but insufficient to decide
 
+    # A bare `str, Enum` inherits Enum.__str__/__format__ -> "Verdict.PROVEN"; override them to the str value
+    # ("proven") so str() / f-string / %s all match the .value / json.dumps paths -- keeping a RAW member
+    # interchangeable with the hand-written string everywhere, so a future surface that interpolates a Verdict
+    # into a snapshot string / Excel cell / HTML can't silently emit "Verdict.PROVEN". (Explicit defs, not
+    # `__str__ = str.__str__`, so the self-type matches the Enum override signature under mypy.)
+    def __str__(self) -> str:
+        return str.__str__(self)
+
+    def __format__(self, format_spec: str) -> str:
+        return str.__format__(self, format_spec)
+
     @classmethod
     def from_acl_reason(cls, reason: str) -> "Verdict":
         """Map an aclcheck finding ``reason`` to a Verdict: a dead / unmatchable line is REFUTED

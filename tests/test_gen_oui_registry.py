@@ -52,3 +52,17 @@ def test_main_refuses_a_url():
     for url in ("https://www.wireshark.org/download/automated/data/manuf", "http://x/manuf", "ftp://h/f"):
         with pytest.raises(SystemExit):
             G.main([url])
+
+
+def test_main_refuses_a_url_with_leading_whitespace():
+    """The no-egress refusal must not be defeated by a leading space in the argument."""
+    with pytest.raises(SystemExit):
+        G.main(["   https://www.wireshark.org/download/automated/data/manuf"])
+
+
+def test_write_registry_tolerates_a_bare_filename_out(tmp_path, monkeypatch):
+    """A bare-filename --out (no directory component) must not crash on os.makedirs('') -- a plausible
+    first invocation writing to the CWD."""
+    monkeypatch.chdir(tmp_path)
+    n = G.write_registry(G.parse_manuf(_SAMPLE.splitlines()), "oui_registry.tsv.gz")
+    assert n == 3 and (tmp_path / "oui_registry.tsv.gz").exists()
