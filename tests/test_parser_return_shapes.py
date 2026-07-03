@@ -59,10 +59,13 @@ def test_registry_agrees_with_return_annotations():
 
 
 def _safe_parse_call_defaults(src):
-    """Yield (parser_name, declared_shape) for each _safe_parse(...) call, where declared_shape
-    is 'dict'/'list' when the site pins one via a trailing `or {}`/`or []` or an inner
-    `_default={}`/`_default=[]`, else None. Balanced-paren scan because the calls nest
-    _load_cmd_output(...), which a flat regex cannot span."""
+    """Yield (parser_name, declared_shape, sentinel) for each _safe_parse(...) call, where
+    declared_shape is 'dict'/'list' when the site pins one via a trailing `or {}`/`or []` or an
+    inner `_default={}`/`_default=[]`, else None. `sentinel` is True when the call is tagged with
+    a `shape-sentinel` marker in the comment immediately after it -- the ONE coverage-honest idiom
+    where a deliberately OFF-registry crash default is CORRECT because the result is isinstance-
+    guarded to 'not observed' before any shape-specific consumer sees it (build_cloud). Balanced-
+    paren scan because the calls nest _load_cmd_output(...), which a flat regex cannot span."""
     out = []
     for m in re.finditer(r"_safe_parse\(", src):
         pm = re.match(r"\s*(parse_\w+)", src[m.end():])
@@ -83,22 +86,36 @@ def _safe_parse_call_defaults(src):
             shape = "list"
         elif tail.startswith("or {}"):
             shape = "dict"
-        out.append((parser, shape))
+        sentinel = "shape-sentinel" in src[j:j + 200]       # marker in the comment right after the call
+        out.append((parser, shape, sentinel))
     return out
 
 
 def test_build_call_site_defaults_match_the_registry():
     """The anti-drift guard: wherever a build.py _safe_parse site pins an empty default
     (`or {}` / `or []` / `_default=`), it must equal the parser's registered shape -- so a
-    future `or {}` on a list parser (the exact hazard) turns this red."""
+    future `or {}` on a list parser (the exact hazard) turns this red. The SOLE exemption is a
+    `shape-sentinel`-tagged site: a deliberately OFF-registry crash default that is immediately
+    isinstance-guarded to 'not observed' (build_cloud), so the sentinel never reaches a
+    shape-specific consumer. An UNMARKED mismatch is still the hazard -> still red."""
     mismatches = []
-    for parser, shape in _safe_parse_call_defaults(_BUILD_SRC):
-        if shape is None:
+    for parser, shape, sentinel in _safe_parse_call_defaults(_BUILD_SRC):
+        if shape is None or sentinel:
             continue
         reg = PARSER_RETURN_SHAPE.get(parser)
         if reg is not None and reg != shape:
             mismatches.append((parser, f"call-site={shape}", f"registry={reg}"))
     assert not mismatches, f"build.py _safe_parse default disagrees with the parser's shape: {mismatches}"
+
+
+def test_shape_sentinel_exemption_is_scoped_to_the_one_documented_site():
+    """The `shape-sentinel` exemption must cover EXACTLY the one documented coverage-honest site
+    (parse_aws_security_groups in build_cloud) and no other -- so the exemption can never silently
+    spread to hide a real shape hazard, and can't be quietly dropped from build_cloud either. Only
+    an OFF-registry default counts (a sentinel tag on a matching default is a harmless no-op)."""
+    exempt = [parser for parser, shape, sentinel in _safe_parse_call_defaults(_BUILD_SRC)
+              if sentinel and shape is not None and PARSER_RETURN_SHAPE.get(parser) not in (None, shape)]
+    assert exempt == ["parse_aws_security_groups"], f"unexpected shape-sentinel exemptions: {exempt}"
 
 
 def test_empty_for_returns_a_fresh_correct_container():

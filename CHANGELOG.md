@@ -6,6 +6,18 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Fixed
+- **`build_cloud` coverage-honesty on a parser crash**: the v3.25.0 typed-parser-defaults change made
+  `_safe_parse` return a list parser's registered empty shape (`[]`) on a raise — which slips past
+  `build_cloud`'s `isinstance(sgs, list)` guard and reports `{security_groups: []}` ("cloud observed,
+  nothing world-open" = false-health) instead of not-observed `{}`. `build_cloud` now pins `_default={}`
+  (a non-list crash sentinel the guard converts back to not-observed), while a genuine clean `[]` on the
+  happy path is preserved. Latent today (`parse_aws_security_groups` never raises) → **golden byte-
+  unchanged**. The `build.py` call-site anti-drift test learns the one intentional off-registry sentinel
+  (a `shape-sentinel` marker + a pin-test scoping the exemption to exactly that site), and a pre-existing
+  crash test whose `lambda` mock masked the real list-shape fallback (so it passed regardless) is made
+  faithful. Found by adversarial review of the v3.25.0 wave.
+
 ## [v3.25.0] — 2026-07-03 — Plan-A remainder wave (8 items) + project SSOT registry
 
 The tail of the Plan-A backlog (Tier-2/3 remainder + the greenfield north-star's additive first
