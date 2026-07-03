@@ -22,6 +22,8 @@ from __future__ import annotations
 import ipaddress
 from typing import Any, Dict, List, Optional, Tuple
 
+from cisco_toolkit.model import Verdict
+
 # --------------------------------------------------------------------------- proto dimension
 # A co-finite set over protocol tokens: ("only", {…}) = exactly these; ("allexcept", {…}) = all but these.
 PROTO_FULL: Tuple[str, frozenset] = ("allexcept", frozenset())
@@ -278,7 +280,8 @@ def _rule_box(rule, ogs, host) -> Tuple[dict, str]:
 
 def _finding(idx, rule, reason, blocking_lines=None, different_action=False, detail=""):
     return {"line_index": idx, "action": rule.get("action"), "raw": rule.get("raw", ""),
-            "reason": reason, "blocking_lines": blocking_lines or [],
+            "reason": reason, "verdict": Verdict.from_acl_reason(reason).value,
+            "blocking_lines": blocking_lines or [],
             "different_action": bool(different_action), "detail": detail}
 
 
