@@ -16,7 +16,7 @@ no live network needed to read them:
   **keystone devices** the fleet most depends on (by migration blast radius),
   and per-move-group readiness;
 - an interactive single-file **Network Migration Explorer** (the
-  `blast_radius_explorer.html` viewer) with 13 analysis modes and a graphical
+  `blast_radius_explorer.html` viewer) with 14 analysis modes and a graphical
   **Risk cockpit** that distils thousands of findings into "fix these first."
 
 The engine is **multi-vendor**: Cisco IOS / IOS-XE / NX-OS over SSH show-text plus
