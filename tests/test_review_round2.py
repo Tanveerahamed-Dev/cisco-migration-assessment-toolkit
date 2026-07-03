@@ -113,15 +113,21 @@ def test_sdwan_control_shortfall_counted_once_per_device():
 
 # ---------------------------------------------------------------- BUILD-02 ---
 def test_build_cloud_coverage_honest_on_parser_crash(tmp_path):
-    """BUILD-02: build_cloud's not-observed contract hinged on `sgs is None`, but _safe_parse returns {} (a
-    truthy non-list) when the parser RAISES -- so a crash produced {security_groups: {}}, read downstream as
-    'cloud observed, nothing world-open' (false-health). A non-list (crash {} or no-export None) must map to
-    not-observed {}; only a real list is a result."""
+    """BUILD-02: build_cloud's not-observed contract must NOT hinge on 'the parser didn't raise'. A crash
+    produced a non-list default read downstream as 'cloud observed, nothing world-open' (false-health):
+    originally {} slipping past an `is None` guard; since Plan-A #16, _safe_parse's typed default hands back the
+    parser's registered LIST shape [], which slips past the isinstance guard instead. A parser crash and a
+    no-export None must BOTH map to not-observed {}; only a real list is a result. The raiser MUST carry the
+    real parser's __name__ so _safe_parse's _empty_for resolves that LIST shape -- a bare `lambda` (__name__
+    '<lambda>') falls back to {} and silently turns this into a false-negative (it was, until this was fixed)."""
     import cisco_toolkit.build as b
     f = tmp_path / "sg.json"; f.write_text('{"SecurityGroups":[]}')
     orig = b.parse_aws_security_groups
+    def _crash(*a):
+        raise RecursionError()
+    _crash.__name__ = orig.__name__                                                     # faithful: reproduces the real LIST-shape crash fallback
     try:
-        b.parse_aws_security_groups = lambda *a: (_ for _ in ()).throw(RecursionError())
+        b.parse_aws_security_groups = _crash
         assert b.build_cloud({"aws ec2 describe-security-groups": str(f)}) == {}        # crash -> not observed
     finally:
         b.parse_aws_security_groups = orig
