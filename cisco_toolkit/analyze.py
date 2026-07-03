@@ -505,7 +505,6 @@ def cable_map_of_snapshot(snap: Optional[dict]) -> dict:
     snapshot that predates the cable-map engine, rehydrate the stored dict-interfaces back into
     InterfaceData (dropping unknown legacy keys) and recompute. Tolerant: anything else -> empty
     model. One rehydration SSOT — the --compare delta and the webapp endpoint both call this."""
-    import dataclasses
     snap = snap if isinstance(snap, dict) else {}
     cm = snap.get("cable_map")
     if isinstance(cm, dict) and isinstance(cm.get("nodes"), list):
@@ -517,14 +516,13 @@ def cable_map_of_snapshot(snap: Optional[dict]) -> dict:
         current = (_n0 is None or "kind" in _n0) and (_c0 is None or "speed" in _c0)
         if current or not isinstance(snap.get("interfaces"), dict):
             return cm
-    fields = {f.name for f in dataclasses.fields(InterfaceData)}
     raw = snap.get("interfaces")
     ifaces: Dict[str, Dict[str, InterfaceData]] = {}
     if isinstance(raw, dict):
         for host, ports_ in raw.items():
             if not isinstance(ports_, dict):
                 continue
-            ifaces[host] = {p: InterfaceData(**{k: v for k, v in (d or {}).items() if k in fields})
+            ifaces[host] = {p: InterfaceData.from_sparse(d)   # restores '' defaults for sparse-encoded records
                             for p, d in ports_.items() if isinstance(d, dict)}
     return compute_cable_map(ifaces, snap.get("health_scores"))
 

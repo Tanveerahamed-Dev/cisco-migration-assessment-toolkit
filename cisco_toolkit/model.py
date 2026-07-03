@@ -5,7 +5,7 @@ byte-identical). `InterfaceData` is the per-port record; `DevicePhysical` is the
 per-switch physical inventory record. The scoring tunables (`ScoringConfig`) stay
 with the analyze layer - they are not part of the passed-around data model."""
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 
 # =============================================================================
@@ -71,6 +71,15 @@ class InterfaceData:
     # interface (comma-joined; blank = no relay). Lets the explorer flag client subnets whose gateway has no
     # relay, or whose relay server isn't routable from the gateway (a classic silent post-cutover black-hole).
     dhcp_helpers: str = ""
+
+    @classmethod
+    def from_sparse(cls, d) -> "InterfaceData":
+        """Rehydrate a possibly-sparse interface record: unknown / legacy keys are dropped, and any
+        field the sparse encoder OMITTED (because it equalled the '' default) is restored to that
+        default. Lossless inverse of html.sparsify_interfaces for any record dataclasses.asdict()
+        produced -- the one decode SSOT the --compare delta and the webapp endpoint both go through."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in (d or {}).items() if k in known})
 
 
 # =============================================================================

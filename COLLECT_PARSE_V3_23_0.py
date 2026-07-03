@@ -458,7 +458,7 @@ from cisco_toolkit.build import (
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
-from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_workbook,
+from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_explorer, write_diff_workbook,
                                 write_campaign_workbook, redact_snapshot,
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
@@ -2651,7 +2651,7 @@ def main():
         except Exception as e:
             logger.warning(f"  --assert-pack not evaluated ({e}); skipping.")
     try:
-        write_json_file(snap_path, snap_dict, compact=True)   # Tier3#14: minified on disk (parsed-compare consumers)
+        write_json_file(snap_path, sparsify_interfaces(snap_dict), compact=True)   # Tier3#14 minified + #14-Phase2 sparse interfaces on disk
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")
     except Exception as e:
         logger.warning(f"  Snapshot write failed: {e}")
