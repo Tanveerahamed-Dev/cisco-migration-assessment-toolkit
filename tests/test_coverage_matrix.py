@@ -130,3 +130,72 @@ def test_parse_axis_attributes_fs_sanitized_hostname():
     parse_rows = [r for r in cm["rows"] if r["axis"] == "parse"]
     assert len(parse_rows) == 1 and parse_rows[0]["device"] == host
     assert parse_rows[0]["state"] == "unparsed" and parse_rows[0]["is_abstention"]
+
+
+def test_not_collected_device_is_not_silently_dropped():
+    """[PR #279] A device the collection NEVER reached (unreachable / auth-fail) is ABSENT from
+    snap['devices'] (that map is built only from hosts that collected) but IS present in
+    collection_completeness as 'not collected'. The matrix joined on snap['devices'].keys(), so such a
+    device emitted ZERO rows and vanished -- reading as fully covered, the exact false-health the module
+    exists to prevent (on the [HISTORY-REDACTED] fleet: all 50 of 303/253 not-collected devices would disappear). It must
+    instead appear as an explicit blind-spot on EVERY base axis, and must NOT read 'covered' on
+    capture/parse by mere absence of findings (a never-collected host was never captured or parsed either)."""
+    snap = {
+        "devices": {"sw1": {}},                                      # sw1 is the only host that collected
+        "collection_completeness": {"devices": [
+            {"host": "sw1", "status": "partial", "missing": ["show cdp neighbors"]},
+            {"host": "sw2", "status": "not collected", "missing": ["<all commands>"]},  # never reached
+        ]},
+        "capture_integrity": {"findings": []},
+        "parse_yield": {"events": []},
+    }
+    cm = compute_coverage_matrix(snap)
+    by = {(r["device"], r["axis"]): r for r in cm["rows"]}
+    for axis in ("collection", "capture", "parse"):
+        assert ("sw2", axis) in by, f"not-collected sw2 vanished from the {axis} axis"
+        assert by[("sw2", axis)]["state"] == "not_collected", f"sw2 must abstain on {axis}, not fake-cover"
+        assert by[("sw2", axis)]["is_abstention"]
+    assert cm["summary"]["n_devices"] == 2                            # the inventory universe now counts sw2
+    assert "sw2" not in {r["device"] for r in cm["rows"] if r["state"] == "covered"}
+    assert by[("sw1", "collection")]["state"] == "partial"           # control: sw1 keeps its REAL verdicts
+    assert by[("sw1", "capture")]["state"] == "covered"
+    assert by[("sw1", "parse")]["state"] == "covered"
+
+
+def test_struct_keyed_observed_arch_axis_emits_no_struct_field_device_rows():
+    """[PR #282] Coverage-honest join against the inventory. A JSON controller axis is published
+    `{host: {faults, nodes, ...}}`, so architecture_coverage's `hosts` are controller hostnames. But if a
+    malformed / bare struct-keyed axis (`{faults:.., nodes:..}`) ever reached the matrix, `hosts` would be
+    the axis's STRUCTURAL FIELDS -- leaking fake device rows (device='faults' / 'nodes'), all 'covered',
+    into by_device and the covered count. A struct key is NOT a device: no such row may appear; the observed
+    class collapses to ONE '(fleet)' covered row (the axis WAS observed -- coverage != health)."""
+    struct_keys = ["devices", "fabric_health", "faults", "nodes", "summary"]   # none is an inventory member
+    snap = {"devices": {"sw1": {}, "sw2": {}},
+            "architecture_coverage": {"classes": [
+                {"key": "aci", "label": "Cisco ACI (APIC fabric)", "observed": True, "status": "finding",
+                 "findings": ["aci-critical-fault-raised"], "hosts": struct_keys},
+            ]}}
+    cm = compute_coverage_matrix(snap)
+    aci_rows = [r for r in cm["rows"] if r["axis"] == "aci"]
+    leaked = sorted(set(struct_keys) & {r["device"] for r in aci_rows})
+    assert not leaked, f"struct-field(s) leaked as device rows: {leaked}"
+    assert not (set(struct_keys) & set(cm["by_device"])), "struct fields polluted by_device"
+    assert len(aci_rows) == 1 and aci_rows[0]["device"] == "(fleet)"
+    assert aci_rows[0]["state"] == "covered" and aci_rows[0]["is_abstention"] is False
+
+
+def test_host_keyed_observed_arch_axis_still_emits_per_real_device_rows():
+    """[PR #282] The struct-key guard must NOT over-collapse the host-keyed norm: an observed axis whose
+    hosts ARE inventory devices (every ssh axis, and a controller axis attributed to a collected host --
+    e.g. the golden's aci under 'core2') still emits one covered row per REAL device."""
+    snap = {"devices": {"core1": {}, "core2": {}},
+            "architecture_coverage": {"classes": [
+                {"key": "aci", "label": "Cisco ACI", "observed": True, "status": "finding",
+                 "findings": ["aci-critical-fault-raised"], "hosts": ["core2"]},
+                {"key": "fhrp_detail", "label": "FHRP", "observed": True, "status": "clean",
+                 "hosts": ["core1", "core2"]},
+            ]}}
+    cm = compute_coverage_matrix(snap)
+    aci = [r for r in cm["rows"] if r["axis"] == "aci"]
+    assert len(aci) == 1 and aci[0]["device"] == "core2" and aci[0]["state"] == "covered"
+    assert sorted(r["device"] for r in cm["rows"] if r["axis"] == "fhrp_detail") == ["core1", "core2"]

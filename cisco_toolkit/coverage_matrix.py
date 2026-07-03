@@ -57,13 +57,28 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
     """Compose snap's four coverage sources into a per-(device, axis) matrix. Pure over the
     snapshot, deterministic, fail-soft (a missing source just yields fewer rows)."""
     snap = _d(snap)
-    devices = sorted((snap.get("devices") or {}).keys())      # the inventory universe (join key 1)
-    device_set = set(devices)                                 # hoisted: membership-tested per parse event below
     rows: List[Dict[str, Any]] = []
 
+    # collection_completeness lists only the blind spots (partial / not-collected hosts).
+    cc_by_host: Dict[str, dict] = {}
+    for _rec in _l(_d(snap.get("collection_completeness")).get("devices")):
+        _h = _rec.get("host") if isinstance(_rec, dict) else None
+        if isinstance(_h, str) and _h:
+            cc_by_host[_h] = _rec
+    # Join key 1 = the INVENTORY universe = collected devices UNION the collection_completeness blind spots.
+    # snap['devices'] is built only from hosts that collected (COLLECT_PARSE: `if cmd_to_file is None: continue`),
+    # so a device the collection never reached (unreachable / auth-fail) is absent there yet present in
+    # collection_completeness as 'not collected'. Joining on snap['devices'] alone silently dropped it -> zero
+    # rows -> it read as fully covered (the coverage-honesty inversion this module exists to prevent, PR #279).
+    _dev = snap.get("devices")
+    dev_keys = {k for k in _dev if isinstance(k, str)} if isinstance(_dev, dict) else set()
+    devices = sorted(dev_keys | set(cc_by_host))
+    device_set = set(devices)                                 # hoisted: membership-tested throughout
+    # A host the collection never reached is a blind spot on EVERY axis (nothing was captured or parsed
+    # either) -> its capture/parse 'covered-by-silence' inference is invalid (PR #279).
+    not_collected = {h for h, rec in cc_by_host.items() if "not" in str(rec.get("status", "")).lower()}
+
     # --- collection axis: present-with-status in collection_completeness -> abstain; absent -> covered
-    cc_by_host = {d.get("host"): d for d in _l(_d(snap.get("collection_completeness")).get("devices"))
-                  if isinstance(d, dict) and d.get("host")}
     for host in devices:
         rec = cc_by_host.get(host)
         if rec is None:
@@ -81,6 +96,9 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(f, dict) and f.get("host"):
             ci_by_host.setdefault(f["host"], []).append(f)
     for host in devices:
+        if host in not_collected:                             # never reached -> nothing to verify (never a fake 'covered')
+            rows.append(_row(host, "capture", "capture", "not_collected", "collection_completeness"))
+            continue
         finds = ci_by_host.get(host)
         if finds:
             w = _worst_capture(finds)
@@ -111,10 +129,13 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
             raw = ev.get("device")
             if not isinstance(raw, str):
                 continue
-            host = raw if (raw in device_set or raw in cc_by_host) else fs_to_dev.get(raw)
-            if host is not None and (host in cc_by_host or host in device_set):   # a real inventory device
-                py_suspect.setdefault(host, []).append(ev)
+            dev = raw if (raw in device_set or raw in cc_by_host) else fs_to_dev.get(raw)
+            if dev is not None and (dev in cc_by_host or dev in device_set):   # a real inventory device
+                py_suspect.setdefault(dev, []).append(ev)
     for host in devices:
+        if host in not_collected:                             # never reached -> nothing to parse (never a fake 'covered')
+            rows.append(_row(host, "parse", "parse", "not_collected", "collection_completeness"))
+            continue
         sus = py_suspect.get(host)
         if sus:
             rows.append(_row(host, "parse", "parse", "unparsed", "parse_yield",
@@ -130,8 +151,16 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
         key = c.get("key") or "?"
         if c.get("observed"):
             ev = ", ".join(_l(c.get("findings"))) if c.get("status") == "finding" else ""
-            for host in _l(c.get("hosts")):
-                rows.append(_row(host, key, "architecture", "covered", "architecture_coverage", ev))
+            # Coverage-honest join: a class's `hosts` are trustworthy device ids only when they are inventory
+            # members. A malformed / bare struct-keyed axis ({faults:.., nodes:..}) would otherwise leak its
+            # STRUCTURAL FIELDS as fake 'covered' device rows; emit per-host only for a real device, else
+            # collapse the observed class to one (fleet) covered row (observed -> coverage != health) (PR #282).
+            real_hosts = [h for h in _l(c.get("hosts")) if h in device_set]
+            if real_hosts:
+                for host in real_hosts:
+                    rows.append(_row(host, key, "architecture", "covered", "architecture_coverage", ev))
+            else:
+                rows.append(_row(_FLEET, key, "architecture", "covered", "architecture_coverage", ev))
         else:
             rows.append(_row(_FLEET, key, "architecture", "not_observed", "architecture_coverage",
                              str(c.get("label", ""))))

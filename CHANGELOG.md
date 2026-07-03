@@ -17,6 +17,16 @@ per change, with verification evidence) lives in
   (a `shape-sentinel` marker + a pin-test scoping the exemption to exactly that site), and a pre-existing
   crash test whose `lambda` mock masked the real list-shape fallback (so it passed regardless) is made
   faithful. Found by adversarial review of the v3.25.0 wave.
+- **`coverage_matrix` false-health — a not-collected device no longer vanishes** (PR #279): the matrix joined
+  the (device × axis) grid on `snap['devices']`, which is built only from hosts that COLLECTED — so a device
+  the collection never reached (unreachable / auth-fail) emitted zero rows and read as fully covered (on the
+  [HISTORY-REDACTED] fleet, all 50 of 303/253 not-collected devices would disappear). The join is now the inventory UNION
+  (`snap['devices'] ∪ collection_completeness`), and a never-reached host abstains `not_collected` on every
+  base axis (its capture/parse "covered-by-silence" inference is invalid).
+- **`coverage_matrix` inventory join hardened** (PR #282): an architecture-coverage row is emitted only for a
+  host that IS an inventory device; an observed class contributing no inventory device collapses to one
+  `(fleet)` covered row — guarding a malformed/bare struct-keyed controller axis (`{faults:.., nodes:..}`)
+  from leaking fake `device='faults'` rows into `by_device` and the covered count.
 - **`coverage_matrix` correctness**: the synthetic `(fleet)` row no longer pollutes `by_device` (it is
   not a device); `summary.n_axes` counts the coverage *dimensions* (collection/capture/parse/architecture),
   not each architecture key (was ~32 on a real fleet); a parse-axis event keyed by the FS-sanitized
