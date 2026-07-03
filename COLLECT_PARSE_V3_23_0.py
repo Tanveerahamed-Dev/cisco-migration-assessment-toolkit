@@ -458,10 +458,12 @@ from cisco_toolkit.build import (
 # contract), write_html_explorer (bakes the snapshot into the Blast-Radius Explorer), and the
 # '--compare OLD NEW' diff workbook. Homed in cisco_toolkit/html.py; imported back so main() keeps
 # building/serializing the snapshot + emitting the HTML + diff outputs.
-from cisco_toolkit.html import (snapshot_state, write_html_explorer, write_diff_workbook,
+from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_explorer, write_diff_workbook,
                                 write_campaign_workbook, redact_snapshot,
                                 redact_collected_inplace, redact_workbook_cells,   # campaign trend; audit-3 #8 workbook redact
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
+from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
+from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -2620,6 +2622,11 @@ def main():
         # source the deliverables/explorer/webapp read instead of re-deriving coverage. Reads design_blueprint
         # + the per-axis snapshot keys; excluded from the golden (date-relative via the blueprint) like it.
         snap_dict["architecture_coverage"] = compute_architecture_coverage(snap_dict)
+        # Coverage matrix (Plan-A #5): compose the four coverage sources -- collection / capture / parse /
+        # architecture -- into ONE per-(device, axis) first-class table (recomputes no device state, just
+        # projects the published verdicts). Reads architecture_coverage above, so it inherits the
+        # blueprint's date-relativity -> excluded from the golden + publish-locked alongside it.
+        snap_dict["coverage_matrix"] = compute_coverage_matrix(snap_dict)
     except Exception as e:                                            # fail-soft: never break the snapshot write
         logger.warning(f"  design_blueprint compute failed (non-fatal): {e}")
     # SSOT self-check (the field-data safety net): the suite only proves SSOT-consistency on its own
@@ -2651,7 +2658,7 @@ def main():
         except Exception as e:
             logger.warning(f"  --assert-pack not evaluated ({e}); skipping.")
     try:
-        write_json_file(snap_path, snap_dict, compact=True)   # Tier3#14: minified on disk (parsed-compare consumers)
+        write_json_file(snap_path, sparsify_interfaces(snap_dict), compact=True)   # Tier3#14 minified + #14-Phase2 sparse interfaces on disk
         logger.info(f"[OK] Snapshot: {snap_path}  (use --compare OLD NEW for pre/post diff)")
     except Exception as e:
         logger.warning(f"  Snapshot write failed: {e}")
@@ -2760,6 +2767,21 @@ def main():
             write_ops_handbook_docx(oh_out, snap_dict, label)
         except Exception as e:
             logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
+
+    # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases, extracted behind the typed
+    # AnalysisContext carrier. Golden-neutral -- a pure move; the stage body is byte-identical.
+    _stage_finalize(AnalysisContext(args=args, out_xlsx=out_xlsx, root_dir=root_dir,
+                                    all_devices_meta=all_devices_meta, workers=workers, snap_dict=snap_dict))
+
+
+def _stage_finalize(ctx: "AnalysisContext") -> None:
+    """Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases -- run-manifest
+    chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41). A true LEAF:
+    nothing downstream reads its outputs, which is why it is the safest first extraction. Reads the
+    context's out_xlsx / snap_dict / root_dir / args / all_devices_meta / workers + the module-global
+    _PHASE_TIMINGS; the body below is byte-identical to the inline block it replaced."""
+    out_xlsx, snap_dict, root_dir, args = ctx.out_xlsx, ctx.snap_dict, ctx.root_dir, ctx.args
+    all_devices_meta, workers = ctx.all_devices_meta, ctx.workers
 
     # Phase 39: sealed run-manifest chain-of-custody (roadmap D2 + J4). The offline, deterministic answer to a
     # GAIT-style audit trail: a hash-chained ledger of the pipeline stages + per-artifact sha256 + the

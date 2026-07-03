@@ -347,6 +347,17 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     _cov = snap["architecture_coverage"]
     assert _cov == compute_architecture_coverage(snap), \
         "published architecture_coverage must equal the canonical recompute"
+    # Coverage matrix (Plan-A #5): the composed per-(device,axis) SSOT is published + equals its recompute,
+    # its abstention count is self-consistent, and no collection blind-spot reads a fake 'covered'.
+    from cisco_toolkit.coverage_matrix import compute_coverage_matrix
+    assert "coverage_matrix" in snap, "snapshot must publish the coverage_matrix SSOT"
+    _cm = snap["coverage_matrix"]
+    assert _cm == compute_coverage_matrix(snap), "published coverage_matrix must equal the canonical recompute"
+    assert _cm["summary"]["n_abstained"] == sum(1 for _r in _cm["rows"] if _r["is_abstention"])
+    _cc_blind = {d.get("host") for d in (snap.get("collection_completeness") or {}).get("devices", [])
+                 if isinstance(d, dict) and "complete" not in str(d.get("status", "")).lower()}
+    assert not any(r["axis"] == "collection" and r["device"] in _cc_blind and r["state"] == "covered"
+                   for r in _cm["rows"]), "a collection blind-spot must never read 'covered'"
     _covby = {c["key"]: c for c in _cov["classes"]}
     assert _covby["aci"]["status"] == "finding" and _covby["aci"]["channel"] == "json", \
         "ACI (json controller channel) must be observed-with-findings on the fixtures"

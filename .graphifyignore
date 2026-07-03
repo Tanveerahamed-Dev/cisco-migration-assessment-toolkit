@@ -11,3 +11,9 @@ _ref/
 graphify-out/
 _aci_conv.txt
 graphify-out/memory/
+
+# 2026-07 audit: linked git worktrees under .claude/ are full repo COPIES, so scanning them
+# re-imports every engine/webapp module as a DUPLICATE node (the same god-node/ambiguous-path
+# pollution the _ref/ copy caused). Ignore the whole tree — worktree pruning still leaves the
+# 3 named claude/* checkouts, and their copies must never enter the graph.
+.claude/worktrees/
