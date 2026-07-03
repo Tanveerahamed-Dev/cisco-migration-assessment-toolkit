@@ -6,6 +6,16 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.26.0] — 2026-07-03 — true 3D topology
+
+### Added
+- **True 3D topology** — a new `3D` explorer mode (keyboard `o` = orbit) renders the fabric as an
+  orbitable 3-D scene: device tiers stacked as rings (core / distribution on the upper rings, access
+  below), each switch chassis tinted by health — drawn by a **self-contained canvas-2D projector** (no
+  external deps; offline / CSP-safe, like the rest of the single-file explorer). The AssessHub webapp
+  gains a **2D/3D toggle** backed by a lazy-loaded `Topology3D` component. Re-expressed as one entry in
+  main's table-driven MODES-registry when the 3-week-stale branch was brought current (PR #264).
+
 ## [v3.25.2] — 2026-07-03 — SSOT sweep + Plan-A #15 Stage-3 refactor
 
 ### Fixed
