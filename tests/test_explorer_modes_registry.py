@@ -42,7 +42,7 @@ def _entries():
 
 def test_registry_is_complete_and_unique():
     entries = _entries()
-    assert len(entries) >= 13, f"expected all 13 modes, found {sorted(entries)}"
+    assert len(entries) >= 14, f"expected all 14 modes, found {sorted(entries)}"
     for key, seg in entries.items():
         for field in ("kbd:", "gl:", "btn:", "label:", "tag:", "hint:", "legend:"):
             assert field in seg, f"mode {key!r} lost its {field.rstrip(':')} field"
