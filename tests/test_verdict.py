@@ -31,6 +31,16 @@ def test_verdict_serializes_as_a_bare_string():
     assert Verdict("indeterminate") is Verdict.INDETERMINATE          # round-trips from the string
 
 
+def test_verdict_str_and_fstring_are_the_bare_value():
+    """A bare str-mixin enum inherits Enum.__str__ -> 'Verdict.PROVEN' (NOT 'proven'); Verdict pins __str__/
+    __format__ to str's so str() / f-string / %s / .format() all yield the bare value. Guards a future surface
+    that interpolates a RAW member into a snapshot string / Excel cell / HTML (not just the .value path)."""
+    assert str(Verdict.PROVEN) == "proven"
+    assert f"{Verdict.NOT_OBSERVED}" == "not_observed"
+    assert "%s" % Verdict.REFUTED == "refuted"
+    assert "{}".format(Verdict.INDETERMINATE) == "indeterminate"
+
+
 def test_from_acl_reason_mapping():
     assert Verdict.from_acl_reason("BLOCKING_LINES") is Verdict.REFUTED
     assert Verdict.from_acl_reason("INDEPENDENTLY_UNMATCHABLE") is Verdict.REFUTED

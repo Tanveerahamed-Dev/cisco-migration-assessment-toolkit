@@ -17,6 +17,17 @@ per change, with verification evidence) lives in
   (a `shape-sentinel` marker + a pin-test scoping the exemption to exactly that site), and a pre-existing
   crash test whose `lambda` mock masked the real list-shape fallback (so it passed regardless) is made
   faithful. Found by adversarial review of the v3.25.0 wave.
+- **`coverage_matrix` correctness**: the synthetic `(fleet)` row no longer pollutes `by_device` (it is
+  not a device); `summary.n_axes` counts the coverage *dimensions* (collection/capture/parse/architecture),
+  not each architecture key (was ~32 on a real fleet); a parse-axis event keyed by the FS-sanitized
+  collection-dir basename is mapped back to the raw inventory host, so a hostname with an FS-reserved char
+  no longer silently reads "covered"; and `set(devices)` is hoisted out of the per-event loop.
+- **`Verdict` string-safety**: `__str__`/`__format__` pinned to `str`'s, so `str()`/f-string/`%s` yield the
+  bare value (`"proven"`) not `"Verdict.PROVEN"` — safe for any future surface that interpolates a raw member.
+- **`gen_oui_registry`**: a bare-filename `--out` no longer crashes on `os.makedirs('')`, and a leading
+  space no longer defeats the no-egress URL refusal.
+- **Test hardening**: two coverage guards that silently asserted nothing on the shipped fixtures are now
+  synthetic and always-run — the `_carry` `''`-cache sentinel and the collection false-health guard.
 
 ## [v3.25.0] — 2026-07-03 — Plan-A remainder wave (8 items) + project SSOT registry
 
