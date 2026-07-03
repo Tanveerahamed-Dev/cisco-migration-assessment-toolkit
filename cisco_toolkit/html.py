@@ -686,6 +686,23 @@ def snapshot_state(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     }
 
 
+def sparsify_interfaces(snap: dict) -> dict:
+    """Return a SHALLOW copy of `snap` whose `interfaces` subtree drops every field equal to its
+    empty-string default (Tier-3 #14 Phase-2). Every InterfaceData field defaults to '', so
+    dropping '' values is lossless -- InterfaceData.from_sparse restores the omitted fields on read
+    (~70% of the interface field-cells are '' on a real fleet). Confined to `interfaces`: `devices`
+    (DevicePhysical) has non-'' defaults and stays dense. Applied ONLY to the on-disk snapshot; the
+    in-memory snap_dict every in-process consumer reads is left untouched, so this changes nothing
+    about the pipeline's behaviour -- only the persisted file's size."""
+    ifaces = snap.get("interfaces")
+    if not isinstance(ifaces, dict):
+        return snap
+    sparse = {host: {port: {k: v for k, v in rec.items() if v != ""}
+                     for port, rec in ports.items() if isinstance(rec, dict)}
+              for host, ports in ifaces.items() if isinstance(ports, dict)}
+    return {**snap, "interfaces": sparse}
+
+
 # -----------------------------------------------------------------------------
 # NEW-V3.23.90: shrink the snapshot copy EMBEDDED in the single-file explorer.
 # The on-disk snapshot.json stays full-fidelity (it is the data contract and the
