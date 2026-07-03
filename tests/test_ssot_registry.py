@@ -15,8 +15,6 @@ keys, cross-links), never on prose that legitimately changes.
 import pathlib
 import re
 
-import pytest
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs" / "ssot.md"
 CONTRACT = ROOT / "docs" / "ssot-contract.md"
