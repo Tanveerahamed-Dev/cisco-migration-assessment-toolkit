@@ -23,6 +23,10 @@ _CAPTURE_WORST = ("error", "incomplete", "unverified_prompt", "empty")
 
 _AXIS_ORDER = ("collection", "capture", "parse")
 
+# the synthetic device key for a fleet-level (not-observed architecture) abstention row -- NOT a real device,
+# so it is emitted as a row but deliberately kept OUT of the per-device by_device view / n_devices count.
+_FLEET = "(fleet)"
+
 _NOTE = ("Each row is one (device, axis) coverage verdict COMPOSED from the four published coverage "
          "sources; no device state is recomputed. 'not_collected' / 'partial' / 'unverified' / "
          "'unparsed' / 'not_observed' are ABSTENTIONS — the engine did not prove the evidence, which "
@@ -54,6 +58,7 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
     snapshot, deterministic, fail-soft (a missing source just yields fewer rows)."""
     snap = _d(snap)
     devices = sorted((snap.get("devices") or {}).keys())      # the inventory universe (join key 1)
+    device_set = set(devices)                                 # hoisted: membership-tested per parse event below
     rows: List[Dict[str, Any]] = []
 
     # --- collection axis: present-with-status in collection_completeness -> abstain; absent -> covered
@@ -90,13 +95,24 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
         from cisco_toolkit.cmdio import MAY_BE_EMPTY_PARSERS
     except Exception:                                          # pragma: no cover
         MAY_BE_EMPTY_PARSERS = frozenset()
+    # events attribute the device by its on-disk collection-dir basename = safe_fs_name(hostname); map that
+    # back to the RAW inventory key so a host whose name carries an FS-reserved char (':' '/' '\' ...) still
+    # attributes its suspect event instead of silently reading 'covered' (a coverage-honesty false-health).
+    try:
+        from cisco_toolkit.textutils import safe_fs_name
+        fs_to_dev = {safe_fs_name(h): h for h in devices}
+    except Exception:                                          # pragma: no cover
+        fs_to_dev = {}
     py_suspect: Dict[str, list] = {}
     for ev in _l(_d(snap.get("parse_yield")).get("events")):
         if not isinstance(ev, dict):
             continue
         if ev.get("error") or ev.get("parser") not in MAY_BE_EMPTY_PARSERS:
-            host = ev.get("device")
-            if host in cc_by_host or host in set(devices):     # attributable to a real inventory device
+            raw = ev.get("device")
+            if not isinstance(raw, str):
+                continue
+            host = raw if (raw in device_set or raw in cc_by_host) else fs_to_dev.get(raw)
+            if host is not None and (host in cc_by_host or host in device_set):   # a real inventory device
                 py_suspect.setdefault(host, []).append(ev)
     for host in devices:
         sus = py_suspect.get(host)
@@ -117,11 +133,15 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
             for host in _l(c.get("hosts")):
                 rows.append(_row(host, key, "architecture", "covered", "architecture_coverage", ev))
         else:
-            rows.append(_row("(fleet)", key, "architecture", "not_observed", "architecture_coverage",
+            rows.append(_row(_FLEET, key, "architecture", "not_observed", "architecture_coverage",
                              str(c.get("label", ""))))
 
+    # by_device is the per-DEVICE view -> exclude the synthetic _FLEET rows (fleet-level abstentions are in
+    # `rows`, but they are not a device and must not appear as a phantom host or inflate a device count).
     by_device: Dict[str, Dict[str, str]] = {}
     for r in rows:
+        if r["device"] == _FLEET:
+            continue
         by_device.setdefault(r["device"], {})[r["axis"]] = r["state"]
     n_abstained = sum(1 for r in rows if r["is_abstention"])
     return {
@@ -129,7 +149,9 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
         "by_device": by_device,
         "summary": {
             "n_devices": len(devices),
-            "n_axes": len({r["axis"] for r in rows}),
+            # count the coverage DIMENSIONS (collection/capture/parse/architecture), NOT each architecture key
+            # -- keying on r["axis"] would inflate this to ~1 + n_arch_classes and misread as 'axes assessed'.
+            "n_axes": len({r["dimension"] for r in rows}),
             "n_rows": len(rows),
             "n_covered": len(rows) - n_abstained,
             "n_abstained": n_abstained,

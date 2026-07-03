@@ -41,14 +41,16 @@ def test_carry_cache_memoizes_and_never_recomputes():
 
 
 def test_not_carried_empty_string_is_cached_not_treated_as_absent():
-    """'' (not-carried) is a real cached value; the None sentinel means 'not yet computed'. A link
-    that carries no VLAN must still cache '' and not be recomputed."""
+    """'' (not-carried) is a real cached value; the None sentinel means 'not yet computed'. A link that
+    carries a given VLAN under no path must still cache '' and not be recomputed. Uses a bogus VLAN id that
+    no link carries so the '' branch is GUARANTEED to exercise (the old golden-scan asserted nothing when
+    every real (link,vid) happened to be carried)."""
     m = _model()
-    # find a (link, vid) that is NOT carried (rel == ''), if any; else synth-verify the sentinel logic
-    for vid in m["vlans"]:
-        for link in m["links"]:
-            if analyze._link_carries(link, vid) == "":
-                m.pop("_carry_cache", None)
-                assert analyze._carry(m, link, vid) == ""
-                assert m["_carry_cache"][(vid, id(link))] == ""     # cached the empty string
-                return
+    link = m["links"][0]
+    bogus_vid = 999999                                       # a VLAN no link is configured to carry
+    assert analyze._link_carries(link, bogus_vid) == ""      # precondition: genuinely not carried (fails loud if not)
+    m.pop("_carry_cache", None)
+    assert analyze._carry(m, link, bogus_vid) == ""          # returns the empty string...
+    assert m["_carry_cache"][(bogus_vid, id(link))] == ""    # ...and CACHES it (not re-treated as the absent None)
+    n = len(m["_carry_cache"])
+    assert analyze._carry(m, link, bogus_vid) == "" and len(m["_carry_cache"]) == n   # 2nd call: no recompute
