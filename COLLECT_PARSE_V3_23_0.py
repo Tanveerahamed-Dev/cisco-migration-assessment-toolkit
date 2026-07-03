@@ -2778,10 +2778,17 @@ def main():
         except Exception as e:
             logger.warning(f"  Operations handbook (DOCX) write failed: {e}")
 
-    # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases, extracted behind the typed
-    # AnalysisContext carrier. Golden-neutral -- a pure move; the stage body is byte-identical.
-    _stage_finalize(AnalysisContext(args=args, out_xlsx=out_xlsx, root_dir=root_dir,
-                                    all_devices_meta=all_devices_meta, workers=workers, snap_dict=snap_dict))
+    # Pipeline stage 5 (Plan-A #15 strangler): the leaf finalize phases. Reuse the ONE analyze-stage
+    # carrier (_actx, unconditionally built above) instead of a second fresh AnalysisContext -- the
+    # strangler converging on a single typed carrier threaded through the pipeline. Set the
+    # finalize-only handles it reads (config + the assembled snapshot); golden-neutral, same values.
+    _actx.args = args
+    _actx.out_xlsx = out_xlsx
+    _actx.root_dir = root_dir
+    _actx.all_devices_meta = all_devices_meta
+    _actx.workers = workers
+    _actx.snap_dict = snap_dict
+    _stage_finalize(_actx)
 
 
 def _stage_finalize(ctx: "AnalysisContext") -> None:
