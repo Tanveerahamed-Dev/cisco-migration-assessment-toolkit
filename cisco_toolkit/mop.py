@@ -228,8 +228,9 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     sub = doc.add_paragraph(); sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _ninv = _as_dict(_as_dict(snap.get("executive_brief")).get("scale")).get("n_devices")   # canonical inventoried (SSOT owner); len() only pre-brief (CROSS-04)
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{len(waves)} wave(s)  ·  {len(devices)} devices  ·  script {snap.get('script_version', '')}"
+                 f"{len(waves)} wave(s)  ·  {_ninv if isinstance(_ninv, int) else len(devices)} devices  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     status = doc.add_paragraph(); status.alignment = WD_ALIGN_PARAGRAPH.CENTER
     st = status.add_run("DRAFT TEMPLATE — fill every <placeholder>, peer-review, and dry-run before any window.")
