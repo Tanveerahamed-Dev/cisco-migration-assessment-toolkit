@@ -113,9 +113,12 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     sub = doc.add_paragraph(); sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sr2 = sub.add_run(label); sr2.font.size = Pt(13); sr2.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _ncoll = _as_dict(_as_dict(snap.get("executive_brief")).get("scale")).get("n_collected")   # coerce: a truthy non-dict eb/scale must not crash (audit-4 #10)
+    _scale = _as_dict(_as_dict(snap.get("executive_brief")).get("scale"))   # coerce: a truthy non-dict eb/scale must not crash (audit-4 #10)
+    _ncoll = _scale.get("n_collected")
+    _ninv = _scale.get("n_devices")                                         # canonical inventoried (SSOT owner: executive_brief.scale.n_devices); len() only pre-brief (CROSS-03)
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{_ncoll if isinstance(_ncoll, int) else len(devices)} collected of {len(devices)} inventoried  ·  script {snap.get('script_version', '')}"
+                 f"{_ncoll if isinstance(_ncoll, int) else len(devices)} collected of "
+                 f"{_ninv if isinstance(_ninv, int) else len(devices)} inventoried  ·  script {snap.get('script_version', '')}"
                  ).font.color.rgb = GREY
     doc.add_paragraph()
     note = doc.add_paragraph()

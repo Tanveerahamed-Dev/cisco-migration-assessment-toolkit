@@ -170,6 +170,28 @@ def test_crd_and_runbook_device_count_is_canonical_not_raw_len(tmp_path):
     assert cells[i + 1] == "2"                                            # CROSS-02: canonical 2, not 4
 
 
+# ------------------------------------------------------- CROSS-03 / CROSS-04 ---
+def test_ops_and_mop_title_device_count_is_canonical_not_raw_len(tmp_path):
+    """CROSS-03/04 (SSOT sweep post-v3.25.1): the Ops-Handbook and MOP title-meta lines rendered the
+    INVENTORIED total as a bare len(snap['devices']) recount, while their canonical siblings
+    (engagement/crd/runbook, CROSS-01/02) read executive_brief.scale.n_devices. On a fresh run snap['devices']
+    is the COLLECTED subset, so the recount under-reports the fleet -- the exact drift ssot.py exists to kill.
+    Both must read the canonical count, len() only as a pre-brief fallback."""
+    from docx import Document
+    from cisco_toolkit.ops import write_ops_handbook_docx
+    from cisco_toolkit.mop import write_mop_docx
+    # canonical inventoried = 7, but only 3 devices survive in snap['devices'] (the collected subset)
+    snap = {"executive_brief": {"scale": {"n_devices": 7, "n_collected": 5, "n_endpoints": 10, "n_vlans": 4}},
+            "devices": {"a": {}, "b": {}, "c": {}},
+            "health_scores": [], "punchlist": [], "migration_readiness": [], "move_groups": []}
+    op = tmp_path / "ops.docx"; write_ops_handbook_docx(str(op), snap, "Test")
+    ops_meta = " ".join(p.text for p in Document(str(op)).paragraphs)
+    assert "5 collected of 7 inventoried" in ops_meta, ops_meta          # CROSS-03: canonical 7, not len()=3
+    mp = tmp_path / "mop.docx"; write_mop_docx(str(mp), snap, "Test")
+    mop_meta = " ".join(p.text for p in Document(str(mp)).paragraphs)
+    assert "7 devices" in mop_meta, mop_meta                             # CROSS-04: canonical 7, not len()=3
+
+
 def test_deck_title_scale_renders_dash_not_none_for_null_scale(tmp_path):
     """DECK_-02: the deck title slide built the scale line with scale.get('n_devices', '—'); dict.get's default
     only fires when the KEY is ABSENT, so a present-but-null value (uploaded / partially-computed snapshot)

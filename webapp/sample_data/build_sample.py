@@ -370,8 +370,13 @@ def main() -> None:
             os.chdir(cwd)
 
         snap_path = os.path.splitext(out_xlsx)[0] + ".snapshot.json"
-        shutil.copyfile(snap_path, OUT)
-        snap = json.loads(open(OUT, encoding="utf-8").read())
+        # Re-dump PRETTY (indent=2), not a raw copy of the engine's compact on-disk snapshot: the committed
+        # sample is a human-reviewable, git-diffable demo fixture, so a one-line compact blob would make every
+        # regeneration an unreadable 1-line diff. (The engine's real *.snapshot.json stays compact; this is
+        # only the demo copy webapp/ ships.)
+        snap = json.loads(open(snap_path, encoding="utf-8").read())
+        with open(OUT, "w", encoding="utf-8") as _out:
+            json.dump(snap, _out, indent=2)
         bands: dict = {}
         for r in snap.get("health_scores", []):
             bands[r.get("band", "?")] = bands.get(r.get("band", "?"), 0) + 1

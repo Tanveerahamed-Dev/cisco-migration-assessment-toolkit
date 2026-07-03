@@ -6,6 +6,20 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+### Fixed
+- **SSOT sweep (post-v3.25.1)** — a project single-source-of-truth verification found and closed three drifts:
+  - **Ops-Handbook + MOP titles recomputed the inventoried device count** as a bare `len(snap['devices'])`
+    (the *collected* subset on a fresh run) instead of the canonical `executive_brief.scale.n_devices` — the
+    same drift class CROSS-01/02 fixed in crd/runbook/engagement, never extended to `ops.py`/`mop.py`. Both
+    now read canonical-first (`len()` only pre-brief). (CROSS-03/04)
+  - **Stale demo corpora** — the bundled `sample_fleet.snapshot.json` and the explorer's baked demo froze on
+    2026-07-02 and missed the 2026-07-03 waves: ACL findings lacked the new `verdict` field and the
+    `coverage_matrix` block was absent. Regenerated the sample (`build_sample.py`, now re-dumped
+    pretty-printed so the demo stays a reviewable git diff) and hand-added `verdict` to the explorer demo's
+    ACL rows.
+  - **Freshness guard hardened** — `test_sample_fleet.py` now also asserts `coverage_matrix` presence and a
+    `verdict` on every ACL finding (the sub-field / golden-excluded drift the key-superset check was blind to).
+
 ## [v3.25.1] — 2026-07-03 — post-review coverage-honesty fixes + hardening
 
 Adversarial review of the v3.25.0 wave (PR #277 + #278). One live cloud false-health
