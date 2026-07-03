@@ -403,11 +403,15 @@ def build_cloud(cmd_to_file: Dict[str, str]) -> dict:
     json-normalised by parse_aws_security_groups. {} when there is no cloud export (coverage-honest, so an
     on-prem fleet never fires); {security_groups: []} when the export is present but nothing is world-open
     (observed / clean). Fail-soft."""
-    sgs = _safe_parse(parse_aws_security_groups, _load_cmd_output(cmd_to_file, "aws ec2 describe-security-groups"))
-    # Coverage-honesty must NOT hinge on 'the parser didn't raise'. _safe_parse returns {} (a truthy non-list)
-    # when the parser raises -- which slipped past an `is None` guard and made build_cloud report
-    # {security_groups: {}}, read downstream as 'cloud observed, nothing world-open' (false-health) instead of
-    # 'not observed'. Only a LIST is a real result; None (no export) and {} (parse crash) both -> not observed.
+    sgs = _safe_parse(parse_aws_security_groups, _load_cmd_output(cmd_to_file, "aws ec2 describe-security-groups"), _default={})
+    # shape-sentinel: Coverage-honesty must NOT hinge on 'the parser didn't raise'. Since Plan-A #16,
+    # _safe_parse's DEFAULT crash fallback for a list parser is its registered shape -- [] -- which is itself a
+    # list and would slip past the isinstance guard below, making build_cloud report {security_groups: []},
+    # read downstream as 'cloud observed, nothing world-open' (false-health) instead of 'not observed'. So we
+    # pin _default={}: a non-list crash sentinel (deliberately OFF the registry 'list' shape) that never
+    # escapes -- the guard converts it to not-observed. `_default` fires ONLY on a raise, so a genuine clean []
+    # on the happy path is preserved (unlike `or []`/`or {}`, which would collapse it). Only a LIST is a real
+    # result; None (no export) and the {} crash-sentinel both -> not observed.
     if not isinstance(sgs, list):
         return {}
     return {"security_groups": sgs}
