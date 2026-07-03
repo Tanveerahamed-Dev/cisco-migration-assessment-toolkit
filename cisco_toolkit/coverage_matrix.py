@@ -53,12 +53,20 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
     """Compose snap's four coverage sources into a per-(device, axis) matrix. Pure over the
     snapshot, deterministic, fail-soft (a missing source just yields fewer rows)."""
     snap = _d(snap)
-    devices = sorted((snap.get("devices") or {}).keys())      # the inventory universe (join key 1)
     rows: List[Dict[str, Any]] = []
 
     # --- collection axis: present-with-status in collection_completeness -> abstain; absent -> covered
     cc_by_host = {d.get("host"): d for d in _l(_d(snap.get("collection_completeness")).get("devices"))
                   if isinstance(d, dict) and d.get("host")}
+    # Join key 1 = the INVENTORY universe, NOT the collected subset. snap['devices'] is built only from
+    # hosts that collected, so a device the collection never reached (unreachable / auth-fail) is absent
+    # there yet present in collection_completeness as 'not collected'. Joining on snap['devices'] alone
+    # silently dropped it -> zero rows -> it read as fully covered: the exact coverage-honesty inversion
+    # this module exists to prevent (review PR#277). The union restores it as an explicit blind spot.
+    devices = sorted(set((snap.get("devices") or {}).keys()) | set(cc_by_host))
+    # Hosts the collection never reached at all -> a blind spot on EVERY downstream axis too (nothing was
+    # captured or parsed either), so their capture/parse 'covered-by-silence' inference is invalid below.
+    not_collected = {h for h, rec in cc_by_host.items() if "not" in str(rec.get("status", "")).lower()}
     for host in devices:
         rec = cc_by_host.get(host)
         if rec is None:
@@ -76,6 +84,9 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(f, dict) and f.get("host"):
             ci_by_host.setdefault(f["host"], []).append(f)
     for host in devices:
+        if host in not_collected:                             # never reached -> nothing to verify (never a fake 'covered')
+            rows.append(_row(host, "capture", "capture", "not_collected", "collection_completeness"))
+            continue
         finds = ci_by_host.get(host)
         if finds:
             w = _worst_capture(finds)
@@ -99,6 +110,9 @@ def compute_coverage_matrix(snap: Dict[str, Any]) -> Dict[str, Any]:
             if host in cc_by_host or host in set(devices):     # attributable to a real inventory device
                 py_suspect.setdefault(host, []).append(ev)
     for host in devices:
+        if host in not_collected:                             # never reached -> nothing to parse (never a fake 'covered')
+            rows.append(_row(host, "parse", "parse", "not_collected", "collection_completeness"))
+            continue
         sus = py_suspect.get(host)
         if sus:
             rows.append(_row(host, "parse", "parse", "unparsed", "parse_yield",

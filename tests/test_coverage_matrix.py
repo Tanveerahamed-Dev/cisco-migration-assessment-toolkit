@@ -72,6 +72,42 @@ def test_not_observed_arch_classes_are_fleet_abstentions():
     assert len(fhrp) == 1 and fhrp[0]["device"] == "sw1" and fhrp[0]["state"] == "covered"
 
 
+def test_not_collected_device_is_not_silently_dropped():
+    """[review PR#277 — coverage-honesty inversion] A device the collection NEVER reached
+    (unreachable / auth-fail) is ABSENT from snap['devices'] (that map is built only from hosts
+    that collected) but IS present in collection_completeness as 'not collected'. The matrix joined
+    on snap['devices'].keys(), so such a device emitted ZERO rows and vanished — reading as fully
+    covered, the exact false-health the module exists to prevent (on the AJ fleet: all 50 of
+    303/253 not-collected devices would disappear). It must instead appear as an explicit blind-spot
+    on EVERY base axis, and must NOT read 'covered' on capture/parse by mere absence of findings
+    (a never-collected host was never captured or parsed either). The synthetic golden/sample carry
+    zero blind spots, so ONLY this fixture exercises the guarantee."""
+    snap = {
+        "devices": {"sw1": {}},                                      # sw1 is the only host that collected
+        "collection_completeness": {"devices": [
+            {"host": "sw1", "status": "partial", "missing": ["show cdp neighbors"]},
+            {"host": "sw2", "status": "not collected", "missing": ["<all commands>"]},  # never reached
+        ]},
+        "capture_integrity": {"findings": []},
+        "parse_yield": {"events": []},
+    }
+    cm = compute_coverage_matrix(snap)
+    by = {(r["device"], r["axis"]): r for r in cm["rows"]}
+    # sw2 (never collected) is present on all three base axes, every one an explicit abstention.
+    for axis in ("collection", "capture", "parse"):
+        assert ("sw2", axis) in by, f"not-collected sw2 vanished from the {axis} axis"
+        assert by[("sw2", axis)]["state"] == "not_collected", f"sw2 must abstain on {axis}, not fake-cover"
+        assert by[("sw2", axis)]["is_abstention"]
+    # the inventory universe now counts sw2 (n_devices was under-reporting the collected subset)
+    assert cm["summary"]["n_devices"] == 2
+    # a total blind spot is never a 'covered' device on any axis
+    assert "sw2" not in {r["device"] for r in cm["rows"] if r["state"] == "covered"}
+    # control — sw1 (partially collected) still reports its REAL per-axis verdicts, unchanged:
+    assert by[("sw1", "collection")]["state"] == "partial"
+    assert by[("sw1", "capture")]["state"] == "covered"     # collected + no capture finding => genuinely covered
+    assert by[("sw1", "parse")]["state"] == "covered"
+
+
 def test_deterministic_and_degrades_on_empty():
     snap = {"devices": {"b": {}, "a": {}}, "collection_completeness": {"devices": []},
             "capture_integrity": {"findings": []}, "parse_yield": {"events": []}}
