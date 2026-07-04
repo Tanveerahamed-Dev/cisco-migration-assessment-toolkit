@@ -202,8 +202,17 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
     # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
     add_excellence_front(doc, snap_dict)
-    # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
-    add_inputs_required(doc, snap_dict)
+    # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9). The CRD's whole
+    # purpose is capturing what the customer must confirm, so it names that ask explicitly up front.
+    add_inputs_required(doc, snap_dict, extra_rows=[
+        ("Confirm every seeded requirement",
+         "Every REQ-ID below is a PROPOSAL derived from the observed network — confirm, amend, or strike "
+         "each in the requirements workshop; a seeded row is not a requirement until the customer confirms it.",
+         "Customer (requirement owner)"),
+        ("Complete the questionnaire fields",
+         "Fill every <…> owner / class / confirmation field the questionnaire leaves with the customer.",
+         "Customer / delivery"),
+    ])
     # ===== 1. Engagement context =====
     doc.add_heading("1. Engagement Context", level=1)
     doc.add_paragraph(
