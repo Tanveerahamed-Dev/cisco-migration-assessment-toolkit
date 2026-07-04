@@ -43,3 +43,15 @@ devices.json
 
 # graphify knowledge-graph output (generated; regenerate with the graphify skill)
 graphify-out/
+.gstack/
+# Local scratch, client deliverables, generated bundles
+scratch_*
+[HISTORY-REDACTED]_*
+x3.xlsx
+_aci_conv.txt
+raw/
+ds-bundle/
+_ref/
+.design-sync/
+.ds-sync/
+Migration_Assessment_Template_*
