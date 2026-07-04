@@ -166,8 +166,19 @@ def add_document_control(doc, *, document, label, engine_version="", generated_a
     add_table(doc, ["Version", "Date", "Author", "Notes"], [
         ("0.1", datetime.now().strftime("%Y-%m-%d"), "Generated draft",
          "Initial draft generated from the assessment snapshot"),
-        ("", "", "", ""),
+        ("", "", "", "<record each review/amendment here before acceptance>"),
     ], widths=[0.8, 1.1, 1.9, 2.9])
+
+    # Distribution list (wave DE-01, Law 2 "Document Control"): a generated deliverable is a
+    # controlled record — who holds a copy and in what capacity is part of the control front matter,
+    # not an afterthought. Static roles (the review-and-approval chain); names/orgs are placeholders
+    # the delivery lead completes before the document is issued.
+    doc.add_heading("Distribution list", level=2)
+    add_table(doc, ["Name", "Role", "Organisation", "Purpose"],
+              [("<name>", r, "<organisation>",
+                "Review & acceptance" if "author" not in r.lower() else "Author / issue")
+               for r in DEFAULT_ROLES],
+              widths=[1.6, 2.2, 1.7, 1.2])
 
     _kv(doc, "Intended audience:", audience)
     doc.add_paragraph()
@@ -223,3 +234,128 @@ def as_dict(x) -> dict:
 def as_list(x) -> list:
     """Coerce a possibly-malformed snapshot value to a list (see as_dict)."""
     return x if isinstance(x, list) else []
+
+
+# ---- Deliverable Excellence furniture (wave DE-01) --------------------------------------------
+# The narrative documents were strong on evidence but weak on ORIENTATION: no "at a glance"
+# register, no glossary, and — the recurring drift risk — they hand-recounted headline numbers
+# instead of reading the single source of truth. These shared helpers close Laws 1/6/8/10 + the
+# glossary for the WHOLE docx family in one place, exactly as add_document_control/add_acceptance
+# already do for Law 2. Every value is read via cisco_toolkit.ssot.canonical_facts (never a recount)
+# and is coverage-honest (an unpublished fact reads "[NOT OBSERVED]", never a fabricated 0).
+
+# Curated shared glossary — terms + evidence conventions common to every deliverable. A writer
+# appends doc-specific terms via extra_terms; the coverage-honesty rows are the load-bearing ones.
+DEFAULT_GLOSSARY = (
+    ("SVI", "Switched Virtual Interface — a VLAN's Layer-3 gateway on a switch."),
+    ("FHRP", "First-Hop Redundancy Protocol (HSRP/VRRP/GLBP) — gateway redundancy across two devices."),
+    ("LDoS / EoS", "Last Date of Support / End of Sale — hardware lifecycle milestones. Past-LDoS is migration-critical."),
+    ("Blast radius", "The set of devices/endpoints affected if a given node or link fails."),
+    ("Keystone device", "A device whose failure strands a disproportionate share of the fleet."),
+    ("Move group", "A set of devices migrated together within one maintenance window."),
+    ("vPC / MLAG", "Multi-chassis link aggregation — two switches presenting as one to a downstream device."),
+    ("VRF", "Virtual Routing and Forwarding — an isolated routing table on a device."),
+    ("Inferred-high", "Derived from CDP/LLDP or configuration rather than directly observed, but high-confidence."),
+    ("[NOT OBSERVED]", "The evidence needed to judge this was NOT collected. It is NOT a healthy or passing "
+                       "result — coverage-honesty: not observed never silently becomes 'fine'."),
+)
+
+
+def _glance_rows(snap):
+    """Default 'at a glance' Q&A rows built from the canonical facts (coverage-honest). Kept private
+    so a writer's extra_rows compose with a single, drift-proof headline block."""
+    from cisco_toolkit import ssot   # lazy: avoids any module-load cycle (matches the docx lazy-import style)
+
+    f = ssot.canonical_facts(snap if isinstance(snap, dict) else {})
+
+    def v(x):
+        return "[NOT OBSERVED]" if x is None else x
+
+    nd, nc = f.get("n_devices"), f.get("n_collected")
+    if nd is not None and nc is not None and nc != nd:
+        scope = f"{nc} of {nd} inventoried devices collected (read-only evidence; {nd - nc} not reached)"
+    elif nd is not None:
+        scope = f"{nd} inventoried devices, collected read-only"
+    else:
+        scope = "[NOT OBSERVED]"
+
+    rows = [
+        ("What was assessed?", scope),
+        ("How healthy is the fleet?",
+         f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor"),
+        ("Biggest lifecycle exposure?",
+         f"{v(f.get('n_past_ldos'))} device(s) past last-date-of-support (migration-critical)"),
+        ("Scale (VLANs / endpoints)?",
+         f"{v(f.get('n_vlans'))} production VLANs · {v(f.get('n_endpoints'))} evidenced endpoints"),
+    ]
+    if f.get("n_design_decisions") is not None:
+        rows.append(("Design decisions recorded?",
+                     f"{f['n_design_decisions']} (each traced to a requirement or a gap)"))
+    return rows
+
+
+def add_excellence_front(doc, snap, *, extra_rows=(), heading="At a Glance"):
+    """Answer-first 'at a glance' register + the single-source-of-truth trust signal, for EVERY
+    deliverable (Laws 6/1/10). Reads headline facts via ssot.canonical_facts (never a recount),
+    renders the ssot.summary self-verification line, and is coverage-honest ('[NOT OBSERVED]', not 0,
+    for an unpublished fact). extra_rows lets a writer pre-answer its own doc-specific questions.
+    Unnumbered heading so the writers' numbered sections are untouched. Call it right after the TOC."""
+    from cisco_toolkit import ssot
+
+    doc.add_heading(heading, level=1)
+    s = ssot.summary(snap if isinstance(snap, dict) else {})
+    if s.get("n_facts"):
+        if s.get("verified"):
+            _kv(doc, "Single source of truth:",
+                f"✓ {s['n_facts']} headline figures self-verified against the raw evidence — "
+                "every number in this document reconciles to one source.")
+        else:
+            _kv(doc, "Single source of truth:",
+                f"⚠ {s['n_violations']} of {s['n_facts']} headline figures did not reconcile; "
+                "treat flagged numbers with caution (see the assessment-integrity disclosure).")
+    rows = list(_glance_rows(snap)) + list(extra_rows)
+    add_table(doc, ["Question", "Answer"], rows, widths=[2.6, 4.1], fixed=False)
+
+
+def add_glossary(doc, *, extra_terms=(), heading="Glossary & Conventions"):
+    """Shared term/convention glossary for the deliverable family (Technique T2). extra_terms
+    appends doc-specific terms. Unnumbered; place before the acceptance block."""
+    doc.add_heading(heading, level=1)
+    doc.add_paragraph(
+        "Terms and evidence conventions used across the assessment deliverable set. "
+        "'[NOT OBSERVED]' always means the evidence was not collected — never that the item is healthy.")
+    add_table(doc, ["Term", "Meaning"], list(DEFAULT_GLOSSARY) + list(extra_terms),
+              widths=[1.7, 5.0], fixed=False)
+
+
+def add_inputs_required(doc, snap, *, extra_rows=(), heading="Inputs Required"):
+    """Consolidated 'what the customer and delivery team must still provide or confirm' register
+    (Law 9): the reader should never have to hunt scattered <placeholders> to know what is owed.
+    Universal, coverage-honest base rows from the snapshot — the not-collected devices are the #1
+    real gap (a blind spot, [NOT OBSERVED], never assumed healthy) — plus the standard
+    placeholder/peer-review gates; extra_rows lets a writer add its own unconfirmed items.
+    Unnumbered; place in the front matter so the outstanding asks are answer-first."""
+    snap = snap if isinstance(snap, dict) else {}
+    cc = snap.get("collection_completeness")
+    cc = cc if isinstance(cc, dict) else {}
+    summ = cc.get("summary")
+    summ = summ if isinstance(summ, dict) else {}
+    rows = []
+    n_notcoll = summ.get("not_collected")
+    if isinstance(n_notcoll, int) and n_notcoll > 0:
+        rows.append(("Collect the not-reached devices",
+                     f"{n_notcoll} inventoried device(s) were not collected — their state is a blind spot "
+                     "([NOT OBSERVED]). Collect them read-only to close it before relying on this document.",
+                     "Customer / delivery"))
+    rows.append(("Complete every <placeholder>",
+                 "Fill every <…> marker in this document before it is treated as an approved record.",
+                 "Delivery engineer"))
+    rows.append(("Peer review & accept",
+                 "This is a generated DRAFT; it must be peer-reviewed and accepted (see Document "
+                 "Acceptance) before use.", "Review owner"))
+    rows = rows + list(extra_rows)
+    doc.add_heading(heading, level=1)
+    doc.add_paragraph(
+        "What the customer and delivery team must provide or confirm to close the assessment's known "
+        "gaps. Coverage-honest: a not-collected device is a blind spot, never assumed healthy.")
+    add_table(doc, ["Item", "What is needed", "Owner"], rows, widths=[1.9, 3.8, 1.0], fixed=False)

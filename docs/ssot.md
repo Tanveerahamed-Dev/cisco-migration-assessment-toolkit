@@ -29,6 +29,7 @@ guard is a latent drift bug (this is Law 1 of the Deliverable Excellence Standar
 | **Release history / what shipped** | `CHANGELOG.md` | read it | convention |
 | **Run provenance / chain-of-custody** | `cisco_toolkit/manifest.py` (append-only, hash-chained ledger) | the sealed run-manifest | tamper-evident by hash chain |
 | **Deliverable quality bar + reusable prompts** | `…\Desktop\_Deliverable_Excellence_Kit\` (Standard + Master Prompt Library) | read the kit | the verify-gate ratchet on generated docs |
+| **Generated-deliverable excellence** (furniture every docx carries) | `cisco_toolkit/docmeta.py :: add_excellence_front / add_glossary / add_document_control` + plan `docs/deliverable-excellence-plan.md` | the 7 writers call them; read the plan | ✅ **CI-enforced** — `tests/test_deliverable_excellence.py` fails the build if any deliverable lacks the At-a-Glance / Glossary / Document-Control / acceptance furniture |
 | **Side engagements** (separate SSOTs, *not* this repo) | Qatar DC: `syntys/ssot.py` → `Syntys_DC_Design\` · QAG CCTV bid: `…\QAG_Alwaj_CCTV_PS_Proposal\` | their own pipelines | own verify gates |
 
 > **Snapshot-vintage note (coverage-honest):** the three newest evidence blocks — `cable_map`,
