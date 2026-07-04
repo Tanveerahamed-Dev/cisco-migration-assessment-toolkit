@@ -1060,7 +1060,8 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     summary = _as_dict(ar.get("summary"))
     checks = {c.get("id"): c for c in _as_list(ar.get("checks")) if isinstance(c, dict)}
 
-    NAVY = RGBColor(0x1F, 0x38, 0x64)
+    from cisco_toolkit.brand_tokens import DOC_NAVY_RGB
+    NAVY = RGBColor(*DOC_NAVY_RGB)
     GREY = RGBColor(0x59, 0x59, 0x59)
     VERDICT_LABEL = {"conforms": "CONFORMS", "advisory": "ADVISORY", "deviation": "DEVIATION",
                      "critical": "CRITICAL DEVIATION", "not-assessable": "NOT ASSESSABLE"}

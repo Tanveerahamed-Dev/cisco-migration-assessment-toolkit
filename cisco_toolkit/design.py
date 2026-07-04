@@ -112,7 +112,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     # string the generator writes -- direct paragraphs (_label_run), tables, the title label -- flows from these.
     snap = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})
     label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
-    NAVY = RGBColor(0x1F, 0x38, 0x64)
+    from cisco_toolkit.brand_tokens import DOC_NAVY_RGB
+    NAVY = RGBColor(*DOC_NAVY_RGB)
     GREY = RGBColor(0x59, 0x59, 0x59)
     doc = Document()
     normal = doc.styles["Normal"]

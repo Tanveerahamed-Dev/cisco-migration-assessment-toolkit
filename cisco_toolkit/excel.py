@@ -19,6 +19,7 @@ from cisco_toolkit.analyze import (
     _health_band, _physical_uplink_index, _poe_device_util, build_network_model,
     compute_findings, compute_move_groups, compute_topology_links,
 )
+from cisco_toolkit.brand_tokens import DOC_NAVY_HEX, WORKBOOK_NAVY_HEX
 from cisco_toolkit.cmdio import _load_cmd_output
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
@@ -108,7 +109,7 @@ def harden_workbook(wb):
     wb.create_sheet = _create
     return wb
 
-_CENSUS_HDR_FILL = "1F497D"
+_CENSUS_HDR_FILL = WORKBOOK_NAVY_HEX
 
 def _census_header(ws, columns):
     hf = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
@@ -255,7 +256,7 @@ def write_device_inventory_sheet(wb, all_device_physical: List[DevicePhysical]) 
     ws = wb.create_sheet(INVENTORY_SHEET_NAME)
 
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
-    HDR_FILL  = PatternFill("solid", fgColor="1F497D")
+    HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
     DAT_FONT  = Font(name="Calibri", size=10)
     DAT_L     = Alignment(horizontal="left",   vertical="center")
@@ -325,7 +326,7 @@ def write_svi_gateway_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceDat
     ws = wb.create_sheet(SVI_SHEET_NAME)
 
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
-    HDR_FILL  = PatternFill("solid", fgColor="1F497D")
+    HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
     DAT_FONT  = Font(name="Calibri", size=10)
     DAT_L     = Alignment(horizontal="left",   vertical="center")
@@ -390,7 +391,7 @@ def write_stp_detail_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
     ws = wb.create_sheet(STP_SHEET_NAME)
 
     HDR_FONT  = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
-    HDR_FILL  = PatternFill("solid", fgColor="1F497D")
+    HDR_FILL  = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
     DAT_FONT  = Font(name="Calibri", size=10)
     DAT_L     = Alignment(horizontal="left", vertical="center")
@@ -3389,8 +3390,8 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     where to start without opening all 30+ detail tabs. This is the workbook twin of the explorer's Risk
     cockpit: pure presentation of already-computed data; every detail tab remains the source of record."""
     ws = wb.create_sheet(EXEC_SUMMARY_SHEET_NAME)
-    TITLE = Font(name="Calibri", bold=True, size=15, color="1F3864")
-    SUB   = Font(name="Calibri", bold=True, size=11, color="1F3864")
+    TITLE = Font(name="Calibri", bold=True, size=15, color=DOC_NAVY_HEX)
+    SUB   = Font(name="Calibri", bold=True, size=11, color=DOC_NAVY_HEX)
     KEY   = Font(name="Calibri", bold=True, size=10)
     DAT   = Font(name="Calibri", size=10)
     HDR   = Font(name="Calibri", bold=True, size=10, color="FFFFFF")
@@ -3725,7 +3726,7 @@ def write_flow_paths_sheet(wb, flow_paths: dict) -> None:
     flows = fp.get("flows") or []
     ws = wb.create_sheet(FLOW_PATHS_SHEET_NAME)
     bold = Font(bold=True)
-    ws.cell(1, 1, "Representative Flow Paths").font = Font(bold=True, size=14, color="1F3864")
+    ws.cell(1, 1, "Representative Flow Paths").font = Font(bold=True, size=14, color=DOC_NAVY_HEX)
     s0 = fp.get("summary") or {}
     ws.cell(2, 1, f"{s0.get('n_flows', 0)} representative flow(s) · {s0.get('n_at_risk', 0)} at-risk "
                   f"(HIGH/CRITICAL) · {s0.get('n_partitioned', 0)} partitioned. Static twin of the explorer "
@@ -3741,7 +3742,7 @@ def write_flow_paths_sheet(wb, flow_paths: dict) -> None:
     headers = ["#", "Layer", "From", "To", "Interface", "Detail", "SPOF"]
     for flow in flows:
         s = flow["summary"]
-        ws.cell(r, 1, flow["label"]).font = Font(bold=True, size=11, color="1F3864"); r += 1
+        ws.cell(r, 1, flow["label"]).font = Font(bold=True, size=11, color=DOC_NAVY_HEX); r += 1
         ws.cell(r, 1, "Verdict").font = bold
         vc = ws.cell(r, 2, f"{s.get('flow_type', '')} · risk {s.get('risk', '')}"
                            + (f" · SPOFs: {', '.join(s.get('spofs') or [])}" if s.get("spofs") else " · no SPOF"))
