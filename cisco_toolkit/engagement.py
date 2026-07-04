@@ -23,7 +23,7 @@ import re
 from datetime import datetime
 
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
 from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
@@ -250,6 +250,9 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     # ---- table of contents (shared field-code helper, V3.23.171) ----
     add_toc(doc)
 
+
+    # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
+    add_excellence_front(doc, snap_dict)
     # ===== 1. Engagement verdict =====
     doc.add_heading("1. Engagement Verdict", level=1)
     vp_ = doc.add_paragraph()
@@ -563,6 +566,9 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     ], widths=[2.0, 1.6, 1.5, 1.6])
 
     # ---- closing acceptance gate ----
+    # Deliverable Excellence (DE-01): shared glossary before the sign-off gate.
+    add_glossary(doc)
+
     add_acceptance(
         doc, scope_note="Acceptance of this document adopts the verdict, the gate calendar and the "
                         "seeded RAID log as the engagement's working plan of record; subsequent "
