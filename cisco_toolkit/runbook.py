@@ -109,7 +109,8 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         snap_dict["executive_brief"] = {}
     label = _xls_sanitize(label) if isinstance(label, str) else (str(label) if label is not None else "")
 
-    NAVY = RGBColor(0x1F, 0x38, 0x64)
+    from cisco_toolkit.brand_tokens import DOC_NAVY_RGB
+    NAVY = RGBColor(*DOC_NAVY_RGB)
     GREY = RGBColor(0x59, 0x59, 0x59)
     doc = Document()
 

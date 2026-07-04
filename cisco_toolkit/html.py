@@ -15,6 +15,7 @@ from openpyxl.utils import get_column_letter
 
 from cisco_toolkit import __version__
 from cisco_toolkit.model import DevicePhysical, InterfaceData
+from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,7 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
     new = new if isinstance(new, dict) else {}
     from openpyxl import Workbook
     HF = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
-    FILL = PatternFill("solid", fgColor="1F497D")
+    FILL = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     AL = Alignment(horizontal="left", vertical="top", wrap_text=True)
     DF = Font(name="Calibri", size=10)
     NONE = "\u2205"  # empty marker
@@ -582,7 +583,7 @@ def write_campaign_workbook(snapshots: List[dict], out_path: str) -> None:
     of snapshot_state() dicts."""
     from openpyxl import Workbook
     HF = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
-    FILL = PatternFill("solid", fgColor="1F497D")
+    FILL = PatternFill("solid", fgColor=WORKBOOK_NAVY_HEX)
     AL = Alignment(horizontal="left", vertical="top", wrap_text=True)
     CEN = Alignment(horizontal="center", vertical="center", wrap_text=True)
     DF = Font(name="Calibri", size=10)

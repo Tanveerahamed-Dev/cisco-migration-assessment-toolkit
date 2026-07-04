@@ -1,5 +1,5 @@
 /* Design tokens mirrored verbatim from cisco_toolkit/blast_radius_explorer.html so AssessHub and the
-   deep explorer read as one product. Dark is the default; [data-theme="light"] flips the palette. */
+   deep explorer read as one product (guarded by tests/test_theme_tokens_reconcile.py). Dark is the default; [data-theme="light"] flips the palette. */
 :root {
   --bg: #0e1116; --surface: #161b22; --surface-2: #1c2230; --surface-3: #222a39;
   --border: #2a313c; --border-strong: #3b4452; --border-faint: #21272f;
