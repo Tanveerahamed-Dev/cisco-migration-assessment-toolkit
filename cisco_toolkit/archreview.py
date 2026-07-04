@@ -1087,8 +1087,11 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     sub = doc.add_paragraph(); sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sr = sub.add_run(label); sr.font.size = Pt(13); sr.font.color.rgb = GREY
     meta = doc.add_paragraph(); meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    from cisco_toolkit import ssot as _ssot   # DE-01/Law 1: cover shows the CANONICAL inventory count,
+    _nd = _ssot.canonical_facts(snap).get("n_devices")   # not a recount of the (collected-only) devices map
+    _nd = _nd if _nd is not None else len(_as_dict(snap.get("devices")))   # coverage-honest fallback
     meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  "
-                 f"{len(_as_dict(snap.get('devices')))} devices in scope  ·  "
+                 f"{_nd} devices in scope  ·  "
                  f"script {snap.get('script_version', '')}").font.color.rgb = GREY
     gp = doc.add_paragraph(); gp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     gr = gp.add_run(f"Conformance grade: {summary.get('grade', 'N/A')}"
