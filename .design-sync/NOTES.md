@@ -19,7 +19,11 @@
 - `componentSrcMap` enumerates all 16 components explicitly; because the map is non-empty, the converter's
   src content-scan never runs, so pages (`Dashboard`, `Landing`, …) and `App` need no `null` exclusions.
 - Tokens: `src/theme.css` (dark default; `[data-theme="light"]` flips; severity/band/ready/gate vocabulary
-  maps engine terms → tokens). Component classes: `src/styles.css`. No webfonts (system-ui / ui-monospace).
+  maps engine terms → tokens — the engine-vocab tokens are **PascalCase-suffixed** (`--sev-Critical`,
+  `--band-Fair`, `--ready-CAUTION`, `--gate-GO`), so a conventions-header validation grep MUST be
+  case-insensitive or it false-alarms "0 defs" on the `--sev-*/--band-*/--ready-*/--gate-*` claim that is
+  actually TRUE — the helpers `sevColor/sevSoft/bandColor/readyColor/gateColor` (`src/api.ts`) resolve to
+  exactly these with a `var(--text-faint)` fallback). Component classes: `src/styles.css`. No webfonts (system-ui / ui-monospace).
 - Per-component docs + grouping: `.design-sync/docs/<Name>.md` (`docsDir`), frontmatter `category` gives the
   DS pane groups (ui-kit / snapshot-widgets / providers). **Precedence gotcha:** a NON-generic dir-derived group
   beats the doc frontmatter — that's why the demo module lives in `.design-sync/providers/` (the dir name IS the
