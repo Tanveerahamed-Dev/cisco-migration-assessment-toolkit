@@ -23,7 +23,7 @@ import re
 from datetime import datetime
 
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
 from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
@@ -250,6 +250,11 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     # ---- table of contents (shared field-code helper, V3.23.171) ----
     add_toc(doc)
 
+
+    # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
+    add_excellence_front(doc, snap_dict)
+    # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
+    add_inputs_required(doc, snap_dict)
     # ===== 1. Engagement verdict =====
     doc.add_heading("1. Engagement Verdict", level=1)
     vp_ = doc.add_paragraph()
@@ -535,16 +540,25 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     ], widths=[0.8, 2.0, 3.9])
 
     doc.add_heading("5.5 Decision log", level=2)
+    # DE-01/Law 7: a decision record must show the ALTERNATIVES considered + the rationale, not just a
+    # position — otherwise the reader cannot tell whether the choice was reasoned or defaulted.
     decisions = [("DEC-001", "Fleet cutover scenario",
                   str(f["sc"].get("fleet_recommendation") or "<to be decided at design review>"),
+                  "Big-bang (all at once) vs phased-by-domain vs pilot-first; recommended for the lowest "
+                  "blast radius and reversibility — per-group basis in the Migration Scenarios sheet.",
                   "PROPOSED")]
     if f["pilot"]:
         decisions.append(("DEC-002", "Pilot wave selection",
                           f"{f['pilot'].get('group')} — smallest qualifying blast radius",
+                          "Other candidate groups carried larger blast radius / readiness gaps; the smallest "
+                          "qualifying group de-risks the bulk waves that inherit its lessons.",
                           "PROPOSED"))
     decisions.append(("DEC-%03d" % (len(decisions) + 1), "Window calendar",
-                      "<dates per wave — set at the commit gate>", "OPEN"))
-    table(["ID", "Decision", "Position", "Status"], decisions, widths=[0.7, 1.5, 3.5, 1.0])
+                      "<dates per wave — set at the commit gate>",
+                      "Driven by the customer's approved maintenance windows + outage tolerance (a CRD input).",
+                      "OPEN"))
+    table(["ID", "Decision", "Position", "Alternatives / rationale", "Status"], decisions,
+          widths=[0.6, 1.3, 1.9, 2.5, 0.7])
 
     # ===== 6. Operating rhythm =====
     doc.add_heading("6. Operating Rhythm", level=1)
@@ -563,6 +577,9 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     ], widths=[2.0, 1.6, 1.5, 1.6])
 
     # ---- closing acceptance gate ----
+    # Deliverable Excellence (DE-01): shared glossary before the sign-off gate.
+    add_glossary(doc)
+
     add_acceptance(
         doc, scope_note="Acceptance of this document adopts the verdict, the gate calendar and the "
                         "seeded RAID log as the engagement's working plan of record; subsequent "

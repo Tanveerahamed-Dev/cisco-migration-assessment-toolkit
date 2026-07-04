@@ -24,7 +24,7 @@ import logging
 from collections import Counter
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +207,11 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     # ---- table of contents (shared field-code helper, V3.23.171) ----
     add_toc(doc)
 
+
+    # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
+    add_excellence_front(doc, snap_dict)
+    # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
+    add_inputs_required(doc, snap_dict)
     # ===== 1. Assessment Header & Executive Summary =====
     doc.add_heading("1. Assessment Header & Executive Summary", level=1)
     _scale = (snap_dict.get("executive_brief") or {}).get("scale") or {}
@@ -1068,6 +1073,9 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             doc.add_paragraph(f"…and {len(ranked) - 40} more device(s) — see the Remediation Plan workbook sheet.")
 
     # ---- closing acceptance gate (AS-style back matter) ----
+    # Deliverable Excellence (DE-01): shared glossary before the sign-off gate.
+    add_glossary(doc)
+
     add_acceptance(
         doc, scope_note="Acceptance of this runbook confirms its findings and migration approach as "
                         "the agreed basis for the MOP and cutover planning that follow.")

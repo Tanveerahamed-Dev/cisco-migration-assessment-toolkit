@@ -259,8 +259,10 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
                       f"count(per_device.band=={band})")
 
     # --- design decisions --------------------------------------------------------------------
-    dbp = snap.get("design_blueprint") or {}
-    dsum = dbp.get("summary") or {}
+    dbp = snap.get("design_blueprint")
+    dbp = dbp if isinstance(dbp, dict) else {}      # the `x or {}` idiom does NOT guard a TRUTHY non-dict
+    dsum = dbp.get("summary")                        # block (e.g. a str) -> it would crash the coverage guard
+    dsum = dsum if isinstance(dsum, dict) else {}
     decisions = dbp.get("decisions")
     if "n_decisions" in dsum and isinstance(decisions, list):
         check("design_blueprint.summary.n_decisions", dsum.get("n_decisions"), len(decisions),
