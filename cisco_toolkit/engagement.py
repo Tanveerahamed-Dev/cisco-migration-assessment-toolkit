@@ -540,16 +540,25 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
     ], widths=[0.8, 2.0, 3.9])
 
     doc.add_heading("5.5 Decision log", level=2)
+    # DE-01/Law 7: a decision record must show the ALTERNATIVES considered + the rationale, not just a
+    # position — otherwise the reader cannot tell whether the choice was reasoned or defaulted.
     decisions = [("DEC-001", "Fleet cutover scenario",
                   str(f["sc"].get("fleet_recommendation") or "<to be decided at design review>"),
+                  "Big-bang (all at once) vs phased-by-domain vs pilot-first; recommended for the lowest "
+                  "blast radius and reversibility — per-group basis in the Migration Scenarios sheet.",
                   "PROPOSED")]
     if f["pilot"]:
         decisions.append(("DEC-002", "Pilot wave selection",
                           f"{f['pilot'].get('group')} — smallest qualifying blast radius",
+                          "Other candidate groups carried larger blast radius / readiness gaps; the smallest "
+                          "qualifying group de-risks the bulk waves that inherit its lessons.",
                           "PROPOSED"))
     decisions.append(("DEC-%03d" % (len(decisions) + 1), "Window calendar",
-                      "<dates per wave — set at the commit gate>", "OPEN"))
-    table(["ID", "Decision", "Position", "Status"], decisions, widths=[0.7, 1.5, 3.5, 1.0])
+                      "<dates per wave — set at the commit gate>",
+                      "Driven by the customer's approved maintenance windows + outage tolerance (a CRD input).",
+                      "OPEN"))
+    table(["ID", "Decision", "Position", "Alternatives / rationale", "Status"], decisions,
+          widths=[0.6, 1.3, 1.9, 2.5, 0.7])
 
     # ===== 6. Operating rhythm =====
     doc.add_heading("6. Operating Rhythm", level=1)
