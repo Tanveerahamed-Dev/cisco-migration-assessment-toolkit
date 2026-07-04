@@ -94,6 +94,24 @@
   / `package-capture.mjs`) and a manual atomic upload — same guarantees, just without the driver's
   single-command convenience. **`resync.mjs` may need a fresh permission grant or a NOTES-documented exception
   before it will run un-blocked next time.**
+- ✅ **2026-07-04 RE-SYNCED — shipped the GLASS/DEPTH refresh that a prior read had misdiagnosed as noise.**
+  `resync.mjs` ran **clean this session** (no harness-classifier block — the 07-02 block did NOT recur; one command:
+  `node .ds-sync/resync.mjs --config .design-sync/config.json --node-modules webapp/frontend/node_modules --out
+  ./ds-bundle --remote .design-sync/.cache/remote-sync.json`). Verdict: 16/16 verified-by-upload, 0 changed/added/
+  removed, but `upload.any=true` with `bundle+styling+aux` differing. **This was NOT esbuild noise** (an earlier
+  2026-07-04 read had dismissed the identical 3-SHA diff as noise and skipped the upload): the **V3.23.181 glass/
+  depth refresh** (frosted `.panel`/`.topbar`, gradient `.btn.primary`/`.tabs button.on`, `--glass`/`--glass-border`/
+  `--glow`/`--accent-grad`/`--elev-1`/`--elev-2`/`--blur` tokens) rode #264's long-lived branch and only merged to
+  `main` on 07-03 (db09eef) — **after** the 07-02 upload — so the live project was shipping **pre-glass CSS**.
+  Proven by git-diffing the shipped CSS (765d588→HEAD: theme.css +20, styles.css +18) AND fetching the live
+  `_ds_bundle.css` (definitively lacked the glass layer). Uploaded atomically (88 files, 0 deletes, sentinel fence/
+  re-arm, anchor last); **live anchor now == fresh build** (styleSha `6697e492…`, bundleSha12 `62ac4af8e3cd`, auxSha
+  `dc89273e…`; was `8482d04e…`/`bdc339faa68a…`/`84b35f01…`). post-upload `list_files`=90 (88 + server `_ds_manifest.json`
+  + `_adherence.oxlintrc.json`); `report_validate` {16,1,0,0,1} (the 1 bad = the deliberate ErrorBoundary throw).
+  Conventions header re-validated **clean** (all 16 components + 30 classes + tokens + 5 helpers resolve) — not
+  rewritten. **Follow-up (optional, user's call):** the new glass tokens (`--glass`/`--elev-1`/`--accent-grad`/
+  `--glow`/`--blur`) now ship but are NOT named in `.design-sync/conventions.md`'s token list — designs get glass
+  automatically via `.panel`/`.topbar`, but the design agent won't hand-roll glass on custom elements without them.
 
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
@@ -112,3 +130,12 @@
   `.design-sync/.cache/remote-sync.json` and run the driver with `--remote` so unchanged components skip
   re-verification.
 - Never regenerate sample data from real [HISTORY-REDACTED] snapshots (no-egress; the file ships to claude.ai).
+- **DS-source CSS edits masquerade as "esbuild noise" — always git-diff the shipped CSS before dismissing a
+  styleSha diff.** A `styleSha`+`bundleSha12`(+`auxSha`) diff with **all** `renderHashes`/`sourceKeys`/`sourceHashes`
+  identical is the EXACT signature of both (a) harmless esbuild non-determinism AND (b) a real edit to
+  `src/theme.css`/`src/styles.css` — they're indistinguishable by hash, because `_ds_sync.json` `sourceHashes` track
+  the emitted component artifacts (`.jsx`/`.d.ts`/`.prompt.md`), NOT the source CSS, and `renderHashes` are
+  DOM-structural (blind to `background`/`backdrop-filter`/`box-shadow`/token-value changes). When `upload.any=true`
+  but no component moved, DIFF THE ACTUAL CSS: `git diff <last-upload-commit> -- webapp/frontend/src/theme.css
+  webapp/frontend/src/styles.css` and/or fetch the live `_ds_bundle.css` and compare — do NOT trust "it's just
+  noise." (This trap hid the glass refresh from 07-03→07-04 until the 07-04 driver run + CSS diff caught it.)
