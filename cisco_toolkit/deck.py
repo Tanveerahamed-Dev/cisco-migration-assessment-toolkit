@@ -12,12 +12,13 @@ failing. Deterministic content; no network, no device data beyond the snapshot.
 import logging
 
 from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (the deck's single text sink)
+from cisco_toolkit.brand_tokens import DECK_NAVY_RGB
 
 logger = logging.getLogger(__name__)
 
 # Topic-informed palette (enterprise network risk): a dominant navy with an ice-blue support tone, white
 # content, and severity colours for the risk content. Dark title/closing slides "sandwich" light content.
-_NAVY = (0x1E, 0x27, 0x61)
+_NAVY = DECK_NAVY_RGB
 _NAVY2 = (0x2A, 0x35, 0x7A)
 _ICE = (0xCA, 0xDC, 0xFC)
 _WHITE = (0xFF, 0xFF, 0xFF)
