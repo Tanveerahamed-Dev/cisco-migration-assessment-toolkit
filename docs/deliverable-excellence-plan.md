@@ -19,7 +19,11 @@ Fix-once in the shared `cisco_toolkit/docmeta.py`, wired into all 7 DOCX writers
   reading `ssot.canonical_facts` (Law 1, never a recount) + the `ssot.summary` self-verified badge
   (Law 10); coverage-honest `[NOT OBSERVED]` on absent blocks (Law 8).
 - **`add_glossary(doc)`** — shared term/convention glossary incl. the coverage-honesty legend (T2).
+- **`add_inputs_required(doc, snap)`** — consolidated "what's still needed" register (Law 9), not-collected
+  devices as the load-bearing coverage-honest gap (commit `0ecda78`).
 - **`add_document_control`** now emits a **Distribution list** (Law 2) for the whole family.
+- **Net**: the universal orientation spine is COMPLETE — every DOCX deliverable carries At-a-Glance +
+  Inputs-Required + Glossary + Document-Control(+Distribution) + acceptance + the SSOT self-verified badge.
 - **Ratchet**: `tests/test_deliverable_excellence.py` fails the build unless every writer carries the
   furniture (reuses the `test_docx_family_xml_safe` WRITERS fan-out); `test_docmeta.py` gains
   coverage-honesty mutation tests. **DOCX are golden-free** (`test_pipeline_golden.py` renders only
@@ -29,11 +33,12 @@ Fix-once in the shared `cisco_toolkit/docmeta.py`, wired into all 7 DOCX writers
 - **Verified on the real AJ snapshot**: the register renders true canonical facts (253/303 collected,
   152 past-LDoS, 202 VLANs, 5127 endpoints, 39 decisions) + "14 figures self-verified".
 
-## P1 — Client-facing depth (remaining; DOCX = golden-free, low risk)
-- **crd.py — Inputs-Required register (marquee gap).** A CRD is made of `<placeholders>` (crd.py:209-217,
-  261-268, 336-343) with no consolidated "Customer must provide/confirm" table. Add `add_inputs_required`
-  (a docmeta helper to write) after the "How to use" note (~crd.py:183), fed by the unconfirmed
-  `req_ids` (crd.py:149) + each `<...>` field, with Owner/Due columns.
+## P1 — Client-facing depth
+- ✅ **Inputs-Required register — SHIPPED as a UNIVERSAL helper** (commit `0ecda78`): `add_inputs_required`
+  in docmeta, wired into all 7 writers' front matter, coverage-honest base rows from the snapshot
+  (not-collected devices as the load-bearing gap). *Remaining refinement*: per-generator `extra_rows`
+  (crd's unconfirmed `req_ids`/`<...>` fields, crd.py:149; mop's `<placeholder>` markers) so each doc's
+  specific asks appear alongside the universal ones.
 - **mop.py — Executive Summary BLUF** between cover and §1 (~mop.py:266), fed by
   `executive_brief.top_gating` + `migration_scenarios.fleet_recommendation` + wave count. Plus an
   explicit rollback-trigger boolean under each §x.7 (mop.py:594), a per-window pre-implementation
@@ -49,9 +54,14 @@ Fix-once in the shared `cisco_toolkit/docmeta.py`, wired into all 7 DOCX writers
 - **runbook.py** — already the strongest; just Inputs-Required.
 
 ## P3 — Non-DOCX surfaces (excel/deck/explorer — already strong; Law-2 provenance is the gap)
-- **excel.py** — set `wb.properties` (CoreProperties: creator/created/keywords=version — **golden-safe**,
-  metadata only) + a provenance block on the Exec-Summary sheet; a Read-Me tab-1 + Glossary tab
-  (**these add sheets → one sheet-schema golden re-bless**, gated by `test_golden_guard.py`).
+- **excel.py** — `wb.properties` (CoreProperties: creator/created/keywords=version — golden-safe metadata)
+  is set at the orchestrator's `wb.save` (`COLLECT_PARSE_V3_23_0.py:2464`); **CAUTION**: that's the flagship
+  save path — a stray undefined var there crashes every `cisco-assess` run, so trace the in-scope
+  version/timestamp vars first (deferred for that reason — low value: File>Info metadata, and the
+  visible coverage-honesty already lives in the "Collection Completeness" sheet). A **visible** provenance
+  row is golden-safe if added AFTER row 1 of the Exec-Summary sheet (`excel.py:3413`; the golden captures
+  only row-1 headers) but that writer only receives `brief`, not `script_version`/`generated_at` — needs a
+  small signature+caller change. A Read-Me tab-1 + Glossary tab add sheets → one sheet-schema re-bless.
 - **deck.py:184** — add version/date/snapshot to the title-slide footer (deck is golden-free). NOTE the
   `text()` run-format differs between single- and multi-line calls — check the helper before editing.
 - **explorer** (`blast_radius_explorer.html`) — show `SNAP.script_version`/`generated_at` in the header
