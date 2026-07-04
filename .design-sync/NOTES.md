@@ -108,10 +108,20 @@
   re-arm, anchor last); **live anchor now == fresh build** (styleSha `6697e492…`, bundleSha12 `62ac4af8e3cd`, auxSha
   `dc89273e…`; was `8482d04e…`/`bdc339faa68a…`/`84b35f01…`). post-upload `list_files`=90 (88 + server `_ds_manifest.json`
   + `_adherence.oxlintrc.json`); `report_validate` {16,1,0,0,1} (the 1 bad = the deliberate ErrorBoundary throw).
-  Conventions header re-validated **clean** (all 16 components + 30 classes + tokens + 5 helpers resolve) — not
-  rewritten. **Follow-up (optional, user's call):** the new glass tokens (`--glass`/`--elev-1`/`--accent-grad`/
-  `--glow`/`--blur`) now ship but are NOT named in `.design-sync/conventions.md`'s token list — designs get glass
-  automatically via `.panel`/`.topbar`, but the design agent won't hand-roll glass on custom elements without them.
+  Conventions header re-validated **clean** (all 16 components + 30 classes + tokens + 5 helpers resolve).
+- ✅ **2026-07-04 (2nd upload, same session) — DOCUMENTED the glass tokens in the conventions header.** User
+  authorized ("proceed with best possible solution") adding the newly-shipped depth vocabulary to
+  `.design-sync/conventions.md`: a **depth & glass** token clause (`--glass`/`--glass-2`/`--glass-border`/`--blur`/
+  `--elev-1`/`--elev-2`/`--accent-grad`/`--glow`, all verified present in `_ds_bundle.css` with their real class
+  usage mapped first) + a custom-surface usage recipe mirroring `.panel`/`.topbar`/`.btn.primary`/`.tabs .on`.
+  Skill rebuild-rule followed: edit → fresh `resync.mjs` driver run (re-stitches README) → atomic re-upload.
+  Driver verdict was surgical: **`upload.any=true` but `bundle:false`, `styling:false`, `aux:true`** — ONLY the
+  README changed; live README now carries the header (`get_file` confirmed), anchor `auxSha` `dc89273e→c5cf3002`,
+  `bundleSha12`/`styleSha`/all 16 renderHashes UNCHANGED. **Determinism note (refines the "esbuild noise" framing):**
+  a rebuild from identical source produced an IDENTICAL `bundleSha12` (`bundle:false`) — so within a fixed
+  toolchain the bundle is DETERMINISTIC, and the glass upload's `bundle`/`style` diff was 100% the real CSS, zero
+  noise. Treat a `bundleSha12`/`styleSha` diff as a real-change signal (source CSS or esbuild-version), never a
+  within-session "it's just noise" — identify WHAT moved (git-diff CSS, check README/aux) before dismissing.
 
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
