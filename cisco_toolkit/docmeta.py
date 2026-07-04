@@ -122,7 +122,8 @@ def _kv(doc, label, value):
     p = doc.add_paragraph()
     r = p.add_run(xml_safe(label))
     r.bold = True
-    r.font.color.rgb = RGBColor(0x1F, 0x38, 0x64)
+    from cisco_toolkit.brand_tokens import DOC_NAVY_RGB
+    r.font.color.rgb = RGBColor(*DOC_NAVY_RGB)
     p.add_run(" " + (xml_safe(str(value)) if value not in (None, "") else "—"))
     return p
 

@@ -81,7 +81,8 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
 
     snap = xml_safe_deep(snap_dict if isinstance(snap_dict, dict) else {})   # one bad device byte (noncharacter/surrogate) must not abort the docx
     label = xml_safe(label) if isinstance(label, str) else (str(label) if label is not None else "")
-    NAVY = RGBColor(0x1F, 0x38, 0x64)
+    from cisco_toolkit.brand_tokens import DOC_NAVY_RGB
+    NAVY = RGBColor(*DOC_NAVY_RGB)
     GREY = RGBColor(0x59, 0x59, 0x59)
     doc = Document()
     normal = doc.styles["Normal"]

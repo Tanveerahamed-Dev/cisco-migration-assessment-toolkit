@@ -30,6 +30,7 @@ guard is a latent drift bug (this is Law 1 of the Deliverable Excellence Standar
 | **Run provenance / chain-of-custody** | `cisco_toolkit/manifest.py` (append-only, hash-chained ledger) | the sealed run-manifest | tamper-evident by hash chain |
 | **Deliverable quality bar + reusable prompts** | `…\Desktop\_Deliverable_Excellence_Kit\` (Standard + Master Prompt Library) | read the kit | the verify-gate ratchet on generated docs |
 | **Generated-deliverable excellence** (furniture every docx carries) | `cisco_toolkit/docmeta.py :: add_excellence_front / add_glossary / add_document_control` + plan `docs/deliverable-excellence-plan.md` | the 7 writers call them; read the plan | ✅ **CI-enforced** — `tests/test_deliverable_excellence.py` fails the build if any deliverable lacks the At-a-Glance / Glossary / Document-Control / acceptance furniture |
+| **Brand design tokens** — print navy + severity (deck/DOCX/workbook) · digital dark/light palette (explorer/webapp) | print → `cisco_toolkit/brand_tokens.py :: BRAND_NAVY_RGB` (canonical `#1F3864`); digital → `cisco_toolkit/blast_radius_explorer.html` `:root` | import the token — never hardcode a hex / `RGBColor` | ✅ **CI-enforced** — `tests/test_brand_tokens_reconcile.py` (zero stray print-navy literal) + `tests/test_theme_tokens_reconcile.py` (theme.css must not drift from the explorer; 33 shared tokens) |
 | **Side engagements** (separate SSOTs, *not* this repo) | Qatar DC: `[HISTORY-REDACTED]/ssot.py` → `[HISTORY-REDACTED]_DC_Design\` · [HISTORY-REDACTED] CCTV bid: `…\[HISTORY-REDACTED]_[HISTORY-REDACTED]_CCTV_PS_Proposal\` | their own pipelines | own verify gates |
 
 > **Snapshot-vintage note (coverage-honest):** the three newest evidence blocks — `cable_map`,
@@ -45,6 +46,7 @@ guard is a latent drift bug (this is Law 1 of the Deliverable Excellence Standar
 | Fleet counts (303 inventoried / 253 collected / 50 not) | `ssot.canonical_facts(snap)` | memory `canonical-[HISTORY-REDACTED]-fleet.md` | Snapshot wins. Memory is a human-readable cache — regenerate it *from* the snapshot; never edit the number in memory alone. (They agree today.) |
 | Release vs schema version | `pyproject.toml` vs `__version__` | — | **Not the same fact.** Decoupled on purpose; do not force-equal. |
 | Any headline number rendered in a deliverable | fact #1 (`canonical_facts`) | the rendered DOCX/XLSX/HTML/PPTX | Already mechanically reconciled by the cross-surface lock. |
+| Digital design tokens (dark/light palette) | `blast_radius_explorer.html` `:root` | `webapp/frontend/src/theme.css` (mirror; cites it, line 1) | Explorer wins. Guarded by `test_theme_tokens_reconcile.py` — the 33 shared tokens must match. |
 
 ## The federation rule (how to keep it consolidated)
 
