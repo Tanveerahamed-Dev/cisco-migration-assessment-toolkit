@@ -22,7 +22,7 @@ from datetime import datetime
 
 from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # coerce truthy non-dict/list sections
 from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
@@ -202,6 +202,8 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
     # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
     add_excellence_front(doc, snap_dict)
+    # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
+    add_inputs_required(doc, snap_dict)
     # ===== 1. Engagement context =====
     doc.add_heading("1. Engagement Context", level=1)
     doc.add_paragraph(

@@ -11,6 +11,7 @@ from cisco_toolkit.docmeta import (  # noqa: E402
     add_document_control,
     add_excellence_front,
     add_glossary,
+    add_inputs_required,
     add_toc,
     as_dict,
     as_list,
@@ -59,6 +60,22 @@ def test_glossary_always_carries_the_coverage_honesty_convention():
     txt = _all_text(doc)
     assert "Glossary" in txt and "FHRP" in txt and "XYZ" in txt
     assert "[NOT OBSERVED]" in txt   # the not-observed-is-not-healthy row must always be present
+
+
+def test_inputs_required_surfaces_not_collected_devices_coverage_honestly():
+    # DE-01/Law 9: the register must name the not-collected blind spot as a concrete input to close,
+    # never bury it. And it must NOT invent one when nothing is uncollected.
+    doc = Document()
+    add_inputs_required(doc, {"collection_completeness": {"summary": {"not_collected": 50}}})
+    txt = _all_text(doc)
+    assert "Inputs Required" in txt
+    assert "50 inventoried device(s) were not collected" in txt and "[NOT OBSERVED]" in txt
+
+    doc2 = Document()
+    add_inputs_required(doc2, {"collection_completeness": {"summary": {"not_collected": 0}}})
+    txt2 = _all_text(doc2)
+    assert "Inputs Required" in txt2                       # heading + the standard gates still present
+    assert "were not collected" not in txt2                # but no fabricated blind-spot row
 
 
 def test_document_control_includes_a_distribution_list():

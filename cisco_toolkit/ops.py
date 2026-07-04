@@ -19,7 +19,7 @@ a missing library is a warning + skip, never a crash. Deterministic; no network.
 import logging
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict
 from cisco_toolkit.docmeta import as_list as _as_list
 from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
@@ -150,6 +150,8 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
 
     # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
     add_excellence_front(doc, snap_dict)
+    # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
+    add_inputs_required(doc, snap_dict)
     # ===== 1. Purpose & audience =====
     doc.add_heading("1. Purpose & Audience", level=1)
     doc.add_paragraph(

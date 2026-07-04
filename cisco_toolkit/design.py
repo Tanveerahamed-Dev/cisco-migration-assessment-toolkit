@@ -23,7 +23,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 from cisco_toolkit.analyze import vlan_inventory
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.textutils import xml_safe, xml_safe_deep
 
 logger = logging.getLogger(__name__)
@@ -225,6 +225,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
 
     # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
     add_excellence_front(doc, snap_dict)
+    # Deliverable Excellence (DE-01): consolidated Inputs-Required register (Law 9).
+    add_inputs_required(doc, snap_dict)
     # ===== 1. Executive design summary =====
     doc.add_heading("1. Executive Design Summary", level=1)
     posture = eb.get("posture_statement") or (
