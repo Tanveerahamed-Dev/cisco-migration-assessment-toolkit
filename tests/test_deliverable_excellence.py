@@ -28,7 +28,8 @@ WRITERS = [
 # The furniture every deliverable must carry. Stable anchors: three unnumbered headings + the
 # acceptance-gate invariant sentence (the MOP appends the gate headingless under its final section,
 # so we anchor on add_acceptance's body text, present in every writer, not the heading).
-REQUIRED_SECTIONS = ("Document Control", "At a Glance", "Glossary", "accepted as the working record")
+REQUIRED_SECTIONS = ("Document Control", "At a Glance", "Inputs Required", "Glossary",
+                     "accepted as the working record")
 
 
 def _snap():

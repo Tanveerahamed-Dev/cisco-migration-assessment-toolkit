@@ -326,3 +326,36 @@ def add_glossary(doc, *, extra_terms=(), heading="Glossary & Conventions"):
         "'[NOT OBSERVED]' always means the evidence was not collected — never that the item is healthy.")
     add_table(doc, ["Term", "Meaning"], list(DEFAULT_GLOSSARY) + list(extra_terms),
               widths=[1.7, 5.0], fixed=False)
+
+
+def add_inputs_required(doc, snap, *, extra_rows=(), heading="Inputs Required"):
+    """Consolidated 'what the customer and delivery team must still provide or confirm' register
+    (Law 9): the reader should never have to hunt scattered <placeholders> to know what is owed.
+    Universal, coverage-honest base rows from the snapshot — the not-collected devices are the #1
+    real gap (a blind spot, [NOT OBSERVED], never assumed healthy) — plus the standard
+    placeholder/peer-review gates; extra_rows lets a writer add its own unconfirmed items.
+    Unnumbered; place in the front matter so the outstanding asks are answer-first."""
+    snap = snap if isinstance(snap, dict) else {}
+    cc = snap.get("collection_completeness")
+    cc = cc if isinstance(cc, dict) else {}
+    summ = cc.get("summary")
+    summ = summ if isinstance(summ, dict) else {}
+    rows = []
+    n_notcoll = summ.get("not_collected")
+    if isinstance(n_notcoll, int) and n_notcoll > 0:
+        rows.append(("Collect the not-reached devices",
+                     f"{n_notcoll} inventoried device(s) were not collected — their state is a blind spot "
+                     "([NOT OBSERVED]). Collect them read-only to close it before relying on this document.",
+                     "Customer / delivery"))
+    rows.append(("Complete every <placeholder>",
+                 "Fill every <…> marker in this document before it is treated as an approved record.",
+                 "Delivery engineer"))
+    rows.append(("Peer review & accept",
+                 "This is a generated DRAFT; it must be peer-reviewed and accepted (see Document "
+                 "Acceptance) before use.", "Review owner"))
+    rows = rows + list(extra_rows)
+    doc.add_heading(heading, level=1)
+    doc.add_paragraph(
+        "What the customer and delivery team must provide or confirm to close the assessment's known "
+        "gaps. Coverage-honest: a not-collected device is a blind spot, never assumed healthy.")
+    add_table(doc, ["Item", "What is needed", "Owner"], rows, widths=[1.9, 3.8, 1.0], fixed=False)
