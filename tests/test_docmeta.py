@@ -9,6 +9,8 @@ from docx import Document  # noqa: E402
 from cisco_toolkit.docmeta import (  # noqa: E402
     add_acceptance,
     add_document_control,
+    add_excellence_front,
+    add_glossary,
     add_toc,
     as_dict,
     as_list,
@@ -22,6 +24,48 @@ def _all_text(doc):
         for row in t.rows:
             parts.extend(c.text for c in row.cells)
     return "\n".join(parts)
+
+
+def test_excellence_front_reads_canonical_facts_not_a_recount():
+    # DE-01: the 'At a Glance' register must render the CANONICAL headline facts (single source of
+    # truth), plus the ssot self-verification signal — proof it reads, not recounts.
+    doc = Document()
+    snap = {"executive_brief": {"scale": {"n_devices": 303, "n_collected": 253,
+                                          "n_endpoints": 5127, "n_vlans": 202},
+                                "posture": {"avg_health": 41, "n_critical": 117, "n_poor": 85}},
+            "lifecycle_risk": {"summary": {"n_past_ldos": 152}}}
+    add_excellence_front(doc, snap)
+    txt = _all_text(doc)
+    assert "At a Glance" in txt
+    assert "253 of 303" in txt               # canonical scope, not a recount
+    assert "152 device" in txt               # the marquee lifecycle fact
+    assert "Single source of truth" in txt   # the Law-10 self-verified signal
+
+
+def test_excellence_front_is_coverage_honest_on_absent_blocks():
+    # The bite: with NO canonical blocks published, an unpublished fact must read [NOT OBSERVED],
+    # never a fabricated healthy-looking 0 (the false-health class this whole layer exists to kill).
+    doc = Document()
+    add_excellence_front(doc, {})
+    txt = _all_text(doc)
+    assert "At a Glance" in txt
+    assert "[NOT OBSERVED]" in txt
+    assert "0 device(s) past last-date-of-support" not in txt
+
+
+def test_glossary_always_carries_the_coverage_honesty_convention():
+    doc = Document()
+    add_glossary(doc, extra_terms=(("XYZ", "a doc-specific term"),))
+    txt = _all_text(doc)
+    assert "Glossary" in txt and "FHRP" in txt and "XYZ" in txt
+    assert "[NOT OBSERVED]" in txt   # the not-observed-is-not-healthy row must always be present
+
+
+def test_document_control_includes_a_distribution_list():
+    doc = Document()
+    add_document_control(doc, document="X.docx", label="AJ", engine_version="9")
+    txt = _all_text(doc)
+    assert "Distribution list" in txt
 
 
 def test_add_toc_renders_field_code_and_placeholder():

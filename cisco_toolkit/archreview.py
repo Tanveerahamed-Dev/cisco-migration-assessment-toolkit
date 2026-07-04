@@ -35,7 +35,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
 from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
@@ -1120,6 +1120,9 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     # ---- TOC (shared field-code helper, V3.23.171) ----
     add_toc(doc)
 
+
+    # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
+    add_excellence_front(doc, snap_dict)
     # ===== 1. Executive verdict =====
     doc.add_heading("1. Executive Verdict", level=1)
     doc.add_paragraph(str(summary.get("statement") or ""))
@@ -1221,6 +1224,9 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
         "migration punch-list; the priority queue in §1.1 is the working order. The engagement plan "
         "of record carries each item's owner and gate; the NRFU plan re-verifies the affected checks "
         "post-cutover. Regenerate this review after each wave — the verdicts move as the fleet does.")
+
+    # Deliverable Excellence (DE-01): shared glossary before the sign-off gate.
+    add_glossary(doc)
 
     add_acceptance(
         doc, scope_note="Acceptance confirms the review's verdicts as the agreed design-gap baseline; "

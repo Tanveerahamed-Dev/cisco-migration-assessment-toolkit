@@ -22,7 +22,7 @@ from datetime import datetime
 
 from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
-from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_table, add_toc
+from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # coerce truthy non-dict/list sections
 from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
 
@@ -199,6 +199,9 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     # ---- table of contents (shared field-code helper, V3.23.171) ----
     add_toc(doc)
 
+
+    # Deliverable Excellence (DE-01): answer-first at-a-glance register + single-source-of-truth signal.
+    add_excellence_front(doc, snap_dict)
     # ===== 1. Engagement context =====
     doc.add_heading("1. Engagement Context", level=1)
     doc.add_paragraph(
@@ -418,6 +421,9 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
             _label_run(doc.add_paragraph(), "Coverage:", cov.get("caveat"), GREY)
 
     # ---- closing acceptance gate ----
+    # Deliverable Excellence (DE-01): shared glossary before the sign-off gate.
+    add_glossary(doc)
+
     add_acceptance(
         doc, scope_note="Acceptance of this CRD baselines the requirements for the high-level design; "
                         "changes after acceptance go through change control as requirement amendments.")
