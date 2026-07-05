@@ -97,3 +97,30 @@ def test_make_redactor_ip_map_never_reproduces_a_real_address():
     assert scrub("240.0.0.7") != "240.0.0.7"
     # determinism within a call: the same input scrubs to the same output
     assert scrub(reals[0]) == outs[0]
+
+
+def test_redact_snapshot_ip_map_never_reproduces_a_real_address():
+    """[NRFU sheet audit, sibling map] redact_snapshot (the JSON / explorer --redact path) carried the
+    SAME in-band 10.{i//256}.{i%256} collision class _make_redactor was cured of: the Nth distinct real
+    /24 could draw a pseudonym equal to ANOTHER real net (10.0.20 -> '10.0.10', re-emitting the real
+    gateway 10.0.10.1 into a share-safe deliverable), or a net at its own index survived VERBATIM.
+    Pseudonym /24s now live in IANA-reserved 240.0.0.0/4 (Class E). UNLIKE _make_redactor's
+    refuse-everything guard, an already-240.x net maps to ITSELF -- the identity rule that keeps
+    redact_snapshot(redact_snapshot(x)) == redact_snapshot(x) (test_secret_scrub_is_idempotent)."""
+    from cisco_toolkit.html import redact_snapshot
+    reals = [f"10.0.{n}.1" for n in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20)]
+    snap = {"ips": list(reals)}
+    once = redact_snapshot(snap)
+    outs = once["ips"]
+    for real in reals:
+        assert all(real not in o for o in outs), f"real address {real} reproduced by redact_snapshot's map"
+    # /24 grouping is preserved and the pseudonym space is the unassignable Class E block
+    assert all(o.startswith("240.") and o.endswith(".1") for o in outs), outs
+    # the deliberate contrast with _make_redactor: an already-Class-E net is kept (identity), and a real
+    # net may never be handed a /24 that an identity-kept net already claimed
+    r = redact_snapshot({"seed": "240.0.0.9", "real": "192.168.1.5"})
+    assert r["seed"] == "240.0.0.9"
+    assert r["real"].startswith("240.") and not r["real"].startswith("240.0.0.")
+    # ...which is exactly what keeps the map idempotent: every IPv4 in a scrubbed output is 240.x,
+    # so a second pass maps each net to itself and is a no-op
+    assert redact_snapshot(once) == once

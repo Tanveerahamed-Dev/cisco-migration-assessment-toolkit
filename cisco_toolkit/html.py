@@ -994,16 +994,34 @@ def redact_snapshot(snap: dict) -> dict:
     """Return a copy of the snapshot with IPs, MACs, and serial numbers consistently
     pseudonymized for sharing the single-file deliverable. Same input maps to the same
     output and IPs keep their /24 grouping, so topology / ARP / subnet relationships
-    survive; hostnames are kept. Pure (stdlib only); the input is not mutated."""
+    survive; hostnames are kept. Pure (stdlib only); the input is not mutated.
+    COLLISION-PROOF IPv4 (same cure as _make_redactor's): pseudonym /24s are drawn from
+    240.0.0.0/4 — the IANA-reserved Class E block no deployed device can carry — so a
+    redacted deliverable can NEVER reproduce a real address. The old in-band
+    10.{i//256}.{i%256} scheme could (net 10.0.20 drew '10.0.10', re-emitting the real
+    gateway 10.0.10.1). A net ALREADY in 240.x maps to ITSELF: every IPv4 in a scrubbed
+    output is 240.x, so that identity rule is exactly what keeps redact_snapshot
+    idempotent (a second pass is a no-op)."""
     ip_map: Dict[str, str] = {}
     ip6_map: Dict[str, str] = {}
     mac_map: Dict[str, str] = {}
     serial_map: Dict[str, str] = {}
+    _next_net = [0]
 
     def _ip(m):
         net = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
         if net not in ip_map:
-            i = len(ip_map); ip_map[net] = f"10.{i // 256}.{i % 256}"   # remap /24, keep host octet
+            if m.group(1) == "240":
+                ip_map[net] = net       # already a Class E pseudonym (re-scrub of our own output): identity
+            else:
+                i = _next_net[0]
+                while True:
+                    cand = f"240.{i // 256}.{i % 256}"   # remap /24 into Class E, keep host octet
+                    i += 1
+                    if cand not in ip_map:               # never hand out a /24 an identity-kept net already claimed
+                        break
+                _next_net[0] = i
+                ip_map[net] = cand
         return f"{ip_map[net]}.{m.group(4)}"
 
     def _ip6(m):
@@ -1076,14 +1094,15 @@ def _make_redactor():
     """A fresh, self-consistent pseudonymizer (same scheme as redact_snapshot: IPv4 keeps its /24 grouping;
     IPv6 -> fd00::; MAC -> 02:..; serial -> SNxxxx). Returns (scrub_str, redact_serial) sharing per-call maps.
     Shared by redact_collected_inplace + redact_workbook_cells so the --redact workbook is scrubbed everywhere.
-    COLLISION-PROOF IPv4 (unlike redact_snapshot's 10.x map, whose identity behaviour is load-bearing for
-    its idempotency): pseudonym /24s are drawn from 240.0.0.0/4 — the IANA-reserved Class E block that can
-    never be assigned to real gear — so a pseudonym can NEVER reproduce a real deployed address. The old
-    in-band 10.{i//256}.{i%256} scheme could: the NRFU sheet's second real SVI net drew the pseudonym
-    '10.0.10', re-emitting the OTHER real gateway IP 10.0.10.1 verbatim into a --redact workbook (and a
-    net whose index matched its own name survived unredacted). Belt-and-braces guards keep a candidate
-    from equalling the input net, an already-seen net, or an already-issued pseudonym even if a capture
-    somehow contains 240.x addresses. Deterministic per call."""
+    COLLISION-PROOF IPv4 (same Class E scheme as redact_snapshot's map): pseudonym /24s are drawn from
+    240.0.0.0/4 — the IANA-reserved Class E block that can never be assigned to real gear — so a pseudonym
+    can NEVER reproduce a real deployed address. The old in-band 10.{i//256}.{i%256} scheme could: the
+    NRFU sheet's second real SVI net drew the pseudonym '10.0.10', re-emitting the OTHER real gateway IP
+    10.0.10.1 verbatim into a --redact workbook (and a net whose index matched its own name survived
+    unredacted). Belt-and-braces guards keep a candidate from equalling the input net, an already-seen
+    net, or an already-issued pseudonym even if a capture somehow contains 240.x addresses — unlike
+    redact_snapshot, which must map an already-240.x net to ITSELF to stay idempotent, this per-call map
+    is never re-fed its own output, so it refuses identity outright. Deterministic per call."""
     ip_map: Dict[str, str] = {}
     ip6_map: Dict[str, str] = {}
     mac_map: Dict[str, str] = {}
