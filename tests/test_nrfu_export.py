@@ -58,6 +58,8 @@ def _snap():
                 "Vlan20": {"port": "Vlan20", "status": "connected", "svi_ip": "10.0.20.2"},
                 "Eth1/1": {"port": "Eth1/1", "status": "connected", "port_channel": "Po1",
                            "cdp_neighbor": "dist1", "neighbor_port": "Gi1/0/1"},
+                # the logical bundle interface also carries port_channel — must NOT count as a member
+                "Po1": {"port": "Po1", "status": "connected", "port_channel": "Po1"},
             },
             "acc1": {
                 "Gi0/1": {"port": "Gi0/1", "status": "connected", "switchport_mode": "Access",
@@ -179,6 +181,9 @@ def test_expected_prefill_stp_root_hsrp_active_and_neighbor_sets():
     # port-channel member count
     pc = _cases_of(out, "dist1", command="show etherchannel summary")
     assert pc and "Po1" in pc[0]["expected"] and "2 member(s)" in pc[0]["expected"]
+    # the logical Po1 interface record must not inflate the member count (dist2: 1 real member)
+    pc2 = _cases_of(out, "dist2", command="show port-channel summary")
+    assert pc2 and "Po1: 1 member(s)" in pc2[0]["expected"]
 
 
 def test_gateway_svi_ping_and_traceroute_within_move_group():
