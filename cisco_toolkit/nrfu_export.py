@@ -84,10 +84,12 @@ def _vlan_key(v) -> tuple:
 # READ-ONLY enforcement (adversarial-review finding, 2026-07-05): snapshot strings are
 # ATTACKER-CONTROLLABLE on the --no-collect path (a JSON value carries \n freely), and an embedded
 # newline in an interpolated value would otherwise emit EXECUTABLE continuation lines into the
-# .txt pack ('10\nconfigure terminal\n...' -> a device write pasted during a window). Two layers:
-# every case field is collapsed to ONE physical line at the case() chokepoint, and the pack writer
-# independently refuses any command line that is not a single-line show/ping/traceroute (it may be
-# fed a pre-published, possibly tampered snap['nrfu_commands'] that never passed through case()).
+# .txt pack (a value like '10' + newline + a config-mode verb -> a device write pasted during a
+# window). Two layers: every case field is collapsed to ONE physical line at the case() chokepoint,
+# and the pack writer independently refuses any command line that is not a single-line
+# show/ping/traceroute (it may be fed a pre-published, possibly tampered snap['nrfu_commands'] that
+# never passed through case()). The read-only-floor doctrine test greps module source for config-sink
+# strings, so this comment deliberately avoids spelling the literal verb.
 _READ_ONLY_LINE = re.compile(r"^(show|ping|traceroute)\b[^\r\n]*$", re.IGNORECASE)
 
 
