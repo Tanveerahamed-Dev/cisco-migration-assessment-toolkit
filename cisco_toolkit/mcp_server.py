@@ -4,9 +4,11 @@ Plan-A Tier-3 #18. Exposes READ-ONLY query tools an assistant can call to reason
 assessed estate -- fleet orientation, inventory, per-device risk dossier, punch-list
 findings (list and single-finding lookup), device search with health/risk posture,
 failure blast-radius, topology chokepoints, architecture coverage, move-group readiness,
-single-node what-if failure injection, and fleet / per-device health. It mirrors
-analysis the explorer / webapp already compute; it never SSHes, never writes, never hits
-the network. Input is a snapshot file the engine already produced.
+single-node what-if failure injection, the L2 failover twin (STP re-election + FHRP
+takeover, actuated with a target) and its target-free readiness rollup, and fleet /
+per-device health. It mirrors analysis the explorer / webapp already compute; it never
+SSHes, never writes, never hits the network. Input is a snapshot file the engine already
+produced.
 
 Design: the data layer (the module-level functions below) is PURE and stdlib-only -- it
 imports no `mcp`, so it is fully unit-testable without the optional dependency. The MCP
@@ -25,7 +27,7 @@ import json
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import whatif
+from . import failover, whatif
 
 # The tools this server registers, in a stable order. Kept module-level so the test can
 # assert the wired surface without importing `mcp`.
@@ -33,6 +35,7 @@ TOOL_NAMES = [
     "overview", "list_devices", "device_detail", "top_findings",
     "failure_impact", "chokepoints", "architecture_coverage",
     "get_finding", "search_devices", "get_move_groups", "whatif_node", "get_health",
+    "failover_twin", "failover_readiness",
 ]
 
 
@@ -307,6 +310,53 @@ def get_health(snap: Dict[str, Any], host: Optional[str] = None) -> Dict[str, An
             "available_hosts": [r.get("switch") for r in rows][:40]}
 
 
+def failover_twin(snap: Dict[str, Any], target: Any) -> Dict[str, Any]:
+    """L2 failover twin (cisco_toolkit.failover): remove a node/site and recompute per-VLAN STP root
+    re-election and FHRP (HSRP/VRRP/GLBP) master takeover from snap['stp_roots'] + snap['fhrp_detail'].
+    The engine result is returned VERBATIM so its coverage-honest wording (indeterminate abstention,
+    default-election smell, split-brain / VIP-stranded flags) is preserved. `target` is a hostname (a
+    node) or a site-code substring."""
+    sources = ["stp_roots", "fhrp_detail"]
+    want = str(target or "").strip()
+    if not want:
+        return {"available": False, "sources": sources,
+                "reason": "no target given -- pass a hostname (node) or a site-code substring to fail"}
+    has_stp = isinstance(snap.get("stp_roots"), dict) and snap.get("stp_roots")
+    has_fhrp = isinstance(snap.get("fhrp_detail"), dict) and snap.get("fhrp_detail")
+    if not (has_stp or has_fhrp):
+        return {"available": False, "sources": sources,
+                "reason": "snapshot has neither 'stp_roots' nor 'fhrp_detail' -- the L2 twin needs collected "
+                          "spanning-tree / first-hop-redundancy state"}
+    # accept a bare host OR the whatif {type,id} shape; default to a node match, fall back to a site substring
+    result = failover.compute_failover_twin(snap, [{"type": "node", "id": want}])
+    if not result["failed_hosts"]:
+        result = failover.compute_failover_twin(snap, [{"type": "site", "id": want}])
+    out = {"available": True, "target": want, "result": result, "sources": sources}
+    if not result["failed_hosts"]:                       # honest miss: say which hosts COULD be failed
+        hosts = set()
+        for sec in ("stp_roots", "fhrp_detail"):
+            s = snap.get(sec)
+            if isinstance(s, dict):
+                hosts.update(s.keys())
+        out["available_l2_hosts"] = sorted(hosts)
+    return out
+
+
+def failover_readiness(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """Target-free L2 resilience rollup (cisco_toolkit.failover): for EVERY observed STP root and FHRP
+    forwarding member, is there a PROVABLE backup on a single failure? Returns the engine's verbatim
+    coverage-honest tallies (roots/actives with a proven backup vs default-election smell vs indeterminate)
+    and the named at-risk list."""
+    sources = ["stp_roots", "fhrp_detail"]
+    has_stp = isinstance(snap.get("stp_roots"), dict) and snap.get("stp_roots")
+    has_fhrp = isinstance(snap.get("fhrp_detail"), dict) and snap.get("fhrp_detail")
+    if not (has_stp or has_fhrp):
+        return {"available": False, "sources": sources,
+                "reason": "snapshot has neither 'stp_roots' nor 'fhrp_detail' -- L2 readiness needs collected "
+                          "spanning-tree / first-hop-redundancy state"}
+    return {"available": True, "result": failover.compute_failover_readiness(snap), "sources": sources}
+
+
 # name -> pure function, captured so build_server's same-named tool wrappers don't shadow it
 _PURE = {
     "overview": overview, "list_devices": list_devices, "device_detail": device_detail,
@@ -314,6 +364,7 @@ _PURE = {
     "chokepoints": chokepoints, "architecture_coverage": architecture_coverage,
     "get_finding": get_finding, "search_devices": search_devices,
     "get_move_groups": get_move_groups, "whatif_node": whatif_node, "get_health": get_health,
+    "failover_twin": failover_twin, "failover_readiness": failover_readiness,
 }
 
 
@@ -386,6 +437,18 @@ def build_server(snap: Dict[str, Any], name: str = "cisco-assessment"):
     def get_health(host: str = "") -> dict:  # noqa: F811
         """Fleet health-band distribution (default), or one device's score, band and top deductions."""
         return P["get_health"](snap, host or None)
+
+    @server.tool()
+    def failover_twin(target: str) -> dict:  # noqa: F811
+        """L2 failover twin: remove a node/site and recompute per-VLAN STP root re-election and FHRP
+        (HSRP/VRRP/GLBP) master takeover; default-election smell + split-brain / VIP-stranded flags."""
+        return P["failover_twin"](snap, target)
+
+    @server.tool()
+    def failover_readiness() -> dict:  # noqa: F811
+        """L2 resilience rollup: for every observed STP root and FHRP active, is there a provable backup
+        on a single failure (proven vs default-election smell vs indeterminate blind spot)."""
+        return P["failover_readiness"](snap)
 
     return server
 
