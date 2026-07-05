@@ -240,7 +240,8 @@ def test_every_emitted_command_is_read_only():
     verb (configure/clear/reload/copy/...) fails HERE instead of shipping in a certification pack."""
     out = compute_nrfu_commands(_snap())
     bad = [c["command"] for _w, _h, c in _all_cases(out)
-           if not _READ_ONLY_CMD.match(c["command"].strip())]
+           if "\n" in c["command"] or "\r" in c["command"]           # single-line IS part of read-only:
+           or not _READ_ONLY_CMD.match(c["command"].strip())]       # a 2nd physical line is a 2nd command
     assert not bad, f"NON-read-only command(s) emitted in the NRFU pack: {bad}"
     # sanity: the guard is not vacuous — the pack actually contains commands of both classes
     cmds = [c["command"] for _w, _h, c in _all_cases(out)]
@@ -278,6 +279,51 @@ def test_pack_writer_file_layout_and_content(tmp_path):
     snap["nrfu_commands"] = compute_nrfu_commands(snap)
     written2 = write_nrfu_pack(snap, str(tmp_path / "again"))
     assert len(written2) == len(written)
+
+
+def _assert_pack_executable_lines_readonly(root):
+    """Every non-comment, non-blank physical line in every emitted file is a single-line
+    show/ping/traceroute — the executable surface of the pack, whatever the snapshot contained."""
+    import glob
+    for p in glob.glob(os.path.join(root, "**", "*.txt"), recursive=True):
+        for line in open(p, encoding="utf-8").read().splitlines():
+            if not line.strip() or line.startswith("!"):
+                continue
+            assert _READ_ONLY_CMD.match(line), f"executable non-read-only line in {p}: {line!r}"
+            assert line.split()[0].lower() not in ("configure", "conf", "reload", "clear", "no")
+
+
+def test_hostile_newline_values_cannot_inject_executable_lines(tmp_path):
+    """Adversarial-review regression (2026-07-05, doctrine lens, verified-by-execution): snapshot
+    strings are attacker-controllable on the --no-collect path; an embedded newline in an
+    interpolated value (an stp_roots VLAN key, a device field, a CDP neighbor) must NEVER become an
+    executable line in the pack — 'No writes to devices, ever' is guardrail #1."""
+    payload = "10\nconfigure terminal\ninterface Gi1/0/1\nshutdown"
+    snap = _snap()
+    snap["stp_roots"]["dist1"][payload] = {"is_root": True, "root_priority": 24586}
+    snap["devices"]["dist1"]["sw_version"] = "16.12.4\nconfigure terminal\nno logging"
+    snap["interfaces"]["dist1"]["Gi1/0/1"]["cdp_neighbor"] = "evil\nreload"
+    out = compute_nrfu_commands(snap)
+    for _w, _h, c in _all_cases(out):
+        for field in ("command", "expected", "source_key"):
+            assert "\n" not in c[field] and "\r" not in c[field], \
+                f"multi-line {field} escaped the chokepoint: {c[field]!r}"
+    write_nrfu_pack(snap, str(tmp_path))
+    _assert_pack_executable_lines_readonly(str(tmp_path))
+    # belt-and-braces: a TAMPERED pre-published nrfu_commands section (which bypasses compute's
+    # chokepoint entirely) is refused at the writer — the injected verb becomes a comment line.
+    snap["nrfu_commands"] = {
+        "waves": [{"wave_id": "Group 1", "devices": [{"host": "dist1", "platform_dialect": "ios",
+                   "cases": [{"id": "NRFU-W1-P2-001", "phase": 2, "scope": "per-site",
+                              "command": "show version\nconfigure terminal\nshutdown",
+                              "expected": "x", "source_key": "y"},
+                             {"id": "NRFU-W1-P2-002", "phase": 2, "scope": "per-site",
+                              "command": "configure terminal", "expected": "x", "source_key": "y"}]}]}]}
+    write_nrfu_pack(snap, str(tmp_path / "tampered"))
+    _assert_pack_executable_lines_readonly(str(tmp_path / "tampered"))
+    body = open(os.path.join(str(tmp_path), "tampered", "Group_1", "dist1.txt"),
+                encoding="utf-8").read()
+    assert "[REFUSED — not a read-only command] configure terminal" in body
 
 
 # --------------------------------------------------------------------------- sheet writer ---

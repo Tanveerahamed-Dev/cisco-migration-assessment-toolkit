@@ -81,6 +81,22 @@ def _vlan_key(v) -> tuple:
     return (0, int(s), "") if s.isdigit() else (1, 0, s)
 
 
+# READ-ONLY enforcement (adversarial-review finding, 2026-07-05): snapshot strings are
+# ATTACKER-CONTROLLABLE on the --no-collect path (a JSON value carries \n freely), and an embedded
+# newline in an interpolated value would otherwise emit EXECUTABLE continuation lines into the
+# .txt pack ('10\nconfigure terminal\n...' -> a device write pasted during a window). Two layers:
+# every case field is collapsed to ONE physical line at the case() chokepoint, and the pack writer
+# independently refuses any command line that is not a single-line show/ping/traceroute (it may be
+# fed a pre-published, possibly tampered snap['nrfu_commands'] that never passed through case()).
+_READ_ONLY_LINE = re.compile(r"^(show|ping|traceroute)\b[^\r\n]*$", re.IGNORECASE)
+
+
+def _one_line(v) -> str:
+    """Collapse any whitespace run (incl. \\n / \\r / \\t) to a single space — a case field can never
+    span physical lines, so no snapshot value can smuggle an executable line into the pack."""
+    return re.sub(r"\s+", " ", str(v)).strip()
+
+
 def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
     """The four-phase NRFU certification pack synthesized from the snapshot (see module docstring).
     Deterministic; read-only; tolerant of empty / oddly-typed snapshot sections. Every expected value
@@ -130,7 +146,8 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
             seq += 1
             cases_by_host.setdefault(host, []).append(
                 {"id": f"NRFU-W{wno}-P{phase}-{seq:03d}", "phase": phase, "scope": scope,
-                 "command": command, "expected": expected, "source_key": source_key})
+                 "command": _one_line(command), "expected": _one_line(expected),
+                 "source_key": _one_line(source_key)})
 
         for h in whosts:
             dev = _as_dict(devices.get(h))
@@ -187,7 +204,12 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
                            + (f" (priority {prio})" if prio not in (None, "") else "") + " — unchanged")
                 else:
                     exp = NOT_OBSERVED
-                case(h, 2, "per-site", f"show spanning-tree vlan {vlan}", exp, f"stp_roots.{h}.{vlan}")
+                # the VLAN token rides a COMMAND template: restrict it to identifier characters (a
+                # key that sanitizes differently is snapshot corruption, not a VLAN — skip, don't guess)
+                vtok = re.sub(r"[^\w.-]", "", str(vlan))
+                if not vtok or vtok != str(vlan):
+                    continue
+                case(h, 2, "per-site", f"show spanning-tree vlan {vtok}", exp, f"stp_roots.{h}.{vtok}")
             recs = fhrp_detail.get(h)
             fhrp_cmd = "show hsrp brief" if nx else "show standby brief"
             if isinstance(recs, list) and recs:
@@ -312,11 +334,18 @@ def write_nrfu_pack(snap: Optional[dict] = None, out_dir: str = ".") -> List[str
                      "! READ-ONLY: show/ping/traceroute class only; '!' lines are comments.",
                      ""]
             for c in dev.get("cases") or []:
-                lines += [f"! {c.get('id')}  [Phase {_PHASE_ROMAN.get(c.get('phase'), c.get('phase'))}]"
-                          f" [{c.get('scope')}]",
-                          f"!   expect: {c.get('expected')}",
-                          f"!   source: {c.get('source_key')}",
-                          str(c.get("command") or ""),
+                # belt-and-braces vs a tampered pre-published snap['nrfu_commands']: comment fields
+                # are re-collapsed to one line, and a command that is not a single-line
+                # show/ping/traceroute is REFUSED into a comment — never an executable line.
+                cmd = _one_line(c.get("command") or "")
+                cmd_line = cmd if _READ_ONLY_LINE.match(cmd) else \
+                    f"! [REFUSED — not a read-only command] {cmd}"
+                lines += [f"! {_one_line(c.get('id'))}  "
+                          f"[Phase {_PHASE_ROMAN.get(c.get('phase'), c.get('phase'))}]"
+                          f" [{_one_line(c.get('scope'))}]",
+                          f"!   expect: {_one_line(c.get('expected'))}",
+                          f"!   source: {_one_line(c.get('source_key'))}",
+                          cmd_line,
                           ""]
             path = os.path.join(wdir, f"{_safe_name(host)}.txt")
             with open(path, "w", encoding="utf-8") as f:
