@@ -140,6 +140,35 @@ def _step_failures(step: Dict[str, Any]) -> List[dict]:
     return []
 
 
+def _fhrp_moves(before: Dict[str, Any], after: Dict[str, Any]) -> List[dict]:
+    """Groups whose PROVABLE forwarding member changed between `before` and `after` — the takeover a
+    move_fhrp_active step actually performs (which `_step_failures` implies no host removal for, so the
+    twin alone never reports it). Diffs failover._current_active per group (coverage-honest: only groups
+    with an explicitly-observed Active/Master on one side or the other produce a row)."""
+    def _actives(snap: Dict[str, Any]) -> Dict[str, dict]:
+        out: Dict[str, dict] = {}
+        for key, members in failover._fhrp_groups(snap).items():
+            a = failover._current_active(members)
+            if a is not None:
+                out[key] = a
+        return out
+    b, a = _actives(before), _actives(after)
+    rows: List[dict] = []
+    for key in sorted(set(b) | set(a)):
+        bh = str(b[key].get("host")) if key in b else None
+        ah = str(a[key].get("host")) if key in a else None
+        if bh == ah:
+            continue
+        m = a.get(key) or b.get(key)
+        rows.append({
+            "group": str(m.get("group", "")), "ifname": str(m.get("ifname", "")), "vip": m.get("vip", ""),
+            "version": m.get("version"), "old_active": bh, "new_active": ah, "new_active_priority": None,
+            "split_brain_risk": False, "indeterminate": False,
+            "reason": "FHRP forwarding role moved by the cutover step (intentional)",
+        })
+    return rows
+
+
 # ------------------------------------------------------------------- narrative maker ---
 
 def _narrative(action: str, step: Dict[str, Any], removed: List[str], n_lost: int, n_recovered: int,
@@ -222,6 +251,10 @@ def simulate_cutover(snap: Dict[str, Any], steps: List[Dict[str, Any]],
         # L2: the failover twin for this step's implied host removals, evaluated on the PRE-step topology.
         twin = failover.compute_failover_twin(before, _step_failures(step))
         stp, fhrp = twin["stp"], twin["fhrp"]
+        if action == "move_fhrp_active":
+            # a move removes no HOST, so the twin sees no takeover — report the intentional active move the
+            # step actually performed (before -> after), else the step silently claims no L2 change.
+            fhrp = fhrp + _fhrp_moves(before, after)
 
         removed = _removed_by_step(before, after) if action in ("fail_node", "fail_site") else []
         is_noop = (action not in _ACTIONS) or _step_is_noop(before, after, action)
