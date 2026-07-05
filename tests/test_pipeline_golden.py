@@ -91,6 +91,11 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     # coverage_matrix (Plan-A #5) is COMPOSED from architecture_coverage -> inherits its date-relativity;
     # exclude it too, its SSOT publish is locked in tests/test_pipeline_inprocess.py. (coverage matrix)
     snap.pop("coverage_matrix", None)
+    # attestation.generated_at is the one NESTED wall-clock stamp; strip just it (like the
+    # top-level generated_at) — the re-derived trust CLAIMS themselves are deterministic and
+    # must stay frozen in the golden. (roadmap D3)
+    if isinstance(snap.get("attestation"), dict):
+        snap["attestation"].pop("generated_at", None)
     return snap, str(out_xlsx)
 
 
