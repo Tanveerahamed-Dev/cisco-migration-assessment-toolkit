@@ -418,6 +418,7 @@ from cisco_toolkit.excel import (
     write_segmentation_sheet,                                    # NEW-V3.23.118 (L3 segmentation / isolation posture)
     write_architecture_review_sheet,                             # NEW-V3.23.161 (leading-practice conformance scorecard)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
+    write_coverage_schema_sheet,                                 # J3 (per-section coverage census — SuzieQ `describe` analog)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
     write_vlan_cutover_sheet,                                    # MASTER_PLAN §4.3 (per-VLAN cutover matrix)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
@@ -2730,6 +2731,28 @@ def main():
             snap_dict.setdefault("assessment_integrity", {}).update(_ssot_drift)
     except Exception as e:                                            # fail-soft: a self-check must never break the write
         logger.warning(f"  SSOT self-check skipped (non-fatal): {e}")
+    # J3 + J2: coverage-schema census + fact-lineage — the coverage-honesty doctrine made QUERYABLE.
+    # Both are computed HERE, from the fully-assembled snap_dict (so the census sees every section and
+    # the lineage reads the final canonical blocks), reusing the SSOT contract (abstention_reason /
+    # CANONICAL_FACTS) rather than a parallel one. schema_census is presence/absence + structural shape
+    # only -> non-volatile -> golden-stable; fact_lineage embeds the date-relative headline VALUES, so
+    # it is golden-EXCLUDED (stripped like executive_brief/lifecycle_risk) and pinned in its own test.
+    try:
+        from cisco_toolkit import ssot as _ssot2
+        snap_dict["schema_census"] = _ssot2.compute_schema_census(snap_dict)   # per-section coverage map (SuzieQ `describe` analog)
+        snap_dict["fact_lineage"] = _ssot2.compute_fact_lineage(snap_dict)      # attribute-level provenance for the canonical facts
+        # The census self-describes the FINAL snapshot; the two keys it adds above (schema_census /
+        # fact_lineage) are themselves absent from the map it computed, so re-census once so the
+        # published census is complete + self-consistent with the JSON it ships in (one source of truth).
+        snap_dict["schema_census"] = _ssot2.compute_schema_census(snap_dict)
+        # Coverage Schema sheet: the workbook twin of the census. The workbook was saved above (the
+        # census needs the fully-assembled snap_dict, which exists only now), so add this last sheet
+        # and re-save. It carries only section names/states/counts/notes — no IP/MAC/serial — so it is
+        # share-safe under --redact without a further scrub. Fail-soft: never break the snapshot write.
+        write_coverage_schema_sheet(wb, snap_dict["schema_census"])
+        wb.save(out_xlsx)
+    except Exception as e:                                            # fail-soft: census/lineage must never break the write
+        logger.warning(f"  schema-census / fact-lineage skipped (non-fatal): {e}")
     # roadmap A1/H2: opt-in state-assertion check-pack (--assert-pack FILE), evaluated over the FULL snapshot
     # (coverage-honest: a subject that was not collected -> [NOT OBSERVED], excluded from the pass/fail denominator).
     if args.assert_pack:
