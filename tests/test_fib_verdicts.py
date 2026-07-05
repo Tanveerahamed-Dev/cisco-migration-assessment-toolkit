@@ -226,3 +226,70 @@ def test_bidirectional_carries_mtu_dimension_on_each_direction():
     through so an asymmetric-MTU underlay is visible per direction."""
     r = fib.trace_bidirectional(_snap_symmetric(), "10.1.1.5", "10.2.2.9")
     assert "mtu_verdict" in r["forward"] and "mtu_verdict" in r["reverse"]
+
+
+# =============================================== OPTIONAL: ECMP multipath-consistency ===
+def _ecmp_snap(mtu_a="9216", mtu_b="9216", acl_a_in="", acl_b_in=""):
+    """R1 installs TWO equal-cost OSPF legs to 10.9.9.0/24 (via Gi0/1 and Gi0/2). The two egress interfaces'
+    MTU / ACL are parameterized so a test can make the legs agree or diverge."""
+    return {
+        "routes": {
+            "R1": [{"prefix": "10.0.1.0/24", "next_hop": "", "out_intf": "Vlan1", "source": "connected"},
+                   {"prefix": "10.0.12.0/30", "next_hop": "", "out_intf": "Gi0/1", "source": "connected"},
+                   {"prefix": "10.0.13.0/30", "next_hop": "", "out_intf": "Gi0/2", "source": "connected"},
+                   {"prefix": "10.9.9.0/24", "next_hop": "10.0.12.2", "out_intf": "Gi0/1", "source": "ospf"},
+                   {"prefix": "10.9.9.0/24", "next_hop": "10.0.13.3", "out_intf": "Gi0/2", "source": "ospf"}],
+        },
+        "interfaces": {
+            "R1": {"Gi0/1": {"port": "Gi0/1", "mtu": mtu_a, "acl_in": acl_a_in},
+                   "Gi0/2": {"port": "Gi0/2", "mtu": mtu_b, "acl_in": acl_b_in}},
+        },
+    }
+
+
+def test_ecmp_consistent_when_legs_agree():
+    r = fib.ecmp_consistency(_ecmp_snap(mtu_a="9216", mtu_b="9216"), "10.0.1.5", "10.9.9.5")
+    assert r["host"] == "R1" and r["leg_count"] == 2
+    assert r["verdict"] == "consistent"
+    assert r["mtu_divergence"] == [] and r["acl_divergence"] == []
+
+
+def test_ecmp_inconsistent_on_mtu_divergence():
+    r = fib.ecmp_consistency(_ecmp_snap(mtu_a="9216", mtu_b="1500"), "10.0.1.5", "10.9.9.5")
+    assert r["verdict"] == "inconsistent"
+    mtus = {d["mtu"] for d in r["mtu_divergence"]}
+    assert mtus == {1500, 9216}
+    # the divergence names each egress interface
+    assert {d["out_intf"] for d in r["mtu_divergence"]} == {"Gi0/1", "Gi0/2"}
+
+
+def test_ecmp_inconsistent_on_acl_divergence():
+    r = fib.ecmp_consistency(_ecmp_snap(acl_a_in="BLOCK_GUEST", acl_b_in=""), "10.0.1.5", "10.9.9.5")
+    assert r["verdict"] == "inconsistent"
+    assert any(d["acl_in"] == "BLOCK_GUEST" for d in r["acl_divergence"])
+
+
+def test_ecmp_not_applicable_for_single_path():
+    """A single installed path is not ECMP -> the check does not apply (not a fabricated 'consistent' pass)."""
+    single = {
+        "routes": {"R1": [{"prefix": "10.0.1.0/24", "source": "connected"},
+                          {"prefix": "10.9.9.0/24", "next_hop": "10.0.1.2", "out_intf": "Vlan1", "source": "static"}]},
+        "interfaces": {"R1": {"Vlan1": {"port": "Vlan1", "mtu": "1500"}}},
+    }
+    r = fib.ecmp_consistency(single, "10.0.1.5", "10.9.9.5")
+    assert r["verdict"] == "not_ecmp" and r["leg_count"] == 1
+
+
+def test_ecmp_indeterminate_when_a_leg_interface_is_unobserved():
+    """A leg whose egress interface was not collected can't be proven consistent -> INDETERMINATE, disclosing the
+    blind leg. Never a fabricated 'consistent'."""
+    snap = _ecmp_snap(mtu_a="9216", mtu_b="9216")
+    del snap["interfaces"]["R1"]["Gi0/2"]                 # one leg's interface not collected
+    r = fib.ecmp_consistency(snap, "10.0.1.5", "10.9.9.5")
+    assert r["verdict"] == "INDETERMINATE"
+    assert any(leg["out_intf"] == "Gi0/2" for leg in r["unobserved_legs"])
+
+
+def test_ecmp_total_on_bad_input():
+    r = fib.ecmp_consistency(None, "1.1.1.1", "2.2.2.2")
+    assert r["verdict"] == "INDETERMINATE" and r["leg_count"] == 0
