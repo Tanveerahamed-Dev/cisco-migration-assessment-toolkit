@@ -174,8 +174,20 @@ def parse_ip_routes(output: str) -> Dict[str, Dict[str, object]]:
                     if re.match(r"^[A-Za-z]", p) and not p.startswith('['):
                         out_intf = normalize_ifname(p)
                         break
+                # [K2 parser-examples] the source is NOT always the last comma-field: OSPF/BGP append a
+                # route-type qualifier AFTER it ('..., ospf-CORE, inter' / '..., bgp-65001, internal, tag 65002'),
+                # so parts[-1] read 'inter' and every real Nexus OSPF route mis-sourced. Walk back over the
+                # known qualifier tokens to the true protocol field.
+                src_tok = ''
+                for p in reversed(parts[1:]):
+                    pl = p.lower()
+                    if pl in ('intra', 'inter', 'internal', 'external', 'type-1', 'type-2') \
+                            or pl.startswith('tag '):
+                        continue
+                    src_tok = p
+                    break
                 routes[current]['entries'].append({
-                    'prefix': current, 'code': '', 'source': _nxos_route_source(parts[-1] if parts else ''),
+                    'prefix': current, 'code': '', 'source': _nxos_route_source(src_tok),
                     'next_hop': mvia.group(1), 'out_intf': out_intf, 'raw': s})
             continue
         if current:
@@ -2316,6 +2328,13 @@ def parse_show_interface_trunk_table(output: str) -> Dict[str, Dict[str, str]]:
             section = "allowed"; nxos_top = False; continue
         if low.startswith("port") and ("vlans allowed" in low or "vlans in spanning" in low):
             section = "other"; continue
+        # [K2 parser-examples] NX-OS prints the trunk-table header on TWO lines
+        # ('Port  Native  Status  Port' / '      Vlan          Channel'), so 'channel' never
+        # co-occurs with 'port' on one line, the single-line branch above never fired, and the
+        # real Nexus native-VLAN + port-channel columns were silently dropped. The bare
+        # 'Vlan Channel' continuation line is the NX-OS tell.
+        if section == "top" and low.split() == ["vlan", "channel"]:
+            nxos_top = True; continue
         if section == "top":
             parts = line.split()
             if len(parts) < 3: continue
@@ -3842,9 +3861,15 @@ def parse_show_version(output: str) -> Dict[str, str]:
             line, re.IGNORECASE)
         if m6 and not r["system_mac"]:
             r["system_mac"] = normalize_mac(m6.group(1))
+        # [K2 parser-examples] IOS reports '<hostname> uptime is ...', but NX-OS prints
+        # 'Kernel uptime is ...' (not a hostname -- every real Nexus reported hostname 'Kernel')
+        # and carries the real name on its own 'Device name: <host>' line instead.
         m7 = re.match(r"^(\S+)\s+uptime is", line)
-        if m7 and not r["hostname_reported"]:
+        if m7 and not r["hostname_reported"] and m7.group(1).lower() != "kernel":
             r["hostname_reported"] = m7.group(1).strip()
+        m8 = re.match(r"^\s*Device name:\s*(\S+)", line, re.IGNORECASE)
+        if m8:
+            r["hostname_reported"] = m8.group(1).strip()
     return r
 
 
