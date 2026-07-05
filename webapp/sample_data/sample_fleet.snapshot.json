@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-03T17:33:41.040216",
+  "generated_at": "2026-07-05T17:18:22.896093",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2984,7 +2984,7 @@
       }
     }
   },
-  "collected_at": "2026-07-03T17:33:36.438066",
+  "collected_at": "2026-07-05T17:18:18.830327",
   "physical_health": [
     {
       "switch": "access1",
@@ -6342,7 +6342,7 @@
           "ldos": ""
         }
       ],
-      "asof": "2026-07-03"
+      "asof": "2026-07-05"
     },
     "risks": [
       {
@@ -6368,7 +6368,7 @@
         "remediation": "Schedule replacement before LDoS; confirm the migration target covers these."
       }
     ],
-    "asof": "2026-07-03",
+    "asof": "2026-07-05",
     "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."
   },
   "remediation_plan": {
@@ -11136,6 +11136,1725 @@
       "n_high": 23
     },
     "banner": "Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good result captured from the pre-cutover state -- a deviation is a regression to investigate."
+  },
+  "nrfu_commands": {
+    "schema": "nrfu_commands/1",
+    "banner": "Four-phase NRFU certification pack: run each READ-ONLY command and confirm the output MATCHES the pre-filled EXPECTED value (captured from the pre-cutover snapshot; the source key cites the evidence). A deviation is a regression to investigate before sign-off. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner.",
+    "waves": [
+      {
+        "wave_id": "Group 1",
+        "devices": [
+          {
+            "host": "access1",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-001",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 15.2(7)E3 (unchanged from baseline)",
+                "source_key": "devices.access1.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-002",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C2960X-48FPD-L, serial FOC2233B002 present",
+                "source_key": "devices.access1.model"
+              },
+              {
+                "id": "NRFU-W1-P1-003",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access1.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-004",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access1"
+              },
+              {
+                "id": "NRFU-W1-P2-005",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access1.10"
+              },
+              {
+                "id": "NRFU-W1-P2-006",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access1.30"
+              },
+              {
+                "id": "NRFU-W1-P2-007",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/24), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access1.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-008",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access1"
+              },
+              {
+                "id": "NRFU-W1-P4-162",
+                "phase": 4,
+                "scope": "end-to-end",
+                "command": "ping <representative 'General / Back-office (unclassified)' application endpoint>",
+                "expected": "[HUMAN-EXECUTED] Application owner certifies 'General / Back-office (unclassified)' (tier Support) end-to-end after cutover; attach the evidence to the wave sign-off",
+                "source_key": "application_intelligence.domains[general]"
+              }
+            ]
+          },
+          {
+            "host": "access10",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-009",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 12.2(55)SE (unchanged from baseline)",
+                "source_key": "devices.access10.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-010",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C3560-48TS, serial FOC2310A010 present",
+                "source_key": "devices.access10.model"
+              },
+              {
+                "id": "NRFU-W1-P1-011",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access10.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-012",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access10"
+              },
+              {
+                "id": "NRFU-W1-P2-013",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access10.10"
+              },
+              {
+                "id": "NRFU-W1-P2-014",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access10.30"
+              },
+              {
+                "id": "NRFU-W1-P2-015",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/34), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access10.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-016",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access10"
+              }
+            ]
+          },
+          {
+            "host": "access11",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-017",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.access11.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-018",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FOC2311A011 present",
+                "source_key": "devices.access11.model"
+              },
+              {
+                "id": "NRFU-W1-P1-019",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access11.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-020",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access11"
+              },
+              {
+                "id": "NRFU-W1-P2-021",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access11.10"
+              },
+              {
+                "id": "NRFU-W1-P2-022",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access11.30"
+              },
+              {
+                "id": "NRFU-W1-P2-023",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/11), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access11.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-024",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access11"
+              }
+            ]
+          },
+          {
+            "host": "access12",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-025",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 15.2(7)E3 (unchanged from baseline)",
+                "source_key": "devices.access12.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-026",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C2960X-48FPD-L, serial FOC2312A012 present",
+                "source_key": "devices.access12.model"
+              },
+              {
+                "id": "NRFU-W1-P1-027",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access12.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-028",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access12"
+              },
+              {
+                "id": "NRFU-W1-P2-029",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access12.10"
+              },
+              {
+                "id": "NRFU-W1-P2-030",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access12.30"
+              },
+              {
+                "id": "NRFU-W1-P2-031",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/36), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access12.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-032",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access12"
+              }
+            ]
+          },
+          {
+            "host": "access13",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-033",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 12.2(55)SE (unchanged from baseline)",
+                "source_key": "devices.access13.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-034",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C3560-48TS, serial FOC2313A013 present",
+                "source_key": "devices.access13.model"
+              },
+              {
+                "id": "NRFU-W1-P1-035",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access13.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-036",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access13"
+              },
+              {
+                "id": "NRFU-W1-P2-037",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access13.10"
+              },
+              {
+                "id": "NRFU-W1-P2-038",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access13.30"
+              },
+              {
+                "id": "NRFU-W1-P2-039",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/13), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access13.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-040",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access13"
+              }
+            ]
+          },
+          {
+            "host": "access14",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-041",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.access14.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-042",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FOC2314A014 present",
+                "source_key": "devices.access14.model"
+              },
+              {
+                "id": "NRFU-W1-P1-043",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access14.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-044",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access14"
+              },
+              {
+                "id": "NRFU-W1-P2-045",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access14.10"
+              },
+              {
+                "id": "NRFU-W1-P2-046",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access14.30"
+              },
+              {
+                "id": "NRFU-W1-P2-047",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/38), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access14.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-048",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access14"
+              }
+            ]
+          },
+          {
+            "host": "access15",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-049",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 15.2(7)E3 (unchanged from baseline)",
+                "source_key": "devices.access15.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-050",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C2960X-48FPD-L, serial FOC2315A015 present",
+                "source_key": "devices.access15.model"
+              },
+              {
+                "id": "NRFU-W1-P1-051",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access15.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-052",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access15"
+              },
+              {
+                "id": "NRFU-W1-P2-053",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access15.10"
+              },
+              {
+                "id": "NRFU-W1-P2-054",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access15.30"
+              },
+              {
+                "id": "NRFU-W1-P2-055",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/15), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access15.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-056",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access15"
+              }
+            ]
+          },
+          {
+            "host": "access16",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-057",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 12.2(55)SE (unchanged from baseline)",
+                "source_key": "devices.access16.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-058",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C3560-48TS, serial FOC2316A016 present",
+                "source_key": "devices.access16.model"
+              },
+              {
+                "id": "NRFU-W1-P1-059",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access16.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-060",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access16"
+              },
+              {
+                "id": "NRFU-W1-P2-061",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access16.10"
+              },
+              {
+                "id": "NRFU-W1-P2-062",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access16.30"
+              },
+              {
+                "id": "NRFU-W1-P2-063",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/40), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access16.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-064",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access16"
+              }
+            ]
+          },
+          {
+            "host": "access17",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-065",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.access17.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-066",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FOC2317A017 present",
+                "source_key": "devices.access17.model"
+              },
+              {
+                "id": "NRFU-W1-P1-067",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access17.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-068",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access17"
+              },
+              {
+                "id": "NRFU-W1-P2-069",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access17.10"
+              },
+              {
+                "id": "NRFU-W1-P2-070",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access17.30"
+              },
+              {
+                "id": "NRFU-W1-P2-071",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/17), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access17.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-072",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access17"
+              }
+            ]
+          },
+          {
+            "host": "access2",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-073",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.access2.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-074",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FOC2302A002 present",
+                "source_key": "devices.access2.model"
+              },
+              {
+                "id": "NRFU-W1-P1-075",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access2.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-076",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access2"
+              },
+              {
+                "id": "NRFU-W1-P2-077",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access2.10"
+              },
+              {
+                "id": "NRFU-W1-P2-078",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access2.30"
+              },
+              {
+                "id": "NRFU-W1-P2-079",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/26), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access2.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-080",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access2"
+              }
+            ]
+          },
+          {
+            "host": "access3",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-081",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 15.2(7)E3 (unchanged from baseline)",
+                "source_key": "devices.access3.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-082",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C2960X-48FPD-L, serial FOC2303A003 present",
+                "source_key": "devices.access3.model"
+              },
+              {
+                "id": "NRFU-W1-P1-083",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access3.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-084",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access3"
+              },
+              {
+                "id": "NRFU-W1-P2-085",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access3.10"
+              },
+              {
+                "id": "NRFU-W1-P2-086",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access3.30"
+              },
+              {
+                "id": "NRFU-W1-P2-087",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/3), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access3.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-088",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access3"
+              }
+            ]
+          },
+          {
+            "host": "access4",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-089",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 12.2(55)SE (unchanged from baseline)",
+                "source_key": "devices.access4.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-090",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C3560-48TS, serial FOC2304A004 present",
+                "source_key": "devices.access4.model"
+              },
+              {
+                "id": "NRFU-W1-P1-091",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access4.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-092",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access4"
+              },
+              {
+                "id": "NRFU-W1-P2-093",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access4.10"
+              },
+              {
+                "id": "NRFU-W1-P2-094",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access4.30"
+              },
+              {
+                "id": "NRFU-W1-P2-095",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/28), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access4.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-096",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access4"
+              }
+            ]
+          },
+          {
+            "host": "access5",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-097",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.access5.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-098",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FOC2305A005 present",
+                "source_key": "devices.access5.model"
+              },
+              {
+                "id": "NRFU-W1-P1-099",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access5.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-100",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access5"
+              },
+              {
+                "id": "NRFU-W1-P2-101",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access5.10"
+              },
+              {
+                "id": "NRFU-W1-P2-102",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access5.30"
+              },
+              {
+                "id": "NRFU-W1-P2-103",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/5), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access5.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-104",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access5"
+              }
+            ]
+          },
+          {
+            "host": "access6",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-105",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 15.2(7)E3 (unchanged from baseline)",
+                "source_key": "devices.access6.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-106",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C2960X-48FPD-L, serial FOC2306A006 present",
+                "source_key": "devices.access6.model"
+              },
+              {
+                "id": "NRFU-W1-P1-107",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access6.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-108",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access6"
+              },
+              {
+                "id": "NRFU-W1-P2-109",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access6.10"
+              },
+              {
+                "id": "NRFU-W1-P2-110",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access6.30"
+              },
+              {
+                "id": "NRFU-W1-P2-111",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/30), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access6.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-112",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access6"
+              }
+            ]
+          },
+          {
+            "host": "access7",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-113",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 12.2(55)SE (unchanged from baseline)",
+                "source_key": "devices.access7.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-114",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C3560-48TS, serial FOC2307A007 present",
+                "source_key": "devices.access7.model"
+              },
+              {
+                "id": "NRFU-W1-P1-115",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access7.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-116",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access7"
+              },
+              {
+                "id": "NRFU-W1-P2-117",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access7.10"
+              },
+              {
+                "id": "NRFU-W1-P2-118",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access7.30"
+              },
+              {
+                "id": "NRFU-W1-P2-119",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/7), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access7.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-120",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access7"
+              }
+            ]
+          },
+          {
+            "host": "access8",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-121",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.access8.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-122",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FOC2308A008 present",
+                "source_key": "devices.access8.model"
+              },
+              {
+                "id": "NRFU-W1-P1-123",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access8.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-124",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access8"
+              },
+              {
+                "id": "NRFU-W1-P2-125",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access8.10"
+              },
+              {
+                "id": "NRFU-W1-P2-126",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access8.30"
+              },
+              {
+                "id": "NRFU-W1-P2-127",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/32), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access8.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-128",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access8"
+              }
+            ]
+          },
+          {
+            "host": "access9",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-129",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 15.2(7)E3 (unchanged from baseline)",
+                "source_key": "devices.access9.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-130",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C2960X-48FPD-L, serial FOC2309A009 present",
+                "source_key": "devices.access9.model"
+              },
+              {
+                "id": "NRFU-W1-P1-131",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.access9.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-132",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+                "source_key": "interfaces.access9"
+              },
+              {
+                "id": "NRFU-W1-P2-133",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+                "source_key": "stp_roots.access9.10"
+              },
+              {
+                "id": "NRFU-W1-P2-134",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+                "source_key": "stp_roots.access9.30"
+              },
+              {
+                "id": "NRFU-W1-P2-135",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> core2.lab (Eth1/9), Gi0/2 -> AP-floor1 (Gi0)",
+                "source_key": "interfaces.access9.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-136",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.access9"
+              }
+            ]
+          },
+          {
+            "host": "core1",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-137",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 16.12.4 (unchanged from baseline)",
+                "source_key": "devices.core1.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-138",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis WS-C3850-24T, serial FCW1234A001 present",
+                "source_key": "devices.core1.model"
+              },
+              {
+                "id": "NRFU-W1-P1-139",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.core1.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-140",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "5 known-up port(s) connected: Gi1/0/1, Gi1/0/2, Gi1/0/5, Gi1/0/24, Po1",
+                "source_key": "interfaces.core1"
+              },
+              {
+                "id": "NRFU-W1-P2-141",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show etherchannel summary",
+                "expected": "Po1: 2 member(s) bundled (P)",
+                "source_key": "interfaces.core1.*.port_channel"
+              },
+              {
+                "id": "NRFU-W1-P2-142",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "This bridge is the root for VLAN 10 (priority 24586)",
+                "source_key": "stp_roots.core1.10"
+              },
+              {
+                "id": "NRFU-W1-P2-143",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 30",
+                "expected": "Root bridge cccc.0003.0003 for VLAN 30 (priority 32798) \u2014 unchanged",
+                "source_key": "stp_roots.core1.30"
+              },
+              {
+                "id": "NRFU-W1-P2-144",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show standby brief",
+                "expected": "Vlan10 grp 10 Active (VIP 10.0.10.1); Vlan20 grp 20 Standby (VIP 10.0.20.1)",
+                "source_key": "fhrp_detail.core1"
+              },
+              {
+                "id": "NRFU-W1-P2-145",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show ip ospf neighbor",
+                "expected": "2 OSPF neighbor(s) in FULL: 10.0.99.2, 10.0.99.9",
+                "source_key": "routing_neighbors.core1.ospf"
+              },
+              {
+                "id": "NRFU-W1-P2-146",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "10 adjacency(ies): Gi1/0/24 -> access1.lab (Gi0/1), Gi1/0/26 -> access2.lab (Gi0/1), Gi1/0/28 -> access4.lab (Gi0/1), Gi1/0/30 -> access6.lab (Gi0/1), Gi1/0/32 -> access8.lab (Gi0/1), Gi1/0/34 -> access10.lab (Gi0/1), Gi1/0/36 -> access12.lab (Gi0/1), Gi1/0/38 -> access14.lab (Gi0/1), Gi1/0/40 -> dist1.lab (Gi1/0/3), Po1 -> core2.lab (Po1)",
+                "source_key": "interfaces.core1.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-147",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.core1"
+              },
+              {
+                "id": "NRFU-W1-P3-157",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "ping 10.0.10.2",
+                "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan20",
+                "source_key": "interfaces.core1.Vlan10.svi_ip"
+              },
+              {
+                "id": "NRFU-W1-P3-158",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "ping 10.0.10.2",
+                "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan30",
+                "source_key": "interfaces.core1.Vlan10.svi_ip"
+              },
+              {
+                "id": "NRFU-W1-P4-163",
+                "phase": 4,
+                "scope": "end-to-end",
+                "command": "ping <representative 'Compute / Virtualization' application endpoint>",
+                "expected": "[HUMAN-EXECUTED] Application owner certifies 'Compute / Virtualization' (tier Support) end-to-end after cutover; attach the evidence to the wave sign-off",
+                "source_key": "application_intelligence.domains[compute]"
+              }
+            ]
+          },
+          {
+            "host": "core2",
+            "platform_dialect": "nxos",
+            "cases": [
+              {
+                "id": "NRFU-W1-P1-148",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.core2.sw_version"
+              },
+              {
+                "id": "NRFU-W1-P1-149",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show module",
+                "expected": "chassis N9K-C93180YC-EX, serial FDO12345ABC present",
+                "source_key": "devices.core2.model"
+              },
+              {
+                "id": "NRFU-W1-P1-150",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.core2.ps_status"
+              },
+              {
+                "id": "NRFU-W1-P2-151",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "3 known-up port(s) connected: Eth1/1, Eth1/2, Po1",
+                "source_key": "interfaces.core2"
+              },
+              {
+                "id": "NRFU-W1-P2-152",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show port-channel summary",
+                "expected": "Po1: 2 member(s) bundled (P)",
+                "source_key": "interfaces.core2.*.port_channel"
+              },
+              {
+                "id": "NRFU-W1-P2-153",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 10",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "stp_roots.core2.10"
+              },
+              {
+                "id": "NRFU-W1-P2-154",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show spanning-tree vlan 20",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "stp_roots.core2.20"
+              },
+              {
+                "id": "NRFU-W1-P2-155",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show hsrp brief",
+                "expected": "Vlan10: HSRP grp 10 Standby VIP 10.0.10.1; Vlan20: HSRP grp 20 Active VIP 10.0.20.1",
+                "source_key": "interfaces.core2.*.hsrp_behavior"
+              },
+              {
+                "id": "NRFU-W1-P2-156",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "12 adjacency(ies): Eth1/3 -> access3.lab (Gi0/1), Eth1/5 -> access5.lab (Gi0/1), Eth1/7 -> access7.lab (Gi0/1), Eth1/9 -> access9.lab (Gi0/1), Eth1/11 -> access11.lab (Gi0/1), Eth1/13 -> access13.lab (Gi0/1), Eth1/15 -> access15.lab (Gi0/1), Eth1/17 -> access17.lab (Gi0/1), Eth1/20 -> dist2.lab (Gi1/0/3), Eth1/30 -> AP-floor3-01 (Gi0), Eth1/47 -> wan-edge-rtr1.lab (Gi0/0/1), Po1 -> core1.lab (Po1)",
+                "source_key": "interfaces.core2.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W1-P3-159",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "ping 10.0.10.2",
+                "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan10",
+                "source_key": "interfaces.core1.Vlan10.svi_ip"
+              },
+              {
+                "id": "NRFU-W1-P3-160",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "traceroute 10.0.10.2",
+                "expected": "Completes; final hop 10.0.10.2 (gateway SVI Vlan10 on core1)",
+                "source_key": "interfaces.core1.Vlan10.svi_ip"
+              },
+              {
+                "id": "NRFU-W1-P3-161",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "ping 10.0.10.2",
+                "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan20",
+                "source_key": "interfaces.core1.Vlan10.svi_ip"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "wave_id": "Group 2",
+        "devices": [
+          {
+            "host": "dist1",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W2-P1-001",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.dist1.sw_version"
+              },
+              {
+                "id": "NRFU-W2-P1-002",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FCW2442D002 present",
+                "source_key": "devices.dist1.model"
+              },
+              {
+                "id": "NRFU-W2-P1-003",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.dist1.ps_status"
+              },
+              {
+                "id": "NRFU-W2-P2-004",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "6 known-up port(s) connected: Gi1/0/1, Gi1/0/2, Gi1/0/3, Gi1/0/10, Gi1/0/11, Po1",
+                "source_key": "interfaces.dist1"
+              },
+              {
+                "id": "NRFU-W2-P2-005",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show etherchannel summary",
+                "expected": "Po1: 2 member(s) bundled (P)",
+                "source_key": "interfaces.dist1.*.port_channel"
+              },
+              {
+                "id": "NRFU-W2-P2-006",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show standby brief",
+                "expected": "Vlan40: HSRP grp 40 Active VIP 10.0.40.1; Vlan41: HSRP grp 41 Active VIP 10.0.41.1",
+                "source_key": "interfaces.dist1.*.hsrp_behavior"
+              },
+              {
+                "id": "NRFU-W2-P2-007",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "4 adjacency(ies): Gi1/0/3 -> core1.lab (Gi1/0/40), Gi1/0/10 -> podacc1.lab (Gi0/1), Gi1/0/11 -> podacc2.lab (Gi0/1), Po1 -> dist2.lab (Po1)",
+                "source_key": "interfaces.dist1.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W2-P3-027",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "ping 10.0.40.2",
+                "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan40 on dist1 (10.0.40.2) reachable from Vlan41",
+                "source_key": "interfaces.dist1.Vlan40.svi_ip"
+              },
+              {
+                "id": "NRFU-W2-P4-031",
+                "phase": 4,
+                "scope": "end-to-end",
+                "command": "ping <representative 'General / Back-office (unclassified)' application endpoint>",
+                "expected": "[HUMAN-EXECUTED] Application owner certifies 'General / Back-office (unclassified)' (tier Support) end-to-end after cutover; attach the evidence to the wave sign-off",
+                "source_key": "application_intelligence.domains[general]"
+              }
+            ]
+          },
+          {
+            "host": "dist2",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W2-P1-008",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.09.04 (unchanged from baseline)",
+                "source_key": "devices.dist2.sw_version"
+              },
+              {
+                "id": "NRFU-W2-P1-009",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-48P, serial FCW2443D003 present",
+                "source_key": "devices.dist2.model"
+              },
+              {
+                "id": "NRFU-W2-P1-010",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.dist2.ps_status"
+              },
+              {
+                "id": "NRFU-W2-P2-011",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "6 known-up port(s) connected: Gi1/0/1, Gi1/0/2, Gi1/0/3, Gi1/0/10, Gi1/0/11, Po1",
+                "source_key": "interfaces.dist2"
+              },
+              {
+                "id": "NRFU-W2-P2-012",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show etherchannel summary",
+                "expected": "Po1: 2 member(s) bundled (P)",
+                "source_key": "interfaces.dist2.*.port_channel"
+              },
+              {
+                "id": "NRFU-W2-P2-013",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show standby brief",
+                "expected": "Vlan40: HSRP grp 40 Standby VIP 10.0.40.1; Vlan41: HSRP grp 41 Standby VIP 10.0.41.1",
+                "source_key": "interfaces.dist2.*.hsrp_behavior"
+              },
+              {
+                "id": "NRFU-W2-P2-014",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "4 adjacency(ies): Gi1/0/3 -> core2.lab (Eth1/20), Gi1/0/10 -> podacc1.lab (Gi0/2), Gi1/0/11 -> podacc2.lab (Gi0/2), Po1 -> dist1.lab (Po1)",
+                "source_key": "interfaces.dist2.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W2-P3-028",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "ping 10.0.40.2",
+                "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan40 on dist1 (10.0.40.2) reachable from Vlan40",
+                "source_key": "interfaces.dist1.Vlan40.svi_ip"
+              },
+              {
+                "id": "NRFU-W2-P3-029",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "traceroute 10.0.40.2",
+                "expected": "Completes; final hop 10.0.40.2 (gateway SVI Vlan40 on dist1)",
+                "source_key": "interfaces.dist1.Vlan40.svi_ip"
+              },
+              {
+                "id": "NRFU-W2-P3-030",
+                "phase": 3,
+                "scope": "end-to-end",
+                "command": "ping 10.0.40.2",
+                "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan40 on dist1 (10.0.40.2) reachable from Vlan41",
+                "source_key": "interfaces.dist1.Vlan40.svi_ip"
+              }
+            ]
+          },
+          {
+            "host": "podacc1",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W2-P1-015",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.06.05 (unchanged from baseline)",
+                "source_key": "devices.podacc1.sw_version"
+              },
+              {
+                "id": "NRFU-W2-P1-016",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-24T, serial FCW245501 present",
+                "source_key": "devices.podacc1.model"
+              },
+              {
+                "id": "NRFU-W2-P1-017",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.podacc1.ps_status"
+              },
+              {
+                "id": "NRFU-W2-P2-018",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/4",
+                "source_key": "interfaces.podacc1"
+              },
+              {
+                "id": "NRFU-W2-P2-019",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> dist1.lab (Gi1/0/10), Gi0/2 -> dist2.lab (Gi1/0/10)",
+                "source_key": "interfaces.podacc1.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W2-P3-020",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.podacc1"
+              }
+            ]
+          },
+          {
+            "host": "podacc2",
+            "platform_dialect": "ios",
+            "cases": [
+              {
+                "id": "NRFU-W2-P1-021",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show version",
+                "expected": "Software version 17.06.05 (unchanged from baseline)",
+                "source_key": "devices.podacc2.sw_version"
+              },
+              {
+                "id": "NRFU-W2-P1-022",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show inventory",
+                "expected": "chassis C9300-24T, serial FCW245502 present",
+                "source_key": "devices.podacc2.model"
+              },
+              {
+                "id": "NRFU-W2-P1-023",
+                "phase": 1,
+                "scope": "per-site",
+                "command": "show environment all",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "devices.podacc2.ps_status"
+              },
+              {
+                "id": "NRFU-W2-P2-024",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show interface status",
+                "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/4",
+                "source_key": "interfaces.podacc2"
+              },
+              {
+                "id": "NRFU-W2-P2-025",
+                "phase": 2,
+                "scope": "per-site",
+                "command": "show cdp neighbors",
+                "expected": "2 adjacency(ies): Gi0/1 -> dist1.lab (Gi1/0/11), Gi0/2 -> dist2.lab (Gi1/0/11)",
+                "source_key": "interfaces.podacc2.*.cdp_neighbor"
+              },
+              {
+                "id": "NRFU-W2-P3-026",
+                "phase": 3,
+                "scope": "per-site",
+                "command": "show ip dhcp snooping binding",
+                "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+                "source_key": "dhcp_snooping.podacc2"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "n_waves": 2,
+      "n_devices": 23,
+      "n_cases": 194,
+      "by_phase": {
+        "1": 69,
+        "2": 93,
+        "3": 29,
+        "4": 3
+      },
+      "n_not_observed": 46,
+      "n_human_executed": 3
+    }
   },
   "golden_drift": {
     "mode": "majority",
@@ -29425,7 +31144,7 @@
         "axis": "Hardware lifecycle (EoL)",
         "severity": "Critical",
         "headline": "5 past end-of-support, 1 within 1yr (26% of 23 assessable)",
-        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-03 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
+        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-05 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
       },
       {
         "axis": "Asset risk register",
