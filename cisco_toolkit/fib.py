@@ -575,6 +575,95 @@ def trace_bidirectional(snap, a_ip: str, b_ip: str, max_hops: int = 32, required
             "asymmetry": [], "rpf_verdict": "symmetric"}
 
 
+def _iface_acl(interfaces: dict, host: str, out_intf: str):
+    """(acl_in, acl_out) applied to a hop's egress interface, or (None, None) if the interface/fields were not
+    collected. A collected-but-empty ACL field is '' (no ACL); a NOT-collected interface is None (a blind spot)."""
+    if not out_intf or not isinstance(interfaces, dict):
+        return (None, None)
+    ports = interfaces.get(host)
+    if not isinstance(ports, dict):
+        return (None, None)
+    rec = ports.get(out_intf)
+    if rec is None:
+        try:
+            from .textutils import normalize_ifname
+        except Exception:                    # pragma: no cover
+            normalize_ifname = None
+        if normalize_ifname is not None:
+            want = normalize_ifname(out_intf)
+            for p, r in ports.items():
+                if normalize_ifname(p) == want:
+                    rec = r
+                    break
+    if rec is None:
+        return (None, None)
+    ai, ao = _iface_field(rec, "acl_in"), _iface_field(rec, "acl_out")
+    return (str(ai).strip() if ai is not None else "", str(ao).strip() if ao is not None else "")
+
+
+def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
+    """ECMP multipath-consistency (Batfish multipathConsistency analog; §3.4 optional). For the equal-cost leg set
+    a router installs toward `dst_ip`, flag when the legs would NOT be treated ALIKE -- a flow that hashes onto one
+    leg then behaves differently from a sibling, mimicking intermittent loss. Two divergence classes are checked
+    over the collected egress interfaces of the leg set at the FIRST L3 host on the path:
+      * mtu  -- the legs' egress MTUs differ (a jumbo flow blackholes only on the narrow leg);
+      * acl  -- the legs carry different ingress/egress ACL treatment (one leg filters, another passes).
+
+    COVERAGE-HONEST: a single-leg (non-ECMP) lookup is 'not_ecmp'; a leg whose egress interface was not collected
+    is DISCLOSED in `unobserved_legs` and can NOT prove OR disprove consistency, so with any blind leg the verdict
+    is 'INDETERMINATE', never a fabricated 'consistent'. Verdicts: not_ecmp | consistent | inconsistent |
+    INDETERMINATE. Returns {host, dst, leg_count, mtu_divergence, acl_divergence, unobserved_legs, verdict}.
+    Pure/offline; total on bad input -- resolves the leg set at the source-owning host only (a bounded, local check)."""
+    snap = snap if isinstance(snap, dict) else {}
+    interfaces = snap.get("interfaces") if isinstance(snap.get("interfaces"), dict) else {}
+    fibs, connected, _l3 = _build(snap)
+    base = {"host": None, "dst": dst_ip, "leg_count": 0, "mtu_divergence": [],
+            "acl_divergence": [], "unobserved_legs": [], "verdict": "not_ecmp"}
+
+    src_hosts = _hosts_owning_ip(connected, src_ip)
+    if len(src_hosts) != 1:                   # no owner, or an ambiguous transit/multi-access src -> can't localize
+        base["verdict"] = "INDETERMINATE"
+        return base
+    host = src_hosts[0]
+    base["host"] = host
+    legs = fib_lookup_all(fibs.get(host, []), dst_ip)
+    base["leg_count"] = len(legs)
+    if len(legs) < 2:
+        base["verdict"] = "not_ecmp"          # a single installed path -> multipath consistency is not applicable
+        return base
+
+    mtus, acls, unobserved = [], [], []
+    for leg in legs:
+        oi = str(leg.get("out_intf", "") or "")
+        mtu = _hop_mtu(interfaces, host, oi)
+        ai, ao = _iface_acl(interfaces, host, oi)
+        if not oi or (mtu is None and ai is None and ao is None):
+            unobserved.append({"out_intf": oi, "next_hop": str(leg.get("next_hop", "") or "")})
+            continue
+        mtus.append((oi, mtu))
+        acls.append((oi, ai or "", ao or ""))
+
+    base["unobserved_legs"] = unobserved
+
+    # MTU divergence: distinct OBSERVED MTUs across legs (ignore legs whose MTU was not collected).
+    obs_mtus = {m for _oi, m in mtus if m is not None}
+    if len(obs_mtus) > 1:
+        base["mtu_divergence"] = sorted(
+            [{"out_intf": oi, "mtu": m} for oi, m in mtus if m is not None], key=lambda d: d["mtu"])
+    # ACL divergence: distinct (acl_in, acl_out) tuples across legs whose interface WAS collected.
+    obs_acls = {(ai, ao) for _oi, ai, ao in acls}
+    if len(obs_acls) > 1:
+        base["acl_divergence"] = [{"out_intf": oi, "acl_in": ai, "acl_out": ao} for oi, ai, ao in acls]
+
+    if base["mtu_divergence"] or base["acl_divergence"]:
+        base["verdict"] = "inconsistent"      # a proven divergence dominates -- the legs are NOT treated alike
+    elif unobserved:
+        base["verdict"] = "INDETERMINATE"     # a blind leg -> can't certify the set is consistent (abstain)
+    else:
+        base["verdict"] = "consistent"        # every leg observed and aligned on MTU + ACL
+    return base
+
+
 def subnet_reps(snap, limit: int = 24) -> list:
     """A bounded, deterministic [(network_str, representative_host_ip)] -- the FIRST and LAST usable host of each
     collected CONNECTED subnet (so an upper- OR lower-half more-specific drop is sampled, not just .1), sorted by
