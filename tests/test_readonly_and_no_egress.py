@@ -10,31 +10,30 @@ setup commands (COLLECT_PARSE_V3_23_0.py:810); the SSH collector has a protocol-
 (send_command cannot configure); rest_collect is GET-only except a single login POST; and no analysis ->
 deliverable module imports a network library. These tests re-derive the allow-list from the ACTUAL registries
 (not a hardcoded verb list) and walk imports at ANY nesting depth (lazy imports too).
+
+roadmap D3: the read-only grammar + banned-import lists + AST import-walk are FACTORED into
+cisco_toolkit/attestation.py (the shipped 'Trust & Sovereignty' panel) and imported here, so
+the CI doctrine-guard and the build-time attestation can never diverge. To keep the SHARED
+grammar itself falsifiable (a loosened regex must not green both sides), this file adds a
+negative-control test: known write verbs must be REJECTED by the grammar.
 """
 import ast
 import os
-import re
 
 import COLLECT_PARSE_V3_23_0 as C
+from cisco_toolkit.attestation import (
+    NETWORK_IMPORTS as _NETWORK_IMPORTS,
+    READ_ONLY_CMD as _READ_ONLY_CMD,
+    imported_names as _imported_names,
+)
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TOOLKIT = os.path.join(_HERE, "cisco_toolkit")
 
-# Read-only command allow-list, re-derived to cover EXACTLY the read verbs the six registries actually use:
-# SSH/CLI reads (show/display/get/dir/ping/moquery), the AWS read-only describe-*, and the controller-REST GET
-# paths (api/ FMC, ers/ ISE, dataservice/ vManage). A write verb (config/set/execute/reload/request/aws ec2
-# authorize-/create-/delete-, a POST-only REST path, …) matches none of these and fails the test.
-_READ_ONLY_CMD = re.compile(
-    r"^(show|display|get|dir|ping|moquery)\b"          # SSH/CLI read verbs (incl. ACI moquery over SSH)
-    r"|^aws ec2 describe-"                              # AWS read-only describe (never authorize/create/delete)
-    r"|^(api/|ers/|dataservice/)",                     # controller-REST GET paths (FMC / ISE / vManage)
-)
-
-# netmiko config / write sinks that would break the SSH read-only floor, and any direct network egress lib.
+# netmiko config / write sinks that would break the SSH read-only floor (SSH-collector-specific:
+# stays here, not in the attestation module, whose scope is the four published claims).
 _CONFIG_SINKS = ("send_config_set", "send_config_from_file", "config_mode(",
                  "configure terminal", "\nsend_config", " send_config(")
-_NETWORK_IMPORTS = {"socket", "requests", "httpx", "http.client", "httplib", "urllib.request",
-                    "netmiko", "paramiko", "telnetlib", "ftplib", "smtplib", "aiohttp", "pycurl"}
 
 
 def _registries():
@@ -92,19 +91,20 @@ def test_rest_collect_is_get_only_except_single_login_post():
 
 
 # ------------------------------------------------------------------ W1-2: no egress ---
-def _imported_names(tree):
-    """Every imported module name in a parsed module, at ANY nesting depth (catches lazy in-function imports)."""
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                names.add(a.name)
-        elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
-            names.add(mod)
-            for a in node.names:
-                names.add(f"{mod}.{a.name}" if mod else a.name)
-    return names
+def test_shared_read_only_grammar_rejects_write_verbs():
+    """Negative control for the SHARED grammar (imported from cisco_toolkit.attestation): a
+    future loosening of the regex that lets a write verb through must fail HERE, even though
+    the registry walk above and the shipped panel both use the same pattern."""
+    for write_cmd in ("configure terminal", "reload", "request system reboot",
+                      "aws ec2 authorize-security-group-ingress", "set system host-name x",
+                      "execute factoryreset", "copy running-config startup-config",
+                      "no shutdown", "delete flash:", "write memory"):
+        assert not _READ_ONLY_CMD.match(write_cmd), \
+            f"read-only grammar wrongly ACCEPTS write command {write_cmd!r}"
+    # and the import-walk still sees LAZY nested imports (the mechanics stay honest too)
+    lazy = ast.parse("def f():\n    import requests\n    from urllib.request import urlopen\n")
+    got = _imported_names(lazy)
+    assert "requests" in got and "urllib.request" in got
 
 
 def test_no_network_egress_in_analysis_pipeline():
