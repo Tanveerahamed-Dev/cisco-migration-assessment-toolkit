@@ -79,7 +79,27 @@ def test_healthy_value_present_and_threshold_present_or_explicitly_null():
             f"{d['key']!r} threshold must be a non-empty string or explicit None, got {d['threshold']!r}"
 
 
-def test_cited_fields_are_nonempty_and_plausible_dotted_snapshot_keys():
+def _rich_snapshot():
+    """The richest committed snapshot for leaf resolution: the 23-device sample fleet (populated
+    operational_drift/security/etc.), falling back to the golden. None if neither is present."""
+    for p in ("webapp/sample_data/sample_fleet.snapshot.json", "tests/golden/snapshot.json"):
+        path = os.path.join(ROOT, p)
+        if os.path.exists(path):
+            try:
+                return json.load(open(path, encoding="utf-8"))
+            except Exception:
+                pass
+    return None
+
+
+def test_cited_fields_name_a_field_not_a_bare_section_and_resolve():
+    """Every cited_field must name the EVIDENCE FIELD inside a real section — 'section[].field' or
+    'section.<k>.field' — never a bare section token. A bare section ('trunk_native') tells a client
+    "look at this whole block" without saying which field backs the finding, and is how the
+    l2-native-vlan-1 descriptor once cited a DIFFERENT detector's output (adversarial-review finding,
+    2026-07-05). Where the section is a populated list-of-dicts in the rich sample fleet, the leaf field
+    must actually exist on some record — so a mis-typed leaf can't ship silently either."""
+    rich = _rich_snapshot()
     for d in compute_detector_schema()["detectors"]:
         cf = d["cited_fields"]
         assert isinstance(cf, list) and cf, f"{d['key']!r} has empty cited_fields"
@@ -88,6 +108,17 @@ def test_cited_fields_are_nonempty_and_plausible_dotted_snapshot_keys():
             head = re.split(r"[.\[]", f, 1)[0]
             assert head in _KNOWN_SECTIONS, \
                 f"{d['key']!r} cites {f!r} whose root {head!r} is not a known snapshot section"
+            # the citation must reference a FIELD, not the bare section (the trunk_native bug class)
+            assert f != head, \
+                f"{d['key']!r} cites the BARE section {f!r} — name the evidence field (e.g. {head}[].field)"
+            # best-effort leaf resolution: a simple 'section[].leaf' over a populated list-of-dicts must
+            # find the leaf on at least one record (a populated section proves the field name is real)
+            m = re.fullmatch(r"([a-z_]+)\[\]\.([a-z_]+)", f)
+            if rich is not None and m:
+                section, leaf = rich.get(m.group(1)), m.group(2)
+                if isinstance(section, list) and section and all(isinstance(x, dict) for x in section):
+                    assert any(leaf in x for x in section), \
+                        f"{d['key']!r} cites {f!r} but no record in a populated {m.group(1)!r} has {leaf!r}"
 
 
 def test_family_and_source_command_are_read_only_show_queries():

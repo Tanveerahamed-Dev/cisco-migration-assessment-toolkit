@@ -56,12 +56,17 @@ def test_registry_owner_files_all_exist():
 def test_registry_owner_symbols_are_real():
     """The symbols the registry leans on (the assessment-facts contract, the version, the ledger)
     must exist in the code it points at -- import them / read them, don't trust the prose."""
-    from cisco_toolkit import ssot, manifest
+    from cisco_toolkit import ssot, manifest, detector_schema
     import cisco_toolkit
 
     assert hasattr(ssot, "CANONICAL_FACTS") and isinstance(ssot.CANONICAL_FACTS, dict)
     assert hasattr(ssot, "canonical_facts") and callable(ssot.canonical_facts)
     assert hasattr(ssot, "reconcile") and callable(ssot.reconcile)
+    # the coverage/provenance-schema owners (J3/J2/J1) the registry gained on 2026-07-05 must resolve too,
+    # else a refactor that moved one without updating docs/ssot.md would slip past this guard.
+    assert hasattr(ssot, "compute_schema_census") and callable(ssot.compute_schema_census)
+    assert hasattr(ssot, "compute_fact_lineage") and callable(ssot.compute_fact_lineage)
+    assert hasattr(detector_schema, "compute_detector_schema") and callable(detector_schema.compute_detector_schema)
     assert isinstance(getattr(cisco_toolkit, "__version__", None), str), "schema __version__ owner is gone"
     # manifest.py is the hash-chained chain-of-custody ledger the registry cites for run provenance.
     assert hasattr(manifest, "GENESIS"), "manifest.py no longer exposes the hash-chain GENESIS"
@@ -75,7 +80,8 @@ def test_registry_cited_snapshot_keys_are_published_by_the_engine():
     engine = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
     analyze = (ROOT / "cisco_toolkit" / "analyze.py").read_text(encoding="utf-8", errors="ignore")
     src = engine + "\n" + analyze
-    for key in ("architecture_coverage", "cable_map", "coverage_matrix", "design_blueprint"):
+    for key in ("architecture_coverage", "cable_map", "coverage_matrix", "design_blueprint",
+                "schema_census", "fact_lineage", "detector_schema"):
         assert key in txt, f"registry stopped citing the {key!r} owner path"
         assigned = re.search(rf'["\']{re.escape(key)}["\']\]\s*=', src)
         assert assigned, f"registry cites snap[{key!r}] but the engine source never assigns it"
