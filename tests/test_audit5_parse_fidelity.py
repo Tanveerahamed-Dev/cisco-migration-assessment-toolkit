@@ -35,8 +35,8 @@ def test_parse_security_nxos_type5_user_and_password_encryption():
     CIS check false-FAILED every NX-OS device with an impossible 'cleartext (Type-0)' claim -> must be N/A.
     Real CS01 shapes."""
     nxos = ("feature ospf\n"
-            "username admin password 5 $1$/xzLOXP8$cb6hjzRZiOUAmAkP91S930  role network-admin\n"
-            "username swadmin password 5 $1$.2qNwXmh$KYWx8jlR.OCGELDIxtNLi0  role vdc-operator\n")
+            "username admin password 5 $1$REDACTED$0000000000000000000000  role network-admin\n"
+            "username swadmin password 5 $1$SCRUBBED$1111111111111111111111  role vdc-operator\n")
     f = _sec_findings(nxos)
     assert f["weak-user-pw"]["status"] == "pass"        # Type-5 users are strong, not weak
     assert f["password-encryption"]["status"] == "na"   # not applicable on NX-OS (no false cleartext FAIL)
