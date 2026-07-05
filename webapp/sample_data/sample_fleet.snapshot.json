@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-05T17:34:20.601552",
+  "generated_at": "2026-07-05T17:40:22.454170",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2984,7 +2984,7 @@
       }
     }
   },
-  "collected_at": "2026-07-05T17:34:13.970502",
+  "collected_at": "2026-07-05T17:40:15.859686",
   "physical_health": [
     {
       "switch": "access1",
@@ -26723,7 +26723,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-05T14:34:19.288221+00:00",
+    "generated_at": "2026-07-05T14:40:21.244227+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -31143,6 +31143,213 @@
     },
     "risks": []
   },
+  "vlan_cutover": [
+    {
+      "vlan": 10,
+      "name": "USERS",
+      "stp_root": "core1",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "10",
+        "vip": "10.0.10.1",
+        "members": [
+          {
+            "host": "core1",
+            "proto": "HSRP",
+            "group": "10",
+            "vip": "10.0.10.1",
+            "role": "active",
+            "priority": 110,
+            "preempt": true,
+            "vmac": "0000.0c07.ac0a"
+          },
+          {
+            "host": "core2",
+            "proto": "HSRP",
+            "group": "10",
+            "vip": "10.0.10.1",
+            "role": "standby",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "core1",
+        "core2"
+      ],
+      "endpoint_count": 36,
+      "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [
+        "DHCP relay via 10.0.40.10, 10.0.40.11"
+      ],
+      "wave": "Group 1",
+      "scenario": "mixed: 17 hard cutover / 2 make-before-break",
+      "readiness": "NOT READY",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 20,
+      "name": "VOICE",
+      "stp_root": "[NOT OBSERVED]",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "20",
+        "vip": "10.0.20.1",
+        "members": [
+          {
+            "host": "core1",
+            "proto": "HSRP",
+            "group": "20",
+            "vip": "10.0.20.1",
+            "role": "standby",
+            "priority": 100,
+            "preempt": false,
+            "vmac": "0000.0c07.ac14"
+          },
+          {
+            "host": "core2",
+            "proto": "HSRP",
+            "group": "20",
+            "vip": "10.0.20.1",
+            "role": "active",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "core1",
+        "core2"
+      ],
+      "endpoint_count": 0,
+      "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 1",
+      "scenario": "mixed: 6 hard cutover / 2 make-before-break",
+      "readiness": "NOT READY",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 30,
+      "name": "SERVERS",
+      "stp_root": "access1",
+      "stp_root_default_election": true,
+      "fhrp": "sole gateway on core1 (no FHRP)",
+      "gateway_svi_hosts": [
+        "core1"
+      ],
+      "endpoint_count": 11,
+      "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 1",
+      "scenario": "mixed: 17 hard cutover / 1 make-before-break",
+      "readiness": "NOT READY",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 40,
+      "name": "POD-USERS",
+      "stp_root": "[NOT OBSERVED]",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "40",
+        "vip": "10.0.40.1",
+        "members": [
+          {
+            "host": "dist1",
+            "proto": "HSRP",
+            "group": "40",
+            "vip": "10.0.40.1",
+            "role": "active",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          },
+          {
+            "host": "dist2",
+            "proto": "HSRP",
+            "group": "40",
+            "vip": "10.0.40.1",
+            "role": "standby",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "dist1",
+        "dist2"
+      ],
+      "endpoint_count": 2,
+      "app_domain": "General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 2",
+      "scenario": "make-before-break",
+      "readiness": "CAUTION",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 41,
+      "name": "POD-VOICE",
+      "stp_root": "[NOT OBSERVED]",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "41",
+        "vip": "10.0.41.1",
+        "members": [
+          {
+            "host": "dist1",
+            "proto": "HSRP",
+            "group": "41",
+            "vip": "10.0.41.1",
+            "role": "active",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          },
+          {
+            "host": "dist2",
+            "proto": "HSRP",
+            "group": "41",
+            "vip": "10.0.41.1",
+            "role": "standby",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "dist1",
+        "dist2"
+      ],
+      "endpoint_count": 2,
+      "app_domain": "General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 2",
+      "scenario": "make-before-break",
+      "readiness": "CAUTION",
+      "cutover_window": "",
+      "rollback_owner": ""
+    }
+  ],
   "executive_brief": {
     "scale": {
       "n_devices": 23,
