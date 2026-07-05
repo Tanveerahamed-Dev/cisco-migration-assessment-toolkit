@@ -52,10 +52,15 @@ Syntys_*
 x3.xlsx
 _aci_conv.txt
 raw/
-ds-bundle/
 _ref/
-.design-sync/
-.ds-sync/
 Migration_Assessment_Template_*
 _verify_nrfu.py
 /blast_radius_explorer.html
+
+# design-sync (claude.ai/design converter) — staged scripts, build output, machine state.
+# The durable set (.design-sync/config.json, NOTES.md, conventions.md, previews/, docs/, overrides/) IS committed.
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
