@@ -289,7 +289,7 @@ def test_build_server_ok_on_empty_snapshot():
 
 def test_each_tool_call_returns_its_pure_function_output(rich):
     """Refute a wrapper mis-binding: drive every tool THROUGH the server and assert it returns
-    exactly its pure-function output -- proving each of the seven near-identical wrappers is
+    exactly its pure-function output -- proving each of the twelve near-identical wrappers is
     wired to the RIGHT pure fn and passes its arguments through (registration alone can't)."""
     pytest.importorskip("mcp")
     import asyncio
@@ -303,6 +303,7 @@ def test_each_tool_call_returns_its_pure_function_output(rich):
 
     server = M.build_server(rich)
     host = M.list_devices(rich)[0]["host"]
+    route_host = list(rich["routes"].keys())[0]
     cases = [
         ("overview", {}, M.overview(rich)),
         ("list_devices", {}, M.list_devices(rich)),
@@ -311,6 +312,12 @@ def test_each_tool_call_returns_its_pure_function_output(rich):
         ("failure_impact", {"limit": 5}, M.failure_impact(rich, 5)),
         ("chokepoints", {"limit": 5}, M.chokepoints(rich, 5)),
         ("device_detail", {"host": host}, M.device_detail(rich, host)),
+        ("get_finding", {"finding": "1"}, M.get_finding(rich, "1")),
+        ("search_devices", {"query": host}, M.search_devices(rich, host)),
+        ("get_move_groups", {}, M.get_move_groups(rich)),
+        ("whatif_node", {"host": route_host}, M.whatif_node(rich, route_host)),
+        ("get_health", {}, M.get_health(rich)),                     # defaulted host -> fleet view
+        ("get_health", {"host": host}, M.get_health(rich, host)),   # explicit host passes through
     ]
     for name, args, expected in cases:
         got = _reassemble(asyncio.run(server.call_tool(name, args)), expected)
