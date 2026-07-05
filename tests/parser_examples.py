@@ -211,6 +211,88 @@ PARSER_EXAMPLES = {
             ],
         },
     ],
+    # ------------------------------------------------------------------ routing table
+    "parse_ip_routes": [
+        {
+            "note": "NX-OS 'show ip route' ubest/mbest blocks with ECMP '*via' lines; the "
+                    "source ('ospf-<tag>') is followed by a route-type qualifier ('inter') "
+                    "that must NOT be read as the source. Real CS01 shape (process tag "
+                    "anonymized).",
+            "input": (
+                'IP Route Table for VRF "default"\n'
+                "'*' denotes best ucast next-hop\n"
+                "'**' denotes best mcast next-hop\n"
+                "'[x/y]' denotes [preference/metric]\n"
+                "'%<string>' in via output denotes VRF <string>\n"
+                "\n"
+                "0.0.0.0/0, ubest/mbest: 2/0\n"
+                "    *via 10.203.254.5, Po11, [110/2], 34w1d, ospf-CORE, inter\n"
+                "    *via 10.203.254.9, Po12, [110/2], 34w1d, ospf-CORE, inter\n"
+                "10.0.0.60/32, ubest/mbest: 2/0\n"
+                "    *via 10.203.254.5, Po11, [110/5], 34w1d, ospf-CORE, inter\n"
+                "    *via 10.203.254.9, Po12, [110/5], 34w1d, ospf-CORE, inter\n"
+                "10.6.4.0/24, ubest/mbest: 2/0\n"
+                "    *via 10.203.254.5, Po11, [110/42], 34w1d, ospf-CORE, inter\n"
+                "    *via 10.203.254.9, Po12, [110/42], 34w1d, ospf-CORE, inter\n"
+            ),
+            "expect_min_entities": 3,
+            "spot_facts": [
+                (("0.0.0.0/0", "entries", 0, "source"), "ospf"),  # not the 'inter' qualifier
+                (("0.0.0.0/0", "entries", 0, "next_hop"), "10.203.254.5"),
+                (("0.0.0.0/0", "entries", 1, "out_intf"), "Po12"),  # ECMP sibling kept
+                (("10.6.4.0/24", "entries", 0, "out_intf"), "Po11"),
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ trunking
+    "parse_show_interface_trunk_table": [
+        {
+            "note": "NX-OS 'show interface trunk' TWO-line header ('Port Native Status "
+                    "Port' / 'Vlan ... Channel') -- the channel column marker lives on "
+                    "line 2. Real CS01 slice.",
+            "input": (
+                "\n"
+                "--------------------------------------------------------------------------------\n"
+                "Port          Native  Status        Port\n"
+                "              Vlan                  Channel\n"
+                "--------------------------------------------------------------------------------\n"
+                "Eth1/12       1       trunking      --\n"
+                "Eth1/15       1       trnk-bndl     Po15\n"
+                "Eth2/3        1       trnk-bndl     Po1\n"
+                "Po1           1       trunking      --\n"
+                "Po15          1       trunking      --\n"
+            ),
+            "expect_min_entities": 5,
+            "spot_facts": [
+                (("Eth1/12", "native_vlan"), "1"),
+                (("Eth1/12", "status"), "trunking"),
+                (("Eth1/15", "status"), "trnk-bndl"),
+                (("Eth1/15", "port_channel"), "Po15"),
+                (("Eth2/3", "port_channel"), "Po1"),
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ FHRP
+    "parse_vrrp_summary": [
+        {
+            "note": "IOS 'show vrrp brief' -- Vl<N> short names, Grp/Pri/Own/Pre columns, "
+                    "Group addr is the LAST IP. Real ACS shape (this estate runs VRRP, "
+                    "not HSRP: every show hsrp/standby brief capture is header-only).",
+            "input": (
+                "Interface          Grp Pri Time  Own Pre State   Master addr     Group addr\n"
+                "Vl3                3   110 3570       Y  Master  10.202.0.2      10.202.0.1     \n"
+                "Vl4                4   90  3648       Y  Backup  10.202.4.3      10.202.4.1     \n"
+                "Vl10               10  110 3570       Y  Master  10.202.10.2     10.202.10.1    \n"
+                "Vl250              200 90  3648       Y  Backup  10.202.250.3    10.202.250.1   \n"
+            ),
+            "expect_min_entities": 4,
+            "spot_facts": [
+                (("Vlan3",), "VRRP grp 3 Master VIP 10.202.0.1"),
+                (("Vlan4",), "VRRP grp 4 Backup VIP 10.202.4.1"),
+                (("Vlan250",), "VRRP grp 200 Backup VIP 10.202.250.1"),  # ifname != grp
+            ],
+        },
+    ],
     # ------------------------------------------------------------------ interface physical
     "parse_interface_phy": [
         {
