@@ -146,6 +146,127 @@ def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) ->
     return "published"
 
 
+# ---------------------------------------------------------------------------------------------
+# schema census (J3): a snapshot self-describes what it actually SAW -- the SuzieQ `describe`
+# analog. For EVERY top-level snapshot section, project the coverage-honest 3-state token onto a
+# queryable coverage map, so an access-only collection (e.g. the AJ fleet, where a whole
+# distribution/core tier is UN-collected) reports exactly what was seen vs what is a blind spot,
+# instead of a rendered "filler" output whose real cause is an uncollected tier, not a code bug.
+# ---------------------------------------------------------------------------------------------
+
+SCHEMA_CENSUS_SCHEMA = "schema_census/1"
+
+# The honest note per 3-state token. Never "ok"/"healthy": absence of evidence is never health.
+_CENSUS_NOTE = {
+    "published":           "seen — collected and non-empty",
+    "collected_but_empty": "collected, nothing of this kind found (not a blind spot)",
+    "not_collected":       "blind spot — not collected",
+}
+
+
+def _census_kind(val: Any) -> str:
+    """The shape of a section, for the census `kind` column: absent / list / dict / scalar.
+    Purely structural (no model, no dates) so the census stays deterministic across runs."""
+    if val is None:
+        return "absent"
+    if isinstance(val, list):
+        return "list"
+    if isinstance(val, dict):
+        return "dict"
+    return "scalar"
+
+
+def compute_schema_census(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """The per-section coverage census -- a snapshot's self-description of what it actually saw.
+
+    For EVERY top-level snapshot section key, emit one row::
+
+        {key, state, count, kind, note}
+
+    where ``state`` is the coverage-honest 3-state token :func:`abstention_reason` returns
+    (``published`` / ``collected_but_empty`` / ``not_collected``), ``count`` is ``len()`` when the
+    section is a list or dict (else ``None`` -- a scalar/absent section has no cardinality),
+    ``kind`` is the section's structural shape, and ``note`` is a short honest phrase. A
+    present-but-empty section is ``collected_but_empty`` (collected, genuinely nothing found -- NOT
+    a blind spot); an absent section is ``not_collected`` (a real blind spot). Nothing is ever
+    labelled "ok"/"healthy": absence of evidence is never health (Law 3).
+
+    Deterministic (presence/absence only -- no dates, no model) and total on bad input: a non-dict
+    snapshot yields an empty-but-well-formed census rather than raising.
+    """
+    snap = snap if isinstance(snap, dict) else {}
+    sections: List[Dict[str, Any]] = []
+    n_pub = n_empty = n_absent = 0
+    for key in snap:                                   # iterate a snapshot copy's keys (see caller)
+        val = snap.get(key)
+        state = abstention_reason(snap, key)
+        if state == "published":
+            n_pub += 1
+        elif state == "collected_but_empty":
+            n_empty += 1
+        else:
+            n_absent += 1
+        count = len(val) if isinstance(val, (list, dict)) else None
+        sections.append({
+            "key": key,
+            "state": state,
+            "count": count,
+            "kind": _census_kind(val),
+            "note": _CENSUS_NOTE.get(state, _CENSUS_NOTE["not_collected"]),
+        })
+    return {
+        "schema": SCHEMA_CENSUS_SCHEMA,
+        "sections": sections,
+        "summary": {
+            "n_published": n_pub,
+            "n_collected_but_empty": n_empty,
+            "n_not_collected": n_absent,
+            "n_sections": len(sections),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------------------------
+# fact lineage (J2): attribute-level provenance for the canonical headline facts (Infrahub-style).
+# For each CANONICAL_FACTS entry, name WHERE the number comes from: its dotted canonical path, the
+# published value, the coverage-honest state of that path, and the one-line basis/derivation
+# already recorded in CANONICAL_FACTS -- provenance made queryable by REUSING the SSOT contract,
+# not a parallel one. (source_command depth -- mapping each fact to the exact show-command -- is
+# DEFERRED; the basis string is the v1 provenance.)
+# ---------------------------------------------------------------------------------------------
+
+FACT_LINEAGE_SCHEMA = "fact_lineage/1"
+
+
+def compute_fact_lineage(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """Attribute-level provenance for every canonical headline fact.
+
+    Emits one row per :data:`CANONICAL_FACTS` entry::
+
+        {name, value, path, state, basis}
+
+    where ``path`` is the dotted canonical snapshot path, ``value`` is the authoritative value from
+    :func:`canonical_facts` (read canonical-first; ``None`` when the block isn't published),
+    ``state`` is :func:`abstention_reason` on that path (``published`` / ``collected_but_empty`` /
+    ``not_collected`` -- so an un-published block reads as a blind spot, never a silent 0), and
+    ``basis`` is the one-line concept/derivation named in ``CANONICAL_FACTS`` (the "== len(...)"
+    hints), so a reader sees WHERE each headline number comes from. Reuses the SSOT contract rather
+    than inventing a parallel provenance store. Total on bad input.
+    """
+    snap = snap if isinstance(snap, dict) else {}
+    values = canonical_facts(snap)
+    facts: List[Dict[str, Any]] = []
+    for name, (path, concept) in CANONICAL_FACTS.items():
+        facts.append({
+            "name": name,
+            "value": values.get(name),
+            "path": path,
+            "state": abstention_reason(snap, path),
+            "basis": concept,
+        })
+    return {"schema": FACT_LINEAGE_SCHEMA, "facts": facts}
+
+
 def reconcile(snap: Dict[str, Any]) -> List[str]:
     """Return human-readable SSOT violations: a published canonical value that disagrees with an
     independent derivation from the raw evidence. Empty list == every published fact reconciles.

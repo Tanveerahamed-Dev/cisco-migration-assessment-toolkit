@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-05T19:37:08.404283",
+  "generated_at": "2026-07-05T21:10:12.164100",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2985,7 +2985,7 @@
       }
     }
   },
-  "collected_at": "2026-07-05T19:37:02.998646",
+  "collected_at": "2026-07-05T21:10:06.546179",
   "physical_health": [
     {
       "switch": "access1",
@@ -26726,7 +26726,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-05T16:37:07.326735+00:00",
+    "generated_at": "2026-07-05T18:10:11.098423+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -43005,5 +43005,819 @@
       },
       "note": "Each row is one (device, axis) coverage verdict COMPOSED from the four published coverage sources; no device state is recomputed. 'not_collected' / 'partial' / 'unverified' / 'unparsed' / 'not_observed' are ABSTENTIONS \u2014 the engine did not prove the evidence, which is NOT the same as healthy. 'covered' is emitted only where a source positively proves it."
     }
+  },
+  "schema_census": {
+    "schema": "schema_census/1",
+    "sections": [
+      {
+        "key": "schema",
+        "state": "published",
+        "count": null,
+        "kind": "scalar",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "script_version",
+        "state": "published",
+        "count": null,
+        "kind": "scalar",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "generated_at",
+        "state": "published",
+        "count": null,
+        "kind": "scalar",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "devices",
+        "state": "published",
+        "count": 23,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "interfaces",
+        "state": "published",
+        "count": 23,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "collected_at",
+        "state": "published",
+        "count": null,
+        "kind": "scalar",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "physical_health",
+        "state": "published",
+        "count": 122,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "l3_forwarding",
+        "state": "published",
+        "count": 9,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "cross_layer",
+        "state": "published",
+        "count": 43,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "protocol_health",
+        "state": "published",
+        "count": 28,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "protocol_intelligence",
+        "state": "published",
+        "count": 1,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "service_map",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "multicast_intelligence",
+        "state": "published",
+        "count": 6,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "lifecycle_risk",
+        "state": "published",
+        "count": 5,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "remediation_plan",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "validation_plan",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "nrfu_commands",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "golden_drift",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "syslog_intelligence",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "qos_audit",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "software_risk",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "platform_health",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "collection_completeness",
+        "state": "published",
+        "count": 2,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "health_scores",
+        "state": "published",
+        "count": 23,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "cable_map",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "migration_readiness",
+        "state": "published",
+        "count": 2,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "score_sensitivity",
+        "state": "published",
+        "count": 20,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "nat",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "security",
+        "state": "published",
+        "count": 18,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "framework_coverage",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "config_hygiene",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "stp_roots",
+        "state": "published",
+        "count": 19,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "vpc",
+        "state": "collected_but_empty",
+        "count": 0,
+        "kind": "dict",
+        "note": "collected, nothing of this kind found (not a blind spot)"
+      },
+      {
+        "key": "fhrp_detail",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "overlay",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "copp",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "mpls",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "aci",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "sdwan",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "firewall",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "ise",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "fmc",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "arista",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "juniper",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "cloud",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "fortigate",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "mroute",
+        "state": "collected_but_empty",
+        "count": 0,
+        "kind": "dict",
+        "note": "collected, nothing of this kind found (not a blind spot)"
+      },
+      {
+        "key": "lisp",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "cts",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "dmvpn",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "crypto",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "bfd",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "ipv6_nd",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "ipv6_routing",
+        "state": "published",
+        "count": 17,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "pim",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "ipv6_fhs",
+        "state": "published",
+        "count": 17,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "ntp",
+        "state": "published",
+        "count": 19,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "port_security",
+        "state": "published",
+        "count": 17,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "storm_control",
+        "state": "published",
+        "count": 17,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "qos_runtime",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "shadow_infra",
+        "state": "published",
+        "count": 23,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "punchlist",
+        "state": "published",
+        "count": 115,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "operational_drift",
+        "state": "published",
+        "count": 1,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "calibration",
+        "state": "published",
+        "count": 9,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "acls",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "object_groups",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "feature_compliance",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "acl_line_reachability",
+        "state": "published",
+        "count": 2,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "capture_integrity",
+        "state": "published",
+        "count": 2,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "attestation",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "parse_yield",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "routes",
+        "state": "published",
+        "count": 2,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "routing_neighbors",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "redistribution",
+        "state": "published",
+        "count": 1,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "causality",
+        "state": "published",
+        "count": 24,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "failure_impact",
+        "state": "published",
+        "count": 23,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "link_centrality",
+        "state": "published",
+        "count": 25,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "wave_sequencing",
+        "state": "published",
+        "count": 2,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "addressing_conflicts",
+        "state": "published",
+        "count": 2,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "fhrp",
+        "state": "collected_but_empty",
+        "count": 0,
+        "kind": "list",
+        "note": "collected, nothing of this kind found (not a blind spot)"
+      },
+      {
+        "key": "trunk_native",
+        "state": "published",
+        "count": 5,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "link_phy",
+        "state": "collected_but_empty",
+        "count": 0,
+        "kind": "list",
+        "note": "collected, nothing of this kind found (not a blind spot)"
+      },
+      {
+        "key": "move_groups",
+        "state": "published",
+        "count": 2,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "capacity",
+        "state": "published",
+        "count": 23,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "endpoint_identity",
+        "state": "published",
+        "count": 50,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "endpoint_dependencies",
+        "state": "published",
+        "count": 5,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "subnet_intelligence",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "migration_scenarios",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "application_intelligence",
+        "state": "published",
+        "count": 7,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "segmentation",
+        "state": "published",
+        "count": 5,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "vlan_cutover",
+        "state": "published",
+        "count": 5,
+        "kind": "list",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "executive_brief",
+        "state": "published",
+        "count": 6,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "device_dossiers",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "architecture_review",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "design_blueprint",
+        "state": "published",
+        "count": 10,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "design_nrfu",
+        "state": "published",
+        "count": 4,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "architecture_coverage",
+        "state": "published",
+        "count": 2,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "coverage_matrix",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "schema_census",
+        "state": "published",
+        "count": 3,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      },
+      {
+        "key": "fact_lineage",
+        "state": "published",
+        "count": 2,
+        "kind": "dict",
+        "note": "seen \u2014 collected and non-empty"
+      }
+    ],
+    "summary": {
+      "n_published": 96,
+      "n_collected_but_empty": 4,
+      "n_not_collected": 0,
+      "n_sections": 100
+    }
+  },
+  "fact_lineage": {
+    "schema": "fact_lineage/1",
+    "facts": [
+      {
+        "name": "n_devices",
+        "value": 23,
+        "path": "executive_brief.scale.n_devices",
+        "state": "published",
+        "basis": "inventoried devices (== len(health_scores))"
+      },
+      {
+        "name": "n_collected",
+        "value": 23,
+        "path": "executive_brief.scale.n_collected",
+        "state": "published",
+        "basis": "devices with a complete collection"
+      },
+      {
+        "name": "n_endpoints",
+        "value": 50,
+        "path": "executive_brief.scale.n_endpoints",
+        "state": "published",
+        "basis": "evidenced endpoints (== len(endpoint_identity))"
+      },
+      {
+        "name": "n_vlans",
+        "value": 5,
+        "path": "executive_brief.scale.n_vlans",
+        "state": "published",
+        "basis": "VLANs in use (== len(analyze.vlan_inventory))"
+      },
+      {
+        "name": "n_domains",
+        "value": 2,
+        "path": "executive_brief.scale.n_domains",
+        "state": "published",
+        "basis": "broadcast/management domains"
+      },
+      {
+        "name": "avg_health",
+        "value": 50,
+        "path": "executive_brief.posture.avg_health",
+        "state": "published",
+        "basis": "mean fleet health score"
+      },
+      {
+        "name": "n_critical",
+        "value": 6,
+        "path": "executive_brief.posture.n_critical",
+        "state": "published",
+        "basis": "devices in the Critical health band"
+      },
+      {
+        "name": "n_poor",
+        "value": 12,
+        "path": "executive_brief.posture.n_poor",
+        "state": "published",
+        "basis": "devices in the Poor health band"
+      },
+      {
+        "name": "worst_band",
+        "value": "Critical",
+        "path": "executive_brief.posture.worst_band",
+        "state": "published",
+        "basis": "worst health band observed"
+      },
+      {
+        "name": "n_past_ldos",
+        "value": 5,
+        "path": "lifecycle_risk.summary.n_past_ldos",
+        "state": "published",
+        "basis": "devices past last-day-of-support (the past-SUPPORT population)"
+      },
+      {
+        "name": "n_past_eos",
+        "value": 6,
+        "path": "lifecycle_risk.summary.n_past_eos",
+        "state": "published",
+        "basis": "devices past end-of-sale but NOT yet past LDoS (a different, smaller set)"
+      },
+      {
+        "name": "n_near",
+        "value": 1,
+        "path": "lifecycle_risk.summary.n_near",
+        "state": "published",
+        "basis": "devices within 1yr of LDoS (Near-LDoS band)"
+      },
+      {
+        "name": "n_active",
+        "value": 11,
+        "path": "lifecycle_risk.summary.n_active",
+        "state": "published",
+        "basis": "devices in active support (Active band)"
+      },
+      {
+        "name": "n_design_decisions",
+        "value": 69,
+        "path": "design_blueprint.summary.n_decisions",
+        "state": "published",
+        "basis": "ranked target-state design decisions"
+      }
+    ]
   }
 }

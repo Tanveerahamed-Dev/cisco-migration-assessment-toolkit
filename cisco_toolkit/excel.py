@@ -1253,6 +1253,66 @@ def write_multicast_intelligence_sheet(wb, mi: dict) -> None:
                 f"{s.get('n_mac_clashes', 0)} MAC clash(es), {s.get('n_querier_gaps', 0)} querier gap(s)")
 
 
+COVERAGE_SCHEMA_SHEET_NAME = "Coverage Schema"   # J3: the per-section coverage census (SuzieQ `describe` analog)
+
+# The per-state cell fill: a blind spot (not_collected) is RED, an empty-but-collected section is
+# AMBER (collected, nothing found — NOT a blind spot), a published section is GREEN. Coverage-honest
+# palette — an absent axis can never render as a clean/green result.
+_CENSUS_STATE_FILL = {
+    "published": "D9EAD3",             # green — seen
+    "collected_but_empty": "FFF2CC",   # amber — collected, nothing of this kind found
+    "not_collected": "F4CCCC",         # red — blind spot
+}
+
+
+def write_coverage_schema_sheet(wb, census: dict) -> None:
+    """Write the 'Coverage Schema' sheet from ssot.compute_schema_census() — the snapshot's own
+    per-section coverage census (a SuzieQ `describe` analog). One row per top-level snapshot
+    section: its coverage-honest 3-state (published / collected_but_empty / not_collected), its
+    structural kind + cardinality, and an honest note. COVERAGE-HONEST: an EMPTY section reads
+    'collected, nothing found' (amber — NOT a blind spot); an ABSENT section reads 'blind spot —
+    not collected' (red). Nothing renders as 'ok'/'healthy' — absence of evidence is never health.
+
+    This is the map that answers, for an access-only collection, exactly what was SEEN vs what is a
+    blind spot (the real cause of a 'filler'-feeling output is an uncollected tier, not a code
+    bug)."""
+    c = census if isinstance(census, dict) else {}
+    ws = wb.create_sheet(COVERAGE_SCHEMA_SHEET_NAME)
+    summ = c.get("summary") or {}
+    # Row 1: coverage-honesty caveat + the roll-up, disclosed up top so a reader sees scope first.
+    caveat = (f"Per-section coverage census — what this snapshot actually SAW. "
+              f"published {summ.get('n_published', 0)} · collected-but-empty "
+              f"{summ.get('n_collected_but_empty', 0)} · NOT collected "
+              f"{summ.get('n_not_collected', 0)} (blind spots) of {summ.get('n_sections', 0)} "
+              "section(s). An absent axis is a blind spot, never a clean result.")
+    c0 = ws.cell(1, 1, caveat)
+    c0.font = Font(italic=True, color="666666"); ws.merge_cells("A1:E1")
+    for col, h in enumerate(["Section", "State", "Kind", "Count", "Note"], 1):
+        cell = ws.cell(2, col, h); cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
+    r = 3
+    for row in (c.get("sections") or []):
+        state = str(row.get("state") or "")
+        ws.cell(r, 1, row.get("key", ""))
+        st_cell = ws.cell(r, 2, state)
+        ws.cell(r, 3, row.get("kind", ""))
+        cnt = row.get("count")
+        ws.cell(r, 4, cnt if cnt is not None else "—")   # scalar/absent has no cardinality
+        ws.cell(r, 5, row.get("note", ""))
+        fill = _CENSUS_STATE_FILL.get(state)
+        if fill:
+            st_cell.fill = PatternFill("solid", fgColor=fill); st_cell.font = Font(bold=True)
+        r += 1
+    if r == 3:
+        ws.cell(3, 1, "No sections — snapshot carried no top-level evidence blocks.").font = Font(italic=True)
+    for i, w in enumerate([26, 20, 8, 8, 56], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A3"
+    logger.info(f"  [OK] '{COVERAGE_SCHEMA_SHEET_NAME}' sheet: "
+                f"{summ.get('n_published', 0)} seen / {summ.get('n_collected_but_empty', 0)} empty / "
+                f"{summ.get('n_not_collected', 0)} blind of {summ.get('n_sections', 0)} section(s)")
+
+
 COLLECTION_COMPLETENESS_SHEET_NAME = "Collection Completeness"   # NEW-V3.23.109
 
 def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict] = None) -> None:
