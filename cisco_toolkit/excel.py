@@ -1986,6 +1986,57 @@ def write_capture_integrity_sheet(wb, ci: dict) -> None:
     logger.info(f"  [OK] '{CAPTURE_INTEGRITY_SHEET_NAME}' sheet: {len(rows)} finding(s)")
 
 
+ATTESTATION_SHEET_NAME = "Trust & Sovereignty"   # roadmap D3 (re-derived zero-egress attestation)
+
+def write_attestation_sheet(wb, attestation: dict) -> None:
+    """Write 'Trust & Sovereignty' from compute_attestation(): the read-only / no-egress /
+    GET-only / no-LLM trust claims RE-DERIVED at build time from this installation's actual
+    registries and sources — a falsifiable proof, never a hardcoded badge. A claim that could
+    not be evaluated renders NOT_EVALUATED (grey), and a failed compute renders UNVERIFIED —
+    absence of evidence is never rendered as a pass."""
+    if ATTESTATION_SHEET_NAME in wb.sheetnames:
+        del wb[ATTESTATION_SHEET_NAME]
+    ws = wb.create_sheet(ATTESTATION_SHEET_NAME)
+    p = attestation if isinstance(attestation, dict) else {}
+    claims = p.get("claims") or []
+    n_holds = sum(1 for c in claims if c.get("result") == "HOLDS")
+    if claims:
+        banner = ("Zero-egress attestation — each claim below was RE-DERIVED at build time from the "
+                  "actual command registries and source tree (same mechanics as the CI doctrine guard), "
+                  "not asserted. HOLDS is proven now; NOT_EVALUATED is a disclosed abstention.")
+    else:   # the sentinel/empty case must not echo any result word the claims table could carry
+        banner = ("Zero-egress attestation — the trust-claim re-derivation did not run for this "
+                  "build, so no claim below is proven or refuted.")
+    b = ws.cell(1, 1, banner)
+    b.font = Font(bold=True, color="7030A0", size=10); b.alignment = Alignment(horizontal="left", wrap_text=True)
+    if claims:
+        ws.cell(2, 1, f"schema {p.get('schema', '—')} · generated {p.get('generated_at', '—')} · "
+                      f"{n_holds}/{len(claims)} claim(s) hold").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(["Claim", "Result", "Method (re-derived at build time)", "Evidence / detail"], 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0"); c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    DAT = Font(name="Calibri", size=10)
+    _C = {"HOLDS": "D9EAD3", "VIOLATED": "FFC7CE", "NOT_EVALUATED": "D9D9D9"}
+    r = hdr_row + 1
+    for cl in claims:
+        res = cl.get("result")
+        for col, v in enumerate([cl.get("id"), res, cl.get("method"), cl.get("detail")], 1):
+            c = ws.cell(r, col, v); c.font = DAT
+            c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col >= 3)
+            if col == 2 and res in _C:
+                c.fill = PatternFill("solid", fgColor=_C[res])
+        r += 1
+    if not claims:
+        c = ws.cell(hdr_row + 1, 1, "Attestation could not be computed for this run — the trust claims are "
+                                    "UNVERIFIED (a failed proof is disclosed, never assumed).")
+        c.font = DAT; c.fill = PatternFill("solid", fgColor="FFC7CE")
+    for i, w in enumerate([28, 16, 55, 65], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{ATTESTATION_SHEET_NAME}' sheet: {n_holds}/{len(claims)} claim(s) hold")
+
+
 WHATIF_SHEET_NAME = "Failure What-If"   # roadmap G4 (single-snapshot failure-injection)
 
 def write_whatif_sheet(wb, scenarios: list) -> None:

@@ -585,5 +585,11 @@
   null,
   null,
   null
+ ],
+ "Trust & Sovereignty": [
+  "Zero-egress attestation \u2014 each claim below was RE-DERIVED at build time from the actual command registries and source tree (same mechanics as the CI doctrine guard), not asserted. HOLDS is proven now; NOT_EVALUATED is a disclosed abstention.",
+  null,
+  null,
+  null
  ]
 }

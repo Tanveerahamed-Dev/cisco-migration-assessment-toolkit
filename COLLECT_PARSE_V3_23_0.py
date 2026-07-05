@@ -354,6 +354,7 @@ from cisco_toolkit.analyze import (
     compute_cable_map,                                 # NEW: EDA-style physical cable-map SSOT (explorer + webapp cable-map views)
 )
 from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
+from cisco_toolkit.attestation import compute_attestation   # roadmap D3: zero-egress attestation — trust claims RE-DERIVED at build time (falsifiable, never a badge)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
 # build); only _CISCO_ERRORS stays (platform detection reuses it). Plan A / Tier-1 #3
@@ -402,6 +403,7 @@ from cisco_toolkit.excel import (
     write_acl_shadow_sheet,                                     # roadmap G1 (offline ACL line-reachability / shadow proof)
     write_external_reconcile_sheet,                            # roadmap B (declared source-of-truth vs collected evidence)
     write_capture_integrity_sheet,                             # roadmap K1 (truncation / pager / CLI-error guard)
+    write_attestation_sheet,                                   # roadmap D3 (re-derived zero-egress attestation panel)
     write_whatif_sheet,                                        # roadmap G4 (single-snapshot failure-injection)
     write_path_intents_sheet,                                  # roadmap G3 (named segmentation/path intents)
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
@@ -2480,6 +2482,16 @@ def main():
         _default={"_unavailable": True})   # sentinel: a CRASH != a legit-empty review (cf. executive_brief)
     _run_phase("Architecture Review sheet", write_architecture_review_sheet, wb, architecture_review)
 
+    # roadmap D3: zero-egress attestation — RE-DERIVE the read-only / no-egress / GET-only /
+    # no-LLM trust claims NOW, from this installation's actual registries + sources (same
+    # mechanics as tests/test_readonly_and_no_egress.py). Computed ONCE here for the 'Trust &
+    # Sovereignty' sheet, then the SAME object is attached to the snapshot below (one source of
+    # truth). A compute crash yields the _unavailable sentinel, which the sheet renders as
+    # UNVERIFIED — a failed proof is disclosed, never defaulted to a pass (cf. architecture_review).
+    attestation = _run_phase("Zero-egress attestation", compute_attestation,
+                             _default={"_unavailable": True})
+    _run_phase("Trust & Sovereignty sheet", write_attestation_sheet, wb, attestation)
+
     if getattr(args, "redact", False):    # final --redact net: scrub IP/MAC/secrets from computed + raw-config
         _run_phase("redact workbook cells", redact_workbook_cells, wb)   # sheets the dataclass pass can't reach
     wb.save(out_xlsx)
@@ -2560,6 +2572,7 @@ def main():
     if external_reconcile is not None:                               # roadmap B (opt-in: only when --import-inventory supplied)
         snap_dict["external_reconcile"] = external_reconcile         # declared source-of-truth vs collected evidence
     snap_dict["capture_integrity"] = capture_integrity              # roadmap K1 (per-capture truncation/pager/error guard)
+    snap_dict["attestation"] = attestation                          # roadmap D3 (re-derived trust claims; 'Trust & Sovereignty' sheet twin — computed at the workbook stage above)
     snap_dict["parse_yield"] = parse_yield_report()                 # Plan A / Tier-1 #3: content-in/0-entities-out ledger (collected-but-unparsed ≠ feature-absent; K1's sibling)
     if whatif_result is not None:                                   # roadmap G4 (opt-in: only when --scenario supplied)
         snap_dict["whatif"] = whatif_result                         # failure-injection what-if results

@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-03T17:33:41.040216",
+  "generated_at": "2026-07-05T16:50:55.893438",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2984,7 +2984,7 @@
       }
     }
   },
-  "collected_at": "2026-07-03T17:33:36.438066",
+  "collected_at": "2026-07-05T16:50:43.011200",
   "physical_health": [
     {
       "switch": "access1",
@@ -6342,7 +6342,7 @@
           "ldos": ""
         }
       ],
-      "asof": "2026-07-03"
+      "asof": "2026-07-05"
     },
     "risks": [
       {
@@ -6368,7 +6368,7 @@
         "remediation": "Schedule replacement before LDoS; confirm the migration target covers these."
       }
     ],
-    "asof": "2026-07-03",
+    "asof": "2026-07-05",
     "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."
   },
   "remediation_plan": {
@@ -25002,6 +25002,36 @@
       "n_hosts_affected": 18
     }
   },
+  "attestation": {
+    "schema": "attestation/1",
+    "generated_at": "2026-07-05T13:50:54.348458+00:00",
+    "claims": [
+      {
+        "id": "read_only_command_surface",
+        "method": "re-derive over every COMMANDS_* registry of the collector: each command must match the read-only grammar (show/display/get/dir/ping/moquery | aws ec2 describe- | api|ers|dataservice REST GET paths)",
+        "result": "HOLDS",
+        "detail": "all 285 registry commands across 7 COMMANDS_* registries match the read-only grammar"
+      },
+      {
+        "id": "no_egress_import_graph",
+        "method": "AST import-walk (any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)",
+        "result": "HOLDS",
+        "detail": "0 network-library imports across 43 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
+      },
+      {
+        "id": "rest_collect_get_only",
+        "method": "source scan of rest_collect.py: no PUT/PATCH/DELETE request method anywhere; exactly ONE POST (the login) \u2014 the collector cannot create/modify/delete a fabric object",
+        "result": "HOLDS",
+        "detail": "GET-only with the single login POST (1 GET call site(s), 1 POST, 0 PUT/PATCH/DELETE)"
+      },
+      {
+        "id": "no_llm_runtime",
+        "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
+        "result": "HOLDS",
+        "detail": "0 LLM/GenAI SDK imports across 45 modules (analysis package + collector entry)"
+      }
+    ]
+  },
   "parse_yield": {
     "summary": {
       "parsers_called": 88,
@@ -29425,7 +29455,7 @@
         "axis": "Hardware lifecycle (EoL)",
         "severity": "Critical",
         "headline": "5 past end-of-support, 1 within 1yr (26% of 23 assessable)",
-        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-03 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
+        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-05 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
       },
       {
         "axis": "Asset risk register",
