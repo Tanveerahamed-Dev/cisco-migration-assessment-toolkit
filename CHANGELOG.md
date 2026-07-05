@@ -6,7 +6,41 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
-## [v3.28.0] — 2026-07-05 — the rehearsal release (L2 failover twin + cutover dry-run + FIB path verdicts)
+## [v3.29.0] — 2026-07-05 — the schema release (coverage-honesty as a queryable schema)
+
+The third `docs/MASTER_PLAN_2026-07-05.md` tranche (§3.5, "deepen the actual moat"): make coverage-honesty a
+*queryable schema property*, not just a runtime convention. Built as a parallel isolated-worktree agent wave and
+hardened by a 4-lens adversarial review (find → independent refutation) that confirmed 1 HIGH + 3 LOW.
+
+### Added
+- **`ssot.compute_schema_census` (J3)** — the snapshot self-describes what it actually SAW: a per-section
+  census projecting the coverage-honest 3-state token (`published` / `collected_but_empty` / `not_collected`)
+  onto every top-level block (the SuzieQ `describe` analog). For an access-only collection this is the map that
+  answers *what was seen vs what is a blind spot* — the real cause of a "filler"-feeling output is an
+  uncollected tier, not a code bug. New `schema_census` key + a **Coverage Schema** sheet (blind spots red,
+  collected-but-empty amber, seen green — an absent axis can never render as a clean/green result).
+- **`ssot.compute_fact_lineage` (J2)** — attribute-level provenance (value / dotted-path / coverage-state /
+  basis) for every canonical headline fact. New `fact_lineage` key (date-relative, golden-excluded + pinned).
+- **`detector_schema.compute_detector_schema` (J1)** — a declarative registry of 32 per-detector descriptors
+  (`checks` / `healthy_value` / `threshold` / `cited_fields` / `abstains_when` / `source_command`) that makes
+  "not-observed ≠ healthy" a **schema property**: every evidence-gated detector carries a non-empty
+  `abstains_when`. New `detector_schema` key + a **Detector Schema** sheet.
+
+### Fixed — integration + adversarial-review findings (coverage-honesty)
+- **The census had a coverage-honesty bug of its own** (HIGH): `abstention_reason` gated emptiness with a
+  shallow `not val`, so a *wrapper of empty payloads* (a compute that always returns its keys but found
+  nothing — e.g. `addressing_conflicts {'dup_ip': [], 'dup_subnet': []}`) was truthy and mislabelled
+  `published` — a green "seen" row for a genuinely-empty result. Fixed at the single owner with a deep-empty
+  check (a container all of whose leaves are empty carries no evidence), short-circuiting on the first real
+  leaf; three zero-result sections on the demo fleet correctly flip green→amber.
+- **The Coverage Schema sheet's row-1 banner carried live counts** — every future section added would re-trip
+  the additive-only golden shrink guard, desensitising a load-bearing safety mechanism. The banner is now
+  static and the roll-up moved to an `(all sections)` totals data row (locked by a test that the header carries
+  no digits).
+- A detector descriptor cited the bare section `trunk_native` (a *different* detector's output); fixed to the
+  real backing field, and the `cited_fields` test strengthened to require a field path (never a bare section)
+  and resolve simple leaves against the sample fleet — the gap that let the mis-citation ship. The SSOT
+  registry-integrity guard learned the three new J3/J2/J1 owners.
 
 The second `docs/MASTER_PLAN_2026-07-05.md` tranche (§3.4 / §4.1 / §4.2): the market-gap capabilities the
 L3-centric verification tools (Batfish, Forward) do not cover, built as a parallel isolated-worktree agent
