@@ -6010,7 +6010,7 @@
     "id": "no_egress_import_graph",
     "method": "AST import-walk (any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)",
     "result": "HOLDS",
-    "detail": "0 network-library imports across 45 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
+    "detail": "0 network-library imports across 47 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
    },
    {
     "id": "rest_collect_get_only",
@@ -6022,7 +6022,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 47 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 49 modules (analysis package + collector entry)"
    }
   ]
  },
