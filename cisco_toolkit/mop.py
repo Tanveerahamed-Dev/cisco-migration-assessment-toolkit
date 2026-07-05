@@ -447,6 +447,55 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
          "Archived with the post-implementation review"),
     ], widths=[2.6, 2.0, 2.2])
 
+    # Communications & escalation plan (Cisco-AS standard) — the roles, the T-minus comms cadence and
+    # the escalation matrix (incl. Cisco TAC pre-open for high-risk windows). Unnumbered H2 so the
+    # conditional §2.2/§2.3 EVPN/software numbering (pinned by tests) is untouched.
+    doc.add_heading("Communications & escalation plan", level=2)
+    doc.add_paragraph(
+        "Who runs the window, who is told what and when, and how a problem escalates. Fill the "
+        "<contact> placeholders per engagement before approval; the roles and cadence are the standard "
+        "AS change-communications model.")
+    doc.add_paragraph("War-room roles", style="List Bullet")
+    table(["Role", "Who", "Responsibility"], [
+        ("Change owner (go/no-go)", "<name / on-call>",
+         "Owns the go/no-go and rollback decision; the only person who calls a rollback."),
+        ("Executor (implementing engineer)", "<name>",
+         "Executes each MOP step exactly as written; calls out each success criterion."),
+        ("Verifier (validation / war-room lead)", "<name>",
+         "Runs the §x.6 post-cutover validation independently of the executor; records evidence."),
+        ("Escalation / bridge lead", "<name>",
+         "Runs the conference bridge, drives escalation, owns stakeholder comms."),
+    ], widths=[2.0, 1.6, 3.1])
+    doc.add_paragraph("T-minus communications cadence", style="List Bullet")
+    table(["When", "Message", "Audience"], [
+        ("T-minus 1 week", "Window confirmed, CAB approved, MOP + rollback distributed.",
+         "Stakeholders, NOC, change owner"),
+        ("T-minus 1 day", "Go/no-go readiness re-confirmed; preconditions checklist reviewed.",
+         "War-room roles, change owner"),
+        ("T-minus 1 hour", "War room open, roll-call, OOB access + backups confirmed.", "War-room roles"),
+        ("T-0 (start)", "Window start announced; outage clock started (if hard cutover).",
+         "Stakeholders, NOC"),
+        ("Per step / gate", "Each success criterion and each go/no-go gate called on the bridge.",
+         "War-room roles"),
+        ("T-plus (close)", "Window closed as PROCEEDED or ROLLED-BACK; validation evidence archived.",
+         "Stakeholders, NOC, change owner"),
+    ], widths=[1.3, 3.3, 2.1])
+    doc.add_paragraph("Escalation matrix", style="List Bullet")
+    table(["Tier", "Trigger", "Contact / action", "Response target"], [
+        ("L1 — war room", "A step fails its success criterion.",
+         "Executor → verifier → change owner on the bridge.", "Immediate"),
+        ("L2 — engineering", "A trigger fires or a fault is not understood in one cycle.",
+         "Escalation lead → senior network engineering / <SME>.", "<15 min>"),
+        ("L3 — vendor (Cisco TAC)", "A device/software fault needs vendor help.",
+         "Open/attach the Cisco TAC case (SEV per impact); reference the pre-opened SR.", "<per SLA>"),
+        ("Rollback authority", "The rollback decision time passes or a trigger stands.",
+         "Change owner declares rollback; executor runs §x.7.", "Immediate"),
+    ], widths=[1.4, 2.1, 2.4, 0.9])
+    _label_run(doc.add_paragraph(), "High-risk windows:",
+               "for any NOT-READY wave or a wave with Critical/High blockers, PRE-OPEN a Cisco TAC case "
+               "before the window and hold the SR number in the war room, so L3 escalation is immediate "
+               "rather than started mid-incident (see each wave's pre-implementation checklist).", RED)
+
     # §2.2 EVPN-migration guardrails — gated, evidence-grounded brownfield->NX-OS-VXLAN-EVPN cutover doctrine.
     # Silent unless a VXLAN-EVPN fabric is the target; renders the load-bearing, primary-source migration
     # gotchas (NX-OS 10.2(3) HSRP/DAG gate, the gateway-vMAC pre-step, single-active-L2-interconnect loop
@@ -561,7 +610,8 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
             ("Config backup taken off-box (golden snapshot)", "Attested",
              "Confirm a fresh off-box config backup of every in-scope device (captured in §baseline below)."),
             ("Maintenance window confirmed & communicated", "Attested",
-             "Date/time agreed, owner + approver named, stakeholders notified per the comms plan (§2.4)."),
+             "Date/time agreed, owner + approver named, stakeholders notified per the §2 "
+             "Communications & escalation plan."),
             ("Change-advisory-board (CAB) approval obtained", "Attested",
              "Signed change record referencing this MOP, the workbook and the runbook."),
             ("Rollback tested / dry-run walked", "Attested",
