@@ -538,6 +538,48 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                        "is migrated; STP root, FHRP active and trunk allowed-VLAN lists are NOT independent "
                        "of the siblings.", RED)
 
+        # pre-implementation checklist — the precondition gate for THIS window (Cisco-AS standard).
+        # Evidence-gated where the snapshot can genuinely check the precondition (OOB management-port
+        # evidence; the wave's own readiness/blocker gate); human-attested where it cannot (backup taken,
+        # CAB approval, rollback tested). Coverage-honesty: an OOB precondition with no mgmt-port evidence
+        # is [NOT OBSERVED], never assumed reachable. Unnumbered H2 so the existing .1-.8 chain is intact.
+        high_risk = (str(verdict).upper() == "NOT READY") or bool(pl) or bool(rem)
+        oob_ev = _oob_evidence_for(switches, _as_dict(snap.get("interfaces")))
+        doc.add_heading("Pre-implementation checklist (precondition gate)", level=2)
+        doc.add_paragraph(
+            "Do NOT open this window until every precondition below is met. Each row is either "
+            "EVIDENCE-gated (the assessment snapshot can confirm it) or ATTESTED (the change owner must "
+            "confirm it — it is not machine-verifiable). Coverage-honesty: an evidence-gated item with no "
+            "collected evidence reads “[NOT OBSERVED]”, never assumed satisfied.")
+        chk_rows = [
+            ("Out-of-band / console access to every device in scope", "Evidence",
+             (f"observed management-port(s): {'; '.join(oob_ev[:6])}"
+              + (" …" if len(oob_ev) > 6 else "") + " — confirm each is reachable before the window")
+             if oob_ev else
+             "[NOT OBSERVED] — no management-port evidence for this wave's devices; confirm OOB "
+             "reachability out-of-band before the window (do NOT assume it)."),
+            ("Config backup taken off-box (golden snapshot)", "Attested",
+             "Confirm a fresh off-box config backup of every in-scope device (captured in §baseline below)."),
+            ("Maintenance window confirmed & communicated", "Attested",
+             "Date/time agreed, owner + approver named, stakeholders notified per the comms plan (§2.4)."),
+            ("Change-advisory-board (CAB) approval obtained", "Attested",
+             "Signed change record referencing this MOP, the workbook and the runbook."),
+            ("Rollback tested / dry-run walked", "Attested",
+             "The §rollback for this wave has been walked or dry-run; the rollback owner is identified."),
+            ("Wave blockers cleared or explicitly risk-accepted", "Evidence",
+             (f"readiness {verdict}; {len(pl)} Critical/High punch-list + {len(rem)} remediation item(s) "
+              "attributed (see §blockers) — clear or risk-accept before proceeding")
+             if high_risk else
+             f"readiness {verdict}; no Critical/High blocker attributed to this wave's devices."),
+        ]
+        if high_risk:
+            chk_rows.append((
+                "Cisco TAC case pre-opened (high-risk window)", "Attested",
+                "This wave is HIGH-RISK (NOT-READY and/or Critical/High blockers). Pre-open a Cisco TAC "
+                "case and have the SR number in the war room before the window, so escalation is "
+                "immediate — do not open the case mid-incident."))
+        table(["Precondition", "Gate", "Status / evidence"], chk_rows, widths=[2.4, 0.9, 3.4])
+
         # 2.x.2 blockers to clear first
         doc.add_heading(f"{wi}.2 Blockers to clear before this window", level=2)
         if not rem and not pl:
@@ -631,13 +673,14 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                               "snapshot — build the mapping from a fresh interface collection before "
                               "the window.")
 
-        # 2.x.5 procedure (each step carries its success criterion — the MOP definition)
+        # 2.x.5 procedure (each step carries its success criterion — the MOP definition; and a
+        # PRE/DURING/POST phase tag so the window structure is visible at a glance — roadmap C2).
         doc.add_heading(f"{wi}.5 Cutover procedure", level=2)
-        proc = [("Open the change window and announce start in the war room; confirm rollback owner "
+        proc = [("[PRE] Open the change window and announce start in the war room; confirm rollback owner "
                  "is present.",
                  "roles confirmed; the rollback decision time in §" + f"{wi}.1 is agreed.")]
         if playbook.get("pre"):
-            proc.append(("Preparation: " + playbook["pre"].rstrip(". ") + ".",
+            proc.append(("[PRE] Preparation: " + playbook["pre"].rstrip(". ") + ".",
                          "staging complete with no production-facing change."))
         # classify off the engine's STRUCTURED dual-homed/single-homed split, NOT the free-text 'sequence'
         # (which for a mixed wave reads "...hard cutover (single-homed) + ...make-before-break (dual-homed)" —
@@ -647,40 +690,41 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         mbb_hosts, hard_hosts = (seq.get("make_before_break") or []), (seq.get("hard_cutover") or [])
         if mbb_hosts and not hard_hosts:
             proc += [
-                ("Build the new/target path BESIDE the existing one (do not remove the legacy path "
-                 "yet): stage the target device config and bring up the new uplinks per the §"
+                ("[DURING] Build the new/target path BESIDE the existing one (do not remove the legacy "
+                 "path yet): stage the target device config and bring up the new uplinks per the §"
                  f"{wi}.4 mapping.",
                  "target links up; no STP topology change on the legacy path."),
-                ("Verify the new path forwards in isolation (link up, STP/trunk consistent, gateway "
-                 "reachable) before moving any production load.",
+                ("[DURING] Verify the new path forwards in isolation (link up, STP/trunk consistent, "
+                 "gateway reachable) before moving any production load.",
                  "isolation checks pass on the target path before any endpoint moves."),
-                ("Migrate endpoints leg-by-leg / VLAN-by-VLAN onto the new path, validating after "
-                 "each increment; keep the legacy leg as the live fallback.",
+                ("[DURING] Migrate endpoints leg-by-leg / VLAN-by-VLAN onto the new path, validating "
+                 "after each increment; keep the legacy leg as the live fallback.",
                  "each increment re-homes and passes its checks before the next one moves."),
-                ("Once all load is on the new path and validated, decommission the legacy path.",
+                ("[POST] Once all load is on the new path and validated, decommission the legacy path.",
                  "no endpoint remains on the legacy leg (MAC/ARP tables clean)."),
             ]
         else:  # any single-homed member present (mixed or pure single-homed) -> scheduled-outage flow
             if mbb_hosts and hard_hosts:   # MIXED: do the dual-homed make-before-break FIRST, then the outage
                 proc.append((
-                    f"Sequence within the wave: make-before-break the {len(mbb_hosts)} dual-homed switch(es) "
-                    f"first (build beside, keep the legacy leg), THEN take the scheduled outage for the "
-                    f"{len(hard_hosts)} single-homed switch(es) that have no second path.",
+                    f"[DURING] Sequence within the wave: make-before-break the {len(mbb_hosts)} dual-homed "
+                    f"switch(es) first (build beside, keep the legacy leg), THEN take the scheduled outage "
+                    f"for the {len(hard_hosts)} single-homed switch(es) that have no second path.",
                     "dual-homed members re-homed with no outage before the single-homed window opens."))
             proc += [
-                ("Announce the hard cutover; this wave has a brief outage for the moved endpoints.",
+                ("[DURING] Announce the hard cutover; this wave has a brief outage for the moved "
+                 "endpoints.",
                  "stakeholders acknowledged; the outage clock is started."),
-                ("Apply the staged target configuration and move the uplinks/endpoints per the §"
+                ("[DURING] Apply the staged target configuration and move the uplinks/endpoints per the §"
                  f"{wi}.4 port mapping from legacy to target.",
                  "every port in the §" + f"{wi}.4 mapping is re-terminated and up."),
-                ("Bring up the target links and confirm STP converges and trunks negotiate as "
+                ("[DURING] Bring up the target links and confirm STP converges and trunks negotiate as "
                  "expected.",
                  "STP converged; trunk allowed-VLAN checks pass; no err-disabled ports."),
             ]
         if playbook.get("validate"):
-            proc.append(("In-window validation: " + playbook["validate"].rstrip(". ") + ".",
+            proc.append(("[DURING] In-window validation: " + playbook["validate"].rstrip(". ") + ".",
                          "in-window checks match the §" + f"{wi}.3 baseline."))
-        proc.append(("Run §" + f"{wi}.6 post-cutover validation in full before declaring the wave "
+        proc.append(("[POST] Run §" + f"{wi}.6 post-cutover validation in full before declaring the wave "
                      "complete.",
                      "every check matches its captured baseline."))
         steps(proc)
@@ -707,6 +751,55 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                               "gateway reachability (ping the SVI/HSRP vIP), FHRP roles, routing "
                               "adjacencies, STP root, and port-channel membership are unchanged from the "
                               "§" + f"{wi}.3 baseline.")
+
+        # rollback triggers — the EXPLICIT, QUANTIFIED abort conditions for this wave (Cisco-AS standard:
+        # not "if something breaks" but a boolean with a measurable threshold). Each is a "Roll back if:"
+        # test the in-window engineer can evaluate unambiguously. Where the snapshot carries no device-
+        # specific threshold, the AS standard DEFAULT is stated and flagged "confirm with the change
+        # owner" (coverage-honesty: a default is not a measured value). Unnumbered H2 so the .1-.8 chain
+        # is intact; sits directly ahead of the §x.7 rollback PROCEDURE.
+        doc.add_heading("Rollback triggers (quantified go/no-go)", level=2)
+        doc.add_paragraph(
+            "Execute the §" + f"{wi}.7 rollback if ANY trigger below is true. These are explicit boolean "
+            "conditions, not prose judgement — the standard defaults are flagged “confirm with the change "
+            "owner” because the assessment snapshot carries no device-specific threshold for them.")
+        trig_rows = [
+            ("Validation failure", "Roll back if: any Critical or High §" + f"{wi}.6 validation check "
+             "fails, OR > 0.1% of the checks fail and cannot be corrected in-window.",
+             "standard AS default — confirm with the change owner"),
+            ("No convergence in time", "Roll back if: STP / routing / control-plane has not converged "
+             "within the agreed budget (default 5 minutes) after the cutover step, OR endpoints are not "
+             "reachable by the §" + f"{wi}.1 rollback decision time.",
+             "5 min default — confirm with the change owner"),
+            ("Blast-radius / outage overrun", "Roll back if: the observed outage exceeds the approved "
+             "window, OR more endpoints than the §" + f"{wi}.1 max-blast-radius figure are affected.",
+             "sized from §" + f"{wi}.1 — confirm with the change owner"),
+            ("Unrecoverable error", "Roll back if: any device err-disables, drops OOB reachability, or "
+             "enters a state not covered by this MOP and not resolved within one escalation cycle.",
+             "standard AS default — confirm with the change owner"),
+        ]
+        # EVPN-target specificity (gated ONLY on an NX-OS VXLAN-EVPN target): surface the primary-source
+        # EVPN abort conditions so the trigger set is grounded in the fleet's own guardrail evidence, not
+        # generic prose. Prefer the engine's rollback guardrail detail verbatim; fall back to the canonical
+        # documented failure modes when a slim snapshot carries no rollback-phase guardrail.
+        if evpn_on:
+            evpn_rb = next((g for g in _as_list(evpn.get("guardrails"))
+                            if isinstance(g, dict) and g.get("phase") == "rollback"), None)
+            if evpn_rb and "if ANY of:" in str(evpn_rb.get("detail", "")):
+                cond = str(evpn_rb["detail"]).split("if ANY of:", 1)[-1].strip().rstrip(".")
+                basis = f"[{evpn_rb.get('source', 'BRKDCN-2951')}]"
+            else:
+                cond = ("a gateway-MAC mismatch black-holes a migrated subnet (host ARP not refreshed); "
+                        "a Layer-2 loop forms (the overlay will not break it); the EVPN control plane "
+                        "(underlay IGP or iBGP-EVPN) is not Established on a migrated leg; or post-cutover "
+                        "reachability / NRFU fails")
+                basis = "BRKDCN-2951; Cisco migration white papers"
+            trig_rows.append((
+                "EVPN cutover abort (target = NX-OS VXLAN-EVPN)",
+                "Roll back the affected subnet/wave across the still-present L2+L3 interconnect if: "
+                + cond + ".", basis))
+        table(["Trigger", "Roll back if (quantified condition)", "Threshold basis"],
+              trig_rows, widths=[1.5, 3.9, 1.3])
 
         # 2.x.7 rollback
         doc.add_heading(f"{wi}.7 Rollback", level=2)
