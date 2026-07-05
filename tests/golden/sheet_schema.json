@@ -546,6 +546,23 @@
   null,
   null
  ],
+ "VLAN Cutover Matrix": [
+  "VLAN",
+  "Name",
+  "STP Root",
+  "Root Default-Election",
+  "FHRP",
+  "Gateway SVIs",
+  "Endpoint MACs (per-port sum)",
+  "App Domain",
+  "Criticality",
+  "Dependencies",
+  "Wave",
+  "Scenario",
+  "Readiness",
+  "Cutover Window",
+  "Rollback Owner"
+ ],
  "Protocol Boundaries": [
   "Switch",
   "Protocols",

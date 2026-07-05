@@ -351,6 +351,7 @@ from cisco_toolkit.analyze import (
     compute_device_dossiers,                           # NEW-V3.23.172 (per-asset compound-risk synthesis -- the Device Risk Register)
     compute_collection_completeness,                   # NEW-V3.23.109 (pre-assessment blind-spot / collection report)
     compute_application_intelligence,                  # NEW-V3.23.112 (application-domain synthesis + migration risk)
+    compute_vlan_cutover_matrix,                       # MASTER_PLAN §4.3 (per-VLAN cutover matrix: the maintenance-window sheet)
     compute_cable_map,                                 # NEW: EDA-style physical cable-map SSOT (explorer + webapp cable-map views)
 )
 from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
@@ -414,6 +415,7 @@ from cisco_toolkit.excel import (
     write_architecture_review_sheet,                             # NEW-V3.23.161 (leading-practice conformance scorecard)
     write_collection_completeness_sheet,                         # NEW-V3.23.109 (pre-assessment blind-spot report)
     write_application_intelligence_sheet,                        # NEW-V3.23.112 (application-domain synthesis)
+    write_vlan_cutover_sheet,                                    # MASTER_PLAN §4.3 (per-VLAN cutover matrix)
     write_executive_summary_sheet,                              # NEW-V3.23.75 (one-page landing synthesis)
     write_physical_health_sheet, write_flow_trace_sheet, write_flow_paths_sheet, write_l3_forwarding_sheet,             # step 25
     append_interface_rows,                                                                       # step 26
@@ -2403,6 +2405,22 @@ def main():
                               all_interfaces, application_intelligence, _default={})
     _run_phase("Segmentation sheet", write_segmentation_sheet, wb, segmentation)
 
+    # Phase 30d-bis3: Per-VLAN cutover matrix - MASTER_PLAN 2026-07-05 §4.3 ("the single most
+    # valuable artifact"): the sheet a cutover team runs the maintenance window from -- one row per
+    # evidenced VLAN, every column joined from the axes computed above (STP root + default-election
+    # smell, FHRP brief+detail, gateway SVIs, endpoint census, application domains, move-group wave
+    # + make-before-break vs hard-cutover scenario, readiness pull-through, multicast / DHCP-relay
+    # dependency flags), with the window / rollback-owner columns deliberately left to the human.
+    # Pure synthesis of already-computed records; compute once -> sheet + snapshot (one source of
+    # truth). Sits AFTER its inputs exist: move_groups / _ws_seq (Phase 29d) / migration_readiness /
+    # multicast_intelligence (Phase 27c-bis) / application_intelligence (Phase 30d-bis).
+    vlan_cutover = _run_phase("VLAN cutover matrix", compute_vlan_cutover_matrix,
+                              all_interfaces, all_stp_roots, all_fhrp_detail,
+                              endpoint_identity, application_intelligence,
+                              move_groups, _ws_seq, migration_readiness,
+                              multicast_intelligence, _default=[])
+    _run_phase("VLAN Cutover Matrix sheet", write_vlan_cutover_sheet, wb, vlan_cutover)
+
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
     logger.info("\n[Phase 30e] Writing Executive Summary sheet ...")
     # NEW-V3.23.120: the cross-axis migration brief -- one headline per assessment axis (the 7 new axes +
@@ -2576,6 +2594,7 @@ def main():
     snap_dict["migration_scenarios"] = migration_scenarios           # NEW-V3.23.98 (per-group cutover scenario recommendation; reused from Phase 29d)
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
+    snap_dict["vlan_cutover"] = vlan_cutover                         # MASTER_PLAN §4.3 (per-VLAN cutover matrix; reused from Phase 30d-bis3)
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
     # Single source of truth: publish the canonical VLAN count (the same `vlan_inventory` derivation the
     # design / CRD deliverables read) into the brief's scale block, so every consumer — workbook, explorer,
