@@ -1279,18 +1279,27 @@ def write_coverage_schema_sheet(wb, census: dict) -> None:
     c = census if isinstance(census, dict) else {}
     ws = wb.create_sheet(COVERAGE_SCHEMA_SHEET_NAME)
     summ = c.get("summary") or {}
-    # Row 1: coverage-honesty caveat + the roll-up, disclosed up top so a reader sees scope first.
-    caveat = (f"Per-section coverage census — what this snapshot actually SAW. "
-              f"published {summ.get('n_published', 0)} · collected-but-empty "
-              f"{summ.get('n_collected_but_empty', 0)} · NOT collected "
-              f"{summ.get('n_not_collected', 0)} (blind spots) of {summ.get('n_sections', 0)} "
-              "section(s). An absent axis is a blind spot, never a clean result.")
+    # Row 1: a STATIC coverage-honesty caveat. The live roll-up counts deliberately do NOT live here —
+    # a header cell that carries data-dependent counts would churn the frozen sheet-schema golden on
+    # every new section and desensitise the additive-only shrink guard (it cried wolf on the very next
+    # axis added). The counts live in the '(all sections)' TOTALS data row below instead.
+    caveat = ("Per-section coverage census — what this snapshot actually SAW: published (green) · "
+              "collected-but-empty (amber) · NOT collected = a blind spot (red). "
+              "An absent axis is a blind spot, never a clean result.")
     c0 = ws.cell(1, 1, caveat)
     c0.font = Font(italic=True, color="666666"); ws.merge_cells("A1:E1")
     for col, h in enumerate(["Section", "State", "Kind", "Count", "Note"], 1):
         cell = ws.cell(2, col, h); cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="434343"); cell.alignment = Alignment(horizontal="center")
-    r = 3
+    # Row 3: the roll-up as DATA (not a frozen header cell) — the counts stay in the sheet while the
+    # structural header (row 1) stays byte-stable across section additions.
+    ws.cell(3, 1, "(all sections)").font = Font(bold=True)
+    ws.cell(3, 3, "summary")
+    ws.cell(3, 4, summ.get("n_sections", 0))
+    ws.cell(3, 5, (f"published {summ.get('n_published', 0)} · collected-but-empty "
+                   f"{summ.get('n_collected_but_empty', 0)} · NOT collected "
+                   f"{summ.get('n_not_collected', 0)} (blind spots)")).font = Font(bold=True)
+    r = 4
     for row in (c.get("sections") or []):
         state = str(row.get("state") or "")
         ws.cell(r, 1, row.get("key", ""))
@@ -1303,8 +1312,8 @@ def write_coverage_schema_sheet(wb, census: dict) -> None:
         if fill:
             st_cell.fill = PatternFill("solid", fgColor=fill); st_cell.font = Font(bold=True)
         r += 1
-    if r == 3:
-        ws.cell(3, 1, "No sections — snapshot carried no top-level evidence blocks.").font = Font(italic=True)
+    if r == 4:
+        ws.cell(4, 1, "No sections — snapshot carried no top-level evidence blocks.").font = Font(italic=True)
     for i, w in enumerate([26, 20, 8, 8, 56], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A3"
@@ -1560,6 +1569,49 @@ def write_security_sheet(wb, all_security: dict) -> None:
     nhosts = len([h for h in all_security if all_security[h]])
     logger.info(f"  [OK] '{CONFIG_COMPLIANCE_SHEET_NAME}' sheet: {nfail} fail / {total} check(s) "
                 f"across {nhosts} switch(es)")
+
+
+DETECTOR_SCHEMA_SHEET_NAME = "Detector Schema"   # J1: per-detector descriptors (not-observed != healthy as a schema property)
+
+def write_detector_schema_sheet(wb, detector_schema: dict) -> None:
+    """Write the 'Detector Schema' sheet from compute_detector_schema() -- the DECLARATIVE registry of
+    per-detector descriptors (one row per detector/axis). It DESCRIBES the engine's detectors, it does
+    not re-run them: each row states what the detector checks, its healthy value/threshold, the snapshot
+    fields it reads, and -- the load-bearing column -- 'Abstains When', the coverage-honest guard that
+    makes 'not-observed != healthy' a first-class property (never empty for an evidence-gated detector)."""
+    ds = detector_schema if isinstance(detector_schema, dict) else {}
+    detectors = ds.get("detectors") or []
+    ws = wb.create_sheet(DETECTOR_SCHEMA_SHEET_NAME)
+    # Row 1: disclose that this DESCRIBES detection (never re-runs it) up top, so the sheet cannot be
+    # misread as a per-device result table.
+    note = (ds.get("summary") or {}).get("note") or \
+        "Declarative per-detector descriptors — describes detection, does not re-run it."
+    c0 = ws.cell(1, 1, note)
+    c0.font = Font(italic=True, color="666666"); ws.merge_cells("A1:I1")
+    headers = ["Key", "Detector", "Family", "Checks", "Healthy Value", "Threshold",
+               "Cited Fields", "Abstains When", "Source Command"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(2, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    r = 3
+    for d in detectors:
+        if not isinstance(d, dict):
+            continue
+        thr = d.get("threshold")
+        ws.cell(r, 1, d.get("key", ""))
+        ws.cell(r, 2, d.get("title", ""))
+        ws.cell(r, 3, d.get("family", ""))
+        ws.cell(r, 4, d.get("checks", ""))
+        ws.cell(r, 5, d.get("healthy_value", ""))
+        ws.cell(r, 6, thr if thr is not None else "—")   # explicit em-dash: 'no numeric threshold', never blank
+        ws.cell(r, 7, "; ".join(d.get("cited_fields") or []))
+        ws.cell(r, 8, d.get("abstains_when", ""))
+        ws.cell(r, 9, d.get("source_command", ""))
+        r += 1
+    for i, w in enumerate([26, 34, 14, 60, 40, 40, 46, 56, 26], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A3"
+    logger.info(f"  [OK] '{DETECTOR_SCHEMA_SHEET_NAME}' sheet: {len(detectors)} detector descriptor(s)")
 
 
 FRAMEWORK_COVERAGE_SHEET_NAME = "Framework Coverage"   # W2-3: CIS/NIST/PCI/STIG mapping over the existing checks

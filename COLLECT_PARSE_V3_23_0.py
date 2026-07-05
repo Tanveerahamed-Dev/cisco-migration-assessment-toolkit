@@ -376,6 +376,7 @@ from cisco_toolkit.excel import (
     write_nat_sheet,   # NAT inventory V3.23.50
     write_security_sheet,   # Security Posture (CIS-aligned) V3.23.59
     write_framework_coverage_sheet,   # Framework Coverage (CIS/NIST/PCI/STIG mapping over existing checks) W2-3
+    write_detector_schema_sheet,   # Detector Schema (per-detector descriptors; not-observed != healthy) J1
     write_config_hygiene_sheet,   # Config Hygiene (undefined refs / unused structures) V3.23.61
     write_stp_roots_sheet,   # STP Root Bridges (accidental root / gateway misalignment) V3.23.62
     write_punchlist_sheet,   # Migration Punch-List (consolidated, severity-ranked) V3.23.63
@@ -472,6 +473,7 @@ from cisco_toolkit.html import (snapshot_state, sparsify_interfaces, write_html_
                                 redact_collection_dir)                             # Plan A Tier-1 #5 (raw-capture secret scrub)
 from cisco_toolkit.context import AnalysisContext                    # Plan A #15 (typed pipeline carrier / strangler)
 from cisco_toolkit.coverage_matrix import compute_coverage_matrix   # Plan A #5 (coverage-as-a-first-class-row SSOT)
+from cisco_toolkit.detector_schema import compute_detector_schema   # J1 (per-detector descriptors; not-observed != healthy)
 from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23.93 (DOCX runbook deliverable)
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
@@ -2210,6 +2212,8 @@ def main():
     _run_phase("Config Compliance sheet", write_security_sheet, wb, all_security)
     framework_cov = _run_phase("Framework coverage", compute_framework_coverage, all_security, _default={})  # W2-3: computed once here; reused for snap_dict below
     _run_phase("Framework Coverage sheet", write_framework_coverage_sheet, wb, framework_cov)
+    detector_schema = _run_phase("Detector schema", compute_detector_schema, _default={}) or {}  # J1: computed once here; reused for snap_dict below
+    _run_phase("Detector Schema sheet", write_detector_schema_sheet, wb, detector_schema)
     _run_phase("Config Hygiene sheet", write_config_hygiene_sheet, wb, all_config_hygiene)
     _run_phase("STP Root Bridges sheet", write_stp_roots_sheet, wb, all_stp_roots, all_interfaces)
 
@@ -2569,6 +2573,7 @@ def main():
     snap_dict["nat"] = all_nat                                       # NEW-V3.23.50 (NAT inventory: {host:{static,dynamic,pools,inside,outside}})
     snap_dict["security"] = all_security                            # NEW-V3.23.59 (CIS-aligned security posture: {host:{findings,summary}})
     snap_dict["framework_coverage"] = framework_cov                 # W2-3 (CIS/NIST/PCI/STIG mapping; computed once at the workbook stage above)
+    snap_dict["detector_schema"] = detector_schema                   # J1 (per-detector descriptors; not-observed != healthy as a schema property; computed once at the workbook stage above)
     snap_dict["config_hygiene"] = all_config_hygiene                # NEW-V3.23.61 (undefined refs / unused structures: {host:{undefined,unused,summary}})
     snap_dict["stp_roots"] = all_stp_roots                          # NEW-V3.23.62 (per-VLAN STP root bridge: {host:{vlan:{root_priority,root_address,is_root}}})
     snap_dict["vpc"] = all_vpc                                       # NEW-V3.23.125 (vPC / MLAG status: {host:{domain_id,role,peer_status,vpcs}}) -> confirms MLAG peers in the flow simulator

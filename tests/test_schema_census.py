@@ -148,6 +148,22 @@ def test_sheet_appears_with_exact_headers():
     assert header == _EXPECTED_HEADER, header
 
 
+def test_row1_banner_is_static_no_live_counts():
+    """The frozen sheet-schema golden captures row 1 as the header cell. Row 1 must therefore be
+    STATIC — no data-dependent counts — or every new snapshot section churns the golden and
+    desensitises the additive-only shrink guard (the exact cry-wolf this design avoids). The live
+    roll-up lives in the '(all sections)' totals DATA row instead."""
+    wb = Workbook()
+    write_coverage_schema_sheet(wb, _census(SNAP))
+    ws = wb[COVERAGE_SCHEMA_SHEET_NAME]
+    banner = ws.cell(1, 1).value or ""
+    assert not any(ch.isdigit() for ch in banner), f"row-1 banner must carry no live counts: {banner!r}"
+    # the counts still appear, but as a data row (row 3) so the header stays byte-stable
+    totals = [ws.cell(3, col).value for col in range(1, 6)]
+    assert totals[0] == "(all sections)" and isinstance(totals[3], int)
+    assert "published" in str(totals[4]) and "blind spots" in str(totals[4])
+
+
 def test_sheet_is_total_on_empty_census():
     wb = Workbook()
     write_coverage_schema_sheet(wb, {})           # missing schema/sections/summary -> no crash
