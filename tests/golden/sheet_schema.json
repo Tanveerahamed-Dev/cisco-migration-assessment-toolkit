@@ -375,6 +375,17 @@
   null,
   null
  ],
+ "Detector Schema": [
+  "Each row DESCRIBES a live detector, grounded in its source; it does not re-run detection. 'abstains_when' is the coverage-honest guard \u2014 the condition under which the detector ABSTAINS (maps to ssot.abstention_reason's 'not_collected') instead of passing, so a blind spot never reads as healthy. It is never empty for an evidence-gated detector.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Config Hygiene": [
   "Switch",
   "Issue",
