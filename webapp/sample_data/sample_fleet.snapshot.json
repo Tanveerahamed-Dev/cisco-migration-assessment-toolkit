@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-05T17:40:22.454170",
+  "generated_at": "2026-07-05T18:56:34.772720",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -43,7 +43,7 @@
       "active_ports": 2,
       "fan_status": "",
       "temperature_status": "",
-      "reported_hostname": ""
+      "reported_hostname": "core2"
     },
     "access1": {
       "hostname": "access1",
@@ -785,6 +785,7 @@
         "stp_blocked": "Forwarding",
         "endpoint_type": "Switch",
         "dual_connection": "Yes",
+        "trunk_native_vlan": "1",
         "trunk_allowed_vlans": "10,20,30",
         "trunk_status": "trunking",
         "cdp_neighbor": "core1.lab",
@@ -2984,7 +2985,7 @@
       }
     }
   },
-  "collected_at": "2026-07-05T17:40:15.859686",
+  "collected_at": "2026-07-05T18:56:29.163717",
   "physical_health": [
     {
       "switch": "access1",
@@ -25739,14 +25740,15 @@
         "access8",
         "access9",
         "core1",
+        "core2",
         "dist1",
         "dist2",
         "podacc1",
         "podacc2"
       ],
       "wave": "",
-      "title": "Native VLAN 1 on 26 inter-switch trunk(s)",
-      "detail": "26 trunk(s) across 17 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+      "title": "Native VLAN 1 on 27 inter-switch trunk(s)",
+      "detail": "27 trunk(s) across 18 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
       "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
       "priority": 110
     },
@@ -25886,13 +25888,14 @@
         "access8",
         "access9",
         "core1",
+        "core2",
         "dist1",
         "dist2",
         "podacc1",
         "podacc2"
       ],
-      "title": "Native VLAN 1 on 26 inter-switch trunk(s)",
-      "detail": "26 trunk(s) across 17 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+      "title": "Native VLAN 1 on 27 inter-switch trunk(s)",
+      "detail": "27 trunk(s) across 18 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
       "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."
     }
   ],
@@ -26723,7 +26726,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-05T14:40:21.244227+00:00",
+    "generated_at": "2026-07-05T15:56:33.749571+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -33778,7 +33781,7 @@
         "domain": "Layer-2 design",
         "title": "VLAN 1 not used for user traffic",
         "verdict": "advisory",
-        "observed": "Trunks with native VLAN 1 on 17 switch(es): access1, access10, access11, access12, access2, access3, access4, access5, access6, access7, access8, access9 +5 more.",
+        "observed": "Trunks with native VLAN 1 on 18 switch(es): access1, access10, access11, access12, access2, access3, access4, access5, access6, access7, access8, access9 +6 more.",
         "implication": "Native VLAN 1 on inter-switch trunks exposes untagged control-plane crosstalk and is flagged by the hardening baseline.",
         "recommendation": "Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
         "reference": "Cisco hardening guidance \u2014 keep user traffic and trunk native VLAN off VLAN 1",
@@ -33796,6 +33799,7 @@
           "access8",
           "access9",
           "core1",
+          "core2",
           "dist1",
           "dist2",
           "podacc1",
@@ -34127,6 +34131,7 @@
           "access8",
           "access9",
           "core1",
+          "core2",
           "dist1",
           "dist2",
           "podacc1",
@@ -34472,8 +34477,8 @@
         "confidence": "Observed",
         "driver": "L2 edge hygiene: a dedicated native VLAN on trunks closes the VLAN-hopping/double-tag vector.",
         "evidence": {
-          "summary": "26 inter-switch trunk(s) across 17 switch(es) carry VLAN 1 as the native (untagged) VLAN -- a double-tagging / VLAN-hopping exposure and a hygiene gap; the target L2 edge must use a dedicated, unused native VLAN (and prune VLAN 1).",
-          "count": 26,
+          "summary": "27 inter-switch trunk(s) across 18 switch(es) carry VLAN 1 as the native (untagged) VLAN -- a double-tagging / VLAN-hopping exposure and a hygiene gap; the target L2 edge must use a dedicated, unused native VLAN (and prune VLAN 1).",
+          "count": 27,
           "devices": [
             "access1",
             "access10",
