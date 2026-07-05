@@ -91,6 +91,13 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     # coverage_matrix (Plan-A #5) is COMPOSED from architecture_coverage -> inherits its date-relativity;
     # exclude it too, its SSOT publish is locked in tests/test_pipeline_inprocess.py. (coverage matrix)
     snap.pop("coverage_matrix", None)
+    # fact_lineage (J2) embeds the canonical headline VALUES (n_past_ldos / avg_health / ... are
+    # date-relative via lifecycle/executive_brief) -> exclude like its value sources; its shape +
+    # coverage-honest state are pinned deterministically by tests/test_fact_lineage.py. (fact lineage)
+    snap.pop("fact_lineage", None)
+    # schema_census (J3) is intentionally KEPT in the golden: it records only presence/absence +
+    # structural shape of the sections (no dates, no headline values), so it is non-volatile and
+    # frozen here; its logic is also pinned by tests/test_schema_census.py.
     # attestation.generated_at is the one NESTED wall-clock stamp; strip just it (like the
     # top-level generated_at) — the re-derived trust CLAIMS themselves are deterministic and
     # must stay frozen in the golden. (roadmap D3)

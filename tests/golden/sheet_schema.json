@@ -620,5 +620,12 @@
   null,
   null,
   null
+ ],
+ "Coverage Schema": [
+  "Per-section coverage census \u2014 what this snapshot actually SAW. published 95 \u00b7 collected-but-empty 5 \u00b7 NOT collected 0 (blind spots) of 100 section(s). An absent axis is a blind spot, never a clean result.",
+  null,
+  null,
+  null,
+  null
  ]
 }
