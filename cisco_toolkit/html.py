@@ -198,9 +198,11 @@ def compute_snapshot_delta(old: dict, new: dict) -> dict:
         "verdict": verdict, "verdict_note": note,
     }
 
-def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
+def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = None) -> None:
     """Write a diff workbook (Summary / Interface Changes / Endpoint Changes /
-    SVI Changes) comparing two snapshot_state() dicts."""
+    SVI Changes) comparing two snapshot_state() dicts. `precert` is an optional precomputed
+    Pre-Change Validation Certificate (roadmap C1); when None it is computed here, so the
+    'Pre-Change Certificate' sheet is always present."""
     old = old if isinstance(old, dict) else {}            # total on a non-dict snapshot (parsed null/[]/scalar)
     new = new if isinstance(new, dict) else {}
     from openpyxl import Workbook
@@ -443,6 +445,65 @@ def write_diff_workbook(old: dict, new: dict, out_path: str) -> None:
             ws.cell(row=r, column=6).fill = PatternFill("solid", fgColor="FFC7CE")
         r += 1
     autofit(ws, 7); ws.column_dimensions["G"].width = 55
+
+    # Pre-Change Validation Certificate (roadmap C1) — the fib differential packaged as the PPDIOO gate
+    # artifact: verdict + every changed flow cited before->after + segmentation invariants + path intents
+    # + every NAMED blind spot. Rendered from the certificate dict (the .precert.json SSOT); computed here
+    # when the caller did not pass one, so the sheet is always present.
+    from cisco_toolkit.precert import CERT_SHEET_HEADERS, CERT_SHEET_NAME, compute_precert
+    cert = precert if isinstance(precert, dict) else compute_precert(old, new)
+    cf = cert.get("flows") or {}
+    _CERT_FILL = {"PASS": "C6EFCE", "CONDITIONAL": "FFEB9C", "FAIL": "FFC7CE", "INDETERMINATE": "D9D9D9"}
+    stamps = cert.get("stamps") or {}
+    if cf.get("assessed"):
+        cover = (f"{cf.get('preserved', 0)} preserved, {cf.get('both_unreachable', 0)} unreachable both sides, "
+                 f"{len(cf.get('changed') or [])} changed, {len(cf.get('inconclusive') or [])} inconclusive "
+                 f"(bounded sample: {cf.get('subnets_tested', 0)} of {cf.get('subnets_total', 0)} subnet(s), one "
+                 f"representative host each{', CAPPED — coverage incomplete' if cf.get('capped') else ''})")
+    else:
+        cover = "computed reachability NOT assessed (this is NOT a statement that reachability is unchanged)"
+    cert_rows: list = [
+        ("VERDICT", "pre-change validation certificate",
+         (stamps.get("before") or {}).get("generated_at", ""), (stamps.get("after") or {}).get("generated_at", ""),
+         cert.get("verdict", ""), cert.get("verdict_note", "")),
+        ("Flows", "coverage", "", "", f"{cf.get('pairs_tested', 0)} flow(s) tested", cover),
+    ]
+    for f0 in (cf.get("changed") or []):
+        cert_rows.append(("Flows", f"{f0.get('src')} -> {f0.get('dst')}", f0.get("before", ""), f0.get("after", ""),
+                          "NEWLY BLOCKED" if f0.get("regression") else "newly reachable", ""))
+    for f0 in (cf.get("inconclusive") or []):
+        cert_rows.append(("Flows", f"{f0.get('src')} -> {f0.get('dst')}", "", "", "INCONCLUSIVE",
+                          f0.get("reason", "")))
+    for s0 in (cert.get("segmentation") or []):
+        held = s0.get("held")
+        cert_rows.append(("Segmentation", s0.get("invariant", ""), "", "",
+                          "HELD" if held is True else ("VIOLATED" if held is False else "NOT EVALUABLE"),
+                          s0.get("evidence", "")))
+    for i0 in (cert.get("intents") or []):
+        cert_rows.append(("Intent", f"{i0.get('id')} (expect {i0.get('expect')})",
+                          i0.get("old_verdict", ""), i0.get("new_verdict", ""),
+                          "REGRESSED" if i0.get("regressed") else
+                          ("coverage lost" if i0.get("coverage_lost") else str(i0.get("new_verdict", ""))),
+                          f"{i0.get('old_status')} -> {i0.get('new_status')}"))
+    for b0 in (cert.get("blind_spots") or []):
+        cert_rows.append(("Blind spot", b0, "", "", "OPEN", ""))
+    if not (cert.get("blind_spots") or []):
+        cert_rows.append(("Blind spot", "none open", "", "", "", ""))
+    _ROW_FILL = {"NEWLY BLOCKED": "FFC7CE", "newly reachable": "C6EFCE", "VIOLATED": "FFC7CE",
+                 "REGRESSED": "FFC7CE", "INCONCLUSIVE": "D9D9D9", "NOT EVALUABLE": "D9D9D9", "OPEN": "FFEB9C"}
+    ws = sheet(CERT_SHEET_NAME, list(CERT_SHEET_HEADERS))
+    r = 2
+    for vals in cert_rows:
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(row=r, column=c, value=v); cell.font = DF; cell.alignment = AL
+        if vals[0] == "VERDICT":
+            vc = ws.cell(row=r, column=5)
+            vc.fill = PatternFill("solid", fgColor=_CERT_FILL.get(str(vals[4]), "FFFFFF"))
+            vc.font = Font(name="Calibri", bold=True, size=11)
+        elif str(vals[4]) in _ROW_FILL:
+            ws.cell(row=r, column=5).fill = PatternFill("solid", fgColor=_ROW_FILL[str(vals[4])])
+        r += 1
+    autofit(ws, 6); ws.column_dimensions["B"].width = 46; ws.column_dimensions["F"].width = 70
 
     wb.save(out_path)
 
