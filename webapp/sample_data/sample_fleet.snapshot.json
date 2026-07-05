@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-03T17:33:41.040216",
+  "generated_at": "2026-07-05T16:35:37.828831",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2984,7 +2984,7 @@
       }
     }
   },
-  "collected_at": "2026-07-03T17:33:36.438066",
+  "collected_at": "2026-07-05T16:35:29.496602",
   "physical_health": [
     {
       "switch": "access1",
@@ -6342,7 +6342,7 @@
           "ldos": ""
         }
       ],
-      "asof": "2026-07-03"
+      "asof": "2026-07-05"
     },
     "risks": [
       {
@@ -6368,7 +6368,7 @@
         "remediation": "Schedule replacement before LDoS; confirm the migration target covers these."
       }
     ],
-    "asof": "2026-07-03",
+    "asof": "2026-07-05",
     "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."
   },
   "remediation_plan": {
@@ -29394,6 +29394,213 @@
     },
     "risks": []
   },
+  "vlan_cutover": [
+    {
+      "vlan": 10,
+      "name": "USERS",
+      "stp_root": "core1",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "10",
+        "vip": "10.0.10.1",
+        "members": [
+          {
+            "host": "core1",
+            "proto": "HSRP",
+            "group": "10",
+            "vip": "10.0.10.1",
+            "role": "active",
+            "priority": 110,
+            "preempt": true,
+            "vmac": "0000.0c07.ac0a"
+          },
+          {
+            "host": "core2",
+            "proto": "HSRP",
+            "group": "10",
+            "vip": "10.0.10.1",
+            "role": "standby",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "core1",
+        "core2"
+      ],
+      "endpoint_count": 36,
+      "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [
+        "DHCP relay via 10.0.40.10, 10.0.40.11"
+      ],
+      "wave": "Group 1",
+      "scenario": "mixed: 17 hard cutover / 2 make-before-break",
+      "readiness": "NOT READY",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 20,
+      "name": "VOICE",
+      "stp_root": "[NOT OBSERVED]",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "20",
+        "vip": "10.0.20.1",
+        "members": [
+          {
+            "host": "core1",
+            "proto": "HSRP",
+            "group": "20",
+            "vip": "10.0.20.1",
+            "role": "standby",
+            "priority": 100,
+            "preempt": false,
+            "vmac": "0000.0c07.ac14"
+          },
+          {
+            "host": "core2",
+            "proto": "HSRP",
+            "group": "20",
+            "vip": "10.0.20.1",
+            "role": "active",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "core1",
+        "core2"
+      ],
+      "endpoint_count": 0,
+      "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 1",
+      "scenario": "mixed: 6 hard cutover / 2 make-before-break",
+      "readiness": "NOT READY",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 30,
+      "name": "SERVERS",
+      "stp_root": "access1",
+      "stp_root_default_election": true,
+      "fhrp": "sole gateway on core1 (no FHRP)",
+      "gateway_svi_hosts": [
+        "core1"
+      ],
+      "endpoint_count": 11,
+      "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 1",
+      "scenario": "mixed: 17 hard cutover / 1 make-before-break",
+      "readiness": "NOT READY",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 40,
+      "name": "POD-USERS",
+      "stp_root": "[NOT OBSERVED]",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "40",
+        "vip": "10.0.40.1",
+        "members": [
+          {
+            "host": "dist1",
+            "proto": "HSRP",
+            "group": "40",
+            "vip": "10.0.40.1",
+            "role": "active",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          },
+          {
+            "host": "dist2",
+            "proto": "HSRP",
+            "group": "40",
+            "vip": "10.0.40.1",
+            "role": "standby",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "dist1",
+        "dist2"
+      ],
+      "endpoint_count": 2,
+      "app_domain": "General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 2",
+      "scenario": "make-before-break",
+      "readiness": "CAUTION",
+      "cutover_window": "",
+      "rollback_owner": ""
+    },
+    {
+      "vlan": 41,
+      "name": "POD-VOICE",
+      "stp_root": "[NOT OBSERVED]",
+      "stp_root_default_election": false,
+      "fhrp": {
+        "proto": "HSRP",
+        "group": "41",
+        "vip": "10.0.41.1",
+        "members": [
+          {
+            "host": "dist1",
+            "proto": "HSRP",
+            "group": "41",
+            "vip": "10.0.41.1",
+            "role": "active",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          },
+          {
+            "host": "dist2",
+            "proto": "HSRP",
+            "group": "41",
+            "vip": "10.0.41.1",
+            "role": "standby",
+            "priority": null,
+            "preempt": null,
+            "vmac": ""
+          }
+        ]
+      },
+      "gateway_svi_hosts": [
+        "dist1",
+        "dist2"
+      ],
+      "endpoint_count": 2,
+      "app_domain": "General / Back-office (unclassified)",
+      "criticality": "Support",
+      "dependencies": [],
+      "wave": "Group 2",
+      "scenario": "make-before-break",
+      "readiness": "CAUTION",
+      "cutover_window": "",
+      "rollback_owner": ""
+    }
+  ],
   "executive_brief": {
     "scale": {
       "n_devices": 23,
@@ -29425,7 +29632,7 @@
         "axis": "Hardware lifecycle (EoL)",
         "severity": "Critical",
         "headline": "5 past end-of-support, 1 within 1yr (26% of 23 assessable)",
-        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-03 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
+        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-05 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
       },
       {
         "axis": "Asset risk register",
