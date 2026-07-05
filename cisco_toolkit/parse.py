@@ -3861,9 +3861,15 @@ def parse_show_version(output: str) -> Dict[str, str]:
             line, re.IGNORECASE)
         if m6 and not r["system_mac"]:
             r["system_mac"] = normalize_mac(m6.group(1))
+        # [K2 parser-examples] IOS reports '<hostname> uptime is ...', but NX-OS prints
+        # 'Kernel uptime is ...' (not a hostname -- every real Nexus reported hostname 'Kernel')
+        # and carries the real name on its own 'Device name: <host>' line instead.
         m7 = re.match(r"^(\S+)\s+uptime is", line)
-        if m7 and not r["hostname_reported"]:
+        if m7 and not r["hostname_reported"] and m7.group(1).lower() != "kernel":
             r["hostname_reported"] = m7.group(1).strip()
+        m8 = re.match(r"^\s*Device name:\s*(\S+)", line, re.IGNORECASE)
+        if m8:
+            r["hostname_reported"] = m8.group(1).strip()
     return r
 
 
