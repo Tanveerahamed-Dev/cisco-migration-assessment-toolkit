@@ -145,6 +145,107 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
     return r, seq, scen, val_items
 
 
+# ---- readiness roll-up + window estimate (BLUF facts) -----------------------------------------
+# The engine's readiness vocabulary is exactly {"NOT READY","CAUTION","READY"} (analyze.compute_
+# migration_readiness). Lower rank = worse; an unknown value defaults least-worst so it never masks a
+# real NOT READY. This mirrors _join_group_records' reducer — one shared ordering, not a second copy.
+_READY_RANK = {"not ready": 0, "caution": 1, "ready": 2}
+
+
+def _worst_readiness(waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave):
+    """The go/no-go gate for the whole change: the WORST per-wave readiness verdict across every wave
+    (each wave's verdict is itself the worst across its constituent groups, via _join_group_records — one
+    source of truth). Returns the verdict string, or None when no wave publishes one (coverage-honest)."""
+    worst = None
+    for _name, switches, _kind, gnames in waves:
+        r, *_ = _join_group_records(gnames, switches, readiness_by_group, seq_by_group,
+                                    scen_by_group, val_by_wave)
+        rd = r.get("readiness")
+        if rd and rd != "—" and (worst is None
+                                 or _READY_RANK.get(str(rd).lower(), 9) < _READY_RANK.get(str(worst).lower(), 9)):
+            worst = rd
+    return worst
+
+
+def _window_estimate(n_waves: int) -> str:
+    """A DERIVED planning figure for the per-window duration — NOT a collected fact, so it is always
+    labelled an estimate to confirm with the change owner (coverage-honesty: a planning heuristic must
+    never masquerade as an authoritative number). The engine publishes no per-window duration, so this
+    is a standard AS default band, stated as a range to be sized against the wave's real port count."""
+    return ("2–4 hours per maintenance window (standard planning estimate — includes pre-cutover "
+            "baseline capture, the procedure, post-cutover validation and a rollback contingency; "
+            "confirm with the change owner and size against each wave's port count and blast radius).")
+
+
+def _oob_evidence_for(switches, ifaces_all):
+    """Coverage-honest OOB precondition evidence: return the management-port identifier(s) observed for a
+    wave's devices (mgmt0 / Management* / Gi0/0 / Fa0/0, or any interface carrying an mgmt_ip), or None
+    when the snapshot has NO management-port evidence — in which case the precondition is [NOT OBSERVED]
+    (not assumed reachable). Reads only the collected `interfaces` evidence; never infers reachability."""
+    import re
+    found = []
+    for h in switches:
+        for pname, dd in sorted((_as_dict(ifaces_all.get(h))).items()):
+            dd = _as_dict(dd)
+            if re.match(r"^(mgmt|management|gigabitethernet0/0|gi0/0|fastethernet0/0|fa0/0)",
+                        str(pname), re.IGNORECASE) or str(dd.get("mgmt_ip") or "").strip():
+                tag = f"{h} {pname}"
+                ip = str(dd.get("mgmt_ip") or "").strip()
+                found.append(tag + (f" ({ip})" if ip else ""))
+    return found or None
+
+
+def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
+                snap, NAVY, RED, _label_run, table):
+    """Render the Bottom-Line-Up-Front executive summary (unnumbered H1 so the numbered sections are
+    untouched). Answer-first decision facts, all snapshot-grounded and coverage-honest."""
+    n_waves = len(waves)
+    gate = _worst_readiness(waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave)
+    fleet_rec = _as_dict(snap.get("migration_scenarios")).get("fleet_recommendation")
+    gating = _as_list(_as_dict(snap.get("executive_brief")).get("top_gating"))
+    n_blockers = sum(1 for _n, sw, _k, gn in waves
+                     for r in [_join_group_records(gn, sw, readiness_by_group, seq_by_group,
+                                                   scen_by_group, val_by_wave)[0]]
+                     for _ in range(int(r.get("n_fail", 0) or 0)))
+
+    doc.add_heading("Executive Summary — Bottom Line Up Front (BLUF)", level=1)
+    doc.add_paragraph(
+        "The one-screen decision view for the change approver: what these windows do, the go/no-go "
+        "gate, the rollback in one line, and the planning window. Every figure below is the assessment "
+        "snapshot's own (single source of truth) — a fact the snapshot did not publish reads "
+        "“[NOT OBSERVED]”, never an assumed value.")
+
+    def _v(x):
+        return x if x not in (None, "", "—") else "[NOT OBSERVED]"
+
+    rows = [
+        ("What this MOP does",
+         f"Cuts the migration over in {n_waves} candidate wave(s), each in its own maintenance window "
+         "(clear blockers → baseline → procedure → validate → proceed or roll back)."),
+        ("Go / no-go gate (worst readiness across the waves)",
+         (f"{gate} — do NOT open a window whose wave is NOT READY until its blockers are cleared or "
+          "risk-accepted." if gate
+          else "[NOT OBSERVED] — no per-wave readiness verdict was published; treat every wave as "
+               "no-go until readiness is assessed.")),
+        ("Open blockers gating the change",
+         f"{n_blockers} blocking check(s) attributed across the waves (see each wave's §x.2)."),
+        ("Rollback in one line",
+         "If any wave's post-cutover validation fails and cannot be corrected inside the window, "
+         "re-apply that wave's captured pre-change config and re-home to the legacy path — every wave "
+         "carries an explicit quantified rollback trigger (§x.7)."),
+        ("Maintenance window (estimate)", _window_estimate(n_waves)),
+        ("Fleet-level recommendation", _v(fleet_rec)),
+        ("Top gating item to clear first", _v(gating[0] if gating else None)),
+    ]
+    table(["Bottom line", "Detail"], rows, widths=[2.4, 4.3])
+    # the go/no-go gate restated as a red one-liner so it cannot be missed
+    _label_run(doc.add_paragraph(), "GO/NO-GO:",
+               (f"the change's overall readiness gate is {gate}."
+                if gate else "readiness NOT assessed — treat as no-go.")
+               + " No window opens without CAB approval, a tested rollback, and the wave's blockers "
+                 "cleared or explicitly risk-accepted.", RED)
+
+
 def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     """Emit the per-wave Method of Procedure (.docx) to `output_path`. Fail-soft: a missing python-docx
     is a warning + skip; any unexpected render error is logged, never raised."""
@@ -246,6 +347,17 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                "If any validation check fails and cannot be corrected within the window, execute the "
                "rollback. Every <placeholder> (date, owner, approver, exact uplinks) must be completed "
                "by the implementing engineer.", GREY)
+    doc.add_page_break()
+
+    # ---- Executive summary (BLUF — Bottom Line Up Front) ------------------------------------------
+    # DE-01 / Cisco-AS: answer-first executive summary at the TOP of the MOP so a change approver reads
+    # the window intent, the go/no-go gate, the one-line rollback and the window estimate WITHOUT paging
+    # into the numbered procedure. Every fact is the snapshot's own (never invented): wave count from
+    # `waves`, the go/no-go gate is the WORST readiness verdict across the waves (via _join_group_records,
+    # one source of truth), the recommendation + top-gating are the engine's. A fact the snapshot did not
+    # publish reads "[NOT OBSERVED]", never a fabricated value (coverage-honesty).
+    _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val_by_wave,
+                snap, NAVY, RED, _label_run, table)
     doc.add_page_break()
 
     # ---- document control (AS-style front matter; unnumbered so the wave sections are untouched) ----
