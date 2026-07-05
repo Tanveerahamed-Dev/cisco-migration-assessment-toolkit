@@ -169,7 +169,122 @@ def _hosts_owning_ip(connected_idx: dict, ip_str: str, exclude: str = None) -> l
     return sorted(hosts)
 
 
-def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32) -> dict:
+def _iface_field(rec, field: str):
+    """Read one field from an interface record that may be a plain dict (the serialized snapshot shape) OR an
+    InterfaceData dataclass (the in-process, pre-serialization shape). Total: returns None on anything else."""
+    if isinstance(rec, dict):
+        return rec.get(field)
+    return getattr(rec, field, None)
+
+
+def _parse_mtu(raw):
+    """Coerce a collected MTU value to a positive int, or None when it is BLANK / unparseable. Blank is
+    ABSTENTION -- 'not collected' -- never a fabricated default. build.py leaves mtu '' when the device did not
+    report a non-default value, and that '' must stay a blind spot, not silently become 1500."""
+    s = str(raw if raw is not None else "").strip()
+    if not s:
+        return None
+    # tolerate a trailing 'bytes' or stray non-digits Cisco sometimes prints ('9216 bytes')
+    digits = ""
+    for ch in s:
+        if ch.isdigit():
+            digits += ch
+        elif digits:
+            break
+    if not digits:
+        return None
+    try:
+        val = int(digits)
+    except ValueError:
+        return None
+    return val if val > 0 else None
+
+
+def _hop_mtu(interfaces: dict, host: str, out_intf: str):
+    """The observed egress MTU (int) for a traced hop's out-interface, or None if not collected / not found. The
+    route's out_intf is matched to the interface port key both verbatim AND via the codebase-canonical short form
+    (textutils.normalize_ifname) so 'GigabitEthernet0/1' and 'Gi0/1' resolve to the same record."""
+    if not out_intf:
+        return None                         # a recursive route with no egress interface -> nothing to observe
+    ports = interfaces.get(host) if isinstance(interfaces, dict) else None
+    if not isinstance(ports, dict):
+        return None
+    rec = ports.get(out_intf)
+    if rec is None:
+        try:
+            from .textutils import normalize_ifname
+        except Exception:                   # pragma: no cover - textutils always importable in-tree
+            normalize_ifname = None
+        if normalize_ifname is not None:
+            want = normalize_ifname(out_intf)
+            for p, r in ports.items():
+                if normalize_ifname(p) == want:
+                    rec = r
+                    break
+    if rec is None:
+        return None
+    return _parse_mtu(_iface_field(rec, "mtu"))
+
+
+def _annotate_mtu(res: dict, snap, required_mtu=None) -> dict:
+    """Add the MTU-dimension keys to a trace result (§3.4). COVERAGE-HONEST: a hop with no collected MTU is
+    disclosed as unobserved and makes the path-MTU verdict INDETERMINATE -- it is NEVER assumed to be 1500 (or
+    any default). Additive + total: the keys are always present, even on a lower-bound / bad-input result."""
+    interfaces = snap.get("interfaces") if isinstance(snap, dict) else None
+    req = _parse_mtu(required_mtu) if required_mtu is not None else None
+
+    res.setdefault("mtu_min", None)
+    res.setdefault("mtu_bottleneck_hop", None)
+    res.setdefault("mtu_unobserved_hops", [])
+    res.setdefault("jumbo_blackhole", [])
+
+    hops = res.get("hops") or []
+    observed = []           # [(host, out_intf, mtu)]
+    unobserved = []         # [{host, out_intf}]
+    jumbo = []
+    for hop in hops:
+        host = hop.get("host", "")
+        out_intf = str(hop.get("out_intf", "") or "")
+        mtu = _hop_mtu(interfaces, host, out_intf)
+        if mtu is None:
+            # only count a hop as an MTU blind spot if it actually has an egress interface to have measured
+            if out_intf:
+                unobserved.append({"host": host, "out_intf": out_intf})
+            continue
+        observed.append((host, out_intf, mtu))
+        if req is not None and mtu < req:
+            jumbo.append({"host": host, "out_intf": out_intf, "mtu": mtu, "required": req})
+
+    res["mtu_unobserved_hops"] = unobserved
+    res["jumbo_blackhole"] = jumbo
+
+    if observed:
+        mtu_min = min(m for _h, _i, m in observed)
+        mtu_max = max(m for _h, _i, m in observed)
+        res["mtu_min"] = mtu_min
+        if mtu_min < mtu_max:
+            h, i, _m = min(observed, key=lambda t: t[2])
+            res["mtu_bottleneck_hop"] = {"host": h, "out_intf": i, "mtu": mtu_min}
+
+    total = len(observed) + len(unobserved)
+    # Verdict precedence (coverage-honest):
+    #  - no reached path to audit, or nothing observed at all           -> INDETERMINATE (abstain)
+    #  - any hop's MTU was not collected                                -> INDETERMINATE, disclosing N of M
+    #  - a genuine narrowing among the observed hops                    -> bottleneck
+    #  - every hop observed AND equal                                   -> uniform
+    if not res.get("reached") or not observed:
+        res["mtu_verdict"] = ("INDETERMINATE -- MTU not collected on {} of {} hops".format(len(unobserved), total)
+                              if unobserved else "INDETERMINATE -- no reached path to audit")
+    elif unobserved:
+        res["mtu_verdict"] = "INDETERMINATE -- MTU not collected on {} of {} hops".format(len(unobserved), total)
+    elif res.get("mtu_bottleneck_hop") is not None:
+        res["mtu_verdict"] = "bottleneck"
+    else:
+        res["mtu_verdict"] = "uniform"
+    return res
+
+
+def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32, required_mtu=None) -> dict:
     """Compute the L3 forwarding path src_ip -> dst_ip by resolving FIB lookups host-to-host over snap['routes'] --
     the COMPUTED upgrade to the L2 topology 'lower bound' (analyze.py trace_full_flow). At each host the dst is
     resolved by longest-prefix-match; ALL equal-cost (ECMP) legs are explored; the next-hop IP locates the next
@@ -187,9 +302,26 @@ def trace_fib_path(snap, src_ip: str, dst_ip: str, max_hops: int = 32) -> dict:
     Reach wins over any lower bound, which wins over a definitive drop -- so one inconclusive leg prevents a false
     computed:unreachable. Pure/offline; total on bad input.
 
-    Returns {src, dst, hops:[{host, match, next_hop, out_intf, source}], status, computed:bool, reached:bool}."""
+    MTU DIMENSION (§3.4 -- the EVPN-flagged 'single most engagement-relevant missing check': a 1500-byte underlay
+    silently drops VXLAN and mimics random loss). Each traced hop's egress-interface MTU is read from
+    snap['interfaces'][host][out_intf]; path_mtu = min OBSERVED MTU. Additive result keys:
+      * mtu_min             -- the minimum observed MTU (int), or None if none was collected.
+      * mtu_bottleneck_hop  -- {host, out_intf, mtu} of the lowest observed hop when it is below the maximum
+                               observed (a genuine narrowing), else None.
+      * mtu_verdict         -- 'uniform' (every hop observed AND equal) | 'bottleneck' (a hop is lower than the
+                               source's) | 'INDETERMINATE -- MTU not collected on N of M hops' (a missing MTU is
+                               ABSTENTION, NEVER a fabricated 1500-byte pass; also INDETERMINATE if the trace did
+                               not resolve a reached path to audit).
+      * mtu_unobserved_hops -- [{host, out_intf}] the traced hops whose MTU was not collected (the disclosed blind spots).
+      * jumbo_blackhole     -- when `required_mtu` is given (e.g. 1550 for VXLAN, 9216 for a jumbo underlay), each
+                               OBSERVED hop whose MTU < required as {host, out_intf, mtu, required}. A hop with no
+                               collected MTU is disclosed in mtu_unobserved_hops, never asserted a blackhole.
+
+    Returns {src, dst, hops:[{host, match, next_hop, out_intf, source}], status, computed, reached,
+    mtu_min, mtu_bottleneck_hop, mtu_verdict, mtu_unobserved_hops, jumbo_blackhole}."""
     fibs, connected, l3_hosts = _build(snap)
-    return _trace(fibs, connected, l3_hosts, src_ip, dst_ip)
+    res = _trace(fibs, connected, l3_hosts, src_ip, dst_ip)
+    return _annotate_mtu(res, snap, required_mtu)
 
 
 def _is_l3_router(host, snap, routes) -> bool:
@@ -369,6 +501,167 @@ def reachability_diff(old_snap, new_snap, pairs) -> dict:
         rows.append({"src": src, "dst": dst, "old_status": o["status"], "new_status": n["status"], "verdict": v})
         summary[v] = summary.get(v, 0) + 1
     return {"pairs": rows, "summary": summary}
+
+
+def _l3_hops(trace: dict) -> list:
+    """The ordered list of collected L3 hosts a trace traversed -- the forwarding-host path, used to compare a
+    forward path against its reverse for RPF/return-path symmetry."""
+    return [h.get("host", "") for h in (trace.get("hops") or [])]
+
+
+def trace_bidirectional(snap, a_ip: str, b_ip: str, max_hops: int = 32, required_mtu=None) -> dict:
+    """Return-path / RPF asymmetry (§3.4; orchestration :232 -- 'works one way, drops the other'). Pure
+    COMPOSITION over two trace_fib_path calls -- forward a->b and reverse b->a -- plus a comparison; NO device
+    contact. A one-directional trace cannot see the classic asymmetric-routing black hole where the forward flow
+    is delivered but the return is dropped or takes a divergent path that a strict uRPF check would discard.
+
+    COVERAGE-HONEST rpf_verdict:
+      * 'symmetric'     -- BOTH directions reach AND traverse the SAME set of collected L3 forwarding hosts
+                           (the shared-segment hop-sets align) -> no return-path asymmetry observed.
+      * 'asymmetric'    -- forward reaches but the reverse is a DEFINITIVE drop (computed:unreachable), OR both
+                           reach yet the traversed host-sets DIVERGE (a path split that a strict uRPF would fail).
+                           The divergence is NAMED in `asymmetry`.
+      * 'INDETERMINATE' -- either direction is inconclusive / a lower bound (computed=False). Asymmetry cannot be
+                           PROVEN from an unprovable trace, so abstain -- never a fabricated 'asymmetric'.
+
+    Returns {forward, reverse, symmetric:bool, asymmetry:[...], rpf_verdict}. `symmetric` is True ONLY for the
+    proven-symmetric case (an INDETERMINATE or asymmetric result is False). Total on bad input."""
+    fwd = trace_fib_path(snap, a_ip, b_ip, max_hops=max_hops, required_mtu=required_mtu)
+    rev = trace_fib_path(snap, b_ip, a_ip, max_hops=max_hops, required_mtu=required_mtu)
+
+    asymmetry: List[str] = []
+
+    # If either direction could not be computed end-to-end, we cannot assert (or refute) asymmetry -> abstain.
+    if not (fwd.get("computed") and rev.get("computed")):
+        undone = []
+        if not fwd.get("computed"):
+            undone.append("forward {}".format(fwd.get("status")))
+        if not rev.get("computed"):
+            undone.append("reverse {}".format(rev.get("status")))
+        asymmetry.append("indeterminate: " + "; ".join(undone))
+        return {"forward": fwd, "reverse": rev, "symmetric": False,
+                "asymmetry": asymmetry, "rpf_verdict": "INDETERMINATE"}
+
+    fwd_reached, rev_reached = bool(fwd.get("reached")), bool(rev.get("reached"))
+
+    # Forward delivered, reverse definitively drops (or vice versa) -> the textbook asymmetric black hole.
+    if fwd_reached != rev_reached:
+        winner = "forward" if fwd_reached else "reverse"
+        loser = "reverse" if fwd_reached else "forward"
+        loser_status = rev.get("status") if fwd_reached else fwd.get("status")
+        asymmetry.append("{} reaches but {} is a definitive drop ({})".format(winner, loser, loser_status))
+        return {"forward": fwd, "reverse": rev, "symmetric": False,
+                "asymmetry": asymmetry, "rpf_verdict": "asymmetric"}
+
+    # Both DEFINITIVELY unreachable in each direction -> no asymmetry (both blocked alike), not an RPF issue.
+    if not fwd_reached:
+        return {"forward": fwd, "reverse": rev, "symmetric": True,
+                "asymmetry": [], "rpf_verdict": "symmetric"}
+
+    # Both reach: compare the traversed L3 host-sets. A strict uRPF fails when the return path does not retrace the
+    # forward one, so a divergence in the shared forwarding hosts is the asymmetry to flag.
+    f_hosts, r_hosts = set(_l3_hops(fwd)), set(_l3_hops(rev))
+    if f_hosts != r_hosts:
+        only_fwd = sorted(f_hosts - r_hosts)
+        only_rev = sorted(r_hosts - f_hosts)
+        if only_fwd:
+            asymmetry.append("forward-only L3 hop(s): " + ", ".join(only_fwd))
+        if only_rev:
+            asymmetry.append("reverse-only L3 hop(s): " + ", ".join(only_rev))
+        return {"forward": fwd, "reverse": rev, "symmetric": False,
+                "asymmetry": asymmetry, "rpf_verdict": "asymmetric"}
+
+    return {"forward": fwd, "reverse": rev, "symmetric": True,
+            "asymmetry": [], "rpf_verdict": "symmetric"}
+
+
+def _iface_acl(interfaces: dict, host: str, out_intf: str):
+    """(acl_in, acl_out) applied to a hop's egress interface, or (None, None) if the interface/fields were not
+    collected. A collected-but-empty ACL field is '' (no ACL); a NOT-collected interface is None (a blind spot)."""
+    if not out_intf or not isinstance(interfaces, dict):
+        return (None, None)
+    ports = interfaces.get(host)
+    if not isinstance(ports, dict):
+        return (None, None)
+    rec = ports.get(out_intf)
+    if rec is None:
+        try:
+            from .textutils import normalize_ifname
+        except Exception:                    # pragma: no cover
+            normalize_ifname = None
+        if normalize_ifname is not None:
+            want = normalize_ifname(out_intf)
+            for p, r in ports.items():
+                if normalize_ifname(p) == want:
+                    rec = r
+                    break
+    if rec is None:
+        return (None, None)
+    ai, ao = _iface_field(rec, "acl_in"), _iface_field(rec, "acl_out")
+    return (str(ai).strip() if ai is not None else "", str(ao).strip() if ao is not None else "")
+
+
+def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
+    """ECMP multipath-consistency (Batfish multipathConsistency analog; §3.4 optional). For the equal-cost leg set
+    a router installs toward `dst_ip`, flag when the legs would NOT be treated ALIKE -- a flow that hashes onto one
+    leg then behaves differently from a sibling, mimicking intermittent loss. Two divergence classes are checked
+    over the collected egress interfaces of the leg set at the FIRST L3 host on the path:
+      * mtu  -- the legs' egress MTUs differ (a jumbo flow blackholes only on the narrow leg);
+      * acl  -- the legs carry different ingress/egress ACL treatment (one leg filters, another passes).
+
+    COVERAGE-HONEST: a single-leg (non-ECMP) lookup is 'not_ecmp'; a leg whose egress interface was not collected
+    is DISCLOSED in `unobserved_legs` and can NOT prove OR disprove consistency, so with any blind leg the verdict
+    is 'INDETERMINATE', never a fabricated 'consistent'. Verdicts: not_ecmp | consistent | inconsistent |
+    INDETERMINATE. Returns {host, dst, leg_count, mtu_divergence, acl_divergence, unobserved_legs, verdict}.
+    Pure/offline; total on bad input -- resolves the leg set at the source-owning host only (a bounded, local check)."""
+    snap = snap if isinstance(snap, dict) else {}
+    interfaces = snap.get("interfaces") if isinstance(snap.get("interfaces"), dict) else {}
+    fibs, connected, _l3 = _build(snap)
+    base = {"host": None, "dst": dst_ip, "leg_count": 0, "mtu_divergence": [],
+            "acl_divergence": [], "unobserved_legs": [], "verdict": "not_ecmp"}
+
+    src_hosts = _hosts_owning_ip(connected, src_ip)
+    if len(src_hosts) != 1:                   # no owner, or an ambiguous transit/multi-access src -> can't localize
+        base["verdict"] = "INDETERMINATE"
+        return base
+    host = src_hosts[0]
+    base["host"] = host
+    legs = fib_lookup_all(fibs.get(host, []), dst_ip)
+    base["leg_count"] = len(legs)
+    if len(legs) < 2:
+        base["verdict"] = "not_ecmp"          # a single installed path -> multipath consistency is not applicable
+        return base
+
+    mtus, acls, unobserved = [], [], []
+    for leg in legs:
+        oi = str(leg.get("out_intf", "") or "")
+        mtu = _hop_mtu(interfaces, host, oi)
+        ai, ao = _iface_acl(interfaces, host, oi)
+        if not oi or (mtu is None and ai is None and ao is None):
+            unobserved.append({"out_intf": oi, "next_hop": str(leg.get("next_hop", "") or "")})
+            continue
+        mtus.append((oi, mtu))
+        acls.append((oi, ai or "", ao or ""))
+
+    base["unobserved_legs"] = unobserved
+
+    # MTU divergence: distinct OBSERVED MTUs across legs (ignore legs whose MTU was not collected).
+    obs_mtus = {m for _oi, m in mtus if m is not None}
+    if len(obs_mtus) > 1:
+        base["mtu_divergence"] = sorted(
+            [{"out_intf": oi, "mtu": m} for oi, m in mtus if m is not None], key=lambda d: d["mtu"])
+    # ACL divergence: distinct (acl_in, acl_out) tuples across legs whose interface WAS collected.
+    obs_acls = {(ai, ao) for _oi, ai, ao in acls}
+    if len(obs_acls) > 1:
+        base["acl_divergence"] = [{"out_intf": oi, "acl_in": ai, "acl_out": ao} for oi, ai, ao in acls]
+
+    if base["mtu_divergence"] or base["acl_divergence"]:
+        base["verdict"] = "inconsistent"      # a proven divergence dominates -- the legs are NOT treated alike
+    elif unobserved:
+        base["verdict"] = "INDETERMINATE"     # a blind leg -> can't certify the set is consistent (abstain)
+    else:
+        base["verdict"] = "consistent"        # every leg observed and aligned on MTU + ACL
+    return base
 
 
 def subnet_reps(snap, limit: int = 24) -> list:
