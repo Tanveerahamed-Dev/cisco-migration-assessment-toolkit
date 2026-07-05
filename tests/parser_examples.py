@@ -293,6 +293,143 @@ PARSER_EXAMPLES = {
             ],
         },
     ],
+    # ------------------------------------------------------------------ vPC
+    "parse_vpc": [
+        {
+            "note": "NX-OS 'show vpc': colon key/value block + peer-link table + vPC "
+                    "status table with down*/wrapped-vlan rows. Real CS01 slice.",
+            "input": (
+                "Legend:\n"
+                "                (*) - local vPC is down, forwarding via vPC peer-link\n"
+                "\n"
+                "vPC domain id                     : 19  \n"
+                "Peer status                       : peer adjacency formed ok      \n"
+                "vPC keep-alive status             : peer is alive                 \n"
+                "Configuration consistency status  : success \n"
+                "Per-vlan consistency status       : success                       \n"
+                "Type-2 consistency status         : success \n"
+                "vPC role                          : primary, operational secondary\n"
+                "Number of vPCs configured         : 27  \n"
+                "Peer Gateway                      : Enabled\n"
+                "Auto-recovery status              : Enabled (timeout = 240 seconds)\n"
+                "\n"
+                "vPC Peer-link status\n"
+                "---------------------------------------------------------------------\n"
+                "id   Port   Status Active vlans    \n"
+                "--   ----   ------ --------------------------------------------------\n"
+                "1    Po1    up     1,12-18,24-28,30-33,64                                    \n"
+                "\n"
+                "vPC status\n"
+                "----------------------------------------------------------------------------\n"
+                "id     Port        Status Consistency Reason                     Active vlans\n"
+                "------ ----------- ------ ----------- -------------------------- -----------\n"
+                "15     Po15        up     success     success                    1,12-18,24- \n"
+                "                                                                 28,30-33,64 \n"
+                "22     Po22        down*  success     success                    -           \n"
+                "31     Po31        up     success     success                    12-14,16-18 \n"
+            ),
+            "expect_min_entities": 5,
+            "spot_facts": [
+                (("domain_id",), 19),
+                (("peer_status",), "peer adjacency formed ok"),
+                (("num_vpcs",), 27),
+                (("peer_link", "port"), "Po1"),
+                (("vpcs", 1, "port"), "Po22"),
+                (("vpcs", 1, "status"), "down*"),
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ port-channels
+    "parse_portchannel_protocol_from_summary": [
+        {
+            "note": "NX-OS 'show port-channel summary' 2-line header; LACP -> Active, "
+                    "NONE -> On. Real CS01 slice.",
+            "input": (
+                "Flags:  D - Down        P - Up in port-channel (members)\n"
+                "        I - Individual  H - Hot-standby (LACP only)\n"
+                "        s - Suspended   r - Module-removed\n"
+                "        S - Switched    R - Routed\n"
+                "        U - Up (port-channel)\n"
+                "        M - Not in use. Min-links not met\n"
+                "--------------------------------------------------------------------------------\n"
+                "Group Port-       Type     Protocol  Member Ports\n"
+                "      Channel\n"
+                "--------------------------------------------------------------------------------\n"
+                "1     Po1(SU)     Eth      LACP      Eth2/3(P)    Eth2/4(P)    \n"
+                "2     Po2(RU)     Eth      LACP      Eth1/48(P)   \n"
+                "39    Po39(SD)    Eth      LACP      Eth1/41(D)   \n"
+                "47    Po47(SD)    Eth      NONE      --\n"
+            ),
+            "expect_min_entities": 4,
+            "spot_facts": [
+                (("Po1",), "Active"),
+                (("Po47",), "On"),  # protocol NONE = static/mode-on bundle
+            ],
+        },
+    ],
+    "parse_etherchannel_summary_members": [
+        {
+            "note": "Same real NX-OS 'show port-channel summary' slice: member -> Po map "
+                    "(down members still belong to their bundle).",
+            "input": (
+                "Flags:  D - Down        P - Up in port-channel (members)\n"
+                "        U - Up (port-channel)\n"
+                "--------------------------------------------------------------------------------\n"
+                "Group Port-       Type     Protocol  Member Ports\n"
+                "      Channel\n"
+                "--------------------------------------------------------------------------------\n"
+                "1     Po1(SU)     Eth      LACP      Eth2/3(P)    Eth2/4(P)    \n"
+                "2     Po2(RU)     Eth      LACP      Eth1/48(P)   \n"
+                "39    Po39(SD)    Eth      LACP      Eth1/41(D)   \n"
+            ),
+            "expect_min_entities": 4,
+            "spot_facts": [
+                (("Eth2/3",), "Po1"),
+                (("Eth2/4",), "Po1"),
+                (("Eth1/41",), "Po39"),  # down member still mapped
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ control-plane health
+    "parse_cpu_utilization": [
+        {
+            "note": "IOS-XE multicore 'show processes cpu' ('Core 0: CPU utilization "
+                    "for five seconds: ...', no /interrupt part). Real ACS shape.",
+            "input": (
+                "Core 0: CPU utilization for five seconds: 21%; one minute: 19%; five minutes: 18%\n"
+                "Core 1: CPU utilization for five seconds: 6%; one minute: 5%; five minutes: 4%\n"
+                "PID     Runtime(ms) Invoked   uSecs  5Sec 1Min 5Min TTY   Process\n"
+                "1       904         768       1177   0.00 0.00 0.00 0     init               \n"
+            ),
+            "expect_min_entities": 4,
+            "spot_facts": [
+                (("five_sec",), 21),
+                (("one_min",), 19),
+                (("five_min",), 18),
+                (("interrupt",), 0),  # no /interrupt part on this platform
+            ],
+        },
+    ],
+    "parse_system_resources": [
+        {
+            "note": "NX-OS 'show system resources' (the NX-OS CPU/memory source of "
+                    "truth -- N6K 'show processes cpu' has no utilization header). "
+                    "Real CS01 output.",
+            "input": (
+                "Load average:   1 minute: 0.44   5 minutes: 0.25   15 minutes: 0.19\n"
+                "Processes   :   429 total, 2 running\n"
+                "CPU states  :   0.6% user,   0.0% kernel,   99.4% idle\n"
+                "Memory usage:   8238112K total,   2851208K used,   5386904K free\n"
+            ),
+            "expect_min_entities": 5,
+            "spot_facts": [
+                (("cpu_idle",), 99.4),
+                (("mem_total_kb",), 8238112),
+                (("mem_free_kb",), 5386904),
+                (("load_1m",), 0.44),
+            ],
+        },
+    ],
     # ------------------------------------------------------------------ interface physical
     "parse_interface_phy": [
         {
