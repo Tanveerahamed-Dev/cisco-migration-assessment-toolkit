@@ -98,8 +98,8 @@ PARSER_EXAMPLES = {
             "input": (
                 "feature ospf\n"
                 "feature interface-vlan\n"
-                "username admin password 5 $1$/xzLOXP8$cb6hjzRZiOUAmAkP91S930  role network-admin\n"
-                "username swadmin password 5 $1$.2qNwXmh$KYWx8jlR.OCGELDIxtNLi0  role vdc-operator\n"
+                "username admin password 5 $1$REDACTED$0000000000000000000000  role network-admin\n"
+                "username swadmin password 5 $1$SCRUBBED$1111111111111111111111  role vdc-operator\n"
             ),
             "expect_min_entities": 1,
             # findings order is deterministic (registry order inside parse_security)
