@@ -1502,6 +1502,49 @@ def write_security_sheet(wb, all_security: dict) -> None:
                 f"across {nhosts} switch(es)")
 
 
+DETECTOR_SCHEMA_SHEET_NAME = "Detector Schema"   # J1: per-detector descriptors (not-observed != healthy as a schema property)
+
+def write_detector_schema_sheet(wb, detector_schema: dict) -> None:
+    """Write the 'Detector Schema' sheet from compute_detector_schema() -- the DECLARATIVE registry of
+    per-detector descriptors (one row per detector/axis). It DESCRIBES the engine's detectors, it does
+    not re-run them: each row states what the detector checks, its healthy value/threshold, the snapshot
+    fields it reads, and -- the load-bearing column -- 'Abstains When', the coverage-honest guard that
+    makes 'not-observed != healthy' a first-class property (never empty for an evidence-gated detector)."""
+    ds = detector_schema if isinstance(detector_schema, dict) else {}
+    detectors = ds.get("detectors") or []
+    ws = wb.create_sheet(DETECTOR_SCHEMA_SHEET_NAME)
+    # Row 1: disclose that this DESCRIBES detection (never re-runs it) up top, so the sheet cannot be
+    # misread as a per-device result table.
+    note = (ds.get("summary") or {}).get("note") or \
+        "Declarative per-detector descriptors — describes detection, does not re-run it."
+    c0 = ws.cell(1, 1, note)
+    c0.font = Font(italic=True, color="666666"); ws.merge_cells("A1:I1")
+    headers = ["Key", "Detector", "Family", "Checks", "Healthy Value", "Threshold",
+               "Cited Fields", "Abstains When", "Source Command"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(2, col, h); c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
+    r = 3
+    for d in detectors:
+        if not isinstance(d, dict):
+            continue
+        thr = d.get("threshold")
+        ws.cell(r, 1, d.get("key", ""))
+        ws.cell(r, 2, d.get("title", ""))
+        ws.cell(r, 3, d.get("family", ""))
+        ws.cell(r, 4, d.get("checks", ""))
+        ws.cell(r, 5, d.get("healthy_value", ""))
+        ws.cell(r, 6, thr if thr is not None else "—")   # explicit em-dash: 'no numeric threshold', never blank
+        ws.cell(r, 7, "; ".join(d.get("cited_fields") or []))
+        ws.cell(r, 8, d.get("abstains_when", ""))
+        ws.cell(r, 9, d.get("source_command", ""))
+        r += 1
+    for i, w in enumerate([26, 34, 14, 60, 40, 40, 46, 56, 26], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    ws.freeze_panes = "A3"
+    logger.info(f"  [OK] '{DETECTOR_SCHEMA_SHEET_NAME}' sheet: {len(detectors)} detector descriptor(s)")
+
+
 FRAMEWORK_COVERAGE_SHEET_NAME = "Framework Coverage"   # W2-3: CIS/NIST/PCI/STIG mapping over the existing checks
 
 def write_framework_coverage_sheet(wb, framework_coverage: dict) -> None:
