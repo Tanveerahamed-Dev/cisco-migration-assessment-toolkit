@@ -447,7 +447,11 @@ def reachability_delta(old_snap, new_snap, pairs=None, limit: int = 24, max_pair
         "summary": summary,
         "newly_blocked": [p for p in diff["pairs"] if p["verdict"] == "newly_blocked"],
         "newly_reachable": [p for p in diff["pairs"] if p["verdict"] == "newly_reachable"],
+        # the inconclusive PAIRS themselves (not just the count): the pre-change certificate (precert.py)
+        # must NAME each blind-spot flow with its lost-trail statuses, never just tally them. Additive key.
+        "inconclusive_pairs": [p for p in diff["pairs"] if p["verdict"] == "inconclusive"],
         "preserved": summary.get("preserved", 0),
+        "both_unreachable": summary.get("both_unreachable", 0),
         "inconclusive": summary.get("inconclusive", 0),
         "pairs_tested": len(diff["pairs"]),
         "subnets_tested": subnets_tested,
