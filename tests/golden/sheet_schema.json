@@ -375,6 +375,17 @@
   null,
   null
  ],
+ "Detector Schema": [
+  "Each row DESCRIBES a live detector, grounded in its source; it does not re-run detection. 'abstains_when' is the coverage-honest guard \u2014 the condition under which the detector ABSTAINS (maps to ssot.abstention_reason's 'not_collected') instead of passing, so a blind spot never reads as healthy. It is never empty for an evidence-gated detector.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
  "Config Hygiene": [
   "Switch",
   "Issue",
@@ -622,7 +633,7 @@
   null
  ],
  "Coverage Schema": [
-  "Per-section coverage census \u2014 what this snapshot actually SAW. published 95 \u00b7 collected-but-empty 5 \u00b7 NOT collected 0 (blind spots) of 100 section(s). An absent axis is a blind spot, never a clean result.",
+  "Per-section coverage census \u2014 what this snapshot actually SAW: published (green) \u00b7 collected-but-empty (amber) \u00b7 NOT collected = a blind spot (red). An absent axis is a blind spot, never a clean result.",
   null,
   null,
   null,
