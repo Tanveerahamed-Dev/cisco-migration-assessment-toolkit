@@ -6,6 +6,59 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.27.0] — 2026-07-05 — the trust release (verification-deliverable trio + K2 + cutover matrix)
+
+The first tranche of `docs/MASTER_PLAN_2026-07-05.md` (the frontier per the saturated-analysis thesis:
+turn strong analysis into audit-grade, provably-trustworthy output). Built as a parallel isolated-worktree
+agent wave, then swept by a 5-lens adversarial review (find → independent refutation) that surfaced and
+closed two HIGH findings before merge.
+
+### Added — the Verification-Deliverable trio (next-best-improvements 2026-07-04 do-first #2)
+- **`precert.py` — Pre-Change Validation Certificate** (roadmap C1): packages `fib.reachability_delta` into a
+  decision-grade `PASS` / `CONDITIONAL` / `FAIL` / `INDETERMINATE` gate artifact on the `--compare` path —
+  never `PASS` with open blind spots; each changed flow cited old→new, each inconclusive pair named. Emits
+  `<out>.precert.json`, a diff-workbook sheet, and a diff-HTML block. The offline peer of Forward Predict /
+  NDI pre-change analysis.
+- **`attestation.py` — zero-egress attestation panel** (roadmap D3): re-derives the four trust claims
+  (read-only command surface, no-egress import graph, GET-only `rest_collect`, no-LLM runtime) at build time
+  with the SAME mechanics as `tests/test_readonly_and_no_egress.py` — a falsifiable proof, never a hardcoded
+  badge. The doctrine test now imports the shared grammar from the module so panel and CI guard cannot diverge.
+  New `attestation` snapshot key + **Trust & Sovereignty** workbook sheet.
+- **`nrfu_export.py` — offline four-phase NRFU command export** (roadmap frontier :233): per-wave, per-device
+  READ-ONLY verification commands with EXPECTED values pre-filled from the snapshot (`NRFU-W<w>-P<phase>-NNN`
+  cases across the canonical four NRFU phases; `[NOT OBSERVED]` abstention where evidence is absent). New
+  `nrfu_commands` key + **NRFU Commands** sheet + `write_nrfu_pack` per-device `.txt` packs.
+
+### Added — cutover & tooling
+- **Per-VLAN cutover workbook** (MASTER_PLAN §4.3): `compute_vlan_cutover_matrix` + **VLAN Cutover Matrix**
+  sheet — one row per VLAN (STP root + default-election flag, FHRP group/VIP/priorities, gateway SVIs,
+  endpoint census, app-domain criticality, dependencies, wave/scenario/readiness, blank human window +
+  rollback-owner fields), coverage-honest `[NOT OBSERVED]` for absent evidence.
+- **Five new read-only MCP tools** (MASTER_PLAN §4.4.1): `get_finding`, `search_devices`, `get_move_groups`,
+  `whatif_node`, `get_health` join the existing seven — the snapshot becomes a first-class MCP data source.
+- **K2 `PARSER_EXAMPLES` registry** (next-best do-first #3): the inline real-line fixtures become a per-parser
+  committed registry replayed forever (the anchored-non-zero-parse guard against the #1 recurring
+  format-fidelity bug class). Building it caught and fixed **two genuine NX-OS parser bugs** — the 2-line
+  trunk-table header dropped the native-VLAN/port-channel columns, and `Kernel uptime` was misread as a
+  hostname — so the golden now surfaces a previously-invisible native-VLAN-1 exposure on the NX-OS device
+  (a false-health miss, now caught).
+
+### Fixed — adversarial-review findings (both HIGH, verified by execution)
+- **NRFU read-only enforcement**: snapshot strings are attacker-controllable on the `--no-collect` path (JSON
+  carries `\n`); an embedded newline in an interpolated value could emit EXECUTABLE continuation lines
+  (`configure terminal` / `shutdown`) into the shipped `.txt` pack — a device write, defeating guardrail #1.
+  Closed with a two-layer defense (`_one_line` chokepoint + writer-side read-only refusal) and a regression test.
+- **`redact_snapshot` IPv4 collision**: the JSON/explorer `--redact` path still used the in-band
+  `10.{i//256}.{i%256}` scheme where a real /24 could draw a pseudonym equal to another real net (re-emitting
+  a real gateway into a share-safe deliverable). Pseudonyms move to IANA-reserved Class E `240.0.0.0/4` with an
+  already-240.x identity rule that preserves idempotency.
+
+### Security
+- Scrubbed two real Type-5 (MD5crypt) client password hashes that had been committed verbatim in
+  `tests/test_audit5_parse_fidelity.py` (pre-existing) and copied into the new parser registry — replaced with
+  length-preserving synthetic tokens. A repo-wide cross-check against 513 real collection secrets confirmed
+  these were the only such leak in any tracked file.
+
 ## [v3.26.0] — 2026-07-03 — true 3D topology
 
 ### Added
