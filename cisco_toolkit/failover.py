@@ -50,13 +50,6 @@ def _as_failure_list(failures: Any) -> List[dict]:
     return failures if isinstance(failures, list) else []
 
 
-def _mac_key(addr: Any) -> str:
-    """Normalize a bridge MAC / STP root address ('aaaa.0001.0001') to a comparable lowercase key. A blank /
-    missing address sorts LAST (so a bridge with an unknown MAC never wins a tiebreak it can't be proven to)."""
-    s = str(addr or "").strip().lower()
-    return s if s else "ffff.ffff.ffff.ffff.ffff"
-
-
 def _int_or(v: Any, default: int) -> int:
     try:
         return int(v)
@@ -85,17 +78,14 @@ def _vlan_bridges(snap: Dict[str, Any]) -> Dict[str, Dict[str, dict]]:
 
 
 def _current_root(bridges: Dict[str, dict]) -> Optional[str]:
-    """The host that is the current STP root for a VLAN: the one flagged is_root, else the min
-    (root_priority, root_address) bridge — the deterministic election the network itself ran. None if no
-    bridge carries usable data."""
+    """The collected host that is PROVABLY the current STP root for a VLAN — the one that reports itself as
+    root (is_root=True). Returns None when no collected bridge is the root: in that case the real root is
+    off-scan (every collected non-root bridge advertises the SAME off-scan root_address, so electing one by
+    the advertised vector would just pick an arbitrary non-root switch — a fabricated incumbent). Coverage-
+    honesty (Law 3): the root is named only when the evidence proves it, never inferred from the identical
+    root vector the non-root bridges all carry. Also None if two+ bridges ambiguously claim root."""
     flagged = [h for h, r in bridges.items() if r.get("is_root") is True]
-    if len(flagged) == 1:
-        return flagged[0]
-    if not bridges:
-        return None
-    # Fall back to the election on the advertised root vector (root_priority then root_address).
-    return min(bridges, key=lambda h: (_int_or(bridges[h].get("root_priority"), 1 << 30),
-                                       _mac_key(bridges[h].get("root_address"))))
+    return flagged[0] if len(flagged) == 1 else None
 
 
 def compute_stp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List[Dict[str, Any]]:
@@ -134,17 +124,37 @@ def compute_stp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List[
                                            "INDETERMINATE — every observed bridge for this VLAN is in the "
                                            "failed set (no surviving root candidate collected)"))
             continue
-        new_root = min(survivors, key=lambda h: (_int_or(survivors[h].get("bridge_priority"), 1 << 30),
-                                                  _mac_key(survivors[h].get("root_address"))))
-        won_by = _stp_won_by(survivors, new_root)
-        new_prio = _int_or(survivors[new_root].get("bridge_priority"), 1 << 30)
+        # The re-election is provable ONLY from each survivor's OWN bridge_priority. A survivor whose own
+        # priority was not collected could hold any value (an uncollected priority could undercut the apparent
+        # winner), so a missing priority on ANY survivor makes the winner unprovable -> abstain (kills the old
+        # 1<<30 sentinel that laundered a missing priority into a fabricated default-election).
+        priced = {h: _int_or(r.get("bridge_priority"), None) for h, r in survivors.items()}
+        if any(p is None for p in priced.values()):
+            missing = sorted(h for h, p in priced.items() if p is None)
+            rows.append(_stp_indeterminate(vlan, old_root, is_mst,
+                                           "INDETERMINATE — surviving bridge(s) without a collected "
+                                           "bridge priority (winner not provable): " + ", ".join(missing)))
+            continue
+        min_prio = min(priced.values())
+        winners = sorted(h for h, p in priced.items() if p == min_prio)
+        if len(winners) > 1:
+            # A genuine bridge_priority tie is broken by the contending bridge's OWN bridge MAC (802.1D), which
+            # is NOT collected (root_address is the OLD root's MAC — identical across these survivors). Abstain
+            # rather than pick arbitrarily / on the wrong field.
+            rows.append(_stp_indeterminate(vlan, old_root, is_mst,
+                                           "INDETERMINATE — bridge-priority tie among surviving candidates at "
+                                           "priority {}; the tiebreak needs each bridge's own MAC (not "
+                                           "collected): {}".format(min_prio, ", ".join(winners))))
+            continue
+        new_root = winners[0]
         rows.append({
             "vlan": vlan,
             "old_root": old_root,
             "new_root": new_root,
-            "new_root_priority": new_prio,
-            "new_root_won_by": won_by,
-            "is_default_election": new_prio >= _DEFAULT_BRIDGE_PRIORITY,
+            "new_root_priority": min_prio,
+            "new_root_won_by": ("default-election(>=32768)" if min_prio >= _DEFAULT_BRIDGE_PRIORITY
+                                else "lower-priority"),
+            "is_default_election": min_prio >= _DEFAULT_BRIDGE_PRIORITY,
             "is_mst": is_mst,
             "ports_expected_to_transition": "(topology-scan-bound — lower bound)",
             "indeterminate": False,
@@ -160,19 +170,6 @@ def _stp_indeterminate(vlan: str, old_root: Optional[str], is_mst: bool, reason:
         "ports_expected_to_transition": "(topology-scan-bound — lower bound)",
         "indeterminate": True, "reason": reason,
     }
-
-
-def _stp_won_by(survivors: Dict[str, dict], new_root: str) -> str:
-    """Explain the winning margin: a strictly-lower bridge_priority => 'lower-priority'; a priority TIE broken
-    by the lower root_address/mac => 'lower-mac-tiebreak'; a winner whose priority is at/above the default =>
-    'default-election(>=32768)' (the unmanaged smell surfaces first)."""
-    new_prio = _int_or(survivors[new_root].get("bridge_priority"), 1 << 30)
-    if new_prio >= _DEFAULT_BRIDGE_PRIORITY:
-        return "default-election(>=32768)"
-    others = [_int_or(survivors[h].get("bridge_priority"), 1 << 30) for h in survivors if h != new_root]
-    if others and min(others) == new_prio:
-        return "lower-mac-tiebreak"                     # a priority tie decided on the MAC
-    return "lower-priority"
 
 
 def _vlan_sort_key(vlan: str):
@@ -203,16 +200,16 @@ def _fhrp_groups(snap: Dict[str, Any]) -> Dict[str, List[dict]]:
 
 
 def _current_active(members: List[dict]) -> Optional[dict]:
-    """The current forwarding member of a group: the one whose state reads 'Active'/'Master' (case-insensitive),
-    else — if none is explicitly so — the highest-priority member (the election the group itself would run).
-    None if the group has no members."""
+    """The PROVABLE current forwarding member of a group: the one whose state reads 'Active'/'Master'
+    (case-insensitive). Returns None when no collected member is explicitly Active/Master — the real
+    forwarding member is then off-scan (e.g. only Standby members were collected), and guessing it by
+    highest priority would fabricate an incumbent that isn't serving the VIP. Coverage-honesty (Law 3):
+    the incumbent is named only when a collected member proves it, never inferred from priority."""
     for m in members:
         st = str(m.get("state", "")).strip().lower()
         if st in ("active", "master"):
             return m
-    if not members:
-        return None
-    return max(members, key=lambda m: (_int_or(m.get("priority"), -1), str(m.get("host", ""))))
+    return None
 
 
 def compute_fhrp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List[Dict[str, Any]]:

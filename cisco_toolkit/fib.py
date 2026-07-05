@@ -632,24 +632,36 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
         base["verdict"] = "not_ecmp"          # a single installed path -> multipath consistency is not applicable
         return base
 
-    mtus, acls, unobserved = [], [], []
+    mtus, acls, iface_blind, mtu_blind = [], [], [], []
     for leg in legs:
         oi = str(leg.get("out_intf", "") or "")
+        nh = str(leg.get("next_hop", "") or "")
+        if not oi:
+            iface_blind.append({"out_intf": oi, "next_hop": nh})
+            continue
         mtu = _hop_mtu(interfaces, host, oi)
         ai, ao = _iface_acl(interfaces, host, oi)
-        if not oi or (mtu is None and ai is None and ao is None):
-            unobserved.append({"out_intf": oi, "next_hop": str(leg.get("next_hop", "") or "")})
+        if ai is None and ao is None and mtu is None:
+            # _iface_acl returns (None, None) ONLY when the interface RECORD is absent (vs ('','') for a
+            # collected record with no ACL). No record at all -> the whole leg is a blind spot.
+            iface_blind.append({"out_intf": oi, "next_hop": nh})
             continue
-        mtus.append((oi, mtu))
+        # The record exists. ACL '' is an OBSERVED "no filter" (not blind). But a missing MTU is its own blind
+        # spot for the MTU dimension — it must NOT read as consistent-by-omission (the finding: a leg whose MTU
+        # was never collected let the MTU dimension pass silently).
+        if mtu is None:
+            mtu_blind.append({"out_intf": oi, "next_hop": nh})
+        else:
+            mtus.append((oi, mtu))
         acls.append((oi, ai or "", ao or ""))
 
-    base["unobserved_legs"] = unobserved
+    base["unobserved_legs"] = iface_blind
+    base["mtu_unobserved_legs"] = mtu_blind      # additive: legs whose record exists but MTU was not collected
 
-    # MTU divergence: distinct OBSERVED MTUs across legs (ignore legs whose MTU was not collected).
-    obs_mtus = {m for _oi, m in mtus if m is not None}
+    # MTU divergence: distinct OBSERVED MTUs across legs (a proven divergence — the narrow leg blackholes).
+    obs_mtus = {m for _oi, m in mtus}
     if len(obs_mtus) > 1:
-        base["mtu_divergence"] = sorted(
-            [{"out_intf": oi, "mtu": m} for oi, m in mtus if m is not None], key=lambda d: d["mtu"])
+        base["mtu_divergence"] = sorted([{"out_intf": oi, "mtu": m} for oi, m in mtus], key=lambda d: d["mtu"])
     # ACL divergence: distinct (acl_in, acl_out) tuples across legs whose interface WAS collected.
     obs_acls = {(ai, ao) for _oi, ai, ao in acls}
     if len(obs_acls) > 1:
@@ -657,10 +669,10 @@ def ecmp_consistency(snap, src_ip: str, dst_ip: str) -> dict:
 
     if base["mtu_divergence"] or base["acl_divergence"]:
         base["verdict"] = "inconsistent"      # a proven divergence dominates -- the legs are NOT treated alike
-    elif unobserved:
-        base["verdict"] = "INDETERMINATE"     # a blind leg -> can't certify the set is consistent (abstain)
+    elif iface_blind or mtu_blind:
+        base["verdict"] = "INDETERMINATE"     # ANY blind spot (whole leg, or just its MTU) -> can't certify
     else:
-        base["verdict"] = "consistent"        # every leg observed and aligned on MTU + ACL
+        base["verdict"] = "consistent"        # every leg fully observed and aligned on MTU + ACL
     return base
 
 

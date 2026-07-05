@@ -290,6 +290,20 @@ def test_ecmp_indeterminate_when_a_leg_interface_is_unobserved():
     assert any(leg["out_intf"] == "Gi0/2" for leg in r["unobserved_legs"])
 
 
+def test_ecmp_indeterminate_when_a_leg_mtu_is_uncollected():
+    """Adversarial-review #3/#10: the interface RECORD exists (so it is NOT a whole-leg blind spot) but its MTU
+    field was never collected. The MTU dimension must NOT read 'consistent' by omission — a blank MTU is its own
+    blind spot that forces INDETERMINATE, disclosed in mtu_unobserved_legs. This exercises the ('','') vs
+    (None,None) distinction the pre-fix gate missed (an existing record with no ACL returns ('',''), so the old
+    `mtu is None and ai is None and ao is None` guard never fired and the leg silently read consistent)."""
+    snap = _ecmp_snap(mtu_a="9216", mtu_b="9216")
+    snap["interfaces"]["R1"]["Gi0/2"].pop("mtu", None)   # record kept, MTU field absent (not the whole leg)
+    r = fib.ecmp_consistency(snap, "10.0.1.5", "10.9.9.5")
+    assert r["verdict"] == "INDETERMINATE"                # NOT 'consistent'
+    assert any(leg["out_intf"] == "Gi0/2" for leg in r["mtu_unobserved_legs"])
+    assert r["unobserved_legs"] == []                     # the leg's interface WAS collected — only its MTU is blind
+
+
 def test_ecmp_total_on_bad_input():
     r = fib.ecmp_consistency(None, "1.1.1.1", "2.2.2.2")
     assert r["verdict"] == "INDETERMINATE" and r["leg_count"] == 0

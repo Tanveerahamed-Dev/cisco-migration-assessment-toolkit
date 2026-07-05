@@ -162,13 +162,27 @@ def test_embedded_fib_port_is_behaviorally_identical_to_python(tmp_path):
     js_results = json.loads(proc.stdout)
 
     assert len(js_results) == len(py_results)
+    # trace_fib_path grew Python-ONLY advisory enrichments (the wave-2 MTU / jumbo-blackhole verdict keys)
+    # that the embedded explorer FIB port deliberately does NOT compute — the explorer renders reachability,
+    # not path-MTU audit. Parity is over the SHARED reachability core, so these keys are projected out of both
+    # sides before comparison. This is a DECLARED, guarded divergence (not a silent one): the non-vacuity
+    # assertion below proves the enrichment is actually present on the Python side and the exclusion list is
+    # the exhaustive, named set — a NEW Python-only key added without updating this list would leave it in the
+    # compared dict and trip the mismatch, so the gate cannot silently hollow out.
+    _PY_ONLY_FIB_KEYS = {"mtu_min", "mtu_bottleneck_hop", "mtu_verdict", "mtu_unobserved_hops", "jumbo_blackhole"}
+    assert _PY_ONLY_FIB_KEYS <= set(py_results[0]), (
+        "the Python trace lost its MTU-enrichment keys — update _PY_ONLY_FIB_KEYS or the parity projection")
+
+    def _core(d):
+        return {k: v for k, v in d.items() if k not in _PY_ONLY_FIB_KEYS} if isinstance(d, dict) else d
+
     mismatches = []
     for i, (py, js) in enumerate(zip(py_results, js_results)):
-        if py != js:
-            mismatches.append((cases[i]["src"], cases[i]["dst"], py, js))
+        if _core(py) != _core(js):
+            mismatches.append((cases[i]["src"], cases[i]["dst"], _core(py), _core(js)))
     assert not mismatches, (
         f"{len(mismatches)} of {len(cases)} traces DIVERGE between fib.py and the embedded "
-        f"JS port — first: src={mismatches[0][0]} dst={mismatches[0][1]}\n"
+        f"JS port on the shared reachability core — first: src={mismatches[0][0]} dst={mismatches[0][1]}\n"
         f"python: {json.dumps(mismatches[0][2])[:400]}\n"
         f"js:     {json.dumps(mismatches[0][3])[:400]}")
 

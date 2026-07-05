@@ -153,6 +153,14 @@ def test_move_fhrp_active_flips_state_without_touching_routes():
     s = res["steps"][0]
     assert s["is_noop"] is False                            # the fhrp_detail state changed
     assert s["newly_lost_flows"] == []                      # L2-only: the VIP does not move, routes intact
+    # adversarial-review #6/#8: the step must REPORT the takeover it performed (the twin over an empty
+    # failure set would otherwise see nothing) — group 10's active moves core1 -> dist1, and the summary +
+    # narrative reflect it. This assertion would fail against the pre-fix engine that silently reported nothing.
+    move = next(r for r in s["fhrp_takeovers"] if r["group"] == "10")
+    assert move["old_active"] == "core1" and move["new_active"] == "dist1"
+    assert move.get("reason", "").lower().startswith("fhrp forwarding role moved")
+    assert res["summary"]["total_fhrp_takeovers"] >= 1
+    assert "take over" in s["narrative"]
     # the input snapshot's fhrp state is untouched (deep copy) — core1 is still Active in the ORIGINAL
     assert snap["fhrp_detail"]["core1"][0]["state"] == "Active"
 

@@ -10,18 +10,24 @@ from cisco_toolkit import failover
 # ------------------------------------------------------------------ STP re-election ---
 
 def _stp_snap():
-    """core1 is the VLAN-10 root (priority 4096); dist1 (8192) and dist2 (8192, lower mac) are alternates.
-    VLAN-20 root is core1 (priority 4096) with a single sole alternate dist1 at the DEFAULT priority 32768."""
+    """core1 is the VLAN-10 root (priority 4096); dist1 (16384) and dist2 (8192) are alternates with DISTINCT
+    own bridge priorities, so dist2 wins the re-election on priority (a provable winner — the realistic case,
+    where every collected bridge advertises the SAME root_address for the incumbent). VLAN-20 root is core1
+    (priority 4096) with a single sole alternate dist1 at the DEFAULT priority 32768.
+
+    Note the root_address on the alternates is the incumbent core1's advertised MAC (identical across them),
+    matching real 'show spanning-tree' output — the per-bridge OWN MAC is NOT in this data, which is why a
+    genuine bridge-priority tie is unbreakable and must abstain (see test_stp_priority_tie_abstains)."""
     return {"stp_roots": {
         "core1": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": True,
                          "is_mst": False, "bridge_priority": 4096},
                   "20": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": True,
                          "is_mst": False, "bridge_priority": 4096}},
-        "dist1": {"10": {"root_priority": 4096, "root_address": "dddd.0000.0002", "is_root": False,
-                         "is_mst": False, "bridge_priority": 8192},
-                  "20": {"root_priority": 4096, "root_address": "dddd.0000.0002", "is_root": False,
+        "dist1": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
+                         "is_mst": False, "bridge_priority": 16384},
+                  "20": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
                          "is_mst": False, "bridge_priority": 32768}},
-        "dist2": {"10": {"root_priority": 4096, "root_address": "cccc.0000.0003", "is_root": False,
+        "dist2": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
                          "is_mst": False, "bridge_priority": 8192, }},
     }}
 
@@ -30,17 +36,18 @@ def test_stp_reelection_picks_lowest_priority_new_root():
     snap = _stp_snap()
     rows = failover.compute_stp_failover(snap, ["core1"])
     v10 = next(r for r in rows if r["vlan"] == "10")
-    # dist1 and dist2 both sit at 8192; the winner is the lower root_address/mac tiebreak.
+    # dist2 (8192) beats dist1 (16384) on its OWN bridge priority — a provable winner, no mac tiebreak needed.
     assert v10["old_root"] == "core1"
-    assert v10["new_root"] == "dist2"                       # dist2 mac 'cccc…' < dist1 mac 'dddd…' — mac tiebreak
-    assert v10["new_root_won_by"] == "lower-mac-tiebreak"
+    assert v10["new_root"] == "dist2"
+    assert v10["new_root_won_by"] == "lower-priority"
+    assert v10["new_root_priority"] == 8192
     assert v10["is_default_election"] is False
     assert v10["indeterminate"] is False
     assert v10["ports_expected_to_transition"] == "(topology-scan-bound — lower bound)"
 
 
-def test_stp_reelection_lower_priority_beats_mac():
-    # give dist1 a strictly lower priority so it wins by priority, not by mac
+def test_stp_reelection_lower_priority_wins():
+    # give dist1 a strictly lower priority than dist2 so it wins on priority
     snap = _stp_snap()
     snap["stp_roots"]["dist1"]["10"]["bridge_priority"] = 4097
     rows = failover.compute_stp_failover(snap, ["core1"])
@@ -49,20 +56,59 @@ def test_stp_reelection_lower_priority_beats_mac():
     assert v10["new_root_won_by"] == "lower-priority"
 
 
-def test_stp_mac_tiebreak_lower_address_wins():
-    # equal priority on both alternates -> lower root_address (mac) breaks the tie deterministically
+def test_stp_priority_tie_abstains():
+    # REALISTIC schema (adversarial-review #5/#7): both alternates share the incumbent's advertised
+    # root_address (their OWN bridge MACs are not collected), and sit at an EQUAL own bridge priority.
+    # The 802.1D tiebreak needs each bridge's own MAC — absent here — so the engine must ABSTAIN, never
+    # fabricate a winner on the (identical) root_address field.
     snap = {"stp_roots": {
         "core1": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": True,
                          "bridge_priority": 4096}},
-        "a": {"10": {"root_priority": 4096, "root_address": "bbbb.0000.0002", "is_root": False,
+        "a": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
                      "bridge_priority": 8192}},
-        "b": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0009", "is_root": False,
+        "b": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
                      "bridge_priority": 8192}},
     }}
     rows = failover.compute_stp_failover(snap, ["core1"])
     v10 = next(r for r in rows if r["vlan"] == "10")
-    assert v10["new_root"] == "b"                           # 'aaaa…' < 'bbbb…'
-    assert v10["new_root_won_by"] == "lower-mac-tiebreak"
+    assert v10["indeterminate"] is True
+    assert v10["new_root"] is None
+    assert "tie" in v10["reason"].lower() and "not collected" in v10["reason"].lower()
+
+
+def test_stp_offscan_root_is_not_fabricated():
+    # adversarial-review #1: no collected bridge reports itself as root (is_root all False) — the real root
+    # is off-scan. Failing a collected non-root switch must NOT fabricate a re-election (the real root
+    # survives off-scan); _current_root abstains, so no VLAN-10 row is produced for the removal.
+    snap = {"stp_roots": {
+        "acc1": {"10": {"root_priority": 4096, "root_address": "ffff.0000.0009", "is_root": False,
+                        "bridge_priority": 8192}},
+        "acc2": {"10": {"root_priority": 4096, "root_address": "ffff.0000.0009", "is_root": False,
+                        "bridge_priority": 16384}},
+    }}
+    rows = failover.compute_stp_failover(snap, ["acc1"])
+    assert rows == []                                       # the incumbent is off-scan -> nothing re-roots
+    rd = failover.compute_failover_readiness(snap)
+    assert rd["n_stp_roots"] == 0                           # no collected bridge is provably a root
+
+
+def test_stp_missing_survivor_priority_abstains():
+    # adversarial-review #4/#11: a surviving bridge whose OWN bridge_priority was not collected could hold
+    # any value (an uncollected priority could undercut the apparent winner) -> abstain, never launder the
+    # missing priority into a fabricated default-election via a sentinel.
+    snap = {"stp_roots": {
+        "core1": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": True,
+                         "bridge_priority": 4096}},
+        "dist1": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
+                         "bridge_priority": 8192}},
+        "dist2": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False}},
+    }}
+    rows = failover.compute_stp_failover(snap, ["core1"])
+    v10 = next(r for r in rows if r["vlan"] == "10")
+    assert v10["indeterminate"] is True
+    assert v10["new_root"] is None
+    assert v10["is_default_election"] is False             # never a fabricated default-election
+    assert "priority" in v10["reason"].lower()
 
 
 def test_stp_default_election_flagged():
@@ -177,6 +223,22 @@ def test_fhrp_surviving_active_is_not_reported():
     snap = _fhrp_snap()
     rows = failover.compute_fhrp_failover(snap, ["core2"])
     assert rows == []
+
+
+def test_fhrp_offscan_active_is_not_fabricated():
+    # adversarial-review #2: the real Active/Master (core1, prio 110) is OFF-SCAN; only Standby members were
+    # collected. Failing a collected Standby must NOT promote another Standby to a fabricated 'current active'
+    # and claim a takeover — the VIP is still served by the off-scan Active, unaffected by this failure.
+    snap = {"fhrp_detail": {
+        "core2": [{"ifname": "Vlan10", "group": "10", "state": "Standby", "priority": 100, "preempt": True,
+                   "vip": "10.0.10.1", "version": 2}],
+        "core3": [{"ifname": "Vlan10", "group": "10", "state": "Standby", "priority": 90, "preempt": True,
+                   "vip": "10.0.10.1", "version": 2}],
+    }}
+    rows = failover.compute_fhrp_failover(snap, ["core2"])
+    assert rows == []                                       # no member proves it is the active -> no takeover
+    rd = failover.compute_failover_readiness(snap)
+    assert rd["n_fhrp_actives"] == 0                        # no collected member is provably the forwarder
 
 
 # ------------------------------------------------------------------ orchestrator ---
