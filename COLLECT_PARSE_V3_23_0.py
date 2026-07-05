@@ -427,6 +427,7 @@ from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_path
                                              load_capture_meta, CAPTURE_META_FILENAME)
 from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
 from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
+from cisco_toolkit.precert import compute_precert                        # roadmap C1 (Pre-Change Validation Certificate)
 from cisco_toolkit.assertions import evaluate_pack                      # roadmap A1/H1/H2 (checks-as-data)
 # NEW-V3.23.37-.38 (PHASE 2.7 steps 27-28): the model-construction layer - the per-device
 # InterfaceData builder + switch-level DevicePhysical / switch-identity records + global-ARP
@@ -1530,7 +1531,9 @@ def main():
                     metavar=("OLD_SNAPSHOT", "NEW_SNAPSHOT"),
                     help="NEW-V15: compare two snapshot JSONs and write a pre/post-cutover validation "
                          "workbook (Summary verdict + Interface/Endpoint/SVI changes + Health Shifts + "
-                         "Findings Delta); skips collection and the template.")
+                         "Findings Delta + Pre-Change Certificate) plus a <output>.precert.json "
+                         "Pre-Change Validation Certificate (roadmap C1; --path-intents is honored); "
+                         "skips collection and the template.")
     ap.add_argument("--no-html",         action="store_true",
                     help="NEW-V3.17: skip Blast-Radius Explorer (HTML) generation "
                          "(default: HTML is always written beside the workbook).")
@@ -1582,7 +1585,8 @@ def main():
                          "-> a 'Failure What-If' sheet + snapshot key. Opt-in; read-only (the snapshot is mutated in memory).")
     ap.add_argument("--path-intents",    default=None, metavar="FILE",
                     help="roadmap G3: a JSON catalog of named path/segmentation intents (a list of {id, src, dst, expect: "
-                         "REACHES|ISOLATED}) evaluated over the computed FIB -> a 'Path Assertions' sheet + snapshot key. Opt-in.")
+                         "REACHES|ISOLATED}) evaluated over the computed FIB -> a 'Path Assertions' sheet + snapshot key. "
+                         "With --compare, the catalog is re-validated across the pair into the Pre-Change Certificate. Opt-in.")
     ap.add_argument("--assert-pack",     default=None, metavar="FILE",
                     help="roadmap A1/H2: a JSON state-assertion check-pack ({assertions:[...]}) evaluated over the "
                          "snapshot -> a 'state_assertions' snapshot key. Opt-in; coverage-honest ([NOT OBSERVED] abstention).")
@@ -1627,8 +1631,25 @@ def main():
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         diff_out = args.output or f"Migration_Diff_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(diff_out)) or ".", exist_ok=True)  # FIX-V3.23.103: same missing-output-dir guard
-        write_diff_workbook(old_snap, new_snap, diff_out)
+        # roadmap C1: the Pre-Change Validation Certificate — the fib differential packaged as the PPDIOO
+        # gate artifact (<output>.precert.json + a 'Pre-Change Certificate' sheet). An optional
+        # --path-intents catalog is re-validated across the pair and folded into the certificate.
+        _intents = None
+        if args.path_intents:
+            try:
+                with open(args.path_intents, encoding="utf-8") as _pf:
+                    _intents = json.load(_pf)
+            except Exception as e:
+                _intents = None
+                logger.warning(f"  --path-intents not read ({e}); certificate proceeds without intents.")
+            else:
+                _intents = _intents if isinstance(_intents, list) else (_intents.get("assertions") or _intents.get("intents") or [])
+        cert = compute_precert(old_snap, new_snap, path_intents=_intents)
+        write_diff_workbook(old_snap, new_snap, diff_out, precert=cert)
+        precert_path = os.path.splitext(os.path.abspath(diff_out))[0] + ".precert.json"
+        write_json_file(precert_path, cert)
         logger.info(f"[OK] Saved diff workbook: {os.path.abspath(diff_out)}")
+        logger.info(f"[OK] Pre-Change Validation Certificate: {precert_path}  (verdict: {cert.get('verdict')})")
         return
 
     # NEW-V3.23.145: trend mode - migration-campaign trajectory across a SERIES of snapshots, no SSH/template.
