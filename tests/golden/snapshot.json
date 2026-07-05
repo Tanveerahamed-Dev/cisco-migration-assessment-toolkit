@@ -4413,7 +4413,7 @@
     "cited_fields": [
      "operational_drift[].category",
      "operational_drift[].title",
-     "trunk_native"
+     "operational_drift[].devices"
     ],
     "abstains_when": "device not collected, or trunk/switchport detail not captured for the port",
     "evidence_gated": true,
@@ -8623,10 +8623,10 @@
    },
    {
     "key": "multicast_intelligence",
-    "state": "published",
+    "state": "collected_but_empty",
     "count": 6,
     "kind": "dict",
-    "note": "seen \u2014 collected and non-empty"
+    "note": "collected, nothing of this kind found (not a blind spot)"
    },
    {
     "key": "lifecycle_risk",
@@ -9008,10 +9008,10 @@
    },
    {
     "key": "feature_compliance",
-    "state": "published",
+    "state": "collected_but_empty",
     "count": 3,
     "kind": "dict",
-    "note": "seen \u2014 collected and non-empty"
+    "note": "collected, nothing of this kind found (not a blind spot)"
    },
    {
     "key": "acl_line_reachability",
@@ -9092,10 +9092,10 @@
    },
    {
     "key": "addressing_conflicts",
-    "state": "published",
+    "state": "collected_but_empty",
     "count": 2,
     "kind": "dict",
-    "note": "seen \u2014 collected and non-empty"
+    "note": "collected, nothing of this kind found (not a blind spot)"
    },
    {
     "key": "fhrp",
@@ -9246,8 +9246,8 @@
    }
   ],
   "summary": {
-   "n_published": 96,
-   "n_collected_but_empty": 5,
+   "n_published": 93,
+   "n_collected_but_empty": 8,
    "n_not_collected": 0,
    "n_sections": 101
   }

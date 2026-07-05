@@ -463,7 +463,7 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
                   "hygiene and VLAN-hopping exposure.",
         "healthy_value": "a dedicated, unused native VLAN on inter-switch trunks",
         "threshold": "trunk native VLAN == 1",
-        "cited_fields": ["operational_drift[].category", "operational_drift[].title", "trunk_native"],
+        "cited_fields": ["operational_drift[].category", "operational_drift[].title", "operational_drift[].devices"],
         "abstains_when": "device not collected, or trunk/switchport detail not captured for the port",
         "evidence_gated": True,
         "source_command": _src("Trunk", "show interface trunk"),

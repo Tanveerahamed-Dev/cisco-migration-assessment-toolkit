@@ -49,6 +49,26 @@ def test_abstention_is_total_on_bad_input():
     assert ssot.abstention_reason({"fhrp": 0}, "fhrp") == "collected_but_empty"   # zero/empty scalar
 
 
+def test_abstention_wrapper_of_empties_is_not_published():
+    """DEEP-empty, not shallow-falsy (adversarial-review finding, 2026-07-05): a section produced by a
+    compute that ALWAYS returns its keys but found nothing — e.g. addressing_conflicts
+    {'dup_ip': [], 'dup_subnet': []} (zero conflicts) — is truthy, so a shallow `not val` mislabels it
+    'published' (a green "seen" row for a genuinely-empty result — the exact Law-3 inversion this module
+    exists to prevent). It must read 'collected_but_empty'."""
+    s = {
+        "addressing_conflicts": {"dup_ip": [], "dup_subnet": []},           # wrapper of empty lists
+        "feature_compliance": {"features": [], "summary": {"n_features": 0}},  # nested all-zero/empty
+        "multicast_intelligence": {"groups": [], "querier": {"n_querier_vlans": 0}},
+        "vpc": {"core1": {"domain_id": 1}},                                 # a REAL leaf -> stays published
+        "qos": {"policies": [{"name": "VOICE"}], "notes": []},              # partial content -> published
+    }
+    assert ssot.abstention_reason(s, "addressing_conflicts") == "collected_but_empty"
+    assert ssot.abstention_reason(s, "feature_compliance") == "collected_but_empty"
+    assert ssot.abstention_reason(s, "multicast_intelligence") == "collected_but_empty"
+    assert ssot.abstention_reason(s, "vpc") == "published"        # deep-empty must not over-reach
+    assert ssot.abstention_reason(s, "qos") == "published"        # any real leaf keeps it published
+
+
 def test_abstention_device_match_is_case_insensitive():
     """Device names vary in case between devices.json and CDP/show-text hostnames. A blind-spot device must be
     recognised regardless of case — else an un-collected device queried with different case escapes the

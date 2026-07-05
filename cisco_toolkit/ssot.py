@@ -114,6 +114,20 @@ def canonical_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
 _MISSING = object()
 
 
+def _is_deep_empty(val: Any) -> bool:
+    """True when `val` carries NO evidence — a falsy scalar/empty container, OR a container whose every
+    element/value is itself deep-empty. This is the coverage-honesty fix for the WRAPPER-of-empties shape
+    (adversarial-review finding, 2026-07-05): a section like ``{'dup_ip': [], 'dup_subnet': []}`` (a compute
+    that ALWAYS returns its keys, here with zero conflicts found) is truthy, so a shallow ``not val`` check
+    mislabels it 'published' — a green "seen" row for a genuinely-empty result, the exact Law-3 inversion this
+    module exists to prevent. Short-circuits on the first real leaf, so a populated section stays cheap."""
+    if isinstance(val, dict):
+        return all(_is_deep_empty(v) for v in val.values())
+    if isinstance(val, (list, tuple, set)):
+        return all(_is_deep_empty(v) for v in val)
+    return not val
+
+
 def _device_not_collected(snap: Dict[str, Any], device: str) -> bool:
     """True iff `device` is in the collection blind-spot list with status 'not collected' (a fully un-collected
     device). A 'partial' device (some evidence collected) or a fully-collected one is NOT a blind spot."""
@@ -141,7 +155,9 @@ def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) ->
     val = _dotted(snap, subject) if "." in subject else snap.get(subject, _MISSING)
     if val is _MISSING or val is None:
         return "not_collected"
-    if not val:                      # present but falsy ([], {}, '', 0) -> collected, nothing found
+    # DEEP-empty, not just shallow-falsy: a wrapper whose every payload is empty (a compute that always
+    # returns its keys but found nothing) is 'collected_but_empty', never the green 'published'.
+    if _is_deep_empty(val):          # present but carries no evidence -> collected, nothing found
         return "collected_but_empty"
     return "published"
 
