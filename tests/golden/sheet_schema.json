@@ -585,5 +585,17 @@
   null,
   null,
   null
+ ],
+ "NRFU Commands": [
+  "\u2713 Four-phase NRFU certification pack: run each READ-ONLY command and confirm the output MATCHES the pre-filled EXPECTED value (captured from the pre-cutover snapshot; the source key cites the evidence). A deviation is a regression to investigate before sign-off. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner.",
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
  ]
 }

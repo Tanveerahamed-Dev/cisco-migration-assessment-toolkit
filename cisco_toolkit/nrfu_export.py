@@ -165,7 +165,10 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
             bundles: Dict[str, int] = {}
             for p, d in ifaces.items():
                 b = _fld(d, "port_channel")
-                if b:
+                # the logical bundle interface itself (Po1/Port-channel1) also carries the
+                # port_channel field — it is not a MEMBER, so counting it would assert a
+                # false member count at execution (e.g. 3 for a 2-member bundle).
+                if b and not re.match(r"^(Po|Port-?channel)\d+$", str(p), re.IGNORECASE):
                     bundles[b] = bundles.get(b, 0) + 1
             if bundles:      # no bundle configured = feature absent, not missing evidence -> no case
                 case(h, 2, "per-site", "show port-channel summary" if nx else "show etherchannel summary",
