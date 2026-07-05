@@ -355,6 +355,7 @@ from cisco_toolkit.analyze import (
 )
 from cisco_toolkit.design_advisor import compute_design_blueprint, compute_design_nrfu, compute_architecture_coverage   # NEW: CCDE-grounded target-state design blueprint + design-driven NRFU + architecture-coverage SSOT (single source of truth)
 from cisco_toolkit.attestation import compute_attestation   # roadmap D3: zero-egress attestation — trust claims RE-DERIVED at build time (falsifiable, never a badge)
+from cisco_toolkit.nrfu_export import compute_nrfu_commands   # NEW: four-phase NRFU certification pack (READ-ONLY commands + expected values pre-filled from the snapshot)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
 # build); only _CISCO_ERRORS stays (platform detection reuses it). Plan A / Tier-1 #3
@@ -398,6 +399,7 @@ from cisco_toolkit.excel import (
     write_multicast_intelligence_sheet,                          # NEW-V3.23.115 (media-fabric multicast intelligence)
     write_remediation_plan_sheet,                                # NEW-V3.23.116 (generated config snippets, review-only)
     write_validation_plan_sheet,                                 # NEW-V3.23.143 (per-wave post-cutover validation checklist)
+    write_nrfu_commands_sheet,                                   # NEW (four-phase NRFU certification pack; orchestration-roadmap frontier)
     write_golden_drift_sheet,                                    # NEW-V3.23.146 (per-device config drift vs baseline)
     write_feature_compliance_sheet,                             # roadmap I2 (per-feature ConfigCompliance decomposition)
     write_acl_shadow_sheet,                                     # roadmap G1 (offline ACL line-reachability / shadow proof)
@@ -2492,6 +2494,22 @@ def main():
                              _default={"_unavailable": True})
     _run_phase("Trust & Sovereignty sheet", write_attestation_sheet, wb, attestation)
 
+    # Phase 30f-bis: NRFU COMMAND EXPORT (orchestration-roadmap frontier). The four-phase NRFU
+    # certification pack: per-wave, per-device READ-ONLY verification commands with the EXPECTED values
+    # pre-filled from the snapshot evidence (assertive, not informational; missing evidence stays the
+    # explicit NOT-OBSERVED abstention). COMPLEMENTS the Phase 30d-quater validation plan (post-cutover
+    # spot checks) with the full certification pack. Computed once from a snap-shaped view (the Phase 30f
+    # pattern) -> sheet + snapshot (one source of truth); per-device .txt command files are available via
+    # cisco_toolkit.nrfu_export.write_nrfu_pack (a --nrfu-pack CLI flag is deferred).
+    nrfu_commands = _run_phase(
+        "NRFU commands", compute_nrfu_commands,
+        {**snapshot_state(all_interfaces, all_device_physical),
+         "move_groups": move_groups, "stp_roots": all_stp_roots,
+         "routing_neighbors": all_routing_neighbors, "fhrp_detail": all_fhrp_detail,
+         "application_intelligence": application_intelligence},
+        _default={})
+    _run_phase("NRFU Commands sheet", write_nrfu_commands_sheet, wb, nrfu_commands)
+
     if getattr(args, "redact", False):    # final --redact net: scrub IP/MAC/secrets from computed + raw-config
         _run_phase("redact workbook cells", redact_workbook_cells, wb)   # sheets the dataclass pass can't reach
     wb.save(out_xlsx)
@@ -2518,6 +2536,7 @@ def main():
     snap_dict["lifecycle_risk"] = lifecycle_risk                     # NEW-V3.23.117 (hardware EoL band per device; reused from Phase 27c-ter)
     snap_dict["remediation_plan"] = remediation_plan                 # NEW-V3.23.116 (generated config snippets, review-only; reused from Phase 30d-ter)
     snap_dict["validation_plan"] = validation_plan                   # NEW-V3.23.143 (per-wave post-cutover validation checklist; reused from Phase 30d-quater)
+    snap_dict["nrfu_commands"] = nrfu_commands                       # NEW (four-phase NRFU certification pack, READ-ONLY + expected-from-evidence; reused from Phase 30f-bis)
     snap_dict["golden_drift"] = golden_drift                         # NEW-V3.23.146 (per-device config drift vs baseline; reused from Phase 30d-quinquies)
     snap_dict["syslog_intelligence"] = syslog_intelligence           # NEW-V3.23.164 (NOS-style operational log analysis; reused from Phase 30d-sexies)
     snap_dict["qos_audit"] = qos_audit                               # NEW-V3.23.165 (configured QoS posture + doctrine findings; reused from Phase 30d-septies)
