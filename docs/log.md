@@ -4,6 +4,29 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-05] — v3.29 "schema release" wave: coverage-honesty as a queryable schema (J3/J2/J1)
+
+- 2-agent isolated-worktree wave built the moat-deepening §3.5 features: `ssot.compute_schema_census` (J3 —
+  the snapshot self-describes published/collected-but-empty/not-collected per section; the SuzieQ `describe`
+  analog that answers the AJMN access-only "filler" problem: it's an uncollected tier, not a code bug),
+  `ssot.compute_fact_lineage` (J2 provenance for canonical facts), and `detector_schema.py` (J1 — 32
+  descriptors making "not-observed ≠ healthy" a schema property via a mandatory `abstains_when`).
+- `!lesson` **The golden shrink-guard caught a real integration defect, not me:** the Coverage Schema sheet put
+  LIVE COUNTS in its frozen row-1 header, so every future section addition would re-trip the additive-only
+  guard — cry-wolf that desensitises a load-bearing mechanism. Fixed to a static banner + totals data row. The
+  guard firing on a routine additive merge is exactly the signal that something's wrong with the sheet design.
+- `!lesson` **The coverage-honesty feature had a coverage-honesty bug (HIGH, adversarial review):**
+  `abstention_reason`'s shallow `not val` mislabelled a WRAPPER of empty payloads (`addressing_conflicts
+  {'dup_ip':[], 'dup_subnet':[]}` = zero conflicts) as green "published" instead of amber "collected, nothing
+  found" — the exact Law-3 inversion the arc exists to prevent. Fixed at the single owner with `_is_deep_empty`
+  (short-circuits on first real leaf). 3 zero-result sections correctly flip green→amber on the demo fleet.
+- `!lesson` **A weak test let a wrong fact-citation ship:** the `cited_fields` test only checked the root
+  token, so a descriptor citing the bare section `trunk_native` (a different detector's output) passed.
+  Strengthened to require a field path + resolve simple leaves against the sample fleet. The test-vacuity lens
+  earns its place — a weak assertion is how a subtly-wrong client-facing schema ships.
+- Integration discipline held: two golden re-blesses (merge + fix), each audited to be exactly the intended
+  additive/flip delta with nothing removed; full suite green with node on PATH (parity gate ran, not skipped).
+
 ## [2026-07-05] — v3.28 "rehearsal release" wave: L2 failover twin + cutover sim + FIB verdicts
 
 - 2-agent parallel wave (isolated worktrees) built the market-gap flagship features: `failover.py` (STP
