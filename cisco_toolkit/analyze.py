@@ -1369,6 +1369,194 @@ def compute_wave_sequencing(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     return out
 
 
+# =============================================================================
+# Per-VLAN cutover matrix (MASTER_PLAN 2026-07-05 §4.3): the sheet a cutover team
+# runs the maintenance window from. One row per evidenced VLAN, every column JOINED
+# from data already computed/collected (stp_roots, FHRP brief+detail, gateway SVIs,
+# endpoint census, application domains, move-groups + wave sequencing, readiness,
+# multicast querier coverage, DHCP relay) -- pure synthesis, no new collection.
+# Coverage-honest: a VLAN with no FHRP evidence reads '[NOT OBSERVED]'; the
+# "sole gateway (no FHRP)" claim is made only when the gateway evidence POSITIVELY
+# shows exactly one gateway (mirrors compute_migration_readiness's wording).
+# =============================================================================
+VLAN_CUTOVER_NOT_OBSERVED = "[NOT OBSERVED]"
+
+_VLAN_CUTOVER_READY_RANK = {"NOT READY": 0, "CAUTION": 1, "READY": 2}   # worst-first pull-through
+
+
+def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                                stp_roots: Optional[Dict[str, dict]] = None,
+                                fhrp_detail: Optional[Dict[str, list]] = None,
+                                endpoint_identity: Optional[List[dict]] = None,
+                                application_intelligence: Optional[dict] = None,
+                                move_groups: Optional[List[dict]] = None,
+                                wave_sequencing: Optional[List[dict]] = None,
+                                migration_readiness: Optional[List[dict]] = None,
+                                multicast_intelligence: Optional[dict] = None) -> List[dict]:
+    """One row per evidenced VLAN with every cutover-relevant fact pre-filled from evidence the
+    snapshot already carries. Returns [{vlan, name, stp_root, stp_root_default_election, fhrp,
+    gateway_svi_hosts, endpoint_count, app_domain, criticality, dependencies, wave, scenario,
+    readiness, cutover_window, rollback_owner}] sorted by VLAN id. cutover_window / rollback_owner
+    are DELIBERATELY blank -- they belong to the human running the window. Deterministic; tolerant
+    of empty / oddly-typed inputs (every join input is optional and abstains as ''/[])."""
+    from cisco_toolkit.parse import _parse_fhrp
+
+    # ---- VLAN universe: access-port presence + gateway SVIs (+ names) -------------------------
+    vlan_hosts: Dict[int, set] = {}
+    names: Dict[int, str] = {}
+    gws: Dict[int, List[tuple]] = {}                 # vid -> [(host, InterfaceData)] gateway SVIs
+    for host in sorted(all_interfaces or {}):
+        for port, d in (all_interfaces[host] or {}).items():
+            v = (getattr(d, "vlan", "") or "").strip()
+            if (getattr(d, "switchport_mode", "") or "") == "Access" and v.isdigit():
+                vid = int(v)
+                vlan_hosts.setdefault(vid, set()).add(host)
+                nm = (getattr(d, "vlan_name", "") or "").strip()
+                if nm:
+                    names.setdefault(vid, nm)
+            m = re.match(r"^Vlan0*(\d+)$", str(port), re.IGNORECASE)
+            if not m:
+                continue
+            vid = int(m.group(1))
+            vlan_hosts.setdefault(vid, set()).add(host)
+            nm = (getattr(d, "vlan_name", "") or "").strip()
+            if nm:
+                names.setdefault(vid, nm)
+            if (getattr(d, "svi_ip", "") or "").strip() or (getattr(d, "hsrp_behavior", "") or "").strip():
+                gws.setdefault(vid, []).append((host, d))
+    # STP root evidence adds VLAN presence too (a trunk-carried VLAN still runs an STP instance on
+    # its root even where no local access port / SVI was collected). MST keys are INSTANCE numbers,
+    # not VLAN ids -- excluded, mirroring stp_root_findings. First sorted host claiming root wins.
+    root_of: Dict[int, str] = {}
+    root_prio: Dict[int, object] = {}
+    for host in sorted(stp_roots or {}):
+        for vlan, rec in (stp_roots[host] or {}).items():
+            if not str(vlan).isdigit() or not isinstance(rec, dict) or rec.get("is_mst"):
+                continue
+            vid = int(vlan)
+            vlan_hosts.setdefault(vid, set()).add(host)
+            if rec.get("is_root") and vid not in root_of:
+                root_of[vid] = host
+                root_prio[vid] = rec.get("root_priority")
+
+    # ---- join indexes over the precomputed axes ------------------------------------------------
+    det_ix: Dict[tuple, dict] = {}                   # (host, vid) -> FHRP election-detail record
+    for host, recs in (fhrp_detail or {}).items():
+        for rec in (recs or []):
+            m = re.match(r"^Vlan0*(\d+)$", str((rec or {}).get("ifname", "")), re.IGNORECASE)
+            if m:
+                det_ix.setdefault((host, int(m.group(1))), rec)
+    ep_count: Dict[int, int] = {}                    # per-VLAN sum of learned MACs (per-port sum)
+    for r in (endpoint_identity or []):
+        v = str((r or {}).get("vlan", "")).strip()
+        if v.isdigit():
+            ep_count[int(v)] = ep_count.get(int(v), 0) + int(r.get("mac_count") or 1)
+    doms_of: Dict[int, List[dict]] = {}
+    for dom in ((application_intelligence or {}).get("domains") or []):
+        for v in ((dom or {}).get("vlans") or []):
+            if str(v).strip().isdigit():
+                doms_of.setdefault(int(str(v).strip()), []).append(dom)
+    group_of: Dict[str, str] = {}                    # host -> its move-group label
+    for gi, g in enumerate(move_groups or [], 1):
+        for h in ((g or {}).get("switches") or []):
+            group_of.setdefault(str(h), f"Group {gi}")
+    seq_of = {str(r.get("group", "")): r for r in (wave_sequencing or []) if isinstance(r, dict)}
+    ready_of = {str(r.get("group", "")): str(r.get("readiness", ""))
+                for r in (migration_readiness or []) if isinstance(r, dict)}
+    mq = ((multicast_intelligence or {}).get("querier")) or {}
+    mcast_vlans = {str(v) for v in (mq.get("multicast_vlans") or [])}
+    gap_vlans = {str(v) for v in (mq.get("gap_vlans") or [])}
+
+    rows: List[dict] = []
+    for vid in sorted(vlan_hosts):
+        hosts = vlan_hosts[vid]
+        # STP root + the default-election smell (same 32768 / 32768+vlan test as stp_root_findings)
+        root = root_of.get(vid, VLAN_CUTOVER_NOT_OBSERVED)
+        prio = root_prio.get(vid)
+        default_election = bool(vid in root_of and isinstance(prio, int)
+                                and prio in (32768, 32768 + vid))
+        # FHRP: brief behaviour string joined with the election detail where collected
+        gwl = gws.get(vid, [])
+        members: List[dict] = []
+        for host, d in gwl:
+            proto, role, vip, grp = _parse_fhrp((getattr(d, "hsrp_behavior", "") or "").strip())
+            det = det_ix.get((host, vid))
+            if not proto and not det:
+                continue                             # a gateway with no FHRP evidence of its own
+            members.append({"host": host,
+                            "proto": (proto or "HSRP").upper(),   # detail parses 'show standby' -> HSRP
+                            "group": grp or str((det or {}).get("group") or ""),
+                            "vip": vip or str((det or {}).get("vip") or ""),
+                            "role": (role or str((det or {}).get("state") or "")).lower(),
+                            "priority": (det or {}).get("priority"),
+                            "preempt": (det or {}).get("preempt"),
+                            "vmac": str((det or {}).get("vmac") or "")})
+        if members:
+            fhrp: object = {"proto": "/".join(sorted({m["proto"] for m in members if m["proto"]})),
+                            "group": "/".join(sorted({m["group"] for m in members if m["group"]})),
+                            "vip": "/".join(sorted({m["vip"] for m in members if m["vip"]})),
+                            "members": members}
+        elif len(gwl) == 1:
+            # positively-observed sole gateway -- compute_migration_readiness's wording
+            fhrp = f"sole gateway on {gwl[0][0]} (no FHRP)"
+        elif gwl:
+            # >=2 observed gateways, none running FHRP -- compute_fhrp_consistency's wording
+            fhrp = f"{len(gwl)} gateways but no FHRP — no first-hop redundancy"
+        else:
+            fhrp = VLAN_CUTOVER_NOT_OBSERVED         # no gateway evidence at all -> no claim
+        # application domain + criticality tier (highest tier leads when several domains map)
+        doms = sorted(doms_of.get(vid, []),
+                      key=lambda d: (_APP_TIER_RANK.get(str(d.get("tier", "")), 9),
+                                     str(d.get("domain", ""))))
+        app_domain = " + ".join(str(d.get("domain", "")) for d in doms[:3])
+        criticality = str(doms[0].get("tier", "")) if doms else ""
+        # dependency flags: multicast activity / querier gap / DHCP relay off the gateway SVIs
+        deps: List[str] = []
+        if str(vid) in mcast_vlans:
+            deps.append("multicast active")
+        if str(vid) in gap_vlans:
+            deps.append("no IGMP querier")
+        helpers: List[str] = []
+        for _h, d in gwl:
+            for tok in re.split(r"[\s,]+", (getattr(d, "dhcp_helpers", "") or "").strip()):
+                if tok and tok not in helpers:
+                    helpers.append(tok)
+        if helpers:
+            deps.append("DHCP relay via " + ", ".join(helpers))
+        # wave / scenario / readiness: via the VLAN's OWN switches (a VLAN inherits the group's
+        # sequencing only for the switches it actually rides)
+        glabels = sorted({group_of[h] for h in hosts if h in group_of},
+                         key=lambda s: int(s.split()[-1]) if s.split()[-1].isdigit() else 0)
+        n_hard = n_mbb = n_unk = 0
+        for gl in glabels:
+            rec = seq_of.get(gl) or {}
+            n_hard += len(hosts & set(rec.get("hard_cutover") or []))
+            n_mbb += len(hosts & set(rec.get("make_before_break") or []))
+            n_unk += len(hosts & set(rec.get("homing_unknown") or []))
+        bits: List[str] = []
+        if n_hard and n_mbb:
+            bits.append(f"mixed: {n_hard} hard cutover / {n_mbb} make-before-break")
+        elif n_hard:
+            bits.append("hard cutover (maintenance window)")
+        elif n_mbb:
+            bits.append("make-before-break")
+        if n_unk:
+            bits.append(f"{n_unk} switch(es) homing unknown — verify uplinks first")
+        verdicts = [ready_of[gl] for gl in glabels if ready_of.get(gl)]
+        rows.append({
+            "vlan": vid, "name": names.get(vid, ""),
+            "stp_root": root, "stp_root_default_election": default_election,
+            "fhrp": fhrp, "gateway_svi_hosts": sorted(h for h, _d in gwl),
+            "endpoint_count": ep_count.get(vid, 0),
+            "app_domain": app_domain, "criticality": criticality,
+            "dependencies": deps, "wave": ", ".join(glabels),
+            "scenario": "; ".join(bits),
+            "readiness": min(verdicts, key=lambda v: _VLAN_CUTOVER_READY_RANK.get(v, 9)) if verdicts else "",
+            "cutover_window": "", "rollback_owner": "",    # deliberately blank human fields
+        })
+    return rows
+
+
 def compute_data_quality(all_cmd_to_files: Dict[str, Dict[str, str]]) -> Dict[str, float]:
     """NEW-V3.23.7: per-switch collection completeness = fraction of the essential
     command set that returned usable (non-empty, non-error) output, via the

@@ -3379,6 +3379,69 @@ def write_wave_sequencing_sheet(wb, all_interfaces: Dict[str, Dict[str, Interfac
     logger.info(f"  [OK] '{WAVE_SEQUENCING_SHEET_NAME}' sheet: {len(rows)} group(s)")
 
 
+VLAN_CUTOVER_SHEET_NAME = "VLAN Cutover Matrix"
+
+
+def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
+    """Write 'VLAN Cutover Matrix' (MASTER_PLAN 2026-07-05 §4.3): one row per evidenced VLAN with
+    every cutover-relevant fact joined from the already-computed axes (STP root + default-election
+    smell, FHRP election detail, gateway SVIs, endpoint census, app domain / criticality,
+    dependency flags, wave / scenario / readiness) plus the two DELIBERATELY blank human columns
+    (Cutover Window / Rollback Owner) the team fills during the window. Pure presentation of
+    compute_vlan_cutover_matrix (one source of truth with snap['vlan_cutover'])."""
+    from cisco_toolkit.analyze import VLAN_CUTOVER_NOT_OBSERVED
+    cols = ["VLAN", "Name", "STP Root", "Root Default-Election", "FHRP",
+            "Gateway SVIs", "Endpoint MACs (per-port sum)", "App Domain", "Criticality",
+            "Dependencies", "Wave", "Scenario", "Readiness", "Cutover Window", "Rollback Owner"]
+    ws = wb.create_sheet(VLAN_CUTOVER_SHEET_NAME)
+    _census_header(ws, cols)
+    DAT_FONT = Font(name="Calibri", size=10)
+    DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    DAT_C = Alignment(horizontal="center", vertical="center")
+    warn_fill = PatternFill("solid", fgColor="FCE5CD")
+    r = 2
+    for rec in (vlan_cutover or []):
+        fhrp = rec.get("fhrp")
+        if isinstance(fhrp, dict):
+            mem = ", ".join(
+                f"{m.get('host')} {m.get('role') or '?'}"
+                + (f" prio {m['priority']}" if m.get("priority") is not None else "")
+                + (" preempt" if m.get("preempt") else "")
+                for m in (fhrp.get("members") or []))
+            head = " ".join(x for x in (fhrp.get("proto") or "",
+                                        f"grp {fhrp.get('group')}" if fhrp.get("group") else "",
+                                        f"VIP {fhrp.get('vip')}" if fhrp.get("vip") else "") if x)
+            vmacs = sorted({m.get("vmac") for m in (fhrp.get("members") or []) if m.get("vmac")})
+            fhrp_txt = head + (f" — {mem}" if mem else "") \
+                + (f" (vMAC {', '.join(vmacs)})" if vmacs else "")
+        else:
+            fhrp_txt = str(fhrp or "")
+        # tri-state honesty: yes / no only when a root was observed; blank = no claim possible
+        root_seen = rec.get("stp_root") != VLAN_CUTOVER_NOT_OBSERVED
+        de = ("yes" if rec.get("stp_root_default_election") else "no") if root_seen else ""
+        vals = [rec.get("vlan"), rec.get("name", ""), rec.get("stp_root", ""), de, fhrp_txt,
+                ", ".join(rec.get("gateway_svi_hosts") or []), rec.get("endpoint_count", 0),
+                rec.get("app_domain", ""), rec.get("criticality", ""),
+                "; ".join(rec.get("dependencies") or []), rec.get("wave", ""),
+                rec.get("scenario", ""), rec.get("readiness", ""),
+                rec.get("cutover_window", ""), rec.get("rollback_owner", "")]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
+            c.alignment = DAT_C if col in (1, 7) else DAT_L
+        if rec.get("stp_root_default_election"):
+            ws.cell(r, 3).fill = warn_fill; ws.cell(r, 4).fill = warn_fill
+        if rec.get("readiness") == "NOT READY":
+            ws.cell(r, 13).font = Font(name="Calibri", size=10, bold=True, color="C00000")
+        r += 1
+    if r == 2:
+        # coverage-honest empty state: scoped to the collection, not a claim of "no VLANs exist"
+        ws.cell(2, 1, "-"); ws.cell(2, 2, "No VLAN evidenced in the collected devices")
+    _census_autofit(ws, len(cols), r - 1)
+    for letter, w in (("E", 46), ("J", 36), ("L", 34), ("N", 16), ("O", 16)):
+        ws.column_dimensions[letter].width = w
+    logger.info(f"  [OK] '{VLAN_CUTOVER_SHEET_NAME}' sheet: {len(vlan_cutover or [])} VLAN(s)")
+
+
 EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
