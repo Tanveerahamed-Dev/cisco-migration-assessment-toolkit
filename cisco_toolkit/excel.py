@@ -1761,6 +1761,65 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
                 f"{s.get('n_waves', 0)} wave(s)")
 
 
+NRFU_COMMANDS_SHEET_NAME = "NRFU Commands"   # NEW (four-phase NRFU certification pack; orchestration-roadmap frontier)
+
+def write_nrfu_commands_sheet(wb, nc: dict) -> None:
+    """Write 'NRFU Commands' from compute_nrfu_commands() (cisco_toolkit/nrfu_export.py): the four-phase,
+    per-wave certification pack — every row an ASSERTIVE read-only command with the EXPECTED value
+    pre-filled from the snapshot evidence and its source key cited. '[NOT OBSERVED …]' rows are honest
+    abstentions (grey-filled). Row 1 carries the how-to-use banner; mirrors the Cutover Validation
+    sheet's layout (that sheet is the post-cutover spot-check list; this is the certification pack)."""
+    if NRFU_COMMANDS_SHEET_NAME in wb.sheetnames:
+        del wb[NRFU_COMMANDS_SHEET_NAME]
+    ws = wb.create_sheet(NRFU_COMMANDS_SHEET_NAME)
+    p = nc or {}
+    s = p.get("summary") or {}
+    b = ws.cell(1, 1, "✓ " + (p.get("banner") or "Four-phase NRFU certification pack: confirm each "
+                                                 "read-only command's output matches the expected value."))
+    b.font = Font(bold=True, color="1F4E79", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    _byp = s.get("by_phase") or {}
+    ws.cell(2, 1, f"{s.get('n_cases', 0)} case(s) across {s.get('n_waves', 0)} wave(s) / "
+                  f"{s.get('n_devices', 0)} device(s) · by phase: "
+                  + ", ".join(f"P{k} {v}" for k, v in sorted(_byp.items(), key=lambda kv: str(kv[0])))
+                  + f" · {s.get('n_not_observed', 0)} not-observed baseline(s) to record · "
+                    f"{s.get('n_human_executed', 0)} human-executed (Phase IV)").font = Font(size=10)
+    hdr_row = 4
+    cols = ["#", "Wave", "Device", "Dialect", "Case ID", "Phase", "Scope",
+            "Command", "Expected (from snapshot)", "Source key"]
+    for i, h in enumerate(cols, 1):
+        c = ws.cell(hdr_row, i, h); c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="1F4E79")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 1)
+    PHASEFILL = {1: "DDEBF7", 2: "E2EFDA", 3: "FFF2CC", 4: "FCE4D6"}
+    ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV"}
+    DAT = Font(name="Calibri", size=10); MONO = Font(name="Consolas", size=9)
+    r = hdr_row + 1
+    n = 0
+    for w in p.get("waves") or []:
+        for dev in w.get("devices") or []:
+            for case in dev.get("cases") or []:
+                n += 1
+                ph = case.get("phase")
+                vals = [n, w.get("wave_id"), dev.get("host"), dev.get("platform_dialect"),
+                        case.get("id"), ROMAN.get(ph, ph), case.get("scope"),
+                        case.get("command"), case.get("expected"), case.get("source_key")]
+                for col, v in enumerate(vals, 1):
+                    c = ws.cell(r, col, v); c.font = (MONO if col in (5, 8, 9, 10) else DAT)
+                    c.alignment = Alignment(horizontal="center" if col in (1, 4, 6, 7) else "left",
+                                            vertical="top", wrap_text=col in (8, 9, 10))
+                    if col == 6:
+                        c.fill = PatternFill("solid", fgColor=PHASEFILL.get(ph, "FFFFFF"))
+                if str(case.get("expected", "")).startswith("[NOT OBSERVED"):
+                    ws.cell(r, 9).fill = PatternFill("solid", fgColor="EFEFEF")
+                r += 1
+    for i, w in enumerate([5, 12, 22, 9, 18, 8, 12, 34, 52, 32], 1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    logger.info(f"  [OK] '{NRFU_COMMANDS_SHEET_NAME}' sheet: {s.get('n_cases', 0)} case(s), "
+                f"{s.get('n_waves', 0)} wave(s)")
+
+
 GOLDEN_DRIFT_SHEET_NAME = "Golden-Config Drift"   # NEW-V3.23.146 (per-device config drift vs a baseline)
 
 def write_golden_drift_sheet(wb, gd: dict) -> None:

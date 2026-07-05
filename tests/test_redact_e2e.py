@@ -74,3 +74,26 @@ def test_redact_workbook_does_not_leak_real_inventory(tmp_path):
     for ip in REAL_SVI_IPS:
         assert ip not in redacted, f"real SVI host IP {ip} leaked into the --redact workbook"
     assert re.search(r"\bSN\d{4}\b", redacted), "expected pseudonymized serials (SN####) -> redaction did not run"
+
+
+def test_make_redactor_ip_map_never_reproduces_a_real_address():
+    """[NRFU sheet audit] The per-call IPv4 pseudonym map must be COLLISION-PROOF: with the old in-band
+    `10.{len(ip_map)}`-indexed scheme, the Nth distinct real /24 could draw a pseudonym equal to ANOTHER
+    real net (observed: net 10.0.20 -> '10.0.10', re-emitting the real gateway 10.0.10.1 into a --redact
+    workbook), or a net at its own index survived VERBATIM (identity). Pseudonyms now live in the
+    IANA-reserved 240.0.0.0/4 (Class E) block, which no deployed device can carry — so a scrubbed output
+    can never contain a real input IP."""
+    from cisco_toolkit.html import _make_redactor
+    scrub, _ = _make_redactor()
+    # 12 distinct real /24s, so 10.0.10 and 10.0.20 sit near their own would-be indices; host octet .1
+    # everywhere makes any in-band collision reproduce a real address exactly.
+    reals = [f"10.0.{n}.1" for n in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20)]
+    outs = [scrub(ip) for ip in reals]
+    for real in reals:
+        assert all(real not in o for o in outs), f"real address {real} reproduced by the pseudonym map"
+    # /24 grouping is preserved and the pseudonym space is the unassignable Class E block
+    assert all(o.startswith("240.") and o.endswith(".1") for o in outs), outs
+    # the belt-and-braces guards hold even for a (theoretically impossible) 240.x input:
+    assert scrub("240.0.0.7") != "240.0.0.7"
+    # determinism within a call: the same input scrubs to the same output
+    assert scrub(reals[0]) == outs[0]

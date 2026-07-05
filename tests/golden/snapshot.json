@@ -1856,6 +1856,328 @@
   },
   "banner": "Run these AFTER each wave's cutover to confirm it succeeded. 'Expect' is the known-good result captured from the pre-cutover state -- a deviation is a regression to investigate."
  },
+ "nrfu_commands": {
+  "schema": "nrfu_commands/1",
+  "banner": "Four-phase NRFU certification pack: run each READ-ONLY command and confirm the output MATCHES the pre-filled EXPECTED value (captured from the pre-cutover snapshot; the source key cites the evidence). A deviation is a regression to investigate before sign-off. '[NOT OBSERVED \u2026]' rows are honest abstentions \u2014 record the baseline at execution. Phase IV rows are HUMAN-EXECUTED with the application owner.",
+  "waves": [
+   {
+    "wave_id": "Group 1",
+    "devices": [
+     {
+      "host": "access1",
+      "platform_dialect": "ios",
+      "cases": [
+       {
+        "id": "NRFU-W1-P1-001",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show version",
+        "expected": "Software version 15.2(7)E3 (unchanged from baseline)",
+        "source_key": "devices.access1.sw_version"
+       },
+       {
+        "id": "NRFU-W1-P1-002",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show inventory",
+        "expected": "chassis WS-C2960X-48FPD-L, serial FOC2233B002 present",
+        "source_key": "devices.access1.model"
+       },
+       {
+        "id": "NRFU-W1-P1-003",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show environment all",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "devices.access1.ps_status"
+       },
+       {
+        "id": "NRFU-W1-P2-004",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show interface status",
+        "expected": "4 known-up port(s) connected: Gi0/1, Gi0/2, Gi0/3, Gi0/10",
+        "source_key": "interfaces.access1"
+       },
+       {
+        "id": "NRFU-W1-P2-005",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree vlan 10",
+        "expected": "Root bridge aaaa.0001.0001 for VLAN 10 (priority 24586) \u2014 unchanged",
+        "source_key": "stp_roots.access1.10"
+       },
+       {
+        "id": "NRFU-W1-P2-006",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree vlan 30",
+        "expected": "This bridge is the root for VLAN 30 (priority 32798)",
+        "source_key": "stp_roots.access1.30"
+       },
+       {
+        "id": "NRFU-W1-P2-007",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show cdp neighbors",
+        "expected": "2 adjacency(ies): Gi0/1 -> core1.lab (Gi1/0/24), Gi0/2 -> AP-floor1 (Gi0)",
+        "source_key": "interfaces.access1.*.cdp_neighbor"
+       },
+       {
+        "id": "NRFU-W1-P3-008",
+        "phase": 3,
+        "scope": "per-site",
+        "command": "show ip dhcp snooping binding",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "dhcp_snooping.access1"
+       },
+       {
+        "id": "NRFU-W1-P4-034",
+        "phase": 4,
+        "scope": "end-to-end",
+        "command": "ping <representative 'General / Back-office (unclassified)' application endpoint>",
+        "expected": "[HUMAN-EXECUTED] Application owner certifies 'General / Back-office (unclassified)' (tier Support) end-to-end after cutover; attach the evidence to the wave sign-off",
+        "source_key": "application_intelligence.domains[general]"
+       }
+      ]
+     },
+     {
+      "host": "core1",
+      "platform_dialect": "ios",
+      "cases": [
+       {
+        "id": "NRFU-W1-P1-009",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show version",
+        "expected": "Software version 16.12.4 (unchanged from baseline)",
+        "source_key": "devices.core1.sw_version"
+       },
+       {
+        "id": "NRFU-W1-P1-010",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show inventory",
+        "expected": "chassis WS-C3850-24T, serial FCW1234A001 present",
+        "source_key": "devices.core1.model"
+       },
+       {
+        "id": "NRFU-W1-P1-011",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show environment all",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "devices.core1.ps_status"
+       },
+       {
+        "id": "NRFU-W1-P2-012",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show interface status",
+        "expected": "5 known-up port(s) connected: Gi1/0/1, Gi1/0/2, Gi1/0/5, Gi1/0/24, Po1",
+        "source_key": "interfaces.core1"
+       },
+       {
+        "id": "NRFU-W1-P2-013",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show etherchannel summary",
+        "expected": "Po1: 2 member(s) bundled (P)",
+        "source_key": "interfaces.core1.*.port_channel"
+       },
+       {
+        "id": "NRFU-W1-P2-014",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree vlan 10",
+        "expected": "This bridge is the root for VLAN 10 (priority 24586)",
+        "source_key": "stp_roots.core1.10"
+       },
+       {
+        "id": "NRFU-W1-P2-015",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree vlan 30",
+        "expected": "Root bridge cccc.0003.0003 for VLAN 30 (priority 32798) \u2014 unchanged",
+        "source_key": "stp_roots.core1.30"
+       },
+       {
+        "id": "NRFU-W1-P2-016",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show standby brief",
+        "expected": "Vlan10 grp 10 Active (VIP 10.0.10.1); Vlan20 grp 20 Standby (VIP 10.0.20.1)",
+        "source_key": "fhrp_detail.core1"
+       },
+       {
+        "id": "NRFU-W1-P2-017",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show ip ospf neighbor",
+        "expected": "2 OSPF neighbor(s) in FULL: 10.0.99.2, 10.0.99.9",
+        "source_key": "routing_neighbors.core1.ospf"
+       },
+       {
+        "id": "NRFU-W1-P2-018",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show cdp neighbors",
+        "expected": "2 adjacency(ies): Gi1/0/24 -> access1.lab (Gi0/1), Po1 -> core2.lab (Po1)",
+        "source_key": "interfaces.core1.*.cdp_neighbor"
+       },
+       {
+        "id": "NRFU-W1-P3-019",
+        "phase": 3,
+        "scope": "per-site",
+        "command": "show ip dhcp snooping binding",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "dhcp_snooping.core1"
+       },
+       {
+        "id": "NRFU-W1-P3-029",
+        "phase": 3,
+        "scope": "end-to-end",
+        "command": "ping 10.0.10.2",
+        "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan20",
+        "source_key": "interfaces.core1.Vlan10.svi_ip"
+       },
+       {
+        "id": "NRFU-W1-P3-030",
+        "phase": 3,
+        "scope": "end-to-end",
+        "command": "ping 10.0.10.2",
+        "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan30",
+        "source_key": "interfaces.core1.Vlan10.svi_ip"
+       },
+       {
+        "id": "NRFU-W1-P4-035",
+        "phase": 4,
+        "scope": "end-to-end",
+        "command": "ping <representative 'Compute / Virtualization' application endpoint>",
+        "expected": "[HUMAN-EXECUTED] Application owner certifies 'Compute / Virtualization' (tier Support) end-to-end after cutover; attach the evidence to the wave sign-off",
+        "source_key": "application_intelligence.domains[compute]"
+       }
+      ]
+     },
+     {
+      "host": "core2",
+      "platform_dialect": "nxos",
+      "cases": [
+       {
+        "id": "NRFU-W1-P1-020",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show version",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "devices.core2.sw_version"
+       },
+       {
+        "id": "NRFU-W1-P1-021",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show module",
+        "expected": "chassis N9K-C93180YC-EX, serial FDO12345ABC present",
+        "source_key": "devices.core2.model"
+       },
+       {
+        "id": "NRFU-W1-P1-022",
+        "phase": 1,
+        "scope": "per-site",
+        "command": "show environment",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "devices.core2.ps_status"
+       },
+       {
+        "id": "NRFU-W1-P2-023",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show interface status",
+        "expected": "3 known-up port(s) connected: Eth1/1, Eth1/2, Po1",
+        "source_key": "interfaces.core2"
+       },
+       {
+        "id": "NRFU-W1-P2-024",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show port-channel summary",
+        "expected": "Po1: 2 member(s) bundled (P)",
+        "source_key": "interfaces.core2.*.port_channel"
+       },
+       {
+        "id": "NRFU-W1-P2-025",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree vlan 10",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "stp_roots.core2.10"
+       },
+       {
+        "id": "NRFU-W1-P2-026",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show spanning-tree vlan 20",
+        "expected": "[NOT OBSERVED \u2014 record baseline at execution]",
+        "source_key": "stp_roots.core2.20"
+       },
+       {
+        "id": "NRFU-W1-P2-027",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show hsrp brief",
+        "expected": "Vlan10: HSRP grp 10 Standby VIP 10.0.10.1; Vlan20: HSRP grp 20 Active VIP 10.0.20.1",
+        "source_key": "interfaces.core2.*.hsrp_behavior"
+       },
+       {
+        "id": "NRFU-W1-P2-028",
+        "phase": 2,
+        "scope": "per-site",
+        "command": "show cdp neighbors",
+        "expected": "4 adjacency(ies): Eth1/20 -> SEP00112233AABB (Port), Eth1/30 -> AP-floor3-01 (Gi0), Eth1/47 -> wan-edge-rtr1.lab (Gi0/0/1), Po1 -> core1.lab (Po1)",
+        "source_key": "interfaces.core2.*.cdp_neighbor"
+       },
+       {
+        "id": "NRFU-W1-P3-031",
+        "phase": 3,
+        "scope": "end-to-end",
+        "command": "ping 10.0.10.2",
+        "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan10",
+        "source_key": "interfaces.core1.Vlan10.svi_ip"
+       },
+       {
+        "id": "NRFU-W1-P3-032",
+        "phase": 3,
+        "scope": "end-to-end",
+        "command": "traceroute 10.0.10.2",
+        "expected": "Completes; final hop 10.0.10.2 (gateway SVI Vlan10 on core1)",
+        "source_key": "interfaces.core1.Vlan10.svi_ip"
+       },
+       {
+        "id": "NRFU-W1-P3-033",
+        "phase": 3,
+        "scope": "end-to-end",
+        "command": "ping 10.0.10.2",
+        "expected": "Success rate is 100 percent \u2014 gateway SVI Vlan10 on core1 (10.0.10.2) reachable from Vlan20",
+        "source_key": "interfaces.core1.Vlan10.svi_ip"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "summary": {
+   "n_waves": 1,
+   "n_devices": 3,
+   "n_cases": 35,
+   "by_phase": {
+    "1": 9,
+    "2": 17,
+    "3": 7,
+    "4": 2
+   },
+   "n_not_observed": 8,
+   "n_human_executed": 2
+  }
+ },
  "golden_drift": {
   "mode": "majority",
   "baseline": [],
@@ -5685,7 +6007,7 @@
     "id": "no_egress_import_graph",
     "method": "AST import-walk (any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)",
     "result": "HOLDS",
-    "detail": "0 network-library imports across 43 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
+    "detail": "0 network-library imports across 45 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
    },
    {
     "id": "rest_collect_get_only",
@@ -5697,7 +6019,7 @@
     "id": "no_llm_runtime",
     "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
     "result": "HOLDS",
-    "detail": "0 LLM/GenAI SDK imports across 45 modules (analysis package + collector entry)"
+    "detail": "0 LLM/GenAI SDK imports across 47 modules (analysis package + collector entry)"
    }
   ]
  },
