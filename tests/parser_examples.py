@@ -25,6 +25,46 @@ v1 note: the seed examples below are lifted from tests/test_audit5_parse_fidelit
 refactor there can never silently weaken this registry).
 """
 
+# Real CS01 'show spanning-tree' slice (NX-OS RSTP, vPC peer-link rows) -- shared by the
+# root-bridge and port-state parsers below.
+_STP_REAL_BLOCK = (
+    "\n"
+    "VLAN0001\n"
+    "  Spanning tree enabled protocol rstp\n"
+    "  Root ID    Priority    32769\n"
+    "             Address     0023.04ee.be13\n"
+    "             This bridge is the root\n"
+    "             Hello Time  2  sec  Max Age 20 sec  Forward Delay 15 sec\n"
+    "\n"
+    "  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)\n"
+    "             Address     0023.04ee.be13\n"
+    "             Hello Time  2  sec  Max Age 20 sec  Forward Delay 15 sec\n"
+    "\n"
+    "Interface        Role Sts Cost      Prio.Nbr Type\n"
+    "---------------- ---- --- --------- -------- --------------------------------\n"
+    "Po1              Root FWD 250       128.4096 (vPC peer-link) Network P2p \n"
+    "Po15             Desg FWD 200       128.4110 (vPC) P2p \n"
+    "Po16             Desg FWD 200       128.4111 (vPC) P2p \n"
+    "\n"
+    "\n"
+    "VLAN0012\n"
+    "  Spanning tree enabled protocol rstp\n"
+    "  Root ID    Priority    12\n"
+    "             Address     0023.04ee.be13\n"
+    "             This bridge is the root\n"
+    "             Hello Time  2  sec  Max Age 20 sec  Forward Delay 15 sec\n"
+    "\n"
+    "  Bridge ID  Priority    12     (priority 0 sys-id-ext 12)\n"
+    "             Address     0023.04ee.be13\n"
+    "             Hello Time  2  sec  Max Age 20 sec  Forward Delay 15 sec\n"
+    "\n"
+    "Interface        Role Sts Cost      Prio.Nbr Type\n"
+    "---------------- ---- --- --------- -------- --------------------------------\n"
+    "Po1              Desg FWD 250       128.4096 (vPC peer-link) Network P2p \n"
+    "Po15             Desg FWD 200       128.4110 (vPC) P2p \n"
+    "Po31             Desg FWD 200       128.4126 (vPC) P2p \n"
+)
+
 PARSER_EXAMPLES = {
     # ------------------------------------------------------------------ multicast / PIM
     "parse_multicast_info": [
@@ -91,6 +131,55 @@ PARSER_EXAMPLES = {
                 (("Eth1/1", "device_id"), "NBR-A.example.tv"),
                 (("Eth1/1", "mgmt_ip"), "10.200.200.222"),
                 (("Eth1/3", "mgmt_ip"), "10.200.200.223"),
+            ],
+        },
+        {
+            "note": "FULL real NX-OS 'show cdp neighbors detail' blocks (VTP domain, "
+                    "Version stanza, Platform+Capabilities, Mgmt address). Device IDs / "
+                    "VTP domain anonymized, structure verbatim from CS01.",
+            "input": (
+                "----------------------------------------\n"
+                "Device ID:AS-NBR-A.example.tv\n"
+                "VTP Management Domain Name: EXAMPLE-DOM\n"
+                "\n"
+                "Interface address(es):\n"
+                "    IPv4 Address: 10.200.200.222\n"
+                "Platform: C9300-48T, Capabilities: Switch IGMP Filtering \n"
+                "Interface: Ethernet1/15, Port ID (outgoing port): TenGigabitEthernet1/1/1\n"
+                "Holdtime: 132 sec\n"
+                "\n"
+                "Version:\n"
+                "Cisco IOS Software [Everest], Catalyst L3 Switch Software (CAT9K_IOSXE), "
+                "Version 16.6.7, RELEASE SOFTWARE (fc2)\n"
+                "\n"
+                "Advertisement Version: 2\n"
+                "\n"
+                "Native VLAN: 1\n"
+                "Duplex: full\n"
+                "Mgmt address(es):\n"
+                "    IPv4 Address: 10.200.200.222\n"
+                "----------------------------------------\n"
+                "Device ID:AS-NBR-B.example.tv\n"
+                "VTP Management Domain Name: EXAMPLE-DOM\n"
+                "\n"
+                "Interface address(es):\n"
+                "    IPv4 Address: 10.200.200.223\n"
+                "Platform: WS-C3850-48T, Capabilities: Router Switch IGMP Filtering \n"
+                "Interface: Ethernet1/16, Port ID (outgoing port): TenGigabitEthernet1/1/3\n"
+                "Holdtime: 169 sec\n"
+                "\n"
+                "Native VLAN: 1\n"
+                "Duplex: full\n"
+                "Mgmt address(es):\n"
+                "    IPv4 Address: 10.200.200.223\n"
+            ),
+            "expect_min_entities": 2,
+            "spot_facts": [
+                (("Eth1/15", "device_id"), "AS-NBR-A.example.tv"),
+                (("Eth1/15", "platform"), "C9300-48T"),  # Capabilities tail stripped
+                (("Eth1/15", "remote_port"), "Te1/1/1"),
+                (("Eth1/16", "platform"), "WS-C3850-48T"),
+                (("Eth1/16", "mgmt_ip"), "10.200.200.223"),
             ],
         },
     ],
@@ -427,6 +516,80 @@ PARSER_EXAMPLES = {
                 (("mem_total_kb",), 8238112),
                 (("mem_free_kb",), 5386904),
                 (("load_1m",), 0.44),
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ spanning tree
+    "parse_spanning_tree_root": [
+        {
+            "note": "NX-OS RSTP per-VLAN blocks ('This bridge is the root', vPC "
+                    "peer-link rows). Real CS01 slice.",
+            "input": _STP_REAL_BLOCK,
+            "expect_min_entities": 2,
+            "spot_facts": [
+                (("1", "root_priority"), 32769),
+                (("1", "is_root"), True),
+                (("12", "bridge_priority"), 12),
+                (("12", "root_address"), "0023.04ee.be13"),
+            ],
+        },
+    ],
+    "parse_spanning_tree_states": [
+        {
+            "note": "Same real 'show spanning-tree' slice: interface Role/Sts rows "
+                    "with '(vPC peer-link) Network P2p' type suffixes.",
+            "input": _STP_REAL_BLOCK,
+            "expect_min_entities": 4,
+            "spot_facts": [
+                (("Po1",), "Forwarding"),
+                (("Po31",), "Forwarding"),
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ platform / version
+    "parse_show_version": [
+        {
+            "note": "Real NX-OS N6K 'show version' (serial + device name anonymized): "
+                    "chassis PID normalization, kickstart/system version, 'Kernel "
+                    "uptime' must not be read as hostname 'Kernel' -- the hostname is "
+                    "on 'Device name:'.",
+            "input": (
+                "Cisco Nexus Operating System (NX-OS) Software\n"
+                "TAC support: http://www.cisco.com/tac\n"
+                "Copyright (c) 2002-2016, Cisco Systems, Inc. All rights reserved.\n"
+                "\n"
+                "Software\n"
+                "  BIOS:      version 2.2.0\n"
+                "  loader:    version N/A\n"
+                "  kickstart: version 7.0(8)N1(1)\n"
+                "  system:    version 7.0(8)N1(1)\n"
+                "  BIOS compile time:       12/05/2015\n"
+                "  kickstart image file is: bootflash:///n6000-uk9-kickstart.7.0.8.N1.1.bin\n"
+                "  system image file is:    bootflash:///n6000-uk9.7.0.8.N1.1.bin\n"
+                "\n"
+                "\n"
+                "Hardware\n"
+                '  cisco Nexus 6001 Chassis ("Nexus 64 Supervisor")\n'
+                "  Intel(R) Xeon(R) CPU  @ 2.00 with 8238112 kB of memory.\n"
+                "  Processor Board ID FOC12345ABC\n"
+                "\n"
+                "  Device name: CS01\n"
+                "  bootflash:    7827456 kB\n"
+                "\n"
+                "Kernel uptime is 3552 day(s), 14 hour(s), 45 minute(s), 27 second(s)\n"
+                "\n"
+                "Last reset at 931349 usecs after  Thu Jun  7 17:31:05 2012\n"
+                "\n"
+                "  Reason: Reset Requested by CLI command reload\n"
+                "  System version: 7.0(8)N1(1)\n"
+            ),
+            "expect_min_entities": 1,
+            "spot_facts": [
+                (("model",), "N6K-C6001"),  # normalized PID, matches eoldb
+                (("sw_version",), "7.0(8)N1(1)"),
+                (("serial_number",), "FOC12345ABC"),
+                (("uptime",), "3552 day(s), 14 hour(s), 45 minute(s), 27 second(s)"),
+                (("hostname_reported",), "CS01"),  # from 'Device name:', never 'Kernel'
             ],
         },
     ],
