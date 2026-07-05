@@ -42,7 +42,7 @@
    "active_ports": 2,
    "fan_status": "",
    "temperature_status": "",
-   "reported_hostname": ""
+   "reported_hostname": "core2"
   },
   "access1": {
    "hostname": "access1",
@@ -268,6 +268,7 @@
     "stp_blocked": "Forwarding",
     "endpoint_type": "Switch",
     "dual_connection": "Yes",
+    "trunk_native_vlan": "1",
     "trunk_allowed_vlans": "10,20,30",
     "trunk_status": "trunking",
     "cdp_neighbor": "core1.lab",
@@ -5508,11 +5509,12 @@
    "category": "False-health",
    "devices": [
     "access1",
-    "core1"
+    "core1",
+    "core2"
    ],
    "wave": "",
-   "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
-   "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+   "title": "Native VLAN 1 on 4 inter-switch trunk(s)",
+   "detail": "4 trunk(s) across 3 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
    "priority": 32
   },
@@ -5592,10 +5594,11 @@
    "category": "False-health",
    "devices": [
     "access1",
-    "core1"
+    "core1",
+    "core2"
    ],
-   "title": "Native VLAN 1 on 3 inter-switch trunk(s)",
-   "detail": "3 trunk(s) across 2 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+   "title": "Native VLAN 1 on 4 inter-switch trunk(s)",
+   "detail": "4 trunk(s) across 3 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."
   }
  ],
@@ -7703,13 +7706,14 @@
     "domain": "Layer-2 design",
     "title": "VLAN 1 not used for user traffic",
     "verdict": "advisory",
-    "observed": "Trunks with native VLAN 1 on 2 switch(es): access1, core1.",
+    "observed": "Trunks with native VLAN 1 on 3 switch(es): access1, core1, core2.",
     "implication": "Native VLAN 1 on inter-switch trunks exposes untagged control-plane crosstalk and is flagged by the hardening baseline.",
     "recommendation": "Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
     "reference": "Cisco hardening guidance \u2014 keep user traffic and trunk native VLAN off VLAN 1",
     "evidence": [
      "access1",
-     "core1"
+     "core1",
+     "core2"
     ]
    },
    {
@@ -7958,7 +7962,8 @@
     "action": "Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
     "evidence": [
      "access1",
-     "core1"
+     "core1",
+     "core2"
     ]
    },
    {
