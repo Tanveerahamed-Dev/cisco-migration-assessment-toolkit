@@ -95,6 +95,9 @@ def test_every_extractor_degrades_on_empty_snapshot():
     assert M.chokepoints(empty) == []
     assert M.architecture_coverage(empty)["classes"] == []
     assert "error" in M.device_detail(empty, "x")
+    # the L2 failover tools degrade honestly on a snapshot with no collected STP/FHRP state
+    assert M.failover_twin(empty, "core1")["available"] is False
+    assert M.failover_readiness(empty)["available"] is False
 
 
 def test_load_snapshot_rejects_non_object(tmp_path):
@@ -113,8 +116,38 @@ def test_tool_names_pin_and_pure_map_completeness():
         "overview", "list_devices", "device_detail", "top_findings",
         "failure_impact", "chokepoints", "architecture_coverage",
         "get_finding", "search_devices", "get_move_groups", "whatif_node", "get_health",
+        "failover_twin", "failover_readiness",
     ]
     assert set(M._PURE) == set(M.TOOL_NAMES)
+
+
+def test_failover_twin_tool_returns_engine_result_verbatim(golden):
+    # golden's core1 is a VLAN root; failing it re-elects a new root (result carried verbatim, schema intact)
+    res = M.failover_twin(golden, "core1")
+    assert res["available"] is True and res["target"] == "core1"
+    assert res["result"]["schema"] == "failover_twin/1"
+    assert res["result"]["failed_hosts"] == ["core1"]
+    assert res["sources"] == ["stp_roots", "fhrp_detail"]
+
+
+def test_failover_twin_tool_miss_lists_available_hosts(golden):
+    res = M.failover_twin(golden, "__no_such_host__")
+    assert res["available"] is True                       # the tool ran; the target just matched nothing
+    assert res["result"]["failed_hosts"] == []
+    assert isinstance(res["available_l2_hosts"], list) and res["available_l2_hosts"]
+
+
+def test_failover_twin_tool_empty_target_is_helpful(golden):
+    res = M.failover_twin(golden, "")
+    assert res["available"] is False and "no target" in res["reason"].lower()
+
+
+def test_failover_readiness_tool_shape(golden):
+    res = M.failover_readiness(golden)
+    assert res["available"] is True
+    r = res["result"]
+    assert r["schema"] == "failover_readiness/1"
+    assert isinstance(r["n_stp_roots"], int) and isinstance(r["at_risk"], list)
 
 
 def test_get_finding_by_priority_index(rich):
