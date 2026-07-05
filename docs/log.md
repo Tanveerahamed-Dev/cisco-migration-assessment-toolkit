@@ -4,6 +4,29 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-05] — v3.28 "rehearsal release" wave: L2 failover twin + cutover sim + FIB verdicts
+
+- 2-agent parallel wave (isolated worktrees) built the market-gap flagship features: `failover.py` (STP
+  root re-election + FHRP takeover — the L2 layer Batfish/Forward don't cover), `cutover_sim.py` (step-by-step
+  dry-run naming the window a VLAN loses its path), and FIB path verdicts (`trace_fib_path` MTU/jumbo-blackhole,
+  `trace_bidirectional` RPF asymmetry, `ecmp_consistency`). Both agents completed cleanly (no crashes this time);
+  merged golden-neutral (failover is target-actuated, not snapshot-embedded) except the attestation module-count
+  re-bless (47→49 for the 2 new modules).
+- `!lesson` **Adversarial review (3 lenses, find→refute) confirmed 11 real findings — ALL one class: false-health
+  when the incumbent is off-scan**, which is the COMMON case on the [HISTORY-REDACTED] fleet (every uplink → uncollected core).
+  The twin as first built would hand a client a confident "you have a backup" verdict for switches whose real STP
+  root / FHRP active were never collected. Fixed: `_current_root` names a root only on collected `is_root=True`
+  (never from the identical advertised root vector); `_current_active` only trusts an explicit Active/Master;
+  the STP survivor election abstains on missing bridge_priority (no 1<<30 sentinel laundering) and on genuine
+  priority ties (802.1D tiebreak needs the bridge's own MAC, not collected); ecmp treats a record-exists-MTU-blank
+  leg as an MTU blind spot → INDETERMINATE (the `('','')` vs `(None,None)` gap); cutover reports the FHRP move it
+  performs. Plus 2 vacuous tests replaced with realistic-schema regressions.
+- `!lesson` **The executed JS↔Python FIB parity gate was a latent CI-breaker**: it does full-dict equality, and
+  wave-2 added Python-only MTU keys to `trace_fib_path` → it would fail on any node-equipped CI runner. It only
+  stayed green locally because node wasn't on PATH and it SILENTLY SKIPPED (a guard that doesn't run looks
+  identical to a guard that passes). Fixed: project both sides to the shared reachability core + a non-vacuity
+  guard; verified by running it WITH node on PATH.
+
 ## [2026-07-05] — v3.27 "trust release" wave: 6 features built + adversarially reviewed
 
 - Parallel agent wave (isolated git worktrees) built the master-plan Weeks-2–4 features: the trust trio

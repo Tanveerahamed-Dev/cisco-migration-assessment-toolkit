@@ -6,6 +6,42 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.28.0] — 2026-07-05 — the rehearsal release (L2 failover twin + cutover dry-run + FIB path verdicts)
+
+The second `docs/MASTER_PLAN_2026-07-05.md` tranche (§3.4 / §4.1 / §4.2): the market-gap capabilities the
+L3-centric verification tools (Batfish, Forward) do not cover, built as a parallel isolated-worktree agent
+wave and hardened by a 3-lens adversarial review (find → independent refutation) that surfaced and closed
+11 findings — all one class: false-health when the true incumbent is off-scan (the common case on an
+access-only collection).
+
+### Added
+- **`failover.py` — the L2 failover twin** (§4.1): deterministic STP root re-election and FHRP (HSRP/VRRP/GLBP)
+  takeover recomputed from `stp_roots` + `fhrp_detail`, with split-brain detection when preempt is off and a
+  target-free `compute_failover_readiness` rollup ("for every observed root/active, is there a PROVABLE
+  backup?"). Coverage-honest: the incumbent and the re-election winner are named ONLY when the collected
+  evidence proves them — an off-scan root/active, a missing bridge priority, or an unbreakable priority tie
+  all abstain (INDETERMINATE) rather than fabricate a confident answer. Exposed via 2 new read-only MCP tools.
+- **`cutover_sim.py` — the cutover dry-run simulator** (§4.2): applies an ordered wave of mutations
+  (`fail_node` / `fail_site` / `shut_link` / `move_fhrp_active`) step-by-step on a deep copy, and at each step
+  reports the marginal reachability delta + failover recompute + a plain-English narrative ("after step 3,
+  VLAN 40 loses its only path until step 5"). The input snapshot is never mutated.
+- **FIB path verdicts** (§3.4): `trace_fib_path` gains an MTU / jumbo-blackhole dimension (min path MTU +
+  bottleneck hop + optional required-MTU flag; a missing MTU abstains, never assumes 1500 — the check the
+  EVPN underlay most needs); `trace_bidirectional` classifies RPF / return-path symmetry (symmetric /
+  asymmetric / INDETERMINATE); `ecmp_consistency` is the Batfish multipathConsistency analog.
+
+### Fixed — adversarial-review findings (11, all coverage-honesty)
+- The L2 twin no longer fabricates an incumbent from the advertised root vector (identical across non-root
+  bridges) or from a priority fallback over Standby-only members; it abstains when the root/active is off-scan.
+- The STP survivor election abstains on an uncollected survivor priority (no `1<<30` sentinel laundered into a
+  fabricated default-election) and on a genuine bridge-priority tie (the 802.1D MAC tiebreak is not collected).
+- `ecmp_consistency` treats a leg whose record exists but whose MTU was uncollected as an MTU blind spot →
+  INDETERMINATE, instead of reading "consistent" by omission (new `mtu_unobserved_legs` disclosure).
+- `move_fhrp_active` cutover steps now report the takeover they perform.
+- The executed JS↔Python FIB parity gate now projects to the shared reachability core (the wave-2 MTU keys are
+  Python-only by design) with a non-vacuity guard — closing a latent break that a node-equipped CI runner
+  would have hit and that a node-less environment silently skipped past.
+
 ## [v3.27.0] — 2026-07-05 — the trust release (verification-deliverable trio + K2 + cutover matrix)
 
 The first tranche of `docs/MASTER_PLAN_2026-07-05.md` (the frontier per the saturated-analysis thesis:
