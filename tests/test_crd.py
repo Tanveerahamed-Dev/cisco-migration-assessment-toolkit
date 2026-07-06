@@ -63,7 +63,8 @@ def test_crd_has_skeleton_sections_and_furniture(tmp_path):
     for token in ("1. Engagement Context", "2. Current Environment Summary (evidence)",
                   "3. Business Requirements", "4. Technical Requirements",
                   "5. Operational Requirements", "6. Future Plans & Growth",
-                  "7. Requirement Traceability"):
+                  "7. Constraints & Assumptions", "8. Out of Scope",
+                  "9. Requirements Traceability Matrix (RTM)"):
         assert any(t == token for t in h1), f"missing section: {token}; have {h1}"
     assert "Document Control" in h1 and "Document Acceptance" in h1
     text = _all_text(d)
@@ -187,8 +188,8 @@ def test_crd_requirements_are_proposals_with_req_ids_and_traceability(tmp_path):
         assert rid in text, rid
     assert "testable statement" in text.lower()
     assert "<owner>" in text and "<YES/AMEND>" in text
-    # every seeded REQ-ID lands in the traceability skeleton
-    assert "<NRFU-…>" in text and "<HLD §>" in text
+    # every seeded REQ-ID lands in the RTM as HONEST forward placeholders (never fabricated references)
+    assert "to be traced in HLD" in text and "to be traced in NRFU" in text
     # the evidence-primed framing is explicit (proposals, not assumed requirements)
     assert "proposals" in text.lower() or "proposal" in text.lower()
 
@@ -290,14 +291,14 @@ def test_crd_gains_design_driven_requirements_section(tmp_path):
     write_crd_docx(out, snap, "Unit Test Fleet")
     d = Document(out)
     h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
-    assert any("8. Design-Driven Requirements" in t for t in h1), f"missing §8; have {h1}"
+    assert any("10. Design-Driven Requirements" in t for t in h1), f"missing §10; have {h1}"
     text = _all_text(d)
     assert "REQ-D-001" in text
     assert "Introduce first-hop redundancy" in text and "CCDE In Depth — HA" in text
     assert "Right-size availability per tier" in text          # open design question surfaced
     # gated off when there is no blueprint (the other tests rely on this)
-    d2 = Document(out)  # sanity: §8 only here
-    assert any("8. Design-Driven Requirements" in p.text for p in d2.paragraphs)
+    d2 = Document(out)  # sanity: §10 only here
+    assert any("10. Design-Driven Requirements" in p.text for p in d2.paragraphs)
 
 
 def test_crd_design_requirements_enter_traceability_matrix(tmp_path):
@@ -366,3 +367,169 @@ def test_crd_and_ops_survive_nondict_sections(tmp_path):
     for i, snap in enumerate(cases):
         write_crd_docx(str(tmp_path / f"crd{i}.docx"), snap, "L")            # must not raise
         write_ops_handbook_docx(str(tmp_path / f"ops{i}.docx"), snap, "L")   # must not raise
+
+
+# --------------------------------------------------------------------------- Constraints / Out-of-Scope / RTM
+def _snap_with_register():
+    """The _snap() fleet PLUS a real requirements-overlaid design_blueprint — the SSOT read path the CRD
+    uses for the Constraints / Out-of-Scope overlay. Built with the engine's own load_requirements +
+    compute_design_blueprint (not a hand-mocked requirements_model), so the test exercises the actual echo
+    of the register into design_blueprint.requirements_model.fields[*].value."""
+    from cisco_toolkit.design_advisor import compute_design_blueprint
+    snap = _snap()
+    req = {
+        "availability_tier": "gold",
+        "fabric_operating_model": "nxos-evpn",
+        "constraints": [
+            "Standardize on Cisco Nexus 9000 / NX-OS, managed by Nexus Dashboard (NDFC + NDI)",
+            "Out-of-band management on physically separate gear; it must not transit the fabric it manages",
+        ],
+    }
+    snap["design_blueprint"] = compute_design_blueprint(snap, req)
+    return snap
+
+
+def test_crd_constraints_section_from_register_when_supplied(tmp_path):
+    """Constraints (§7): when a requirements register is supplied (echoed into
+    design_blueprint.requirements_model), its constraints are rendered as CONFIRMED rows — read off the
+    canonical blueprint (SSOT), not re-loaded — and the availability tier + fabric operating model become
+    confirmed constraints too. No OPEN QUESTION rows in the register-supplied path."""
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, _snap_with_register(), "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any(t == "7. Constraints & Assumptions" for t in h1), f"missing §7; have {h1}"
+    text = _all_text(d)
+    assert "CONFIRMED (requirements register)" in text                       # register-sourced, not invented
+    assert "Nexus Dashboard (NDFC + NDI)" in text                            # a verbatim register constraint
+    assert "must not transit the fabric" in text                             # the OOB register constraint
+    assert "Standalone NX-OS VXLAN BGP-EVPN" in text                         # fabric_operating_model -> constraint
+    assert "gold" in text                                                     # availability_tier -> constraint
+    assert "CON-001" in text                                                  # constraints get CON-IDs
+    # coverage-honesty: a supplied register does NOT surface the no-register OPEN QUESTIONS
+    assert "no requirements register supplied" not in text.lower()
+
+
+def test_crd_constraints_are_open_questions_without_register(tmp_path):
+    """Constraints (§7), coverage-honesty: with NO requirements register the engagement constraints are
+    surfaced as OPEN QUESTIONS (the fabric-model / OOB / overlapping-VLAN / installed-base / cutover asks),
+    never asserted as if the customer had stated them. _snap() carries no design_blueprint -> no register."""
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, _snap(), "Unit Test Fleet")     # _snap() has no design_blueprint
+    text = _all_text(Document(out))
+    assert "OPEN QUESTION — no requirements register supplied" in text
+    assert "port-VLAN translation" in text                                   # overlapping-VLAN open question
+    assert "Out-of-band management must NOT transit" in text                 # OOB open question
+    assert "Installed-base reuse" in text                                    # installed-base open question
+    # honesty: the no-register path must NOT print a CONFIRMED register row
+    assert "CONFIRMED (requirements register)" not in text
+
+
+def test_crd_constraints_surface_eol_forced_replacements_from_evidence(tmp_path):
+    """Constraints (§7): EoL / past-LDoS hardware is an EVIDENCE-derived constraint (a forced replacement
+    the migration cannot carry forward), read from lifecycle_risk — gated on observed state, distinct from
+    the register-supplied constraints."""
+    snap = _snap()
+    snap["lifecycle_risk"] = {"summary": {"n_devices": 2, "n_past_ldos": 3, "n_past_eos": 4}}
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "EVIDENCE (lifecycle risk)" in text
+    assert "3 device(s) are past last-day-of-support" in text                # the observed LDoS count
+    assert "forced replacements" in text
+
+
+def test_crd_has_out_of_scope_boundary_section(tmp_path):
+    """Out of Scope (§8): the explicit boundary statement — the standard CRD guardrail. Present with a
+    default 'confirm with customer' exclusion list; not-collected devices are the coverage-honest anchor."""
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any(t == "8. Out of Scope" for t in h1), f"missing §8; have {h1}"
+    text = _all_text(d)
+    assert "confirm with customer" in text.lower()                           # exclusions are proposals to confirm
+    assert "Not-collected devices" in text                                   # coverage-honest boundary
+    assert "Application / server / storage changes" in text                  # a sensible default exclusion
+
+
+def test_crd_rtm_traces_reqids_forward_to_four_downstream_columns(tmp_path):
+    """RTM (§9): the Cisco-AS Requirements Traceability Matrix — every captured REQ-ID traced FORWARD to
+    HLD / LLD / MOP / NRFU as HONEST placeholders ('to be traced in <deliverable>'), never a fabricated
+    section number. The four downstream columns are all present."""
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any(t == "9. Requirements Traceability Matrix (RTM)" for t in h1), f"missing §9; have {h1}"
+    # locate the RTM by its 5-column header (REQ-ID + the four forward deliverables)
+    rtm = next((t for t in d.tables
+                if [c.text for c in t.rows[0].cells] ==
+                ["REQ-ID", "HLD section", "LLD object", "MOP step", "NRFU test case"]), None)
+    assert rtm is not None, "no §9 RTM with the four forward columns"
+    rids = [r.cells[0].text for r in rtm.rows[1:]]
+    for seeded in ("REQ-B-001", "REQ-T-LAN-001", "REQ-O-001"):
+        assert seeded in rids, f"{seeded} orphaned from the RTM; have {rids}"
+    text = _all_text(d)
+    # forward cells are honest placeholders, not invented references
+    assert "to be traced in LLD" in text and "to be traced in MOP" in text and "to be traced in NRFU" in text
+
+
+def test_crd_rtm_forward_cells_are_placeholders_not_fabricated_sections(tmp_path):
+    """RTM honesty: a non-REQ-D requirement (no design blueprint behind it) must NOT trace to a fabricated
+    downstream section number — its four forward cells stay 'to be traced in <deliverable>' placeholders.
+    Guards against a regression that back-fills invented HLD/LLD/MOP/NRFU references."""
+    import re
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, _snap(), "Unit Test Fleet")     # no design_blueprint -> only seeded B/T/O rows
+    d = Document(out)
+    rtm = next(t for t in d.tables
+               if [c.text for c in t.rows[0].cells] ==
+               ["REQ-ID", "HLD section", "LLD object", "MOP step", "NRFU test case"])
+    row = next(r for r in rtm.rows[1:] if r.cells[0].text == "REQ-B-001")
+    for cell in row.cells[1:]:                                                # every forward cell
+        assert cell.text.startswith("to be traced in"), f"fabricated forward ref: {cell.text!r}"
+        assert not re.search(r"§\s*\d", cell.text), f"invented section number: {cell.text!r}"
+
+
+def test_crd_reqd_row_traces_to_known_hld_but_placeholders_downstream(tmp_path):
+    """RTM: a REQ-D requirement DOES trace to the KNOWN HLD §4 design blueprint (the same design_blueprint
+    the CRD read — a real, not fabricated, reference), while LLD / MOP / NRFU stay honest placeholders."""
+    snap = _snap()
+    snap["design_blueprint"] = {
+        "summary": {"n_recommended": 1, "n_needs_requirement": 0, "n_critical": 1},
+        "decisions": [
+            {"title": "Introduce first-hop redundancy", "status": "recommended", "priority": "Critical",
+             "recommended_action": "Deploy HSRP/VRRP", "driver": "Gateway resilience",
+             "evidence": {"summary": "52 VLAN(s) without FHRP"}, "principle": {"citation": "CCDE — HA"}},
+        ],
+        "coverage": {},
+    }
+    out = str(tmp_path / "c.docx")
+    write_crd_docx(out, snap, "Unit Test Fleet")
+    d = Document(out)
+    rtm = next(t for t in d.tables
+               if [c.text for c in t.rows[0].cells] ==
+               ["REQ-ID", "HLD section", "LLD object", "MOP step", "NRFU test case"])
+    row = next(r for r in rtm.rows[1:] if r.cells[0].text == "REQ-D-001")
+    assert "§4" in row.cells[1].text                                         # KNOWN HLD trace (real)
+    assert "to be traced in LLD" in row.cells[2].text                        # LLD placeholder
+    assert "to be traced in MOP" in row.cells[3].text                        # MOP placeholder
+
+
+def test_crd_requirements_overlay_reads_blueprint_ssot():
+    """_requirements_overlay reads the register OFF design_blueprint.requirements_model (the ONE echo of
+    the --requirements register into the snapshot) — provided flag + constraints/tier/fabric values —
+    rather than re-loading the register file, so the CRD agrees with the HLD/deck/explorer."""
+    from cisco_toolkit.crd import _requirements_overlay
+    # provided register
+    snap = _snap_with_register()
+    reg = _requirements_overlay(snap["design_blueprint"])
+    assert reg["provided"] is True
+    assert reg["availability_tier"] == "gold"
+    assert reg["fabric_operating_model"] == "nxos-evpn"
+    assert any("Nexus Dashboard" in c for c in reg["constraints"])
+    # no register / non-dict blueprint -> honest empties, provided False
+    empty = _requirements_overlay({})
+    assert empty["provided"] is False and empty["constraints"] == []
+    assert empty["availability_tier"] is None and empty["fabric_operating_model"] is None
