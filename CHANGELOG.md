@@ -6,6 +6,44 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.30.0] — 2026-07-05 — the deliverable release (MOP / Ops-Handbook / CRD excellence)
+
+The `docs/deliverable-excellence-plan.md` P1-remainder/P2 tranche + the Cisco Advanced-Services deliverable-
+standard gaps — the client-facing DOCX deliverables a senior engineer hands a change board. Built as a
+3-agent isolated-worktree wave (golden-neutral by construction — DOCX is not in the frozen snapshot contract)
+and hardened by a 3-lens adversarial review (find → independent refutation) that confirmed 5 HIGH + several
+MEDIUM/LOW, all fixed.
+
+### Added
+- **MOP rigor** (`mop.py`): a Bottom-Line-Up-Front executive summary (wave count, go/no-go gate = worst
+  readiness across the waves via the single-source reducer, one-line rollback, window estimate); a
+  per-step **quantified** rollback trigger on every wave (Cisco-AS standard — ">0.1% validation failures" /
+  "no convergence within N minutes", not "if something breaks"); a pre-implementation checklist (evidence-gated
+  vs human-attested preconditions); a communications/escalation plan (roles, T-minus cadence, Cisco-TAC tier);
+  PRE/DURING/POST phase labels; NX-OS EVPN cutover guardrails gated on an EVPN target.
+- **Operations Handbook** (`ops.py`): a Backup-&-Recovery section (strategy/cadence/retention, the restore-TEST
+  discipline — "a backup never restore-tested is not a backup", NDFC config-backup on the EVPN target); a
+  Known-Issues register synthesized from the assessment's OWN axes (syslog signatures, software/PSIRT surface,
+  hot control planes, past-LDoS/EoS platforms, QoS doctrine, CIS failures) — each citing its source axis +
+  affected devices, each uncollected axis DECLARED not-assessable.
+- **CRD completeness** (`crd.py`): a Constraints & Assumptions section (register-confirmed vs surfaced as OPEN
+  QUESTIONS when no requirements register), an Out-of-Scope boundary statement, and a **Requirements Traceability
+  Matrix** mapping each REQ-ID forward to HLD → LLD → MOP → NRFU (the Cisco-AS chain; honest "to be traced"
+  placeholders, never fabricated section numbers).
+
+### Fixed — adversarial-review findings (client-safety / coverage-honesty)
+- The ops Known-Issues **Security axis** had no not-assessable branch — silently dropped when uncollected or
+  clean, so the §7.1 census read as complete when security was never assessed (false-health by silence). Now
+  always represented; and its "Affected" set names ONLY devices that actually failed a CIS check (was: every
+  device with a security block — asserting open failures on clean boxes to a change board).
+- The Syslog Known-Issues row aggregates by distinct signature CLASS before the top-N cut (one signature on
+  many devices no longer crowds every other class off a real fleet's list); QoS gained its collected-clean row.
+- The MOP/ops **EVPN framing** now matches the CRD's confidence: "the target IS EVPN" is asserted only when the
+  requirements register confirms it, else framed as an engine assessment to confirm — never a settled
+  plan-of-record from an engine default. MOP/comms `§x.N` placeholder cross-refs reworded to plain language.
+- Two vacuous coverage-honesty tests hardened (asserted a heading substring always present; now assert the
+  specific axis structurally), plus the MOP BLUF gate test now asserts the gate ROW, not the whole doc.
+
 ## [v3.29.0] — 2026-07-05 — the schema release (coverage-honesty as a queryable schema)
 
 The third `docs/MASTER_PLAN_2026-07-05.md` tranche (§3.5, "deepen the actual moat"): make coverage-honesty a

@@ -4,6 +4,30 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-05] — v3.30 "deliverable release" wave: MOP / Ops-Handbook / CRD excellence (§3.6 / DE-01)
+
+- 3-agent isolated-worktree wave built the client-facing DOCX upgrades for the [HISTORY-REDACTED] engagement: MOP BLUF +
+  quantified rollback triggers + pre-impl checklist + comms/escalation (mop.py); Backup-&-Recovery +
+  Known-Issues from the fleet's own axes (ops.py); Constraints + Out-of-Scope + Requirements Traceability
+  Matrix (crd.py). All 3 agents completed cleanly; merges conflict-free (disjoint files); GOLDEN-NEUTRAL
+  (DOCX isn't in the frozen snapshot contract — lower-risk than waves 1–3, no re-bless).
+- `!lesson` **The coverage-honesty feature had coverage-honesty gaps of its own** (2 HIGH, adversarial review):
+  the ops Known-Issues **Security axis had no not-assessable branch** — silently dropped when uncollected/clean,
+  so the "not-assessable census" read as COMPLETE when security was never assessed (false-health by silence,
+  in the very section built to prevent it). And its "Affected" column listed every device with a security
+  block, not just the failing ones — telling a change board that clean boxes carry open hardening failures.
+  Both fixed at the source.
+- `!lesson` **Confidence-framing consistency across deliverables matters:** MOP/ops asserted "the target IS
+  NX-OS VXLAN BGP-EVPN" as a settled plan-of-record off the ENGINE-default applicability flag, while the CRD
+  correctly treated it as an open question without a requirements register. A change board reading three docs
+  with three confidence levels is a real defect. Now all gate assertive EVPN language on register-confirmation.
+- `!lesson` **Two vacuous tests** asserted `"not-assessable" in text` — always true from the §7.1 heading — and
+  the MOP gate test asserted "NOT READY" against the whole doc (it renders in every wave table). Both
+  re-anchored structurally (specific axis in `absent`; the BLUF gate ROW). The test-vacuity lens keeps earning
+  its place: a weak assertion is how a subtly-wrong CLIENT-FACING document ships.
+- graphify installed this session (real package = `graphifyy`, double-y, from the 78k-star Graphify-Labs repo;
+  provenance verified before install); Obsidian LLM-wiki vault fully set up (Dataview/Templater/obsidian-git).
+
 ## [2026-07-05] — v3.29 "schema release" wave: coverage-honesty as a queryable schema (J3/J2/J1)
 
 - 2-agent isolated-worktree wave built the moat-deepening §3.5 features: `ssot.compute_schema_census` (J3 —
