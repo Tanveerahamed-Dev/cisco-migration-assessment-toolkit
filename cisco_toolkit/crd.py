@@ -93,6 +93,28 @@ def _evidence_facts(snap: dict) -> dict:
     }
 
 
+def _requirements_overlay(bp: dict) -> dict:
+    """Read the customer's supplied requirements register OFF the canonical blueprint (SSOT).
+
+    `design_blueprint.requirements_model` is the ONE place the `--requirements` register is echoed
+    into the snapshot (design_advisor._requirements_model): `provided` (was a register supplied?),
+    `fields` ([{key, label, value}] — availability_tier / constraints / fabric_operating_model / …),
+    and `open_questions`. The CRD reads that model rather than re-loading the register file, so the
+    Constraints / Out-of-Scope sections agree with the HLD/deck/explorer instead of drifting. When no
+    register was supplied every value is None and `provided` is False — the caller surfaces the
+    engagement constraints as OPEN QUESTIONS, never inventing them (coverage-honesty).
+    """
+    rm = _as_dict(bp.get("requirements_model"))
+    vals = {f.get("key"): f.get("value")
+            for f in _as_list(rm.get("fields")) if isinstance(f, dict) and f.get("key")}
+    return {
+        "provided": bool(rm.get("provided")),
+        "constraints": [str(c).strip() for c in _as_list(vals.get("constraints")) if str(c).strip()],
+        "availability_tier": (str(vals.get("availability_tier") or "").strip() or None),
+        "fabric_operating_model": (str(vals.get("fabric_operating_model") or "").strip() or None),
+    }
+
+
 def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     """Emit the Customer Requirements Document (.docx) to `output_path`. Fail-soft: a missing
     python-docx is a warning + skip; any unexpected render error is logged, never raised."""
@@ -127,14 +149,15 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
     ev = _evidence_facts(snap)
     _bp = snap.get("design_blueprint")        # isinstance-guard, not `or {}`: a truthy non-dict crashes .get below
     bp = _bp if isinstance(_bp, dict) else {}   # (audit-2 L5 -- design.py guarded this; crd.py was the gap)
+    reg = _requirements_overlay(bp)             # the customer's WHY register, read off the canonical blueprint (SSOT)
     req_ids: list = []   # (req_id, origin) — feeds the traceability skeleton
 
     def _verify_method(rid):
         # how the requirement is PROVEN — Source is implicit in the REQ-ID class (B/T/O/D), so the
-        # higher-value column to add is the verification method, kept consistent with §7 (N5).
+        # higher-value column to add is the verification method, kept consistent with the RTM (N5).
         rid = str(rid)
         if rid.startswith("REQ-D"):
-            return "Design-driven NRFU (§8 + HLD §4)"
+            return "Design-driven NRFU (§10 + HLD §4)"
         if rid.startswith("REQ-T"):
             return "NRFU technical acceptance test"
         if rid.startswith("REQ-B"):
@@ -377,39 +400,147 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
            ("<36 months>", "<e.g. platform refresh, segmentation program>", "<to be assessed>")],
           widths=[1.1, 3.0, 2.6])
 
+    # ===== 7. Constraints & assumptions =====
+    # The fixed boundaries the design must respect. Register-supplied constraints (the customer's WHY,
+    # read off the canonical blueprint) are CONFIRMED; evidence-derived constraints are proposals gated on
+    # observed state; when NO register was supplied the standard engagement constraints are surfaced as
+    # OPEN QUESTIONS (coverage-honesty — a constraint the customer never stated is never invented).
+    doc.add_heading("7. Constraints & Assumptions", level=1)
+    doc.add_paragraph(
+        "The fixed boundaries the design MUST respect — the non-negotiables the target architecture is "
+        "built inside. A constraint is stronger than a requirement: it is not up for trade-off. Rows "
+        "marked CONFIRMED come from the supplied requirements register; EVIDENCE rows are proposals "
+        "derived from the assessment; OPEN QUESTION rows are constraints the engagement typically carries "
+        "but that this assessment cannot observe — answer them in the workshop (the engine never invents "
+        "a constraint the customer has not stated).")
+    con_rows = []   # (CON-ID, constraint, source)
+    _ci = 0
+    if reg["provided"] and reg["constraints"]:
+        for c in reg["constraints"]:
+            _ci += 1
+            con_rows.append((f"CON-{_ci:03d}", c, "CONFIRMED (requirements register)"))
+    if reg["fabric_operating_model"]:
+        _ci += 1
+        _fm = {"nxos-evpn": "Standalone NX-OS VXLAN BGP-EVPN fabric (Nexus Dashboard / NDFC-managed), "
+                            "not a Cisco ACI / APIC policy fabric.",
+               "aci": "Cisco ACI (APIC-controlled application-centric policy fabric), not a standalone "
+                      "NX-OS VXLAN-EVPN fabric."}.get(reg["fabric_operating_model"],
+                                                      f"Target fabric operating model: {reg['fabric_operating_model']}.")
+        con_rows.append((f"CON-{_ci:03d}", _fm, "CONFIRMED (requirements register)"))
+    if reg["availability_tier"]:
+        _ci += 1
+        con_rows.append((f"CON-{_ci:03d}",
+                         f"Target availability tier is '{reg['availability_tier']}' — the design is "
+                         "right-sized to this tier, not 5x9 everywhere.",
+                         "CONFIRMED (requirements register)"))
+    # Evidence-derived constraint: EoL / past-LDoS hardware forces replacement (from lifecycle_risk).
+    _ldos = ev["lifecycle"].get("n_past_ldos")
+    _eos = ev["lifecycle"].get("n_past_eos")
+    if isinstance(_ldos, int) and _ldos > 0:
+        _ci += 1
+        con_rows.append((f"CON-{_ci:03d}",
+                         f"{_ldos} device(s) are past last-day-of-support (LDoS) — these are forced "
+                         "replacements the migration cannot carry forward on the current hardware.",
+                         "EVIDENCE (lifecycle risk)"))
+    elif isinstance(_eos, int) and _eos > 0:
+        _ci += 1
+        con_rows.append((f"CON-{_ci:03d}",
+                         f"{_eos} device(s) are past end-of-sale (EoS) — plan the hardware refresh within "
+                         "the vendor-support horizon.", "EVIDENCE (lifecycle risk)"))
+    if not (reg["provided"] and reg["constraints"]):
+        # No register (or an empty constraints list): surface the standard engagement constraints as OPEN
+        # QUESTIONS rather than asserting them — the coverage-honest default (mirrors §4's open questions).
+        for q in (
+            "Fabric operating model — standalone NX-OS VXLAN BGP-EVPN (NDFC-managed) vs Cisco ACI "
+            "(APIC-managed)? The whole target design pivots on this; confirm it in the workshop.",
+            "Out-of-band management must NOT transit the fabric it manages — confirm the OOB gear is "
+            "physically separate.",
+            "Overlapping legacy VLAN IDs across zones — confirm whether port-VLAN translation to a new "
+            "fabric VLAN/VNI is required at the migration handoff.",
+            "Installed-base reuse — which existing hardware (if any) must be carried forward vs replaced?",
+            "Cutover model — multi-window, NRFU-gated (fabric fully deployed and tested before any "
+            "workload migration)?",
+        ):
+            _ci += 1
+            con_rows.append((f"CON-{_ci:03d}", q, "OPEN QUESTION — no requirements register supplied"))
+    if not con_rows:   # register provided-but-empty AND no lifecycle evidence: still ask, never blank
+        con_rows.append(("CON-001", "<capture the engagement's fixed constraints in the workshop>",
+                         "OPEN QUESTION"))
+    table(["CON-ID", "Constraint / assumption", "Source"], con_rows, widths=[0.9, 4.4, 1.4])
+
+    # ===== 8. Out of scope =====
+    # The explicit boundary statement — the standard CRD guardrail. Register-seeded when supplied; the
+    # default list is marked "confirm with customer" so a boundary is never silently assumed.
+    doc.add_heading("8. Out of Scope", level=1)
+    doc.add_paragraph(
+        "What this engagement does NOT cover — the explicit boundary that stops scope creep and sets the "
+        "customer's expectations. Each line is a proposed exclusion to CONFIRM, AMEND or STRIKE in the "
+        "workshop; anything the customer moves in-scope becomes a requirement row above.")
+    oos_default = [
+        ("Application / server / storage changes",
+         "The assessment and design are network-layer (L1–L4); application, compute and storage "
+         "remediation are out of scope unless explicitly added."),
+        ("Physical cabling & structured-cabling works",
+         "New fibre/copper runs, patching and facilities work are assumed pre-existing or handled by a "
+         "separate work-order."),
+        ("Endpoint / client-side configuration",
+         "Host, camera and appliance configuration is the customer's responsibility beyond the switchport."),
+        ("Security policy authorship",
+         "Firewall rule-set and security-policy design beyond preserving the observed segmentation."),
+        ("WAN / Internet-edge & provider circuits",
+         "Carrier services and the Internet edge are out of scope unless named in the engagement scope."),
+        ("Not-collected devices",
+         "Any device not in the collected evidence set is outside this assessment's coverage — its role "
+         "and dependencies are an explicit unknown, not assumed."),
+    ]
+    table(["Excluded area", "Boundary statement (confirm with customer)"],
+          oos_default, widths=[2.1, 4.6])
+
     # Design-driven requirements (REQ-D) are derived from the canonical blueprint; register their IDs in
-    # the traceability set BEFORE §7 renders so they are NOT orphaned from the matrix (a requirement that
-    # traces to nothing is the exact review defect §7 forbids). Their detail table is §8.
+    # the traceability set BEFORE the RTM (§9) renders so they are NOT orphaned from the matrix (a
+    # requirement that traces to nothing is the exact review defect the RTM forbids). Their detail is §10.
     bp_decisions = [d for d in (bp.get("decisions") or []) if isinstance(d, dict)]
     rec = [d for d in bp_decisions if d.get("status") == "recommended"]
     req_d = [(f"REQ-D-{i:03d}", d) for i, d in enumerate(rec, 1)]
     req_ids.extend(rid for rid, _ in req_d)
 
-    # ===== 7. Requirement traceability =====
-    doc.add_heading("7. Requirement Traceability", level=1)
+    # ===== 9. Requirements Traceability Matrix (RTM) =====
+    # The Cisco Advanced-Services instrument: each captured REQ-ID traced FORWARD through the delivery
+    # chain — HLD section → LLD object → MOP step → NRFU test case → evidence. The design/MOP/NRFU are
+    # authored downstream, so every forward cell is an HONEST PLACEHOLDER ("to be traced in <deliverable>")
+    # rather than a fabricated section number — this closes the requirement→design→MOP→NRFU→evidence chain
+    # the AS standard mandates without inventing references that do not yet exist.
+    doc.add_heading("9. Requirements Traceability Matrix (RTM)", level=1)
     doc.add_paragraph(
-        "Every requirement lands in design content and an acceptance test — an orphan requirement "
-        "(traced to nothing) or an orphan design choice (tracing to no requirement) is a review "
-        "defect. Complete as the HLD/LLD/NRFU are produced.")
+        "The forward-traceability instrument the Cisco Advanced-Services standard mandates: every captured "
+        "requirement is traced forward to the design object that satisfies it, the MOP step that "
+        "implements it, and the NRFU test case that proves it — so no requirement is orphaned (traced to "
+        "nothing) and no design choice is unjustified (tracing to no requirement). The design, MOP and "
+        "NRFU are authored downstream; each forward cell below is a PLACEHOLDER to complete when that "
+        "deliverable is produced, never a fabricated reference. This is the spine of the "
+        "requirement→design→MOP→NRFU→evidence chain.")
 
-    def _trace_row(rid):
-        # REQ-D requirements trace to the HLD §4 design blueprint (known) + the design-driven NRFU; the
-        # rest stay placeholders to complete as the HLD/LLD/NRFU are produced.
+    def _rtm_row(rid):
+        # REQ-D requirements already trace to the KNOWN HLD §4 design blueprint (the same design_blueprint
+        # this CRD read); the forward LLD/MOP/NRFU cells are honest placeholders naming the deliverable
+        # that will author them. Non-REQ-D rows are placeholders across all four forward columns.
         if rid.startswith("REQ-D"):
-            return (rid, "HLD §4 (design blueprint)", "<LLD §>", "design-driven NRFU")
-        return (rid, "<HLD §>", "<LLD §>", "<NRFU-…>")
-    table(["REQ-ID", "HLD section", "LLD section", "NRFU test ID"],
-          [_trace_row(rid) for rid in req_ids], widths=[1.1, 1.8, 1.8, 1.8])
+            return (rid, "HLD §4 (design blueprint)", "to be traced in LLD",
+                    "to be traced in MOP", "design-driven NRFU (to be traced in NRFU)")
+        return (rid, "to be traced in HLD", "to be traced in LLD",
+                "to be traced in MOP", "to be traced in NRFU")
+    table(["REQ-ID", "HLD section", "LLD object", "MOP step", "NRFU test case"],
+          [_rtm_row(rid) for rid in req_ids], widths=[1.0, 1.35, 1.4, 1.4, 1.55])
 
-    # ===== 8. Design-driven requirements (target-state blueprint) — evidence-gated =====
+    # ===== 10. Design-driven requirements (target-state blueprint) — evidence-gated =====
     if bp_decisions:
-        doc.add_heading("8. Design-Driven Requirements (Target-State Blueprint)", level=1)
+        doc.add_heading("10. Design-Driven Requirements (Target-State Blueprint)", level=1)
         doc.add_paragraph(
             "Requirements the assessment itself derives: the CCDE-grounded target-state design blueprint "
             "(the SAME design_blueprint behind the HLD/LLD §4 and the explorer Design mode), read as "
             "requirement candidates. Each is gated on observed evidence and cites a network-design "
             "principle — confirm, amend or strike it like any workshop requirement; each traces forward to "
-            "an HLD §4 design decision (and appears in the §7 traceability matrix).")
+            "an HLD §4 design decision (and appears in the §9 RTM).")
         if rec:
             table(["REQ-D", "Design requirement (recommended target pattern)", "Driver / evidence",
                    "CCDE basis", "Confirmed?"],
