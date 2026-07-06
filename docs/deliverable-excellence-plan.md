@@ -72,6 +72,37 @@ Fix-once in the shared `cisco_toolkit/docmeta.py`, wired into all 7 DOCX writers
 badge (shipped in P0) is the machine signal. (The `deliverable-qa-reviewer` agent type may be
 unavailable in some sessions; the `/qa` command + `.claude/agents/deliverable-qa-reviewer.md` remain.)
 
+## P5 — Rendered-output fidelity (fed back from the 2026-07-06 HLD side-engagement)
+Hand-authoring a 53-page client HLD surfaced two gaps in *rendered* fidelity that the text-first
+pipeline and text-first QA both missed — folded back into the engine:
+- ✅ **Field-code TOC now builds on open** — `docmeta.enable_update_fields` sets
+  `<w:updateFields w:val="true"/>`, called from the shared `add_toc` so all 7 DOCX writers inherit it;
+  ratcheted by `tests/test_docmeta.py::test_add_toc_marks_fields_to_rebuild_on_open`. Was: every
+  deliverable shipped the literal placeholder *"Right-click → Update Field to build the table of
+  contents"* (docmeta.py) — a client who opens-and-prints, or any headless docx→pdf render, got a
+  deliverable with **no** table of contents. Now Word/LibreOffice rebuild the TOC (and all fields) on
+  open. DOCX are golden-free, so no re-bless.
+- ✅ **Raster is a QA blind spot — QA now renders and eyeballs the figures.** `deliverable-qa-reviewer`
+  + `/qa` gained a render-to-page-images step: a diagram's title / node labels / event IDs live in the
+  image, not the extractable text, so a figure can carry a stale or self-contradictory label while every
+  grep-able string is correct (the session hit exactly this — out-of-order figure chips, a topology
+  captioned for a superseded design, deep-dive titles with retired event IDs). Unrenderable in-env →
+  report **UN-VERIFIED**, never a silent APPROVE (matches the "default to blocked" guardrail).
+- ✅ **Deliverable-SET version-drift is now a QA finding.** The side-engagement folder was itself the
+  evidence: an HLD reissued to v7.1 sitting on a companion LLD still at v6.0 (0 of the v7.1 markers, 15
+  retired-architecture markers) — a whole family out of version-sync that no *single-document* QA pass
+  flags. `deliverable-qa-reviewer` + `/qa` gained a step: reconcile the cover version / design baseline /
+  snapshot across EVERY deliverable in the set; a sibling on an older baseline or rendering an
+  architecture its own HLD has retired is a blocking finding; a family where only one document was
+  regenerated must be called out, not approved. (The engine generates a set from one snapshot so it is
+  version-consistent by construction — but a partial re-render, or a hand-authored set, drifts silently.)
+- **Reusable verification recipe** (this Windows box lacks `pandoc`/`pdftoppm`/`zip`; console is cp1252):
+  PyMuPDF (`pip install pymupdf`) for PDF→PNG; Word COM via `powershell.exe` (or `soffice`) for
+  docx→pdf; Python `zipfile` (write `[Content_Types].xml` first) to package a hand-edited docx; assert an
+  exact occurrence count before every XML string-replace and use `len("</w:tr>")` not a hand-counted
+  offset; back up embedded media before PIL surgery; `PYTHONIOENCODING=utf-8` before printing `→`/`§`/`⇄`.
+  Full lesson set with `bridge-candidate` tags: `docs/log.md` [2026-07-06].
+
 ## Discipline
 Ships as `feat:` PRs; pyproject bump only at release-tag time. Any NEW headline number surfaced in the
 At-a-Glance register must be added to `ssot.CANONICAL_FACTS` + a `reconcile()` check (per

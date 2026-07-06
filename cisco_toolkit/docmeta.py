@@ -204,10 +204,41 @@ def add_acceptance(doc, *, heading="Document Acceptance", scope_note="", roles=D
            [(r, "", "", "") for r in roles], widths=[2.2, 1.9, 1.6, 1.0])
 
 
+def enable_update_fields(doc):
+    """Mark the document so Word / LibreOffice rebuild every field (the TOC especially) on open —
+    instead of shipping the client an empty placeholder they must Right-click → Update Field / F9.
+
+    Sets ``<w:updateFields w:val="true"/>`` in word/settings.xml, idempotently (V3.23.172). Without
+    it a field-code TOC renders as its placeholder text until manually refreshed, so a client who
+    opens-and-prints (or a headless docx→pdf render) gets a deliverable with no table of contents.
+
+    Placed in the schema-correct slot (``CT_Settings`` is an ordered sequence: ``updateFields`` must
+    precede ``compat``/``rsids``/``mathPr``/…). Appending at the end is what Word/LibreOffice tolerate
+    but a strict XSD validator rejects — insert before the first element that must follow it so the
+    deliverable is schema-valid, not merely Word-openable.
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    after = {qn("w:" + t) for t in (
+        "compat", "docVars", "rsids", "attachedSchema", "themeFontLang", "clrSchemeMapping",
+        "doNotAutoCompressPictures", "shapeDefaults", "decimalSymbol", "listSeparator",
+        "hdrShapeDefaults", "footnotePr", "endnotePr")}
+    after.add(qn("m:mathPr"))
+    settings = doc.settings.element
+    el = settings.find(qn("w:updateFields"))
+    if el is None:
+        el = OxmlElement("w:updateFields")
+        anchor = next((c for c in settings if c.tag in after), None)
+        anchor.addprevious(el) if anchor is not None else settings.append(el)
+    el.set(qn("w:val"), "true")
+
+
 def add_toc(doc, *, heading="Contents", depth="1-2"):
     """Render the 'Contents' heading + the Word TOC field code (V3.23.171 — was a verbatim
     copy in every generator; one home means one place to change heading depth or the
-    update-field placeholder). Word builds the actual entries on field update."""
+    update-field placeholder). Fields are marked to rebuild on open (``enable_update_fields``,
+    V3.23.172), so the TOC populates for the client automatically — no manual F9."""
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
 
@@ -218,10 +249,11 @@ def add_toc(doc, *, heading="Contents", depth="1-2"):
     instr = OxmlElement("w:instrText"); instr.set(qn("xml:space"), "preserve")
     instr.text = rf'TOC \o "{depth}" \h \z \u'
     fs = OxmlElement("w:fldChar"); fs.set(qn("w:fldCharType"), "separate")
-    ft = OxmlElement("w:t"); ft.text = "Right-click → Update Field to build the table of contents."
+    ft = OxmlElement("w:t"); ft.text = "This table builds automatically when the document opens (or Right-click → Update Field)."
     fe = OxmlElement("w:fldChar"); fe.set(qn("w:fldCharType"), "end")
     for el in (fb, instr, fs, ft, fe):
         run._r.append(el)
+    enable_update_fields(doc)
     doc.add_page_break()
 
 
