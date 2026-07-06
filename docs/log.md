@@ -4,6 +4,30 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-06] — Session-brief made worktree-aware: graphify rot-watch + memory slug (PRs #295/#296)
+
+- Fixed the PR-#293 SessionStart brief for git-worktree sessions: `_graph_age()` read `graphify-out/graph.json`
+  relative to cwd, but `graphify-out/` is untracked so worktrees have none → false "graphify graph missing"
+  despite a fresh 5.9k-node graph in the main checkout. New `_main_root()` resolves the main checkout via
+  `git rev-parse --git-common-dir` (trailing `.git` stripped, fail-open to cwd); the graphify line reads from
+  there. PR #295, merged same day — confirmed live when this very session's own startup brief showed
+  "graphify graph 0d old" from inside a worktree.
+- Verified the hook manually in four states: worktree (missing → 0d old), main checkout (unchanged 0d old),
+  non-git dir (exit 0 + valid JSON + honest "missing"), garbage `ASNE_GIT_COMMON` (cwd fallback). The fail-open
+  and pure-ASCII/`json.dumps` output contracts held in all four.
+- Scope discipline on reviewed rig code worked: the same bug class in `_auto_memory()` (project slug computed
+  from cwd → "dir 0KB" misreport in worktrees) was found mid-fix but kept OUT of the reviewed change — handed
+  off as a task chip, delivered by a separate session as PR #296 (merged 5 min after #295) reusing `_main_root()`.
+- `!lesson` **cwd-relative reads in hooks/statuslines silently break in git-worktree sessions — but only for
+  artifacts that don't exist per-worktree.** Decision rule per metric: tracked file → cwd is correct (agent-memory
+  post-#294); untracked output or per-project global store (graphify-out/, the auto-memory slug) → resolve the
+  main checkout via `git rev-parse --git-common-dir`, abspath it first (it returns relative `.git` in the main
+  checkout, absolute from a worktree), strip the `.git` basename, and keep a cwd fallback so the hook stays
+  fail-open. bridge-candidate
+- `!lesson` **git-bash `/tmp` is MSYS-private on Windows** — a file a bash pipeline writes there is invisible to
+  native Windows Python (`FileNotFoundError`), which cost one verification round-trip. When mixing git-bash and
+  Windows Python in one pipeline, pass data via stdin pipes or a real Windows path, never `/tmp`. bridge-candidate
+
 ## [2026-07-05] — v3.30 "deliverable release" wave: MOP / Ops-Handbook / CRD excellence (§3.6 / DE-01)
 
 - 3-agent isolated-worktree wave built the client-facing DOCX upgrades for the [HISTORY-REDACTED] engagement: MOP BLUF +
