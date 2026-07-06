@@ -14,6 +14,9 @@ export ASNE_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
 export ASNE_DIRTY="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 export ASNE_LAST="$(git log -1 --oneline 2>/dev/null)"
 export ASNE_SNAP="$(ls -1t *.snapshot.json 2>/dev/null | head -1)"
+# graphify-out/ is untracked, so in a git worktree it exists only in the MAIN checkout;
+# --git-common-dir points at the main .git from any worktree ('.git' in the main checkout).
+export ASNE_GIT_COMMON="$(git rev-parse --git-common-dir 2>/dev/null || echo '')"
 
 "$PY" - <<'PYEOF' 2>/dev/null || true
 import datetime, json, os, re, time
@@ -32,9 +35,24 @@ def _days_since_op(op):
     except Exception:
         return "?"
 
+def _main_root():
+    # graphify freshness must be read from the MAIN checkout: graphify-out/ is untracked,
+    # so a worktree session has none and would misreport "missing". ASNE_GIT_COMMON is the
+    # main .git (absolute from a worktree; '.git' in the main checkout, which abspath
+    # resolves against cwd). Fail-open to cwd if unset or unexpected.
+    try:
+        d = os.environ.get("ASNE_GIT_COMMON", "")
+        if d:
+            d = os.path.abspath(d)
+            if os.path.basename(d) == ".git" and os.path.isdir(os.path.dirname(d)):
+                return os.path.dirname(d)
+    except Exception:
+        pass
+    return os.getcwd()
+
 def _graph_age():
     try:
-        d = int((time.time() - os.path.getmtime("graphify-out/graph.json")) // 86400)
+        d = int((time.time() - os.path.getmtime(os.path.join(_main_root(), "graphify-out", "graph.json"))) // 86400)
         return str(d) + "d old"
     except Exception:
         return "missing"
