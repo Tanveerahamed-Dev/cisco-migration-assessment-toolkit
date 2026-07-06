@@ -511,3 +511,191 @@ def test_mop_check_counts_sum_to_group_ssot_across_subwaves():
     assert w1["n_fail"] + w2["n_fail"] == 1 and w1["n_warn"] + w2["n_warn"] == 1   # each check counted ONCE
     full = _join_group_records(["G1"], ["swA", "swB", "swC", "swD"], readiness, {}, {}, {})[0]
     assert full["n_fail"] == 1 and full["n_warn"] == 1                              # whole group -> full SSOT
+
+
+# ---- DE-01 P1: Executive-Summary BLUF (answer-first, front matter) ----------------------------
+def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
+    """DE-01 / Cisco-AS: a Bottom-Line-Up-Front executive summary sits at the TOP of the MOP (before the
+    numbered sections), and it carries the load-bearing decision facts pulled from the snapshot — the wave
+    count, the go/no-go gate (worst readiness across the waves), the one-line rollback, and the window
+    estimate. None invented: the fleet recommendation + top-gating are the snapshot's own."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
+    assert any("Bottom Line Up Front" in t or "Bottom-Line-Up-Front" in t for t in h1), h1
+    text = _all_text(d)
+    # the BLUF names the wave count and the go/no-go gate (worst readiness = NOT READY in the fixture)
+    assert "2 wave(s)" in text
+    assert "NOT READY" in text                                   # the go/no-go readiness gate
+    # one-line rollback + a maintenance-window estimate line, both answer-first
+    assert "Rollback in one line" in text or "Rollback (one line)" in text
+    assert "Maintenance window" in text
+    # the BLUF must appear BEFORE the numbered §1 Change Overview (it is genuinely up front)
+    paras = [p.text for p in d.paragraphs]
+    bluf_i = next(i for i, t in enumerate(paras)
+                  if "Bottom Line Up Front" in t or "Bottom-Line-Up-Front" in t)
+    co_i = next(i for i, t in enumerate(paras) if t == "1. Change Overview")
+    assert bluf_i < co_i, (bluf_i, co_i)
+
+
+def test_mop_bluf_window_estimate_is_coverage_honest(tmp_path):
+    """The window estimate is a derived planning figure, not a collected fact — it must be labelled as an
+    estimate to confirm with the change owner, never presented as an authoritative collected number."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "estimate" in text.lower() and "confirm with the change owner" in text.lower()
+
+
+# ---- DE-01 P1: per-step quantified rollback triggers -----------------------------------------
+def test_mop_each_wave_has_quantified_rollback_trigger(tmp_path):
+    """Cisco-AS standard: every wave carries an EXPLICIT, QUANTIFIED rollback trigger — not 'if something
+    breaks' but a boolean condition (e.g. '>0.1% validation failures', 'no convergence within N minutes',
+    'any Critical check fails'). The §x.7 rollback-triggers block must render a quantified condition per
+    wave, ahead of the rollback procedure."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    # a dedicated rollback-triggers heading per wave (waves are §3 and §4)
+    assert any("Rollback triggers" in t for t in h2), h2
+    text = _all_text(d)
+    # QUANTIFIED default conditions (Cisco-AS), with the confirm-with-owner caveat where the snapshot
+    # has no device-specific threshold
+    assert "any Critical" in text and "validation" in text.lower()
+    assert "convergence" in text.lower()
+    assert "confirm with the change owner" in text.lower()
+
+
+def test_mop_rollback_trigger_is_a_boolean_per_step(tmp_path):
+    """Each rollback trigger reads as an explicit boolean 'Roll back if:' condition, so the in-window
+    engineer has an unambiguous abort test rather than prose judgement."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert text.count("Roll back if") >= 2      # at least one per wave (two waves in the fixture)
+
+
+# ---- DE-01 P1: pre-implementation checklist (evidence-gated vs attested) ----------------------
+def test_mop_pre_implementation_checklist_present(tmp_path):
+    """Cisco-AS: a per-window pre-implementation checklist gates the window — config backup taken, OOB
+    reachable, window confirmed, CAB approved, rollback tested, TAC pre-opened for high-risk. The
+    snapshot-checkable preconditions (OOB port evidence, backup) are evidence-gated; the human-attested
+    ones are clearly distinguished."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert any("Pre-implementation checklist" in t for t in h2), h2
+    text = _all_text(d)
+    # the standard AS preconditions
+    for token in ("Config backup", "Out-of-band", "CAB", "Rollback tested", "maintenance window"):
+        assert token in text or token.lower() in text.lower(), token
+    # the evidence-gated vs human-attested distinction is explicit
+    assert "Evidence" in text and "Attested" in text
+
+
+def test_mop_checklist_evidence_gates_oob_from_snapshot(tmp_path):
+    """The OOB-reachability precondition is EVIDENCE-GATED: when the snapshot carries a management-port for
+    a wave device it reads as evidenced (not merely attested); with no mgmt-port evidence it is [NOT
+    OBSERVED] — coverage-honest, never assumed reachable."""
+    snap = _snap()
+    snap["interfaces"] = {
+        "distA": {"mgmt0": {"switchport_mode": "", "mgmt_ip": "10.99.0.5"}},
+    }
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    # wave 1 (distA) has mgmt-port evidence -> the OOB precondition cites it
+    assert "mgmt0" in text or "10.99.0.5" in text
+    # wave 2 (acc1) has NO mgmt-port evidence -> coverage-honest not-observed marker
+    assert "[NOT OBSERVED]" in text
+
+
+def test_mop_checklist_tac_preopen_for_high_risk_wave(tmp_path):
+    """A high-risk wave (NOT-READY / has Critical blockers) surfaces the 'pre-open a Cisco TAC case'
+    precondition; a low-risk wave does not force it. In the fixture Group 2 (acc1) is NOT READY with a
+    Critical punch-list item -> TAC pre-open surfaces."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "TAC" in text and "pre-open" in text.lower()
+
+
+# ---- DE-01 P1: communications / escalation plan ----------------------------------------------
+def test_mop_comms_and_escalation_plan_present(tmp_path):
+    """Cisco-AS: a communications / escalation plan — roles (change owner, executor, verifier,
+    escalation), a T-minus comms cadence, and the escalation matrix (incl. Cisco TAC pre-open for
+    high-risk windows)."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    d = Document(out)
+    h2 = [p.text for p in d.paragraphs if p.style.name == "Heading 2"]
+    assert any("Communications" in t and "escalation" in t.lower() for t in h2), h2
+    text = _all_text(d)
+    # T-minus cadence
+    assert "T-minus" in text or "T-" in text
+    # escalation matrix roles + the TAC escalation tier
+    assert "Change owner" in text and "Escalation" in text
+    assert "Cisco TAC" in text
+
+
+# ---- DE-01 P1: PRE / DURING / POST phase labels (roadmap C2) + verify AND rollback (C3) -------
+def test_mop_procedure_steps_carry_phase_labels(tmp_path):
+    """Roadmap C2: the cutover procedure labels its steps PRE / DURING / POST so the reader can see the
+    window structure at a glance."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "[PRE]" in text and "[DURING]" in text and "[POST]" in text
+
+
+def test_mop_every_wave_has_verify_and_rollback(tmp_path):
+    """Roadmap C3: every wave has at least one VERIFY (post-cutover validation) AND one ROLLBACK section.
+    Guards against a wave that renders a procedure with no go/no-go or no abort path."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")
+    h2 = [p.text for p in Document(out).paragraphs if p.style.name == "Heading 2"]
+    # two waves -> two validation (verify) + two rollback headings
+    assert sum(1 for t in h2 if "Post-cutover validation" in t) >= 2
+    assert sum(1 for t in h2 if t.endswith("Rollback")) >= 2
+
+
+# ---- coverage-honesty: not-assessable when evidence absent -----------------------------------
+def test_mop_bluf_not_assessable_when_evidence_absent(tmp_path):
+    """Coverage-honesty: with no fleet recommendation and no top-gating in the snapshot, the BLUF must
+    DECLARE the missing facts not-assessable ([NOT OBSERVED]) rather than fabricate a recommendation."""
+    snap = _snap()
+    snap["migration_scenarios"] = {"per_group": snap["migration_scenarios"]["per_group"]}   # drop fleet_recommendation
+    snap["executive_brief"] = {}                                                             # drop top_gating
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "[NOT OBSERVED]" in text
+    # even with no recommendation the structural gate facts (wave count) still render
+    assert "2 wave(s)" in text
+
+
+# ---- EVPN gating: rollback triggers cite the evpn abort conditions only when EVPN is the target
+def test_mop_rollback_triggers_surface_evpn_abort_conditions_when_applicable(tmp_path):
+    """AJMN specificity: when the target fabric is NX-OS VXLAN-EVPN, the quantified rollback triggers
+    surface the primary-source EVPN abort conditions (gateway-MAC black-hole, L2 loop, control-plane not
+    Established). Gated: a non-EVPN MOP does not."""
+    snap = _snap()
+    snap["design_blueprint"] = {"evpn_migration": _evpn_mig()}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    # the EVPN rollback guardrail's quantified abort conditions appear in the triggers block
+    assert "control plane" in text.lower() and "Established" in text
+    assert "black-hole" in text.lower() or "loop" in text.lower()
+
+
+def test_mop_rollback_triggers_silent_on_evpn_when_not_the_target(tmp_path):
+    """Refutation / gate: a non-EVPN MOP's rollback triggers do NOT reference the EVPN-specific abort
+    conditions (they are gated on the target fabric)."""
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, _snap(), "Unit Test Fleet")   # _snap() has no evpn_migration
+    text = _all_text(Document(out))
+    assert "Anycast" not in text and "DAG MAC" not in text
