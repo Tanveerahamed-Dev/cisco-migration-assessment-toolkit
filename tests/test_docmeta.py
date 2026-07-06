@@ -27,6 +27,24 @@ def _all_text(doc):
     return "\n".join(parts)
 
 
+def test_add_toc_marks_fields_to_rebuild_on_open():
+    """DE-TOC: a field-code TOC renders as a placeholder until refreshed, so every deliverable
+    must ship with <w:updateFields w:val="true"/> — the client (or a headless docx→pdf render)
+    gets a built table of contents on open, not a 'press F9' stub. Guards the V3.23.172 fix."""
+    from docx.oxml.ns import qn
+    from cisco_toolkit.docmeta import enable_update_fields
+
+    doc = Document()
+    add_toc(doc)
+    uf = doc.settings.element.findall(qn("w:updateFields"))
+    assert len(uf) == 1 and uf[0].get(qn("w:val")) == "true"
+    # idempotent: re-invoking (a second TOC, or an explicit call) never duplicates the setting
+    add_toc(doc)
+    enable_update_fields(doc)
+    uf2 = doc.settings.element.findall(qn("w:updateFields"))
+    assert len(uf2) == 1 and uf2[0].get(qn("w:val")) == "true"
+
+
 def test_excellence_front_reads_canonical_facts_not_a_recount():
     # DE-01: the 'At a Glance' register must render the CANONICAL headline facts (single source of
     # truth), plus the ssot self-verification signal — proof it reads, not recounts.
