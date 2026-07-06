@@ -99,8 +99,20 @@ def _known_issues(ev: dict) -> tuple:
     if si_sum.get("n_collected"):
         dets = [d for d in _as_list(ev["si"].get("detections")) if isinstance(d, dict)]
         if dets:
-            top = sorted(dets, key=lambda d: (-int(d.get("count") or 0), str(d.get("label") or "")))[:6]
-            sigs = "; ".join(f"{d.get('label')} (×{d.get('count', 0)}, {d.get('severity', '—')})" for d in top)
+            # Aggregate by distinct signature CLASS (label) BEFORE the top-N cut — otherwise one
+            # signature firing on many devices produces many rows and crowds every other class off
+            # a real fleet's list (adversarial-review finding, 2026-07-05).
+            _SEV = {"Critical": 3, "High": 2, "Medium": 1, "Low": 0}
+            by_label: dict = {}
+            for d in dets:
+                a = by_label.setdefault(str(d.get("label") or "?"), {"count": 0, "sev": "—", "devs": 0})
+                a["count"] += int(d.get("count") or 0)
+                a["devs"] += 1
+                sev = str(d.get("severity") or "—")
+                if _SEV.get(sev, -1) > _SEV.get(a["sev"], -1):
+                    a["sev"] = sev
+            top = sorted(by_label.items(), key=lambda kv: (-kv[1]["count"], kv[0]))[:6]
+            sigs = "; ".join(f"{lbl} (×{a['count']} on {a['devs']} device(s), {a['sev']})" for lbl, a in top)
             issues.append((
                 "Syslog Intelligence",
                 f"Recurring log signatures already fired on this fleet: {sigs}.",
@@ -194,18 +206,39 @@ def _known_issues(ev: dict) -> tuple:
                 _hosts_from(qaf),
                 "On a broadcast/media estate an un-marked, un-queued path is a caveat for real-time feeds — "
                 "hold the role's trust + queuing template (§4) on every switch carrying media."))
+        else:      # collected AND clean — represent it, don't drop it (a silent drop reads as 'not assessed')
+            issues.append((
+                "QoS Audit", "QoS posture screened; no marking/queuing doctrine gap flagged at assessment.",
+                "(fleet)", "Hold the role's trust + queuing template (§4) as QoS is extended for real-time media."))
     else:
         absent.append(("QoS Audit (marking / queuing doctrine gaps)",
                        "re-run the assessment to screen the fleet's QoS posture."))
 
     # -- security: CIS hardening failures open at assessment --
-    if ev["n_sec_fail"]:
-        sec_hosts = _hosts_from([{"host": h} for h in sorted(_as_dict(ev["sec"]).keys())])
-        issues.append((
-            "Security Posture",
-            f"{ev['n_sec_fail']} CIS hardening check failure(s) open at assessment.",
-            sec_hosts,
-            "Each is an operations-owned remediation with a named owner and date — track to zero (§4)."))
+    # Coverage-honest, mirroring every other axis (adversarial-review finding, 2026-07-05): declare
+    # the axis not-assessable when it was never collected; when collected-and-clean, say so; and when
+    # there are failures, name ONLY the devices that actually failed (never every device that merely
+    # carries a security block — that would assert open failures on clean boxes to a change board).
+    if ev["sec"]:                                          # the CIS/hardening axis WAS collected
+        def _fail_of(blk):                                 # total on a malformed 'fail' (e.g. the string 'many')
+            try:
+                return int(_as_dict(_as_dict(blk).get("summary")).get("fail") or 0)
+            except (TypeError, ValueError):
+                return 0
+        fail_hosts = sorted(h for h, blk in ev["sec"].items() if _fail_of(blk) > 0)
+        if ev["n_sec_fail"] and fail_hosts:
+            issues.append((
+                "Security Posture",
+                f"{ev['n_sec_fail']} CIS hardening check failure(s) open at assessment.",
+                _hosts_from([{"host": h} for h in fail_hosts]),
+                "Each is an operations-owned remediation with a named owner and date — track to zero (§4)."))
+        else:
+            issues.append((
+                "Security Posture", "CIS / hardening posture screened; no failing check at assessment.",
+                "(fleet)", "Re-screen on the §8 cadence — hardening posture drifts as configs change."))
+    else:
+        absent.append(("Security Posture (CIS / hardening failures)",
+                       "re-run the assessment to screen the fleet's hardening posture (per-device CIS checks)."))
 
     return issues, absent
 
@@ -540,9 +573,21 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
     # flag the MOP §2.2 uses, so it is silent on a non-EVPN engagement (evidence-gated, never assumed).
     _evpn = _as_dict(_as_dict(snap.get("design_blueprint")).get("evpn_migration"))
     if _evpn.get("applicable"):
+        # Match the CRD/MOP confidence (adversarial-review finding, 2026-07-05): assert the EVPN/NDFC target
+        # only when the requirements register confirms it; otherwise it is an engine assessment to confirm.
+        _rm = _as_dict(_as_dict(snap.get("design_blueprint")).get("requirements_model"))
+        _fom = next((str(f.get("value") or "") for f in _as_list(_rm.get("fields"))
+                     if isinstance(f, dict) and f.get("key") == "fabric_operating_model"), "")
+        _confirmed = bool(_rm.get("provided")) and "evpn" in _fom.lower()
+        _lead = (f"The target is an NX-OS VXLAN BGP-EVPN fabric ({_evpn.get('model_basis', '')}), "
+                 "customer-confirmed via the requirements register."
+                 if _confirmed else
+                 f"IF the target is an NX-OS VXLAN BGP-EVPN fabric ({_evpn.get('model_basis', '')}) — an engine "
+                 "assessment to confirm with the customer, not a settled plan-of-record — the day-2 backup model "
+                 "changes as follows.")
         doc.add_heading("6.4 Fabric backup discipline (NDFC-managed target)", level=2)
         doc.add_paragraph(
-            f"The target is an NX-OS VXLAN BGP-EVPN fabric ({_evpn.get('model_basis', '')}). On the "
+            _lead + " On the "
             "NDFC-managed fabric the backup model changes: NDFC (Nexus Dashboard Fabric Controller) owns "
             "scheduled and on-demand configuration backups for every managed switch, and the source of "
             "truth is NDFC's intent, not each device. Two disciplines follow:")

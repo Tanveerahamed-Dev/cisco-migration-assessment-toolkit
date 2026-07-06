@@ -228,11 +228,11 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
           else "[NOT OBSERVED] — no per-wave readiness verdict was published; treat every wave as "
                "no-go until readiness is assessed.")),
         ("Open blockers gating the change",
-         f"{n_blockers} blocking check(s) attributed across the waves (see each wave's §x.2)."),
+         f"{n_blockers} blocking check(s) attributed across the waves (see each wave's Blockers-to-clear subsection)."),
         ("Rollback in one line",
          "If any wave's post-cutover validation fails and cannot be corrected inside the window, "
          "re-apply that wave's captured pre-change config and re-home to the legacy path — every wave "
-         "carries an explicit quantified rollback trigger (§x.7)."),
+         "carries an explicit quantified rollback trigger (in each wave's Rollback subsection)."),
         ("Maintenance window (estimate)", _window_estimate(n_waves)),
         ("Fleet-level recommendation", _v(fleet_rec)),
         ("Top gating item to clear first", _v(gating[0] if gating else None)),
@@ -462,7 +462,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("Executor (implementing engineer)", "<name>",
          "Executes each MOP step exactly as written; calls out each success criterion."),
         ("Verifier (validation / war-room lead)", "<name>",
-         "Runs the §x.6 post-cutover validation independently of the executor; records evidence."),
+         "Runs each wave's post-cutover validation independently of the executor; records evidence."),
         ("Escalation / bridge lead", "<name>",
          "Runs the conference bridge, drives escalation, owns stakeholder comms."),
     ], widths=[2.0, 1.6, 3.1])
@@ -489,7 +489,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         ("L3 — vendor (Cisco TAC)", "A device/software fault needs vendor help.",
          "Open/attach the Cisco TAC case (SEV per impact); reference the pre-opened SR.", "<per SLA>"),
         ("Rollback authority", "The rollback decision time passes or a trigger stands.",
-         "Change owner declares rollback; executor runs §x.7.", "Immediate"),
+         "Change owner declares rollback; executor runs that wave's Rollback procedure.", "Immediate"),
     ], widths=[1.4, 2.1, 2.4, 0.9])
     _label_run(doc.add_paragraph(), "High-risk windows:",
                "for any NOT-READY wave or a wave with Critical/High blockers, PRE-OPEN a Cisco TAC case "
@@ -502,13 +502,28 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     # safety, the vPC back-to-back method, rollback triggers) grounded in the fleet's OWN observed evidence.
     evpn = _as_dict(_as_dict(snap.get("design_blueprint")).get("evpn_migration"))
     evpn_on = bool(evpn.get("applicable"))
+    # Match the CRD's confidence (adversarial-review finding, 2026-07-05): assert "the target IS EVPN"
+    # only when the customer's requirements register confirms fabric_operating_model=nxos-evpn; otherwise
+    # this is an ENGINE assessment from the fleet's evidence and must be framed as a to-confirm target-state,
+    # never a settled plan-of-record.
+    _rm = _as_dict(_as_dict(snap.get("design_blueprint")).get("requirements_model"))
+    _fom = next((str(f.get("value") or "") for f in _as_list(_rm.get("fields"))
+                 if isinstance(f, dict) and f.get("key") == "fabric_operating_model"), "")
+    evpn_confirmed = bool(_rm.get("provided")) and "evpn" in _fom.lower()
     if evpn_on:
         doc.add_heading("2.2 EVPN-migration guardrails (brownfield → NX-OS VXLAN-EVPN)", level=2)
+        _basis = (
+            f"The target fabric is NX-OS VXLAN BGP-EVPN ({evpn.get('model_basis', '')}), customer-confirmed "
+            "via the requirements register."
+            if evpn_confirmed else
+            f"The assessed target-state fabric is modeled as NX-OS VXLAN BGP-EVPN ({evpn.get('model_basis', '')}) "
+            "— an engine assessment from this fleet's evidence, NOT a settled plan-of-record; confirm the fabric "
+            "operating model with the customer before cutover (a requirements register with fabric_operating_model "
+            "settles it).")
         doc.add_paragraph(
-            f"The target fabric is NX-OS VXLAN BGP-EVPN ({evpn.get('model_basis', '')}). These migration "
-            "guardrails are grounded in this fleet's own evidence and documented in primary Cisco sources; "
-            "each is an easily-missed cutover failure mode that must be satisfied — or explicitly "
-            "risk-accepted — before the relevant wave.")
+            _basis + " These migration guardrails are grounded in this fleet's own evidence and documented in "
+            "primary Cisco sources; each is an easily-missed cutover failure mode that must be satisfied — or "
+            "explicitly risk-accepted — before the relevant wave.")
         table(["Guardrail", "Phase", "Severity", "Basis (observed) & action — [source]"],
               [(g.get("title", ""), g.get("phase", ""), g.get("severity", ""),
                 f"{g.get('basis', '')} — {g.get('detail', '')} [{g.get('source', '')}]")

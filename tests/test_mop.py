@@ -525,9 +525,17 @@ def test_mop_bluf_present_and_carries_wave_and_gate(tmp_path):
     h1 = [p.text for p in d.paragraphs if p.style.name == "Heading 1"]
     assert any("Bottom Line Up Front" in t or "Bottom-Line-Up-Front" in t for t in h1), h1
     text = _all_text(d)
-    # the BLUF names the wave count and the go/no-go gate (worst readiness = NOT READY in the fixture)
+    # the BLUF names the wave count
     assert "2 wave(s)" in text
-    assert "NOT READY" in text                                   # the go/no-go readiness gate
+    # STRUCTURAL (non-vacuous): the BLUF go/no-go GATE ROW itself must carry the worst readiness — not just
+    # "NOT READY" appearing somewhere in the doc (it also renders in every wave's scope table, which would
+    # make a whole-doc substring check vacuous — adversarial-review finding, 2026-07-05).
+    gate_rows = [[c.text.strip() for c in row.cells]
+                 for tbl in d.tables for row in tbl.rows
+                 if any("no-go gate" in c.text.lower() or "worst readiness" in c.text.lower()
+                        for c in row.cells)]
+    assert gate_rows, "BLUF go/no-go gate row not found in any table"
+    assert any("NOT READY" in " ".join(cells) for cells in gate_rows), gate_rows
     # one-line rollback + a maintenance-window estimate line, both answer-first
     assert "Rollback in one line" in text or "Rollback (one line)" in text
     assert "Maintenance window" in text
