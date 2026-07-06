@@ -13,6 +13,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/vault-guard.sh",
+            "statusMessage": "Enforcing ADR 0001 (vault is not writable from repo sessions)"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
