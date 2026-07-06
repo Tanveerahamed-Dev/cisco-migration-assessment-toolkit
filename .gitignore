@@ -64,3 +64,7 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# autonomous-brain: generated dated morning briefings (reproducible via /briefing).
+# The command, hook, and scorecard schema ARE committed; the machine-generated output is not.
+docs/briefings/briefing-*.md
