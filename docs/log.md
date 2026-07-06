@@ -4,6 +4,42 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-06] — [HISTORY-REDACTED] HLD v7.1: integrity reissue + FCSLA-delivery + firewall-terminated-edge deltas (side engagement)
+
+- Side-engagement session only — produced [HISTORY-REDACTED] DC HLD v7.1 from v7.0 in three stacked deltas: an integrity/completeness
+  reissue (~27 fixes: ACP rule off-by-one, FPR3105 copper-port media, C9400 SVL single-active-supervisor behaviour,
+  figure renumber, consolidated 39-REQ + 10-OQ Appendix A, reinstated §12.6/§14.4, S-30, REC-6 optics gap), then the
+  Ooredoo FCSLA delivery as a design variation, then the resolved firewall-terminated eBGP edge (D-14 topology /
+  D-15 C-2 evolution). No tracked repo code touched — `[HISTORY-REDACTED]_DC_Design/` is gitignored with its own SSOT, so `git log`
+  is unchanged. Built via an idempotent, assertion-guarded XML-transform script re-runnable from a pristine `.orig` unpack.
+- !lesson **The Windows git-bash docx toolchain is missing the obvious binaries — reach for pip wheels and Python
+  stdlib instead.** `pandoc`, `pdftoppm`/poppler, and `zip` are all absent; the console is cp1252. Fixes that worked:
+  PyMuPDF (`pip install pymupdf`) to render PDF→PNG in place of pdftoppm; Python `zipfile` (write `[Content_Types].xml`
+  first) in place of `zip`; `sys.stdout.reconfigure(encoding='utf-8')` or `PYTHONIOENCODING=utf-8` before printing any
+  `→`/`✓`/`§`/`⇄`; and `pip install defusedxml` for the docx skill's `merge_runs.py`. bridge-candidate
+- !lesson **Assert an exact occurrence count before every string-replace edit, and never hand-count XML tag offsets.**
+  Wrapping each edit in `assert doc.count(old)==n` caught stale anchors immediately (e.g. a table-row anchor that didn't
+  contain the expected phrase) instead of silently corrupting the doc. But a hand-written splice offset
+  `find("</w:tr>") + 7 + 1` left a stray `<` before the next `<w:tr>` → "StartTag: invalid element name" at XSD
+  validation. Use `len("</w:tr>")`, never a magic number. bridge-candidate
+- !lesson **Raster text in documents is a QA blind spot that text-extraction verification cannot see.** Embedded figure
+  PNGs literally drew stale labels — a "single CPE" box, out-of-order "Figure N" chips, and deep-dive titles with event
+  IDs ("S-05/S-11/S-17") that disagreed with the renumbered failure matrix ("S-6/S-9/…"). Fix: render pages, eyeball the
+  figures, patch the PNGs with PIL — detect the box/chip bbox by scanning **outside-in** for the border (an inside-out
+  scan hits the dark title glyphs and mis-measures), erase with a sampled fill colour, redraw with matplotlib's bundled
+  DejaVu TTF — and back up the media first (the build pipeline kept no per-file `.orig` for images). bridge-candidate
+- !lesson **A Word static TOC (from a prior Ctrl+A/F9) has hardcoded page numbers that never auto-update, and the
+  title↔number tab separator is fragile.** Render → measure real pages (PyMuPDF `page.search_for`) → patch the number
+  run. The first patch replaced the whole run text and ate the leading `\t`, so titles ran into their page numbers with
+  no gap — a regression the independent verifier caught. Substitute only the numeric text and preserve the leading
+  tab/whitespace prefix. bridge-candidate
+- !lesson **Proposer≠verifier pays off on prose deliverables, and a contradictory design brief is a stop-and-confirm
+  signal, not a guess.** An independent extraction-diff subagent caught a mis-registered management IP and the TOC-tab
+  regression that the builder's own gates missed. And when the brief self-contradicted ("CPEs connect to firewalls"
+  while also "keep the routers"), resolving the active-edge role with an explicit question before the large §6 rewrite
+  avoided rebuilding the wrong topology; the reserved decision number (D-14) was then reused rather than left dangling
+  beside a new D-15. Run an independent verifier after any large document delta; confirm contradictory briefs first. bridge-candidate
+
 ## [2026-07-06] — Session-brief made worktree-aware: graphify rot-watch + memory slug (PRs #295/#296)
 
 - Fixed the PR-#293 SessionStart brief for git-worktree sessions: `_graph_age()` read `graphify-out/graph.json`
