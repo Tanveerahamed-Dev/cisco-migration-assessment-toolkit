@@ -48,6 +48,15 @@ must cite the owner. Assessment headline facts carry the mechanical contract (`c
 registry's own pointers from rotting. Adding a new source of truth = register it in `docs/ssot.md`, and
 add a reconcile guard if it overlaps an existing fact. This is Law 1 of the Deliverable Excellence Standard.
 
+## Knowledge base (two-store rule — ADR 0001)
+
+Career/domain knowledge lives in the personal vault at `C:\Vaults\brain`; this repo + graphify own code and
+engagement knowledge (`docs/decisions/0001-two-store-knowledge-architecture.md`). Repo sessions NEVER write the
+vault — client-generic lessons are captured via `/retro` as `!lesson` entries in `docs/log.md` tagged
+`bridge-candidate`, and a separate vault-cwd session promotes them with the vault's `/ingest` (its Rule-3 gate
+strips client identifiers). Engine facts on wiki pages cite the symbol and defer to graphify, never restate
+behavior. Reading vault pages from repo sessions is NOT granted (would need an ADR-0001 amendment).
+
 ## Automated Senior Network Engineer (operating doctrine)
 
 This repo operates as an automated senior Cisco network engineer for L1–L4 brownfield assessment & migration. The main session is the **Engagement Lead / orchestrator**: it owns the PPDIOO gate sequence and delegates specialist work to the subagents below (in `.claude/agents/`).
