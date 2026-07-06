@@ -37,8 +37,9 @@ def test_rich_snapshot_renders_evidence_derived_baselines(tmp_path, golden_snap)
     # the section skeleton
     for h in ("1. Purpose & Audience", "2. Network Quick Reference",
               "3. Monitoring & Alerting Baseline", "4. Operational Standards & Drift Control",
-              "5. Software & Lifecycle Governance", "6. Routine Operations Calendar",
-              "7. Escalation & TAC Readiness"):
+              "5. Software & Lifecycle Governance", "6. Backup & Recovery",
+              "7. Known Issues & Operating Caveats", "8. Routine Operations Calendar",
+              "9. Escalation & TAC Readiness"):
         assert any(h in x for x in heads), h
     # baselines really come from the golden fleet's own evidence
     assert "core1" in text                               # quick reference inventory
@@ -142,3 +143,115 @@ def test_ops_handbook_tolerates_non_dict_protocol_health_row(tmp_path):
     write_ops_handbook_docx(out, {"devices": {"sw1": None}, "protocol_health": ["STP up", None]}, "bad")  # no raise
     import os
     assert os.path.exists(out)
+
+
+# ---- P2 (deliverable-excellence): Backup & Recovery + Known-Issues sections ----
+
+def _heads(doc):
+    return [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
+
+
+def test_backup_recovery_section_carries_restore_test_discipline(tmp_path, golden_snap):
+    """P2: the handbook carries a Backup & Recovery section — strategy, cadence, restore procedure and,
+    load-bearing, the restore-TEST discipline (a backup never restore-tested is not a backup)."""
+    out = tmp_path / "ops.docx"
+    write_ops_handbook_docx(str(out), golden_snap, "golden-fleet")
+    doc = Document(str(out))
+    text = _all_text(doc)
+    assert any("Backup & Recovery" in h for h in _heads(doc)), _heads(doc)
+    # the four pillars are all present
+    assert "restore" in text.lower()                     # restore procedure
+    assert "retention" in text.lower()                   # storage / retention
+    # the discipline that separates a backup from a false sense of security
+    assert "restore-test" in text.lower() or "restore test" in text.lower()
+    assert "is not a backup" in text                     # the exact doctrine line
+
+
+def test_backup_evidence_is_coverage_honest(tmp_path, golden_snap):
+    """P2: the backup section is evidence-gated — it reconciles device counts to the canonical scale and,
+    when no backup-evidence axis was collected, DECLARES that as a blind spot rather than asserting the
+    fleet is backed up (the false-health class)."""
+    out = tmp_path / "ops.docx"
+    write_ops_handbook_docx(str(out), golden_snap, "golden-fleet")
+    doc = Document(str(out))
+    text = _all_text(doc)
+    # coverage-honest: the assessment does not collect backup state, so it must NOT claim devices are backed up
+    assert "does not directly evidence" in text or "not directly evidence" in text \
+        or "blind spot" in text.lower()
+    # count reconciled to the canonical scale (SSOT), not a silent fabricated number
+    assert "device(s) in scope" in text or "devices in scope" in text or "of the fleet" in text
+
+
+def test_backup_ndfc_discipline_gated_on_evpn_target(tmp_path):
+    """P2: when the target is the NX-OS VXLAN-EVPN / NDFC fabric, the backup section notes NDFC
+    config-backup + the 'no out-of-band CLI once managed' discipline; on a non-EVPN engagement it stays
+    silent (gated on the same design_blueprint.evpn_migration.applicable flag the MOP uses)."""
+    on = {"script_version": "V", "devices": {"leaf1": {}},
+          "design_blueprint": {"evpn_migration": {"applicable": True,
+                                                  "model_basis": "requirement-confirmed"}}}
+    off = {"script_version": "V", "devices": {"sw1": {}}}
+    a = tmp_path / "on.docx"
+    b = tmp_path / "off.docx"
+    write_ops_handbook_docx(str(a), on, "evpn")
+    write_ops_handbook_docx(str(b), off, "legacy")
+    da, db = Document(str(a)), Document(str(b))
+    ta, tb = _all_text(da), _all_text(db)
+    # the gated §6.4 fabric-backup subsection is present on-target
+    assert any("Fabric backup discipline" in h for h in _heads(da)), _heads(da)
+    assert "NDFC" in ta                                   # NDFC config-backup discipline surfaces on-target
+    assert "out-of-band CLI" in ta or "out-of-band cli" in ta.lower()
+    # ...and is SILENT on a legacy (non-EVPN) engagement — no §6.4, no "no out-of-band CLI" doctrine
+    assert not any("Fabric backup discipline" in h for h in _heads(db)), _heads(db)
+    assert "out-of-band CLI" not in tb and "out-of-band cli" not in tb.lower()
+
+
+def test_known_issues_synthesizes_from_real_axes_with_citation(tmp_path, golden_snap):
+    """P2: the Known-Issues section synthesizes the assessment's OWN findings across >=3 real axes and
+    cites each issue's source axis + affected devices — it is not a generic caveat list."""
+    out = tmp_path / "ops.docx"
+    write_ops_handbook_docx(str(out), golden_snap, "golden-fleet")
+    doc = Document(str(out))
+    text = _all_text(doc)
+    assert any("Known Issues" in h for h in _heads(doc)), _heads(doc)
+    # the golden fleet fires >=3 distinct axes — each must appear as a cited known-issue
+    assert "Syslog Intelligence" in text                 # recurring-signature axis cited
+    assert "Software Risk" in text                        # advisory-surface axis cited
+    assert "Platform Health" in text                      # hot control-plane axis cited
+    # affected device is named, not just an abstract count
+    assert "core1" in text
+    # a real recurring signature is surfaced as a known-issue (mac-flap / err-disable class)
+    assert "flap" in text.lower() or "err-disable" in text.lower()
+
+
+def test_known_issues_declares_not_assessable_axis_no_silent_clean(tmp_path):
+    """P2 (the load-bearing honesty test): an axis that was NOT collected is DECLARED not-assessable in
+    the Known-Issues section — it never silently reads as 'no known issues'. The golden lacks
+    lifecycle_risk, so lifecycle must be named as a blind spot, not omitted."""
+    # a snapshot with syslog + software evidence but NO lifecycle_risk axis at all
+    snap = {
+        "script_version": "V", "devices": {"c1": {}},
+        "syslog_intelligence": {"summary": {"n_devices": 1, "n_collected": 1, "n_detections": 1},
+                                "detections": [{"host": "c1", "label": "MAC address flapping",
+                                                "severity": "High", "count": 2}]},
+    }
+    out = tmp_path / "ops.docx"
+    write_ops_handbook_docx(str(out), snap, "partial")
+    doc = Document(str(out))
+    text = _all_text(doc)
+    # lifecycle axis absent -> declared not-assessable, NOT silently clean
+    assert "not-assessable" in text.lower() or "not assessable" in text.lower() \
+        or "not collected" in text.lower()
+    # and it must NOT assert the fleet is issue-free on the uncollected axes
+    assert "no known issues" not in text.lower()
+
+
+def test_known_issues_all_axes_absent_is_honest_not_empty(tmp_path):
+    """P2: with NO finding-bearing axes collected at all, the Known-Issues section still renders and is
+    coverage-honest — every axis declared not-assessable, never an empty section that reads as 'clean'."""
+    out = tmp_path / "ops.docx"
+    write_ops_handbook_docx(str(out), {"devices": {"x": {}}}, "bare")
+    doc = Document(str(out))
+    text = _all_text(doc)
+    assert any("Known Issues" in h for h in _heads(doc)), _heads(doc)
+    assert "not-assessable" in text.lower() or "not assessable" in text.lower()
+    assert "no known issues" not in text.lower()          # never a false all-clear

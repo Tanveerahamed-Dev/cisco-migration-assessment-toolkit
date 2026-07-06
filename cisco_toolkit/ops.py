@@ -63,8 +63,151 @@ def _facts(snap: dict) -> dict:
     n_gw = len(l3f)
     n_fhrp = sum(1 for r in l3f if isinstance(r, dict) and (str(r.get("fhrp", "none")) or "none") != "none")
     return {"devices": devices, "keystones": keystones[:5], "si": si, "ph": ph,
-            "gd": gd, "qa": qa, "sr": sr, "lc": lc, "n_sec_fail": sec_fail,
+            "gd": gd, "qa": qa, "sr": sr, "lc": lc, "sec": sec, "n_sec_fail": sec_fail,
             "routing_protos": routing_protos, "n_proto_high": n_proto_high, "n_gw": n_gw, "n_fhrp": n_fhrp}
+
+
+def _hosts_from(rows, key="host", cap=6):
+    """De-duplicated, ordered list of affected device names from a list of finding dicts, capped
+    (with an ellipsis when truncated) so a known-issue cites WHICH devices, not just a count."""
+    seen = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        h = r.get(key)
+        if h and h not in seen:
+            seen.append(str(h))
+    txt = ", ".join(seen[:cap])
+    if len(seen) > cap:
+        txt += f", +{len(seen) - cap} more"
+    return txt or "—"
+
+
+def _known_issues(ev: dict) -> tuple:
+    """Synthesize the operate-phase Known-Issues register from the assessment's OWN finding axes.
+
+    Returns (issues, absent) where `issues` is a list of (axis, issue, affected, day2-note) rows —
+    each grounded in a collected axis and citing the source axis + affected devices — and `absent`
+    is a list of (axis, how-to-collect) rows for finding-bearing axes that were NOT collected. An
+    uncollected axis is DECLARED not-assessable (in `absent`), never silently dropped — a silent drop
+    would read as 'no known issues on that axis', the false-health class this whole toolkit guards
+    against. Pure/deterministic; no docx dependency (unit-testable in isolation)."""
+    issues, absent = [], []
+
+    # -- syslog_intelligence: recurring signatures already seen on this fleet --
+    si_sum = _as_dict(ev["si"].get("summary"))
+    if si_sum.get("n_collected"):
+        dets = [d for d in _as_list(ev["si"].get("detections")) if isinstance(d, dict)]
+        if dets:
+            top = sorted(dets, key=lambda d: (-int(d.get("count") or 0), str(d.get("label") or "")))[:6]
+            sigs = "; ".join(f"{d.get('label')} (×{d.get('count', 0)}, {d.get('severity', '—')})" for d in top)
+            issues.append((
+                "Syslog Intelligence",
+                f"Recurring log signatures already fired on this fleet: {sigs}.",
+                _hosts_from(dets),
+                "These are live day-2 caveats, not historical noise — alert on each class (§3.1) and "
+                "root-cause before it recurs post-cutover."))
+        else:
+            issues.append((
+                "Syslog Intelligence", "Log evidence collected; no recurring-signature detections in the "
+                "assessed window.", "(fleet)",
+                "Absence is bounded by the buffer window — keep central syslog and the §3.1 alert list live."))
+    elif si_sum.get("n_devices"):
+        absent.append(("Syslog Intelligence (recurring signatures: MAC-flap / err-disable / link-flap)",
+                       "re-run the collection ('show logging' is in the standard set) to derive the "
+                       "recurring-signature caveats from this fleet's own history."))
+    else:
+        absent.append(("Syslog Intelligence (recurring signatures: MAC-flap / err-disable / link-flap)",
+                       "re-run the assessment with a current engine to populate the syslog axis."))
+
+    # -- software_risk: open advisory / PSIRT surface --
+    sr_sum = _as_dict(ev["sr"].get("summary"))
+    if sr_sum.get("n_devices"):
+        srf = [f for f in _as_list(ev["sr"].get("findings")) if isinstance(f, dict)]
+        n_find = sr_sum.get("n_findings", 0)
+        if srf:
+            surfaces = "; ".join(sorted({str(f.get("label") or f.get("kind") or "?") for f in srf}))
+            issues.append((
+                "Software Risk",
+                f"{n_find} exposed advisory / hardening surface(s) open at assessment: {surfaces}.",
+                _hosts_from(srf),
+                "Each is a standing exposure until closed — validate every running release against the "
+                "Cisco PSIRT Software Checker (§5) and remediate the surface."))
+        else:
+            issues.append((
+                "Software Risk", f"{n_find} exposed advisory surface(s) flagged; see the Software Risk sheet.",
+                "(see sheet)", "Screen every release against the Cisco PSIRT Software Checker on the §8 cadence."))
+    else:
+        absent.append(("Software Risk (open PSIRT / advisory surface)",
+                       "re-run the assessment with a current engine to screen the running releases."))
+
+    # -- platform_health: hot control planes --
+    ph_sum = _as_dict(ev["ph"].get("summary"))
+    if ph_sum.get("n_collected"):
+        phf = [f for f in _as_list(ev["ph"].get("findings")) if isinstance(f, dict)]
+        if phf:
+            labels = "; ".join(sorted({str(f.get("label") or f.get("kind") or "?") for f in phf}))
+            issues.append((
+                "Platform Health",
+                f"{len(phf)} control-plane capacity finding(s): {labels}.",
+                _hosts_from(phf),
+                "A hot control plane converges slowly and drops adjacencies under load — treat as a day-2 "
+                "caveat on any change to the affected device (§3.2) and trend it."))
+        else:
+            issues.append((
+                "Platform Health", "Capacity sampled; no device outside its band at collection time.",
+                "(fleet)", "Single-point sample — re-sample on the §8 cadence and alert on departure from baseline."))
+    else:
+        absent.append(("Platform Health (hot control planes / CPU-memory pressure)",
+                       "re-run the collection to capture the control-plane capacity baseline."))
+
+    # -- lifecycle_risk: past-LDoS / EoS platforms as a standing day-2 caveat --
+    lc_sum = _as_dict(ev["lc"].get("summary"))
+    if lc_sum:
+        n_ldos = lc_sum.get("n_past_ldos")
+        n_eos = lc_sum.get("n_past_eos")
+        if n_ldos or n_eos:
+            issues.append((
+                "Lifecycle Risk",
+                f"{n_ldos or 0} device(s) past last-date-of-support / {n_eos or 0} past end-of-sale — "
+                "no vendor bug/PSIRT remediation path until migrated.",
+                "(see Lifecycle Risk sheet)",
+                "Standing caveat until the fleet is migrated: an unfixable defect on a past-LDoS platform is "
+                "a when-not-if incident. Feed into budget and the migration wave order."))
+        else:
+            issues.append((
+                "Lifecycle Risk", "No past-LDoS / past-EoS platform flagged at assessment.",
+                "(fleet)", "Re-check EoX bands quarterly (§8); lifecycle status drifts as Cisco publishes notices."))
+    else:
+        absent.append(("Lifecycle Risk (past-LDoS / past-EoS platforms)",
+                       "re-run the assessment with a current engine to populate the hardware-lifecycle bands."))
+
+    # -- qos_audit: doctrine gaps (a best-effort media fabric is a caveat) --
+    qa_sum = _as_dict(ev["qa"].get("summary"))
+    if qa_sum.get("n_assessable"):
+        qaf = [f for f in _as_list(ev["qa"].get("findings")) if isinstance(f, dict)]
+        if qaf:
+            labels = "; ".join(sorted({str(f.get("label") or f.get("kind") or "?") for f in qaf}))
+            issues.append((
+                "QoS Audit",
+                f"{len(qaf)} QoS-doctrine gap(s): {labels}.",
+                _hosts_from(qaf),
+                "On a broadcast/media estate an un-marked, un-queued path is a caveat for real-time feeds — "
+                "hold the role's trust + queuing template (§4) on every switch carrying media."))
+    else:
+        absent.append(("QoS Audit (marking / queuing doctrine gaps)",
+                       "re-run the assessment to screen the fleet's QoS posture."))
+
+    # -- security: CIS hardening failures open at assessment --
+    if ev["n_sec_fail"]:
+        sec_hosts = _hosts_from([{"host": h} for h in sorted(_as_dict(ev["sec"]).keys())])
+        issues.append((
+            "Security Posture",
+            f"{ev['n_sec_fail']} CIS hardening check failure(s) open at assessment.",
+            sec_hosts,
+            "Each is an operations-owned remediation with a named owner and date — track to zero (§4)."))
+
+    return issues, absent
 
 
 def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> None:
@@ -226,7 +369,7 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
         doc.add_paragraph(
             f"Capacity sample at collection time ({btxt}). These figures are the NORMAL for this "
             "fleet — alert when a device departs its own baseline, not just on absolute thresholds. "
-            "The sample is a single point in time: re-sample on the §6 cadence.")
+            "The sample is a single point in time: re-sample on the §8 cadence.")
         prow = [[d.get("host"), d.get("cpu_5min") if d.get("cpu_5min") is not None else "—",
                  d.get("mem_free_pct") if d.get("mem_free_pct") is not None else "—",
                  d.get("band")]
@@ -277,7 +420,7 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
             f"Configuration standard: {gsrc}, {gd_sum.get('n_baseline', 0)} required directive(s). "
             f"At assessment time {gd_sum.get('n_drifting', 0)} of {gd_sum.get('n_devices', 0)} "
             f"device(s) drifted (average compliance {gd_sum.get('avg_compliance_pct', 0)}%). "
-            "Operations owns keeping this at zero: re-run the drift check on the §6 cadence and "
+            "Operations owns keeping this at zero: re-run the drift check on the §8 cadence and "
             "treat every new MISSING directive as an unauthorized change until explained.")
     else:
         absent("a configuration baseline",
@@ -306,7 +449,7 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
             f"Software trains at assessment: {', '.join(f'{v}× {k}' for k, v in tb.items())}. "
             f"{sr_sum.get('n_findings', 0)} exposed advisory surface(s) were open (Software Risk "
             "sheet). Governance: validate every running release with the Cisco PSIRT Software "
-            "Checker on the §6 cadence, close the exposed surfaces, and plan upgrades for every "
+            "Checker on the §8 cadence, close the exposed surfaces, and plan upgrades for every "
             "Replace/Upgrade and Verify-EoL train against Cisco's published notices.")
         worst = [d for d in _as_list(ev["sr"].get("per_device"))
                  if isinstance(d, dict)
@@ -323,8 +466,125 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
             "Hardware lifecycle: the Lifecycle Risk sheet carries the per-device EoX bands — "
             "review quarterly and feed Past-EoS / Near-LDoS devices into budget planning.")
 
-    # ===== 6. Routine operations calendar =====
-    doc.add_heading("6. Routine Operations Calendar", level=1)
+    # ===== 6. Backup & recovery =====
+    # Config-backup strategy + cadence, the restore procedure, and — load-bearing — the restore-TEST
+    # discipline. Evidence-gated: the assessment collects read-only SHOW output, so it does NOT directly
+    # evidence backup state; that is DECLARED as a blind spot (coverage-honesty), never asserted healthy.
+    doc.add_heading("6. Backup & Recovery", level=1)
+    doc.add_paragraph(
+        "A config that cannot be restored is an outage waiting for its trigger. Operations owns a "
+        "backup regime that is proven by restore, not assumed by the presence of a backup file.")
+    # count reconciled to the canonical scale (SSOT: executive_brief.scale.n_devices), len() only pre-brief
+    _n_scope = _ninv if isinstance(_ninv, int) else len(devices)
+    doc.add_heading("6.1 Strategy, cadence & retention", level=2)
+    table(["Control", "Standard to hold", "Evidence / owner"], [
+        ("What is backed up",
+         "The full running- AND startup-config of every managed device, plus any off-box state "
+         "(licences, certificates, NDFC/controller policy where applicable).",
+         f"All {_n_scope} device(s) in scope (§2)"),
+        ("Cadence",
+         "Automated nightly config backup, and an explicit on-change backup captured immediately "
+         "before and after every MOP (the pre-change capture is the rollback baseline).",
+         "Scheduler / §8 calendar"),
+        ("Storage & retention",
+         "Version-controlled off-box store, access-controlled, ≥90 days of daily versions plus a "
+         "monthly archive; the store must survive loss of the device it backs up (off-site copy).",
+         "Customer backup platform"),
+        ("Integrity",
+         "Each backup diffed against the prior version so an empty or truncated capture is caught the "
+         "morning after, not at restore time.",
+         "Backup platform / §4 drift check"),
+    ], widths=[1.5, 3.6, 1.6])
+    doc.add_heading("6.2 Restore procedure & the restore-test discipline", level=2)
+    doc.add_paragraph(
+        "A backup that has never been restore-tested is not a backup — it is an untested assumption. "
+        "The restore procedure and its proving discipline:")
+    table(["Step", "Action"], [
+        ("1. Retrieve", "Pull the last-known-good version for the device from the off-box store "
+                        "(identify it by the pre-change backup, not by date alone)."),
+        ("2. Stage & review", "Diff the backup against current running-config; a peer reviews the delta "
+                             "before any load — a restore is a change and follows change control."),
+        ("3. Restore", "Apply in a maintenance window with console/OOB access proven FIRST (never rely on "
+                       "the path you are restoring); capture a post-restore backup."),
+        ("4. Validate", "Run the NRFU/post-change checks (§8, MOP/NRFU documents) to confirm the device "
+                        "returned to its baseline before handing back."),
+        ("Restore-test drill", "On the §8 cadence, restore a representative device's backup to a lab or "
+                              "spare and prove it boots and forwards. An untested restore path is a "
+                              "latent outage — this drill is what turns a backup file into a recovery "
+                              "capability."),
+    ], widths=[1.6, 5.1])
+    doc.add_heading("6.3 Backup coverage (evidence-gated)", level=2)
+    doc.add_paragraph(
+        "Coverage-honesty: this assessment collects read-only SHOW output and does not directly "
+        "evidence whether each device is under a working backup regime — that is a blind spot the "
+        "customer closes, not a state this document can assert. What the evidence CAN anchor:")
+    _bk_rows = []
+    gd_sum_bk = _as_dict(ev["gd"].get("summary"))
+    if gd_sum_bk.get("n_baseline"):
+        _bk_rows.append(("Config baseline captured",
+                         f"A configuration baseline of {gd_sum_bk.get('n_baseline', 0)} directive(s) exists "
+                         f"across {gd_sum_bk.get('n_devices', 0)} device(s) — the drift check (§4) is the "
+                         "day-2 signal that a config changed outside change control."))
+    else:
+        _bk_rows.append(("Config baseline captured",
+                         "No configuration baseline was captured — supply --golden-config or collect "
+                         "≥3 full running-configs so drift (an unexpected change to a backed-up config) "
+                         "is detectable. Until then, backup completeness is [NOT OBSERVED]."))
+    _bk_rows.append(("Per-device backup status",
+                     f"Not directly assessed for any of the {_n_scope} in-scope device(s) — verify in the "
+                     "customer's backup platform that every device has a recent, restore-tested backup; "
+                     "any device missing one is a blind spot, not assumed backed-up."))
+    table(["What the evidence anchors", "Status (coverage-honest)"], _bk_rows, widths=[2.2, 4.5])
+
+    # NDFC / EVPN-fabric backup discipline — gated on the SAME design_blueprint.evpn_migration.applicable
+    # flag the MOP §2.2 uses, so it is silent on a non-EVPN engagement (evidence-gated, never assumed).
+    _evpn = _as_dict(_as_dict(snap.get("design_blueprint")).get("evpn_migration"))
+    if _evpn.get("applicable"):
+        doc.add_heading("6.4 Fabric backup discipline (NDFC-managed target)", level=2)
+        doc.add_paragraph(
+            f"The target is an NX-OS VXLAN BGP-EVPN fabric ({_evpn.get('model_basis', '')}). On the "
+            "NDFC-managed fabric the backup model changes: NDFC (Nexus Dashboard Fabric Controller) owns "
+            "scheduled and on-demand configuration backups for every managed switch, and the source of "
+            "truth is NDFC's intent, not each device. Two disciplines follow:")
+        for _b in (
+            "NDFC config-backup is enabled per fabric (scheduled + pre/post-change), and an NDFC "
+            "backup/restore is exercised on the §8 restore-test cadence like any other device — the same "
+            "'never restore-tested = not a backup' rule applies to the controller.",
+            "No out-of-band CLI once managed: once a switch is under NDFC, configuration changes go "
+            "through NDFC so intent and device stay reconciled. An out-of-band CLI edit creates drift NDFC "
+            "will flag (or overwrite) — treat any OOB change as an incident, matching the §4 drift standard."):
+            doc.add_paragraph(_b, style="List Bullet")
+
+    # ===== 7. Known issues & operating caveats =====
+    # Synthesized from the assessment's OWN finding axes (syslog / software-risk / platform-health /
+    # lifecycle / qos / security). Each collected axis cites its source + affected devices; an axis that
+    # was NOT collected is DECLARED not-assessable — a silent drop would read as "no known issues" on that
+    # axis, the false-health class the toolkit exists to prevent.
+    doc.add_heading("7. Known Issues & Operating Caveats", level=1)
+    doc.add_paragraph(
+        "The day-2 caveats the network hands over WITH — synthesized from this assessment's own findings, "
+        "not a generic list. Each issue names the assessment axis it comes from and the affected "
+        "device(s); an axis that was not collected is declared not-assessable below, never silently "
+        "treated as clean.")
+    _issues, _absent_axes = _known_issues(ev)
+    if _issues:
+        table(["Source axis", "Known issue (from this fleet's evidence)", "Affected", "Day-2 caveat / action"],
+              [[a, i, aff, note] for (a, i, aff, note) in _issues], widths=[1.2, 2.7, 1.2, 1.6])
+    else:
+        doc.add_paragraph(
+            "No finding-bearing axis was collected, so NO known issue can be asserted either way — see "
+            "the not-assessable axes below. This is a coverage gap, not an all-clear.")
+    if _absent_axes:
+        doc.add_heading("7.1 Not-assessable axes (declared, not assumed clean)", level=2)
+        doc.add_paragraph(
+            "These finding axes were NOT collected. Per coverage-honesty each is a blind spot, NOT a "
+            "'no issues' result — collect the evidence before treating the axis as clean:")
+        for _axis, _how in _absent_axes:
+            p = doc.add_paragraph(style="List Bullet")
+            _label_run(p, f"{_axis}:", f"not-assessable — {_how}", GREY)
+
+    # ===== 8. Routine operations calendar =====
+    doc.add_heading("8. Routine Operations Calendar", level=1)
     doc.add_paragraph(
         "The cadence that keeps the baselines above honest. Each row names its evidence source so "
         "the activity stays mechanical, not aspirational.")
@@ -342,12 +602,16 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
         ("Quarterly", "Re-run the full assessment and trend it against prior snapshots; the "
                       "baselines in this handbook move with the evidence.",
          "Toolkit (--trend OLD NEW)"),
-        ("Per change", "MOP with per-step success criteria + post-change validation; update the "
-                       "drift baseline when the standard itself changes.", "MOP / NRFU documents"),
+        ("Quarterly", "Restore-test drill: restore a representative device's backup to a lab/spare and "
+                      "prove it boots and forwards — an untested restore is not a recovery capability.",
+         "Backup platform / §6.2"),
+        ("Per change", "MOP with per-step success criteria + post-change validation; capture a pre- and "
+                       "post-change backup and update the drift baseline when the standard itself changes.",
+         "MOP / NRFU documents / §6"),
     ], widths=[1.0, 4.0, 1.9])
 
-    # ===== 7. Escalation & TAC readiness =====
-    doc.add_heading("7. Escalation & TAC Readiness", level=1)
+    # ===== 9. Escalation & TAC readiness =====
+    doc.add_heading("9. Escalation & TAC Readiness", level=1)
     doc.add_paragraph(
         "Before any vendor case: capture the evidence pack below — it answers the first round of "
         "TAC questions in one attachment and anchors the case to facts.")
