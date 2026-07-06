@@ -58,9 +58,12 @@ def _graph_age():
         return "missing"
 
 def _auto_memory():
-    # auto-memory dir for THIS project (slug = abs path with :\/ -> -)
+    # auto-memory dir for THIS project (slug = abs path with :\/ -> -). Claude Code keys
+    # auto-memory to the MAIN project's slug even in a worktree session, so slug from
+    # _main_root(), not cwd (a .claude/worktrees/<name> slug has no memory dir and the
+    # brief would misreport "dir 0KB; index 0 lines" while the real index has entries).
     try:
-        slug = re.sub(r"[:\\/]", "-", os.getcwd())
+        slug = re.sub(r"[:\\/]", "-", _main_root())
         md = os.path.join(os.path.expanduser("~"), ".claude", "projects", slug, "memory")
         total = 0
         for root, _, files in os.walk(md):
