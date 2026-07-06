@@ -88,6 +88,14 @@ pipeline and text-first QA both missed — folded back into the engine:
   grep-able string is correct (the session hit exactly this — out-of-order figure chips, a topology
   captioned for a superseded design, deep-dive titles with retired event IDs). Unrenderable in-env →
   report **UN-VERIFIED**, never a silent APPROVE (matches the "default to blocked" guardrail).
+- ✅ **Deliverable-SET version-drift is now a QA finding.** The side-engagement folder was itself the
+  evidence: an HLD reissued to v7.1 sitting on a companion LLD still at v6.0 (0 of the v7.1 markers, 15
+  retired-architecture markers) — a whole family out of version-sync that no *single-document* QA pass
+  flags. `deliverable-qa-reviewer` + `/qa` gained a step: reconcile the cover version / design baseline /
+  snapshot across EVERY deliverable in the set; a sibling on an older baseline or rendering an
+  architecture its own HLD has retired is a blocking finding; a family where only one document was
+  regenerated must be called out, not approved. (The engine generates a set from one snapshot so it is
+  version-consistent by construction — but a partial re-render, or a hand-authored set, drifts silently.)
 - **Reusable verification recipe** (this Windows box lacks `pandoc`/`pdftoppm`/`zip`; console is cp1252):
   PyMuPDF (`pip install pymupdf`) for PDF→PNG; Word COM via `powershell.exe` (or `soffice`) for
   docx→pdf; Python `zipfile` (write `[Content_Types].xml` first) to package a hand-edited docx; assert an
