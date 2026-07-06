@@ -238,20 +238,50 @@ def test_known_issues_declares_not_assessable_axis_no_silent_clean(tmp_path):
     write_ops_handbook_docx(str(out), snap, "partial")
     doc = Document(str(out))
     text = _all_text(doc)
-    # lifecycle axis absent -> declared not-assessable, NOT silently clean
-    assert "not-assessable" in text.lower() or "not assessable" in text.lower() \
-        or "not collected" in text.lower()
-    # and it must NOT assert the fleet is issue-free on the uncollected axes
-    assert "no known issues" not in text.lower()
+    # STRUCTURAL (non-vacuous): the SPECIFIC uncollected axes must land in `absent`, not be dropped.
+    # ("not-assessable" as a bare substring is vacuous — it is always present from the §7.1 heading.)
+    from cisco_toolkit.ops import _facts, _known_issues
+    _issues, absent = _known_issues(_facts(snap))
+    absent_axes = " | ".join(a for a, _how in absent).lower()
+    assert "lifecycle risk" in absent_axes, absent          # the uncollected axis IS declared
+    assert "security posture" in absent_axes, absent        # the axis whose silent-drop was the 2026-07-05 bug
+    # a not-collected axis must never appear as a clean/issue row
+    issue_axes = " | ".join(a for a, *_ in _issues).lower()
+    assert "lifecycle risk" not in issue_axes and "security posture" not in issue_axes
+    assert "no known issues" not in text.lower()            # never a false all-clear in the rendered doc
 
 
 def test_known_issues_all_axes_absent_is_honest_not_empty(tmp_path):
     """P2: with NO finding-bearing axes collected at all, the Known-Issues section still renders and is
-    coverage-honest — every axis declared not-assessable, never an empty section that reads as 'clean'."""
+    coverage-honest — every axis declared not-assessable BY NAME, never an empty section that reads clean."""
+    from cisco_toolkit.ops import _facts, _known_issues
+    issues, absent = _known_issues(_facts({"devices": {"x": {}}}))
+    absent_axes = " | ".join(a for a, _how in absent).lower()
+    for axis in ("syslog", "software risk", "platform health", "lifecycle risk", "qos audit", "security posture"):
+        assert axis in absent_axes, f"{axis!r} not declared not-assessable: {absent}"
+    assert not issues, f"nothing was collected, so there can be no positive known-issue rows: {issues}"
     out = tmp_path / "ops.docx"
     write_ops_handbook_docx(str(out), {"devices": {"x": {}}}, "bare")
     doc = Document(str(out))
     text = _all_text(doc)
     assert any("Known Issues" in h for h in _heads(doc)), _heads(doc)
-    assert "not-assessable" in text.lower() or "not assessable" in text.lower()
     assert "no known issues" not in text.lower()          # never a false all-clear
+
+
+def test_known_issues_security_affected_names_only_failing_hosts():
+    """Adversarial-review HIGH (2026-07-05): the Security-Posture 'Affected' set must be ONLY the devices
+    that actually failed a CIS check — never every device that merely carries a security block (that would
+    tell a change board that clean boxes have open hardening failures)."""
+    from cisco_toolkit.ops import _facts, _known_issues
+    snap = {"devices": {"c1": {}, "c2": {}, "c3": {}}, "security": {
+        "c1": {"summary": {"fail": 0}}, "c2": {"summary": {"fail": 5}}, "c3": {"summary": {"fail": 0}}}}
+    issues, _absent = _known_issues(_facts(snap))
+    sec = [row for row in issues if row[0] == "Security Posture"]
+    assert sec, "security collected-with-failures must produce a Security Posture issue row"
+    affected = sec[0][2]
+    assert "c2" in affected and "c1" not in affected and "c3" not in affected, affected
+    # and a collected-but-all-clean fleet reads screened-clean, never silently absent
+    clean = {"devices": {"c1": {}}, "security": {"c1": {"summary": {"fail": 0}}}}
+    cissues, cabsent = _known_issues(_facts(clean))
+    assert any(r[0] == "Security Posture" and "no failing check" in r[1].lower() for r in cissues)
+    assert "security posture" not in " | ".join(a for a, _ in cabsent).lower()
