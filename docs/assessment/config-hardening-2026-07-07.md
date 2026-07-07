@@ -4,6 +4,7 @@
 ACL hygiene; KEV = exploited surfaces; fleet-risk = SNMP + currency). **Evidence:** the engine's `security`
 block (CIS-aligned per-device findings) + `acls`, in `Migration_Assessment_AUTOFILLED_20260613_063201.snapshot.json`.
 **Scope:** 253 config-assessable devices (the 50 not-collected are excluded — not assessed, not clean).
+**Device-level gap lists (SSOT):** [`config-hardening-devices.json`](config-hardening-devices.json) — the exact hosts per check (the 32 permit-any rules sit on **8** devices).
 
 ## Headline — the fleet is broadly under-hardened, and the gaps are config-plane (cheap to fix)
 
