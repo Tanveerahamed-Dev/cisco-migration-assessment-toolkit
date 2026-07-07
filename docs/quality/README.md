@@ -107,6 +107,32 @@ a limitation, not overclaimed. This is **distinct from** `analyze.compute_calibr
 *prospective, within-snapshot* band-discrimination diagnostic (do this fleet's bands separate?) rather than a
 *retrospective, cross-engagement* predicted-vs-actual check. Discipline pinned by `tests/test_calibration.py`.
 
+## `nightly_runs.jsonl` — the clock's safety rails (Phase 2, rails only)
+
+Phase 2 wires a nightly, propose-only headless `claude -p` run. That run spends **real metered money**
+(D13) and can misfire, so [`cisco_toolkit/clock.py`](../../cisco_toolkit/clock.py) provides the two rails a
+wrapper must check **before** it ever fires, plus the ledger they read/append:
+
+- **3-fail circuit breaker + 30-min cooldown (D5)** — three consecutive failed runs trip it; it holds
+  **open** for the cooldown, then allows one **half-open** probe (a fresh failure re-opens it). Fail-safe:
+  a tripped breaker with no readable timestamp stays *open* (better to skip a nightly than hammer a failing
+  system).
+- **Daily-spend ceiling (D13)** — headless runs bill outside the interactive subscription; once today's
+  spend reaches the ceiling (`ASNE_NIGHTLY_CEILING_USD`, default \$2), no further run.
+- **Weekly spend-vs-action report** — `--report` flags a **zero-value week** (cost but no action) as the
+  *kill-the-briefing* signal; value has to be falsifiable too.
+
+```
+python -m cisco_toolkit.clock --preflight   # go/no-go; exit 0 = GO, 3 = NO-GO (a wrapper bails on 3)
+python -m cisco_toolkit.clock --report      # trailing-7-day spend vs. actions
+```
+
+**Rails only — this module starts nothing and spends nothing.** Scheduler registration and the `claude -p`
+invocation are **not** wired: like auto-wiring `/briefing` into SessionStart, they are deferred to explicit
+approval (a system-config + real-spend change). The decision core takes an injected clock, so it is fully
+deterministic; pinned by `tests/test_clock.py` (the breaker trips on exactly three induced failures — the
+Phase-2 acceptance).
+
 ## `learnings.md` — the distilled, verifiable engine facts (sibling substrate)
 
 The other half of the feedback nerve: [`learnings.md`](learnings.md) is the distilled store of durable,
