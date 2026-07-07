@@ -211,15 +211,26 @@ def enable_update_fields(doc):
     Sets ``<w:updateFields w:val="true"/>`` in word/settings.xml, idempotently (V3.23.172). Without
     it a field-code TOC renders as its placeholder text until manually refreshed, so a client who
     opens-and-prints (or a headless docx→pdf render) gets a deliverable with no table of contents.
+
+    Placed in the schema-correct slot (``CT_Settings`` is an ordered sequence: ``updateFields`` must
+    precede ``compat``/``rsids``/``mathPr``/…). Appending at the end is what Word/LibreOffice tolerate
+    but a strict XSD validator rejects — insert before the first element that must follow it so the
+    deliverable is schema-valid, not merely Word-openable.
     """
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
 
+    after = {qn("w:" + t) for t in (
+        "compat", "docVars", "rsids", "attachedSchema", "themeFontLang", "clrSchemeMapping",
+        "doNotAutoCompressPictures", "shapeDefaults", "decimalSymbol", "listSeparator",
+        "hdrShapeDefaults", "footnotePr", "endnotePr")}
+    after.add(qn("m:mathPr"))
     settings = doc.settings.element
     el = settings.find(qn("w:updateFields"))
     if el is None:
         el = OxmlElement("w:updateFields")
-        settings.append(el)   # Word/LibreOffice honour it regardless of sequence position
+        anchor = next((c for c in settings if c.tag in after), None)
+        anchor.addprevious(el) if anchor is not None else settings.append(el)
     el.set(qn("w:val"), "true")
 
 
