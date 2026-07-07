@@ -490,6 +490,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     if "trend" in argv or "--trend" in argv:
         print(render_trend(read_rows(path)))
         return 0
+    if "--record-from" in argv:
+        # Record the INDEPENDENT subagent's verdict from ITS transcript — the same source and parser as
+        # the SubagentStop hook, but invoked explicitly. For environments where that hook does not fire
+        # (Agent-tool subagents under the Claude Agent SDK). The invariant holds: it parses the subagent
+        # transcript (never main-agent prose — parse_qa_verdict requires the per-artifact reviewer
+        # signature), so only a real independent verdict is recorded.
+        i = argv.index("--record-from")
+        tpath = argv[i + 1] if i + 1 < len(argv) else ""
+        row = run_hook(json.dumps({"transcript_path": tpath}), path=path) if tpath else None
+        print(f"scorecard += {row['deliverable']} {row['verdict']} (counterexamples={row['counterexamples']}, "
+              f"laws={row['laws_tripped']})" if row else "no QA verdict found in transcript — nothing recorded")
+        return 0
     if "--show" in argv:
         rows = read_rows(path)
         if not rows:
