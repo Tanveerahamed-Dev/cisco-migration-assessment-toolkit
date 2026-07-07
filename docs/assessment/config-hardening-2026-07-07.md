@@ -12,12 +12,12 @@ devices carry ≥1 High** hardening failure. None require a reload to remediate.
 
 | Failed check | Devices | Severity | Risk |
 |---|---|---|---|
-| **VTY line hardening** | **247 / 253 (98%)** | Medium | Remote-access (SSH/telnet) lines lack `access-class` / `exec-timeout` / transport restriction — the mgmt plane is broadly reachable. |
+| **VTY line hardening gap** | **247 / 253** (98%; **100% of VTY-bearing devices**) | Medium | ≥1 VTY line missing `access-class` **or** `exec-timeout` — a multi-part OR check, so *partial* hardening still trips it. The mgmt plane is broadly reachable, but this is "≥1 gap," not "unhardened." |
 | **Weak local user password storage** | **73** | **High** | Type-7 / cleartext local credentials (not Type-8/9) — recoverable if a config leaks. The dominant High finding. |
-| **Insecure SNMP access** | **105** | Medium | Corroborates the separate 106-device SNMP v2c finding (cleartext community strings). |
+| **Insecure SNMP access** | **106** (105 Medium + 1 High) | Medium/High | **The same 106 devices** as the SNMP v2c finding (fleet-risk synthesis) — one check viewed two ways, *not* an independent corroboration. Cleartext community strings. |
 | **`service password-encryption` unset** | **64** | Medium | Type-0 cleartext secrets in running-config. |
 | **Weak / missing enable secret** | **63** | High(2)/Info | Privileged-EXEC secret weak or absent on a few; advisory on most. |
-| Telnet transport enabled · no NTP · no logging/banner | 6 · 9 · 1 | Info/Low | Long-tail hygiene. |
+| No NTP · no logging / banner | 9 · 1 / 2 | Info/Low | Long-tail hygiene. **0 devices have telnet enabled** (the `telnet` check's 6 hits are `na` = "no VTY lines", not enabled telnet). |
 
 **ACL hygiene:** 3,507 ACL rules across 253 devices; **32 `permit any → any`** entries — overly-broad
 permits to review (some are legitimate infra rules; each should be justified or scoped).
@@ -43,6 +43,8 @@ The assessment's security findings now span three tiers, coherent and non-overla
 - `permit any → any` counts *structural* breadth, not intent — some are legitimate (e.g. an infrastructure
   ACL); the 32 are a **review list**, not 32 confirmed misconfigurations.
 
-**Bottom line:** the fleet is broadly under-hardened (98% unhardened VTY; 73 devices with recoverable local
-passwords), but almost every gap is a **no-reload config change** — pairing VTY-hardening + password-migration
-+ SNMPv3 into one hardening wave is the highest cheap-risk-reduction move after the KEV Phase-A mitigation.
+**Bottom line:** the fleet is broadly under-hardened (98% have a VTY hardening gap; 73 devices with recoverable
+local passwords), but almost every gap is a **no-reload config change** — pairing VTY-hardening +
+password-migration + SNMPv3 into one hardening wave is the highest cheap-risk-reduction move after the KEV
+Phase-A mitigation. (Note: the SNMP count here is the *same* 106-device population as the fleet-risk finding,
+not an additional one.)
