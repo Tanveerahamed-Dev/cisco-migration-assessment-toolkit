@@ -36,12 +36,20 @@ def test_add_toc_marks_fields_to_rebuild_on_open():
 
     doc = Document()
     add_toc(doc)
-    uf = doc.settings.element.findall(qn("w:updateFields"))
+    settings = doc.settings.element
+    uf = settings.findall(qn("w:updateFields"))
     assert len(uf) == 1 and uf[0].get(qn("w:val")) == "true"
+    # schema position: CT_Settings is an ordered sequence — updateFields must PRECEDE w:compat/w:rsids,
+    # or a strict XSD validator rejects the deliverable (Word tolerates it; a client's toolchain may not).
+    kids = list(settings)
+    for later in ("w:compat", "w:rsids"):
+        el = settings.find(qn(later))
+        if el is not None:
+            assert kids.index(uf[0]) < kids.index(el), "updateFields must precede %s (schema order)" % later
     # idempotent: re-invoking (a second TOC, or an explicit call) never duplicates the setting
     add_toc(doc)
     enable_update_fields(doc)
-    uf2 = doc.settings.element.findall(qn("w:updateFields"))
+    uf2 = settings.findall(qn("w:updateFields"))
     assert len(uf2) == 1 and uf2[0].get(qn("w:val")) == "true"
 
 
