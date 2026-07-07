@@ -52,6 +52,61 @@ is reported as absence — it is never rendered as "healthy" (Law 3). The score 
 checks; a partial deliverable's unassessable Laws are disclosed as UNVERIFIED, never counted as passed, and an
 empty deliverable scores `null`, never a false 100.
 
+## `scorecard trend` — the line you watch go up (Phase 1)
+
+```
+python -m cisco_toolkit.scorecard trend
+```
+
+Renders the append-only log as a **time series** — the [feedback nerve's](../autonomous-brain-plan-v4-final-2026-07-06.md)
+whole point is that improvement is *watchable*, not asserted. Rows are bucketed by ISO week; per week you see
+cycles, block-rate, mean counterexamples, and mean eval-score, then the two watch-lines with a sparkline and a
+direction:
+
+- **counterexamples / cycle** — should trend **↓** (fewer grounded defects per QA cycle);
+- **eval score** — should trend **↑** (the golden-snapshot harness's number, on release rows).
+
+Coverage-honest by construction (`cisco_toolkit.scorecard.summarize_trend` is the pure core; `render_trend`
+prints it): an empty log says "no entries yet" (never a fabricated trend); a log with no *scored* rows says the
+score line has none yet rather than drawing a zero; and a span **under two weeks** is labelled *not-yet-meaningful*
+instead of dressed up as a trend. The Phase-1 acceptance is exactly this — *≥ 2 weeks of rows render a trend* —
+pinned in `tests/test_scorecard.py`. The morning `/briefing` shows a one-line digest of the same data; `trend` is
+the full view.
+
+## `pir_outcomes.jsonl` — PIR-outcome calibration (Phase 1, D11-gated)
+
+The *retrospective* half of the feedback nerve. The engine makes a **prediction** before a cutover (a per-unit
+readiness verdict) and the **PIR** records what actually happened; joining them tells us whether the scoring was
+*calibrated*. One JSON object per line, append-only — **verifiable outcomes only, never a guess**:
+
+| field | type | meaning |
+|---|---|---|
+| `date` | `YYYY-MM-DD` | when the PIR / war-room recorded the outcome |
+| `engagement` | string | engagement or snapshot id |
+| `unit` | string | the device / wave / site the prediction was about |
+| `predicted` | string | the pre-cutover readiness verdict: `READY` / `CAUTION` / `NOT_READY` (aliases accepted) |
+| `actual` | string | the real outcome: `clean` (no incident) / `incident` (fault / rollback) (aliases accepted) |
+| `commit` | string | git SHA the prediction was produced against |
+| `notes` | string | short, factual — what actually happened |
+
+[`cisco_toolkit/calibration.py`](../../cisco_toolkit/calibration.py) derives the **calibration gap** — the
+*false-confidence rate* `P(incident | READY)` (we said go, it broke) and the *false-alarm rate* `P(clean |
+NOT_READY)` (we blocked a fine unit) — and, from the gap's direction, whether the scorer is **too lenient** or
+**too strict**.
+
+```
+python -m cisco_toolkit.calibration --report
+```
+
+**The D11 gate is load-bearing.** Calibration is **descriptive-only until N ≥ 5 labeled outcomes**; below the
+floor `propose_adjustment` **refuses to move any `ScoringConfig` parameter and says exactly why** (two PIRs must
+never re-tune the engine). At/above the floor it proposes **one small, reversible, human-gated** delta on a single
+conservative lever (`caps.XL` by default) and **applies nothing** (`applied` is always `False`; every unattended
+action is propose-only). A full per-finding weight refit is out of reach from per-unit pass/fail labels — stated as
+a limitation, not overclaimed. This is **distinct from** `analyze.compute_calibration_report`, which is a
+*prospective, within-snapshot* band-discrimination diagnostic (do this fleet's bands separate?) rather than a
+*retrospective, cross-engagement* predicted-vs-actual check. Discipline pinned by `tests/test_calibration.py`.
+
 ## `learnings.md` — the distilled, verifiable engine facts (sibling substrate)
 
 The other half of the feedback nerve: [`learnings.md`](learnings.md) is the distilled store of durable,

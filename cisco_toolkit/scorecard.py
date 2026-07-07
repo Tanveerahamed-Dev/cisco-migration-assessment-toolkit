@@ -195,6 +195,191 @@ def append_row(row: Dict[str, Any], path: str = SCORECARD_PATH, *, dedupe: bool 
     return True
 
 
+# --- trend renderer (Phase 1 — "the line you watch go up") -------------------------------------
+#
+# The scorecard is the record; the *trend* is the signal. This renders the append-only log as a
+# time series so a human (or the morning briefing) can watch the two load-bearing lines move:
+# counterexamples/cycle DOWN and eval-score UP. Pure derivation over rows -> no I/O; the CLI verb
+# and the briefing pass in ``read_rows()``. Coverage-honest throughout: an empty log renders
+# "no entries yet" (never a fabricated healthy line), a score series with no scored rows says so
+# (absence is absence, not score=0), and a span under two weeks is labelled as not-yet-meaningful
+# rather than presented as a trend (Phase-1 acceptance: >= 2 weeks of rows render a trend).
+
+_SPARK = "▁▂▃▄▅▆▇█"   # ▁▂▃▄▅▆▇█ — 8-level block ramp
+
+
+def _iso_week(date_str: str) -> str:
+    """'2026-W27' for a 'YYYY-MM-DD' date; '' if unparseable (malformed rows bucket to ''-> dropped)."""
+    try:
+        import datetime
+        y, m, d = (int(x) for x in str(date_str).split("-")[:3])
+        iso = datetime.date(y, m, d).isocalendar()
+        return f"{iso[0]}-W{int(iso[1]):02d}"
+    except Exception:
+        return ""
+
+
+def _span_days(dates: List[str]) -> Optional[int]:
+    """Inclusive day-span between the earliest and latest parseable date, or None if < 1 parseable."""
+    import datetime
+    ds = []
+    for s in dates:
+        try:
+            y, m, d = (int(x) for x in str(s).split("-")[:3])
+            ds.append(datetime.date(y, m, d))
+        except Exception:
+            pass
+    return (max(ds) - min(ds)).days if ds else None
+
+
+def _sparkline(values: List[Optional[float]]) -> str:
+    """A unicode block sparkline over the non-None values (None -> a gap ' '). Flat-safe: a
+    single distinct value renders mid-ramp, not a divide-by-zero."""
+    present = [v for v in values if isinstance(v, (int, float))]
+    if not present:
+        return ""
+    lo, hi = min(present), max(present)
+    rng = hi - lo
+    out = []
+    for v in values:
+        if not isinstance(v, (int, float)):
+            out.append(" ")
+        elif rng == 0:
+            out.append(_SPARK[len(_SPARK) // 2])
+        else:
+            out.append(_SPARK[min(len(_SPARK) - 1, int((v - lo) / rng * (len(_SPARK) - 1) + 0.5))])
+    return "".join(out)
+
+
+def _direction(series: List[Optional[float]], *, down_is_good: bool) -> str:
+    """Trend of the first vs last *present* value. 'improving'/'regressing'/'flat'/'n/a'. For
+    counterexamples down_is_good=True (fewer defects = better); for score down_is_good=False."""
+    present = [v for v in series if isinstance(v, (int, float))]
+    if len(present) < 2:
+        return "n/a"
+    first, last = present[0], present[-1]
+    if first == last:
+        return "flat"
+    improved = (last < first) if down_is_good else (last > first)
+    return "improving" if improved else "regressing"
+
+
+def summarize_trend(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Structured aggregate of the scorecard for the trend renderer + briefing. Pure; no I/O.
+
+    Buckets rows by ISO week (chronological) and reports, per bucket: cycles, block-rate, mean
+    counterexamples, mean eval-score. Plus top-level totals, the two watch-series (counterexamples,
+    score) with their direction, the all-time laws-tripped frequency, and the honest coverage flags
+    (span, whether it clears the two-week bar, how many rows carried a numeric score)."""
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    n = len(rows)
+    dates = [r.get("date") for r in rows if r.get("date")]
+    span = _span_days(dates)
+    scored_rows = sum(1 for r in rows if isinstance(r.get("score"), (int, float)))
+
+    # Bucket by ISO week, preserving chronological order of first appearance.
+    order: List[str] = []
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        wk = _iso_week(r.get("date", ""))
+        if not wk:
+            continue
+        if wk not in buckets:
+            buckets[wk] = []
+            order.append(wk)
+    for r in rows:
+        wk = _iso_week(r.get("date", ""))
+        if wk:
+            buckets[wk].append(r)
+    order.sort()   # ISO week strings sort chronologically
+
+    def _mean(vals: List[float]) -> Optional[float]:
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    bucket_stats: List[Dict[str, Any]] = []
+    for wk in order:
+        brs = buckets[wk]
+        verdicts = [str(r.get("verdict", "")).upper() for r in brs]
+        blocks = sum(1 for v in verdicts if v.startswith("BLOCK"))
+        decided = sum(1 for v in verdicts if v.startswith("BLOCK") or v.startswith("APPROVE"))
+        cx = [float(r["counterexamples"]) for r in brs if isinstance(r.get("counterexamples"), (int, float))]
+        sc = [float(r["score"]) for r in brs if isinstance(r.get("score"), (int, float))]
+        bucket_stats.append({
+            "bucket": wk, "cycles": len(brs), "blocks": blocks,
+            "block_rate": round(blocks / decided, 2) if decided else None,
+            "mean_cx": _mean(cx), "mean_score": _mean(sc)})
+
+    cx_series = [b["mean_cx"] for b in bucket_stats]
+    score_series = [b["mean_score"] for b in bucket_stats]
+
+    laws: Dict[str, int] = {}
+    for r in rows:
+        for law in (r.get("laws_tripped") or []):
+            laws[law] = laws.get(law, 0) + 1
+
+    return {
+        "n": n, "span_days": span, "weeks": len(order), "scored_rows": scored_rows,
+        "two_week_bar": bool(span is not None and span >= 14),
+        "buckets": bucket_stats,
+        "counterexamples": {"series": cx_series, "direction": _direction(cx_series, down_is_good=True)},
+        "score": {"series": score_series, "direction": _direction(score_series, down_is_good=False)},
+        "laws": dict(sorted(laws.items(), key=lambda kv: (-kv[1], kv[0]))),
+    }
+
+
+def render_trend(rows: List[Dict[str, Any]]) -> str:
+    """The human-readable quality trend. Empty -> a plain honest line, never a fabricated trend."""
+    s = summarize_trend(rows)
+    if s["n"] == 0:
+        return ("Quality trend — no entries yet. The scorecard records automatically once a /qa "
+                "verdict is produced (the SubagentStop appender) or a release eval scores a "
+                "deliverable. Absence is absence, not health.")
+    span = s["span_days"]
+    span_txt = f"{span}d" if span is not None else "?"
+    hdr_dates = ""
+    dates = sorted(str(r.get("date")) for r in rows if r.get("date"))
+    if dates:
+        hdr_dates = f" ({dates[0]} → {dates[-1]})"
+    L = [f"Quality trend — {s['n']} cycle(s) over {s['weeks']} week(s), span {span_txt}{hdr_dates}"]
+    # Per-week table.
+    L.append(f"  {'week':<10} {'cycles':>6} {'block%':>7} {'cx/avg':>7} {'score/avg':>9}")
+    for b in s["buckets"]:
+        br = f"{round(b['block_rate'] * 100)}%" if b["block_rate"] is not None else "  —"
+        cx = f"{b['mean_cx']:.2f}" if b["mean_cx"] is not None else "  —"
+        sco = f"{b['mean_score']:.0f}" if b["mean_score"] is not None else "  —"
+        L.append(f"  {b['bucket']:<10} {b['cycles']:>6} {br:>7} {cx:>7} {sco:>9}")
+    # The two watch-lines.
+    cx_spark = _sparkline(s["counterexamples"]["series"])
+    L.append(f"  counterexamples/cycle  {cx_spark}  {_arrow(s['counterexamples']['direction'], down_is_good=True)}")
+    if s["scored_rows"]:
+        sc_spark = _sparkline(s["score"]["series"])
+        L.append(f"  eval score             {sc_spark}  {_arrow(s['score']['direction'], down_is_good=False)}"
+                 f"  ({s['scored_rows']} scored row(s))")
+    else:
+        L.append("  eval score             — no scored rows yet (scores come from the golden-snapshot "
+                 "harness on release; /qa rows carry a verdict, not a number)")
+    if s["laws"]:
+        L.append("  laws tripped (all-time): " + ", ".join(f"{k}×{v}" for k, v in s["laws"].items()))
+    # Coverage-honesty on the span.
+    if s["two_week_bar"]:
+        L.append("  span ≥ 2 weeks — trend is meaningful.")
+    else:
+        L.append("  span < 2 weeks — a trend needs ≥ 2 weeks of rows to be meaningful; "
+                 "showing what's recorded so far.")
+    return "\n".join(L)
+
+
+def _arrow(direction: str, *, down_is_good: bool) -> str:
+    """A terse 'direction + judgement' tag for a watch-line."""
+    if direction == "n/a":
+        return "(one bucket — no direction yet)"
+    if direction == "flat":
+        return "→ flat"
+    good = (direction == "improving")
+    glyph = "↓" if down_is_good else "↑"       # ↓ for cx-good, ↑ for score-good
+    return f"{glyph} {direction}" if good else f"{'↑' if down_is_good else '↓'} {direction}"
+
+
 # --- transcript extraction + hook glue ---------------------------------------------------------
 
 def _iter_assistant_texts(transcript_path: str) -> List[str]:
@@ -291,12 +476,20 @@ def run_hook(stdin_text: str, *, path: str = SCORECARD_PATH,
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """CLI. ``--hook`` reads a hook payload on stdin and appends a QA verdict if present; ``--show``
-    prints the tail of the scorecard. Always exits 0 on the hook path (fail-open)."""
+    """CLI. ``trend`` renders the quality trend (the line you watch); ``--hook`` reads a hook payload
+    on stdin and appends a QA verdict if present; ``--show`` prints the tail of the scorecard.
+    Always exits 0 on the hook path (fail-open)."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # cp1252 console -> never crash on the sparkline
+    except Exception:
+        pass
     # The hook uses the default path (zero-arg). SCORECARD_FILE lets a dry-run/test redirect it.
     path = os.environ.get("SCORECARD_FILE") or SCORECARD_PATH
+    if "trend" in argv or "--trend" in argv:
+        print(render_trend(read_rows(path)))
+        return 0
     if "--show" in argv:
         rows = read_rows(path)
         if not rows:
