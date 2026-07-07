@@ -103,14 +103,36 @@ def fmt_scorecard(rows):
         trend = "  (up) improving" if scored[-1] > scored[0] else ("  (down) regressing" if scored[-1] < scored[0] else "  (flat)")
     return tail + trend
 
+def self_check():
+    # Phase-4 agent-system self-check — RED leads the briefing. Fail-open (import/other error -> skipped).
+    try:
+        from cisco_toolkit.selfcheck import run_selfcheck
+        r = run_selfcheck()
+        red = [c for c in r["checks"] if c["status"] == "RED"]
+        return r["verdict"], (f"{red[0]['name']}: {red[0]['detail']}" if red else "")
+    except Exception:
+        return None, ""
+
+def intel_status():
+    # Phase-5 intel-feed status (no-egress consumer). Empty/absent -> honest "gated" note.
+    try:
+        from cisco_toolkit.intel_feed import load_feeds
+        return load_feeds().get("note", "")
+    except Exception:
+        return ""
+
 gday, gtxt = graph_age()
 les, bc = lessons_queue()
 oi = open_items()
 td, tf = todos()
 rows = scorecard_rows()
 dirty = int(os.environ.get("ASNE_DIRTY", "0") or 0)
+sc_verdict, sc_red = self_check()
+intel_note = intel_status()
 
 actions = []
+if sc_verdict == "RED":
+    actions.append(f"Agent-system self-check is RED — {sc_red or 'a guard/substrate check failed'} (fix before trusting the nerves)")
 if gday is not None and gday > 7:
     actions.append("Graph is stale (>7d) — refresh: `python -m graphify update .`")
 if bc:
@@ -147,6 +169,10 @@ else:
     L.append("- **Open items**: none detected (GI-/REC- patterns in docs/)")
 L.append(f"- **TODO/FIXME**: {td} across {tf} file(s)")
 L.append(f"- **Quality scorecard**: {fmt_scorecard(rows)}")
+if sc_verdict:
+    L.append(f"- **Self-check**: {sc_verdict}" + (f" — {sc_red}" if sc_red else ""))
+if intel_note:
+    L.append(f"- **Intel feed**: {intel_note}")
 L.append("")
 L.append("_Assembled from local repo state only — no egress, no device access. Manual today; wire into SessionStart to make it automatic (docs/autonomous-brain-plan-2026-07-06.md §6.1)._")
 
