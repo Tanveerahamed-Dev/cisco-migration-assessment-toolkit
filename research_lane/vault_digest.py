@@ -136,10 +136,12 @@ def run(entries: List[Dict[str, Any]], out_dir: str = os.path.join("docs", "vaul
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI (run from a VAULT-CONNECTED session — this reads the vault):
       ``python -m research_lane.vault_digest --vault <C:\\Vaults\\brain> [--subdir wiki] [--generated DATE]
-        [--forbidden Acme,SiteA] [--max-chars 600] [--out docs/vault-digest]``
+        [--forbidden Acme,SiteA] [--max-chars 600] [--out docs/vault-digest] [--dry-run]``
     Emits ``docs/vault-digest/digest-<date>.jsonl`` — a signed, sanitized DIGEST the air-gapped repo verifies
-    and fuses into recall. Reading the vault requires an explicit ``--vault`` (no default): there is no
-    silent vault read, mirroring how the intel producer gates live egress behind ``--live --url``."""
+    and fuses into recall. **``--dry-run`` previews what would cross (sanitized titles + redaction counts)
+    and writes NOTHING** — recommended for the first run of a real vault. Reading the vault requires an
+    explicit ``--vault`` (no default): there is no silent vault read, mirroring how the intel producer gates
+    live egress behind ``--live --url``."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -153,7 +155,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     vault = _opt("--vault")
     if not vault:
         print("usage: python -m research_lane.vault_digest --vault <dir> [--subdir wiki] [--generated DATE] "
-              "[--forbidden A,B] [--max-chars 600]\n"
+              "[--forbidden A,B] [--max-chars 600] [--dry-run]\n"
+              "  --dry-run previews what would cross (writes nothing) — use it for a real vault's first run.\n"
               "  (reading the vault is explicit + fenced — run this from a vault-connected session, "
               "never an air-gapped repo session; ADR-0001 Amendment 1)")
         return 2
@@ -165,6 +168,20 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"[vault-digest] READING VAULT (fenced): {vault}{('/' + subdir) if subdir else ''}")
     entries = vault_source(vault, subdir=subdir, max_chars=max_chars)
+    if not forbidden:
+        print("[vault-digest] WARNING: no --forbidden tokens set — only IPv4/email are pattern-scrubbed; the "
+              "crossing then relies on the vault's own 'no client identifiers' contract. Pass "
+              "--forbidden <client,site,device> for engagement-specific scrubbing.")
+    if "--dry-run" in argv:
+        # Sanitize + sign IN MEMORY but write NOTHING — preview exactly what would cross (safe first run).
+        feed, redactions = produce_digest(entries, forbidden=forbidden, generated=generated)
+        from cisco_toolkit.intel_feed import verify_feed
+        preview = verify_feed(feed, forbidden=forbidden)["entries"]
+        print(f"[vault-digest] DRY-RUN — nothing written. Would emit {len(preview)} entry(ies), "
+              f"{len(redactions)} redaction(s). Preview (sanitized titles):")
+        for e in preview[:60]:
+            print(f"    - {e.get('id')}: {str(e.get('title', ''))[:70]}  ({len(str(e.get('detail', '')))} ch)")
+        return 0
     path, redactions = run(entries, out_dir=out_dir, forbidden=forbidden, generated=generated)
     print(f"[vault-digest] wrote {path} ({len(entries)} distilled entry(ies); {len(redactions)} redaction(s) "
           f"applied; digest not pages, capped at {max_chars} chars/entry)")

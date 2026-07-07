@@ -112,3 +112,14 @@ def test_ollama_probe_fastfails_and_empty_digest_degrade(tmp_path):
     # And an empty digest dir yields nothing to rank -> [] / exit 0, independent of Ollama being up.
     assert R.ollama_digest_rank("anything", digest_dir=str(tmp_path)) == []
     assert ollama_recall.main(["query", str(tmp_path)]) == 0   # fast, silent, non-raising
+
+
+def test_producer_dry_run_previews_and_writes_nothing(tmp_path, capsys):
+    root = tmp_path / "v"; root.mkdir(); _write_vault(root)
+    out = tmp_path / "vd"
+    rc = VD.main(["--vault", str(root), "--dry-run", "--out", str(out)])
+    assert rc == 0
+    printed = capsys.readouterr().out
+    assert "DRY-RUN" in printed and "nothing written" in printed
+    assert "WARNING: no --forbidden" in printed                # no scrub tokens -> safety warning surfaced
+    assert (not out.exists()) or not list(out.glob("digest-*.jsonl"))   # preview writes nothing
