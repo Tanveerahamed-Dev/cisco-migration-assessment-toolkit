@@ -13,10 +13,18 @@ confirmed open). Today's CISA **Known-Exploited-Vulnerabilities** sweep shows bo
 **actively exploited in the wild**, which promotes them from *"verify someday"* to **"verify / remediate
 now":**
 
-| Engine surface flag | Devices flagged (`verify`+`exposed`) | Matching actively-exploited CVE (in the feed) | What it means |
-|---|---|---|---|
-| `smart-install` | **151** (150 verify + 1 exposed) | **CVE-2018-0171** — Cisco Smart Install RCE | Smart Install is being exploited for unauthenticated RCE / config theft. Any device with it actually enabled is critically exposed. |
-| `http-server` | **63** (61 verify + 2 exposed) | **CVE-2023-20198 + CVE-2023-20273** — IOS XE Web UI privilege-escalation → RCE (CVSS 10, mass-exploited Oct 2023) | Any device with the HTTP/HTTPS Web UI reachable is critically exposed. |
+| Engine surface flag | Flagged (`verify`+`exposed`) | **IOS/IOS-XE (CVE-applicable)** | NX-OS (screening artifact) | Matching actively-exploited CVE |
+|---|---|---|---|---|
+| `smart-install` | 151 | **96** (+1 confirmed `exposed`: `AAS13-BC-CR02R03-TCDOH`) | 55 | **CVE-2018-0171** — Smart Install RCE |
+| `http-server` | 63 | **8** (+2 confirmed `exposed`: `AAS13…`, `AS01-BC-CA01RA13-CXDOH`) | 55 | **CVE-2023-20198 + -20273** — IOS XE Web UI RCE (CVSS 10, mass-exploited Oct 2023) |
+
+> **Platform-correctness (surfaced by independent verification — proposer ≠ verifier).** CVE-2018-0171 and
+> CVE-2023-20198/-20273 are **IOS/IOS-XE** vulnerabilities. The engine's IOS-oriented `software_risk` detector
+> also raises a `verify` flag on the **55 NX-OS** devices, where `vstack` (Smart Install) and IOS `ip http
+> server` **do not exist** — so those NX-OS flags are **screening artifacts, not IOS-CVE exposure** (the NX-OS
+> equivalent is NXAPI/`feature nxapi`, checked separately). The **actively-exploited, CVE-applicable exposure is
+> 96 Smart-Install + 8 Web-UI IOS/IOS-XE devices**, with the **3 confirmed `exposed`** instances as priority-0.
+> Both downstream deliverables (the MOP and the NRFU acceptance) independently reached this same carve-out.
 
 Of the fleet, **45 of the 93** Cisco KEV advisories match the platforms present (`ios` 198, `nxos` 105).
 
