@@ -142,6 +142,9 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
   // Architecture-coverage SSOT — computed server-side by the SAME engine function the explorer/CLI use
   // (never re-derived in JS). Which architecture classes were observed vs not, across both ingestion channels.
   const { data, error, loading } = useAsync(() => api.architectureCoverage(snapId), [snapId]);
+  // Domain lenses (Phase-3 / D6) selected by the engine from the SAME coverage — a secondary, non-blocking
+  // signal: the coverage grid renders even if this fetch is slow/fails (chips just don't show).
+  const packs = useAsync(() => api.domainPacks(snapId), [snapId]);
   if (loading) return <Loading />;
   if (error) return <ErrorBox msg={error} />;
   const cov = data as ArchitectureCoverage;
@@ -163,6 +166,32 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
         <span className="faint"><b>{s.n_not_observed}</b> not observed</span>
         <span className="faint">· {s.by_channel.ssh} SSH · {s.by_channel.json} JSON</span>
       </div>
+      {packs.data && (
+        <div style={{ margin: "0 0 12px", padding: "8px 10px", border: "1px solid var(--line, #ccc)", borderRadius: 6 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: packs.data.selected.length ? 6 : 0 }}>
+            Domain lenses engaged{" "}
+            <span className="faint" style={{ fontWeight: 400, fontSize: 11 }}>
+              · evidence-selected review packs (D6) — a lens loads only where its architecture is observed
+            </span>
+          </div>
+          {packs.data.selected.length ? (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {packs.data.selected.map((p) => (
+                <span
+                  key={p.pack}
+                  title={`triggered by: ${p.triggered_by.join(", ")}${p.with_findings.length ? ` · findings: ${p.with_findings.join(", ")}` : ""}`}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 9px", borderRadius: 14, color: "#fff", background: p.with_findings.length ? "var(--crit, #c62828)" : "var(--ok, #2e7d32)" }}
+                >
+                  <b>{p.pack.toUpperCase()}</b> {p.title}
+                  {p.with_findings.length ? <span style={{ fontSize: 10, opacity: 0.9 }}>· {p.with_findings.length} finding(s)</span> : null}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="faint" style={{ fontSize: 11 }}>{packs.data.note}</div>
+          )}
+        </div>
+      )}
       {rows.map((c) => (
         <div key={c.key} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", opacity: c.status === "not-observed" ? 0.55 : 1 }}>
           <span style={{ minWidth: 86, textAlign: "center", fontSize: 10, fontWeight: 700, color: "#fff", background: col(c.status), borderRadius: 4, padding: "1px 6px" }}>{c.status}</span>

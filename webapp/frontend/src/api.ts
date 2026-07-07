@@ -264,6 +264,16 @@ export interface ArchitectureCoverage {
   };
 }
 
+// Domain skill-packs (Phase-3 / D6) engaged for a snapshot — selected by the engine SSOT (select_packs)
+// from the SAME architecture_coverage above. A pack loads IFF one of its classes was OBSERVED; the note
+// states the coverage-honest empty case. Never re-derived in JS (the selection engine is authoritative).
+export interface DomainPack {
+  pack: string; title: string; doc: string; triggered_by: string[]; with_findings: string[];
+}
+export interface DomainPacks {
+  selected: DomainPack[]; loaded: string[]; note: string;
+}
+
 export interface DesignDecision {
   id: string;
   title: string;
@@ -476,6 +486,8 @@ export const api = {
   design: (id: number) => fetch(`/api/snapshots/${id}/design`).then((r) => j<DesignBlueprint>(r)),
   architectureCoverage: (id: number) =>
     fetch(`/api/snapshots/${id}/architecture_coverage`).then((r) => j<ArchitectureCoverage>(r)),
+  domainPacks: (id: number) =>
+    fetch(`/api/snapshots/${id}/domain_packs`).then((r) => j<DomainPacks>(r)),
   designOverlay: (id: number, requirements: Record<string, unknown>) =>
     post<DesignBlueprint>(`/api/snapshots/${id}/design`, requirements),
   designNrfu: (id: number) => fetch(`/api/snapshots/${id}/design/nrfu`).then((r) => j<DesignNrfu>(r)),

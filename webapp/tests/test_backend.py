@@ -89,6 +89,29 @@ def test_architecture_coverage_endpoint(client):
     assert client.get("/api/snapshots/999999/architecture_coverage").status_code == 404
 
 
+def test_domain_packs_endpoint(client):
+    """The domain skill-packs a snapshot engages (Phase-3 / D6) are served, selected by the engine SSOT
+    (domain_packs.select_packs) -- never re-derived in JS. Cross-endpoint SSOT: a pack loads IFF one of its
+    architecture classes is OBSERVED in the SAME /architecture_coverage map, so the chip strip can never
+    disagree with the coverage grid beside it. Coverage-honest: an empty selection is stated, not silent."""
+    from cisco_toolkit.domain_packs import PACKS
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    r = client.get(f"/api/snapshots/{snap_id}/domain_packs")
+    assert r.status_code == 200
+    dp = r.json()
+    assert isinstance(dp.get("selected"), list) and isinstance(dp.get("loaded"), list) and dp.get("note")
+    assert {s["pack"] for s in dp["selected"]} == set(dp["loaded"]) <= set(PACKS)
+    # the invariant that keeps the two panels honest: loaded IFF an observed class in that pack
+    cov = client.get(f"/api/snapshots/{snap_id}/architecture_coverage").json()
+    observed = {c["key"] for c in cov["classes"] if c.get("observed")}
+    for pid, spec in PACKS.items():
+        assert (pid in dp["loaded"]) == bool(observed & spec["classes"]), pid
+    # every loaded pack cites the OBSERVED class(es) that triggered it (never an empty/ungrounded trigger)
+    for s in dp["selected"]:
+        assert s["triggered_by"] and set(s["triggered_by"]) <= observed
+    assert client.get("/api/snapshots/999999/domain_packs").status_code == 404
+
+
 def test_nos_quartet_sections_reachable(client):
     """NEW-V3.23.176: the syslog / QoS / software-risk / platform-health axes (V3.23.164-.167)
     are tabbed AND fetchable -- the one-source-of-truth audit found them unreachable from the
