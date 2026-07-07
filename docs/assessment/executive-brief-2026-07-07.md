@@ -8,7 +8,9 @@ no change has been made, and none happens without your CAB approval inside a mai
 ## Bottom line
 The fleet carries **one urgent, actively-exploited exposure** and **two fleet-scale structural risks**. The
 urgent item is ready to close now with a **no-reload** change; the structural items are **programs**, not
-change windows, and need resourcing decisions.
+change windows, and need resourcing decisions. *Context: the endpoint mix identifies this as a
+**broadcast/media facility** (Grass Valley, Dante/AES67 audio, cameras) — live real-time A/V raises the stakes
+on the resilience gap (finding 4), and change windows must treat media paths as production-critical.*
 
 ## The three findings, by urgency
 
@@ -53,4 +55,4 @@ change windows, and need resourcing decisions.
 Full grounded artifacts: KEV [finding](../security/kev-exposure-2026-07-07.md) · [MOP](../security/kev-remediation-mop-2026-07-07.md)
 · [NRFU](../security/kev-remediation-nrfu-2026-07-07.md) · [blast-radius](../security/kev-remediation-blast-radius-2026-07-07.md)
 · fleet [risk synthesis](fleet-risk-synthesis-2026-07-07.md) · [L1–L2 resilience](l1l2-resilience-2026-07-07.md)
-· [config-hardening](config-hardening-2026-07-07.md).
+· [config-hardening](config-hardening-2026-07-07.md) · [endpoint inventory](endpoint-inventory-2026-07-07.md).
