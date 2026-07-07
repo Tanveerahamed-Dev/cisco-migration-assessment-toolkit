@@ -61,6 +61,8 @@ def open_items():
     hits = {}
     try:
         for f in glob.glob("docs/**/*.md", recursive=True):
+            if "/briefings/" in f.replace("\\", "/"):   # skip our OWN emitted briefings (self-reference)
+                continue
             t = read(f)
             for pat, label in ((r"\bGI-\d+", "GI"), (r"\bREC-\d+", "REC")):
                 for m in re.findall(pat, t):
@@ -73,6 +75,8 @@ def todos():
     n = 0; files = set()
     try:
         for f in glob.glob("docs/**/*.md", recursive=True) + glob.glob("cisco_toolkit/**/*.py", recursive=True):
+            if "/briefings/" in f.replace("\\", "/"):    # skip our OWN emitted briefings (self-reference)
+                continue
             c = len(re.findall(r"\b(?:TODO|FIXME|XXX)\b", read(f)))
             if c:
                 n += c; files.add(f)
