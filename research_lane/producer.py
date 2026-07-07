@@ -76,7 +76,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     generated = _opt("--generated", "")
     forbidden = tuple(t for t in _opt("--forbidden", "").split(",") if t)
 
-    if "--live" in argv:
+    source = _opt("--source")
+    if source == "cisa-kev":
+        from research_lane.sources import cisa_kev_source                # LIVE egress (fenced adapter)
+        lim = _opt("--limit")
+        print(f"[research-lane] LIVE egress: CISA KEV (Cisco{f', last {lim}' if lim else ''})")
+        raw = cisa_kev_source(limit=int(lim) if lim else None)
+    elif "--live" in argv:
         url = _opt("--url")
         if not url:
             print("[research-lane] --live requires --url <json-advisory-endpoint> — refusing to fetch nothing.")
@@ -87,7 +93,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         fx = _opt("--fixture")
         if not fx:
             print("usage: python -m research_lane.producer --fixture <advisories.json> [--generated DATE] "
-                  "[--forbidden A,B] [--out docs/intel]   |   ... --live --url <url>")
+                  "[--forbidden A,B] [--out docs/intel]   |   --source cisa-kev [--limit N]   |   "
+                  "--live --url <url>")
             return 2
         raw = fixture_source(fx)
 
