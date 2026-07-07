@@ -68,6 +68,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     fetches over the network. Writes ``docs/intel/feed-<date>.jsonl`` the repo consumes."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # cp1252 console -> never garble a dash
+    except Exception:
+        pass
 
     def _opt(name: str, default: str = "") -> str:
         return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
@@ -82,6 +86,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         lim = _opt("--limit")
         print(f"[research-lane] LIVE egress: CISA KEV (Cisco{f', last {lim}' if lim else ''})")
         raw = cisa_kev_source(limit=int(lim) if lim else None)
+    elif source == "cisco-psirt":
+        # LIVE egress, CREDENTIAL-gated: the authoritative fixed-version source (openVuln). Fetches the
+        # fixed releases for the CVEs already in the feed (or --cve-file). No creds -> no egress.
+        from research_lane.sources import cisco_psirt_source
+        cid, csec = os.environ.get("CISCO_OPENVULN_CLIENT_ID"), os.environ.get("CISCO_OPENVULN_CLIENT_SECRET")
+        if not (cid and csec):
+            print("[research-lane] --source cisco-psirt needs CISCO_OPENVULN_CLIENT_ID + "
+                  "CISCO_OPENVULN_CLIENT_SECRET (openVuln API creds, https://apiconsole.cisco.com/) — "
+                  "no creds, no egress.")
+            return 2
+        cve_file = _opt("--cve-file")
+        if cve_file:
+            cves = [ln.strip() for ln in open(cve_file, encoding="utf-8") if ln.strip()]
+        else:                                               # default: the CVEs already in the consumed feed
+            from cisco_toolkit.intel_feed import load_feeds
+            cves = sorted({a["id"] for a in load_feeds().get("advisories", []) if a.get("id")})
+        print(f"[research-lane] LIVE egress: Cisco PSIRT openVuln — fixed versions for {len(cves)} CVE(s)")
+        raw = cisco_psirt_source(cves, client_id=cid, client_secret=csec)
     elif "--live" in argv:
         url = _opt("--url")
         if not url:

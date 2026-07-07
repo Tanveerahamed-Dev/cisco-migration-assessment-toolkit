@@ -80,3 +80,34 @@ def test_map_cisa_kev_filters_and_maps():
     assert [a["id"] for a in out] == ["CVE-1", "CVE-3"]        # Microsoft filtered; sorted by date
     assert out[0]["affected"] == ["ASA"] and out[0]["severity"] == "High" and out[0]["source"] == "CISA KEV"
     assert out[1]["severity"] == "Critical"                   # ransomware-linked -> Critical
+
+
+def test_map_psirt_advisories_extracts_fixed_versions():
+    """The openVuln -> advisory mapper is pure (no egress): one entry per CVE, carrying the `fixed`
+    release(s) — the Phase-B target — and defensive across field-name variants."""
+    from research_lane.sources import map_psirt_advisories
+    advisories = [
+        {"advisoryId": "cisco-sa-x", "advisoryTitle": "Smart Install RCE", "cves": ["CVE-2018-0171"],
+         "sir": "High", "firstPublished": "2018-03-28T16:00:00", "productNames": ["Cisco IOS", "IOS XE"],
+         "firstFixed": ["12.2(55)SE12", "15.2(4)E"], "cvssBaseScore": "9.8"},
+        {"advisoryId": "cisco-sa-y", "advisoryTitle": "Web UI RCE", "cves": ["CVE-2023-20198", "CVE-2023-20273"],
+         "severity": "critical", "firstPublished": "2023-10-16", "productNames": ["IOS XE"],
+         "fixedReleases": "17.9.4a, 17.6.6a"},
+    ]
+    by = {a["id"]: a for a in map_psirt_advisories(advisories)}
+    assert by["CVE-2018-0171"]["fixed"] == ["12.2(55)SE12", "15.2(4)E"]      # list preserved (sorted-uniq)
+    assert by["CVE-2018-0171"]["severity"] == "High" and by["CVE-2018-0171"]["source"] == "Cisco PSIRT openVuln"
+    assert by["CVE-2018-0171"]["cvss"] == "9.8" and by["CVE-2018-0171"]["published"] == "2018-03-28"
+    # a multi-CVE advisory fans out to one entry per CVE, each carrying the fix (string form parsed + sorted)
+    assert by["CVE-2023-20198"]["fixed"] == ["17.6.6a", "17.9.4a"] == by["CVE-2023-20273"]["fixed"]
+    assert by["CVE-2023-20198"]["severity"] == "Critical"                    # 'critical' -> title-cased
+
+
+def test_psirt_source_refuses_without_creds():
+    """Credential-gated: no client_id/secret -> raises before any egress."""
+    import pytest
+    from research_lane.sources import cisco_psirt_source
+    with pytest.raises(ValueError):
+        cisco_psirt_source(["CVE-2018-0171"], client_id=None, client_secret=None)
+    with pytest.raises(ValueError):
+        cisco_psirt_source(["CVE-2018-0171"], client_id="x", client_secret="")
