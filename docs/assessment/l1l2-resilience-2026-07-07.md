@@ -18,6 +18,24 @@ points the wrong way — but must be **verified by a targeted collection**, not 
 | Endpoint resilience | **224** dual-homed endpoints (`endpoint_dependencies.dual_homed`) | Some access-layer redundancy IS present — the one positive resilience signal collected. |
 | vPC | **49** devices carry vPC config | Datacenter MLAG present; peer/keepalive health not certifiable from the collected fields (verify per pair). |
 
+## STP root analysis — the under-used signal, now mined (`stp_roots`: 248 devices / 271 VLANs)
+
+The collected spanning-tree root data is **not** bounded by the physical/FHRP gaps, so it yields real signal —
+one positive, one concern:
+
+- **Positive — root placement is intentional, not accidental.** 100 devices are STP root for ≥1 VLAN, and the
+  top holders are all **distribution/core**: `DS-VSS-CAR3-R13-ARDOH` (22 VLANs), `CS01/CS02-BC-CA21…` (18
+  each), `DS05`–`DS10` (12–13 each). Roots sit on the aggregation layer, **not** on access switches — the STP
+  design is deliberate. (Corroboration: `DS-VSS-CAR3-R13`, the KEV blast-radius annex's highest-confidence
+  SPOF, is also the single largest root-holder — the two independent analyses agree.)
+- **Concern — 78 of 271 VLANs show INCONSISTENT roots** (devices disagree on the root bridge; VLAN 9 is seen
+  with **7** distinct roots). For a *single* bridged domain that is STP instability/misconfiguration; for a
+  VLAN **ID reused across separate L2 domains** (common in a large campus) it is expected. Distinguishing
+  needs the physical topology (`cable_map`, absent) — so this is a concrete, prioritized item for the targeted
+  collection, not a standalone verdict.
+- **Concentration:** two aggregation devices root ~122 and ~110 VLANs — a concentration point, mitigated only
+  if they are the redundant halves of a VSS/vPC pair (verify).
+
 ## What this means for the assessment
 - The engine reports **worst-case** because redundancy evidence is thin — this is the model being
   coverage-honest, not a claim that the fleet has no redundancy. A tree-like inferred L2 graph with no FHRP
@@ -37,8 +55,9 @@ non-issue (if merely uncollected).
 - `cable_map` is **absent** (physical topology inferred) → this is what bounds the numbers: do not read the 43
   cut-edges or 253 hard-partitions as certified physical SPOFs. **STP data, by contrast, IS present** —
   `stp_roots` holds per-VLAN root elections for **248 devices** (77 distinct root MACs, 100 devices root for
-  ≥1 VLAN) plus per-interface STP state; it is **under-used here** and a follow-on can mine it for
-  single-root-per-VLAN SPOF candidates. The L2 layer is better-collected than the physical layer.
+  ≥1 VLAN) plus per-interface STP state — **now mined** (see *STP root analysis* above: intentional
+  distribution/core root placement, but 78/271 VLANs show inconsistent roots). The L2 layer is
+  better-collected than the physical layer.
 - 50 devices are `not collected` (`Info` severity in `failure_impact`) → excluded, not "resilient".
 - "No FHRP observed" is **not** "no FHRP configured" until the targeted collection above confirms it.
 
