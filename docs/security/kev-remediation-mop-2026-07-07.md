@@ -169,6 +169,12 @@ change. Action = console/OOB → `configure terminal` → `vstack` → `write me
 `DS18-BC-CA05R47-AJDOH`, `DS19-BC-CA11D03`, `DS20-BC-CA11D04` — cache of SSOT. Canaries: the two `exposed`
 devices `AAS13-BC-CR02R03-TCDOH` and `AS01-BC-CA01RA13-CXDOH`.*
 
+> ⚠ **`AS01-BC-CAR11RD22` and `AS02-BC-CAR11RD22` are `not_collected_version`** (blank `model`+`sw_version`;
+> only `platform=ios` is asserted, uncorroborated) **and carry the highest lock-out consequence** (L3, stranded
+> ≈527 each — blast-radius annex §2/§4). Do **not** default these two to Option A. **Verify the platform in the
+> pre-check first**, and **prefer Option B (ACL-restrict, retains management)** over disable. Treat them as their
+> own micro-wave with console standby (annex §2).
+
 **Pre-checks (capture evidence per device):**
 ```
 show ip http server status                  ! HTTP + secure-server Enabled/Disabled, port, active sessions
