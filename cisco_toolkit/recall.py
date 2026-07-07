@@ -9,8 +9,11 @@ normalization needed.
 The no-egress signals fused here are two **local** corpora: the **docs** (prose) and the **code** (the
 ``cisco_toolkit`` sources — a lexical proxy for the graphify structural signal). Both are offline. Two more
 stores plug into the same fusion when available: **graphify** (the AST graph, via :func:`graph_rank`, a
-best-effort subprocess — offline) and, once wired, the **Ollama vault-digest** (gated, ADR-0001 Amendment 1).
-So a fused answer visibly draws on ≥ 2 stores — the plan's recall metric.
+best-effort subprocess — offline) and the **vault digest** (D3/D4, ADR-0001 Amendment 1): a signed,
+sanitized, provenance-**verified** corpus ranked **lexically** here (:func:`vault_digest_rank` — fence-clean,
+always available when a digest exists), with an OPTIONAL local-Ollama semantic re-rank
+(:func:`ollama_digest_rank`, gated — degrades to lexical). So a fused answer visibly draws on ≥ 2 stores —
+the plan's recall metric.
 
 Coverage-honest: a query with no lexical overlap returns nothing (not a fabricated hit); the eval reports the
 measured lift (or *no* lift — "inconclusive"), never an assumed win. Pure-stdlib; :func:`rrf_fuse`,
@@ -94,6 +97,64 @@ def graph_rank(query: str, *, timeout: int = 30) -> List[str]:
         for m in re.finditer(r"[\w/\\.-]+\.(?:py|md)(?::\d+)?|\b[A-Za-z_][\w.]*\(\)", out.stdout or ""):
             tok = m.group(0)
             if tok not in seen:
+                seen.append(tok)
+        return seen[:50]
+    except Exception:
+        return []
+
+
+# --- the vault-digest store (Phase 5, D3/D4, ADR-0001 Amendment 1) -----------------------------
+# The one-way, sanitized, read-only vault digest. PRODUCED in the fenced lane (research_lane/vault_digest.py,
+# outside cisco_toolkit/); the air-gapped repo only ever VERIFIES + reads the frozen signed digest here.
+VAULT_DIGEST_DIR = os.path.join("docs", "vault-digest")
+
+
+def load_vault_digest(digest_dir: str = VAULT_DIGEST_DIR, *, forbidden: Tuple[str, ...] = ()) -> Dict[str, str]:
+    """Load + PROVENANCE-VERIFY the signed vault digest(s) into a ``{entry_id: text}`` corpus. Amendment 1
+    point 2: the repo verifies before use — reuses :func:`cisco_toolkit.intel_feed.verify_feed` (sanitized +
+    SHA-256 + forbidden-scan), the SAME gate as the intel feed. A refused digest is skipped whole (never
+    partially consumed); no digest at all -> ``{}`` (coverage-honest — recall degrades to graph+docs, never a
+    fabricated hit)."""
+    from cisco_toolkit.intel_feed import verify_feed          # the shared sign/verify contract
+    corpus: Dict[str, str] = {}
+    for p in sorted(glob.glob(os.path.join(digest_dir, "digest-*.jsonl"))):
+        try:
+            text = open(p, encoding="utf-8").read()
+        except OSError:
+            continue
+        res = verify_feed(text, forbidden=forbidden)
+        if not res["ok"]:
+            continue
+        for e in res["entries"]:
+            corpus[str(e.get("id"))] = " ".join(str(e.get(f, "")) for f in ("title", "detail", "notes", "tags"))
+    return corpus
+
+
+def vault_digest_rank(query: str, digest_corpus: Dict[str, str], *, limit: int = 50) -> List[str]:
+    """The vault-digest signal, LEXICAL (TF-IDF) — fence-clean, always available whenever a verified digest
+    exists (needs no Ollama). The optional Ollama semantic re-rank is a separate, gated signal
+    (:func:`ollama_digest_rank`)."""
+    return lexical_rank(query, digest_corpus, limit=limit)
+
+
+def ollama_digest_rank(query: str, *, digest_dir: str = VAULT_DIGEST_DIR, timeout: int = 10) -> List[str]:
+    """OPTIONAL semantic signal via LOCAL Ollama (D4) — invoked as a SUBPROCESS (``ollama_recall.py`` lives
+    OUTSIDE ``cisco_toolkit/`` so the no-egress import fence stays intact; the same pattern as
+    :func:`graph_rank`). Returns ``[]`` when Ollama is absent/unreachable or the helper is missing — graceful
+    degradation, so recall falls back to the lexical vault signal."""
+    try:
+        import subprocess
+        helper = os.path.join(_repo_root(), "ollama_recall.py")
+        if not os.path.exists(helper):
+            return []
+        out = subprocess.run(["python", helper, query, digest_dir],
+                             capture_output=True, text=True, timeout=timeout, cwd=_repo_root())
+        if out.returncode != 0:
+            return []
+        seen: List[str] = []
+        for ln in (out.stdout or "").splitlines():
+            tok = ln.strip()
+            if tok and tok not in seen:
                 seen.append(tok)
         return seen[:50]
     except Exception:
@@ -187,14 +248,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not query:
         print('usage: python -m cisco_toolkit.recall "<query>"   |   --eval')
         return 2
-    extra = graph_rank(query)                                   # offline graphify signal if available
-    fused = hybrid_recall(query, docs_corpus=docs, code_corpus=code, extra_lists=[extra] if extra else None)
-    stores = "docs+code" + ("+graphify" if extra else "")
+    extra: List[List[Any]] = []
+    g = graph_rank(query)                                       # offline graphify signal if available
+    if g:
+        extra.append(g)
+    vault = load_vault_digest()                                 # verified signed vault digest (empty if none/gated)
+    used_ollama = False
+    if vault:
+        extra.append(vault_digest_rank(query, vault))
+        o = ollama_digest_rank(query)                           # optional LOCAL-Ollama semantic re-rank (gated)
+        if o:
+            extra.append(o)
+            used_ollama = True
+    fused = hybrid_recall(query, docs_corpus=docs, code_corpus=code, extra_lists=extra or None)
+    stores = ("docs+code" + ("+graphify" if g else "") + ("+vault" if vault else "")
+              + ("+ollama" if used_ollama else ""))
     print(f'recall "{query}" (fused: {stores}):')
     for item, score in fused[:10]:
         print(f"  {score:.4f}  {item}")
     if not fused:
         print("  (no lexical overlap in any store — nothing to recall)")
+    if not vault:
+        print("  [vault-digest: none/gated — degraded to graph+docs+code (ADR-0001 Amendment 1)]")
     return 0
 
 
