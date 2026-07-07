@@ -17,6 +17,7 @@ change windows, and need resourcing decisions.
 | 1 | **Actively-exploited surfaces** — Smart Install (CVE-2018-0171) + IOS-XE Web UI (CVE-2023-20198/-20273, CVSS 10) | 96 + 8 IOS devices (+3 confirmed open) | **NOW** — being exploited in the wild | ✅ **Phase-A CAB request drafted, QA-approved, no reload** |
 | 2 | **Cleartext SNMP (v2c)** | **106 devices** | High — sniffable recon | ◑ Direction set (→ SNMPv3); needs the v3 credential scheme + NMS coordination |
 | 3 | **Software-currency + health debt** | **217 (~72%) EoL/replace-grade** (+75 unknown-train, separately unassessed); **67% Critical/Poor** health; only **3.6% current** | Chronic — support + exposure risk | ◑ A phased refresh **program**; needs PSIRT fixed-versions + refresh budget |
+| 4 | **L1–L2 resilience — *un-certifiable* from this data** (all 52 multi-gateway VLANs show no observed FHRP; 43 inferred topology chokepoints; `cable_map`/STP absent) | Fleet-wide **evidence gap** | Blocks any resilience verdict | ✗ Needs a **targeted read-only collection** first (cheap) |
 
 ## Recommended sequence
 1. **This maintenance window — approve KEV Phase-A** ([CAB request](../security/kev-phaseA-cab-request-2026-07-07.md)).
@@ -34,6 +35,9 @@ change windows, and need resourcing decisions.
   refresh targets from "TBD" into concrete releases).
 - **A read-only collection** for the **50 not-collected / 56 version-unknown** devices — their risk is
   *unknown*, not clean, until we see them.
+- **A targeted resilience collection** (FHRP/STP/CDP-LLDP topology/routing) — cheap, read-only, and it
+  resolves whether the 52-VLAN "no first-hop redundancy" is a real design gap or merely uncollected. Converts
+  the L1–L2 posture from **UNKNOWN** to assessable (finding 4).
 - **Refresh budget/roadmap** for the currency program (a fleet that is 3.6% current is a strategic, not
   tactical, decision).
 
@@ -46,4 +50,4 @@ change windows, and need resourcing decisions.
 ## Detail (for the engineering track)
 Full grounded artifacts: KEV [finding](../security/kev-exposure-2026-07-07.md) · [MOP](../security/kev-remediation-mop-2026-07-07.md)
 · [NRFU](../security/kev-remediation-nrfu-2026-07-07.md) · [blast-radius](../security/kev-remediation-blast-radius-2026-07-07.md)
-· fleet [risk synthesis](fleet-risk-synthesis-2026-07-07.md).
+· fleet [risk synthesis](fleet-risk-synthesis-2026-07-07.md) · [L1–L2 resilience](l1l2-resilience-2026-07-07.md).
