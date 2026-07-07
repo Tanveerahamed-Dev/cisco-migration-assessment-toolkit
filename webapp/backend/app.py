@@ -480,13 +480,11 @@ def create_app(db_path: str | None = None) -> FastAPI:
             bp = _fallback_blueprint(snapshot_id, snap)
         return bp
 
-    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage")
-    def snapshot_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
-        """Architecture-coverage SSOT (engine compute_architecture_coverage): which architecture CLASSES were
-        OBSERVED vs not, across both ingestion channels (ssh show-text / json controller-REST), and what fired
-        -- the SAME map the explorer's ✎Design view renders. Coverage-honest: 'not-observed' is NOT 'healthy'.
-        Prefers the stored section; computes server-side with the same engine function otherwise (one source of
-        truth -- the dashboard never re-derives coverage)."""
+    def _resolve_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
+        """The architecture-coverage SSOT for a snapshot: the stored section if present, else computed
+        server-side with the SAME engine function the CLI/explorer use (one source of truth). Raises 404 for
+        an unknown snapshot. Shared by the /architecture_coverage and /domain_packs endpoints so coverage is
+        resolved exactly ONE way -- a pack selection can never disagree with the coverage grid beside it."""
         if not store.get_snapshot_meta(snapshot_id):
             raise HTTPException(404, "Snapshot not found")
         cov = store.get_snapshot_section(snapshot_id, "architecture_coverage")
@@ -499,6 +497,25 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 snap["design_blueprint"] = _fallback_blueprint(snapshot_id, snap)
             cov = compute_architecture_coverage(snap)
         return cov
+
+    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage")
+    def snapshot_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
+        """Architecture-coverage SSOT (engine compute_architecture_coverage): which architecture CLASSES were
+        OBSERVED vs not, across both ingestion channels (ssh show-text / json controller-REST), and what fired
+        -- the SAME map the explorer's ✎Design view renders. Coverage-honest: 'not-observed' is NOT 'healthy'.
+        Prefers the stored section; computes server-side with the same engine function otherwise (one source of
+        truth -- the dashboard never re-derives coverage)."""
+        return _resolve_architecture_coverage(snapshot_id)
+
+    @app.get("/api/snapshots/{snapshot_id}/domain_packs")
+    def snapshot_domain_packs(snapshot_id: int) -> Dict[str, Any]:
+        """Which DOMAIN SKILL-PACKS (DC/ACI · Enterprise/SD-Access · SP/MPLS-SR · Security/ISE-TrustSec) this
+        snapshot engages (Phase-3 / D6). A pack loads IFF one of its architecture classes was OBSERVED in the
+        SAME coverage map above -- retrieval-selected by evidence, never a default headcount. Selection is the
+        engine SSOT (cisco_toolkit.domain_packs.select_packs); the dashboard never re-derives it in JS.
+        Coverage-honest: no observed class -> no packs, said plainly (never 'no domain concerns')."""
+        from cisco_toolkit.domain_packs import select_packs
+        return select_packs(_resolve_architecture_coverage(snapshot_id))
 
     @app.post("/api/snapshots/{snapshot_id}/design")
     def design_overlay(snapshot_id: int, requirements: Dict[str, Any]) -> Dict[str, Any]:
