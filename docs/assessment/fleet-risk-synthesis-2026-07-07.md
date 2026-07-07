@@ -12,8 +12,8 @@ block is the engine's own computed output — read `snap['software_risk']['summa
 
 | Risk | Magnitude | So what |
 |---|---|---|
-| **Software-currency debt** | **Only 11 of 303 (3.6%) are `Current-era`**; **54 `Replace/Upgrade` + 163 `Verify-EoL` + 75 `Unknown`** | ~72% of the fleet is on end-of-life or replace-grade software — a standing exposure + support risk far larger than the 21 KEV-priority devices. |
-| **Device health** | **202 of 303 (67%) are `Critical` (117) or `Poor` (85)**; only **22 `Good`**, 50 `Insufficient Data` | The fleet is broadly unhealthy, not a few hotspots — migration/refresh is warranted at scale, not device-by-device. |
+| **Software-currency debt** | **Only 11 of 303 (3.6%) are `Current-era`**; **54 `Replace/Upgrade` + 163 `Verify-EoL` + 75 `Unknown`** | **~72%** (the **217** Replace + Verify-EoL; the 75 Unknown are *separately un-assessed*, not counted here) is end-of-life or replace-grade software — a standing exposure + support risk far larger than the 21 KEV-priority devices. |
+| **Device health** | **202 of 303 (67%) are `Critical` (117) or `Poor` (85)**; also 29 `Fair`, 22 `Good`, 50 `Insufficient Data` (117+85+29+22+50 = 303) | The fleet is broadly unhealthy, not a few hotspots — migration/refresh is warranted at scale, not device-by-device. |
 | **SNMP v2c exposure** | **106 devices** flagged `snmp-v2c-ro` (the single largest finding class, `by_kind`) | SNMPv2c community strings are **cleartext, unauthenticated** — sniffable for recon/inventory. Bigger by device count than the KEV surfaces. Remediate to **SNMPv3** (auth+priv). |
 
 ## Software-currency detail (`software_risk.summary.trains`)
