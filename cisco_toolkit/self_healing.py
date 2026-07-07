@@ -104,6 +104,8 @@ def extract_drift(old_snap: Any, new_snap: Any, *, score_drop: int = 10) -> List
 
 
 def _route(item: Dict[str, Any]) -> str:
+    if item["kind"] == "advisory":
+        return "config-security-auditor"                 # a software advisory is a security/audit-surface item
     if item["kind"] == "coverage":
         from cisco_toolkit.domain_packs import PACKS
         for pid, spec in PACKS.items():
@@ -113,6 +115,9 @@ def _route(item: Dict[str, Any]) -> str:
 
 
 def _intent(item: Dict[str, Any]) -> str:
+    if item["kind"] == "advisory":
+        return (f"Assess fleet exposure to advisory {item['subject']} ({item['detail']}) and propose the "
+                f"upgrade/mitigation as a reviewable MOP with rollback; never a device write.")
     if item["kind"] == "health":
         return (f"Root-cause the health regression on {item['subject']} ({item['detail']}) and propose the "
                 f"minimal restore — author it as a reviewable MOP; do NOT emit a device command.")
@@ -121,11 +126,19 @@ def _intent(item: Dict[str, Any]) -> str:
 
 
 def propose_remediation(old_snap: Any, new_snap: Any, *, baseline_id: str = "baseline",
-                        score_drop: int = 10) -> Dict[str, Any]:
+                        score_drop: int = 10, extra_items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """The propose-only remediation plan. Each item names a root-cause owner, a MOP author, an independent
     verifier, the remediation *intent* (never a command), the rollback, and the NRFU acceptance. Applies
-    nothing; the whole thing is a reviewable proposal (PR + CAB)."""
+    nothing; the whole thing is a reviewable proposal (PR + CAB).
+
+    ``extra_items`` are externally-supplied drift items (e.g. intel-feed advisory hits from
+    :func:`cisco_toolkit.intel_feed.advisory_drift_items`) merged into the same loop — so a PSIRT hit
+    proposes a remediation exactly like a snapshot regression does (closing the Phase-5 -> Phase-4 loop)."""
     drift = extract_drift(old_snap, new_snap, score_drop=score_drop)
+    for it in (extra_items or []):
+        if isinstance(it, dict) and it.get("kind") and it.get("severity") in SEV_ORDER and it.get("subject"):
+            drift.append({"detail": "", **it})
+    drift.sort(key=lambda d: SEV_ORDER.index(d["severity"]))
     plan: List[Dict[str, Any]] = []
     for d in drift:
         plan.append({
