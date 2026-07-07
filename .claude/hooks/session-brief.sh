@@ -89,6 +89,17 @@ def _agent_memory():
     except Exception:
         return "?"
 
+def _learnings():
+    # distilled, verifiable engine facts (docs/quality/learnings.md) — surfaced so the durable
+    # lessons are READ at session start, not rediscovered. Cheap count; fail-open.
+    try:
+        txt = open(os.path.join("docs", "quality", "learnings.md"), encoding="utf-8", errors="replace").read()
+        n = sum(1 for l in txt.splitlines() if l.startswith("- "))
+        m = len(txt.splitlines())
+        return ("%d entries, %d/100 lines" % (n, m)) if n else "empty (no entries yet)"
+    except Exception:
+        return "none"
+
 brief = (
     "Automated Senior Network Engineer — engagement context\n"
     f"- Toolkit version: {os.environ.get('ASNE_VER','?')} · branch: {os.environ.get('ASNE_BRANCH','?')} · uncommitted files: {os.environ.get('ASNE_DIRTY','0')}\n"
@@ -96,6 +107,7 @@ brief = (
     f"- Latest evidence snapshot: {snap}\n"
     f"- Rot watch: vault /ingest {_days_since_op('ingest')} · vault /lint {_days_since_op('lint')} (weekly per MASTER_PLAN §6) · graphify graph {_graph_age()}\n"
     f"- Memory: {_auto_memory()} · agent-memory: {_agent_memory()}\n"
+    f"- Learnings ({_learnings()}): distilled verifiable engine facts - read docs/quality/learnings.md\n"
     "- Specialist roster (delegate to these): assessment-analyst, config-security-auditor, topology-reachability-analyst, design-author, mop-change-author, nrfu-validator, deliverable-qa-reviewer, release-captain\n"
     "- Commands: /assess /deliverables /audit /reachability /qa /release /ask /retro\n"
     "- Doctrine: read-only by default; proposer != verifier; evidence-grounded & coverage-honest; no device writes; production change only via human-owned PR + CAB."

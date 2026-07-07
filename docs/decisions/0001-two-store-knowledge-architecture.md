@@ -24,3 +24,48 @@ Two stores, one contract each, never merged:
 - Wiki pages that mention engine behavior must cite the symbol name and defer to graphify, not restate.
 - Claude Cowork/Desktop folder grants: vault only, never this repo.
 - The vault's lint cadence (weekly) is independent of this repo's hooks.
+
+---
+
+## Amendment 1 (2026-07-07) — one-way, sanitized, read-only vault **digest** for recall (D3/D4)
+
+**Status:** accepted (authorized 2026-07-07) · **enables:** the *recall* nerve of
+`docs/autonomous-brain-plan-v4-final-2026-07-06.md` (D3/D4) · **related:** `research_lane/`,
+`cisco_toolkit/intel_feed.py`, `research_lane/sanitize.py`
+
+### Context
+Decision point 3 above states "**Nothing flows vault→repo**." That is correct for *raw* vault pages
+(client-adjacent career/domain notes) and stays in force. But the autonomous-brain plan needs *recall* — an
+`/ask` answer that fuses graph + docs + the operator's own distilled domain knowledge. The plan resolved
+this (D3) as an **additive, one-way, read-only DIGEST**, not raw pages, behind the same Rule-3 sanitization
+that the repo→vault bridge already uses.
+
+### Amended decision
+Point 3 is narrowed, not reversed. Raw vault pages still never cross. **One new, tightly-fenced exception:**
+a **sanitized vault digest** may cross vault→repo for recall, subject to all of:
+1. **Digest, not pages** — only distilled, generic domain facts (concepts/patterns/vendor quirks), never a
+   raw note, never client-adjacent material.
+2. **Rule-3 sanitized at the boundary** — passed through `research_lane/sanitize.py` (forbidden-token / IP /
+   email scrub) with a recorded proof-of-scrub, exactly like the intel feed; the crossing artifact is
+   **signed** (the `intel_feed.build_feed` contract) and the repo **verifies** it before use.
+3. **Read-only + additive** — the repo consumes it; it never writes back to the vault, and the digest is
+   supplementary to graph+docs (recall degrades gracefully to graph+docs if the digest is absent).
+4. **Produced in the fenced lane** — the vault read + sanitize + sign happens in a network/vault-connected
+   worktree (like the research lane), never from an air-gapped repo session. The air-gapped repo only ever
+   reads the frozen, signed, sanitized digest — its no-egress invariant is unchanged.
+
+### Ollama vault-digest RAG — **planned (D4), not installed**
+The digest is retrieved locally via **Ollama** (zero-egress, offline embeddings/LLM) so recall needs no
+network at query time. This is a **plan, not an install** — the dependency is **optional and
+gracefully-degrading**: no Ollama ⇒ the vault-digest store is simply unavailable and recall falls back to
+graph+docs (reported honestly, never silently "no results"). Implementation (the RRF hybrid retriever over
+graph ⊕ docs ⊕ vault-digest, D10) remains gated on the Ollama install + a first sanitized digest, and ships
+as an experiment with its own eval (D10), not as proven SOTA.
+
+### Consequences
+- The sanitizer (`research_lane/sanitize.py`) is now the shared Rule-3 boundary for **both** crossings (intel
+  feed and vault digest).
+- `docs/ssot.md` gains the vault-digest as a *gated* store (like the intel feed): registered, but no data
+  until the digest producer + Ollama are wired.
+- This amendment grants the mechanism; it does **not** grant reading arbitrary vault pages from repo sessions
+  (that would need a further amendment).

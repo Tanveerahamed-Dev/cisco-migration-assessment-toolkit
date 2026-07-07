@@ -4,6 +4,43 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-07] — Autonomous-brain plan Phases 1–6 wired + demonstrated end-to-end (KEV remediation package)
+
+- Continued the v4 plan from Phase-0: shipped the feedback nerve (`scorecard trend` + PIR `calibration.py`,
+  D11-gated descriptive-only until N≥5), the clock safety rails + dry-run nightly wrapper (3-fail breaker +
+  daily-spend ceiling, propose-only, nothing scheduled/spent), the domain packs + `/council` (D6/D8 —
+  retrieval-selected lenses keyed to `architecture_coverage`, independent refute-first majority), the
+  self-check immune system + self-healing drift-triage, and (in compacted work) the Phase-5 eyes/recall +
+  Phase-6 Batfish GO. Then demonstrated the whole loop on the real fleet: live CISA-KEV intel → verified
+  exposure finding → propose-only remediation package (MOP + independent NRFU + blast-radius annex +
+  adversarial QA), all in `docs/security/`. Every new module re-blessed the no-egress attestation (0 LLM +
+  0 network imports); full suite green throughout.
+- !lesson **An IOS-oriented software-advisory/surface detector over-flags on NX-OS — reconcile advisory
+  exposure to the CVE's actual platform before you count it.** `software_risk` raised `smart-install`/
+  `http-server` "verify" flags on 151/63 devices, but 55 of each were NX-OS where `vstack` / IOS `ip http
+  server` don't exist; CVE-2018-0171 and CVE-2023-20198 are IOS/IOS-XE. True CVE-applicable exposure = 96
+  Smart-Install + 8 Web-UI + 3 confirmed-`exposed`. An advisory-hit count is not an exposure count until it
+  is platform-filtered to the CVE's affected OS. bridge-candidate
+- !lesson **Proposer≠verifier earns its keep on security findings, and the verifier must RECOMPUTE, not
+  review.** Two independent agents (MOP author + NRFU) each caught the NX-OS over-count before it reached a
+  change window; the QA verifier re-derived every count/split/blast-radius value against the SSOT + snapshot
+  (zero mismatches) and re-ran the reproduce command rather than eyeballing — which is what surfaced the one
+  real reconciliation nit. A verifier that recomputes catches what a verifier that reads misses. bridge-candidate
+- !lesson **A blast-radius / SPOF model is only as strong as the redundancy it collected — report worst-case
+  and certify nothing when FHRP/STP aren't parsed.** The model returned "Hard-partition for all 21" reload
+  targets, but FHRP was parsed for 0/52 multi-gateway VLANs and STP-backup for 2/303 devices, so that verdict
+  is coverage-bounded, not proven SPOF; the analyst refused to certify redundancy and deferred to a per-device
+  pre-check. Corollaries: overlapping `stranded` endpoint counts must never be summed (one VLAN's 667
+  endpoints get attributed to every cut point), and a VLAN-1 "hard partition" on 226 devices holding 1
+  endpoint is noise. bridge-candidate
+- !lesson **A fail-open automation hook can silently never fire in a different runtime — verify the loop
+  actually produces output, don't trust the wiring.** The `SubagentStop` scorecard appender is correctly
+  registered (`.claude/settings.json:66` → `scorecard-append.sh`) and `parse_qa_verdict` parses a real
+  reviewer verdict (tested), yet a genuine independent `/qa` verdict appended no row (`selfcheck` still shows
+  "0 entries") — the hook is fail-open, so nothing surfaced. In the Claude Agent SDK env, SubagentStop
+  doesn't fire for Agent-tool subagents. Flagged as task_dcf0043c (needs a fallback recording path that
+  records only a real subagent verdict, never main-agent prose). bridge-candidate
+
 ## [2026-07-06] — Syntys HLD v7.1: integrity reissue + FCSLA-delivery + firewall-terminated-edge deltas (side engagement)
 
 - Side-engagement session only — produced Syntys DC HLD v7.1 from v7.0 in three stacked deltas: an integrity/completeness

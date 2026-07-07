@@ -1,0 +1,2588 @@
+{
+ "_methodology": "severity-weighted cross-finding risk: KEV=5,WeakPW=4,Health=3,EoL=2,SNMP=2,VTY=1,NoEnc=1 (defensible, not calibrated \u2014 a RANKING aid)",
+ "_source": "devices+software_risk+health_scores+security; reproduce from the snapshot",
+ "_scope": "253 config-assessable devices (50 not-collected unscored)",
+ "_summary": {
+  "scored": 253,
+  "max_score": 14,
+  "at_max": 8,
+  "ge4_dimensions": 93
+ },
+ "devices": [
+  {
+   "host": "AS20-BC-TR12SatR2-BCDOH",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS20-MGM-CA11B29-Stack",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS21-BC-TE421R01",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS21-MGM-TE421R02",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS22-BC-TE421R01",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS22-MGM-CA05R70-stack",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS25-BC-TR11SatR2-BCDOH",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS-VSS-CA05R27CA11F17-SW",
+   "score": 14,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS-VSS-BC-CAR6R1-CAR11RF16-DOH",
+   "score": 12,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS-VSS-CAR3-R13-ARDOH",
+   "score": 12,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS01-DC-INVESTIGATIVE-AJSS-DCDOH",
+   "score": 12,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AAS13-BC-CR02R03-TCDOH",
+   "score": 11,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "NoEnc",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "DS01-BC-CA05R52-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS02-BC-CA05R53-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS03-BC-CA05R52-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS04-BC-CA05R53-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS07-BC-CA05R52-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS08-BC-CA05R53-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS09-BC-CA11F18",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS09-DC-CAR05R62",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS10-BC-CA11F17",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS11-BC-CA05R52-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS12-BC-CA05R53-AJDOH",
+   "score": 10,
+   "n_dimensions": 5,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AAS01-BC-CAR7R188-ARDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS03-BC-CA11G06",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS04-BC-CA11G07",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS07-BC-CA01A13",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS08-BC-CA01A13",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CAR3R13-AJA",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CAR3R13-AJA",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CNPI-ARDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS03-BC-CAR11RD20",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS03-BC-CAR3R13-AJA",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS04-BC-CAR3R13-AJA",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS04-MGM-CA05R46-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-BC-CAR3R13-AJA",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-MGM-CA05R44-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS06-BC-CAR3R13-AJA",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS07-BC-CR03R13-BCDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS07-MGM-CA11G05-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS08-MGM-CA11G16-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS09-BC-CA01A14",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS10-BC-CA01A14-BCDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS13-BC-CA05R86-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS13-BC-ST14SATR12-BCDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS13-MGM-CA01A13",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS14-BC-ST14SATR2-BCDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS14-MGM-IT03R01-AJDOH-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS17-MGM-CA05R47-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS18-MGM-CA04R02-AJDOH-stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS19-MGM-CA05R45",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS22-BC-CA04R2-BCDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS22-MGM-TE421R02",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS24-BC-TR11SatR2-Stack",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS26-BC-TR11SatR2-BCDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW01-BC-ROBOTICS-CAR6R1-ARDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW02-BC-ROBOTICS-CAR6R2-ARDOH",
+   "score": 10,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA05R81-CXDOH",
+   "score": 9,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "NoEnc",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS24-MGM-CA01A14",
+   "score": 9,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "10GSW01-BC-CA11F17",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "10GSW02-BC-CA11F18",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "CS01-BC-CA21C10-CXDOH",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "CS02-BC-CA21RB03-CXDOH",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS01-DC-CA11D07",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS01-DC-CAR05R18",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS02-DC-CA11D08",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS02-DC-CAR05R18",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS03-DC-CA11D11",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS03-DC-CAR05R22",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS04-DC-CAR05R22",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS05-BC-CA05R52-AJDOH",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS05-DC-CAR5R74",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS06-BC-CA05R53-AJDOH",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS06-DC-CAR5R74",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS10-DC-CAR05R62",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS13-BC-CA11F18",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS14-BC-CA11F17",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS15-BC-CA11RD07",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS16-BC-CA11RD08",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS22-BC-CA05R23",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS23-BC-CA05R23",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "NoEnc",
+    "SNMP",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "EVS02-BC-CAR1-2R5-ARDOH",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "FEX CAR11 RACK F15",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 100 (SOC-ROW-R03)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 101 (CAR05-Rack27)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 103 (SOC-ROW-R08)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 104 (SOC-ROW-R04)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 124 (CAR05-Rack24-Lower)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 135 (CAR05-Rack18-Upper)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 136 (CAR05-Rack18-Lower)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex 137 (CAR05-Rack28)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex125 (CAR05-Rack25)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "Fex128 (CAR05-Rack24-Upper)",
+   "score": 8,
+   "n_dimensions": 4,
+   "dimensions": [
+    "EoL",
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AAS03-BC-CA01A13-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS04-BC-CA01A13-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS05-BC-CA05R37-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS06-BC-CA05R37-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS07-BC-IT03R01-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS08-BC-IT03R01-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS10-BC-IT03R01-ARDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS11-BC-CA04R01-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS12-BC-CA04R01-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS12-BC-TE421R02",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "ACS01-BC-CA11G20-PGDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS-BC-VSS-CAR07R07-AJDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA01RA13-CXDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CAR11RD22",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "KEV",
+    "NoEnc",
+    "SNMP"
+   ]
+  },
+  {
+   "host": "AS01-BC-CNPI-ARDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-STDOPS-CAR3R13-BCDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-IT03-SANDBOX-ARDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CAR11RD22",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "KEV",
+    "NoEnc",
+    "SNMP"
+   ]
+  },
+  {
+   "host": "AS04-BC-CA11C06",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS04-BC-MGMT-STS-CAR07R03",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-BC-MGMT-STS-CAR05R70",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS06-BC-CA11G09",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS06-MGM-CA12R03-AJDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS08--BC-CR03R13-BCDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "KEV",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS09-BC-CA05R39-ARDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS09-BC-CA11G14",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS10-BC-CA05R40-ARDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS10-BC-CA11G13",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS13-BC-CA21C10-CXDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS14-BC-CA21C10-CXDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS29-MGM-CA11G17",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "DS-VSS-AVID-CAR05-R37-AJDOH",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "DS21-BC-CA11G17",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW01-BC-CAR05R70",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW01-BC-CAR11RF16",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW02-BC-CAR05R70",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW02-CI-BC-CAR1and2-AJA",
+   "score": 8,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-MGMT-STS-CAR05R70",
+   "score": 7,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS02-BC-MGMT-STS-CAR01RA04",
+   "score": 7,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS03-BC-MGMT-STS-CAR01RA14",
+   "score": 7,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS11-BC-CA11B31",
+   "score": 7,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS12-BC-CA11B30",
+   "score": 7,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA01A03-AJM-STD01",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS02-BC-CA01A03-AJM-STD01",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS25-MGM-CA05R46",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS26-MGM-CA05R47",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS27-MGM-CA11D18",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS28-MGM-CA11D17",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS04-DC-CA11D16",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS11-DC-CA05R12",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "DS12-DC-CA05R13",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "SW01-BC-NEXIS-CAR05R41",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "SW02-BC-NEXIS-CAR05R41",
+   "score": 6,
+   "n_dimensions": 3,
+   "dimensions": [
+    "NoEnc",
+    "VTY",
+    "WeakPW"
+   ]
+  },
+  {
+   "host": "AS02-BC-STDOPS-CAR3R13-BCDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "DS17-BC-CA05R46-AJDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "NoEnc"
+   ]
+  },
+  {
+   "host": "DS18-BC-CA05R47-AJDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "NoEnc"
+   ]
+  },
+  {
+   "host": "DS19-BC-CA11D03",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "NoEnc"
+   ]
+  },
+  {
+   "host": "DS20-BC-CA11D04",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "NoEnc"
+   ]
+  },
+  {
+   "host": "SW01-BC-CAR6R01-ARDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW01-BC-DANTE-CAR6R01-ARDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW01-BC-ST5LED-CAR05R79A",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW01-BC-ST5LED-CAR06RD14-ARDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW02-BC-CAR6R01-ARDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW02-BC-DANTE-CAR6R02-ARDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW03-BC-CAR6R02-ARDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW04-BC-CAR6R02-ARDOH",
+   "score": 6,
+   "n_dimensions": 2,
+   "dimensions": [
+    "KEV",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS01-BC-CA05R32-ENDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS01-BC-CAR7R03",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS02-BC-CA05R33-ENDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS02-BC-CAR7R03",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS05-BC-CA05R88",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS05-BC-TE421",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS06-BC-CA05R89",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS06-BC-CA11G08",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS06-BC-TE421",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS07-BC-TR12SatR2-ENDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS08-BC-TR12SatR2-ENDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "ACS01-BC-CAR7R03-ARDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "ACS02-BC-CAR7R03-ARDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA05R46",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CA11C32-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-MGM-CA05R48-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS03-BC-CA05R48",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS03-MGM-CA05R49-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS04-BC-CA05R49",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS06-BC-CA05R43-AJDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS06-BC-CA21C03-CXDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS07-BC-CA11C01-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS08-BC-CA01A14",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS09-BC-CA01A13",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS09-MGM-CA11F18-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS10-MGM-CA11C01-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS11-BC-IT03R01-BCDOH-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS11-MGM-CA11C01-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS12-BC-IT03R02-BCDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS12-MGM-CA11C32-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS13-BC-CR3R13-ARDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS14-BC-CR3R13-ARDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS15-BC-ST14SATR2-BCDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS16-BC-CA01A10-ROBOTICS",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS18-BC-TR12SatR2-BCDOH-stack",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS19-BC-TR12SatR2-BCDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "DS01-EVS-CAR07R181-ARDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "EVS01-BC-CAR7R181-ARDOH",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "SW1-CI-BC-PT4-AJD",
+   "score": 5,
+   "n_dimensions": 3,
+   "dimensions": [
+    "EoL",
+    "SNMP",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS03-BC-CA05R35-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS03-BC-CAR7R03",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS04-BC-CA05R36-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS04-BC-CAR7R03",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS05-BC-CA11G08",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS05-BC-INGR02-ARDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS07-BC-CA12R10-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS08-BC-CA12R12-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS09-BC-CA21A13-PGDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS09-BC-IT03R01-ARDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS10-BC-CA21A13-PGDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS11-BC-CA11G06",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AAS12-BC-CA11G07",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "ACS01-BC-CA05R30",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "ACS01-BC-CA11G01-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "ACS02-BC-CA05R31",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA11C32-stack",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA11F07",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA12R10-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-BC-CA21A02-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-CI-BC-CAR1and2-AJA",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-CI-BC-CAR7-AJA",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS01-MGM-CA05R34-stack",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CA05R47",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CA11F08",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CA12R12-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-BC-CA21A03-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS02-CI-BC-CAR7-AJA",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS03-BC-CA11C05",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS03-BC-CA11C32-stack",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS03-BC-CA21B11-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS04-BC-CA11C32-stack",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS04-BC-CA12R02-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS04-BC-CA21B10-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-BC-AL01R01-ENDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-BC-CA05R42-AJDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-BC-CA11C01-stack",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-BC-CA11G09",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS05-BC-CA21C02-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS06-BC-CA11C01-stack",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS07-BC-CA11G12",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS07-BC-CA21A12-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS07-BC-IT03R01-ARDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS08-BC-CA11G11",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS08-BC-CA21A12-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS10-BC-CA21B03-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS11-BC-CA21A11-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS12-BC-CA21A13-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS13-BC-CA05R36-AJDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS14-BC-CA05R36-AJDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS15-MGM-CA21A01-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS16-MGM-CA21B12-CXDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "AS17-MGM-CA05R36-AJDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "DS02-EVS-CAR07R181-ARDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  },
+  {
+   "host": "EVS03-BC-CAR21RC10-ARDOH",
+   "score": 3,
+   "n_dimensions": 2,
+   "dimensions": [
+    "EoL",
+    "VTY"
+   ]
+  }
+ ]
+}
