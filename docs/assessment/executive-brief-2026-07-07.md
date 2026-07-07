@@ -17,7 +17,7 @@ change windows, and need resourcing decisions.
 | 1 | **Actively-exploited surfaces** — Smart Install (CVE-2018-0171) + IOS-XE Web UI (CVE-2023-20198/-20273, CVSS 10) | 96 + 8 IOS devices (+3 confirmed open) | **NOW** — being exploited in the wild | ✅ **Phase-A CAB request drafted, QA-approved, no reload** |
 | 2 | **Cleartext SNMP (v2c)** | **106 devices** | High — sniffable recon | ◑ Direction set (→ SNMPv3); needs the v3 credential scheme + NMS coordination |
 | 3 | **Software-currency + health debt** | **217 (~72%) EoL/replace-grade** (+75 unknown-train, separately unassessed); **67% Critical/Poor** health; only **3.6% current** | Chronic — support + exposure risk | ◑ A phased refresh **program**; needs PSIRT fixed-versions + refresh budget |
-| 4 | **L1–L2 resilience — *un-certifiable* from this data** (all 52 multi-gateway VLANs show no observed FHRP; 43 inferred topology chokepoints; `cable_map`/STP absent) | Fleet-wide **evidence gap** | Blocks any resilience verdict | ✗ Needs a **targeted read-only collection** first (cheap) |
+| 4 | **L1–L2 resilience — *un-certifiable* from this data** (all 52 multi-gateway VLANs show no observed FHRP; 43 inferred topology chokepoints; `cable_map` absent) | Fleet-wide **evidence gap** | Blocks any resilience verdict | ✗ Needs a **targeted read-only collection** first (cheap) |
 
 ## Recommended sequence
 1. **This maintenance window — approve KEV Phase-A** ([CAB request](../security/kev-phaseA-cab-request-2026-07-07.md)).

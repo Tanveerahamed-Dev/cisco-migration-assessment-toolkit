@@ -12,7 +12,7 @@ points the wrong way — but must be **verified by a targeted collection**, not 
 
 | Signal | Measured | Honest reading |
 |---|---|---|
-| First-hop redundancy | **All 52 of 52** multi-gateway VLANs show **no observed FHRP** ("N gateways but no FHRP") | Either a **critical fleet-wide gap** (no HSRP/VRRP/GLBP → no automatic gateway failover) **or** FHRP is configured but was not captured. **Must verify.** |
+| First-hop redundancy | **All 52 of 52** multi-gateway VLANs show **no observed FHRP** ("N gateways but no FHRP") | **Leans toward a real gap** — the engine parsed 459 real SVI IPs and found multiple gateways per subnet with **no shared virtual IP** (the missing-FHRP signature), and `hsrp_behavior` is uniformly empty. But the snapshot keeps *parsed* data, not raw configs, so it is **not certified** — a targeted FHRP collection confirms design-gap vs. parse-gap. |
 | Physical chokepoints | **43 cut-edges** of 238 collected links (`link_centrality.is_bridge`) | Bridges *in the collected graph* — but **`cable_map` is null** (physical topology partly inferred), so some may be artifacts of incomplete cabling collection. Worst-case, 43 single links each partition a segment. |
 | Modeled failure impact | **253 of 303** devices = `High` (hard-partition, no backup path); only **2** have a proven backup; **0** FHRP-covered | Coverage-bounded worst-case (per the KEV blast-radius annex: FHRP parsed 0/52, STP-backup 2/303). NOT 253 certified SPOFs. |
 | Endpoint resilience | **224** dual-homed endpoints (`endpoint_dependencies.dual_homed`) | Some access-layer redundancy IS present — the one positive resilience signal collected. |
@@ -34,8 +34,11 @@ answer determines whether first-hop redundancy is a top-priority remediation (if
 non-issue (if merely uncollected).
 
 ## Coverage-honesty (Law 3)
-- `cable_map` and `stp` are **null** in this snapshot → the physical/spanning-tree layers are largely inferred
-  or absent; do not read the 43 cut-edges or 253 hard-partitions as certified physical SPOFs.
+- `cable_map` is **absent** (physical topology inferred) → this is what bounds the numbers: do not read the 43
+  cut-edges or 253 hard-partitions as certified physical SPOFs. **STP data, by contrast, IS present** —
+  `stp_roots` holds per-VLAN root elections for **248 devices** (77 distinct root MACs, 100 devices root for
+  ≥1 VLAN) plus per-interface STP state; it is **under-used here** and a follow-on can mine it for
+  single-root-per-VLAN SPOF candidates. The L2 layer is better-collected than the physical layer.
 - 50 devices are `not collected` (`Info` severity in `failure_impact`) → excluded, not "resilient".
 - "No FHRP observed" is **not** "no FHRP configured" until the targeted collection above confirms it.
 
