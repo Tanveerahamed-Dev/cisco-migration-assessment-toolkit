@@ -33,6 +33,11 @@ on the resilience gap (finding 4), and change windows must treat media paths as 
 3. **Program (quarters, not a window) — software-currency refresh** of the ~217 EoL/replace devices, phased
    by the per-device blast-radius pre-checks, targeting PSIRT-fixed releases.
 
+**Sequencing aid:** the [device risk heat-map](device-risk-heatmap-2026-07-07.md) ranks all 253 devices across
+every finding — **8 carry all five risks, 93 carry ≥ 4**. For those, batch the waves into **coordinated
+per-device touches** (Phase-A mitigation + hardening + upgrade scheduled together) rather than visiting the
+same box in three separate windows.
+
 ## What we need from you (the gates)
 - **CAB approval** + a window for Phase-A (and later SNMP).
 - **Cisco openVuln API credentials** — the fixed-version lookup is built and waiting on creds (turns the
