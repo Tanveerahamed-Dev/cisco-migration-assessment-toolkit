@@ -68,3 +68,9 @@ ds-bundle/
 # autonomous-brain: generated dated morning briefings (reproducible via /briefing).
 # The command, hook, and scorecard schema ARE committed; the machine-generated output is not.
 docs/briefings/briefing-*.md
+
+# autonomous-brain: vault-digest recall store (ADR-0001 Amendment 1). The digest is DERIVED from the
+# PERSONAL vault; even Rule-3-sanitized it is local-only by default (privacy-first) — the producer,
+# consumer, gate, and format doc ARE committed; the digest data is not. Un-ignore deliberately if you
+# decide a sanitized digest may live in the (pushable) repo.
+docs/vault-digest/digest-*.jsonl
