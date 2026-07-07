@@ -168,3 +168,94 @@ def test_run_hook_is_total_on_bad_input(tmp_path):
     assert S.run_hook("", path=sc) is None
     assert S.run_hook(json.dumps({"transcript_path": str(tmp_path / "nope.jsonl")}), path=sc) is None
     assert S.read_rows(sc) == []
+
+
+# --- trend renderer (Phase 1) ------------------------------------------------------------------
+# The trend turns the append-only log into the two watch-lines: counterexamples/cycle DOWN, eval
+# score UP. Properties under test: buckets by ISO week; the direction is DERIVED (improving vs
+# regressing flips with the data — non-vacuous); empty + short-span + no-scored-rows are all
+# reported honestly (absence is absence), and >= 2 weeks of rows render a trend (Phase-1 acceptance).
+
+def _row(date, *, deliverable="design", score=None, verdict="APPROVE", cx=0, laws=None, commit="c"):
+    return {"date": date, "deliverable": deliverable, "score": score, "verdict": verdict,
+            "counterexamples": cx, "laws_tripped": laws or [], "commit": commit, "notes": ""}
+
+
+def test_render_trend_empty_is_honest():
+    out = S.render_trend([])
+    assert "no entries yet" in out
+    assert "Absence is absence" in out          # never a fabricated healthy line
+    assert S.summarize_trend([])["n"] == 0
+
+
+def test_summarize_trend_buckets_by_iso_week():
+    rows = [_row("2026-06-22", cx=2, verdict="BLOCK"),    # Mon — week A
+            _row("2026-06-24", cx=1, verdict="APPROVE"),  # Wed — week A (same ISO week)
+            _row("2026-07-01", cx=0, verdict="APPROVE")]  # Wed — week B
+    s = S.summarize_trend(rows)
+    assert s["n"] == 3 and s["weeks"] == 2
+    wks = [b["bucket"] for b in s["buckets"]]
+    assert wks == sorted(wks)                              # chronological
+    week_a = next(b for b in s["buckets"] if b["cycles"] == 2)
+    assert week_a["blocks"] == 1 and week_a["mean_cx"] == 1.5
+    assert week_a["block_rate"] == 0.5                     # 1 BLOCK of 2 decided
+
+
+def test_trend_two_week_bar_met_and_counterexamples_improving():
+    # Phase-1 acceptance: >= 2 weeks of rows render a trend; counterexamples fall 3 -> 1 -> 0.
+    rows = [_row("2026-06-22", cx=3, verdict="BLOCK"),
+            _row("2026-06-29", cx=1, verdict="APPROVE"),
+            _row("2026-07-06", cx=0, verdict="APPROVE")]
+    s = S.summarize_trend(rows)
+    assert s["span_days"] == 14 and s["two_week_bar"] is True and s["weeks"] == 3
+    assert s["counterexamples"]["direction"] == "improving"
+    out = S.render_trend(rows)
+    assert "trend is meaningful" in out                    # the >= 2-week label (ASCII-safe assert)
+
+
+def test_trend_counterexamples_regressing_when_rising():
+    """Non-vacuity: the SAME renderer calls a rising counterexample series 'regressing'."""
+    rows = [_row("2026-06-22", cx=0), _row("2026-06-29", cx=2), _row("2026-07-06", cx=5)]
+    assert S.summarize_trend(rows)["counterexamples"]["direction"] == "regressing"
+
+
+def test_trend_score_absence_is_honest():
+    rows = [_row("2026-06-22", cx=1), _row("2026-06-29", cx=0)]   # all /qa rows -> score None
+    s = S.summarize_trend(rows)
+    assert s["scored_rows"] == 0
+    assert "no scored rows yet" in S.render_trend(rows)           # absence, not score=0
+
+
+def test_trend_scored_rows_render_and_direction_up():
+    rows = [_row("2026-06-22", score=80, verdict="APPROVE"),
+            _row("2026-07-06", score=92, verdict="APPROVE")]
+    s = S.summarize_trend(rows)
+    assert s["scored_rows"] == 2 and s["score"]["direction"] == "improving"   # 80 -> 92, up is good
+    out = S.render_trend(rows)
+    assert "eval score" in out and "scored row" in out
+
+
+def test_trend_short_span_is_labeled_not_yet_meaningful():
+    rows = [_row("2026-07-06", cx=1), _row("2026-07-07", cx=0)]
+    s = S.summarize_trend(rows)
+    assert s["two_week_bar"] is False
+    assert "< 2 weeks" in S.render_trend(rows)
+
+
+def test_trend_laws_frequency_counted():
+    rows = [_row("2026-06-22", verdict="BLOCK", laws=["L3"]),
+            _row("2026-06-29", verdict="BLOCK", laws=["L3", "L10"])]
+    assert S.summarize_trend(rows)["laws"] == {"L3": 2, "L10": 1}   # sorted by frequency desc
+
+
+def test_trend_malformed_date_bucketed_out_but_counted():
+    rows = [_row("2026-06-22", cx=1), _row("not-a-date", cx=9)]
+    s = S.summarize_trend(rows)
+    assert s["n"] == 2 and s["weeks"] == 1     # total counts both; only the parseable date buckets
+
+
+def test_trend_single_bucket_direction_is_na():
+    """One week of data has no direction yet — reported as such, not a fake trend."""
+    rows = [_row("2026-07-06", cx=1), _row("2026-07-07", cx=2)]   # same ISO week
+    s = S.summarize_trend(rows)
+    assert s["weeks"] == 1 and s["counterexamples"]["direction"] == "n/a"
