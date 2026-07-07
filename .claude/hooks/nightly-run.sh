@@ -56,6 +56,9 @@ else
   BRIEF=$(bash .claude/hooks/morning-briefing.sh 2>/dev/null || echo "(briefing assembler produced nothing)")
 fi
 
+# 2b) Agent-system self-check (Phase 4) — local, free, no egress. RED leads the briefing.
+SELFCHECK=$("$PY" -m cisco_toolkit.selfcheck 2>/dev/null || echo "(self-check unavailable)")
+
 # 3) The propose-only prompt the nightly hands to claude -p. Scoped to what exists TODAY (Phase 2):
 #    assemble the briefing, surface open items, name the single next move — all read-only.
 #    (Phase 4 will add: run the eval smoke tier + the agent-system self-check to this payload.)
@@ -65,6 +68,9 @@ local evidence ('not observed' is never 'healthy'). Using the briefing payload b
 <=1-screen morning briefing where every line is a number or a link, then name the single
 highest-impact next move. Propose only — your output is a briefing plus at most reviewable
 suggestions, never an applied change.
+
+--- agent-system self-check (RED items lead the briefing) ---
+${SELFCHECK}
 
 --- briefing payload (local, no-egress) ---
 ${BRIEF}"

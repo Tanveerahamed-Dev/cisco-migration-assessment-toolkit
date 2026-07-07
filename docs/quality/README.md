@@ -141,6 +141,22 @@ preflight-gated (NO-GO → stand down) and the live path is **double-guarded** (
 scheduled. Its safety properties are pinned by `tests/test_nightly_wrapper.py`. To arm/schedule it later,
 see the header of the script — that step is yours (spend + system change).
 
+## Agent-system self-check (Phase 4 — the immune system)
+
+[`cisco_toolkit/selfcheck.py`](../../cisco_toolkit/selfcheck.py) re-derives, from the repo, whether the
+guards are **non-vacuous** and the substrate is healthy — a *deleted or gutted* guard reads **RED**, not
+silently gone (a skipped test is red). It runs in the nightly wrapper (local, free, no egress) and RED items
+lead the briefing. Checks: scorecard / PIR / nightly-ledger substrate present; the learnings lint passes;
+all guard suites exist **and assert**; the graph is fresh (absent → UNKNOWN, never GREEN). Coverage-honest —
+an un-evaluable check is UNKNOWN, disclosed, never counted healthy.
+
+```
+python -m cisco_toolkit.selfcheck    # exit 0 unless a check is RED (then 4)
+```
+
+Pinned by `tests/test_selfcheck.py` (a gutted guard, a missing substrate, and a stale graph each read
+correctly; a healthy repo reads GREEN).
+
 ## `learnings.md` — the distilled, verifiable engine facts (sibling substrate)
 
 The other half of the feedback nerve: [`learnings.md`](learnings.md) is the distilled store of durable,
