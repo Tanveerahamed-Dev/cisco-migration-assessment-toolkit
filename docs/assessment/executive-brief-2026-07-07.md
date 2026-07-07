@@ -18,14 +18,16 @@ change windows, and need resourcing decisions.
 | 2 | **Cleartext SNMP (v2c)** | **106 devices** | High — sniffable recon | ◑ Direction set (→ SNMPv3); needs the v3 credential scheme + NMS coordination |
 | 3 | **Software-currency + health debt** | **217 (~72%) EoL/replace-grade** (+75 unknown-train, separately unassessed); **67% Critical/Poor** health; only **3.6% current** | Chronic — support + exposure risk | ◑ A phased refresh **program**; needs PSIRT fixed-versions + refresh budget |
 | 4 | **L1–L2 resilience — *un-certifiable* from this data** (all 52 multi-gateway VLANs show no observed FHRP; 43 inferred topology chokepoints; `cable_map` absent) | Fleet-wide **evidence gap** | Blocks any resilience verdict | ✗ Needs a **targeted read-only collection** first (cheap) |
+| 5 | **Config-hardening gaps** (247/253 = 98% unhardened VTY lines; **73 devices High** weak local passwords; 32 permit-any ACLs; 74/253 with ≥1 High) | Fleet-wide | High — mgmt-plane + credential exposure | ◑ All **config-plane, no reload** — batch with SNMPv3 |
 
 ## Recommended sequence
 1. **This maintenance window — approve KEV Phase-A** ([CAB request](../security/kev-phaseA-cab-request-2026-07-07.md)).
    Closes the actively-exploited surfaces, **no reload**, canary-first, independent NRFU acceptance. Lowest
    risk, highest urgency.
-2. **Next window — SNMPv2c → SNMPv3** (106 devices, config-plane, no reload). Fastest *fleet-wide* risk
-   reduction. Prerequisite: agree the SNMPv3 auth/priv scheme and reconfigure the NMS/poller first (or
-   monitoring goes dark).
+2. **Next window — one hardening wave** (all config-plane, no reload): **SNMPv2c → SNMPv3** (106) **+ VTY
+   hardening** (247: SSH-only + `access-class` + `exec-timeout`) **+ local-password migration** (73 High
+   Type-7→Type-8/9 + 64 `service password-encryption`). Fastest *fleet-wide* risk reduction. Prerequisite:
+   agree the SNMPv3 auth/priv scheme + reconfigure the NMS/poller first (or monitoring goes dark).
 3. **Program (quarters, not a window) — software-currency refresh** of the ~217 EoL/replace devices, phased
    by the per-device blast-radius pre-checks, targeting PSIRT-fixed releases.
 
@@ -50,4 +52,5 @@ change windows, and need resourcing decisions.
 ## Detail (for the engineering track)
 Full grounded artifacts: KEV [finding](../security/kev-exposure-2026-07-07.md) · [MOP](../security/kev-remediation-mop-2026-07-07.md)
 · [NRFU](../security/kev-remediation-nrfu-2026-07-07.md) · [blast-radius](../security/kev-remediation-blast-radius-2026-07-07.md)
-· fleet [risk synthesis](fleet-risk-synthesis-2026-07-07.md) · [L1–L2 resilience](l1l2-resilience-2026-07-07.md).
+· fleet [risk synthesis](fleet-risk-synthesis-2026-07-07.md) · [L1–L2 resilience](l1l2-resilience-2026-07-07.md)
+· [config-hardening](config-hardening-2026-07-07.md).
