@@ -63,6 +63,18 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/scorecard-append.sh",
+            "timeout": 45,
+            "statusMessage": "Recording the QA verdict to the quality scorecard"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
