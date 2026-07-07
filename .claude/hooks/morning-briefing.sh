@@ -86,10 +86,17 @@ def scorecard_rows():
     except Exception:
         return []
 
+def _scorecard_row(r):
+    d, dl, sc, v = r.get("date", "?"), r.get("deliverable", "?"), r.get("score"), r.get("verdict", "?")
+    if isinstance(sc, (int, float)):                       # eval-harness row: a numeric score
+        return f"{d} {dl}={sc} ({v})"
+    cx = r.get("counterexamples")                          # /qa-verdict row: no number -> show verdict+cx
+    return f"{d} {dl} ({v}{f', {cx}cx' if isinstance(cx, int) else ''})"
+
 def fmt_scorecard(rows):
     if not rows:
-        return "no entries yet — begins recording once /qa appends verdicts (Phase 1 of the brain plan)"
-    tail = " | ".join(f"{r.get('date','?')} {r.get('deliverable','?')}={r.get('score','?')} ({r.get('verdict','?')})" for r in rows[-3:])
+        return "no entries yet — records automatically once a /qa verdict is produced (SubagentStop appender)"
+    tail = " | ".join(_scorecard_row(r) for r in rows[-3:])
     scored = [r.get("score") for r in rows if isinstance(r.get("score"), (int, float))]
     trend = ""
     if len(scored) >= 2:
@@ -112,7 +119,7 @@ oi_flat = sum(len(v) for v in oi.values())
 if oi_flat:
     actions.append(f"{oi_flat} open engagement item(s) (GI/REC) referenced in docs — check status")
 if not rows:
-    actions.append("Quality scorecard is empty — wire `/qa` to append verdicts (Phase 1) so improvement becomes a number you can watch")
+    actions.append("Quality scorecard is empty — run `/qa` on a deliverable; the SubagentStop appender records each verdict so the trend becomes a number you can watch")
 if dirty:
     actions.append(f"{dirty} uncommitted file(s) — review/commit")
 if not actions:
