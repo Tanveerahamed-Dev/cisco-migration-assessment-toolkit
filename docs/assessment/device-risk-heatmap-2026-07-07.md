@@ -5,14 +5,20 @@
 [`device-risk-heatmap.json`](device-risk-heatmap.json). **Scope:** 253 config-assessable devices (50
 not-collected are **unscored** — absent, not safe).
 
-## Headline — 8 devices carry every risk; 93 carry four or more
+## Headline — 8 devices stack five risks; 93 carry four or more
 Cross-referencing the six independent findings at the device level, a severity-weighted score
 (`KEV 5 · weak-password 4 · poor-health 3 · EoL 2 · SNMP 2 · VTY 1 · no-encryption 1`) yields a clear
 priority order:
 
-- **8 devices score the maximum (14)** — hit by **all five** of: an actively-exploited **KEV** surface, an
-  **EoL** train, a **weak local password** (High), **insecure SNMP**, and a **VTY** hardening gap.
+- **8 devices score the maximum (14)** — hit by **five** of the seven dimensions: an actively-exploited **KEV**
+  surface, an **EoL** train, a **weak local password** (High), **insecure SNMP**, and a **VTY** hardening gap.
 - **93 of 253 devices carry ≥ 4** distinct risk dimensions — a large, concentrated high-risk cohort.
+- **This axis is *security-finding density* only — it does NOT weight topological consequence / blast-radius.**
+  So the fleet's highest-confidence SPOF, `DS-VSS-CAR3-R13-ARDOH` (blast-radius annex), scores **12** here —
+  *below* the eight access/distribution boxes — because it lacks the SNMP dimension. An access switch with a
+  v2c string is **not** more critical than the core SPOF; this list orders *how many security gaps stack on a
+  box*, and MUST be read **with** the [blast-radius annex](../security/kev-remediation-blast-radius-2026-07-07.md)
+  for change sequencing.
 
 ### The priority-0 list (score 14 — fix these first, once, across all waves)
 `AS22-MGM-CA05R70-stack` · `AS20-MGM-CA11B29-Stack` · `DS-VSS-CA05R27CA11F17-SW` ·
@@ -25,8 +31,10 @@ priority order:
 The remediation waves are organized by *finding* (KEV Phase-A, the hardening wave, the currency program). But
 these 8 (and the 93) devices appear in **several waves at once**. Touching them **once, coordinated** — Phase-A
 mitigation + hardening + scheduling their upgrade together — is cheaper and lower-risk than visiting the same
-device in three separate windows. The heat-map is the join that makes that possible; several of the top devices
-(`DS-VSS-CAR3-R13`, `AS20/21/25-*`) are also the KEV blast-radius annex's SPOF/priority set — so the
+device in three separate windows. The heat-map is the join that makes that possible; several high-scoring
+devices (`AS20/21/25-*`) are also in the KEV blast-radius priority set — so those change-sequencing pre-checks
+already apply — while `DS-VSS-CAR3-R13` (score 12, the annex's top SPOF) shows the two views are complementary:
+security-gap density here, topological consequence there. So the
 change-sequencing pre-checks already apply to them.
 
 ## Coverage-honesty (Law 3)

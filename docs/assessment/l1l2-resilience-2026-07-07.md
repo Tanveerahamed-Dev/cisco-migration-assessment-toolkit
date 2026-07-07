@@ -45,11 +45,19 @@ one positive, one concern:
   required to separate "real gap" from "not collected."*
 
 ## The one required next step (a collection, not a change)
-A **targeted read-only resilience collection** — `show standby/vrrp/glbp brief`, `show spanning-tree summary`,
-`show cdp/lldp neighbors` (physical topology → populates `cable_map`), `show ip route`/adjacencies, `show vpc`
-— resolves the load-bearing question: **is the 52-VLAN "no FHRP" a real design gap or a collection gap?** That
-answer determines whether first-hop redundancy is a top-priority remediation (if genuinely absent) or a
-non-issue (if merely uncollected).
+A **targeted read-only resilience + media collection** — `show standby/vrrp/glbp brief`, `show spanning-tree
+summary`, `show cdp/lldp neighbors` (physical topology → populates `cable_map`), `show ip route`/adjacencies,
+`show vpc`, **plus the media-transport + L2-containment commands (below)** — resolves the load-bearing question:
+**is the 52-VLAN "no FHRP" a real design gap or a collection gap?** That answer determines whether first-hop
+redundancy is a top-priority remediation (if genuinely absent) or a non-issue (if merely uncollected).
+
+> **Media transport — NOT ASSESSED (this snapshot's parsed data cannot speak to it).** This is a broadcast/media
+> facility (finding: endpoint inventory — ST2110/Dante/AES67), where live A/V is **multicast + PTP-timed +
+> QoS-critical** — precisely the dimensions most sensitive to the resilience uncertainty above. None are
+> characterized here. Add to the collection: `show ip mroute` / `show ip igmp snooping` / PIM-RP state,
+> `show ptp clock`/`show ptp foreign-masters`, QoS policy-maps + `show mls qos`/queue drops, and L2 edge
+> protection (`show spanning-tree inconsistentports`, BPDU-guard/root-guard/DHCP-snooping/`port-security`
+> status). Do not schedule an A/V-path change until this is collected.
 
 ## Coverage-honesty (Law 3)
 - `cable_map` is **absent** (physical topology inferred) → this is what bounds the numbers: do not read the 43

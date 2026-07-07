@@ -18,7 +18,7 @@ devices carry ≥1 High** hardening failure. None require a reload to remediate.
 | **Insecure SNMP access** | **106** (105 Medium + 1 High) | Medium/High | **The same 106 devices** as the SNMP v2c finding (fleet-risk synthesis) — one check viewed two ways, *not* an independent corroboration. Cleartext community strings. |
 | **`service password-encryption` unset** | **64** | Medium | Type-0 cleartext secrets in running-config. |
 | **Weak / missing enable secret** | **63** | High(2)/Info | Privileged-EXEC secret weak or absent on a few; advisory on most. |
-| No NTP · no logging / banner | 9 · 1 / 2 | Info/Low | Long-tail hygiene. **0 devices have telnet enabled** (the `telnet` check's 6 hits are `na` = "no VTY lines", not enabled telnet). |
+| No NTP · no logging / banner | 9 · 1 / 2 | Info/Low | Long-tail hygiene. **0 devices *show* telnet enabled**; the `telnet` check's 6 hits are `na` (no parsed VTY lines) — telnet state **unobserved** there, not confirmed-off (avoid the not-observed→clean trap). |
 
 **ACL hygiene:** 3,507 ACL rules across 253 devices; **32 `permit any → any`** entries — overly-broad
 permits to review (some are legitimate infra rules; each should be justified or scoped).

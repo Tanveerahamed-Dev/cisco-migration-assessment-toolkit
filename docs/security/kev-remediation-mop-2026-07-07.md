@@ -90,8 +90,8 @@ owned by other roles.
 |---|---|---|---|
 | P1 | Verified KEV finding (current-state baseline) | assessment / research lane | ✅ met (`kev-exposure-2026-07-07.md`) |
 | P2 | Device roster reconciled to SSOT | this MOP | ✅ met (§2) |
-| P3 | **Per-wave blast-radius / reachability report** — mgmt-plane dependency (Phase A), redundancy & routing adjacency (Phase B) | `topology-reachability-analyst` | ⛔ **OUTSTANDING** |
-| P4 | **Independent NRFU / ATP acceptance criteria** + pre/post diff plan | `nrfu-validator` | ⛔ **OUTSTANDING** (proposer ≠ verifier — see §8) |
+| P3 | **Per-wave blast-radius / reachability report** — mgmt-plane dependency (Phase A), redundancy & routing adjacency (Phase B) | `topology-reachability-analyst` | ✅ **met** (`kev-remediation-blast-radius-2026-07-07.md`); the per-device **redundancy pre-check** is a **per-window Phase-B** residual, not a Phase-A blocker |
+| P4 | **Independent NRFU / ATP acceptance criteria** + pre/post diff plan | `nrfu-validator` | ✅ **met** (`kev-remediation-nrfu-2026-07-07.md`; proposer ≠ verifier — §8) |
 | P5 | **PSIRT / openVuln sweep → per-CVE fixed-version per model** (Phase B target) | research lane | ⛔ **OUTSTANDING** (feed lacks fixed-versions) |
 | P6 | Out-of-band **console** access confirmed reachable for every target (recovery path if in-band mgmt is lost) | change engineer | ⛔ verify per device pre-window |
 | P7 | Off-box backup of `running-config` + `startup-config` captured per target immediately pre-change | change engineer | per-step |
@@ -406,11 +406,12 @@ outage → **halt the wave, roll back the last step, convene the CAB bridge.**
 
 ## 11. Outstanding items / next intel (blockers for CAB)
 
-- **P5 — PSIRT/openVuln sweep** → attach per-CVE fixed-versions per model, converting Phase B "TBD" targets to
-  device-precise releases. *Blocks Phase B execution.*
-- **P3 — per-wave blast-radius / reachability report** from `topology-reachability-analyst`. *Blocks CAB.*
-- **P4 — independent NRFU/ATP acceptance criteria** from `nrfu-validator`. *Blocks CAB sign-off.*
-- **P6 — per-device OOB console verification** and **P7/P8 backups** before each window.
+- **P3 (blast-radius) ✅ delivered** (`kev-remediation-blast-radius-2026-07-07.md`) and **P4 (NRFU) ✅
+  delivered** (`kev-remediation-nrfu-2026-07-07.md`) — these are **no longer CAB blockers**.
+- **The real remaining gates for the Phase-A CAB are only P6/P7 (per-window: OOB console + backups) and P9
+  (approval).** Phase A can be tabled now.
+- **P5 — PSIRT/openVuln sweep** (per-CVE fixed-versions per model) → **blocks Phase B only**, not Phase A.
+- **P8** (rollback image + flash) is **Phase B only**.
 
 ---
 
