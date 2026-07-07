@@ -133,6 +133,14 @@ approval (a system-config + real-spend change). The decision core takes an injec
 deterministic; pinned by `tests/test_clock.py` (the breaker trips on exactly three induced failures — the
 Phase-2 acceptance).
 
+The manual-trigger wrapper [`nightly-run.sh`](../../.claude/hooks/nightly-run.sh) shows what a
+nightly pass *would* do — **dry-run by default** (`bash .claude/hooks/nightly-run.sh` prints the preflight,
+the propose-only prompt, and the caps, then stands down; **spends \$0, writes no ledger row**). It is
+preflight-gated (NO-GO → stand down) and the live path is **double-guarded** (`--live` **and**
+`ASNE_NIGHTLY_ARMED=yes`) so it cannot spend by accident; it is **not** registered as a hook and **not**
+scheduled. Its safety properties are pinned by `tests/test_nightly_wrapper.py`. To arm/schedule it later,
+see the header of the script — that step is yours (spend + system change).
+
 ## `learnings.md` — the distilled, verifiable engine facts (sibling substrate)
 
 The other half of the feedback nerve: [`learnings.md`](learnings.md) is the distilled store of durable,
