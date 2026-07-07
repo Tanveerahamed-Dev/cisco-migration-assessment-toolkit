@@ -161,6 +161,29 @@ def test_run_hook_non_qa_transcript_appends_nothing(tmp_path):
     assert S.read_rows(sc) == []                  # coverage-honest: nothing recorded, file untouched
 
 
+def test_record_from_transcript_cli(tmp_path, monkeypatch):
+    """`--record-from <transcript>` records the INDEPENDENT subagent verdict from its transcript (the
+    manual path for envs where SubagentStop fires but the hook wasn't triggered). Same parser/invariant:
+    a transcript of main-agent prose (no verdict signature) records nothing."""
+    tp = str(tmp_path / "t.jsonl")
+    _write_transcript(tp, [("user", "run /qa"), ("assistant", [{"type": "text", "text": QA_BLOCK}])])
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    assert S.main(["--record-from", tp]) == 0
+    rows = S.read_rows(sc)
+    assert len(rows) == 1 and rows[0]["verdict"] == "BLOCK" and rows[0]["counterexamples"] == 2
+    # a transcript with only non-verdict prose records nothing (invariant preserved)
+    tp2 = str(tmp_path / "t2.jsonl")
+    _write_transcript(tp2, [("assistant", [{"type": "text", "text": SUMMARY_PROSE}])])
+    assert S.main(["--record-from", tp2]) == 0
+    assert len(S.read_rows(sc)) == 1               # unchanged — prose is not a verdict
+
+
+def test_record_from_missing_transcript_is_safe(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCORECARD_FILE", str(tmp_path / "sc.jsonl"))
+    assert S.main(["--record-from", str(tmp_path / "nope.jsonl")]) == 0   # total; records nothing
+
+
 def test_run_hook_is_total_on_bad_input(tmp_path):
     sc = str(tmp_path / "scorecard.jsonl")
     # garbage stdin, missing transcript, non-dict payload — none may raise; all append nothing.
