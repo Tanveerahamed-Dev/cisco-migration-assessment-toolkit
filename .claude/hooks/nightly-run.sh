@@ -20,13 +20,19 @@
 #   bash .claude/hooks/nightly-run.sh --live     # still refuses unless ASNE_NIGHTLY_ARMED=yes
 #   ASNE_NIGHTLY_ARMED=yes bash .claude/hooks/nightly-run.sh --live   # ARMED: spends metered $
 #
-# BEFORE YOU ARM IT (the live path is authored, not verified against your install):
-#   * Confirm the `claude` flags below against YOUR CLI version (--max-turns, --permission-mode
-#     plan). Budget is enforced EXTERNALLY by the daily ceiling + a per-run estimate — wire real
-#     cost capture into the `--record` step before you trust the ceiling.
-#   * To schedule it (only once trusted, per D5 "manual-trigger week 1"): register a Windows
-#     Task Scheduler task whose action runs this script via git-bash. That is a system change —
-#     do it yourself; this script will not.
+# BEFORE YOU ARM IT — VERIFIED against this install (claude-code 2.1.202, 2026-07-07):
+#   * FLAGS CONFIRMED: this CLI has --print, --output-format json, --permission-mode plan, and a
+#     NATIVE --max-budget-usd per-run hard cap. It has NO --max-turns (that flag was dropped here).
+#     Real per-run cost is now captured from the JSON `total_cost_usd` (the old $0.5 estimate is gone).
+#   * CLI PATH: `claude` is NOT on PATH under the Windows desktop app, which bundles it at
+#     <Roaming>/Claude/claude-code/<version>/claude.exe — resolved below (newest version wins).
+#   * AUTH IS THE REMAINING PREREQUISITE: the bundled CLI is NOT logged in for headless use (a probe
+#     returned "Not logged in"). Provide ANTHROPIC_API_KEY (metered, D13 separate pool) in the
+#     environment the run/scheduler uses, OR run `claude /login`. Until then a live run records
+#     'skipped' (spends $0, never trips the breaker) and tells you how to fix it.
+#   * To schedule it (only once trusted, per D5 "manual-trigger week 1"): register a Windows Task
+#     Scheduler task that runs this script via git-bash WITH ANTHROPIC_API_KEY in its environment.
+#     That is a system change — do it yourself; this script will not.
 # =============================================================================================
 set -u
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null || exit 0
@@ -75,21 +81,37 @@ ${SELFCHECK}
 --- briefing payload (local, no-egress) ---
 ${BRIEF}"
 
-# Caps (D5/D13). max-turns is a real claude flag; the USD budget is enforced externally by the
-# daily ceiling in clock.py (a native per-invocation USD cap may not exist on your CLI version).
-MAX_TURNS="${ASNE_NIGHTLY_MAX_TURNS:-12}"
-CEILING="${ASNE_NIGHTLY_CEILING_USD:-2.0}"
-EST_COST="${ASNE_NIGHTLY_EST_COST_USD:-0.5}"   # placeholder until real cost capture is wired
+# Caps (D5/D13), VERIFIED against the installed CLI (claude-code 2.1.202):
+#   * NO --max-turns on this CLI (dropped) — spend is bounded by the NATIVE --max-budget-usd hard
+#     cap PER RUN (below) plus the external daily ceiling in clock.py.
+#   * real per-run cost is captured from --output-format json (`total_cost_usd`) — no estimate.
+MAX_BUDGET_USD="${ASNE_NIGHTLY_MAX_BUDGET_USD:-0.50}"   # native per-run hard cap (claude --max-budget-usd)
+CEILING="${ASNE_NIGHTLY_CEILING_USD:-2.0}"              # external daily ceiling (clock.py)
+
+# Resolve the claude CLI. It is NOT on PATH under the Windows desktop app, which bundles it at
+# <Roaming>/Claude/claude-code/<version>/claude.exe — resolve the NEWEST version (survives app updates).
+resolve_claude() {
+  local c roam
+  c=$(command -v claude 2>/dev/null) && { printf '%s' "$c"; return 0; }
+  roam="${APPDATA:-$HOME/AppData/Roaming}"
+  c=$(ls -d "$roam"/Claude/claude-code/*/claude.exe 2>/dev/null | sort -V | tail -1)
+  [ -n "$c" ] && { printf '%s' "$c"; return 0; }
+  return 1
+}
+CLAUDE=$(resolve_claude || echo "")
 
 if [ "$MODE" = "dry-run" ]; then
   cat <<EOF
 [nightly] DRY-RUN — nothing invoked, \$0 spent, ledger untouched.
+Resolved claude CLI: ${CLAUDE:-"(NOT FOUND — set PATH or install)"}
 Would invoke (ONLY with --live and ASNE_NIGHTLY_ARMED=yes):
 
-  claude -p --max-turns ${MAX_TURNS} --permission-mode plan "<prompt below>"
+  claude -p --output-format json --max-budget-usd ${MAX_BUDGET_USD} --permission-mode plan "<prompt below>"
 
-Caps: max-turns=${MAX_TURNS}; daily ceiling=\$${CEILING} + 3-fail breaker + 30m cooldown (clock.py);
-per-run cost estimate recorded to the ledger=\$${EST_COST} (until real cost capture is wired).
+Caps: per-run hard cap=\$${MAX_BUDGET_USD} (native --max-budget-usd); daily ceiling=\$${CEILING}
+      + 3-fail breaker + 30m cooldown (clock.py). Real cost captured from JSON total_cost_usd.
+NOTE: headless auth is required — an unauthenticated CLI returns "Not logged in" and is recorded as
+      'skipped' (never trips the breaker). Set ANTHROPIC_API_KEY (D13 metered pool) or run 'claude /login'.
 
 ----- prompt -----
 ${PROMPT}
@@ -106,19 +128,54 @@ if [ "${ASNE_NIGHTLY_ARMED:-}" != "yes" ]; then
   echo "          To arm: ASNE_NIGHTLY_ARMED=yes bash .claude/hooks/nightly-run.sh --live"
   exit 0
 fi
-CLAUDE=$(command -v claude || echo "")
 if [ -z "$CLAUDE" ]; then
-  echo "[nightly] claude CLI not found on PATH — cannot run live. (Nothing spent.)"
+  echo "[nightly] claude CLI not found (not on PATH, no desktop-app bundle) — cannot run live. (Nothing spent.)"
   exit 0
 fi
 
-echo "[nightly] ARMED live run — invoking claude -p (propose-only, max-turns=${MAX_TURNS})..."
-OUT=$("$CLAUDE" -p --max-turns "$MAX_TURNS" --permission-mode plan "$PROMPT" 2>&1); RC=$?
-OUTCOME=$([ "$RC" -eq 0 ] && echo ok || echo fail)
+echo "[nightly] ARMED live run — invoking $(basename "$CLAUDE") -p (propose-only, plan mode, --max-budget-usd=${MAX_BUDGET_USD})..."
+# </dev/null avoids the CLI's slow-stdin warning; 2>/dev/null keeps RAW as clean single-result JSON.
+RAW=$("$CLAUDE" -p --output-format json --max-budget-usd "$MAX_BUDGET_USD" --permission-mode plan "$PROMPT" </dev/null 2>/dev/null); RC=$?
+
+# Parse the JSON for REAL cost + turns + error status (coverage-honest: unparseable => treated as fail).
+PARSED=$(printf '%s' "$RAW" | "$PY" -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    cost = d.get("total_cost_usd", 0) or 0
+    turns = d.get("num_turns", 0) or 0
+    err = bool(d.get("is_error", True))
+    res = (d.get("result") or "").replace("\n", " ").replace("\t", " ")[:160]
+    print(f"{cost}\t{turns}\t{str(err).lower()}\t{res}")
+except Exception:
+    print("0\t0\ttrue\tunparseable-cli-output")
+')
+COST=$(printf '%s' "$PARSED" | cut -f1); COST="${COST:-0}"
+TURNS=$(printf '%s' "$PARSED" | cut -f2); TURNS="${TURNS:-0}"
+ISERR=$(printf '%s' "$PARSED" | cut -f3)
+RESULT=$(printf '%s' "$PARSED" | cut -f4-)
+
+# Classify. An UNAUTHENTICATED CLI ("Not logged in") is a config gap, not a run failure -> 'skipped'
+# so a missing credential can't trip the breaker; a real run is ok iff exit 0 AND is_error=false.
+if [ "$ISERR" = "true" ] && printf '%s' "$RESULT" | grep -qiE "not logged in|/login|please run.*login"; then
+  OUTCOME="skipped"
+  echo "[nightly] claude is NOT authenticated for headless use -> \"$RESULT\". Recorded 'skipped', \$0 spent."
+  echo "          Fix: set ANTHROPIC_API_KEY (metered, D13 separate pool) OR run 'claude /login', then re-arm."
+elif [ "$RC" -eq 0 ] && [ "$ISERR" = "false" ]; then
+  OUTCOME="ok"
+else
+  OUTCOME="fail"
+fi
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
-# Record the outcome + (estimated) spend to the ledger so the breaker + daily ceiling stay honest.
-printf '{"outcome":"%s","cost_usd":%s,"turns":%s,"actions":0,"commit":"%s","notes":"nightly live rc=%s"}' \
-  "$OUTCOME" "$EST_COST" "$MAX_TURNS" "$COMMIT" "$RC" \
+
+# Record the outcome + REAL spend to the ledger so the breaker + daily ceiling stay honest.
+printf '{"outcome":"%s","cost_usd":%s,"turns":%s,"actions":0,"commit":"%s","notes":"nightly %s rc=%s"}' \
+  "$OUTCOME" "$COST" "$TURNS" "$COMMIT" "$OUTCOME" "$RC" \
   | "$PY" -m cisco_toolkit.clock --record >/dev/null 2>&1 || true
-echo "$OUT"
+
+# Surface the model's briefing (the JSON `result`) on a successful run.
+if [ "$OUTCOME" = "ok" ]; then
+  printf '%s' "$RAW" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("result",""))' 2>/dev/null || true
+fi
+echo "[nightly] outcome=$OUTCOME  cost=\$$COST  turns=$TURNS"
 exit 0
