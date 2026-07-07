@@ -62,3 +62,21 @@ def test_scrubbed_feed_passes_even_consumer_forbidden_scan(tmp_path):
     P.run(raw, out_dir=str(tmp_path), forbidden=("Acme",), generated="d")
     loaded = IF.load_feeds(str(tmp_path), forbidden=("Acme",))
     assert len(loaded["advisories"]) == 1 and loaded["refused"] == []
+
+
+def test_map_cisa_kev_filters_and_maps():
+    """The KEV -> advisory mapper is pure (no egress) and testable. Filters to vendor, maps fields,
+    severity Critical iff ransomware-linked, sorted by date."""
+    from research_lane.sources import map_kev_vulnerabilities
+    vulns = [
+        {"cveID": "CVE-1", "vendorProject": "Cisco", "product": "ASA", "vulnerabilityName": "ASA DoS",
+         "dateAdded": "2021-01-01", "shortDescription": "x", "knownRansomwareCampaignUse": "Unknown"},
+        {"cveID": "CVE-2", "vendorProject": "Microsoft", "product": "Windows", "vulnerabilityName": "y",
+         "dateAdded": "2021-02-01"},
+        {"cveID": "CVE-3", "vendorProject": "Cisco", "product": "IOS XE", "vulnerabilityName": "z",
+         "dateAdded": "2022-01-01", "knownRansomwareCampaignUse": "Known"},
+    ]
+    out = map_kev_vulnerabilities(vulns, vendor="Cisco")
+    assert [a["id"] for a in out] == ["CVE-1", "CVE-3"]        # Microsoft filtered; sorted by date
+    assert out[0]["affected"] == ["ASA"] and out[0]["severity"] == "High" and out[0]["source"] == "CISA KEV"
+    assert out[1]["severity"] == "Critical"                   # ransomware-linked -> Critical
