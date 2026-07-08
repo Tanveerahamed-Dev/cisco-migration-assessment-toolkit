@@ -40,6 +40,28 @@ def test_build_prompt_is_refute_first_and_carries_text_and_vocab():
     assert "phantom-health" in prompt                 # the class vocabulary is offered
 
 
+def test_parse_structured_json_reject_localizes():
+    v = J.parse_verdict('{"reasoning":"NRFU PASS with empty output","verdict":"REJECT","defect_class":"empty-nrfu-evidence"}')
+    assert v == {"verdict": "REJECT", "defect_class": "empty-nrfu-evidence"}
+
+
+def test_parse_structured_json_approve_is_class_none():
+    v = J.parse_verdict('{"reasoning":"all reconciles","verdict":"APPROVE","defect_class":"NONE"}')
+    assert v["verdict"] == "APPROVE" and v["defect_class"] is None
+
+
+def test_parse_structured_reject_unknown_class_is_unlocalized():
+    v = J.parse_verdict('{"reasoning":"x","verdict":"REJECT","defect_class":"made-up-class"}')
+    assert v["verdict"] == "REJECT" and v["defect_class"] is None
+
+
+def test_judge_schema_constrains_verdict_and_class():
+    s = J.judge_schema()
+    assert s["properties"]["verdict"]["enum"] == ["APPROVE", "REJECT"]
+    enum = s["properties"]["defect_class"]["enum"]
+    assert "NONE" in enum and "phantom-health" in enum
+
+
 def test_run_baseline_degrades_when_ollama_down():
     res = J.run_baseline(listening=lambda h: False)
     assert res["ok"] is False and "not listening" in res["reason"]
