@@ -140,6 +140,12 @@ a limitation, not overclaimed. This is **distinct from** `analyze.compute_calibr
 *prospective, within-snapshot* band-discrimination diagnostic (do this fleet's bands separate?) rather than a
 *retrospective, cross-engagement* predicted-vs-actual check. Discipline pinned by `tests/test_calibration.py`.
 
+**Prior art grounds these choices** (verified 2026-07-08): **SelfMem** (arXiv `2607.03726`) finds a well-constructed
+*small* corpus beats a large one and that calibration peaks at an *intermediate* refinement stage — corroborating the
+N-floor over a big-N chase; **Holistic Trajectory Calibration** (arXiv `2601.15778`) is trajectory-level prior art for
+calibrating an agent's own success estimate; and the agentic-overconfidence result (`2602.06948`, cited under Judge
+trust above) is the empirical *why* — self-scored confidence is not trustworthy, so the outcome join is what calibrates.
+
 ## `fault_corpus` — the fault-injected calibration corpus (Move 2)
 
 The strongest *honest* calibration source while N≈0 REAL: **ground truth by construction.**
