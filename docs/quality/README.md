@@ -17,6 +17,7 @@ Every consequential QA / eval cycle appends one row. **Verifiable facts only —
 | `deliverable` | string | which artifact (e.g. `design`, `mop`, `crd`, `hld`, or a snapshot id) |
 | `score` | number \| null | eval-suite score (0–100) from the golden-snapshot harness; `null` on a `/qa`-verdict row (a QA transcript yields a verdict, not a number) |
 | `verdict` | string | `APPROVE` / `BLOCK` (from deliverable-qa-reviewer) |
+| `judge_tnr` | number \| null | the measured true-negative rate of the JUDGE that produced this verdict (`cisco_toolkit.defect_panel`), or `null` when unmeasured. An `APPROVE` is only trustworthy to the extent the judge is *shown* to REJECT known-bad work (Jain et al. `2510.11822`: LLM judges default to TNR < 25%). **A QA-verdict row with `judge_tnr` null/absent is PROVISIONAL** — trust unquantified until the defect-panel baseline runs. A deterministic `eval_harness` row is bias-free and carries `null` here (no judge involved). |
 | `counterexamples` | int | number of grounded defects the verifier found this cycle (should trend ↓) |
 | `laws_tripped` | array | which of the 10 Deliverable-Excellence Laws failed, if any |
 | `commit` | string | git SHA the verdict was produced against |
