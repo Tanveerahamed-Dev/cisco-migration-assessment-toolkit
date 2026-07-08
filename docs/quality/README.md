@@ -53,6 +53,33 @@ is reported as absence — it is never rendered as "healthy" (Law 3). The score 
 checks; a partial deliverable's unassessable Laws are disclosed as UNVERIFIED, never counted as passed, and an
 empty deliverable scores `null`, never a false 100.
 
+## Judge trust — the defect panel + cross-family judge (Move 1)
+
+The `judge_tnr` field above is only meaningful if something *measures* it. A QA verdict is a Claude judge on
+Claude's work, and the literature is blunt: LLM judges default to **TNR < 25%** — they approve almost anything
+(Jain et al. `2510.11822`; self-preference / "great models think alike" `2502.04313`). So an all-`APPROVE`
+scorecard is the *predicted output of a broken instrument*, not evidence of good work. Two instruments
+**measure** the judge instead of trusting it:
+
+- **[`cisco_toolkit/defect_panel.py`](../../cisco_toolkit/defect_panel.py) — the deterministic floor.** 12
+  doctrine-mapped defects, each an atomic script-injected violation of a named assessment law (oracle sound,
+  verified non-vacuous). `deterministic_findings()` is the bias-free arm: it mechanically catches and localizes
+  **all 12** (localized TNR = 1.0) — the floor any LLM judge must clear. `python -m cisco_toolkit.defect_panel`.
+- **[`ollama_judge.py`](../../ollama_judge.py) — the cross-family minority-veto arm.** A *different model
+  family* via a local Ollama (127.0.0.1, air-gapped, $0) so it does not share Claude's failure modes. It lives
+  at repo root, outside `cisco_toolkit/`, so its `urllib` use never trips the no-egress attestation. Uses
+  Ollama Structured Outputs + a neutral per-condition checklist — the *only* framing measured to discriminate
+  ("try to disprove" rejects even clean work; "most are fine" approves even defects).
+
+**Honest characterization (qwen3:4b on a 16GB CPU host):** the local judge genuinely *discriminates*
+(`approves_clean` = True, so it is specific) but is a **weak detector** (rejection ≈ 0.2 — catches only the
+blatant defect). It is a *supplement*, not a replacement; the deterministic arm (12/12) is the reliable
+instrument on this hardware. `run_baseline` judges a known-GOOD deliverable **first** and reports
+`approves_clean` (specificity): a "rejects everything" judge scores rejection 1.0 yet is worthless, so
+`rejection_rate` is only meaningful when `approves_clean` is True. Hermetic tests inject the model I/O, so the
+harness never needs a running model (`tests/test_defect_panel.py`, `tests/test_ollama_judge.py`); both are in
+the self-check `GUARD_FILES` so a gutted TNR floor reads **RED**.
+
 ## `scorecard trend` — the line you watch go up (Phase 1)
 
 ```
@@ -110,6 +137,27 @@ action is propose-only). A full per-finding weight refit is out of reach from pe
 a limitation, not overclaimed. This is **distinct from** `analyze.compute_calibration_report`, which is a
 *prospective, within-snapshot* band-discrimination diagnostic (do this fleet's bands separate?) rather than a
 *retrospective, cross-engagement* predicted-vs-actual check. Discipline pinned by `tests/test_calibration.py`.
+
+## `fault_corpus` — the fault-injected calibration corpus (Move 2)
+
+The strongest *honest* calibration source while N≈0 REAL: **ground truth by construction.**
+[`cisco_toolkit/fault_corpus.py`](../../cisco_toolkit/fault_corpus.py) starts from a minimal all-pass scenario
+that scores `READY`, then injects **one real fault at a time** (SPOF gateway, single-homed uplink, Critical
+device health, cross-layer Critical, err-disabled port, half-duplex uplink). Each fault's actual outcome
+(`incident`) is known without fabricating anything, and the row records what the engine *predicts*.
+
+```
+python -m cisco_toolkit.fault_corpus --report   # does the scorer flag every fault + pass the clean baseline?
+python -m cisco_toolkit.fault_corpus --emit      # the rows as JSONL, for appending to pir_outcomes.jsonl
+```
+
+**Measured:** the deterministic readiness scorer discriminates cleanly — clean → `READY`, and **6/6** injected
+faults → non-`READY`. Every row is tagged `source_class=fault-injected`, so it populates the **descriptive**
+calibration gap (proving the scorer separates good from bad) but **never** unlocks a tuning move — the D11
+floor counts `REAL` only. This is why, once the 7 rows are emitted into `pir_outcomes.jsonl`, `calibration
+--report` shows `N=7, accuracy=1.0` yet still reads `[GATED] … 0 REAL`: the surrogate rows validate the
+detector without ever re-tuning the engine. Pinned by `tests/test_fault_corpus.py` (in the self-check
+`GUARD_FILES`).
 
 ## `nightly_runs.jsonl` — the clock's safety rails (Phase 2, rails only)
 

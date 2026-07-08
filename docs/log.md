@@ -4,6 +4,32 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-08] — Judge-trust + calibration nerve: guard the guard, feed it honest data (branch `chore/scorecard-first-real-rows`)
+
+- Continued the "measure the judge, don't assume it" arc. A QA verdict is a Claude judge on Claude's work, and
+  LLM judges default to TNR < 25% (agreeableness bias, `2510.11822`) — so an all-`APPROVE` scorecard is the
+  predicted output of a *broken* instrument. Moves 1–2 (prior commits) built the apparatus to MEASURE it
+  (`defect_panel` deterministic 12/12 floor + cross-family `ollama_judge`) and to validate the readiness scorer
+  (`fault_corpus`, 6/6 injected faults flip non-READY). This session HARDENED + completed the arc: wired the three
+  new instruments into the self-check immune system (`GUARD_FILES` 10→13), made `check_pir_substrate` REAL-aware
+  (`X/5 toward the D11 floor`, surrogate never reads tune-eligible), fed the 7 fault-injected rows into the empty
+  `pir_outcomes.jsonl`, and documented Move 1/2 in `docs/quality/README.md`. Full suite green.
+- `!lesson` **A branch that builds a guard must also guard the guard — else the immune system is blind to its own
+  newest instrument.** Moves 1–2 built the defect-panel TNR floor + fault-corpus discrimination (the whole thesis),
+  but neither test was in selfcheck's `GUARD_FILES`; gutting the TNR floor would still read GREEN — the exact
+  "silently gone" failure selfcheck exists to prevent. The branch contradicted its own thesis until the guards were
+  registered (10→13, verified RED-on-gut by the existing non-vacuity test). bridge-candidate
+- `!lesson` **A true-negative-rate harness that only tests REJECTING bad work is half a test — a "rejects
+  everything" judge scores rejection 1.0 and looks perfect while being worthless.** The clean-control (judge a
+  known-GOOD deliverable FIRST; `rejection_rate` is meaningful ONLY when `approves_clean` is True) separates a
+  *specific* judge from a paranoid one. Measured qwen3:4b: `approves_clean`=True but rejection ≈ 0.2 —
+  specific-but-insensitive, a supplement not a replacement on 16GB-CPU hardware. bridge-candidate
+- `!lesson` **The strongest HONEST calibration source at N≈0 is ground truth by construction, never a fabricated
+  PIR.** Injecting one real fault into an all-pass scenario yields a labeled row (clean vs incident) with zero
+  fabrication; tagged `source_class=fault-injected` it populates the DESCRIPTIVE gap but the D11 gate (REAL-only)
+  keeps it out of tuning. Result: the calibration nerve is proven end-to-end (`N=7, accuracy=1.0, false-confidence
+  0.0`) while still correctly `[GATED]` at 0 REAL — data fed without loosening the no-fabrication law. bridge-candidate
+
 ## [2026-07-07] — Syntys DC HLD → v7.5 full-family rebuild (research → audit → mining → figures → content → resync → independent QA)
 
 - Rebuilt the Syntys Qatar-DC deliverable set to a best-possible v7.5 across a ~50-agent marathon: a research wave
