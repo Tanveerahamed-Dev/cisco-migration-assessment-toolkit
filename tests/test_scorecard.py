@@ -122,6 +122,21 @@ def test_read_rows_missing_file_is_empty_not_error():
     assert S.read_rows(os.path.join("does", "not", "exist.jsonl")) == []
 
 
+def test_judge_tnr_is_a_schema_field_and_persists(tmp_path):
+    """A QA verdict is a Claude judge on Claude's work; its trustworthiness is unknown until the judge's
+    true-negative rate is MEASURED (cisco_toolkit.defect_panel). `judge_tnr` records that measurement per
+    row: a measured value persists; absent -> honest null (trust unquantified), never a fabricated score."""
+    assert "judge_tnr" in S.SCHEMA_KEYS
+    path = str(tmp_path / "sc.jsonl")
+    row = S.parse_qa_verdict("runbook.docx — APPROVE. reconciles; no findings.", date="d", commit="c")
+    row["judge_tnr"] = 0.6                                 # the Move-1 baseline annotates the verdict
+    assert S.append_row(row, path) is True
+    assert S.read_rows(path)[0]["judge_tnr"] == 0.6
+    row2 = S.parse_qa_verdict("mop.docx — APPROVE. reconciles.", date="d", commit="c2")
+    assert S.append_row(row2, path) is True
+    assert S.read_rows(path)[1]["judge_tnr"] is None       # unmeasured -> null, not a guess
+
+
 def _write_transcript(path, messages):
     """messages: list of (role, content) where content is a str or list of text-block dicts."""
     with open(path, "w", encoding="utf-8") as f:
