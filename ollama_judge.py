@@ -68,21 +68,24 @@ def judge_schema(classes: Optional[List[str]] = None) -> Dict[str, Any]:
 
 
 def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> str:
-    """The refute-first judge prompt: a skeptical, coverage-honest reviewer told to DISPROVE the excerpt.
-    Output shape is enforced by :func:`judge_schema`; the prompt supplies the rules + the class vocabulary."""
+    """The judge prompt: a NEUTRAL per-condition checklist — check the deliverable against each defect
+    definition and REJECT iff one clearly holds, else APPROVE. Measured to *discriminate* (approves clean
+    work, catches blatant defects) where a leaning prompt over-rejects ('reject everything') or over-approves
+    ('most are fine'). A 4B model still misses subtler defects — this is the best-measured framing, not a cure
+    for model weakness. Output shape enforced by :func:`judge_schema`."""
     vocab = ", ".join(classes if classes is not None else _text_visible_classes())
     return (
-        "You are an INDEPENDENT, skeptical senior Cisco network reviewer performing adversarial QA on ONE\n"
-        "migration-deliverable excerpt. Your job is to try to DISPROVE it. Apply coverage-honesty:\n"
-        "- \"not observed\" / \"not collected\" is NOT \"healthy\": a health or redundancy claim about a\n"
-        "  device the COVERAGE line says was NOT collected is a defect (class 'phantom-health').\n"
-        "- a MOP step with no rollback is a defect ('missing-rollback'); an IRREVERSIBLE step (e.g.\n"
-        "  withdrawing a BGP advertisement) ordered BEFORE its verification step is a defect ('unsafe-sequence').\n"
-        "- the workbook and the runbook must agree on every number; different totals are 'cross-artifact-mismatch'.\n"
-        "- an NRFU item marked PASS with an EMPTY captured-output field is 'empty-nrfu-evidence'.\n"
-        "Find the SPECIFIC evidence that makes this deliverable WRONG. Give brief reasoning, then a verdict\n"
-        f"(APPROVE only if you find nothing wrong; else REJECT) and the single defect class (one of: {vocab};\n"
-        "or NONE if APPROVE).\n\n"
+        "You are an independent senior Cisco reviewer doing QA on ONE migration-deliverable excerpt. Check it\n"
+        "against these conditions and REJECT if and only if at least one CLEARLY holds (name the exact line);\n"
+        "otherwise APPROVE. Do not reject on vague suspicion; a device simply being 'healthy' is normal.\n"
+        "- phantom-health: a device in an 'assessed: healthy' or 'Redundancy ... verified' line whose name the\n"
+        "  COVERAGE line lists under NOT collected (only if the healthy/verified device is the not-collected one).\n"
+        "- missing-rollback: a MOP step whose rollback is exactly '(none)'.\n"
+        "- unsafe-sequence: an irreversible step (withdraw/remove) with a LOWER order number than a 'verify' step.\n"
+        "- cross-artifact-mismatch: on the Endpoint total line, the workbook number differs from the runbook number.\n"
+        "- empty-nrfu-evidence: an 'NRFU ... PASS' line whose captured output is '(empty)'.\n"
+        "Reason through each condition, then give your verdict and the single defect class that held\n"
+        f"(one of: {vocab}; or NONE if APPROVE).\n\n"
         "DELIVERABLE:\n"
         f"{deliverable_text}\n"
     )
