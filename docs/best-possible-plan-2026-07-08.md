@@ -99,6 +99,26 @@ better **strategy**; keep its spine:
   freeze the live prediction** — needs the live‑engagement snapshot and a sign‑off, and is the one perishable,
   irreversible‑adjacent action.
 
+## 5c. Act 0 continued — binary phantom-health audit executed 2026-07-08 (this session)
+
+- **Section 2 #4 CLOSED (binary residual).** The 9 AUTOFILLED binary deliverables (7 DOCX + workbook XLSX +
+  executive PPTX, snapshot 20260613_063201) were text-extracted (stdlib zip/XML, no deps, offline) and
+  audited for phantom-health: **0 violations.** No health / redundancy / clean claim covers the 50 uncollected
+  nodes or the full 303 without an exclusion caveat. The binaries hold section 5b's text-deliverable line
+  exactly - consistent "253 of 303" scoping; the 50 framed as "role and redundancy are UNKNOWN ... absence of
+  evidence is not redundancy" (design/crd/deck); runbook labels them "assessment blind spots (Unknown state)";
+  control-plane "247 OK, 56 Unknown"; "a device without a full capture is declared not assessable"; the risk
+  register scopes 250 Severe + 3 Elevated over all 303 (conservative - treats uncollected as risk-bearing,
+  never healthy).
+- **Heuristic scope (honest limit).** A regex co-occurrence check (health-token x fleet-total token, minus an
+  exclusion caveat) over extracted paragraphs. It would not catch a phantom-health claim that names a specific
+  uncollected device WITHOUT a fleet-total token - but that is structurally unlikely: the engine has no
+  collected data for the 50, so it cannot emit per-device health for them (UNKNOWN by construction). Auditor:
+  `scratchpad/audit_phantom_health.py` (throwaway analysis tool, not committed).
+- **Net:** section 2 #4 complete across BOTH text (5b) and binary (here). The [HISTORY-REDACTED]-fleet AUTOFILLED deliverable
+  set is phantom-health-clean. (The `[HISTORY-REDACTED]_*` DC files are a different engagement/fleet - out of scope; they
+  carry their own QA. Both sets are gitignored generated outputs, present on disk but never committed.)
+
 ## 6. The honest ceiling
 
 Past the instrument, the next unit of insight is a **measurement, not a token** — and the ground truth makes
