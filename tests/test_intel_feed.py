@@ -6,7 +6,6 @@ hash-intact, and free of forbidden identifiers — a tampered / unsanitized / po
 into the Phase-4 self_healing loop routed to the security auditor (closing the eyes->self-healing loop).
 """
 import json
-import os
 
 from cisco_toolkit import intel_feed as IF
 from cisco_toolkit import self_healing as SH
