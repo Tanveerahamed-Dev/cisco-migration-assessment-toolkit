@@ -154,14 +154,24 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
     ``chat`` / ``listening`` are injectable for hermetic tests (default: the real Ollama with the structured
     schema). Returns ``{ok: False, reason}`` when Ollama is down (never raises).
 
-    Two headline metrics: ``rejection_rate`` (did it catch the bad work at all — the veto signal an ensemble
-    needs) and ``localized_tnr`` (did it catch AND correctly name the defect — the stricter diagnostic bar)."""
+    Three headline metrics: ``approves_clean`` (SPECIFICITY — a good deliverable MUST pass; a judge that
+    rejects it has none, so its panel rejections are worthless), ``rejection_rate`` (did it catch the bad
+    work at all — the veto signal), and ``localized_tnr`` (did it catch AND correctly name the defect). The
+    clean control is measured FIRST and on purpose: a high ``rejection_rate`` means nothing unless
+    ``approves_clean`` is True (the 'rejects everything' trap this harness must not fall into)."""
     probe = listening if listening is not None else _listening
     if not probe(host):
         return {"ok": False, "reason": f"Ollama not listening on {host} — pull the model and start Ollama"}
     classes = _text_visible_classes()
     schema = judge_schema(classes)
     do_chat = chat if chat is not None else (lambda prompt: _chat(model, prompt, fmt=schema))
+    # SPECIFICITY control: judge a known-good deliverable — it must APPROVE. Measured before the panel so a
+    # judge that rejects everything is exposed rather than flattering its rejection_rate.
+    try:
+        clean_raw = do_chat(build_prompt(P.render_text(P.good_deliverable()), classes))
+    except Exception as ex:
+        clean_raw = f"(judge error: {ex})"
+    approves_clean = parse_verdict(clean_raw)["verdict"] == "APPROVE"
     ids = list(ids) if ids is not None else list(P.text_visible_ids())
     panel = P.build_panel(ids)
     keys = {e["defect_id"]: e["key"] for e in panel}
@@ -175,7 +185,7 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
         verdicts.append({"defect_id": e["defect_id"], "verdict": v["verdict"],
                          "defect_class": v["defect_class"]})
     score = P.score_verdicts(verdicts, keys)
-    return {"ok": True, "model": model, "verdicts": verdicts, **score}
+    return {"ok": True, "model": model, "approves_clean": approves_clean, "verdicts": verdicts, **score}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -190,11 +200,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[ollama-judge] {res.get('reason')}")
         return 0                                               # graceful: nothing measured, not an error
     print(f"[ollama-judge] model={res['model']}  panel={res['n']} text-visible defects")
-    print(f"  rejection rate       = {res['rejection_rate']}   (caught the bad work at all — the veto signal)")
+    print(f"  approves clean       = {res['approves_clean']}   (SPECIFICITY: a good deliverable MUST pass)")
+    print(f"  rejection rate       = {res['rejection_rate']}   (caught bad work — meaningful ONLY if approves_clean)")
     print(f"  localized TNR        = {res['localized_tnr']}   (rejected WITH the right defect class)")
     print(f"  unlocalized rejects  = {res['unlocalized_rejection_rate']}   (rejected, wrong/'no' class)")
     for v in res["verdicts"]:
         print(f"    {v['defect_id']}: {v['verdict']:<7} class={v['defect_class']}")
+    if not res["approves_clean"]:
+        print("  ! WARNING: the judge REJECTED a clean deliverable -> no specificity; its rejections are\n"
+              "    worthless (it rejects everything). Fix the prompt/model before trusting any rejection rate.")
     print("  (the deterministic arm catches all 12 by construction; this is the LLM judge's floor to clear)")
     return 0
 

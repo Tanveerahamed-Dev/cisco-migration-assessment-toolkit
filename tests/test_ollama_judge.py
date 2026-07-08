@@ -94,3 +94,15 @@ def test_run_baseline_is_total_on_judge_error():
         raise RuntimeError("model exploded")
     res = J.run_baseline(ids=["D-11"], listening=lambda h: True, chat=boom)
     assert res["ok"] is True and res["localized_tnr"] == 0.0
+
+
+def test_run_baseline_reports_specificity_via_clean_control():
+    # an all-APPROVE judge correctly APPROVES the clean control -> specificity holds
+    r = J.run_baseline(chat=lambda p: '{"reasoning":"ok","verdict":"APPROVE","defect_class":"NONE"}',
+                       listening=lambda h: True)
+    assert r["approves_clean"] is True
+    # a reject-EVERYTHING judge is exposed by the clean control (no specificity) — the trap the harness
+    # must surface, so a high rejection_rate can't be mistaken for a working judge.
+    r2 = J.run_baseline(chat=lambda p: '{"reasoning":"x","verdict":"REJECT","defect_class":"phantom-health"}',
+                        listening=lambda h: True)
+    assert r2["approves_clean"] is False
