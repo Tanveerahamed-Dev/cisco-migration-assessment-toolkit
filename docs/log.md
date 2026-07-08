@@ -4,6 +4,41 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-07] — Syntys DC HLD → v7.5 full-family rebuild (research → audit → mining → figures → content → resync → independent QA)
+
+- Rebuilt the Syntys Qatar-DC deliverable set to a best-possible v7.5 across a ~50-agent marathon: a research wave
+  (cited HLD/diagram best-practices brief), an audit wave (14 figures + document + family-skew), and a mining wave
+  (every v3–v7 HLD/LLD for content dropped along the way → 32-recovery plan) fed a ground-up rebuild. Shipped a NEW
+  reusable figure generator (`Syntys_DC_Design/figgen/`: `svgkit.py` vector engine + `figdata.py` SSOT →
+  editable SVG + 600-DPI PNG), 14 rebuilt figures, an elevated 78-page HLD (18 content recoveries + Appendices E–I),
+  and the whole companion family (LLD/ConfigPack/MOP/NRFU/NIP) resync'd to v7.5 via their generators. docx→PDF via Word COM.
+- !lesson **A single wrong "canonical fact" in a generation spec propagates silently across an entire
+  multi-document family — and only an INDEPENDENT adversarial QA catches it, not mechanical greps.** I
+  over-simplified the routerless internet edge to "FTD takes a static default toward the CPE VIP .225" in an HLD
+  appendix and fed that into the family-resync spec; taken literally it routes ALL internet egress over a 10 Mbps
+  leased circuit, violating the design's own acceptance criterion. The correct model (default via broadband; the
+  VIP is a PBR next-hop for the published-return+telemetry classes only) was in the HLD body and the figure all
+  along. Grep-verification reported the WRONG pattern as "consistent"; a fresh proposer≠verifier QA found the
+  contradiction. After a large multi-agent build, run an independent adversarial QA — greps confirm known
+  patterns but miss new contradictions and prose. bridge-candidate
+- !lesson **A .docx built by a non-python-docx tool (here docx-js) exposes no style-name lookup:
+  `add_heading(...)` / `add_paragraph(style="Heading 1")` raises `KeyError: no style with name 'Heading 1'` even
+  though the body paragraphs use that style. Fix: capture the style OBJECT from an existing paragraph (`p.style`)
+  and assign it to the new paragraph — never look it up by name.** bridge-candidate
+- !lesson **A static (non-field) Table of Contents silently rots the instant pagination shifts.** The v7.x HLD's
+  TOC is baked text, not a TOC field, so resizing figures + inserting content left its page numbers 1–5 pages
+  wrong (appendices off by 5). Re-measure each Heading-1's real page (Word COM `Range.Information(3)`) and patch
+  the trailing `\t<page>` run; a live TOC field (as the companion generators use) auto-updates on open instead. bridge-candidate
+- !lesson **A multi-step build pipeline that spans two file locations will silently process a STALE copy — pin
+  ONE working path.** I edited the project docx but ran the TOC-patch + PDF-export stage on a scratchpad copy; the
+  re-exported PDF came out BYTE-IDENTICAL to the previous one (the tell) because it rendered the stale file.
+  Route every stage through the same path, or assert the output actually changed. bridge-candidate
+- !lesson **"Editable, no-overlap" figures come from a data model, not from patching rasters.** One
+  register-sourced model → clean SVG (real `<text>` + shapes, editable in draw.io/Inkscape) → 600-DPI PNG via
+  PyMuPDF (`fitz`) for the doc (python-docx cannot embed SVG — `add_picture` raises). Auto-sized boxes + opaque
+  label chips make overlap impossible by construction, retiring the stale-label / tofu-glyph / overprint class
+  that fragile PIL raster-surgery kept re-introducing. bridge-candidate
+
 ## [2026-07-07] — Autonomous-brain plan Phases 1–6 wired + demonstrated end-to-end (KEV remediation package)
 
 - Continued the v4 plan from Phase-0: shipped the feedback nerve (`scorecard trend` + PIR `calibration.py`,
