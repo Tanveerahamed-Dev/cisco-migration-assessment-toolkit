@@ -32,12 +32,12 @@ def test_parse_garbled_or_empty_defaults_to_approve():
     assert J.parse_verdict("I think this is mostly fine, hard to say")["verdict"] == "APPROVE"
 
 
-def test_build_prompt_is_refute_first_and_carries_text_and_vocab():
+def test_build_prompt_carries_text_and_vocab_and_both_verdicts():
     text = P.build_panel(["D-03"])[0]["text"]
     prompt = J.build_prompt(text)
-    assert "DISPROVE" in prompt.upper() or "WRONG" in prompt.upper()
+    assert "REJECT" in prompt.upper() and "APPROVE" in prompt.upper()   # a real judge offers both outcomes
     assert "core9" in prompt                          # the deliverable excerpt is embedded
-    assert "phantom-health" in prompt                 # the class vocabulary is offered
+    assert "phantom-health" in prompt                 # the defect definitions / class vocabulary are offered
 
 
 def test_parse_structured_json_reject_localizes():
