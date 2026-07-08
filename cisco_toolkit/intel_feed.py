@@ -125,7 +125,6 @@ def match_fleet(advisories: List[Dict[str, Any]], platforms: Set[str]) -> List[D
     """Advisories whose ``affected`` product/platform tokens intersect the fleet's platforms (case-insensitive
     substring either way). Each hit records which fleet platforms it matched. No platforms -> no hits (honest:
     we can't match without inventory, and we do not guess)."""
-    plats = {p.lower() for p in platforms}
     hits: List[Dict[str, Any]] = []
     for a in advisories:
         affected = a.get("affected") or []
