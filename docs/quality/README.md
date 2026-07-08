@@ -57,7 +57,9 @@ empty deliverable scores `null`, never a false 100.
 
 The `judge_tnr` field above is only meaningful if something *measures* it. A QA verdict is a Claude judge on
 Claude's work, and the literature is blunt: LLM judges default to **TNR < 25%** — they approve almost anything
-(Jain et al. `2510.11822`; self-preference / "great models think alike" `2502.04313`). So an all-`APPROVE`
+(Jain et al. `2510.11822`; self-preference / "great models think alike" `2502.04313`), and agents are
+systematically **over-confident** about their own success — some that succeed only 22% of the time predict 77%
+(`2602.06948`, verified 2026-07-08). So an all-`APPROVE`
 scorecard is the *predicted output of a broken instrument*, not evidence of good work. Two instruments
 **measure** the judge instead of trusting it:
 
