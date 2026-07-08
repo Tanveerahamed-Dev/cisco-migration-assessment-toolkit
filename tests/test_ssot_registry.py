@@ -12,12 +12,17 @@ that actually exists, checked in CI. It bites the moment a refactor moves an own
 the map. It is deliberately structural -- it asserts on stable anchors (paths, symbol names, snapshot
 keys, cross-links), never on prose that legitimately changes.
 """
+import os
 import pathlib
 import re
+import subprocess
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs" / "ssot.md"
 CONTRACT = ROOT / "docs" / "ssot-contract.md"
+GRAPHIFY_IGNORE = ROOT / ".graphifyignore"
 
 
 def _registry_text() -> str:
@@ -103,3 +108,87 @@ def test_registry_names_the_core_federated_owners():
     for token in ("ssot.py", "graphify", "pyproject.toml", "__version__", "CHANGELOG.md",
                   "manifest.py", "MEMORY.md", "CLAUDE.md"):
         assert token in txt, f"registry no longer names the '{token}' owner"
+
+
+# --- Side engagements (the 2026-07-06 rot class: a pointer to a file that never migrated) ---------
+#
+# The 'Side engagements' row points OUTSIDE the tracked tree at untracked local artifacts
+# (.gitignore `Syntys_*` keeps client deliverables out of git by design). Until 2026-07-06 the row
+# pointed at `syntys/ssot.py` -- a module that was never tracked in this repo's history and never
+# migrated from the old laptop -- and none of the guards above covered the row, so the registry
+# asserted "the truth is over there" about a path that existed nowhere. Three layers close that
+# class: a citation guard (runs everywhere), an existence guard (owner machine only -- the
+# artifacts deliberately exist on no other checkout), and a regression pin on the old pointer.
+
+SIDE_ENGAGEMENT_POINTERS = [
+    # deliverables + their generator scripts (HLD/LLD/MOP/NRFU/NIP docx+pdf, build_hld_*.py)
+    "Syntys_DC_Design",
+    # the engagement record: what changed in the current HLD and why
+    "Syntys_DC_Design/HLD_v7_1_CHANGES.md",
+    # CRD + BOQ live at the repo root (untracked)
+    "Syntys_DC_Network_CRD_v1.1.docx",
+    "Syntys_BOQ.xlsx",
+]
+
+
+def _main_checkout_root() -> pathlib.Path:
+    """The side-engagement artifacts are UNTRACKED, so they exist only in the MAIN checkout -- a
+    linked worktree under .claude/worktrees/ has none (the graphify-out/ trap again; mirrors
+    .claude/hooks/session-brief.sh :: _main_root). `git rev-parse --git-common-dir` is the main
+    .git from any worktree ('.git', relative, in the main checkout itself). Fail-open to ROOT."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=ROOT, capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+        git_dir = pathlib.Path(out)
+        if not git_dir.is_absolute():
+            git_dir = (ROOT / git_dir).resolve()
+        if git_dir.name == ".git" and git_dir.parent.is_dir():
+            return git_dir.parent
+    except Exception:
+        pass
+    return ROOT
+
+
+def test_side_engagement_row_cites_the_on_disk_record():
+    """Citation guard (runs EVERYWHERE -- needs no artifacts): the row must name each real on-disk
+    pointer, so dropping or renaming one in the registry is caught even on checkouts that don't
+    carry the files (hosted CI, fresh clones, worktrees)."""
+    txt = _registry_text()
+    not_cited = [p for p in SIDE_ENGAGEMENT_POINTERS if p.rsplit("/", 1)[-1] not in txt]
+    assert not_cited == [], f"'Side engagements' row no longer cites: {not_cited}"
+    # The second engagement in the row must stay on the map. Existence is deliberately NOT
+    # asserted for it: the dir was not found on this machine on 2026-07-06 and the row says so.
+    assert "QAG_Alwaj_CCTV_PS_Proposal" in txt, "the QAG CCTV side engagement fell off the map"
+
+
+@pytest.mark.skipif(bool(os.environ.get("CI")),
+                    reason="hosted CI clones never carry the untracked side-engagement artifacts "
+                           "(.gitignore `Syntys_*`) -- only the owner machine can verify existence")
+def test_side_engagement_pointers_exist_on_owner_machine():
+    """Existence guard (owner machine only): every Syntys pointer the registry names must resolve
+    on disk under the MAIN checkout. This is the check that was missing while the row pointed at
+    the never-migrated syntys/ssot.py. Failing here after a machine migration is the guard WORKING:
+    bring the artifacts over from the old machine, or repoint the row at what actually exists."""
+    main_root = _main_checkout_root()
+    missing = [p for p in SIDE_ENGAGEMENT_POINTERS if not (main_root / p).exists()]
+    assert missing == [], (
+        f"docs/ssot.md points at side-engagement artifacts that do not exist under {main_root}: "
+        f"{missing} -- restore them or repoint the 'Side engagements' row (and keep "
+        f"SIDE_ENGAGEMENT_POINTERS in this test in sync)"
+    )
+
+
+def test_registry_never_points_at_the_never_migrated_syntys_module():
+    """Regression pin (runs EVERYWHERE, incl. hosted CI): docs/ssot.md and .graphifyignore both
+    claimed `syntys/ssot.py` was the Qatar DC SSOT; `git log --all` shows that path was never
+    tracked here, and it exists nowhere on this machine (verified 2026-07-06 -- it never migrated
+    off the old laptop). Neither pointer file may claim it again. If the module is ever genuinely
+    restored, repoint the row AND retire this pin."""
+    for path, label in ((REGISTRY, "docs/ssot.md"), (GRAPHIFY_IGNORE, ".graphifyignore")):
+        txt = path.read_text(encoding="utf-8")
+        assert "syntys/ssot.py" not in txt, (
+            f"{label} points at syntys/ssot.py again -- that module never existed in this repo; "
+            f"either it was truly restored (then update this pin) or the 2026-07-06 rot is back"
+        )
