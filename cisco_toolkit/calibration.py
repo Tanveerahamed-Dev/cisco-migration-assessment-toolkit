@@ -62,6 +62,37 @@ _ACTUAL_ALIASES: Dict[str, set] = {
                  "rolledback", "outage", "error", "red", "broke", "broken"},
 }
 
+# Provenance of a calibration row. **Only "REAL" (a genuine post-cutover PIR / war-room outcome) counts
+# toward the D11 tuning floor.** Surrogate classes (fault-injected / public / synthetic / …) VALIDATE
+# detectors and inform descriptive stats, but must NEVER unlock a ScoringConfig proposal: feeding public
+# or synthetic calibration data must not re-tune the scorer (the no-fabrication law, applied to the
+# calibration nerve itself). This matters the moment production data from many engagements starts to
+# flow — each real cutover contributes exactly one REAL row; everything else stays descriptive-only.
+_SOURCE_ALIASES: Dict[str, set] = {
+    "REAL": {"real", "pir", "post_cutover", "postcutover", "production", "prod", "live", "war_room"},
+    "fault-injected": {"fault_injected", "faultinjected", "injected", "batfish"},
+    "retro-public": {"retro_public", "retropublic", "public", "public_lab", "kathara", "retro"},
+    "compare-pair": {"compare_pair", "comparepair", "before_after", "beforeafter", "diff_pair"},
+    "shadow-PIR": {"shadow_pir", "shadowpir", "shadow", "postmortem", "post_mortem"},
+    "synthetic": {"synthetic", "synth", "authored", "fabricated"},
+}
+
+
+def _norm_source(val: Any) -> Optional[str]:
+    """Canonical provenance for a calibration row, or None if unspecified. An UNRECOGNIZED tag is kept
+    verbatim (visible, honest) but is never equal to ``'REAL'`` — so unknown provenance can never unlock
+    tuning (fail-safe; coverage-honest: unknown provenance != a real outcome)."""
+    if val is None:
+        return None
+    key = str(val).strip().lower().replace(" ", "_").replace("-", "_")
+    if not key:
+        return None
+    for canon, al in _SOURCE_ALIASES.items():
+        normed = {a.replace(" ", "_").replace("-", "_") for a in al} | {canon.lower().replace("-", "_")}
+        if key in normed:
+            return canon
+    return str(val).strip()
+
 
 def _norm(val: Any, aliases: Dict[str, set]) -> Optional[str]:
     """Coerce a free-text label to its canonical form (space/hyphen -> underscore), or None."""
@@ -88,6 +119,9 @@ def normalize_outcome(row: Any) -> Optional[Dict[str, Any]]:
     if pred is None or act is None:
         return None
     out: Dict[str, Any] = {"predicted": pred, "actual": act}
+    sc = _norm_source(row.get("source_class"))
+    if sc is not None:                                    # only carry provenance when the row states it
+        out["source_class"] = sc
     for k in ("date", "engagement", "unit", "commit", "notes"):
         if row.get(k) is not None:
             out[k] = row[k]
@@ -113,14 +147,25 @@ def _direction_and_strength(fc: Optional[float], fa: Optional[float]) -> Tuple[s
     return "insufficient", 0.0
 
 
-def calibration_gap(outcomes: List[Any]) -> Dict[str, Any]:
+def calibration_gap(outcomes: List[Any], *, real_only: bool = False) -> Dict[str, Any]:
     """The descriptive predicted-vs-actual calibration report. Pure; no I/O, no engine import.
 
     Buckets the (normalized) outcomes by predicted label and reports, per bucket, the incident rate;
     then the two headline error rates (false-confidence, false-alarm), the accuracy over *confident*
     predictions (CAUTION excluded — it is neither a go nor a stop), and the calibration *direction*.
-    ``n`` counts only usable rows (malformed dropped), so absence stays absence."""
-    valid = [o for o in (normalize_outcome(r) for r in (outcomes or [])) if o]
+    ``n`` counts only usable rows (malformed dropped), so absence stays absence.
+
+    ``real_n`` counts the subset whose provenance is ``REAL`` (genuine post-cutover outcomes) and
+    ``by_source`` breaks the rows down by provenance — the D11 tuning floor is measured against
+    ``real_n``, never the total. With ``real_only=True`` the report is computed over the REAL rows
+    alone (the basis a tuning proposal must use)."""
+    all_valid = [o for o in (normalize_outcome(r) for r in (outcomes or [])) if o]
+    real_n = sum(1 for o in all_valid if o.get("source_class") == "REAL")
+    by_source: Dict[str, int] = {}
+    for o in all_valid:
+        sc = o.get("source_class") or "unspecified"
+        by_source[sc] = by_source.get(sc, 0) + 1
+    valid = [o for o in all_valid if o.get("source_class") == "REAL"] if real_only else all_valid
     n = len(valid)
     by: Dict[str, Dict[str, Any]] = {}
     for lab in ("READY", "CAUTION", "NOT_READY"):
@@ -136,7 +181,8 @@ def calibration_gap(outcomes: List[Any]) -> Dict[str, Any]:
     accuracy = round(correct / conf, 3) if conf else None
     direction, strength = _direction_and_strength(fc, fa)
     note = _gap_note(n, fc, fa, accuracy, direction)
-    return {"n": n, "by_predicted": by, "false_confidence_rate": fc, "false_alarm_rate": fa,
+    return {"n": n, "real_n": real_n, "by_source": by_source,
+            "by_predicted": by, "false_confidence_rate": fc, "false_alarm_rate": fa,
             "accuracy": accuracy, "direction": direction, "strength": round(strength, 3), "note": note}
 
 
@@ -163,35 +209,41 @@ def _lever_value(config: Any, lever: str) -> Any:
 
 def propose_adjustment(outcomes: List[Any], config: Any = None, *,
                        n_floor: int = DEFAULT_N_FLOOR, lever: str = DEFAULT_LEVER) -> Dict[str, Any]:
-    """The D11-gated proposal. **Descriptive-only until N >= n_floor**; below the floor it returns
-    ``proposal=None`` with a reason that says exactly why (the Phase-1 acceptance: "calibration refuses
-    to move a parameter below the N-floor and says so"). At/above the floor it proposes ONE small,
-    reversible delta on ``lever`` in the direction the gap indicates — and **applies nothing**
+    """The D11-gated proposal. **Descriptive-only until N >= n_floor REAL outcomes**; below the floor it
+    returns ``proposal=None`` with a reason that says exactly why (the Phase-1 acceptance: "calibration
+    refuses to move a parameter below the N-floor and says so"). **The floor is measured against REAL
+    (post-cutover) outcomes only** — surrogate rows (fault-injected / public / synthetic) are counted in
+    the descriptive ``gap`` and validate detectors, but can never unlock a tuning proposal, and the
+    proposal itself is derived from the REAL outcomes alone. At/above the floor it proposes ONE small,
+    reversible delta on ``lever`` in the direction the REAL gap indicates — and **applies nothing**
     (``applied`` is always False; every unattended action is propose-only).
 
     ``config`` defaults to the engine's module-default :data:`cisco_toolkit.analyze.SCORING` (imported
     lazily so the descriptive path needs no engine import). It is read, never mutated."""
-    gap = calibration_gap(outcomes)
-    n = gap["n"]
-    if n < n_floor:
-        return {"gated": True, "n": n, "n_floor": n_floor, "proposal": None, "applied": False,
-                "gap": gap,
-                "reason": (f"descriptive-only until N >= {n_floor} labeled PIR outcomes (D11); have "
-                           f"N={n}. No ScoringConfig parameter will be moved — too few outcomes to "
-                           f"tune on without overfitting. See "
+    gap = calibration_gap(outcomes)                        # descriptive, over ALL rows (real+surrogate)
+    real_gap = calibration_gap(outcomes, real_only=True)   # the tuning basis: REAL outcomes only
+    real_n, total_n = real_gap["n"], gap["n"]
+    if real_n < n_floor:
+        surrogate = (f" (of {total_n} total — surrogate/public rows validate detectors but NEVER tune "
+                     f"ScoringConfig)" if total_n > real_n else "")
+        return {"gated": True, "n": total_n, "real_n": real_n, "n_floor": n_floor, "proposal": None,
+                "applied": False, "gap": gap, "real_gap": real_gap,
+                "reason": (f"descriptive-only until N >= {n_floor} REAL labeled PIR outcomes (D11); have "
+                           f"{real_n} REAL{surrogate}. No ScoringConfig parameter will be moved — too few "
+                           f"REAL outcomes to tune on without overfitting. See "
                            f"docs/autonomous-brain-plan-v4-final-2026-07-06.md D11.")}
 
     if config is None:
         from cisco_toolkit.analyze import SCORING as config   # lazy: only the proposing path needs it
     current = _lever_value(config, lever)
-    direction, strength = gap["direction"], gap["strength"]
+    direction, strength = real_gap["direction"], real_gap["strength"]   # tune on REAL outcomes only
 
     if direction in ("balanced", "insufficient"):
         reason = ("scorer is well-calibrated on these outcomes; no change proposed."
                   if direction == "balanced"
                   else "no confident predictions (all CAUTION) to calibrate against; no change proposed.")
-        return {"gated": False, "n": n, "n_floor": n_floor, "proposal": None, "applied": False,
-                "gap": gap, "reason": reason,
+        return {"gated": False, "n": total_n, "real_n": real_n, "n_floor": n_floor, "proposal": None,
+                "applied": False, "gap": gap, "real_gap": real_gap, "reason": reason,
                 "note": "PROPOSE-ONLY — nothing applied; reversible."}
 
     frac = 0.10 if strength >= 0.5 else 0.05                   # 5% normally; 10% only for a strong gap
@@ -201,14 +253,14 @@ def propose_adjustment(outcomes: List[Any], config: Any = None, *,
     why = ("too many READY units had incidents -> tighten the scorer"
            if direction == "too_lenient"
            else "too many NOT_READY units were actually clean -> relax the scorer")
-    rationale = (f"{why}. false-confidence={gap['false_confidence_rate']}, "
-                 f"false-alarm={gap['false_alarm_rate']}, |gap|={strength:.2f}. "
-                 f"Move is {round(frac * 100)}% of current and fully reversible.")
+    rationale = (f"{why}. false-confidence={real_gap['false_confidence_rate']}, "
+                 f"false-alarm={real_gap['false_alarm_rate']}, |gap|={strength:.2f} (over {real_n} REAL "
+                 f"outcomes). Move is {round(frac * 100)}% of current and fully reversible.")
     proposal = {"param": lever, "current": current, "proposed": current + delta, "delta": delta,
                 "direction": "stricter" if delta > 0 else "looser", "reversible": True,
                 "rationale": rationale}
-    return {"gated": False, "n": n, "n_floor": n_floor, "proposal": proposal, "applied": False,
-            "gap": gap, "reason": rationale,
+    return {"gated": False, "n": total_n, "real_n": real_n, "n_floor": n_floor, "proposal": proposal,
+            "applied": False, "gap": gap, "real_gap": real_gap, "reason": rationale,
             "limitation": ("label-only outcomes calibrate DIRECTION + magnitude on one conservative "
                            "lever; a full per-finding weight refit needs per-finding labelled features, "
                            "not just per-unit pass/fail."),
@@ -240,6 +292,9 @@ def render_report(outcomes: List[Any], *, n_floor: int = DEFAULT_N_FLOOR) -> str
     res = propose_adjustment(outcomes, n_floor=n_floor)
     gap = res["gap"]
     L = [f"PIR calibration — {gap['note']}"]
+    if res.get("n") != res.get("real_n"):                # surrogate rows present -> disclose provenance
+        L.append(f"  provenance: {res.get('real_n', 0)} REAL of {res.get('n', 0)} rows are tune-eligible "
+                 f"{gap.get('by_source', {})} — only REAL outcomes can move the scorer")
     by = gap["by_predicted"]
     for lab in ("READY", "CAUTION", "NOT_READY"):
         b = by[lab]
