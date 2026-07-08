@@ -84,6 +84,7 @@ readiness verdict) and the **PIR** records what actually happened; joining them 
 | `date` | `YYYY-MM-DD` | when the PIR / war-room recorded the outcome |
 | `engagement` | string | engagement or snapshot id |
 | `unit` | string | the device / wave / site the prediction was about |
+| `source_class` | string | provenance — `REAL` (a genuine post-cutover PIR / war-room outcome) or a surrogate class (`fault-injected` / `retro-public` / `compare-pair` / `shadow-PIR` / `synthetic`). **Only `REAL` counts toward the D11 tuning floor**; surrogate rows validate detectors and appear in the descriptive gap but never tune the scorer. Absent / unrecognized ⇒ treated as non-`REAL` (fail-safe) |
 | `predicted` | string | the pre-cutover readiness verdict: `READY` / `CAUTION` / `NOT_READY` (aliases accepted) |
 | `actual` | string | the real outcome: `clean` (no incident) / `incident` (fault / rollback) (aliases accepted) |
 | `commit` | string | git SHA the prediction was produced against |
@@ -98,9 +99,11 @@ NOT_READY)` (we blocked a fine unit) — and, from the gap's direction, whether 
 python -m cisco_toolkit.calibration --report
 ```
 
-**The D11 gate is load-bearing.** Calibration is **descriptive-only until N ≥ 5 labeled outcomes**; below the
-floor `propose_adjustment` **refuses to move any `ScoringConfig` parameter and says exactly why** (two PIRs must
-never re-tune the engine). At/above the floor it proposes **one small, reversible, human-gated** delta on a single
+**The D11 gate is load-bearing.** Calibration is **descriptive-only until N ≥ 5 REAL labeled outcomes** — measured
+against `source_class == REAL` only, because surrogate / public / synthetic rows validate detectors but must NEVER
+unlock a tuning move (otherwise feeding public or multi-customer production data would silently re-tune the engine,
+the no-fabrication law turned on the calibration nerve itself). Below the floor `propose_adjustment` **refuses to
+move any `ScoringConfig` parameter and says exactly why** (two PIRs must never re-tune the engine). At/above the floor it proposes **one small, reversible, human-gated** delta on a single
 conservative lever (`caps.XL` by default) and **applies nothing** (`applied` is always `False`; every unattended
 action is propose-only). A full per-finding weight refit is out of reach from per-unit pass/fail labels — stated as
 a limitation, not overclaimed. This is **distinct from** `analyze.compute_calibration_report`, which is a
