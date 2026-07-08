@@ -31,7 +31,12 @@ from typing import Any, Dict, List, Optional
 SCORECARD_PATH = os.path.join("docs", "quality", "scorecard.jsonl")
 
 # The append-only row schema (docs/quality/README.md). Emitted in this order.
-SCHEMA_KEYS = ("date", "deliverable", "score", "verdict", "counterexamples",
+# `judge_tnr` = the measured true-negative rate of the JUDGE that produced this verdict
+# (:mod:`cisco_toolkit.defect_panel`), or ``null`` when unmeasured. A QA verdict is a Claude judge on
+# Claude's work, so an APPROVE is only trustworthy to the extent the judge is *shown* to REJECT known-bad
+# work (Jain et al. 2510.11822: LLM judges default to TNR < 25%). ``null`` = trust unquantified — never a
+# fabricated confidence. A deterministic ``eval_harness`` row is bias-free and simply carries ``null`` here.
+SCHEMA_KEYS = ("date", "deliverable", "score", "verdict", "judge_tnr", "counterexamples",
                "laws_tripped", "commit", "notes")
 
 # Deliverable family tokens -> the canonical `deliverable` label the scorecard uses.
