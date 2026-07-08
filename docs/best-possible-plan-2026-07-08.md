@@ -119,6 +119,22 @@ better **strategy**; keep its spine:
   set is phantom-health-clean. (The `[HISTORY-REDACTED]_*` DC files are a different engagement/fleet - out of scope; they
   carry their own QA. Both sets are gitignored generated outputs, present on disk but never committed.)
 
+## 5d. Frontier #2 (Order 1) — the readiness-FREEZE mechanism built + shadow-validated 2026-07-08
+
+- **`precert` extended to a single-snapshot readiness freeze** (`compute_readiness_freeze`, schema
+  `precert-readiness/1`; CLI `python -m cisco_toolkit.precert <snap> --mode shadow|real`). It reads the
+  snapshot's precomputed per-move-group `migration_readiness` (no re-analysis), takes the WORST-of verdict,
+  NAMES every uncollected device as a blind spot, and HASHES the prediction (sha256) so a committed cert
+  cannot be retrofitted after the outcome is known. Reuses `precert._stamp` provenance — plan §3.2's "small
+  precise extension" (+~115 lines, 7 tests, precert suite 25/25 green).
+- **Shadow-validated on the [HISTORY-REDACTED] snapshot:** verdict NOT READY (Group 1; 52 CAUTION, 0 READY of 53), coverage
+  253/303 with all 50 uncollected named, `prediction_hash sha256:ea6f2048...`. Tagged `mode=shadow` — it
+  validates the mechanism and is explicitly NOT a REAL calibration input (0 REAL unchanged; nothing fabricated;
+  the shadow cert artifact is gitignored, not committed).
+- **Still pending (unchanged, operator-owned):** REAL row #1 = `--mode real` + commit the cert BEFORE a genuine
+  maintenance window + record the actual outcome post-cutover. The mechanism is now ready; only the live
+  cutover event is missing — the perishable half that no code can manufacture.
+
 ## 6. The honest ceiling
 
 Past the instrument, the next unit of insight is a **measurement, not a token** — and the ground truth makes

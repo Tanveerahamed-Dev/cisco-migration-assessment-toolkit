@@ -17,12 +17,19 @@ two already-collected snapshots; no egress, no device contact; total on malforme
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import sys
+
 from typing import Any, Dict, List, Optional
 
 from . import fib
 from .path_assertions import revalidate
 
 SCHEMA = "precert/1"
+# Single-snapshot pre-window READINESS freeze (the prediction half of a calibration row).
+READINESS_SCHEMA = "precert-readiness/1"
 
 # The diff-workbook sheet contract (write_diff_workbook renders the certificate from these).
 CERT_SHEET_NAME = "Pre-Change Certificate"
@@ -221,3 +228,156 @@ def compute_precert(snap_before: Dict[str, Any], snap_after: Dict[str, Any],
         "blind_spots": blind_spots,
         "stamps": {"before": _stamp(before), "after": _stamp(after)},
     }
+
+
+# ============================================================================================
+# Single-snapshot pre-window READINESS FREEZE (roadmap: the perishable prediction half of a
+# calibration row). `compute_precert` above certifies a before/after PAIR; this freezes ONE
+# snapshot's migration-readiness prediction, hashed so it cannot be retrofitted after the outcome
+# is known (the anti-hindsight point). It reads the snapshot's PRE-computed `migration_readiness`
+# (the serialized `analyze.compute_migration_readiness` output) — it does NOT re-run analysis.
+# ============================================================================================
+
+# Worst-first ranking; accept the snapshot's literal "NOT READY" and the calibration-canonical "NOT_READY".
+_READINESS_RANK = {"NOT READY": 2, "NOT_READY": 2, "CAUTION": 1, "READY": 0}
+
+
+def _canon_readiness(v: Any) -> str:
+    """A move-group readiness label normalized to READY / CAUTION / NOT READY, or '' if unrecognized."""
+    s = str(v or "").strip().upper().replace("_", " ")
+    return s if s in ("READY", "CAUTION", "NOT READY") else ""
+
+
+def _prediction_hash(payload: dict) -> str:
+    """SHA-256 over the canonical prediction payload — the tamper-evident freeze token. Deterministic:
+    the same snapshot always yields the same hash, so a committed cert is independently re-verifiable, and
+    any post-hoc edit to the frozen prediction changes the hash. Excludes `mode`/`verdict_note` (metadata),
+    so a shadow and a real freeze of the SAME prediction share a hash."""
+    canon = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def compute_readiness_freeze(snap: Dict[str, Any], *, mode: str = "shadow") -> dict:
+    """Pre-window readiness FREEZE for one snapshot (schema 'precert-readiness/1').
+
+    Coverage-honest, exact:
+      * verdict = the WORST move-group readiness (never rated better than its weakest group);
+      * no per-move-group readiness at all -> INDETERMINATE (asserts NOTHING — this is not READY);
+      * every not-collected device is NAMED as a blind spot (its readiness inputs are absent, so any
+        move-group containing it is a PARTIAL prediction — absence of evidence is not readiness).
+    `mode='real'` marks a genuine pre-cutover freeze (commit it BEFORE the window; the outcome later
+    completes a REAL calibration row); `mode='shadow'` (default) is a mechanism-validation run that is
+    NOT a REAL calibration input. Pure JSON types; total on malformed input; offline, no egress."""
+    s = snap if isinstance(snap, dict) else {}
+    groups_in = s.get("migration_readiness")
+    groups_in = groups_in if isinstance(groups_in, list) else []
+
+    groups: List[dict] = []
+    dist = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
+    worst_rank, worst = -1, ""
+    for g in groups_in:
+        if not isinstance(g, dict):
+            continue
+        rd = _canon_readiness(g.get("readiness"))
+        if rd in dist:
+            dist[rd] += 1
+        rank = _READINESS_RANK.get(rd, -1)
+        if rank > worst_rank:
+            worst_rank, worst = rank, rd
+        blocking = [c.get("check") for c in (g.get("checks") or [])
+                    if isinstance(c, dict) and str(c.get("status", "")).lower() in ("fail", "warn")]
+        groups.append({"group": g.get("group"), "readiness": rd,
+                       "n_fail": int(g.get("n_fail") or 0), "n_warn": int(g.get("n_warn") or 0),
+                       "blocking": blocking})
+
+    # Coverage-honest blind spots: NAME every not-collected device (its readiness inputs are absent).
+    cc = s.get("collection_completeness")
+    cc = cc if isinstance(cc, dict) else {}
+    summ = cc.get("summary") if isinstance(cc.get("summary"), dict) else {}
+    not_collected = sorted(str(d.get("host")) for d in (cc.get("devices") or [])
+                           if isinstance(d, dict) and str(d.get("status", "")).lower().startswith("not"))
+    n_missing = int(summ.get("not_collected") or 0) or len(not_collected)
+    blind_spots: List[str] = []
+    if n_missing:
+        blind_spots.append(
+            f"{n_missing} of {summ.get('inventory', '?')} inventoried device(s) were not collected "
+            f"(named in coverage.not_collected_hosts) - their readiness inputs are absent, so any "
+            f"move-group containing them is a PARTIAL prediction; absence of evidence is not readiness.")
+
+    if not groups:
+        verdict = "INDETERMINATE"
+        note = ("no per-move-group readiness in the snapshot - the freeze asserts NOTHING "
+                "(this is not READY; re-run analysis and re-freeze)")
+    else:
+        verdict = worst or "INDETERMINATE"
+        note = (f"worst-of {len(groups)} move-group(s): {dist['NOT READY']} NOT READY, "
+                f"{dist['CAUTION']} CAUTION, {dist['READY']} READY"
+                + (f"; {n_missing} device(s) uncollected (blind spots named)" if n_missing else ""))
+
+    stamp = _stamp(s)
+    stamp["collected_at"] = str(s.get("collected_at", "") or "")
+    stamp["snapshot_schema"] = str(s.get("schema", "") or "")
+
+    payload = {
+        "verdict": verdict,
+        "n_groups": len(groups),
+        "readiness_distribution": dist,
+        "groups": groups,
+        "coverage": {"inventory": summ.get("inventory"), "collected": summ.get("complete"),
+                     "not_collected": n_missing, "not_collected_hosts": not_collected},
+        "blind_spots": blind_spots,
+        "stamp": stamp,
+    }
+    cert = {"schema": READINESS_SCHEMA,
+            "mode": mode if mode in ("shadow", "real") else "shadow",
+            "verdict_note": note}
+    cert.update(payload)
+    cert["prediction_hash"] = _prediction_hash(payload)   # hashes the prediction, not the mode/note
+    return cert
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """CLI: freeze a single snapshot's readiness prediction. Writes the cert JSON and prints a summary.
+    `--mode real` is a genuine pre-cutover freeze (commit the cert BEFORE the window); the default
+    `shadow` validates the mechanism and is never a REAL calibration input."""
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="python -m cisco_toolkit.precert",
+        description="Pre-window readiness FREEZE from one snapshot (schema precert-readiness/1).")
+    ap.add_argument("snapshot", help="path to a .snapshot.json")
+    ap.add_argument("--mode", choices=("shadow", "real"), default="shadow",
+                    help="shadow (default) = mechanism validation, NOT a REAL calibration input; "
+                         "real = a genuine pre-cutover freeze (commit it before the maintenance window).")
+    ap.add_argument("--out", default=None,
+                    help="cert output path (default: <snapshot>.precert-readiness.json)")
+    args = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        with open(args.snapshot, encoding="utf-8") as f:
+            snap = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"[precert-readiness] cannot read snapshot: {e}")
+        return 2
+    cert = compute_readiness_freeze(snap, mode=args.mode)
+    out = args.out or (os.path.splitext(args.snapshot)[0] + ".precert-readiness.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(cert, f, ensure_ascii=True, indent=2)
+    d = cert["readiness_distribution"]
+    cov = cert["coverage"]
+    print(f"[precert-readiness] mode={cert['mode']}  verdict={cert['verdict']}  groups={cert['n_groups']}")
+    print(f"  distribution : {d['NOT READY']} NOT READY / {d['CAUTION']} CAUTION / {d['READY']} READY")
+    print(f"  coverage     : {cov['collected']} of {cov['inventory']} collected; "
+          f"{cov['not_collected']} uncollected (blind spots: {len(cert['blind_spots'])})")
+    print(f"  prediction_hash: {cert['prediction_hash']}")
+    print(f"  written      : {out}")
+    if cert["mode"] == "shadow":
+        print("  NOTE: shadow mode - NOT a REAL calibration row (0 REAL is unchanged). It validates the "
+              "freeze; a REAL row needs --mode real, committed before the window, plus the actual outcome.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
