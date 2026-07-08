@@ -15,7 +15,6 @@ Coverage-honesty is asserted as a first-class property: a partial snapshot's unv
 back ``unverified`` (disclosed), never a fabricated pass; an empty deliverable scores ``None``, never
 a false 100.
 """
-import copy
 import glob
 import importlib
 import os
