@@ -17,7 +17,8 @@ import sys
 from openpyxl import load_workbook
 
 from cisco_toolkit.html import write_diff_workbook
-from cisco_toolkit.precert import CERT_SHEET_HEADERS, CERT_SHEET_NAME, compute_precert
+from cisco_toolkit.precert import (CERT_SHEET_HEADERS, CERT_SHEET_NAME, READINESS_SCHEMA,
+                                   compute_precert, compute_readiness_freeze)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
@@ -271,3 +272,74 @@ def test_compare_cli_emits_precert_json_next_to_diff_workbook(tmp_path):
     assert cert["schema"] == "precert/1" and cert["verdict"] == "FAIL"
     assert any(r["id"] == "app-to-db" for r in cert["intents"])      # --path-intents honored in --compare
     assert CERT_SHEET_NAME in load_workbook(str(out)).sheetnames
+
+
+# ---------------------------------------------------------------- single-snapshot readiness FREEZE
+def _readiness_snap(groups, completeness=None):
+    s = {"schema": "collect_parse_snapshot/1", "script_version": "V3.23.0",
+         "generated_at": "2026-07-01T00:00:00", "collected_at": "2026-06-13T06:32:01",
+         "devices": {f"d{i}": {} for i in range(3)}, "migration_readiness": groups}
+    if completeness is not None:
+        s["collection_completeness"] = completeness
+    return s
+
+
+def test_readiness_freeze_is_worst_of_and_coverage_honest():
+    groups = [{"group": "G1", "readiness": "READY", "n_fail": 0, "n_warn": 0, "checks": []},
+              {"group": "G2", "readiness": "CAUTION", "n_fail": 0, "n_warn": 1,
+               "checks": [{"check": "STP consistency", "status": "warn"},
+                          {"check": "Redundant uplinks", "status": "pass"}]}]
+    cc = {"summary": {"inventory": 5, "complete": 3, "partial": 0, "not_collected": 2},
+          "devices": [{"host": "y-uncollected", "status": "not collected"},
+                      {"host": "x-uncollected", "status": "not collected"},
+                      {"host": "z-ok", "status": "complete"}]}
+    cert = compute_readiness_freeze(_readiness_snap(groups, cc), mode="shadow")
+    assert cert["schema"] == READINESS_SCHEMA and cert["mode"] == "shadow"
+    assert cert["verdict"] == "CAUTION"                               # worst-of (never the better READY)
+    assert cert["readiness_distribution"] == {"READY": 1, "CAUTION": 1, "NOT READY": 0}
+    assert cert["groups"][1]["blocking"] == ["STP consistency"]      # only the fail/warn check is blocking
+    assert cert["coverage"]["not_collected"] == 2
+    assert cert["coverage"]["not_collected_hosts"] == ["x-uncollected", "y-uncollected"]  # NAMED + sorted
+    assert cert["blind_spots"] and "not collected" in cert["blind_spots"][0].lower()
+    assert cert["prediction_hash"].startswith("sha256:")
+
+
+def test_readiness_freeze_worst_of_promotes_not_ready():
+    groups = [{"group": "G1", "readiness": "CAUTION", "checks": []},
+              {"group": "G2", "readiness": "NOT READY", "n_fail": 1, "checks": []}]
+    assert compute_readiness_freeze(_readiness_snap(groups))["verdict"] == "NOT READY"
+
+
+def test_readiness_freeze_empty_is_indeterminate_never_ready():
+    cert = compute_readiness_freeze(_readiness_snap([]), mode="shadow")
+    assert cert["verdict"] == "INDETERMINATE" and cert["n_groups"] == 0  # nothing to score != READY
+
+
+def test_readiness_freeze_hash_is_deterministic_and_tamper_evident():
+    g1 = [{"group": "G1", "readiness": "CAUTION", "n_warn": 1, "checks": []}]
+    g2 = [{"group": "G1", "readiness": "NOT READY", "n_fail": 1, "checks": []}]
+    h1 = compute_readiness_freeze(_readiness_snap(g1))["prediction_hash"]
+    h1b = compute_readiness_freeze(_readiness_snap(g1))["prediction_hash"]
+    h2 = compute_readiness_freeze(_readiness_snap(g2))["prediction_hash"]
+    assert h1 == h1b                                                 # deterministic: same snapshot -> same hash
+    assert h1 != h2                                                  # tamper-evident: changed prediction -> new hash
+
+
+def test_readiness_freeze_shadow_and_real_share_the_prediction_hash():
+    g = [{"group": "G1", "readiness": "CAUTION", "n_warn": 1, "checks": []}]
+    shadow = compute_readiness_freeze(_readiness_snap(g), mode="shadow")
+    real = compute_readiness_freeze(_readiness_snap(g), mode="real")
+    assert shadow["prediction_hash"] == real["prediction_hash"]      # mode is metadata; prediction is identical
+    assert (shadow["mode"], real["mode"]) == ("shadow", "real")
+
+
+def test_readiness_freeze_total_on_bad_input():
+    for bad in (None, [], 42, "s", {"migration_readiness": "nope"}):
+        assert compute_readiness_freeze(bad)["verdict"] == "INDETERMINATE"
+
+
+def test_readiness_freeze_json_round_trips():
+    g = [{"group": "G1", "readiness": "NOT READY", "n_fail": 2, "checks":
+          [{"check": "Gateway redundancy", "status": "fail"}]}]
+    cert = compute_readiness_freeze(_readiness_snap(g), mode="real")
+    assert json.loads(json.dumps(cert)) == cert                      # pure JSON types only
