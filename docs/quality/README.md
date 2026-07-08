@@ -17,6 +17,7 @@ Every consequential QA / eval cycle appends one row. **Verifiable facts only —
 | `deliverable` | string | which artifact (e.g. `design`, `mop`, `crd`, `hld`, or a snapshot id) |
 | `score` | number \| null | eval-suite score (0–100) from the golden-snapshot harness; `null` on a `/qa`-verdict row (a QA transcript yields a verdict, not a number) |
 | `verdict` | string | `APPROVE` / `BLOCK` (from deliverable-qa-reviewer) |
+| `judge_tnr` | number \| null | the measured true-negative rate of the JUDGE that produced this verdict (`cisco_toolkit.defect_panel`), or `null` when unmeasured. An `APPROVE` is only trustworthy to the extent the judge is *shown* to REJECT known-bad work (Jain et al. `2510.11822`: LLM judges default to TNR < 25%). **A QA-verdict row with `judge_tnr` null/absent is PROVISIONAL** — trust unquantified until the defect-panel baseline runs. A deterministic `eval_harness` row is bias-free and carries `null` here (no judge involved). |
 | `counterexamples` | int | number of grounded defects the verifier found this cycle (should trend ↓) |
 | `laws_tripped` | array | which of the 10 Deliverable-Excellence Laws failed, if any |
 | `commit` | string | git SHA the verdict was produced against |
@@ -84,6 +85,7 @@ readiness verdict) and the **PIR** records what actually happened; joining them 
 | `date` | `YYYY-MM-DD` | when the PIR / war-room recorded the outcome |
 | `engagement` | string | engagement or snapshot id |
 | `unit` | string | the device / wave / site the prediction was about |
+| `source_class` | string | provenance — `REAL` (a genuine post-cutover PIR / war-room outcome) or a surrogate class (`fault-injected` / `retro-public` / `compare-pair` / `shadow-PIR` / `synthetic`). **Only `REAL` counts toward the D11 tuning floor**; surrogate rows validate detectors and appear in the descriptive gap but never tune the scorer. Absent / unrecognized ⇒ treated as non-`REAL` (fail-safe) |
 | `predicted` | string | the pre-cutover readiness verdict: `READY` / `CAUTION` / `NOT_READY` (aliases accepted) |
 | `actual` | string | the real outcome: `clean` (no incident) / `incident` (fault / rollback) (aliases accepted) |
 | `commit` | string | git SHA the prediction was produced against |
@@ -98,9 +100,11 @@ NOT_READY)` (we blocked a fine unit) — and, from the gap's direction, whether 
 python -m cisco_toolkit.calibration --report
 ```
 
-**The D11 gate is load-bearing.** Calibration is **descriptive-only until N ≥ 5 labeled outcomes**; below the
-floor `propose_adjustment` **refuses to move any `ScoringConfig` parameter and says exactly why** (two PIRs must
-never re-tune the engine). At/above the floor it proposes **one small, reversible, human-gated** delta on a single
+**The D11 gate is load-bearing.** Calibration is **descriptive-only until N ≥ 5 REAL labeled outcomes** — measured
+against `source_class == REAL` only, because surrogate / public / synthetic rows validate detectors but must NEVER
+unlock a tuning move (otherwise feeding public or multi-customer production data would silently re-tune the engine,
+the no-fabrication law turned on the calibration nerve itself). Below the floor `propose_adjustment` **refuses to
+move any `ScoringConfig` parameter and says exactly why** (two PIRs must never re-tune the engine). At/above the floor it proposes **one small, reversible, human-gated** delta on a single
 conservative lever (`caps.XL` by default) and **applies nothing** (`applied` is always `False`; every unattended
 action is propose-only). A full per-finding weight refit is out of reach from per-unit pass/fail labels — stated as
 a limitation, not overclaimed. This is **distinct from** `analyze.compute_calibration_report`, which is a

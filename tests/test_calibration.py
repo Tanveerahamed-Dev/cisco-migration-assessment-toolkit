@@ -15,8 +15,10 @@ import os
 from cisco_toolkit import calibration as C
 
 
-def _oc(predicted, actual, **kw):
-    return {"predicted": predicted, "actual": actual, **kw}
+def _oc(predicted, actual, source_class="REAL", **kw):
+    # Default to a REAL outcome: these tests exercise the *tuning* path, which only REAL post-cutover
+    # PIR outcomes may unlock. Surrogate-source tests pass source_class explicitly (e.g. "synthetic").
+    return {"predicted": predicted, "actual": actual, "source_class": source_class, **kw}
 
 
 # --- the gap (descriptive) ---------------------------------------------------------------------
@@ -141,3 +143,61 @@ def test_render_report_gated_and_proposal():
     assert "GATED" in gated and "descriptive-only" in gated
     proposed = C.render_report([_oc("READY", "incident")] * 5)
     assert "PROPOSAL" in proposed and "reversible" in proposed and "PROPOSE-ONLY" in proposed
+
+
+# --- the real-vs-surrogate tuning gate (Correction 1) ------------------------------------------
+# Doctrine safety: public / fault-injected / synthetic calibration rows may VALIDATE detectors, but
+# they must NEVER unlock a ScoringConfig tuning proposal. Only REAL post-cutover PIR outcomes count
+# toward the N-floor. Without this, feeding production/public data auto-corrupts the very nerve it
+# feeds. (Multi-customer operating model: each real cutover contributes exactly one REAL row.)
+
+def test_surrogate_rows_never_unlock_tuning():
+    ocs = [_oc("READY", "incident", source_class="synthetic")] * 6      # 6 surrogate, 0 REAL
+    res = C.propose_adjustment(ocs)
+    assert res["gated"] is True
+    assert res["proposal"] is None
+    assert res["real_n"] == 0 and res["n"] == 6        # descriptive sees all 6; tuning sees 0 REAL
+    assert "REAL" in res["reason"]
+
+
+def test_real_rows_unlock_tuning_at_floor():
+    ocs = ([_oc("READY", "incident", source_class="REAL")] * 4
+           + [_oc("READY", "clean", source_class="REAL")])              # 5 REAL, fc=0.8 -> lenient
+    res = C.propose_adjustment(ocs)
+    assert res["gated"] is False and res["real_n"] == 5
+    assert res["proposal"] is not None and res["proposal"]["direction"] == "stricter"
+
+
+def test_mixed_real_and_surrogate_counts_only_real():
+    # 4 REAL + 20 surrogate -> still gated (real_n=4 < 5); a surrogate flood cannot unlock it.
+    ocs = ([_oc("READY", "incident", source_class="REAL")] * 4
+           + [_oc("READY", "incident", source_class="fault-injected")] * 20)
+    res = C.propose_adjustment(ocs)
+    assert res["gated"] is True and res["real_n"] == 4 and res["n"] == 24
+
+
+def test_untagged_row_is_not_counted_as_real():
+    # Unknown provenance != real outcome (coverage-honest, fail-safe): no source_class -> not REAL.
+    ocs = [{"predicted": "READY", "actual": "incident"}] * 6
+    res = C.propose_adjustment(ocs)
+    assert res["gated"] is True and res["real_n"] == 0
+
+
+def test_proposal_direction_follows_real_not_surrogate():
+    # REAL says too-lenient (raise/stricter); a surrogate flood says too-strict. Follow REAL only.
+    ocs = ([_oc("READY", "incident", source_class="REAL")] * 5
+           + [_oc("NOT_READY", "clean", source_class="synthetic")] * 20)
+    res = C.propose_adjustment(ocs)
+    assert res["gated"] is False and res["real_n"] == 5
+    assert res["proposal"]["direction"] == "stricter"
+
+
+def test_source_class_aliases_normalize():
+    assert C.normalize_outcome(
+        {"predicted": "READY", "actual": "clean", "source_class": "pir"})["source_class"] == "REAL"
+    assert C.normalize_outcome(
+        {"predicted": "READY", "actual": "clean", "source_class": "fault_injected"}
+    )["source_class"] == "fault-injected"
+    # an unrecognized tag is kept verbatim but is NEVER treated as REAL
+    assert C.normalize_outcome(
+        {"predicted": "READY", "actual": "clean", "source_class": "mystery"}).get("source_class") != "REAL"
