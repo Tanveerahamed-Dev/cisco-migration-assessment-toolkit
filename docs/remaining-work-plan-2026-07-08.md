@@ -41,7 +41,7 @@ Five commits on `chore/scorecard-first-real-rows`, all pushed: `c5c1f1d` (ADR 00
 | Phase 0a — 2 remaining citations (`2607.03726` at the N-floor; `2601.15778` in `calibration.py`) | none | mine | **DO now** — cheap grounding |
 | Phase 0b — SelfMem write-operator lint in `learnings.py` | memory store grows | mine | **DEFER** (store ~13 entries; not yet needed) |
 | Phase 2 — hybrid SQLite enforcement/query index | memory volume + real-row need | gated | **don't build speculatively** — hardening, not a gap |
-| Phase 3 — RRF retrieval (= v4 **D10**) | Ollama install + first sanitized vault digest | gated | unchanged; ships with its own eval, not as SOTA |
+| Phase 3 — RRF retrieval (= v4 **D10**) | Ollama install + first sanitized vault digest | gated | **eval now specified + citation-verified** (`docs/d10-retrieval-eval-design-2026-07-08.md`); ships with that eval, not as SOTA |
 | **C. Autonomy nerves** — *v4 final* | | | |
 | Clock (D13) — scheduler + `claude -p` nightly | TNR-gate ∧ calibration separation ∧ ROI | gated | rails built (`clock.py`); **do not arm** (see §3) |
 | Remediation / self-healing (`/remediate`) | a baseline⋈current drift to act on | mine | propose-only; exercise when drift is real |
@@ -80,7 +80,10 @@ can manufacture. So the honest plan is *narrow now, wide after the cutover*.
 3. **Hybrid SQLite (Phase 2) — GATED, not speculative.** The markdown+JSONL + `memory_guard` tests already
    enforce the invariants; triggers are *hardening*. Build only when memory volume + real-row history justify a
    queryable index. (Registers in `docs/ssot.md` as derived/gated when built.)
-4. **RRF retrieval / D10 — GATED on Ollama + a first digest.** Unchanged; experiment-with-eval, not adopted SOTA.
+4. **RRF retrieval / D10 — GATED on Ollama + a first digest.** The eval that decides it — including whether the
+   dense/vector lane ships at all — is now specified + citation-verified in
+   `docs/d10-retrieval-eval-design-2026-07-08.md` (measure the query mix first; different-family judge = the
+   existing `ollama_judge`; AST graph gives free identifier labels). Experiment-with-eval, not adopted SOTA.
 5. **Act 2 surrogate corpus — AVAILABLE, DON'T pull forward.** It cannot move the tuning floor (D11 = REAL only)
    and the 7 rows already show discrimination=1.0. Do it *only* if Act 1 slips for many weeks and a richer
    descriptive picture is genuinely wanted.
