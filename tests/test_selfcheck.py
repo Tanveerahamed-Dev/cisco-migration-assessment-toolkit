@@ -50,6 +50,20 @@ def test_scorecard_substrate_states(tmp_path):
     assert "2 verdict row" in SC.check_scorecard_substrate(root)["detail"]
 
 
+def test_pir_substrate_counts_only_real_toward_floor(tmp_path):
+    """The D11 floor is REAL-only: a surrogate (fault-injected) row populates the descriptive gap but must
+    NOT read as tune-eligible, while a REAL alias (`pir`) does — and the readout normalizes via the same
+    `_norm_source` the gate uses, so the health line can never drift from the gate it reports on."""
+    root = str(tmp_path)
+    q = _quality_dir(root)
+    with open(os.path.join(q, "pir_outcomes.jsonl"), "w", encoding="utf-8") as f:
+        f.write('{"source_class":"fault-injected","predicted":"READY","actual":"clean"}\n')
+        f.write('{"source_class":"pir","predicted":"READY","actual":"incident"}\n')      # alias -> REAL
+    c = SC.check_pir_substrate(root)
+    assert c["status"] == SC.GREEN
+    assert "2 labeled outcome(s), 1 REAL" in c["detail"]      # surrogate excluded; alias normalized to REAL
+
+
 def test_guards_nonvacuous_detects_missing_and_gutted(tmp_path):
     root = str(tmp_path)
     _write_guards(root)
