@@ -1,0 +1,65 @@
+{
+  "_meta": {
+    "registered": "2026-07-10",
+    "task": "P2-0d of docs/architect-master-plan-2026-07-10.md (Phase-2 pre-task)",
+    "owner_doc": "docs/d10-retrieval-eval-design-2026-07-08.md",
+    "contract": "Committed BEFORE any Phase-2 eval run (owner doc §7: 'Write these thresholds to a file first; do not adjust after seeing results'). Changing a value after a run is a protocol violation; tests/test_d10_thresholds.py pins every value exactly so any edit is loud and must move file + pin together in a reviewed diff. No Phase-2 eval run existed at registration (the built recall.py 8-query experiment is the harness seed, not the eval).",
+    "amendment": "DEC-006 2026-07-10 (PR #318): eval corpus widened to graph + docs + digest; the bar below is UNCHANGED by that amendment"
+  },
+  "significance": {
+    "test": "paired-t",
+    "p_max": 0.05,
+    "cohens_d_min": 0.4,
+    "rule": "BOTH must clear before any delta is called real"
+  },
+  "criteria": {
+    "bm25_earns_place": {
+      "metric": "MRR@5",
+      "comparison": "graph+BM25 > graph",
+      "margin": 0.05,
+      "on_fail": "FALSIFIED"
+    },
+    "dense_earns_dependency": {
+      "metric": "MRR@5",
+      "stratum": "semantic",
+      "comparison": "+dense > BM25",
+      "margin": 0.05,
+      "and_condition": "Hole@10 not inflated"
+    },
+    "dense_anti_pattern_auto_reject": {
+      "metric": "MRR@5",
+      "stratum": "identifier",
+      "condition": "+dense < BM25",
+      "consequence": "auto-reject the dense lane (it hurts the majority category)"
+    }
+  },
+  "validity_gate": {
+    "judge_kappa_min": 0.7,
+    "anchor_accuracy_min": 0.8,
+    "hole_at_10_max": 0.15,
+    "on_fail": "eval INVALID - re-pool; never report results from an invalid run"
+  },
+  "dense_precondition": {
+    "semantic_share_min": 0.3,
+    "n_real_queries": 30,
+    "source": "REAL rows of the query log (P2-0a, docs/quality/recall_queries.jsonl); classification unrunnable until 30 real queries accrue - never sampled from memory"
+  },
+  "query_set": {
+    "identifier": 20,
+    "semantic": 20,
+    "multi_hop": 10,
+    "negative": 10,
+    "anchors_separate": 15
+  },
+  "corpus_config_recording": {
+    "digest_lane": ["present_or_absent", "file_name", "entry_count", "manifest_sha256", "verify_feed_verdict"],
+    "ollama": ["reachable", "version_read_live", "embed_model"],
+    "rule": "report per corpus-config, never pooled; a digest-absent run certifies the degraded graph+docs mode only (DEC-006)"
+  },
+  "tuning_frozen": {
+    "rrf_k": 60,
+    "bm25_k1": 0.9,
+    "bm25_b": 0.4,
+    "rule": "no grid search at n=60 (owner doc §4); revisit only at 500+ labelled queries"
+  }
+}
