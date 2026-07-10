@@ -1,0 +1,16 @@
+{"_meta": {"artifact": "d10-anchors", "task": "P2-1", "registered": "2026-07-10", "count_owner": "docs/quality/d10-eval-thresholds.json :: query_set.anchors_separate", "protocol": "judge-visible HALF of the anchor calibration set — run FIRST every eval session; the judge grades each (query, doc) pair 0-3 per the rubric in d10-eval-set.jsonl. Expected grades are SEALED in d10-anchor-key.jsonl (the defect_panel sealed-key pattern) and must NEVER enter a judge prompt; the P2-2 screening gate (kappa>=0.70 AND anchor accuracy>=0.80, validity_gate owner) scores against the key AFTER the judge has answered."}}
+{"aid": "A-01", "query": "what three fields does each real-query log line carry?", "doc": "docs/quality/README.md"}
+{"aid": "A-02", "query": "what does the seeded-defect harness report when a judge rejects for the wrong reason?", "doc": "cisco_toolkit/defect_panel.py"}
+{"aid": "A-03", "query": "which two statistical bars must a retrieval delta clear before it counts as real?", "doc": "docs/quality/d10-eval-thresholds.json"}
+{"aid": "A-04", "query": "what does the readiness-versus-outcome report do when there are too few real rows?", "doc": "cisco_toolkit/calibration.py"}
+{"aid": "A-05", "query": "which laws must every generated client document's furniture satisfy?", "doc": "docs/deliverable-excellence-plan.md"}
+{"aid": "A-06", "query": "how is the reciprocal-rank-fusion damping constant chosen?", "doc": "cisco_toolkit/brand_tokens.py"}
+{"aid": "A-07", "query": "what rollback stanza must every cutover step carry?", "doc": "docs/intel/README.md"}
+{"aid": "A-08", "query": "which local model family serves as the cross-family judge?", "doc": "cisco_toolkit/textutils.py"}
+{"aid": "A-09", "query": "when does the sealed seventy-thirty split activate?", "doc": "cisco_toolkit/deck.py"}
+{"aid": "A-10", "query": "which hook blocks shell writes into the personal vault?", "doc": "cisco_toolkit/excel.py"}
+{"aid": "A-11", "query": "how does the toolkit fuse multiple retrieval signals into one ranking?", "doc": "docs/d10-retrieval-eval-design-2026-07-08.md"}
+{"aid": "A-12", "query": "how are cutover risks categorized before a wave proceeds?", "doc": "cisco_toolkit/precert.py"}
+{"aid": "A-13", "query": "how are external advisory entries verified before use?", "doc": "cisco_toolkit/recall.py"}
+{"aid": "A-14", "query": "how is the deliverable quality trend rendered week by week?", "doc": "docs/quality/holdout-contract.md"}
+{"aid": "A-15", "query": "how long should a typical cutover maintenance window be?", "doc": "CLAUDE.md"}
