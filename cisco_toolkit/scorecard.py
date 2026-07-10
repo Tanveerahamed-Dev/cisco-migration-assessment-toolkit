@@ -4,7 +4,7 @@ Phase 0 of ``docs/autonomous-brain-plan-v4-final-2026-07-06.md``. Two jobs:
 
 1. **Parse an independent QA verdict** (the ``deliverable-qa-reviewer`` subagent's output) into one
    scorecard row — the schema in ``docs/quality/README.md`` (date / deliverable / score / verdict /
-   counterexamples / laws_tripped / commit / notes).
+   judge_tnr / provisional / counterexamples / laws_tripped / commit / notes).
 2. **Append it** to ``docs/quality/scorecard.jsonl``, one JSON object per line, append-only.
 
 What it records is the **independent verifier's verdict** — a *verifiable fact* (proposer ≠ verifier),
@@ -32,12 +32,24 @@ SCORECARD_PATH = os.path.join("docs", "quality", "scorecard.jsonl")
 
 # The append-only row schema (docs/quality/README.md). Emitted in this order.
 # `judge_tnr` = the measured true-negative rate of the JUDGE that produced this verdict
-# (:mod:`cisco_toolkit.defect_panel`), or ``null`` when unmeasured. A QA verdict is a Claude judge on
-# Claude's work, so an APPROVE is only trustworthy to the extent the judge is *shown* to REJECT known-bad
-# work (Jain et al. 2510.11822: LLM judges default to TNR < 25%). ``null`` = trust unquantified — never a
-# fabricated confidence. A deterministic ``eval_harness`` row is bias-free and simply carries ``null`` here.
-SCHEMA_KEYS = ("date", "deliverable", "score", "verdict", "judge_tnr", "counterexamples",
-               "laws_tripped", "commit", "notes")
+# (:mod:`cisco_toolkit.defect_panel` seeds the panel; ``ollama_judge`` measures), or ``null`` when
+# unmeasured. A QA verdict is a Claude judge on Claude's work, so an APPROVE is only trustworthy to the
+# extent the judge is *shown* to REJECT known-bad work (Jain et al. 2510.11822: LLM judges default to
+# TNR < 25%). ``null`` = trust unquantified — never a fabricated confidence. A deterministic
+# ``eval_harness`` row is bias-free and simply carries ``null`` here.
+# `provisional` (P0-6 / DEC-004) makes that trust judgement MACHINE-READABLE: ``true`` on any APPROVE
+# whose ``judge_tnr`` is null or below :data:`JUDGE_TNR_FLOOR` — that verdict is ADVISORY and nothing
+# may gate on it (:func:`is_provisional` is the one predicate; enforced at :func:`append_row`).
+SCHEMA_KEYS = ("date", "deliverable", "score", "verdict", "judge_tnr", "provisional",
+               "counterexamples", "laws_tripped", "commit", "notes")
+
+# The broken-instrument threshold: below this measured TNR an LLM judge approves almost anything
+# (Jain et al. 2510.11822 — LLM judges default to TNR < 25%), so its APPROVE quantifies nothing. This
+# constant OWNS the 0.25 figure — docs/quality/README.md cites it; never restate it elsewhere (SSOT Law 1).
+JUDGE_TNR_FLOOR = 0.25
+# The `deliverable` label of a judge-baseline measurement row (written by `ollama_judge --append-baseline`;
+# read back by :func:`latest_judge_baseline` to stamp each subsequent QA verdict).
+JUDGE_BASELINE_DELIVERABLE = "judge-baseline"
 
 # Deliverable family tokens -> the canonical `deliverable` label the scorecard uses.
 _FAMILY = [
@@ -175,6 +187,55 @@ def read_rows(path: str = SCORECARD_PATH) -> List[Dict[str, Any]]:
         return []
 
 
+# --- judge trust: PROVISIONAL vs quantified verdicts (P0-6 / DEC-004; gap G-006) -----------------
+
+def _num(v: Any) -> Optional[float]:
+    """``v`` as a float when it is a real number (bools excluded — True is an int), else ``None``."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def latest_judge_baseline(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The most recent judge-baseline row carrying a MEASURED (numeric) ``judge_tnr``, or ``None``.
+    File order is append order, so the last match is the current baseline. A baseline row without a
+    numeric measurement is skipped — it quantifies nothing and must stamp nothing."""
+    for r in reversed(rows or []):
+        if (isinstance(r, dict) and r.get("deliverable") == JUDGE_BASELINE_DELIVERABLE
+                and _num(r.get("judge_tnr")) is not None):
+            return r
+    return None
+
+
+def is_provisional(row: Dict[str, Any]) -> bool:
+    """THE provisional predicate (P0-6 / DEC-004): does this row's APPROVE quantify trust, or merely
+    assert it? ``True`` iff the row is a JUDGE verdict — an APPROVE with no numeric ``score`` (a
+    numeric score means the deterministic golden harness produced it: bias-free, no judge involved) —
+    whose ``judge_tnr`` is unmeasured (null) or measured below :data:`JUDGE_TNR_FLOOR`. A provisional
+    APPROVE is ADVISORY: no gate may advance on it. BLOCK rows are never provisional — a grounded
+    counterexample stands regardless of the judge's TNR (a weak judge OVER-approves; its rejections
+    are findings to verify, not confidence to discount)."""
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("verdict") or "").strip().upper() not in ("APPROVE", "APPROVED"):
+        return False
+    if _num(row.get("score")) is not None:       # deterministic harness row — bias-free by construction
+        return False
+    tnr = _num(row.get("judge_tnr"))
+    return tnr is None or tnr < JUDGE_TNR_FLOOR
+
+
+def stamp_judge_trust(row: Dict[str, Any], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """EMIT (P0-6a): annotate a freshly-parsed QA-verdict row with the judge-trust facts before it is
+    appended — ``judge_tnr`` from the latest judge-baseline in ``rows`` (``None`` when no baseline was
+    ever measured: honest absence, never a guess) plus the machine-readable ``provisional`` mark, so
+    PROVISIONAL vs quantified is readable off the row itself. Pure over the given rows; the writers
+    (:func:`run_hook` and the ``--record`` arm) pass ``read_rows(path)``. QA-verdict rows only — a
+    deterministic ``eval_harness`` row carries no judge and must never inherit a judge's TNR."""
+    base = latest_judge_baseline(rows)
+    row["judge_tnr"] = _num(base.get("judge_tnr")) if base else None
+    row["provisional"] = is_provisional(row)
+    return row
+
+
 def _same_verdict(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     keys = ("deliverable", "verdict", "counterexamples", "commit", "notes")
     return all(a.get(k) == b.get(k) for k in keys)
@@ -192,6 +253,12 @@ def append_row(row: Dict[str, Any], path: str = SCORECARD_PATH, *, dedupe: bool 
         if existing and _same_verdict(existing[-1], row):
             return False
     ordered = {k: row.get(k) for k in SCHEMA_KEYS}
+    # ENFORCE (P0-6b): the PROVISIONAL mark cannot be dropped or persisted False at the choke point —
+    # an APPROVE whose judge_tnr is null / below JUDGE_TNR_FLOOR is written ``provisional: true`` no
+    # matter what the caller set. Fabricated confidence is the one direction the schema makes
+    # impossible; the conservative direction (a caller forcing True) is left alone.
+    if is_provisional(ordered):
+        ordered["provisional"] = True
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
@@ -476,6 +543,7 @@ def run_hook(stdin_text: str, *, path: str = SCORECARD_PATH,
     for text in candidates:
         row = parse_qa_verdict(text, date=date, commit=commit)
         if row:
+            stamp_judge_trust(row, read_rows(path))    # EMIT: judge_tnr from the latest baseline (P0-6a)
             return row if append_row(row, path) else None
     return None
 
@@ -524,6 +592,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row = parse_qa_verdict(f.read(), date=_today(), commit=_git_commit())
         except Exception:
             row = None
+        if row is not None:
+            stamp_judge_trust(row, read_rows(path))    # EMIT: judge_tnr from the latest baseline (P0-6a)
         if row is not None and not append_row(row, path):
             row = None                             # dedupe no-op — already recorded
         print(f"scorecard += {row['deliverable']} {row['verdict']} (counterexamples={row['counterexamples']}, "

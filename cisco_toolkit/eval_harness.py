@@ -105,16 +105,23 @@ class ScoreResult:
             else:
                 notes = (f"eval: {self.n_passed}/{self.n_applicable} checks pass"
                          f"{f'; {len(self.laws_unverified)} law(s) unverified (evidence absent)' if self.laws_unverified else ''}")
-        return {
+        row = {
             "date": date,
             "deliverable": deliverable,
             "score": self.score,
             "verdict": "BLOCK" if self.counterexamples else "APPROVE",
+            "judge_tnr": None,       # deterministic checks — there is no judge to measure (bias-free)
+            "provisional": None,     # derived below via THE predicate (never a second computation)
             "counterexamples": self.counterexamples,
             "laws_tripped": self.laws_tripped,
             "commit": commit,
             "notes": notes,
         }
+        # P0-6: a scored row is never provisional (no judge); an APPROVE with score=None (nothing was
+        # applicable) quantifies nothing and honestly marks itself advisory rather than gate-worthy.
+        from cisco_toolkit.scorecard import is_provisional
+        row["provisional"] = is_provisional(row)
+        return row
 
 
 # --- individual checks -------------------------------------------------------------------------

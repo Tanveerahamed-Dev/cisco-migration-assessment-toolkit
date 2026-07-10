@@ -34,7 +34,15 @@ GUARD_FILES = [
     # registry-freshness guard (P0-5): four docs/ssot.md rows + ADR 0001 cite it as their enforcement;
     # deleting it must go RED here, not leave the registry advertising a guard that no longer exists.
     "tests/test_registry_freshness.py",
+    # the schema-version value pin (P0-6 / G-006): test_version.py is what makes the REAL
+    # cisco_toolkit.__version__ value a guarded fact (the docs/ssot.md "currently 3.23.0" cache);
+    # test_registry_freshness guards the registry CELL, this guards the VALUE — gut either, read RED.
+    "tests/test_version.py",
 ]
+
+# This roster's exact membership is itself pinned by tests/test_selfcheck.py::test_guard_files_exact_pin
+# (P0-6): without that pin, dropping an entry here AND deleting its file leaves every check green —
+# the roster is the one place where a guard can silently stop being watched.
 
 # The D12 protected-tier artifact constants (store path, env override, artifact name) are OWNED by
 # cisco_toolkit.memory_guard (one source of truth) and imported lazily inside the check, so a deleted
@@ -157,6 +165,51 @@ def check_guards_nonvacuous(root: str) -> Dict[str, str]:
     return _check("guards_nonvacuous", GREEN, f"all {len(GUARD_FILES)} guard suites present and asserting")
 
 
+def check_judge_trust(root: str) -> Dict[str, str]:
+    """PROVISIONAL-verdict enforcement (P0-6 / DEC-004; gap G-006) — the consumer that treats an
+    unquantified APPROVE as NON-GATING. A QA APPROVE is an LLM judge's output; it gates nothing
+    unless the judge's measured TNR clears ``scorecard.JUDGE_TNR_FLOOR`` (below it the instrument is
+    broken — LLM judges default to TNR < 25%, Jain et al. 2510.11822). RED on the one forbidden
+    state: a persisted row contradicting the predicate in the TRUSTING direction (``provisional``
+    stored false while judge_tnr is null / below the floor — fabricated confidence). Advisory-only
+    approvals under an honestly-demoted weak judge are GREEN *with the demotion disclosed* — a
+    measured-weak instrument correctly marked is health, not failure. No scorecard → UNKNOWN
+    (signal_absent; the substrate check owns the missing-file RED)."""
+    p = os.path.join(root, "docs", "quality", "scorecard.jsonl")
+    if not os.path.exists(p):
+        return _check("judge_trust", UNKNOWN,
+                      "signal_absent: docs/quality/scorecard.jsonl not found — no verdicts to enforce on")
+    try:
+        from cisco_toolkit import scorecard as SCD
+        rows = SCD.read_rows(p)
+        fabricated = [f"row {i + 1} ({r.get('date')} {r.get('deliverable')})"
+                      for i, r in enumerate(rows)
+                      if SCD.is_provisional(r) and r.get("provisional") is False]
+        if fabricated:
+            return _check("judge_trust", RED,
+                          f"fabricated confidence: {len(fabricated)} APPROVE row(s) persisted "
+                          f"provisional=false with judge_tnr null/< {SCD.JUDGE_TNR_FLOOR} "
+                          f"(first: {fabricated[0]}) — a below-floor judge's APPROVE must stay advisory")
+        judged = [r for r in rows
+                  if str(r.get("verdict") or "").strip().upper().startswith("APPROVE")
+                  and SCD._num(r.get("score")) is None]
+        advisory = sum(1 for r in judged if SCD.is_provisional(r))
+        base = SCD.latest_judge_baseline(rows)
+        if base is None:
+            tail = (f"no judge-baseline row yet — every judge APPROVE stays advisory until a "
+                    f"baseline clears TNR >= {SCD.JUDGE_TNR_FLOOR}")
+        else:
+            tnr = SCD._num(base.get("judge_tnr"))
+            state = ("BELOW the floor — judge APPROVEs stay advisory until a re-baseline clears it"
+                     if tnr < SCD.JUDGE_TNR_FLOOR else
+                     "clears the floor — freshly-stamped APPROVEs are gating")
+            tail = f"latest judge-baseline TNR={tnr} ({base.get('date')}), floor {SCD.JUDGE_TNR_FLOOR}: {state}"
+        return _check("judge_trust", GREEN,
+                      f"{advisory}/{len(judged)} judge-APPROVE row(s) advisory (non-gating); {tail}")
+    except Exception as e:
+        return _check("judge_trust", UNKNOWN, f"could not evaluate: {e!r}")
+
+
 def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dict[str, str]:
     """Pin the REAL protected-memory artifact (P0-1 / DEC-005; gap G-001). ``memory_guard`` is a
     mechanism exercised only by synthetic-store tests — without this check, deleting or unprotecting
@@ -249,6 +302,7 @@ def run_selfcheck(root: Optional[str] = None, *, now: Optional[float] = None,
         check_nightly_ledger(root),
         check_learnings_discipline(root),
         check_guards_nonvacuous(root),
+        check_judge_trust(root),
         check_protected_artifact(root, memory_dir=memory_dir),
         check_graph_fresh(root, now=now, stale_days=graph_stale_days),
     ]

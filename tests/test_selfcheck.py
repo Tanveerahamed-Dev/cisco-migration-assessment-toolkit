@@ -6,6 +6,7 @@ healthy repo reads GREEN. Root, now AND memory_dir are injected so every case is
 per DEC-005, portable pytest must NEVER reference the per-machine real agent-memory store (the
 runtime default path is the pin; here every store is synthetic, under tmp or via $AGENT_MEMORY_DIR).
 """
+import json
 import os
 
 from cisco_toolkit import memory_guard as MG
@@ -134,6 +135,101 @@ def test_learnings_discipline(tmp_path):
     with open(os.path.join(q, "learnings.md"), "w", encoding="utf-8") as f:
         f.write("\n".join("- unverified claim of great progress" for _ in range(150)))
     assert SC.check_learnings_discipline(root)["status"] == SC.RED
+
+
+# --- the GUARD_FILES exact-membership pin (P0-6 / DEC-004; gap G-006) ----------------------------
+
+def test_guard_files_exact_pin():
+    """THE roster pin: check_guards_nonvacuous only watches what GUARD_FILES lists, so before P0-6
+    dropping an entry TOGETHER with its file left every check green — the one silent way to un-guard
+    a guard. This pin makes the roster membership itself the fact under test: exact and
+    duplicate-free. Editing the roster now means editing this pin in the same reviewed change.
+    (Count note: the P0-6 plan said 13→14, but the roster already held 14 when P0-5 added
+    test_registry_freshness.py in the same window the plan was written — the in-code owner wins,
+    so with test_version.py the true membership is 15.)"""
+    expected = {
+        "tests/test_memory_guard.py", "tests/test_learnings.py", "tests/test_scorecard.py",
+        "tests/test_calibration.py", "tests/test_clock.py", "tests/test_domain_packs.py",
+        "tests/test_council.py", "tests/test_eval_harness.py", "tests/test_ssot_registry.py",
+        "tests/test_pipeline_golden.py", "tests/test_defect_panel.py", "tests/test_fault_corpus.py",
+        "tests/test_ollama_judge.py", "tests/test_registry_freshness.py",
+        # P0-6 / G-006: the schema-version VALUE pin joins the roster
+        "tests/test_version.py",
+    }
+    assert set(SC.GUARD_FILES) == expected
+    assert len(SC.GUARD_FILES) == len(expected) == 15     # no duplicate hiding a dropped entry
+
+
+def test_guard_files_exist_and_assert_in_this_repo():
+    """Non-vacuity against the REAL repo (every other case here uses synthetic roots): each pinned
+    guard file exists HERE and asserts. This is what turns 'dropped the roster entry AND deleted the
+    file' into a pytest failure instead of a silently green selfcheck."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    c = SC.check_guards_nonvacuous(repo)
+    assert c["status"] == SC.GREEN, c["detail"]
+
+
+# --- judge trust: the PROVISIONAL-verdict consumer (P0-6 / DEC-004; gap G-006) -------------------
+
+def _scorecard_with(root, rows):
+    q = _quality_dir(root)
+    with open(os.path.join(q, "scorecard.jsonl"), "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+
+def test_judge_trust_missing_scorecard_is_signal_absent(tmp_path):
+    c = SC.check_judge_trust(str(tmp_path))
+    assert c["status"] == SC.UNKNOWN and "signal_absent" in c["detail"]
+
+
+def test_judge_trust_advisory_approvals_green_with_demotion_disclosed(tmp_path):
+    """An honestly-marked weak judge (TNR 0.2 < floor) is a healthy instrument reading: GREEN, with
+    the demotion disclosed — every judge APPROVE counted advisory, none gating."""
+    root = str(tmp_path)
+    _scorecard_with(root, [
+        {"date": "2026-07-08", "deliverable": "judge-baseline", "score": None, "verdict": None,
+         "judge_tnr": 0.2},
+        {"date": "2026-07-09", "deliverable": "set", "score": None, "verdict": "APPROVE",
+         "judge_tnr": 0.2, "provisional": True},
+    ])
+    c = SC.check_judge_trust(root)
+    assert c["status"] == SC.GREEN
+    assert "1/1" in c["detail"] and "BELOW the floor" in c["detail"]
+
+
+def test_judge_trust_fabricated_confidence_goes_red(tmp_path):
+    """THE enforcement teeth: an APPROVE persisted provisional=false while its judge_tnr is
+    null/below the floor is fabricated confidence — RED, the exact drift this consumer exists to
+    catch (any code gating on verdicts would have trusted it)."""
+    root = str(tmp_path)
+    _scorecard_with(root, [{"date": "2026-07-09", "deliverable": "set", "score": None,
+                            "verdict": "APPROVE", "judge_tnr": None, "provisional": False}])
+    c = SC.check_judge_trust(root)
+    assert c["status"] == SC.RED and "fabricated confidence" in c["detail"]
+
+
+def test_judge_trust_floor_clearing_baseline_gates(tmp_path):
+    root = str(tmp_path)
+    _scorecard_with(root, [
+        {"date": "2026-07-10", "deliverable": "judge-baseline", "score": None, "verdict": None,
+         "judge_tnr": 0.6},
+        {"date": "2026-07-10", "deliverable": "set", "score": None, "verdict": "APPROVE",
+         "judge_tnr": 0.6, "provisional": False},
+    ])
+    c = SC.check_judge_trust(root)
+    assert c["status"] == SC.GREEN and "clears the floor" in c["detail"] and "0/1" in c["detail"]
+
+
+def test_judge_trust_legacy_unmarked_rows_are_advisory_not_red(tmp_path):
+    """Append-only history: a pre-P0-6 APPROVE (no provisional key at all) reads as advisory via the
+    predicate — never RED (absent is unmarked, not a lie) and never trusted as gating."""
+    root = str(tmp_path)
+    _scorecard_with(root, [{"date": "2026-07-07", "deliverable": "set", "score": None,
+                            "verdict": "APPROVE"}])
+    c = SC.check_judge_trust(root)
+    assert c["status"] == SC.GREEN
+    assert "1/1" in c["detail"] and "no judge-baseline" in c["detail"]
 
 
 # --- the protected-tier artifact pin (P0-1 / DEC-005; gap G-001, evidence BLK-1) -----------------
