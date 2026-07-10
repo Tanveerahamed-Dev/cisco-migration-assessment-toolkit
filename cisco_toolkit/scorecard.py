@@ -482,8 +482,9 @@ def run_hook(stdin_text: str, *, path: str = SCORECARD_PATH,
 
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI. ``trend`` renders the quality trend (the line you watch); ``--hook`` reads a hook payload
-    on stdin and appends a QA verdict if present; ``--show`` prints the tail of the scorecard.
-    Always exits 0 on the hook path (fail-open)."""
+    on stdin and appends a QA verdict if present; ``--record-from <transcript>`` / ``--record
+    <message-file>`` append the independent reviewer's verdict explicitly (transcript arm / message
+    arm); ``--show`` prints the tail of the scorecard. Always exits 0 on the hook path (fail-open)."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -506,6 +507,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         row = run_hook(json.dumps({"transcript_path": tpath}), path=path) if tpath else None
         print(f"scorecard += {row['deliverable']} {row['verdict']} (counterexamples={row['counterexamples']}, "
               f"laws={row['laws_tripped']})" if row else "no QA verdict found in transcript — nothing recorded")
+        return 0
+    if "--record" in argv:
+        # The MESSAGE arm: record the independent reviewer's verdict from a saved VERBATIM copy of its
+        # final message. For harnesses where SubagentStop never fires AND the Agent-tool subagent
+        # transcript is never written (the Claude Agent SDK / desktop app) — there the transcript arm
+        # above has nothing to read, and without this arm the nerve depends on operator memory. A FILE,
+        # not stdin: a cp1252 Windows console mangles em-dashes mid-verdict. Same conservative parser
+        # as every arm — text without the per-artifact reviewer signature records NOTHING, so
+        # main-agent prose still cannot fabricate a row. Fail-open: unreadable file → nothing appended.
+        i = argv.index("--record")
+        fpath = argv[i + 1] if i + 1 < len(argv) else ""
+        row = None
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                row = parse_qa_verdict(f.read(), date=_today(), commit=_git_commit())
+        except Exception:
+            row = None
+        if row is not None and not append_row(row, path):
+            row = None                             # dedupe no-op — already recorded
+        print(f"scorecard += {row['deliverable']} {row['verdict']} (counterexamples={row['counterexamples']}, "
+              f"laws={row['laws_tripped']})" if row else "no QA verdict in message file — nothing recorded")
         return 0
     if "--show" in argv:
         rows = read_rows(path)

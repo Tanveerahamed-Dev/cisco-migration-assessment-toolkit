@@ -118,3 +118,28 @@ in `docs/quality/pir_outcomes.jsonl`, `precert.compute_readiness_freeze` (`313b4
 `docs/agent-brain-selfmem-upgrade-plan-2026-07-08.md`, `docs/autonomous-brain-plan-v4-final-2026-07-06.md`
 (D10/D11/D12/D13), `docs/decisions/0001-two-store-knowledge-architecture.md` Amendment 1. Air-gapped session —
 no engine code changed by authoring this plan.
+
+## 8. Addendum — 2026-07-10 (adversarial re-verification: repairs landed, one decision surfaced)
+
+*A refute-first pass over this plan's load-bearing numbers against their in-code owners found substrate
+defects — repaired same-day — and one strategic gap only you can close. No Act was pulled forward.*
+
+- **Repaired — doc-rot on the coverage headline.** CLAUDE.md + `docs/universal-architecture-coverage.md`
+  said 40 detectors / 23 classes; the owner (`design_advisor._ARCH_COVERAGE_REGISTRY`) holds **46 / 27**,
+  including the multi-vendor classes (Arista/Juniper/FortiGate/ISE/FMC/cloud) the docs never absorbed.
+  Reconciled, and a count reconcile-guard added to `tests/test_ssot_registry.py` so the next drift fails
+  the suite. (Graph size in CLAUDE.md and the stale pyproject release-train comment fixed in the same pass.)
+- **Repaired — the feedback nerve's dead trigger.** Under the Agent-SDK harness `SubagentStop` never fires
+  and subagent transcripts are empty, so `/qa` verdicts were recorded only by operator memory (3 rows ever).
+  `scorecard --record <message-file>` (the message arm) now exists, tested, and `/qa` ends by invoking it.
+- **Recorded — §3's judge-gate margin is thin.** "Deterministic TNR 1.0 clears 0.75" holds with a 95%
+  Clopper–Pearson lower bound of 0.779 (margin 0.029); one panel miss un-clears it (11/12 → 0.661).
+  Hardening targets (18 / 29 / 59, independently sourced classes only) are registered in
+  `docs/quality/README.md` — gated hardening, not scheduled work.
+- **DECISION NEEDED (yours) — Act 1 has no diverse path.** The critical path is single-homed on a real
+  cutover window with no dated fallback; the schema already defines `shadow-PIR`, Syntys's MOP/NRFU
+  execution will produce real outcomes harvestable at zero fabrication cost, and a lab-gear window is a
+  real (non-fabricated) outcome too. **Trigger: if no REAL row exists by 2026-08-05, explicitly decide**
+  (a) whether Syntys execution outcomes are harvested as `shadow-PIR` rows, and (b) whether a lab cutover
+  counts as `REAL` for the D11 floor or joins the surrogate classes. Until then the answer stays "wait" —
+  this addendum adds a date to the waiting, not work.
