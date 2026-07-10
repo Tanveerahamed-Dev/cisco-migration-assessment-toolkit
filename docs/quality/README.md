@@ -206,6 +206,42 @@ floor counts `REAL` only. This is why, once the 7 rows are emitted into `pir_out
 detector without ever re-tuning the engine. Pinned by `tests/test_fault_corpus.py` (in the self-check
 `GUARD_FILES`).
 
+## The sealed holdout — `holdout-contract.md` (DEC-007, P1-2; dormant until N ≥ 50 REAL)
+
+[`holdout-contract.md`](holdout-contract.md) is the **policy owner** (registered in
+[`docs/ssot.md`](../ssot.md)) for the DEC-007 hybrid data policy: today the existing floors above
+are the only gates; when the REAL rows in `pir_outcomes.jsonl` reach the activation floor
+(`cisco_toolkit/holdout.py :: ACTIVATION_FLOOR` owns the figure), a **sealed 70/30
+optimisation/holdout split activates** — a one-time human-run
+`python -m cisco_toolkit.holdout seal`, which **refuses** below the floor and counts REAL rows
+only (same `source_class` discriminator as the D11 gate; a surrogate flood never activates it).
+The contract was committed **before any REAL data exists** — pre-registration, so the split rule
+cannot be fitted to the data.
+
+The seal is a committed `holdout_manifest.json` on the `cisco_toolkit/manifest.py` hash chain: it
+freezes the sealed policy terms + each holdout row's content **digest** (never a second copy of
+the rows — the store stays the one owner). Holdout rows are read **only** via the logging
+accessor, `python -m cisco_toolkit.holdout read --who <name> [--purpose "…"]`, which verifies the
+seal against the store and appends one line per access attempt — success or integrity failure —
+to the append-only, committed `holdout_access.jsonl`:
+
+| field | meaning |
+|---|---|
+| `ts` | UTC ISO timestamp of the access attempt |
+| `who` | declared identity (required — an unattributed read is refused) |
+| `os_user` | best-effort OS account (declared ≠ proven, same residual as the scorecard's provenance pair) |
+| `purpose` | free-text why, recorded verbatim (`null` if not given) |
+| `manifest` / `chain_root` | which seal the read was against |
+| `ok` | whether the seal verified against the store |
+| `n_rows` | holdout rows returned (0 on an integrity failure) |
+
+**Audit trail, not proof:** the rows are plaintext in a repo anyone with a checkout can read;
+*mathematical proof of non-use does not exist and is not claimed* (the contract says so plainly).
+What the mechanism gives is tamper-evidence (hash chain), attributable access (this log, reviewed
+weekly alongside the gate-override log), and pre-registration. Discipline — refusal below the
+floor, seal→tamper→verify-fails, access-logged, contract figures reconciled to their code owners —
+is pinned by `tests/test_holdout.py`.
+
 ## `nightly_runs.jsonl` — the clock's safety rails (Phase 2, rails only)
 
 Phase 2 wires a nightly, propose-only headless `claude -p` run. That run spends **real metered money**
