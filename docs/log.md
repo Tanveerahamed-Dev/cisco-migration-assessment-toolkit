@@ -35,6 +35,12 @@ Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembe
   events then timed out — the `gh ... --json | jq` pipeline failed every iteration and the fallback swallowed
   it, making hard failure indistinguishable from "still pending". A poll loop must emit at least one error
   event before continuing; silence is not success. bridge-candidate
+- `!lesson` **Every CI check "failing" in ~2s with zero failed steps and `log not found` = the jobs never
+  STARTED — read the check-run annotations API, don't debug the code.** This PR's own docs-only run showed
+  10/10 instant fails; `gh api .../check-runs/<id>/annotations` surfaced the real cause: "recent account
+  payments have failed or your spending limit needs to be increased" (Actions billing exhausted after a
+  9-PR day). With required-checks branch protection, billing exhaustion silently makes EVERY merge
+  impossible until fixed (or human admin bypass). bridge-candidate
 
 - Built `.claude/commands/architect-plan.md` through 4 adversarial iterations (self-verify → self-adversarial →
   independent refuter fan-out → consistency audit; each round found real defects the prior round missed, incl. a
