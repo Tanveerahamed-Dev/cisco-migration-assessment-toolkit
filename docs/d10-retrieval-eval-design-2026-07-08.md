@@ -92,7 +92,11 @@ This is the coverage-honest answer to "should D10 have a vector lane": **measure
 ## 7. Falsification criteria — commit BEFORE running (coverage-honest)
 
 Write these thresholds to a file first; do not adjust after seeing results. Require **p < 0.05 (paired t-test)
-∧ Cohen's d > 0.4** before calling any delta real (60 queries has only ~40–50% power at d=0.5).
+∧ Cohen's d > 0.4** before calling any delta real. Power honesty (corrected 2026-07-10 — the earlier
+"~40–50%" figure here was the UNPAIRED two-sample result): for this doc's own pre-registered PAIRED
+test, power at dz=0.5 is **≈97% overall** (n=60 pairs; ≈78% even at zero pairing correlation) but only
+**≈55% / ≈33% per-stratum** at n=20 / n=10 — the caution belongs to the per-stratum decisions
+(the semantic-stratum dense criterion above all), not the overall test.
 
 - **BM25 earns its place:** `MRR@5(graph+BM25) > MRR@5(graph) + 0.05`, significant. FALSIFIED otherwise.
 - **Dense earns its dependency:** `MRR@5(+dense, semantic) > MRR@5(BM25, semantic) + 0.05` AND
@@ -102,7 +106,8 @@ Write these thresholds to a file first; do not adjust after seeing results. Requ
 
 ## 8. Offline stack (all air-gap-safe)
 
-`rank-bm25` / `bm25s`; `sentence-transformers` + `faiss-cpu` (CPU, `IndexFlatIP` exact — fine at 5k nodes);
+`rank-bm25` / `bm25s`; `sentence-transformers` + `faiss-cpu` (CPU, `IndexFlatIP` exact — fine at this
+graph's ~7.0k nodes; count owner: `graphify-out/GRAPH_REPORT.md` header);
 `pytrec_eval` (the reference `trec_eval` binding, offline); `scipy`/`scikit-learn` for the paired t-test + κ.
 Everything runs with no egress. Re-implement the source doc's snippets clean (its `[^N]` markers are corruption).
 
