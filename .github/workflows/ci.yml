@@ -21,10 +21,17 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Runner fleet toggle: the repo variable CI_RUNNER (Settings → Secrets and variables → Actions →
+# Variables) reroutes every job to the self-hosted pool when set to "self-hosted" ($0 metered
+# minutes — the pool is the registered runners on the dev box), and falls back to GitHub-hosted
+# runners when unset/empty. Job NAMES still derive from the matrix values, so the 10 required
+# branch-protection contexts (e.g. "Tests · py3.12 · ubuntu-latest") stay byte-identical under
+# either fleet — flipping the variable never wedges the merge gate.
+
 jobs:
   lint:
     name: Ruff lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,7 +45,7 @@ jobs:
 
   test:
     name: Tests · py${{ matrix.python-version }} · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ vars.CI_RUNNER || matrix.os }}
     strategy:
       # Don't let one version/OS failing cancel the rest — we want the full grid of results.
       fail-fast: false
@@ -68,7 +75,7 @@ jobs:
 
   typecheck:
     name: mypy
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -93,7 +100,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -114,7 +121,7 @@ jobs:
 
   package:
     name: Package build + install
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
