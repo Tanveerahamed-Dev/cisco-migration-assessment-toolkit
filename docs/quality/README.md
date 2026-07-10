@@ -17,7 +17,8 @@ Every consequential QA / eval cycle appends one row. **Verifiable facts only —
 | `deliverable` | string | which artifact (e.g. `design`, `mop`, `crd`, `hld`, or a snapshot id) |
 | `score` | number \| null | eval-suite score (0–100) from the golden-snapshot harness; `null` on a `/qa`-verdict row (a QA transcript yields a verdict, not a number) |
 | `verdict` | string | `APPROVE` / `BLOCK` (from deliverable-qa-reviewer) |
-| `judge_tnr` | number \| null | the measured true-negative rate of the JUDGE that produced this verdict (`cisco_toolkit.defect_panel`), or `null` when unmeasured. An `APPROVE` is only trustworthy to the extent the judge is *shown* to REJECT known-bad work (Jain et al. `2510.11822`: LLM judges default to TNR < 25%). **A QA-verdict row with `judge_tnr` null/absent is PROVISIONAL** — trust unquantified until the defect-panel baseline runs. A deterministic `eval_harness` row is bias-free and carries `null` here (no judge involved). |
+| `judge_tnr` | number \| null | the measured true-negative rate of the JUDGE that produced this verdict, **stamped by the QA-verdict writers from the latest `judge-baseline` row** on this scorecard (`scorecard.latest_judge_baseline`; measured by `python ollama_judge.py <model> --append-baseline` over the `cisco_toolkit.defect_panel` panel) — or `null` when no baseline was ever measured (honest absence, never a guess). An `APPROVE` is only trustworthy to the extent the judge is *shown* to REJECT known-bad work (Jain et al. `2510.11822`: LLM judges default to TNR < 25%). A deterministic `eval_harness` row is bias-free and carries `null` here (no judge involved). |
+| `provisional` | bool \| null | **the machine-readable PROVISIONAL mark (P0-6 / DEC-004) — enforced in code, not by this table**: `true` on any APPROVE whose `judge_tnr` is `null` or below the broken-instrument floor owned by `cisco_toolkit.scorecard.JUDGE_TNR_FLOOR` (0.25 — that constant is the owner; this cell is a cited cache). A provisional APPROVE is **ADVISORY — nothing may gate on it**. `scorecard.is_provisional` is the one predicate; `append_row` enforces the mark at the write choke point (a fabricated `provisional: false` cannot persist), and `selfcheck.check_judge_trust` is the consumer check that reads **RED** on any persisted row contradicting the predicate in the trusting direction. `false` on deterministic scored rows and floor-clearing judge APPROVEs; `null` on non-verdict rows (`judge-baseline` measurements) and pre-P0-6 history — **unmarked is still treated advisory by the predicate**, never trusted by default. |
 | `counterexamples` | int | number of grounded defects the verifier found this cycle (should trend ↓) |
 | `laws_tripped` | array | which of the 10 Deliverable-Excellence Laws failed, if any |
 | `commit` | string | git SHA the verdict was produced against |
@@ -100,6 +101,25 @@ instrument on this hardware. `run_baseline` judges a known-GOOD deliverable **fi
 `rejection_rate` is only meaningful when `approves_clean` is True. Hermetic tests inject the model I/O, so the
 harness never needs a running model (`tests/test_defect_panel.py`, `tests/test_ollama_judge.py`); both are in
 the self-check `GUARD_FILES` so a gutted TNR floor reads **RED**.
+
+**Advisory-until-measured policy (P0-6 / DEC-004; gap G-006).** A `/qa` APPROVE is **demoted to advisory**
+unless the judge that produced it has a measured baseline clearing `judge_tnr ≥ JUDGE_TNR_FLOOR`
+(`cisco_toolkit/scorecard.py` owns the 0.25 figure — the Jain et al. broken-instrument threshold). The
+mechanics are code, not this paragraph: the QA-verdict writers **stamp** each row's `judge_tnr` from the
+latest `judge-baseline` row (`latest_judge_baseline`); `is_provisional` + `append_row` **persist**
+`provisional: true` on every unmeasured / below-floor APPROVE (a fabricated `false` cannot be written);
+and `selfcheck.check_judge_trust` is the **consumer** — anything gating on verdicts must treat a
+provisional APPROVE as non-gating, and the self-check reads RED if a row is ever persisted trusting in
+contradiction. Gate consequence: a PROVISIONAL APPROVE never advances a PPDIOO gate by itself — it is the
+reviewer's recorded opinion, pending an instrument that has *earned* trust. Re-baseline with
+`python ollama_judge.py qwen3:4b --append-baseline` after any judge/prompt/model change; the appended row
+is what promotes (or keeps demoted) every subsequent verdict. Ollama unreachable → the arm prints
+`signal_absent` and appends **nothing** (a measurement row is never fabricated).
+
+**Re-baseline record (2026-07-10, P0-6d):** re-run over the 5-defect text-visible panel via the new arm —
+localized TNR **0.2** (`D-12` caught; `D-01/03/06/11` approved), `approves_clean=True`, reproducing the
+2026-07-08 measurement exactly. **Still below the 0.25 floor ⇒ judge APPROVEs remain PROVISIONAL/advisory**
+until a stronger judge (bigger model, better prompt, or a Claude-arm panel run) clears it.
 
 ## `scorecard trend` — the line you watch go up (Phase 1)
 
