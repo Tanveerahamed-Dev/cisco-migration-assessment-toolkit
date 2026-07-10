@@ -12,6 +12,14 @@ never the main agent's self-assessment (the coasting trap the README warns about
 ``null`` on this path: the numeric eval score comes from the golden-snapshot harness
 (:mod:`cisco_toolkit.eval_harness`), not from a QA transcript.
 
+**Proposer ≠ verifier is mechanical here (P0-2 / gap G-002):** rows carry an optional provenance pair
+(``authored_by`` / ``reviewed_by``) and :func:`check_independence` REFUSES any record whose two
+identities are the same non-empty string — a self-review can never mint a quality row (the record
+arms refuse loudly with the reason; :func:`append_row` backstops the same rule at the persistence
+layer). Honest residual: the check is over *declared* identity strings, which an agent could
+misdeclare — it raises the bar, it is not proof of independence; the hard boundary stays the
+OS/permission layer (CLAUDE.md trust-boundary note).
+
 **Coverage-honest & conservative:** if the text is not confidently a QA verdict, :func:`parse_qa_verdict`
 returns ``None`` and nothing is appended — a missing verdict is recorded as *nothing*, never a
 fabricated "APPROVE". The hook that drives this (``.claude/hooks/scorecard-append.sh``) is fail-open:
@@ -36,8 +44,12 @@ SCORECARD_PATH = os.path.join("docs", "quality", "scorecard.jsonl")
 # Claude's work, so an APPROVE is only trustworthy to the extent the judge is *shown* to REJECT known-bad
 # work (Jain et al. 2510.11822: LLM judges default to TNR < 25%). ``null`` = trust unquantified — never a
 # fabricated confidence. A deterministic ``eval_harness`` row is bias-free and simply carries ``null`` here.
+# `authored_by` / `reviewed_by` (P0-2 / G-002) = the optional provenance pair — which agent authored
+# the reviewed deliverable(s) and which produced this verdict. Absent -> honest ``null`` (provenance
+# undeclared), and pre-P0-2 rows on disk carry no such keys at all — both stay valid (back-compat).
+# :func:`check_independence` is the mechanical proposer≠verifier wedge over the pair.
 SCHEMA_KEYS = ("date", "deliverable", "score", "verdict", "judge_tnr", "counterexamples",
-               "laws_tripped", "commit", "notes")
+               "laws_tripped", "commit", "notes", "authored_by", "reviewed_by")
 
 # Deliverable family tokens -> the canonical `deliverable` label the scorecard uses.
 _FAMILY = [
@@ -155,6 +167,28 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
+# --- proposer != verifier wedge (P0-2 / gap G-002) ----------------------------------------------
+
+def check_independence(authored_by: Optional[str], reviewed_by: Optional[str]) -> Optional[str]:
+    """The refusal reason when ``authored_by`` and ``reviewed_by`` name the SAME non-empty identity,
+    else ``None`` (the record proceeds). Case- and whitespace-insensitive ("Design-Author " ==
+    "design-author" — a cosmetic respelling is not independence).
+
+    Absent/empty identities do NOT refuse: the pair is optional (pre-P0-2 rows and callers carry no
+    provenance), so the wedge trips only on a POSITIVE self-review signal, never on missing metadata
+    — conservative, like every other guard in this module. Honest residual: this checks *declared*
+    identity strings, which an agent could misdeclare; the wedge raises the bar (an honest caller can
+    no longer record a self-review), it is not proof — the hard boundary is the OS/permission layer.
+    """
+    a = (authored_by or "").strip()
+    r = (reviewed_by or "").strip()
+    if a and r and a.casefold() == r.casefold():
+        return (f"refused: authored_by == reviewed_by ({a!r}) -- proposer != verifier (P0-2/G-002): "
+                f"a self-review cannot mint a scorecard row; nothing recorded. Have an independent "
+                f"agent (e.g. deliverable-qa-reviewer) produce the verdict, or omit the identity flags.")
+    return None
+
+
 # --- persistence -------------------------------------------------------------------------------
 
 def read_rows(path: str = SCORECARD_PATH) -> List[Dict[str, Any]]:
@@ -184,9 +218,12 @@ def append_row(row: Dict[str, Any], path: str = SCORECARD_PATH, *, dedupe: bool 
     """Append one row (JSON, one line). Returns True if written. With ``dedupe`` (default), a row
     identical to the last one already logged is skipped — so a double-fired hook (SubagentStop then
     SessionEnd for the same QA run) can't write the same verdict twice. Creates the file/dir if
-    absent."""
+    absent. Refuses a self-review row (``authored_by`` == ``reviewed_by``, non-empty) — the
+    persistence-layer backstop of the P0-2 wedge; the CLI arms refuse earlier and print why."""
     if not isinstance(row, dict):
         return False
+    if check_independence(row.get("authored_by"), row.get("reviewed_by")):
+        return False                           # self-review can never mint a row, whatever the caller
     if dedupe:
         existing = read_rows(path)
         if existing and _same_verdict(existing[-1], row):
@@ -459,10 +496,17 @@ def _today() -> str:
 
 
 def run_hook(stdin_text: str, *, path: str = SCORECARD_PATH,
-             date: Optional[str] = None, commit: Optional[str] = None) -> Optional[Dict[str, Any]]:
+             date: Optional[str] = None, commit: Optional[str] = None,
+             authored_by: Optional[str] = None,
+             reviewed_by: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """SubagentStop/SessionEnd glue: read the hook payload, find the most recent QA verdict in the
     referenced transcript, and append it. Returns the appended row, or ``None`` when there is no QA
-    verdict to record (or it was a dedupe no-op). Total — never raises (fail-open)."""
+    verdict to record (or it was a dedupe no-op). Total — never raises (fail-open).
+
+    ``authored_by`` / ``reviewed_by`` annotate the row's provenance pair when the caller knows the
+    identities (the ``--record-from`` arm passes them; the hook payload carries none). A self-review
+    pair is refused by :func:`append_row` (returns ``None`` — nothing recorded); the CLI refuses
+    earlier with the printed reason."""
     try:
         payload = json.loads(stdin_text) if stdin_text and stdin_text.strip() else {}
     except Exception:
@@ -476,15 +520,49 @@ def run_hook(stdin_text: str, *, path: str = SCORECARD_PATH,
     for text in candidates:
         row = parse_qa_verdict(text, date=date, commit=commit)
         if row:
+            _annotate_provenance(row, authored_by, reviewed_by)
             return row if append_row(row, path) else None
     return None
+
+
+def _annotate_provenance(row: Dict[str, Any], authored_by: Optional[str],
+                         reviewed_by: Optional[str]) -> None:
+    """Set the provenance pair on a parsed row (in place), empty/absent -> key left unset (emitted
+    as an honest ``null`` by :func:`append_row`, never a fabricated identity)."""
+    if authored_by and authored_by.strip():
+        row["authored_by"] = authored_by.strip()
+    if reviewed_by and reviewed_by.strip():
+        row["reviewed_by"] = reviewed_by.strip()
+
+
+def _flag_value(argv: List[str], flag: str) -> Optional[str]:
+    """The value following ``flag`` in argv, '' if the flag is last (present, valueless), None if
+    absent. The module's minimalist arg convention (same as the record arms' path handling)."""
+    if flag not in argv:
+        return None
+    i = argv.index(flag)
+    return argv[i + 1] if i + 1 < len(argv) else ""
+
+
+def _row_line(row: Dict[str, Any]) -> str:
+    """The one-line 'what was recorded' echo (the /qa close-the-loop step prints this as evidence).
+    Includes the provenance pair when declared, so the transcript shows the wedge saw it."""
+    line = (f"scorecard += {row['deliverable']} {row['verdict']} "
+            f"(counterexamples={row['counterexamples']}, laws={row['laws_tripped']})")
+    if row.get("authored_by") or row.get("reviewed_by"):
+        line += f" [authored_by={row.get('authored_by')} reviewed_by={row.get('reviewed_by')}]"
+    return line
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI. ``trend`` renders the quality trend (the line you watch); ``--hook`` reads a hook payload
     on stdin and appends a QA verdict if present; ``--record-from <transcript>`` / ``--record
     <message-file>`` append the independent reviewer's verdict explicitly (transcript arm / message
-    arm); ``--show`` prints the tail of the scorecard. Always exits 0 on the hook path (fail-open)."""
+    arm) — both accept ``--authored-by <agent>`` / ``--reviewed-by <agent>`` and REFUSE (exit 2,
+    reason printed, nothing appended) when the two match non-empty: the P0-2 proposer≠verifier
+    wedge — a self-review can never mint a quality row. ``--show`` prints the tail of the scorecard.
+    Always exits 0 on the hook path (fail-open — the refusal is a guard tripping by design, not an
+    error, and it never occurs on the identity-less hook path)."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -496,6 +574,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if "trend" in argv or "--trend" in argv:
         print(render_trend(read_rows(path)))
         return 0
+    # The provenance pair for the explicit record arms (P0-2/G-002). Checked BEFORE any parsing so a
+    # self-review is refused up front with the reason — exit 2, nothing appended. Optional: absent
+    # identities never block an otherwise-valid verdict (they record as null — back-compat).
+    authored_by = _flag_value(argv, "--authored-by")
+    reviewed_by = _flag_value(argv, "--reviewed-by")
+    if "--record-from" in argv or "--record" in argv:
+        refusal = check_independence(authored_by, reviewed_by)
+        if refusal:
+            print(refusal)
+            return 2
     if "--record-from" in argv:
         # Record the INDEPENDENT subagent's verdict from ITS transcript — the same source and parser as
         # the SubagentStop hook, but invoked explicitly. For environments where that hook does not fire
@@ -504,9 +592,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         # signature), so only a real independent verdict is recorded.
         i = argv.index("--record-from")
         tpath = argv[i + 1] if i + 1 < len(argv) else ""
-        row = run_hook(json.dumps({"transcript_path": tpath}), path=path) if tpath else None
-        print(f"scorecard += {row['deliverable']} {row['verdict']} (counterexamples={row['counterexamples']}, "
-              f"laws={row['laws_tripped']})" if row else "no QA verdict found in transcript — nothing recorded")
+        row = run_hook(json.dumps({"transcript_path": tpath}), path=path,
+                       authored_by=authored_by, reviewed_by=reviewed_by) if tpath else None
+        print(_row_line(row) if row else "no QA verdict found in transcript — nothing recorded")
         return 0
     if "--record" in argv:
         # The MESSAGE arm: record the independent reviewer's verdict from a saved VERBATIM copy of its
@@ -524,10 +612,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row = parse_qa_verdict(f.read(), date=_today(), commit=_git_commit())
         except Exception:
             row = None
+        if row is not None:
+            _annotate_provenance(row, authored_by, reviewed_by)
         if row is not None and not append_row(row, path):
             row = None                             # dedupe no-op — already recorded
-        print(f"scorecard += {row['deliverable']} {row['verdict']} (counterexamples={row['counterexamples']}, "
-              f"laws={row['laws_tripped']})" if row else "no QA verdict in message file — nothing recorded")
+        print(_row_line(row) if row else "no QA verdict in message file — nothing recorded")
         return 0
     if "--show" in argv:
         rows = read_rows(path)
@@ -541,8 +630,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             row = run_hook(sys.stdin.read(), path=path)
             if row:
-                print(f"scorecard += {row['deliverable']} {row['verdict']} "
-                      f"(counterexamples={row['counterexamples']}, laws={row['laws_tripped']})")
+                print(_row_line(row))
         except Exception:
             pass
         return 0
