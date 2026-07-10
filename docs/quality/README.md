@@ -23,11 +23,13 @@ Every consequential QA / eval cycle appends one row. **Verifiable facts only —
 | `laws_tripped` | array | which of the 10 Deliverable-Excellence Laws failed, if any |
 | `commit` | string | git SHA the verdict was produced against |
 | `notes` | string | short, factual — the counterexample, not an opinion |
+| `authored_by` | string \| null | which agent authored the reviewed deliverable(s) — the **proposer** (P0-2/G-002). Optional: `null` = provenance undeclared; pre-P0-2 rows carry no key at all — both stay valid. |
+| `reviewed_by` | string \| null | which agent produced this verdict — the **verifier**. The recorder **refuses** any row where `authored_by` == `reviewed_by` (non-empty, case/space-insensitive): a self-review can never mint a quality row (`scorecard.check_independence`, exit 2 on the record arms, backstopped in `append_row`). Residual, declared: these are *declared* identity strings, not proof — full enforcement tops out at the OS/permission layer (CLAUDE.md trust-boundary note). |
 
 Example (illustrative — do not hand-edit real data in):
 
 ```json
-{"date":"2026-07-06","deliverable":"design","score":null,"verdict":"BLOCK","counterexamples":2,"laws_tripped":["L3"],"commit":"4bedd9f","notes":"ops Security axis rendered 'complete' with no not-assessable branch"}
+{"date":"2026-07-06","deliverable":"design","score":null,"verdict":"BLOCK","counterexamples":2,"laws_tripped":["L3"],"commit":"4bedd9f","notes":"ops Security axis rendered 'complete' with no not-assessable branch","authored_by":"design-author","reviewed_by":"deliverable-qa-reviewer"}
 ```
 
 ## How rows get here (Phase 0 — wired)
@@ -45,6 +47,9 @@ Example (illustrative — do not hand-edit real data in):
   to a UTF-8 file and invoking `--record` on it — same conservative parser as the hook (no per-artifact
   signature → no row), and a file rather than stdin because a cp1252 Windows console mangles em-dashes.
   `--record-from <transcript>` remains the arm for the interactive CLI, where the transcript exists.
+  Both arms take `--authored-by <agent> --reviewed-by <agent>` (the provenance pair above) and refuse a
+  non-empty match up front — the P0-2 proposer≠verifier wedge, proven in
+  `tests/test_proposer_verifier_guard.py` alongside the read-only analyst-roster pin.
 - **The golden-snapshot eval harness.** [`cisco_toolkit/eval_harness.py`](../../cisco_toolkit/eval_harness.py)
   scores a *fixed known-good deliverable* against deterministic, offline checks — SSOT `reconcile` clean,
   citations byte-match, and the machine-checkable Deliverable-Excellence Laws present (the repo-grounded
