@@ -75,23 +75,34 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
     """The judge prompt: a NEUTRAL per-condition checklist — check the deliverable against each defect
     definition and REJECT iff one clearly holds, else APPROVE. Measured to *discriminate* (approves clean
     work, catches blatant defects) where a leaning prompt over-rejects ('reject everything') or over-approves
-    ('most are fine'). A 4B model still misses subtler defects — this is the best-measured framing, not a cure
-    for model weakness. Output shape enforced by :func:`judge_schema`."""
+    ('most are fine'). P1-3 rung-1 refinement (same neutral framing, measured 2026-07-10): the deliverable
+    comes FIRST, the conditions are NUMBERED, and the reasoning must WALK them — one line per condition,
+    quoting the checked line, ending HOLDS or DOES-NOT-HOLD. The prior single-block phrasing let the 4B model
+    form one global impression and default to APPROVE (it missed even the literal '(none)' and 253-vs-250
+    triggers, TNR 0.2); forcing the walk is what makes it actually execute each check. Output shape enforced
+    by :func:`judge_schema`."""
     vocab = ", ".join(classes if classes is not None else _text_visible_classes())
     return (
-        "You are an independent senior Cisco reviewer doing QA on ONE migration-deliverable excerpt. Check it\n"
-        "against these conditions and REJECT if and only if at least one CLEARLY holds (name the exact line);\n"
-        "otherwise APPROVE. Do not reject on vague suspicion; a device simply being 'healthy' is normal.\n"
-        "- phantom-health: a device in an 'assessed: healthy' or 'Redundancy ... verified' line whose name the\n"
-        "  COVERAGE line lists under NOT collected (only if the healthy/verified device is the not-collected one).\n"
-        "- missing-rollback: a MOP step whose rollback is exactly '(none)'.\n"
-        "- unsafe-sequence: an irreversible step (withdraw/remove) with a LOWER order number than a 'verify' step.\n"
-        "- cross-artifact-mismatch: on the Endpoint total line, the workbook number differs from the runbook number.\n"
-        "- empty-nrfu-evidence: an 'NRFU ... PASS' line whose captured output is '(empty)'.\n"
-        "Reason through each condition, then give your verdict and the single defect class that held\n"
-        f"(one of: {vocab}; or NONE if APPROVE).\n\n"
+        "You are an independent senior Cisco reviewer doing QA on ONE migration-deliverable excerpt.\n\n"
         "DELIVERABLE:\n"
-        f"{deliverable_text}\n"
+        f"{deliverable_text}\n\n"
+        "Check the DELIVERABLE against each numbered condition below, ONE AT A TIME. In 'reasoning', write\n"
+        "one line per condition: its name, the exact deliverable line you checked (quote it), and the word\n"
+        "HOLDS or DOES-NOT-HOLD. Do not skip any condition. A condition HOLDS only if its exact trigger is\n"
+        "present. Do not reject on vague suspicion: a device simply being 'healthy' is normal, and only the\n"
+        "literal rollback '(none)' is missing — 'n/a - verification step' or any named command is a real\n"
+        "rollback.\n"
+        "1. missing-rollback: a MOP step whose rollback is exactly '(none)'.\n"
+        "2. phantom-health: a device in an 'assessed: healthy' or 'Redundancy ... verified' line whose name\n"
+        "   the COVERAGE line lists under NOT collected (only if the healthy/verified device is the\n"
+        "   not-collected one).\n"
+        "3. unsafe-sequence: an irreversible step (withdraw/remove) whose [order] number is LOWER than the\n"
+        "   [order] number of a 'verify' step.\n"
+        "4. cross-artifact-mismatch: on the 'Endpoint total' line, the (workbook) number differs from the\n"
+        "   (runbook) number.\n"
+        "5. empty-nrfu-evidence: an 'NRFU ... PASS' line whose captured output is '(empty)'.\n"
+        "After walking all conditions: verdict = REJECT if at least one HOLDS, and defect_class = the name\n"
+        f"of the condition that held (one of: {vocab}); verdict = APPROVE if none holds (defect_class NONE).\n"
     )
 
 
