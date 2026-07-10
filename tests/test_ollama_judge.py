@@ -106,3 +106,72 @@ def test_run_baseline_reports_specificity_via_clean_control():
     r2 = J.run_baseline(chat=lambda p: '{"reasoning":"x","verdict":"REJECT","defect_class":"phantom-health"}',
                         listening=lambda h: True)
     assert r2["approves_clean"] is False
+
+
+# --- the judge-baseline scorecard row (P0-6a: --append-baseline) ---------------------------------
+# The measurement becomes the `judge-baseline` row that cisco_toolkit.scorecard.latest_judge_baseline
+# stamps every subsequent QA verdict from. Properties: a MEASUREMENT not a verdict (verdict/score
+# null); no specificity -> null trust (a reject-everything judge must never stamp APPROVEs gating);
+# Ollama down -> NOTHING appended (a measurement row is never fabricated).
+
+def test_baseline_row_is_a_measurement_not_a_verdict():
+    from cisco_toolkit import scorecard as S
+    # a DISCRIMINATING judge: approves the clean control (no core9 'healthy' claim in it), rejects
+    # the D-03 corruption — specificity holds, so the measured TNR is trustworthy
+    res = J.run_baseline(ids=["D-03"], listening=lambda h: True,
+                         chat=lambda p: ("VERDICT: REJECT\nDEFECT_CLASS: phantom-health"
+                                         if "Device core9 assessed" in p
+                                         else "VERDICT: APPROVE\nDEFECT_CLASS: NONE"))
+    assert res["approves_clean"] is True
+    row = J.baseline_row(res, date="2026-07-10", commit="abc1234")
+    assert row["deliverable"] == S.JUDGE_BASELINE_DELIVERABLE
+    assert row["judge_tnr"] == 1.0 and row["verdict"] is None and row["score"] is None
+    assert "clears" in row["notes"]                     # 1.0 >= JUDGE_TNR_FLOOR
+    assert S.latest_judge_baseline([row])["judge_tnr"] == 1.0   # this row IS what stamps verdicts
+
+
+def test_baseline_row_below_floor_notes_provisional():
+    # the agreeable judge: approves the clean control AND every defect -> TNR 0, below the floor
+    res = J.run_baseline(listening=lambda h: True,
+                         chat=lambda p: "VERDICT: APPROVE\nDEFECT_CLASS: NONE")
+    row = J.baseline_row(res, date="d", commit="c")
+    assert row["judge_tnr"] == 0.0 and "PROVISIONAL" in row["notes"]
+
+
+def test_baseline_row_no_specificity_records_null_trust():
+    """A reject-everything judge can post a high localized TNR — but with approves_clean False it has
+    no specificity, so the baseline records judge_tnr NULL (raw numbers kept in notes): it must never
+    become the TNR that stamps later APPROVEs as gating."""
+    res = J.run_baseline(listening=lambda h: True,
+                         chat=lambda p: '{"reasoning":"x","verdict":"REJECT","defect_class":"phantom-health"}')
+    assert res["approves_clean"] is False
+    row = J.baseline_row(res, date="d", commit="c")
+    assert row["judge_tnr"] is None and "NO SPECIFICITY" in row["notes"]
+
+
+def test_append_baseline_cli_appends_the_row(tmp_path, monkeypatch):
+    from cisco_toolkit import scorecard as S
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    canned = {"ok": True, "model": "fake", "approves_clean": True, "n": 1,
+              "localized_tnr": 1.0, "rejection_rate": 1.0, "unlocalized_rejection_rate": 0.0,
+              "verdicts": [{"defect_id": "D-03", "verdict": "REJECT", "defect_class": "phantom-health"}]}
+    monkeypatch.setattr(J, "run_baseline", lambda model: canned)
+    assert J.main(["fake", "--append-baseline"]) == 0
+    rows = S.read_rows(sc)
+    assert len(rows) == 1
+    assert rows[0]["deliverable"] == "judge-baseline" and rows[0]["judge_tnr"] == 1.0
+    # re-recording the identical measurement dedupes (append-only, no double rows)
+    assert J.main(["fake", "--append-baseline"]) == 0
+    assert len(S.read_rows(sc)) == 1
+
+
+def test_append_baseline_cli_ollama_down_appends_nothing(tmp_path, monkeypatch):
+    """signal_absent honestly: Ollama unreachable -> no row is ever fabricated (doctrine 5)."""
+    from cisco_toolkit import scorecard as S
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    monkeypatch.setattr(J, "run_baseline",
+                        lambda model: {"ok": False, "reason": "Ollama not listening on 127.0.0.1:11434"})
+    assert J.main(["--append-baseline"]) == 0
+    assert S.read_rows(sc) == []

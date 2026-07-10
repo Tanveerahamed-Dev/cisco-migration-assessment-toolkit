@@ -25,6 +25,9 @@ never hangs or raises. The parser and prompt builder are pure and unit-tested; t
 so the test suite never requires a running model.
 
 Usage: ``python ollama_judge.py qwen3:4b``  →  prints the judge's measured localized TNR over the panel.
+``--append-baseline`` additionally records the measurement as a ``judge-baseline`` row on the quality
+scorecard (P0-6a: the row :func:`cisco_toolkit.scorecard.latest_judge_baseline` stamps QA verdicts from).
+Ollama down → nothing is appended (signal_absent — a measurement row is never fabricated).
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ import sys
 from typing import Any, Callable, Dict, List, Optional
 
 from cisco_toolkit import defect_panel as P
+from cisco_toolkit import scorecard as SCD
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_JUDGE_MODEL", "qwen3:4b")   # 8b swaps on a 16GB CPU host; 4b fits
@@ -188,16 +192,46 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
     return {"ok": True, "model": model, "approves_clean": approves_clean, "verdicts": verdicts, **score}
 
 
+def baseline_row(res: Dict[str, Any], *, date: str, commit: str) -> Dict[str, Any]:
+    """Project a successful :func:`run_baseline` result onto the scorecard schema as the
+    ``judge-baseline`` row (P0-6a) — a MEASUREMENT, not a verdict: ``verdict``/``score``/
+    ``counterexamples`` stay null and ``judge_tnr`` carries the measured localized TNR. Fail-safe on
+    specificity: when the judge rejected the clean control (``approves_clean`` False) its rejections
+    are worthless, so ``judge_tnr`` is recorded null (with the raw numbers in ``notes``) — a
+    no-specificity judge must never become the TNR that stamps later APPROVEs as gating."""
+    tnr = res.get("localized_tnr") if res.get("approves_clean") else None
+    per = ",".join(f"{v.get('defect_id')}:{'R' if v.get('verdict') == 'REJECT' else 'A'}"
+                   for v in res.get("verdicts", []))
+    if not res.get("approves_clean"):
+        state = (f"NO SPECIFICITY (rejected the clean control) — measured rejection "
+                 f"{res.get('rejection_rate')}/localized {res.get('localized_tnr')} recorded as null trust")
+    elif tnr is not None and tnr >= SCD.JUDGE_TNR_FLOOR:
+        state = f"clears the {SCD.JUDGE_TNR_FLOOR} floor -> freshly-stamped judge APPROVEs are gating"
+    else:
+        state = f"below the {SCD.JUDGE_TNR_FLOOR} floor -> judge APPROVEs stay PROVISIONAL/advisory"
+    notes = (f"cross-family LLM judge {res.get('model')} re-baseline: localized TNR={res.get('localized_tnr')}, "
+             f"rejection_rate={res.get('rejection_rate')}, approves_clean={res.get('approves_clean')} "
+             f"over the {res.get('n')}-defect text-visible panel ({per}); {state}")
+    return {"date": date, "deliverable": SCD.JUDGE_BASELINE_DELIVERABLE, "score": None,
+            "verdict": None, "judge_tnr": tnr, "provisional": None, "counterexamples": None,
+            "laws_tripped": [], "commit": commit, "notes": notes}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    record = "--append-baseline" in argv
+    if record:
+        argv.remove("--append-baseline")
     model = argv[0] if argv else DEFAULT_MODEL
     res = run_baseline(model)
     if not res.get("ok"):
         print(f"[ollama-judge] {res.get('reason')}")
+        if record:
+            print("[ollama-judge] signal_absent — no baseline row appended (a measurement is never fabricated)")
         return 0                                               # graceful: nothing measured, not an error
     print(f"[ollama-judge] model={res['model']}  panel={res['n']} text-visible defects")
     print(f"  approves clean       = {res['approves_clean']}   (SPECIFICITY: a good deliverable MUST pass)")
@@ -210,6 +244,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("  ! WARNING: the judge REJECTED a clean deliverable -> no specificity; its rejections are\n"
               "    worthless (it rejects everything). Fix the prompt/model before trusting any rejection rate.")
     print("  (the deterministic arm catches all 12 by construction; this is the LLM judge's floor to clear)")
+    if record:
+        row = baseline_row(res, date=SCD._today(), commit=SCD._git_commit())
+        path = os.environ.get("SCORECARD_FILE") or SCD.SCORECARD_PATH
+        if SCD.append_row(row, path):
+            print(f"scorecard += judge-baseline judge_tnr={row['judge_tnr']} "
+                  f"(floor {SCD.JUDGE_TNR_FLOOR}) -> {path}")
+        else:
+            print("scorecard: identical baseline already recorded (dedupe no-op)")
     return 0
 
 
