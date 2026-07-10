@@ -39,7 +39,7 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
   (the Stop gate runs pytest unpiped for exactly this reason).
 - Memory consolidation deletes "superseded" facts on a schedule, so a rarely-referenced safety
   constraint survives only via the protected tier marker `protected: true`. Evidence:
-  `cisco_toolkit/memory_guard.py` (D12) + `.claude/scheduled-tasks/monthly-memory-consolidation/SKILL.md`.
+  `cisco_toolkit/memory_guard.py` (D12) + the out-of-repo `anthropic-skills:consolidate-memory` skill.
 - A transcript-scraping hook keyed on keywords fires on the MAIN agent's own prose that *describes* a
   verdict (a summary with "verdict"/"BLOCK" + a markdown table once fabricated a scorecard row); gate
   on the reviewer's structural signature — a per-artifact `X — BLOCK` line — not keyword co-occurrence.

@@ -1,9 +1,9 @@
 """Protected-constraint memory tier — the *never-compressible* safety store (D12).
 
 Decision D12 of ``docs/autonomous-brain-plan-v4-final-2026-07-06.md``: memory consolidation
-("compression") silently deletes rare-but-vital facts over repeated passes — step 2 of the monthly
-``.claude/scheduled-tasks/monthly-memory-consolidation`` skill literally "delete[s] facts that are
-now wrong or superseded". A rarely-referenced *safety constraint* is exactly the kind of rare-but-
+("compression") silently deletes rare-but-vital facts over repeated passes — the consolidation
+skill (the out-of-repo ``anthropic-skills:consolidate-memory`` plugin) literally "delete[s] facts
+that are now wrong or superseded". A rarely-referenced *safety constraint* is exactly the kind of rare-but-
 vital fact that pass can drop. So the non-negotiable guardrails get a **protected tier**: memory
 entries the compression pass must retain verbatim, exempt from pruning and merging.
 
