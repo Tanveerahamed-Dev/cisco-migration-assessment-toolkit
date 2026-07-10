@@ -49,6 +49,8 @@ def test_registry_owner_files_all_exist():
         "CHANGELOG.md",
         "pyproject.toml",
         "cisco_toolkit/__init__.py",
+        # the freshness guard: four registry rows cite it as their enforcement (2026-07-10)
+        "tests/test_registry_freshness.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
