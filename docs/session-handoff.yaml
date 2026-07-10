@@ -1,0 +1,53 @@
+generated: "2026-07-10 @ e3b2bd5"
+stage: "B — plan saved + decisions ratified"
+execution_phase: "Phase 0 — Doctrine hardening (launched: P0-1/P0-4/P0-5 spawned as one-click sessions; P0-7 decided, execution deferred)"
+artifacts:
+  - "docs/architect-understanding-2026-07-10.md"
+  - "docs/architect-master-plan-2026-07-10.md"
+qa_verdict: "APPROVE (round 2, all three artifacts; round-1 BLOCK dispositioned; verdict rows in docs/quality/scorecard.jsonl: set/BLOCK cx=8, set/APPROVE cx=2)"
+last_completed_task: "HR-001..HR-004 DECIDED per plan recommendations under user delegation ('take the best possible decision', 2026-07-10); decisions log added to master plan S4; Phase 0 launched via task chips P0-4 (merge gate), P0-1 (protected-tier pin), P0-5 (SSOT truth sweep)"
+next_task: "Human: merge OPEN PR #309 (P0-5 retro) + the architect-artifacts PR when green; P0-2/P0-3/P0-6 chips queued; P0-7 permission-narrowing after the two fix-sessions (D10 erratum, ghost path) complete; then P0-8/P0-9"
+p0_gaps:
+  - id: "G-001"
+    description: "Protected memory tier bypassable, no RED test -> P0-1 (chip spawned)"
+    status: "closed (PR #308 merged 2026-07-10 @ a88c38d: selfcheck.check_protected_artifact runtime pin + memory_guard snapshot|verify pre/post-consolidation wrapper; acceptance proven live — flip->RED exit 4, store-absent->signal_absent; R9 residual declared)"
+  - id: "G-002"
+    description: "Proposer != verifier prompt-only -> P0-2"
+    status: "open"
+  - id: "G-003"
+    description: "PPDIOO human gates prose-only -> P0-3"
+    status: "open"
+  - id: "G-004"
+    description: "No merge gate on-machine; GitHub Pro unlocks branch protection -> P0-4 (chip spawned)"
+    status: "closed (P0-4 done: branch protection LIVE on main — 10 required ci.yml checks + 1 review, enforce_admins=false so the human merges via explicit bypass; DEC-002 refuting experiment PASSED — deliberately-red PR #306 was BLOCKED, closed unmerged; verified via gh api 2026-07-10)"
+  - id: "G-005"
+    description: "SSOT registry self-rot (:40/:41/:31) + CLAUDE.md egress carve-out -> P0-5 (chip spawned)"
+    status: "closed (PR #307 merged 2026-07-10 @ cf0d1af: ssot.md de-rot + ADR-0001 update + CLAUDE.md local-Ollama carve-out + tests/test_registry_freshness.py dual-mode guard, hardened post-review in 91e81d1; retro docs pending as OPEN PR #309 — human merge)"
+  - id: "G-006"
+    description: "Judge-trust: judge_tnr never emitted; PROVISIONAL prose-only; GUARD_FILES un-pinned; judge TNR 0.2 -> P0-6"
+    status: "open"
+pending_human_review:
+  - id: "HR-001"
+    decision: "DEC-001 mission ladder (M0 personal -> M1 client -> M2 product; research = instrument layer)"
+    recommendation: "DECIDED 2026-07-10 by user delegation: ladder CONFIRMED"
+  - id: "HR-002"
+    decision: "DEC-008 settings.local.json pre-approvals (python -c, cat > *)"
+    recommendation: "DECIDED 2026-07-10 by user delegation: remove/narrow — execution deferred until the two live fix-sessions finish (lands with P0-7); revert = re-add + formally accept"
+  - id: "HR-003"
+    decision: "DEC-006 D10 eval corpus digest lane"
+    recommendation: "DECIDED 2026-07-10 by user delegation: add the digest lane via D10 owner amendment (execute at P2-0e)"
+  - id: "HR-004"
+    decision: "DEC-009 assumed answers to unanswered P0s (resource envelope, risk appetite, first-REAL-PIR timing)"
+    recommendation: "DECIDED 2026-07-10 by user delegation: assumptions stand as defaults until corrected in one sentence"
+context_summary: |
+  /architect-plan v5 completed Stage A+B on 2026-07-10 @ e3b2bd5 and passed independent QA
+  (round-1 BLOCK remediated -> round-2 APPROVE x3; both verdicts recorded). Under user delegation
+  ("take the best possible decision") all four NEEDS_HUMAN_REVIEW items were ratified per plan
+  recommendation (ladder confirmed; pre-approvals to be narrowed after live sessions finish;
+  digest lane added to eval at P2-0e; DEC-009 defaults stand), and Phase 0 launched as three
+  one-click chip sessions: P0-4 merge gate (branch protection + red-PR proof), P0-1 protected-
+  tier artifact pin, P0-5 SSOT registry truth sweep + freshness guard. Each delivers a human-
+  owned PR; nothing merges without the human. Remaining Phase-0 queue: P0-2 proposer!=verifier
+  wedge, P0-3 gate mechanization, P0-6 judge-trust repairs, P0-7 permission narrowing (decided,
+  deferred), P0-8 vault-guard Bash extension, P0-9 residual ledger. Two earlier fix-sessions
+  (D10 erratum = P2-0f, memory_guard docstring) still running independently.
