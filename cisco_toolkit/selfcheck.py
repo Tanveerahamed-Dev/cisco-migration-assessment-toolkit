@@ -27,6 +27,9 @@ GUARD_FILES = [
     "tests/test_calibration.py", "tests/test_clock.py", "tests/test_domain_packs.py",
     "tests/test_council.py", "tests/test_eval_harness.py", "tests/test_ssot_registry.py",
     "tests/test_pipeline_golden.py",
+    # the judge-trust + calibration-corpus instruments — the "measure the judge, don't assume it" nerve.
+    # Gutting the TNR floor or the fault-corpus discrimination would let an unmeasured judge read GREEN.
+    "tests/test_defect_panel.py", "tests/test_fault_corpus.py", "tests/test_ollama_judge.py",
 ]
 
 
@@ -56,6 +59,30 @@ def _count_rows(path: str) -> int:
         return -1
 
 
+def _count_real_pir(path: str) -> int:
+    """Count only REAL-provenance PIR rows — the sole class that counts toward the D11 tuning floor
+    (surrogate rows like ``fault-injected`` validate the scorer but must NEVER unlock a tuning move).
+    Delegates provenance classification to ``calibration._norm_source`` so this readout can never DRIFT
+    from the gate it reports on (one source of truth). Fail-safe: an unparseable/unclassed row is non-REAL."""
+    import json
+    from cisco_toolkit.calibration import _norm_source
+    real = 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    if _norm_source(json.loads(line).get("source_class")) == "REAL":
+                        real += 1
+                except Exception:
+                    pass
+    except OSError:
+        return 0
+    return real
+
+
 def check_scorecard_substrate(root: str) -> Dict[str, str]:
     p = os.path.join(root, "docs", "quality", "scorecard.jsonl")
     n = _count_rows(p)
@@ -70,7 +97,9 @@ def check_pir_substrate(root: str) -> Dict[str, str]:
     n = _count_rows(p)
     if n < 0:
         return _check("pir_outcomes_substrate", RED, "docs/quality/pir_outcomes.jsonl missing — calibration cannot record")
-    return _check("pir_outcomes_substrate", GREEN, f"present ({n} labeled outcome(s); calibration gated until N>=5)")
+    real = _count_real_pir(p)      # only REAL rows count toward D11; surrogate rows populate the descriptive gap only
+    return _check("pir_outcomes_substrate", GREEN,
+                  f"present ({n} labeled outcome(s), {real} REAL — {real}/5 toward the D11 tuning floor)")
 
 
 def check_nightly_ledger(root: str) -> Dict[str, str]:

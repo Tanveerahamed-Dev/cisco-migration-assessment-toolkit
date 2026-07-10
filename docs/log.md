@@ -4,6 +4,72 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-10] — Perplexity-Brain research → agent-brain planning: verify the external plan, hold the data-first line (branch `chore/scorecard-first-real-rows`)
+
+- Turned a "is Perplexity Brain better than us?" research request into an agent-brain planning arc. Deep-research
+  found Brain = self-improving *agent-work* memory (context graph + overnight synthesis), **cloud-only → non-adoptable
+  for the air-gapped core** → decision (ADR 0003): skip the product, port patterns, hybrid markdown+SQLite substrate
+  *gated* behind real data. Then verified TWO externally-run Perplexity design docs against primary source and folded
+  the survivors into plans — the SelfMem "True Ceiling" → ADR 0003 + `agent-brain-selfmem-upgrade-plan`; the retrieval
+  "Pass 4" → `d10-retrieval-eval-design`. Executed the *built* frontier: recorded the baseline judge-TNR (reproduced
+  `ollama_judge` cross-family 0.2 / deterministic 1.0 → the design.docx APPROVE is now explicitly PROVISIONAL), cleared
+  the binary phantom-health audit (0 violations across 9 AUTOFILLED deliverables), and BUILT
+  `precert.compute_readiness_freeze` (single-snapshot readiness cert, schema `precert-readiness/1`, +7 tests,
+  shadow-validated NOT READY on the [HISTORY-REDACTED] snapshot). 8 commits, whole suite green. *(Honest slip: dated the new planning
+  docs `2026-07-08` by anchoring on a sibling filename; the system clock was `2026-07-10` — git timestamps are the truth.)*
+- `!lesson` **An external planner blind to the codebase re-derives instruments you already ship — map every proposal to
+  a shipped symbol BEFORE building.** Twice now (two Fable plans earlier, two Perplexity passes here) the "build this"
+  list was ~80% already-shipped: the "independent verifier" = `ollama_judge`, the "red-team panel" = `defect_panel`
+  D-01…D-12, the "calibration loop" = `calibration.py`, the "safety tier" = `memory_guard`. A polished spec pulls hard
+  toward re-building; the honest delta is usually small. Fix: grep/graphify each proposal to its owner first, adopt only
+  the residual. bridge-candidate
+- `!lesson` **Verify an external doc's citations against primary source — they can be REAL even when the doc looks
+  confabulation-shaped — but a real citation ≠ a build-worthy proposal, and existence ≠ attribution ≠ figures.** All ~10
+  cited papers (SelfMem `2607.03726`, HTC `2601.15778`, overconfidence `2602.06948`, Fiedler `2605.06939`, R-GPL
+  `2501.14434`, UDCG EACL-2026, Fröbe SIGIR-2025) checked out on WebFetch — skepticism resolved in the doc's favor. But
+  (a) exact figures inside a real paper still need a PDF check before quoting (Fröbe's κ/τ numbers weren't extractable),
+  and (b) some refs were MIS-attached (a dev.to blog + an IETF draft cited for "RRF k=60 sensitivity") — drop those.
+  Verify the three separately. bridge-candidate
+- `!lesson` **Perplexity renders markdown footnote markers (`[^1]`) INTO its code blocks, so its Python is never
+  drop-in.** `embeddings.shape[^1]` / `sorted(..., key=lambda x: x[^1])` are corruption of `[1]`; seen in BOTH uploaded
+  docs. Treat any Perplexity code as reference-only and re-implement clean — a naive paste crashes on the first line. bridge-candidate
+- `!lesson` **Under a vague "proceed / take the best decision", the best decision is sometimes to NOT act — outward or
+  gated actions still need an explicit instruction.** Held all session: never pushed off a vague "proceed" (only on an
+  explicit "push"), kept REAL calibration row #1 operator-owned (it needs a live cutover + sign-off — unforgeable), and
+  refused to pull gated work (the SQLite substrate, the D10 retriever) forward as busywork. "Feed real data, don't build
+  more" survives sustained pressure to manufacture motion. bridge-candidate
+- `!lesson` **A background workflow can WEDGE while its task-registry status still reads `running` — detect it by
+  filesystem staleness, not the status field.** The deep-research workflow stalled between phases; the status API said
+  `running` for ~1h45m while the journal + agent files had ZERO new writes (newest mtime vs wall-clock `date`). Fix:
+  check the transcript dir's newest-file mtime against now — a long flat-line = wedged; `TaskStop` the zombie and
+  synthesize from the completed phases (every returned agent's output was already in `journal.jsonl`). bridge-candidate
+
+## [2026-07-08] — Judge-trust + calibration nerve: guard the guard, feed it honest data (branch `chore/scorecard-first-real-rows`)
+
+- Continued the "measure the judge, don't assume it" arc. A QA verdict is a Claude judge on Claude's work, and
+  LLM judges default to TNR < 25% (agreeableness bias, `2510.11822`) — so an all-`APPROVE` scorecard is the
+  predicted output of a *broken* instrument. Moves 1–2 (prior commits) built the apparatus to MEASURE it
+  (`defect_panel` deterministic 12/12 floor + cross-family `ollama_judge`) and to validate the readiness scorer
+  (`fault_corpus`, 6/6 injected faults flip non-READY). This session HARDENED + completed the arc: wired the three
+  new instruments into the self-check immune system (`GUARD_FILES` 10→13), made `check_pir_substrate` REAL-aware
+  (`X/5 toward the D11 floor`, surrogate never reads tune-eligible), fed the 7 fault-injected rows into the empty
+  `pir_outcomes.jsonl`, and documented Move 1/2 in `docs/quality/README.md`. Full suite green.
+- `!lesson` **A branch that builds a guard must also guard the guard — else the immune system is blind to its own
+  newest instrument.** Moves 1–2 built the defect-panel TNR floor + fault-corpus discrimination (the whole thesis),
+  but neither test was in selfcheck's `GUARD_FILES`; gutting the TNR floor would still read GREEN — the exact
+  "silently gone" failure selfcheck exists to prevent. The branch contradicted its own thesis until the guards were
+  registered (10→13, verified RED-on-gut by the existing non-vacuity test). bridge-candidate
+- `!lesson` **A true-negative-rate harness that only tests REJECTING bad work is half a test — a "rejects
+  everything" judge scores rejection 1.0 and looks perfect while being worthless.** The clean-control (judge a
+  known-GOOD deliverable FIRST; `rejection_rate` is meaningful ONLY when `approves_clean` is True) separates a
+  *specific* judge from a paranoid one. Measured qwen3:4b: `approves_clean`=True but rejection ≈ 0.2 —
+  specific-but-insensitive, a supplement not a replacement on 16GB-CPU hardware. bridge-candidate
+- `!lesson` **The strongest HONEST calibration source at N≈0 is ground truth by construction, never a fabricated
+  PIR.** Injecting one real fault into an all-pass scenario yields a labeled row (clean vs incident) with zero
+  fabrication; tagged `source_class=fault-injected` it populates the DESCRIPTIVE gap but the D11 gate (REAL-only)
+  keeps it out of tuning. Result: the calibration nerve is proven end-to-end (`N=7, accuracy=1.0, false-confidence
+  0.0`) while still correctly `[GATED]` at 0 REAL — data fed without loosening the no-fabrication law. bridge-candidate
+
 ## [2026-07-07] — [HISTORY-REDACTED] DC HLD → v7.5 full-family rebuild (research → audit → mining → figures → content → resync → independent QA)
 
 - Rebuilt the [HISTORY-REDACTED] Qatar-DC deliverable set to a best-possible v7.5 across a ~50-agent marathon: a research wave

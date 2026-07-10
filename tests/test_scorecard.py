@@ -297,3 +297,33 @@ def test_trend_single_bucket_direction_is_na():
     rows = [_row("2026-07-06", cx=1), _row("2026-07-07", cx=2)]   # same ISO week
     s = S.summarize_trend(rows)
     assert s["weeks"] == 1 and s["counterexamples"]["direction"] == "n/a"
+
+
+def test_record_message_file_cli(tmp_path, monkeypatch):
+    """`--record <file>` — the MESSAGE arm — records the reviewer's verdict from a saved verbatim copy
+    of its final message: the arm for harnesses where SubagentStop never fires and the Agent-tool
+    subagent transcript is empty (the Claude Agent SDK). Same conservative parser as the hook: prose
+    without the per-artifact signature records nothing, and re-recording the same verdict dedupes."""
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    msg = tmp_path / "qa-verdict.md"
+    msg.write_text(QA_BLOCK, encoding="utf-8")
+    assert S.main(["--record", str(msg)]) == 0
+    rows = S.read_rows(sc)
+    assert len(rows) == 1 and rows[0]["verdict"] == "BLOCK" and rows[0]["counterexamples"] == 2
+    # main-agent summary prose (no per-artifact verdict line) must record nothing
+    prose = tmp_path / "prose.md"
+    prose.write_text(SUMMARY_PROSE, encoding="utf-8")
+    assert S.main(["--record", str(prose)]) == 0
+    assert len(S.read_rows(sc)) == 1
+    # dedupe: recording the same verdict file twice appends once
+    assert S.main(["--record", str(msg)]) == 0
+    assert len(S.read_rows(sc)) == 1
+
+
+def test_record_missing_message_file_is_safe(tmp_path, monkeypatch):
+    """Fail-open: a missing/unreadable message file records nothing and never raises (exit 0)."""
+    monkeypatch.setenv("SCORECARD_FILE", str(tmp_path / "sc.jsonl"))
+    assert S.main(["--record", str(tmp_path / "nope.md")]) == 0
+    assert S.read_rows(str(tmp_path / "sc.jsonl")) == []
+    assert S.main(["--record"]) == 0               # no path argument at all — still total
