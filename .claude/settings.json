@@ -23,6 +23,16 @@
         ]
       },
       {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/vault-guard-bash.sh",
+            "statusMessage": "Enforcing ADR 0001 (no shell writes into the vault)"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
