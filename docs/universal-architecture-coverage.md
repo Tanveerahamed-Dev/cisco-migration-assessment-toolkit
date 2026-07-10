@@ -18,7 +18,13 @@ text via the same `_load_cmd_output` path, and the parser does `json.loads` inst
 downstream — `build_*` → `snap_dict[<axis>]` → `_d_*` detectors → `design_blueprint` → deliverables →
 dashboards — is reused unchanged.
 
-## What is assessed (40 architecture-class detectors across 23 classes)
+## What is assessed (46 architecture-class detectors across 27 classes)
+
+> Count reconciled to the in-code owner (`design_advisor._ARCH_COVERAGE_REGISTRY`: 46 probe-ids across
+> 27 class axes; guarded by `tests/test_ssot_registry.py`). The enumeration below covers the classes
+> through the ISE/FMC wave; the registry has since added **Arista, Juniper, FortiGate (SSH)** and
+> **cloud (JSON)** — each with its own parser test file (`tests/test_arista.py`, `test_juniper.py`,
+> `test_fortinet.py`, `test_cloud.py`).
 
 Each detector fires on a single, unambiguous broken state; the cry-wolf trap is excluded by design:
 
@@ -133,6 +139,7 @@ Then add the controller as a device in `devices.json` and run the normal offline
 A detector that cries wolf is worse than no detector. Every detector here fires only on an observed,
 genuinely-broken state; benign/intentional/transient states are excluded (IPsec UP-IDLE, BFD AdminDown, IPv6
 TENTATIVE, OSPFv3 2WAY-DROTHER, a lone LISP Down peer, a transient firewall sync state, a standalone ISE
-deployment). Proven on the canonical AJ customer snapshot: all 40 detectors fire on synthetic fixtures yet
+deployment). Proven on the canonical AJ customer snapshot (verified at the 40-detector baseline; classes
+added since carry their own per-vendor parser test files): the detectors fire on synthetic fixtures yet
 produce **zero** decisions on the real AJ fleet (which captured none of these axes). A fuzz/robustness gate (`tests/test_universal_arch_robustness.py`) guarantees no parser raises
 on hostile input and the detectors survive malformed evidence without spuriously firing.
