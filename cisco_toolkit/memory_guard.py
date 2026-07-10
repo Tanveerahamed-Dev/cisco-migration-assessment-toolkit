@@ -17,13 +17,20 @@ Two halves, both here:
   :func:`reconcile_constraints` / :func:`missing_protected`, so a dropped or drifted constraint is a
   RED test, never a silent loss.
 
+Plus **the runtime arms** (P0-1 / DEC-005): store resolution (:func:`resolve_store_dir` — one owner,
+shared with ``selfcheck.check_protected_artifact``) and the pre/post-consolidation wrapper
+(:func:`snapshot_store` / :func:`verify_snapshot` + the ``snapshot|verify`` CLI), so a LIVE
+consolidation pass — which runs out-of-repo and never routes through
+:func:`compact_preserving_protected` — is bracketed by a mechanical before/after reconcile.
+
 Coverage-honest: absence is reported as absence — :func:`missing_protected` names what was lost; a
-store that pins nothing yields the full unpinned list, never a green "ok". Pure stdlib, offline, no
-egress, total on bad input.
+store that pins nothing yields the full unpinned list, never a green "ok"; a vacuous baseline is
+refused, never verified. Pure stdlib, offline, no egress, total on bad input.
 """
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import re
 from typing import Any, Callable, Dict, List, Optional
@@ -186,3 +193,160 @@ def unpinned_constraints(entries: List[Any]) -> List[str]:
         (e.body if isinstance(e, MemoryEntry) else str((e or {}).get("body", "")))
         for e in entries if _is_protected_entry(e))
     return [cid for cid, anchor in CANONICAL_SAFETY_CONSTRAINTS if anchor not in pinned]
+
+
+# --- the runtime arms (P0-1 / DEC-005; gap G-001, evidence BLK-1) ---------------------------------
+# The real store lives OUTSIDE the repo (Claude Code auto-memory for this project), so its location
+# cannot be derived from the repo root: the known per-machine path is pinned literally BY DESIGN,
+# $AGENT_MEMORY_DIR relocates it on any other machine, and every consumer (selfcheck's
+# check_protected_artifact, the snapshot/verify wrapper below) resolves through here — one owner.
+PROTECTED_ARTIFACT = "protected-constraints.md"
+AGENT_MEMORY_DIR_ENV = "AGENT_MEMORY_DIR"
+DEFAULT_AGENT_MEMORY_DIR = r"C:\Users\jajch\.claude\projects\C--Users-jajch-Desktop-Enhancements\memory"
+
+
+def resolve_store_dir(explicit: Optional[str] = None) -> str:
+    """The agent-memory store location: explicit arg > ``$AGENT_MEMORY_DIR`` > the known per-machine
+    path. Pure resolution — existence is the CALLER's coverage-honest signal to report."""
+    return explicit or os.environ.get(AGENT_MEMORY_DIR_ENV) or DEFAULT_AGENT_MEMORY_DIR
+
+
+def _sha256_file(path: str) -> Optional[str]:
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def snapshot_store(memory_dir: Optional[str] = None) -> Dict[str, Any]:
+    """PRE-consolidation baseline (first half of the DEC-005 wrapper): every memory file's name,
+    protected flag and full-file sha256 — D12 demands protected entries survive *verbatim*, so the
+    hash pins rewrites (including a frontmatter flip), not just deletions. Total: an absent store
+    yields ``store_present: False``, which :func:`verify_snapshot` REFUSES as vacuous — a baseline
+    of nothing must never become a green verify."""
+    mdir = resolve_store_dir(memory_dir)
+    snap: Dict[str, Any] = {"store": mdir, "store_present": os.path.isdir(mdir), "entries": []}
+    if not snap["store_present"]:
+        return snap
+    try:
+        names = sorted(os.listdir(mdir))
+    except OSError:
+        snap["store_present"] = False
+        return snap
+    for fn in names:
+        if not fn.endswith(".md") or fn == "MEMORY.md":
+            continue
+        path = os.path.join(mdir, fn)
+        e = load_entry(path)
+        snap["entries"].append({"name": e.name, "file": fn,
+                                "protected": e.protected, "sha256": _sha256_file(path)})
+    return snap
+
+
+def verify_snapshot(before: Dict[str, Any], memory_dir: Optional[str] = None) -> Dict[str, Any]:
+    """POST-consolidation check (second half of the wrapper): reconcile the live store against the
+    pre-pass baseline. Failures are NAMED, never silent — ``dropped``: protected entries gone
+    (:func:`missing_protected`, the guard's own loss detector); ``rewritten``: protected files whose
+    bytes changed (a D12 verbatim violation); ``unpinned``: canonical anchors no longer pinned by any
+    protected entry after the pass; ``unindexed``: surviving protected files MEMORY.md no longer
+    references (an index prune orphans them from session-start re-surfacing — BLK-1 route d).
+    ``vacuous``: the baseline itself pinned nothing (or had no store) — REFUSED, not a pass.
+    Ordinary entries may be freely compressed; only the protected tier is judged. ``ok`` iff clean."""
+    before = before or {}
+    baseline = [e for e in (before.get("entries") or []) if isinstance(e, dict)]
+    protected_before = [e for e in baseline if _truthy(e.get("protected"))]
+    mdir = resolve_store_dir(memory_dir or before.get("store"))
+    out: Dict[str, Any] = {"store": mdir, "dropped": [], "rewritten": [], "unpinned": [],
+                           "unindexed": [], "vacuous": False, "ok": False}
+    if not before.get("store_present") or not protected_before:
+        out["vacuous"] = True          # nothing was pinned at baseline: refusing beats a vacuous green
+        return out
+    after = load_store(mdir)
+    out["dropped"] = missing_protected(baseline, after)
+    for e in protected_before:
+        if e.get("name") in out["dropped"]:
+            continue                   # already reported as dropped, not rewritten
+        if _sha256_file(os.path.join(mdir, str(e.get("file") or ""))) != e.get("sha256"):
+            out["rewritten"].append(e.get("name"))
+    out["unpinned"] = unpinned_constraints(after)
+    try:
+        idx = open(os.path.join(mdir, "MEMORY.md"), encoding="utf-8", errors="replace").read()
+    except OSError:
+        idx = ""
+    out["unindexed"] = [e.get("name") for e in protected_before
+                        if e.get("name") not in out["dropped"] and str(e.get("file")) not in idx]
+    out["ok"] = not (out["dropped"] or out["rewritten"] or out["unpinned"] or out["unindexed"])
+    return out
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """CLI — the DEC-005 pre/post-consolidation wrapper. Bracket ANY memory-consolidation pass:
+
+        python -m cisco_toolkit.memory_guard snapshot [--store DIR] [--out FILE]
+        ... run the consolidation ...
+        python -m cisco_toolkit.memory_guard verify BASELINE.json [--store DIR]
+
+    Exit 0 = protected tier intact; 4 = loss/drift/vacuous baseline (matches selfcheck's RED)."""
+    import argparse
+    import json
+    import sys
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    ap = argparse.ArgumentParser(prog="python -m cisco_toolkit.memory_guard")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("snapshot", help="record the pre-consolidation baseline")
+    s.add_argument("--store", help="store dir (default: $AGENT_MEMORY_DIR or the known location)")
+    s.add_argument("--out", help="write the baseline JSON here (default: stdout)")
+    v = sub.add_parser("verify", help="reconcile the live store against a baseline")
+    v.add_argument("baseline", help="baseline JSON written by `snapshot`")
+    v.add_argument("--store", help="store dir (default: the baseline's recorded store)")
+    a = ap.parse_args(argv)
+    if a.cmd == "snapshot":
+        snap = snapshot_store(a.store)
+        text = json.dumps(snap, indent=1)
+        if a.out:
+            with open(a.out, "w", encoding="utf-8") as f:
+                f.write(text)
+        else:
+            print(text)
+        if not snap["store_present"]:
+            print(f"[RED] store absent at {snap['store']} — nothing to guard (baseline is vacuous)",
+                  file=sys.stderr)
+            return 4
+        n_prot = sum(1 for e in snap["entries"] if e["protected"])
+        print(f"[OK ] baseline: {len(snap['entries'])} entr(ies), {n_prot} protected — {snap['store']}",
+              file=sys.stderr)
+        if not n_prot:
+            print("[RED] baseline pins NO protected entries — a later verify would be vacuous",
+                  file=sys.stderr)
+            return 4
+        return 0
+    try:
+        with open(a.baseline, encoding="utf-8") as f:
+            before = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"[RED] cannot read baseline {a.baseline}: {e!r}", file=sys.stderr)
+        return 4
+    rep = verify_snapshot(before, a.store)
+    if rep["vacuous"]:
+        print("[RED] vacuous baseline (no store / nothing protected at snapshot time) — refused, not a pass",
+              file=sys.stderr)
+        return 4
+    for key, label in (("dropped", "protected entries DROPPED"),
+                       ("rewritten", "protected entries REWRITTEN (D12 verbatim violated)"),
+                       ("unpinned", "canonical anchors UNPINNED after the pass"),
+                       ("unindexed", "MEMORY.md index lost (orphaned from re-surfacing)")):
+        if rep[key]:
+            print(f"[RED] {label}: {', '.join(str(x) for x in rep[key])}", file=sys.stderr)
+    if rep["ok"]:
+        print(f"[OK ] protected tier survived the pass verbatim — {rep['store']}", file=sys.stderr)
+        return 0
+    return 4
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
