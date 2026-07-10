@@ -478,6 +478,7 @@ from cisco_toolkit.runbook import write_runbook_docx                 # NEW-V3.23
 from cisco_toolkit.deck import write_executive_deck_pptx             # NEW-V3.23.144 (executive PPTX deck deliverable)
 from cisco_toolkit.design import write_design_doc_docx               # NEW-V3.23.148 (As-Built HLD/LLD design document)
 from cisco_toolkit.mop import write_mop_docx                         # NEW-V3.23.149 (per-wave Method of Procedure)
+from cisco_toolkit.gate_state import enforce as gate_enforce         # P0-3/DEC-003 (PPDIOO document-gate refusal)
 from cisco_toolkit.crd import write_crd_docx                         # NEW-V3.23.156 (Plan-phase requirements capture)
 from cisco_toolkit.engagement import write_engagement_docx           # NEW-V3.23.157 (engagement workflow / plan of record)
 from cisco_toolkit.archreview import (compute_architecture_review,   # NEW-V3.23.160 (leading-practice design review)
@@ -1562,6 +1563,14 @@ def main():
                     help="NEW-V3.23.149: skip the per-wave Method of Procedure (MOP, DOCX) — a "
                          "maintenance-window cutover template per migration wave; needs python-docx "
                          "(a missing library is a warning, not an error).")
+    ap.add_argument("--override-gate",   default=None, metavar="REASON",
+                    help="P0-3/DEC-003: proceed past a REFUSED PPDIOO document gate. When "
+                         "docs/engagement-state.json exists (see python -m cisco_toolkit.gate_state), "
+                         "the design doc requires an approved assessment and the MOP an approved LLD "
+                         "+ captured baseline; a missing approval refuses that deliverable. This flag "
+                         "overrides the refusal, recording WHO/WHEN/WHY as an audit line in the "
+                         "gate-state store (reason must be non-empty). Without the store, generation "
+                         "proceeds ungated (brownfield).")
     ap.add_argument("--no-crd",          action="store_true",
                     help="NEW-V3.23.156: skip the Customer Requirements Document (CRD, DOCX) — the "
                          "Plan-phase requirements-capture instrument primed with the assessment "
@@ -2811,7 +2820,11 @@ def main():
     # Phase 33: As-Built Network Design Document (HLD/LLD, DOCX) - NEW-V3.23.148. The Design-phase twin
     # of the workbook: reconstructs the current (as-built) design + target-state recommendations from the
     # SAME snapshot (one source of truth). Optional python-docx; a missing library is a warning, never a crash.
-    if not args.no_design:
+    # P0-3/DEC-003: design follows an APPROVED assessment (PPDIOO gate). With a gate-state store
+    # present (docs/engagement-state.json) and the marker unapproved, this REFUSES (skips the
+    # write, loudly); --override-gate proceeds and appends a who/when/why audit line. No store at
+    # all = warn-and-proceed (brownfield).
+    if not args.no_design and gate_enforce("design", override_reason=args.override_gate):
         design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
         try:
@@ -2822,7 +2835,10 @@ def main():
     # Phase 34: per-wave Method of Procedure (MOP, DOCX) - NEW-V3.23.149. The Implement-phase cutover
     # template, one section per migration wave, reusing the validation plan as the post-cutover checks.
     # Optional python-docx; a missing library is a warning, never a crash.
-    if not args.no_mop:
+    # P0-3/DEC-003: the MOP follows an APPROVED LLD + a captured current-state baseline (PPDIOO
+    # gate; mop-change-author charter). Same refusal/override/brownfield semantics as the design
+    # gate above — the refusal skips ONLY this deliverable; the workbook/snapshot already saved.
+    if not args.no_mop and gate_enforce("mop", override_reason=args.override_gate):
         mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
         label = os.path.splitext(os.path.basename(out_xlsx))[0]
         try:
