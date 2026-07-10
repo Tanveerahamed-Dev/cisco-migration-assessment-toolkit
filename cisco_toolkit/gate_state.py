@@ -260,10 +260,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     print(f"gate-state store: {path}")
     for key, label, arrow, _criteria in DOC_GATES:
-        rec = _gates(store).get(key)
-        if isinstance(rec, dict) and rec.get("decision"):
-            print(f"  {key:20s} [{rec.get('decision'):8s}] {arrow:18s} "
-                  f"by {rec.get('signed_by') or '?'} at {rec.get('decided_at') or '?'}")
+        row = _gates(store).get(key)
+        if isinstance(row, dict) and row.get("decision"):
+            print(f"  {key:20s} [{row.get('decision'):8s}] {arrow:18s} "
+                  f"by {row.get('signed_by') or '?'} at {row.get('decided_at') or '?'}")
         else:
             print(f"  {key:20s} [   --   ] {arrow:18s} {label}")
     audit = [a for a in store.get("audit", []) if isinstance(a, dict)]
