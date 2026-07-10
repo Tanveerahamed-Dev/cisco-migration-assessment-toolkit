@@ -174,6 +174,7 @@ def test_scorecard_row_matches_schema():
     assert set(row) == set(SCHEMA_KEYS)
     assert row["verdict"] == "APPROVE" and row["score"] == 100 and row["counterexamples"] == 0
     assert row["judge_tnr"] is None and row["provisional"] is False
+    assert row["authored_by"] is None and row["reviewed_by"] is None  # no provenance pair on a deterministic row
     # a tripped deliverable rows as BLOCK with the defect in notes
     bad = known_good_snapshot(); bad["executive_brief"]["scale"]["n_devices"] = 999
     brow = E.score(bad).to_scorecard_row(deliverable="golden", commit="abc1234", date="2026-07-06")
