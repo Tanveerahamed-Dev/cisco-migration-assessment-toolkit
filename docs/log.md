@@ -4,7 +4,37 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
-## [2026-07-10] — /architect-plan v5: plan → 2-round QA → Phase 0 executed same-day (8 PRs + protection live)
+## [2026-07-10] — P0-3 human-gate mechanization: PPDIOO document gates now refuse, not advise (branch `feat/p0-3-gate-enforcement`, PR #313 merged)
+
+- Executed P0-3 (G-003/DEC-003) end-to-end: new `cisco_toolkit/gate_state.py` — per-engagement
+  `docs/engagement-state.json` store (append-only `DOC_GATES` keys; the *document-approval* axis
+  complementing `engagement.GATE_SEQUENCE`'s per-wave cadence, reusing the webapp board's record model) —
+  and the engine's design/MOP blocks now REFUSE on a missing upstream approval (design ← `assessment_approved`;
+  MOP ← `lld_approved` + `baseline_captured`), overridable only by `--override-gate "<reason>"` which appends a
+  who/when/why audit line. Fail-safe: absent store = warn-and-proceed, so it ships DORMANT (no store in-repo;
+  first `approve` opts an engagement in). SSOT-registered; 14 tests incl. both plan acceptance criteria;
+  12/12 CI green; human-merged same morning. Clean session — nothing broke that wasn't a designed pin firing.
+- Blast-radius-first paid off as a *design input*, not paperwork: `python -m graphify affected` on the two
+  writers showed ~63 direct test call-sites + the webapp path, which DECIDED the enforcement point (CLI
+  orchestration layer, where a flag can live; writer signatures untouched → zero drift for every caller).
+  Worktree note: `graphify-out/graph.json` is untracked so it doesn't exist in worktrees — run graphify from
+  the main checkout (same class as the gitignored vault-digest absence).
+- `!lesson` **Adding ANY new module under `cisco_toolkit/` fails `test_pipeline_golden` by design** — the
+  attestation claim re-derives "0 LLM/GenAI SDK imports across N modules" (64→65 here) against the frozen
+  golden. That's the no-egress pin working, not corruption: re-bless with `UPDATE_GOLDEN=1 python -m pytest
+  tests/test_pipeline_golden.py` (grow-only; refuses to shrink), then verify the golden diff is EXACTLY the
+  census lines before committing.
+- `!lesson` **An override whose entire purpose is to leave an audit line must fail CLOSED when the ledger
+  itself is unreadable.** A corrupt/unparseable gate-state store refuses generation even WITH
+  `--override-gate` — the who/when/why line has nowhere trustworthy to land, so the bypass would be
+  unaudited by construction. Distinguish the three states explicitly: absent (proceed, warn), unapproved
+  (refuse, overridable+audited), unreadable (refuse, not overridable). bridge-candidate
+- `!lesson` **CI-watch scripting traps, twice in one session:** (a) `gh pr checks` exits 8 while checks are
+  merely PENDING — a background poll surfaced as "failed with exit code 8" when nothing was wrong; script
+  for exit 8 explicitly. (b) A Monitor poll loop whose error arm is `|| { sleep; continue; }` produced ZERO
+  events then timed out — the `gh ... --json | jq` pipeline failed every iteration and the fallback swallowed
+  it, making hard failure indistinguishable from "still pending". A poll loop must emit at least one error
+  event before continuing; silence is not success. bridge-candidate
 
 - Built `.claude/commands/architect-plan.md` through 4 adversarial iterations (self-verify → self-adversarial →
   independent refuter fan-out → consistency audit; each round found real defects the prior round missed, incl. a
