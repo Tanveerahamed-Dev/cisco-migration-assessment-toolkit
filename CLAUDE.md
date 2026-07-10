@@ -6,7 +6,9 @@ excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (
 engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
 NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
-(~434 nodes) because regenerating it needs an LLM call = egress, which the no-egress doctrine forbids. It fuses
+(~434 nodes) because regenerating it needs an LLM call = egress, which the no-egress doctrine forbids
+(sole carve-out: a **local** Ollama on 127.0.0.1 is on-host compute, not egress — ADR 0001 Amendment 1,
+implemented by `ollama_recall.py`; cloud LLM calls stay forbidden). It fuses
 the code + the repo's markdown (CLAUDE.md, docs/, incl. the deep-research corpus under docs/research/). Use it
 FIRST for codebase questions AND for impact analysis before a change — a scoped subgraph beats grep/file-browsing.
 graphify is NOT on PATH — always invoke as `python -m graphify`.
