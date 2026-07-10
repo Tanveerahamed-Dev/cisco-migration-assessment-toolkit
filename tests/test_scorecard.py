@@ -137,6 +137,99 @@ def test_judge_tnr_is_a_schema_field_and_persists(tmp_path):
     assert S.read_rows(path)[1]["judge_tnr"] is None       # unmeasured -> null, not a guess
 
 
+# --- judge trust: PROVISIONAL vs quantified verdicts (P0-6 / DEC-004; gap G-006) -----------------
+# Before P0-6, `judge_tnr` was a passive schema field no writer emitted and PROVISIONAL lived only in
+# README prose. Properties under test: the latest judge-baseline row stamps every subsequent QA
+# verdict (EMIT); an APPROVE whose judge_tnr is null / below JUDGE_TNR_FLOOR persists provisional:true
+# and cannot be written trusting (ENFORCE); BLOCKs and deterministic scored rows are never provisional.
+
+BASELINE_ROW = {"date": "2026-07-08", "deliverable": "judge-baseline", "score": None, "verdict": None,
+                "judge_tnr": 0.2, "provisional": None, "counterexamples": None, "laws_tripped": [],
+                "commit": "b2b2951", "notes": "cross-family LLM judge qwen3:4b: localized TNR=0.2"}
+
+
+def test_latest_judge_baseline_picks_last_measured():
+    rows = [BASELINE_ROW,
+            {"deliverable": "judge-baseline", "judge_tnr": None},        # unmeasured -> skipped
+            {"deliverable": "design", "judge_tnr": 0.9},                 # not a baseline row
+            dict(BASELINE_ROW, date="2026-07-10", judge_tnr=0.4)]
+    assert S.latest_judge_baseline(rows)["judge_tnr"] == 0.4             # the LATEST measured one
+    assert S.latest_judge_baseline([]) is None
+    assert S.latest_judge_baseline(None) is None
+    # a bool is not a measurement (True is an int in Python — must not read as TNR 1.0)
+    assert S.latest_judge_baseline([{"deliverable": "judge-baseline", "judge_tnr": True}]) is None
+
+
+def test_is_provisional_predicate():
+    # a judge APPROVE with no measured TNR quantifies nothing -> provisional (advisory)
+    assert S.is_provisional({"verdict": "APPROVE", "score": None, "judge_tnr": None}) is True
+    # measured below the floor -> still provisional (the qwen3:4b 0.2 baseline demotes, not promotes)
+    assert S.is_provisional({"verdict": "APPROVE", "score": None, "judge_tnr": 0.2}) is True
+    # at/above the floor -> quantified trust, gating
+    assert S.is_provisional({"verdict": "APPROVE", "score": None, "judge_tnr": S.JUDGE_TNR_FLOOR}) is False
+    # a BLOCK is a grounded counterexample regardless of judge trust (weak judges OVER-approve)
+    assert S.is_provisional({"verdict": "BLOCK", "score": None, "judge_tnr": None}) is False
+    # a deterministic scored row (golden harness) involves no judge -> never provisional
+    assert S.is_provisional({"verdict": "APPROVE", "score": 100, "judge_tnr": None}) is False
+    # a judge-baseline / malformed row is not a verdict at all
+    assert S.is_provisional({"verdict": None, "score": None}) is False
+    assert S.is_provisional("not a dict") is False
+
+
+def test_run_hook_stamps_judge_tnr_from_latest_baseline(tmp_path):
+    """(a) EMIT: with a judge-baseline row on the scorecard, the QA-verdict writer stamps the new
+    row's judge_tnr from it — PROVISIONAL vs quantified is machine-readable off the row, not prose."""
+    sc = str(tmp_path / "sc.jsonl")
+    assert S.append_row(BASELINE_ROW, sc) is True
+    tp = str(tmp_path / "t.jsonl")
+    _write_transcript_rows(tp, QA_APPROVE)
+    row = S.run_hook(json.dumps({"transcript_path": tp}), path=sc, date="2026-07-10", commit="c")
+    assert row["judge_tnr"] == 0.2                       # stamped from the baseline, not null
+    persisted = S.read_rows(sc)[-1]
+    assert persisted["judge_tnr"] == 0.2
+    assert persisted["provisional"] is True              # 0.2 < JUDGE_TNR_FLOOR -> advisory, non-gating
+
+
+def test_run_hook_without_baseline_stamps_null_and_provisional(tmp_path):
+    """No baseline ever measured -> judge_tnr stays an honest null and the APPROVE is provisional."""
+    sc = str(tmp_path / "sc.jsonl")
+    tp = str(tmp_path / "t.jsonl")
+    _write_transcript_rows(tp, QA_APPROVE)
+    S.run_hook(json.dumps({"transcript_path": tp}), path=sc, date="d", commit="c")
+    persisted = S.read_rows(sc)[-1]
+    assert persisted["judge_tnr"] is None and persisted["provisional"] is True
+
+
+def test_record_arm_stamps_from_floor_clearing_baseline(tmp_path, monkeypatch):
+    """The --record (message) arm stamps too; a baseline AT/above the floor makes the APPROVE gating."""
+    sc = str(tmp_path / "sc.jsonl")
+    S.append_row(dict(BASELINE_ROW, judge_tnr=0.5), sc)  # a (hypothetical) floor-clearing baseline
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    msg = tmp_path / "qa.md"
+    msg.write_text(QA_APPROVE, encoding="utf-8")
+    assert S.main(["--record", str(msg)]) == 0
+    persisted = S.read_rows(sc)[-1]
+    assert persisted["judge_tnr"] == 0.5 and persisted["provisional"] is False
+
+
+def test_append_row_enforces_provisional_cannot_be_false(tmp_path):
+    """(b) ENFORCE at the choke point: a caller stamping provisional=False on a below-floor APPROVE
+    is overruled — fabricated confidence cannot be persisted. The conservative direction (forcing
+    True on a trustworthy row) is deliberately left alone; BLOCK rows pass through unforced."""
+    sc = str(tmp_path / "sc.jsonl")
+    row = S.parse_qa_verdict(QA_APPROVE, date="d", commit="c")
+    row["provisional"] = False                            # a lying writer
+    assert S.append_row(row, sc) is True
+    assert S.read_rows(sc)[0]["provisional"] is True      # enforced: judge_tnr null -> advisory
+    b = S.parse_qa_verdict(QA_BLOCK, date="d", commit="c")
+    assert S.append_row(b, sc) is True
+    assert S.read_rows(sc)[-1]["provisional"] is None     # a BLOCK is never marked, never forced
+
+
+def _write_transcript_rows(path, text):
+    _write_transcript(path, [("user", "run /qa"), ("assistant", [{"type": "text", "text": text}])])
+
+
 def _write_transcript(path, messages):
     """messages: list of (role, content) where content is a str or list of text-block dicts."""
     with open(path, "w", encoding="utf-8") as f:
