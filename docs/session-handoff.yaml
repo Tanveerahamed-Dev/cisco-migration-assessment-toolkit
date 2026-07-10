@@ -6,7 +6,7 @@ artifacts:
   - "docs/architect-master-plan-2026-07-10.md"
 qa_verdict: "APPROVE (round 2, all three artifacts; round-1 BLOCK dispositioned; verdict rows recorded)"
 last_completed_task: "PHASE 0 CLOSE-OUT 2026-07-10: G-001..G-006 closed (#308, #311, #313, #312, protection+#306 proof, #307+#309); P0-8 vault shell-lane merged #314 @ 520751d; P0-7 executed (settings.local.json narrowed — python -c and cat> pre-approvals removed, 11 narrow one-shots kept); P0-9/HR-005 residuals RATIFIED by user delegation; stale duplicate PR #298 closed (superseded by #304); planning artifacts + ledger merged via #310 @ 37409f6"
-next_task: "Phase 1: P1-1 data accrual runs with every /qa (provenance flags now mandatory per qa.md); P1-2 holdout activation contract (write manifest tooling + register in ssot.md); P1-3 judge re-baseline ladder (advisory until TNR >= 0.25); PLUS carry-over P2-0f: the D10-erratum + memory_guard-ghost-path fix-sessions have still not landed — if silent much longer, re-spawn them as fresh chips"
+next_task: "Phase 1: P1-1 data accrual runs with every /qa (provenance flags now mandatory per qa.md); P1-2 holdout activation contract (write manifest tooling + register in ssot.md); P1-3 judge re-baseline ladder (advisory until TNR >= 0.25). Carry-over P2-0f CLOSED in this PR — owner errata fixed directly (the two original fix-sessions never landed; superseded, close their windows)"
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
@@ -52,5 +52,6 @@ context_summary: |
   Bash/PowerShell lane; the local allowlist erosion is removed; the seven irreducible residuals
   are ratified in HR-005. Front line = Phase 1 of docs/architect-master-plan-2026-07-10.md
   (hybrid data policy: N-floors now, sealed 70/30 at N>=50 REAL; 2026-08-05 checkpoint) — feed
-  the loops REAL data, never fabricate. Open carry-over: the D10-erratum + memory_guard-ghost
-  fix-sessions never landed (P2-0f owns the erratum; re-spawn if still silent).
+  the loops REAL data, never fabricate. P2-0f closed 2026-07-10: owner errata fixed directly
+  (D10 paired-power figure + node count; memory_guard + learnings ghost citations) — the two
+  original fix-sessions never landed and are superseded; close their windows.
