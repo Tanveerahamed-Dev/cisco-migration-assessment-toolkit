@@ -33,13 +33,9 @@ GUARD_FILES = [
     "tests/test_defect_panel.py", "tests/test_fault_corpus.py", "tests/test_ollama_judge.py",
 ]
 
-# The D12 protected-tier artifact (P0-1 / DEC-005; gap G-001, evidence BLK-1). The store lives OUTSIDE
-# the repo (Claude Code auto-memory for this project), so its location cannot be derived from ``root``:
-# the known per-machine path is pinned literally BY DESIGN, ``AGENT_MEMORY_DIR`` overrides it for any
-# other machine, and a machine without the store reads explicit signal_absent (UNKNOWN) — never green.
-PROTECTED_ARTIFACT = "protected-constraints.md"
-AGENT_MEMORY_DIR_ENV = "AGENT_MEMORY_DIR"
-DEFAULT_AGENT_MEMORY_DIR = r"C:\Users\[HISTORY-REDACTED]\.claude\projects\C--Users-[HISTORY-REDACTED]-Desktop-Enhancements\memory"
+# The D12 protected-tier artifact constants (store path, env override, artifact name) are OWNED by
+# cisco_toolkit.memory_guard (one source of truth) and imported lazily inside the check, so a deleted
+# guard module reads RED there instead of breaking this module's import.
 
 
 def _check(name: str, status: str, detail: str) -> Dict[str, str]:
@@ -184,21 +180,21 @@ def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dic
         problems.append(f"doctrine drift: {len(drifted)}/{len(MG.CANONICAL_SAFETY_CONSTRAINTS)} canonical anchor(s) "
                         f"not verbatim in CLAUDE.md (first: {drifted[0]})")
     # Store side (per-machine): a missing store is a missing SIGNAL, not health.
-    mdir = memory_dir or os.environ.get(AGENT_MEMORY_DIR_ENV) or DEFAULT_AGENT_MEMORY_DIR
+    mdir = MG.resolve_store_dir(memory_dir)
     if not os.path.isdir(mdir):
         if problems:                            # doctrine drift is verified regardless of the store
             return _check("protected_artifact", RED, "; ".join(problems) + f" (store itself absent at {mdir})")
         return _check("protected_artifact", UNKNOWN,
                       f"signal_absent: agent-memory store not found at {mdir} "
-                      f"(set {AGENT_MEMORY_DIR_ENV} to point at it) — absence is never green")
+                      f"(set {MG.AGENT_MEMORY_DIR_ENV} to point at it) — absence is never green")
     store = MG.load_store(mdir)
     # The pinned expectation, reconciled via the guard's own loss detector: an entry named after the
     # artifact must survive in the live store (deletion OR a name-pin rewrite reads as dropped).
-    expected = [MG.MemoryEntry(name=os.path.splitext(PROTECTED_ARTIFACT)[0], body="", meta={"protected": "true"})]
-    if MG.missing_protected(expected, store) or not os.path.exists(os.path.join(mdir, PROTECTED_ARTIFACT)):
-        problems.append(f"{PROTECTED_ARTIFACT} dropped from the store ({mdir}) — the D12 never-delete tier is gone")
+    expected = [MG.MemoryEntry(name=os.path.splitext(MG.PROTECTED_ARTIFACT)[0], body="", meta={"protected": "true"})]
+    if MG.missing_protected(expected, store) or not os.path.exists(os.path.join(mdir, MG.PROTECTED_ARTIFACT)):
+        problems.append(f"{MG.PROTECTED_ARTIFACT} dropped from the store ({mdir}) — the D12 never-delete tier is gone")
     else:
-        entry = MG.load_entry(os.path.join(mdir, PROTECTED_ARTIFACT))
+        entry = MG.load_entry(os.path.join(mdir, MG.PROTECTED_ARTIFACT))
         if not entry.protected:                 # the frontmatter flip: protected: true -> false
             problems.append("frontmatter no longer marks the artifact protected "
                             "(protected/type-constraint marker off) — consolidation may now compress it")
@@ -213,12 +209,12 @@ def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dic
         index_text = None
     if index_text is None:
         problems.append("MEMORY.md index absent from the store — the artifact cannot re-surface at session start")
-    elif PROTECTED_ARTIFACT not in index_text:
-        problems.append(f"MEMORY.md no longer indexes {PROTECTED_ARTIFACT} — an index prune orphaned the protected tier")
+    elif MG.PROTECTED_ARTIFACT not in index_text:
+        problems.append(f"MEMORY.md no longer indexes {MG.PROTECTED_ARTIFACT} — an index prune orphaned the protected tier")
     if problems:
         return _check("protected_artifact", RED, "; ".join(problems))
     return _check("protected_artifact", GREEN,
-                  f"{PROTECTED_ARTIFACT} pinned: protected marker intact, all {len(MG.CANONICAL_SAFETY_CONSTRAINTS)} "
+                  f"{MG.PROTECTED_ARTIFACT} pinned: protected marker intact, all {len(MG.CANONICAL_SAFETY_CONSTRAINTS)} "
                   f"canonical anchors pinned + doctrine-reconciled, MEMORY.md indexes it")
 
 

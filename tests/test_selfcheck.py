@@ -210,9 +210,9 @@ def test_protected_artifact_env_var_points_the_store(tmp_path, monkeypatch):
     beats the env; without either, THIS test never resolves to the per-machine default."""
     root = _doctrine_root(tmp_path)
     store = _protected_store(tmp_path)
-    monkeypatch.setenv(SC.AGENT_MEMORY_DIR_ENV, store)
+    monkeypatch.setenv(MG.AGENT_MEMORY_DIR_ENV, store)
     assert SC.check_protected_artifact(root)["status"] == SC.GREEN
-    monkeypatch.setenv(SC.AGENT_MEMORY_DIR_ENV, str(tmp_path / "relocated-away"))
+    monkeypatch.setenv(MG.AGENT_MEMORY_DIR_ENV, str(tmp_path / "relocated-away"))
     assert SC.check_protected_artifact(root, memory_dir=store)["status"] == SC.GREEN   # arg > env
     assert SC.check_protected_artifact(root)["status"] == SC.UNKNOWN                   # env honored
 
