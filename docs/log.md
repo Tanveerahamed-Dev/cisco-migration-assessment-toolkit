@@ -4,7 +4,45 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
-## [2026-07-10] — Perplexity-Brain research → agent-brain planning: verify the external plan, hold the data-first line (branch `chore/scorecard-first-real-rows`)
+## [2026-07-10] — P0-5 registry de-rot + freshness guard, adversarially reviewed and merged (PR #307, branch `claude/beautiful-mcnulty-0f67af`)
+
+- Executed P0-5 (gap G-005): fixed the four verified-stale registry/ADR lines (release-version cache 3.26.0→3.30.0;
+  "no live feed yet" vs the TRACKED `feed-2026-07-07.jsonl`; "no digest data yet" → clean-clone-honest wording; the
+  ADR-0001 "planned, not installed" heading → dated status update) + the CLAUDE.md local-Ollama carve-out (ADR 0001
+  Am. 1). NEW `tests/test_registry_freshness.py` guards both rot modes — status-vs-tracked-tree and cached-value-vs-
+  owner — proven red before the fixes (3 failures, one per stale claim), green after. Then a max-effort 10-angle
+  adversarial review of my own PR found 15 confirmed issues (all fixed, `91e81d1`): the guard is now enrolled in
+  `selfcheck.GUARD_FILES` (13→14), reconciles the feed count against `verify_feed`'s VERIFIED entries, scans table
+  rows only, and skips on unobservable reality instead of a CI env-var proxy. Merged with an explicitly named
+  `--admin` bypass after CI green (10 checks incl. py3.10 exercising the fallback parser). The plan doc itself
+  (`architect-master-plan-2026-07-10.md`) is untracked here — proceeded by re-verifying every inline task claim
+  against the tree first; all held.
+- `!lesson` **A freshly written policy carve-out needs an adversarial read for unintended licenses — the exception you
+  word for one mechanism will be read as licensing neighbors.** My first carve-out ("a local Ollama on 127.0.0.1 is
+  not egress") accidentally read as re-authorizing `graphify label` via a localhost backend — regenerating the very
+  LLM-derived node layer the de-pollution removed — because the AST-only invariant had only ever been justified BY
+  egress. Refuter fan-out caught it; self-review had not. Fix: state the surviving invariant separately from the
+  exception ("licenses local INFERENCE only; AST-only is a provenance invariant, not an egress one"). bridge-candidate
+- `!lesson` **Never cache machine state in docs — name the read path instead; and when a review flags a cached value,
+  PROBE it live before trusting either side.** The registry row cached "Ollama 0.31.1"; a finder flagged the rot
+  class, and the live probe showed the install was ALREADY 0.31.2 — the drift had happened before the ink dried.
+  Docs now say "read `ollama --version`, never cache it here". Same class as device state: "not observed" ≠ current.
+  bridge-candidate
+- `!lesson` **An artifact's self-declared header fields are NOT attestations unless the signature covers them —
+  reconcile against verified content, not the header.** The feed manifest's `n: 93` is outside the SHA-256 (which
+  covers entry lines only) and `verify_feed` never cross-checks it; my first guard trusted `n`. A tampered or
+  mis-produced feed could assert any count while the gate loads a different one. Fix: require the provenance gate to
+  ACCEPT the artifact and reconcile to `len(verified entries)`. bridge-candidate
+- `!lesson` **An env-var is a proxy for "which runner", not "which data is present" — gate owner-machine tests on
+  whether the reality is observable, not on `CI`.** The digest existence check under `skipif(CI)` would hard-fail any
+  contributor clone (no CI var, no gitignored digest — a state the registry row itself documents as designed), and
+  `bool(os.environ.get("CI"))` is truthy for `CI=false`. Fix: skip exactly when zero digests are visible; assert only
+  where the data exists. bridge-candidate
+- `!lesson` **Windows Git-Bash piping can eat pytest's final summary line (`N passed in Xs`) — trust the exit code +
+  file redirect, not the piped tail.** `python -m pytest -q 2>&1 | tail` repeatedly ended at the warnings block with
+  the count line missing; `grep -c` on the same stream returned 0. Redirect to a file and read exit status; also
+  pytest 9's `--collect-only -q` emits per-file counts (`file.py: N`), not node ids — `grep -c "::"` counts zero.
+  bridge-candidate
 
 - Turned a "is Perplexity Brain better than us?" research request into an agent-brain planning arc. Deep-research
   found Brain = self-improving *agent-work* memory (context graph + overnight synthesis), **cloud-only → non-adoptable
