@@ -117,3 +117,107 @@ Everything runs with no egress. Re-implement the source doc's snippets clean (it
 gets stood up *when* D10 is built, and it is the thing that decides whether the dense lane ships at all. The one
 autonomous slice available now with zero new dependencies: the **20 AST-identifier queries + the graph-only
 baseline** (no LLM, no embeddings) — a real first data point whenever we choose to spend it. Not pulled forward.
+
+---
+
+## Amendment 2026-07-10 (DEC-006) — the eval corpus gains the vault-digest lane
+
+*Appended per **DEC-006** (`docs/architect-master-plan-2026-07-10.md` §4; decided 2026-07-10 by user
+delegation, executed at **P2-0e**). The pre-registration above (§0–§9) is untouched — this amendment widens
+the CORPUS the eval measures, not the bar it applies.*
+
+### A1. Why — the eval must measure what ships
+
+The BUILT retriever (`cisco_toolkit/recall.py`) already fuses a **vault-digest lane**:
+`load_vault_digest()` (provenance-verified via `intel_feed.verify_feed`; a refused digest is skipped whole)
+→ `vault_digest_rank()` (lexical TF-IDF, fence-clean, always on when a verified digest exists), plus the
+OPTIONAL local-Ollama semantic re-rank (`ollama_digest_rank()` → `ollama_recall.py` subprocess, gated —
+ADR-0001 Amendment 1). The eval as pre-registered measures a graph+docs corpus only, so it would certify a
+**different system than the one shipped**. Per DEC-006 the eval corpus becomes **graph ⊕ docs ⊕ digest**,
+matching `hybrid_recall` and Am.1's framing, and the §7 results comparisons gain the digest-lane configs
+(lexical arm; semantic arm where Ollama is present).
+
+### A2. Coverage-honesty clause — digest availability is environment-dependent
+
+The digest is **gitignored / owner-machine-only by design** (`docs/vault-digest/digest-*.jsonl`; registry
+row in `docs/ssot.md`): worktrees, fresh clones and CI carry none, and recall there degrades to graph+docs.
+Therefore every eval run MUST:
+
+1. **Record the corpus config actually measured:** digest **present/absent**; when present — file name,
+   entry count, manifest SHA-256, and the `verify_feed` verdict (a refused digest counts as ABSENT, said
+   so); Ollama reachable yes/no (+ `ollama --version` and embed model, read live).
+2. **Report per-config, never pooled:** digest-present and digest-absent runs are different corpora —
+   silently comparing or averaging them is forbidden. A digest-absent run certifies the **degraded
+   graph⊕docs mode only** and must say so in its header.
+
+### A3. §7 unchanged — pre-registration intact
+
+The falsification criteria and thresholds of §7 are **UNCHANGED**: same margins (MRR@5 + 0.05), same
+significance bar (p < 0.05 paired t ∧ d > 0.4), same judge gate (κ ≥ 0.70, anchor acc ≥ 0.80) and
+`Hole@10 ≤ 0.15` validity bar. The digest-lane configs are decided with the SAME pre-registered criteria —
+in particular the **dense anti-pattern auto-reject** applies verbatim to the semantic digest arm (the probe
+below caught a live instance). The amendment widens the corpus, not the bar.
+
+### A4. DEC-006 cheapest probe — run 2026-07-10, results recorded
+
+The master-plan DEC-006 row names the cheapest refuting experiment: *"run the recall.py 8-query experiment
+with/without the digest lane; if delta ≈ 0 the lane question is moot."* Preconditions were **met** on the
+owner machine (digest present + Ollama reachable), so the probe was **run**, not deferred.
+
+**Environment (recorded per A2):** worktree @ `155ad84`, clean; probe run BEFORE this amendment was written
+(the doc edit itself perturbs the docs corpus). Digest `digest-2026-07-07.jsonl` — 10 entries, manifest
+SHA-256 `c16056d5…`, `verify_feed` OK. Ollama **0.31.2**, embed model `nomic-embed-text`
+(`ollama_recall.py` default). Corpora: docs=78 · code=64 · digest=10. Two method notes: (a) the built
+`evaluate()` does **not** wire the digest lane (it measures docs/code/hybrid only — a finding in itself:
+the harness-as-built cannot see the lane); the probe composed the lane through the public
+`hybrid_recall(extra_lists=…)` API without modifying `recall.py`. (b) The graphify lane was excluded to
+isolate one variable. MRR convention = `evaluate()`'s full-list reciprocal rank, not §3's MRR@5 (all
+observed ranks were ≤ 5, so the cutoff changes nothing here).
+
+| Config (8 labeled queries → expected `cisco_toolkit/*.py`) | MRR | Δ vs A | queries changed |
+|---|---|---|---|
+| **A** base: docs ⊕ code (what `evaluate()` measures today) | 1.000 | — | — |
+| **B** = A ⊕ digest **lexical** (`vault_digest_rank`) | 1.000 | **0.000** | 0/8 |
+| **C** = B ⊕ **Ollama re-rank** (the shipped composition when both present) | 0.671 | **−0.329** | 4/8 (rank 1 → 3, 5, 3, 2) |
+
+**Reading (coverage-honest):**
+
+- **Lexical arm: Δ = 0 → moot at this scale.** The lane fired on 4/8 queries and displaced nothing.
+- **Semantic arm: NOT moot.** `ollama_digest_rank` ranks the **entire** digest for every query (cosine,
+  no relevance threshold — 10/10 entries returned on all 8 queries), so any entry that also fires lexically
+  is **double-listed** and outranks single-listed ground truth under RRF (a double-listed entry scores
+  ≥ 2/70; any single-listed item ≤ 1/61, at k=60). The 4 degraded queries are exactly the 4 with a
+  non-empty lexical lane. This is a live n=8 instance of §7's pre-registered **dense anti-pattern** (a
+  semantic lane hurting the identifier/majority category) on the shipped composition — the corpus mismatch
+  has a measurable effect, and this amendment is necessary.
+- **Probe limits (do not over-read):** n=8; the labels expect code files, so digest entries can never be
+  relevant on this set — the probe measures the **interference direction only**, not the lane's positive
+  value; no significance claim at n=8 (§7's bar is for the 60-query eval, which this probe is not). The
+  probe is the harness seed the master plan calls it, not Phase-2 evidence.
+
+Repro (stdlib + `recall.py` public API only, from the repo root):
+
+```python
+from cisco_toolkit.recall import (_EVAL_LABELS, build_corpus, hybrid_recall,
+                                  load_vault_digest, ollama_digest_rank, vault_digest_rank)
+docs, code = build_corpus(".", ["docs/**/*.md", "*.md"]), build_corpus(".", ["cisco_toolkit/*.py"])
+vault = load_vault_digest()                      # {} unless a verified digest exists (record per A2)
+def rr(ranked, exp): return next((1.0 / i for i, x in enumerate(ranked, 1) if exp in str(x)), 0.0)
+for q, exp in _EVAL_LABELS:
+    A = rr([x for x, _ in hybrid_recall(q, docs_corpus=docs, code_corpus=code)], exp)
+    dl = vault_digest_rank(q, vault)
+    B = rr([x for x, _ in hybrid_recall(q, docs_corpus=docs, code_corpus=code, extra_lists=[dl])], exp)
+    ol = ollama_digest_rank(q)                   # shipped semantic arm (gated; [] when Ollama absent)
+    C = rr([x for x, _ in hybrid_recall(q, docs_corpus=docs, code_corpus=code,
+                                        extra_lists=[dl, ol] if ol else [dl])], exp)
+```
+
+### A5. Follow-ups (Phase 2 — measure first, nothing tuned now)
+
+- The 60-query set (§2) gains **digest-relevant queries** so the lane's positive value becomes measurable
+  (the probe above could only measure interference).
+- The C-config interference mechanism (thresholdless semantic ranking + RRF double-listing) is a Phase-2
+  decision under §7's criteria — candidate mitigations (similarity floor in `ollama_recall.py`, lane
+  weight) are **not** applied now (no tuning on n=8; §4's freeze-don't-grid-search discipline holds).
+- The harness gap (built `evaluate()` cannot see the digest lane) closes when the Phase-2 eval is stood up
+  — the digest-lane configs enter the results table per A1/A2.
