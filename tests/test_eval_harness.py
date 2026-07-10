@@ -165,16 +165,23 @@ def test_empty_deliverable_scores_none_not_a_false_100():
 
 def test_scorecard_row_matches_schema():
     """to_scorecard_row emits exactly the docs/quality/README.md schema keys (so the appender and
-    the eval suite write the same shape)."""
+    the eval suite write the same shape) — reconciled to scorecard.SCHEMA_KEYS, the owner, never a
+    hardcoded copy (SSOT Law 1). A deterministic scored row carries judge_tnr null (no judge to
+    measure) and provisional false — it is bias-free, never an advisory judge verdict (P0-6)."""
+    from cisco_toolkit.scorecard import SCHEMA_KEYS
     r = E.score(known_good_snapshot())
     row = r.to_scorecard_row(deliverable="golden", commit="abc1234", date="2026-07-06")
-    assert set(row) == {"date", "deliverable", "score", "verdict", "counterexamples",
-                        "laws_tripped", "commit", "notes"}
+    assert set(row) == set(SCHEMA_KEYS)
     assert row["verdict"] == "APPROVE" and row["score"] == 100 and row["counterexamples"] == 0
+    assert row["judge_tnr"] is None and row["provisional"] is False
     # a tripped deliverable rows as BLOCK with the defect in notes
     bad = known_good_snapshot(); bad["executive_brief"]["scale"]["n_devices"] = 999
     brow = E.score(bad).to_scorecard_row(deliverable="golden", commit="abc1234", date="2026-07-06")
     assert brow["verdict"] == "BLOCK" and "L1" in brow["laws_tripped"] and brow["notes"].startswith("eval:")
+    # the coverage-honest edge: an EMPTY deliverable's APPROVE (nothing applicable, score None)
+    # quantifies nothing -> it self-marks provisional rather than reading as gate-worthy
+    erow = E.score({}).to_scorecard_row(deliverable="golden", commit="abc1234", date="2026-07-06")
+    assert erow["score"] is None and erow["verdict"] == "APPROVE" and erow["provisional"] is True
 
 
 # --- full tier (release): render the family + rendered checks; real snapshot if present ---------
