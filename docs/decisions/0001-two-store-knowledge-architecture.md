@@ -54,18 +54,28 @@ a **sanitized vault digest** may cross vault→repo for recall, subject to all o
    worktree (like the research lane), never from an air-gapped repo session. The air-gapped repo only ever
    reads the frozen, signed, sanitized digest — its no-egress invariant is unchanged.
 
-### Ollama vault-digest RAG — **planned (D4), not installed**
+### Ollama vault-digest RAG — planned (D4); **since installed — see status update below**
 The digest is retrieved locally via **Ollama** (zero-egress, offline embeddings/LLM) so recall needs no
-network at query time. This is a **plan, not an install** — the dependency is **optional and
+network at query time. At decision time this was a **plan, not an install** — the dependency is **optional and
 gracefully-degrading**: no Ollama ⇒ the vault-digest store is simply unavailable and recall falls back to
 graph+docs (reported honestly, never silently "no results"). Implementation (the RRF hybrid retriever over
-graph ⊕ docs ⊕ vault-digest, D10) remains gated on the Ollama install + a first sanitized digest, and ships
-as an experiment with its own eval (D10), not as proven SOTA.
+graph ⊕ docs ⊕ vault-digest, D10) was gated on the Ollama install + a first sanitized digest (both since
+satisfied — see the status update below), and ships as an experiment with its own eval (D10), not as
+proven SOTA.
+
+> **Status update (2026-07-10):** the D4 gate is satisfied — Ollama + `nomic-embed-text` are installed
+> locally (semantic path validated via local `/api/embeddings`; read the version from `ollama --version`,
+> not from any doc) and the first sanitized digest (`digest-2026-07-07.jsonl`, owner-machine only,
+> gitignored) has been produced. The graceful-degradation contract above is unchanged and implemented
+> (`ollama_recall.py`, subprocess, fast-fail to lexical). Live status is owned by the `docs/ssot.md`
+> vault-digest row (freshness-guarded by `tests/test_registry_freshness.py`); this ADR records the
+> decision, not current state.
 
 ### Consequences
 - The sanitizer (`research_lane/sanitize.py`) is now the shared Rule-3 boundary for **both** crossings (intel
   feed and vault digest).
 - `docs/ssot.md` gains the vault-digest as a *gated* store (like the intel feed): registered, but no data
-  until the digest producer + Ollama are wired.
+  until the digest producer + Ollama are wired *(both wired since — see the 2026-07-10 status update above;
+  the ssot.md row owns current state)*.
 - This amendment grants the mechanism; it does **not** grant reading arbitrary vault pages from repo sessions
   (that would need a further amendment).
