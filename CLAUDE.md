@@ -7,8 +7,10 @@ engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). 
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
 NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
 (~434 nodes) because regenerating it needs an LLM call = egress, which the no-egress doctrine forbids
-(sole carve-out: a **local** Ollama on 127.0.0.1 is on-host compute, not egress — ADR 0001 Amendment 1,
-implemented by `ollama_recall.py`; cloud LLM calls stay forbidden). It fuses
+(sole carve-out: a **local** Ollama on 127.0.0.1 is on-host compute, not egress — ADR 0001 Amendment 1;
+`ollama_recall.py` + `ollama_judge.py`. The carve-out licenses local INFERENCE only — it does NOT
+re-authorize `graphify label` or any LLM-derived graph nodes: the graph stays AST-only for
+reproducibility/provenance, a separate invariant from egress. Cloud LLM calls stay forbidden). It fuses
 the code + the repo's markdown (CLAUDE.md, docs/, incl. the deep-research corpus under docs/research/). Use it
 FIRST for codebase questions AND for impact analysis before a change — a scoped subgraph beats grep/file-browsing.
 graphify is NOT on PATH — always invoke as `python -m graphify`.
@@ -28,8 +30,9 @@ Rules:
   (D3 collapsible tree) and `python -m graphify export callflow-html` (Mermaid call-flow); `GRAPH_REPORT.md` for the
   broad architecture review; `god_nodes` is the fastest map of the core abstractions.
 - EGRESS — do NOT use in this air-gapped repo (they break the no-egress doctrine): `graphify add <url>` (fetches
-  URLs), `graphify label` (calls an LLM), and the MCP `get_pr_impact` / `list_prs` / `triage_prs` (hit live
-  api.github.com — and GitHub is paused). Every other verb (query/path/explain/affected/tree/export/diagnose/
+  URLs), `graphify label` (calls an LLM — forbidden even via a local backend: it would plant LLM-derived
+  nodes, breaking the AST-only invariant above, which the local-Ollama carve-out does not license), and the
+  MCP `get_pr_impact` / `list_prs` / `triage_prs` (hit live api.github.com — and GitHub is paused). Every other verb (query/path/explain/affected/tree/export/diagnose/
   update/cluster-only) is fully offline.
 - Keeping the graph current: a Stop hook re-extracts incrementally after .py edits (AST-only, no API cost) — this
   is what keeps graph.json fresh (it also picks up new docs/*.md alongside a code change). A MANUAL
@@ -88,7 +91,7 @@ Assess → *(approve)* → Design HLD/LLD → *(peer review)* → MOP + rollback
 - **Validate cutover:** `cisco-assess --compare OLD.snapshot.json NEW.snapshot.json --output Diff.xlsx`; campaign trend: `--trend snap1 snap2 …`.
 - **Universal architecture coverage** (both ingestion channels — see `docs/universal-architecture-coverage.md`): 46 coverage-honest architecture-class detectors across 27 classes (the in-code `_ARCH_COVERAGE_REGISTRY` is the authoritative count — probe-ids across class axes, reconciled by `tests/test_ssot_registry.py`) spanning SSH `show`-text (SD-Access/LISP, TrustSec/CTS, DMVPN, IPsec, BFD, IPv6, SP/MPLS, switch-native, firewall, + multi-vendor Arista/Juniper/FortiGate) **and** JSON controller/mgmt REST (Cisco ACI/APIC, Catalyst SD-WAN/vManage, ISE, FMC, + cloud). Controller fabrics: collect read-only via `python -m cisco_toolkit.rest_collect apic|vmanage --url https://… --user <ro> --password <pw> --out-dir <dir>` (GET-only, dedicated read-only RBAC account, opt-in, never auto-runs), then analyze with `--no-collect`. Coverage map is published as `snap['architecture_coverage']` (read by the explorer ✎Design + webapp); ACI migration move-groups in `design_blueprint.target_state.aci_move_groups`.
 - **Deliverable generators** (`cisco_toolkit/`): design, mop, crd, engagement, archreview, ops, runbook, deck, html (explorer/diff/campaign), excel (workbook). Toggle with `--no-html` (explorer), `--no-docx` (runbook), `--no-pptx` (deck), and `--no-design`/`--no-mop`/`--no-crd`/`--no-engagement`/`--no-opshandbook`/`--no-archreview`; the workbook is always produced (there is no `--no-runbook`/`--no-deck`/`--no-excel`).
-- **Tests:** `python -m pytest -q` (~1,390 test functions across `tests/` + `webapp/tests` — both in the default gate; don't restate the count, run the suite). **graphify here:** `python -m graphify query|explain|path|"update ."` (not on PATH — use `python -m`). Bump the release version in `pyproject.toml` only at tag time; never bump the decoupled schema version `cisco_toolkit.__version__`.
+- **Tests:** `python -m pytest -q` (~1,800 test functions across `tests/` + `webapp/tests` — both in the default gate; don't restate the count, run the suite). **graphify here:** `python -m graphify query|explain|path|"update ."` (not on PATH — use `python -m`). Bump the release version in `pyproject.toml` only at tag time; never bump the decoupled schema version `cisco_toolkit.__version__`.
 
 > **Automation already wired in `.claude/`:** a `Stop` hook (`verify-green.sh`) runs `pytest` and blocks the turn until green after any `.py` change; a second `Stop` hook refreshes graphify after code edits; a `SessionStart` hook prints this engagement's state; a status line shows version/branch/model. All are fail-open (a timeout or error never wedges a turn) — disable via `/hooks` if needed.
 

@@ -7,7 +7,7 @@ nesting depth. :func:`cisco_toolkit.recall.ollama_digest_rank` invokes this as a
 **local** Ollama on 127.0.0.1:11434 (an on-host service, not the network) — so the air-gapped repo's
 reproducibility is unchanged.
 
-GRACEFUL DEGRADATION (D4 — "planned, not installed"): if Ollama is not installed / not listening, this
+GRACEFUL DEGRADATION (D4 — optional dependency, ADR 0001 Amendment 1): if Ollama is not installed / not listening, this
 prints **nothing** and exits 0, so recall falls back to the lexical vault signal (and graph+docs). It never
 hangs (it fast-fails on a closed port) and never raises out.
 
