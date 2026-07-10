@@ -37,6 +37,13 @@ Example (illustrative — do not hand-edit real data in):
   **independent verifier's** verdict (proposer ≠ verifier) — a verifiable fact, never a self-assessment.
   Conservative + fail-open: no confident verdict → **no row** (never a fabricated one); any error → nothing
   appended, the turn never blocks. The parser is unit-tested in `tests/test_scorecard.py`.
+- **The message arm — `python -m cisco_toolkit.scorecard --record <file>`.** Under the Claude **Agent
+  SDK** harness (the desktop app), `SubagentStop` never fires and Agent-tool subagent transcripts are
+  empty — the hook above never sees a verdict there (measured: 3 rows in the nerve's first 3 days, all
+  recorded by hand). The `/qa` command therefore ends by saving the reviewer's **verbatim** final message
+  to a UTF-8 file and invoking `--record` on it — same conservative parser as the hook (no per-artifact
+  signature → no row), and a file rather than stdin because a cp1252 Windows console mangles em-dashes.
+  `--record-from <transcript>` remains the arm for the interactive CLI, where the transcript exists.
 - **The golden-snapshot eval harness.** [`cisco_toolkit/eval_harness.py`](../../cisco_toolkit/eval_harness.py)
   scores a *fixed known-good deliverable* against deterministic, offline checks — SSOT `reconcile` clean,
   citations byte-match, and the machine-checkable Deliverable-Excellence Laws present (the repo-grounded
@@ -67,6 +74,13 @@ scorecard is the *predicted output of a broken instrument*, not evidence of good
   doctrine-mapped defects, each an atomic script-injected violation of a named assessment law (oracle sound,
   verified non-vacuous). `deterministic_findings()` is the bias-free arm: it mechanically catches and localizes
   **all 12** (localized TNR = 1.0) — the floor any LLM judge must clear. `python -m cisco_toolkit.defect_panel`.
+  **Small-N honesty (computed 2026-07-10):** 12/12 is a point estimate; the exact one-sided 95% lower
+  bound (Clopper–Pearson) is **0.779**, so the 0.75 arm-gate is cleared by 0.029 — and a single future
+  panel miss would un-clear it (11/12 → lower bound 0.661). Registered hardening targets (gated, not
+  scheduled): **18** defects → the gate survives one miss; **29/29** → licenses "TNR ≥ 0.90"; **59/59**
+  → "≥ 0.95". New defect classes must come from an *independent* source (real PIR incidents once they
+  exist; blind proposals from another model family or person) — the current 12 were selected by the
+  detectors' own authors, so same-hand panel growth has diminishing evidential value.
 - **[`ollama_judge.py`](../../ollama_judge.py) — the cross-family minority-veto arm.** A *different model
   family* via a local Ollama (127.0.0.1, air-gapped, $0) so it does not share Claude's failure modes. It lives
   at repo root, outside `cisco_toolkit/`, so its `urllib` use never trips the no-egress attestation. Uses
