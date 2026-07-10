@@ -200,9 +200,14 @@ def check_judge_trust(root: str) -> Dict[str, str]:
                     f"baseline clears TNR >= {SCD.JUDGE_TNR_FLOOR}")
         else:
             tnr = SCD._num(base.get("judge_tnr"))
-            state = ("BELOW the floor — judge APPROVEs stay advisory until a re-baseline clears it"
-                     if tnr < SCD.JUDGE_TNR_FLOOR else
-                     "clears the floor — freshly-stamped APPROVEs are gating")
+            if tnr is None:
+                # a REAL measurement that concluded null trust (e.g. the specificity fail-safe) —
+                # the demoting baseline of P1-3/DEC-004, not an absence
+                state = "NULL trust (e.g. specificity failure) — judge APPROVEs stay advisory"
+            elif tnr < SCD.JUDGE_TNR_FLOOR:
+                state = "BELOW the floor — judge APPROVEs stay advisory until a re-baseline clears it"
+            else:
+                state = "clears the floor — freshly-stamped APPROVEs are gating"
             tail = f"latest judge-baseline TNR={tnr} ({base.get('date')}), floor {SCD.JUDGE_TNR_FLOOR}: {state}"
         return _check("judge_trust", GREEN,
                       f"{advisory}/{len(judged)} judge-APPROVE row(s) advisory (non-gating); {tail}")

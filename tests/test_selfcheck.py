@@ -221,6 +221,22 @@ def test_judge_trust_floor_clearing_baseline_gates(tmp_path):
     assert c["status"] == SC.GREEN and "clears the floor" in c["detail"] and "0/1" in c["detail"]
 
 
+def test_judge_trust_null_trust_latest_baseline_reports_demotion(tmp_path):
+    """P1-3/DEC-004: when the LATEST baseline is a null-trust measurement (the specificity
+    fail-safe), the check must report the demotion — not crash on None-vs-float and not fall back
+    to an older flattering number."""
+    root = str(tmp_path)
+    _scorecard_with(root, [
+        {"date": "2026-07-10", "deliverable": "judge-baseline", "score": None, "verdict": None,
+         "judge_tnr": 0.4},
+        {"date": "2026-07-10", "deliverable": "judge-baseline", "score": None, "verdict": None,
+         "judge_tnr": None, "notes": "NO SPECIFICITY (rejected the clean control)"},
+    ])
+    c = SC.check_judge_trust(root)
+    assert c["status"] == SC.GREEN and "NULL trust" in c["detail"]
+    assert "TNR=0.4" not in c["detail"]          # the stale numeric row must not be the report
+
+
 def test_judge_trust_legacy_unmarked_rows_are_advisory_not_red(tmp_path):
     """Append-only history: a pre-P0-6 APPROVE (no provisional key at all) reads as advisory via the
     predicate — never RED (absent is unmarked, not a lie) and never trusted as gating."""
