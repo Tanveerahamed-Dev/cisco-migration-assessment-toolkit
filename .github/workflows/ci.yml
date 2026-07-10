@@ -94,9 +94,12 @@ jobs:
           cisco_toolkit/model.py cisco_toolkit/ouidb.py cisco_toolkit/portdb.py
           cisco_toolkit/protocol_kb.py cisco_toolkit/textutils.py
       # NON-GATING: full-project report (the documented dynamic-typing baseline in mypy.ini). Printed
-      # for visibility; `|| true` keeps the check GREEN. Tighten by promoting modules to the gated step.
+      # for visibility; continue-on-error keeps the check GREEN. It replaces the previous `|| true`,
+      # a bashism that fails to parse under PowerShell 5.1 — the default step shell on the self-hosted
+      # Windows fleet. Tighten by promoting modules to the gated step.
       - name: mypy (full report — non-gating)
-        run: python -m mypy cisco_toolkit COLLECT_PARSE_V3_23_0.py || true
+        continue-on-error: true
+        run: python -m mypy cisco_toolkit COLLECT_PARSE_V3_23_0.py
 
   coverage:
     name: Coverage
