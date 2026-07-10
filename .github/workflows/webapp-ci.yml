@@ -20,10 +20,16 @@ concurrency:
   group: webapp-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Runner fleet toggle (same contract as ci.yml, PR #325): the repo variable CI_RUNNER reroutes both
+# jobs to the self-hosted pool when set ("self-hosted" = the registered Windows runners on the dev
+# box, $0 metered minutes) and falls back to GitHub-hosted runners when unset/empty. Job names are
+# untouched. The shared runner toolcache ships Python-only; the frontend job's setup-node downloads
+# node 20 and self-seeds the toolcache on its first self-hosted run.
+
 jobs:
   backend:
     name: Backend e2e tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,7 +46,7 @@ jobs:
 
   frontend:
     name: Frontend type-check + build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: webapp/frontend
