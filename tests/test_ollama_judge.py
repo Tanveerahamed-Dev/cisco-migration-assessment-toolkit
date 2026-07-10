@@ -156,7 +156,7 @@ def test_append_baseline_cli_appends_the_row(tmp_path, monkeypatch):
     canned = {"ok": True, "model": "fake", "approves_clean": True, "n": 1,
               "localized_tnr": 1.0, "rejection_rate": 1.0, "unlocalized_rejection_rate": 0.0,
               "verdicts": [{"defect_id": "D-03", "verdict": "REJECT", "defect_class": "phantom-health"}]}
-    monkeypatch.setattr(J, "run_baseline", lambda model: canned)
+    monkeypatch.setattr(J, "run_baseline", lambda model, **kw: canned)
     assert J.main(["fake", "--append-baseline"]) == 0
     rows = S.read_rows(sc)
     assert len(rows) == 1
@@ -172,6 +172,58 @@ def test_append_baseline_cli_ollama_down_appends_nothing(tmp_path, monkeypatch):
     sc = str(tmp_path / "sc.jsonl")
     monkeypatch.setenv("SCORECARD_FILE", sc)
     monkeypatch.setattr(J, "run_baseline",
-                        lambda model: {"ok": False, "reason": "Ollama not listening on 127.0.0.1:11434"})
+                        lambda model, **kw: {"ok": False, "reason": "Ollama not listening on 127.0.0.1:11434"})
     assert J.main(["--append-baseline"]) == 0
     assert S.read_rows(sc) == []
+
+
+# --- the P1-3 stability protocol (--runs / --think): rung 2's 0.4 was refuted by a same-config rerun
+# (clean control rejected on run 2), so a multi-run baseline records its WORST run — a specificity
+# failure outranks any TNR, then the lowest localized TNR — and the spread stays visible in notes.
+
+def _canned(clean: bool, tnr: float, rej: float = 0.6) -> dict:
+    return {"ok": True, "model": "fake", "approves_clean": clean, "n": 5,
+            "localized_tnr": tnr, "rejection_rate": rej, "unlocalized_rejection_rate": round(rej - tnr, 3),
+            "verdicts": [{"defect_id": "D-12", "verdict": "REJECT", "defect_class": "empty-nrfu-evidence"}]}
+
+
+def test_worst_of_prefers_no_specificity_then_lowest_tnr():
+    clean_high, clean_low = _canned(True, 1.0), _canned(True, 0.2)
+    no_spec = _canned(False, 0.8)
+    assert J.worst_of([clean_high, clean_low]) is clean_low
+    assert J.worst_of([clean_low, no_spec]) is no_spec     # losing the clean control outranks any TNR
+    assert J.worst_of([clean_high]) is clean_high
+
+
+def test_multi_run_records_worst_run_with_spread(tmp_path, monkeypatch):
+    from cisco_toolkit import scorecard as S
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    seq = iter([_canned(True, 0.4), _canned(False, 0.2)])   # the literal rung-2 A/B shape
+    monkeypatch.setattr(J, "run_baseline", lambda model, **kw: next(seq))
+    assert J.main(["fake", "--runs", "2", "--append-baseline"]) == 0
+    rows = S.read_rows(sc)
+    assert len(rows) == 1
+    assert rows[0]["judge_tnr"] is None                     # worst run lost specificity -> null trust
+    assert "worst run" in rows[0]["notes"] and "run1" in rows[0]["notes"] and "run2" in rows[0]["notes"]
+
+
+def test_multi_run_incomplete_protocol_records_nothing(tmp_path, monkeypatch):
+    from cisco_toolkit import scorecard as S
+    sc = str(tmp_path / "sc.jsonl")
+    monkeypatch.setenv("SCORECARD_FILE", sc)
+    seq = iter([_canned(True, 1.0), {"ok": False, "reason": "Ollama died mid-protocol"}])
+    monkeypatch.setattr(J, "run_baseline", lambda model, **kw: next(seq))
+    assert J.main(["fake", "--runs", "2", "--append-baseline"]) == 0
+    assert S.read_rows(sc) == []                            # partial k-run protocol -> signal_absent
+
+
+def test_think_flag_is_plumbed_to_run_baseline(monkeypatch):
+    seen = {}
+
+    def fake_rb(model, **kw):
+        seen["model"], seen["think"] = model, kw.get("think")
+        return {"ok": False, "reason": "probe"}
+    monkeypatch.setattr(J, "run_baseline", fake_rb)
+    assert J.main(["fake", "--think"]) == 0
+    assert seen == {"model": "fake", "think": True}
