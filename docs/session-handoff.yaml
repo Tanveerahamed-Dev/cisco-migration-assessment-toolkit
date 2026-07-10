@@ -21,18 +21,21 @@ last_completed_task: >-
   P2-0c SATISFIED-AS-AMENDED, no PR: ssot.md:43 already records install + embed model with
   version-read-live (the pinned-0.31.1-drifted-to-0.31.2 lesson) — veto in one sentence to reopen.
 next_task: >-
-  HUMAN (in order): (1) finish the billing fix — recovery is PARTIAL as of 13:55Z: one job ran
-  green, nine still hit the "spending limit needs to be increased" annotation, so the LIMIT is the
-  binding constraint now; (2) PICK ONE P2-0a — #319 (other session; tracked query_log.jsonl) vs
-  #321 (this session; gitignored recall_queries.jsonl) are duplicate implementations and exactly
-  one may merge (factual comparison + declared authorship posted on #319; the load-bearing axis is
-  tracked-vs-gitignored = does a typed client token ever leave the machine on push); (3) review
-  the 9-PR queue: #317 retro, #318 P2-0e, #319/#321 duplicate pair, #320 P1-2 (other session; NB
-  edits ssot.md/README/test_ssot_registry.py + tests/golden/snapshot.json — conflicts with the P2
-  set, land P2 first then rebase; confirm the golden churn is intended), #322 P2-0d, #323 P2-0b,
-  #324 this handoff, #325 self-hosted CI (NB: required contexts are pinned BY JOB NAME — a runner
-  toggle that alters names wedges merges, the P0-4 lesson; with the limit raised its case drops to
-  cost optimization). AGENT next: P1-2 is TAKEN by #320 — do not re-implement; P1-1 accrual
+  HUMAN (in order): (1) UNBLOCK CI — two proven paths, pick either: merge #325 FIRST (VERIFIED
+  16:1xZ: its full run executed green on the two registered self-hosted runners TANVEER-AHAMED-1/2
+  with all 10 required job names INVARIANT — the P0-4 context-wedge caution is resolved by
+  evidence; open PRs then need a rebase/fresh run to pick up the toggle, the session automates
+  that) OR raise the Actions spending limit (still binding at 16:09Z — hosted reruns stalled at 11
+  green jobs across 4 sweeps); (2) PICK ONE P2-0a — #319 (other session; tracked query_log.jsonl)
+  vs #321 (this session; gitignored recall_queries.jsonl) are duplicates and exactly one may merge
+  (comparison + declared authorship on #319; load-bearing axis = does a typed client token ever
+  leave the machine on push); (3) review the queue: #317 retro, #318 P2-0e, #319/#321 pair, #320
+  P1-2 (other session; edits ssot.md/README/test_ssot_registry.py + tests/golden/snapshot.json —
+  land the P2 set first then rebase; confirm the golden churn is intended), #322 P2-0d, #323
+  P2-0b, #324 this handoff. AGENT next: dual watcher live (main-HEAD move OR limit raise → wake,
+  converge the queue: limit path = resume --failed sweeps; merge path = rebase open PRs so fresh
+  runs use the self-hosted toggle — NB gh run rerun replays the ORIGINAL workflow snapshot, only a
+  fresh run picks up a merged ci.yml). P1-2 is TAKEN by #320 — do not re-implement; P1-1 accrual
   continues with every /qa; first REAL PIR stays event-driven (never fabricate). LESSON for
   parallel sessions: list open PRs before starting a plan task — #319/#321 raced 19 minutes apart.
 p0_gaps:
