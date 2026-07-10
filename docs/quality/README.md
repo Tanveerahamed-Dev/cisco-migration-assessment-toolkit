@@ -240,6 +240,24 @@ preflight-gated (NO-GO → stand down) and the live path is **double-guarded** (
 scheduled. Its safety properties are pinned by `tests/test_nightly_wrapper.py`. To arm/schedule it later,
 see the header of the script — that step is yours (spend + system change).
 
+## `query_log.jsonl` — the real-query mix (P2-0a)
+
+The raw material for D10's dense-lane decision ("classify 30 real queries by type FIRST" —
+[`docs/d10-retrieval-eval-design-2026-07-08.md`](../d10-retrieval-eval-design-2026-07-08.md) §5): until
+P2-0a no log of real queries existed anywhere, so that precondition was permanently unrunnable. One JSON
+object per line, append-only, **local — no egress**; exactly three fields, nothing else:
+
+| field | type | meaning |
+|---|---|---|
+| `date` | `YYYY-MM-DD` | when the query was asked |
+| `query` | string | the query text, verbatim |
+| `surface` | string | which REAL surface asked it: `recall` (the `python -m cisco_toolkit.recall` CLI) or `ask` (the `/ask` command's mandatory `--log-only --surface=ask` first step) |
+
+Written only by `cisco_toolkit.recall.log_query` at the real surfaces; the synthetic paths (`--eval`,
+the labeled experiment, unit tests) deliberately never log, so the recorded mix stays real. **Fail-open:**
+a logging failure degrades silently to nothing recorded — it must never break retrieval or an `/ask` turn.
+Never hand-edit. Owner row in [`docs/ssot.md`](../ssot.md); discipline pinned by `tests/test_query_log.py`.
+
 ## Agent-system self-check (Phase 4 — the immune system)
 
 [`cisco_toolkit/selfcheck.py`](../../cisco_toolkit/selfcheck.py) re-derives, from the repo, whether the
