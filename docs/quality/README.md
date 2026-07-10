@@ -206,6 +206,42 @@ floor counts `REAL` only. This is why, once the 7 rows are emitted into `pir_out
 detector without ever re-tuning the engine. Pinned by `tests/test_fault_corpus.py` (in the self-check
 `GUARD_FILES`).
 
+## The sealed holdout — `holdout-contract.md` (DEC-007, P1-2; dormant until N ≥ 50 REAL)
+
+[`holdout-contract.md`](holdout-contract.md) is the **policy owner** (registered in
+[`docs/ssot.md`](../ssot.md)) for the DEC-007 hybrid data policy: today the existing floors above
+are the only gates; when the REAL rows in `pir_outcomes.jsonl` reach the activation floor
+(`cisco_toolkit/holdout.py :: ACTIVATION_FLOOR` owns the figure), a **sealed 70/30
+optimisation/holdout split activates** — a one-time human-run
+`python -m cisco_toolkit.holdout seal`, which **refuses** below the floor and counts REAL rows
+only (same `source_class` discriminator as the D11 gate; a surrogate flood never activates it).
+The contract was committed **before any REAL data exists** — pre-registration, so the split rule
+cannot be fitted to the data.
+
+The seal is a committed `holdout_manifest.json` on the `cisco_toolkit/manifest.py` hash chain: it
+freezes the sealed policy terms + each holdout row's content **digest** (never a second copy of
+the rows — the store stays the one owner). Holdout rows are read **only** via the logging
+accessor, `python -m cisco_toolkit.holdout read --who <name> [--purpose "…"]`, which verifies the
+seal against the store and appends one line per access attempt — success or integrity failure —
+to the append-only, committed `holdout_access.jsonl`:
+
+| field | meaning |
+|---|---|
+| `ts` | UTC ISO timestamp of the access attempt |
+| `who` | declared identity (required — an unattributed read is refused) |
+| `os_user` | best-effort OS account (declared ≠ proven, same residual as the scorecard's provenance pair) |
+| `purpose` | free-text why, recorded verbatim (`null` if not given) |
+| `manifest` / `chain_root` | which seal the read was against |
+| `ok` | whether the seal verified against the store |
+| `n_rows` | holdout rows returned (0 on an integrity failure) |
+
+**Audit trail, not proof:** the rows are plaintext in a repo anyone with a checkout can read;
+*mathematical proof of non-use does not exist and is not claimed* (the contract says so plainly).
+What the mechanism gives is tamper-evidence (hash chain), attributable access (this log, reviewed
+weekly alongside the gate-override log), and pre-registration. Discipline — refusal below the
+floor, seal→tamper→verify-fails, access-logged, contract figures reconciled to their code owners —
+is pinned by `tests/test_holdout.py`.
+
 ## `nightly_runs.jsonl` — the clock's safety rails (Phase 2, rails only)
 
 Phase 2 wires a nightly, propose-only headless `claude -p` run. That run spends **real metered money**
@@ -239,6 +275,24 @@ preflight-gated (NO-GO → stand down) and the live path is **double-guarded** (
 `ASNE_NIGHTLY_ARMED=yes`) so it cannot spend by accident; it is **not** registered as a hook and **not**
 scheduled. Its safety properties are pinned by `tests/test_nightly_wrapper.py`. To arm/schedule it later,
 see the header of the script — that step is yours (spend + system change).
+
+## `query_log.jsonl` — the real-query mix (P2-0a)
+
+The raw material for D10's dense-lane decision ("classify 30 real queries by type FIRST" —
+[`docs/d10-retrieval-eval-design-2026-07-08.md`](../d10-retrieval-eval-design-2026-07-08.md) §5): until
+P2-0a no log of real queries existed anywhere, so that precondition was permanently unrunnable. One JSON
+object per line, append-only, **local — no egress**; exactly three fields, nothing else:
+
+| field | type | meaning |
+|---|---|---|
+| `date` | `YYYY-MM-DD` | when the query was asked |
+| `query` | string | the query text, verbatim |
+| `surface` | string | which REAL surface asked it: `recall` (the `python -m cisco_toolkit.recall` CLI) or `ask` (the `/ask` command's mandatory `--log-only --surface=ask` first step) |
+
+Written only by `cisco_toolkit.recall.log_query` at the real surfaces; the synthetic paths (`--eval`,
+the labeled experiment, unit tests) deliberately never log, so the recorded mix stays real. **Fail-open:**
+a logging failure degrades silently to nothing recorded — it must never break retrieval or an `/ask` turn.
+Never hand-edit. Owner row in [`docs/ssot.md`](../ssot.md); discipline pinned by `tests/test_query_log.py`.
 
 ## Agent-system self-check (Phase 4 — the immune system)
 
