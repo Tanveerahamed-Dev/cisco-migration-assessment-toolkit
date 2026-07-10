@@ -116,6 +116,8 @@ class ScoreResult:
             "laws_tripped": self.laws_tripped,
             "commit": commit,
             "notes": notes,
+            "authored_by": None,     # deterministic harness — no provenance pair to declare (P0-2 keys, honest null)
+            "reviewed_by": None,
         }
         # P0-6: a scored row is never provisional (no judge); an APPROVE with score=None (nothing was
         # applicable) quantifies nothing and honestly marks itself advisory rather than gate-worthy.
