@@ -1,12 +1,33 @@
-generated: "2026-07-10 @ 520751d"
-stage: "PHASE 0 CLOSED — Phase 1 is the front line"
-execution_phase: "Phase 1 — Feedback loop bootstrap (docs/architect-master-plan-2026-07-10.md §5; hybrid data policy DEC-007; 2026-08-05 checkpoint)"
+generated: "2026-07-10 @ 155ad84 (P2 pre-task sweep, delegated during the Actions billing outage)"
+stage: "PHASE 0 CLOSED — Phase 1 is the front line; Phase-2 pre-tasks executed ahead (all 5 PRs await billing fix + human review)"
+execution_phase: "Phase 1 — Feedback loop bootstrap (docs/architect-master-plan-2026-07-10.md §5; hybrid data policy DEC-007; 2026-08-05 checkpoint). Phase-2 pre-tasks P2-0a/0b/0d/0e executed 2026-07-10 by user delegation; Phase 2 itself still blocked on their merges."
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"
   - "docs/architect-master-plan-2026-07-10.md"
 qa_verdict: "APPROVE (round 2, all three artifacts; round-1 BLOCK dispositioned; verdict rows recorded)"
-last_completed_task: "PHASE 0 CLOSE-OUT 2026-07-10: G-001..G-006 closed (#308, #311, #313, #312, protection+#306 proof, #307+#309); P0-8 vault shell-lane merged #314 @ 520751d; P0-7 executed (settings.local.json narrowed — python -c and cat> pre-approvals removed, 11 narrow one-shots kept); P0-9/HR-005 residuals RATIFIED by user delegation; stale duplicate PR #298 closed (superseded by #304); planning artifacts + ledger merged via #310 @ 37409f6"
-next_task: "Phase 1: P1-1 data accrual runs with every /qa (provenance flags now mandatory per qa.md); P1-2 holdout activation contract (write manifest tooling + register in ssot.md); P1-3 judge re-baseline ladder (advisory until TNR >= 0.25). Carry-over P2-0f CLOSED in this PR — owner errata fixed directly (the two original fix-sessions never landed; superseded, close their windows)"
+last_completed_task: >-
+  P2 PRE-TASK SWEEP 2026-07-10 (user delegation 'take the best possible decision till i sort the
+  billing issue'): P2-0e DONE — DEC-006 owner amendment appended to the D10 eval design (PR #318;
+  corpus = graph+docs+digest, per-run digest-present/absent recording, §7 bar UNCHANGED) with the
+  cheapest-probe RUN (digest present + Ollama reachable): lexical digest lane delta 0.000 (0/8
+  queries, moot) but the shipped Ollama semantic arm delta -0.329 (4/8 queries degraded, rank
+  1->3/5/3/2 — a live n=8 instance of §7's dense anti-pattern; thresholdless cosine ranking gets
+  double-listed under RRF). P2-0a DONE — real-query log (PR #321: recall.py append_query_log +
+  --log-only arm wired into /ask; gitignored owner-machine store registered in ssot.md; starts the
+  30-real-query classification data clock). P2-0d DONE — thresholds pre-registered (PR #322:
+  docs/quality/d10-eval-thresholds.json + exact-value pin test, values frozen BEFORE any run).
+  P2-0b DONE — [eval] extra (PR #323: rank-bm25 + pytrec-eval-terrier + scipy, real-install
+  verified on Windows py3.12; dense deps deliberately absent until the §5 traffic bar clears).
+  P2-0c SATISFIED-AS-AMENDED, no PR: ssot.md:43 already records install + embed model with
+  version-read-live (the pinned-0.31.1-drifted-to-0.31.2 lesson) — veto in one sentence to reopen.
+next_task: >-
+  HUMAN: fix GitHub Actions billing (payments/spending-limit annotation since ~11:35Z 2026-07-10;
+  ALL checks instant-fail with zero steps account-wide — NOT a code failure; diagnosis on PR #318),
+  then rerun checks and review/merge the 5 open PRs (#317 retro, #318 P2-0e, #321 P2-0a, #322
+  P2-0d, #323 P2-0b — all independent, based on 155ad84; a billing-recovery watcher auto-reruns
+  #318/#317 and the session sweeps the rest). AGENT next: P1-2 holdout activation contract
+  (deliberately NOT piled onto this review queue — a sealing-design doc deserving fresh review);
+  P1-1 accrual continues with every /qa; first REAL PIR stays event-driven (never fabricate).
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
@@ -35,13 +56,16 @@ pending_human_review:
     recommendation: "DECIDED + EXECUTED 2026-07-10 (P0-7): python -c and cat> entries removed; revert = re-add + formally accept in HR-005(g)"
   - id: "HR-003"
     decision: "DEC-006 D10 eval corpus digest lane"
-    recommendation: "DECIDED 2026-07-10 by user delegation: add the digest lane via D10 owner amendment (execute at P2-0e)"
+    recommendation: "DECIDED 2026-07-10 by user delegation; EXECUTED at P2-0e (PR #318, amendment + probe evidence). Probe finding for Phase-2 attention: the shipped Ollama digest arm interferes on identifier queries (delta -0.329 at n=8) — mitigation is a Phase-2 decision under §7, nothing tuned"
   - id: "HR-004"
     decision: "DEC-009 assumed answers to unanswered P0s"
     recommendation: "DECIDED 2026-07-10 by user delegation: defaults stand (generous-but-bounded resources; conservative risk; first REAL PIR event-driven) until corrected in one sentence"
   - id: "HR-005"
     decision: "P0-9 residual-bypass ledger: (a) Bash-holding agents bypass tool allowlists — floor is permission mode; (b) hooks fail-open by design; (c) graphify ranking engine external/unauditable; (d) out-of-repo consolidation plugin honoring protected: unverifiable — P0-1 wrapper detects loss after the fact; (e) P0-2 provenance identities self-reported; (f) enforce_admins=false — the human CAN bypass (the intended explicit-merge path); (g) settings.local.json — remaining narrow one-shots accepted post-P0-7"
     recommendation: "RATIFIED 2026-07-10 by user delegation ('proceed with best possible decision'): all seven accepted as documented residuals; refuse any item in one sentence to re-open it as a Phase-0 task"
+  - id: "HR-006"
+    decision: "P2-0c disposition: Ollama pin executed as read-live rather than a cached version"
+    recommendation: "SATISFIED-AS-AMENDED 2026-07-10: the master plan asked for 'version + model recorded in ssot.md'; ssot.md:43 records install + nomic-embed-text model but deliberately reads the VERSION live (a cached 0.31.1 had already drifted to 0.31.2 — the exact rot class P0-5 closed). Veto in one sentence to reopen as a literal pin"
 context_summary: |
   PHASE 0 CLOSED 2026-07-10 @ 520751d, same day the /architect-plan v5 master plan was written and
   2-round-QA-approved. All six doctrine gaps closed on main; the merge gate is live and proven
@@ -55,3 +79,18 @@ context_summary: |
   the loops REAL data, never fabricate. P2-0f closed 2026-07-10: owner errata fixed directly
   (D10 paired-power figure + node count; memory_guard + learnings ghost citations) — the two
   original fix-sessions never landed and are superseded; close their windows.
+
+  2026-07-10 (later, this handoff): GitHub Actions billing broke account-wide ~11:35Z (jobs fail
+  in 1-4s with ZERO steps + a payments/spending-limit annotation — the diagnostic signature; NOT
+  a red diff; last green run 11:05Z). Under user delegation the P2 pre-task sweep above was
+  executed as 4 independent PRs off 155ad84 (#318/#321/#322/#323, each locally green under the
+  verify-green gate; ssot.md insertions placed in different table regions to merge cleanly in any
+  order), plus this handoff PR. The DEC-006 cheapest probe was RUN (preconditions met), producing
+  the one substantive new fact: the digest lane's LEXICAL arm is non-interfering (delta 0.000)
+  but the shipped OLLAMA arm degrades identifier queries (delta -0.329, mechanism = thresholdless
+  cosine ranking double-lists entries under RRF k=60) — recorded in the amendment with limits
+  stated (n=8, interference-direction only, no significance claim); mitigation deferred to
+  Phase 2 under the unchanged §7 bar. The eval-dep fork was resolved deliberately: rank-bm25
+  (auditable) over bm25s, pytrec-eval-terrier (Windows wheels) over the original. Phase 2 remains
+  blocked until the pre-task PRs land; P1-2 (holdout contract) is the next agent task, held back
+  deliberately to keep the review queue sane during the outage.
