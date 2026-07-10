@@ -80,7 +80,11 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
     quoting the checked line, ending HOLDS or DOES-NOT-HOLD. The prior single-block phrasing let the 4B model
     form one global impression and default to APPROVE (it missed even the literal '(none)' and 253-vs-250
     triggers, TNR 0.2); forcing the walk is what makes it actually execute each check. Output shape enforced
-    by :func:`judge_schema`."""
+    by :func:`judge_schema`. Rung-2 (measured 2026-07-10): rung 1 raised detection (rejection 0.4) but both
+    rejections bound ``defect_class`` to the FIRST enum value — so the reasoning must now END with a literal
+    ``HELD: <condition name or NONE>`` line and ``defect_class`` copies it (an explicit copy source right
+    before the enum field is generated), and the rollback guard is reworded (rung 1's 'only the literal
+    rollback (none) is missing' parsed as \"the string is absent\")."""
     vocab = ", ".join(classes if classes is not None else _text_visible_classes())
     return (
         "You are an independent senior Cisco reviewer doing QA on ONE migration-deliverable excerpt.\n\n"
@@ -89,10 +93,10 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
         "Check the DELIVERABLE against each numbered condition below, ONE AT A TIME. In 'reasoning', write\n"
         "one line per condition: its name, the exact deliverable line you checked (quote it), and the word\n"
         "HOLDS or DOES-NOT-HOLD. Do not skip any condition. A condition HOLDS only if its exact trigger is\n"
-        "present. Do not reject on vague suspicion: a device simply being 'healthy' is normal, and only the\n"
-        "literal rollback '(none)' is missing — 'n/a - verification step' or any named command is a real\n"
-        "rollback.\n"
-        "1. missing-rollback: a MOP step whose rollback is exactly '(none)'.\n"
+        "present. Do not reject on vague suspicion: a device simply being 'healthy' is normal, and a\n"
+        "rollback stated as a command or as 'n/a - verification step' is a real rollback — condition 1 is\n"
+        "about the placeholder '(none)'.\n"
+        "1. missing-rollback: a MOP step whose rollback field reads '(none)' — that step has no rollback.\n"
         "2. phantom-health: a device in an 'assessed: healthy' or 'Redundancy ... verified' line whose name\n"
         "   the COVERAGE line lists under NOT collected (only if the healthy/verified device is the\n"
         "   not-collected one).\n"
@@ -101,8 +105,10 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
         "4. cross-artifact-mismatch: on the 'Endpoint total' line, the (workbook) number differs from the\n"
         "   (runbook) number.\n"
         "5. empty-nrfu-evidence: an 'NRFU ... PASS' line whose captured output is '(empty)'.\n"
-        "After walking all conditions: verdict = REJECT if at least one HOLDS, and defect_class = the name\n"
-        f"of the condition that held (one of: {vocab}); verdict = APPROVE if none holds (defect_class NONE).\n"
+        "The LAST line of 'reasoning' must be exactly 'HELD: <name of the one condition that HOLDS>' —\n"
+        "using the condition's name as written above — or 'HELD: NONE' if none holds.\n"
+        "Then: verdict = REJECT if a condition HOLDS, else APPROVE; defect_class = exactly the value you\n"
+        f"wrote after 'HELD:' (one of: {vocab}; or NONE).\n"
     )
 
 
