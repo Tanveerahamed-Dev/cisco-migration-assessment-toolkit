@@ -215,6 +215,38 @@ def evaluate(labeled: List[Tuple[str, str]], *, docs_corpus: Dict[str, str],
                     f"queries — {verdict}"}
 
 
+# --- the REAL-query log (P2-0a, Phase-2 pre-task) -----------------------------------------------
+# The D10 Phase-2 dense-lane decision is gated on classifying 30 REAL queries by type
+# (docs/d10-retrieval-eval-design-2026-07-08.md §5) — unrunnable until real queries accrue, so this
+# starts that data clock. Owner-machine only (gitignored, like the vault digest): a real query may
+# name client tokens (two-store rule, ADR 0001). Synthetic --eval queries are NEVER logged
+# (doctrine 5: surrogate rows must not pollute a REAL store).
+QUERY_LOG_RELPATH = os.path.join("docs", "quality", "recall_queries.jsonl")
+
+
+def append_query_log(query: str, *, source: str, stores: str = "",
+                     path: Optional[str] = None) -> bool:
+    """Append one REAL retrieval query to the owner-machine query log (JSONL, append-only:
+    ``{ts, query, source, stores}``). Best-effort and opt-out-able (``CISCO_RECALL_NO_LOG=1``):
+    a failed or skipped append returns ``False`` and never breaks recall. ``path=None`` anchors to
+    the repo root (the same resolution as the corpora), so the log lands per-checkout."""
+    if os.environ.get("CISCO_RECALL_NO_LOG") == "1" or not (query or "").strip():
+        return False
+    try:
+        import datetime
+        import json
+        if path is None:
+            path = os.path.join(_repo_root(), QUERY_LOG_RELPATH)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        row = {"ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "query": query.strip(), "source": source, "stores": stores}
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def _repo_root() -> str:
     try:
         import subprocess
@@ -228,13 +260,23 @@ def _repo_root() -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI: ``python -m cisco_toolkit.recall "<query>"`` fuses docs+code (and graphify if present) for the
-    query; ``--eval`` runs the D10 experiment over the labeled set. Read-only, no egress."""
+    query; ``--eval`` runs the D10 experiment over the labeled set; ``--log-only [--source=<who>]``
+    appends the query to the REAL-query log without retrieving (the `/ask` arm — P2-0a). Interactive
+    queries are logged too (opt-out ``CISCO_RECALL_NO_LOG=1``); ``--eval``'s synthetic queries never
+    are. Read-only, no egress."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    query = " ".join(a for a in argv if not a.startswith("-"))
+    source = next((a.split("=", 1)[1] for a in argv if a.startswith("--source=")), "")
+    if "--log-only" in argv:                        # /ask's cheap arm: record the REAL question, no retrieval
+        ok = append_query_log(query, source=source or "ask")
+        print(f"query-log: {'appended' if ok else 'skipped (empty query or opted out)'} "
+              f"({source or 'ask'}) -> {QUERY_LOG_RELPATH}")
+        return 0 if ok else 2
     root = _repo_root()
     docs = build_corpus(root, ["docs/**/*.md", "*.md"])
     code = build_corpus(root, ["cisco_toolkit/*.py"])
@@ -244,9 +286,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  n={rep['n']}  docs={rep['mrr_docs']}  code={rep['mrr_code']}  "
               f"hybrid={rep['mrr_hybrid']}  delta_vs_best_single={rep['delta']:+}")
         return 0
-    query = " ".join(a for a in argv if not a.startswith("-"))
     if not query:
-        print('usage: python -m cisco_toolkit.recall "<query>"   |   --eval')
+        print('usage: python -m cisco_toolkit.recall "<query>"   |   --eval   |'
+              '   --log-only [--source=<who>] "<query>"')
         return 2
     extra: List[List[Any]] = []
     g = graph_rank(query)                                       # offline graphify signal if available
@@ -263,6 +305,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     fused = hybrid_recall(query, docs_corpus=docs, code_corpus=code, extra_lists=extra or None)
     stores = ("docs+code" + ("+graphify" if g else "") + ("+vault" if vault else "")
               + ("+ollama" if used_ollama else ""))
+    append_query_log(query, source=source or "recall", stores=stores)   # REAL usage -> the P2-0a log
     print(f'recall "{query}" (fused: {stores}):')
     for item, score in fused[:10]:
         print(f"  {score:.4f}  {item}")

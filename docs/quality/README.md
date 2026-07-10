@@ -206,6 +206,23 @@ floor counts `REAL` only. This is why, once the 7 rows are emitted into `pir_out
 detector without ever re-tuning the engine. Pinned by `tests/test_fault_corpus.py` (in the self-check
 `GUARD_FILES`).
 
+## `recall_queries.jsonl` — the REAL retrieval-query log (P2-0a, Phase-2 pre-task)
+
+The D10 Phase-2 dense-lane decision is gated on classifying **30 real queries** by type
+([`docs/d10-retrieval-eval-design-2026-07-08.md`](../d10-retrieval-eval-design-2026-07-08.md) §5) — a
+classification that was unrunnable because no real-query log existed. This file is that log, and it starts
+the data clock: `cisco_toolkit.recall` appends one row per REAL interactive query, and `/ask` records its
+question via the cheap no-retrieval arm `python -m cisco_toolkit.recall --log-only --source=ask
+"<question>"`. One JSON object per line, append-only: `ts` (UTC), `query` (verbatim, stripped), `source`
+(`recall` / `ask`), `stores` (the fused-store string, empty on `--log-only` rows).
+
+**Gitignored / owner-machine only** (a real query may name client or site tokens — the two-store rule),
+per-checkout like the vault digest. Synthetic `--eval` queries are **never** logged: the classification
+needs real usage, and surrogate rows polluting a REAL store is exactly the fabrication class doctrine 5
+forbids. Per-command opt-out: `CISCO_RECALL_NO_LOG=1`. Best-effort: a failed append returns `False` and
+never breaks recall (pinned in `tests/test_recall.py`). While the log is short, the classification simply
+stays unrunnable and says so — queries are never invented to fill it.
+
 ## `nightly_runs.jsonl` — the clock's safety rails (Phase 2, rails only)
 
 Phase 2 wires a nightly, propose-only headless `claude -p` run. That run spends **real metered money**

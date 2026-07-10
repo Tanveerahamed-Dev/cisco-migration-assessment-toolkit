@@ -74,3 +74,8 @@ docs/briefings/briefing-*.md
 # consumer, gate, and format doc ARE committed; the digest data is not. Un-ignore deliberately if you
 # decide a sanitized digest may live in the (pushable) repo.
 docs/vault-digest/digest-*.jsonl
+
+# autonomous-brain P2-0a: the REAL retrieval-query log (D10 Phase-2 query-mix classification).
+# Real queries may name client/site tokens (two-store rule) — owner-machine only; the writer
+# (cisco_toolkit/recall.py::append_query_log), tests, and schema doc ARE committed; the data is not.
+docs/quality/recall_queries.jsonl

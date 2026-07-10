@@ -50,3 +50,62 @@ def test_evaluate_reports_mrr_vs_best_single_honestly():
     assert rep["delta"] == round(rep["mrr_hybrid"] - rep["best_single"], 3)   # honest baseline
     # non-vacuity: fusion is compared against the BEST single signal, so it cannot look better than it is
     assert rep["best_single"] == max(rep["mrr_docs"], rep["mrr_code"])
+
+
+# --- the REAL-query log (P2-0a) -- hermetic: tmp paths only, never the repo's real log -----------
+
+def test_append_query_log_appends_schema_and_respects_optout(tmp_path, monkeypatch):
+    import json
+    monkeypatch.delenv("CISCO_RECALL_NO_LOG", raising=False)
+    p = tmp_path / "recall_queries.jsonl"
+    assert R.append_query_log("  what does clock.py do  ", source="recall",
+                              stores="docs+code", path=str(p)) is True
+    assert R.append_query_log("second query", source="ask", path=str(p)) is True
+    rows = [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2                                    # append-only, one JSON object per line
+    assert rows[0]["query"] == "what does clock.py do"       # verbatim, stripped
+    assert rows[0]["source"] == "recall" and rows[0]["stores"] == "docs+code"
+    assert rows[1]["source"] == "ask" and rows[1]["stores"] == ""
+    assert all(set(r) == {"ts", "query", "source", "stores"} for r in rows)
+    monkeypatch.setenv("CISCO_RECALL_NO_LOG", "1")           # opt-out: no row, honest False
+    assert R.append_query_log("third", source="recall", path=str(p)) is False
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_append_query_log_never_logs_empty_and_never_raises(tmp_path):
+    p = tmp_path / "q.jsonl"
+    assert R.append_query_log("", source="recall", path=str(p)) is False
+    assert R.append_query_log("   ", source="recall", path=str(p)) is False
+    assert not p.exists()                                    # nothing fabricated for empty input
+    blocked = tmp_path / "as-dir"
+    blocked.mkdir()
+    assert R.append_query_log("q", source="recall", path=str(blocked)) is False   # unwritable -> False
+
+
+def test_main_log_only_arm_records_for_ask_without_retrieval(tmp_path, monkeypatch, capsys):
+    import json
+    monkeypatch.delenv("CISCO_RECALL_NO_LOG", raising=False)
+    monkeypatch.chdir(tmp_path)                              # non-repo cwd -> _repo_root() falls back here
+    rc = R.main(["--log-only", "--source=ask", "what breaks if the core switch fails"])
+    assert rc == 0
+    logf = tmp_path / "docs" / "quality" / "recall_queries.jsonl"
+    assert logf.exists()
+    row = json.loads(logf.read_text(encoding="utf-8").splitlines()[0])
+    assert row["query"] == "what breaks if the core switch fails"
+    assert row["source"] == "ask" and row["stores"] == ""
+    assert "appended" in capsys.readouterr().out
+    assert R.main(["--log-only"]) == 2                       # empty query: skipped, honest non-zero
+
+
+def test_main_interactive_query_logs_but_eval_never_does(tmp_path, monkeypatch):
+    import json
+    monkeypatch.delenv("CISCO_RECALL_NO_LOG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(R, "graph_rank", lambda q, **kw: [])          # hermetic: no graphify subprocess
+    monkeypatch.setattr(R, "load_vault_digest", lambda *a, **kw: {})  # hermetic: no digest, no Ollama
+    logf = tmp_path / "docs" / "quality" / "recall_queries.jsonl"
+    assert R.main(["--eval"]) == 0                           # synthetic eval queries: NEVER logged
+    assert not logf.exists()
+    assert R.main(["some real question"]) == 0               # interactive query: logged with stores
+    rows = [json.loads(ln) for ln in logf.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1 and rows[0]["source"] == "recall" and rows[0]["stores"] == "docs+code"
