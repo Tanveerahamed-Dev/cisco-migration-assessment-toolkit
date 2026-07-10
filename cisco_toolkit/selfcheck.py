@@ -5,7 +5,8 @@ the morning briefing with any failure. The whole autonomy story rests on guards 
 appender, the protected-constraint tier, the learnings discipline, the SSOT reconcilers). A guard that has
 been **deleted or gutted** silently stops protecting — a *skipped* test is **red**, not green. This module
 re-derives, from the repo, whether each guard is present and actually asserting, plus whether the feedback
-substrate is being written and the graph is fresh.
+substrate is being written, the graph is fresh, and the REAL protected-memory artifact is still pinned
+(P0-1 / DEC-005 — the memory_guard mechanism's only live wiring).
 
 Every check returns **GREEN** (verified healthy), **RED** (verified broken — leads the briefing), or
 **UNKNOWN** (could not be evaluated — coverage-honest: absence of a signal is *never* rendered GREEN). Pure
@@ -34,6 +35,10 @@ GUARD_FILES = [
     # deleting it must go RED here, not leave the registry advertising a guard that no longer exists.
     "tests/test_registry_freshness.py",
 ]
+
+# The D12 protected-tier artifact constants (store path, env override, artifact name) are OWNED by
+# cisco_toolkit.memory_guard (one source of truth) and imported lazily inside the check, so a deleted
+# guard module reads RED there instead of breaking this module's import.
 
 
 def _check(name: str, status: str, detail: str) -> Dict[str, str]:
@@ -152,6 +157,70 @@ def check_guards_nonvacuous(root: str) -> Dict[str, str]:
     return _check("guards_nonvacuous", GREEN, f"all {len(GUARD_FILES)} guard suites present and asserting")
 
 
+def check_protected_artifact(root: str, memory_dir: Optional[str] = None) -> Dict[str, str]:
+    """Pin the REAL protected-memory artifact (P0-1 / DEC-005; gap G-001). ``memory_guard`` is a
+    mechanism exercised only by synthetic-store tests — without this check, deleting or unprotecting
+    the real ``protected-constraints.md`` trips nothing (BLK-1). Store resolution: explicit arg >
+    ``$AGENT_MEMORY_DIR`` > the known per-machine location. RED when the guard's own reconcilers
+    report loss or drift: artifact dropped (``missing_protected``), frontmatter no longer marked
+    protected, a canonical anchor unpinned (``unpinned_constraints``) or drifted out of the doctrine
+    owner (``reconcile_constraints``), or MEMORY.md no longer indexes the artifact (an index prune
+    orphans it from session-start re-surfacing). A machine without the store is explicit
+    ``signal_absent`` (UNKNOWN) — portable pytest never references the real store; THIS runtime
+    check is the pin. Never green on absence."""
+    try:
+        from cisco_toolkit import memory_guard as MG
+    except Exception as e:                      # the guard mechanism itself deleted/broken -> RED, not a crash
+        return _check("protected_artifact", RED, f"cisco_toolkit.memory_guard unavailable ({e!r}) — the D12 guard mechanism is gone")
+    problems: List[str] = []
+    # Doctrine side (repo-portable): every pinned anchor must still ground verbatim in the owner.
+    try:
+        doctrine = open(os.path.join(root, "CLAUDE.md"), encoding="utf-8", errors="replace").read()
+    except OSError:
+        doctrine = ""
+    drifted = MG.reconcile_constraints(doctrine)
+    if drifted:
+        problems.append(f"doctrine drift: {len(drifted)}/{len(MG.CANONICAL_SAFETY_CONSTRAINTS)} canonical anchor(s) "
+                        f"not verbatim in CLAUDE.md (first: {drifted[0]})")
+    # Store side (per-machine): a missing store is a missing SIGNAL, not health.
+    mdir = MG.resolve_store_dir(memory_dir)
+    if not os.path.isdir(mdir):
+        if problems:                            # doctrine drift is verified regardless of the store
+            return _check("protected_artifact", RED, "; ".join(problems) + f" (store itself absent at {mdir})")
+        return _check("protected_artifact", UNKNOWN,
+                      f"signal_absent: agent-memory store not found at {mdir} "
+                      f"(set {MG.AGENT_MEMORY_DIR_ENV} to point at it) — absence is never green")
+    store = MG.load_store(mdir)
+    # The pinned expectation, reconciled via the guard's own loss detector: an entry named after the
+    # artifact must survive in the live store (deletion OR a name-pin rewrite reads as dropped).
+    expected = [MG.MemoryEntry(name=os.path.splitext(MG.PROTECTED_ARTIFACT)[0], body="", meta={"protected": "true"})]
+    if MG.missing_protected(expected, store) or not os.path.exists(os.path.join(mdir, MG.PROTECTED_ARTIFACT)):
+        problems.append(f"{MG.PROTECTED_ARTIFACT} dropped from the store ({mdir}) — the D12 never-delete tier is gone")
+    else:
+        entry = MG.load_entry(os.path.join(mdir, MG.PROTECTED_ARTIFACT))
+        if not entry.protected:                 # the frontmatter flip: protected: true -> false
+            problems.append("frontmatter no longer marks the artifact protected "
+                            "(protected/type-constraint marker off) — consolidation may now compress it")
+        unpinned = MG.unpinned_constraints(store)
+        if unpinned:
+            problems.append(f"{len(unpinned)}/{len(MG.CANONICAL_SAFETY_CONSTRAINTS)} canonical constraint(s) "
+                            f"unpinned by any protected entry (first: {unpinned[0]})")
+    # Index coverage: MEMORY.md is what re-surfaces the fact at session start (BLK-1 route d).
+    try:
+        index_text = open(os.path.join(mdir, "MEMORY.md"), encoding="utf-8", errors="replace").read()
+    except OSError:
+        index_text = None
+    if index_text is None:
+        problems.append("MEMORY.md index absent from the store — the artifact cannot re-surface at session start")
+    elif MG.PROTECTED_ARTIFACT not in index_text:
+        problems.append(f"MEMORY.md no longer indexes {MG.PROTECTED_ARTIFACT} — an index prune orphaned the protected tier")
+    if problems:
+        return _check("protected_artifact", RED, "; ".join(problems))
+    return _check("protected_artifact", GREEN,
+                  f"{MG.PROTECTED_ARTIFACT} pinned: protected marker intact, all {len(MG.CANONICAL_SAFETY_CONSTRAINTS)} "
+                  f"canonical anchors pinned + doctrine-reconciled, MEMORY.md indexes it")
+
+
 def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str, str]:
     """graph.json lives in the MAIN checkout (untracked) — absent in a worktree -> UNKNOWN, never RED/GREEN."""
     p = os.path.join(root, "graphify-out", "graph.json")
@@ -167,10 +236,11 @@ def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str
 
 
 def run_selfcheck(root: Optional[str] = None, *, now: Optional[float] = None,
-                  graph_stale_days: int = 7) -> Dict[str, Any]:
-    """Run every check and summarize. ``now`` defaults to wall-clock (injected in tests). RED checks lead
-    the briefing; the overall verdict is RED if any check is RED, else GREEN if none are UNKNOWN, else
-    'GREEN-with-gaps' (coverage-honest: unknowns are disclosed, not hidden)."""
+                  graph_stale_days: int = 7, memory_dir: Optional[str] = None) -> Dict[str, Any]:
+    """Run every check and summarize. ``now`` defaults to wall-clock and ``memory_dir`` to the real
+    agent-memory store (both injected in tests — pytest must never touch the per-machine store). RED
+    checks lead the briefing; the overall verdict is RED if any check is RED, else GREEN if none are
+    UNKNOWN, else 'GREEN-with-gaps' (coverage-honest: unknowns are disclosed, not hidden)."""
     root = _repo_root(root)
     now = now if now is not None else time.time()
     checks = [
@@ -179,6 +249,7 @@ def run_selfcheck(root: Optional[str] = None, *, now: Optional[float] = None,
         check_nightly_ledger(root),
         check_learnings_discipline(root),
         check_guards_nonvacuous(root),
+        check_protected_artifact(root, memory_dir=memory_dir),
         check_graph_fresh(root, now=now, stale_days=graph_stale_days),
     ]
     n_red = sum(1 for c in checks if c["status"] == RED)
