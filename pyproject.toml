@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cisco-migration-assessment-toolkit"
-# RELEASE version — tracks the change log and git tags (V3.23.x). This is intentionally DECOUPLED from
+# RELEASE version — tracks the change log and git tags (the V3.x release train). This is intentionally DECOUPLED from
 # `cisco_toolkit.__version__` ("3.23.0"): that constant is the snapshot-SCHEMA version baked into the
 # golden data contract (`script_version` in every snapshot), and bumping it would churn the frozen
 # golden. See the change log ("In-code version 3.23.0") and tests/test_pipeline_golden.py.

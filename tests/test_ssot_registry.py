@@ -103,3 +103,27 @@ def test_registry_names_the_core_federated_owners():
     for token in ("ssot.py", "graphify", "pyproject.toml", "__version__", "CHANGELOG.md",
                   "manifest.py", "MEMORY.md", "CLAUDE.md"):
         assert token in txt, f"registry no longer names the '{token}' owner"
+
+
+def test_arch_coverage_cached_counts_match_registry():
+    """Reconcile guard for the architecture-coverage headline. The docs cache the fact ("N ...
+    architecture-class detectors across M classes"); the in-code registry
+    (`design_advisor._ARCH_COVERAGE_REGISTRY`) owns it. A cached count that drifts from its owner is
+    the exact rot Law 1 exists to prevent — caught live 2026-07-10, when both docs still said 40/23
+    while the registry held 46 probe-ids across 27 class axes. Asserts every doc that states the
+    headline states the registry's numbers, and that the headline is still present at all (dropping
+    the phrase entirely would silently retire this guard)."""
+    from cisco_toolkit.design_advisor import _ARCH_COVERAGE_REGISTRY as reg
+    detectors = sum(len(pids) for _axis, _label, _channel, pids in reg)
+    classes = len({axis for axis, *_rest in reg})
+    headline = re.compile(
+        r"(\d+)\s+(?:coverage-honest\s+)?architecture-class\s+detectors\s+across\s+(\d+)\s+classes")
+    for doc in (ROOT / "CLAUDE.md", ROOT / "docs" / "universal-architecture-coverage.md"):
+        txt = doc.read_text(encoding="utf-8")
+        hits = headline.findall(txt)
+        assert hits, f"{doc.name} no longer states the coverage headline — reconcile it or update this guard"
+        for n, m in hits:
+            assert (int(n), int(m)) == (detectors, classes), (
+                f"{doc.name} caches {n} detectors / {m} classes but the registry "
+                f"(design_advisor._ARCH_COVERAGE_REGISTRY) holds {detectors} / {classes} — "
+                "update the doc from the owner (a copy is a cache and must match)")
