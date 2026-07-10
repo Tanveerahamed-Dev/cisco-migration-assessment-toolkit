@@ -229,12 +229,17 @@ def _num(v: Any) -> Optional[float]:
 
 
 def latest_judge_baseline(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The most recent judge-baseline row carrying a MEASURED (numeric) ``judge_tnr``, or ``None``.
-    File order is append order, so the last match is the current baseline. A baseline row without a
-    numeric measurement is skipped — it quantifies nothing and must stamp nothing."""
+    """The most recent judge-baseline row, or ``None`` when none was ever recorded. File order is
+    append order, so the last match is the current baseline — INCLUDING one whose ``judge_tnr`` is
+    null (P1-3 / DEC-004): the baseline arm records null trust when the judge lost specificity
+    (rejected the clean control), and that measurement must DEMOTE — skipping it in favour of an
+    older numeric row would let a stale flattering baseline keep stamping APPROVEs as gating after
+    a newer run refuted the instrument (measured for real on 2026-07-10: a 0.4 run was followed by
+    a same-config no-specificity run). Anything non-numeric in the latest row reads as trust
+    unquantified via :func:`_num` -> the stamped verdict goes PROVISIONAL (fail-safe in the
+    demoting direction, never the trusting one)."""
     for r in reversed(rows or []):
-        if (isinstance(r, dict) and r.get("deliverable") == JUDGE_BASELINE_DELIVERABLE
-                and _num(r.get("judge_tnr")) is not None):
+        if isinstance(r, dict) and r.get("deliverable") == JUDGE_BASELINE_DELIVERABLE:
             return r
     return None
 
