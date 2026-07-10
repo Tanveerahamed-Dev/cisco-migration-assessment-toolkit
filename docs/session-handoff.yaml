@@ -21,12 +21,13 @@ last_completed_task: >-
   P2-0c SATISFIED-AS-AMENDED, no PR: ssot.md:43 already records install + embed model with
   version-read-live (the pinned-0.31.1-drifted-to-0.31.2 lesson) — veto in one sentence to reopen.
 next_task: >-
-  HUMAN (in order): (1) UNBLOCK CI — two proven paths, pick either: merge #325 FIRST (VERIFIED
-  16:1xZ: its full run executed green on the two registered self-hosted runners TANVEER-AHAMED-1/2
-  with all 10 required job names INVARIANT — the P0-4 context-wedge caution is resolved by
-  evidence; open PRs then need a rebase/fresh run to pick up the toggle, the session automates
-  that) OR raise the Actions spending limit (still binding at 16:09Z — hosted reruns stalled at 11
-  green jobs across 4 sweeps); (2) PICK ONE P2-0a — #319 (other session; tracked query_log.jsonl)
+  HUMAN (in order): (1) CI UNBLOCKED — #325 merged 16:16Z (self-hosted path chosen; runners
+  TANVEER-AHAMED-1/2; job names invariant, wedge caution resolved by evidence). The 5 this-session
+  PR branches (#318/#321/#322/#323/#324) had main merged in at ~16:2xZ and run fresh on the pool;
+  the 3 other-session PRs (#317/#319/#320) still carry the OLD hosted ci.yml — click GitHub's
+  "Update branch" on each (the automode classifier twice declined this session modifying
+  other-session PRs — correct boundary, so it is a human click or a one-sentence authorization);
+  raising the spending limit is now OPTIONAL (cost only); (2) PICK ONE P2-0a — #319 (other session; tracked query_log.jsonl)
   vs #321 (this session; gitignored recall_queries.jsonl) are duplicates and exactly one may merge
   (comparison + declared authorship on #319; load-bearing axis = does a typed client token ever
   leave the machine on push); (3) review the queue: #317 retro, #318 P2-0e, #319/#321 pair, #320
