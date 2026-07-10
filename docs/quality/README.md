@@ -17,7 +17,7 @@ Every consequential QA / eval cycle appends one row. **Verifiable facts only —
 | `deliverable` | string | which artifact (e.g. `design`, `mop`, `crd`, `hld`, or a snapshot id) |
 | `score` | number \| null | eval-suite score (0–100) from the golden-snapshot harness; `null` on a `/qa`-verdict row (a QA transcript yields a verdict, not a number) |
 | `verdict` | string | `APPROVE` / `BLOCK` (from deliverable-qa-reviewer) |
-| `judge_tnr` | number \| null | the measured true-negative rate of the JUDGE that produced this verdict, **stamped by the QA-verdict writers from the latest `judge-baseline` row** on this scorecard (`scorecard.latest_judge_baseline`; measured by `python ollama_judge.py <model> --append-baseline` over the `cisco_toolkit.defect_panel` panel) — or `null` when no baseline was ever measured (honest absence, never a guess). An `APPROVE` is only trustworthy to the extent the judge is *shown* to REJECT known-bad work (Jain et al. `2510.11822`: LLM judges default to TNR < 25%). A deterministic `eval_harness` row is bias-free and carries `null` here (no judge involved). |
+| `judge_tnr` | number \| null | the measured true-negative rate of the JUDGE that produced this verdict, **stamped by the QA-verdict writers from the latest `judge-baseline` row** on this scorecard (`scorecard.latest_judge_baseline`; measured by `python ollama_judge.py <model> --append-baseline` over the `cisco_toolkit.defect_panel` panel) — or `null` when no baseline was ever measured (honest absence, never a guess) **or when the latest baseline itself recorded null trust** (the specificity fail-safe; latest row wins, so a refuting re-baseline demotes — P1-3). An `APPROVE` is only trustworthy to the extent the judge is *shown* to REJECT known-bad work (Jain et al. `2510.11822`: LLM judges default to TNR < 25%). A deterministic `eval_harness` row is bias-free and carries `null` here (no judge involved). |
 | `provisional` | bool \| null | **the machine-readable PROVISIONAL mark (P0-6 / DEC-004) — enforced in code, not by this table**: `true` on any APPROVE whose `judge_tnr` is `null` or below the broken-instrument floor owned by `cisco_toolkit.scorecard.JUDGE_TNR_FLOOR` (0.25 — that constant is the owner; this cell is a cited cache). A provisional APPROVE is **ADVISORY — nothing may gate on it**. `scorecard.is_provisional` is the one predicate; `append_row` enforces the mark at the write choke point (a fabricated `provisional: false` cannot persist), and `selfcheck.check_judge_trust` is the consumer check that reads **RED** on any persisted row contradicting the predicate in the trusting direction. `false` on deterministic scored rows and floor-clearing judge APPROVEs; `null` on non-verdict rows (`judge-baseline` measurements) and pre-P0-6 history — **unmarked is still treated advisory by the predicate**, never trusted by default. |
 | `counterexamples` | int | number of grounded defects the verifier found this cycle (should trend ↓) |
 | `laws_tripped` | array | which of the 10 Deliverable-Excellence Laws failed, if any |
@@ -93,14 +93,19 @@ scorecard is the *predicted output of a broken instrument*, not evidence of good
   Ollama Structured Outputs + a neutral per-condition checklist — the *only* framing measured to discriminate
   ("try to disprove" rejects even clean work; "most are fine" approves even defects).
 
-**Honest characterization (qwen3:4b on a 16GB CPU host):** the local judge genuinely *discriminates*
-(`approves_clean` = True, so it is specific) but is a **weak detector** (rejection ≈ 0.2 — catches only the
-blatant defect). It is a *supplement*, not a replacement; the deterministic arm (12/12) is the reliable
-instrument on this hardware. `run_baseline` judges a known-GOOD deliverable **first** and reports
-`approves_clean` (specificity): a "rejects everything" judge scores rejection 1.0 yet is worthless, so
-`rejection_rate` is only meaningful when `approves_clean` is True. Hermetic tests inject the model I/O, so the
-harness never needs a running model (`tests/test_defect_panel.py`, `tests/test_ollama_judge.py`); both are in
-the self-check `GUARD_FILES` so a gutted TNR floor reads **RED**.
+**Honest characterization (measured through the P1-3 ladder, 2026-07-10/11, 15.4 GB CPU-only host):** the
+local arm is **not yet a trustworthy detector**. qwen3:4b discriminates only *unstably* — two same-config
+temperature-0 runs flipped between localized TNR 0.4-with-specificity and 0.2-without (it rejected the clean
+control), so a single run must never be trusted: re-baseline with `--runs 2` (worst-run protocol, below).
+qwen3:8b detects far more (localized 0.6–0.8, the only judge to catch `D-03` phantom-health) but rejected the
+clean control in **both** runs (it insists `n/a - verification step` is a missing rollback), so it has **no
+specificity** and records null trust; qwen3 think-mode is compute-infeasible on this host (≈360 s/call, empty
+content once the think block exhausts the token budget). The LLM arm stays a *supplement*; the deterministic
+arm (12/12) is the reliable instrument on this hardware. `run_baseline` judges a known-GOOD deliverable
+**first** and reports `approves_clean` (specificity): a "rejects everything" judge scores rejection 1.0 yet is
+worthless, so `rejection_rate` is only meaningful when `approves_clean` is True. Hermetic tests inject the
+model I/O, so the harness never needs a running model (`tests/test_defect_panel.py`,
+`tests/test_ollama_judge.py`); both are in the self-check `GUARD_FILES` so a gutted TNR floor reads **RED**.
 
 **Advisory-until-measured policy (P0-6 / DEC-004; gap G-006).** A `/qa` APPROVE is **demoted to advisory**
 unless the judge that produced it has a measured baseline clearing `judge_tnr ≥ JUDGE_TNR_FLOOR`
@@ -112,14 +117,44 @@ and `selfcheck.check_judge_trust` is the **consumer** — anything gating on ver
 provisional APPROVE as non-gating, and the self-check reads RED if a row is ever persisted trusting in
 contradiction. Gate consequence: a PROVISIONAL APPROVE never advances a PPDIOO gate by itself — it is the
 reviewer's recorded opinion, pending an instrument that has *earned* trust. Re-baseline with
-`python ollama_judge.py qwen3:4b --append-baseline` after any judge/prompt/model change; the appended row
-is what promotes (or keeps demoted) every subsequent verdict. Ollama unreachable → the arm prints
-`signal_absent` and appends **nothing** (a measurement row is never fabricated).
+`python ollama_judge.py qwen3:4b --runs 2 --append-baseline` after any judge/prompt/model change; the
+appended row is what promotes (**or demotes**) every subsequent verdict — `latest_judge_baseline` is
+latest-row-wins (P1-3), so a null-trust re-baseline (the specificity fail-safe) revokes an older numeric
+one, and `--runs N` records the WORST of N runs (an unstable judge is never promoted by its best run).
+Ollama unreachable → the arm prints `signal_absent` and appends **nothing** (a measurement row is never
+fabricated; a multi-run protocol that cannot complete also records nothing).
 
 **Re-baseline record (2026-07-10, P0-6d):** re-run over the 5-defect text-visible panel via the new arm —
 localized TNR **0.2** (`D-12` caught; `D-01/03/06/11` approved), `approves_clean=True`, reproducing the
 2026-07-08 measurement exactly. **Still below the 0.25 floor ⇒ judge APPROVEs remain PROVISIONAL/advisory**
 until a stronger judge (bigger model, better prompt, or a Claude-arm panel run) clears it.
+
+**P1-3 re-baseline ladder (2026-07-10 → 07-11, DEC-004) — outcome: floor NOT durably cleared; the judge
+stays ADVISORY.** One variable per rung over the fair subset (the 5 text-visible defects D-01/03/06/11/12);
+every completed panel measurement recorded via `python ollama_judge.py <model> [--runs N] --append-baseline`
+(append-only — failures included, nothing cherry-picked; per-rung commits on the P1-3 branch make each row's
+exact prompt/config reproducible):
+
+| rung | variable changed | measured | row |
+|---|---|---|---|
+| 0 | none — reproduce the recorded state at HEAD | clean=True, localized **0.2** (only `D-12`) — identical to the two rows on record | not re-appended (already ×2) |
+| 1 | prompt: deliverable-first, numbered conditions, forced per-condition HOLDS/DOES-NOT-HOLD walk | clean=True, rejection ↑0.4 but localized **0.0** — both rejects bound `defect_class` to the *first* enum value | `@fddada1` |
+| 2 | prompt: reasoning must end `` `HELD: <name|NONE>` ``, `defect_class` copies it | run A: clean=True, localized **0.4** (`D-06`,`D-12`) — *point estimate clears 0.25*; same-config rerun B: clean=**False**, localized 0.2 → **run A refuted; unstable** | `@8d208bf` ×2 (0.4, then null trust) |
+| 3 | decoding: qwen3 `think=true` | probe-refuted on this host: ≈360 s/call, content empty (think exhausts `num_predict`) — a full run would mechanically score 0 | none (feasibility probe, not a panel run) |
+| 4 | model: qwen3:8b (installed locally; nothing pulled), worst-of-2 | localized **0.8/0.6** (catches `D-03`) but clean control rejected in **both** runs (`n/a - verification step` read as missing-rollback) → **null trust** | `@ee01898` (worst run + spread in notes) |
+
+Small-N honesty (stated per the P1-3 mandate): the fair subset is **n=5**, so even a passing point estimate
+carries a wide interval — 2/5 = 0.4 has a one-sided 95% Clopper–Pearson lower bound of **0.076**, far below
+the 0.25 floor (4/5, LB 0.343, is the smallest outcome whose *bound* clears it). The DEC-004 promotion gate
+is a point-estimate **screening floor, never calibration proof** — the same convention as the deterministic
+arm's 12/12 → 0.779 above. What the ladder hardened into code: `--runs N` (worst-run recording) and
+**demotion semantics** — `latest_judge_baseline` is latest-row-wins, so the rung-2 stale 0.4 can never keep
+stamping APPROVEs gating after a newer refuting run
+(`tests/test_scorecard.py::test_latest_judge_baseline_null_trust_demotes`). Highest-value next steps, in
+order: (1) one more prompt iteration targeting the 8b's single specificity failure (its detection already
+doubles the floor; condition 1's wording vs `n/a`-style rollbacks is the one blocker); (2) a mid-size
+instruct model — **needs a human-approved pull: model download = egress**, outside the ADR-0001 local-
+inference carve-out; (3) a GPU / higher-RAM host, which unlocks both think-mode and swap-free 8b.
 
 ## `scorecard trend` — the line you watch go up (Phase 1)
 

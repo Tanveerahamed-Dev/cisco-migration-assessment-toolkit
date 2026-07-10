@@ -1,5 +1,25 @@
-generated: "2026-07-10 @ 155ad84 (P2 pre-task sweep, delegated during the Actions billing outage)"
+generated: "2026-07-11 @ b81b491 (P1-3 judge re-baseline ladder, branch claude/goofy-gauss-3877a5)"
 stage: "PHASE 0 CLOSED — Phase 1 is the front line; Phase-2 pre-tasks executed ahead (all 5 PRs await billing fix + human review)"
+p1_3_status: >-
+  P1-3 EXECUTED 2026-07-10/11 (DEC-004 ladder, 4 honest iterations, every measurement recorded) —
+  outcome: floor NOT durably cleared, judge stays ADVISORY. Rungs: (1) forced per-condition walk ->
+  detection up, localization broke (0.0 — first-enum binding); (2) HELD:-copy binding -> 0.4
+  point-clear REFUTED by same-config rerun (clean control rejected -> null trust; 4b is run-to-run
+  unstable at temp 0); (3) think=true probe-refuted (~360s/call, empty content — CPU-infeasible);
+  (4) qwen3:8b worst-of-2 -> localized 0.8/0.6 (only judge to catch D-03) but NO specificity
+  (rejects 'n/a - verification step' as missing-rollback, both runs) -> null trust. NOTHING pulled
+  (egress); qwen3:4b/8b were already installed. Hardened into code: --runs N worst-run protocol
+  (never promoted by the best run; incomplete protocol records nothing), --think knob (default
+  off), and DEMOTION semantics — latest_judge_baseline is latest-row-wins so a null-trust
+  re-baseline revokes a stale numeric one (was: null rows skipped -> the stale rung-2 0.4 would
+  have stamped fresh /qa APPROVEs as GATING; found via refute-first rerun, fixed + pinned by
+  test_latest_judge_baseline_null_trust_demotes; selfcheck judge_trust now reports NULL trust
+  instead of TypeError->UNKNOWN). Live state verified: latest baseline = 2026-07-11 null row; a
+  fresh APPROVE stamps provisional=true; selfcheck GREEN with demotion disclosed. Ladder log +
+  small-N honesty (n=5: 2/5 point 0.4 has CP95 lower bound 0.076; 4/5 is the first bound-clearing
+  outcome) in docs/quality/README.md judge section. Next-value paths (human decides): one more
+  prompt rung on the 8b specificity failure (detection already 2x floor); a mid-size model pull
+  (EGRESS — human-approved only); GPU/RAM host for think-mode/8b.
 execution_phase: "Phase 1 — Feedback loop bootstrap (docs/architect-master-plan-2026-07-10.md §5; hybrid data policy DEC-007; 2026-08-05 checkpoint). Phase-2 pre-tasks P2-0a/0b/0d/0e executed 2026-07-10 by user delegation; Phase 2 itself still blocked on their merges."
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"
