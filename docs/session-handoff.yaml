@@ -21,13 +21,20 @@ last_completed_task: >-
   P2-0c SATISFIED-AS-AMENDED, no PR: ssot.md:43 already records install + embed model with
   version-read-live (the pinned-0.31.1-drifted-to-0.31.2 lesson) — veto in one sentence to reopen.
 next_task: >-
-  HUMAN: fix GitHub Actions billing (payments/spending-limit annotation since ~11:35Z 2026-07-10;
-  ALL checks instant-fail with zero steps account-wide — NOT a code failure; diagnosis on PR #318),
-  then rerun checks and review/merge the 5 open PRs (#317 retro, #318 P2-0e, #321 P2-0a, #322
-  P2-0d, #323 P2-0b — all independent, based on 155ad84; a billing-recovery watcher auto-reruns
-  #318/#317 and the session sweeps the rest). AGENT next: P1-2 holdout activation contract
-  (deliberately NOT piled onto this review queue — a sealing-design doc deserving fresh review);
-  P1-1 accrual continues with every /qa; first REAL PIR stays event-driven (never fabricate).
+  HUMAN (in order): (1) finish the billing fix — recovery is PARTIAL as of 13:55Z: one job ran
+  green, nine still hit the "spending limit needs to be increased" annotation, so the LIMIT is the
+  binding constraint now; (2) PICK ONE P2-0a — #319 (other session; tracked query_log.jsonl) vs
+  #321 (this session; gitignored recall_queries.jsonl) are duplicate implementations and exactly
+  one may merge (factual comparison + declared authorship posted on #319; the load-bearing axis is
+  tracked-vs-gitignored = does a typed client token ever leave the machine on push); (3) review
+  the 9-PR queue: #317 retro, #318 P2-0e, #319/#321 duplicate pair, #320 P1-2 (other session; NB
+  edits ssot.md/README/test_ssot_registry.py + tests/golden/snapshot.json — conflicts with the P2
+  set, land P2 first then rebase; confirm the golden churn is intended), #322 P2-0d, #323 P2-0b,
+  #324 this handoff, #325 self-hosted CI (NB: required contexts are pinned BY JOB NAME — a runner
+  toggle that alters names wedges merges, the P0-4 lesson; with the limit raised its case drops to
+  cost optimization). AGENT next: P1-2 is TAKEN by #320 — do not re-implement; P1-1 accrual
+  continues with every /qa; first REAL PIR stays event-driven (never fabricate). LESSON for
+  parallel sessions: list open PRs before starting a plan task — #319/#321 raced 19 minutes apart.
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
@@ -94,3 +101,15 @@ context_summary: |
   (auditable) over bm25s, pytrec-eval-terrier (Windows wheels) over the original. Phase 2 remains
   blocked until the pre-task PRs land; P1-2 (holdout contract) is the next agent task, held back
   deliberately to keep the review queue sane during the outage.
+
+  2026-07-10 (latest): billing recovered PARTIALLY at 13:54Z — Tests·py3.10 got a runner and
+  passed the FULL suite on the docs-only #318; the other 9 jobs still zero-step-fail on the
+  spending-limit annotation, so raising the limit is the remaining human step. All open-PR failed
+  runs re-triggered at ~14:0xZ; a convergence sweeper re-runs --failed every ~15 min (successes
+  stick) until all green or progress stalls. CONCURRENCY DISCOVERED: parallel sessions raced the
+  same plan during the outage — #319 duplicates #321 (P2-0a twice, 19 min apart; comparison +
+  authorship declared on #319; exactly one merges), #320 took P1-2 (do not re-implement), #325
+  proposes a self-hosted-runner toggle (job-name/required-context wedge risk flagged above; the
+  automode classifier correctly declined unsolicited comments on other sessions' PRs — the
+  observations live here instead). Lesson: in a multi-session window, list open PRs before
+  starting any plan task.
