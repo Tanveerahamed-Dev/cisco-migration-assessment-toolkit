@@ -1,31 +1,31 @@
 generated: "2026-07-10 @ e3b2bd5"
-stage: "B — plan saved + decisions ratified"
-execution_phase: "Phase 0 — Doctrine hardening (launched: P0-1/P0-4/P0-5 spawned as one-click sessions; P0-7 decided, execution deferred)"
+stage: "B — plan saved + Phase 0 gaps closed"
+execution_phase: "Phase 0 — Doctrine hardening (G-001..G-006 ALL CLOSED; P0-8 chip in flight; P0-7 deferred pending the two fix-sessions; P0-9 = HR-005 residual sign-off)"
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"
   - "docs/architect-master-plan-2026-07-10.md"
 qa_verdict: "APPROVE (round 2, all three artifacts; round-1 BLOCK dispositioned; verdict rows in docs/quality/scorecard.jsonl: set/BLOCK cx=8, set/APPROVE cx=2)"
-last_completed_task: "HR-001..HR-004 DECIDED per plan recommendations under user delegation ('take the best possible decision', 2026-07-10); decisions log added to master plan S4; Phase 0 launched via task chips P0-4 (merge gate), P0-1 (protected-tier pin), P0-5 (SSOT truth sweep)"
-next_task: "Human: merge the five OPEN PRs #309/#310/#311/#312/#313 (NOTE: #311 and #312 both touch scorecard.py — merge in numeric order and rebase the second if it conflicts); P0-7 permission-narrowing stays deferred (both fix-sessions still un-landed: d10:95 erratum + memory_guard ghost path unchanged on main); P0-8 chip queued; P0-9 residual ledger = HR-005 (accept or direct)"
+last_completed_task: "Phase-0 merge wave under explicit user 'merge with --admin' authorization: #309 (retro, 425110f), #311 (P0-2, 8d34df8), #313 (P0-3, bda5800), #312 (P0-6, 6806328 — conflict-union with #311: schema carries both field sets, both record arms annotate provenance then stamp judge trust, eval harness emits provenance nulls)"
+next_task: "Human: merge PR #310 (this ledger, the last open PR); P0-8 chip session running; P0-7 permission-narrowing still deferred (D10-erratum + ghost-path fix-sessions un-landed); sign off HR-005 residuals to close Phase 0"
 p0_gaps:
   - id: "G-001"
-    description: "Protected memory tier bypassable, no RED test -> P0-1 (chip spawned)"
+    description: "Protected memory tier bypassable, no RED test -> P0-1"
     status: "closed (PR #308 merged 2026-07-10 @ a88c38d: selfcheck.check_protected_artifact runtime pin + memory_guard snapshot|verify pre/post-consolidation wrapper; acceptance proven live — flip->RED exit 4, store-absent->signal_absent; R9 residual declared)"
   - id: "G-002"
     description: "Proposer != verifier prompt-only -> P0-2"
-    status: "in_progress (PR #311 OPEN: authored_by/reviewed_by provenance pair, self-review refusal exit 2, read-only analyst roster pinned by tests/test_proposer_verifier_guard.py — human merge)"
+    status: "closed (PR #311 merged 2026-07-10 @ 8d34df8: authored_by/reviewed_by provenance pair, self-review refusal exit 2, read-only analyst roster pinned by tests/test_proposer_verifier_guard.py)"
   - id: "G-003"
     description: "PPDIOO human gates prose-only -> P0-3"
-    status: "in_progress (PR #313 OPEN: design/MOP generators refuse on missing upstream approval, explicit logged --override-gate escape — human merge)"
+    status: "closed (PR #313 merged 2026-07-10 @ bda5800: design/MOP generators refuse on missing upstream approval, explicit logged --override-gate escape)"
   - id: "G-004"
-    description: "No merge gate on-machine; GitHub Pro unlocks branch protection -> P0-4 (chip spawned)"
+    description: "No merge gate on-machine -> P0-4"
     status: "closed (P0-4 done: branch protection LIVE on main — 10 required ci.yml checks + 1 review, enforce_admins=false so the human merges via explicit bypass; DEC-002 refuting experiment PASSED — deliberately-red PR #306 was BLOCKED, closed unmerged; verified via gh api 2026-07-10)"
   - id: "G-005"
-    description: "SSOT registry self-rot (:40/:41/:31) + CLAUDE.md egress carve-out -> P0-5 (chip spawned)"
-    status: "closed (PR #307 merged 2026-07-10 @ cf0d1af: ssot.md de-rot + ADR-0001 update + CLAUDE.md local-Ollama carve-out + tests/test_registry_freshness.py dual-mode guard, hardened post-review in 91e81d1; retro docs pending as OPEN PR #309 — human merge)"
+    description: "SSOT registry self-rot (:40/:41/:31) + CLAUDE.md egress carve-out -> P0-5"
+    status: "closed (PR #307 merged 2026-07-10 @ cf0d1af: ssot.md de-rot + ADR-0001 update + CLAUDE.md local-Ollama carve-out + tests/test_registry_freshness.py dual-mode guard, hardened post-review in 91e81d1; retro docs merged as PR #309 @ 425110f)"
   - id: "G-006"
     description: "Judge-trust: judge_tnr never emitted; PROVISIONAL prose-only; GUARD_FILES un-pinned; judge TNR 0.2 -> P0-6"
-    status: "in_progress (PR #312 OPEN: PROVISIONAL enforced in code — judge_tnr stamped from latest baseline, sub-0.25 APPROVE non-gating; GUARD_FILES pinned at 15 (owner = selfcheck.GUARD_FILES); qwen3:4b re-baseline reproduced TNR=0.2 — human merge)"
+    status: "closed (PR #312 merged 2026-07-10 @ 6806328: judge_tnr stamped from latest baseline, provisional enforced at the append_row choke point, GUARD_FILES pinned, qwen3:4b re-baseline TNR=0.2 reproduced; merged as a union with the P0-2 wedge)"
 pending_human_review:
   - id: "HR-001"
     decision: "DEC-001 mission ladder (M0 personal -> M1 client -> M2 product; research = instrument layer)"
@@ -43,14 +43,13 @@ pending_human_review:
     decision: "P0-9 RESIDUAL-BYPASS LEDGER — the gaps that CANNOT close at code level; explicit human acceptance required per Phase-0 acceptance criteria: (a) Bash-holding agents can bypass tool allowlists — hard floor is default permission mode (CLAUDE.md trust boundary); (b) hooks are fail-open by design (verify-green timeout, vault-guard exception paths); (c) graphify's ranking engine is external to the repo and unauditable in-repo (risk R6); (d) the out-of-repo consolidation plugin honoring the protected: marker is unverifiable — mitigated by the P0-1 snapshot|verify wrapper detecting loss after the fact (risk R9); (e) P0-2 provenance identities are self-reported strings — the wedge raises the bar, it is not proof; (f) branch protection has enforce_admins=false — the human CAN bypass (intended: that IS the explicit human-merge path); (g) settings.local.json pre-approvals remain until P0-7 lands"
     recommendation: "Accept all seven as documented residuals (each has a declared mitigation or is the intended human path); any you refuse becomes a new Phase-0 task"
 context_summary: |
-  /architect-plan v5 completed Stage A+B on 2026-07-10 @ e3b2bd5 and passed independent QA
-  (round-1 BLOCK remediated -> round-2 APPROVE x3; both verdicts recorded). Under user delegation
-  ("take the best possible decision") all four NEEDS_HUMAN_REVIEW items were ratified per plan
-  recommendation (ladder confirmed; pre-approvals to be narrowed after live sessions finish;
-  digest lane added to eval at P2-0e; DEC-009 defaults stand), and Phase 0 launched as three
-  one-click chip sessions: P0-4 merge gate (branch protection + red-PR proof), P0-1 protected-
-  tier artifact pin, P0-5 SSOT registry truth sweep + freshness guard. Each delivers a human-
-  owned PR; nothing merges without the human. Remaining Phase-0 queue: P0-2 proposer!=verifier
-  wedge, P0-3 gate mechanization, P0-6 judge-trust repairs, P0-7 permission narrowing (decided,
-  deferred), P0-8 vault-guard Bash extension, P0-9 residual ledger. Two earlier fix-sessions
-  (D10 erratum = P2-0f, memory_guard docstring) still running independently.
+  /architect-plan v5 completed Stage A+B on 2026-07-10 @ e3b2bd5, passed 2-round independent QA,
+  and Phase 0 EXECUTED same-day: all six doctrine gaps closed on main (P0-1 #308, P0-2 #311,
+  P0-3 #313, P0-4 protection live + red-PR #306 proof, P0-5 #307+#309, P0-6 #312 — merged as a
+  union with the P0-2 wedge after a scorecard.py conflict: schema carries judge_tnr/provisional
+  AND authored_by/reviewed_by, append_row enforces both self-review refusal and the provisional
+  choke point). Merge wave ran under explicit user "merge with --admin" authorization. Remaining
+  Phase 0: P0-8 vault-guard Bash fence (chip session running), P0-7 permission narrowing
+  (deferred until the D10-erratum + ghost-path fix-sessions land), P0-9 = HR-005 residual
+  sign-off. Then Phase 1 (hybrid data bootstrap, 2026-08-05 checkpoint) per
+  docs/architect-master-plan-2026-07-10.md, the active work-plan index.
