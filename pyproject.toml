@@ -58,6 +58,14 @@ dev = ["pytest>=8,<10", "ruff>=0.5", "mypy>=1.8"]
 # already-produced snapshot.json (offline, no egress). The base engine never imports `mcp`
 # unless this extra is installed; cisco_toolkit.mcp_server guards the import at call time.
 mcp = ["mcp>=1.28,<2"]
+# The D10 Phase-2 retrieval-eval stack (P2-0b; docs/d10-retrieval-eval-design-2026-07-08.md §8) —
+# all offline/air-gap-safe, none imported by the engine: rank-bm25 (the auditable pure-Python Okapi
+# BM25 — §4's frozen priors k1/b are constructor args), pytrec-eval-terrier (the maintained
+# reference trec_eval binding that ships Windows wheels), scipy (the pre-registered paired t-test).
+# Dense-lane deps (sentence-transformers, faiss-cpu) are deliberately ABSENT until the §5 traffic
+# bar clears (≥30% semantic of 30 REAL logged queries) — the zero-embedding preference holds until
+# measured otherwise. API surface pinned by tests/test_eval_deps.py (skips when not installed).
+eval = ["rank-bm25>=0.2,<1", "pytrec-eval-terrier>=0.5,<1", "scipy>=1.10,<2"]
 
 [project.scripts]
 # Stable command -> the existing main() in the (versioned-filename) entry module. No refactor required:
