@@ -18,10 +18,17 @@ the plan's recall metric.
 Coverage-honest: a query with no lexical overlap returns nothing (not a fabricated hit); the eval reports the
 measured lift (or *no* lift — "inconclusive"), never an assumed win. Pure-stdlib; :func:`rrf_fuse`,
 :func:`lexical_rank`, and :func:`evaluate` do no I/O and are unit-tested without a repo.
+
+P2-0a: the CLI's REAL query surfaces append each query to ``docs/quality/query_log.jsonl``
+(:func:`log_query` — one JSON line of ``date``/``query``/``surface``, fail-open, local, no egress) so
+D10's dense-lane precondition ("classify 30 real queries by type FIRST", d10 design §5) is runnable at
+all; the synthetic ``--eval`` path never logs, so the recorded mix stays real.
 """
 from __future__ import annotations
 
+import datetime
 import glob
+import json
 import math
 import os
 import re
@@ -161,6 +168,34 @@ def ollama_digest_rank(query: str, *, digest_dir: str = VAULT_DIGEST_DIR, timeou
         return []
 
 
+# --- the real-query log (P2-0a) -----------------------------------------------------------------
+# D10's dense-lane precondition classifies the REAL query mix ("classify 30 real queries by type
+# FIRST" — docs/d10-retrieval-eval-design-2026-07-08.md §5), which needs a log to exist at all.
+# Only the REAL surfaces append here (this CLI, and /ask via ``--log-only --surface=ask``); the
+# synthetic ones (--eval, the labeled experiment, unit tests) never do, so the mix stays real.
+# Append-only, local, no egress. Registered in docs/ssot.md (Law 1); never hand-edit.
+QUERY_LOG_PATH = os.path.join("docs", "quality", "query_log.jsonl")
+
+
+def log_query(query: str, surface: str = "recall", *, path: Optional[str] = None) -> bool:
+    """Append ONE real query as one JSON line — exactly ``date``/``query``/``surface``, nothing else.
+    FAIL-OPEN by contract: retrieval must never break because logging did, so any write failure
+    (unwritable path, read-only tree) degrades silently to ``False`` — the same typed-except
+    convention as :func:`build_corpus` / :func:`graph_rank`."""
+    try:
+        p = path or os.path.join(_repo_root(), QUERY_LOG_PATH)
+        line = json.dumps({"date": datetime.date.today().isoformat(),
+                           "query": str(query), "surface": str(surface)}, ensure_ascii=False)
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def hybrid_recall(query: str, *, docs_corpus: Dict[str, str], code_corpus: Dict[str, str],
                   k: int = 60, extra_lists: Optional[List[List[Any]]] = None) -> List[Tuple[Any, float]]:
     """Fuse the docs + code lexical signals (plus any ``extra_lists``, e.g. ``graph_rank`` output or a
@@ -228,7 +263,10 @@ def _repo_root() -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI: ``python -m cisco_toolkit.recall "<query>"`` fuses docs+code (and graphify if present) for the
-    query; ``--eval`` runs the D10 experiment over the labeled set. Read-only, no egress."""
+    query; ``--eval`` runs the D10 experiment over the labeled set (synthetic — never logged);
+    ``--log-only`` (with optional ``--surface=NAME``) records the query in the P2-0a real-query log
+    WITHOUT retrieving — the arm the prose-only ``/ask`` command invokes (``--surface=ask``).
+    Read-only, no egress."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -236,9 +274,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception:
         pass
     root = _repo_root()
-    docs = build_corpus(root, ["docs/**/*.md", "*.md"])
-    code = build_corpus(root, ["cisco_toolkit/*.py"])
-    if "--eval" in argv:
+    if "--eval" in argv:                       # the labeled experiment — synthetic, NEVER logged (P2-0a)
+        docs = build_corpus(root, ["docs/**/*.md", "*.md"])
+        code = build_corpus(root, ["cisco_toolkit/*.py"])
         rep = evaluate(_EVAL_LABELS, docs_corpus=docs, code_corpus=code)
         print(f"RRF recall eval (D10 experiment) — {rep['note']}")
         print(f"  n={rep['n']}  docs={rep['mrr_docs']}  code={rep['mrr_code']}  "
@@ -246,8 +284,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     query = " ".join(a for a in argv if not a.startswith("-"))
     if not query:
-        print('usage: python -m cisco_toolkit.recall "<query>"   |   --eval')
+        print('usage: python -m cisco_toolkit.recall "<query>"   |   --eval   |   '
+              '--log-only [--surface=ask] "<question>"')
         return 2
+    surface = next((a.split("=", 1)[1] for a in argv if a.startswith("--surface=")), "") or "recall"
+    logged = log_query(query, surface=surface)  # P2-0a: real query -> the mix log (fail-open)
+    if "--log-only" in argv:
+        print(f"logged (surface={surface}) -> {QUERY_LOG_PATH}" if logged else
+              "query log unavailable — nothing recorded (fail-open)")
+        return 0
+    docs = build_corpus(root, ["docs/**/*.md", "*.md"])
+    code = build_corpus(root, ["cisco_toolkit/*.py"])
     extra: List[List[Any]] = []
     g = graph_rank(query)                                       # offline graphify signal if available
     if g:
