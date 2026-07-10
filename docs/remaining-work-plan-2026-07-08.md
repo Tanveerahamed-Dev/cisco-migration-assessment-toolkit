@@ -45,7 +45,7 @@ Five commits on `chore/scorecard-first-real-rows`, all pushed: `c5c1f1d` (ADR 00
 | **C. Autonomy nerves** — *v4 final* | | | |
 | Clock (D13) — scheduler + `claude -p` nightly | TNR-gate ∧ calibration separation ∧ ROI | gated | rails built (`clock.py`); **do not arm** (see §3) |
 | Remediation / self-healing (`/remediate`) | a baseline⋈current drift to act on | mine | propose-only; exercise when drift is real |
-| Recall / vault-digest (D10) | Ollama + a signed sanitized digest | gated | degrade-gracefully; not installed |
+| Recall / vault-digest (D10) | Ollama + a signed sanitized digest | gated | degrade-gracefully; not installed *(gate satisfied 2026-07-10 — Ollama installed + first digest produced; see ADR 0001 Am. 1 status update / ssot.md row)* |
 | **Strategy** — *best-possible-plan §4* | | | |
 | Keep axis allocation (validation 60 / career 25 / autonomy 10 / commercial 5) | — | you | keep; autonomy/commercial are downstream of proof |
 | Publish the negative result (open the TNR + coverage-honesty harness) | after Act 3 | you | the durable moat incumbents can't copy |

@@ -30,6 +30,9 @@ GUARD_FILES = [
     # the judge-trust + calibration-corpus instruments — the "measure the judge, don't assume it" nerve.
     # Gutting the TNR floor or the fault-corpus discrimination would let an unmeasured judge read GREEN.
     "tests/test_defect_panel.py", "tests/test_fault_corpus.py", "tests/test_ollama_judge.py",
+    # registry-freshness guard (P0-5): four docs/ssot.md rows + ADR 0001 cite it as their enforcement;
+    # deleting it must go RED here, not leave the registry advertising a guard that no longer exists.
+    "tests/test_registry_freshness.py",
 ]
 
 
