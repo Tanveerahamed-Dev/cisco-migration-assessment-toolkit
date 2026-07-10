@@ -4,6 +4,8 @@
 # personal vault at C:\Vaults\brain. The bridge is one-way and sanitized — lessons leave this
 # repo only as docs/log.md !lesson entries (tagged bridge-candidate via /retro) and are
 # promoted by the vault's own /ingest in a separate vault-cwd session.
+# The Bash/PowerShell command lane (redirections, tee/cp/mv/rm, Set-Content, ...) is
+# covered by vault-guard-bash.sh + vault_guard_bash.py (P0-8).
 # Exit 2 blocks the tool call with the reason; every other outcome fails open (exit 0),
 # so a hook bug or missing python never wedges a turn.
 set -u
