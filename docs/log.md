@@ -4,6 +4,28 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-10] — /architect-plan v5: plan → 2-round QA → Phase 0 executed same-day (8 PRs + protection live)
+
+- Built `.claude/commands/architect-plan.md` through 4 adversarial iterations (self-verify → self-adversarial →
+  independent refuter fan-out → consistency audit; each round found real defects the prior round missed, incl. a
+  doctrine-3 violation in the prompt itself and the D10 paired-power erratum). Ran it: Stage A = 9 parallel
+  read-only workers (A–H + R), Stage B master plan, 2-round independent QA (round-1 BLOCK on a provenance defect
+  → remediated → APPROVE ×3). Phase 0 then EXECUTED same day: G-001..G-006 all closed
+  (#307/#308/#311/#312/#313 + protection-live proof via red PR #306), P0-7 local allowlist narrowed, P0-8 vault
+  shell-lane merged (#314), HR-005 residuals ratified by user delegation. Scorecard 3→6 rows incl. the first
+  real BLOCK (cx=8) — the feedback nerve fed by its own planning process.
+- `!lesson` `/goal` conditions MUST be declarative claims — an interrogative deadlocks the Stop hook evaluator
+  into an infinite block loop; worse, async task-start reminders splice into a mid-typed command's arguments
+  (a `/goal clear` became a new corrupted goal). Submit control commands into an EMPTY input box. `bridge-candidate`
+- `!lesson` Parallel chip PRs touching one module (scorecard.py ×2) need an integration owner: the merge-union
+  must be re-verified semantically (schema-set equality test caught `to_scorecard_row` missing the other PR's
+  keys) — a test pinning `set(row) == set(SCHEMA_KEYS)` is exactly the tripwire you want. `bridge-candidate`
+- `!lesson` Append-only jsonl logs conflict trivially across parallel sessions — resolve as an ordered UNION
+  (never pick a side), and keep the latest judge-baseline row last so `latest_judge_baseline` semantics hold.
+- `!lesson` Fast-moving multi-session days: `git fetch` before EVERY merge decision (a stale `origin/main` made a
+  clean-looking local merge lie about conflicts), and `gh pr checks --watch` right after a push can report "no
+  checks" before runs register — wait ~60s or re-arm.
+
 ## [2026-07-10] — P0-5 registry de-rot + freshness guard, adversarially reviewed and merged (PR #307, branch `claude/beautiful-mcnulty-0f67af`)
 
 - Executed P0-5 (gap G-005): fixed the four verified-stale registry/ADR lines (release-version cache 3.26.0→3.30.0;
