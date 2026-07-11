@@ -1,5 +1,10 @@
-generated: "2026-07-11 @ b81b491 (P1-3 judge re-baseline ladder, branch claude/goofy-gauss-3877a5)"
-stage: "PHASE 0 CLOSED — Phase 1 is the front line; Phase-2 pre-tasks executed ahead (all 5 PRs await billing fix + human review)"
+generated: "2026-07-10 @ 18e9f7d (P2-1 eval-set build, branch claude/clever-agnesi-91bb95)"
+stage: "PHASE 0 CLOSED — Phase 1 accrual continues; Phase-2 pre-tasks MERGED (P2-0a..0f all landed), P2-1 delivered as a PR"
+execution_phase: "Phase 2 — Retrieval layer falsification (docs/architect-master-plan-2026-07-10.md §5; owner protocol docs/d10-retrieval-eval-design-2026-07-08.md + DEC-006 amendment). P2-1 (eval set) delivered 2026-07-10; P2-2 (judge screening gate + pooling harness) is runnable once P2-1 merges. Phase-1 data accrual (P1-1) unchanged: REAL rows stay event-driven, never fabricated."
+artifacts:
+  - "docs/architect-understanding-2026-07-10.md"
+  - "docs/architect-master-plan-2026-07-10.md"
+qa_verdict: "APPROVE (round 2, all three artifacts; round-1 BLOCK dispositioned; verdict rows recorded)"
 p1_3_status: >-
   P1-3 EXECUTED 2026-07-10/11 (DEC-004 ladder, 4 honest iterations, every measurement recorded) —
   outcome: floor NOT durably cleared, judge stays ADVISORY. Rungs: (1) forced per-condition walk ->
@@ -20,45 +25,43 @@ p1_3_status: >-
   outcome) in docs/quality/README.md judge section. Next-value paths (human decides): one more
   prompt rung on the 8b specificity failure (detection already 2x floor); a mid-size model pull
   (EGRESS — human-approved only); GPU/RAM host for think-mode/8b.
-execution_phase: "Phase 1 — Feedback loop bootstrap (docs/architect-master-plan-2026-07-10.md §5; hybrid data policy DEC-007; 2026-08-05 checkpoint). Phase-2 pre-tasks P2-0a/0b/0d/0e executed 2026-07-10 by user delegation; Phase 2 itself still blocked on their merges."
-artifacts:
-  - "docs/architect-understanding-2026-07-10.md"
-  - "docs/architect-master-plan-2026-07-10.md"
-qa_verdict: "APPROVE (round 2, all three artifacts; round-1 BLOCK dispositioned; verdict rows recorded)"
 last_completed_task: >-
-  P2 PRE-TASK SWEEP 2026-07-10 (user delegation 'take the best possible decision till i sort the
-  billing issue'): P2-0e DONE — DEC-006 owner amendment appended to the D10 eval design (PR #318;
-  corpus = graph+docs+digest, per-run digest-present/absent recording, §7 bar UNCHANGED) with the
-  cheapest-probe RUN (digest present + Ollama reachable): lexical digest lane delta 0.000 (0/8
-  queries, moot) but the shipped Ollama semantic arm delta -0.329 (4/8 queries degraded, rank
-  1->3/5/3/2 — a live n=8 instance of §7's dense anti-pattern; thresholdless cosine ranking gets
-  double-listed under RRF). P2-0a DONE — real-query log (PR #321: recall.py append_query_log +
-  --log-only arm wired into /ask; gitignored owner-machine store registered in ssot.md; starts the
-  30-real-query classification data clock). P2-0d DONE — thresholds pre-registered (PR #322:
-  docs/quality/d10-eval-thresholds.json + exact-value pin test, values frozen BEFORE any run).
-  P2-0b DONE — [eval] extra (PR #323: rank-bm25 + pytrec-eval-terrier + scipy, real-install
-  verified on Windows py3.12; dense deps deliberately absent until the §5 traffic bar clears).
-  P2-0c SATISFIED-AS-AMENDED, no PR: ssot.md:43 already records install + embed model with
-  version-read-live (the pinned-0.31.1-drifted-to-0.31.2 lesson) — veto in one sentence to reopen.
+  P2-1 DONE 2026-07-10 (this branch/PR): the frozen 60-query D10 eval set + sealed anchors, built
+  per owner-doc §2-§4 and the DEC-006 amendment. docs/quality/d10-eval-set.jsonl — 20 IDENTIFIER
+  rows extracted deterministically from graphify-out/graph.json @ bc16a1c (extractor
+  cisco_toolkit/d10_eval_set.py :: extract_identifier_queries; unique code-node labels ranked by
+  CROSS-FILE reference in-degree, label tie-break, zero randomness; graph sha256 recorded in the
+  fixture _meta) + 20 SEMANTIC (synonym-stripped, every row grounding-cited; 4 are digest-lane
+  rows per A5 with requires_digest=true and per-config A2 honesty) + 10 MULTI-HOP (each declares
+  its >=2 graph edges, all verified present in the live graph at build time) + 10 NEGATIVE (empty
+  qrels; absence grep-verified 2026-07-10, nearest-distractor cited). Graded 0-3 qrels throughout
+  (rubric + binarization grade>=2 recorded in _meta). d10-anchors.jsonl (judge-visible:
+  aid/query/doc ONLY) + d10-anchor-key.jsonl (SEALED expected-grade bands 5/5/5, defect_panel
+  separation pattern) for the P2-2 screening gate. Tests tests/test_d10_eval_set.py: strata counts
+  reconciled to the P2-0d query_set owner, grounding-citation + synonym-strip + edge checks,
+  anchor-whitelist seal, exact SHA-256 pins on all three fixtures, extractor determinism proven on
+  a synthetic mini-graph (live-graph checks skip off the owner machine, saying so). Registered in
+  docs/ssot.md (new row; placed clear of the freshness guard's single-row anchors) + documented in
+  docs/quality/README.md.
 next_task: >-
-  HUMAN (in order): (1) CI UNBLOCKED — #325 merged 16:16Z (self-hosted path chosen; runners
-  TANVEER-AHAMED-1/2; job names invariant, wedge caution resolved by evidence). The 5 this-session
-  PR branches (#318/#321/#322/#323/#324) had main merged in at ~16:2xZ and run fresh on the pool;
-  the 3 other-session PRs (#317/#319/#320) still carry the OLD hosted ci.yml — click GitHub's
-  "Update branch" on each (the automode classifier twice declined this session modifying
-  other-session PRs — correct boundary, so it is a human click or a one-sentence authorization);
-  raising the spending limit is now OPTIONAL (cost only); (2) PICK ONE P2-0a — #319 (other session; tracked query_log.jsonl)
-  vs #321 (this session; gitignored recall_queries.jsonl) are duplicates and exactly one may merge
-  (comparison + declared authorship on #319; load-bearing axis = does a typed client token ever
-  leave the machine on push); (3) review the queue: #317 retro, #318 P2-0e, #319/#321 pair, #320
-  P1-2 (other session; edits ssot.md/README/test_ssot_registry.py + tests/golden/snapshot.json —
-  land the P2 set first then rebase; confirm the golden churn is intended), #322 P2-0d, #323
-  P2-0b, #324 this handoff. AGENT next: dual watcher live (main-HEAD move OR limit raise → wake,
-  converge the queue: limit path = resume --failed sweeps; merge path = rebase open PRs so fresh
-  runs use the self-hosted toggle — NB gh run rerun replays the ORIGINAL workflow snapshot, only a
-  fresh run picks up a merged ci.yml). P1-2 is TAKEN by #320 — do not re-implement; P1-1 accrual
-  continues with every /qa; first REAL PIR stays event-driven (never fabricate). LESSON for
-  parallel sessions: list open PRs before starting a plan task — #319/#321 raced 19 minutes apart.
+  HUMAN: review + merge the P2-1 PR (this branch; do NOT let an agent merge it — human-owned per
+  doctrine; check the required checks are green on the self-hosted fleet first). Also still open:
+  #327 (P2-0a privacy regraft — real-query log goes gitignored/owner-machine) awaits review.
+  AGENT next (P2-2, runnable once P2-1 merges): build the judge screening gate + pooling harness —
+  (a) anchor gate: run the 15 anchors FIRST each session via ollama_judge dual-prompt take-the-MIN,
+  score against the SEALED d10-anchor-key.jsonl (scorer-only — never let the key into a prompt;
+  accuracy = grade in expected_grades; kappa>=0.70 AND acc>=0.80 else the eval session is INVALID,
+  owner validity_gate), and record the gate outcome; (b) retrieval configs per the amendment
+  (graph-only, graph+BM25 always; digest lexical/semantic arms per-config when present; dense
+  column ONLY if the P2-0a real-query log reaches 30 rows and classifies >=30% semantic — check
+  docs/quality/ for the log, do not fabricate the mix); (c) pool top-10s, judge unjudged docs,
+  append to a SEPARATE pooled-qrels file (the frozen P2-1 fixtures are SHA-pinned — never edit);
+  (d) Hole@10<=0.15 validity + pre-registered §7 criteria via d10-eval-thresholds.json; paired-t +
+  Cohen's d from the [eval] extras (P2-0b). Per-stratum power honesty: ~55%/~33% at n=20/10 (owner
+  §7 corrected note) — report, never over-claim. P1-1 accrual continues with every /qa; first REAL
+  PIR stays event-driven (never fabricate). LESSON for parallel sessions: list open PRs before
+  starting a plan task — #319/#321 raced 19 minutes apart (P2-1 lane was checked clear 2026-07-10
+  before this build: only #327 open).
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
@@ -137,3 +140,18 @@ context_summary: |
   automode classifier correctly declined unsolicited comments on other sessions' PRs — the
   observations live here instead). Lesson: in a multi-session window, list open PRs before
   starting any plan task.
+
+  2026-07-10 (P2-1, this branch): all Phase-2 pre-tasks are MERGED on main (P2-0a query log,
+  P2-0b [eval] deps, P2-0d thresholds pin, P2-0e DEC-006 amendment + probe, P2-0f owner errata;
+  P2-0c satisfied-as-amended). P2-1 built the falsification run's eval set as committed, frozen,
+  SHA-pinned fixtures (see last_completed_task). Notable build decisions, for P2-2's author:
+  identifier ranking uses CROSS-FILE reference in-degree (intra-file fan-in ranked test helpers
+  above engine hubs) and label-uniqueness (an ambiguous label cannot be "exactly correct by
+  construction" — 5 files define _snap()); the corpus contract in the fixture _meta widens the
+  recall.py seed globs (qrels reference tests/*.py, root *.py, research_lane/*.py — the harness
+  must index at least the union, listed in _meta.corpus_contract.required); binarization for
+  binary metrics is grade>=2 (recorded in _meta, fixed BEFORE any run); anchor accuracy = judge
+  grade in the keyed band, bands frozen with the key (clear_relevant [2,3] because the
+  take-the-MIN ensemble biases down, clear_irrelevant strictly [0], borderline [1,2]). The anchor
+  key is plaintext — the seal is separation + SHA-pin + pre-registration, stated plainly, not
+  secrecy.
