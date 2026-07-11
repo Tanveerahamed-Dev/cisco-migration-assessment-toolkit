@@ -368,6 +368,36 @@ protocol violation and the pins make it loud. Validate offline with
 `python -m cisco_toolkit.d10_eval_set --verify` (graph-dependent checks skip off the owner machine,
 saying so).
 
+## `retrieval_eval` — the Phase-2 falsification harness (P2-2) + `d10-pooled-qrels.jsonl`
+
+[`cisco_toolkit/retrieval_eval.py`](../../cisco_toolkit/retrieval_eval.py) runs the pre-registered
+protocol over the frozen fixtures above: judge screening gate **first** (the 15 anchors through the
+local-Ollama judge — dual-prompt neutral+adversarial, take-the-MIN, two passes; κ and anchor
+accuracy scored against the **sealed** key, floors from `validity_gate`), then the two §7 configs —
+**graph-only** vs **graph ⊕ BM25** (RRF k and the BM25 `k1`/`b` priors read from the frozen
+`tuning_frozen` block, never hardcoded) — over the corpus of every git-tracked `*.py`/`*.md` ⊕ the
+provenance-verified vault digest when present (recorded per DEC-006 A2; a digest-absent run
+certifies the degraded graph+docs mode and says so). Scored with `pytrec_eval` (MRR@5 / P@1 on the
+grade≥2 binarization, nDCG@5 graded) + direct Recall@10; decided by the pre-registered scipy
+paired t + paired Cohen's dz from [`d10-eval-thresholds.json`](d10-eval-thresholds.json). Negative
+rows are an over-retrieval diagnostic, never in the rank aggregates. `Hole@10` over its bar ⇒
+INVALID, re-pool. Ollama unreachable / gate failed ⇒ the judged strata (semantic, multi-hop) are
+INVALID, the identifier stratum still scores, and the run is **PARTIAL** — grades are never
+fabricated. All Ollama I/O lives in the root-level subprocess helper
+[`ollama_retrieval_judge.py`](../../ollama_retrieval_judge.py) (outside the no-egress fence).
+
+- **`d10-pooled-qrels.jsonl`** — the *separate*, append-only pool-judgment file (§7 "re-pool"):
+  one line per screened-judge grade (`qid`/`doc`/`grade`/`judge`/`date`/`source`). Authored fixture
+  grades always take precedence on overlap; the frozen fixtures are never edited.
+- **`d10-eval-results-<date>.md` (+ `.json`)** — the run record: environment per DEC-006 A2
+  (digest lane, live `ollama --version`, judge model), gate outcome, the 2-config × 4-strata
+  table, Hole@10 validity, and the §7 verdicts read from the thresholds file. The dense column
+  stays **DEFERRED** until the real-query log clears the pre-registered 30-row floor.
+
+CLI: `python -m cisco_toolkit.retrieval_eval --check | --gate | --run`. `--run` REFUSES when the
+P2-1 fixtures are absent or fail validation — the harness never builds its own set. Hermetic guard:
+`tests/test_retrieval_eval.py` (injected judge + graph lane; `[eval]`-extra tests importorskip).
+
 ## Agent-system self-check (Phase 4 — the immune system)
 
 [`cisco_toolkit/selfcheck.py`](../../cisco_toolkit/selfcheck.py) re-derives, from the repo, whether the
