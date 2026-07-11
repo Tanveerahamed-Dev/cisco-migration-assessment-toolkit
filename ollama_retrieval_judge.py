@@ -50,11 +50,14 @@ def _listening(hostport: str = OLLAMA_HOST, *, timeout: float = 0.4) -> bool:
 
 def _chat(model: str, prompt: str, *, timeout: int = 300) -> str:
     """One structured completion via the LOCAL Ollama chat API (lazy ``urllib``, outside the
-    fence): temperature 0, bounded output, ``think`` off, grade schema enforced."""
+    fence): temperature 0, bounded output, ``think`` off, grade schema enforced. ``num_predict``
+    1024: the adversarial prompt's reasoning-first output overran a 512 budget in the synthetic
+    probe (truncated mid-JSON → unparseable → an honest None) — the budget is I/O headroom, not a
+    scoring parameter."""
     import urllib.request                            # localhost only; outside the cisco_toolkit fence
     body = {"model": model, "stream": False, "keep_alive": "15m", "think": False,
             "messages": [{"role": "user", "content": prompt}],
-            "options": {"temperature": 0, "num_predict": 512},
+            "options": {"temperature": 0, "num_predict": 1024},
             "format": judge_schema()}
     req = urllib.request.Request(
         f"http://{OLLAMA_HOST}/api/chat",
@@ -65,14 +68,19 @@ def _chat(model: str, prompt: str, *, timeout: int = 300) -> str:
     return str((obj.get("message") or {}).get("content", "") or "")
 
 
-def _grade_once(model: str, prompt: str) -> Optional[int]:
-    """One prompt → one 0–3 grade, or None on any model/parse failure (never a fabricated grade)."""
-    try:
-        obj = json.loads(_chat(model, prompt))
-        g = obj.get("grade")
-        return int(g) if isinstance(g, (int, float)) and int(g) in (0, 1, 2, 3) else None
-    except Exception:
-        return None
+def _grade_once(model: str, prompt: str, *, retries: int = 1) -> Optional[int]:
+    """One prompt → one 0–3 grade, or None on model/parse failure (never a fabricated grade).
+    One retry for TRANSIENT failures (HTTP hiccup, connection reset); a deterministic failure
+    repeats and still lands on an honest None, which the gate's missing-anchor check fails loudly."""
+    for _ in range(1 + max(0, retries)):
+        try:
+            obj = json.loads(_chat(model, prompt))
+            g = obj.get("grade")
+            if isinstance(g, (int, float)) and int(g) in (0, 1, 2, 3):
+                return int(g)
+        except Exception:
+            pass
+    return None
 
 
 def grade_pairs(pairs: List[Dict[str, Any]], *, model: str, passes: int) -> Dict[str, Any]:
