@@ -173,7 +173,9 @@ def ollama_digest_rank(query: str, *, digest_dir: str = VAULT_DIGEST_DIR, timeou
 # FIRST" — docs/d10-retrieval-eval-design-2026-07-08.md §5), which needs a log to exist at all.
 # Only the REAL surfaces append here (this CLI, and /ask via ``--log-only --surface=ask``); the
 # synthetic ones (--eval, the labeled experiment, unit tests) never do, so the mix stays real.
-# Append-only, local, no egress. Registered in docs/ssot.md (Law 1); never hand-edit.
+# Append-only, local, no egress; GITIGNORED/owner-machine like the vault digest — a real query may
+# name client tokens from another engagement (two-store rule), so the rows never enter the pushable
+# repo. Per-command opt-out: CISCO_RECALL_NO_LOG=1. Registered in docs/ssot.md (Law 1); never hand-edit.
 QUERY_LOG_PATH = os.path.join("docs", "quality", "query_log.jsonl")
 
 
@@ -181,7 +183,10 @@ def log_query(query: str, surface: str = "recall", *, path: Optional[str] = None
     """Append ONE real query as one JSON line — exactly ``date``/``query``/``surface``, nothing else.
     FAIL-OPEN by contract: retrieval must never break because logging did, so any write failure
     (unwritable path, read-only tree) degrades silently to ``False`` — the same typed-except
-    convention as :func:`build_corpus` / :func:`graph_rank`."""
+    convention as :func:`build_corpus` / :func:`graph_rank`. Honors the per-command opt-out
+    ``CISCO_RECALL_NO_LOG=1`` (returns ``False``, records nothing)."""
+    if os.environ.get("CISCO_RECALL_NO_LOG") == "1":
+        return False
     try:
         p = path or os.path.join(_repo_root(), QUERY_LOG_PATH)
         line = json.dumps({"date": datetime.date.today().isoformat(),

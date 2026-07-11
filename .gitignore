@@ -74,3 +74,9 @@ docs/briefings/briefing-*.md
 # consumer, gate, and format doc ARE committed; the digest data is not. Un-ignore deliberately if you
 # decide a sanitized digest may live in the (pushable) repo.
 docs/vault-digest/digest-*.jsonl
+
+# The P2-0a real-query log — owner-machine only, like the vault digest above: a REAL query may name
+# client tokens from another engagement (two-store rule, ADR 0001), so the data never enters the
+# pushable repo. The writer (recall.log_query), schema doc, and tests ARE committed; the rows are not.
+# (Human decision 2026-07-10, resolving the #319/#321 duplicate-design split.)
+docs/quality/query_log.jsonl

@@ -281,7 +281,9 @@ see the header of the script — that step is yours (spend + system change).
 The raw material for D10's dense-lane decision ("classify 30 real queries by type FIRST" —
 [`docs/d10-retrieval-eval-design-2026-07-08.md`](../d10-retrieval-eval-design-2026-07-08.md) §5): until
 P2-0a no log of real queries existed anywhere, so that precondition was permanently unrunnable. One JSON
-object per line, append-only, **local — no egress**; exactly three fields, nothing else:
+object per line, append-only, **gitignored / owner-machine only** (like the vault digest: a real query
+may name client tokens from another engagement — the two-store rule — so the rows never enter the
+pushable repo, and clean clones / CI checkouts carry none); exactly three fields, nothing else:
 
 | field | type | meaning |
 |---|---|---|
@@ -292,6 +294,8 @@ object per line, append-only, **local — no egress**; exactly three fields, not
 Written only by `cisco_toolkit.recall.log_query` at the real surfaces; the synthetic paths (`--eval`,
 the labeled experiment, unit tests) deliberately never log, so the recorded mix stays real. **Fail-open:**
 a logging failure degrades silently to nothing recorded — it must never break retrieval or an `/ask` turn.
+Per-command opt-out: `CISCO_RECALL_NO_LOG=1` (records nothing, returns `False`). While the log is short,
+the D10 classification simply stays unrunnable and says so — queries are never invented to fill it.
 Never hand-edit. Owner row in [`docs/ssot.md`](../ssot.md); discipline pinned by `tests/test_query_log.py`.
 
 ## Agent-system self-check (Phase 4 — the immune system)
