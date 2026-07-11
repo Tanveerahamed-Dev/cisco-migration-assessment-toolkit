@@ -59,12 +59,33 @@ def test_dual_prompt_combination_is_take_the_min():
 
 
 def test_excerpt_picks_the_query_relevant_window_deterministically():
+    # windows=1 is instrument v1 exactly: the earliest max-hit window, nothing else
     text = ("padding " * 400) + "the circuit breaker cooldown lives here" + (" trailer" * 400)
-    ex = excerpt_for_judge("circuit breaker cooldown", text, size=200)
+    ex = excerpt_for_judge("circuit breaker cooldown", text, size=200, windows=1)
     assert "circuit breaker cooldown" in ex
     assert len(ex) <= 200
     small = "tiny doc"
     assert excerpt_for_judge("anything", small) == small
+
+
+def test_excerpt_v2_multi_window_carries_head_and_hit_regions():
+    """Instrument v2 (pre-registered 2026-07-11): head window (doc identity) + top-hit windows,
+    document order, overlap-suppressed, budget-bounded, deterministic."""
+    head = "MODULE DOCSTRING: this file owns the breaker discipline. "
+    text = head + ("padding " * 400) + "the circuit breaker cooldown lives here" + (" trailer" * 400)
+    ex = excerpt_for_judge("circuit breaker cooldown", text, size=200, windows=3)
+    assert ex.startswith("MODULE DOCSTRING")           # the head window is always included
+    assert "circuit breaker cooldown" in ex            # ...and so is the best-hit region
+    assert "[...]" in ex                               # non-contiguous regions are marked, not spliced
+    assert len(ex) <= 3 * 200 + 2 * len("\n[...]\n")   # the budget bounds the excerpt
+    assert ex == excerpt_for_judge("circuit breaker cooldown", text, size=200, windows=3)
+    # whole doc when it fits the TOTAL budget (size*windows), not just one window
+    mid = "x" * 500
+    assert excerpt_for_judge("anything", mid, size=200, windows=3) == mid
+    # production default is the v2 shape (three windows of 1800)
+    big = "HEAD " + ("filler " * 2000) + " breaker cooldown target " + ("tail " * 2000)
+    prod = excerpt_for_judge("breaker cooldown", big)
+    assert prod.startswith("HEAD ") and "breaker cooldown target" in prod
 
 
 def test_judge_prompts_carry_rubric_and_no_expected_grades():

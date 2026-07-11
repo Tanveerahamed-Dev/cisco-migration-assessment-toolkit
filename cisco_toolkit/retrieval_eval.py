@@ -435,21 +435,32 @@ def combine_dual(neutral_grade: int, adversarial_grade: int) -> int:
     return min(int(neutral_grade), int(adversarial_grade))
 
 
-def excerpt_for_judge(query: str, text: str, *, size: int = 1800) -> str:
-    """Deterministic excerpt: the window (of ``size`` chars, half-overlapping steps) with the most
-    query-token occurrences — earliest window on ties, so the judge sees the doc's most
-    query-relevant region rather than a blind head. Whole doc when it already fits."""
-    if len(text) <= size:
+def excerpt_for_judge(query: str, text: str, *, size: int = 1800, windows: int = 3) -> str:
+    """Deterministic excerpt for the judge — **instrument v2** (pre-registered 2026-07-11, ONE
+    variable vs v1): instead of the single best-hit window, the doc's HEAD window (its identity —
+    module docstring / doc title) plus the highest-query-token-hit non-overlapping windows, joined
+    in document order with an ``[...]`` marker, up to ``windows`` windows of ``size`` chars each.
+    ``windows=1`` reproduces v1 exactly (the earliest max-hit window). Whole doc when it fits the
+    total budget. Registered motivation (PR #331 hypothesis 1, recorded BEFORE this change): the
+    judge grades an excerpt while the sealed key grades the DOC, and the anchor docs run 9–238 KB,
+    so a 1800-char v1 window covers 1–9% — under-crediting concentrated exactly on relevant docs
+    whose relevance lives beyond one window. Window selection stays purely lexical + deterministic:
+    half-``size`` steps, hit-count ranking, earliest-on-ties, overlap-suppressed."""
+    budget = size * max(1, windows)
+    if len(text) <= budget:
         return text
     qtoks = set(tokenize(query))
     step = max(1, size // 2)
-    best_start, best_hits = 0, -1
-    for start in range(0, len(text) - size + step, step):
-        window = text[start:start + size].lower()
-        hits = sum(window.count(t) for t in qtoks)
-        if hits > best_hits:
-            best_start, best_hits = start, hits
-    return text[best_start:best_start + size]
+    starts = list(range(0, len(text) - size + step, step))
+    hits = {s: sum(text[s:s + size].lower().count(t) for t in qtoks) for s in starts}
+    chosen: List[int] = [0] if windows > 1 else []   # head window = the doc's identity
+    for start in sorted(starts, key=lambda s: (-hits[s], s)):
+        if len(chosen) >= windows:
+            break
+        if any(start < c + size and c < start + size for c in chosen):
+            continue                                 # overlap-suppressed: distinct doc regions only
+        chosen.append(start)
+    return "\n[...]\n".join(text[s:s + size] for s in sorted(chosen))
 
 
 def cohens_kappa(a: Sequence[int], b: Sequence[int],
@@ -494,10 +505,13 @@ def screen_judge(pass1_final: Dict[str, int], pass2_final: Dict[str, int],
 
 
 def invoke_judge_helper(pairs: List[Dict[str, Any]], *, root: str, passes: int = 1,
-                        timeout: int = 5400) -> Dict[str, Any]:
+                        timeout: int = 21600) -> Dict[str, Any]:
     """Run the root-level Ollama helper as a SUBPROCESS over ``pairs`` (each: pid/query/doc/
     excerpt/rubric) and parse its one-line JSON result. Ollama down / helper missing / bad JSON →
-    ``{"ok": False, "reason": …}`` — signal_absent honesty, never a fabricated grade."""
+    ``{"ok": False, "reason": …}`` — signal_absent honesty, never a fabricated grade. The default
+    timeout is I/O headroom sized to the MEASURED v2 per-call latency on the CPU host (~70–90 s/call
+    × 60 gate calls ≈ the old 5400 s wall — a timeout mid-protocol kills the measurement without
+    shaping any grade, so the ceiling errs generous); pool runs pass their own budget if needed."""
     helper = os.path.join(root, JUDGE_HELPER)
     if not os.path.exists(helper):
         return {"ok": False, "reason": f"judge helper missing: {helper}"}
