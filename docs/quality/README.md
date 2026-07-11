@@ -149,6 +149,20 @@ exact prompt/config reproducible):
 | 4 | model: qwen3:8b (installed locally; nothing pulled), worst-of-2 | localized **0.8/0.6** (catches `D-03`) but clean control rejected in **both** runs (`n/a - verification step` read as missing-rollback) → **null trust** | `@ee01898` (worst run + spread in notes) |
 | 5 | prompt: the `n/a`-rollback exception moves INTO condition 1 as a literal-'(none)'-only rule (code `@c154326`, pre-registered before the run) | qwen3:8b `--runs 2`: run 1 clean=**True** localized **0.6**; run 2 clean=**True** localized **1.0** (full panel, all correctly classed, 0 unlocalized) — clean approved in BOTH runs ⇒ worst-run recorded **judge_tnr 0.6, the 0.25 floor CLEARED**; promotion live (selfcheck discloses it) | `@1475d12` (worst run + spread in notes) |
 
+**Cross-family informational check (llama3.1:8b, 2026-07-11 — human-pulled under the egress carve-out;
+NOT appended to the scorecard).** The Meta model was run over the same 5-defect fair subset (`--runs 2`,
+rung-5 prompt) alongside its D10 retrieval-gate rung. Result: it **approves the clean control in both
+runs but detects NOTHING — localized TNR 0.0, all five defects APPROVED** — the textbook agreeableness
+failure (Jain et al.), the *opposite* failure mode to qwen3:8b (which detects at 0.6 with the same
+prompt). Deliberately run **without** `--append-baseline`: under latest-row-wins it would have demoted
+the just-merged qwen 0.6 operative baseline to 0.0, turning every fresh `/qa` APPROVE provisional — a
+model that is simply worse at this task must never become the operative judge by recency alone. **qwen3:8b
+(rung-5 prompt) stays the operative defect-panel judge;** this row is evidence here, not on the scorecard.
+The cross-instrument finding: **no single local CPU model is good at both instruments** — qwen detects
+defects but is harsh on retrieval-relevance; llama is agreeable on defects and equally harsh on
+retrieval-relevance. The two tasks probe different judge failure modes, and the local arm has no model
+that clears both on this hardware.
+
 Small-N honesty (stated per the P1-3 mandate): the fair subset is **n=5**, so even a passing point estimate
 carries a wide interval — the recorded rung-5 worst run, 3/5 = 0.6, has a one-sided 95% Clopper–Pearson
 lower bound of **0.189**, which does NOT clear the 0.25 floor (4/5, LB 0.343, remains the smallest outcome
@@ -408,38 +422,66 @@ CLI: `python -m cisco_toolkit.retrieval_eval --check | --gate | --run`. `--run` 
 P2-1 fixtures are absent or fail validation — the harness never builds its own set. Hermetic guard:
 `tests/test_retrieval_eval.py` (injected judge + graph lane; `[eval]`-extra tests importorskip).
 
-### Screening-gate instrument ladder (P1-3 continuation, 2026-07-11) — gate still FAILED; excerpt-coverage hypothesis refuted
+### Screening-gate instrument ladder (P1-3 continuation, 2026-07-11) — gate FAILED across THREE models/TWO families; the failure is STRUCTURAL, not model-specific
 
 The §6 gate (κ ≥ 0.70 ∧ anchor accuracy ≥ 0.80 over the 15 sealed anchors; dual-prompt
-take-the-MIN, two passes; accuracy on pass-1 finals) has been measured at three instrument/model
-rungs — every run recorded, pass or fail. The v1 rows were measured pre-merge (PR #331 comments);
-the v2 row is this ladder's rung 5: ONE variable (`excerpt_for_judge` v1 single 1800-char best-hit
-window → v2 head-window + top-2 hit windows, 3×1800, overlap-suppressed), pre-registered at
-`ca54af3`/run at `42008fb` **before** the run, and the spend/no-spend fork decided by the rule
-committed at `5f23be2` **before** the result was read:
+take-the-MIN, two passes; accuracy on pass-1 finals) has now been measured at four instrument/model
+points — every run recorded, pass or fail. The v1 rows were measured pre-merge (PR #331 comments);
+the v2 qwen row is rung 5 (ONE variable: `excerpt_for_judge` v1 single 1800-char best-hit window →
+v2 head-window + top-2 hit windows, 3×1800, overlap-suppressed; pre-registered `ca54af3`, run
+`42008fb`, spend/no-spend fork committed `5f23be2` **before** the result); the llama row is the
+user-approved cross-**family** rung (model `llama3.1:8b` — Meta family, pulled by the human 2026-07-11
+under the egress carve-out; nothing pulled by the agent), run at v2 excerpts on branch
+`claude/d10-llama-regate`:
 
-| instrument | model | κ (≥0.70) | anchor acc (≥0.80) | clear-rel | clear-irrel | borderline |
-|---|---|---|---|---|---|---|
-| v1 — single 1800-char best-hit window | qwen3:4b | 1.00 ✅ | 7/15 = 0.47 ❌ | 1/5 | 5/5 | 1/5 |
-| v1 | qwen3:8b | 0.87 ✅ | 8/15 = 0.53 ❌ | 2/5 | 5/5 | 1/5 |
-| **v2 — head + top-2 hit windows (3×1800)** | qwen3:8b | **1.00 ✅** | **7/15 = 0.47 ❌** | 0/5 | 5/5 | 2/5 |
+| instrument | model | family | κ (≥0.70) | anchor acc (≥0.80) | clear-rel | clear-irrel | borderline |
+|---|---|---|---|---|---|---|---|
+| v1 — single 1800-char best-hit window | qwen3:4b | Qwen | 1.00 ✅ | 7/15 = 0.47 ❌ | 1/5 | 5/5 | 1/5 |
+| v1 | qwen3:8b | Qwen | 0.87 ✅ | 8/15 = 0.53 ❌ | 2/5 | 5/5 | 1/5 |
+| **v2 — head + top-2 hit windows (3×1800)** | qwen3:8b | Qwen | **1.00 ✅** | **7/15 = 0.47 ❌** | 0/5 | 5/5 | 2/5 |
+| **v2** | **llama3.1:8b** | **Meta** | **0.72 ✅** | **8/15 = 0.53 ❌** | **0/5** | **4/5** | **4/5** |
 
-**Reading (mechanism, small-n stated):** tripling doc coverage did NOT lift accuracy — it made the
-judge *more self-consistent* (κ 0.87 → 1.00) at the *same harsh grades*: all five clear-relevant
-anchors land on exactly grade 1 in both passes. PR #331's hypothesis 1 (the judge under-credits
-because it sees too little of the doc) is measured-REFUTED as the accuracy lever. The uniform
-grade-1 signature is *consistent with* the conservative ensemble (the adversarial arm + take-the-MIN
-can always argue an excerpt "mentions without answering") capping relevant docs at marginal —
-though the gate record keeps only post-MIN finals, so the per-arm split is not proven here. The
-ensemble is owner-doc §6 protocol, not an instrument knob. Per the pre-registered rung-6 rule
-(`docs/quality/.rung6-decision-rule.md`: accuracy ≤ 9/15 → no third same-family prompt rung), the
-spare rung was NOT spent. **Consequence:** `--run` still lands **PARTIAL** (identifier stratum +
-negative diagnostics; semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED). Next-value
-forks, all human-owned: a different local judge FAMILY that fits the host (model pull = **EGRESS**,
-human-approved only), a GPU/higher-RAM host, or accepting the PARTIAL protocol while identifier
-evidence accrues. Wall-clock for a passing full run, measured 2026-07-11: gate ≈ 75 min (60 calls)
-+ pool ≈ 267 pairs × 2 prompts = 534 calls at ~80 s/call ≈ **~13 h on the CPU host** — first
-passing run only (pooled qrels are append-only; later runs pay only newly-surfaced docs).
+**Reading — the invariant is cross-family and structural:** every model, at both excerpt widths,
+fails on the SAME stratum — **clear-relevant is under-credited to grade 0–1 (0–2 of 5 in band, never
+better)** — while clear-irrelevant and borderline are mostly fine. Two hypotheses are now
+measured-REFUTED as the accuracy lever: (1) *excerpt coverage* — tripling the doc window (v1→v2 on
+qwen3:8b) raised only self-consistency (κ 0.87→1.00) at the identical harsh grades; (2) *model
+family/size* — a genuinely different family (Meta llama3.1:8b) at the wider excerpt lands the same
+8/15 with the same clear-relevant collapse (0/5). llama trades qwen's shape (it recovers borderline
+4/5 but drops one clear-irrelevant, A-07, and is less self-consistent — κ 0.72 barely clears) yet
+the headline number and the clear-relevant failure are invariant. **What this implicates** (stated,
+not acted on): the residue is at the PROTOCOL level the agent must not tweak unilaterally — the
+take-the-MIN dual-prompt ensemble (the adversarial arm can always argue an excerpt "mentions without
+answering," capping relevant docs at marginal) and/or the sealed clear-relevant band `[2,3]` being
+unreachable for an excerpt-reading local judge. Both are owner-doc §6 pre-registration decisions,
+not instrument knobs. **Consequence unchanged:** `--run` lands **PARTIAL** (identifier stratum +
+negative diagnostics; semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED).
+
+**Decision (2026-07-11) — accept the PARTIAL protocol as the honest Phase-2 verdict; do NOT loosen
+the gate to manufacture an unlock.** The decisive point, recorded so a future session does not
+re-open it as a quick win: the §6 gate exists to *certify the judge is trustworthy enough to grade
+the semantic/multi-hop strata*. Changing the ensemble to make the judge PASS the gate — after seeing
+exactly which anchors it under-graded — does not make the judge trustworthy; it lowers the bar, and
+the semantic verdicts a gate-loosened judge then produces are **less** trustworthy, not more. So
+"unlocking" Phase 2 by weakening the judge is partly self-defeating, and any post-hoc ensemble tweak
+is pre-registration-contaminated (we have seen the per-anchor bands). The honest state stands:
+- **identifier stratum is already answered** (PR #333 run 1, judge-free): BM25 raises MRR@5
+  0.139 → 0.276 (Δ **+0.137**, clears the +0.05 margin) but p=0.107 / dz=0.38 do **not** clear the
+  pre-registered significance bars at n=20 — *directionally positive, underpowered*, per the owner's
+  ~55% per-stratum power note;
+- **semantic / multi-hop stay honestly UNDECIDED** — not falsely resolved by a judge we would have
+  had to weaken to trust.
+
+This is coverage-honesty applied to our own instrument (Law 3): an unanswerable comparison is
+reported as unanswered, never dressed up. **What would legitimately change it** (human-owned, and
+NOT trying more models — three have failed identically): a genuine §6 protocol *correction*
+ratified by the protocol owner as a mis-specification fix — the leading hypothesis is that
+take-the-MIN is right for the *reject* direction (clear-irrelevant scores 4–5/5) but wrong for the
+*accept* direction (an ensemble should match the risk direction), so an **asymmetric or neutral-only
+relevance ensemble** is the principled candidate. To stay clean it must be pre-registered as a
+correction and ideally re-gated by a hand that did not fit it to these anchor outcomes. If such a
+judge is ever found, llama's ~2–3× faster warm pace (~19–25 s/call) makes a full `--run` ≈ **4 h**
+vs qwen3:8b's ≈ **13 h** (pooled qrels are append-only; later runs pay only newly-surfaced docs).
 
 ## Agent-system self-check (Phase 4 — the immune system)
 
