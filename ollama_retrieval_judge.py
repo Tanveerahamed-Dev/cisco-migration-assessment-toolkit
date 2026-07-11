@@ -53,11 +53,13 @@ def _chat(model: str, prompt: str, *, timeout: int = 600) -> str:
     fence): temperature 0, bounded output, ``think`` off, grade schema enforced. ``num_predict``
     1024: the adversarial prompt's reasoning-first output overran a 512 budget in the synthetic
     probe (truncated mid-JSON → unparseable → an honest None) — the budget is I/O headroom, not a
-    scoring parameter."""
+    scoring parameter. ``num_ctx`` 8192 is the same class of headroom for the instrument-v2
+    multi-window excerpts (up to ~5.4k chars): Ollama's default context would sit one long doc
+    away from silent prompt truncation, which would grade a clipped excerpt without saying so."""
     import urllib.request                            # localhost only; outside the cisco_toolkit fence
     body = {"model": model, "stream": False, "keep_alive": "15m", "think": False,
             "messages": [{"role": "user", "content": prompt}],
-            "options": {"temperature": 0, "num_predict": 1024},
+            "options": {"temperature": 0, "num_predict": 1024, "num_ctx": 8192},
             "format": judge_schema()}
     req = urllib.request.Request(
         f"http://{OLLAMA_HOST}/api/chat",
