@@ -1,6 +1,6 @@
-generated: "2026-07-10 @ 18e9f7d (P2-1 eval-set build, branch claude/clever-agnesi-91bb95)"
-stage: "PHASE 0 CLOSED — Phase 1 accrual continues; Phase-2 pre-tasks MERGED (P2-0a..0f all landed), P2-1 delivered as a PR"
-execution_phase: "Phase 2 — Retrieval layer falsification (docs/architect-master-plan-2026-07-10.md §5; owner protocol docs/d10-retrieval-eval-design-2026-07-08.md + DEC-006 amendment). P2-1 (eval set) delivered 2026-07-10; P2-2 (judge screening gate + pooling harness) is runnable once P2-1 merges. Phase-1 data accrual (P1-1) unchanged: REAL rows stay event-driven, never fabricated."
+generated: "2026-07-11 @ b50d17e base (P2-2 harness build, branch feat/p2-2-retrieval-eval, STACKED on the P2-1 branch claude/clever-agnesi-91bb95)"
+stage: "PHASE 0 CLOSED — Phase 1 accrual continues; Phase-2 pre-tasks MERGED (P2-0a..0f all landed), P2-1 delivered as a PR (#329), P2-2 harness delivered as a stacked PR"
+execution_phase: "Phase 2 — Retrieval layer falsification (docs/architect-master-plan-2026-07-10.md §5; owner protocol docs/d10-retrieval-eval-design-2026-07-08.md + DEC-006 amendment). P2-1 (eval set) delivered 2026-07-10 (#329, one ruff F401 pair fixed on the stacked branch); P2-2 harness delivered 2026-07-11 (cisco_toolkit/retrieval_eval.py + ollama_retrieval_judge.py + hermetic tests). The falsification RUN itself has NOT happened: it is gated on the human merging P2-1 (frozen set sealed on main first), then `python -m cisco_toolkit.retrieval_eval --run` on the owner machine. Phase-1 data accrual (P1-1) unchanged: REAL rows stay event-driven, never fabricated."
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"
   - "docs/architect-master-plan-2026-07-10.md"
@@ -44,24 +44,26 @@ last_completed_task: >-
   docs/ssot.md (new row; placed clear of the freshness guard's single-row anchors) + documented in
   docs/quality/README.md.
 next_task: >-
-  HUMAN: review + merge the P2-1 PR (this branch; do NOT let an agent merge it — human-owned per
-  doctrine; check the required checks are green on the self-hosted fleet first). Also still open:
-  #327 (P2-0a privacy regraft — real-query log goes gitignored/owner-machine) awaits review.
-  AGENT next (P2-2, runnable once P2-1 merges): build the judge screening gate + pooling harness —
-  (a) anchor gate: run the 15 anchors FIRST each session via ollama_judge dual-prompt take-the-MIN,
-  score against the SEALED d10-anchor-key.jsonl (scorer-only — never let the key into a prompt;
-  accuracy = grade in expected_grades; kappa>=0.70 AND acc>=0.80 else the eval session is INVALID,
-  owner validity_gate), and record the gate outcome; (b) retrieval configs per the amendment
-  (graph-only, graph+BM25 always; digest lexical/semantic arms per-config when present; dense
-  column ONLY if the P2-0a real-query log reaches 30 rows and classifies >=30% semantic — check
-  docs/quality/ for the log, do not fabricate the mix); (c) pool top-10s, judge unjudged docs,
-  append to a SEPARATE pooled-qrels file (the frozen P2-1 fixtures are SHA-pinned — never edit);
-  (d) Hole@10<=0.15 validity + pre-registered §7 criteria via d10-eval-thresholds.json; paired-t +
-  Cohen's d from the [eval] extras (P2-0b). Per-stratum power honesty: ~55%/~33% at n=20/10 (owner
-  §7 corrected note) — report, never over-claim. P1-1 accrual continues with every /qa; first REAL
-  PIR stays event-driven (never fabricate). LESSON for parallel sessions: list open PRs before
-  starting a plan task — #319/#321 raced 19 minutes apart (P2-1 lane was checked clear 2026-07-10
-  before this build: only #327 open).
+  HUMAN, in order: (1) review + merge the P2-1 PR #329 (its one red check — ruff F401 ×2 — is
+  fixed as the first commit of the stacked P2-2 branch; cherry-pick that commit onto #329 or merge
+  the stack in order); (2) review + merge the stacked P2-2 harness PR #331 (branch
+  feat/p2-2-retrieval-eval; contains #329's content + the lint fix + the harness); (3) THEN run
+  the falsification on the owner machine: `python -m cisco_toolkit.retrieval_eval --run`.
+  KNOWN-IN-ADVANCE (gate dry-runs 2026-07-11, full numbers in the #331 comments): the judge
+  screening gate FAILS on BOTH in-code ladder rungs — qwen3:4b kappa 1.00/acc 7/15, qwen3:8b
+  kappa 0.87/acc 8/15 vs floors 0.70/0.80; direction = harsh-not-agreeable (clear-irrelevant 5/5
+  both, relevant/borderline under-credited; likely excerpt-coverage: judge sees 1800 chars, key
+  grades the doc). So the run as-is lands PARTIAL (identifier scored + negative diagnostics;
+  semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED). Fork, human-owned: (a) accept
+  PARTIAL and run; (b) pre-register an instrument v2 (larger/multi-window excerpts and/or a
+  different local cross-family judge), re-gate from scratch, THEN run — never a quiet tweak
+  after seeing anchor outcomes. The run was deliberately NOT executed pre-merge (frozen set
+  sealed on main before any number exists). Also still open: #327 (P2-0a privacy regraft).
+  Dense column stays DEFERRED — query_log.jsonl has 0 real rows (<30 floor); never fabricate the
+  mix. Per-stratum power honesty: ~55%/~33% at n=20/10 (owner §7 corrected note). P1-1 accrual
+  continues with every /qa; first REAL PIR stays event-driven. LESSON for parallel sessions:
+  list open PRs before starting AND before creating one — this session found #329 mid-flight and
+  STACKED on it instead of duplicating P2-1 (the #319/#321 lesson applied).
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
