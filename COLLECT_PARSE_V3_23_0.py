@@ -435,7 +435,7 @@ from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_path
                                              load_capture_meta, CAPTURE_META_FILENAME)
 from cisco_toolkit.whatif import run_scenarios                          # roadmap G4 (failure-injection what-if)
 from cisco_toolkit.path_assertions import evaluate_path_assertions      # roadmap G3 (named path/segmentation intents)
-from cisco_toolkit.precert import compute_precert                        # roadmap C1 (Pre-Change Validation Certificate)
+from cisco_toolkit.precert import compute_precert, schema_compat_status  # roadmap C1 (Pre-Change Cert); P3-E2 schema gate
 from cisco_toolkit.assertions import evaluate_pack                      # roadmap A1/H1/H2 (checks-as-data)
 # NEW-V3.23.37-.38 (PHASE 2.7 steps 27-28): the model-construction layer - the per-device
 # InterfaceData builder + switch-level DevicePhysical / switch-identity records + global-ARP
@@ -1618,6 +1618,12 @@ def main():
                     help="NEW-V3.23.145: migration-campaign trend across a SERIES of snapshot JSONs (>=2, "
                          "oldest first) -> a trend workbook (Campaign Summary verdict + Timeline w/ chart + "
                          "Burndown). Skips collection and the template.")
+    ap.add_argument("--allow-schema-mismatch", action="store_true",
+                    help="P3-E2: permit --compare/--trend across snapshots produced by DIFFERENT engine "
+                         "schema versions (script_version). OFF by default, so a cross-schema diff -- which "
+                         "can misreport a schema change as a real network change -- is REFUSED rather than "
+                         "emitted silently; passing this downgrades the refusal to a logged warning "
+                         "(both versions are recorded in the certificate provenance either way).")
     ap.add_argument("--redact",          action="store_true",
                     help="NEW-V3.23.41: pseudonymize IPs / MACs / serial numbers across the WHOLE output "
                          "bundle -- the snapshot JSON, the HTML explorer, AND the always-produced .xlsx "
@@ -1646,6 +1652,15 @@ def main():
             ap.error(f"--compare: snapshot file not found: {e.filename}")
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--compare: could not parse snapshot JSON ({e})")
+        # P3-E2: refuse to diff across a schema/script_version change unless explicitly allowed -- a
+        # cross-schema diff can misreport a schema difference as a real change (never emit it silently).
+        _sc_status, _sc_msg = schema_compat_status([old_snap, new_snap], labels=[old_p, new_p])
+        if _sc_status == "mismatch" and not args.allow_schema_mismatch:
+            ap.error(f"--compare: {_sc_msg}. Re-run with --allow-schema-mismatch to diff across schema "
+                     f"versions anyway (both versions are recorded in the certificate provenance).")
+        if _sc_status in ("mismatch", "unverifiable"):
+            logger.warning(f"  [schema] {_sc_msg}"
+                           + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         diff_out = args.output or f"Migration_Diff_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(diff_out)) or ".", exist_ok=True)  # FIX-V3.23.103: same missing-output-dir guard
@@ -1683,6 +1698,14 @@ def main():
             ap.error(f"--trend: snapshot file not found: {e.filename}")
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             ap.error(f"--trend: could not parse snapshot JSON ({e})")
+        # P3-E2: same schema/script_version gate for the campaign series (an engine upgrade mid-campaign
+        # would otherwise trend across incompatible schemas silently).
+        _sc_status, _sc_msg = schema_compat_status(snaps, labels=list(args.trend))
+        if _sc_status == "mismatch" and not args.allow_schema_mismatch:
+            ap.error(f"--trend: {_sc_msg}. Re-run with --allow-schema-mismatch to trend across schema versions.")
+        if _sc_status in ("mismatch", "unverifiable"):
+            logger.warning(f"  [schema] {_sc_msg}"
+                           + (" -- proceeding under --allow-schema-mismatch" if _sc_status == "mismatch" else ""))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         trend_out = args.output or f"Migration_Trend_{stamp}.xlsx"
         os.makedirs(os.path.dirname(os.path.abspath(trend_out)) or ".", exist_ok=True)

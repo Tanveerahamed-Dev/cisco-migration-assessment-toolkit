@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 from cisco_toolkit import analyze as _analyze  # noqa: E402  (after path bootstrap)
 from cisco_toolkit import html as _html  # noqa: E402
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
+from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2: webapp diff schema gate)
 
 # Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
 canon_host = _analyze._canon_host
@@ -50,10 +51,21 @@ def render_explorer_html(snapshot: Dict[str, Any], label: str) -> str:
             pass
 
 
+def _with_schema_compat(result: Dict[str, Any], snaps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Attach the pair/series schema-compatibility verdict to a diff/trend result (P3-E2, webapp surface).
+    The CLI REFUSES a cross-schema diff; an interactive endpoint instead WARNS -- it surfaces the verdict
+    (schema_compat.status: ok | unverifiable | mismatch) so the UI never presents a diff across an engine
+    schema change as if it were a real network change. Additive + non-breaking."""
+    if isinstance(result, dict):
+        status, message = schema_compat_status(list(snaps or []))
+        result["schema_compat"] = {"status": status, "message": message}
+    return result
+
+
 def campaign_trend(snapshots: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Trajectory across a series (oldest-first) — thin pass-through to the engine."""
-    return compute_campaign_trend(snapshots)
+    return _with_schema_compat(compute_campaign_trend(snapshots), list(snapshots or []))
 
 
 def snapshot_delta(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
-    return compute_snapshot_delta(old, new)
+    return _with_schema_compat(compute_snapshot_delta(old, new), [old, new])
