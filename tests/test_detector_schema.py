@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 
+import pytest
 from openpyxl import Workbook, load_workbook
 
 from cisco_toolkit.detector_schema import (
@@ -92,13 +93,93 @@ def _rich_snapshot():
     return None
 
 
+# ---------------------------------------------------------- parser<->detector field-fidelity (P3-E1) ---
+# A descriptor's cited_field names an evidence field by a small path grammar over the PUBLISHED snapshot.
+# Binding it to a real leaf over the sample fleet makes the repo's own named recurring bug class --
+# "parser<->detector format-fidelity drift" (docs/parser-format-fidelity.md), where a producing
+# compute_*'s output field is renamed -- FAIL this contract instead of silently emitting a wrong/blank
+# deliverable. The grammar the descriptors actually use:
+#     section[].leaf            list-of-dicts          physical_health[].status
+#     section.sub[].leaf        nested list-of-dicts   qos_audit.per_device[].n_trust_if
+#     section.<key>.sub[].leaf  per-host / keyed map   security.<host>.findings[].id
+#     section.<key>.<key>.leaf  doubly-keyed map       stp_roots.<host>.<vlan>.root_priority
+#     section.sub.leaf          nested scalar          lifecycle_risk.summary.n_past_ldos
+# '[]' iterates a list; '<name>' is a WILDCARD dict key (any host / vlan); a bare token is a literal key.
+_SAMPLE_FLEET = os.path.join(ROOT, "webapp", "sample_data", "sample_fleet.snapshot.json")
+
+# Cited fields that legitimately DO NOT resolve over the committed 23-device sample fleet because the
+# fleet never collected/populated that section -- coverage-honest signal_absent, NOT a bug. PINNED so a
+# newly-unresolved field (a real regression) OR a newly-populated one (progress) trips the test and gets
+# reconciled consciously, never silently absorbed (doctrine 3: "not observed" != "healthy").
+_SIGNAL_ABSENT_IN_FLEET = {
+    # no multi-gateway-VLAN FHRP-inconsistency row in the sample fleet -> snap['fhrp'] == []
+    ("fhrp-fake-redundancy", "fhrp[].vid"),
+    ("fhrp-fake-redundancy", "fhrp[].issues"),
+    ("fhrp-fake-redundancy", "fhrp[].members"),
+}
+
+
+def _tokenize_cited_field(field):
+    """'a.b[].c' -> ['a', 'b', '[]', 'c']; a '<host>' segment is kept verbatim as a wildcard token."""
+    toks = []
+    for part in field.split("."):
+        if part.endswith("[]"):
+            toks.append(part[:-2])
+            toks.append("[]")
+        else:
+            toks.append(part)
+    return toks
+
+
+def _walk_snapshot(node, tokens):
+    """Resolve a token path into a loaded snapshot node. Returns exactly one of:
+       'resolved' -- the leaf was reached on some concrete record;
+       'missing'  -- a POPULATED container has no such key/leaf: the drift bug -> the test FAILS;
+       'absent'   -- a container along the path is empty/absent: signal_absent, undecidable here."""
+    if not tokens:
+        return "resolved"
+    tok, rest = tokens[0], tokens[1:]
+    if tok == "[]":                                   # iterate a list-of-records
+        if not isinstance(node, list) or not node:
+            return "absent"
+        states = [_walk_snapshot(x, rest) for x in node]
+        if "resolved" in states:
+            return "resolved"
+        return "absent" if all(s == "absent" for s in states) else "missing"
+    if tok.startswith("<") and tok.endswith(">"):     # wildcard dict key (any host / vlan)
+        if not isinstance(node, dict) or not node:
+            return "absent"
+        states = [_walk_snapshot(v, rest) for v in node.values()]
+        if "resolved" in states:
+            return "resolved"
+        return "absent" if all(s == "absent" for s in states) else "missing"
+    if isinstance(node, dict):                        # literal key
+        if tok in node:
+            return _walk_snapshot(node[tok], rest)
+        return "missing" if node else "absent"        # a populated dict without the key IS drift
+    return "absent"
+
+
+def _resolve_cited_field(rich, field):
+    """Status of `field` (see _walk_snapshot) over the loaded snapshot `rich`. An entirely-absent
+    top-level section is 'absent' (signal_absent), never 'missing'."""
+    toks = _tokenize_cited_field(field)
+    head, rest = toks[0], toks[1:]
+    if not isinstance(rich, dict) or head not in rich:
+        return "absent"
+    return _walk_snapshot(rich[head], rest)
+
+
 def test_cited_fields_name_a_field_not_a_bare_section_and_resolve():
-    """Every cited_field must name the EVIDENCE FIELD inside a real section — 'section[].field' or
-    'section.<k>.field' — never a bare section token. A bare section ('trunk_native') tells a client
-    "look at this whole block" without saying which field backs the finding, and is how the
-    l2-native-vlan-1 descriptor once cited a DIFFERENT detector's output (adversarial-review finding,
-    2026-07-05). Where the section is a populated list-of-dicts in the rich sample fleet, the leaf field
-    must actually exist on some record — so a mis-typed leaf can't ship silently either."""
+    """Every cited_field must name the EVIDENCE FIELD inside a real section — 'section[].field',
+    'section.<host>.field', 'section.sub[].field' — never a bare section token. A bare section
+    ('trunk_native') tells a client "look at this whole block" without saying which field backs the
+    finding, and is how the l2-native-vlan-1 descriptor once cited a DIFFERENT detector's output
+    (adversarial-review finding, 2026-07-05). And where the section is POPULATED in the rich sample
+    fleet, the cited leaf must actually exist on some record — across ALL the descriptor path grammars
+    (P3-E1), not just the flat 'section[].leaf' shape — so a renamed producing-compute_* output field
+    (parser<->detector drift) fails HERE rather than shipping a wrong/blank deliverable. A section the
+    fleet never populated is signal_absent (status 'absent'), checked in the pinned test below."""
     rich = _rich_snapshot()
     for d in compute_detector_schema()["detectors"]:
         cf = d["cited_fields"]
@@ -111,14 +192,39 @@ def test_cited_fields_name_a_field_not_a_bare_section_and_resolve():
             # the citation must reference a FIELD, not the bare section (the trunk_native bug class)
             assert f != head, \
                 f"{d['key']!r} cites the BARE section {f!r} — name the evidence field (e.g. {head}[].field)"
-            # best-effort leaf resolution: a simple 'section[].leaf' over a populated list-of-dicts must
-            # find the leaf on at least one record (a populated section proves the field name is real)
-            m = re.fullmatch(r"([a-z_]+)\[\]\.([a-z_]+)", f)
-            if rich is not None and m:
-                section, leaf = rich.get(m.group(1)), m.group(2)
-                if isinstance(section, list) and section and all(isinstance(x, dict) for x in section):
-                    assert any(leaf in x for x in section), \
-                        f"{d['key']!r} cites {f!r} but no record in a populated {m.group(1)!r} has {leaf!r}"
+            # leaf resolution across every descriptor grammar: a POPULATED section that lacks the cited
+            # leaf is field drift (a renamed compute_* output) -> fail; an empty/absent section is
+            # signal_absent, not a failure (pinned + reconciled in the test below).
+            if rich is not None:
+                status = _resolve_cited_field(rich, f)
+                assert status != "missing", (
+                    f"{d['key']!r} cites {f!r} but a POPULATED {head!r} has no such leaf — "
+                    f"parser<->detector field drift (a producing compute_* output field was renamed)")
+
+
+def test_cited_field_resolution_over_sample_fleet_and_signal_absent_is_pinned():
+    """The parser<->detector field contract, made coverage-honest over the 23-device sample fleet: every
+    cited_field either RESOLVES to a real leaf produced by the pipeline, or is an EXPLICITLY-PINNED
+    signal_absent (a section the fleet never collected). Two ways this fails, both the point of P3-E1:
+      * a POPULATED section missing the cited leaf -> a renamed compute_* output field (drift);
+      * the signal_absent set drifting -> a field silently stopped/started resolving, unreconciled.
+    (The sibling test above runs over the golden-fallback too; this one pins against the fleet.)"""
+    if not os.path.exists(_SAMPLE_FLEET):
+        pytest.skip("sample fleet snapshot not present — field-resolution pin needs the rich fleet")
+    rich = json.load(open(_SAMPLE_FLEET, encoding="utf-8"))
+    observed_absent = set()
+    for d in compute_detector_schema()["detectors"]:
+        for f in d["cited_fields"]:
+            status = _resolve_cited_field(rich, f)
+            assert status != "missing", (
+                f"{d['key']!r} cites {f!r} but a populated section has no such leaf — "
+                f"parser<->detector field drift")
+            if status == "absent":
+                observed_absent.add((d["key"], f))
+    assert observed_absent == _SIGNAL_ABSENT_IN_FLEET, (
+        "signal_absent cited-field set drifted — reconcile _SIGNAL_ABSENT_IN_FLEET (do not paper over):\n"
+        f"  newly UNRESOLVED (possible regression): {sorted(observed_absent - _SIGNAL_ABSENT_IN_FLEET)}\n"
+        f"  newly RESOLVED (progress; drop from pin): {sorted(_SIGNAL_ABSENT_IN_FLEET - observed_absent)}")
 
 
 def test_family_and_source_command_are_read_only_show_queries():
