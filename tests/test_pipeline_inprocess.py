@@ -116,16 +116,22 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     # snapshot's n_vlans is assembled later), so without that injection the workbook would miss 'VLANs in use'.
     _wb = load_workbook(str(out_xlsx), read_only=True)
     _es = _wb["Executive Summary"]
-    _vlan_cell = "MISSING"; _coll_cell = "MISSING"
+    _vlan_cell = "MISSING"; _coll_cell = "MISSING"; _engine_cell = "MISSING"
     for _row in _es.iter_rows():
         _lbl = str(_row[0].value or "").strip() if _row else ""
         if _lbl == "VLANs in use":
             _vlan_cell = _row[1].value if len(_row) > 1 else None
         elif _lbl == "Switches collected / inventoried":
             _coll_cell = _row[1].value if len(_row) > 1 else None
+        elif _lbl == "Engine version":
+            _engine_cell = _row[1].value if len(_row) > 1 else None
     _wb.close()
     assert _vlan_cell == _scale["n_vlans"], (
         f"Executive Summary 'VLANs in use' must state the canonical {_scale['n_vlans']}, got {_vlan_cell!r}")
+    # P3-E3: the Document-control provenance section is wired end-to-end (call site -> sheet) -- the engine
+    # version renders, so the landing sheet is self-traceable to the exact engine that produced it.
+    assert isinstance(_engine_cell, str) and _engine_cell.startswith("V"), (
+        f"Executive Summary 'Document control' must carry the engine version (P3-E3), got {_engine_cell!r}")
     # SSOT (QA F1): the Fleet-posture block reads canonical scale.n_collected ("<collected> / <inventoried>"),
     # not a local recompute that would call the full inventory "assessed". n_collected is injected into the
     # brief's scale BEFORE this sheet is written (same early-injection point as n_vlans).

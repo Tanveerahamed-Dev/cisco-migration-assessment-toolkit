@@ -3672,7 +3672,7 @@ EXEC_SUMMARY_SHEET_NAME = "Executive Summary"
 
 def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
                                   migration_readiness: list,
-                                  failure_impact: list, brief=None) -> None:
+                                  failure_impact: list, brief=None, provenance=None) -> None:
     """Write the 'Executive Summary' landing sheet (moved to the FRONT of the workbook): a one-page
     synthesis -- fleet posture, the keystone devices the fleet most depends on (migration blast radius),
     the punch-list severity / category breakdown, and per-group migration readiness -- so a reader knows
@@ -3828,6 +3828,22 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         c = ws.cell(r, 1, ln); c.font = DAT; c.alignment = WRAP
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
         r += 1
+
+    # --- document control / provenance (P3-E3): make the one-page landing sheet self-traceable to the
+    # exact engine + snapshot that produced it -- the workbook twin of the deck title-footer (deck.py).
+    # Absent fields are omitted, never fabricated (an older snapshot missing a field shows fewer rows).
+    prov = provenance or {}
+    _prov_rows = [
+        ("Engine version", str(prov.get("script_version") or "").strip()),
+        ("Generated", str(prov.get("generated_at") or "")[:19].replace("T", " ").strip()),
+        ("Snapshot", str(prov.get("snapshot") or "").strip()),
+    ]
+    _prov_rows = [(k, v) for k, v in _prov_rows if v]
+    if _prov_rows:
+        r += 1
+        _sub("Document control")
+        for k, v in _prov_rows:
+            _kv(k, v)
 
     for i, w in enumerate([26, 30, 16, 20, 16, 12], 1):
         ws.column_dimensions[chr(64 + i)].width = w
