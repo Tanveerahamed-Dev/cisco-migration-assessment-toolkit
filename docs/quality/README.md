@@ -398,6 +398,39 @@ CLI: `python -m cisco_toolkit.retrieval_eval --check | --gate | --run`. `--run` 
 P2-1 fixtures are absent or fail validation — the harness never builds its own set. Hermetic guard:
 `tests/test_retrieval_eval.py` (injected judge + graph lane; `[eval]`-extra tests importorskip).
 
+### Screening-gate instrument ladder (P1-3 continuation, 2026-07-11) — gate still FAILED; excerpt-coverage hypothesis refuted
+
+The §6 gate (κ ≥ 0.70 ∧ anchor accuracy ≥ 0.80 over the 15 sealed anchors; dual-prompt
+take-the-MIN, two passes; accuracy on pass-1 finals) has been measured at three instrument/model
+rungs — every run recorded, pass or fail. The v1 rows were measured pre-merge (PR #331 comments);
+the v2 row is this ladder's rung 5: ONE variable (`excerpt_for_judge` v1 single 1800-char best-hit
+window → v2 head-window + top-2 hit windows, 3×1800, overlap-suppressed), pre-registered at
+`ca54af3`/run at `42008fb` **before** the run, and the spend/no-spend fork decided by the rule
+committed at `5f23be2` **before** the result was read:
+
+| instrument | model | κ (≥0.70) | anchor acc (≥0.80) | clear-rel | clear-irrel | borderline |
+|---|---|---|---|---|---|---|
+| v1 — single 1800-char best-hit window | qwen3:4b | 1.00 ✅ | 7/15 = 0.47 ❌ | 1/5 | 5/5 | 1/5 |
+| v1 | qwen3:8b | 0.87 ✅ | 8/15 = 0.53 ❌ | 2/5 | 5/5 | 1/5 |
+| **v2 — head + top-2 hit windows (3×1800)** | qwen3:8b | **1.00 ✅** | **7/15 = 0.47 ❌** | 0/5 | 5/5 | 2/5 |
+
+**Reading (mechanism, small-n stated):** tripling doc coverage did NOT lift accuracy — it made the
+judge *more self-consistent* (κ 0.87 → 1.00) at the *same harsh grades*: all five clear-relevant
+anchors land on exactly grade 1 in both passes. PR #331's hypothesis 1 (the judge under-credits
+because it sees too little of the doc) is measured-REFUTED as the accuracy lever. The uniform
+grade-1 signature is *consistent with* the conservative ensemble (the adversarial arm + take-the-MIN
+can always argue an excerpt "mentions without answering") capping relevant docs at marginal —
+though the gate record keeps only post-MIN finals, so the per-arm split is not proven here. The
+ensemble is owner-doc §6 protocol, not an instrument knob. Per the pre-registered rung-6 rule
+(`docs/quality/.rung6-decision-rule.md`: accuracy ≤ 9/15 → no third same-family prompt rung), the
+spare rung was NOT spent. **Consequence:** `--run` still lands **PARTIAL** (identifier stratum +
+negative diagnostics; semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED). Next-value
+forks, all human-owned: a different local judge FAMILY that fits the host (model pull = **EGRESS**,
+human-approved only), a GPU/higher-RAM host, or accepting the PARTIAL protocol while identifier
+evidence accrues. Wall-clock for a passing full run, measured 2026-07-11: gate ≈ 75 min (60 calls)
++ pool ≈ 267 pairs × 2 prompts = 534 calls at ~80 s/call ≈ **~13 h on the CPU host** — first
+passing run only (pooled qrels are append-only; later runs pay only newly-surfaced docs).
+
 ## Agent-system self-check (Phase 4 — the immune system)
 
 [`cisco_toolkit/selfcheck.py`](../../cisco_toolkit/selfcheck.py) re-derives, from the repo, whether the
