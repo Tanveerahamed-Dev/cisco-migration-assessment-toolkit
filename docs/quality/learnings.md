@@ -25,9 +25,13 @@ falsifiable fact and cite where it is checkable (a file, a test, or a commit).
 - The frozen `tests/golden/snapshot.json` is stripped of `executive_brief`/`lifecycle_risk`/
   `design_blueprint` (date-relative) → it has 0 canonical facts, so it is NOT a Law-scoring fixture;
   build a synthetic fully-published one. Evidence: `tests/test_eval_harness.py` (`known_good_snapshot`).
-- Adding any `cisco_toolkit/*.py` module changes the attestation's re-derived module count, so the
-  pipeline golden must be re-blessed (`UPDATE_GOLDEN=1`); it is additive and the no-egress claim still
-  HOLDS. Evidence: `tests/test_pipeline_golden.py`.
+- Adding ANY new `cisco_toolkit/*.py` module changes `tests/golden/snapshot.json`: the golden's
+  attestation block pins the re-derived module-census strings ("0 LLM/GenAI SDK imports across N
+  modules", "0 network-library imports across N analysis modules"). Sanctioned refresh:
+  `UPDATE_GOLDEN=1 python -m pytest tests/test_pipeline_golden.py`; the reviewed diff must show ONLY
+  the census strings changing, violation counts still 0. Precedent: PR #329 (P2-1) added
+  `cisco_toolkit/d10_eval_set.py` → census 66→67, analysis modules 64→65. Evidence:
+  `cisco_toolkit/attestation.py` + `tests/test_pipeline_golden.py::test_snapshot_matches_golden`.
 - The real assessment snapshot (`Migration_Assessment_*.snapshot.json`) is untracked / absent from git
   → not a reliable committed fixture; score it opportunistically and SKIP when absent (coverage-honest).
   Evidence: `tests/test_eval_harness.py::test_real_on_disk_snapshot_scores_clean_if_present`.
