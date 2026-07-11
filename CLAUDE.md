@@ -6,14 +6,22 @@ excluded untracked scratch + side-engagement dirs — `ds-bundle/`+`.ds-sync/` (
 engine copy + the graph's own `graphify-out/` dumps — see `.graphifyignore`). The live graph is
 **AST-only / no-egress** (the offline `update` re-extract): it is reproducible on an air-gapped host and contains
 NO LLM-derived nodes — the de-pollution rebuild intentionally dropped a prior LLM-semantic "rationale" layer
-(~434 nodes) because regenerating it needs an LLM call = egress, which the no-egress doctrine forbids
+(~434 nodes — NB: a DIFFERENT thing from the current extractor's ~2.1k `file_type: rationale` nodes, which
+are AST-extracted docstrings/comments — every one carries `_origin: ast`, no egress; same word, not a
+regression) because regenerating the LLM layer needs an LLM call = egress, which the no-egress doctrine forbids
 (sole carve-out: a **local** Ollama on 127.0.0.1 is on-host compute, not egress — ADR 0001 Amendment 1;
 `ollama_recall.py` + `ollama_judge.py`. The carve-out licenses local INFERENCE only — it does NOT
 re-authorize `graphify label` or any LLM-derived graph nodes: the graph stays AST-only for
 reproducibility/provenance, a separate invariant from egress. Cloud LLM calls stay forbidden). It fuses
 the code + the repo's markdown (CLAUDE.md, docs/, incl. the deep-research corpus under docs/research/). Use it
 FIRST for codebase questions AND for impact analysis before a change — a scoped subgraph beats grep/file-browsing.
-graphify is NOT on PATH — always invoke as `python -m graphify`.
+graphify is NOT on PATH — always invoke as `python -m graphify`, **from the main checkout (repo root),
+never a linked worktree**: `graphify-out/` is untracked AND `.graphifyignore` excludes `.claude/worktrees/`,
+so a worktree carries no `graph.json` — every verb there errors `graph file not found`, and a `graphify
+update .` run from a worktree builds a degenerate PARTIAL graph. (That is the P3-E1 trap: the
+"122-node / file-granular / `affected "fn()"` returns No node match" reading came from a worktree run;
+the real main-checkout graph is ~7.5k nodes and **function-granular** — `affected "parse_qos_config()"`,
+`explain`, `path` all resolve function symbols as advertised. Verified graphify 0.9.6, 2026-07-11.)
 
 Rules:
 - For codebase questions, run `python -m graphify query "<question>"` first. Use `python -m graphify path "<A>" "<B>"`
