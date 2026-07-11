@@ -316,7 +316,9 @@ see the header of the script — that step is yours (spend + system change).
 The raw material for D10's dense-lane decision ("classify 30 real queries by type FIRST" —
 [`docs/d10-retrieval-eval-design-2026-07-08.md`](../d10-retrieval-eval-design-2026-07-08.md) §5): until
 P2-0a no log of real queries existed anywhere, so that precondition was permanently unrunnable. One JSON
-object per line, append-only, **local — no egress**; exactly three fields, nothing else:
+object per line, append-only, **gitignored / owner-machine only** (like the vault digest: a real query
+may name client tokens from another engagement — the two-store rule — so the rows never enter the
+pushable repo, and clean clones / CI checkouts carry none); exactly three fields, nothing else:
 
 | field | type | meaning |
 |---|---|---|
@@ -327,7 +329,44 @@ object per line, append-only, **local — no egress**; exactly three fields, not
 Written only by `cisco_toolkit.recall.log_query` at the real surfaces; the synthetic paths (`--eval`,
 the labeled experiment, unit tests) deliberately never log, so the recorded mix stays real. **Fail-open:**
 a logging failure degrades silently to nothing recorded — it must never break retrieval or an `/ask` turn.
+Per-command opt-out: `CISCO_RECALL_NO_LOG=1` (records nothing, returns `False`). While the log is short,
+the D10 classification simply stays unrunnable and says so — queries are never invented to fill it.
 Never hand-edit. Owner row in [`docs/ssot.md`](../ssot.md); discipline pinned by `tests/test_query_log.py`.
+
+## `d10-eval-set.jsonl` (+ anchors) — the frozen Phase-2 retrieval eval set (P2-1)
+
+The committed, **frozen** eval set the D10 falsification run consumes
+([`docs/d10-retrieval-eval-design-2026-07-08.md`](../d10-retrieval-eval-design-2026-07-08.md) §2–§4;
+strata counts owned by [`d10-eval-thresholds.json`](d10-eval-thresholds.json) `query_set`). Three
+files, each headed by a `{"_meta": …}` line; loaders/validators in
+[`cisco_toolkit/d10_eval_set.py`](../../cisco_toolkit/d10_eval_set.py):
+
+- **`d10-eval-set.jsonl`** — 60 query rows: `qid` / `stratum` / `query` / graded `qrels`
+  (`{doc, grade 0–3, why}`; doc-ids are repo-relative paths, digest entries as `digest:<id>`) /
+  `grounding`. The 20 **identifier** rows are *extracted, not authored* —
+  `extract_identifier_queries` derives them from the owner-machine `graphify-out/graph.json`
+  (unique code-node labels, cross-file reference in-degree, label tie-break; deterministic, so the
+  committed rows reproduce from the recorded graph bytes). **Semantic** rows are synonym-stripped
+  (no target-name tokens — owner doc §2) and include digest-lane rows (`requires_digest: true`,
+  reported per corpus-config per DEC-006 A2, never pooled). **Multi-hop** rows declare the ≥ 2
+  graph edges they require, verified against the live graph. **Negative** rows have empty qrels
+  with the absence evidence cited.
+- **`d10-anchors.jsonl`** — the judge-visible half of the 15-anchor screening set (5 clear-relevant
+  / 5 clear-irrelevant / 5 borderline): `aid`/`query`/`doc` ONLY. Run FIRST every eval session; the
+  P2-2 gate (κ ≥ 0.70 ∧ anchor accuracy ≥ 0.80, `validity_gate`) decides whether the judge may
+  grade at all.
+- **`d10-anchor-key.jsonl`** — the **SEALED** expected-grade bands + rationales. Sealed by
+  *separation* (the [`defect_panel`](../../cisco_toolkit/defect_panel.py) pattern: scorer-only,
+  never in a judge prompt) and by *tamper-evidence* (exact SHA-256 pins in
+  `tests/test_d10_eval_set.py` — an edit must move file + pin together in a reviewed diff).
+  Declared residual: the key is plaintext in the repo; the seal is separation + tamper-evidence +
+  pre-registration, not secrecy (the holdout contract's honesty).
+
+**Freeze discipline (owner doc §7):** all three fixtures are frozen at registration (2026-07-10).
+P2-2 pool judging appends to a *separate* pooled-qrels file; a post-hoc edit to these files is a
+protocol violation and the pins make it loud. Validate offline with
+`python -m cisco_toolkit.d10_eval_set --verify` (graph-dependent checks skip off the owner machine,
+saying so).
 
 ## Agent-system self-check (Phase 4 — the immune system)
 
