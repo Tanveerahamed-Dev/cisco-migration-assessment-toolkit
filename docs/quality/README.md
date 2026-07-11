@@ -455,15 +455,33 @@ take-the-MIN dual-prompt ensemble (the adversarial arm can always argue an excer
 answering," capping relevant docs at marginal) and/or the sealed clear-relevant band `[2,3]` being
 unreachable for an excerpt-reading local judge. Both are owner-doc §6 pre-registration decisions,
 not instrument knobs. **Consequence unchanged:** `--run` lands **PARTIAL** (identifier stratum +
-negative diagnostics; semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED). **Remaining forks,
-all human-owned and now narrowed** — trying yet another *model* is the lowest-value path (three have
-failed identically): the live options are (a) pre-register an **instrument-v3 / §6-protocol change**
-(e.g. neutral-only grading for the relevance direction, or a re-examined clear-relevant band),
-re-gate from scratch; (b) accept the PARTIAL protocol while identifier evidence accrues. Wall-clock
-for a passing full run, measured 2026-07-11: **qwen3:8b** gate ≈ 75 min + pool ≈ 534 calls at
-~80 s ≈ ~13 h; **llama3.1:8b** is ≈ 2–3× faster warm (~19–25 s/call) → gate ≈ 30 min + pool ≈ **~4 h**
-— materially cheaper if a passing judge is ever found (pooled qrels are append-only; later runs pay
-only newly-surfaced docs).
+negative diagnostics; semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED).
+
+**Decision (2026-07-11) — accept the PARTIAL protocol as the honest Phase-2 verdict; do NOT loosen
+the gate to manufacture an unlock.** The decisive point, recorded so a future session does not
+re-open it as a quick win: the §6 gate exists to *certify the judge is trustworthy enough to grade
+the semantic/multi-hop strata*. Changing the ensemble to make the judge PASS the gate — after seeing
+exactly which anchors it under-graded — does not make the judge trustworthy; it lowers the bar, and
+the semantic verdicts a gate-loosened judge then produces are **less** trustworthy, not more. So
+"unlocking" Phase 2 by weakening the judge is partly self-defeating, and any post-hoc ensemble tweak
+is pre-registration-contaminated (we have seen the per-anchor bands). The honest state stands:
+- **identifier stratum is already answered** (PR #333 run 1, judge-free): BM25 raises MRR@5
+  0.139 → 0.276 (Δ **+0.137**, clears the +0.05 margin) but p=0.107 / dz=0.38 do **not** clear the
+  pre-registered significance bars at n=20 — *directionally positive, underpowered*, per the owner's
+  ~55% per-stratum power note;
+- **semantic / multi-hop stay honestly UNDECIDED** — not falsely resolved by a judge we would have
+  had to weaken to trust.
+
+This is coverage-honesty applied to our own instrument (Law 3): an unanswerable comparison is
+reported as unanswered, never dressed up. **What would legitimately change it** (human-owned, and
+NOT trying more models — three have failed identically): a genuine §6 protocol *correction*
+ratified by the protocol owner as a mis-specification fix — the leading hypothesis is that
+take-the-MIN is right for the *reject* direction (clear-irrelevant scores 4–5/5) but wrong for the
+*accept* direction (an ensemble should match the risk direction), so an **asymmetric or neutral-only
+relevance ensemble** is the principled candidate. To stay clean it must be pre-registered as a
+correction and ideally re-gated by a hand that did not fit it to these anchor outcomes. If such a
+judge is ever found, llama's ~2–3× faster warm pace (~19–25 s/call) makes a full `--run` ≈ **4 h**
+vs qwen3:8b's ≈ **13 h** (pooled qrels are append-only; later runs pay only newly-surfaced docs).
 
 ## Agent-system self-check (Phase 4 — the immune system)
 
