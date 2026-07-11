@@ -20,7 +20,6 @@ The validators live in ``cisco_toolkit/d10_eval_set.py`` (one implementation; th
 rather than re-deriving the rules — Law 1 applied to the contract itself).
 """
 import json
-import os
 import pathlib
 
 import pytest
