@@ -36,9 +36,34 @@ p1_3_status: >-
   hypothesis REFUTED (harshness is framing-level, consistent-with the take-the-MIN ensemble; the
   per-arm split is not in the gate record). The pre-registered rung-6 rule (@5f23be2, committed
   before the result was read) fired its no-spend branch (accuracy <= 9/15): the spare rung was NOT
-  spent. D10 --run therefore stays PARTIAL; forks human-owned (specific cross-family model pull =
-  EGRESS; GPU/RAM host; accept PARTIAL). Measured on this host: ~80 s/call at v2 excerpt size; a
-  passing full --run ~13 h (gate ~75 min + ~534 pool calls; pool is append-only, paid once).
+  spent. Measured on this host: ~80 s/call at v2 excerpt size; a passing full --run ~13 h.
+  CROSS-FAMILY RUNG 2026-07-11 (later; user pulled llama3.1:8b under the egress carve-out, agent
+  pulled nothing; branch claude/d10-llama-regate, PR pending): llama3.1:8b at v2 excerpts also
+  FAILS the gate — kappa 0.72 PASS, accuracy 8/15 = 0.5333 FAIL, clear-rel 0/5 (SAME collapse),
+  clear-irrel 4/5, borderline 4/5. THREE models / TWO families now fail on the SAME clear-relevant
+  stratum -> the failure is STRUCTURAL, not model-specific: two hypotheses (excerpt coverage, model
+  family/size) both measured-REFUTED. Implicated (NOT acted on — owner-doc §6 pre-registration, not
+  an agent knob): the take-the-MIN dual-prompt ensemble and/or the sealed clear-relevant band [2,3]
+  being unreachable for an excerpt-reading local judge. D10 --run stays PARTIAL; the live forks
+  NARROW to (a) pre-register an instrument-v3/§6-protocol change + re-gate, or (b) accept PARTIAL —
+  trying yet another model is now the lowest-value path. llama is ~2-3x faster warm (~19-25 s/call)
+  so a passing full --run would be ~4 h not ~13 h, IF a passing judge is ever found.
+  (c) DEFECT-PANEL cross-family check (llama3.1:8b, --runs 2, INFORMATIONAL — NOT appended): llama
+  approves the clean control both runs but detects NOTHING (localized 0.0, all 5 APPROVED) — textbook
+  agreeableness, the OPPOSITE of qwen3:8b's 0.6 detection. Deliberately not --append-baseline'd:
+  latest-row-wins would have demoted the just-merged qwen 0.6 to 0.0. qwen3:8b (rung-5 prompt) STAYS
+  the operative defect-panel judge. Cross-instrument finding: no single local CPU model clears both
+  instruments — qwen detects defects/harsh on retrieval; llama agreeable on defects/harsh on retrieval.
+  DECISION 2026-07-11 (best-possible, recorded in docs/quality/README.md): ACCEPT the PARTIAL protocol
+  as the honest Phase-2 verdict; do NOT loosen the §6 gate to manufacture an unlock. Crux: the gate
+  certifies the judge is trustworthy enough to grade semantic/multi-hop; a post-hoc ensemble tweak to
+  PASS it (after seeing the per-anchor bands) lowers the bar and makes those verdicts LESS trustworthy
+  + is pre-registration-contaminated. Honest state: identifier already answered (PR #333, BM25 MRR@5
+  +0.137, clears margin but p=0.107/dz=0.38 underpowered at n=20); semantic/multi-hop stay UNDECIDED
+  (Law 3 coverage-honesty on our own instrument). Legitimate change = a human-owned §6 CORRECTION
+  (leading hypothesis: take-the-MIN suits the reject-direction but not the accept-direction ->
+  asymmetric/neutral-only relevance ensemble), pre-registered as a fix and re-gated blind — NOT more
+  models. This session did NOT do it (contaminated + protocol-ownership + outside the rung budget).
 last_completed_task: >-
   P2-1 DONE 2026-07-10 (this branch/PR): the frozen 60-query D10 eval set + sealed anchors, built
   per owner-doc §2-§4 and the DEC-006 amendment. docs/quality/d10-eval-set.jsonl — 20 IDENTIFIER
