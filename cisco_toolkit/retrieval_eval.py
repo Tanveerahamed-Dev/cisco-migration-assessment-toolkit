@@ -391,9 +391,16 @@ GRADING_GRADES = (0, 1, 2, 3)
 
 def judge_schema() -> Dict[str, Any]:
     """Ollama structured-output schema for one (query, doc) grade: reasoning FIRST, then the 0–3
-    grade as an enum (the :mod:`ollama_judge` idiom — reason before committing, always parseable)."""
+    grade as an enum (the :mod:`ollama_judge` idiom — reason before committing, always parseable).
+
+    ``maxLength`` on the reasoning is GRAMMAR-ENFORCED (llama.cpp json-schema-to-grammar): it
+    forces the string to close so the grade token is always reached. Without it, qwen3:4b
+    deliberated unboundedly on one anchor's content until the token budget died mid-string
+    (unterminated JSON → an honest None → gate unable to measure κ at all) — a prompt-level word
+    bound and repeat_penalty both failed to stop it; the grammar bound is structural. Applied
+    uniformly to every pair and both prompt arms; chosen for JSON validity, never grade shaping."""
     return {"type": "object",
-            "properties": {"reasoning": {"type": "string"},
+            "properties": {"reasoning": {"type": "string", "maxLength": 400},
                            "grade": {"type": "integer", "enum": list(GRADING_GRADES)}},
             "required": ["reasoning", "grade"]}
 
