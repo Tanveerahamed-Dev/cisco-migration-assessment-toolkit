@@ -404,8 +404,12 @@ def judge_prompts(query: str, doc_id: str, excerpt: str,
     grades are combined take-the-MIN (:func:`combine_dual`), the conservative ensemble against
     rubber-stamping. The rubric text comes from the fixture ``_meta`` (frozen at P2-1)."""
     scale = "\n".join(f"- {g}: {rubric.get(str(g), '')}" for g in GRADING_GRADES)
+    # The 60-word bound is OUTPUT-BUDGET engineering, not debiasing: an unbounded reasoning field
+    # overran the token budget mid-string on the adversarial arm (unterminated JSON -> an honest
+    # None grade), measured on a SYNTHETIC probe before any sealed anchor was ever graded.
     head = (f"QUERY: {query}\n\nDOCUMENT (id: {doc_id}) EXCERPT:\n{excerpt}\n\n"
-            f"Grading scale:\n{scale}\n")
+            f"Grading scale:\n{scale}\n"
+            "Keep the reasoning to AT MOST 60 words, then commit to one integer grade.\n")
     neutral = (
         "You are grading search-result relevance for a network-engineering codebase.\n"
         "Read the query and the document excerpt, reason briefly about what the query needs and\n"
@@ -414,8 +418,8 @@ def judge_prompts(query: str, doc_id: str, excerpt: str,
         "You are a skeptical reviewer. Your job is to find why this document does NOT answer the\n"
         "query: look for topic overlap that is merely superficial, terms used in a different\n"
         "sense, or content that mentions the subject without addressing the question. Reason\n"
-        "through the strongest case AGAINST relevance first, then grade only what survives that\n"
-        "case, on the scale.\n\n" + head)
+        "through the strongest case AGAINST relevance first (briefly), then grade only what\n"
+        "survives that case, on the scale.\n\n" + head)
     return {"neutral": neutral, "adversarial": adversarial}
 
 
