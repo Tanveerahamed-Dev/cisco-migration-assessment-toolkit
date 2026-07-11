@@ -5939,7 +5939,9 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            f"keystone {asum.get('keystone_domain', '')}", f"{asum.get('n_edges', 0)} inter-domain coupling(s).")
         ax("Cutover sequence", "Medium" if not_ready else "Low",
            f"pilot {asum.get('pilot_domain', '')} → last {asum.get('last_domain', '')}"
-           + (f" · {not_ready} of {len(mr)} wave(s) NOT READY" if mr else ""),
+           # 'move-group(s)', not 'wave(s)': len(mr) is the migration_readiness/move-group count (the 53),
+           # a distinct unit from the sequenced wave_plan waves (the 9) -- keep 'wave' reserved for those.
+           + (f" · {not_ready} of {len(mr)} move-group(s) NOT READY" if mr else ""),
            "Recommended lowest-risk-first order.")
     if lc.get("n_devices"):
         ax("Hardware lifecycle (EoL)",
@@ -6059,7 +6061,9 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     if mi.get("n_mac_clashes"):
         flags.append("a multicast MAC-address clash is present")
     if not_ready:
-        flags.append(f"{not_ready} migration wave(s) are NOT READY")
+        # 'move-group(s)', not 'wave(s)': not_ready counts migration_readiness rows (the 53 move-groups),
+        # not the sequenced wave_plan waves (the 9). Matches the Cutover-sequence axis headline above.
+        flags.append(f"{not_ready} move-group(s) are NOT READY")
     if n_crit:
         flags.append(f"{n_crit} switch(es) are in Critical health")
     posture_statement = ("Migration posture: " + "; ".join(flags[:4])

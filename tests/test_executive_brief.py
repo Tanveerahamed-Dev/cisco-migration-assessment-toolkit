@@ -71,6 +71,20 @@ def test_avg_health_excludes_insufficient_data():
     assert b["scale"]["n_devices"] == 3                # but the device COUNT still reflects all inventoried
 
 
+def test_cutover_sequence_and_flag_use_move_group_noun():
+    """QA row 12 (noun overload): the Cutover-sequence axis headline and the NOT-READY posture flag both
+    count migration_readiness (move-groups, e.g. the 53), a DISTINCT unit from the sequenced wave_plan
+    waves (the 9). The noun must read 'move-group(s)' so the two do not collide under one overloaded word."""
+    head = {a["axis"]: a for a in compute_executive_brief(**_full())["axes"]}["Cutover sequence"]["headline"]
+    assert "move-group(s) NOT READY" in head
+    assert "wave(s)" not in head                       # 'wave(s)' stays reserved for the wave_plan (the 9)
+    # the flag renders in isolation (no other top-tier flags crowd it out of the posture_statement's flags[:4])
+    ps = compute_executive_brief(
+        migration_readiness=[{"readiness": "NOT READY"}, {"readiness": "READY"}])["posture_statement"]
+    assert "move-group(s) are NOT READY" in ps
+    assert "wave(s)" not in ps
+
+
 def test_empty_and_deterministic():
     out = compute_executive_brief()
     assert out["axes"] and out["scale"]["n_devices"] == 0            # health + punch-list axes always present
