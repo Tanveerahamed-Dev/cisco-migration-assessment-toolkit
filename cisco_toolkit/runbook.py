@@ -997,15 +997,20 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     vp_by_wave = vp.get("by_wave") or {}
     if vp_by_wave:
         vs = vp.get("summary") or {}
-        doc.add_heading("11.3 Post-cutover verification plan (per wave)", level=2)
+        # 'validation group(s)', not 'wave(s)': validation_plan.by_wave buckets are per move-group ("Group N",
+        # the 3 groups with checks), a distinct unit from the sequenced wave_plan waves (the 9). Reserve 'wave'
+        # for those; here the count is the validation-group count so the noun must match it.
+        doc.add_heading("11.3 Post-cutover verification plan (per validation group)", level=2)
         doc.add_paragraph(
-            f"{vs.get('n_items', 0)} check(s) across {vs.get('n_waves', 0)} wave(s) "
+            f"{vs.get('n_items', 0)} check(s) across {vs.get('n_waves', 0)} validation group(s) "
+            # 'each wave's cutover' below is the RESERVED sense: cutover happens in the sequenced wave_plan
+            # waves. Only the COUNT noun above is corrected (it counts validation groups, not waves).
             f"({vs.get('n_high', 0)} High/Critical). After each wave's cutover run these and confirm the "
             "result matches the 'Expect' column — it is the known-good output captured from the "
             "pre-cutover state, so a deviation is a regression. Full detail is in the 'Cutover "
             "Validation' workbook sheet.")
         for wave, vits in vp_by_wave.items():
-            doc.add_heading(f"Wave: {wave}", level=3)
+            doc.add_heading(f"Validation group: {wave}", level=3)
             table(["Device", "Category", "Check", "Command", "Expect (good result)"],
                   [[it.get("device"), it.get("category"), it.get("check"), it.get("command"), it.get("expect")]
                    for it in vits[:14]], widths=[1.6, 1.1, 2.6, 2.2, 2.5])
