@@ -35,6 +35,31 @@ def _days_since_op(op):
     except Exception:
         return "?"
 
+def _last_op_date(op):
+    # the last YYYY-MM-DD stamped against <op> in the vault's own log = the /ingest watermark.
+    # Same read the rot-watch age uses; None on any error/absence -> the bridge metric degrades.
+    try:
+        txt = open(r"C:\Vaults\brain\wiki\log.md", encoding="utf-8", errors="replace").read()
+        dates = re.findall(r"\[(\d{4}-\d{2}-\d{2})\]\s*" + op, txt)
+        return max(dates) if dates else None
+    except Exception:
+        return None
+
+def _bridge():
+    # HONEST repo->vault promotion backlog: NOT the cumulative bridge-candidate tag count (which
+    # only grows and cries wolf), but lessons logged since the last /ingest. cisco_toolkit.bridge_queue.
+    try:
+        from cisco_toolkit.bridge_queue import bridge_queue_status
+        st = bridge_queue_status(open("docs/log.md", encoding="utf-8", errors="replace").read(), _last_op_date("ingest"))
+        p = st["pending"]
+        if p is None:
+            return "%d tagged (pending unknown)" % st["lifetime"]
+        if p == 0:
+            return "0 pending (%d lifetime)" % st["lifetime"]
+        return "%d PENDING since /ingest %s -> run /ingest in a vault session" % (p, st["last_ingest"])
+    except Exception:
+        return "?"
+
 def _main_root():
     # graphify freshness must be read from the MAIN checkout: graphify-out/ is untracked,
     # so a worktree session has none and would misreport "missing". ASNE_GIT_COMMON is the
@@ -105,7 +130,7 @@ brief = (
     f"- Toolkit version: {os.environ.get('ASNE_VER','?')} · branch: {os.environ.get('ASNE_BRANCH','?')} · uncommitted files: {os.environ.get('ASNE_DIRTY','0')}\n"
     f"- Last commit: {os.environ.get('ASNE_LAST','?')}\n"
     f"- Latest evidence snapshot: {snap}\n"
-    f"- Rot watch: vault /ingest {_days_since_op('ingest')} · vault /lint {_days_since_op('lint')} (weekly per MASTER_PLAN §6) · graphify graph {_graph_age()}\n"
+    f"- Rot watch: vault /ingest {_days_since_op('ingest')} · vault /lint {_days_since_op('lint')} (weekly per MASTER_PLAN §6) · graphify graph {_graph_age()} · bridge {_bridge()}\n"
     f"- Memory: {_auto_memory()} · agent-memory: {_agent_memory()}\n"
     f"- Learnings ({_learnings()}): distilled verifiable engine facts - read docs/quality/learnings.md\n"
     "- Specialist roster (delegate to these): assessment-analyst, config-security-auditor, topology-reachability-analyst, design-author, mop-change-author, nrfu-validator, deliverable-qa-reviewer, release-captain\n"
