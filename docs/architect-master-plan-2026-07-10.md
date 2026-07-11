@@ -91,6 +91,7 @@ rather than pretending code can hold them alone.
 | DEC-007 | Holdout policy (per interview) | Hybrid: calibration N≥5-REAL floor + N≥20 target now; a sealed 70/30 split contract written NOW (manifest.py hash-chain) that ACTIVATES at N≥50 REAL. | HIGH | At activation: tamper one holdout row → manifest verify must fail | no |
 | DEC-008 | settings.local.json pre-approvals (`python -c`, `cat > *`)? | Recommend removal/narrowing — they erode the doctrine's own declared backstop. It is the operator's convenience trade; decision is theirs. | MED | Remove; count added prompts/day for one week — if intolerable, re-accept formally | **YES** |
 | DEC-009 | Unanswered P0s | Assume: resource envelope generous-but-bounded (review ≈ a few hrs/wk); risk appetite conservative (close what's closable, formally accept documented residuals); first REAL PIR event-driven (no date). | LOW | The human corrects any of the three in one sentence | **YES** |
+| DEC-010 | Phase-2 acceptance when the local judge cannot clear the D10 anchor gate on available hardware | ACCEPT an **identifier-stratum-only** verdict: the identifier stratum is judge-FREE and ran clean; the judged strata (semantic/multi-hop) are DEFERRED as hardware-limited, not failed. Rejected: (b) infinite laddering — 5 rungs × 2 model families did not clear anchor accuracy (0.53 vs 0.80 bar; defect-panel TNR reached 0.6 but that is a different instrument); (c) block Phase 3 on a GPU host that may not exist. | HIGH | A GPU/larger-model re-run later flips the deferred strata — the frozen set + harness make it one command, so acceptance now costs nothing later | decided |
 
 > **Decisions log — 2026-07-10 (user delegation: "take the best possible decision"):**
 > DEC-001 ladder CONFIRMED (M0 personal → M1 client → M2 product; research = instrument layer).
@@ -99,6 +100,17 @@ rather than pretending code can hold them alone.
 > DEFERRED until the two live fix-sessions complete (yanking permissions under running sessions
 > is an operational hazard); lands with P0-7, revert path = re-add and formally accept.
 > DEC-009 assumptions STAND as defaults until corrected in one sentence.
+
+> **Phase-2 VERDICT — 2026-07-11 (DEC-010, user-accepted):** run 1 (`docs/quality/d10-eval-results-2026-07-11.md`,
+> PARTIAL) + DEC-010. **BM25 on the identifier stratum: SUGGESTIVE-BUT-INCONCLUSIVE** — MRR@5
+> 0.139→0.276 (Δ+0.137, clears the +0.05 effect bar) but p=0.107 / dz=0.38 at n=20, short of the
+> pre-registered p<0.05 ∧ d>0.4 bars (the documented ~55% power limit at n=20). No re-tuning — the
+> bars were pre-registered. **Judged strata (semantic/multi-hop): DEFERRED** — the local judge could
+> not clear the anchor gate (accuracy 0.53 < 0.80) on CPU-class models. **Dense lane: DEFERRED** —
+> 0/30 real queries logged; the traffic mix is measured, never assumed. Negatives flagged a real
+> over-retrieval / no-abstention signal for Phase 3. **Phase-2 acceptance = CLOSED on this evidence;
+> Phase 3 opens.** The frozen set + harness make a future GPU re-run one command — deferral is
+> reversible at zero cost.
 
 ## 5. Phased execution plan
 
