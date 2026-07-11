@@ -26,19 +26,24 @@ last_completed_task: >-
 next_task: >-
   HUMAN, in order: (1) review + merge the P2-1 PR #329 (its one red check — ruff F401 ×2 — is
   fixed as the first commit of the stacked P2-2 branch; cherry-pick that commit onto #329 or merge
-  the stack in order); (2) review + merge the stacked P2-2 harness PR (branch
+  the stack in order); (2) review + merge the stacked P2-2 harness PR #331 (branch
   feat/p2-2-retrieval-eval; contains #329's content + the lint fix + the harness); (3) THEN run
-  the falsification on the owner machine (digest present there):
-  `python -m cisco_toolkit.retrieval_eval --run` — judge gate first (Ollama up, qwen3:4b pulled),
-  writes docs/quality/d10-eval-results-<date>.md + .json and appends pool grades to
-  d10-pooled-qrels.jsonl. The run was deliberately NOT executed pre-merge: the §7 discipline wants
-  the frozen set sealed on main before any result exists (no numbers before the seal). Also still
-  open: #327 (P2-0a privacy regraft) awaits review. Dense column stays DEFERRED — query_log.jsonl
-  has 0 real rows (<30 floor); never fabricate the mix. Per-stratum power honesty: ~55%/~33% at
-  n=20/10 (owner §7 corrected note) — report, never over-claim. P1-1 accrual continues with every
-  /qa; first REAL PIR stays event-driven (never fabricate). LESSON for parallel sessions: list
-  open PRs before starting AND before creating one — this session found #329 mid-flight and
-  stacked on it instead of duplicating P2-1 (the #319/#321 lesson applied).
+  the falsification on the owner machine: `python -m cisco_toolkit.retrieval_eval --run`.
+  KNOWN-IN-ADVANCE (gate dry-runs 2026-07-11, full numbers in the #331 comments): the judge
+  screening gate FAILS on BOTH in-code ladder rungs — qwen3:4b kappa 1.00/acc 7/15, qwen3:8b
+  kappa 0.87/acc 8/15 vs floors 0.70/0.80; direction = harsh-not-agreeable (clear-irrelevant 5/5
+  both, relevant/borderline under-credited; likely excerpt-coverage: judge sees 1800 chars, key
+  grades the doc). So the run as-is lands PARTIAL (identifier scored + negative diagnostics;
+  semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED). Fork, human-owned: (a) accept
+  PARTIAL and run; (b) pre-register an instrument v2 (larger/multi-window excerpts and/or a
+  different local cross-family judge), re-gate from scratch, THEN run — never a quiet tweak
+  after seeing anchor outcomes. The run was deliberately NOT executed pre-merge (frozen set
+  sealed on main before any number exists). Also still open: #327 (P2-0a privacy regraft).
+  Dense column stays DEFERRED — query_log.jsonl has 0 real rows (<30 floor); never fabricate the
+  mix. Per-stratum power honesty: ~55%/~33% at n=20/10 (owner §7 corrected note). P1-1 accrual
+  continues with every /qa; first REAL PIR stays event-driven. LESSON for parallel sessions:
+  list open PRs before starting AND before creating one — this session found #329 mid-flight and
+  STACKED on it instead of duplicating P2-1 (the #319/#321 lesson applied).
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
