@@ -2490,7 +2490,10 @@ def main():
         executive_brief["scale"]["n_collected"] = ((collection_completeness or {}).get("summary") or {}).get("complete")
     _run_phase("Executive Summary sheet", write_executive_summary_sheet, wb,
                health_scores, punchlist, migration_readiness, failure_impact,   # NEW-V3.23.91: reuse precomputed fi
-               brief=executive_brief)
+               brief=executive_brief,
+               provenance={"script_version": f"V{__version__}",                 # P3-E3: self-trace the landing sheet
+                           "generated_at": datetime.now().isoformat(),
+                           "snapshot": os.path.splitext(os.path.basename(str(out_xlsx or "")))[0]})
     _run_phase("Protocol Boundaries sheet", write_protocol_boundaries_sheet, wb, all_routing_neighbors, all_redistribution)
     _run_phase("Addressing Conflicts sheet", write_addressing_conflicts_sheet, wb, all_interfaces)
     _run_phase("FHRP Consistency sheet", write_fhrp_consistency_sheet, wb, all_interfaces)
