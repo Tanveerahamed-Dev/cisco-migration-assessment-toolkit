@@ -88,7 +88,13 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
     rejections bound ``defect_class`` to the FIRST enum value — so the reasoning must now END with a literal
     ``HELD: <condition name or NONE>`` line and ``defect_class`` copies it (an explicit copy source right
     before the enum field is generated), and the rollback guard is reworded (rung 1's 'only the literal
-    rollback (none) is missing' parsed as \"the string is absent\")."""
+    rollback (none) is missing' parsed as \"the string is absent\"). Rung-5 (2026-07-11, ONE variable:
+    condition 1's own text): qwen3:8b at rung 4 rejected the CLEAN control in both runs by reading
+    ``n/a - verification step`` as a missing rollback — the rung-2 exception lived only in the PREAMBLE,
+    and the model's domain prior (\"a senior reviewer flags n/a rollbacks\") overrode it when walking the
+    numbered condition. The exception now lives INSIDE condition 1 as an explicit literal rule: only the
+    exact placeholder '(none)' triggers; any other text — a command or an 'n/a …' applicability note —
+    is a rollback that EXISTS, stated with its own DOES-NOT-HOLD instruction."""
     vocab = ", ".join(classes if classes is not None else _text_visible_classes())
     return (
         "You are an independent senior Cisco reviewer doing QA on ONE migration-deliverable excerpt.\n\n"
@@ -100,7 +106,11 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
         "present. Do not reject on vague suspicion: a device simply being 'healthy' is normal, and a\n"
         "rollback stated as a command or as 'n/a - verification step' is a real rollback — condition 1 is\n"
         "about the placeholder '(none)'.\n"
-        "1. missing-rollback: a MOP step whose rollback field reads '(none)' — that step has no rollback.\n"
+        "1. missing-rollback: a MOP step whose rollback field reads exactly '(none)' — that step has no\n"
+        "   rollback. This is a literal string check: if the rollback field contains ANY other text — a\n"
+        "   command, or an applicability note such as 'n/a - verification step' — then a rollback IS\n"
+        "   declared and condition 1 DOES-NOT-HOLD for that step (a verify-only step declaring its\n"
+        "   rollback not applicable is correct MOP practice, not a defect).\n"
         "2. phantom-health: a device in an 'assessed: healthy' or 'Redundancy ... verified' line whose name\n"
         "   the COVERAGE line lists under NOT collected (only if the healthy/verified device is the\n"
         "   not-collected one).\n"
