@@ -1,0 +1,212 @@
+{
+  "run_status": "PARTIAL",
+  "date": "2026-07-11",
+  "environment": {
+    "digest": {
+      "present": true,
+      "files": [
+        {
+          "file": "digest-2026-07-07.jsonl",
+          "file_sha256": "c5651658f919ddda5de1aef4b58bacbd8b09ff2374dcde2d7f2e6dabf98cb20f",
+          "verdict": "verify_feed OK",
+          "entries": 10
+        }
+      ],
+      "entry_count": 10
+    },
+    "tracked_docs": 393,
+    "ollama_version": "ollama version is 0.31.2",
+    "judge_model_env": "qwen3:4b (in-code default)"
+  },
+  "judge_gate": {
+    "status": "failed",
+    "kappa": 0.8661,
+    "accuracy": 0.4667,
+    "floors": {
+      "kappa": 0.7,
+      "accuracy": 0.8
+    },
+    "per_anchor": {
+      "A-01": {
+        "pass1": 1,
+        "pass2": 3,
+        "band": [
+          2,
+          3
+        ]
+      },
+      "A-02": {
+        "pass1": 1,
+        "pass2": 1,
+        "band": [
+          2,
+          3
+        ]
+      },
+      "A-03": {
+        "pass1": 1,
+        "pass2": 1,
+        "band": [
+          2,
+          3
+        ]
+      },
+      "A-04": {
+        "pass1": 2,
+        "pass2": 2,
+        "band": [
+          2,
+          3
+        ]
+      },
+      "A-05": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          2,
+          3
+        ]
+      },
+      "A-06": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          0
+        ]
+      },
+      "A-07": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          0
+        ]
+      },
+      "A-08": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          0
+        ]
+      },
+      "A-09": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          0
+        ]
+      },
+      "A-10": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          0
+        ]
+      },
+      "A-11": {
+        "pass1": 1,
+        "pass2": 1,
+        "band": [
+          1,
+          2
+        ]
+      },
+      "A-12": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          1,
+          2
+        ]
+      },
+      "A-13": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          1,
+          2
+        ]
+      },
+      "A-14": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          1,
+          2
+        ]
+      },
+      "A-15": {
+        "pass1": 0,
+        "pass2": 0,
+        "band": [
+          1,
+          2
+        ]
+      }
+    },
+    "model": "qwen3:4b"
+  },
+  "pooled_rows_appended": 0,
+  "hole@10": {
+    "graph": 0.5714,
+    "graph+bm25": 0.37,
+    "max_allowed": 0.15,
+    "valid": false
+  },
+  "strata": {
+    "identifier": {
+      "n": 20,
+      "stats": {
+        "n": 20,
+        "metric": "mrr@5",
+        "mean_a": 0.13916666666666666,
+        "mean_b": 0.2758333333333333,
+        "delta": 0.13666666666666666,
+        "p_value": 0.10691116327607131,
+        "cohens_dz": 0.37842429891158613
+      },
+      "graph": {
+        "mrr@5": 0.13916666666666666,
+        "p@1": 0.0,
+        "ndcg@5": 0.3922090177905426,
+        "recall@10": 0.8
+      },
+      "graph+bm25": {
+        "mrr@5": 0.2758333333333333,
+        "p@1": 0.05,
+        "ndcg@5": 0.7170428522853127,
+        "recall@10": 1.0
+      }
+    },
+    "semantic": {
+      "status": "INVALID — judged stratum, judge gate failed (below floor)"
+    },
+    "multi_hop": {
+      "status": "INVALID — judged stratum, judge gate failed (below floor)"
+    },
+    "negative": {
+      "graph": {
+        "mean_returned@5": 4.7,
+        "any_returned_rate": 1.0
+      },
+      "graph+bm25": {
+        "mean_returned@5": 5.0,
+        "any_returned_rate": 1.0
+      }
+    }
+  },
+  "overall": null,
+  "verdicts": {
+    "bm25_earns_place": {
+      "verdict": "UNDECIDED",
+      "reason": "run PARTIAL — the pre-registered criterion needs a valid full run"
+    },
+    "dense_column": {
+      "status": "DEFERRED",
+      "real_queries_logged": 0,
+      "required": 30,
+      "semantic_share_min": 0.3,
+      "note": "the traffic mix is measured, not assumed (owner §5); no dense config runs until the log clears the floor and classifies ≥ the semantic share"
+    }
+  },
+  "per_stratum_power_note": "owner §7 (corrected): ≈97% overall at dz=0.5 (n=60 frame), but only ≈55%/≈33% per-stratum at n=20/10 — per-stratum deltas are reported, never over-claimed"
+}
