@@ -1,5 +1,5 @@
-generated: "2026-07-11 @ b50d17e base (P2-2 harness build, branch feat/p2-2-retrieval-eval, STACKED on the P2-1 branch claude/clever-agnesi-91bb95)"
-stage: "PHASE 0 CLOSED — Phase 1 accrual continues; Phase-2 pre-tasks MERGED (P2-0a..0f all landed), P2-1 delivered as a PR (#329), P2-2 harness delivered as a stacked PR"
+generated: "2026-07-11 @ 8e7e91a base (P1-3 rung-5 session, branch claude/blissful-proskuriakova-e9c474; P2-1/P2-2 merged on main via #332, D10 run-1 PARTIAL record open as #333)"
+stage: "PHASE 0 CLOSED — Phase 1 accrual continues; Phase-2 harness MERGED; D10 run 1 landed PARTIAL (judge gate failed); P1-3 rung 5 executed: defect-panel floor CLEARED (worst-run 0.6), D10 gate excerpt hypothesis REFUTED (still failing)"
 execution_phase: "Phase 2 — Retrieval layer falsification (docs/architect-master-plan-2026-07-10.md §5; owner protocol docs/d10-retrieval-eval-design-2026-07-08.md + DEC-006 amendment). P2-1 (eval set) delivered 2026-07-10 (#329, one ruff F401 pair fixed on the stacked branch); P2-2 harness delivered 2026-07-11 (cisco_toolkit/retrieval_eval.py + ollama_retrieval_judge.py + hermetic tests). The falsification RUN itself has NOT happened: it is gated on the human merging P2-1 (frozen set sealed on main first), then `python -m cisco_toolkit.retrieval_eval --run` on the owner machine. Phase-1 data accrual (P1-1) unchanged: REAL rows stay event-driven, never fabricated."
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"
@@ -22,9 +22,23 @@ p1_3_status: >-
   instead of TypeError->UNKNOWN). Live state verified: latest baseline = 2026-07-11 null row; a
   fresh APPROVE stamps provisional=true; selfcheck GREEN with demotion disclosed. Ladder log +
   small-N honesty (n=5: 2/5 point 0.4 has CP95 lower bound 0.076; 4/5 is the first bound-clearing
-  outcome) in docs/quality/README.md judge section. Next-value paths (human decides): one more
-  prompt rung on the 8b specificity failure (detection already 2x floor); a mid-size model pull
-  (EGRESS — human-approved only); GPU/RAM host for think-mode/8b.
+  outcome) in docs/quality/README.md judge section. RUNG 5 EXECUTED 2026-07-11 (branch
+  claude/blissful-proskuriakova-e9c474, both variables pre-registered by commit BEFORE their runs):
+  (a) defect-panel arm — the n/a-rollback exception moved INTO condition 1 as a literal-'(none)'
+  rule (@c154326); qwen3:8b --runs 2: run1 clean=True/localized 0.6, run2 clean=True/localized 1.0
+  -> worst-run judge_tnr 0.6 RECORDED via the sanctioned appender, 0.25 floor CLEARED — first
+  durable clear; promotion live (latest_judge_baseline 0.6, selfcheck GREEN disclosing "APPROVEs
+  are gating"); small-N stated: CP95 LB of the recorded 3/5 is 0.189 (screening floor cleared,
+  bound not — 18-defect panel growth from independent sources is the registered path).
+  (b) D10 retrieval gate — instrument v2 multi-window excerpts (@ca54af3; PR #331's pre-registered
+  hypothesis 1): kappa 1.00 PASS but anchor accuracy 7/15 = 0.4667 FAIL, BELOW the v1-8b 8/15;
+  clear-rel 0/5 (all grade 1, both passes), clear-irrel 5/5, borderline 2/5 -> excerpt-coverage
+  hypothesis REFUTED (harshness is framing-level, consistent-with the take-the-MIN ensemble; the
+  per-arm split is not in the gate record). The pre-registered rung-6 rule (@5f23be2, committed
+  before the result was read) fired its no-spend branch (accuracy <= 9/15): the spare rung was NOT
+  spent. D10 --run therefore stays PARTIAL; forks human-owned (specific cross-family model pull =
+  EGRESS; GPU/RAM host; accept PARTIAL). Measured on this host: ~80 s/call at v2 excerpt size; a
+  passing full --run ~13 h (gate ~75 min + ~534 pool calls; pool is append-only, paid once).
 last_completed_task: >-
   P2-1 DONE 2026-07-10 (this branch/PR): the frozen 60-query D10 eval set + sealed anchors, built
   per owner-doc §2-§4 and the DEC-006 amendment. docs/quality/d10-eval-set.jsonl — 20 IDENTIFIER
@@ -44,26 +58,23 @@ last_completed_task: >-
   docs/ssot.md (new row; placed clear of the freshness guard's single-row anchors) + documented in
   docs/quality/README.md.
 next_task: >-
-  HUMAN, in order: (1) review + merge the P2-1 PR #329 (its one red check — ruff F401 ×2 — is
-  fixed as the first commit of the stacked P2-2 branch; cherry-pick that commit onto #329 or merge
-  the stack in order); (2) review + merge the stacked P2-2 harness PR #331 (branch
-  feat/p2-2-retrieval-eval; contains #329's content + the lint fix + the harness); (3) THEN run
-  the falsification on the owner machine: `python -m cisco_toolkit.retrieval_eval --run`.
-  KNOWN-IN-ADVANCE (gate dry-runs 2026-07-11, full numbers in the #331 comments): the judge
-  screening gate FAILS on BOTH in-code ladder rungs — qwen3:4b kappa 1.00/acc 7/15, qwen3:8b
-  kappa 0.87/acc 8/15 vs floors 0.70/0.80; direction = harsh-not-agreeable (clear-irrelevant 5/5
-  both, relevant/borderline under-credited; likely excerpt-coverage: judge sees 1800 chars, key
-  grades the doc). So the run as-is lands PARTIAL (identifier scored + negative diagnostics;
-  semantic/multi-hop pooling INVALID; BM25 verdict UNDECIDED). Fork, human-owned: (a) accept
-  PARTIAL and run; (b) pre-register an instrument v2 (larger/multi-window excerpts and/or a
-  different local cross-family judge), re-gate from scratch, THEN run — never a quiet tweak
-  after seeing anchor outcomes. The run was deliberately NOT executed pre-merge (frozen set
-  sealed on main before any number exists). Also still open: #327 (P2-0a privacy regraft).
-  Dense column stays DEFERRED — query_log.jsonl has 0 real rows (<30 floor); never fabricate the
-  mix. Per-stratum power honesty: ~55%/~33% at n=20/10 (owner §7 corrected note). P1-1 accrual
-  continues with every /qa; first REAL PIR stays event-driven. LESSON for parallel sessions:
-  list open PRs before starting AND before creating one — this session found #329 mid-flight and
-  STACKED on it instead of duplicating P2-1 (the #319/#321 lesson applied).
+  HUMAN, in order: (1) review + merge PR #333 (the D10 run-1 PARTIAL record, docs-only) and this
+  session's rung-5 PR (branch claude/blissful-proskuriakova-e9c474): instrument v2 + its measured
+  FAIL, the rung-6 no-spend rule + its firing, the defect-panel rung-5 prompt + its measured
+  CLEAR (judge_tnr 0.6 worst-of-2, both runs clean), scorecard row, ladder logs, this handoff.
+  (2) Decide the D10 fork — the retrieval gate STILL FAILS after the pre-registered v2 (excerpt
+  hypothesis refuted; ladder in docs/quality/README.md retrieval_eval section): (a) accept the
+  PARTIAL protocol (identifier evidence + diagnostics accrue; BM25 verdict UNDECIDED), (b) approve
+  a SPECIFIC cross-family local judge pull by name (EGRESS — nothing was pulled this session), or
+  (c) provide a GPU/higher-RAM host (unlocks think-mode + swap-free 8b). A passing full --run
+  costs ~13 h on the current CPU host (measured: gate ~75 min + ~534 pool-judging calls at
+  ~80 s/call; pooled qrels are append-only so the pool is paid once). If (b)/(c): re-gate from
+  scratch first — `OLLAMA_JUDGE_MODEL=<model> python -m cisco_toolkit.retrieval_eval --gate`.
+  (3) Defect-panel arm is now PROMOTED (0.6): next /qa APPROVEs stamp gating — panel growth
+  toward the 18-defect target must come from INDEPENDENT sources (real PIR incidents, blind
+  cross-family proposals), never same-hand. (4) P1-1 accrual unchanged: REAL rows event-driven,
+  never fabricated. Dense column stays DEFERRED (query_log 0/30). Also still open: #327
+  (P2-0a privacy regraft).
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
@@ -142,6 +153,16 @@ context_summary: |
   automode classifier correctly declined unsolicited comments on other sessions' PRs — the
   observations live here instead). Lesson: in a multi-session window, list open PRs before
   starting any plan task.
+
+  2026-07-11 (rung-5 session, this handoff): P2-1/P2-2 landed on main (#332); another session ran
+  D10 run 1 -> PARTIAL exactly as pre-declared (#333, open). This session executed the approved
+  next judge rung on BOTH instruments, one pre-registered variable each, every measurement
+  recorded (see p1_3_status): the defect-panel arm CLEARED its floor for the first time
+  (worst-of-2 judge_tnr 0.6, clean control approved in both runs — the n/a-rollback fix); the D10
+  retrieval gate's excerpt-coverage hypothesis was REFUTED by measurement (v2 multi-window: kappa
+  1.00, accuracy 7/15 < the v1 8/15) and the pre-committed rung-6 rule fired no-spend, so the
+  spare rung was returned unspent. Latency + full-run cost measured honestly (~13 h CPU for a
+  passing --run). No model pulled; sealed key unread; take-the-MIN/§6 protocol untouched.
 
   2026-07-10 (P2-1, this branch): all Phase-2 pre-tasks are MERGED on main (P2-0a query log,
   P2-0b [eval] deps, P2-0d thresholds pin, P2-0e DEC-006 amendment + probe, P2-0f owner errata;

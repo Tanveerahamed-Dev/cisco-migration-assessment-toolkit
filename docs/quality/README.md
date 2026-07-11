@@ -93,15 +93,18 @@ scorecard is the *predicted output of a broken instrument*, not evidence of good
   Ollama Structured Outputs + a neutral per-condition checklist — the *only* framing measured to discriminate
   ("try to disprove" rejects even clean work; "most are fine" approves even defects).
 
-**Honest characterization (measured through the P1-3 ladder, 2026-07-10/11, 15.4 GB CPU-only host):** the
-local arm is **not yet a trustworthy detector**. qwen3:4b discriminates only *unstably* — two same-config
-temperature-0 runs flipped between localized TNR 0.4-with-specificity and 0.2-without (it rejected the clean
-control), so a single run must never be trusted: re-baseline with `--runs 2` (worst-run protocol, below).
-qwen3:8b detects far more (localized 0.6–0.8, the only judge to catch `D-03` phantom-health) but rejected the
-clean control in **both** runs (it insists `n/a - verification step` is a missing rollback), so it has **no
-specificity** and records null trust; qwen3 think-mode is compute-infeasible on this host (≈360 s/call, empty
-content once the think block exhausts the token budget). The LLM arm stays a *supplement*; the deterministic
-arm (12/12) is the reliable instrument on this hardware. `run_baseline` judges a known-GOOD deliverable
+**Honest characterization (measured through the P1-3 ladder, 2026-07-10 → 07-11, 15.4 GB CPU-only host):**
+qwen3:4b discriminates only *unstably* — two same-config temperature-0 runs flipped between localized TNR
+0.4-with-specificity and 0.2-without (it rejected the clean control), so a single run must never be trusted:
+re-baseline with `--runs 2` (worst-run protocol, below). qwen3:8b detects far more (localized 0.6–1.0, the
+only judge to catch `D-03` phantom-health) and at rung 4 rejected the clean control in **both** runs (reading
+`n/a - verification step` as a missing rollback → null trust) — until **rung 5 (2026-07-11)** moved that
+exception INTO condition 1 as a literal-'(none)'-only rule: under the rung-5 prompt, 8b **approves the clean
+control in both runs** and records worst-of-2 localized TNR **0.6** — the LLM arm's first floor-clearing
+baseline (screening-floor convention; the small-N caveat in the ladder note below applies). qwen3 think-mode
+stays compute-infeasible on this host (≈360 s/call, empty content once the think block exhausts the token
+budget). The deterministic arm (12/12) remains the bias-free reliable instrument on this hardware; the LLM
+arm is a measured supplement, now with a promoted baseline. `run_baseline` judges a known-GOOD deliverable
 **first** and reports `approves_clean` (specificity): a "rejects everything" judge scores rejection 1.0 yet is
 worthless, so `rejection_rate` is only meaningful when `approves_clean` is True. Hermetic tests inject the
 model I/O, so the harness never needs a running model (`tests/test_defect_panel.py`,
@@ -129,8 +132,10 @@ localized TNR **0.2** (`D-12` caught; `D-01/03/06/11` approved), `approves_clean
 2026-07-08 measurement exactly. **Still below the 0.25 floor ⇒ judge APPROVEs remain PROVISIONAL/advisory**
 until a stronger judge (bigger model, better prompt, or a Claude-arm panel run) clears it.
 
-**P1-3 re-baseline ladder (2026-07-10 → 07-11, DEC-004) — outcome: floor NOT durably cleared; the judge
-stays ADVISORY.** One variable per rung over the fair subset (the 5 text-visible defects D-01/03/06/11/12);
+**P1-3 re-baseline ladder (2026-07-10 → 07-11, DEC-004) — outcome: rungs 0–4 left the judge ADVISORY
+(floor not durably cleared); rung 5 (2026-07-11) CLEARED the floor under the hardened worst-run protocol
+(clean control approved in BOTH runs).** One variable per rung over the fair subset (the 5 text-visible
+defects D-01/03/06/11/12);
 every completed panel measurement recorded via `python ollama_judge.py <model> [--runs N] --append-baseline`
 (append-only — failures included, nothing cherry-picked; per-rung commits on the P1-3 branch make each row's
 exact prompt/config reproducible):
@@ -142,19 +147,24 @@ exact prompt/config reproducible):
 | 2 | prompt: reasoning must end `` `HELD: <name|NONE>` ``, `defect_class` copies it | run A: clean=True, localized **0.4** (`D-06`,`D-12`) — *point estimate clears 0.25*; same-config rerun B: clean=**False**, localized 0.2 → **run A refuted; unstable** | `@8d208bf` ×2 (0.4, then null trust) |
 | 3 | decoding: qwen3 `think=true` | probe-refuted on this host: ≈360 s/call, content empty (think exhausts `num_predict`) — a full run would mechanically score 0 | none (feasibility probe, not a panel run) |
 | 4 | model: qwen3:8b (installed locally; nothing pulled), worst-of-2 | localized **0.8/0.6** (catches `D-03`) but clean control rejected in **both** runs (`n/a - verification step` read as missing-rollback) → **null trust** | `@ee01898` (worst run + spread in notes) |
+| 5 | prompt: the `n/a`-rollback exception moves INTO condition 1 as a literal-'(none)'-only rule (code `@c154326`, pre-registered before the run) | qwen3:8b `--runs 2`: run 1 clean=**True** localized **0.6**; run 2 clean=**True** localized **1.0** (full panel, all correctly classed, 0 unlocalized) — clean approved in BOTH runs ⇒ worst-run recorded **judge_tnr 0.6, the 0.25 floor CLEARED**; promotion live (selfcheck discloses it) | `@1475d12` (worst run + spread in notes) |
 
 Small-N honesty (stated per the P1-3 mandate): the fair subset is **n=5**, so even a passing point estimate
-carries a wide interval — 2/5 = 0.4 has a one-sided 95% Clopper–Pearson lower bound of **0.076**, far below
-the 0.25 floor (4/5, LB 0.343, is the smallest outcome whose *bound* clears it). The DEC-004 promotion gate
-is a point-estimate **screening floor, never calibration proof** — the same convention as the deterministic
-arm's 12/12 → 0.779 above. What the ladder hardened into code: `--runs N` (worst-run recording) and
-**demotion semantics** — `latest_judge_baseline` is latest-row-wins, so the rung-2 stale 0.4 can never keep
-stamping APPROVEs gating after a newer refuting run
-(`tests/test_scorecard.py::test_latest_judge_baseline_null_trust_demotes`). Highest-value next steps, in
-order: (1) one more prompt iteration targeting the 8b's single specificity failure (its detection already
-doubles the floor; condition 1's wording vs `n/a`-style rollbacks is the one blocker); (2) a mid-size
-instruct model — **needs a human-approved pull: model download = egress**, outside the ADR-0001 local-
-inference carve-out; (3) a GPU / higher-RAM host, which unlocks both think-mode and swap-free 8b.
+carries a wide interval — the recorded rung-5 worst run, 3/5 = 0.6, has a one-sided 95% Clopper–Pearson
+lower bound of **0.189**, which does NOT clear the 0.25 floor (4/5, LB 0.343, remains the smallest outcome
+whose *bound* clears it; rung 5's run 2 was 5/5, LB 0.549, but the protocol records the worst run). The
+DEC-004 promotion gate is a point-estimate **screening floor, never calibration proof** — the same
+convention as the deterministic arm's 12/12 → 0.779 above. What the ladder hardened into code: `--runs N`
+(worst-run recording) and **demotion semantics** — `latest_judge_baseline` is latest-row-wins, so a stale
+numeric row can never keep stamping APPROVEs gating after a newer refuting run
+(`tests/test_scorecard.py::test_latest_judge_baseline_null_trust_demotes`); a future `--runs 2` that loses
+the clean control again will correctly re-demote this 0.6. Next-value paths after rung 5, in order:
+(1) grow the panel toward the registered 18-defect target from *independent* sources (real PIR incidents,
+blind cross-family proposals) — at n=5 the bound cannot clear any reasonable floor, and same-hand growth
+has diminishing evidential value; (2) REAL PIR accrual (unchanged, event-driven, never fabricated);
+(3) the D10 *retrieval* screening gate is a DIFFERENT instrument and still fails — its forks (cross-family
+model pull = **egress, human-approved only**; GPU/higher-RAM host; accept the PARTIAL protocol) stay
+human-owned, recorded in the retrieval_eval section below.
 
 ## `scorecard trend` — the line you watch go up (Phase 1)
 
