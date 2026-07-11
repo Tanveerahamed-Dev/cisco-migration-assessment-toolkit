@@ -37,7 +37,7 @@ import hashlib
 import json
 import os
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Reference-type relations — an artifact LEANING on another. Structural relations (``contains``,
 # ``method``, ``defines``) and docstring links (``rationale_for``) are deliberately excluded: they
