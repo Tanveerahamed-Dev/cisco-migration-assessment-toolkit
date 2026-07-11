@@ -148,16 +148,32 @@ BASELINE_ROW = {"date": "2026-07-08", "deliverable": "judge-baseline", "score": 
                 "commit": "b2b2951", "notes": "cross-family LLM judge qwen3:4b: localized TNR=0.2"}
 
 
-def test_latest_judge_baseline_picks_last_measured():
+def test_latest_judge_baseline_picks_last_row():
     rows = [BASELINE_ROW,
-            {"deliverable": "judge-baseline", "judge_tnr": None},        # unmeasured -> skipped
             {"deliverable": "design", "judge_tnr": 0.9},                 # not a baseline row
             dict(BASELINE_ROW, date="2026-07-10", judge_tnr=0.4)]
-    assert S.latest_judge_baseline(rows)["judge_tnr"] == 0.4             # the LATEST measured one
+    assert S.latest_judge_baseline(rows)["judge_tnr"] == 0.4             # the LATEST baseline row
     assert S.latest_judge_baseline([]) is None
     assert S.latest_judge_baseline(None) is None
-    # a bool is not a measurement (True is an int in Python — must not read as TNR 1.0)
-    assert S.latest_judge_baseline([{"deliverable": "judge-baseline", "judge_tnr": True}]) is None
+
+
+def test_latest_judge_baseline_null_trust_demotes():
+    """P1-3/DEC-004: a null-trust baseline (the specificity fail-safe records judge_tnr null) is the
+    OPERATIVE baseline — it must demote. Skipping it in favour of an older numeric row is the
+    trusting direction (measured 2026-07-10: a 0.4 run was refuted by a same-config no-specificity
+    rerun; the stale 0.4 must not keep stamping APPROVEs gating)."""
+    rows = [dict(BASELINE_ROW, judge_tnr=0.4),
+            {"deliverable": "judge-baseline", "judge_tnr": None,
+             "notes": "NO SPECIFICITY (rejected the clean control)"}]
+    base = S.latest_judge_baseline(rows)
+    assert base is not None and base["judge_tnr"] is None                # the newest row wins
+    stamped = S.stamp_judge_trust({"verdict": "APPROVE", "score": None}, rows)
+    assert stamped["judge_tnr"] is None and stamped["provisional"] is True   # advisory, not gating
+    # a bool judge_tnr is not a measurement (True is an int — must not read as TNR 1.0): the row is
+    # still the latest baseline, but its trust reads unquantified -> same advisory path
+    junk = [{"deliverable": "judge-baseline", "judge_tnr": True}]
+    stamped2 = S.stamp_judge_trust({"verdict": "APPROVE", "score": None}, junk)
+    assert stamped2["judge_tnr"] is None and stamped2["provisional"] is True
 
 
 def test_is_provisional_predicate():

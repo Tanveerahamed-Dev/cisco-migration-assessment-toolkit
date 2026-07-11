@@ -27,7 +27,11 @@ so the test suite never requires a running model.
 Usage: ``python ollama_judge.py qwen3:4b``  →  prints the judge's measured localized TNR over the panel.
 ``--append-baseline`` additionally records the measurement as a ``judge-baseline`` row on the quality
 scorecard (P0-6a: the row :func:`cisco_toolkit.scorecard.latest_judge_baseline` stamps QA verdicts from).
-Ollama down → nothing is appended (signal_absent — a measurement row is never fabricated).
+``--runs N`` runs the whole panel N times and records the WORST run (specificity failure outranks any
+TNR; then lowest localized TNR) with the per-run spread in the notes — the P1-3 stability protocol
+(rung 2's 0.4 was refuted by a same-config rerun; a single flattering run must never promote). ``--think``
+turns the qwen3 thinking mode on for the run. Ollama down → nothing is appended (signal_absent — a
+measurement row is never fabricated).
 """
 from __future__ import annotations
 
@@ -75,23 +79,40 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
     """The judge prompt: a NEUTRAL per-condition checklist — check the deliverable against each defect
     definition and REJECT iff one clearly holds, else APPROVE. Measured to *discriminate* (approves clean
     work, catches blatant defects) where a leaning prompt over-rejects ('reject everything') or over-approves
-    ('most are fine'). A 4B model still misses subtler defects — this is the best-measured framing, not a cure
-    for model weakness. Output shape enforced by :func:`judge_schema`."""
+    ('most are fine'). P1-3 rung-1 refinement (same neutral framing, measured 2026-07-10): the deliverable
+    comes FIRST, the conditions are NUMBERED, and the reasoning must WALK them — one line per condition,
+    quoting the checked line, ending HOLDS or DOES-NOT-HOLD. The prior single-block phrasing let the 4B model
+    form one global impression and default to APPROVE (it missed even the literal '(none)' and 253-vs-250
+    triggers, TNR 0.2); forcing the walk is what makes it actually execute each check. Output shape enforced
+    by :func:`judge_schema`. Rung-2 (measured 2026-07-10): rung 1 raised detection (rejection 0.4) but both
+    rejections bound ``defect_class`` to the FIRST enum value — so the reasoning must now END with a literal
+    ``HELD: <condition name or NONE>`` line and ``defect_class`` copies it (an explicit copy source right
+    before the enum field is generated), and the rollback guard is reworded (rung 1's 'only the literal
+    rollback (none) is missing' parsed as \"the string is absent\")."""
     vocab = ", ".join(classes if classes is not None else _text_visible_classes())
     return (
-        "You are an independent senior Cisco reviewer doing QA on ONE migration-deliverable excerpt. Check it\n"
-        "against these conditions and REJECT if and only if at least one CLEARLY holds (name the exact line);\n"
-        "otherwise APPROVE. Do not reject on vague suspicion; a device simply being 'healthy' is normal.\n"
-        "- phantom-health: a device in an 'assessed: healthy' or 'Redundancy ... verified' line whose name the\n"
-        "  COVERAGE line lists under NOT collected (only if the healthy/verified device is the not-collected one).\n"
-        "- missing-rollback: a MOP step whose rollback is exactly '(none)'.\n"
-        "- unsafe-sequence: an irreversible step (withdraw/remove) with a LOWER order number than a 'verify' step.\n"
-        "- cross-artifact-mismatch: on the Endpoint total line, the workbook number differs from the runbook number.\n"
-        "- empty-nrfu-evidence: an 'NRFU ... PASS' line whose captured output is '(empty)'.\n"
-        "Reason through each condition, then give your verdict and the single defect class that held\n"
-        f"(one of: {vocab}; or NONE if APPROVE).\n\n"
+        "You are an independent senior Cisco reviewer doing QA on ONE migration-deliverable excerpt.\n\n"
         "DELIVERABLE:\n"
-        f"{deliverable_text}\n"
+        f"{deliverable_text}\n\n"
+        "Check the DELIVERABLE against each numbered condition below, ONE AT A TIME. In 'reasoning', write\n"
+        "one line per condition: its name, the exact deliverable line you checked (quote it), and the word\n"
+        "HOLDS or DOES-NOT-HOLD. Do not skip any condition. A condition HOLDS only if its exact trigger is\n"
+        "present. Do not reject on vague suspicion: a device simply being 'healthy' is normal, and a\n"
+        "rollback stated as a command or as 'n/a - verification step' is a real rollback — condition 1 is\n"
+        "about the placeholder '(none)'.\n"
+        "1. missing-rollback: a MOP step whose rollback field reads '(none)' — that step has no rollback.\n"
+        "2. phantom-health: a device in an 'assessed: healthy' or 'Redundancy ... verified' line whose name\n"
+        "   the COVERAGE line lists under NOT collected (only if the healthy/verified device is the\n"
+        "   not-collected one).\n"
+        "3. unsafe-sequence: an irreversible step (withdraw/remove) whose [order] number is LOWER than the\n"
+        "   [order] number of a 'verify' step.\n"
+        "4. cross-artifact-mismatch: on the 'Endpoint total' line, the (workbook) number differs from the\n"
+        "   (runbook) number.\n"
+        "5. empty-nrfu-evidence: an 'NRFU ... PASS' line whose captured output is '(empty)'.\n"
+        "The LAST line of 'reasoning' must be exactly 'HELD: <name of the one condition that HOLDS>' —\n"
+        "using the condition's name as written above — or 'HELD: NONE' if none holds.\n"
+        "Then: verdict = REJECT if a condition HOLDS, else APPROVE; defect_class = exactly the value you\n"
+        f"wrote after 'HELD:' (one of: {vocab}; or NONE).\n"
     )
 
 
@@ -129,16 +150,19 @@ def parse_verdict(text: str) -> Dict[str, Any]:
     return {"verdict": verdict, "defect_class": defect_class}
 
 
-def _chat(model: str, prompt: str, *, timeout: int = 420, fmt: Optional[Dict[str, Any]] = None) -> str:
+def _chat(model: str, prompt: str, *, timeout: int = 420, fmt: Optional[Dict[str, Any]] = None,
+          think: bool = False) -> str:
     """One completion via the LOCAL Ollama chat API. ``urllib`` is imported lazily and this file is outside
-    the ``cisco_toolkit/`` fence, so the engine's no-egress import graph is untouched. ``think: false`` skips
-    the slow chain-of-thought block; ``keep_alive`` holds the model resident across a multi-defect run on a
-    memory-tight CPU host; ``fmt`` (a JSON schema) forces structured, parseable output."""
+    the ``cisco_toolkit/`` fence, so the engine's no-egress import graph is untouched. ``think`` toggles the
+    chain-of-thought block (qwen3 is a hybrid-thinking model — P1-3 rung 3 measures the thinking mode; off
+    by default because it is slow on a CPU host), with ``num_predict`` sized to hold the think block when
+    on; ``keep_alive`` holds the model resident across a multi-defect run on a memory-tight CPU host;
+    ``fmt`` (a JSON schema) forces structured, parseable output."""
     import urllib.request                                       # localhost only; outside the cisco_toolkit fence
     body: Dict[str, Any] = {
-        "model": model, "stream": False, "keep_alive": "15m", "think": False,
+        "model": model, "stream": False, "keep_alive": "15m", "think": bool(think),
         "messages": [{"role": "user", "content": prompt}],
-        "options": {"temperature": 0, "num_predict": 640}}     # deterministic; bounded so it can't run away
+        "options": {"temperature": 0, "num_predict": 2048 if think else 640}}  # deterministic; bounded
     if fmt is not None:
         body["format"] = fmt                                   # ollama structured output -> a valid JSON verdict
     req = urllib.request.Request(
@@ -153,7 +177,7 @@ def _chat(model: str, prompt: str, *, timeout: int = 420, fmt: Optional[Dict[str
 def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
                  chat: Optional[Callable[[str], str]] = None,
                  listening: Optional[Callable[[str], bool]] = None,
-                 host: str = OLLAMA_HOST) -> Dict[str, Any]:
+                 host: str = OLLAMA_HOST, think: bool = False) -> Dict[str, Any]:
     """Run the cross-family judge over the text-visible defect panel and score it against the sealed key.
     ``chat`` / ``listening`` are injectable for hermetic tests (default: the real Ollama with the structured
     schema). Returns ``{ok: False, reason}`` when Ollama is down (never raises).
@@ -168,7 +192,7 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
         return {"ok": False, "reason": f"Ollama not listening on {host} — pull the model and start Ollama"}
     classes = _text_visible_classes()
     schema = judge_schema(classes)
-    do_chat = chat if chat is not None else (lambda prompt: _chat(model, prompt, fmt=schema))
+    do_chat = chat if chat is not None else (lambda prompt: _chat(model, prompt, fmt=schema, think=think))
     # SPECIFICITY control: judge a known-good deliverable — it must APPROVE. Measured before the panel so a
     # judge that rejects everything is exposed rather than flattering its rejection_rate.
     try:
@@ -192,13 +216,32 @@ def run_baseline(model: str = DEFAULT_MODEL, ids: Optional[List[str]] = None, *,
     return {"ok": True, "model": model, "approves_clean": approves_clean, "verdicts": verdicts, **score}
 
 
-def baseline_row(res: Dict[str, Any], *, date: str, commit: str) -> Dict[str, Any]:
+def worst_of(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The most conservative run of a multi-run baseline — the one whose row grants the LEAST trust:
+    any no-specificity run (rejected the clean control -> null trust) outranks every clean run, then
+    the lowest localized TNR. Rung-2 lesson (P1-3, measured 2026-07-10): two same-config
+    temperature-0 runs measured 0.4-with-specificity and 0.2-without — an unstable judge must be
+    recorded by its worst run, never promoted by its best."""
+    return min(results, key=lambda r: (bool(r.get("approves_clean")), r.get("localized_tnr") or 0.0))
+
+
+def runs_summary(results: List[Dict[str, Any]]) -> str:
+    """One compact clause per run, for the recorded row's notes — the spread stays visible."""
+    return "; ".join(
+        f"run{i}: clean={bool(r.get('approves_clean'))} localized={r.get('localized_tnr')} "
+        f"rejection={r.get('rejection_rate')}" for i, r in enumerate(results, 1))
+
+
+def baseline_row(res: Dict[str, Any], *, date: str, commit: str,
+                 runs_note: Optional[str] = None) -> Dict[str, Any]:
     """Project a successful :func:`run_baseline` result onto the scorecard schema as the
     ``judge-baseline`` row (P0-6a) — a MEASUREMENT, not a verdict: ``verdict``/``score``/
     ``counterexamples`` stay null and ``judge_tnr`` carries the measured localized TNR. Fail-safe on
     specificity: when the judge rejected the clean control (``approves_clean`` False) its rejections
     are worthless, so ``judge_tnr`` is recorded null (with the raw numbers in ``notes``) — a
-    no-specificity judge must never become the TNR that stamps later APPROVEs as gating."""
+    no-specificity judge must never become the TNR that stamps later APPROVEs as gating.
+    ``runs_note`` (the multi-run protocol) discloses the per-run spread when ``res`` is the worst of
+    several runs — the recorded number is always a single real run, never an average of runs."""
     tnr = res.get("localized_tnr") if res.get("approves_clean") else None
     per = ",".join(f"{v.get('defect_id')}:{'R' if v.get('verdict') == 'REJECT' else 'A'}"
                    for v in res.get("verdicts", []))
@@ -212,9 +255,24 @@ def baseline_row(res: Dict[str, Any], *, date: str, commit: str) -> Dict[str, An
     notes = (f"cross-family LLM judge {res.get('model')} re-baseline: localized TNR={res.get('localized_tnr')}, "
              f"rejection_rate={res.get('rejection_rate')}, approves_clean={res.get('approves_clean')} "
              f"over the {res.get('n')}-defect text-visible panel ({per}); {state}")
+    if runs_note:
+        notes += f" [recorded = worst run of the multi-run protocol; {runs_note}]"
     return {"date": date, "deliverable": SCD.JUDGE_BASELINE_DELIVERABLE, "score": None,
             "verdict": None, "judge_tnr": tnr, "provisional": None, "counterexamples": None,
             "laws_tripped": [], "commit": commit, "notes": notes}
+
+
+def _print_run(res: Dict[str, Any]) -> None:
+    print(f"[ollama-judge] model={res['model']}  panel={res['n']} text-visible defects")
+    print(f"  approves clean       = {res['approves_clean']}   (SPECIFICITY: a good deliverable MUST pass)")
+    print(f"  rejection rate       = {res['rejection_rate']}   (caught bad work — meaningful ONLY if approves_clean)")
+    print(f"  localized TNR        = {res['localized_tnr']}   (rejected WITH the right defect class)")
+    print(f"  unlocalized rejects  = {res['unlocalized_rejection_rate']}   (rejected, wrong/'no' class)")
+    for v in res["verdicts"]:
+        print(f"    {v['defect_id']}: {v['verdict']:<7} class={v['defect_class']}")
+    if not res["approves_clean"]:
+        print("  ! WARNING: the judge REJECTED a clean deliverable -> no specificity; its rejections are\n"
+              "    worthless (it rejects everything). Fix the prompt/model before trusting any rejection rate.")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -226,26 +284,39 @@ def main(argv: Optional[List[str]] = None) -> int:
     record = "--append-baseline" in argv
     if record:
         argv.remove("--append-baseline")
+    think = "--think" in argv
+    if think:
+        argv.remove("--think")
+    runs = 1
+    if "--runs" in argv:
+        i = argv.index("--runs")
+        try:
+            runs = max(1, int(argv[i + 1]))
+            del argv[i:i + 2]
+        except (IndexError, ValueError):
+            del argv[i:i + 1]
     model = argv[0] if argv else DEFAULT_MODEL
-    res = run_baseline(model)
-    if not res.get("ok"):
-        print(f"[ollama-judge] {res.get('reason')}")
-        if record:
-            print("[ollama-judge] signal_absent — no baseline row appended (a measurement is never fabricated)")
-        return 0                                               # graceful: nothing measured, not an error
-    print(f"[ollama-judge] model={res['model']}  panel={res['n']} text-visible defects")
-    print(f"  approves clean       = {res['approves_clean']}   (SPECIFICITY: a good deliverable MUST pass)")
-    print(f"  rejection rate       = {res['rejection_rate']}   (caught bad work — meaningful ONLY if approves_clean)")
-    print(f"  localized TNR        = {res['localized_tnr']}   (rejected WITH the right defect class)")
-    print(f"  unlocalized rejects  = {res['unlocalized_rejection_rate']}   (rejected, wrong/'no' class)")
-    for v in res["verdicts"]:
-        print(f"    {v['defect_id']}: {v['verdict']:<7} class={v['defect_class']}")
-    if not res["approves_clean"]:
-        print("  ! WARNING: the judge REJECTED a clean deliverable -> no specificity; its rejections are\n"
-              "    worthless (it rejects everything). Fix the prompt/model before trusting any rejection rate.")
+    results: List[Dict[str, Any]] = []
+    for k in range(runs):
+        res = run_baseline(model, think=think)
+        if not res.get("ok"):
+            print(f"[ollama-judge] {res.get('reason')}")
+            if record:
+                print("[ollama-judge] signal_absent — no baseline row appended (a measurement is never "
+                      "fabricated; a multi-run protocol that could not complete records nothing)")
+            return 0                                           # graceful: nothing measured, not an error
+        results.append(res)
+        if runs > 1:
+            print(f"--- run {k + 1}/{runs} ---")
+        _print_run(res)
+    res = worst_of(results)
+    if runs > 1:
+        print(f"  worst of {runs} runs (the recorded measurement): approves_clean={res['approves_clean']}, "
+              f"localized TNR={res['localized_tnr']} — an unstable judge is recorded by its worst run")
     print("  (the deterministic arm catches all 12 by construction; this is the LLM judge's floor to clear)")
     if record:
-        row = baseline_row(res, date=SCD._today(), commit=SCD._git_commit())
+        row = baseline_row(res, date=SCD._today(), commit=SCD._git_commit(),
+                           runs_note=runs_summary(results) if runs > 1 else None)
         path = os.environ.get("SCORECARD_FILE") or SCD.SCORECARD_PATH
         if SCD.append_row(row, path):
             print(f"scorecard += judge-baseline judge_tnr={row['judge_tnr']} "
