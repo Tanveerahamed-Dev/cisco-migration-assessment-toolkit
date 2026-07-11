@@ -237,6 +237,88 @@ def test_deck_survives_xml_illegal_chars(tmp_path):
     Presentation(out)                                    # and open
 
 
+def _m0_like_snap():
+    """Mirrors the real M0 estate that exposed the QA row-11 BLOCK (scorecard 2026-07-11): 53 device
+    groups (1 NOT READY / 52 CAUTION / 0 READY) and a wave_plan of 9 candidate waves over 53 move-groups,
+    largest a 251-switch domain — the shape on which the fixed 6.5in footnote overprinted row 6."""
+    snap = _rich_snap()
+    snap["migration_readiness"] = (
+        [{"group": "Group 1", "readiness": "NOT READY", "n_fail": 2, "n_warn": 3}]
+        + [{"group": f"Group {i}", "readiness": "CAUTION", "n_fail": 0, "n_warn": 2}
+           for i in range(2, 54)])
+    snap["move_groups"] = [{"switches": [f"s{i}"]} for i in range(53)]
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 1, "n_recommended": 1, "n_needs_requirement": 0, "n_critical": 1,
+                    "headline": "1 recommended."},
+        "tradeoff_scorecard": [], "coverage": {},
+        "decisions": [{"id": "d1", "title": "T", "priority": "High", "status": "recommended",
+                       "evidence": {"summary": "e"}, "principle": {"citation": "CCDE"}}],
+        "target_state": {"wave_plan": {"n_waves": 9, "n_move_groups": 53, "largest_group": 251,
+                                       "wave_cap": 40, "waves": [], "note": "n"}},
+    }
+    return snap
+
+
+def _waves_slide(prs):
+    for sl in prs.slides:
+        if any(sh.has_text_frame and "PER-GROUP READINESS" in sh.text_frame.text for sh in sl.shapes):
+            return sl
+    raise AssertionError("migration-waves slide not found")
+
+
+def test_deck_wave_footnote_below_list_by_construction(tmp_path):
+    """QA row-11 BLOCK, defect 1 (baked-in shape overlap): the reconciling footnote was pinned at 6.5in
+    while a 6-row readiness list runs to ~6.83in — the shapes overprinted and both were illegible. The
+    footnote's top must now be COMPUTED from the rows actually rendered: strictly below every other shape
+    on the slide, and fully on-slide. Bounding boxes asserted in EMU straight off the saved pptx."""
+    out = tmp_path / "d.pptx"
+    write_executive_deck_pptx(str(out), _m0_like_snap(), "Test fleet")
+    sl = _waves_slide(Presentation(str(out)))
+    foots = [sh for sh in sl.shapes
+             if sh.has_text_frame and "Cutover Validation" in sh.text_frame.text]
+    assert len(foots) == 1, "exactly one reconciling footnote expected on the waves slide"
+    foot = foots[0]
+    others_bottom = max(sh.top + sh.height for sh in sl.shapes if sh.shape_id != foot.shape_id)
+    assert foot.top >= others_bottom, (
+        f"footnote (top {foot.top} EMU) overlaps slide content (bottom {others_bottom} EMU)")
+    assert foot.top + foot.height <= Presentation(str(out)).slide_height, "footnote runs off the slide"
+
+
+def test_deck_wave_slide_discloses_hidden_groups_and_denominators(tmp_path):
+    """QA row-11 BLOCK, defect 2 (readiness framing understates blocked scope ~7x): tiles
+    '1 NOT READY / 52 CAUTION / 0 READY' sat beside '9 candidate waves' with a truncated list and NO cue
+    that the rows shown are a subset of the 53-group estate. The slide must disclose the truncation
+    ('+N more', computed from the data, never hardcoded) and carry the denominator on every readiness
+    tile, and the wave tile must name the move-group scope it sequences."""
+    out = tmp_path / "d.pptx"
+    snap = _m0_like_snap()
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    sl = _waves_slide(Presentation(str(out)))
+    txt = "\n".join(sh.text_frame.text for sh in sl.shapes if sh.has_text_frame)
+    n = len(snap["migration_readiness"])
+    shown = txt.count("blocking ·")                   # one per rendered readiness row
+    assert 0 < shown < n, "fixture must overflow the list for the cue to be exercised"
+    assert f"+ {n - shown} more device group(s) not shown" in txt
+    assert f"of {n} device group(s)" in txt           # tile denominators explicit
+    assert "candidate waves · 53 move-group(s)" in txt
+
+
+def test_deck_title_footer_carries_provenance(tmp_path):
+    """P3-E3: the title footer must carry engine version + generation timestamp + snapshot stem (the
+    explorer-ctx pattern, html.py:539-543) so a printed / forwarded deck stays traceable to the exact
+    snapshot that produced it. The '_executive_deck' artifact suffix is stripped to the snapshot stem."""
+    out = tmp_path / "Migration_Assessment_X_executive_deck.pptx"
+    snap = _rich_snap()
+    snap["script_version"] = "V3.23.0"
+    snap["generated_at"] = "2026-07-11T10:27:30.004051"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    prs = Presentation(str(out))
+    txt = "\n".join(sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
+    assert "V3.23.0" in txt and "2026-07-11 10:27:30" in txt
+    assert "snapshot Migration_Assessment_X" in txt
+    assert "Migration_Assessment_X_executive_deck" not in txt
+
+
 def test_deck_keystone_not_well_distributed_when_blast_radius_blind(tmp_path):
     """[audit-4 #8 false-health] the keystone slide printed green 'dependency is well distributed' whenever no
     record had stranded>0 -- including when failure_impact was NEVER computed (absent) or every record is
