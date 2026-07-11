@@ -48,6 +48,54 @@ def _stamp(snap: Dict[str, Any]) -> dict:
             "n_devices": len(devs) if isinstance(devs, dict) else 0}
 
 
+def _schema_signature(snap: Dict[str, Any]) -> tuple[str, str]:
+    """The comparable schema signature of one snapshot: (script_version, schema_version). script_version
+    is emitted on every real snapshot ('V{__version__}', the DECOUPLED schema/engine version — NOT the
+    pyproject release version); schema_version is optional. A missing token -> '' (unverifiable, which is
+    NOT the same as a mismatch). Total on a non-dict snapshot (-> ('', ''))."""
+    s = snap if isinstance(snap, dict) else {}
+    return (str(s.get("script_version", "") or "").strip(),
+            str(s.get("schema_version", "") or "").strip())
+
+
+def schema_compat_status(snaps: List[Dict[str, Any]],
+                         labels: Optional[List[str]] = None) -> tuple[str, str]:
+    """Classify whether a SERIES of snapshots is safe to diff/trend, by their engine schema version, so
+    ``--compare``/``--trend`` can warn-or-refuse instead of diffing across a schema change silently (P3-E2).
+    Diffing across engine SCHEMA versions can MISREPORT — a field a newer engine renamed/moved reads as a
+    real network change when it is only a schema difference. Returns ``(status, message)``:
+
+      * ``"ok"``           — every snapshot carries the SAME non-empty script_version (and schema_version
+                             where present): safe to diff. ``message`` is ''.
+      * ``"unverifiable"`` — at least one snapshot omits script_version, so compatibility cannot be PROVEN;
+                             never silently "ok" (coverage-honest) — the caller WARNS and proceeds (an
+                             absent version is not evidence of a mismatch, so it is not refused).
+      * ``"mismatch"``     — two snapshots carry DIFFERENT non-empty script_versions (or schema_versions):
+                             a cross-schema diff — the caller REFUSES unless explicitly overridden.
+
+    ``labels`` name the snapshots (e.g. file paths) in the message; default 'snapshot N'. Pure; total on
+    malformed input (a non-dict snapshot contributes an empty signature)."""
+    items = list(snaps or [])
+    names = list(labels or [])
+    sigs = []
+    for i, s in enumerate(items):
+        name = names[i] if i < len(names) else f"snapshot {i + 1}"
+        script_v, schema_v = _schema_signature(s)
+        sigs.append((name, script_v, schema_v))
+    scripts = {sv for (_n, sv, _sc) in sigs if sv}
+    schemas = {sc for (_n, _sv, sc) in sigs if sc}
+    if len(scripts) > 1 or len(schemas) > 1:
+        shown = ", ".join(f"{n}={sv or '?'}" + (f"/{sc}" if sc else "") for (n, sv, sc) in sigs)
+        return ("mismatch",
+                f"snapshots were produced by DIFFERENT engine schema versions ({shown}) -- a cross-schema "
+                f"diff can misreport a schema change as a real network change")
+    missing = [n for (n, sv, _sc) in sigs if not sv]
+    if missing:
+        return ("unverifiable",
+                f"could not verify schema compatibility -- no script_version on: {', '.join(missing)}")
+    return ("ok", "")
+
+
 def _inconclusive_reason(pair: dict) -> str:
     """NAME the blind spot: which side(s) of the trace were lost to incomplete collection, and how."""
     bits = []
