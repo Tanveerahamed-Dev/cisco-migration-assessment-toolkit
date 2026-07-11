@@ -108,18 +108,44 @@ def test_deck_has_all_slides_and_key_content(tmp_path):
 
 def test_deck_lifecycle_past_end_of_support_is_ldos_not_eos(tmp_path):
     """A3 (SSOT/coverage-honesty): the 'past end-of-support' headline must read n_past_ldos ALONE
-    (matching the canonical executive_brief lifecycle axis, analyze.py:5018), NOT n_past_eos +
-    n_past_ldos. Past-EoS is end-of-SALE (support window still open). Fixture: 152 LDoS + 40 EoS +
-    61 near of 303 → headline 152 and 70% past/nearing; the old conflation rendered 192 / 83%."""
+    (matching the canonical executive_brief lifecycle axis, compute_executive_brief's lc_pe), NOT
+    n_past_eos + n_past_ldos. Past-EoS is end-of-SALE (support window still open). Fixture: 152 LDoS +
+    40 EoS + 61 near of 303 → headline 152 and 70% past/nearing; the old conflation rendered 192 / 83%.
+    This fixture has NO unknown-model devices (n_unknown=0), so the assessable denominator equals the
+    fleet (303) and 70% is correct here; the assessable-vs-fleet distinction is exercised by the
+    sibling test below."""
     snap = _rich_snap()
     snap["lifecycle_risk"] = {"summary": {
         "n_devices": 303, "n_past_ldos": 152, "n_past_eos": 40, "n_near": 61, "n_active": 50,
+        "n_unknown": 0,
         "by_band": {"Past-LDoS": 152, "Past-EoS": 40, "Near-LDoS": 61, "Active": 50}}}
     out = tmp_path / "deck.pptx"
     write_executive_deck_pptx(str(out), snap, "Test fleet")
     n, txt = _deck(str(out))
-    assert "152" in txt and "70%" in txt           # n_past_ldos headline + (152+61)/303 pct
+    assert "152" in txt and "70%" in txt           # n_past_ldos headline + (152+61)/303 pct (no unknowns)
     assert "192" not in txt and "83%" not in txt    # old n_past_eos+n_past_ldos conflation gone
+
+
+def test_deck_lifecycle_pct_uses_assessable_denominator(tmp_path):
+    """SSOT (QA scorecard row 12, residual #1): the headline 'past or nearing end-of-support' pct must
+    be computed over the ASSESSABLE denominator (known-model devices == n_devices − n_unknown), the same
+    lc_known compute_executive_brief uses — NOT the diluted full-fleet n_devices. Fixture mirrors the
+    real fleet: 152 LDoS + 61 near of 303, with 56 unidentified-model devices → 247 assessable →
+    213/247 = 86% (the value the workbook / design / MOP / runbook / engagement all report), never the
+    full-fleet 213/303 = 70% that made the deck the sole set-wide outlier. The denominator is also named
+    on the slide ('of 247 assessable') so the percentage is unambiguous."""
+    snap = _rich_snap()
+    snap["lifecycle_risk"] = {"summary": {
+        "n_devices": 303, "n_past_ldos": 152, "n_past_eos": 20, "n_near": 61, "n_active": 14,
+        "n_unknown": 56,
+        "by_band": {"Past-LDoS": 152, "Past-EoS": 20, "Near-LDoS": 61, "Active": 14, "Unknown": 56}}}
+    out = tmp_path / "deck.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    assert "86%" in txt                 # (152+61) / (303-56) assessable = 86%, agrees with the whole set
+    assert "70%" not in txt             # the full-fleet 213/303 outlier must be gone
+    assert "of 247 assessable" in txt   # denominator named on the slide (no ambiguity)
+    assert "152" in txt                 # n_past_ldos count still surfaced unchanged
 
 
 def test_deck_gains_riskiest_assets_slide_with_register(tmp_path):

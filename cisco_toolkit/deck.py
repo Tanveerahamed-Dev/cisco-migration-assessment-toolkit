@@ -340,15 +340,21 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     if lsum.get("n_devices"):
         s = slide()
         header(s, "A primary migration driver", "Hardware end-of-support exposure")
-        n = lsum.get("n_devices", 0)
         # "Past end-of-support" is the Past-LDoS band ALONE (no TAC) — Past-EoS is end-of-SALE with
         # the support window still open. Mirror the canonical executive_brief lifecycle axis
-        # (analyze.py:5018) so the deck headline agrees with every other surface (A3 SSOT fix).
-        # Past-EoS is not lost: it keeps its own segment in the band-distribution bar below.
+        # (compute_executive_brief's lc_pe / lc_known pair) so the deck headline agrees with every
+        # other surface (A3 SSOT fix). Past-EoS is not lost: it keeps its own segment below.
         past = lsum.get("n_past_ldos", 0)
         near = lsum.get("n_near", 0)
-        pct = round(100 * (past + near) / n) if n else 0
-        stat(s, 0.7, 2.1, f"{pct}%", "past or nearing end-of-support", _HIGH)
+        # Denominator == KNOWN-model (EoL-assessable) devices == full fleet minus unidentified-model
+        # devices, mirroring compute_executive_brief's lc_known. Dividing by the full n_devices diluted
+        # the headline and made THIS slide the sole set-wide outlier (70% of 303) while the workbook,
+        # design, MOP, runbook and engagement all report "86% of 247 assessable" (QA scorecard row 12,
+        # residual #1). The Unknown count stays visible in the band-distribution legend below, so the
+        # narrower denominator is coverage-honest, not a hidden exclusion.
+        assessable = lsum.get("n_devices", 0) - lsum.get("n_unknown", 0)
+        pct = round(100 * (past + near) / assessable) if assessable else 0
+        stat(s, 0.7, 2.1, f"{pct}%", f"of {assessable} assessable, past or nearing end-of-support", _HIGH)
         stat(s, 3.6, 2.1, past, "past end-of-support", _CRIT)
         stat(s, 6.2, 2.1, near, "within 1 year", _MED)
         lc_order = ["Past-LDoS", "Past-EoS", "Near-LDoS", "Active", "Unknown"]
