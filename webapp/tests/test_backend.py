@@ -341,10 +341,27 @@ def test_upload_and_compare(client):
     cmp = client.post("/api/compare", json={"old_id": a.json()["id"], "new_id": b.json()["id"]})
     assert cmp.status_code == 200
     assert "verdict" in cmp.json()
+    assert "schema_compat" in cmp.json()          # P3-E2: the diff surfaces its schema-compat verdict
 
     trend = client.get(f"/api/campaigns/{cid}/trend")
     assert trend.status_code == 200
     assert len(trend.json()["timeline"]) == 2
+    assert "schema_compat" in trend.json()        # P3-E2: the trend surfaces its schema-compat verdict
+
+
+def test_engine_diff_surfaces_schema_compat_status():
+    """P3-E2 (webapp surface): snapshot_delta / campaign_trend surface the pair/series schema-compat
+    verdict (ok | unverifiable | mismatch) so the interactive UI never presents a diff across an engine
+    schema change as a real network change. Additive + non-breaking; ASCII message (cp1252 safe)."""
+    from webapp.backend import engine
+    mism = engine.snapshot_delta({"script_version": "V3.23.0", "devices": {}},
+                                 {"script_version": "V9.9.9", "devices": {}})
+    assert mism["schema_compat"]["status"] == "mismatch"
+    assert mism["schema_compat"]["message"].isascii()
+    ok = engine.snapshot_delta({"script_version": "V3.23.0"}, {"script_version": "V3.23.0"})
+    assert ok["schema_compat"]["status"] == "ok"
+    trend = engine.campaign_trend([{"script_version": "V3.23.0"}, {"script_version": "V9.9.9"}])
+    assert trend["schema_compat"]["status"] == "mismatch"
 
 
 def test_graph_endpoint(client):
