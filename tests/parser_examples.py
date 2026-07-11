@@ -333,6 +333,71 @@ PARSER_EXAMPLES = {
             ],
         },
     ],
+    # ------------------------------------------------------------------ routing adjacency
+    "parse_bgp_summary": [
+        {
+            "note": "IOS/NX-OS 'show ip bgp summary' -- the last column is PfxRcd (Established -> a "
+                    "number) OR the BGP state word (Idle/Active/...). A down (Idle) peer must NOT read "
+                    "as a healthy prefix count, and an IPv6 peer row must survive. Anonymized "
+                    "addresses/ASNs.",
+            "input": (
+                "BGP router identifier 10.0.0.1, local AS number 65001\n"
+                "Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+                "10.0.0.2        4 65002    1000    1001       50    0    0 10w2d          120\n"
+                "10.0.0.3        4 65003    2000    2002       50    0    0 00:00:15       Idle\n"
+                "2001:db8::1     4 65004     500     501       50    0    0 01:02:03         45\n"
+            ),
+            "expect_min_entities": 3,
+            "spot_facts": [
+                ((0, "neighbor"), "10.0.0.2"),
+                ((0, "as"), "65002"),
+                ((0, "state"), "120"),              # Established -> the PfxRcd count
+                ((1, "state"), "Idle"),             # down peer NOT silently read as Established
+                ((2, "neighbor"), "2001:db8::1"),   # IPv6 peer row kept, not dropped
+            ],
+        },
+    ],
+    "parse_ospf_neighbors": [
+        {
+            "note": "'show ip ospf neighbor' -- on a point-to-point/unnumbered interface the State's "
+                    "role is a whitespace-separated dash ('FULL/  -'); the row (incl. a stuck EXSTART) "
+                    "must survive and collapse to 'FULL/-', else it reads like a device with no OSPF. "
+                    "Anonymized.",
+            "input": (
+                "Neighbor ID     Pri   State           Dead Time   Address         Interface\n"
+                "10.0.0.2          1   FULL/DR         00:00:38    10.1.1.2        Vlan10\n"
+                "10.0.0.3          0   FULL/  -        00:00:35    10.1.2.3        GigabitEthernet0/1\n"
+                "10.0.0.4          1   EXSTART/  -     00:00:31    10.1.3.4        GigabitEthernet0/2\n"
+            ),
+            "expect_min_entities": 3,
+            "spot_facts": [
+                ((0, "state"), "FULL/DR"),
+                ((1, "state"), "FULL/-"),          # p2p '/  -' role collapsed, row not dropped
+                ((1, "interface"), "Gi0/1"),       # normalized ifname
+                ((2, "state"), "EXSTART/-"),        # stuck adjacency preserved, not read as absent
+            ],
+        },
+    ],
+    "parse_eigrp_neighbors": [
+        {
+            "note": "'show ip eigrp neighbors' -- H/Address/Interface/Hold/Uptime grid; the token after "
+                    "Hold (the Uptime) becomes the 'up <uptime>' state, and the ifname normalizes "
+                    "(Vl20 -> Vlan20). Anonymized.",
+            "input": (
+                "EIGRP-IPv4 Neighbors for AS(100)\n"
+                "H   Address                 Interface       Hold Uptime   SRTT   RTO  Q  Seq\n"
+                "0   10.1.1.2                Gi0/1             12 01:22:33   10   200  0  5\n"
+                "1   10.1.2.3                Vl20              10 1d02h      15   300  0  8\n"
+            ),
+            "expect_min_entities": 2,
+            "spot_facts": [
+                ((0, "neighbor"), "10.1.1.2"),
+                ((0, "interface"), "Gi0/1"),
+                ((0, "state"), "up 01:22:33"),
+                ((1, "interface"), "Vlan20"),       # Vl20 -> Vlan20 normalized
+            ],
+        },
+    ],
     # ------------------------------------------------------------------ trunking
     "parse_show_interface_trunk_table": [
         {
@@ -379,6 +444,27 @@ PARSER_EXAMPLES = {
                 (("Vlan3",), "VRRP grp 3 Master VIP 10.202.0.1"),
                 (("Vlan4",), "VRRP grp 4 Backup VIP 10.202.4.1"),
                 (("Vlan250",), "VRRP grp 200 Backup VIP 10.202.250.1"),  # ifname != grp
+            ],
+        },
+    ],
+    "parse_hsrp_summary": [
+        {
+            "note": "'show standby brief' tabular HSRP -- 'Vl<N> Grp Pri P State ... Virtual-IP' with "
+                    "the VIP as the LAST IP on the row. Feeds the FHRP behavior string that _parse_fhrp "
+                    "later re-parses (an Init/down group must survive, not drop to 'no FHRP'). The "
+                    "sample-fleet estate runs VRRP, so this pins the HSRP device-output format itself. "
+                    "Anonymized addresses.",
+            "input": (
+                "Interface   Grp  Pri P State   Active          Standby         Virtual IP\n"
+                "Vl10        10   110 P Active  local           10.1.10.3       10.1.10.1\n"
+                "Vl20        20   90  P Standby 10.1.20.2       local           10.1.20.1\n"
+                "Vl30        30   90  P Init    unknown         unknown         10.1.30.1\n"
+            ),
+            "expect_min_entities": 3,
+            "spot_facts": [
+                (("Vlan10",), "HSRP grp 10 Active VIP 10.1.10.1"),
+                (("Vlan20",), "HSRP grp 20 Standby VIP 10.1.20.1"),
+                (("Vlan30",), "HSRP grp 30 Init VIP 10.1.30.1"),  # Init (down) group kept, not dropped
             ],
         },
     ],
@@ -608,6 +694,63 @@ PARSER_EXAMPLES = {
             "spot_facts": [
                 (("Eth1/9", "speed"), "10 Gb/s"),  # no multi-line bleed
                 (("Eth1/9", "duplex"), "Full"),
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ operational logs
+    "parse_syslog_events": [
+        {
+            "note": "'show logging' -- IOS ('000123: *Jun ... %LINK-3-UPDOWN: ...') and NX-OS "
+                    "('2026 Jun ... host %ETHPORT-5-...: ...') event shapes both parse; the non-event "
+                    "header lines ('Syslog logging: enabled ...') are skipped, never errored. "
+                    "Anonymized host.",
+            "input": (
+                "Syslog logging: enabled (0 messages dropped, 0 flushes, 0 overruns)\n"
+                "    Console logging: level debugging, 100 messages logged\n"
+                "Log Buffer (200000 bytes):\n"
+                "000123: *Jun  9 12:00:01.123: %LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down\n"
+                "000124: *Jun  9 12:00:02.456: %LINEPROTO-5-UPDOWN: Line protocol on Interface Gi0/1, changed state to down\n"
+                "2026 Jun  9 12:00:03 CS01 %ETHPORT-5-IF_DOWN_LINK_FAILURE: Interface Ethernet1/1 is down\n"
+            ),
+            "expect_min_entities": 3,
+            "spot_facts": [
+                ((0, "facility"), "LINK"),
+                ((0, "severity"), 3),         # numeric syslog level, not the mnemonic
+                ((0, "mnemonic"), "UPDOWN"),
+                ((2, "facility"), "ETHPORT"),  # NX-OS line shape parsed too
+                ((2, "severity"), 5),
+            ],
+        },
+    ],
+    # ------------------------------------------------------------------ QoS posture
+    "parse_qos_config": [
+        {
+            "note": "QoS slice of a running-config: global 'mls qos', an MQC class-map/policy-map, and "
+                    "a per-interface trust + voice-vlan + input service-policy. The per-interface "
+                    "attribute keys (trust / voice_vlan / policy_in) are exactly what compute_qos_audit "
+                    "counts into n_trust_if / n_voice_if -- renaming one of these output keys is the "
+                    "parser<->detector drift this pin catches. Fixed 6-key shape, so the spot_facts (not "
+                    "the entity count) carry the guard. Anonymized.",
+            "input": (
+                "mls qos\n"
+                "class-map match-any VOICE\n"
+                " match ip dscp ef\n"
+                "policy-map MARK\n"
+                " class VOICE\n"
+                "  set dscp ef\n"
+                "interface GigabitEthernet0/1\n"
+                " switchport voice vlan 100\n"
+                " mls qos trust dscp\n"
+                " service-policy input MARK\n"
+            ),
+            "expect_min_entities": 1,
+            "spot_facts": [
+                (("mls_qos",), True),
+                (("class_maps", 0), "VOICE"),
+                (("policy_maps", 0), "MARK"),
+                (("interfaces", "Gi0/1", "trust"), "dscp"),       # the acceptance field
+                (("interfaces", "Gi0/1", "voice_vlan"), "100"),
+                (("interfaces", "Gi0/1", "policy_in"), "MARK"),
             ],
         },
     ],
