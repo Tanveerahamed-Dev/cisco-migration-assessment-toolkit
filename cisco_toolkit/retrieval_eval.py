@@ -505,10 +505,13 @@ def screen_judge(pass1_final: Dict[str, int], pass2_final: Dict[str, int],
 
 
 def invoke_judge_helper(pairs: List[Dict[str, Any]], *, root: str, passes: int = 1,
-                        timeout: int = 5400) -> Dict[str, Any]:
+                        timeout: int = 21600) -> Dict[str, Any]:
     """Run the root-level Ollama helper as a SUBPROCESS over ``pairs`` (each: pid/query/doc/
     excerpt/rubric) and parse its one-line JSON result. Ollama down / helper missing / bad JSON →
-    ``{"ok": False, "reason": …}`` — signal_absent honesty, never a fabricated grade."""
+    ``{"ok": False, "reason": …}`` — signal_absent honesty, never a fabricated grade. The default
+    timeout is I/O headroom sized to the MEASURED v2 per-call latency on the CPU host (~70–90 s/call
+    × 60 gate calls ≈ the old 5400 s wall — a timeout mid-protocol kills the measurement without
+    shaping any grade, so the ceiling errs generous); pool runs pass their own budget if needed."""
     helper = os.path.join(root, JUDGE_HELPER)
     if not os.path.exists(helper):
         return {"ok": False, "reason": f"judge helper missing: {helper}"}
