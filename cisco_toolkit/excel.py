@@ -1843,7 +1843,11 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
     b = ws.cell(1, 1, "✓ " + (p.get("banner") or "Run after each wave's cutover to confirm it succeeded."))
     b.font = Font(bold=True, color="1F6E43", size=10)
     b.alignment = Alignment(horizontal="left", wrap_text=True)
-    ws.cell(2, 1, f"{s.get('n_items', 0)} check(s) across {s.get('n_waves', 0)} wave(s) · "
+    # 'validation group(s)', not 'wave(s)': n_waves here is the validation_plan.by_wave count (per move-group,
+    # the 3 groups with checks) -- a distinct unit from the sequenced wave_plan waves (the 9). Mirrors the
+    # runbook §11.3 summary; 'wave' stays reserved for the wave_plan. (The 'Wave' column header is left as-is:
+    # it is a shared layout with the NRFU Commands / VLAN cutover sheets, out of this fix's scope.)
+    ws.cell(2, 1, f"{s.get('n_items', 0)} check(s) across {s.get('n_waves', 0)} validation group(s) · "
                   f"{s.get('n_high', 0)} High/Critical · by category: "
                   + ", ".join(f"{k} {v}" for k, v in (s.get("by_category") or {}).items())).font = Font(size=10)
     hdr_row = 4
@@ -1870,7 +1874,7 @@ def write_validation_plan_sheet(wb, vp: dict) -> None:
     for i, w in enumerate([5, 12, 22, 9, 14, 10, 40, 34, 40, 50], 1):
         ws.column_dimensions[chr(64 + i)].width = w
     logger.info(f"  [OK] '{VALIDATION_PLAN_SHEET_NAME}' sheet: {len(items)} check(s), "
-                f"{s.get('n_waves', 0)} wave(s)")
+                f"{s.get('n_waves', 0)} validation group(s)")
 
 
 NRFU_COMMANDS_SHEET_NAME = "NRFU Commands"   # NEW (four-phase NRFU certification pack; orchestration-roadmap frontier)
