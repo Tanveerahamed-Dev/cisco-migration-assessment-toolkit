@@ -10,6 +10,7 @@ read is defensive (.get / tolerant of missing keys) so an older snapshot degrade
 failing. Deterministic content; no network, no device data beyond the snapshot.
 """
 import logging
+import os
 
 from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (the deck's single text sink)
 from cisco_toolkit.brand_tokens import DECK_NAVY_RGB
@@ -181,9 +182,23 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
                        f"· {_sv('n_vlans')} VLANs in scope")
     text(s, 0.9, 4.7, W - 1.8, 1.6,
          [[(sub, 14, _ICE, False)], [(_scale_line, 13, _ICE, False)]])
-    text(s, 0.9, 6.7, W - 1.8, 0.4,
-         [("Generated offline by the Cisco Migration-Assessment Toolkit — full evidence in the workbook, "
-           "explorer & runbook.", 11, (0x9F, 0xB3, 0xE0), False)])
+    # P3-E3 provenance (the explorer-ctx pattern, html.py:539-543): engine version + generation timestamp
+    # + snapshot stem on the title footer, so a printed / forwarded deck stays traceable to the exact
+    # snapshot that produced it. Absent fields are omitted, never fabricated.
+    _stem = os.path.basename(str(output_path or ""))
+    for _suf in ("_executive_deck.pptx", ".pptx"):
+        if _stem.endswith(_suf):
+            _stem = _stem[: -len(_suf)]
+            break
+    _prov = " · ".join(p for p in (
+        snap.get("script_version") or "",
+        (snap.get("generated_at") or "")[:19].replace("T", " "),
+        f"snapshot {_stem}" if _stem else "",
+    ) if p)
+    text(s, 0.9, 6.55, W - 1.8, 0.6,
+         [[("Generated offline by the Cisco Migration-Assessment Toolkit — full evidence in the workbook, "
+            "explorer & runbook.", 11, (0x9F, 0xB3, 0xE0), False)]]
+         + ([[(_prov, 10, (0x9F, 0xB3, 0xE0), False)]] if _prov else []))
 
     # ---------------------------------------------------------------- 2. Fleet posture (light)
     s = slide()
@@ -363,32 +378,56 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         v = r.get("readiness")
         if v in tally:
             tally[v] += 1
+    n_groups = len(mr)
+    _nmg = wp.get("n_move_groups") or len(mg) or n_groups
+    # coverage-honesty (QA row-11 BLOCK): the readiness tiles count EVERY assessed device group — say so on
+    # the tiles themselves, so the wave count beside them cannot read as the whole scope (an exec read
+    # "9 candidate waves" + a 6-row list as the full estate; the real estate was 53 groups, ~7x larger).
+    _denom = f" of {n_groups} device group(s)" if n_groups else " — no groups assessed"
     if wp.get("n_waves"):
-        stat(s, 0.7, 2.1, wp["n_waves"], "candidate waves", _NAVY)
+        stat(s, 0.7, 2.1, wp["n_waves"], f"candidate waves · {_nmg} move-group(s)", _NAVY)
     else:
         stat(s, 0.7, 2.1, len(mg) or len(mr), "move groups", _NAVY)
-    stat(s, 3.3, 2.1, tally["NOT READY"], "NOT READY", _CRIT)
-    stat(s, 5.9, 2.1, tally["CAUTION"], "CAUTION", _MED)
-    stat(s, 8.5, 2.1, tally["READY"], "READY", _OK)
+    stat(s, 3.3, 2.1, tally["NOT READY"], f"NOT READY{_denom}", _CRIT, w=2.5)
+    stat(s, 5.9, 2.1, tally["CAUTION"], f"CAUTION{_denom}", _MED, w=2.5)
+    stat(s, 8.5, 2.1, tally["READY"], f"READY{_denom}", _OK, w=2.5)
     _rt = {"READY": _OK, "CAUTION": _MED, "NOT READY": _CRIT}
-    text(s, 0.7, 3.5, W - 1.4, 0.35, [("PER-GROUP READINESS", 12, _HIGH, True)])
-    y = 3.95
-    for r in mr[:6]:
+    text(s, 0.7, 3.58, W - 1.4, 0.35, [("PER-GROUP READINESS", 12, _HIGH, True)])
+    # Layout is COMPUTED, never coordinated by hand (QA row-11 BLOCK: the footnote was pinned at 6.5in
+    # while a 6-row list runs to ~6.83in — the shapes overprinted and both were illegible). The row count
+    # derives from the space the footnote + bottom margin leave, and the footnote's top from the rows
+    # actually rendered — overlap is impossible by construction (the figgen auto-sized-boxes lesson).
+    # Truncation is disclosed with a "+N more" cue, never silent.
+    LIST_TOP, ROW_H, CUE_H, FOOT_GAP, CONTENT_BOTTOM = 3.95, 0.5, 0.32, 0.12, 7.2
+    foot_h = 0.75 if wp.get("n_waves") else 0.45
+    budget = CONTENT_BOTTOM - foot_h - FOOT_GAP - LIST_TOP
+    n_fit = int(budget // ROW_H)
+    if n_groups > n_fit:
+        n_fit = max(int((budget - CUE_H) // ROW_H), 0)   # reserve the overflow-cue line
+    y = LIST_TOP
+    for r in mr[:n_fit]:
         v = r.get("readiness", "—")
         chip(s, 0.7, y, v, _rt.get(v, _MUTED), w=1.5, h=0.32, size=10)
         text(s, 2.4, y - 0.02, W - 3.1, 0.4,
              [[(_clean(r.get("group", "")) + "  ", 13, _NAVY, True),
                (f"{r.get('n_fail', 0)} blocking · {r.get('n_warn', 0)} warning check(s)", 12, _INK, False)]])
-        y += 0.5
+        y += ROW_H
+    _hidden = n_groups - min(n_fit, n_groups)
+    if _hidden:
+        text(s, 0.7, y, W - 1.4, 0.3,
+             [(f"+ {_hidden} more device group(s) not shown — full per-group readiness in the "
+               "Migration Readiness workbook sheet.", 11, _MUTED, False, True)])
+        y += CUE_H
+    foot_top = y + FOOT_GAP
     if wp.get("n_waves"):
-        text(s, 0.7, 6.5, W - 1.4, 0.7,
-             [(f"{wp.get('n_move_groups', len(mg))} L2-coupled move-group(s) — largest a "
+        text(s, 0.7, foot_top, W - 1.4, foot_h,
+             [(f"{_nmg} L2-coupled move-group(s) — largest a "
                f"{wp.get('largest_group', 0)}-switch broadcast domain — sequence into {wp['n_waves']} "
                f"candidate wave(s) of ≤ {wp.get('wave_cap', 40)} switches. Clear the NOT-READY blockers "
                "first, biggest blast radius first; verify each wave with the Cutover Validation plan.",
                12, _MUTED, False, True)])
     else:
-        text(s, 0.7, 6.7, W - 1.4, 0.4,
+        text(s, 0.7, foot_top, W - 1.4, foot_h,
              [("Clear the NOT-READY blockers first, biggest blast radius first — then verify each wave with the "
                "Cutover Validation plan.", 12, _MUTED, False, True)])
 
