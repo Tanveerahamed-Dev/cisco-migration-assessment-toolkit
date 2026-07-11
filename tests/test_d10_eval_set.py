@@ -130,7 +130,14 @@ def test_multi_hop_edges_exist_in_live_graph():
                     "edge existence is verified on the owner machine and at build time")
     with open(gp, encoding="utf-8") as f:
         graph = json.load(f)
-    _, rows = load_eval_set(str(ROOT))
+    meta, rows = load_eval_set(str(ROOT))
+    recorded = int(meta.get("graph_provenance", {}).get("nodes", 0))
+    live = len(graph.get("nodes", []))
+    if recorded and live < recorded // 2:
+        pytest.skip(f"reachable graph.json is a partial/stub rebuild ({live} nodes vs "
+                    f"{recorded} recorded in the fixture _meta — the worktree-hook rebuild "
+                    f"case): verifying edges against it would be meaningless; the full check "
+                    f"runs on the owner machine's main-checkout graph")
     problems = verify_multi_hop_edges(rows, graph)
     assert problems == [], "\n".join(problems)
 
