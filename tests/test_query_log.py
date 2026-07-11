@@ -7,7 +7,9 @@ P2-0a contract:
   * one JSON line per call, exactly {date, query, surface} — nothing else, append-only;
   * FAIL-OPEN — a logging failure returns False / never raises, and retrieval still completes;
   * the synthetic --eval path (the labeled experiment) NEVER logs, so the real mix stays real;
-  * the SSOT registration (docs/ssot.md row, tracked owner file, /ask wiring) cannot silently rot.
+  * the per-command opt-out CISCO_RECALL_NO_LOG=1 records nothing (privacy escape hatch);
+  * the SSOT registration (docs/ssot.md row, the GITIGNORED owner-machine status — a real query may
+    name client tokens from another engagement, two-store rule — and the /ask wiring) cannot rot.
 """
 import json
 import pathlib
@@ -50,6 +52,13 @@ def test_log_query_failure_degrades_silently_never_raises(tmp_path):
     blocker.write_text("a file where the log's parent dir must go", encoding="utf-8")
     p = blocker / "sub" / "query_log.jsonl"        # makedirs under a FILE -> OSError inside
     assert R.log_query("q", path=str(p)) is False  # honest False, no exception (fail-open)
+
+
+def test_log_query_opt_out_env_records_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CISCO_RECALL_NO_LOG", "1")
+    p = tmp_path / "query_log.jsonl"
+    assert R.log_query("a question naming another client", path=str(p)) is False
+    assert not p.exists(), "the opt-out must record NOTHING (privacy escape hatch)"
 
 
 def _quiet_offline(monkeypatch, root):
@@ -104,12 +113,19 @@ def test_eval_path_never_logs_the_synthetic_labeled_set(tmp_path, monkeypatch):
 
 
 def test_registry_and_ask_command_wire_the_owner():
-    """Ratchet guard (Law 1): the registry row, the tracked owner file, and the /ask wiring must all
-    stay present — dropping any one silently un-registers the query-mix owner or starves the log."""
+    """Ratchet guard (Law 1): the registry row, the GITIGNORED owner-machine status, and the /ask
+    wiring must all stay present — dropping any one silently un-registers the query-mix owner,
+    starves the log, or leaks real queries (which may name another engagement's client tokens —
+    two-store rule) into the pushable repo. The data file itself is deliberately NOT asserted to
+    exist: gitignored means clean clones and CI checkouts carry none (vault-digest precedent)."""
     reg = (ROOT / "docs" / "ssot.md").read_text(encoding="utf-8")
     assert "query_log.jsonl" in reg, "docs/ssot.md no longer registers the query-mix owner"
     assert "log_query" in reg, "docs/ssot.md no longer names the writer symbol on the row"
-    assert (ROOT / "docs" / "quality" / "query_log.jsonl").exists(), "the owner file is gone"
+    assert "gitignored" in reg[reg.index("query_log.jsonl"):][:600].lower(), (
+        "the ssot row no longer records the gitignored/owner-machine status")
+    gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "docs/quality/query_log.jsonl" in gi, (
+        "the query log must stay gitignored — owner-machine only (two-store rule)")
     ask = (ROOT / ".claude" / "commands" / "ask.md").read_text(encoding="utf-8")
     assert "--log-only" in ask and "--surface=ask" in ask, (
         "/ask no longer invokes the --log-only arm — its questions would stop reaching the log")
