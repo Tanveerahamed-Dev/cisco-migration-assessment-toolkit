@@ -236,6 +236,27 @@ def test_runbook_is_evidence_disciplined(tmp_path):
     assert "Cutover playbook by scenario" in text
 
 
+def test_runbook_validation_section_uses_validation_group_noun(tmp_path):
+    """QA row 12 (noun overload): §11.3 counts validation_plan.by_wave buckets (one per move-group, keyed
+    'Group N'), a DISTINCT unit from the sequenced wave_plan waves. The noun must read 'validation group',
+    reserving 'wave' for the wave_plan, so 'N check(s) across M ...' cannot be misread as the wave count."""
+    snap = _snap()
+    snap["validation_plan"] = {
+        "banner": "Run after each cutover to confirm it succeeded.",
+        "by_wave": {"Group 1": [{"device": "sw1", "category": "Gateway", "severity": "High",
+                                 "check": "Default gateway for VLAN 10 is up", "command": "show ip int brief",
+                                 "expect": "Vlan10 up/up", "why": "endpoints lose their gateway"}]},
+        "summary": {"n_items": 1, "n_waves": 1, "n_high": 1, "by_category": {"Gateway": 1}},
+    }
+    out = str(tmp_path / "rb_val.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Post-cutover verification plan (per validation group)" in text
+    assert "check(s) across 1 validation group(s)" in text          # the count noun matches the unit
+    assert "Validation group: Group 1" in text                      # the per-bucket heading
+    assert "1 wave(s)" not in text and "Wave: Group 1" not in text   # the old overloaded phrasings are gone
+
+
 def test_runbook_carries_document_furniture(tmp_path):
     """V3.23.150: AS-style front/back matter — Document Control between cover and TOC, and the
     closing acceptance signature gate."""
