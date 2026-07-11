@@ -48,7 +48,7 @@ def _listening(hostport: str = OLLAMA_HOST, *, timeout: float = 0.4) -> bool:
         return False
 
 
-def _chat(model: str, prompt: str, *, timeout: int = 300) -> str:
+def _chat(model: str, prompt: str, *, timeout: int = 600) -> str:
     """One structured completion via the LOCAL Ollama chat API (lazy ``urllib``, outside the
     fence): temperature 0, bounded output, ``think`` off, grade schema enforced. ``num_predict``
     1024: the adversarial prompt's reasoning-first output overran a 512 budget in the synthetic
