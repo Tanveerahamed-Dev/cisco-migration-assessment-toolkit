@@ -54,8 +54,17 @@ def graph_age():
         return None, "missing"
 
 def lessons_queue():
+    # !lesson bullets + LIFETIME bridge-candidate tags. This brief is vault-free (no /ingest
+    # watermark), so it can only report the lifetime count, never pending — the honest,
+    # watermarked pending queue lives in the SessionStart rot-watch. SSOT: one counter.
     txt = read("docs/log.md")
-    return len(re.findall(r"!lesson", txt)), len(re.findall(r"bridge-candidate", txt))
+    les = len(re.findall(r"!lesson", txt))
+    try:
+        from cisco_toolkit.bridge_queue import bridge_queue_status
+        life = bridge_queue_status(txt)["lifetime"]
+    except Exception:
+        life = len(re.findall(r"bridge-candidate", txt))
+    return les, life
 
 def open_items():
     hits = {}
@@ -126,7 +135,7 @@ def intel_status():
         return ""
 
 gday, gtxt = graph_age()
-les, bc = lessons_queue()
+les, bc_life = lessons_queue()
 oi = open_items()
 td, tf = todos()
 rows = scorecard_rows()
@@ -139,8 +148,10 @@ if sc_verdict == "RED":
     actions.append(f"Agent-system self-check is RED — {sc_red or 'a guard/substrate check failed'} (fix before trusting the nerves)")
 if gday is not None and gday > 7:
     actions.append("Graph is stale (>7d) — refresh: `python -m graphify update .`")
-if bc:
-    actions.append(f"{bc} bridge-candidate lesson(s) await vault promotion — run `/ingest` in a vault session")
+# No "await promotion" action here: this brief is vault-free (no /ingest watermark), so it cannot
+# tell promoted from pending. The honest, watermarked pending count lives in the SessionStart
+# rot-watch (session-brief.sh -> cisco_toolkit.bridge_queue). The cumulative count cried wolf here:
+# it read "34 await promotion" on a day /ingest had already run that morning.
 oi_flat = sum(len(v) for v in oi.values())
 if oi_flat:
     actions.append(f"{oi_flat} open engagement item(s) (GI/REC) referenced in docs — check status")
@@ -166,7 +177,7 @@ L += [f"- {a}" for a in actions]
 L.append("")
 L.append("## Signals")
 L.append(f"- **Graph**: {gtxt}")
-L.append(f"- **Lessons**: {les} !lesson bullet(s); {bc} tagged bridge-candidate (promotion queue depth)")
+L.append(f"- **Lessons**: {les} !lesson bullet(s); {bc_life} tagged bridge-candidate (lifetime; watermarked pending queue shown at SessionStart)")
 if oi:
     L.append("- **Open items**: " + "; ".join(f"{k} {len(v)} ({', '.join(v[:6])}{'...' if len(v) > 6 else ''})" for k, v in sorted(oi.items())))
 else:
