@@ -78,6 +78,9 @@ def test_judge_prompts_carry_rubric_and_no_expected_grades():
     schema = judge_schema()
     assert schema["properties"]["grade"]["enum"] == [0, 1, 2, 3]
     assert list(schema["properties"]) == ["reasoning", "grade"]   # reasoning FIRST
+    # grammar-enforced reasoning bound: forces string closure so the grade is always reached
+    # (unbounded deliberation produced unterminated JSON on real content — measured, not theory)
+    assert schema["properties"]["reasoning"]["maxLength"] == 400
 
 
 # --- κ + screening gate ------------------------------------------------------------------------------
