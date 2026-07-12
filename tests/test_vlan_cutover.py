@@ -17,7 +17,7 @@ from cisco_toolkit.model import InterfaceData
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 EXPECTED_HEADERS = ["VLAN", "Name", "STP Root", "Root Default-Election", "FHRP",
-                    "Gateway SVIs", "Endpoint MACs (per-port sum)", "App Domain", "Criticality",
+                    "Gateway SVIs", "Endpoint MACs (per-port sum)", "Endpoint Mix", "App Domain", "Criticality",
                     "Dependencies", "Wave", "Scenario", "Readiness", "Cutover Window", "Rollback Owner"]
 
 
@@ -70,8 +70,10 @@ def _ctx():
                  "sequence": "1 hard cutover (single-homed, schedule a window) + 2 make-before-break (dual-homed)"}]
     readiness = [{"group": "Group 1", "switches": ["acc1", "distA", "distB"], "readiness": "CAUTION"}]
     endpoint_identity = [
-        {"host": "acc1", "port": "Gi1/0/5", "vlan": "10", "mac": "aabb.ccdd.ee01", "mac_count": 2},
-        {"host": "acc1", "port": "Gi1/0/6", "vlan": "30", "mac": "aabb.ccdd.ee30", "mac_count": 1}]
+        {"host": "acc1", "port": "Gi1/0/5", "vlan": "10", "mac": "aabb.ccdd.ee01", "mac_count": 2,
+         "endpoint_class": "Server"},
+        {"host": "acc1", "port": "Gi1/0/6", "vlan": "30", "mac": "aabb.ccdd.ee30", "mac_count": 1,
+         "endpoint_class": "Workstation"}]
     app_intel = {"domains": [
         {"domain": "Media Production", "tier": "On-air critical", "vlans": ["10"]},
         {"domain": "General infrastructure", "tier": "Support", "vlans": ["10", "30"]}]}
@@ -88,6 +90,20 @@ def _row(rows, vid):
     hit = [r for r in rows if r["vlan"] == vid]
     assert hit, f"no row for VLAN {vid}: {[r['vlan'] for r in rows]}"
     return hit[0]
+
+
+def test_endpoint_mix_composition():
+    """The per-VLAN endpoint composition (WHAT physically moves) — mac-weighted, most-common first,
+    coverage-honest [NOT OBSERVED] where no endpoint was learned. Distinct from the count + criticality."""
+    from cisco_toolkit.analyze import _fmt_endpoint_mix, VLAN_CUTOVER_NOT_OBSERVED
+    rows = _matrix()
+    assert _row(rows, 10)["endpoint_mix"] == "2 Server"          # VLAN 10: two Server MACs
+    assert _row(rows, 30)["endpoint_mix"] == "1 Workstation"
+    assert _row(rows, 20)["endpoint_mix"] == VLAN_CUTOVER_NOT_OBSERVED   # VLAN 20: no endpoints learned
+    # formatter: mac-weighted, most-common first, long tail collapses, honest empty
+    assert _fmt_endpoint_mix({"Server": 8, "Phone": 3, "AP": 1}) == "8 Server · 3 Phone · 1 AP"
+    assert _fmt_endpoint_mix({"A": 1, "B": 1, "C": 1, "D": 1, "E": 1, "F": 1}, limit=4).endswith("· +2 more")
+    assert _fmt_endpoint_mix({}) == VLAN_CUTOVER_NOT_OBSERVED
 
 
 def test_rows_carry_joined_facts():

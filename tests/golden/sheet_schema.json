@@ -565,6 +565,7 @@
   "FHRP",
   "Gateway SVIs",
   "Endpoint MACs (per-port sum)",
+  "Endpoint Mix",
   "App Domain",
   "Criticality",
   "Dependencies",
