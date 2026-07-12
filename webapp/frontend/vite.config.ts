@@ -1,4 +1,5 @@
-import { defineConfig } from "vite";
+/// <reference types="vitest/config" />
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // Dev: proxy the API to the FastAPI backend on :8000 so the SPA and API share one origin.
@@ -16,4 +17,14 @@ export default defineConfig({
     },
   },
   build: { outDir: "dist", sourcemap: false },
+  // Vitest: jsdom for the DOM-touching tests; globals so specs read like the rest of the ecosystem;
+  // setup registers @testing-library/jest-dom matchers. Only the jsdom-SAFE surface is tested — the
+  // three.js / WebGL components (Topology3D, TopologyGraph) are not rendered here (no WebGL in jsdom).
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
+    css: false,
+  },
 });
