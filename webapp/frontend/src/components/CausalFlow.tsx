@@ -20,7 +20,7 @@ const STAGES = [
 
 type Sev = "Critical" | "High" | "Medium" | "Low" | "Info";
 const SEV_ORDER: Sev[] = ["Critical", "High", "Medium", "Low", "Info"];
-function czSev(s: string): Sev {
+export function czSev(s: string): Sev {
   const t = (s || "").toLowerCase();
   if (t.includes("crit")) return "Critical";
   if (t === "high" || t.includes("warn") || t.includes("error")) return "High";
@@ -29,9 +29,9 @@ function czSev(s: string): Sev {
   return (SEV_ORDER as string[]).includes(s) ? (s as Sev) : "Info";
 }
 // connector stroke-width ∝ blast magnitude (Sankey: a heavier flow reaches more endpoints)
-function czWidth(b: number) { return Math.round((2.6 + Math.min(8.6, Math.log2(1 + (b || 0)) * 1.18)) * 10) / 10; }
+export function czWidth(b: number) { return Math.round((2.6 + Math.min(8.6, Math.log2(1 + (b || 0)) * 1.18)) * 10) / 10; }
 // greedy word-wrap into <=maxLines lines of <=maxChars (ellipsis the last if truncated)
-function wrap(s: string, maxChars: number, maxLines: number): string[] {
+export function wrap(s: string, maxChars: number, maxLines: number): string[] {
   const words = String(s || "").split(/\s+/).filter(Boolean), out: string[] = [];
   let cur = "";
   for (const w of words) {

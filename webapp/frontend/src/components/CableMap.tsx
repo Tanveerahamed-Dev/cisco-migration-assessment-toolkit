@@ -12,8 +12,8 @@ const NW = 176, NH = 50, GX = 40, GY = 116, PAD = 60;
 
 interface Pos { x: number; y: number }
 
-function shortName(h: string) { return h.length > 22 ? h.slice(0, 21) + "…" : h; }
-function majorityRole(cm: CableMapModel, k: number) {
+export function shortName(h: string) { return h.length > 22 ? h.slice(0, 21) + "…" : h; }
+export function majorityRole(cm: CableMapModel, k: number) {
   const rs: Record<string, number> = {};
   cm.nodes.filter((n) => n.tier === k).forEach((n) => { if (n.role) rs[n.role] = (rs[n.role] || 0) + 1; });
   const top = Object.entries(rs).sort((a, b) => b[1] - a[1])[0];
@@ -25,7 +25,7 @@ function majorityRole(cm: CableMapModel, k: number) {
 // tier focus keeps one lane + its direct peers. Empty lanes compact (tier remapped on COPIES).
 const EDGE_KINDS = new Set(["ap", "phone", "endpoint"]);
 type FilteredModel = CableMapModel & { _raw: { n: number; c: number } };
-function filterModel(cm: CableMapModel, fabricOnly: boolean, tierSel: number | null): FilteredModel {
+export function filterModel(cm: CableMapModel, fabricOnly: boolean, tierSel: number | null): FilteredModel {
   let nodes = cm.nodes, cables = cm.cables;
   if (fabricOnly) {
     const hide = new Set(nodes.filter((n) => EDGE_KINDS.has(n.kind)).map((n) => n.host));
