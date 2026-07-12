@@ -18,8 +18,9 @@ interface GEdge { source: GNode; target: GNode; is_bridge: boolean; pairs_cut: n
 const W = 840;
 const H = 470;
 
-/** Settle a static force-directed layout (deterministic — d3 seeds positions by phyllotaxis). */
-function layout(raw: { nodes: any[]; edges: any[] }): { nodes: GNode[]; links: GEdge[] } {
+/** Settle a static force-directed layout (deterministic — d3 seeds positions by phyllotaxis).
+ *  Exported for unit testing (pure d3-force; no WebGL) — the graph-positioning algorithm. */
+export function layout(raw: { nodes: any[]; edges: any[] }): { nodes: GNode[]; links: GEdge[] } {
   const nodes: GNode[] = raw.nodes.map((n) => ({ ...n }));
   const links: any[] = raw.edges.map((e) => ({ ...e }));
   const sim = forceSimulation(nodes)

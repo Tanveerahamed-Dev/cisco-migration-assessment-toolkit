@@ -36,7 +36,7 @@ function useThemeColors() {
 /* Build a 3-D rack-mount switch CHASSIS mesh (replaces the default sphere so the fabric reads as
    switches, not globes — mirrors the explorer): a wide low box tinted by health band with an
    emissive front LED strip so it glows. THREE.Color parses the rgb() strings from useThemeColors. */
-function switchMesh(color: string, degree: number, big: boolean): THREE.Object3D {
+export function switchMesh(color: string, degree: number, big: boolean): THREE.Object3D {
   const c = new THREE.Color(color);
   const w = 7 + Math.min(11, degree), h = big ? 3.4 : 2.2, d = 5;
   const g = new THREE.Group();
