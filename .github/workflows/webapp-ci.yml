@@ -45,7 +45,7 @@ jobs:
         run: python -m pytest webapp/tests -q
 
   frontend:
-    name: Frontend type-check + build
+    name: Frontend test + type-check + build
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     defaults:
       run:
@@ -58,5 +58,8 @@ jobs:
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - run: npm ci
+      # Vitest (jsdom) — jsdom-safe unit tests: pure colour tokens + the ErrorBoundary state machine.
+      # `vitest run` exits non-zero on failure, so a broken test fails CI (fail-fast, before the build).
+      - run: npm test
       # `npm run build` is `tsc -p tsconfig.json && vite build`, so a type error or a broken build fails CI.
       - run: npm run build
