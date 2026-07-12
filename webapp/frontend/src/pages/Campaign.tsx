@@ -4,7 +4,7 @@ import { api, bandColor, gateColor } from "../api";
 import type { GateRecord } from "../api";
 import { ErrorBox, Loading, SegBar, useAsync, useToast } from "../components/ui";
 
-const NEXT_DECISION: Record<string, string> = { pending: "go", go: "no-go", "no-go": "slipped", slipped: "pending" };
+export const NEXT_DECISION: Record<string, string> = { pending: "go", go: "no-go", "no-go": "slipped", slipped: "pending" };
 
 function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (m: string) => void }) {
   // `latest` (newest snapshot id) is a dependency so uploading/ingesting a snapshot refetches the
@@ -104,7 +104,7 @@ function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (
 
 const DIR_ICON: Record<string, string> = { improving: "▲", worsening: "▼", flat: "▬" };
 const DIR_COLOR: Record<string, string> = { improving: "var(--ok)", worsening: "var(--crit)", flat: "var(--text-faint)" };
-const VERDICT_COLOR: Record<string, string> = {
+export const VERDICT_COLOR: Record<string, string> = {
   // campaign-trend vocabulary (compute_campaign_trend)
   IMPROVING: "var(--ok)", REGRESSING: "var(--crit)", MIXED: "var(--watch)", FLAT: "var(--text-dim)", INSUFFICIENT: "var(--text-faint)",
   // snapshot_delta vocabulary (compute_snapshot_delta) — the 'Compare two waves' panel reuses this map; without

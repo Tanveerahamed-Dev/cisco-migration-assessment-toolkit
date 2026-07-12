@@ -16,7 +16,7 @@ const WAVE_STATE_COLOR: Record<string, string> = {
   pending: "var(--text-faint)", active: "var(--accent)", complete: "var(--ok)",
   rolled_back: "var(--crit)", deferred: "var(--watch)",
 };
-const OUTCOME_COLOR = (o: string) =>
+export const OUTCOME_COLOR = (o: string) =>
   o === "SUCCESSFUL" ? "var(--ok)"
     : o === "ROLLED BACK" || o === "ABORTED" ? "var(--crit)"
       : "var(--watch)";
@@ -25,7 +25,7 @@ const EVENT_KIND_COLOR: Record<string, string> = {
   gate: "var(--ok)", check: "var(--ok)", step: "var(--text-dim)", note: "var(--watch)",
 };
 
-function fmtClock(totalSeconds: number): string {
+export function fmtClock(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
