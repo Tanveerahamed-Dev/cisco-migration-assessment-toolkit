@@ -13,11 +13,11 @@ import { useEffect, useState } from "react";
 import { api, ArchitectureCoverage, DesignBlueprint, DesignDecision, DesignNrfu, DesignNrfuItem, DesignTargetState } from "../api";
 import { ErrorBox, Loading, useAsync } from "./ui";
 
-const P_COLOR = (p: string) =>
+export const P_COLOR = (p: string) =>
   p === "Critical" ? "var(--crit)" : p === "High" ? "var(--risk)" : p === "Medium" ? "var(--watch)" : "var(--ok)";
-const scoreColor = (v: number | null) =>
+export const scoreColor = (v: number | null) =>
   v == null ? "var(--text-faint)" : v <= 1 ? "var(--crit)" : v <= 2 ? "var(--risk)" : v <= 3 ? "var(--watch)" : "var(--ok)";
-const phaseColor = (ph: string) =>
+export const phaseColor = (ph: string) =>
   ph === "pre-cutover" ? "var(--crit)" : ph === "post-cutover-functional" ? "var(--risk)" : "var(--watch)";
 
 function DecisionCard({ d, isResolved }: { d: DesignDecision; isResolved?: boolean }) {
