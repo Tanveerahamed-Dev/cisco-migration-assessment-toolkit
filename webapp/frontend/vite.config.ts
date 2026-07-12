@@ -18,13 +18,21 @@ export default defineConfig({
   },
   build: { outDir: "dist", sourcemap: false },
   // Vitest: jsdom for the DOM-touching tests; globals so specs read like the rest of the ecosystem;
-  // setup registers @testing-library/jest-dom matchers. Only the jsdom-SAFE surface is tested — the
-  // three.js / WebGL components (Topology3D, TopologyGraph) are not rendered here (no WebGL in jsdom).
+  // setup registers @testing-library/jest-dom matchers. Tests target the jsdom-SAFE surface + the pure
+  // logic of the 3D fabric (the d3-force `layout` and the three.js geometry builder `switchMesh` need
+  // no WebGL); the actual WebGL RENDER (react-force-graph-3d) is honestly out of jsdom scope — that is
+  // browser-E2E (Playwright) territory, deliberately not faked with a hollow canvas mock.
   test: {
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
     css: false,
+    coverage: {
+      provider: "v8",
+      reporter: ["text-summary", "text"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/**/*.test.{ts,tsx}", "src/test/**", "src/main.tsx"],
+    },
   },
 });
