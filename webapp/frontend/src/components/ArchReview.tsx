@@ -7,21 +7,21 @@ import { useState } from "react";
 import { api, ArchCheck, ArchReview, ArchVerdict } from "../api";
 import { ErrorBox, Loading, useAsync } from "./ui";
 
-const V_LABEL: Record<ArchVerdict, string> = {
+export const V_LABEL: Record<ArchVerdict, string> = {
   critical: "CRITICAL DEVIATION",
   deviation: "DEVIATION",
   advisory: "ADVISORY",
   conforms: "CONFORMS",
   "not-assessable": "NOT ASSESSABLE",
 };
-const V_COLOR: Record<ArchVerdict, string> = {
+export const V_COLOR: Record<ArchVerdict, string> = {
   critical: "var(--crit)",
   deviation: "var(--risk)",
   advisory: "var(--watch)",
   conforms: "var(--ok)",
   "not-assessable": "var(--text-faint)",
 };
-const GRADE_COLOR = (g: string) =>
+export const GRADE_COLOR = (g: string) =>
   g === "A" || g === "B" ? "var(--ok)" : g === "C" ? "var(--watch)" : g === "D" || g === "F" ? "var(--crit)" : "var(--text-faint)";
 
 function VerdictPill({ v }: { v: ArchVerdict }) {
