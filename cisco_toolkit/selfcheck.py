@@ -16,9 +16,11 @@ crashes the nightly run.
 """
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 GREEN, RED, UNKNOWN = "GREEN", "RED", "UNKNOWN"
 
@@ -293,6 +295,74 @@ def check_graph_fresh(root: str, *, now: float, stale_days: int = 7) -> Dict[str
     return _check("graph_fresh", GREEN, f"fresh ({age_days:.0f}d old)")
 
 
+def _graph_commit_verdict(built: str, head: str, is_ancestor: Optional[bool], n_py: int,
+                          stale_py_files: int) -> Tuple[str, str]:
+    """The PURE decision for graph code-currency (no I/O -> exhaustively unit-testable). ``built``/``head``
+    are non-empty commit strings; ``is_ancestor`` is whether ``built`` is an ancestor of ``head`` (None =
+    undeterminable); ``n_py`` is the count of .py files changed between them (only meaningful when
+    ``is_ancestor``). Coverage-honest: what cannot be evaluated is UNKNOWN, never a fabricated GREEN.
+
+    Low false-alarm by design: a graph legitimately lags HEAD between Stop-hook refreshes, so lagging is
+    GREEN-with-a-note; only EGREGIOUS code-drift (> ``stale_py_files`` .py files changed since the build,
+    i.e. the refresh is demonstrably not running) is RED — the actionable "the graph is silently wrong
+    for impact analysis" signal that mtime-freshness (:func:`check_graph_fresh`) cannot see."""
+    if head.startswith(built) or built.startswith(head):
+        return GREEN, f"current (built at HEAD {head[:10]})"
+    if is_ancestor is None:
+        return UNKNOWN, f"built at {built[:10]}; ancestry vs HEAD {head[:10]} undeterminable"
+    if not is_ancestor:
+        return UNKNOWN, (f"built at {built[:10]} — not in current history (rebased/rewritten); "
+                         "run: python -m graphify update .")
+    if n_py <= 0:
+        return GREEN, f"built at {built[:10]}; behind HEAD but no .py change since (reflects current code)"
+    if n_py > stale_py_files:
+        return RED, (f"CODE-STALE: {n_py} .py files changed since the graph was built ({built[:10]}) — "
+                     "the Stop-hook refresh isn't keeping up; run: python -m graphify update .")
+    return GREEN, f"built at {built[:10]}; {n_py} .py file(s) changed since (refreshes on the next edit)"
+
+
+def _run_git(root: str, *args: str) -> Optional[subprocess.CompletedProcess]:
+    """Run git in ``root``; None on any failure (the caller degrades to UNKNOWN — never crashes a run)."""
+    try:
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=15)
+    except Exception:
+        return None
+
+
+def check_graph_commit_current(root: str, *, stale_py_files: int = 30) -> Dict[str, str]:
+    """Companion to :func:`check_graph_fresh`: mtime freshness is NOT code currency. A graph touched
+    recently (mtime-fresh) can still be built from OLD code if the Stop-hook refresh isn't running, and
+    impact analysis over a code-stale graph is *silently wrong* (Dimension A gap). This surfaces the
+    ``built_at_commit`` vs HEAD drift, measured in the .py files that changed since — the thing the
+    AST graph reflects. Absent graph / non-git / unreadable -> UNKNOWN (coverage-honest)."""
+    p = os.path.join(root, "graphify-out", "graph.json")
+    if not os.path.exists(p):
+        return _check("graph_commit", UNKNOWN, "graphify-out/graph.json not found here (lives in the main checkout)")
+    try:
+        with open(p, encoding="utf-8") as f:
+            built = json.load(f).get("built_at_commit")
+    except (OSError, ValueError) as e:
+        return _check("graph_commit", UNKNOWN, f"could not read built_at_commit: {e!r}")
+    if not built or not isinstance(built, str):
+        return _check("graph_commit", UNKNOWN, "graph.json has no built_at_commit stamp")
+    head_proc = _run_git(root, "rev-parse", "HEAD")
+    if head_proc is None or head_proc.returncode != 0 or not head_proc.stdout.strip():
+        return _check("graph_commit", UNKNOWN, "not a git checkout / HEAD unavailable")
+    head = head_proc.stdout.strip()
+    is_ancestor: Optional[bool] = None
+    n_py = 0
+    if not (head.startswith(built) or built.startswith(head)):
+        anc = _run_git(root, "merge-base", "--is-ancestor", built, head)
+        if anc is not None and anc.returncode in (0, 1):
+            is_ancestor = anc.returncode == 0
+            if is_ancestor:
+                diff = _run_git(root, "diff", "--name-only", built, head)
+                if diff is not None and diff.returncode == 0:
+                    n_py = sum(1 for ln in diff.stdout.splitlines() if ln.strip().endswith(".py"))
+    status, detail = _graph_commit_verdict(built, head, is_ancestor, n_py, stale_py_files)
+    return _check("graph_commit", status, detail)
+
+
 def run_selfcheck(root: Optional[str] = None, *, now: Optional[float] = None,
                   graph_stale_days: int = 7, memory_dir: Optional[str] = None) -> Dict[str, Any]:
     """Run every check and summarize. ``now`` defaults to wall-clock and ``memory_dir`` to the real
@@ -310,6 +380,7 @@ def run_selfcheck(root: Optional[str] = None, *, now: Optional[float] = None,
         check_judge_trust(root),
         check_protected_artifact(root, memory_dir=memory_dir),
         check_graph_fresh(root, now=now, stale_days=graph_stale_days),
+        check_graph_commit_current(root),
     ]
     n_red = sum(1 for c in checks if c["status"] == RED)
     n_unknown = sum(1 for c in checks if c["status"] == UNKNOWN)
