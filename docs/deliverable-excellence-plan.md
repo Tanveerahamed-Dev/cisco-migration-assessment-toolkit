@@ -53,17 +53,22 @@ Fix-once in the shared `cisco_toolkit/docmeta.py`, wired into all 7 DOCX writers
 - **ops.py** — add Backup-&-Recovery (§4.x) + Known-Issues (from `snap['migration_punchlist']`) sections.
 - **runbook.py** — already the strongest; just Inputs-Required.
 
-## P3 — Non-DOCX surfaces (excel/deck/explorer — already strong; Law-2 provenance is the gap)
+## P3 — Non-DOCX surfaces (excel/deck/explorer — already strong; Law-2 provenance CLOSED by P3-E3 / #346)
+
+> **Status (P3-E4 refresh, 2026-07-12):** the visible Law-2 provenance gap is CLOSED — deck title-slide
+> footer (`deck.py:185`) and the Exec-Summary document-control row (`excel.py:3832`) both carry engine
+> `script_version` + generation timestamp, shipped as **P3-E3 (#346)**. The only remaining item below is
+> the excel File>Info `wb.properties` metadata, still deferred for the flagship-save-path risk noted.
 - **excel.py** — `wb.properties` (CoreProperties: creator/created/keywords=version — golden-safe metadata)
   is set at the orchestrator's `wb.save` (`COLLECT_PARSE_V3_23_0.py:2464`); **CAUTION**: that's the flagship
   save path — a stray undefined var there crashes every `cisco-assess` run, so trace the in-scope
   version/timestamp vars first (deferred for that reason — low value: File>Info metadata, and the
-  visible coverage-honesty already lives in the "Collection Completeness" sheet). A **visible** provenance
-  row is golden-safe if added AFTER row 1 of the Exec-Summary sheet (`excel.py:3413`; the golden captures
-  only row-1 headers) but that writer only receives `brief`, not `script_version`/`generated_at` — needs a
-  small signature+caller change. A Read-Me tab-1 + Glossary tab add sheets → one sheet-schema re-bless.
-- **deck.py:184** — add version/date/snapshot to the title-slide footer (deck is golden-free). NOTE the
-  `text()` run-format differs between single- and multi-line calls — check the helper before editing.
+  visible coverage-honesty already lives in the "Collection Completeness" sheet). ✅ The **visible**
+  provenance row **SHIPPED (P3-E3, #346)** — a document-control row on the Exec-Summary sheet
+  (`excel.py:3832`) carrying `script_version` + `generated_at` (the writer gained the `provenance`
+  signature + caller). A Read-Me tab-1 + Glossary tab add sheets → one sheet-schema re-bless.
+- ✅ **deck.py:185 — SHIPPED (P3-E3, #346):** version/date/snapshot on the title-slide footer (deck is
+  golden-free), following the explorer-ctx provenance pattern.
 - **explorer** (`blast_radius_explorer.html`) — show `SNAP.script_version`/`generated_at` in the header
   (`#src`, ~2406); optionally default the side-panel to `briefCard()` as an answer-first landing.
 
