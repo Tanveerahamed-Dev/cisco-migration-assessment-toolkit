@@ -63,3 +63,23 @@ jobs:
       - run: npm test
       # `npm run build` is `tsc -p tsconfig.json && vite build`, so a type error or a broken build fails CI.
       - run: npm run build
+
+  e2e:
+    name: Frontend E2E (Playwright, real browser + WebGL)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm ci
+      # Chromium for the real-browser E2E (the WebGL 3D-render test jsdom can't reach). Idempotent —
+      # a fast no-op on the self-hosted runner where the browser is already cached.
+      - run: npx playwright install --with-deps chromium
+      # `playwright test` builds (tsc + vite), serves the build, and drives Chromium (see playwright.config.ts).
+      - run: npm run test:e2e
