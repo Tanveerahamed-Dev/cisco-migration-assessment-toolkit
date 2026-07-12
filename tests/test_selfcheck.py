@@ -122,6 +122,32 @@ def test_graph_fresh_stale_absent(tmp_path):
     assert SC.check_graph_fresh(root, now=mtime)["status"] == SC.UNKNOWN               # absent -> UNKNOWN, not GREEN
 
 
+def test_graph_commit_verdict_pure():
+    """The pure code-currency decision, exhaustively — no I/O. Lagging is normal (GREEN-with-note);
+    only egregious code-drift past the floor is RED; the unevaluable is UNKNOWN, never fabricated GREEN."""
+    V = SC._graph_commit_verdict
+    assert V("abc1234", "abc1234ff", None, 0, 30)[0] == SC.GREEN     # prefix match either way -> current
+    assert V("abc1234ff", "abc1234", None, 0, 30)[0] == SC.GREEN
+    assert V("aaa", "bbb", True, 0, 30)[0] == SC.GREEN               # ancestor, no .py change since
+    assert V("aaa", "bbb", True, 5, 30)[0] == SC.GREEN               # small lag is normal
+    assert V("aaa", "bbb", True, 40, 30)[0] == SC.RED                # egregious code-drift -> hook not refreshing
+    assert V("aaa", "bbb", False, 0, 30)[0] == SC.UNKNOWN            # not an ancestor (rebased) -> undeterminable
+    assert V("aaa", "bbb", None, 0, 30)[0] == SC.UNKNOWN             # ancestry unknown -> UNKNOWN
+
+
+def test_graph_commit_absent_and_invalid(tmp_path):
+    """The I/O UNKNOWN paths (no git needed): absent graph, unreadable graph, missing stamp -> UNKNOWN."""
+    root = str(tmp_path)
+    assert SC.check_graph_commit_current(root)["status"] == SC.UNKNOWN          # no graphify-out at all
+    gdir = os.path.join(root, "graphify-out")
+    os.makedirs(gdir)
+    open(os.path.join(gdir, "graph.json"), "w").close()                         # empty -> invalid JSON
+    assert SC.check_graph_commit_current(root)["status"] == SC.UNKNOWN
+    with open(os.path.join(gdir, "graph.json"), "w", encoding="utf-8") as f:
+        json.dump({"nodes": []}, f)                                             # valid JSON, no built_at_commit
+    assert SC.check_graph_commit_current(root)["status"] == SC.UNKNOWN
+
+
 def test_learnings_discipline(tmp_path):
     root = str(tmp_path)
     q = _quality_dir(root)
@@ -331,6 +357,22 @@ def test_protected_artifact_env_var_points_the_store(tmp_path, monkeypatch):
 
 # --- the aggregate ------------------------------------------------------------------------------
 
+def _init_git_with_current_graph(root):
+    """Make ``root`` a git repo with one commit and stamp graphify-out/graph.json's ``built_at_commit``
+    to HEAD, so :func:`check_graph_commit_current` reads GREEN 'current' — a healthy system IS a real
+    git checkout with a code-current graph (that is what the aggregate all-green test now asserts)."""
+    import subprocess
+
+    def _g(*a):
+        return subprocess.run(["git", *a], cwd=root, capture_output=True, text=True)
+    _g("init", "-q")
+    _g("add", "-A")
+    _g("-c", "user.email=t@e.st", "-c", "user.name=t", "commit", "-q", "-m", "fixture", "--no-gpg-sign")
+    head = _g("rev-parse", "HEAD").stdout.strip() or ("0" * 40)
+    with open(os.path.join(root, "graphify-out", "graph.json"), "w", encoding="utf-8") as f:
+        json.dump({"built_at_commit": head, "nodes": [], "links": []}, f)
+
+
 def _healthy_root(tmp_path, now_ref):
     root = _doctrine_root(tmp_path)                 # CLAUDE.md doctrine for the protected reconcile
     q = _quality_dir(root)
@@ -339,9 +381,8 @@ def _healthy_root(tmp_path, now_ref):
     import shutil
     shutil.copyfile(_REAL_LEARNINGS, os.path.join(q, "learnings.md"))
     _write_guards(root)
-    gdir = os.path.join(root, "graphify-out")
-    os.makedirs(gdir)
-    open(os.path.join(gdir, "graph.json"), "w").close()
+    os.makedirs(os.path.join(root, "graphify-out"))
+    _init_git_with_current_graph(root)              # HEAD + a current graph.json (writes graphify-out/graph.json)
     return root
 
 
@@ -357,7 +398,8 @@ def test_run_selfcheck_absent_graph_is_green_with_gaps(tmp_path):
     root = _healthy_root(tmp_path, None)
     os.remove(os.path.join(root, "graphify-out", "graph.json"))     # worktree: no graph
     rep = SC.run_selfcheck(root, now=1.0, memory_dir=_protected_store(tmp_path))
-    assert rep["verdict"] == "GREEN-with-gaps" and rep["summary"]["unknown"] == 1
+    # both graph checks (mtime freshness AND commit currency) go UNKNOWN when the graph is absent
+    assert rep["verdict"] == "GREEN-with-gaps" and rep["summary"]["unknown"] == 2
     assert rep["summary"]["red"] == 0                                # unknown is disclosed, not counted red
 
 
