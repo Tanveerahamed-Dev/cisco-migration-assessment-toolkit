@@ -1,6 +1,6 @@
-generated: "2026-07-11 @ 8e7e91a base (P1-3 rung-5 session, branch claude/blissful-proskuriakova-e9c474; P2-1/P2-2 merged on main via #332, D10 run-1 PARTIAL record open as #333)"
-stage: "PHASE 0 CLOSED — Phase 1 accrual continues; Phase-2 harness MERGED; D10 run 1 landed PARTIAL (judge gate failed); P1-3 rung 5 executed: defect-panel floor CLEARED (worst-run 0.6), D10 gate excerpt hypothesis REFUTED (still failing)"
-execution_phase: "PHASE 2 CLOSED 2026-07-11 (DEC-010, user-accepted identifier-only verdict) — Phase 3 is the front line. Phase-2 verdict: BM25 SUGGESTIVE-BUT-INCONCLUSIVE on identifiers (MRR@5 0.139->0.276, Delta+0.137 clears effect bar but p=0.107/dz=0.38 short of pre-registered significance at n=20); judged strata DEFERRED (local judge anchor accuracy 0.53<0.80 on CPU models, 5 rungs x 2 families); dense DEFERRED (0/30 real queries). Evidence docs/quality/d10-eval-results-2026-07-11.md; frozen set + harness make a GPU re-run one command. Phase 3 opens per plan gate: P3-E1 (parser field-contract) first, fanout-ranked. Phase-1 accrual continues (2 REAL rows now: row-11 BLOCK -> fixed -> row-12 APPROVE bookend); first REAL PIR event-driven."
+generated: "2026-07-12 @ 40bf759 (Phase-3 in progress; E1/E2/E3/K1/K2 merged + bridge adopted; board clean, 0 open PRs, main green)"
+stage: "PHASE 0 CLOSED · PHASE 1 accruing (2 REAL rows, judge advisory) · PHASE 2 CLOSED (DEC-010 identifier-only verdict) · PHASE 3 IN PROGRESS (5 items merged in a day)"
+execution_phase: "PHASE 3 IN PROGRESS (2026-07-12) — front line. Phase 2 CLOSED (DEC-010, identifier-only verdict: BM25 suggestive-but-inconclusive, judged+dense strata deferred hardware-limited; evidence docs/quality/d10-eval-results-2026-07-11.md; a GPU re-run is one command on the frozen set). Phase-3 MERGED: E1 parser<->detector field contract (#342), E2 diff schema-version gate +webapp (#344), E3 Exec-Summary provenance closure (#346), K1 graph.json invariant guard (#345 — AST-only/no-LLM doctrine now a red test), K2 graph commit-currency selfcheck (#348 — code-staleness beyond mtime; K1+K2 fully close the Dimension-A graph-freshness gap). Also adopted: bridge-candidate queue status module (#347, was uncommitted WIP). Phase-1 accrual continues (2 REAL scorecard rows: row-11 BLOCK -> deck fix -> row-12 APPROVE bookend); first REAL PIR event-driven; judge stays ADVISORY (defect-panel TNR 0.6 clears the 0.25 floor but the D10 anchor gate is structurally unmet on CPU models — a human-owned §6 ensemble redesign is the only legitimate unlock, pre-registered blind)."
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"
   - "docs/architect-master-plan-2026-07-10.md"
@@ -83,23 +83,20 @@ last_completed_task: >-
   docs/ssot.md (new row; placed clear of the freshness guard's single-row anchors) + documented in
   docs/quality/README.md.
 next_task: >-
-  HUMAN, in order: (1) review + merge PR #333 (the D10 run-1 PARTIAL record, docs-only) and this
-  session's rung-5 PR (branch claude/blissful-proskuriakova-e9c474): instrument v2 + its measured
-  FAIL, the rung-6 no-spend rule + its firing, the defect-panel rung-5 prompt + its measured
-  CLEAR (judge_tnr 0.6 worst-of-2, both runs clean), scorecard row, ladder logs, this handoff.
-  (2) Decide the D10 fork — the retrieval gate STILL FAILS after the pre-registered v2 (excerpt
-  hypothesis refuted; ladder in docs/quality/README.md retrieval_eval section): (a) accept the
-  PARTIAL protocol (identifier evidence + diagnostics accrue; BM25 verdict UNDECIDED), (b) approve
-  a SPECIFIC cross-family local judge pull by name (EGRESS — nothing was pulled this session), or
-  (c) provide a GPU/higher-RAM host (unlocks think-mode + swap-free 8b). A passing full --run
-  costs ~13 h on the current CPU host (measured: gate ~75 min + ~534 pool-judging calls at
-  ~80 s/call; pooled qrels are append-only so the pool is paid once). If (b)/(c): re-gate from
-  scratch first — `OLLAMA_JUDGE_MODEL=<model> python -m cisco_toolkit.retrieval_eval --gate`.
-  (3) Defect-panel arm is now PROMOTED (0.6): next /qa APPROVEs stamp gating — panel growth
-  toward the 18-defect target must come from INDEPENDENT sources (real PIR incidents, blind
-  cross-family proposals), never same-hand. (4) P1-1 accrual unchanged: REAL rows event-driven,
-  never fabricated. Dense column stays DEFERRED (query_log 0/30). Also still open: #327
-  (P2-0a privacy regraft).
+  Board is CLEAN as of 2026-07-12 (0 open PRs, main green post-merge, census 67). Phase-3
+  continuation targets, none started: (1) P3-E5 parse_port_security_detail NX-OS residual (the one
+  open item from the format-fidelity campaign, docs/parser-format-fidelity.md:71) — BLOCKED on a
+  REAL `show port-security detail` NX-OS fixture; the fidelity discipline forbids authoring one
+  from guesswork, so this needs a real capture before it can be done well. (2) Webapp frontend
+  test harness (P3-W1, webapp/frontend/ has zero tests) or direct pir_docx tests (P3-W2) — needs a
+  few minutes of human intent on what matters most to cover. (3) P3-E4 refresh the
+  deliverable-excellence P2/P3 status table (most items landed per Dimension H). STANDING (human-
+  owned, not agent work): the D10 judged-strata unlock is a §6 judge-ensemble redesign
+  (asymmetric/neutral-only relevance, replacing take-the-MIN which is harsh in the accept
+  direction), pre-registered BLIND then re-gated — never tune-to-pass after seeing the anchor
+  bands. Judge stays advisory until then; defect-panel arm is PROMOTED (TNR 0.6) so /qa APPROVEs
+  now stamp gating — grow the panel from INDEPENDENT sources only. P1-1 accrual: REAL rows
+  event-driven, never fabricated; dense column DEFERRED (query_log 0/30).
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
