@@ -7953,6 +7953,7 @@
     "core2"
    ],
    "endpoint_count": 4,
+   "endpoint_mix": "2 Server \u00b7 1 Phone \u00b7 1 Wireless AP",
    "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
    "criticality": "Support",
    "dependencies": [
@@ -8001,6 +8002,7 @@
     "core2"
    ],
    "endpoint_count": 0,
+   "endpoint_mix": "[NOT OBSERVED]",
    "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
    "criticality": "Support",
    "dependencies": [],
@@ -8020,6 +8022,7 @@
     "core1"
    ],
    "endpoint_count": 1,
+   "endpoint_mix": "1 Server",
    "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
    "criticality": "Support",
    "dependencies": [],

@@ -1384,6 +1384,19 @@ VLAN_CUTOVER_NOT_OBSERVED = "[NOT OBSERVED]"
 _VLAN_CUTOVER_READY_RANK = {"NOT READY": 0, "CAUTION": 1, "READY": 2}   # worst-first pull-through
 
 
+def _fmt_endpoint_mix(classes: Dict[str, int], limit: int = 4) -> str:
+    """Compact per-VLAN endpoint composition, most-common first ('8 Server · 3 Phone · 1 AP'), with a
+    long tail collapsed to '+N more'. Distinct from Criticality (which apps matter) — this is WHAT
+    physically moves, which drives cutover test/rollback approach. Empty → coverage-honest [NOT OBSERVED]."""
+    if not classes:
+        return VLAN_CUTOVER_NOT_OBSERVED
+    items = sorted(classes.items(), key=lambda kv: (-kv[1], kv[0]))
+    head = items[:limit]
+    s = " · ".join(f"{n} {cls}" for cls, n in head)
+    extra = len(items) - len(head)
+    return s + (f" · +{extra} more" if extra > 0 else "")
+
+
 def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                                 stp_roots: Optional[Dict[str, dict]] = None,
                                 fhrp_detail: Optional[Dict[str, list]] = None,
@@ -1447,10 +1460,15 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
             if m:
                 det_ix.setdefault((host, int(m.group(1))), rec)
     ep_count: Dict[int, int] = {}                    # per-VLAN sum of learned MACs (per-port sum)
+    ep_classes: Dict[int, Dict[str, int]] = {}       # per-VLAN endpoint-class composition (mac-weighted)
     for r in (endpoint_identity or []):
         v = str((r or {}).get("vlan", "")).strip()
         if v.isdigit():
-            ep_count[int(v)] = ep_count.get(int(v), 0) + int(r.get("mac_count") or 1)
+            n = int(r.get("mac_count") or 1)
+            ep_count[int(v)] = ep_count.get(int(v), 0) + n
+            cls = str((r or {}).get("endpoint_class") or "").strip() or "Unknown"
+            d = ep_classes.setdefault(int(v), {})
+            d[cls] = d.get(cls, 0) + n
     doms_of: Dict[int, List[dict]] = {}
     for dom in ((application_intelligence or {}).get("domains") or []):
         for v in ((dom or {}).get("vlans") or []):
@@ -1548,6 +1566,7 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
             "stp_root": root, "stp_root_default_election": default_election,
             "fhrp": fhrp, "gateway_svi_hosts": sorted(h for h, _d in gwl),
             "endpoint_count": ep_count.get(vid, 0),
+            "endpoint_mix": _fmt_endpoint_mix(ep_classes.get(vid, {})),
             "app_domain": app_domain, "criticality": criticality,
             "dependencies": deps, "wave": ", ".join(glabels),
             "scenario": "; ".join(bits),
