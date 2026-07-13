@@ -5,7 +5,7 @@ Phase 0 of ``docs/autonomous-brain-plan-v4-final-2026-07-06.md``: the feedback n
 a linter that keeps ``docs/quality/learnings.md`` lean, cited, and free of self-assessment, so it can
 be injected at session start without rotting into a pep-talk.
 
-The three rules (each a real defect the coasting trap or context bloat would otherwise cause):
+The four rules (each a real defect the coasting trap or context bloat would otherwise cause):
 
 1. **Lean** — under 100 lines, so it stays cheap to read at every SessionStart.
 2. **Cited** — every learning carries an evidence pointer (a file/test path, a commit, or an explicit
@@ -13,6 +13,13 @@ The three rules (each a real defect the coasting trap or context bloat would oth
 3. **Verifiable, never a self-assessment** — no coasting language ("great progress", "on track",
    "nailed it", …). The README names the trap: an agent that records "great progress" reads it back
    and stops trying. Learnings are falsifiable facts about the code/engine, not morale.
+4. **Non-redundant** — one claim, one entry. The write discipline is SelfMem's operator vocabulary
+   (arXiv 2607.03726, ADR-0003 §3b): ``ADD`` a genuinely new fact; ``REPLACE`` a stale one in place;
+   ``MERGE`` a related pair; ``REFINE`` wording without duplicating; ``ARCHIVE`` what no longer holds;
+   ``RECORD_EXACT`` a verbatim contract. The through-line is *replace stale, don't accumulate* — so two
+   entries making the same claim are an ``ADD`` where ``REPLACE``/``MERGE`` was due, and are flagged.
+   (The other operators are writer-intent discipline the store can't read; the linter mechanically
+   enforces only the anti-accumulation *symptom* — a duplicated claim.)
 
 Distinct from ``docs/log.md`` (the raw per-session ``/retro`` log — the SOURCE) and from the vault
 (career/domain knowledge, promoted via ``/ingest``). This store is the *distilled repo/engine facts*
@@ -75,6 +82,20 @@ def _short(entry: str) -> str:
     return (first[:70] + "…") if len(first) > 70 else first
 
 
+def _claim_key(entry: str) -> str:
+    """The normalized first-line CLAIM, for duplicate detection (SelfMem write-vocab, rule 4). Strip the
+    bullet, drop backticks, collapse whitespace, lowercase, and shed edge punctuation — so ``- `foo()`
+    returns []`` and ``foo() returns [] —`` key identically. Keys on the claim, NOT the evidence line,
+    so two distinct facts that cite the same file are not flagged. Empty first line → empty key (skipped)."""
+    first = entry.splitlines()[0] if entry else ""
+    first = first.lstrip("- ").replace("`", "")
+    # drop a TRAILING evidence section ("… Evidence: x", "… — Ref: y") so the same claim with a
+    # different pointer keys the same; claim-internal file refs are kept (they ARE the claim)
+    first = re.split(r"\s*[—–-]?\s*(?:Evidence|Ref|Proof|See)\s*[:=].*$", first, maxsplit=1, flags=re.I)[0]
+    first = re.sub(r"\s+", " ", first).strip().lower()
+    return first.strip(".,;:!?—–-…\"'() ")
+
+
 def lint_learnings(text: str, *, max_lines: int = 100) -> List[str]:
     """Discipline violations for a learnings store, most-structural first. Empty == disciplined.
 
@@ -87,12 +108,19 @@ def lint_learnings(text: str, *, max_lines: int = 100) -> List[str]:
     n_lines = len(text.splitlines())
     if n_lines >= max_lines:
         violations.append(f"too long: {n_lines} lines (must stay under {max_lines}; distill it)")
+    seen_claims: dict = {}
     for entry in parse_learnings(text):
         if not _CITATION_RE.search(entry):
             violations.append(f"uncited learning (no evidence pointer): {_short(entry)!r}")
         m = _COASTING_RE.search(entry)
         if m:
             violations.append(f"self-assessment/coasting language {m.group(0)!r} (not a verifiable fact): {_short(entry)!r}")
+        key = _claim_key(entry)
+        if key and key in seen_claims:
+            violations.append(
+                f"duplicate learning (same claim as {seen_claims[key]!r} — REPLACE/MERGE stale, don't ADD): {_short(entry)!r}")
+        elif key:
+            seen_claims[key] = _short(entry)
     return violations
 
 
