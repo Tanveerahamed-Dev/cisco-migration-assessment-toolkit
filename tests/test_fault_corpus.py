@@ -7,6 +7,8 @@ Properties:
 - fed to the calibration nerve the rows show OUTCOME SEPARATION (READY->clean, NOT_READY->incident) — the
   Gate-B signal — yet, being surrogate, they NEVER unlock a tuning proposal (Correction 1, end-to-end).
 """
+import json
+
 from cisco_toolkit import fault_corpus as F
 from cisco_toolkit import calibration as C
 
@@ -49,3 +51,31 @@ def test_surrogate_corpus_never_unlocks_tuning():
     # the whole point of Correction 1: a full fault-injected corpus stays descriptive-only.
     res = C.propose_adjustment(F.corpus_rows())
     assert res["gated"] is True and res["real_n"] == 0 and res["n"] == 1 + len(F.FAULTS)
+
+
+def test_readiness_of_empty_move_groups_is_ready():
+    """No move-groups → nothing to gate → READY (the short-circuit at fault_corpus.py:73)."""
+    s = F.clean_scenario()
+    s["move_groups"] = []
+    assert F.readiness_of(s) == "READY"
+
+
+def test_main_emit_prints_one_jsonl_row_per_corpus_entry(capsys):
+    rc = F.main(["--emit"])
+    assert rc == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(lines) == 1 + len(F.FAULTS)           # clean baseline + one row per fault
+    for ln in lines:
+        row = json.loads(ln)
+        assert {"predicted", "actual", "source_class"} <= set(row)
+        assert row["source_class"] == "fault-injected"
+
+
+def test_main_report_shows_full_discrimination(capsys):
+    rc = F.main([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "fault-injected calibration corpus" in out
+    assert "clean baseline" in out
+    # every injected fault is flagged non-READY (the module's whole reason to exist)
+    assert f"engine flagged {len(F.FAULTS)}/{len(F.FAULTS)}" in out
