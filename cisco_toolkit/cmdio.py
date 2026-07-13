@@ -28,6 +28,14 @@ _CISCO_ERRORS = (
     "% ambiguous command", "% ip routing not enabled",
     "% routing not enabled", "invalid input detected",
     "error: invalid", "% requires vrf", "% vrf does not exist",
+    # AUTHORIZATION denials (audit-6 coverage-honesty): a narrow read-only RBAC / TACACS+ command-authz
+    # account -- which the security doctrine RECOMMENDS -- hitting a privileged `show` gets one of these
+    # banners as the ENTIRE command output. Unfiltered it was NON-EMPTY text, so a device whose logs were
+    # never actually read scored collected=True/0-events -> certified as having clean logs (false health on
+    # the very `show logging` family doctrine #3 names). These forms are exact / '% '-anchored so a legit
+    # DEEP syslog line ('%SEC-6-IPACCESSLOGP: ... permission denied') is never matched. Verified banner text:
+    # NX-OS RBAC '% Permission denied for the role'; IOS exec '% Authorization failed.'; IOS/NX-OS per-command.
+    "% permission denied for the role", "% authorization failed", "command authorization failed",
 )
 
 # --- zero-parse yield ledger ------------------------------------------------------
