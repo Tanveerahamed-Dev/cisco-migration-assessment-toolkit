@@ -108,7 +108,7 @@ def _scorecard_row(r):
 
 def fmt_scorecard(rows):
     if not rows:
-        return "no entries yet — records automatically once a /qa verdict is produced (SubagentStop appender)"
+        return "no entries yet — run /qa on a deliverable; it records the verdict in-session (scorecard --record)"
     tail = " | ".join(_scorecard_row(r) for r in rows[-3:])
     scored = [r.get("score") for r in rows if isinstance(r.get("score"), (int, float))]
     trend = ""
@@ -156,7 +156,7 @@ oi_flat = sum(len(v) for v in oi.values())
 if oi_flat:
     actions.append(f"{oi_flat} open engagement item(s) (GI/REC) referenced in docs — check status")
 if not rows:
-    actions.append("Quality scorecard is empty — run `/qa` on a deliverable; the SubagentStop appender records each verdict so the trend becomes a number you can watch")
+    actions.append("Quality scorecard is empty — run `/qa` on a deliverable; it records each verdict in-session (scorecard --record) so the trend becomes a number you can watch")
 if dirty:
     actions.append(f"{dirty} uncommitted file(s) — review/commit")
 if not actions:
