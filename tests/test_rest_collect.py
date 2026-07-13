@@ -221,3 +221,32 @@ def test_collect_refuses_non_https(monkeypatch, tmp_path):
     assert rest_collect.collect_apic("http://apic.example", "u", "secret", str(tmp_path / "a")) == []
     assert rest_collect.collect_vmanage("http://vmanage.example:8443", "u", "secret", str(tmp_path / "v")) == []
     assert posted == [], "no login POST may be sent to a non-HTTPS URL (the password would be cleartext)"
+
+
+def test_get_json_is_fail_soft_on_non_json_and_none(monkeypatch):
+    """The parse-fidelity floor for every controller: a non-JSON body or a failed GET → None, never a raise
+    (rest_collect.py:145-152) — one bad query never aborts the whole collection."""
+    from cisco_toolkit import rest_collect as RC
+    monkeypatch.setattr(RC, "_get_text", lambda *a, **k: "this is not json")
+    assert RC._get_json(None, "https://apic/api/x") is None
+    monkeypatch.setattr(RC, "_get_text", lambda *a, **k: None)
+    assert RC._get_json(None, "https://apic/api/x") is None
+
+
+def test_post_and_get_text_fail_soft_on_transport_error():
+    from cisco_toolkit import rest_collect as RC
+
+    class _Opener:
+        def open(self, *a, **k):
+            raise OSError("connection refused")
+
+    op = _Opener()
+    assert RC._post(op, "https://ctrl/login", {"a": 1}) is None      # login POST fail-soft
+    assert RC._get_text(op, "https://ctrl/api") is None              # GET fail-soft
+
+
+def test_http_session_disables_tls_verification_when_asked():
+    import urllib.request
+    from cisco_toolkit import rest_collect as RC
+    opener = RC._http_session(verify_tls=False)
+    assert any(isinstance(h, urllib.request.HTTPSHandler) for h in opener.handlers)  # CERT_NONE handler added
