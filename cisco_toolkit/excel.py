@@ -3617,7 +3617,7 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
     compute_vlan_cutover_matrix (one source of truth with snap['vlan_cutover'])."""
     from cisco_toolkit.analyze import VLAN_CUTOVER_NOT_OBSERVED
     cols = ["VLAN", "Name", "STP Root", "Root Default-Election", "FHRP",
-            "Gateway SVIs", "Endpoint MACs (per-port sum)", "App Domain", "Criticality",
+            "Gateway SVIs", "Endpoint MACs (per-port sum)", "Endpoint Mix", "App Domain", "Criticality",
             "Dependencies", "Wave", "Scenario", "Readiness", "Cutover Window", "Rollback Owner"]
     ws = wb.create_sheet(VLAN_CUTOVER_SHEET_NAME)
     _census_header(ws, cols)
@@ -3647,6 +3647,7 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
         de = ("yes" if rec.get("stp_root_default_election") else "no") if root_seen else ""
         vals = [rec.get("vlan"), rec.get("name", ""), rec.get("stp_root", ""), de, fhrp_txt,
                 ", ".join(rec.get("gateway_svi_hosts") or []), rec.get("endpoint_count", 0),
+                rec.get("endpoint_mix", ""),
                 rec.get("app_domain", ""), rec.get("criticality", ""),
                 "; ".join(rec.get("dependencies") or []), rec.get("wave", ""),
                 rec.get("scenario", ""), rec.get("readiness", ""),
@@ -3657,13 +3658,13 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
         if rec.get("stp_root_default_election"):
             ws.cell(r, 3).fill = warn_fill; ws.cell(r, 4).fill = warn_fill
         if rec.get("readiness") == "NOT READY":
-            ws.cell(r, 13).font = Font(name="Calibri", size=10, bold=True, color="C00000")
+            ws.cell(r, 14).font = Font(name="Calibri", size=10, bold=True, color="C00000")
         r += 1
     if r == 2:
         # coverage-honest empty state: scoped to the collection, not a claim of "no VLANs exist"
         ws.cell(2, 1, "-"); ws.cell(2, 2, "No VLAN evidenced in the collected devices")
     _census_autofit(ws, len(cols), r - 1)
-    for letter, w in (("E", 46), ("J", 36), ("L", 34), ("N", 16), ("O", 16)):
+    for letter, w in (("E", 46), ("H", 24), ("K", 36), ("M", 34), ("O", 16), ("P", 16)):
         ws.column_dimensions[letter].width = w
     logger.info(f"  [OK] '{VLAN_CUTOVER_SHEET_NAME}' sheet: {len(vlan_cutover or [])} VLAN(s)")
 
