@@ -1495,6 +1495,27 @@ def test_get_snapshot_section_robust_to_scalar_section(tmp_path):
     assert st.get_snapshot_section(sid, "devices") == {"sw1": {}}          # objects still decode
 
 
+def test_get_snapshot_section_key_is_bound_not_sql_injectable(tmp_path):
+    """[audit-6 sec] get_snapshot_section built its query with an f-string ('$.{key}'). Every caller passes
+    a literal section name, but that made it a SQL-injection sink guarded by convention only -- one future
+    caller forwarding a request value would turn it Critical. The JSON path is now a BOUND parameter, so a
+    hostile key cannot break out of the string literal into SQL to reach another table/row. NON-VACUOUS:
+    under the old f-string this exact key (proven injectable in isolation by the audit) exfiltrated the
+    sqlite_master table list; bound, it is an inert JSON path -> None, and nothing cross-table leaks."""
+    from webapp.backend.storage import Store
+    st = Store(str(tmp_path / "t.db"))
+    cid = st.create_campaign("acme-secret-campaign", "cust")["id"]
+    sid = st.add_snapshot(cid, "s", {"design_blueprint": {"ok": 1}}, {"n_switches": 1})["id"]
+    evil = ("zzz') AS ignored, (SELECT group_concat(name) FROM sqlite_master "
+            "WHERE type='table') AS sect FROM snapshots WHERE id=? -- ")
+    out = st.get_snapshot_section(sid, evil)
+    assert out is None                                                    # inert path miss, not an exfil
+    leaked = "" if out is None else str(out)
+    assert "sqlite_master" not in leaked and "campaigns" not in leaked \
+        and "acme-secret-campaign" not in leaked                          # no other table/row leaked
+    assert st.get_snapshot_section(sid, "design_blueprint") == {"ok": 1}  # legit literal keys unchanged
+
+
 def test_reconcile_gate_flags_a_drifting_snapshot(caplog):
     """W3-5: deliverables.generate runs a fail-soft SSOT pre-emission check — a snapshot whose published facts
     disagree with the raw evidence is loudly logged before the artifact is written (never silently emitted),
