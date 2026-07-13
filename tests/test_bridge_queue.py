@@ -93,3 +93,17 @@ def test_total_on_bad_and_empty_input():
     assert bridge_queue_status(None, None)["pending"] is None
     empty = bridge_queue_status("", "2026-07-11")
     assert empty["lifetime"] == 0 and empty["pending"] == 0 and empty["newest_session"] is None
+
+
+def test_main_ingest_flag_reports_pending(tmp_path, capsys):
+    from cisco_toolkit import bridge_queue as bq
+    log = tmp_path / "log.md"
+    log.write_text("## [2026-07-10] a\n- x bridge-candidate\n", encoding="utf-8")
+    assert bq.main([str(log), "--ingest", "2026-07-09"]) == 0   # a 07-10 candidate is after the watermark
+    assert "pending" in capsys.readouterr().out.lower()
+
+
+def test_main_missing_log_is_reported_never_a_gate(capsys):
+    from cisco_toolkit import bridge_queue as bq
+    assert bq.main(["no-such-log.md"]) == 0                     # a report, always exit 0
+    assert "log not found" in capsys.readouterr().out

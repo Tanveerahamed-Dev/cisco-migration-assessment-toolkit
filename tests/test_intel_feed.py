@@ -88,3 +88,36 @@ def test_advisory_hits_flow_into_self_healing_routed_to_security():
     assert res["plan"] and res["plan"][0]["kind"] == "advisory"
     assert res["plan"][0]["root_cause_owner"] == "config-security-auditor"
     assert res["plan"][0]["mop_author"] == "mop-change-author"    # still propose-only
+
+
+def test_verify_feed_empty_and_unparseable_manifest_are_refused():
+    """The front of the provenance gate: an empty feed or a non-JSON first line is refused whole,
+    with NO entries consumed (intel_feed.py:58,61-62)."""
+    empty = IF.verify_feed("")
+    assert empty["ok"] is False and empty["reason"] == "empty feed" and empty["entries"] == []
+    bad = IF.verify_feed("not-json-line\n")
+    assert bad["ok"] is False and "unparseable manifest" in bad["reason"] and bad["entries"] == []
+
+
+def test_match_fleet_coerces_a_scalar_affected_field():
+    """Real advisories often carry `affected` as a scalar; the list-coercion (intel_feed.py:132) must
+    still match the fleet platform — an uncovered branch."""
+    hits = IF.match_fleet([{"id": "x", "affected": "ios"}], {"ios-xe"})
+    assert hits, "a scalar 'affected' must coerce to a list and still match the fleet"
+
+
+def test_render_shows_refused_feeds_and_no_match():
+    loaded = {"note": "1 feed", "refused": [{"feed": "bad.jsonl", "reason": "unreadable"}], "advisories": []}
+    out = IF.render(loaded, hits=[])
+    assert "[REFUSED] bad.jsonl: unreadable" in out
+    assert "no loaded advisory matches" in out
+
+
+def test_main_verifies_feeds_and_matches_the_fleet(tmp_path, capsys):
+    d = tmp_path / "intel"
+    d.mkdir()
+    (d / "junk-feed.jsonl").write_text("not a manifest\n", encoding="utf-8")     # refused by the gate
+    snap = tmp_path / "snap.json"
+    snap.write_text(json.dumps({"devices": {"r1": {"platform": "ios-xe"}}}), encoding="utf-8")
+    assert IF.main(["--dir", str(d), str(snap)]) == 0                            # read-only, no egress
+    assert "Intel feed" in capsys.readouterr().out

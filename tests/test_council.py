@@ -77,3 +77,26 @@ def test_aggregate_zero_lenses_fails_safe():
 def test_aggregate_non_refute_first_is_plurality():
     assert C.aggregate([S, S, R], refute_first=False)["verdict"] == S
     assert C.aggregate([S, R, R], refute_first=False)["verdict"] == R
+
+
+def test_main_aggregate_exit_codes(capsys):
+    import json
+    assert C.main(["aggregate", "SUPPORT", "SUPPORT", "REFUTE"]) == 0    # strict majority -> certified
+    assert json.loads(capsys.readouterr().out)["verdict"] == C.SUPPORT
+    assert C.main(["aggregate", "REFUTE"]) == 3                          # not certified -> exit 3 (D8)
+
+
+def test_main_plan_without_snapshot_uses_general_lenses(capsys):
+    import json
+    assert C.main(["plan", "the fabric is ready"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["claim"] == "the fabric is ready" and plan["n"] >= 1
+
+
+def test_render_plan_carries_the_claim():
+    plan = C.plan_council("claim X", {"classes": [{"key": "aci", "observed": True, "status": "finding"}]})
+    assert "claim X" in C.render_plan(plan)
+
+
+def test_main_no_subcommand_returns_2(capsys):
+    assert C.main([]) == 2
