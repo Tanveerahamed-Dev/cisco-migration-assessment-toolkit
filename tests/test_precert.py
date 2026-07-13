@@ -343,3 +343,11 @@ def test_readiness_freeze_json_round_trips():
           [{"check": "Gateway redundancy", "status": "fail"}]}]
     cert = compute_readiness_freeze(_readiness_snap(g), mode="real")
     assert json.loads(json.dumps(cert)) == cert                      # pure JSON types only
+
+
+def test_main_unreadable_snapshot_returns_2(capsys):
+    """The readiness-freeze CLI (precert.py:387) fails soft on a bad path — exit 2, a clear message,
+    never a traceback."""
+    from cisco_toolkit import precert as P
+    assert P.main(["no-such-snapshot.json"]) == 2
+    assert "cannot read snapshot" in capsys.readouterr().out
