@@ -99,3 +99,22 @@ def test_read_inventory_file_csv_and_xlsx(tmp_path):
     ws.append(["hostname", "device_type", "primary_ip"]); ws.append(["SW2", "C9500", "10.0.0.2"]); wb.save(str(xl))
     rows = ei.read_inventory_file(str(xl))
     assert rows[0]["host"] == "SW2" and rows[0]["model"] == "C9500" and rows[0]["mgmt_ip"] == "10.0.0.2"
+
+
+def test_reconcile_flags_ip_drift():
+    """The 5th drift type, IP_DRIFT (declared mgmt IP != observed), was only tested for its ABSENCE.
+    Same model, moved management IP → one IP_DRIFT row + summary count."""
+    snap = {"lifecycle_risk": {"per_device": [{"host": "SW1", "model": "C9300", "mgmt_ip": "10.0.0.1"}]}}
+    declared = [{"host": "SW1", "model": "C9300", "mgmt_ip": "10.0.0.2"}]
+    out = ei.reconcile_external(snap, declared)
+    by = {r["host"]: r for r in out["rows"]}
+    assert by["SW1"]["type"] == "IP_DRIFT"
+    assert "10.0.0.1" in by["SW1"]["detail"] and "10.0.0.2" in by["SW1"]["detail"]
+    assert out["summary"]["IP_DRIFT"] == 1
+
+
+def test_reconcile_ip_drift_compares_host_address_not_cidr():
+    # NetBox stores the mgmt IP as CIDR; only the host address is compared → no spurious IP_DRIFT
+    snap = {"lifecycle_risk": {"per_device": [{"host": "SW1", "model": "C9300", "mgmt_ip": "10.0.0.1"}]}}
+    declared = [{"host": "SW1", "model": "C9300", "mgmt_ip": "10.0.0.1/24"}]
+    assert all(r["type"] != "IP_DRIFT" for r in ei.reconcile_external(snap, declared)["rows"])
