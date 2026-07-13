@@ -297,6 +297,15 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
             break
         resources.extend(page)
         nxt = ((sr.get("SearchResult") or {}).get("nextPage") or {}).get("href")
+        if nxt:
+            # SECURITY: nextPage.href is attacker-influenceable (it comes from the controller response body).
+            # Following it verbatim with the Basic-auth header would leak the read-only credential to ANY
+            # host/scheme it names (credential exfil / SSRF / a cleartext http:// downgrade). Only follow a
+            # same-origin link — https on the same host:9060 as ers_base — else stop paginating.
+            _p = urllib.parse.urlsplit(nxt)
+            if _p.scheme != "https" or _p.hostname != host or (_p.port or 9060) != 9060:
+                logger.warning("  [ISE] refusing off-host ERS pagination link: %s", _safe_url(nxt))
+                nxt = None
     if resources:
         ers_nodes = []
         for res in resources:

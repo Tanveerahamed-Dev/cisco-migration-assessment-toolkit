@@ -109,3 +109,23 @@ def test_explorer_iframe_is_sandboxed_without_same_origin():
     assert "allow-scripts" in sandbox_line
     assert "allow-same-origin" not in sandbox_line, \
         "allow-same-origin would hand the iframe the parent origin + zero-auth API"
+
+
+def test_spa_catchall_refuses_path_traversal(tmp_path, monkeypatch):
+    """The SPA history-fallback (app.py:755) sits BELOW the /api access guard — no token, no loopback
+    check. A `..` traversal (sent percent-encoded so it reaches the server undecoded — httpx keeps %2e)
+    must be CONTAINED to the dist dir: it falls back to index.html, never reads an out-of-dist file.
+    Pre-fix this served any file the process could read (the client-snapshot DB, source, keys)."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><title>SPA-SHELL</title>", encoding="utf-8")
+    (dist / "app.js").write_text("console.log('legit-asset')", encoding="utf-8")
+    secret = tmp_path / "secret.txt"                         # a sibling OUTSIDE dist
+    secret.write_text("TOP-SECRET-SNAPSHOT-DB", encoding="utf-8")
+    monkeypatch.setattr(app_module, "FRONTEND_DIST", dist)
+    with TestClient(create_app(db_path=str(tmp_path / "t.db"))) as c:
+        assert c.get("/app.js").text == "console.log('legit-asset')"       # a real in-dist asset is served
+        assert "SPA-SHELL" in c.get("/campaigns/5").text                   # a deep link -> the SPA shell
+        r = c.get("/%2e%2e/secret.txt")                                    # traversal to the sibling secret
+        assert "TOP-SECRET" not in r.text and "SPA-SHELL" in r.text        # contained -> index.html, not the file
+        assert "TOP-SECRET" not in c.get("/%2e%2e%2f%2e%2e%2fsecret.txt").text  # deeper encoded traversal too
