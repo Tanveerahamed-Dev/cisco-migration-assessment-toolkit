@@ -423,3 +423,20 @@ def test_run_selfcheck_red_leads(tmp_path):
     assert rep["verdict"] == "RED"
     assert rep["leads"] and rep["leads"][0]["name"] == "scorecard_substrate"
     assert "scorecard_substrate" in SC.render(rep)
+
+
+def test_pir_and_nightly_substrate_are_red_when_missing(tmp_path):
+    """Both feedback substrates go RED when their store is absent — absence is a RED signal, not silence."""
+    r1 = SC.check_pir_substrate(str(tmp_path))
+    assert r1["status"] == SC.RED and "missing" in r1["detail"]
+    r2 = SC.check_nightly_ledger(str(tmp_path))
+    assert r2["status"] == SC.RED and "missing" in r2["detail"]
+
+
+def test_main_exit_codes_map_red_to_4_and_clean_to_0(monkeypatch):
+    # isolate main's exit-code mapping from render's report shape
+    monkeypatch.setattr(SC, "render", lambda r: "")
+    monkeypatch.setattr(SC, "run_selfcheck", lambda *a, **k: {"verdict": SC.RED})
+    assert SC.main([]) == 4                                   # any RED check -> exit 4
+    monkeypatch.setattr(SC, "run_selfcheck", lambda *a, **k: {"verdict": SC.GREEN})
+    assert SC.main([]) == 0

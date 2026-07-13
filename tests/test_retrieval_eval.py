@@ -392,3 +392,30 @@ def test_authored_qrels_and_configs_shape():
              "qrels": [{"doc": "a.py", "grade": 3}]}]
     assert authored_qrels(rows) == {"I-01": {"a.py": 3}}
     assert CONFIGS == (CONFIG_A, CONFIG_B) == ("graph", "graph+bm25")
+
+
+def test_main_usage_returns_2(capsys):
+    from cisco_toolkit import retrieval_eval as RE
+    assert RE.main([]) == 2
+    assert "usage" in capsys.readouterr().out.lower()
+
+
+def test_invoke_judge_helper_missing_is_signal_absent(tmp_path):
+    """No fabricated grade when the judge helper is absent — signal_absent honesty (retrieval_eval.py:515)."""
+    from cisco_toolkit import retrieval_eval as RE
+    res = RE.invoke_judge_helper([{"pid": "1", "query": "q"}], root=str(tmp_path))
+    assert res["ok"] is False and "judge helper missing" in res["reason"]
+
+
+def test_tracked_files_raises_on_git_failure(monkeypatch, tmp_path):
+    import pytest
+    from cisco_toolkit import retrieval_eval as RE
+
+    class _Bad:
+        returncode = 128
+        stderr = "not a git repository"
+        stdout = ""
+
+    monkeypatch.setattr(RE.subprocess, "run", lambda *a, **k: _Bad())
+    with pytest.raises(RuntimeError):
+        RE.tracked_files(str(tmp_path))

@@ -50,3 +50,32 @@ def test_evaluate_reports_mrr_vs_best_single_honestly():
     assert rep["delta"] == round(rep["mrr_hybrid"] - rep["best_single"], 3)   # honest baseline
     # non-vacuity: fusion is compared against the BEST single signal, so it cannot look better than it is
     assert rep["best_single"] == max(rep["mrr_docs"], rep["mrr_code"])
+
+
+def test_graph_rank_parses_identifiers_dedups_and_caps(monkeypatch):
+    import subprocess
+
+    class _Out:
+        returncode = 0
+        stdout = "NODE cisco_toolkit/recall.py:104\nrrf_fuse()\ndocs/ssot.md\nrrf_fuse()\ncisco_toolkit/parse.py"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Out())
+    toks = R.graph_rank("anything")
+    assert "cisco_toolkit/recall.py:104" in toks and "rrf_fuse()" in toks and "docs/ssot.md" in toks
+    assert toks.count("rrf_fuse()") == 1                      # first-seen, deduped
+
+
+def test_graph_rank_degrades_to_empty_when_graphify_unavailable(monkeypatch):
+    import subprocess
+
+    class _Bad:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Bad())
+    assert R.graph_rank("q") == []                            # offline-graphify degrades, never fabricates
+
+
+def test_main_usage_returns_2(capsys):
+    assert R.main([]) == 2
+    assert "usage" in capsys.readouterr().out.lower()
