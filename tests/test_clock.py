@@ -127,3 +127,35 @@ def test_make_run_row_stamps_clock_and_append_is_schema_ordered(tmp_path):
     assert C.append_run(row, p) is True
     obj = json.loads(open(p, encoding="utf-8").read().splitlines()[0])
     assert list(obj.keys()) == list(C.SCHEMA_KEYS)
+
+
+def test_read_runs_skips_blank_and_malformed_lines(tmp_path):
+    p = str(tmp_path / "runs.jsonl")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write('{"outcome":"ok","cost_usd":1}\n\ngarbage-not-json\n')
+    rows = C.read_runs(p)
+    assert len(rows) == 1 and rows[0]["outcome"] == "ok"       # good line kept; blank + garbage dropped
+
+
+def test_parse_date_and_append_run_reject_bad_input(tmp_path):
+    assert C._parse_date("not-a-date") is None                 # total on a bad date
+    assert C.append_run(["not", "a", "dict"], str(tmp_path / "x.jsonl")) is False   # non-dict guard
+
+
+def test_render_preflight_and_report_format(tmp_path):
+    from datetime import datetime
+    rows = C.read_runs(str(tmp_path / "none.jsonl"))           # [] — a clean, empty ledger
+    pf = C.render_preflight(C.preflight(rows, now=datetime.now()))
+    assert ("[GO]" in pf or "[NO-GO]" in pf) and "breaker:" in pf and "budget:" in pf
+    rep = C.render_report(C.weekly_report(rows, now=datetime.now()))
+    assert "nightly spend-vs-action" in rep
+
+
+def test_main_show_report_and_preflight(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("NIGHTLY_RUNS_FILE", str(tmp_path / "runs.jsonl"))
+    assert C.main(["--show"]) == 0
+    assert "no entries yet" in capsys.readouterr().out
+    assert C.main(["--report"]) == 0
+    assert "nightly spend-vs-action" in capsys.readouterr().out
+    assert C.main([]) in (0, 3)                                # default preflight: go(0) / no-go(3)
+    assert "preflight" in capsys.readouterr().out.lower()

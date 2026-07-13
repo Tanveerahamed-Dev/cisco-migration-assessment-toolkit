@@ -107,3 +107,42 @@ def test_inputs_not_mutated():
     o2, n2 = copy.deepcopy(old), copy.deepcopy(new)
     R.propose_remediation(old, new)
     assert old == o2 and new == n2
+
+
+def test_health_severity_bands():
+    assert R._health_severity(35, "Fair") == "High"       # delta >= 30
+    assert R._health_severity(20, "Fair") == "Medium"     # delta >= 15
+    assert R._health_severity(12, "Fair") == "Low"
+    assert R._health_severity(5, "Critical") == "Critical"    # a Critical band dominates the delta
+
+
+def test_health_drift_routes_to_reachability_and_proposes_a_mop():
+    old = {"health_scores": [{"switch": "sw1", "score": 90, "band": "Good"}]}
+    new = {"health_scores": [{"switch": "sw1", "score": 70, "band": "Fair"}]}
+    res = R.propose_remediation(old, new)
+    assert res["plan"], "a 20-point health drop must produce a remediation item"
+    item = res["plan"][0]
+    assert item["root_cause_owner"] == "topology-reachability-analyst"   # health drift -> the default owner
+    assert "MOP" in item["proposed_intent"]                              # propose a reviewable MOP, never a write
+
+
+def test_new_switch_without_baseline_is_not_a_regression():
+    old = {"health_scores": [{"switch": "sw1", "score": 90, "band": "Good"}]}
+    new = {"health_scores": [{"switch": "sw1", "score": 70, "band": "Fair"},   # sw1 regressed
+                             {"switch": "sw2", "score": 50, "band": "Poor"}]}   # sw2: no baseline row
+    subjects = [d["subject"] for d in R.extract_drift(old, new)]
+    assert "sw1" in subjects and "sw2" not in subjects     # a new device is not a "regression"
+
+
+def test_main_usage_bad_reads_and_happy_path(tmp_path, capsys):
+    import json
+    assert R.main([]) == 2
+    assert "usage" in capsys.readouterr().out.lower()
+    assert R.main(["nope-a.json", "nope-b.json"]) == 2
+    assert "could not read snapshots" in capsys.readouterr().out
+    old = tmp_path / "old.json"; new = tmp_path / "new.json"
+    old.write_text(json.dumps({"health_scores": [{"switch": "sw1", "score": 90, "band": "Good"}]}), encoding="utf-8")
+    new.write_text(json.dumps({"health_scores": [{"switch": "sw1", "score": 60, "band": "Poor"}]}), encoding="utf-8")
+    assert R.main([str(old), str(new)]) == 0
+    out = capsys.readouterr().out
+    assert "Remediation triage" in out and "root-cause:" in out
