@@ -332,6 +332,54 @@ FMC_CONFIG_ENDPOINTS = {
 }
 
 
+def _fmc_next_href(page) -> str:
+    """The ``paging.next`` URL of an FMC list response, or '' when there is no next page. FMC returns ``next``
+    as a LIST of URL string(s) (e.g. {"paging": {"next": [".../devicerecords?offset=25&limit=25&expanded=true"],
+    …}}); a bare string is tolerated too. Never raises."""
+    paging = page.get("paging") if isinstance(page, dict) else None
+    nxt = paging.get("next") if isinstance(paging, dict) else None
+    if isinstance(nxt, list):
+        nxt = next((u for u in nxt if isinstance(u, str) and u), None)
+    return nxt if isinstance(nxt, str) else ""
+
+
+def _fmc_get_all_pages(opener, url: str, headers=None, timeout: int = 30):
+    """GET an FMC list endpoint and follow ``paging.next`` across ALL pages, accumulating ``items``. FMC list
+    endpoints default to limit=25 rows/page, max 1000 (``expanded=true`` controls object DETAIL, NOT page size)
+    and carry a ``paging`` object with ``next``; a single GET reads only the first 25 rows, silently truncating
+    the inventory on a fleet of >25 FTDs -- the SAME page-1-only census truncation already fixed for the ISE
+    ERS collector (audit-5 #16). Returns the first page's envelope with ``items`` replaced by the accumulated
+    cross-page list (so build_fmc / _fmc_items reads the FULL census), the raw object unchanged for a single-
+    object / non-list / error response, or None on a failed first GET (fail-soft)."""
+    first = _get_json(opener, url, headers=headers, timeout=timeout)
+    if not isinstance(first, dict) or not isinstance(first.get("items"), list):
+        return first                              # single-object endpoint / empty envelope / error -> unchanged
+    items = list(first["items"])
+    up = urllib.parse.urlsplit(url)               # the expected origin: only follow same host:port https links
+    host, port, pages = up.hostname, (up.port or 443), 1
+    visited, nxt = {url}, _fmc_next_href(first)
+    while nxt and nxt not in visited:
+        # SECURITY: paging.next comes from the controller RESPONSE BODY -- attacker-influenceable. Following it
+        # verbatim with the X-auth-access-token header attached would leak the read-only session token to ANY
+        # host/scheme it names (credential exfil / SSRF / a cleartext http:// downgrade). Only follow a same-
+        # origin link (https on the same host:port as the FMC base), mirroring the ISE ERS pagination guard.
+        p = urllib.parse.urlsplit(nxt)
+        if p.scheme != "https" or p.hostname != host or (p.port or 443) != port:
+            logger.warning("  [FMC] refusing off-host pagination link: %s", _safe_url(nxt))
+            break
+        visited.add(nxt)
+        page = _get_json(opener, nxt, headers=headers, timeout=timeout)
+        if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+            break
+        items.extend(page["items"])
+        pages, nxt = pages + 1, _fmc_next_href(page)
+    if pages > 1:
+        logger.info("  [FMC] followed %d pages (%d rows) for %s -- full census", pages, len(items), _safe_url(url))
+    combined = dict(first)
+    combined["items"] = items
+    return combined
+
+
 def collect_fmc(base_url: str, username: str, password: str, out_dir: str, verify_tls: bool = True) -> list:
     """Read-only Cisco Secure Firewall Management Center (FMC) collection. POST generatetoken (HTTP Basic over
     HTTPS) returns the X-auth-access-token AND the DOMAINS list in the response HEADERS; then GET each domain-
@@ -370,7 +418,9 @@ def collect_fmc(base_url: str, username: str, password: str, out_dir: str, verif
     headers = {"X-auth-access-token": token}
     written = []
     for cmd, suffix in FMC_CONFIG_ENDPOINTS.items():
-        obj = _get_json(opener, f"{base}/api/fmc_config/v1/domain/{dom_uuid}{suffix}", headers=headers)
+        # FMC list endpoints paginate (default 25 rows/page) -> follow paging.next across ALL pages so a
+        # >25-FTD fleet's inventory / HA-pair / deployable census is NOT silently truncated (coverage-honest).
+        obj = _fmc_get_all_pages(opener, f"{base}/api/fmc_config/v1/domain/{dom_uuid}{suffix}", headers=headers)
         if obj is not None:
             written.append(_write(out_dir, cmd, obj))
     sv = _get_json(opener, f"{base}/api/fmc_platform/v1/info/serverversion", headers=headers)   # platform namespace (not domain-scoped)
