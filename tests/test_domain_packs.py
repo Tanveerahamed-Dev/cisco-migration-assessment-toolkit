@@ -85,3 +85,26 @@ def test_every_pack_doc_exists():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for pid, spec in D.PACKS.items():
         assert os.path.exists(os.path.join(root, spec["doc"])), f"{pid}: missing {spec['doc']}"
+
+
+def test_render_selection_findings_and_honest_absence():
+    findings = D.render_selection({"classes": [{"key": "aci", "observed": True, "status": "finding"}]})
+    assert "findings: aci" in findings
+    assert "absence is absence" in D.render_selection({})      # coverage-honest empty note
+
+
+def test_main_usage_and_unreadable_return_2(capsys):
+    assert D.main([]) == 2
+    assert "usage" in capsys.readouterr().out.lower()
+    assert D.main(["does-not-exist.json"]) == 2
+    assert "could not read snapshot" in capsys.readouterr().out
+
+
+def test_main_happy_path_prints_pack(tmp_path, capsys):
+    import json
+    p = tmp_path / "snap.json"
+    p.write_text(json.dumps({"architecture_coverage":
+                             {"classes": [{"key": "aci", "observed": True, "status": "finding"}]}}),
+                 encoding="utf-8")
+    assert D.main([str(p)]) == 0
+    assert "aci" in capsys.readouterr().out
