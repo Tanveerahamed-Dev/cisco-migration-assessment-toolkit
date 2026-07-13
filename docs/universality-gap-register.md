@@ -1,5 +1,14 @@
 # Universality Gap Register (2026-06-22) — toward a universal ASNE
 
+> **STATUS: HISTORICAL / FROZEN (annotated 2026-07-12, plan item P3-M0).** This 2026-06-22 census remains
+> the **owner of record for the 278-item figure** (docs/ssot.md), but its per-class verdicts are
+> **PRE-BUILD-OUT and now stale**: the architecture-coverage build-out (46 coverage-honest detectors
+> across 27 classes — see `docs/universal-architecture-coverage.md` and the in-code
+> `_ARCH_COVERAGE_REGISTRY`, the authoritative live count) has since closed most of the "absent" gaps
+> below — ACI/APIC, Catalyst SD-WAN/vManage, SP/MPLS, IOS-XE SD-Access/LISP, IPv6, and the classic WAN
+> overlays (DMVPN/IPsec) are all covered today. **Read the coverage registry for CURRENT state**; this
+> register is frozen as the historical gap census, not a live to-do list.
+
 Source:  wave (36 agents, 12 architecture classes; engine-coverage audit @ file:line + CCIE/CCDE capability research @ primary Cisco sources). Full detail: .
 
 **Verdict: 0 strong / 6 partial / 6 absent. 278 build items (140 P1 / 91 P2 / 47 P3).**
