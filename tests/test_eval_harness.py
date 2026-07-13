@@ -230,3 +230,23 @@ def test_real_on_disk_snapshot_scores_clean_if_present():
     assert r.laws_tripped == [], f"{candidates[-1]} tripped {r.laws_tripped}: " \
                                  + "; ".join(c.detail for c in r.checks if c.status == "fail")
     assert r.n_applicable > 0
+
+
+def test_render_checks_fail_when_furniture_is_absent():
+    """The render tier normally needs a real DOCX render; a synthetic furniture-less `texts=` trips the
+    .rendered checks to FAIL — exercised here without EVAL_FULL or a DOCX build (pure text)."""
+    snap = known_good_snapshot()
+    assert E.score(snap).score == 100                     # grounded-only (no texts): a clean 100
+    bare = E.score(snap, texts="a plain paragraph with none of the required excellence furniture")
+    failed = [c for c in bare.checks if c.status == "fail"]
+    assert failed, "furniture-less rendered text must fail the render checks"
+    assert bare.score is not None and bare.score < 100    # the furniture-less doc is penalized
+
+
+def test_law3_flags_impossible_coverage_accounting():
+    """Law-3: 'collected' exceeding inventory is an impossible-coverage FAIL — a coverage-honesty violation
+    detector, previously untested (only the buckets-don't-sum branch was exercised)."""
+    snap = known_good_snapshot()
+    snap["collection_completeness"] = {"summary": {"inventory": 3, "complete": 5}}
+    l3 = [c for c in E.score(snap).checks if c.check_id == "law3.accounting"]
+    assert l3 and l3[0].status == "fail" and "exceeds inventory" in l3[0].detail
