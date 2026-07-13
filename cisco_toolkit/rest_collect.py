@@ -302,8 +302,13 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
             # Following it verbatim with the Basic-auth header would leak the read-only credential to ANY
             # host/scheme it names (credential exfil / SSRF / a cleartext http:// downgrade). Only follow a
             # same-origin link — https on the same host:9060 as ers_base — else stop paginating.
-            _p = urllib.parse.urlsplit(nxt)
-            if _p.scheme != "https" or _p.hostname != host or (_p.port or 9060) != 9060:
+            try:
+                _p = urllib.parse.urlsplit(nxt)
+                _off_origin = (_p.scheme != "https" or _p.hostname != host or (_p.port or 9060) != 9060)
+            except ValueError:            # a malformed authority/port (':9060.attacker.com', ':+9060',
+                _off_origin = True        # ':9060\tx') makes .port raise -> refuse; never propagate (the
+                                          # module's fail-soft 'never raises' contract, audit-2 L3)
+            if _off_origin:
                 logger.warning("  [ISE] refusing off-host ERS pagination link: %s", _safe_url(nxt))
                 nxt = None
     if resources:

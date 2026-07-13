@@ -273,3 +273,30 @@ def test_ise_pagination_refuses_off_host_nextpage(tmp_path, monkeypatch):
     RC.collect_ise("https://ise.corp.local", "svc-ro", "S3cretPass!", str(tmp_path), verify_tls=True)
     assert not any("attacker.evil.example" in u for u in urls_hit), \
         "the credential-bearing GET must never follow an off-host nextPage.href"
+
+
+def test_ise_pagination_survives_malformed_port_nextpage(tmp_path, monkeypatch):
+    """ROBUSTNESS (red-team refutation of the off-host guard): a hostile nextPage.href with a NON-INTEGER
+    port -- 'https://host:9060.attacker.com/…', ':+9060', ':9060\\tx' -- makes urllib.parse.urlsplit().port
+    RAISE ValueError. The same-origin guard reads `_p.port`, so an UNGUARDED read propagated that ValueError
+    straight out of collect_ise (its caller has no try/except) -> a malicious / valid-cert-MITM'd ISE could
+    ABORT the entire collection run and skip the ERS census write, breaking the module's documented fail-soft
+    'never raises' contract (audit-2 L3). The guard must CATCH it and refuse the link (fail closed), not crash.
+    NON-VACUOUS: without the try/except this call raises `ValueError: Port could not be cast to integer value
+    as '9060.attacker.com'` and the test errors."""
+    from cisco_toolkit import rest_collect as RC
+    urls_hit = []
+
+    def fake_get_json(opener, url, headers=None, timeout=30):
+        urls_hit.append(url)
+        if url.endswith("/ers/config/node"):          # page 1: nextPage names a malformed (non-integer) port
+            return {"SearchResult": {"resources": [],
+                                     "nextPage": {"href": "https://ise.corp.local:9060.attacker.com/ers/steal"}}}
+        return None
+
+    monkeypatch.setattr(RC, "_get_json", fake_get_json)
+    monkeypatch.setattr(RC, "_write", lambda *a, **k: "")
+    # must return cleanly, NOT raise ValueError (that is the whole point of the fix)
+    RC.collect_ise("https://ise.corp.local", "svc-ro", "S3cretPass!", str(tmp_path), verify_tls=True)
+    assert not any("attacker.com" in u for u in urls_hit), \
+        "a malformed-port nextPage.href must be refused (fail closed), never followed"
