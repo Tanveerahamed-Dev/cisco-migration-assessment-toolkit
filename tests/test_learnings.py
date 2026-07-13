@@ -67,3 +67,23 @@ def test_citation_forms_accepted():
     """A file path, a commit sha, and an explicit Evidence marker all count as citations."""
     for cite in ("cisco_toolkit/ssot.py", "commit 034b416", "Evidence: the golden test", "tests/test_x.py"):
         assert L.lint_learnings(f"# h\n- a real fact ({cite})\n") == [], cite
+
+
+def test_linter_flags_duplicate_learning():
+    """Two entries making the same claim are an ADD where the SelfMem write-vocab (ADR-0003 §3b) says
+    REPLACE/MERGE — 'replace stale, don't accumulate'. High-precision: the normalized first-line claim,
+    so backtick / trailing-punctuation / case differences still count as the same claim."""
+    text = ("# h\n"
+            "- `foo()` returns [] on empty input. Evidence: cisco_toolkit/foo.py\n"
+            "- foo() returns [] on empty input — Evidence: tests/test_foo.py\n")
+    v = L.lint_learnings(text)
+    assert any("duplicate" in x.lower() for x in v), v
+
+
+def test_distinct_learnings_sharing_a_citation_are_not_duplicates():
+    """Two genuinely different claims are NOT duplicates even when they cite the same file — the rule
+    keys on the claim, not the evidence pointer (else it would punish good, well-cited learnings)."""
+    text = ("# h\n"
+            "- `foo()` returns [] on empty input. Evidence: cisco_toolkit/foo.py\n"
+            "- `foo()` raises on a non-dict argument. Evidence: cisco_toolkit/foo.py\n")
+    assert L.lint_learnings(text) == []
