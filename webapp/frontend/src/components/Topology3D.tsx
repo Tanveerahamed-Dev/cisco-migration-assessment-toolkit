@@ -62,6 +62,17 @@ export function switchMesh(color: string, degree: number, big: boolean): THREE.O
   return g;
 }
 
+/** Tooltip label for a fabric node. SECURITY: react-force-graph-3d renders a STRING nodeLabel as
+ *  innerHTML (its tooltip does `tooltipEl.html(content)`), so a device-derived id/band bearing HTML
+ *  metacharacters would EXECUTE — stored XSS, reachable via a crafted uploaded snapshot whose node id is
+ *  e.g. `SW1<img src=x onerror=…>`, with no CSP backstop. We HTML-escape the assembled label to inert
+ *  text. The id itself is left untouched (it is the force-graph edge-linking key; escaping it would break
+ *  link resolution). The 2D view is already safe — it renders the id as an escaped JSX <text> node. */
+export function topoNodeLabel(n: any): string {
+  const raw = `${n.id} · ${n.band || "—"} ${n.score ?? ""}${n.keystone ? " · keystone" : ""}`;
+  return raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 /* True-3D fabric (mirrors the offline explorer's 3D mode): a WebGL force-directed graph,
    switch-chassis nodes coloured by health band, links flagged for single-points-of-failure. */
 export default function Topology3D({ raw, sel, onPick }: { raw: { nodes: any[]; edges: any[] }; sel: string | null; onPick: (id: string | null) => void }) {
@@ -110,7 +121,7 @@ export default function Topology3D({ raw, sel, onPick }: { raw: { nodes: any[]; 
             sel && n.id !== sel ? colors.faint : (colors.bands[n.band] ?? colors.faint),
             n.degree ?? 0, (n.degree ?? 0) >= 4 || !!n.keystone)}
           nodeThreeObjectExtend={false}
-          nodeLabel={(n: any) => `${n.id} · ${n.band || "—"} ${n.score ?? ""}${n.keystone ? " · keystone" : ""}`}
+          nodeLabel={topoNodeLabel}
           linkColor={(l: any) => (l.is_bridge ? colors.crit : colors.edge)}
           linkWidth={(l: any) => (l.is_bridge ? 1.4 : 0.4)}
           linkOpacity={0.5}
