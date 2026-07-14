@@ -619,6 +619,172 @@ def test_gate_board_roundtrip_and_plan_of_record_feedback(client):
     assert "Gate record (as signed)" not in _text(r)
 
 
+# --- backend state-integrity audit fixes (gate ordering + two LOW siblings) -------------------
+
+def _engagement_text(resp):
+    import io
+
+    from docx import Document
+    doc = Document(io.BytesIO(resp.content))
+    parts = [p.text for p in doc.paragraphs]
+    parts += [c.text for t in doc.tables for row in t.rows for c in row.cells]
+    return "\n".join(parts)
+
+
+def test_gate_ordering_out_of_order_is_disclosed_not_hidden(client):
+    """MEDIUM state-integrity fix (Option B — coverage-honest disclosure, not a hard block): the
+    PPDIOO gate board had no precedence check, so a 'go' signed before its upstream gates were
+    themselves 'go' was published in the plan of record as a clean sign-off. Now such a row is still
+    STORED (real engagements record conditional sign-offs) but flagged out_of_order on the board AND
+    disclosed in §4.3; a correctly-ordered board carries no flag."""
+    seeded = client.post("/api/demo/seed").json()
+    cid, snap_id = seeded["campaign"]["id"], seeded["snapshot"]["id"]
+    wave = client.get(f"/api/campaigns/{cid}/gates").json()["waves"][0]
+
+    def rec(records, gate):
+        return next(r for r in records if r["wave"] == wave and r["gate"] == gate)
+
+    # (1) an out-of-order GO persists (200, not blocked) but is flagged, naming the FIRST unmet
+    # upstream (commit — the whole chain is unsigned).
+    r = client.post(f"/api/campaigns/{cid}/gates",
+                    json={"wave": wave, "gate": "hypercare_exit", "decision": "go",
+                          "signed_by": "A. Eng", "note": "skipped ahead"})
+    assert r.status_code == 200, r.text
+    row = rec(r.json()["records"], "hypercare_exit")
+    assert row["decision"] == "go"                        # recorded, never rejected
+    assert row["out_of_order"] is True and row["out_of_order_upstream"] == "commit"
+
+    # a downstream GO resting on an explicit upstream NO-GO is the same contradiction, disclosed.
+    client.post(f"/api/campaigns/{cid}/gates",
+                json={"wave": wave, "gate": "readiness", "decision": "no-go", "signed_by": "A. Eng"})
+    recs = client.post(f"/api/campaigns/{cid}/gates",
+                       json={"wave": wave, "gate": "go_no_go", "decision": "go",
+                             "signed_by": "A. Eng"}).json()["records"]
+    assert rec(recs, "go_no_go")["out_of_order"] is True
+    assert rec(recs, "readiness")["out_of_order"] is False   # a NO-GO is never itself out of order
+
+    # the disclosure reaches the PUBLISHED plan of record (§4.3), not just the board API.
+    dr = client.get(f"/api/snapshots/{snap_id}/deliverable/engagement")
+    if dr.status_code == 503:
+        pytest.skip("python-docx not installed on this runner")
+    assert "OUT-OF-ORDER" in _engagement_text(dr)
+
+    # (2) sign the upstream chain IN ORDER -> the go_no_go flag clears on its own (derived, not
+    # stored), while hypercare_exit stays flagged and RE-TARGETS to the now-first unmet gate (window)
+    # — proving the flag is specific, not a blanket "something upstream is missing".
+    for g in ("commit", "checkpoint", "readiness"):
+        client.post(f"/api/campaigns/{cid}/gates",
+                    json={"wave": wave, "gate": g, "decision": "go", "signed_by": "A. Eng"})
+    recs = client.post(f"/api/campaigns/{cid}/gates",
+                       json={"wave": wave, "gate": "go_no_go", "decision": "go",
+                             "signed_by": "A. Eng"}).json()["records"]
+    assert rec(recs, "go_no_go")["out_of_order"] is False
+    assert rec(recs, "hypercare_exit")["out_of_order"] is True
+    assert rec(recs, "hypercare_exit")["out_of_order_upstream"] == "window"
+
+    # clear the lone remaining out-of-order row -> a fully-ordered board publishes a CLEAN §4.3
+    # trail with no disclosure at all.
+    client.post(f"/api/campaigns/{cid}/gates",
+                json={"wave": wave, "gate": "hypercare_exit", "decision": "pending"})
+    dr2 = client.get(f"/api/snapshots/{snap_id}/deliverable/engagement")
+    assert dr2.status_code == 200 and "OUT-OF-ORDER" not in _engagement_text(dr2)
+
+
+def test_gate_upstream_gap_rule_is_precedence_ordered():
+    """Unit pin of the ordering SSOT (webapp.gates.upstream_gap): only a 'go' can be out of order;
+    it is flagged iff an EARLIER cadence gate in the same wave is absent or not 'go', naming the
+    first such gate; commit (first) is never out of order; no-go/slipped are never flagged."""
+    from backend import gates
+
+    def cell(dec):
+        return {"decision": dec}
+
+    assert gates.upstream_gap({"commit": cell("go")}, "commit") is None       # first gate, never
+    assert gates.upstream_gap({"go_no_go": cell("go")}, "go_no_go") == "commit"   # earliest unmet
+    assert gates.upstream_gap({"commit": cell("go"), "readiness": cell("go"),
+                               "go_no_go": cell("go")}, "go_no_go") == "checkpoint"
+    assert gates.upstream_gap({"commit": cell("go"), "checkpoint": cell("go"),
+                               "readiness": cell("no-go"), "go_no_go": cell("go")},
+                              "go_no_go") == "readiness"                        # not-go == unmet
+    assert gates.upstream_gap({"commit": cell("go"), "checkpoint": cell("go"),
+                               "readiness": cell("go"), "go_no_go": cell("go")},
+                              "go_no_go") is None                              # fully ordered
+    assert gates.upstream_gap({"go_no_go": cell("no-go")}, "go_no_go") is None  # non-go never flagged
+    assert gates.upstream_gap({"go_no_go": cell("slipped")}, "go_no_go") is None
+    assert gates.upstream_gap({"bogus": cell("go")}, "bogus") is None          # unknown gate, defensive
+
+    # annotate_out_of_order is scoped PER WAVE (a go in Group 2 isn't cleared by a go in Group 1).
+    rows = [
+        {"wave": "Group 1", "gate": "commit", "decision": "go"},
+        {"wave": "Group 1", "gate": "go_no_go", "decision": "go"},   # missing checkpoint/readiness
+        {"wave": "Group 2", "gate": "commit", "decision": "go"},
+    ]
+    ann = {(r["wave"], r["gate"]): r for r in gates.annotate_out_of_order(rows)}
+    assert ann[("Group 1", "commit")]["out_of_order"] is False
+    assert ann[("Group 1", "go_no_go")]["out_of_order"] is True
+    assert ann[("Group 1", "go_no_go")]["out_of_order_upstream"] == "checkpoint"
+    assert ann[("Group 2", "commit")]["out_of_order"] is False
+    gr = gates.gate_record(rows)                                     # same annotation into §4.3 contract
+    assert gr["Group 1"]["go_no_go"]["out_of_order"] is True
+    assert "out_of_order" not in gr["Group 1"]["commit"]            # only flagged cells carry it
+
+
+def test_execution_autolabel_unique_under_concurrency(client):
+    """LOW #1: the 'Cutover run N' auto-label ordinal is now derived under the SAME lock as the
+    INSERT, so concurrent starts can't both read the same count and mint duplicate labels (repro:
+    8 concurrent starts previously collided). The row id is the real key — the label is cosmetic —
+    but a duplicate misreads in the war-room run list."""
+    import threading
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+    n = 8
+    barrier = threading.Barrier(n)
+    results: list = [None] * n
+
+    def _start(i):
+        try:
+            barrier.wait(timeout=30)   # release all threads together to maximise contention
+            results[i] = client.post(f"/api/snapshots/{snap_id}/executions",
+                                     json={"label": "", "operator": "op"})
+        except Exception as e:  # noqa: BLE001 — record as a failed slot, never hang the suite
+            results[i] = e
+
+    threads = [threading.Thread(target=_start, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    ok = [r for r in results if hasattr(r, "status_code")]
+    assert len(ok) == n and all(r.status_code == 201 for r in ok), results
+    labels = sorted(r.json()["label"] for r in ok)
+    assert labels == [f"Cutover run {i}" for i in range(1, n + 1)]   # unique + contiguous 1..n
+
+
+def test_summary_recomputed_when_engine_schema_trails(client):
+    """LOW #2: the cached headline summary is stamped with the engine schema that computed it; when
+    that stamp trails the running engine (a version bump), GET /snapshots/{id} recomputes and
+    re-persists it — so the dashboard's frozen headline cards can't disagree with a live section tab
+    on the same screen. Non-vacuous: a deliberately-wrong frozen headline is corrected on read."""
+    from backend import engine as beng
+    snap_id = client.post("/api/demo/seed").json()["snapshot"]["id"]
+
+    fresh = client.get(f"/api/snapshots/{snap_id}").json()["summary"]
+    assert fresh["engine_schema"] == beng.ENGINE_SCHEMA_VERSION     # a fresh upload is stamped current
+    true_n = fresh["n_switches"]
+    assert isinstance(true_n, int) and true_n > 0
+
+    # simulate a summary frozen by an OLDER engine with a now-wrong headline (write straight to store).
+    store = client.app.state.store
+    store.update_summary(snap_id, {"engine_schema": "0.0.1-old", "n_switches": -999})
+    assert store.get_snapshot_meta(snap_id)["summary"]["n_switches"] == -999   # the store really holds it
+
+    healed = client.get(f"/api/snapshots/{snap_id}").json()["summary"]
+    assert healed["engine_schema"] == beng.ENGINE_SCHEMA_VERSION
+    assert healed["n_switches"] == true_n                          # corrected on read, not the stale -999
+    # re-persisted, so the campaign-list card and every other surface self-heal too.
+    assert store.get_snapshot_meta(snap_id)["summary"]["n_switches"] == true_n
+
+
 def test_archreview_endpoint(client):
     """V3.23.163: the Ask-the-Engineer panel's data — the senior-engineer design review. The server
     prefers the snapshot's stored architecture_review section and computes with the SAME engine
@@ -1493,6 +1659,27 @@ def test_get_snapshot_section_robust_to_scalar_section(tmp_path):
     assert st.get_snapshot_section(sid, "design_blueprint") == 5           # native int, not a 500
     assert st.get_snapshot_section(sid, "architecture_coverage") == "weird-scalar"
     assert st.get_snapshot_section(sid, "devices") == {"sw1": {}}          # objects still decode
+
+
+def test_get_snapshot_section_key_is_bound_not_sql_injectable(tmp_path):
+    """[audit-6 sec] get_snapshot_section built its query with an f-string ('$.{key}'). Every caller passes
+    a literal section name, but that made it a SQL-injection sink guarded by convention only -- one future
+    caller forwarding a request value would turn it Critical. The JSON path is now a BOUND parameter, so a
+    hostile key cannot break out of the string literal into SQL to reach another table/row. NON-VACUOUS:
+    under the old f-string this exact key (proven injectable in isolation by the audit) exfiltrated the
+    sqlite_master table list; bound, it is an inert JSON path -> None, and nothing cross-table leaks."""
+    from webapp.backend.storage import Store
+    st = Store(str(tmp_path / "t.db"))
+    cid = st.create_campaign("acme-secret-campaign", "cust")["id"]
+    sid = st.add_snapshot(cid, "s", {"design_blueprint": {"ok": 1}}, {"n_switches": 1})["id"]
+    evil = ("zzz') AS ignored, (SELECT group_concat(name) FROM sqlite_master "
+            "WHERE type='table') AS sect FROM snapshots WHERE id=? -- ")
+    out = st.get_snapshot_section(sid, evil)
+    assert out is None                                                    # inert path miss, not an exfil
+    leaked = "" if out is None else str(out)
+    assert "sqlite_master" not in leaked and "campaigns" not in leaked \
+        and "acme-secret-campaign" not in leaked                          # no other table/row leaked
+    assert st.get_snapshot_section(sid, "design_blueprint") == {"ok": 1}  # legit literal keys unchanged
 
 
 def test_reconcile_gate_flags_a_drifting_snapshot(caplog):

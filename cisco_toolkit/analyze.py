@@ -3524,7 +3524,13 @@ def compute_migration_scenarios(migration_readiness: list, wave_sequencing: list
                           "dual_homed_pct": mbb_pct, "recommended_scenario": sc, "rationale": why,
                           "playbook": _SCENARIO_PLAYBOOK[sc]})
     fleet = ""
-    hs = health_scores or []
+    # Poor/Critical share is computed over ASSESSED switches only. An "Insufficient Data" row is an
+    # UNCOLLECTED device (no evidence -> no health deductions -> never banded Poor/Critical); counting it in
+    # the denominator silently treats it as healthy and DILUTES the degradation %, which can flip this
+    # greenfield-vs-in-place recommendation below its 60% gate (audit-6 correctness: a 4/6=67% -> GREENFIELD
+    # fleet reads 4/10=40% -> in-place when 4 devices were merely not collected). Matches the exec-brief
+    # convention, which already averages health over genuinely-scored rows only (analyze.py compute_executive_brief).
+    hs = [r for r in (health_scores or []) if r.get("band") != "Insufficient Data"]
     if hs:
         crit = sum(1 for r in hs if r.get("band") in ("Critical", "Poor"))
         pct = round(100 * crit / len(hs))
