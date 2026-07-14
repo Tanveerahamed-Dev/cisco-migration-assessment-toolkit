@@ -38,7 +38,7 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
         for _name, d in host_ifaces.items():
             if not isinstance(d, dict):
                 continue
-            nb = (d.get("cdp_neighbor") or "").strip()
+            nb = str(d.get("cdp_neighbor") or "").strip()   # tolerate a wrong-typed cdp_neighbor (list/int) -> never 500s /graph
             if not nb:
                 continue
             target = canon(nb)
@@ -62,7 +62,7 @@ def build_graph(snap: Dict[str, Any], keystones: Optional[List[str]] = None) -> 
         degree[e["target"]] = degree.get(e["target"], 0) + 1
         m = lc.get(tuple(sorted((e["source"], e["target"]))))
         e["is_bridge"] = bool(m.get("is_bridge")) if m else False
-        e["pairs_cut"] = int(m.get("pairs_cut", 0)) if m else 0
+        e["pairs_cut"] = engine.as_num(m.get("pairs_cut")) if m else 0   # fail-soft: a JSON Infinity would 500 /graph
 
     nodes: List[Dict[str, Any]] = []
     for nid in sorted(node_ids):

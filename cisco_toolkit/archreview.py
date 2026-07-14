@@ -38,7 +38,7 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
-from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
+from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +81,11 @@ _as_list = _docmeta_as_list
 
 
 def _as_int(v, default: int = 0) -> int:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return default
+    # Delegate to the shared fail-soft coercer: rejects the JSON Infinity / NaN too (inf -> OverflowError,
+    # which the old `except (TypeError, ValueError)` let through and 500'd the unwrapped /archreview endpoint).
+    # None sentinel so an unparseable value returns `default` verbatim, never int(default).
+    n = _as_num(v, None)
+    return int(n) if n is not None else default
 
 
 def _canon(name: str) -> str:

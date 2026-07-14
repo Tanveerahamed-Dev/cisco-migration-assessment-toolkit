@@ -24,7 +24,7 @@ from datetime import datetime
 
 from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
-from cisco_toolkit.textutils import xml_safe, xml_safe_deep
+from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep
 
 logger = logging.getLogger(__name__)
 
@@ -269,8 +269,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("Access (L2-only)", len(l2_hosts), ", ".join(sorted(l2_hosts)[:30]) or "—"),
     ], widths=[2.2, 0.8, 4.0])
     # keystone devices (concentrated dependency) from failure_impact
-    keystones = sorted((r for r in failure_impact if isinstance(r, dict) and int(r.get("stranded") or 0) > 0),
-                       key=lambda r: -int(r.get("stranded") or 0))[:5]
+    keystones = sorted((r for r in failure_impact if isinstance(r, dict) and _as_num(r.get("stranded")) > 0),
+                       key=lambda r: -_as_num(r.get("stranded")))[:5]
     if keystones:
         _label_run(doc.add_paragraph(), "Concentrated dependency:",
                    "the fabric leans on " + ", ".join(
@@ -331,7 +331,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("Single-gateway VLANs (no FHRP peer)", n_single_gw),
         ("vPC / MLAG peerings", len([h for h, v in vpc.items() if v])),
         ("Keystone devices (strand endpoints if lost)", len([r for r in failure_impact
-                                                             if int(r.get("stranded") or 0) > 0])),
+                                                             if isinstance(r, dict) and _as_num(r.get("stranded")) > 0])),
     ], widths=[4.6, 2.2])
 
     doc.add_heading("2.5 Multicast & timing design", level=2)
