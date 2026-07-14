@@ -244,3 +244,34 @@ def test_reset_clears_everything(tmp_path, ledger):
     rep = cmdio.parse_yield_report()
     assert rep["events"] == [] and rep["per_parser"] == {}
     assert rep["summary"]["zero_yield_suspect"] == 0
+
+
+def test_authz_denial_banner_is_filtered_not_a_collected_result(tmp_path, ledger):
+    """[audit-6 coverage-honesty / doctrine #3] A read-only RBAC / TACACS+ command-authz account -- which the
+    security doctrine RECOMMENDS -- hitting a privileged `show` gets an AUTHORIZATION-denial banner as the
+    entire output. That banner is NON-EMPTY text, so before the fix _load_cmd_output returned it as valid
+    content and compute_syslog_intelligence's raw-text `collected` flag scored the device collected=True /
+    0-events -> a device whose logs were NEVER READ certified as having clean logs (false health, on the very
+    `show logging` family doctrine #3 names). The loader must recognize the authz banners as errors and
+    return '' (-> collected=False downstream). NON-VACUOUS: reverting the _CISCO_ERRORS additions makes the
+    banner assertions fail (the banner text leaks back as 'content')."""
+    for i, b in enumerate(["% Permission denied for the role\n\nCmd exec error.\n",   # NX-OS RBAC
+                           "Command authorization failed.\n",                          # IOS/NX-OS per-command
+                           "% Authorization failed.\n"]):                              # IOS exec authz
+        c2f = _write_capture(tmp_path, device=f"DENIED-{i}", cmd="show logging", content=b)
+        assert cmdio._load_cmd_output(c2f, "show logging") == "", f"authz banner leaked as content: {b!r}"
+
+    # regression guard: a legitimately QUIET show logging (long header, no notable events) stays COLLECTED
+    quiet = ("Syslog logging: enabled (0 messages dropped, 3 messages rate-limited, 0 flushes, 0 overruns)\n"
+             "    Console logging: level debugging\n    Buffer logging: level informational\n\n"
+             "Log Buffer (8192 bytes):\n")
+    c2f = _write_capture(tmp_path, device="QUIET", cmd="show logging", content=quiet)
+    assert cmdio._load_cmd_output(c2f, "show logging").strip(), "a real quiet show logging must stay collected"
+
+    # THE CRITICAL false-positive guard: a REAL log whose DEEP body carries an ACL 'permission denied' syslog
+    # line must NOT be mistaken for the authz banner (discarding real logs is a worse regression). The '% '-
+    # anchored forms + first-200-char window protect it.
+    deep = quiet + ("Jul 14 10:22:01: %SEC-6-IPACCESSLOGP: list 101 denied tcp 10.0.0.5 -> 10.0.1.9(443), "
+                    "1 packet permission denied\n")
+    c2f = _write_capture(tmp_path, device="REALLOG", cmd="show logging", content=deep)
+    assert cmdio._load_cmd_output(c2f, "show logging").strip(), "a real ACL-deny syslog line must not be filtered"

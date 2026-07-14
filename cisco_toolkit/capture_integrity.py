@@ -33,7 +33,11 @@ _PAGER_RE = re.compile(r"--\s*more\b.*?--|<-+\s*more\s*-+>", re.IGNORECASE)
 # A genuine CLI error STARTS the line (e.g. '% Invalid input detected at ...'). Anchoring as a line-prefix
 # avoids flagging the same phrase when it appears inside config DATA (a description / banner / ACL remark).
 _CLI_ERRORS = ("% invalid input", "% incomplete command", "% ambiguous command", "% unknown command",
-               "% type help", "% bad", "% authorization failed", "% error")
+               "% type help", "% bad", "% authorization failed", "% error",
+               # authz denials the capture-integrity tripwire must also disclose (audit-6 coverage-honesty):
+               # NX-OS RBAC banner + IOS/NX-OS per-command authz failure (neither starts with the existing
+               # '% authorization failed' / '% error' markers). startswith-matched, so anchored + safe.
+               "% permission denied for the role", "command authorization failed")
 
 
 def _is_full_config_dump(command: str) -> bool:
