@@ -36,3 +36,22 @@ def test_migration_scenarios_hard_cutover_forces_phased():
 def test_migration_scenarios_empty():
     out = compute_migration_scenarios([], [], [])
     assert out["per_group"] == [] and out["scenario_counts"] == {}
+
+
+def test_migration_scenarios_pct_excludes_uncollected_devices():
+    """[audit-6 correctness] The Poor/Critical share drives the greenfield-vs-in-place fleet recommendation at
+    a 60% gate. An 'Insufficient Data' row is an UNCOLLECTED device (no evidence -> no deductions -> never
+    banded Poor/Critical); counting it in the denominator DILUTES the degradation % and can flip the verdict.
+    Here 4 of 6 ASSESSED switches are Poor/Critical (67% -> GREENFIELD), but 4 uncollected devices would drag
+    it to 4/10 = 40% -> in-place. The recommendation must be computed over assessed switches only, matching
+    the executive-brief convention. NON-VACUOUS: before the fix the output says '40%' / 'in-place' and these
+    assertions fail."""
+    hs = ([{"band": "Critical"}] * 3 + [{"band": "Poor"}] * 1 +      # 4 Poor/Critical assessed ...
+          [{"band": "Good"}] * 2 +                                    # + 2 Good assessed -> 4/6 = 67%
+          [{"band": "Insufficient Data"}] * 4)                        # 4 uncollected (must NOT dilute)
+    rec = compute_migration_scenarios([], [], hs)["fleet_recommendation"]
+    assert "67%" in rec and "GREENFIELD" in rec, rec                  # assessed-only 67%, not diluted 40%
+    assert "in-place" not in rec
+    # an ALL-uncollected fleet has no assessed switches -> no percentage claimed at all (never a false '0%')
+    allunk = compute_migration_scenarios([], [], [{"band": "Insufficient Data"}] * 5)["fleet_recommendation"]
+    assert allunk == ""

