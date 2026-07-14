@@ -171,6 +171,17 @@ class Store:
             ).fetchone()
         return self._meta_row(row) if row else None
 
+    def update_summary(self, snapshot_id: int, summary: Dict[str, Any]) -> bool:
+        """Refresh ONLY the cached headline summary (the snapshot_json stays immutable). Used to
+        self-heal a summary frozen by an older engine schema than the one now serving live sections
+        (see app._summary_freshened). False when the row no longer exists."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE snapshots SET summary_json = ? WHERE id = ?",
+                (json.dumps(summary, separators=(",", ":")), snapshot_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def get_snapshot(self, snapshot_id: int) -> Optional[Dict[str, Any]]:
         """Full raw snapshot dict (or None)."""
         with self._lock:

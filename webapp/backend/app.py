@@ -260,7 +260,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Campaign not found")
         return {"cadence": gates.cadence(),
                 "waves": _campaign_waves(campaign_id),
-                "records": store.list_gates(campaign_id)}
+                "records": gates.annotate_out_of_order(store.list_gates(campaign_id))}
 
     @app.post("/api/campaigns/{campaign_id}/gates")
     def set_gate(campaign_id: int, body: GateIn) -> Dict[str, Any]:
@@ -282,7 +282,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
                                  body.signed_by, body.note)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        return {"records": store.list_gates(campaign_id)}
+        return {"records": gates.annotate_out_of_order(store.list_gates(campaign_id))}
 
     # -- snapshots ---------------------------------------------------------
     @app.post("/api/campaigns/{campaign_id}/snapshots", status_code=201)
@@ -335,12 +335,31 @@ def create_app(db_path: str | None = None) -> FastAPI:
         meta["ingest"] = report
         return meta
 
+    def _summary_freshened(snapshot_id: int, meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Heal a headline summary frozen by an OLDER engine schema than the one now recomputing the
+        live section tabs, so the dashboard's headline cards can't disagree with a section tab on the
+        SAME screen. Mirrors the device_dossiers staleness recompute (get_section): the summary is
+        stamped with engine.ENGINE_SCHEMA_VERSION at write; a trailing/absent stamp triggers one
+        recompute + re-persist (the snapshot_json itself is immutable, so the recompute is
+        deterministic and the re-persist also self-heals the campaign-list card)."""
+        summ = meta.get("summary")
+        if isinstance(summ, dict) and summ.get("engine_schema") == engine.ENGINE_SCHEMA_VERSION:
+            return meta
+        snap = store.get_snapshot(snapshot_id)
+        if snap is None:                       # row vanished between meta read and heal — serve what we have
+            return meta
+        fresh = summary.summarize(snap)
+        store.update_summary(snapshot_id, fresh)
+        meta = dict(meta)
+        meta["summary"] = fresh
+        return meta
+
     @app.get("/api/snapshots/{snapshot_id}")
     def get_snapshot(snapshot_id: int) -> Dict[str, Any]:
         meta = store.get_snapshot_meta(snapshot_id)
         if not meta:
             raise HTTPException(404, "Snapshot not found")
-        return meta
+        return _summary_freshened(snapshot_id, meta)
 
     @app.get("/api/snapshots/{snapshot_id}/section/{name}")
     def get_section(snapshot_id: int, name: str) -> Dict[str, Any]:
@@ -601,11 +620,18 @@ def create_app(db_path: str | None = None) -> FastAPI:
         snap = store.get_snapshot(snapshot_id)
         if snap is None:
             raise HTTPException(404, "Snapshot not found")
-        label = body.label.strip() or f"Cutover run {store.count_executions(snapshot_id) + 1}"
-        state = execution.start_run(snap, label, body.operator)
+        # Build the (label-independent) plan OFF the lock — it can block for a while and must not
+        # serialize the whole war room.
+        state = execution.start_run(snap, body.label, body.operator)
         if not state["waves"]:
             raise HTTPException(400, "No migration waves were derived from this snapshot — nothing to execute")
-        eid = store.create_execution(snapshot_id, state)
+        # Auto-label + insert ATOMICALLY: two concurrent starts must not both read the same
+        # execution count and mint duplicate "Cutover run N" labels. The ordinal is cosmetic (the
+        # row id is the real key) but a duplicate label misreads in the war-room run list.
+        with execution.MUTATION_LOCK:
+            if not body.label.strip():
+                state["label"] = f"Cutover run {store.count_executions(snapshot_id) + 1}"
+            eid = store.create_execution(snapshot_id, state)
         return execution.with_progress(eid, snapshot_id, state)
 
     @app.get("/api/snapshots/{snapshot_id}/executions")
