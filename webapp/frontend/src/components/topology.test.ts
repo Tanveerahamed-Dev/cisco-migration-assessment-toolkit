@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { layout } from "./TopologyGraph";
-import { switchMesh } from "./Topology3D";
+import { switchMesh, topoNodeLabel } from "./Topology3D";
 
 // The signature feature's PURE logic, tested without a GPU: the d3-force graph positioning and the
 // three.js node-geometry builder both run headless (only the react-force-graph WebGL *render* needs a
@@ -68,5 +68,25 @@ describe("switchMesh — three.js node geometry (headless, no WebGL)", () => {
     const large = switchMesh("rgb(0,0,0)", 9, false).children[0] as THREE.Mesh;
     const w = (m: THREE.Mesh) => (m.geometry as THREE.BoxGeometry).parameters.width;
     expect(w(large)).toBeGreaterThan(w(small));
+  });
+});
+
+describe("topoNodeLabel — the 3D tooltip is XSS-safe", () => {
+  // react-force-graph-3d renders a STRING nodeLabel via `tooltipEl.html(content)` (innerHTML), so a
+  // device-derived id/band must be HTML-escaped or a crafted uploaded snapshot lands stored XSS (no CSP).
+  it("HTML-escapes a device-derived node id so no live markup reaches the innerHTML tooltip", () => {
+    const label = topoNodeLabel({ id: 'SW1<img src=x onerror=alert(document.domain)>', band: "Good", score: 80 });
+    // XSS-safety = no raw angle bracket survives, so .html() can parse NO element (the onerror text
+    // remaining as inert characters is harmless without a tag to attach to).
+    expect(label).not.toContain("<");             // NON-VACUOUS: the raw template contains "<img"
+    expect(label).not.toContain(">");
+    expect(label).toContain("&lt;img");            // the payload is rendered as inert escaped text instead
+  });
+
+  it("also escapes a malformed band, and leaves a normal label byte-for-byte intact", () => {
+    expect(topoNodeLabel({ id: "n", band: "<b>x</b>" })).not.toContain("<b>");
+    expect(topoNodeLabel({ id: "SW-CORE-1", band: "Good", score: 80 })).toBe("SW-CORE-1 · Good 80");
+    expect(topoNodeLabel({ id: "R1", band: "Critical", score: 12, keystone: true }))
+      .toBe("R1 · Critical 12 · keystone");
   });
 });
