@@ -25,6 +25,7 @@ from collections import Counter
 from datetime import datetime
 
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
+from cisco_toolkit.textutils import _as_num   # fail-soft numeric coercion of device-derived leaf counts
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +364,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
         table(["Rank", "Link", "Betweenness", "Switch-pairs cut if it fails"],
               [[b.get("rank"), f"{b.get('a_host')} {b.get('a_port')} ↔ {b.get('b_host')} {b.get('b_port')}",
                 b.get("betweenness"), b.get("pairs_cut")] for b in
-               sorted(bridges, key=lambda r: -(r.get("pairs_cut") or 0))[:12]],
+               sorted(bridges, key=lambda r: -_as_num(r.get("pairs_cut")))[:12]],
               widths=[0.6, 4.4, 1.2, 1.6])
 
     # ===== 6. L1-L4 Findings (the gateway premise + evidence finding blocks) =====
@@ -434,7 +435,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             f"({_CONF_CONFIRMED} from connected routes/SVIs); reachable = its route table "
             f"({_CONF_CONFIRMED}-at-snapshot from 'show ip route'). {bgp_note}")
         top = sorted([r for r in pdv if r.get("is_l3")],
-                     key=lambda r: -(r.get("destination_count", 0) + r.get("reachable_count", 0)))[:12]
+                     key=lambda r: -(_as_num(r.get("destination_count")) + _as_num(r.get("reachable_count"))))[:12]
         doc.add_paragraph("L3 devices — subnets terminated vs reachable:")
         table(["Switch", "Dest subnets", "Reachable", "Sources", "Default next-hop"],
               [[r.get("host"), r.get("destination_count"), r.get("reachable_count"),
@@ -917,7 +918,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
                 r.get("hard"), r.get("backup"), r.get("fhrp")]
                for r in sorted(failure_impact,
                                key=lambda r: (_SEV_ORDER.get(r.get("severity"), 9),
-                                              -(r.get("stranded") or 0)))[:15]]
+                                              -_as_num(r.get("stranded"))))[:15]]
     if fi_rows:
         table(["Switch (remove/migrate)", "Severity", "VLANs", "Stranded eps", "Hard",
                "Backup-covered", "FHRP-covered"], fi_rows, widths=[3.0, 1.0, 0.8, 1.1, 0.8, 1.2, 1.2])

@@ -29,6 +29,7 @@ Read-only and side-effect free: this module derives, it never mutates the snapsh
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 # Canonical facts: name -> (dotted snapshot path of the published value, one-line concept).
@@ -76,13 +77,16 @@ def _as_int(value: Any) -> Optional[int]:
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        return int(value)
+        # inf / NaN are not a coverage-honest count -> None (int(float('inf')) raises OverflowError, int(NaN)
+        # raises ValueError; json.loads accepts a bare Infinity/NaN, so both reach here from an upload).
+        return int(value) if math.isfinite(value) else None
     if isinstance(value, str):
         s = value.strip().replace(",", "")
         try:
-            return int(float(s))
+            f = float(s)
         except (ValueError, TypeError):
             return None
+        return int(f) if math.isfinite(f) else None   # a string that floats to inf (e.g. '1e400') -> None, not OverflowError
     return None
 
 
@@ -363,6 +367,7 @@ def reconcile(snap: Dict[str, Any]) -> List[str]:
         if "avg_health" in posture:
             scored = [h.get("score") for h in health
                       if isinstance(h, dict) and isinstance(h.get("score"), (int, float))
+                      and math.isfinite(h.get("score"))   # a JSON Infinity/NaN score would make round(mean) raise
                       and h.get("band") != _HEALTH_BAND_NOT_SCORED]
             if scored:
                 check("executive_brief.posture.avg_health", posture.get("avg_health"),

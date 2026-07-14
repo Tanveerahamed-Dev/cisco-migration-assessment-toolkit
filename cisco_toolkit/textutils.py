@@ -1,6 +1,7 @@
 """Pure interface-name / text normalization helpers + the interface regex
-constants. Leaf layer: depends only on `re`. Extracted verbatim from
+constants. Leaf layer: depends only on `re` + `math`. Extracted verbatim from
 COLLECT_PARSE_V3_23_0.py in PHASE 2.7 step 1 (behaviour byte-identical)."""
+import math
 import re
 from typing import List
 
@@ -35,11 +36,17 @@ _XML_ILLEGAL_RE = re.compile(
 
 def xml_safe(value):
     """Strip the characters that make XML serialization raise, so one bad byte in device-derived text cannot abort
-    an entire .docx / .xlsx deliverable. Non-strings pass through unchanged (callers stringify when they must).
+    an entire .docx / .xlsx deliverable. Scalars (int / float / None / bool) pass through unchanged -- openpyxl and
+    python-docx render them natively (callers stringify the rest when they must). A CONTAINER (dict / list / tuple /
+    set) is the exception: it can only reach here if a compute placed one in a directly-rendered cell, where openpyxl
+    would raise ValueError -- which excel._run_phase catches PER SHEET, silently dropping every row after it (a
+    coverage-honesty false all-clear). Disclose it as a typed placeholder instead of passing it through to crash.
     Canonical, shared by the excel + docx generators (excel._xls_sanitize delegates here)."""
-    if not isinstance(value, str):
-        return value
-    return _XML_ILLEGAL_RE.sub("", value)
+    if isinstance(value, str):
+        return _XML_ILLEGAL_RE.sub("", value)
+    if isinstance(value, (dict, list, tuple, set)):
+        return "[unrenderable %s]" % type(value).__name__
+    return value
 
 
 def xml_safe_deep(obj):
@@ -52,6 +59,27 @@ def xml_safe_deep(obj):
     if isinstance(obj, list):
         return [xml_safe_deep(v) for v in obj]
     return xml_safe(obj)
+
+
+def _as_num(x, default=0):
+    """Fail-soft numeric coercion of a device-derived leaf value, returning a finite number (an int when
+    integer-valued, else a float) or `default` when `x` cannot be coerced. This is the shared guard for the
+    engine's #1 doctrine (fail-soft): an externally-supplied snapshot -- a webapp upload, a `--compare` /
+    `--trend` file -- can carry a malformed leaf into an `int()` / `round()` / arithmetic coercion of a
+    device-derived count, and a single bad field must degrade THAT field (to `default`), never crash the whole
+    deliverable or endpoint. The three trap inputs it neutralizes:
+      * a non-numeric string / dict / list  -> `float()` raises ValueError / TypeError;
+      * the bare JSON `Infinity` / `-Infinity`  -> `json.loads` accepts it as `float('inf')`, which then raises
+        OverflowError on `int()` (the usual `except (TypeError, ValueError)` guards MISS this) -> rejected here;
+      * the bare JSON `NaN`  -> accepted as `float('nan')` -> rejected here (isnan).
+    Route every raw leaf count coercion through this so no single field can 500 an endpoint or abort a workbook."""
+    try:
+        f = float(x)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if math.isnan(f) or math.isinf(f):
+        return default
+    return int(f) if f.is_integer() else f
 
 
 def normalize_ifname(s: str) -> str:

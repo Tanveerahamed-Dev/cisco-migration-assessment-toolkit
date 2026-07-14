@@ -49,7 +49,7 @@ def _fmt_ts(ts: Any) -> str:
 def _fmt_min(m: Any) -> str:
     try:
         m = int(m)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON Infinity duration
         return "—"
     if m <= 0:
         return "0 min"

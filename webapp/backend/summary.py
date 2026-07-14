@@ -96,8 +96,10 @@ def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
     if isinstance(eb.get("keystones"), list) and eb["keystones"]:
         return eb["keystones"][:top]
     fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
+    # fail-soft: a malformed stranded (the JSON Infinity a raw int() would 500 on) degrades to 0 in the sort
+    # key -- this runs on EVERY unauthenticated snapshot upload (POST /snapshots -> summarize).
     fi.sort(key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99),
-                           -int(r.get("stranded", 0) or 0)))
+                           -engine.as_num(r.get("stranded"))))
     return [{
         "host": r.get("host", ""),
         "severity": r.get("severity", ""),
