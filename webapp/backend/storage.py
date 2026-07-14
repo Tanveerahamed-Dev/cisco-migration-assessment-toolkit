@@ -182,13 +182,16 @@ class Store:
     def get_snapshot_section(self, snapshot_id: int, key: str) -> Any:
         """One top-level section of a snapshot WITHOUT deserializing the whole multi-MB blob —
         sqlite's json_extract parses in C and returns just the subtree (V3.23.159: the gate board
-        reads this per fetch). `key` comes from our own code, never user input. Falls back to the
-        full parse on a sqlite built without JSON1."""
+        reads this per fetch). Callers pass a literal section name, never user input -- but the JSON
+        path is BOUND as a parameter (not f-string-interpolated) so a future caller that forwards a
+        request value cannot break out of the string literal into SQL (audit-6 sec: closes a latent
+        SQL-injection sink; a hostile `key` is now confined to json_extract's path language, which
+        cannot reach another table). Falls back to the full parse on a sqlite built without JSON1."""
         try:
             with self._lock:
                 row = self._conn.execute(
-                    f"SELECT json_extract(snapshot_json, '$.{key}') AS sect "
-                    "FROM snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+                    "SELECT json_extract(snapshot_json, ?) AS sect "
+                    "FROM snapshots WHERE id = ?", ("$." + key, snapshot_id)).fetchone()
         except sqlite3.OperationalError:
             snap = self.get_snapshot(snapshot_id)
             return (snap or {}).get(key)
