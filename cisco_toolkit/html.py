@@ -519,20 +519,32 @@ def write_diff_workbook(old: dict, new: dict, out_path: str, precert: dict = Non
 # -----------------------------------------------------------------------------
 def _trend_point(snap: dict) -> dict:
     """Headline metrics for one snapshot in the campaign timeline."""
-    hs = snap.get("health_scores") or []
+    # Tolerant of a malformed --trend/--compare snapshot: a wrong-typed health_scores (a dict, not the
+    # expected list-of-dicts) would iterate its KEYS (str), and `str.get` raises AttributeError -> the whole
+    # trend workbook aborts (CLI --trend is unwrapped). Coerce to a list of dicts up front; a non-dict row
+    # can't reach the `.get` calls below.
+    _hs = snap.get("health_scores")
+    hs = [r for r in _hs if isinstance(r, dict)] if isinstance(_hs, list) else []
     scores = [r.get("score") for r in hs if isinstance(r.get("score"), (int, float))]
     bands: Dict[str, int] = {}
     for r in hs:
-        bands[r.get("band", "")] = bands.get(r.get("band", ""), 0) + 1
-    pl = snap.get("punchlist") or []
+        bands[str(r.get("band", ""))] = bands.get(str(r.get("band", "")), 0) + 1
+    _pl = snap.get("punchlist")
+    pl = [f for f in _pl if isinstance(f, dict)] if isinstance(_pl, list) else []   # same list-of-dicts guard as health_scores
     readiness = {"READY": 0, "CAUTION": 0, "NOT READY": 0}
-    for r in (snap.get("migration_readiness") or []):
-        if r.get("readiness") in readiness:
+    _mr = snap.get("migration_readiness")
+    for r in (_mr if isinstance(_mr, list) else []):
+        if isinstance(r, dict) and r.get("readiness") in readiness:
             readiness[r["readiness"]] += 1
-    lr = (snap.get("lifecycle_risk") or {}).get("summary") or {}
-    _eb = snap.get("executive_brief") or {}
-    _scale = _eb.get("scale") or {}
-    _posture = _eb.get("posture") or {}
+    # isinstance-guard (not `or {}`): a TRUTHY non-dict section/subsection (a list/str/int in a malformed
+    # --trend/--compare upload) slips past `or {}` and crashes the .get() below -> 500s the unwrapped /trend
+    # endpoint and aborts the CLI --trend workbook. Same truthy-non-dict class the deliverables already guard.
+    def _d(v):
+        return v if isinstance(v, dict) else {}
+    lr = _d(_d(snap.get("lifecycle_risk")).get("summary"))
+    _eb = _d(snap.get("executive_brief"))
+    _scale = _d(_eb.get("scale"))
+    _posture = _d(_eb.get("posture"))
     avg = _posture.get("avg_health")
     if avg is None and scores:
         avg = round(sum(scores) / len(scores), 1)
@@ -540,7 +552,7 @@ def _trend_point(snap: dict) -> dict:
     return {
         "date": ts[:10], "generated_at": ts, "version": snap.get("script_version", ""),
         # SSOT: prefer the engine's canonical scale / posture; the local len()/band-tally is a fallback only.
-        "n_switches": _scale.get("n_devices") if _scale.get("n_devices") is not None else len(snap.get("devices") or {}),
+        "n_switches": _scale.get("n_devices") if _scale.get("n_devices") is not None else len(_d(snap.get("devices"))),
         "avg_health": avg if avg is not None else "",
         "n_critical": _posture.get("n_critical") if _posture.get("n_critical") is not None else bands.get("Critical", 0),
         "n_punchlist": len(pl),

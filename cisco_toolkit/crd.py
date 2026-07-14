@@ -24,7 +24,7 @@ from cisco_toolkit.analyze import vlan_inventory
 from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # coerce truthy non-dict/list sections
-from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
+from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def _evidence_facts(snap: dict) -> dict:
     services = [s for s in _as_list(svc.get("services")) if isinstance(s, dict)]
     mc = _as_dict(svc.get("multicast"))
     mcast_active = any((
-        int(mc.get("active_interfaces") or 0), int(mc.get("active_switch_count") or 0),
+        _as_num(mc.get("active_interfaces")), _as_num(mc.get("active_switch_count")),
         len(mc.get("classified_groups") or []), len(mc.get("igmp_queriers") or []),
         any((v or {}).get("operational") for v in (mc.get("ptp") or {}).values()),
     ))

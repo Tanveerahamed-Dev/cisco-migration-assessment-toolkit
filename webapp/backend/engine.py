@@ -20,11 +20,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 from cisco_toolkit import analyze as _analyze  # noqa: E402  (after path bootstrap)
 from cisco_toolkit import html as _html  # noqa: E402
+from cisco_toolkit.textutils import _as_num as _as_num  # noqa: E402  (shared fail-soft numeric coercion)
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
 from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2: webapp diff schema gate)
 
 # Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
 canon_host = _analyze._canon_host
+as_num = _as_num   # fail-soft leaf-count coercion (rejects the JSON Infinity/NaN a raw int() would 500 on)
 compute_cable_map = _analyze.compute_cable_map   # EDA-style physical cable-map SSOT (explorer + webapp share it)
 cable_map_of_snapshot = _analyze.cable_map_of_snapshot   # stored-snapshot entry point (rehydrates pre-feature uploads)
 trend_point = _html._trend_point

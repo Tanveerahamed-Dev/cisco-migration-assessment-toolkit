@@ -20,7 +20,7 @@ from datetime import datetime
 
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list
-from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
+from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +83,9 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
     rank = {"not ready": 0, "caution": 1, "ready": 2}
 
     def _i(x):
-        try:
-            return int(x)
-        except (TypeError, ValueError):
-            return 0
+        # Delegate to the shared fail-soft coercer: it rejects the JSON Infinity/NaN that a plain
+        # int() would let through (inf -> OverflowError, missed by (TypeError, ValueError)).
+        return int(_as_num(x))
 
     r = {"endpoints": 0, "n_fail": 0, "n_warn": 0, "readiness": None}
     seq, scen, val_items, worst, seen = {}, {}, [], None, set()
@@ -393,7 +392,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
     for name, switches, _kind, _gnames in waves:
         r, seq, _scen, _vi = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
                                                  scen_by_group, val_by_wave)
-        blast = max((int(fi_by_host.get(s, {}).get("stranded") or 0) for s in switches), default=0)
+        blast = max((_as_num(fi_by_host.get(s, {}).get("stranded")) for s in switches), default=0)
         rem, pl = _blockers_for(switches)
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
                         r.get("readiness", "—"), seq.get("sequence", "—"), blast, len(rem) + len(pl)))
@@ -553,7 +552,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                                                        scen_by_group, val_by_wave)
         playbook = scen.get("playbook") or {}
         rem, pl = _blockers_for(switches)
-        blast = max((int(fi_by_host.get(s, {}).get("stranded") or 0) for s in switches), default=0)
+        blast = max((_as_num(fi_by_host.get(s, {}).get("stranded")) for s in switches), default=0)
         verdict = r.get("readiness", "—")
 
         # The constituent move-groups this wave covers (a coupled-subwave maps to ONE group; an

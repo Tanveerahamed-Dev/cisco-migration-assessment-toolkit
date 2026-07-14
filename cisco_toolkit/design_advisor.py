@@ -15,8 +15,10 @@ Discipline (mirrors the engine's coverage-honesty rules): every detector is EVID
 the condition from the snapshot and the decision disappears. A design claim is never asserted from
 absent evidence ("not observed" is not "healthy"); not-collected devices are an explicit unknown.
 """
+import math
 import re
 
+from cisco_toolkit.textutils import _as_num   # shared fail-soft numeric coercion (rejects JSON Infinity/NaN)
 from . import design_kb
 
 PRANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
@@ -60,17 +62,22 @@ def _dict_rows(x):
 
 
 def _as_int(x, default=0):
-    try:
-        return int(x)
-    except (TypeError, ValueError):
-        return default
+    # Delegate to the shared fail-soft coercer, which rejects the JSON Infinity / NaN too (int(inf) ->
+    # OverflowError, which the old (TypeError, ValueError) guard missed and 500'd /design + /architecture_coverage).
+    # None sentinel: an UNPARSEABLE value returns `default` verbatim (a caller passes default=None to tell a
+    # legitimate 0 apart from absent) -- never int(default), which would blow up on default=None.
+    n = _as_num(x, None)
+    return int(n) if n is not None else default
 
 
 def _as_float(x, default=0.0):
+    # Mirror _as_num's fail-soft contract for floats: a JSON Infinity/NaN or a huge-int literal must not crash
+    # (float(10**400) raises OverflowError; inf/nan are not a coverage-honest utilisation) -> `default`.
     try:
-        return float(x)
-    except (TypeError, ValueError):
+        f = float(x)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return f if math.isfinite(f) else default
 
 
 def _dev_list(tagged, sep=" "):
@@ -189,7 +196,7 @@ def _signals(snap):
                 if _g.get("preempt") is False:
                     try:
                         _cfgp = int(_g.get("cfg_priority"))
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON Infinity cfg_priority
                         _cfgp = None
                     if _cfgp is not None and _cfgp > 100:
                         sig["fhrp_no_preempt"].append(_tag)
@@ -965,7 +972,7 @@ def _signals(snap):
     # on-air-critical / high-value tiers the segmentation axis already classified as L3-exposed
     seg_sum = _as_dict(seg.get("summary"))
     sig["oncrit_exposed"] = _as_int(seg_sum.get("n_oncrit_exposed"))
-    sig["gw_acl_cov"] = float(seg_sum.get("gateway_acl_coverage") or 0.0)
+    sig["gw_acl_cov"] = _as_float(seg_sum.get("gateway_acl_coverage"))   # fail-soft: a str/inf coverage -> 0.0, not a 500
     sig["n_gateways"] = _as_int(seg_sum.get("n_gateways"))
     sig["oncrit_domains"] = [d.get("domain") for d in _as_list(seg.get("domains"))
                              if d.get("tier") == "On-air critical" and not d.get("isolated")
@@ -1194,7 +1201,7 @@ def _signals(snap):
                 if int(row.get("root_priority")) in (32768, 32768 + int(vid)):
                     acc += 1
                     acc_hosts.add(host)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON Infinity root_priority/vid
                 continue
     sig["stp_accidental_roots"] = acc
     sig["stp_accidental_nsw"] = len(acc_hosts)
@@ -1235,7 +1242,7 @@ def _signals(snap):
         dv = _as_dict(dv)
         try:
             n = int(dv.get("num_power_supplies"))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON Infinity num_power_supplies
             n = 0
         if n > 1 and "fail" in str(dv.get("ps_status") or "").lower():
             psf.append(host)

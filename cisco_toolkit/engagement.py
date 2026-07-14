@@ -26,7 +26,7 @@ from cisco_toolkit.docmeta import SEV_RANK as _SEV_RANK
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
-from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
+from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,12 @@ _as_list = _docmeta_as_list
 
 
 def _as_int(v, default: int = 0) -> int:
-    """Coerce snapshot counts defensively: None / '' / 'unknown' all degrade to `default`."""
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return default
+    """Coerce snapshot counts defensively: None / '' / 'unknown' / the JSON Infinity / NaN all degrade to
+    `default`. Delegates to the shared fail-soft _as_num, which also rejects `float('inf')` -- int() blows up
+    on that with an OverflowError the old `except (TypeError, ValueError)` missed. (None sentinel so an
+    unparseable value returns `default` verbatim, never int(default).)"""
+    n = _as_num(v, None)
+    return int(n) if n is not None else default
 
 
 def _missing_text(d: dict) -> str:

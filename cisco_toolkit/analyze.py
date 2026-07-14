@@ -21,7 +21,7 @@ from cisco_toolkit.parse import (
     parse_etherchannel_summary_members, parse_ospf_neighbors, parse_bgp_summary,
     parse_eigrp_neighbors, parse_syslog_events, parse_qos_config,
 )
-from cisco_toolkit.textutils import _split_macs, normalize_ifname
+from cisco_toolkit.textutils import _as_num, _split_macs, normalize_ifname
 
 
 # score band -> (label, fill)
@@ -220,8 +220,10 @@ def _is_infra_neighbor(d: InterfaceData, scanned_hosts: set) -> bool:
     return bool(nb and nb in scanned_hosts)
 
 def _canon_host(name: str) -> str:
-    """Normalize a neighbor device-id for matching: strip FQDN domain + serial suffix '(FOC...)'."""
-    n = (name or "").strip()
+    """Normalize a neighbor device-id for matching: strip FQDN domain + serial suffix '(FOC...)'.
+    str()-coerce first: a rehydrated snapshot can carry a wrong-typed cdp_neighbor (a list / int),
+    and .strip() on a non-str would raise -- breaking the cable map's 'never raises' contract."""
+    n = str(name or "").strip()
     n = re.sub(r"\(.*?\)\s*$", "", n).strip()   # drop trailing '(serial)'
     n = n.split(".")[0]                          # drop FQDN domain
     return n.lower()
@@ -236,14 +238,14 @@ def compute_topology_links(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
         for port, d in ifaces.items():
             if not d.cdp_neighbor or not _is_infra_neighbor(d, scanned):
                 continue
-            nbr = d.cdp_neighbor.strip()
+            nbr = str(d.cdp_neighbor or "").strip()   # tolerate a wrong-typed cdp_neighbor (list/int) -> never raises
             # Display name: resolve a scanned neighbor advertised by its FQDN/serial-suffixed
             # CDP id (e.g. 'CORE.broadcast.ajmn') back to its real scanned hostname, so the
             # diagram / 'Topology Links' sheet don't render it as a second, duplicate node. A
             # genuinely off-scan neighbor (no canon match) keeps its raw advertised name.
             b_host = scanned_map.get(_canon_host(nbr), nbr)
-            key = tuple(sorted([f"{_canon_host(host)}|{port.lower()}",
-                                f"{_canon_host(nbr)}|{(d.neighbor_port or '?').lower()}"]))
+            key = tuple(sorted([f"{_canon_host(host)}|{str(port or '').lower()}",
+                                f"{_canon_host(nbr)}|{str(d.neighbor_port or '?').lower()}"]))
             rec = links.get(key)
             if rec is None:
                 links[key] = {"a_host": host, "a_port": port, "b_host": b_host,
@@ -278,7 +280,7 @@ _UP_TIER_ROLES = ("core", "backbone", "superspine", "spine")   # seed the top la
 def _port_op_state(d: "InterfaceData") -> str:
     """Classify one interface's operational state from `show interface status`.
     Down tokens are tested first because 'notconnect' contains the substring 'connect'."""
-    s = (getattr(d, "status", "") or "").strip().lower()
+    s = str(getattr(d, "status", "") or "").strip().lower()   # tolerate a wrong-typed status (int/list) -> 'unknown'
     if not s:
         return "unknown"
     if ("notconnect" in s or "disab" in s or "err" in s or "absent" in s
@@ -385,8 +387,8 @@ def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         b_port = str(L.get("b_port") or "")
         da = all_interfaces.get(a_host, {}).get(a_port)
         db = all_interfaces.get(b_host, {}).get(b_port)
-        is_pc = bool((da and (da.port_channel or "").strip())
-                     or (db and (db.port_channel or "").strip()))
+        is_pc = bool((da and str(da.port_channel or "").strip())
+                     or (db and str(db.port_channel or "").strip()))
         if da is not None:
             ep_ev.setdefault(b_host, []).append(da.endpoint_type or "")
             plat_ev.setdefault(b_host, []).append(da.neighbor_platform or "")
@@ -6293,7 +6295,7 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Golden drift", "na", "not in the drift baseline")
         elif not _gd_has_baseline:
             ax("Golden drift", "na", "no config baseline derived (need 3+ comparable configs)")
-        elif gdr.get("n_missing", 0) >= 5 or gdr.get("compliance_pct", 100) < 70:
+        elif _as_num(gdr.get("n_missing")) >= 5 or _as_num(gdr.get("compliance_pct"), 100) < 70:
             ax("Golden drift", "risk",
                f"{gdr.get('n_missing', 0)} required directive(s) missing "
                f"({gdr.get('compliance_pct', 0)}% compliant)")
@@ -6349,8 +6351,8 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         # -- impact: topology blast radius + control-plane roles -------------
         fir = fi_by.get(host)
         fi_sev = (fir or {}).get("severity", "")
-        stranded = int((fir or {}).get("stranded") or 0)
-        vlans_imp = int((fir or {}).get("vlans_impacted") or 0)
+        stranded = _as_num((fir or {}).get("stranded"))
+        vlans_imp = _as_num((fir or {}).get("vlans_impacted"))
         impact = {"High": 8, "Medium": 5, "Low": 3}.get(fi_sev, 1)
         if stranded >= 200:
             impact += 2
