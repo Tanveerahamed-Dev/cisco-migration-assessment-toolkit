@@ -147,6 +147,11 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "version": snap.get("script_version", ""),
+        # Provenance of THIS projection (the engine build that computed it), distinct from `version`
+        # (the snapshot's own collection-time script_version). A cached summary whose stamp trails the
+        # running engine is recomputed on read so the headline cards never disagree with a live
+        # section tab (app._summary_freshened).
+        "engine_schema": engine.ENGINE_SCHEMA_VERSION,
         "n_switches": head.get("n_switches", len(snap.get("devices") or {})),
         "avg_health": head.get("avg_health", ""),
         "bands": _count_by(hs, "band", BANDS),
