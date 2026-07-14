@@ -131,8 +131,11 @@ def _fleet_model(snap: dict):
     # routing adjacency → L3 (core/distribution); otherwise L2 access.
     l3_hosts = set()
     for r in l3f:
-        if r.get("switch") in devices:
-            l3_hosts.add(r.get("switch"))
+        sw = r.get("switch")
+        # switch may be a poisoned dict/list on an uploaded snapshot; only a str can be a device key, so a
+        # non-str never matches -- guard the `in devices` membership (which would else hash an unhashable dict).
+        if isinstance(sw, str) and sw in devices:
+            l3_hosts.add(sw)
     for h, d in rn.items():
         if h in devices and any(_as_list(_as_dict(d).get(p)) for p in ("ospf", "eigrp", "bgp")):
             l3_hosts.add(h)
@@ -592,8 +595,9 @@ def compute_architecture_review(snap: dict) -> dict:
     svi_owner = {}
     for r in l3f:
         v = str(r.get("vlan") or "")
-        if v and r.get("switch") in devices:
-            svi_owner.setdefault(v, r.get("switch"))
+        sw = r.get("switch")
+        if v and isinstance(sw, str) and sw in devices:
+            svi_owner.setdefault(v, sw)
     no_relay = []
     relay_data = False
     for v, owner in svi_owner.items():
@@ -1058,7 +1062,7 @@ def write_archreview_docx(output_path: str, snap_dict: dict, label: str) -> None
     if not _as_list(ar.get("checks")):
         ar = compute_architecture_review(snap)
     summary = _as_dict(ar.get("summary"))
-    checks = {c.get("id"): c for c in _as_list(ar.get("checks")) if isinstance(c, dict)}
+    checks = {c.get("id"): c for c in _as_list(ar.get("checks")) if isinstance(c, dict) and isinstance(c.get("id"), str)}
 
     from cisco_toolkit.brand_tokens import DOC_NAVY_RGB
     NAVY = RGBColor(*DOC_NAVY_RGB)

@@ -59,6 +59,31 @@ def _dict_rows(x):
     return [r for r in _as_list(x) if isinstance(r, dict)]
 
 
+def _scalar(x):
+    """True for a hashable, mutually-sortable snapshot SCALAR (str/int/float; bool is an int subclass, kept).
+    A device-derived leaf used as a set MEMBER or `sorted()` element is expected to be a scalar; an uploaded
+    snapshot (recursive dict-poison fuzz) can carry a dict/list there, and a non-scalar reaching a set/dict
+    comprehension raises `TypeError: unhashable type: 'dict'` -- a fail-soft 500 on the unwrapped /design,
+    /architecture_coverage endpoints (audit-7 totality, distinct from the audit-6 leaf-COERCION class). FILTER a
+    comprehension on this to drop the poison leaf while leaving every valid scalar EXACTLY as-is, so dedup /
+    counts / SORT ORDER over real data are unchanged (str-coercing every member instead would reorder numeric
+    keys lexically and could collide 1 with '1'). None is excluded -- callers already guard it and it is not a
+    real device value."""
+    return isinstance(x, (str, int, float))
+
+
+def _hkey(x):
+    """A hashable form of a leaf used as a dict KEY or dedup-tuple element -- sites where FILTERING (dropping the
+    whole entry, as _scalar does for a set comprehension) would lose a real finding. Anything already hashable
+    (str/int/float/None/tuple) passes through UNCHANGED so valid keys are untouched; only an unhashable dict/list
+    (dict-poison) is stringified, so it stays a distinct key instead of raising `TypeError: unhashable type`."""
+    try:
+        hash(x)
+        return x
+    except TypeError:
+        return str(x)
+
+
 def _as_int(x, default=0):
     try:
         return int(x)
@@ -165,12 +190,13 @@ def _signals(snap):
     # is NOT a single point of failure). Reconciles the design doc's SPOF claim to its own l3_forwarding table
     # (one source of truth) instead of conflating it with the larger no-FHRP count (multi-domain audit #5).
     sig["single_gw"] = len({r.get("vlan") for r in _dict_rows(snap.get("l3_forwarding"))
-                            if "single-gateway" in str(r.get("risk") or "")})
+                            if "single-gateway" in str(r.get("risk") or "") and _scalar(r.get("vlan"))})
     broken_fhrp = _broken_fhrp_vlans(snap)
     sig["fhrp_broken"] = len(broken_fhrp)
-    sig["fhrp_broken_vids"] = sorted({g.get("vid") for g in broken_fhrp if g.get("vid") is not None})[:12]
+    sig["fhrp_broken_vids"] = sorted({g.get("vid") for g in broken_fhrp if _scalar(g.get("vid"))})[:12]
     sig["fhrp_broken_devices"] = sorted({m.get("host") for g in broken_fhrp
-                                         for m in _dict_rows(g.get("members")) if m.get("host")})[:12]
+                                         for m in _dict_rows(g.get("members"))
+                                         if m.get("host") and _scalar(m.get("host"))})[:12]
     # FHRP RESILIENCE from the published detail axis (parse_hsrp_detail -> snap['fhrp_detail']): ACTIVE
     # gateways missing interface tracking or preemption -- the senior red flags the AJ fleet (no FHRP at
     # all) could never surface. Coverage-honest: empty lists when the detail axis is absent.
@@ -427,8 +453,9 @@ def _signals(snap):
                 # row, so a single device short by one made every remaining UP row also satisfy actual<expected
                 # -- counting the same shortfall N times. Count it ONCE per device (system_ip/host_name).
                 _id = _c.get("system_ip") or _c.get("host_name") or "?"
-                if (_sh, _id) not in _seen_short:
-                    _seen_short.add((_sh, _id))
+                _idk = (_sh, _hkey(_id))
+                if _idk not in _seen_short:
+                    _seen_short.add(_idk)
                     _sdwan_cc.append(f"{_sh} {_c.get('host_name') or _id} -> control connections {_act}/{_exp}")
         for _d in _as_list(_sf.get("devices")):
             if str(_as_dict(_d).get("reachability", "")).lower() == "unreachable":
@@ -780,7 +807,8 @@ def _signals(snap):
         if not _f.get("ra_guard_present"):
             _fhs_open.append(_fh)
             for v in _as_list(_f.get("ipv6_svi_vlans")):
-                _fhs_open_vlans.add(v)
+                if _scalar(v):
+                    _fhs_open_vlans.add(v)
         if not _f.get("dhcp_guard_present"):
             _fhs_open_dhcp.append(_fh)
     sig["ipv6_fhs_open"] = len(_fhs_open)
@@ -944,7 +972,7 @@ def _signals(snap):
     for host, v in _as_dict(snap.get("security")).items():
         for f in _as_list(_as_dict(v).get("findings")):
             if f.get("status") == "fail":
-                fail_hosts.setdefault(f.get("id"), set()).add(host)
+                fail_hosts.setdefault(_hkey(f.get("id")), set()).add(host)
     sig["mgmt_hosts"] = sorted({h for fid in _MGMT_FAIL_IDS for h in fail_hosts.get(fid, set())})
     sig["mgmt_devices"] = len(sig["mgmt_hosts"])
     harden = {h for fid in _HARDEN_FAIL_IDS for h in fail_hosts.get(fid, set())}
@@ -1050,7 +1078,8 @@ def _signals(snap):
     sig["phy_errdisable"] = sum(1 for p in phy if "err" in str(p.get("status", "")).lower()
                                 and "dis" in str(p.get("status", "")).lower())
     sig["phy_dirty"] = sum(1 for p in phy if _phy_dirty(p))
-    sig["phy_dirty_hosts"] = sorted({p.get("switch") for p in phy if _phy_dirty(p) and p.get("switch")})[:12]
+    sig["phy_dirty_hosts"] = sorted({p.get("switch") for p in phy
+                                     if _phy_dirty(p) and p.get("switch") and _scalar(p.get("switch"))})[:12]
 
     # capacity headroom: switches at/above the high port- (or PoE-) utilisation threshold
     cap = [c for c in _as_list(snap.get("capacity")) if isinstance(c, dict)]
@@ -1100,7 +1129,7 @@ def _signals(snap):
               if isinstance(r, dict) and str(r.get("protocol", "")) == "EtherChannel"
               and str(r.get("severity", "")) in ("High", "Critical")]
     sig["bundle_degraded"] = len(pi_bad)
-    bd_sw = {r.get("switch") for r in pi_bad if r.get("switch")}
+    bd_sw = {r.get("switch") for r in pi_bad if r.get("switch") and _scalar(r.get("switch"))}
     sig["bundle_degraded_nsw"] = len(bd_sw)
     sig["bundle_degraded_hosts"] = sorted(bd_sw)[:12]
 
@@ -1157,9 +1186,9 @@ def _signals(snap):
         for ss in _as_list(_as_dict(dev).get("served_subnets")):
             ss = _as_dict(ss)
             vid, sub, gw = ss.get("vlan"), ss.get("subnet"), ss.get("gateway")
-            if vid is not None and sub:
+            if vid is not None and sub and _scalar(sub):
                 v2sub.setdefault(str(vid), set()).add(sub)
-                if gw:
+                if gw and _scalar(gw):
                     v2gw.setdefault(str(vid), set()).add(gw)
     # l3_forwarding corroborates AND extends: VLAN-ID reuse across sites is frequently visible ONLY here, not in
     # subnet_intelligence (e.g. AJ VLAN 64 = 10.200.64.0/24 at one site + 10.203.64.0/24 at another, the latter
@@ -1173,7 +1202,7 @@ def _signals(snap):
         sub = str(r.get("primary_subnet") or "").strip() or _svi_network(r.get("svi_ip"))
         if sub:
             v2sub.setdefault(str(vid), set()).add(sub)
-            if r.get("switch"):
+            if r.get("switch") and _scalar(r.get("switch")):
                 v2gw.setdefault(str(vid), set()).add(r.get("switch"))
     vsi = [v for v in v2sub if len(v2sub[v]) >= 2 and len(v2gw.get(v, set())) >= 2]
     sig["vlan_multi_subnet"] = len(vsi)
@@ -1207,7 +1236,8 @@ def _signals(snap):
     sig["reserved_vlan_svis"] = len(res)
     sig["reserved_vlan_vids"] = sorted({r["vlan"] for r in res})
     sig["reserved_vlan_hosts"] = sorted({r.get("switch") or r.get("host") for r in res
-                                         if r.get("switch") or r.get("host")})[:12]
+                                         if (r.get("switch") or r.get("host"))
+                                         and _scalar(r.get("switch") or r.get("host"))})[:12]
 
     # #4 static (mode on) multi-member EtherChannels: no LACP negotiation -> a miscabled/one-way member is admitted
     #    and blackholes its hash share. Exclude FEX-HIF (Eth>=100/x/y) and the Po self-listing artifact.
@@ -1272,7 +1302,7 @@ def _signals(snap):
         if v in (None, 1, "1"):
             continue
         ei_vlan_n[str(v)] = ei_vlan_n.get(str(v), 0) + 1
-        if h:
+        if h and _scalar(h):
             ei_vlan_hosts.setdefault(str(v), set()).add(h)
     gwc, gwc_vlans = 0, set()
     for r in l3f:
@@ -1302,13 +1332,13 @@ def _signals(snap):
     _ac = _as_dict(snap.get("addressing_conflicts"))
     for grp in _as_list(_ac.get("dup_ip")) + _as_list(_ac.get("dup_subnet")):
         for w in _as_list(_as_dict(grp).get("where")):
-            if isinstance(w, (list, tuple)) and w and w[0]:
+            if isinstance(w, (list, tuple)) and w and w[0] and _scalar(w[0]):
                 ovh.add(w[0])
     sig["addr_overlap_hosts"] = sorted(ovh)[:12]
     dhh = set()
     for rr in _as_list(_as_dict(snap.get("endpoint_dependencies")).get("dual_homed")):
         for sw in _as_list(_as_dict(rr).get("switches")):
-            if sw:
+            if sw and _scalar(sw):
                 dhh.add(sw)
     sig["dual_homed_hosts"] = sorted(dhh)[:12]
     sig["stp_blocked_hosts"] = [x.get("switch") for x in _as_list(snap.get("protocol_health"))
@@ -1325,7 +1355,7 @@ def _signals(snap):
                 continue
         if wide_hit:
             for sw in _as_list(g.get("switches")):
-                if sw:
+                if sw and _scalar(sw):
                     wh.add(sw)
     sig["l2_wide_hosts"] = sorted(wh)[:12]
 
@@ -1334,7 +1364,8 @@ def _signals(snap):
     # unstable baseline + a storm risk to carry into the target. No prior design detector read syslog.
     _si = _as_dict(snap.get("syslog_intelligence"))
     _flap_hosts = sorted({d.get("host") for d in _as_list(_si.get("detections"))
-                          if isinstance(d, dict) and d.get("kind") == "mac-flap" and d.get("host")})
+                          if isinstance(d, dict) and d.get("kind") == "mac-flap"
+                          and d.get("host") and _scalar(d.get("host"))})
     sig["mac_flap_n"] = len(_flap_hosts)
     sig["mac_flap_hosts"] = _flap_hosts[:12]
 
@@ -3979,11 +4010,13 @@ def _wave_plan(snap, cap=_WAVE_CAP):
     waves (parallelizable). Additive -- compute_move_groups (the coupling) is unchanged; every switch is
     placed exactly once."""
     groups = [g for g in _as_list(snap.get("move_groups"))
-              if isinstance(g, dict) and _as_list(g.get("switches"))]
+              if isinstance(g, dict) and any(_scalar(s) for s in _as_list(g.get("switches")))]
     big_subwaves, small = [], []
     n_subdivided = 0
     for gi, g in enumerate(groups):
-        sw = sorted(_as_list(g.get("switches")))                     # alpha sort clusters by site/building/rack
+        # a switch name is a scalar; drop any poisoned dict/list element so the alpha sort can't hit a
+        # 'str' < 'dict' TypeError (the groups filter above guarantees >=1 scalar survives here).
+        sw = sorted(s for s in _as_list(g.get("switches")) if _scalar(s))   # alpha sort clusters by site/building/rack
         if len(sw) > cap:
             n_subdivided += 1
             for i in range(0, len(sw), cap):
@@ -4244,12 +4277,12 @@ def _aci_move_groups(snap):
         for kind in ("tenants", "vrfs", "bds", "epgs"):
             for it in _as_list(_f.get(kind)):
                 it = _as_dict(it)
-                ten = it.get("name") if kind == "tenants" else it.get("tenant")
+                ten = _hkey(it.get("name") if kind == "tenants" else it.get("tenant"))
                 if not ten:
                     continue
                 g = by_tenant.setdefault(ten, {"vrfs": {}, "bds": {}, "epgs": {}, "unenforced_vrfs": set()})
-                nm = it.get("name", "")
-                key = it.get("dn") or nm                  # unique MIT identity -> the cluster multiple collapses
+                nm = _hkey(it.get("name", ""))
+                key = _hkey(it.get("dn")) or nm           # unique MIT identity -> the cluster multiple collapses
                 if kind == "vrfs":
                     g["vrfs"][key] = nm
                     if it.get("pc_enf_pref") == "unenforced":
@@ -4630,7 +4663,7 @@ def compute_architecture_coverage(snap):
     The engine publishes this once; deliverables / explorer / webapp READ it instead of each re-deriving which
     architectures were covered -- one source of truth. Deterministic; depends only on the snapshot."""
     bp = _as_dict(snap.get("design_blueprint"))
-    fired = {d.get("id") for d in _as_list(bp.get("decisions")) if isinstance(d, dict)}
+    fired = {d.get("id") for d in _as_list(bp.get("decisions")) if isinstance(d, dict) and _scalar(d.get("id"))}
     classes = []
     for axis, label, channel, pids in _ARCH_COVERAGE_REGISTRY:
         data = snap.get(axis)
