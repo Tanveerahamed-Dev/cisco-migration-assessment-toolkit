@@ -197,7 +197,8 @@ def collect_apic(base_url: str, username: str, password: str, out_dir: str, veri
             continue
         # an APIC response whose imdata carries an {'error': ...} MO is a fault / RBAC-denied envelope, NOT class
         # data -- writing it would let the offline parser read a denied class as collected-but-empty (audit-5 #17).
-        if isinstance(obj, dict) and any(isinstance(m, dict) and "error" in m for m in (obj.get("imdata") or [])):
+        _imdata = obj.get("imdata") if isinstance(obj, dict) else None
+        if isinstance(_imdata, list) and any(isinstance(m, dict) and "error" in m for m in _imdata):
             logger.warning("  [APIC] %s returned a fault / RBAC-denied envelope -- not written", mo)
             continue
         written.append(_write(out_dir, cmd, obj))
@@ -292,11 +293,18 @@ def collect_ise(base_url: str, username: str, password: str, out_dir: str, verif
     nxt = f"{ers_base}/ers/config/node"
     while nxt:
         sr = _get_json(opener, nxt, headers=headers)
-        page = (sr.get("SearchResult") or {}).get("resources") if isinstance(sr, dict) else None
+        # SearchResult / nextPage must be dicts before we .get() through them: a truthy non-dict (a scalar/list
+        # in a malformed or spoofed ERS envelope) slips past `or {}` and raises AttributeError -> aborts the
+        # opt-in collector. isinstance-guard both, and stop paginating on anything unexpected.
+        sr_result = sr.get("SearchResult") if isinstance(sr, dict) else None
+        if not isinstance(sr_result, dict):
+            break
+        page = sr_result.get("resources")
         if not isinstance(page, list):
             break
         resources.extend(page)
-        nxt = ((sr.get("SearchResult") or {}).get("nextPage") or {}).get("href")
+        _next = sr_result.get("nextPage")
+        nxt = _next.get("href") if isinstance(_next, dict) else None
     if resources:
         ers_nodes = []
         for res in resources:

@@ -290,7 +290,7 @@ def progress(state: Dict[str, Any]) -> Dict[str, Any]:
 def _planned_window(state: Dict[str, Any]) -> int:
     try:
         return int((state.get("plan_summary") or {}).get("est_window_minutes") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON Infinity est_window_minutes
         return 0
 
 

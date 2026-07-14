@@ -42,10 +42,11 @@ _SEV_RANK = {s: i for i, s in enumerate(summary.SEVERITY_ORDER)}
 
 
 def _int(v: Any, default: int = 0) -> int:
-    """Best-effort int from a snapshot value — robust to None/str/garbage in an uploaded snapshot."""
+    """Best-effort int from a snapshot value — robust to None/str/garbage in an uploaded snapshot, incl. the
+    bare JSON Infinity/NaN json.loads accepts (int(inf) raises OverflowError, which the plain guard missed)."""
     try:
         return int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

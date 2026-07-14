@@ -12,7 +12,7 @@ failing. Deterministic content; no network, no device data beyond the snapshot.
 import logging
 import os
 
-from cisco_toolkit.textutils import xml_safe   # shared XML-illegal-char sanitizer (the deck's single text sink)
+from cisco_toolkit.textutils import _as_num, xml_safe   # shared XML-illegal-char sanitizer + fail-soft numeric coercion
 from cisco_toolkit.brand_tokens import DECK_NAVY_RGB
 
 logger = logging.getLogger(__name__)
@@ -302,11 +302,11 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     s = slide()
     header(s, "Concentrated dependency", "The switches the fleet depends on")
     fi = sorted(_R(snap.get("failure_impact")),
-                key=lambda r: -(int(r.get("stranded") or 0)))
-    keystones = [r for r in fi if int(r.get("stranded") or 0) > 0][:5]
+                key=lambda r: -_as_num(r.get("stranded")))
+    keystones = [r for r in fi if _as_num(r.get("stranded")) > 0][:5]
     # off-scan-gateway records carry no usable blast radius (audit-3 #7); count them so an INDETERMINATE estate
     # is not mistaken for a well-distributed one (audit-4 #8 false-health).
-    n_indet = sum(1 for r in fi if int(r.get("off_scan_gw_vlans") or 0) > 0)
+    n_indet = sum(1 for r in fi if _as_num(r.get("off_scan_gw_vlans")) > 0)
     text(s, 0.7, 1.95, W - 1.4, 0.5,
          [("Ranked by migration blast radius — the collateral endpoints stranded if the switch drops "
            "during its move. Sequence and protect these first.", 13, _MUTED, False)])
@@ -344,15 +344,15 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         # the support window still open. Mirror the canonical executive_brief lifecycle axis
         # (compute_executive_brief's lc_pe / lc_known pair) so the deck headline agrees with every
         # other surface (A3 SSOT fix). Past-EoS is not lost: it keeps its own segment below.
-        past = lsum.get("n_past_ldos", 0)
-        near = lsum.get("n_near", 0)
+        past = _as_num(lsum.get("n_past_ldos"))
+        near = _as_num(lsum.get("n_near"))
         # Denominator == KNOWN-model (EoL-assessable) devices == full fleet minus unidentified-model
         # devices, mirroring compute_executive_brief's lc_known. Dividing by the full n_devices diluted
         # the headline and made THIS slide the sole set-wide outlier (70% of 303) while the workbook,
         # design, MOP, runbook and engagement all report "86% of 247 assessable" (QA scorecard row 12,
         # residual #1). The Unknown count stays visible in the band-distribution legend below, so the
         # narrower denominator is coverage-honest, not a hidden exclusion.
-        assessable = lsum.get("n_devices", 0) - lsum.get("n_unknown", 0)
+        assessable = _as_num(lsum.get("n_devices")) - _as_num(lsum.get("n_unknown"))
         pct = round(100 * (past + near) / assessable) if assessable else 0
         stat(s, 0.7, 2.1, f"{pct}%", f"of {assessable} assessable, past or nearing end-of-support", _HIGH)
         stat(s, 3.6, 2.1, past, "past end-of-support", _CRIT)

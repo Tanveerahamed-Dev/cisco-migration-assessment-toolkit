@@ -22,7 +22,7 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict
 from cisco_toolkit.docmeta import as_list as _as_list
-from cisco_toolkit.textutils import xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5)
+from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,7 @@ def _facts(snap: dict) -> dict:
     keystones = [r for r in fi if isinstance(r, dict)]
 
     def _stranded(r):
-        try:
-            return int(r.get("stranded") or 0)
-        except (TypeError, ValueError):
-            return 0
+        return _as_num(r.get("stranded"))
     keystones.sort(key=lambda r: (-_stranded(r), str(r.get("host") or "")))
     keystones = [k for k in keystones if _stranded(k) > 0]
     si = _as_dict(snap.get("syslog_intelligence"))
@@ -50,10 +47,7 @@ def _facts(snap: dict) -> dict:
     sec_fail = 0
     for host, blk in sec.items():
         s = _as_dict(_as_dict(blk).get("summary"))
-        try:
-            sec_fail += int(s.get("fail") or 0)
-        except (TypeError, ValueError):
-            continue
+        sec_fail += _as_num(s.get("fail"))   # fail-soft: a bad 'fail' count contributes 0, never aborts the handbook
     # routing-adjacency + first-hop-redundancy Day-2 health (N36)
     ph2 = _as_list(snap.get("protocol_health"))
     routing_protos = sorted({str(r.get("protocol", "")).upper() for r in ph2 if isinstance(r, dict)
@@ -106,7 +100,7 @@ def _known_issues(ev: dict) -> tuple:
             by_label: dict = {}
             for d in dets:
                 a = by_label.setdefault(str(d.get("label") or "?"), {"count": 0, "sev": "—", "devs": 0})
-                a["count"] += int(d.get("count") or 0)
+                a["count"] += _as_num(d.get("count"))   # fail-soft: a malformed detection count contributes 0
                 a["devs"] += 1
                 sev = str(d.get("severity") or "—")
                 if _SEV.get(sev, -1) > _SEV.get(a["sev"], -1):
@@ -220,11 +214,8 @@ def _known_issues(ev: dict) -> tuple:
     # there are failures, name ONLY the devices that actually failed (never every device that merely
     # carries a security block — that would assert open failures on clean boxes to a change board).
     if ev["sec"]:                                          # the CIS/hardening axis WAS collected
-        def _fail_of(blk):                                 # total on a malformed 'fail' (e.g. the string 'many')
-            try:
-                return int(_as_dict(_as_dict(blk).get("summary")).get("fail") or 0)
-            except (TypeError, ValueError):
-                return 0
+        def _fail_of(blk):                                 # total on a malformed 'fail' (e.g. 'many' / a JSON Infinity)
+            return _as_num(_as_dict(_as_dict(blk).get("summary")).get("fail"))
         fail_hosts = sorted(h for h, blk in ev["sec"].items() if _fail_of(blk) > 0)
         if ev["n_sec_fail"] and fail_hosts:
             issues.append((
