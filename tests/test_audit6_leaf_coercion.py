@@ -11,12 +11,33 @@ a raw int()/round() with NO guard crashes on ANY bad type, but the finding-#2 si
 so those fixtures MUST plant inf to stay non-vacuous. (Unique basename: pytest derives the module name from
 the filename, which must not collide with any other test module.)"""
 
+import json
+import os
+
 import pytest
 
 from cisco_toolkit.textutils import _as_num, xml_safe
 
 INF = float("inf")
 NAN = float("nan")
+
+_GOLDEN = os.path.join(os.path.dirname(__file__), "golden", "snapshot.json")
+
+
+def _poison_numeric_leaves(obj, val):
+    """Recursively replace every int/float leaf (NOT bool) with `val`, preserving dict/list structure so the
+    only failure surface is numeric/type coercion (not broken iteration). This is the fuzz that verified the
+    WHOLE reachable class -- committed here so a future raw int()/round()/float()/unary-minus on a snapshot
+    leaf can't regress the fail-soft doctrine unnoticed."""
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, (int, float)):
+        return val
+    if isinstance(obj, dict):
+        return {k: _poison_numeric_leaves(v, val) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_poison_numeric_leaves(v, val) for v in obj]
+    return obj
 
 
 # --- the shared root-cause helper --------------------------------------------------------------------------
@@ -221,3 +242,30 @@ def test_collect_ise_tolerates_nondict_searchresult(tmp_path, monkeypatch):
     monkeypatch.setattr(rest_collect, "_write", lambda out_dir, cmd, obj: f"{out_dir}/{cmd}")
     out = rest_collect.collect_ise("https://ise.example", "ro", "pw", str(tmp_path))
     assert isinstance(out, list)                  # must NOT raise AttributeError
+
+
+# --- whole-class fuzz guard: poison EVERY numeric leaf of the real golden snapshot -------------------------
+@pytest.mark.parametrize("poison", [INF, NAN, "many"], ids=["inf", "nan", "str"])
+def test_golden_snapshot_numeric_poison_degrades_compute_surface(poison):
+    """The recursive-poison fuzz that verified the whole reachable class, committed as a durable guard. Every
+    numeric leaf of tests/golden/snapshot.json is replaced with inf / nan / a non-numeric string, then the
+    compute + endpoint surface is driven -- no single malformed leaf may crash. inf/nan trip int()/round()
+    (OverflowError/ValueError); a string trips float()/unary-minus/`+`. The dict variant is intentionally
+    EXCLUDED -- it surfaces a separate unhashable-set-comprehension axis tracked as its own follow-up."""
+    if not os.path.exists(_GOLDEN):
+        pytest.skip("golden snapshot fixture not present")
+    from cisco_toolkit import analyze, archreview, design_advisor, html
+    with open(_GOLDEN, encoding="utf-8") as fh:
+        snap = _poison_numeric_leaves(json.load(fh), poison)
+    assert isinstance(design_advisor.compute_design_blueprint(snap, {}), dict)   # /design + /architecture_coverage
+    assert isinstance(archreview.compute_architecture_review(snap), dict)        # /archreview
+    assert isinstance(html.compute_campaign_trend([snap, snap]), dict)           # CLI --trend + campaign timeline
+    assert isinstance(analyze.cable_map_of_snapshot(snap), dict)                 # /cable_map + /graph
+    assert isinstance(analyze.compute_device_dossiers(                           # section recompute
+        health_scores=snap.get("health_scores"), failure_impact=snap.get("failure_impact"),
+        lifecycle_risk=snap.get("lifecycle_risk"), software_risk=snap.get("software_risk"),
+        golden_drift=snap.get("golden_drift"), security=snap.get("security"),
+        platform_health=snap.get("platform_health"), syslog_intelligence=snap.get("syslog_intelligence"),
+        qos_audit=snap.get("qos_audit"), config_hygiene=snap.get("config_hygiene"),
+        stp_roots=snap.get("stp_roots"), vpc=snap.get("vpc"), physical_health=snap.get("physical_health"),
+        protocol_health=snap.get("protocol_health"), move_groups=snap.get("move_groups")), dict)
