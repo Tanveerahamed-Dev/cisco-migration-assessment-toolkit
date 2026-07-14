@@ -152,6 +152,11 @@ export interface GateRecord {
   signed_by: string;
   note: string;
   decided_at: string;
+  // Coverage-honest disclosure (backend gates.annotate_out_of_order, PR #376): this sign-off was
+  // recorded before an upstream cadence gate was itself GO. Disclosed, never blocked — the sign-off
+  // still persists. `out_of_order_upstream` names the first unmet upstream gate key.
+  out_of_order?: boolean;
+  out_of_order_upstream?: string;
 }
 
 export interface GateBoardData {
