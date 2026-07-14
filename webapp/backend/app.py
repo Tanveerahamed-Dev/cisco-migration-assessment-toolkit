@@ -756,10 +756,16 @@ def create_app(db_path: str | None = None) -> FastAPI:
         def spa(full_path: str):
             if full_path.startswith("api/"):
                 raise HTTPException(404, "Not found")
-            candidate = FRONTEND_DIST / full_path
-            if full_path and candidate.is_file():
+            # SECURITY: this catch-all sits BELOW the /api access guard (no token/loopback check), so the
+            # join MUST be contained. A raw client (browsers normalise `..`, sockets/curl --path-as-is do
+            # not) can send `/../../../etc/passwd`; without the resolve()+containment check that FileResponse
+            # served ANY file the process can read — the client-snapshot DB, source, keys — unauthenticated.
+            # An escaping / absolute / drive-qualified path falls through to index.html, never a file read.
+            dist = FRONTEND_DIST.resolve()
+            candidate = (dist / full_path).resolve()
+            if full_path and candidate.is_relative_to(dist) and candidate.is_file():
                 return FileResponse(candidate)
-            return FileResponse(FRONTEND_DIST / "index.html")
+            return FileResponse(dist / "index.html")
 
     return app
 

@@ -136,8 +136,10 @@ def test_collect_ise_ers_paginates_and_keeps_node_on_detail_failure(tmp_path, mo
 
     def fake_get(opener, url, headers=None, timeout=30):
         if url.endswith("/ers/config/node"):                       # ERS list page 1
+            # nextPage stays on the SAME host as ers_base (a real ISE paginates on itself); an off-host href
+            # is refused by the credential-exfil guard — pinned by test_ise_pagination_refuses_off_host_nextpage.
             return {"SearchResult": {"resources": [{"id": "n1", "name": "A"}, {"id": "n2", "name": "B"}],
-                                     "nextPage": {"href": "https://ise:9060/ers/config/node?page=2"}}}
+                                     "nextPage": {"href": "https://ise.example:9060/ers/config/node?page=2"}}}
         if "page=2" in url:                                        # ERS list page 2
             return {"SearchResult": {"resources": [{"id": "n3", "name": "C"}]}}
         if url.endswith("/node/n2"):                               # n2 detail GET FAILS
@@ -250,3 +252,51 @@ def test_http_session_disables_tls_verification_when_asked():
     from cisco_toolkit import rest_collect as RC
     opener = RC._http_session(verify_tls=False)
     assert any(isinstance(h, urllib.request.HTTPSHandler) for h in opener.handlers)  # CERT_NONE handler added
+
+
+def test_ise_pagination_refuses_off_host_nextpage(tmp_path, monkeypatch):
+    """SECURITY: a malicious/MITM'd ISE that returns an off-host `nextPage.href` must NOT receive the
+    Basic-auth credential — the collector refuses a pagination link whose host/scheme differs from ers_base
+    (credential-exfil / SSRF guard). Pre-fix the credential-bearing GET followed it verbatim."""
+    from cisco_toolkit import rest_collect as RC
+    urls_hit = []
+
+    def fake_get_json(opener, url, headers=None, timeout=30):
+        urls_hit.append(url)
+        if url.endswith("/ers/config/node"):                # page 1: point the NEXT page at an attacker host
+            return {"SearchResult": {"resources": [],
+                                     "nextPage": {"href": "https://attacker.evil.example/ers/steal"}}}
+        return None                                         # Open-API endpoints + anything else: skip
+
+    monkeypatch.setattr(RC, "_get_json", fake_get_json)
+    monkeypatch.setattr(RC, "_write", lambda *a, **k: "")
+    RC.collect_ise("https://ise.corp.local", "svc-ro", "S3cretPass!", str(tmp_path), verify_tls=True)
+    assert not any("attacker.evil.example" in u for u in urls_hit), \
+        "the credential-bearing GET must never follow an off-host nextPage.href"
+
+
+def test_ise_pagination_survives_malformed_port_nextpage(tmp_path, monkeypatch):
+    """ROBUSTNESS (red-team refutation of the off-host guard): a hostile nextPage.href with a NON-INTEGER
+    port -- 'https://host:9060.attacker.com/…', ':+9060', ':9060\\tx' -- makes urllib.parse.urlsplit().port
+    RAISE ValueError. The same-origin guard reads `_p.port`, so an UNGUARDED read propagated that ValueError
+    straight out of collect_ise (its caller has no try/except) -> a malicious / valid-cert-MITM'd ISE could
+    ABORT the entire collection run and skip the ERS census write, breaking the module's documented fail-soft
+    'never raises' contract (audit-2 L3). The guard must CATCH it and refuse the link (fail closed), not crash.
+    NON-VACUOUS: without the try/except this call raises `ValueError: Port could not be cast to integer value
+    as '9060.attacker.com'` and the test errors."""
+    from cisco_toolkit import rest_collect as RC
+    urls_hit = []
+
+    def fake_get_json(opener, url, headers=None, timeout=30):
+        urls_hit.append(url)
+        if url.endswith("/ers/config/node"):          # page 1: nextPage names a malformed (non-integer) port
+            return {"SearchResult": {"resources": [],
+                                     "nextPage": {"href": "https://ise.corp.local:9060.attacker.com/ers/steal"}}}
+        return None
+
+    monkeypatch.setattr(RC, "_get_json", fake_get_json)
+    monkeypatch.setattr(RC, "_write", lambda *a, **k: "")
+    # must return cleanly, NOT raise ValueError (that is the whole point of the fix)
+    RC.collect_ise("https://ise.corp.local", "svc-ro", "S3cretPass!", str(tmp_path), verify_tls=True)
+    assert not any("attacker.com" in u for u in urls_hit), \
+        "a malformed-port nextPage.href must be refused (fail closed), never followed"
