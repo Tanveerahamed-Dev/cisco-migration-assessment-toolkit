@@ -155,4 +155,45 @@ describe("CampaignPage", () => {
     // the POST response is applied optimistically — the cell now reads GO
     await waitFor(() => expect(cell.textContent).toBe("GO"));
   });
+
+  it("flags an out-of-order sign-off with a ⚠ badge and disclosing tooltip, and leaves clean cells unmarked", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue({
+      cadence: [
+        { key: "cab", label: "CAB", when: "T-2d" },
+        { key: "nrfu", label: "NRFU", when: "T-0" },
+      ],
+      waves: ["Wave-A"],
+      records: [
+        // in order: no upstream unmet, no disclosure
+        { wave: "Wave-A", gate: "cab", decision: "go", signed_by: "eng", note: "", decided_at: "2026-01-01T00:00:00Z" },
+        // out of order: NRFU signed GO before upstream CAB was GO (backend gates.annotate_out_of_order, PR #376)
+        { wave: "Wave-A", gate: "nrfu", decision: "go", signed_by: "eng", note: "", decided_at: "2026-01-01T00:00:00Z",
+          out_of_order: true, out_of_order_upstream: "cab" },
+      ],
+    });
+    const { container } = renderCampaign();
+
+    const clean = (await waitFor(() => {
+      const c = container.querySelector('[data-wave="Wave-A"][data-gate="cab"]');
+      if (!c) throw new Error("gate board not rendered yet");
+      return c as HTMLElement;
+    }));
+    const ooo = container.querySelector('[data-wave="Wave-A"][data-gate="nrfu"]') as HTMLElement;
+
+    // the out-of-order cell carries a visible ⚠ marker; the clean one does not
+    expect(ooo.textContent).toContain("⚠");
+    expect(clean.textContent).not.toContain("⚠");
+    expect(clean.querySelector(".gate-ooo")).toBeNull();
+
+    // the disclosure names the first unmet upstream, on both the cell tooltip and the marker's a11y label
+    expect(ooo.getAttribute("title")).toContain("Out of order: signed before upstream cab was GO");
+    const badge = ooo.querySelector(".gate-ooo");
+    expect(badge).toBeTruthy();
+    expect(badge?.getAttribute("aria-label")).toBe("Out of order: signed before upstream cab was GO");
+
+    // coverage-honest: disclosing the out-of-order state must not erase the sign-off — it still reads GO
+    expect(ooo.textContent).toContain("GO");
+    expect(ooo.getAttribute("data-out-of-order")).toBe("true");
+  });
 });
