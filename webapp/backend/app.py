@@ -115,6 +115,14 @@ class GateIn(BaseModel):
 # clients only; setting the token (required for any non-loopback bind) gates every /api
 # route behind `Authorization: Bearer <token>`. /api/health stays open as a liveness
 # probe — it carries no client data.
+# CONFIDENTIALITY is thus covered on the response-READ side by CORS. But WRITES need a
+# second guard: a cross-origin page cannot READ our replies, yet it can still EXECUTE
+# "simple request" POSTs (multipart / empty-body, no preflight) — blind CSRF that pollutes
+# the store and spins up heavy ingest subprocesses (resource-exhaustion DoS). So every
+# state-changing method is additionally screened on the REQUEST side (see `_cross_site_write`):
+# the browser's Sec-Fetch-Site oracle first, then a same-origin / localhost / extras Origin check —
+# the write-side complement to the read-side CORS policy, leaving BOTH the zero-token loopback dev
+# flow AND the non-localhost single-origin production deployment working.
 _LOCALHOST_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
 
@@ -132,6 +140,57 @@ def _client_is_loopback(request: Request) -> bool:
     if host is None or host == "testclient":
         return True
     return host == "::1" or host.startswith("127.")
+
+
+# State-changing (unsafe) HTTP methods. GET/HEAD/OPTIONS are safe and never guarded here.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _origin_is_allowed(origin: str, request: Request) -> bool:
+    """True when `origin` is trusted for a WRITE: SAME-ORIGIN (it equals the host this request was
+    addressed to — the SPA is served from that origin in a single-origin production deployment), a
+    localhost origin, or an admin ASSESSHUB_CORS_ORIGINS extra. That is the read-side CORS allowlist
+    PLUS the same-origin case CORS grants implicitly. Only the fallback when there is no Sec-Fetch-Site.
+    `fullmatch` (not `match`) mirrors Starlette CORSMiddleware exactly, and denies a trailing-newline
+    lookalike (`http://localhost\\n.evil`) that a `$`-anchored `re.match` would otherwise accept."""
+    if bool(re.fullmatch(_LOCALHOST_ORIGIN_RE, origin)) or origin in _cors_origins():
+        return True
+    # Same-origin: the Origin's host[:port] equals the Host this request was addressed to. Compare
+    # netloc only — a TLS-terminating proxy can leave request.url.scheme as http while Origin is https.
+    host = request.headers.get("host", "")
+    return host != "" and origin.rsplit("://", 1)[-1] == host
+
+
+def _cross_site_write(request: Request) -> bool:
+    """True for a state-changing request that a foreign site drove the victim's browser
+    into making — the blind-CSRF vector (ADR: client-data confidentiality). Even though CORS
+    hides the response, a cross-origin page can still fire `multipart/form-data` or empty-body
+    POSTs (CORS "simple requests" that skip preflight) that EXECUTE against the zero-token
+    loopback bind: store pollution + a heavy ingest subprocess = resource-exhaustion DoS.
+
+    Signal order follows OWASP Fetch-Metadata guidance. An EXPLICIT ASSESSHUB_CORS_ORIGINS match wins
+    first: the admin trusts that origin for reads (CORS) so it is trusted for writes too, even though a
+    genuine split-origin UI labels its own writes `Sec-Fetch-Site: cross-site` — read/write parity. Then
+    `Sec-Fetch-Site` (browser-set, JS cannot forge it — a `Sec-` forbidden header — and correct across a
+    TLS-terminating proxy): only `cross-site` (and any unknown value) is refused; `same-origin`/`same-site`/
+    `none` are the app's own UI / user-initiated nav. Note the blanket localhost trust is deliberately NOT
+    an override here — a localhost page issuing a cross-site write to a non-localhost deployment must still
+    be refused. When Sec-Fetch-Site is absent (pre-2023 browsers) fall back to `Origin` (same-origin host
+    match / localhost / extras). A request carrying NEITHER header is a non-browser client (curl, the ASGI
+    test harness): browsers ALWAYS attach `Origin` to an unsafe-method request (real origin or `null`), so
+    this branch is never a cross-site browser write, and allowing it keeps the zero-config loopback dev
+    flow (and its pinned test) untouched."""
+    if request.method not in _UNSAFE_METHODS:
+        return False
+    origin = request.headers.get("origin")
+    if origin is not None and origin in _cors_origins():
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in ("same-origin", "same-site", "none")
+    if origin is not None:
+        return not _origin_is_allowed(origin, request)
+    return False
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -171,12 +230,20 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.middleware("http")
     async def _api_access_guard(request: Request, call_next):
         """Registered AFTER (so wrapping OUTSIDE) CORSMiddleware; skips OPTIONS so
-        preflights fall through to CORS. Token set -> Bearer required on all /api;
-        token unset -> /api is loopback-only. Health/liveness stays open."""
+        preflights fall through to CORS. Cross-site writes are refused (CSRF). Token set ->
+        Bearer required on all /api; token unset -> /api is loopback-only. Health/liveness
+        stays open."""
         path = request.url.path
         if (request.method == "OPTIONS" or not path.startswith("/api/")
                 or path == "/api/health"):
             return await call_next(request)
+        # Refuse state-changing requests driven by a foreign origin BEFORE any auth check, so
+        # the "no cross-site writes" invariant holds identically in token and no-token modes.
+        if _cross_site_write(request):
+            return JSONResponse({"detail": "Cross-site state-changing request refused: a write "
+                                           "must originate from the AssessHub UI, not another "
+                                           "site (CSRF protection)."},
+                                status_code=403)
         token = os.environ.get("ASSESSHUB_TOKEN", "")
         if token:
             supplied = request.headers.get("authorization", "")
