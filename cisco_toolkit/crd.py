@@ -38,12 +38,14 @@ def _evidence_facts(snap: dict) -> dict:
     for host, ports in ifaces.items():
         for p, d in _as_dict(ports).items():
             d = d or {}
-            if (d.get("switchport_mode") or "").lower() == "access" and (d.get("end_host_mac") or "").strip():
+            # str()-coerce every device string-field before .strip()/.lower() (audit-6 finding-#3 class): a
+            # wrong-typed leaf (a truthy dict/list/number in an uploaded snapshot) would otherwise .strip() -> 500.
+            if str(d.get("switchport_mode") or "").lower() == "access" and str(d.get("end_host_mac") or "").strip():
                 endpoints += 1
-            vrf = (d.get("vrf") or "").strip()
+            vrf = str(d.get("vrf") or "").strip()
             if vrf and vrf.lower() not in ("default", "global"):
                 vrfs.add(vrf)
-            if (d.get("svi_ip") or "") and ((d.get("acl_in") or "").strip() or (d.get("acl_out") or "").strip()):
+            if (d.get("svi_ip") or "") and (str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip()):
                 n_acl_svis += 1
     # Dual-homed endpoints: the CANONICAL redundancy-bearing count is the engine's
     # endpoint_dependencies.dual_homed (host MAC observed on two switches) — the SAME source the
@@ -360,7 +362,7 @@ def write_crd_docx(output_path: str, snap_dict: dict, label: str) -> None:
 
     if ev["services"]:
         doc.add_heading("4.5 Services & applications", level=2)
-        cats = sorted({(s.get("category") or "").strip() for s in ev["services"] if s.get("category")})
+        cats = sorted({str(s.get("category") or "").strip() for s in ev["services"] if s.get("category")})
         req_table([
             ("REQ-T-SVC-001", "End-to-end continuity for the detected service categories ("
                               + (", ".join(cats[:6]) or "see service map")
