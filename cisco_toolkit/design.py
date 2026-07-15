@@ -57,12 +57,12 @@ def _segmentation_facts(snap: dict):
     n_svis = 0
     for host, ports in (snap.get("interfaces") or {}).items():
         for p, d in (ports or {}).items():
-            vrf = (d.get("vrf") or "").strip()
+            vrf = str(d.get("vrf") or "").strip()   # str()-coerce a wrong-typed device leaf before .strip() (audit-6 #3 class)
             if vrf and vrf.lower() not in ("default", "global"):
                 vrfs.add(vrf)
             if re.match(r"^Vlan\d+$", p, re.IGNORECASE) and (d.get("svi_ip") or ""):
                 n_svis += 1
-                if (d.get("acl_in") or "").strip() or (d.get("acl_out") or "").strip():
+                if str(d.get("acl_in") or "").strip() or str(d.get("acl_out") or "").strip():
                     n_acl_svis += 1
     return vrfs, n_acl_svis, n_svis
 
@@ -449,7 +449,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
             if re.match(r"^Vlan\d+$", p, re.IGNORECASE) and (d.get("svi_ip") or ""):
                 svis.append(f"{p} {d.get('svi_ip')}" + (f" [{d.get('hsrp_behavior')}]"
                                                         if d.get("hsrp_behavior") else ""))
-            if (d.get("switchport_mode") or "").lower() == "trunk" and d.get("cdp_neighbor"):
+            if str(d.get("switchport_mode") or "").lower() == "trunk" and d.get("cdp_neighbor"):
                 uplinks.append(f"{p}→{d.get('cdp_neighbor')}")
             if p.startswith("Po"):
                 pos.append(p)
@@ -490,7 +490,7 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     sw_by_model: dict = defaultdict(Counter)
     for h, d in devices.items():
         m = (d or {}).get("model") or "Unknown"
-        sw_by_model[m][((d or {}).get("sw_version") or "").strip() or "—"] += 1
+        sw_by_model[m][str((d or {}).get("sw_version") or "").strip() or "—"] += 1   # str(): a dict sw_version would be an unhashable key
     sw_rows, mixed = [], []
     for m, cnt in sorted(sw_by_model.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
         images = ", ".join(f"{v} ×{n}" for v, n in cnt.most_common())
