@@ -7,15 +7,18 @@ so the whole platform runs from one origin in production.
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import os
 import re
 import tempfile
+import threading
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -115,6 +118,14 @@ class GateIn(BaseModel):
 # clients only; setting the token (required for any non-loopback bind) gates every /api
 # route behind `Authorization: Bearer <token>`. /api/health stays open as a liveness
 # probe — it carries no client data.
+# CONFIDENTIALITY is thus covered on the response-READ side by CORS. But WRITES need a
+# second guard: a cross-origin page cannot READ our replies, yet it can still EXECUTE
+# "simple request" POSTs (multipart / empty-body, no preflight) — blind CSRF that pollutes
+# the store and spins up heavy ingest subprocesses (resource-exhaustion DoS). So every
+# state-changing method is additionally screened on the REQUEST side (see `_cross_site_write`):
+# the browser's Sec-Fetch-Site oracle first, then a same-origin / localhost / extras Origin check —
+# the write-side complement to the read-side CORS policy, leaving BOTH the zero-token loopback dev
+# flow AND the non-localhost single-origin production deployment working.
 _LOCALHOST_ORIGIN_RE = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
 
@@ -127,11 +138,109 @@ def _cors_origins() -> List[str]:
 
 def _client_is_loopback(request: Request) -> bool:
     """True when the ASGI peer is loopback (or an in-process test harness, which has no
-    real socket). Deliberately conservative: an unknown/forwarded peer is NOT loopback."""
+    real socket). Deliberately conservative: a peer with a non-loopback IP is NOT loopback.
+    NB uvicorn runs proxy_headers=True, so behind a trusted proxy request.client reflects
+    X-Forwarded-For — but forwarded_allow_ips defaults to 127.0.0.1, so a REMOTE peer's forged
+    header is ignored. The safe posture for any non-loopback / proxied bind is a token
+    (ASSESSHUB_TOKEN): token mode ignores peer position entirely, closing this deployment edge."""
     host = getattr(request.client, "host", None)
     if host is None or host == "testclient":
         return True
     return host == "::1" or host.startswith("127.")
+
+
+# State-changing (unsafe) HTTP methods. GET/HEAD/OPTIONS are safe and never guarded here.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _origin_is_allowed(origin: str, request: Request) -> bool:
+    """True when `origin` is trusted for a WRITE: SAME-ORIGIN (it equals the host this request was
+    addressed to — the SPA is served from that origin in a single-origin production deployment), a
+    localhost origin, or an admin ASSESSHUB_CORS_ORIGINS extra. That is the read-side CORS allowlist
+    PLUS the same-origin case CORS grants implicitly. Only the fallback when there is no Sec-Fetch-Site.
+    `fullmatch` (not `match`) mirrors Starlette CORSMiddleware exactly, and denies a trailing-newline
+    lookalike (`http://localhost\\n.evil`) that a `$`-anchored `re.match` would otherwise accept."""
+    if bool(re.fullmatch(_LOCALHOST_ORIGIN_RE, origin)) or origin in _cors_origins():
+        return True
+    # Same-origin: the Origin's host[:port] equals the Host this request was addressed to. Parse the
+    # authority with urlsplit (netloc) — a naive rsplit("://") is fooled by a lookalike whose FRAGMENT
+    # embeds a trusted host ('http://evil.example#http://localhost' rsplits to 'localhost'). A TLS-
+    # terminating proxy can leave request.url.scheme http while Origin is https, so compare netloc only.
+    host = request.headers.get("host", "")
+    return host != "" and urllib.parse.urlsplit(origin).netloc == host
+
+
+def _cross_site_write(request: Request) -> bool:
+    """True for a state-changing request that a foreign site drove the victim's browser
+    into making — the blind-CSRF vector (ADR: client-data confidentiality). Even though CORS
+    hides the response, a cross-origin page can still fire `multipart/form-data` or empty-body
+    POSTs (CORS "simple requests" that skip preflight) that EXECUTE against the zero-token
+    loopback bind: store pollution + a heavy ingest subprocess = resource-exhaustion DoS.
+
+    Signal order follows OWASP Fetch-Metadata guidance. An EXPLICIT ASSESSHUB_CORS_ORIGINS match wins
+    first: the admin trusts that origin for reads (CORS) so it is trusted for writes too, even though a
+    genuine split-origin UI labels its own writes `Sec-Fetch-Site: cross-site` — read/write parity. Then
+    `Sec-Fetch-Site` (browser-set, JS cannot forge it — a `Sec-` forbidden header — and correct across a
+    TLS-terminating proxy): only `cross-site` (and any unknown value) is refused; `same-origin`/`same-site`/
+    `none` are the app's own UI / user-initiated nav. Note the blanket localhost trust is deliberately NOT
+    an override here — a localhost page issuing a cross-site write to a non-localhost deployment must still
+    be refused. When Sec-Fetch-Site is absent (pre-2023 browsers) fall back to `Origin` (same-origin host
+    match / localhost / extras). A request carrying NEITHER header is a non-browser client (curl, the ASGI
+    test harness): browsers ALWAYS attach `Origin` to an unsafe-method request (real origin or `null`), so
+    this branch is never a cross-site browser write, and allowing it keeps the zero-config loopback dev
+    flow (and its pinned test) untouched."""
+    if request.method not in _UNSAFE_METHODS:
+        return False
+    origin = request.headers.get("origin")
+    if origin is not None and origin in _cors_origins():
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in ("same-origin", "same-site", "none")
+    if origin is not None:
+        return not _origin_is_allowed(origin, request)
+    return False
+
+
+# --- DNS-rebinding defense (Plan A / Tier-1 #4 follow-up) ---------------------------
+# Loopback network position is NECESSARY but not SUFFICIENT to trust a caller. An attacker
+# who lures a victim to a domain they control and rebinds its DNS to 127.0.0.1 reaches this
+# server from a loopback peer (so _client_is_loopback is True) while the victim's browser still
+# puts the ATTACKER's name in the Host header. Requiring the Host to name a loopback target (or
+# an admin-allowlisted hostname) closes the blind cross-origin write that rebinding otherwise
+# enables against a zero-token instance — store pollution + the heavy ingest subprocess = a
+# resource-exhaustion DoS. Token mode needs no Host check: a rebound page cannot forge the Bearer
+# credential (it is not a cookie the browser auto-attaches), so the token is already the authority.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# host[:port] where host is a DNS reg-name / IPv4 ([a-z0-9.-]) or a bracketed IPv6 literal, with an
+# OPTIONAL NUMERIC port. Mirrors Django's host_validation_re (the audited reference implementation).
+# Anchored with \Z, not $ — $ also matches just before a trailing newline, which would let a smuggled
+# "localhost\n" through. This strict gate (applied before the exact match) is what rejects userinfo
+# confusion ("localhost:8000@evil.example"), non-numeric ports, embedded control chars / whitespace,
+# and comma-joined duplicate Host headers — every one fails closed rather than parsing to "localhost".
+_HOST_HEADER_RE = re.compile(r"^([a-z0-9.-]+|\[[a-f0-9:.]+\])(?::[0-9]+)?\Z")
+
+
+def _allowed_hosts() -> set:
+    """Extra Host values an admin trusts, comma-separated in ASSESSHUB_ALLOWED_HOSTS (e.g. a
+    same-host reverse-proxy vhost that forwards to the loopback bind). Bare hostname only, no port —
+    the request's port is stripped before the match. Empty by default; loopback names always pass."""
+    raw = os.environ.get("ASSESSHUB_ALLOWED_HOSTS", "")
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+def _request_host_allowed(request: Request) -> bool:
+    """True when the request's Host header names a loopback target or an ASSESSHUB_ALLOWED_HOSTS
+    entry (exact match, port stripped, case-insensitive). Fail-closed: a malformed, empty, or
+    unrecognized Host is rejected. The IP-encoding / 0.0.0.0 / IPv4-mapped-IPv6 rebinding 'bypasses'
+    are not a concern for an exact-match allowlist — it rejects every one of them (they matter only
+    to fuzzy/suffix matching and server-side SSRF resolvers, neither of which this does)."""
+    host = request.headers.get("host", "").lower()
+    if not _HOST_HEADER_RE.match(host):
+        return False
+    hostname = host[1:host.index("]")] if host.startswith("[") else host.rsplit(":", 1)[0]
+    return hostname in _LOOPBACK_HOSTS or hostname in _allowed_hosts()
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -154,6 +263,76 @@ def _send_file(path: str, media_type: str, filename_stem: str, suffix: str) -> F
     )
 
 
+# --- compute-heavy GET hardening (GET-based resource-exhaustion follow-up) ------------
+# Many GET routes do non-trivial server-side work whose dominant cost is a full multi-MB snapshot
+# parse (store.get_snapshot -> json.loads), on top of which some render the explorer HTML, generate a
+# DOCX/PPTX, or run an engine compute_* analysis. A "simple" cross-origin GET — fetch(url,{mode:'no-cors'})
+# or an <img>/<iframe> src on a foreign page a victim visits — still EXECUTES on the server even though
+# CORS hides the response, so a drive-by page could drive CPU/RAM work (distinct from the CSRF *write*
+# issue — this vector never mutates the store). Two complementary defenses:
+#   1. Same-site provenance (EVERY parse/compute/generate GET route: the whole class, so the vector isn't
+#      just relocated to a sibling). Refuse an EXPLICITLY cross-site request. Sec-Fetch-Site is a browser-set
+#      FORBIDDEN header (WHATWG Fetch: the `Sec-` prefix means page JS cannot forge or strip it), so it
+#      cleanly separates our own same-origin SPA calls — including the sandboxed explorer iframe, whose LOAD
+#      request is same-origin (the request's origin is the parent SPA, computed before the sandbox's opaque
+#      origin exists) even though its DOCUMENT is opaque — from a cross-site embed. Keying on Sec-Fetch-Site
+#      and NEVER on Origin is what keeps that iframe working (its own Origin is null). The allow-set
+#      {same-origin, same-site, none, absent} is web.dev's Fetch-Metadata Resource Isolation Policy; we are
+#      deliberately STRICTER (we also block cross-site *navigations*, so a cross-site <iframe> embed of the
+#      explorer is refused too). Verified against real Chromium: same-origin iframe load -> same-origin;
+#      cross-site embed (iframe/img/no-cors fetch) -> cross-site.
+#   2. A concurrency cap on the three heavy GENERATORS (explorer render, deliverable, PIR report), so even a
+#      same-origin burst or a non-browser flood (which defense 1 can't see) can't run unbounded heavy
+#      generations in parallel — excess load is shed with 503 + Retry-After. The parse/compute routes are
+#      NOT capped: a normal dashboard load fans out several of them at once, so throttling that would be wrong.
+# LIMITATION (defense 1): an ABSENT Sec-Fetch-Site is treated as trustworthy (curl / server-to-server /
+# pre-2023 browsers legitimately omit it — fail-open matches the web.dev policy). Browsers only emit it for a
+# "potentially trustworthy" URL, so a no-token instance reached via a NON-canonical loopback hostname (e.g.
+# assesshub.local -> 127.0.0.1) gets no header and defense 1 is inert there; the concurrency cap (2) is the
+# backstop, and token mode 401s an unauthenticated cross-site request before any compute. For the default
+# localhost / 127.0.0.1 bind the origin IS trustworthy and the guard is active.
+def _cross_site_request(request: Request) -> bool:
+    """True only when Sec-Fetch-Site is an explicit 'cross-site'. same-origin / same-site / none /
+    absent are all treated as trustworthy (see the section note above for why)."""
+    return (request.headers.get("sec-fetch-site") or "").strip().lower() == "cross-site"
+
+
+def _forbid_cross_site(request: Request) -> None:
+    """Dependency guard for the compute-heavy GET routes: reject a cross-site-triggered request before
+    any store read or engine compute (fail-fast, and so a foreign page gets no snapshot-existence oracle)."""
+    if _cross_site_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint runs server-side compute and cannot be requested cross-site; "
+                   "open AssessHub directly.")
+
+
+def _max_concurrent_generations() -> int:
+    """Ceiling on concurrent heavy deliverable/explorer generations (env ASSESSHUB_MAX_CONCURRENT_GENERATIONS,
+    default 6): generous enough never to bite a small team's concurrent downloads, low enough to bound a
+    burst's peak CPU/RAM. Always >= 1; a non-integer env value falls back to the default."""
+    try:
+        return max(1, int(os.environ.get("ASSESSHUB_MAX_CONCURRENT_GENERATIONS", "6")))
+    except ValueError:
+        return 6
+
+
+@contextlib.contextmanager
+def _generation_slot(semaphore: threading.BoundedSemaphore):
+    """Hold one generation slot for the duration of a heavy generate/render, or shed load with a 503 when
+    the server is already at its concurrency ceiling. Non-blocking on purpose: a saturated server tells the
+    caller to retry rather than queueing (and holding a threadpool worker for) work it can't afford."""
+    if not semaphore.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail="AssessHub is generating too many deliverables at once — please retry shortly.",
+            headers={"Retry-After": "5"})
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
 def create_app(db_path: str | None = None) -> FastAPI:
     store = Store(db_path or DEFAULT_DB)
     app = FastAPI(
@@ -171,12 +350,21 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.middleware("http")
     async def _api_access_guard(request: Request, call_next):
         """Registered AFTER (so wrapping OUTSIDE) CORSMiddleware; skips OPTIONS so
-        preflights fall through to CORS. Token set -> Bearer required on all /api;
-        token unset -> /api is loopback-only. Health/liveness stays open."""
+        preflights fall through to CORS. Cross-site writes are refused (CSRF). Token set ->
+        Bearer required on all /api; token unset -> /api is loopback-only AND the Host header
+        must name a loopback target (DNS-rebinding guard, see _request_host_allowed).
+        Health/liveness stays open."""
         path = request.url.path
         if (request.method == "OPTIONS" or not path.startswith("/api/")
                 or path == "/api/health"):
             return await call_next(request)
+        # Refuse state-changing requests driven by a foreign origin BEFORE any auth check, so
+        # the "no cross-site writes" invariant holds identically in token and no-token modes.
+        if _cross_site_write(request):
+            return JSONResponse({"detail": "Cross-site state-changing request refused: a write "
+                                           "must originate from the AssessHub UI, not another "
+                                           "site (CSRF protection)."},
+                                status_code=403)
         token = os.environ.get("ASSESSHUB_TOKEN", "")
         if token:
             supplied = request.headers.get("authorization", "")
@@ -185,15 +373,27 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 return JSONResponse({"detail": "This AssessHub requires an API token: "
                                                "send 'Authorization: Bearer <ASSESSHUB_TOKEN>'."},
                                     status_code=401)
-        elif not _client_is_loopback(request):
-            return JSONResponse({"detail": "AssessHub serves loopback clients only until an API "
-                                           "token is configured — set ASSESSHUB_TOKEN on the server "
-                                           "and send it as 'Authorization: Bearer <token>' to enable "
-                                           "non-local access to client data."},
-                                status_code=403)
+        else:
+            # No token -> trust rests on loopback network position, which is DNS-rebinding-forgeable.
+            # Require BOTH: a loopback peer AND a Host header that names a loopback target (or an
+            # ASSESSHUB_ALLOWED_HOSTS entry). Loopback check first, so its actionable message wins.
+            if not _client_is_loopback(request):
+                return JSONResponse({"detail": "AssessHub serves loopback clients only until an API "
+                                               "token is configured — set ASSESSHUB_TOKEN on the server "
+                                               "and send it as 'Authorization: Bearer <token>' to enable "
+                                               "non-local access to client data."},
+                                    status_code=403)
+            if not _request_host_allowed(request):
+                return JSONResponse({"detail": "AssessHub rejected this request's Host header "
+                                               "(DNS-rebinding guard): reach it as localhost / 127.0.0.1, "
+                                               "or set ASSESSHUB_ALLOWED_HOSTS to trust a specific "
+                                               "hostname."},
+                                    status_code=403)
         return await call_next(request)
 
     app.state.store = store
+    # Bound concurrent heavy deliverable/explorer generations for this app (see _generation_slot).
+    app.state.generation_semaphore = threading.BoundedSemaphore(_max_concurrent_generations())
 
     # -- meta --------------------------------------------------------------
     @app.get("/api/health")
@@ -235,7 +435,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         # rejects on a 204 with an ASGI RuntimeError on every delete.
         return Response(status_code=204)
 
-    @app.get("/api/campaigns/{campaign_id}/trend")
+    @app.get("/api/campaigns/{campaign_id}/trend",
+             dependencies=[Depends(_forbid_cross_site)])   # parses EVERY snapshot in the campaign
     def campaign_trend(campaign_id: int) -> Dict[str, Any]:
         c = store.get_campaign(campaign_id)
         if not c:
@@ -361,7 +562,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         return _summary_freshened(snapshot_id, meta)
 
-    @app.get("/api/snapshots/{snapshot_id}/section/{name}")
+    @app.get("/api/snapshots/{snapshot_id}/section/{name}",
+             dependencies=[Depends(_forbid_cross_site)])   # full-snapshot parse per call
     def get_section(snapshot_id: int, name: str) -> Dict[str, Any]:
         if name not in _ALLOWED_SECTIONS:
             raise HTTPException(400, f"Unknown section '{name}'")
@@ -393,7 +595,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     move_groups=snap.get("move_groups"))
         return {"section": name, "data": data}
 
-    @app.get("/api/snapshots/{snapshot_id}/graph")
+    @app.get("/api/snapshots/{snapshot_id}/graph",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_graph(snapshot_id: int) -> Dict[str, Any]:
         meta = store.get_snapshot_meta(snapshot_id)
         snap = store.get_snapshot(snapshot_id)
@@ -402,7 +605,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         keystones = [k.get("host") for k in (meta["summary"].get("keystones") or []) if k.get("host")]
         return graph.build_graph(snap, keystones)
 
-    @app.get("/api/snapshots/{snapshot_id}/cable_map")
+    @app.get("/api/snapshots/{snapshot_id}/cable_map",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_cable_map(snapshot_id: int) -> Dict[str, Any]:
         """EDA-style physical cable map (Python SSOT snap['cable_map']): CDP/LLDP links laid out in role
         tiers, cables coloured by operational status. Recomputed from evidence for pre-feature snapshots."""
@@ -411,7 +615,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         return graph.cable_map_from_snapshot(snap)
 
-    @app.get("/api/snapshots/{snapshot_id}/cutover")
+    @app.get("/api/snapshots/{snapshot_id}/cutover",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_cutover(snapshot_id: int) -> Dict[str, Any]:
         """Gated, pilot-first cutover plan (run-of-show) synthesized from the snapshot's migration model."""
         snap = store.get_snapshot(snapshot_id)
@@ -419,7 +624,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         return cutover.build_plan(snap)
 
-    @app.get("/api/snapshots/{snapshot_id}/archreview")
+    @app.get("/api/snapshots/{snapshot_id}/archreview",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_archreview(snapshot_id: int) -> Dict[str, Any]:
         """The senior-engineer design review (V3.23.160 engine compute) for this snapshot.
         Fast path: the stored architecture_review section (json_extract, no full-blob parse) when
@@ -453,7 +659,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 _fallback_bp[snapshot_id] = cached
         return cached
 
-    @app.get("/api/snapshots/{snapshot_id}/causal_flows")
+    @app.get("/api/snapshots/{snapshot_id}/causal_flows",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_causal_flows(snapshot_id: int) -> Dict[str, Any]:
         """Unified CAUSAL FLOW model (engine compute_causal_flows) — every finding family rendered as one
         trigger -> mechanism -> impact -> mitigation story (cross-layer compounds become a bowtie). This is
@@ -482,7 +689,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         except Exception as exc:  # defense-in-depth: the engine fn is hardened to be total over any dict,
             raise HTTPException(500, f"causal-flow computation failed: {exc}")  # but never leak a raw stack
 
-    @app.get("/api/snapshots/{snapshot_id}/design")
+    @app.get("/api/snapshots/{snapshot_id}/design",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_design(snapshot_id: int) -> Dict[str, Any]:
         """The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint) — the SAME
         object the HLD/LLD DOCX and the explorer Design mode read. Prefers the stored design_blueprint
@@ -517,7 +725,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             cov = compute_architecture_coverage(snap)
         return cov
 
-    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage")
+    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage",
+             dependencies=[Depends(_forbid_cross_site)])   # same lazy compute_* class as /causal_flows
     def snapshot_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
         """Architecture-coverage SSOT (engine compute_architecture_coverage): which architecture CLASSES were
         OBSERVED vs not, across both ingestion channels (ssh show-text / json controller-REST), and what fired
@@ -526,7 +735,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         truth -- the dashboard never re-derives coverage)."""
         return _resolve_architecture_coverage(snapshot_id)
 
-    @app.get("/api/snapshots/{snapshot_id}/domain_packs")
+    @app.get("/api/snapshots/{snapshot_id}/domain_packs",
+             dependencies=[Depends(_forbid_cross_site)])   # resolves architecture_coverage (may compute)
     def snapshot_domain_packs(snapshot_id: int) -> Dict[str, Any]:
         """Which DOMAIN SKILL-PACKS (DC/ACI · Enterprise/SD-Access · SP/MPLS-SR · Security/ISE-TrustSec) this
         snapshot engages (Phase-3 / D6). A pack loads IFF one of its architecture classes was OBSERVED in the
@@ -558,7 +768,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     if isinstance(body.get("interview_answers"), dict) else body)
         return compute_design_blueprint(snap, register or {})
 
-    @app.get("/api/snapshots/{snapshot_id}/design/nrfu")
+    @app.get("/api/snapshots/{snapshot_id}/design/nrfu",
+             dependencies=[Depends(_forbid_cross_site)])   # computes the blueprint + NRFU on the fly
     def design_nrfu(snapshot_id: int) -> Dict[str, Any]:
         """Design-driven NRFU/ATP acceptance-test checklist derived from the recommended design
         decisions. One structured item per decision, traceable to the CCDE principle, the evidence
@@ -680,8 +891,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
             execution_id,
             lambda st: execution.finish(st, body.status, body.note, body.operator))
 
-    @app.get("/api/executions/{execution_id}/report")
-    def execution_report(execution_id: int):
+    @app.get("/api/executions/{execution_id}/report",
+             dependencies=[Depends(_forbid_cross_site)])
+    def execution_report(execution_id: int, request: Request):
         """Post-Implementation Review / as-executed change record for this run, as .docx."""
         rec = store.get_execution(execution_id)
         if not rec:
@@ -692,14 +904,17 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
         snap_meta = store.get_snapshot_meta(rec["snapshot_id"])
         snap_label = snap_meta["label"] if snap_meta else "snapshot"
-        fd, path = tempfile.mkstemp(suffix=".docx", prefix="assesshub_pir_")
-        os.close(fd)
-        try:
-            write_pir_docx(path, rec["state"], snap_label)
-        except Exception as e:
-            if os.path.exists(path):
-                os.unlink(path)
-            raise HTTPException(500, f"Failed to generate the PIR: {e}") from e
+        # Same heavy-generator treatment as /deliverable: bound concurrency, and take the slot BEFORE
+        # creating the temp file so a shed (503) leaves nothing to clean up.
+        with _generation_slot(request.app.state.generation_semaphore):
+            fd, path = tempfile.mkstemp(suffix=".docx", prefix="assesshub_pir_")
+            os.close(fd)
+            try:
+                write_pir_docx(path, rec["state"], snap_label)
+            except Exception as e:
+                if os.path.exists(path):
+                    os.unlink(path)
+                raise HTTPException(500, f"Failed to generate the PIR: {e}") from e
         return _send_file(
             path, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             rec["state"].get("label", "run"), "_pir.docx")
@@ -713,17 +928,20 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 raise HTTPException(404, "Execution run not found")
         return Response(status_code=204)
 
-    @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
-    def snapshot_explorer(snapshot_id: int) -> HTMLResponse:
+    @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse,
+             dependencies=[Depends(_forbid_cross_site)])
+    def snapshot_explorer(snapshot_id: int, request: Request) -> HTMLResponse:
         meta = store.get_snapshot_meta(snapshot_id)
         snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
-        html = engine.render_explorer_html(snap, meta["label"])
+        with _generation_slot(request.app.state.generation_semaphore):   # bound concurrent heavy renders
+            html = engine.render_explorer_html(snap, meta["label"])
         return HTMLResponse(content=html)
 
-    @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}")
-    def snapshot_deliverable(snapshot_id: int, kind: str):
+    @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}",
+             dependencies=[Depends(_forbid_cross_site)])
+    def snapshot_deliverable(snapshot_id: int, kind: str, request: Request):
         if kind not in deliverables.SPECS:
             raise HTTPException(400, f"Unknown deliverable '{kind}'")
         meta = store.get_snapshot_meta(snapshot_id)
@@ -736,10 +954,13 @@ def create_app(db_path: str | None = None) -> FastAPI:
         # sign-offs (§4.3 "as signed"); every other deliverable is a pure snapshot read.
         gate_rec = (gates.gate_record(store.list_gates(meta["campaign_id"]))
                     if kind == "engagement" else None)
-        try:
-            path = deliverables.generate(kind, snap, meta["label"], gates=gate_rec)
-        except Exception as e:  # generation failure (e.g. a malformed snapshot)
-            raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
+        # Slot acquired OUTSIDE the 500-wrapper so its 503 (server at the concurrency ceiling) isn't
+        # rewritten to a 500; released by the context manager even if generation raises.
+        with _generation_slot(request.app.state.generation_semaphore):
+            try:
+                path = deliverables.generate(kind, snap, meta["label"], gates=gate_rec)
+            except Exception as e:  # generation failure (e.g. a malformed snapshot)
+                raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]
         return _send_file(path, spec.media, meta["label"], f"_{kind}.{spec.ext}")
 
