@@ -364,3 +364,78 @@ def test_deck_keystone_not_well_distributed_when_blast_radius_blind(tmp_path):
                                      "off_scan_gw_vlans": 0, "detail": "FHRP-covered"}]
     write_executive_deck_pptx(str(tmp_path / "c.pptx"), snap_clean, "clean")
     assert "well distributed" in _deck_text(str(tmp_path / "c.pptx"))
+
+
+def test_deck_posture_axis_overflow_breadcrumb_stays_on_slide(tmp_path):
+    """QA row-13: with 4 axis rows rendered, the '+N more axis headline(s)' breadcrumb sat at 7.35in
+    with a 0.4in box — its bottom (7.75in) ran past the 7.5in slide edge. Geometry asserted in EMU off
+    the saved pptx: the breadcrumb box must end on-slide."""
+    snap = _rich_snap()
+    snap["executive_brief"]["axes"] = [
+        {"axis": f"Axis {i}", "severity": "High", "headline": f"headline {i}"} for i in range(6)]
+    out = tmp_path / "d.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    prs = Presentation(str(out))
+    foots = [sh for sl in prs.slides for sh in sl.shapes
+             if sh.has_text_frame and "more axis headline(s)" in sh.text_frame.text]
+    assert len(foots) == 1, "expected exactly one axis-overflow breadcrumb"
+    assert foots[0].top + foots[0].height <= prs.slide_height, "axis breadcrumb runs off the slide"
+
+
+def test_deck_design_tile_leads_with_total_decisions(tmp_path):
+    """QA row-13: the tile headlined the RECOMMENDED count as 'design decision(s)' — '34 · 9 need a
+    requirement' read as 9-of-34 while the register holds 43 = 34 recommended + 9 needs-requirement
+    (design.docx says '43 recorded'). The tile must lead with the TOTAL and qualify the subsets."""
+    snap = _rich_snap()
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 43, "n_recommended": 34, "n_needs_requirement": 9, "n_critical": 5,
+                    "headline": "x"},
+        "tradeoff_scorecard": [], "coverage": {},
+        "decisions": [{"id": "d1", "title": "T", "priority": "High", "status": "recommended",
+                       "evidence": {"summary": "e"}, "principle": {"citation": "CCDE"}}],
+    }
+    out = tmp_path / "d.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    assert "43 design decision(s)" in txt
+    assert "34 recommended" in txt and "9 need a requirement" in txt
+    assert "34 design decision(s)" not in txt   # the ambiguous old headline
+
+
+def test_deck_design_evidence_truncates_word_safe_with_ellipsis(tmp_path):
+    """QA row-13: evidence lines cut mid-word with no cue ('forwarding rol', 'these L3 d'). A truncated
+    line must end with an ellipsis at a word boundary; the cut may never strand a partial word."""
+    long_summary = ("distribution switches carry the only forwarding role for these L3 domains and the "
+                    "gateway placement concentrates every subnet behind two devices in one rack row")
+    snap = _rich_snap()
+    snap["design_blueprint"] = {
+        "summary": {"n_decisions": 1, "n_recommended": 1, "n_needs_requirement": 0, "n_critical": 0,
+                    "headline": "x"},
+        "tradeoff_scorecard": [], "coverage": {},
+        "decisions": [{"id": "d1", "title": "Concentrated gateways", "priority": "High",
+                       "status": "recommended", "evidence": {"summary": long_summary},
+                       "principle": {"citation": "CCDE"}}],
+    }
+    out = tmp_path / "d.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    lines = [ln for ln in txt.splitlines() if ln.endswith("…")]
+    assert lines, "the >120-char evidence line must carry a truncation ellipsis"
+    body = lines[0][:-1].rstrip()
+    assert body.split()[-1] in long_summary.split(), "truncation must land on a whole word"
+
+
+def test_deck_gating_slide_discloses_overflow(tmp_path):
+    """QA row-13: slide 9 listed 5 gating items with no cue when the brief carried 9 — the only capped
+    list on the deck without a truncation disclosure. The intro line must carry 'K of N shown' when
+    truncated, and stay a plain colon when everything fits."""
+    snap = _rich_snap()
+    snap["executive_brief"]["top_gating"] = [f"gating item {i}" for i in range(9)]
+    out = tmp_path / "d.pptx"
+    write_executive_deck_pptx(str(out), snap, "Test fleet")
+    _n, txt = _deck(str(out))
+    assert "5 of 9 shown" in txt and "full set in the workbook" in txt
+    out2 = tmp_path / "d2.pptx"
+    write_executive_deck_pptx(str(out2), _rich_snap(), "Test fleet")   # 3 gating items — no overflow
+    _n2, txt2 = _deck(str(out2))
+    assert "of 3 shown" not in txt2
