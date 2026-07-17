@@ -72,7 +72,7 @@ def test_singular_and_plural_rendering():
     # plural: the 07-10 session (2 tags) is the only one after a 07-09 watermark.
     assert "2 lessons pending" in format_status(bridge_queue_status(LOG, "2026-07-09"))
     # singular: a one-tag log with an earlier watermark.
-    one = "## [2026-07-10] — s\n- only one. bridge-candidate\n"
+    one = "## [2026-07-10] — s\n- `!lesson` only one. bridge-candidate\n"
     assert "1 lesson pending" in format_status(bridge_queue_status(one, "2026-07-09"))
 
 
@@ -81,11 +81,41 @@ def test_newest_session_reported():
 
 
 def test_preamble_tag_counts_lifetime_but_never_pending():
-    # a stray tag before any dated header is pre-history: lifetime yes, pending no.
-    text = "intro mentions bridge-candidate once\n\n## [2026-07-10] — s\n- x bridge-candidate\n"
+    # a real tag before any dated header is pre-history: lifetime yes, pending no. A bare prose
+    # mention of the token (the 'intro' line) is NOT a tagged lesson and must not count.
+    text = ("intro mentions bridge-candidate in prose\n"
+            "- `!lesson` an early pre-history lesson. bridge-candidate\n\n"
+            "## [2026-07-10] — s\n- `!lesson` a dated lesson. bridge-candidate\n")
     st = bridge_queue_status(text, "2026-07-11")
-    assert st["lifetime"] == 2
+    assert st["lifetime"] == 2      # two real tagged bullets; the prose 'intro' line does not count
     assert st["pending"] == 0
+
+
+def test_headline_mention_does_not_inflate_pending():
+    # A session whose HEADLINE contains the token but has NO tagged lesson must not be counted —
+    # else the module ironically re-creates the cry-wolf nag it exists to kill. (refuter #1)
+    log = "## [2026-07-12] — bridge-candidate queue hardening\n- a plain note, not a lesson.\n"
+    st = bridge_queue_status(log, "2026-07-01")
+    assert st["lifetime"] == 0
+    assert st["pending"] == 0
+    assert "run /ingest" not in format_status(st)
+
+
+def test_prose_bullet_mention_does_not_inflate():
+    # Narrative (non-!lesson) bullets that mention the token must not count; only the real tag does.
+    log = ("## [2026-07-12] — work\n"
+           "- we reworked the bridge-candidate counting and the bridge-candidate flow.\n"
+           "- `!lesson` a genuine promotable lesson. bridge-candidate\n")
+    st = bridge_queue_status(log, "2026-07-01")
+    assert st["lifetime"] == 1          # one real tagged lesson, not three substring hits
+    assert st["pending"] == 1
+
+
+def test_calendar_invalid_watermark_is_treated_as_absent():
+    # #4: a format-valid but impossible date must degrade to 'unknown', not be used as a lexical bound.
+    st = bridge_queue_status(LOG, "2026-13-45")
+    assert st["pending"] is None
+    assert st["last_ingest"] is None
 
 
 def test_total_on_bad_and_empty_input():
@@ -98,9 +128,9 @@ def test_total_on_bad_and_empty_input():
 def test_main_ingest_flag_reports_pending(tmp_path, capsys):
     from cisco_toolkit import bridge_queue as bq
     log = tmp_path / "log.md"
-    log.write_text("## [2026-07-10] a\n- x bridge-candidate\n", encoding="utf-8")
+    log.write_text("## [2026-07-10] a\n- `!lesson` x bridge-candidate\n", encoding="utf-8")
     assert bq.main([str(log), "--ingest", "2026-07-09"]) == 0   # a 07-10 candidate is after the watermark
-    assert "pending" in capsys.readouterr().out.lower()
+    assert "1 lesson pending" in capsys.readouterr().out        # non-vacuous: a real pending count
 
 
 def test_main_missing_log_is_reported_never_a_gate(capsys):
