@@ -9,8 +9,10 @@ That is the subtlety this module exists for. The *cumulative* count of ``bridge-
 tokens only ever grows, so surfacing it as "N await promotion — run /ingest" cries wolf
 permanently: the morning brief read "34 await promotion" on a day ``/ingest`` had already run
 that morning. The real queue depth is **watermarked** — a lesson is *pending* only if it was
-logged in a session dated strictly after the last ``/ingest``. Everything on or before the
-watermark was swept up by that ingest.
+logged in a session dated strictly after the last ``/ingest``. Anything dated on or before the
+watermark is treated as already swept (day-granular: a lesson logged the *same day* as an ingest
+counts as swept — the strict-after rule deliberately favors not crying wolf, and such a lesson is
+recovered by the next later-dated ingest).
 
 The watermark (the last ``/ingest`` date) is knowable only from the vault's own log, which the
 SessionStart brief already reads for its rot-watch. This module stays **pure and offline**: it
@@ -24,21 +26,35 @@ bad input.
 """
 from __future__ import annotations
 
+import datetime
 import re
 from typing import Dict, Iterator, Optional, Tuple
 
+from .learnings import parse_learnings
+
 # A session block in docs/log.md opens with '## [YYYY-MM-DD] — <headline>' (newest first).
-_SESSION_RE = re.compile(r"^##\s*\[(\d{4}-\d{2}-\d{2})\]", re.M)
-_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-# One '## [date]' lesson carries exactly one 'bridge-candidate' token at its tail, so counting
-# token occurrences counts tagged lessons (matches the historical morning-briefing regex).
+# ASCII digits only ([0-9], not \d): the log is English and a Unicode-digit "date" must not slip
+# through as a session bound.
+_SESSION_RE = re.compile(r"^##\s*\[([0-9]{4}-[0-9]{2}-[0-9]{2})\]", re.M)
+_ISO_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+# The promotion unit is a `!lesson` bullet tagged `bridge-candidate` (ADR 0001 / CLAUDE.md — the tag
+# only ever rides a lesson). We count those BULLETS, not raw substring hits: a mention of the token
+# in a session HEADLINE or a narrative (non-lesson) bullet must not inflate the queue.
 _TAG = "bridge-candidate"
+_LESSON = "!lesson"
 
 
 def _is_iso(value: object) -> bool:
-    """True only for a well-formed ``YYYY-MM-DD`` string. A bad/absent watermark must degrade to
-    'pending unknown', never be trusted as a real date (which would mis-bucket every lesson)."""
-    return isinstance(value, str) and bool(_ISO_RE.match(value))
+    """True only for a real calendar date in ``YYYY-MM-DD`` form. A bad/absent/impossible watermark
+    must degrade to 'pending unknown', never be trusted as a lexical bound (which would mis-bucket
+    every lesson). Validates the actual date, not just the shape — ``2026-13-45`` is rejected."""
+    if not isinstance(value, str) or not _ISO_RE.match(value):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
 
 
 def _sessions(log_text: object) -> Iterator[Tuple[Optional[str], str]]:
@@ -56,15 +72,25 @@ def _sessions(log_text: object) -> Iterator[Tuple[Optional[str], str]]:
         yield m.group(1), text[m.start():end]
 
 
+def _count_tagged(block: str) -> int:
+    """Promotable bridge candidates in a session block: ``!lesson`` bullets carrying the
+    ``bridge-candidate`` tag. Counting bullets — via the shared learnings bullet parser, which
+    groups a bullet with its indented continuation lines so a tag wrapped onto the next line still
+    counts — rather than raw substrings is what stops a token in a HEADLINE or a narrative
+    (non-lesson) bullet from inflating the queue, the exact cry-wolf this module exists to kill."""
+    return sum(1 for entry in parse_learnings(block) if _TAG in entry and _LESSON in entry)
+
+
 def bridge_queue_status(log_text: object, last_ingest_date: Optional[str] = None) -> Dict[str, object]:
     """Promotion-queue status for the repo→vault bridge, read from ``docs/log.md`` text.
 
     Returns a dict:
 
-    - ``lifetime`` — total ``bridge-candidate`` tags ever logged. Only grows; a stat, not a backlog.
-    - ``pending`` — tags in sessions dated **strictly after** ``last_ingest_date``; ``None`` when
-      no valid watermark is supplied, because the backlog is then genuinely unknown. Never a silent
-      0 (coverage-honest: absence of a watermark ≠ empty queue).
+    - ``lifetime`` — total tagged ``!lesson`` bullets ever logged. Only grows; a stat, not a backlog.
+    - ``pending`` — tagged bullets in sessions dated **strictly after** ``last_ingest_date``
+      (day-granular: a same-day-as-ingest lesson reads as swept — a possible same-day under-count,
+      recovered at the next ingest); ``None`` when no valid watermark is supplied, because the
+      backlog is then genuinely unknown — never a silent 0 (coverage-honest: no watermark ≠ empty).
     - ``last_ingest`` — the watermark echoed back (``None`` if absent/invalid).
     - ``newest_session`` — the newest session date seen (diagnostic; ``None`` if the log has none).
     """
@@ -73,7 +99,7 @@ def bridge_queue_status(log_text: object, last_ingest_date: Optional[str] = None
     pending = 0
     newest: Optional[str] = None
     for date_str, block in _sessions(log_text):
-        count = block.count(_TAG)
+        count = _count_tagged(block)
         lifetime += count
         if date_str and (newest is None or date_str > newest):
             newest = date_str
