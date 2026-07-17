@@ -83,14 +83,25 @@ function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (
               {data.cadence.map((g) => {
                 const r = rec.get(`${w}|${g.key}`);
                 const d = r?.decision || "pending";
-                const tip = r ? `${d.toUpperCase()} — ${r.signed_by || "unsigned"} · ${new Date(r.decided_at).toLocaleString()}${r.note ? ` · ${r.note}` : ""}` : "pending — click to sign";
+                // Coverage-honest disclosure (backend gates.annotate_out_of_order, PR #376): a GO signed
+                // before its upstream cadence gate was GO. We surface it, we don't block it — the sign-off
+                // still stands; the ⚠ + tooltip just make the out-of-order state visible on the board.
+                const ooo = r?.out_of_order === true;
+                const oooTip = `Out of order: signed before upstream ${r?.out_of_order_upstream || "gate"} was GO`;
+                const tip = r
+                  ? `${d.toUpperCase()} — ${r.signed_by || "unsigned"} · ${new Date(r.decided_at).toLocaleString()}${r.note ? ` · ${r.note}` : ""}${ooo ? ` · ${oooTip}` : ""}`
+                  : "pending — click to sign";
                 return (
                   <span key={`${w}|${g.key}`} role="button" tabIndex={0} className="chip gate"
                     onClick={() => cycle(w, g.key)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycle(w, g.key); } }}
-                    data-wave={w} data-gate={g.key} title={tip}
-                    style={{ ["--gc" as any]: gateColor(d === "pending" ? "PENDING" : d.toUpperCase()), cursor: "pointer", justifyContent: "center", fontSize: 11, opacity: busy ? 0.65 : 1 }}>
+                    data-wave={w} data-gate={g.key} data-out-of-order={ooo || undefined} title={tip}
+                    style={{ ["--gc" as any]: gateColor(d === "pending" ? "PENDING" : d.toUpperCase()), cursor: "pointer", justifyContent: "center", gap: 4, fontSize: 11, opacity: busy ? 0.65 : 1 }}>
                     {d === "pending" ? "—" : d.toUpperCase()}
+                    {ooo && (
+                      <span className="gate-ooo" role="img" aria-label={oooTip} title={oooTip}
+                        style={{ color: "var(--watch)", fontWeight: 700 }}>⚠</span>
+                    )}
                   </span>
                 );
               })}
