@@ -4,6 +4,39 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-17] — Post-merge-wave convergence: cross-PR red fixed, first all-APPROVE QA row, all six Low findings closed (PRs #389/#390/#391)
+
+- The #385–#388 merge wave landed; #387's PR-level Frontend-E2E red was pure runner infra (the job
+  passed untouched on main). Post-merge main went red on ONE cross-PR semantic conflict → one-line
+  fixture fix (PR #389). The full deliverable set was regenerated on 3.30.0 and independently QA'd →
+  REAL scorecard row 13: the **first all-APPROVE full set** (6 Low, 0 Critical/High/Medium; all five
+  regression-watch items verified fixed in rendered pixels; judge gating at TNR 0.6) — recorded with
+  the handoff refresh as PR #390. All six Low findings were then fixed + test-pinned the same session
+  (deck ×4, MOP sub-wave host-split slice, engagement per-port relabel) as PR #391, render-verified
+  against the real snapshot (the 7 sub-wave splits sum exactly to the parent's 107+144).
+- `!lesson` **PRs that are each green alone can break main where they meet.** A merge wave's PRs each
+  ran CI on their own merge-ref without the siblings (#386's new bare-`TestClient` test file never met
+  #388's Host allowlist until main). Textually MERGEABLE ≠ semantically compatible. After ANY multi-PR
+  wave lands: pull and run the FULL gate on merged main immediately; the fix is usually applying the
+  combined PR's sibling reconciliation pattern to the orphan file; fix forward, never revert the wave.
+  bridge-candidate
+- `!lesson` **A CI job that dies inside actions/checkout with `Invalid username or token` after a long
+  stall is infrastructure, not a red diff.** Under 52-jobs-on-2-runners contention, `git submodule
+  status` (repo has no submodules) hung ~28 min and the job's checkout credential went stale before
+  the fetch. Zero tests ran — re-run once the queue drains; never debug the branch when the log never
+  reaches the test runner. bridge-candidate
+- `!lesson` **PowerShell 5.1 splits a native command's argument at embedded double quotes even inside a
+  single-quoted here-string** — a `git commit -m @'...'@` whose message contained `"board clean"` broke
+  at the quote and git parsed the remainder as a pathspec. For any commit/PR body with quotes or
+  markup, write a UTF-8 file and use `git commit -F <file>` / `gh pr create --body-file`. bridge-candidate
+- `!lesson` **When main is red and your own open PR is the fix, base dependent work on that PR's branch**
+  (stack), not on main — the stacked branch's full local gate and CI run green, and GitHub retargets
+  the dependent PR to main automatically when the fix merges. Merge order stays fix-first. bridge-candidate
+- MOP slice-fix guard worth remembering in-repo: the joined cutover host split is sliced to the wave's
+  members ONLY when the wave covers a proper subset of its groups' membership — a whole-group wave
+  keeps the raw union, so an inconsistent uploaded snapshot can never silently lose a single-homed
+  member from the procedure (fail-soft beats aggressive normalization).
+
 ## [2026-07-10] — P0-3 human-gate mechanization: PPDIOO document gates now refuse, not advise (branch `feat/p0-3-gate-enforcement`, PR #313 merged)
 
 - Executed P0-3 (G-003/DEC-003) end-to-end: new `cisco_toolkit/gate_state.py` — per-engagement

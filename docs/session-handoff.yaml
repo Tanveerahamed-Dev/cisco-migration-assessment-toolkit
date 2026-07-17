@@ -1,5 +1,5 @@
-generated: "2026-07-12 @ 40bf759 (Phase-3 in progress; E1/E2/E3/K1/K2 merged + bridge adopted; board clean, 0 open PRs, main green)"
-stage: "PHASE 0 CLOSED · PHASE 1 accruing (2 REAL rows, judge advisory) · PHASE 2 CLOSED (DEC-010 identifier-only verdict) · PHASE 3 IN PROGRESS (5 items merged in a day)"
+generated: "2026-07-17 @ 8f2f055 (post #385-#388 merge wave; PR #389 open fixing the one cross-PR red; deliverables regenerated + QA'd: first full-set APPROVE)"
+stage: "PHASE 0 CLOSED · PHASE 1 accruing (3 REAL rows, judge PROMOTED — APPROVEs gating at TNR 0.6) · PHASE 2 CLOSED (DEC-010 identifier-only verdict) · PHASE 3 essentially closed (all agent-startable targets merged; P3-E5 fixture-blocked)"
 execution_phase: "PHASE 3 IN PROGRESS (2026-07-12) — front line. Phase 2 CLOSED (DEC-010, identifier-only verdict: BM25 suggestive-but-inconclusive, judged+dense strata deferred hardware-limited; evidence docs/quality/d10-eval-results-2026-07-11.md; a GPU re-run is one command on the frozen set). Phase-3 MERGED: E1 parser<->detector field contract (#342), E2 diff schema-version gate +webapp (#344), E3 Exec-Summary provenance closure (#346), K1 graph.json invariant guard (#345 — AST-only/no-LLM doctrine now a red test), K2 graph commit-currency selfcheck (#348 — code-staleness beyond mtime; K1+K2 fully close the Dimension-A graph-freshness gap). Also adopted: bridge-candidate queue status module (#347, was uncommitted WIP). Phase-1 accrual continues (2 REAL scorecard rows: row-11 BLOCK -> deck fix -> row-12 APPROVE bookend); first REAL PIR event-driven; judge stays ADVISORY (defect-panel TNR 0.6 clears the 0.25 floor but the D10 anchor gate is structurally unmet on CPU models — a human-owned §6 ensemble redesign is the only legitimate unlock, pre-registered blind)."
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"
@@ -64,6 +64,19 @@ p1_3_status: >-
   (leading hypothesis: take-the-MIN suits the reject-direction but not the accept-direction ->
   asymmetric/neutral-only relevance ensemble), pre-registered as a fix and re-gated blind — NOT more
   models. This session did NOT do it (contaminated + protocol-ownership + outside the rung budget).
+last_completed_task_2026_07_17: >-
+  Post-merge-wave convergence session. (1) The #385-#388 wave (FMC pagination, audit-7 fail-soft,
+  gate-OOO board UI, combined webapp API guard = old #382/#383/#384) merged by the human; the PR-level
+  Frontend-E2E red on #387 was diagnosed as pure runner infra (28-min git hang -> stale checkout token;
+  job passed on main). (2) Post-merge main went red on ONE cross-PR semantic conflict: #386's new
+  test_audit7_webapp_unhashable.py bare TestClient vs #388's DNS-rebinding Host allowlist (each PR green
+  alone, met on main first time) -> fix PR #389 (base_url="http://localhost", the same pattern #388
+  applied to every sibling fixture; full default gate green locally on merged main + fix). (3) P1-1
+  accrual: full deliverable set regenerated on 3.30.0 into deliverables_M0_20260717/ (--no-collect,
+  chain-of-custody manifest) and independently QA'd — REAL row 13: set APPROVE, 6 Low findings,
+  0 Critical/High/Medium, all 5 regression-watch items (row-11 deck slide-7, row-12 slide-6 denominator,
+  VLAN endpoint-composition, xlsx formula-injection, wave noun-overload) verified FIXED in rendered
+  pixels; judge gating (TNR 0.6), authored_by=main / reviewed_by=deliverable-qa-reviewer.
 last_completed_task: >-
   P2-1 DONE 2026-07-10 (this branch/PR): the frozen 60-query D10 eval set + sealed anchors, built
   per owner-doc §2-§4 and the DEC-006 amendment. docs/quality/d10-eval-set.jsonl — 20 IDENTIFIER
@@ -84,19 +97,24 @@ last_completed_task: >-
   docs/quality/README.md.
 next_task: >-
   Board is CLEAN as of 2026-07-12 (0 open PRs, main green post-merge, census 67). Phase-3
-  continuation targets, none started: (1) P3-E5 parse_port_security_detail NX-OS residual (the one
-  open item from the format-fidelity campaign, docs/parser-format-fidelity.md:71) — BLOCKED on a
-  REAL `show port-security detail` NX-OS fixture; the fidelity discipline forbids authoring one
-  from guesswork, so this needs a real capture before it can be done well. (2) Webapp frontend
-  test harness (P3-W1, webapp/frontend/ has zero tests) or direct pir_docx tests (P3-W2) — needs a
-  few minutes of human intent on what matters most to cover. (3) P3-E4 refresh the
-  deliverable-excellence P2/P3 status table (most items landed per Dimension H). STANDING (human-
-  owned, not agent work): the D10 judged-strata unlock is a §6 judge-ensemble redesign
-  (asymmetric/neutral-only relevance, replacing take-the-MIN which is harsh in the accept
-  direction), pre-registered BLIND then re-gated — never tune-to-pass after seeing the anchor
-  bands. Judge stays advisory until then; defect-panel arm is PROMOTED (TNR 0.6) so /qa APPROVEs
-  now stamp gating — grow the panel from INDEPENDENT sources only. P1-1 accrual: REAL rows
-  event-driven, never fabricated; dense column DEFERRED (query_log 0/30).
+  continuation targets (2026-07-17 refresh): (0) HUMAN: review+merge PR #389 (one-line test-fixture
+  fix; main's CI is red on exactly that cross-PR test until it lands). (1) P3-E5
+  parse_port_security_detail NX-OS residual (docs/parser-format-fidelity.md:71) — still BLOCKED on
+  a REAL `show port-security detail` NX-OS capture; the fidelity discipline forbids authoring one
+  from guesswork. P3-W1/W2/E4 are DONE (#350/#351, #352-#360 frontend harness + full coverage,
+  #363 hygiene bundle). (2) P1-1 accrual continues: REAL rows event-driven, never fabricated;
+  row 13 (2026-07-17) is the first all-APPROVE full-set row; its 6 Low findings (deck slide-8
+  decision-count qualifier, MOP sub-wave homing-split repeat, slide-2 footnote edge, slide-8
+  mid-word truncation, slide-9 missing "+4 more", engagement §4.2 per-group endpoint qualifier)
+  are ALL FIXED + pinned in PR #391 (stacked on #389 — merge #389 -> #391; render-verified on the
+  real snapshot, sub-wave splits sum to the parent 107+144). (3) Defect-panel growth 5->18 from INDEPENDENT
+  sources only (registered path). STANDING (human-owned, not agent work): the D10 judged-strata
+  unlock is a §6 judge-ensemble redesign (asymmetric/neutral-only relevance, replacing take-the-MIN
+  which is harsh in the accept direction), pre-registered BLIND then re-gated — never tune-to-pass
+  after seeing the anchor bands. Defect-panel arm is PROMOTED (TNR 0.6) so /qa APPROVEs stamp
+  gating. Dense column DEFERRED (query_log 0/30). Vault cadence: /lint weekly due (last
+  2026-07-11); bridge queue 0 pending. Parallel-session rules: gh pr list before picking work AND
+  before gh pr create; re-check git branch --show-current right before committing.
 p0_gaps:
   - id: "G-001"
     description: "Protected memory tier -> P0-1"
