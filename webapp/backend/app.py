@@ -127,11 +127,56 @@ def _cors_origins() -> List[str]:
 
 def _client_is_loopback(request: Request) -> bool:
     """True when the ASGI peer is loopback (or an in-process test harness, which has no
-    real socket). Deliberately conservative: an unknown/forwarded peer is NOT loopback."""
+    real socket). Deliberately conservative: a peer with a non-loopback IP is NOT loopback.
+    NB uvicorn runs proxy_headers=True, so behind a trusted proxy request.client reflects
+    X-Forwarded-For — but forwarded_allow_ips defaults to 127.0.0.1, so a REMOTE peer's forged
+    header is ignored. The safe posture for any non-loopback / proxied bind is a token
+    (ASSESSHUB_TOKEN): token mode ignores peer position entirely, closing this deployment edge."""
     host = getattr(request.client, "host", None)
     if host is None or host == "testclient":
         return True
     return host == "::1" or host.startswith("127.")
+
+
+# --- DNS-rebinding defense (Plan A / Tier-1 #4 follow-up) ---------------------------
+# Loopback network position is NECESSARY but not SUFFICIENT to trust a caller. An attacker
+# who lures a victim to a domain they control and rebinds its DNS to 127.0.0.1 reaches this
+# server from a loopback peer (so _client_is_loopback is True) while the victim's browser still
+# puts the ATTACKER's name in the Host header. Requiring the Host to name a loopback target (or
+# an admin-allowlisted hostname) closes the blind cross-origin write that rebinding otherwise
+# enables against a zero-token instance — store pollution + the heavy ingest subprocess = a
+# resource-exhaustion DoS. Token mode needs no Host check: a rebound page cannot forge the Bearer
+# credential (it is not a cookie the browser auto-attaches), so the token is already the authority.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# host[:port] where host is a DNS reg-name / IPv4 ([a-z0-9.-]) or a bracketed IPv6 literal, with an
+# OPTIONAL NUMERIC port. Mirrors Django's host_validation_re (the audited reference implementation).
+# Anchored with \Z, not $ — $ also matches just before a trailing newline, which would let a smuggled
+# "localhost\n" through. This strict gate (applied before the exact match) is what rejects userinfo
+# confusion ("localhost:8000@evil.example"), non-numeric ports, embedded control chars / whitespace,
+# and comma-joined duplicate Host headers — every one fails closed rather than parsing to "localhost".
+_HOST_HEADER_RE = re.compile(r"^([a-z0-9.-]+|\[[a-f0-9:.]+\])(?::[0-9]+)?\Z")
+
+
+def _allowed_hosts() -> set:
+    """Extra Host values an admin trusts, comma-separated in ASSESSHUB_ALLOWED_HOSTS (e.g. a
+    same-host reverse-proxy vhost that forwards to the loopback bind). Bare hostname only, no port —
+    the request's port is stripped before the match. Empty by default; loopback names always pass."""
+    raw = os.environ.get("ASSESSHUB_ALLOWED_HOSTS", "")
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+def _request_host_allowed(request: Request) -> bool:
+    """True when the request's Host header names a loopback target or an ASSESSHUB_ALLOWED_HOSTS
+    entry (exact match, port stripped, case-insensitive). Fail-closed: a malformed, empty, or
+    unrecognized Host is rejected. The IP-encoding / 0.0.0.0 / IPv4-mapped-IPv6 rebinding 'bypasses'
+    are not a concern for an exact-match allowlist — it rejects every one of them (they matter only
+    to fuzzy/suffix matching and server-side SSRF resolvers, neither of which this does)."""
+    host = request.headers.get("host", "").lower()
+    if not _HOST_HEADER_RE.match(host):
+        return False
+    hostname = host[1:host.index("]")] if host.startswith("[") else host.rsplit(":", 1)[0]
+    return hostname in _LOOPBACK_HOSTS or hostname in _allowed_hosts()
 
 
 def _parse_snapshot_bytes(raw: bytes) -> Dict[str, Any]:
@@ -172,7 +217,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
     async def _api_access_guard(request: Request, call_next):
         """Registered AFTER (so wrapping OUTSIDE) CORSMiddleware; skips OPTIONS so
         preflights fall through to CORS. Token set -> Bearer required on all /api;
-        token unset -> /api is loopback-only. Health/liveness stays open."""
+        token unset -> /api is loopback-only AND the Host header must name a loopback
+        target (DNS-rebinding guard, see _request_host_allowed). Health/liveness stays open."""
         path = request.url.path
         if (request.method == "OPTIONS" or not path.startswith("/api/")
                 or path == "/api/health"):
@@ -185,12 +231,22 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 return JSONResponse({"detail": "This AssessHub requires an API token: "
                                                "send 'Authorization: Bearer <ASSESSHUB_TOKEN>'."},
                                     status_code=401)
-        elif not _client_is_loopback(request):
-            return JSONResponse({"detail": "AssessHub serves loopback clients only until an API "
-                                           "token is configured — set ASSESSHUB_TOKEN on the server "
-                                           "and send it as 'Authorization: Bearer <token>' to enable "
-                                           "non-local access to client data."},
-                                status_code=403)
+        else:
+            # No token -> trust rests on loopback network position, which is DNS-rebinding-forgeable.
+            # Require BOTH: a loopback peer AND a Host header that names a loopback target (or an
+            # ASSESSHUB_ALLOWED_HOSTS entry). Loopback check first, so its actionable message wins.
+            if not _client_is_loopback(request):
+                return JSONResponse({"detail": "AssessHub serves loopback clients only until an API "
+                                               "token is configured — set ASSESSHUB_TOKEN on the server "
+                                               "and send it as 'Authorization: Bearer <token>' to enable "
+                                               "non-local access to client data."},
+                                    status_code=403)
+            if not _request_host_allowed(request):
+                return JSONResponse({"detail": "AssessHub rejected this request's Host header "
+                                               "(DNS-rebinding guard): reach it as localhost / 127.0.0.1, "
+                                               "or set ASSESSHUB_ALLOWED_HOSTS to trust a specific "
+                                               "hostname."},
+                                    status_code=403)
         return await call_next(request)
 
     app.state.store = store
