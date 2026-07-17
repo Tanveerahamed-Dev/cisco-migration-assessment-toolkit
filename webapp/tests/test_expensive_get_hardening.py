@@ -38,7 +38,7 @@ _SECTION = "devices"
 def client(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
     app = create_app(db_path=str(tmp_path / "test.db"))
-    with TestClient(app) as c:
+    with TestClient(app, base_url="http://localhost") as c:  # loopback Host passes the DNS-rebinding guard (#384)
         yield c
 
 
@@ -173,7 +173,7 @@ def _cap_shed_case(tmp_path, monkeypatch, db, make_path):
     monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
     monkeypatch.setenv("ASSESSHUB_MAX_CONCURRENT_GENERATIONS", "1")
     app = create_app(db_path=str(tmp_path / db))
-    with TestClient(app) as c:
+    with TestClient(app, base_url="http://localhost") as c:  # loopback Host passes the DNS-rebinding guard (#384)
         path = make_path(c)
         assert app.state.generation_semaphore.acquire(blocking=False)  # occupy the only slot
         try:
