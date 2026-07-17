@@ -103,10 +103,11 @@ next_task: >-
   a REAL `show port-security detail` NX-OS capture; the fidelity discipline forbids authoring one
   from guesswork. P3-W1/W2/E4 are DONE (#350/#351, #352-#360 frontend harness + full coverage,
   #363 hygiene bundle). (2) P1-1 accrual continues: REAL rows event-driven, never fabricated;
-  row 13 (2026-07-17) is the first all-APPROVE full-set row, and its 6 Low findings are the natural
-  next deliverable-polish batch (deck slide-8 decision-count qualifier, MOP sub-wave homing-split
-  repeat, slide-2 footnote edge, slide-8 mid-word truncation, slide-9 missing "+4 more",
-  engagement §4.2 per-group endpoint qualifier). (3) Defect-panel growth 5->18 from INDEPENDENT
+  row 13 (2026-07-17) is the first all-APPROVE full-set row; its 6 Low findings (deck slide-8
+  decision-count qualifier, MOP sub-wave homing-split repeat, slide-2 footnote edge, slide-8
+  mid-word truncation, slide-9 missing "+4 more", engagement §4.2 per-group endpoint qualifier)
+  are ALL FIXED + pinned in PR #391 (stacked on #389 — merge #389 -> #391; render-verified on the
+  real snapshot, sub-wave splits sum to the parent 107+144). (3) Defect-panel growth 5->18 from INDEPENDENT
   sources only (registered path). STANDING (human-owned, not agent work): the D10 judged-strata
   unlock is a §6 judge-ensemble redesign (asymmetric/neutral-only relevance, replacing take-the-MIN
   which is harsh in the accept direction), pre-registered BLIND then re-gated — never tune-to-pass
