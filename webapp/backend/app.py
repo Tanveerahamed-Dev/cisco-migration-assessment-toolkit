@@ -7,15 +7,17 @@ so the whole platform runs from one origin in production.
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -154,6 +156,76 @@ def _send_file(path: str, media_type: str, filename_stem: str, suffix: str) -> F
     )
 
 
+# --- compute-heavy GET hardening (GET-based resource-exhaustion follow-up) ------------
+# Many GET routes do non-trivial server-side work whose dominant cost is a full multi-MB snapshot
+# parse (store.get_snapshot -> json.loads), on top of which some render the explorer HTML, generate a
+# DOCX/PPTX, or run an engine compute_* analysis. A "simple" cross-origin GET — fetch(url,{mode:'no-cors'})
+# or an <img>/<iframe> src on a foreign page a victim visits — still EXECUTES on the server even though
+# CORS hides the response, so a drive-by page could drive CPU/RAM work (distinct from the CSRF *write*
+# issue — this vector never mutates the store). Two complementary defenses:
+#   1. Same-site provenance (EVERY parse/compute/generate GET route: the whole class, so the vector isn't
+#      just relocated to a sibling). Refuse an EXPLICITLY cross-site request. Sec-Fetch-Site is a browser-set
+#      FORBIDDEN header (WHATWG Fetch: the `Sec-` prefix means page JS cannot forge or strip it), so it
+#      cleanly separates our own same-origin SPA calls — including the sandboxed explorer iframe, whose LOAD
+#      request is same-origin (the request's origin is the parent SPA, computed before the sandbox's opaque
+#      origin exists) even though its DOCUMENT is opaque — from a cross-site embed. Keying on Sec-Fetch-Site
+#      and NEVER on Origin is what keeps that iframe working (its own Origin is null). The allow-set
+#      {same-origin, same-site, none, absent} is web.dev's Fetch-Metadata Resource Isolation Policy; we are
+#      deliberately STRICTER (we also block cross-site *navigations*, so a cross-site <iframe> embed of the
+#      explorer is refused too). Verified against real Chromium: same-origin iframe load -> same-origin;
+#      cross-site embed (iframe/img/no-cors fetch) -> cross-site.
+#   2. A concurrency cap on the three heavy GENERATORS (explorer render, deliverable, PIR report), so even a
+#      same-origin burst or a non-browser flood (which defense 1 can't see) can't run unbounded heavy
+#      generations in parallel — excess load is shed with 503 + Retry-After. The parse/compute routes are
+#      NOT capped: a normal dashboard load fans out several of them at once, so throttling that would be wrong.
+# LIMITATION (defense 1): an ABSENT Sec-Fetch-Site is treated as trustworthy (curl / server-to-server /
+# pre-2023 browsers legitimately omit it — fail-open matches the web.dev policy). Browsers only emit it for a
+# "potentially trustworthy" URL, so a no-token instance reached via a NON-canonical loopback hostname (e.g.
+# assesshub.local -> 127.0.0.1) gets no header and defense 1 is inert there; the concurrency cap (2) is the
+# backstop, and token mode 401s an unauthenticated cross-site request before any compute. For the default
+# localhost / 127.0.0.1 bind the origin IS trustworthy and the guard is active.
+def _cross_site_request(request: Request) -> bool:
+    """True only when Sec-Fetch-Site is an explicit 'cross-site'. same-origin / same-site / none /
+    absent are all treated as trustworthy (see the section note above for why)."""
+    return (request.headers.get("sec-fetch-site") or "").strip().lower() == "cross-site"
+
+
+def _forbid_cross_site(request: Request) -> None:
+    """Dependency guard for the compute-heavy GET routes: reject a cross-site-triggered request before
+    any store read or engine compute (fail-fast, and so a foreign page gets no snapshot-existence oracle)."""
+    if _cross_site_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint runs server-side compute and cannot be requested cross-site; "
+                   "open AssessHub directly.")
+
+
+def _max_concurrent_generations() -> int:
+    """Ceiling on concurrent heavy deliverable/explorer generations (env ASSESSHUB_MAX_CONCURRENT_GENERATIONS,
+    default 6): generous enough never to bite a small team's concurrent downloads, low enough to bound a
+    burst's peak CPU/RAM. Always >= 1; a non-integer env value falls back to the default."""
+    try:
+        return max(1, int(os.environ.get("ASSESSHUB_MAX_CONCURRENT_GENERATIONS", "6")))
+    except ValueError:
+        return 6
+
+
+@contextlib.contextmanager
+def _generation_slot(semaphore: threading.BoundedSemaphore):
+    """Hold one generation slot for the duration of a heavy generate/render, or shed load with a 503 when
+    the server is already at its concurrency ceiling. Non-blocking on purpose: a saturated server tells the
+    caller to retry rather than queueing (and holding a threadpool worker for) work it can't afford."""
+    if not semaphore.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail="AssessHub is generating too many deliverables at once — please retry shortly.",
+            headers={"Retry-After": "5"})
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
 def create_app(db_path: str | None = None) -> FastAPI:
     store = Store(db_path or DEFAULT_DB)
     app = FastAPI(
@@ -194,6 +266,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return await call_next(request)
 
     app.state.store = store
+    # Bound concurrent heavy deliverable/explorer generations for this app (see _generation_slot).
+    app.state.generation_semaphore = threading.BoundedSemaphore(_max_concurrent_generations())
 
     # -- meta --------------------------------------------------------------
     @app.get("/api/health")
@@ -235,7 +309,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         # rejects on a 204 with an ASGI RuntimeError on every delete.
         return Response(status_code=204)
 
-    @app.get("/api/campaigns/{campaign_id}/trend")
+    @app.get("/api/campaigns/{campaign_id}/trend",
+             dependencies=[Depends(_forbid_cross_site)])   # parses EVERY snapshot in the campaign
     def campaign_trend(campaign_id: int) -> Dict[str, Any]:
         c = store.get_campaign(campaign_id)
         if not c:
@@ -342,7 +417,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         return meta
 
-    @app.get("/api/snapshots/{snapshot_id}/section/{name}")
+    @app.get("/api/snapshots/{snapshot_id}/section/{name}",
+             dependencies=[Depends(_forbid_cross_site)])   # full-snapshot parse per call
     def get_section(snapshot_id: int, name: str) -> Dict[str, Any]:
         if name not in _ALLOWED_SECTIONS:
             raise HTTPException(400, f"Unknown section '{name}'")
@@ -374,7 +450,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     move_groups=snap.get("move_groups"))
         return {"section": name, "data": data}
 
-    @app.get("/api/snapshots/{snapshot_id}/graph")
+    @app.get("/api/snapshots/{snapshot_id}/graph",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_graph(snapshot_id: int) -> Dict[str, Any]:
         meta = store.get_snapshot_meta(snapshot_id)
         snap = store.get_snapshot(snapshot_id)
@@ -383,7 +460,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         keystones = [k.get("host") for k in (meta["summary"].get("keystones") or []) if k.get("host")]
         return graph.build_graph(snap, keystones)
 
-    @app.get("/api/snapshots/{snapshot_id}/cable_map")
+    @app.get("/api/snapshots/{snapshot_id}/cable_map",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_cable_map(snapshot_id: int) -> Dict[str, Any]:
         """EDA-style physical cable map (Python SSOT snap['cable_map']): CDP/LLDP links laid out in role
         tiers, cables coloured by operational status. Recomputed from evidence for pre-feature snapshots."""
@@ -392,7 +470,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         return graph.cable_map_from_snapshot(snap)
 
-    @app.get("/api/snapshots/{snapshot_id}/cutover")
+    @app.get("/api/snapshots/{snapshot_id}/cutover",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_cutover(snapshot_id: int) -> Dict[str, Any]:
         """Gated, pilot-first cutover plan (run-of-show) synthesized from the snapshot's migration model."""
         snap = store.get_snapshot(snapshot_id)
@@ -400,7 +479,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Snapshot not found")
         return cutover.build_plan(snap)
 
-    @app.get("/api/snapshots/{snapshot_id}/archreview")
+    @app.get("/api/snapshots/{snapshot_id}/archreview",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_archreview(snapshot_id: int) -> Dict[str, Any]:
         """The senior-engineer design review (V3.23.160 engine compute) for this snapshot.
         Fast path: the stored architecture_review section (json_extract, no full-blob parse) when
@@ -434,7 +514,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 _fallback_bp[snapshot_id] = cached
         return cached
 
-    @app.get("/api/snapshots/{snapshot_id}/causal_flows")
+    @app.get("/api/snapshots/{snapshot_id}/causal_flows",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_causal_flows(snapshot_id: int) -> Dict[str, Any]:
         """Unified CAUSAL FLOW model (engine compute_causal_flows) — every finding family rendered as one
         trigger -> mechanism -> impact -> mitigation story (cross-layer compounds become a bowtie). This is
@@ -463,7 +544,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         except Exception as exc:  # defense-in-depth: the engine fn is hardened to be total over any dict,
             raise HTTPException(500, f"causal-flow computation failed: {exc}")  # but never leak a raw stack
 
-    @app.get("/api/snapshots/{snapshot_id}/design")
+    @app.get("/api/snapshots/{snapshot_id}/design",
+             dependencies=[Depends(_forbid_cross_site)])
     def snapshot_design(snapshot_id: int) -> Dict[str, Any]:
         """The CCDE-grounded target-state DESIGN BLUEPRINT (engine compute_design_blueprint) — the SAME
         object the HLD/LLD DOCX and the explorer Design mode read. Prefers the stored design_blueprint
@@ -498,7 +580,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             cov = compute_architecture_coverage(snap)
         return cov
 
-    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage")
+    @app.get("/api/snapshots/{snapshot_id}/architecture_coverage",
+             dependencies=[Depends(_forbid_cross_site)])   # same lazy compute_* class as /causal_flows
     def snapshot_architecture_coverage(snapshot_id: int) -> Dict[str, Any]:
         """Architecture-coverage SSOT (engine compute_architecture_coverage): which architecture CLASSES were
         OBSERVED vs not, across both ingestion channels (ssh show-text / json controller-REST), and what fired
@@ -507,7 +590,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
         truth -- the dashboard never re-derives coverage)."""
         return _resolve_architecture_coverage(snapshot_id)
 
-    @app.get("/api/snapshots/{snapshot_id}/domain_packs")
+    @app.get("/api/snapshots/{snapshot_id}/domain_packs",
+             dependencies=[Depends(_forbid_cross_site)])   # resolves architecture_coverage (may compute)
     def snapshot_domain_packs(snapshot_id: int) -> Dict[str, Any]:
         """Which DOMAIN SKILL-PACKS (DC/ACI · Enterprise/SD-Access · SP/MPLS-SR · Security/ISE-TrustSec) this
         snapshot engages (Phase-3 / D6). A pack loads IFF one of its architecture classes was OBSERVED in the
@@ -539,7 +623,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     if isinstance(body.get("interview_answers"), dict) else body)
         return compute_design_blueprint(snap, register or {})
 
-    @app.get("/api/snapshots/{snapshot_id}/design/nrfu")
+    @app.get("/api/snapshots/{snapshot_id}/design/nrfu",
+             dependencies=[Depends(_forbid_cross_site)])   # computes the blueprint + NRFU on the fly
     def design_nrfu(snapshot_id: int) -> Dict[str, Any]:
         """Design-driven NRFU/ATP acceptance-test checklist derived from the recommended design
         decisions. One structured item per decision, traceable to the CCDE principle, the evidence
@@ -654,8 +739,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
             execution_id,
             lambda st: execution.finish(st, body.status, body.note, body.operator))
 
-    @app.get("/api/executions/{execution_id}/report")
-    def execution_report(execution_id: int):
+    @app.get("/api/executions/{execution_id}/report",
+             dependencies=[Depends(_forbid_cross_site)])
+    def execution_report(execution_id: int, request: Request):
         """Post-Implementation Review / as-executed change record for this run, as .docx."""
         rec = store.get_execution(execution_id)
         if not rec:
@@ -666,14 +752,17 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
         snap_meta = store.get_snapshot_meta(rec["snapshot_id"])
         snap_label = snap_meta["label"] if snap_meta else "snapshot"
-        fd, path = tempfile.mkstemp(suffix=".docx", prefix="assesshub_pir_")
-        os.close(fd)
-        try:
-            write_pir_docx(path, rec["state"], snap_label)
-        except Exception as e:
-            if os.path.exists(path):
-                os.unlink(path)
-            raise HTTPException(500, f"Failed to generate the PIR: {e}") from e
+        # Same heavy-generator treatment as /deliverable: bound concurrency, and take the slot BEFORE
+        # creating the temp file so a shed (503) leaves nothing to clean up.
+        with _generation_slot(request.app.state.generation_semaphore):
+            fd, path = tempfile.mkstemp(suffix=".docx", prefix="assesshub_pir_")
+            os.close(fd)
+            try:
+                write_pir_docx(path, rec["state"], snap_label)
+            except Exception as e:
+                if os.path.exists(path):
+                    os.unlink(path)
+                raise HTTPException(500, f"Failed to generate the PIR: {e}") from e
         return _send_file(
             path, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             rec["state"].get("label", "run"), "_pir.docx")
@@ -687,17 +776,20 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 raise HTTPException(404, "Execution run not found")
         return Response(status_code=204)
 
-    @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse)
-    def snapshot_explorer(snapshot_id: int) -> HTMLResponse:
+    @app.get("/api/snapshots/{snapshot_id}/explorer", response_class=HTMLResponse,
+             dependencies=[Depends(_forbid_cross_site)])
+    def snapshot_explorer(snapshot_id: int, request: Request) -> HTMLResponse:
         meta = store.get_snapshot_meta(snapshot_id)
         snap = store.get_snapshot(snapshot_id)
         if snap is None or meta is None:
             raise HTTPException(404, "Snapshot not found")
-        html = engine.render_explorer_html(snap, meta["label"])
+        with _generation_slot(request.app.state.generation_semaphore):   # bound concurrent heavy renders
+            html = engine.render_explorer_html(snap, meta["label"])
         return HTMLResponse(content=html)
 
-    @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}")
-    def snapshot_deliverable(snapshot_id: int, kind: str):
+    @app.get("/api/snapshots/{snapshot_id}/deliverable/{kind}",
+             dependencies=[Depends(_forbid_cross_site)])
+    def snapshot_deliverable(snapshot_id: int, kind: str, request: Request):
         if kind not in deliverables.SPECS:
             raise HTTPException(400, f"Unknown deliverable '{kind}'")
         meta = store.get_snapshot_meta(snapshot_id)
@@ -710,10 +802,13 @@ def create_app(db_path: str | None = None) -> FastAPI:
         # sign-offs (§4.3 "as signed"); every other deliverable is a pure snapshot read.
         gate_rec = (gates.gate_record(store.list_gates(meta["campaign_id"]))
                     if kind == "engagement" else None)
-        try:
-            path = deliverables.generate(kind, snap, meta["label"], gates=gate_rec)
-        except Exception as e:  # generation failure (e.g. a malformed snapshot)
-            raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
+        # Slot acquired OUTSIDE the 500-wrapper so its 503 (server at the concurrency ceiling) isn't
+        # rewritten to a 500; released by the context manager even if generation raises.
+        with _generation_slot(request.app.state.generation_semaphore):
+            try:
+                path = deliverables.generate(kind, snap, meta["label"], gates=gate_rec)
+            except Exception as e:  # generation failure (e.g. a malformed snapshot)
+                raise HTTPException(500, f"Failed to generate {kind}: {e}") from e
         spec = deliverables.SPECS[kind]
         return _send_file(path, spec.media, meta["label"], f"_{kind}.{spec.ext}")
 
