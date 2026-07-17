@@ -24,7 +24,9 @@ _D = {"x": 1}   # a dict where a scalar leaf is expected -> unhashable set membe
 @pytest.fixture()
 def client(tmp_path):
     app = create_app(db_path=str(tmp_path / "test.db"))
-    with TestClient(app) as c:
+    # base_url=localhost so the default Host passes the no-token DNS-rebinding guard (app.py
+    # _request_host_allowed) — the dev server this emulates is reached over loopback.
+    with TestClient(app, base_url="http://localhost") as c:
         yield c
 
 
