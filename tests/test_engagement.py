@@ -332,3 +332,17 @@ def test_engagement_title_does_not_falsely_claim_full_collection(tmp_path):
                                 "devices": {f"s{i}": {} for i in range(303)}}, "AJ")
     txt = " ".join(p.text for p in Document(out).paragraphs)
     assert "0 collected of 303" in txt
+
+
+def test_engagement_wave_endpoint_column_is_per_port_qualified(tmp_path):
+    """QA row-13: §4.2's bare 'Endpoints' header invited summing the per-wave per-port MAC counts
+    against the fleet-unique endpoint figure (a MAC behind several waves counts in each, so the column
+    overlaps). The column must carry the per-port relabel its workbook/MOP siblings use, plus the
+    overlap note."""
+    from cisco_toolkit.engagement import write_engagement_docx
+    from docx import Document
+    out = str(tmp_path / "e.docx")
+    write_engagement_docx(out, _snap(), "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "Endpoint MACs (per-port)" in text
+    assert "counts in each" in text and "fleet-unique" in text

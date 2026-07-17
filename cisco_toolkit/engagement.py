@@ -400,9 +400,17 @@ def write_engagement_docx(output_path: str, snap_dict: dict, label: str,
                          (f"{hard} switch(es) / {_as_int(w.get('hard_cutover_endpoints'))} endpoint(s)"
                           if hard else "none"),
                          len(_as_list(f["by_wave"].get(g)))))
-        table(["Wave", "Switches", "Endpoints", "Readiness", "Scenario",
+        # "(per-port)" qualifier: this column is the per-port MAC sighting count the engine attributes to
+        # each wave — a MAC seen behind more than one wave counts in each, so the column can sum above the
+        # fleet-unique endpoint total. The workbook/MOP siblings carry the relabel; QA row-13 flagged this
+        # table as the one place the bare "Endpoints" header invited summing it against the fleet figure.
+        table(["Wave", "Switches", "Endpoint MACs (per-port)", "Readiness", "Scenario",
                "Hard-cutover exposure", "Post-checks"], rows,
               widths=[1.1, 0.7, 0.8, 0.9, 0.9, 1.6, 0.7])
+        doc.add_paragraph(
+            "Endpoint MACs are per-port sightings apportioned to each wave; a MAC visible behind more "
+            "than one wave counts in each, so this column may sum slightly above the fleet-unique "
+            "endpoint total (the workbook Endpoint Census owns the unique count).")
         if f["sc"].get("fleet_recommendation"):
             p2 = doc.add_paragraph()
             _label_run(p2, "Fleet recommendation:", f["sc"]["fleet_recommendation"])

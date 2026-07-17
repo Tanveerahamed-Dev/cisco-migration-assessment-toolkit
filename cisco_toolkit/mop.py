@@ -90,10 +90,12 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
     r = {"endpoints": 0, "n_fail": 0, "n_warn": 0, "readiness": None}
     seq, scen, val_items, worst, seen = {}, {}, [], None, set()
     mbb_all, hard_all = [], []   # cutover host split UNIONED across every group in the wave (not just the first)
+    members_all = set()          # full membership of the joined groups — detects a sub-wave SLICE below
     wsw = set(wave_switches or [])
     for g in gnames:
         rr = readiness_by_group.get(g) or {}
         gsw = rr.get("switches") or []
+        members_all.update(gsw)
         share = (len(wsw & set(gsw)) / len(gsw)) if gsw else 1.0      # a sub-wave is a SLICE -> apportion its switch-share
         r["endpoints"] += round(_i(rr.get("endpoints")) * share)   # endpoints ARE divisible -> apportion by share
         # n_fail/n_warn: ATTRIBUTE each fail/warn check to the ONE sub-wave that owns its canonical (lowest-sorted)
@@ -136,12 +138,38 @@ def _join_group_records(gnames, wave_switches, readiness_by_group, seq_by_group,
                 seen.add(key)
                 val_items.append(v)
     r["readiness"] = worst or "—"
-    # Overlay the UNIONED cutover host split so the procedure branches on the WHOLE wave, not just the
+    # A wave that covers only a SLICE of its groups' membership (an oversized group split into coupled
+    # sub-waves) must not inherit the parent's full host split — same doctrine as the endpoint
+    # apportioning above (QA row-13: every ≤40-switch sub-wave row repeated the parent's full
+    # '107 hard cutover + 144 make-before-break', and §wi.5 sequenced parent-scale counts). A wave
+    # covering its WHOLE group keeps the raw union, so hosts the sequencing lists name beyond the
+    # membership record are preserved rather than silently dropped (fail-soft on inconsistent uploads).
+    if wsw and members_all and not members_all.issubset(wsw):
+        mbb_all = [h for h in mbb_all if h in wsw]
+        hard_all = [h for h in hard_all if h in wsw]
+    # Overlay the SLICED cutover host split so the procedure branches on THIS wave's members, not just the
     # representative group (the free-text 'sequence' stays the representative's — descriptive only). Copy
     # so the engine's record is never mutated (this joiner reads the engine's records, never recomputes).
     if seq:
         seq = {**seq, "make_before_break": mbb_all, "hard_cutover": hard_all}
     return r, seq, scen, val_items
+
+
+def _strategy_cell(seq, scen):
+    """Count-honest cutover-strategy label derived from THIS wave's (sliced) host split. The engine's
+    free-text 'sequence' describes the WHOLE parent group, so on a coupled sub-wave row its counts are
+    impossible (QA row-13: a 40-switch row claiming '107 hard cutover + 144 make-before-break'). The
+    free text / scenario is the fallback only when the split lists are absent."""
+    seq = seq if isinstance(seq, dict) else {}
+    scen = scen if isinstance(scen, dict) else {}
+    mbb, hard = _as_list(seq.get("make_before_break")), _as_list(seq.get("hard_cutover"))
+    if mbb and hard:
+        return f"{len(hard)} hard cutover (single-homed) + {len(mbb)} make-before-break (dual-homed)"
+    if mbb:
+        return f"make-before-break ({len(mbb)} dual-homed)"
+    if hard:
+        return f"hard cutover ({len(hard)} single-homed)"
+    return seq.get("sequence") or scen.get("recommended_scenario") or "—"
 
 
 # ---- readiness roll-up + window estimate (BLUF facts) -----------------------------------------
@@ -395,7 +423,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         blast = max((_as_num(fi_by_host.get(s, {}).get("stranded")) for s in switches), default=0)
         rem, pl = _blockers_for(switches)
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
-                        r.get("readiness", "—"), seq.get("sequence", "—"), blast, len(rem) + len(pl)))
+                        r.get("readiness", "—"), _strategy_cell(seq, _scen), blast, len(rem) + len(pl)))
     table(["Wave", "Devices", "Endpoint MACs", "Readiness", "Strategy", "Max blast", "Blockers"],
           ov_rows, widths=[1.5, 0.8, 1.0, 1.2, 1.5, 0.9, 0.9])
 
@@ -567,7 +595,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
                 str(sq.get("sequence") or sc.get("recommended_scenario") or "").strip()
                 for _g, sc, sq in wave_groups if (sq.get("sequence") or sc.get("recommended_scenario")))) or "—"
         else:
-            strat_cell = seq.get("sequence") or scen.get("recommended_scenario") or "—"
+            strat_cell = _strategy_cell(seq, scen)
 
         doc.add_heading(f"{wi}. MOP — {name}", level=1)
 

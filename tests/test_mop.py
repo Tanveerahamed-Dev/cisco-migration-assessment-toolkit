@@ -707,3 +707,40 @@ def test_mop_rollback_triggers_silent_on_evpn_when_not_the_target(tmp_path):
     write_mop_docx(out, _snap(), "Unit Test Fleet")   # _snap() has no evpn_migration
     text = _all_text(Document(out))
     assert "Anycast" not in text and "DAG MAC" not in text
+
+
+def test_mop_subwave_strategy_and_split_are_slice_scoped(tmp_path):
+    """QA row-13: every ≤40-switch sub-wave row of the 251-switch parent repeated the PARENT's
+    '107 hard cutover + 144 make-before-break' (impossible on a 40-switch row), and §wi.5 sequenced
+    parent-scale counts. The joined host split must be SLICED to this wave's members: the §1 Strategy
+    cell derives per-row counts, the slices sum to the parent split, and the parent-scale text is gone."""
+    snap = _snap()
+    sw = [f"s{i}" for i in range(1, 7)]     # one parent group of 6: 4 dual-homed + 2 single-homed
+    snap["devices"] = {h: {"platform": "ios"} for h in sw}
+    snap["move_groups"] = [{"switches": sw, "endpoints": 60}]
+    snap["migration_readiness"] = [{"group": "Group 1", "switches": sw, "endpoints": 60,
+                                    "readiness": "CAUTION", "n_fail": 0, "n_warn": 1, "checks": []}]
+    snap["wave_sequencing"] = [{
+        "group": "Group 1", "make_before_break": ["s1", "s2", "s4", "s5"],
+        "hard_cutover": ["s3", "s6"], "hard_cutover_endpoints": 20,
+        "sequence": "2 hard cutover (single-homed) + 4 make-before-break (dual-homed)"}]
+    snap["migration_scenarios"]["per_group"] = [
+        {"group": "Group 1", "switches": 6, "endpoints": 60, "readiness": "CAUTION",
+         "recommended_scenario": "hybrid", "rationale": "mixed homing",
+         "playbook": {"pre": "stage", "validate": "prove", "rollback": "fail back"}}]
+    snap["validation_plan"]["by_wave"] = {"Group 1": snap["validation_plan"]["by_wave"]["Group 1"]}
+    snap["design_blueprint"] = {"target_state": {"wave_plan": {
+        "n_waves": 2, "n_move_groups": 1, "largest_group": 6, "wave_cap": 3,
+        "waves": [{"wave": 1, "kind": "coupled-subwave", "switches": ["s1", "s2", "s3"]},
+                  {"wave": 2, "kind": "coupled-subwave", "switches": ["s4", "s5", "s6"]}]}}}
+    out = str(tmp_path / "m.docx")
+    write_mop_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    # per-slice derived split (1 hard + 2 mbb), on BOTH the §1 row and each §wi.1 scope table
+    assert text.count("1 hard cutover (single-homed) + 2 make-before-break (dual-homed)") >= 2
+    # the parent-scale free text must appear NOWHERE (that was the impossible-per-row claim)
+    assert "2 hard cutover (single-homed) + 4 make-before-break (dual-homed)" not in text
+    # the mixed-homing procedure sequences THIS slice's counts, not the parent's
+    assert "make-before-break the 2 dual-homed" in text
+    assert "the 1 single-homed switch(es)" in text
+    assert "the 4 dual-homed" not in text
