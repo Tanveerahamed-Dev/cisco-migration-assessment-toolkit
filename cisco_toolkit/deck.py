@@ -40,6 +40,18 @@ _HEAD = "Calibri"   # universally rendered (Office default); hierarchy comes fro
 _BODY = "Calibri"
 
 
+def _ellip(s, n: int) -> str:
+    """Word-safe truncation with a visible ellipsis. A bare slice ends mid-word with no cue that text
+    was dropped (QA row-13: evidence lines reading 'forwarding rol', 'these L3 d'); backtrack to the
+    last space unless that loses more than ~2 words' worth, and always mark the cut."""
+    s = str(s) if s is not None else ""
+    if len(s) <= n:
+        return s
+    cut = s[:n]
+    at_space = cut.rsplit(" ", 1)[0]
+    return (at_space if len(at_space) >= n - 24 else cut).rstrip() + "…"
+
+
 def _clean(s) -> str:
     """Repair the 'Â·' mojibake the cross-axis headlines carry for their '·' separator AND strip the XML-illegal
     chars (C0 controls, U+FFFE/U+FFFF noncharacters, lone surrogates) that abort python-pptx at save -- the same
@@ -232,13 +244,13 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.3, size=10)
         text(s, 1.85, y - 0.03, 10.8, 0.5,
              [[(_clean(a.get("axis", "")) + ":  ", 12, _NAVY, True), (_clean(a.get("headline", "")), 12, _INK, False)]])
-        y += 0.5
+        y += 0.45   # 4 rows end at 7.15 so the overflow breadcrumb below stays inside the 7.5in slide
     # honesty: never silently drop axes — breadcrumb the overflow + how many are Critical/High, so a
     # 4-row cap can't hide a High/Critical axis (the severity-sorted source means the cap drops the tail).
     _more = axes[4:]
     if _more:
         _more_hi = sum(1 for a in _more if a.get("severity") in ("Critical", "High"))
-        text(s, 0.7, y, 11.8, 0.4,
+        text(s, 0.7, y, 11.8, 0.3,
              [[(f"+ {len(_more)} more axis headline(s)"
                 + (f" — {_more_hi} at High or above" if _more_hi else "")
                 + " — full set in the workbook Executive Summary.", 10, _MUTED, False)]])
@@ -447,11 +459,15 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         s = slide()
         header(s, "CCDE-grounded target state", "The design the migration should adopt")
         bsum = bp.get("summary") or {}
+        # Lead with the TOTAL recorded decisions, then qualify the subsets — the old tile headlined the
+        # RECOMMENDED count as "design decision(s)", so "34 · 9 need a requirement" read as 9-of-34 when
+        # the register holds 43 = 34 recommended + 9 needs-requirement (QA row-13 vs design.docx's "43").
         text(s, 0.7, 1.9, W - 1.4, 0.4,
-             [[(f"{bsum.get('n_recommended', len(bp_rec))} design decision(s)  ", 14, _NAVY, True),
-               (f"· {bsum.get('n_critical', 0)} critical · {bsum.get('n_needs_requirement', 0)} need a "
-                "requirement — each traced to a design principle and the trade-off axes it serves.",
-                13, _MUTED, False)]])
+             [[(f"{bsum.get('n_decisions', len(bp.get('decisions') or []))} design decision(s)  ",
+                14, _NAVY, True),
+               (f"· {bsum.get('n_recommended', len(bp_rec))} recommended · {bsum.get('n_critical', 0)} "
+                f"critical · {bsum.get('n_needs_requirement', 0)} need a requirement — each traced to a "
+                "design principle and the trade-off axes it serves.", 13, _MUTED, False)]])
         sc = [a for a in (bp.get("tradeoff_scorecard") or []) if isinstance(a, dict)]
         weak = [a for a in sc if isinstance(a.get("score"), int) and a.get("score") <= 1][:5]
         if weak:
@@ -466,15 +482,21 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
             chip(s, 0.7, y, sev, _SEV_COLOR.get(sev, _MUTED), w=1.0, h=0.34, size=10)
             text(s, 1.85, y - 0.04, W - 2.6, 0.7,
                  [[(_clean(d.get("title", "")), 14, _INK, True)],
-                  [(_clean(((d.get("evidence") or {}).get("summary") or "")[:120]), 11, _MUTED, False)]], space=1)
+                  [(_clean(_ellip((d.get("evidence") or {}).get("summary") or "", 120)), 11, _MUTED, False)]], space=1)
             y += 0.78
 
     # ---------------------------------------------------------------- 7. Where to start (dark)
     s = slide(dark=True)
     header(s, "Recommendation", "Where to start", dark=True)
     gating = eb.get("top_gating") or []
+    # Truncation disclosure (QA row-13): every other capped list on the deck says "+N more"; a bare
+    # 5-item list here read as the WHOLE gating set when the brief carried 9. The rows below end at
+    # y=6.6 where the closing line sits, so the cue lives in the intro line, not a footnote.
+    _g_more = max(0, len(gating) - 5)
     text(s, 0.7, 2.0, W - 1.4, 0.4,
-         [("Resolve these gating items before the first cutover wave:", 15, _ICE, False)])
+         [(("Resolve these gating items before the first cutover wave"
+            + (f" ({min(5, len(gating))} of {len(gating)} shown — full set in the workbook "
+               "Executive Summary):" if _g_more else ":")), 15, _ICE, False)])
     y = 2.7
     if gating:
         for i, g in enumerate(gating[:5], 1):
