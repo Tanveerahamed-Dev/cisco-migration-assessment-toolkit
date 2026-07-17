@@ -564,7 +564,7 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         multi = len(wave_groups) > 1
         if multi:
             strat_cell = "; ".join(dict.fromkeys(
-                (sq.get("sequence") or sc.get("recommended_scenario") or "").strip()
+                str(sq.get("sequence") or sc.get("recommended_scenario") or "").strip()
                 for _g, sc, sq in wave_groups if (sq.get("sequence") or sc.get("recommended_scenario")))) or "—"
         else:
             strat_cell = seq.get("sequence") or scen.get("recommended_scenario") or "—"
@@ -694,12 +694,12 @@ def write_mop_docx(output_path: str, snap_dict: dict, label: str) -> None:
         for h in switches:
             for pname, dd in sorted((ifaces_all.get(h) or {}).items()):
                 dd = dd or {}
-                mode = (dd.get("switchport_mode") or "").lower()
-                if mode == "access" and ((dd.get("end_host_mac") or "").strip()
-                                         or (dd.get("end_host_ip") or "").strip()):
+                mode = str(dd.get("switchport_mode") or "").lower()   # str()-coerce wrong-typed device leaves (audit-6 #3 class)
+                if mode == "access" and (str(dd.get("end_host_mac") or "").strip()
+                                         or str(dd.get("end_host_ip") or "").strip()):
                     kind = "Endpoint"
-                elif mode == "trunk" and (dd.get("cdp_neighbor") or "").strip():
-                    po = (dd.get("port_channel") or "").strip()
+                elif mode == "trunk" and str(dd.get("cdp_neighbor") or "").strip():
+                    po = str(dd.get("port_channel") or "").strip()
                     # surface bundle membership so redundant uplink pairs (two ports sharing a Po) are explicit
                     kind = f"Uplink → {dd.get('cdp_neighbor')}" + (f" [{po}]" if po else "")
                 else:

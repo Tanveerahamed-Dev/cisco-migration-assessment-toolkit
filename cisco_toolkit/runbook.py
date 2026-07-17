@@ -329,7 +329,7 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
     env_flags = [(d.get("hostname", h), d.get("ps_status", ""), d.get("fan_status", ""),
                   d.get("temperature_status", ""))
                  for h, d in devices.items()
-                 if any((d.get(k) or "").lower() not in ("", "ok", "normal", "good")
+                 if any(str(d.get(k) or "").lower() not in ("", "ok", "normal", "good")
                         for k in ("ps_status", "fan_status", "temperature_status"))]
     if env_flags:
         doc.add_paragraph("Environmental exceptions (PSU/fan/temperature not nominal):")
