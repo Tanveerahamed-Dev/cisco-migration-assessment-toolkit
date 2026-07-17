@@ -126,6 +126,12 @@ locked down by default:
 - **Zero-config localhost** — with no token configured, `/api` answers **loopback clients
   only**; CORS allows **localhost origins only** (never `*`). The workflows above are
   unchanged.
+- **DNS-rebinding guard** — in zero-config (no-token) mode the request's `Host` header must
+  also name a loopback target (`localhost` / `127.0.0.1` / `[::1]`, any port). A page that
+  rebinds an attacker domain to `127.0.0.1` carries its own name in `Host`, so it is refused
+  even though the socket is loopback. Trust an extra same-host name (e.g. a reverse-proxy
+  vhost) with `ASSESSHUB_ALLOWED_HOSTS=host1,host2`. (Token mode is Host-agnostic — the
+  Bearer credential, which a rebound page cannot forge, is the authority there.)
 - **Any non-local access needs a token** — set `ASSESSHUB_TOKEN=<secret>` on the server
   and send `Authorization: Bearer <secret>`; once set, the token is required on every
   `/api` route (only the `/api/health` liveness probe stays open). Add trusted extra UI
