@@ -300,3 +300,99 @@ def test_ise_pagination_survives_malformed_port_nextpage(tmp_path, monkeypatch):
     RC.collect_ise("https://ise.corp.local", "svc-ro", "S3cretPass!", str(tmp_path), verify_tls=True)
     assert not any("attacker.com" in u for u in urls_hit), \
         "a malformed-port nextPage.href must be refused (fail closed), never followed"
+
+
+class _FakeFMCLogin:
+    """A fake FMC generatetoken response: the access token + DOMAINS list arrive in the response HEADERS."""
+    def __init__(self, domains):
+        import json as _json
+        self.headers = {"X-auth-access-token": "TOK123", "DOMAINS": _json.dumps(domains)}
+
+    def close(self):        # collect_fmc _safe_close()s the login response (no dangling fd)
+        pass
+
+
+def test_collect_fmc_paginates_devicerecords_across_pages(tmp_path, monkeypatch):
+    """[coverage-honest] FMC list endpoints default to limit=25 rows/page; a single GET reads only the first
+    page, silently truncating the FTD inventory on a fleet of >25 -- the same page-1-only census bug fixed for
+    ISE ERS (audit-5 #16). collect_fmc must follow paging.next across ALL pages and write the FULL census."""
+    DOM = "dom-uuid-1"
+    base = "https://fmc.example"
+    p1_next = f"{base}/api/fmc_config/v1/domain/{DOM}/devices/devicerecords?offset=2&limit=2&expanded=true"
+    monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: _FakeFMCLogin([{"name": "Global", "uuid": DOM}]))
+
+    def fake_get_json(opener, url, headers=None, timeout=30):
+        assert headers and headers.get("X-auth-access-token") == "TOK123", "every config GET carries the token"
+        if "devices/devicerecords" in url and "offset=" not in url:            # devicerecords PAGE 1 of 2
+            return {"items": [{"name": "FTD-01"}, {"name": "FTD-02"}],
+                    "paging": {"offset": 0, "limit": 2, "count": 3, "pages": 2, "next": [p1_next]}}
+        if "devices/devicerecords" in url and "offset=2" in url:               # devicerecords PAGE 2 of 2
+            return {"items": [{"name": "FTD-03"}], "paging": {"offset": 2, "limit": 2, "count": 3, "pages": 2}}
+        if "serverversion" in url:
+            return {"serverVersion": "7.4.0"}
+        return {"items": []}                                                   # other list endpoints: empty
+    monkeypatch.setattr(rest_collect, "_get_json", fake_get_json)
+
+    rest_collect.collect_fmc(base, "ro", "pw", str(tmp_path))
+    fn = os.path.join(str(tmp_path), rest_collect._cmd_filename("api/fmc_config/v1/devices/devicerecords"))
+    assert os.path.isfile(fn)
+    devs = parse.parse_fmc_devices(open(fn, encoding="utf-8").read())
+    # ALL 3 devices across BOTH pages -- pre-fix (single GET) collected only FTD-01/FTD-02 (page 1).
+    assert {d["name"] for d in devs} == {"FTD-01", "FTD-02", "FTD-03"}
+
+
+def test_collect_fmc_refuses_off_host_pagination_link(tmp_path, monkeypatch):
+    """[security] paging.next comes from the controller response body -- a rogue/MITM'd FMC could point it at
+    an attacker host to exfiltrate the X-auth-access-token (or an internal host = SSRF, or http:// = cleartext
+    downgrade). collect_fmc must only follow a same-origin (https, same host:port) link and NEVER GET the
+    off-host URL -- mirrors the ISE ERS nextPage guard (#368)."""
+    DOM = "dom-uuid-1"
+    base = "https://fmc.example"
+    got = []
+    monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: _FakeFMCLogin([{"name": "Global", "uuid": DOM}]))
+
+    def fake_get_json(opener, url, headers=None, timeout=30):
+        got.append(url)
+        if "devices/devicerecords" in url and "offset=" not in url:            # page 1 -> off-host next
+            return {"items": [{"name": "FTD-01"}],
+                    "paging": {"next": ["https://attacker.evil/api/fmc_config/v1/domain/x/devices/"
+                                        "devicerecords?offset=1&limit=1&expanded=true"]}}
+        return {"items": []}
+    monkeypatch.setattr(rest_collect, "_get_json", fake_get_json)
+
+    rest_collect.collect_fmc(base, "ro", "pw", str(tmp_path))
+    # the off-host pagination link was REFUSED -- never fetched, so the token was never sent to attacker.evil
+    assert not any("attacker.evil" in u for u in got), "must not GET the body-supplied off-host pagination URL"
+    fn = os.path.join(str(tmp_path), rest_collect._cmd_filename("api/fmc_config/v1/devices/devicerecords"))
+    devs = parse.parse_fmc_devices(open(fn, encoding="utf-8").read())
+    assert {d["name"] for d in devs} == {"FTD-01"}      # only the same-origin page 1 (refusal is logged/honest)
+
+
+def test_collect_fmc_survives_malformed_port_pagination_link(tmp_path, monkeypatch):
+    """[robustness / red-team of the off-host guard] A hostile paging.next with a NON-INTEGER port on the SAME
+    host -- 'https://fmc.example:9060.attacker.com/…' -- makes urllib.parse.urlsplit().port RAISE ValueError.
+    The same-origin guard reads p.port, so an UNGUARDED read propagated that ValueError straight out of
+    collect_fmc (its caller has no try/except) -> a rogue / valid-cert-MITM'd FMC could ABORT the whole
+    collection run. The guard must CATCH it and refuse the link (fail CLOSED), never crash -- the same red-team
+    fix the ISE ERS guard carries. NON-VACUOUS: without the try/except this raises `ValueError: Port could not
+    be cast to integer value as '9060.attacker.com'` and the test errors."""
+    DOM = "dom-uuid-1"
+    base = "https://fmc.example"
+    got = []
+    monkeypatch.setattr(rest_collect, "_post", lambda *a, **k: _FakeFMCLogin([{"name": "Global", "uuid": DOM}]))
+
+    def fake_get_json(opener, url, headers=None, timeout=30):
+        got.append(url)
+        if "devices/devicerecords" in url and "offset=" not in url:    # page 1 -> same-host MALFORMED-port next
+            return {"items": [{"name": "FTD-01"}],
+                    "paging": {"next": ["https://fmc.example:9060.attacker.com/api/fmc_config/v1/domain/x/"
+                                        "devices/devicerecords?offset=1&limit=1&expanded=true"]}}
+        return {"items": []}
+    monkeypatch.setattr(rest_collect, "_get_json", fake_get_json)
+
+    # must return cleanly (fail closed), NOT raise ValueError, and never GET the malformed-port link
+    rest_collect.collect_fmc(base, "ro", "pw", str(tmp_path))
+    assert not any("attacker.com" in u for u in got), "a malformed-port paging.next must be refused, never followed"
+    fn = os.path.join(str(tmp_path), rest_collect._cmd_filename("api/fmc_config/v1/devices/devicerecords"))
+    devs = parse.parse_fmc_devices(open(fn, encoding="utf-8").read())
+    assert {d["name"] for d in devs} == {"FTD-01"}      # page 1 census still written (fail-soft, honest)
