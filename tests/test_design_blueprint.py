@@ -2151,7 +2151,10 @@ def test_native_vlan1_design_and_punchlist_texts_are_self_disambiguating():
     # collision guard: normalise every numbered '<N> <unit>(s)' phrase; the two owners' numbered
     # unit-vocabularies must be DISJOINT, so the same phrase can never again render with two numbers.
     unit = re.compile(r"\d[\d,]*\s+[a-z][a-z -]*\(s\)")
-    units = lambda s: {re.sub(r"\d[\d,]*", "N", m) for m in unit.findall(s.lower())}
+
+    def units(s):
+        return {re.sub(r"\d[\d,]*", "N", m) for m in unit.findall(s.lower())}
+
     assert units(design), "design text must carry a numbered unit"
     assert units(punch), "punch-list text must carry a numbered unit"
     shared = units(design) & units(punch)
