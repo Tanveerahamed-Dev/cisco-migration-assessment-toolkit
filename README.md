@@ -61,18 +61,21 @@ The quickest path is just the two runtime dependencies:
 pip install netmiko openpyxl          # minimal runtime
 ```
 
-Or install the project itself (editable, from a checkout) to get a stable
-**`cisco-assess`** console command plus declared dependencies:
+Or install the project itself to get a stable **`cisco-assess`** console command
+plus declared dependencies. A plain install (or a built wheel) is fully
+relocatable: the explorer-HTML template and the offline KB data ship *inside*
+the `cisco_toolkit` package as package-data and are loaded package-relative, so
+they work the same from a checkout, a `pip install .`, or a wheel:
 
 ```bash
-pip install -e .                      # runtime only
-pip install -e ".[docx]"             # + the DOCX runbook
-pip install -e ".[dev,docx]"         # + pytest / ruff / mypy for development
+pip install .                         # runtime only
+pip install ".[docx]"                # + the DOCX runbook
+pip install -e ".[dev,docx]"         # editable, + pytest / ruff / mypy for development
 ```
 
 After installing, `cisco-assess …` is equivalent to `python COLLECT_PARSE_V3_23_0.py …`
-(same entry point). Use an **editable** install (`-e`): the explorer-HTML template and the
-offline KB data are read relative to the checkout.
+(same entry point). The **editable** form (`-e`) is a development convenience —
+code edits take effect without reinstalling — not a runtime requirement.
 
 ## Inputs & outputs
 
