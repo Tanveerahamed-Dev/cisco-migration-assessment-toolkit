@@ -320,3 +320,24 @@ def test_runbook_no_fhrp_count_excludes_none_sentinel(tmp_path):
     text = _all_text(Document(out))
     assert "2 of 3 gateways have no FHRP peer" in text   # the two 'none' gateways, not hidden
     assert "0 of 3 gateways have no FHRP peer" not in text
+
+
+def test_runbook_drift_table_keeps_disambiguation_and_remediation_on_long_detail(tmp_path):
+    """PR-#396 review: the §6.3 why/next-step cell was a single (detail+remediation)[:160] slice, so a
+    long detail (the 270-char native-VLAN-1 row) evicted BOTH its own disambiguating tail and the
+    ENTIRE remediation. The cell now budgets the two parts separately -- the detail's parenthetical
+    and the 'Fix:' next step must both render."""
+    snap = _snap()
+    long_detail = ("4 operationally-trunking port(s) (live trunk status) across 3 live-trunking "
+                   "switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and "
+                   "VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode "
+                   "basis, administrative or negotiated -- so the two figures can differ.)")
+    snap["operational_drift"] = [
+        {"severity": "Low", "category": "False-health", "devices": ["sw1", "sw2"],
+         "title": "Native VLAN 1 on 4 operationally-trunking port(s)", "detail": long_detail,
+         "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk."}]
+    out = str(tmp_path / "rb_drift_long.docx")
+    write_runbook_docx(out, snap, "Unit Test Fleet")
+    text = _all_text(Document(out))
+    assert "so the two figures can differ" in text                  # disambiguating tail survives
+    assert "Fix: Set a dedicated, unused native VLAN" in text       # remediation survives

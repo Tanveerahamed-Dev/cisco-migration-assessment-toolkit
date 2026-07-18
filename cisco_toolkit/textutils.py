@@ -24,6 +24,37 @@ PHYSICAL_IFACE_RE = re.compile(
 _JUNK_IFACE_TOKENS  = {"port","ports","capability","status","native","vlan","name","duplex","speed","type"}
 _TRUNK_STATUS_WORDS = {"trunking","trnk-bndl","notconnect","connected","disabled","suspended"}
 
+# ---- native-VLAN-1 exposure: the TWO deliberately-different measures (PR-#396 review) -------------
+# One token owner for the unit nouns + basis labels every renderer interpolates (analyze punch-list,
+# design_advisor decision, design_kb observable, detector_schema descriptor, archreview L2-3), so the
+# self-disambiguating wording cannot fork per-site again. The two numbered-unit vocabularies must stay
+# DISJOINT across bases -- guarded by
+# tests/test_design_blueprint.py::test_native_vlan1_design_and_punchlist_texts_are_self_disambiguating.
+NATIVE1_OPS_UNIT = "operationally-trunking port(s)"          # live-basis port unit
+NATIVE1_OPS_SWITCH_UNIT = "live-trunking switch(es)"         # live-basis switch unit (NOT plain 'switch(es)')
+NATIVE1_OPS_BASIS = "live trunk status"
+NATIVE1_CFG_UNIT = "trunk-mode port(s)"                      # switchport-mode-basis port unit
+NATIVE1_CFG_BASIS = "switchport-mode basis, administrative or negotiated"
+
+
+def is_live_trunk_status(status) -> bool:
+    """ONE owner for the 'is this port operationally trunking' token decision (live trunk-table
+    status). 'trnk-bndl' (a port-channel trunk member) IS trunking but does NOT start with 'trunk'
+    ('trnk' has no u) -- the miss behind the PR-#396-review undercount, where bundle members landed in
+    the switchport-mode figure (build.py promotes them to mode Trunk) but out of the live figure."""
+    s = str(status or "").strip().lower()
+    return s.startswith("trunk") or s.startswith("trnk-bndl")
+
+
+def is_trunk_mode(mode) -> bool:
+    """ONE owner for the 'is this port trunk-mode by switchport_mode' decision. The field is
+    administrative OR negotiated (parse folds the operational mode in; build promotes from the live
+    trunk table) -- never pure config intent. Substring match: the engine emits 'Trunk'/'Access'/'',
+    but foreign/webapp-uploaded snapshots carry values like 'dynamic trunk' / 'trunk (802.1q)', and
+    design_advisor + archreview L2-3 must count them identically (PR-#396 review: the two hand-rolled
+    predicates diverged substring-vs-exact)."""
+    return "trunk" in str(mode or "").lower()
+
 # Characters that abort XML serialization (python-docx / openpyxl both serialize to XML): the C0 control chars
 # XML 1.0 forbids -- 0x00-0x08, 0x0B-0x0C, 0x0E-0x1F (tab 0x09 / newline 0x0A / CR 0x0D stay legal) -- plus the
 # U+FFFE / U+FFFF noncharacters and the lone surrogates U+D800-U+DFFF. Device-derived free-text (a CDP/LLDP

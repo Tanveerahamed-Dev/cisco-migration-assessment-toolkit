@@ -42,6 +42,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from cisco_toolkit.textutils import (   # native-VLAN-1 unit/basis tokens -- one owner (leaf module)
+    NATIVE1_CFG_BASIS, NATIVE1_CFG_UNIT, NATIVE1_OPS_BASIS)
+
 SCHEMA = "detector_schema/1"
 
 # Reuse the engine's punch-list source-command map so a descriptor's `source_command` is the SAME
@@ -457,13 +460,14 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
     # ---- L2 hygiene: native VLAN 1 on trunks (analyze.compute_operational_drift False-health) --------
     {
         "key": "l2-native-vlan-1",
-        "title": "Native VLAN 1 on inter-switch trunks",
+        "title": "Native VLAN 1 on operationally-trunking ports",
         "family": "Hygiene",
-        "checks": "An operationally-trunking inter-switch port (live trunk status) carrying the default "
-                  "VLAN 1 as the native (untagged) VLAN — a hygiene and VLAN-hopping exposure. (The design "
-                  "gap's configured-switchport-mode count is a deliberately different measure.)",
-        "healthy_value": "a dedicated, unused native VLAN on inter-switch trunks",
-        "threshold": "operationally trunking (trunk_status) and trunk native VLAN == 1",
+        "checks": f"An operationally-trunking port ({NATIVE1_OPS_BASIS}) carrying the default VLAN 1 as "
+                  "the native (untagged) VLAN — a hygiene and VLAN-hopping exposure. Every live-trunking "
+                  "port counts, host-facing trunks included (no inter-switch scoping). (The design gap's "
+                  f"{NATIVE1_CFG_UNIT} count — {NATIVE1_CFG_BASIS} — is a deliberately different measure.)",
+        "healthy_value": "a dedicated, unused native VLAN on every 802.1Q trunk",
+        "threshold": "operationally trunking (trunk_status 'trunking'/'trnk-bndl') and trunk native VLAN == 1",
         "cited_fields": ["operational_drift[].category", "operational_drift[].title", "operational_drift[].devices"],
         "abstains_when": "device not collected, or trunk/switchport detail not captured for the port",
         "evidence_gated": True,

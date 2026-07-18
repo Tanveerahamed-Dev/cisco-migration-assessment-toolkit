@@ -21,7 +21,9 @@ from cisco_toolkit.parse import (
     parse_etherchannel_summary_members, parse_ospf_neighbors, parse_bgp_summary,
     parse_eigrp_neighbors, parse_syslog_events, parse_qos_config,
 )
-from cisco_toolkit.textutils import _as_num, _split_macs, normalize_ifname
+from cisco_toolkit.textutils import (
+    NATIVE1_CFG_BASIS, NATIVE1_CFG_UNIT, NATIVE1_OPS_BASIS, NATIVE1_OPS_SWITCH_UNIT, NATIVE1_OPS_UNIT,
+    _as_num, _split_macs, is_live_trunk_status, normalize_ifname)
 
 
 # score band -> (label, fill)
@@ -3548,7 +3550,7 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
     """NEW-V3.23.93: evidence-led FALSE-HEALTH / operational-drift detector. Surfaces the migration
     traps a green control plane hides (cisco-network-assessment doctrine: "configured is not healthy;
     up is not healthy"): temporary L2 bridges enlarging the broadcast/STP domain, PoE faults on ports
-    described as live powered endpoints, native-VLAN-1 on inter-switch trunks, and multi-year uptime
+    described as live powered endpoints, native-VLAN-1 on operationally-trunking ports, and multi-year uptime
     (STP / control-plane not exercised recently -> latent risk that surfaces on the first change).
 
     Bulk patterns are AGGREGATED (one row + a count/list), never one row per port, per the same
@@ -3564,7 +3566,7 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
     for host, ports in all_interfaces.items():
         for p, d in ports.items():
             desc = (d.description or "").strip()
-            is_infra = bool((d.cdp_neighbor or "").strip()) or (d.trunk_status or "").lower().startswith("trunk")
+            is_infra = bool((d.cdp_neighbor or "").strip()) or is_live_trunk_status(d.trunk_status)
             if desc and is_infra and TEMP.search(desc):
                 temp_by_host.setdefault(host, []).append(f"{p} ({desc[:40]})")
     for host, ports in sorted(temp_by_host.items()):
@@ -3595,27 +3597,30 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
                     "remediation": "Resolve the PoE fault (power budget / cabling / device) before the "
                                    "cutover window."})
 
-    # 3. Native VLAN 1 on operationally-trunking inter-switch ports -- hygiene / VLAN-hopping exposure.
-    # AGGREGATED. Counts LIVE trunk_status -- deliberately a DIFFERENT measure from the design gap's
-    # configured-switchport-mode count (design_advisor); both texts name their basis so the figures
-    # cannot render as one contradicting fact.
+    # 3. Native VLAN 1 on operationally-trunking ports -- hygiene / VLAN-hopping exposure. AGGREGATED.
+    # Counts LIVE trunk-table status via the shared textutils.is_live_trunk_status token owner
+    # ('trunking' AND 'trnk-bndl' -- PR-#396 review: startswith('trunk') missed bundle members), with
+    # NO inter-switch scoping: every live-trunking native-1 port counts, host-facing trunks included.
+    # Deliberately a DIFFERENT measure from the design gap's switchport-mode count (design_advisor);
+    # both texts name their unit+basis (textutils.NATIVE1_* tokens) so the figures cannot render as
+    # one contradicting fact.
     nat1_hosts: list = []
     for host, ports in all_interfaces.items():
-        if any((d.trunk_status or "").lower().startswith("trunk")
+        if any(is_live_trunk_status(d.trunk_status)
                and (d.trunk_native_vlan or "").strip() == "1" for d in ports.values()):
             nat1_hosts.append(host)
     nat1_count = sum(1 for host, ports in all_interfaces.items() for d in ports.values()
-                     if (d.trunk_status or "").lower().startswith("trunk")
+                     if is_live_trunk_status(d.trunk_status)
                      and (d.trunk_native_vlan or "").strip() == "1")
     if nat1_hosts:
         out.append({"severity": "Low", "category": "False-health", "devices": sorted(nat1_hosts),
-                    "title": f"Native VLAN 1 on {nat1_count} operationally-trunking port(s)",
-                    "detail": f"{nat1_count} operationally-trunking port(s) (live trunk status) across "
-                              f"{len(nat1_hosts)} switch(es) carry the default VLAN 1 as the native "
-                              "(untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap "
-                              "counts configured trunk-mode ports -- design intent -- so the two figures "
-                              "can differ.)",
-                    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."})
+                    "title": f"Native VLAN 1 on {nat1_count} {NATIVE1_OPS_UNIT}",
+                    "detail": f"{nat1_count} {NATIVE1_OPS_UNIT} ({NATIVE1_OPS_BASIS}) across "
+                              f"{len(nat1_hosts)} {NATIVE1_OPS_SWITCH_UNIT} carry the default VLAN 1 "
+                              "as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. "
+                              f"(The design gap counts {NATIVE1_CFG_UNIT} -- {NATIVE1_CFG_BASIS} -- "
+                              "so the two figures can differ.)",
+                    "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk."})
 
     # 4. Multi-year uptime -- STP / control-plane not exercised recently (latent cutover risk). AGGREGATED.
     year_re = re.compile(r"(\d+)\s*year")
@@ -3770,12 +3775,19 @@ def compute_migration_punchlist(cross_layer: List[dict],
             wave_of.setdefault(h, g.get("group", ""))
     items: List[dict] = []
 
+    def _clip(s: str, n: int = 400) -> str:
+        # Pathological-length bound only. The old hard (detail)[:300] slice cut mid-word and silently
+        # evicted a long detail's tail -- the PR-#396-review truncation class: the native-VLAN-1 row's
+        # disambiguating '(The design gap counts ...)' parenthetical vanished from the punch-list copy.
+        s = s or ""
+        return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + " …"
+
     def add(severity: str, category: str, devices, title: str, detail: str, remediation: str = "") -> None:
         devs = sorted({d for d in devices if d})
         waves = sorted({wave_of.get(d, "") for d in devs} - {""})
         it = {"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
               "category": category, "devices": devs, "wave": ", ".join(waves),
-              "title": title, "detail": (detail or "")[:300], "remediation": remediation}
+              "title": title, "detail": _clip(detail), "remediation": remediation}
         cmd = _PUNCH_SOURCE_COMMAND.get(category)   # W1-3: cite the backing show-command (absent for composite cats)
         if cmd:
             it["source_command"] = cmd
