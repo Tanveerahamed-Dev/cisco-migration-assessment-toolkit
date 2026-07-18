@@ -4415,7 +4415,7 @@
      "operational_drift[].title",
      "operational_drift[].devices"
     ],
-    "abstains_when": "device not collected, or trunk/switchport detail not captured for the port",
+    "abstains_when": "device not collected, or a switchport-bearing device has no usable trunk-table capture \u2014 disclosed mechanically as the Info/Coverage row 'Native-VLAN-1 check not assessable on N device(s)' (compute_trunk_capture_gaps), never silently clean",
     "evidence_gated": true,
     "source_command": "show interface trunk"
    },

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a c
 from typing import Any, Dict, List, Optional, Tuple
 
 from cisco_toolkit import portdb, protocol_kb
-from cisco_toolkit.cmdio import _load_cmd_output
+from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, cmd_capture_state
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
@@ -3545,13 +3545,41 @@ def compute_migration_scenarios(migration_readiness: list, wave_sequencing: list
     return {"per_group": per_group, "fleet_recommendation": fleet, "scenario_counts": counts}
 
 
+def compute_trunk_capture_gaps(all_interfaces: Dict[str, Dict[str, InterfaceData]],
+                               all_cmd_to_files: Dict[str, Dict[str, str]]) -> List[str]:
+    """Devices whose native-VLAN-1 exposure is NOT ASSESSABLE: collected, switchport-bearing (some
+    port carries a switchport_mode -- i.e. the box plausibly trunks), but with NO usable trunk-table
+    capture (cmdio.cmd_capture_state over TRUNK_TABLE_CMD_VARIANTS is 'missing' or 'error'). A
+    captured-but-EMPTY trunk table is an ANSWER (zero trunks) and is deliberately not a gap; a device
+    with no switchport evidence at all (a router) is outside this detector's scope. Feeds
+    compute_operational_drift(trunk_not_captured=...) -- the mechanical backing for the
+    l2-native-vlan-1 descriptor's abstains_when contract. Total/fail-soft: malformed entries skip."""
+    gaps: List[str] = []
+    for host, ports in (all_interfaces or {}).items():
+        try:
+            if not any((getattr(d, "switchport_mode", "") or "") for d in (ports or {}).values()):
+                continue
+            state = cmd_capture_state((all_cmd_to_files or {}).get(host) or {}, *TRUNK_TABLE_CMD_VARIANTS)
+            if state in ("missing", "error"):
+                gaps.append(host)
+        except Exception:
+            continue
+    return sorted(gaps)
+
+
 def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]],
-                              all_device_physical: list) -> List[dict]:
+                              all_device_physical: list,
+                              trunk_not_captured: Optional[List[str]] = None) -> List[dict]:
     """NEW-V3.23.93: evidence-led FALSE-HEALTH / operational-drift detector. Surfaces the migration
     traps a green control plane hides (cisco-network-assessment doctrine: "configured is not healthy;
     up is not healthy"): temporary L2 bridges enlarging the broadcast/STP domain, PoE faults on ports
     described as live powered endpoints, native-VLAN-1 on operationally-trunking ports, and multi-year uptime
     (STP / control-plane not exercised recently -> latent risk that surfaces on the first change).
+
+    `trunk_not_captured` (from compute_trunk_capture_gaps) lists collected switchport-bearing devices
+    with no usable trunk-table capture: they are disclosed as an Info/Coverage row -- the native-VLAN-1
+    check ABSTAINS there instead of silently reading clean ('not observed' is never 'healthy'). None
+    (offline recompute without a capture record) leaves behaviour unchanged.
 
     Bulk patterns are AGGREGATED (one row + a count/list), never one row per port, per the same
     cry-wolf doctrine the rest of the toolkit follows. Returns punch-list-shaped finding dicts
@@ -3621,6 +3649,26 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
                               f"(The design gap counts {NATIVE1_CFG_UNIT} -- {NATIVE1_CFG_BASIS} -- "
                               "so the two figures can differ.)",
                     "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk."})
+
+    # 3b. Trunk-table capture gaps -- the l2-native-vlan-1 abstention, made MECHANICAL (the descriptor's
+    # abstains_when promised per-port abstention but nothing implemented it: a collected device whose
+    # trunk table was never captured contributed 0 to item 3 and read clean). Disclosed as an
+    # Info/Coverage row -- present even when item 3 found nothing, so absence-of-evidence can never
+    # render as absence-of-exposure. Title deliberately avoids the exact 'Native VLAN 1' phrase so
+    # finding-row consumers (and the collision-guard test) never mistake it for the measured figure.
+    if trunk_not_captured:
+        _gaps = sorted({str(h) for h in trunk_not_captured if h})
+        if _gaps:
+            shown = ", ".join(_gaps[:6]) + ("..." if len(_gaps) > 6 else "")
+            out.append({"severity": "Info", "category": "Coverage", "devices": _gaps,
+                        "title": f"Native-VLAN-1 check not assessable on {len(_gaps)} device(s)",
+                        "detail": f"{len(_gaps)} collected switchport-bearing device(s) have no usable "
+                                  "trunk-table capture ('show interface trunk' missing or errored), so "
+                                  "native-VLAN-1 exposure is NOT ASSESSABLE there -- not clean: "
+                                  f"{shown}. (A captured-but-empty trunk table is an answer -- zero "
+                                  "trunks -- and does not appear here.)",
+                        "remediation": "Re-collect these devices including 'show interface trunk' "
+                                       "before certifying native-VLAN hygiene."})
 
     # 4. Multi-year uptime -- STP / control-plane not exercised recently (latent cutover risk). AGGREGATED.
     year_re = re.compile(r"(\d+)\s*year")

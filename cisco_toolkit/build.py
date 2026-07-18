@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from cisco_toolkit.cmdio import _load_cmd_output, _safe_parse
+from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, _safe_parse
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _compress_vlans, infer_endpoint_type, parse_etherchannel_protocol_ios,
@@ -1069,7 +1069,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
             interfaces[p].vlan_name = v.get("access_vlan_name","") or interfaces[p].vlan_name
 
     # 3) trunk table
-    tr_out = _load_cmd_output(cmd_to_file, "show interface trunk", "show interfaces trunk")
+    tr_out = _load_cmd_output(cmd_to_file, *TRUNK_TABLE_CMD_VARIANTS)
     for p, v in _safe_parse(parse_show_interface_trunk_table, tr_out).items():
         interfaces.setdefault(p, InterfaceData(port=p))
         tstat = (v.get("status") or "")
