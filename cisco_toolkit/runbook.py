@@ -21,6 +21,7 @@ without it, and a missing library is a warning + skip (the run's workbook/explor
 saved), exactly like the HTML explorer's template-missing path.
 """
 import logging
+import textwrap
 from collections import Counter
 from datetime import datetime
 
@@ -414,10 +415,22 @@ def write_runbook_docx(output_path: str, snap_dict: dict, label: str, flow_paths
             "Conditions a green control plane hides — surfaced because configured/up is not healthy. "
             "Each is a snapshot-evidenced exposure; whether it is biting right now is Unknown until "
             "validated live.")
+        # Why/next-step cell: budget the two parts SEPARATELY -- the old single (detail+remediation)[:160]
+        # slice let a long detail evict the entire remediation and its own tail (PR-#396 review: the
+        # 270-char native-VLAN-1 detail cut mid-word and the 'next step' vanished). docx wraps, so the
+        # budgets only bound pathological rows; shorten() cuts at a word boundary and shows an ellipsis.
+        def _why_next(d: dict) -> str:
+            why = textwrap.shorten(str(d.get("detail", "") or ""), width=400, placeholder=" …") \
+                if d.get("detail") else ""
+            nxt = str(d.get("remediation", "") or "").strip()
+            if nxt:
+                nxt = textwrap.shorten(nxt, width=160, placeholder=" …")
+            return (why + (" Fix: " + nxt if nxt else "")).strip()
+
         table(["Severity", "Finding", "Devices", "Why it matters / next step"],
               [[d.get("severity", ""), d.get("title", ""),
                 str(len(d.get("devices") or [])),
-                (d.get("detail", "") + " " + (d.get("remediation", "") or "")).strip()[:160]]
+                _why_next(d)]
                for d in sorted(drift, key=lambda d: _SEV_ORDER.get(d.get("severity"), 9))],
               widths=[0.9, 2.8, 0.9, 4.0])
 

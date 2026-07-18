@@ -801,6 +801,24 @@ def test_operational_drift_detects_and_aggregates():
     assert all(f["category"] == "False-health" for f in out)
 
 
+def test_operational_drift_counts_trnk_bndl_as_live_trunking():
+    """PR-#396 review: 'trnk-bndl' (a port-channel trunk member) IS operationally trunking -- build.py
+    promotes it to switchport_mode 'Trunk' off the same token -- but the old startswith('trunk')
+    predicate missed it ('trnk' has no u), so bundle-member trunks landed in the switchport-mode figure
+    while silently vanishing from the figure labelled 'live trunk status'. The shared
+    textutils.is_live_trunk_status owner counts it; notconnect must still NOT count."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_operational_drift
+
+    ai = {"nx1": {
+        "Eth1/1": InterfaceData(port="Eth1/1", trunk_status="trnk-bndl", trunk_native_vlan="1"),
+        "Eth1/2": InterfaceData(port="Eth1/2", trunk_status="trunking", trunk_native_vlan="1"),
+        "Eth1/3": InterfaceData(port="Eth1/3", trunk_status="notconnect", trunk_native_vlan="1")}}
+    nat = next(f for f in compute_operational_drift(ai, []) if "Native VLAN 1" in f["title"])
+    assert "2 operationally-trunking port(s)" in nat["title"]   # trnk-bndl counted; notconnect not
+    assert nat["devices"] == ["nx1"]
+
+
 def test_operational_drift_folds_into_punchlist(cp):
     """The drift findings reach the executive punch-list (so the runbook / explorer / exec summary
     surface them) via the new `drift` parameter."""
