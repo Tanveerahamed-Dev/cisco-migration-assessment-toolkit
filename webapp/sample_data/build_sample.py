@@ -339,7 +339,41 @@ def _make_template(path: str) -> None:
     wb.save(path)
 
 
+# Sections/keys excluded from the --check comparison because they are wall-clock / date-relative.
+# This list is a labelled CACHE of the golden harness's exclusion set (owner:
+# tests/test_pipeline_golden.py :: _run_pipeline — the inline snap.pop(...) block); if the owner
+# grows a new date-relative section, mirror it here or --check will false-fail on that section,
+# which is loud, never silent.
+_VOLATILE_TOP = ("generated_at", "collected_at", "lifecycle_risk", "executive_brief",
+                 "device_dossiers", "design_blueprint", "design_nrfu", "architecture_coverage",
+                 "coverage_matrix", "fact_lineage")
+
+
+def _strip_volatile(snap: dict) -> dict:
+    out = {k: v for k, v in (snap or {}).items() if k not in _VOLATILE_TOP}
+    if isinstance(out.get("attestation"), dict):
+        out["attestation"] = {k: v for k, v in out["attestation"].items() if k != "generated_at"}
+    return out
+
+
+def _freshness_drift(fresh: dict, committed_path: str):
+    """Top-level sections whose committed demo copy differs from a fresh engine build (volatile
+    sections excluded). Returns a sorted list of section names; empty = the demo is fresh."""
+    try:
+        with open(committed_path, encoding="utf-8") as f:
+            committed = json.load(f)
+    except FileNotFoundError:
+        return ["<no committed sample_fleet.snapshot.json at all>"]
+    a, b = _strip_volatile(fresh), _strip_volatile(committed)
+    return sorted(set(k for k in set(a) | set(b) if a.get(k) != b.get(k)))
+
+
 def main() -> None:
+    # --check: rebuild the demo in a temp dir and DIFF it against the committed fixture instead of
+    # overwriting it — the full-fidelity freshness tool (runs the real pipeline, ~minutes; the cheap
+    # per-section locks that run in the default test gate live in tests/test_sample_fleet.py).
+    # Exit 0 = fresh, exit 2 = stale (regenerate by rerunning WITHOUT --check).
+    check = "--check" in sys.argv[1:]
     cols = build_collections()
     devices = [{"hostname": h, "ip": f"10.0.99.{i + 1}", "username": "demo",
                 "password": "x", "platform": plat}
@@ -375,6 +409,17 @@ def main() -> None:
         # regeneration an unreadable 1-line diff. (The engine's real *.snapshot.json stays compact; this is
         # only the demo copy webapp/ ships.)
         snap = json.loads(open(snap_path, encoding="utf-8").read())
+        if check:
+            drift = _freshness_drift(snap, OUT)
+            if drift:
+                print("STALE sample_fleet.snapshot.json — section(s) drifted from the current engine:")
+                for s in drift:
+                    print(f"  - {s}")
+                print("regenerate: python webapp/sample_data/build_sample.py")
+                raise SystemExit(2)
+            print("sample_fleet.snapshot.json is FRESH — matches the current engine output "
+                  "(volatile/date-relative sections excluded)")
+            return
         with open(OUT, "w", encoding="utf-8") as _out:
             json.dump(snap, _out, indent=2)
         bands: dict = {}
