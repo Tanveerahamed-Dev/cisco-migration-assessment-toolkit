@@ -3595,7 +3595,10 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
                     "remediation": "Resolve the PoE fault (power budget / cabling / device) before the "
                                    "cutover window."})
 
-    # 3. Native VLAN 1 on inter-switch trunks -- hygiene / VLAN-hopping exposure. AGGREGATED.
+    # 3. Native VLAN 1 on operationally-trunking inter-switch ports -- hygiene / VLAN-hopping exposure.
+    # AGGREGATED. Counts LIVE trunk_status -- deliberately a DIFFERENT measure from the design gap's
+    # configured-switchport-mode count (design_advisor); both texts name their basis so the figures
+    # cannot render as one contradicting fact.
     nat1_hosts: list = []
     for host, ports in all_interfaces.items():
         if any((d.trunk_status or "").lower().startswith("trunk")
@@ -3606,9 +3609,12 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
                      and (d.trunk_native_vlan or "").strip() == "1")
     if nat1_hosts:
         out.append({"severity": "Low", "category": "False-health", "devices": sorted(nat1_hosts),
-                    "title": f"Native VLAN 1 on {nat1_count} inter-switch trunk(s)",
-                    "detail": f"{nat1_count} trunk(s) across {len(nat1_hosts)} switch(es) carry the default "
-                              "VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+                    "title": f"Native VLAN 1 on {nat1_count} operationally-trunking port(s)",
+                    "detail": f"{nat1_count} operationally-trunking port(s) (live trunk status) across "
+                              f"{len(nat1_hosts)} switch(es) carry the default VLAN 1 as the native "
+                              "(untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap "
+                              "counts configured trunk-mode ports -- design intent -- so the two figures "
+                              "can differ.)",
                     "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."})
 
     # 4. Multi-year uptime -- STP / control-plane not exercised recently (latent cutover risk). AGGREGATED.
