@@ -1197,3 +1197,63 @@ def test_design_traceability_matrix_is_coverage_honest():
     assert next(x for x in rows if x["decision"] == "Uncited change")["citation"] == "(uncited)"
     # total on junk input
     assert build_design_traceability(None) == [] and build_design_traceability({"design_blueprint": "oops"}) == []
+
+
+def test_operational_drift_trunk_capture_abstention_row():
+    """l2-native-vlan-1's abstains_when, made mechanical (PR #397 follow-up): a collected,
+    switchport-bearing device with NO usable trunk-table capture must be DISCLOSED as an
+    Info/Coverage row -- never silently clean -- both when item 3 found nothing and alongside a
+    real finding. The default call (no capture record, e.g. offline recompute) is unchanged."""
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_operational_drift
+
+    ai = {"sw1": {"Gi1/0/1": InterfaceData(port="Gi1/0/1", switchport_mode="Access", vlan="10")}}
+    # no capture record -> behaviour unchanged: no Coverage row, no native-VLAN row
+    assert not [f for f in compute_operational_drift(ai, []) if f["category"] == "Coverage"]
+    # gap disclosed even when there are ZERO native-1 findings (the silent-clean case)
+    out = compute_operational_drift(ai, [], trunk_not_captured=["sw1"])
+    cov = next(f for f in out if f["category"] == "Coverage")
+    assert cov["title"] == "Native-VLAN-1 check not assessable on 1 device(s)"
+    assert cov["severity"] == "Info" and cov["devices"] == ["sw1"]
+    assert "NOT ASSESSABLE" in cov["detail"] and "sw1" in cov["detail"]
+    assert "Native VLAN 1" not in cov["title"]   # must never read as the measured finding row
+    # gap disclosed ALONGSIDE a real finding on another device
+    ai2 = dict(ai, nx1={"Eth1/1": InterfaceData(port="Eth1/1", trunk_status="trunking",
+                                                trunk_native_vlan="1")})
+    out2 = compute_operational_drift(ai2, [], trunk_not_captured=["sw1"])
+    assert any(f["title"] == "Native VLAN 1 on 1 operationally-trunking port(s)" for f in out2)
+    assert any(f["category"] == "Coverage" for f in out2)
+
+
+def test_trunk_capture_gaps_distinguish_missing_error_empty(tmp_path):
+    """cmd_capture_state mirrors _load_cmd_output's resolution but keeps the states apart:
+    captured-but-EMPTY trunk output is an ANSWER (zero trunks -> assessable, NOT a gap), while a
+    missing command or an errored capture ('% Invalid input') is a blind spot. Devices with no
+    switchport evidence (routers) are outside the native-VLAN-1 gap list's scope."""
+    from cisco_toolkit.cmdio import cmd_capture_state
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_trunk_capture_gaps
+
+    ok = tmp_path / "trunk_ok.txt"
+    ok.write_text("Port        Mode    Status      Native vlan\nEth1/1      on      trunking    1\n")
+    empty = tmp_path / "trunk_empty.txt"
+    empty.write_text("\n")
+    err = tmp_path / "trunk_err.txt"
+    err.write_text("% Invalid input detected at '^' marker.\n")
+    assert cmd_capture_state({"show interface trunk": str(ok)}, "show interface trunk") == "usable"
+    assert cmd_capture_state({"show interface trunk": str(empty)}, "show interface trunk") == "empty"
+    assert cmd_capture_state({"show interface trunk": str(err)}, "show interface trunk") == "error"
+    assert cmd_capture_state({}, "show interface trunk") == "missing"
+    # variant precedence: a usable variant wins over an errored sibling
+    assert cmd_capture_state({"show interface trunk": str(err), "show interfaces trunk": str(ok)},
+                             "show interface trunk", "show interfaces trunk") == "usable"
+
+    ai = {"sw_missing": {"Gi1": InterfaceData(port="Gi1", switchport_mode="Access")},
+          "sw_empty":   {"Gi1": InterfaceData(port="Gi1", switchport_mode="Trunk")},
+          "sw_error":   {"Gi1": InterfaceData(port="Gi1", switchport_mode="Access")},
+          "rtr":        {"Gi1": InterfaceData(port="Gi1")}}   # no switchport evidence -> out of scope
+    c2f = {"sw_missing": {},
+           "sw_empty":   {"show interfaces trunk": str(empty)},
+           "sw_error":   {"show interface trunk": str(err)},
+           "rtr":        {}}
+    assert compute_trunk_capture_gaps(ai, c2f) == ["sw_error", "sw_missing"]

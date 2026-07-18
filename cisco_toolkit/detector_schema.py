@@ -469,7 +469,9 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "healthy_value": "a dedicated, unused native VLAN on every 802.1Q trunk",
         "threshold": "operationally trunking (trunk_status 'trunking'/'trnk-bndl') and trunk native VLAN == 1",
         "cited_fields": ["operational_drift[].category", "operational_drift[].title", "operational_drift[].devices"],
-        "abstains_when": "device not collected, or trunk/switchport detail not captured for the port",
+        "abstains_when": "device not collected, or a switchport-bearing device has no usable trunk-table "
+                         "capture — disclosed mechanically as the Info/Coverage row 'Native-VLAN-1 check "
+                         "not assessable on N device(s)' (compute_trunk_capture_gaps), never silently clean",
         "evidence_gated": True,
         "source_command": _src("Trunk", "show interface trunk"),
     },
