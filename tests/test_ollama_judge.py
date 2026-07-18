@@ -40,6 +40,16 @@ def test_build_prompt_carries_text_and_vocab_and_both_verdicts():
     assert "phantom-health" in prompt                 # the defect definitions / class vocabulary are offered
 
 
+def test_build_prompt_walks_all_eleven_text_visible_conditions():
+    """The 18-panel growth (2026-07-18): every text-visible class has its own NUMBERED condition in the
+    walk — a panel defect without a prompt condition would be scored against a judge never told to look
+    for it (the rung-5 lesson: the check must live INSIDE a numbered condition, not the preamble)."""
+    prompt = J.build_prompt("x")
+    for cls in J._text_visible_classes():
+        assert f"{cls}:" in prompt, f"class {cls} lacks a numbered condition in the prompt walk"
+    assert "11." in prompt                            # the walk is numbered through the grown panel
+
+
 def test_parse_structured_json_reject_localizes():
     v = J.parse_verdict('{"reasoning":"NRFU PASS with empty output","verdict":"REJECT","defect_class":"empty-nrfu-evidence"}')
     assert v == {"verdict": "REJECT", "defect_class": "empty-nrfu-evidence"}

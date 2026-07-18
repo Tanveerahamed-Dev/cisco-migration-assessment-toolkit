@@ -69,6 +69,33 @@ DEFECTS: Dict[str, Dict[str, str]] = {
     "D-12": {"class": "empty-nrfu-evidence", "detect": "both",
              "law": "up/established is not healthy",
              "desc": "an NRFU item marked PASS with an empty captured-output field"},
+    # --- 2026-07-18 growth (12 -> 18): each from an INDEPENDENT source — a real defect found by the
+    # independent QA reviewer (scorecard rows 11/12/13) or the security/coverage-honesty audit PRs —
+    # never authored to fit the judge (the registered growth path; sources cited per entry).
+    "D-13": {"class": "truncation-nondisclosure", "detect": "both",
+             "law": "never silently drop items — disclose truncation",
+             "desc": "a capped list shows fewer items than its stated total with no '+N more' cue "
+                     "(QA rows 11 + 13: deck readiness list / gating list)"},
+    "D-14": {"class": "denominator-drift", "detect": "both",
+             "law": "one denominator per shared fact",
+             "desc": "the same metric reported with different percentages across sibling artifacts "
+                     "(QA row 12: deck 70% full-fleet vs 86% assessable everywhere else)"},
+    "D-15": {"class": "slice-scale-claim", "detect": "both",
+             "law": "a slice must not carry its parent's aggregate",
+             "desc": "a wave row whose strategy counts exceed the row's own switch count "
+                     "(QA row 13: 40-switch sub-wave rows repeating the parent's 107+144 split)"},
+    "D-16": {"class": "auth-denial-as-clean", "detect": "both",
+             "law": "an authorization denial is not-collected, never clean",
+             "desc": "a log review quoting an authorization-failure banner yet assessed clean "
+                     "(coverage-honesty audit PR #371)"},
+    "D-17": {"class": "truncated-census-as-complete", "detect": "both",
+             "law": "a paginated source read once is a partial census",
+             "desc": "an inventory listing fewer devices than the source reports, claimed complete "
+                     "(FMC pagination audit PR #373/#385)"},
+    "D-18": {"class": "subset-as-total", "detect": "both",
+             "law": "lead with the total; label subsets",
+             "desc": "a headline count that is a subset of the register's recorded total, unqualified "
+                     "(QA row 13: '34 design decision(s)' over a 43-decision register)"},
 }
 
 DEFECT_IDS: Tuple[str, ...] = tuple(sorted(DEFECTS))
@@ -104,6 +131,14 @@ def good_deliverable() -> Dict[str, Any]:
         "totals": {"endpoints_workbook": 253, "endpoints_runbook": 253},
         "nrfu_items": [{"id": "N1", "status": "PASS",
                         "captured_output": "Gi1/0/1 up/up; 10.0.0.1 reachable"}],
+        # --- clean bases for the 2026-07-18 growth defects (D-13..D-18) ---
+        "risk_list": {"total": 5, "shown": ["r1", "r2", "r3", "r4", "r5"], "disclosure": ""},
+        "pct_claims": [{"artifact": "deck", "metric": "past-end-of-support", "pct": 86},
+                       {"artifact": "workbook", "metric": "past-end-of-support", "pct": 86}],
+        "wave_rows": [{"wave": "1a", "switches": 40, "hard_cutover_n": 18, "mbb_n": 22}],
+        "log_reviews": [{"device": "sw1", "banner": "", "assessment": "logs clean"}],
+        "census": {"source_total": 25, "retrieved": 25, "claim": "complete"},
+        "decision_register": {"total": 43, "label_count": 43, "qualifier": ""},
     }
 
 
@@ -169,10 +204,42 @@ def _inj_12(d: Dict[str, Any]) -> str:
     return "nrfu_items:N1"
 
 
+def _inj_13(d: Dict[str, Any]) -> str:
+    d["risk_list"]["total"] = 9                            # 5 shown, no disclosure -> silent truncation
+    return "risk_list"
+
+
+def _inj_14(d: Dict[str, Any]) -> str:
+    d["pct_claims"][0]["pct"] = 70                         # deck drifts to the full-fleet denominator
+    return "pct_claims:deck"
+
+
+def _inj_15(d: Dict[str, Any]) -> str:
+    d["wave_rows"][0]["hard_cutover_n"] = 107              # the parent group's split lands on a
+    d["wave_rows"][0]["mbb_n"] = 144                       # 40-switch sub-wave row (107+144 > 40)
+    return "wave_rows:1a"
+
+
+def _inj_16(d: Dict[str, Any]) -> str:
+    d["log_reviews"][0]["banner"] = "% Authorization failed"   # denial banner, assessment stays clean
+    return "log_reviews:sw1"
+
+
+def _inj_17(d: Dict[str, Any]) -> str:
+    d["census"]["source_total"] = 60                       # source reports 60; 25 retrieved, "complete"
+    return "census"
+
+
+def _inj_18(d: Dict[str, Any]) -> str:
+    d["decision_register"]["label_count"] = 34             # headline shows the subset, no qualifier
+    return "decision_register"
+
+
 _INJECTORS: Dict[str, Callable[[Dict[str, Any]], str]] = {
     "D-01": _inj_01, "D-02": _inj_02, "D-03": _inj_03, "D-04": _inj_04, "D-05": _inj_05,
     "D-06": _inj_06, "D-07": _inj_07, "D-08": _inj_08, "D-09": _inj_09, "D-10": _inj_10,
-    "D-11": _inj_11, "D-12": _inj_12,
+    "D-11": _inj_11, "D-12": _inj_12, "D-13": _inj_13, "D-14": _inj_14, "D-15": _inj_15,
+    "D-16": _inj_16, "D-17": _inj_17, "D-18": _inj_18,
 }
 
 
@@ -234,6 +301,28 @@ def deterministic_findings(d: Dict[str, Any]) -> Set[str]:
     for n in d.get("nrfu_items", []):
         if str(n.get("status", "")).upper() == "PASS" and not str(n.get("captured_output", "")).strip():
             found.add("D-12")
+    rl = d.get("risk_list") or {}
+    if int(rl.get("total", 0) or 0) > len(rl.get("shown", [])) and not str(rl.get("disclosure", "")).strip():
+        found.add("D-13")
+    by_metric: Dict[str, Set[Any]] = {}
+    for pc in d.get("pct_claims", []):
+        by_metric.setdefault(str(pc.get("metric")), set()).add(pc.get("pct"))
+    if any(len(vals) > 1 for vals in by_metric.values()):
+        found.add("D-14")
+    for w in d.get("wave_rows", []):
+        if int(w.get("hard_cutover_n", 0) or 0) + int(w.get("mbb_n", 0) or 0) > int(w.get("switches", 0) or 0):
+            found.add("D-15")
+    for lr in d.get("log_reviews", []):
+        if "authorization failed" in str(lr.get("banner", "")).lower() \
+                and "clean" in str(lr.get("assessment", "")).lower():
+            found.add("D-16")
+    cz = d.get("census") or {}
+    if int(cz.get("retrieved", 0) or 0) < int(cz.get("source_total", 0) or 0) \
+            and "complete" in str(cz.get("claim", "")).lower():
+        found.add("D-17")
+    dr = d.get("decision_register") or {}
+    if dr.get("label_count") != dr.get("total") and not str(dr.get("qualifier", "")).strip():
+        found.add("D-18")
     return found
 
 
@@ -272,6 +361,29 @@ def render_text(d: Dict[str, Any]) -> str:
     for n in d.get("nrfu_items", []):
         L.append(f"NRFU {n.get('id')}: {n.get('status')}. captured output: "
                  f"{n.get('captured_output') or '(empty)'}")
+    rl = d.get("risk_list") or {}
+    if rl:
+        line = f"TOP RISKS ({rl.get('total')} total): " + ", ".join(rl.get("shown", []))
+        if str(rl.get("disclosure", "")).strip():
+            line += f" — {rl.get('disclosure')}"
+        L.append(line)
+    for pc in d.get("pct_claims", []):
+        L.append(f"The {pc.get('artifact')} reports {pc.get('metric')}: {pc.get('pct')}%.")
+    for w in d.get("wave_rows", []):
+        L.append(f"Wave {w.get('wave')}: {w.get('switches')} switch(es); strategy "
+                 f"{w.get('hard_cutover_n')} hard cutover + {w.get('mbb_n')} make-before-break.")
+    for lr in d.get("log_reviews", []):
+        L.append(f"Log review {lr.get('device')}: output '{lr.get('banner') or '(no banner)'}'; "
+                 f"assessment: {lr.get('assessment')}.")
+    cz = d.get("census") or {}
+    if cz:
+        L.append(f"Device census: the source reports {cz.get('source_total')} registered; the "
+                 f"inventory lists {cz.get('retrieved')} — {cz.get('claim')}.")
+    dr = d.get("decision_register") or {}
+    if dr:
+        q = f", {dr.get('qualifier')}" if str(dr.get("qualifier", "")).strip() else ""
+        L.append(f"Design register: {dr.get('total')} decisions recorded. Headline: "
+                 f"'{dr.get('label_count')} design decision(s){q}'.")
     return "\n".join(L)
 
 
