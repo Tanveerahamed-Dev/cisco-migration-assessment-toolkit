@@ -35,8 +35,17 @@ def test_every_contract_parser_exists_and_is_callable():
 
 
 def test_no_contract_command_is_a_phantom():
+    # A command counts as dispatched when its literal appears in build.py OR it belongs to a shared
+    # cmdio *_CMD_VARIANTS constant whose NAME build.py references (the one-owner hoist of the trunk
+    # variant literals into cmdio.TRUNK_TABLE_CMD_VARIANTS must not read as a phantom). The guard
+    # stays real: deleting the build.py dispatch deletes the constant reference too, so the command
+    # goes back to phantom. "\x00" sentinel: an unshared command must never pass via '' in src.
+    shared = {cmd: name for name, val in vars(cmdio).items()
+              if isinstance(val, tuple) and name.endswith("_CMD_VARIANTS")
+              for cmd in val if isinstance(cmd, str)}
     absent = [cmd for cmd in PARSER_CONTRACTS
-              if f'"{cmd}"' not in _BUILD_SRC and f"'{cmd}'" not in _BUILD_SRC]
+              if f'"{cmd}"' not in _BUILD_SRC and f"'{cmd}'" not in _BUILD_SRC
+              and shared.get(cmd, "\x00") not in _BUILD_SRC]
     assert not absent, f"PARSER_CONTRACTS lists command(s) build.py never dispatches: {absent}"
 
 

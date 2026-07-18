@@ -359,6 +359,45 @@ def _load_cmd_output(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
                 logger.debug(f"_load_cmd_output: failed reading {p} for '{cmd}': {e}")  # NEW-V3.23.1
     return ""
 
+
+# ONE owner of the trunk-table command variants (build.py's loader + analyze's capture-gap check
+# must resolve the SAME command or the abstention disclosure drifts from what was actually parsed).
+TRUNK_TABLE_CMD_VARIANTS = ("show interface trunk", "show interfaces trunk")
+
+
+def cmd_capture_state(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
+    """Coverage state of a command's capture across its variants: 'usable' | 'empty' | 'error' |
+    'missing'. Mirrors _load_cmd_output's resolution (same cmd_to_file keys, same _CISCO_ERRORS
+    screen) so the two can never disagree about what was loadable -- but where _load_cmd_output
+    collapses empty/error/missing to '', this keeps them apart, because they mean DIFFERENT things
+    for coverage-honesty: a captured-but-EMPTY output is an answer (e.g. a zero-trunk device),
+    while a missing or errored capture is a blind spot ('not observed' must never read as healthy).
+    Precedence across variants: usable > empty > error > missing."""
+    best = "missing"
+    rank = {"missing": 0, "error": 1, "empty": 2, "usable": 3}
+    for cmd in cmd_variants:
+        p = cmd_to_file.get(cmd)
+        if not p or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except Exception:
+            continue
+        stripped = content.strip()
+        if not stripped:
+            state = "empty"
+        elif any(pat in stripped[:200].lower() for pat in _CISCO_ERRORS):
+            state = "error"
+        else:
+            state = "usable"
+        if rank[state] > rank[best]:
+            best = state
+        if best == "usable":
+            break
+    return best
+
+
 def _safe_parse(fn, *args, _default=None):
     """FIX-V3.23.6 (P1): run a section parser fail-soft. If it raises on a
     malformed/unexpected block, log a breadcrumb and return _default so build_interfaces

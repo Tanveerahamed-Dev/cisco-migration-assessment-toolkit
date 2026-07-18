@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-18T13:14:06.043560",
+  "generated_at": "2026-07-18T13:39:55.821757",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2985,7 +2985,7 @@
       }
     }
   },
-  "collected_at": "2026-07-18T13:13:58.978266",
+  "collected_at": "2026-07-18T13:39:49.004535",
   "physical_health": [
     {
       "switch": "access1",
@@ -20533,7 +20533,7 @@
           "operational_drift[].title",
           "operational_drift[].devices"
         ],
-        "abstains_when": "device not collected, or trunk/switchport detail not captured for the port",
+        "abstains_when": "device not collected, or a switchport-bearing device has no usable trunk-table capture \u2014 disclosed mechanically as the Info/Coverage row 'Native-VLAN-1 check not assessable on N device(s)' (compute_trunk_capture_gaps), never silently clean",
         "evidence_gated": true,
         "source_command": "show interface trunk"
       },
@@ -27239,7 +27239,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-18T10:14:04.549201+00:00",
+    "generated_at": "2026-07-18T10:39:54.566350+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",

@@ -328,7 +328,7 @@ from cisco_toolkit.analyze import (
     build_dependency_map, compute_cross_layer_correlations, trace_full_flow,
     stp_root_findings, compute_migration_punchlist, compute_framework_coverage,   # NEW-V3.23.62/.63 + W2-3 (framework-mapping matrix)
     compute_hostname_mismatches, reconcile_cdp_neighbor_names,   # NEW-V3.23.68 + audit-5 #1 (split-node reconcile)
-    compute_operational_drift,                         # NEW-V3.23.93 (false-health / operational-drift detector)
+    compute_operational_drift, compute_trunk_capture_gaps,   # NEW-V3.23.93 (false-health) + trunk-capture abstention (l2-native-vlan-1 abstains_when, mechanical)
     compute_endpoint_identity,                         # NEW-V3.23.95 (endpoint vendor + class intelligence)
     compute_flow_paths,                                # NEW-V3.23.126 (representative end-to-end flow paths; workbook/runbook twin of the Flow Simulator)
     compute_endpoint_dependencies,                     # NEW-V3.23.96 (clusters / dependencies / per-switch validation)
@@ -2257,8 +2257,12 @@ def main():
            "trunk_native": compute_trunk_native_mismatches(all_interfaces),
            "link_phy": compute_duplex_speed_mismatches(all_interfaces)}
     _hostname_mismatches = compute_hostname_mismatches(all_device_physical)   # NEW-V3.23.68
+    # trunk-capture gaps computed first (fail-soft by construction) so the drift detector can DISCLOSE
+    # devices whose native-VLAN-1 exposure is not assessable (l2-native-vlan-1 abstains_when, mechanical).
+    _trunk_gaps = _run_phase("Trunk-capture gaps", compute_trunk_capture_gaps,
+                             all_interfaces, all_cmd_to_files, _default=[])
     _drift = _run_phase("Operational drift", compute_operational_drift,
-                        all_interfaces, all_device_physical, _default=[])      # NEW-V3.23.93 (false-health)
+                        all_interfaces, all_device_physical, _trunk_gaps, _default=[])  # NEW-V3.23.93 (false-health)
     _ptp_readiness = _run_phase("PTP readiness", compute_ptp_readiness, service_map, _default=[])  # NEW-V3.23.108
     # NEW-V3.23.115: fold the media-fabric findings (MAC-aliasing / IGMP querier gaps) into the punch-list;
     # PTP is already folded via _ptp_readiness, so exclude the ptp-dormant risk to avoid a duplicate item.
