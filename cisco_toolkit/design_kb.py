@@ -1323,9 +1323,11 @@ _ACTIONABLE_DETECTOR_ADDENDUM_2 = [
         "boundary. VLAN 1 also can't be cleanly pruned and tends to accumulate control traffic estate-wide. The "
         "target L2 design must set a dedicated, unused native VLAN on every trunk (or tag the native), and "
         "prune VLAN 1 from trunks, so the untagged path crosses no data segment.",
-        "observable": "The engine parses switchport_mode and trunk_native_vlan per interface; trunks whose "
-        "native VLAN is 1 are directly countable (interfaces[host][port]) -- the same field the workbook's "
-        "trunk-native and archreview checks key off, so the count cannot drift.",
+        "observable": "The engine parses switchport_mode and trunk_native_vlan per interface; configured "
+        "trunk-mode ports whose native VLAN is 1 are directly countable (interfaces[host][port]) -- the "
+        "same configured-mode basis as the archreview L2-3 check. The ops punch-list separately counts "
+        "operationally-trunking ports (live trunk_status): a deliberately different measure of the same "
+        "exposure, so the two figures can legitimately differ.",
         "trigger": "One or more inter-switch trunks carry VLAN 1 as the native (untagged) VLAN -- an observed "
         "double-tag / VLAN-hopping exposure.",
         "recommended_action": "Assign a dedicated, unused native VLAN (not 1, not a data VLAN) on every "
