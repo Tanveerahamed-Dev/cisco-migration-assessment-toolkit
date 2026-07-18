@@ -119,6 +119,25 @@ def build_prompt(deliverable_text: str, classes: Optional[List[str]] = None) -> 
         "4. cross-artifact-mismatch: on the 'Endpoint total' line, the (workbook) number differs from the\n"
         "   (runbook) number.\n"
         "5. empty-nrfu-evidence: an 'NRFU ... PASS' line whose captured output is '(empty)'.\n"
+        "6. truncation-nondisclosure: the 'TOP RISKS (N total)' line lists FEWER comma-separated items\n"
+        "   than N and carries no follow-on disclosure text (no '— ... more ...' tail). Count the items;\n"
+        "   if the count equals N, or a disclosure tail is present, condition 6 DOES-NOT-HOLD.\n"
+        "7. denominator-drift: two 'reports past-end-of-support' lines state DIFFERENT percentages for\n"
+        "   the same metric. If every stated percentage for that metric is equal, condition 7\n"
+        "   DOES-NOT-HOLD.\n"
+        "8. slice-scale-claim: on a 'Wave' line, add the hard-cutover number to the make-before-break\n"
+        "   number; condition 8 HOLDS only if that sum is GREATER than the wave's switch count. If the\n"
+        "   sum equals the switch count or is smaller, condition 8 DOES-NOT-HOLD.\n"
+        "9. auth-denial-as-clean: a 'Log review' line whose quoted output contains 'Authorization\n"
+        "   failed' while its assessment says clean. If the quoted output is '(no banner)' or has no\n"
+        "   authorization-failure text, condition 9 DOES-NOT-HOLD.\n"
+        "10. truncated-census-as-complete: on the 'Device census' line, the 'source reports N registered'\n"
+        "   number is GREATER than the 'inventory lists M' number while the line claims complete. If\n"
+        "   N equals M, condition 10 DOES-NOT-HOLD.\n"
+        "11. subset-as-total: on the 'Design register' line, the recorded-decisions count differs from\n"
+        "   the number inside the quoted Headline and the Headline carries NO qualifier word after the\n"
+        "   count. If the two counts are equal, or the Headline carries a qualifier (such as\n"
+        "   'recommended'), condition 11 DOES-NOT-HOLD.\n"
         "The LAST line of 'reasoning' must be exactly 'HELD: <name of the one condition that HOLDS>' —\n"
         "using the condition's name as written above — or 'HELD: NONE' if none holds.\n"
         "Then: verdict = REJECT if a condition HOLDS, else APPROVE; defect_class = exactly the value you\n"
@@ -172,7 +191,12 @@ def _chat(model: str, prompt: str, *, timeout: int = 420, fmt: Optional[Dict[str
     body: Dict[str, Any] = {
         "model": model, "stream": False, "keep_alive": "15m", "think": bool(think),
         "messages": [{"role": "user", "content": prompt}],
-        "options": {"temperature": 0, "num_predict": 2048 if think else 640}}  # deterministic; bounded
+        # num_predict sized to the CONDITION WALK: 640 held the 5-condition reasoning; the 18-panel
+        # growth (2026-07-18) walks 11 conditions, so the non-think budget scales mechanically to 1280
+        # (same tokens-per-condition envelope) — an output-budget fit, not a judge-behavior change. A
+        # clipped walk would truncate the JSON mid-reasoning and parse as APPROVE, deflating TNR as a
+        # harness artifact rather than a judge measurement.
+        "options": {"temperature": 0, "num_predict": 2048 if think else 1280}}  # deterministic; bounded
     if fmt is not None:
         body["format"] = fmt                                   # ollama structured output -> a valid JSON verdict
     req = urllib.request.Request(
