@@ -1,5 +1,25 @@
-generated: "2026-07-17 @ 8f2f055 (post #385-#388 merge wave; PR #389 open fixing the one cross-PR red; deliverables regenerated + QA'd: first full-set APPROVE)"
-stage: "PHASE 0 CLOSED · PHASE 1 accruing (3 REAL rows, judge PROMOTED — APPROVEs gating at TNR 0.6) · PHASE 2 CLOSED (DEC-010 identifier-only verdict) · PHASE 3 essentially closed (all agent-startable targets merged; P3-E5 fixture-blocked)"
+generated: "2026-07-18 @ e48237c+ (board was fully merged+green; this branch adds the 18-panel growth + rows 14/baseline; release v3.31.0 PR cut in parallel)"
+stage: "PHASE 0 CLOSED · PHASE 1 accruing (4 full-pipeline REAL rows; judge GATING at TNR 0.727 — floor cleared AT THE CP95 BOUND, 0.436 > 0.25, first time) · PHASE 2 CLOSED (DEC-010) · PHASE 3 closed except P3-E5 (fixture-blocked)"
+last_completed_task_2026_07_18: >-
+  Attended-authority session, four tracks. (1) QA row 14: set regenerated on merged main
+  (deliverables_M0_20260718) and independently reviewed — set APPROVE, all six row-13 fixes verified
+  in rendered pixels, all five older regressions still fixed, 4 NEW Low findings (native-VLAN-1
+  3100-vs-1777 unit relabel -> task chip; MOP sub-wave endpoint off-by-one 5353 vs 5354; deck slide-8
+  weakest-axes 5-of-6 without "+1 more"; MOP §2/engagement §1 gating 6-of-9 without disclosure) =
+  the next polish batch. (2) DEFECT-PANEL GROWTH 12->18 EXECUTED (the registered path): six new
+  text-visible doctrine-mapped defects, every one from an INDEPENDENT source (QA rows 11/12/13 +
+  audit PRs #371/#373/#385; provenance test-pinned), each with injector + deterministic-oracle arm
+  (18/18 floor TNR 1.0) + its own rung-5-style numbered prompt condition (1-5 verbatim-unchanged;
+  num_predict 640->1280 mechanical output-budget scaling). Protocol pre-registered by commit b23e832
+  BEFORE the run; qwen3:8b --runs 2 --append-baseline over the 11-defect fair panel: BOTH runs
+  clean-control-approving, localized TNR 0.727/0.727 (per-defect identical: 8/11; misses D-06
+  unsafe-sequence, D-11 cross-artifact-mismatch, D-13 truncation-nondisclosure; 5/6 growth defects
+  caught+localized). Worst-run 0.727 recorded via the sanctioned appender — PROMOTION from 0.6, and
+  the CP95 one-sided lower bound (8/11) = 0.436 clears the 0.25 floor AT THE BOUND for the first
+  time (the exact unmet condition the rung-5 record registered growth to fix). (3) Release v3.31.0
+  prepared (109 PRs since v3.30.0; changelog + pyproject bump PR). (4) Vault /lint remains
+  architecturally out of reach from repo sessions (ADR 0001 + P0-8 write-fence) — run it from a
+  vault-cwd session; bridge queue has fresh candidates from the 07-17 retro.
 execution_phase: "PHASE 3 IN PROGRESS (2026-07-12) — front line. Phase 2 CLOSED (DEC-010, identifier-only verdict: BM25 suggestive-but-inconclusive, judged+dense strata deferred hardware-limited; evidence docs/quality/d10-eval-results-2026-07-11.md; a GPU re-run is one command on the frozen set). Phase-3 MERGED: E1 parser<->detector field contract (#342), E2 diff schema-version gate +webapp (#344), E3 Exec-Summary provenance closure (#346), K1 graph.json invariant guard (#345 — AST-only/no-LLM doctrine now a red test), K2 graph commit-currency selfcheck (#348 — code-staleness beyond mtime; K1+K2 fully close the Dimension-A graph-freshness gap). Also adopted: bridge-candidate queue status module (#347, was uncommitted WIP). Phase-1 accrual continues (2 REAL scorecard rows: row-11 BLOCK -> deck fix -> row-12 APPROVE bookend); first REAL PIR event-driven; judge stays ADVISORY (defect-panel TNR 0.6 clears the 0.25 floor but the D10 anchor gate is structurally unmet on CPU models — a human-owned §6 ensemble redesign is the only legitimate unlock, pre-registered blind)."
 artifacts:
   - "docs/architect-understanding-2026-07-10.md"

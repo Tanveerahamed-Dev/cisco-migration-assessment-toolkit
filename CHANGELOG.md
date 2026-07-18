@@ -6,6 +6,75 @@ per change, with verification evidence) lives in
 
 ## [Unreleased]
 
+## [v3.31.0] — 2026-07-18 — the hardening release (security audit + fail-soft totality + verified deliverable quality)
+
+109 merged PRs since v3.30.0, in five arcs: a full security audit of the untrusted-input surfaces, a
+recursive-poison fail-soft campaign over every ingestion path, frontend/backend/engine test-coverage
+completion, the Phase-3 quality-instrument closures, and a QA loop that went finding → fix → re-verified
+in rendered pixels (scorecard rows 11 → 13, the first all-APPROVE full-set row).
+
+### Security (audit series — one PR per untrusted surface, every fix proven non-vacuous)
+- **SPA path traversal (Critical) + ISE `nextPage` credential-leak (High)** (#368): the webapp static
+  server no longer serves outside the dist root; ISE REST pagination fails closed on malformed/off-host
+  `nextPage.href` (follow-up red-team hardening included).
+- **xlsx formula injection (High)** (#369): workbook cells beginning `=`/`+`/`-`/`@` are neutralized —
+  0 unescaped formula-leading cells across all 67 sheets, verified per release QA.
+- **Latent SQL-injection sink (Low)** (#370): the JSON path in `get_snapshot_section` is bound, never
+  interpolated.
+- **Stored XSS via device hostname (High)** (#374): the 3D-topology tooltip label is escaped.
+- **Combined webapp API guard** (#388, reconciling #382/#383/#384): blind-CSRF write block on
+  state-changing routes (fail-closed on unknown `Sec-Fetch-Site`), a concurrency cap + 503/Retry-After
+  on the compute-heavy GET generators, and a DNS-rebinding exact-match `Host` allowlist for no-token
+  loopback mode.
+
+### Coverage honesty & correctness
+- **An authorization-denial banner is not clean logs** (#371): denied `show logging` output now reads
+  not-collected, never a clean-logs verdict.
+- **FMC REST pagination** (#385): the collector follows pagination — a >25-FTD inventory is a full
+  census, off-host and malformed-port safe.
+- **Migration-scenario denominator** (#372): uncollected devices are excluded from the Poor/Critical %.
+- **Deck slide-6 lifecycle %** (#339) uses the assessable denominator (SSOT) and **"wave" noun overload**
+  (#340) is disambiguated across exec-summary + runbook.
+
+### Fail-soft totality (the recursive-poison campaign)
+- Dict/str/inf/NaN-poisoned snapshot leaves can no longer 500 the untrusted endpoints or crash the
+  generators: audit-6 string-op/float class (#377, #381), audit-7 unhashable class across
+  `/design`, `/architecture_coverage`, `/archreview` (#386), design-advisor `_signals` leaf sites, and
+  a durable whole-class recursive-poison fuzz guard committed as a test.
+- The #386×#388 cross-PR fixture conflict found post-merge was fixed forward same-day (#389).
+
+### Deliverables & webapp features
+- **Per-VLAN cutover workbook: endpoint COMPOSITION column** (#364) — device-type mix per VLAN, not
+  just a count, with `[NOT OBSERVED]` honesty.
+- **Out-of-order gate sign-offs surfaced on the campaign board** (#387) + **PPDIOO gate-order
+  enforcement + disclosure** in the engine (#376).
+- **QA row-13 polish batch** (#393): deck slide-8 leads with the total decision count; MOP sub-wave
+  rows carry slice-scoped cutover splits (never the parent group's 107+144); slide-2 breadcrumb
+  geometry on-slide (EMU-pinned); word-safe ellipsis truncation; slide-9 truncation disclosure;
+  engagement §4.2 relabeled `Endpoint MACs (per-port)` with the overlap note.
+
+### Quality instruments (Phase 2/3 closures)
+- **D10 retrieval eval**: frozen 60-query eval set + sealed anchors (P2-1, #332), falsification run
+  recorded as an honest PARTIAL (#333, DEC-010 closes Phase 2 identifier-only), cross-family rung
+  (#338); judge rung-5 defect-panel promotion — TNR 0.6 clears the floor, /qa APPROVEs stamp gating
+  (#335).
+- **Phase-3**: parser↔detector field contract (#342), diff schema-version gate + webapp (#344),
+  Exec-Summary provenance (#346), graph AST-only invariant guard (#345), graph commit-currency
+  selfcheck (#348), bridge-candidate queue module (#347) + semantic count fix (#375).
+- **Scorecard REAL rows 11→13**: first full-pipeline BLOCK → deck fix → APPROVE bookend, then the
+  first **all-APPROVE full-set row** (13; 6 Low findings, all fixed in #393 above).
+
+### Test hardening
+- **Frontend: zero → complete coverage** (#352–#360): Vitest harness (jsdom-safe), api client, UI
+  primitives, component logic, page tiers, App shell, 3D logic headless, + a real-browser WebGL
+  Playwright E2E lane wired into webapp-ci (#356).
+- **Backend API robustness** (#361) and **engine low-coverage tiers** (#365–#367); `pir_docx`
+  renderer smoke + formatter pins (#350/#351).
+
+### Docs & process
+- P3 hygiene bundle (#363), SelfMem write-operator vocabulary for learnings (#362), Phase-2 close +
+  Phase-3 handoff refreshes, session retros with bridge-candidate lessons throughout.
+
 ## [v3.30.0] — 2026-07-05 — the deliverable release (MOP / Ops-Handbook / CRD excellence)
 
 The `docs/deliverable-excellence-plan.md` P1-remainder/P2 tranche + the Cisco Advanced-Services deliverable-
