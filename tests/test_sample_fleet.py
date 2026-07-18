@@ -43,3 +43,76 @@ def test_sample_fleet_carries_engine_subfields_the_superset_check_is_blind_to():
     assert acl and not missing, (
         "ACL findings must all carry the engine's Verdict ADT `verdict` field (stale sample — regenerate "
         f"build_sample.py); offenders: {missing or 'no ACL findings in the demo'}")
+
+
+def _sample():
+    return json.loads((ROOT / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
+                       ).read_text(encoding="utf-8"))
+
+
+def _jnorm(obj):
+    """JSON-normalise an engine object (tuples->lists, Counter->dict) so it compares fairly
+    against the json-round-tripped committed sample."""
+    return json.loads(json.dumps(obj))
+
+
+def test_sample_detector_schema_matches_engine_exactly():
+    """TEXT-freshness lock #1 (the class the key-superset check cannot see): PR #396 renamed the
+    l2-native-vlan-1 descriptor checks/threshold and the demo kept the OLD texts until #397
+    regenerated it by hand. compute_detector_schema() is pure/deterministic/offline, so the demo's
+    embedded copy must equal it exactly -- any descriptor wording change now fails here until the
+    sample is regenerated (python webapp/sample_data/build_sample.py). Costs ~ms: no pipeline run."""
+    from cisco_toolkit.detector_schema import compute_detector_schema
+    sample, engine = _sample(), _jnorm(compute_detector_schema())
+    smp = {d.get("key"): d for d in (sample.get("detector_schema") or {}).get("detectors", [])}
+    eng = {d["key"]: d for d in engine["detectors"]}
+    drifted = sorted(set(smp) ^ set(eng)) + [k for k in sorted(set(smp) & set(eng)) if smp[k] != eng[k]]
+    assert sample.get("detector_schema") == engine, (
+        f"demo detector_schema drifted from the engine (stale sample -- regenerate "
+        f"build_sample.py); drifted detector(s): {drifted}")
+
+
+def test_sample_drift_native_vlan_row_matches_engine_render():
+    """TEXT-freshness lock #2 -- the exact PR-#396 drift class: the engine's rendered f-strings
+    changed while the demo kept the old wording. Recompute operational_drift from the sample's OWN
+    interfaces (via the from_sparse decode SSOT) and require the committed native-VLAN-1 row to
+    match the recomputed render field-for-field. In-memory over ~23 devices: no pipeline run.
+    (The Coverage/abstention row needs the collection-time capture record and is deliberately not
+    recomputed here; build_sample.py --check covers full-snapshot fidelity.)"""
+    from cisco_toolkit.analyze import compute_operational_drift
+    from cisco_toolkit.model import InterfaceData
+    sample = _sample()
+    ai = {h: {p: InterfaceData.from_sparse(dict(pd or {}, port=(pd or {}).get("port") or p))
+              for p, pd in (ports or {}).items()}
+          for h, ports in (sample.get("interfaces") or {}).items()}
+    fresh = next((f for f in compute_operational_drift(ai, [])
+                  if "Native VLAN 1" in f.get("title", "")), None)
+    committed = next((f for f in (sample.get("operational_drift") or [])
+                      if "Native VLAN 1" in f.get("title", "")), None)
+    assert fresh and committed, (
+        "the demo must exercise the native-VLAN-1 drift row (build_sample seeds native-VLAN "
+        "hygiene variety) and the engine must reproduce it from the demo's own interfaces")
+    for k in ("title", "detail", "remediation", "severity", "devices"):
+        assert _jnorm(fresh.get(k)) == committed.get(k), (
+            f"demo native-VLAN-1 drift row field {k!r} drifted from the engine render "
+            f"(stale sample -- regenerate build_sample.py):\n"
+            f"  engine:    {fresh.get(k)!r}\n  committed: {committed.get(k)!r}")
+
+
+def test_sample_architecture_review_matches_engine_exactly():
+    """TEXT-freshness lock #3 -- the third native-VLAN-1 renderer (and ~24 checks besides):
+    compute_architecture_review is pure snapshot synthesis (deterministic -- the golden freezes it),
+    so recomputing it OVER the committed sample must reproduce the committed section exactly. Any
+    archreview wording change (e.g. the L2-3 basis label) now fails here until the sample is
+    regenerated. Costs ~100ms: no pipeline run."""
+    from cisco_toolkit.archreview import compute_architecture_review
+    sample = _sample()
+    fresh = _jnorm(compute_architecture_review(sample))
+    committed = sample.get("architecture_review")
+    f_titles = {c["id"]: c for c in fresh.get("checks", [])}
+    c_titles = {c.get("id"): c for c in (committed or {}).get("checks", [])}
+    drifted = sorted(set(f_titles) ^ set(c_titles)) + \
+        [k for k in sorted(set(f_titles) & set(c_titles)) if f_titles[k] != c_titles[k]]
+    assert committed == fresh, (
+        f"demo architecture_review drifted from the engine (stale sample -- regenerate "
+        f"build_sample.py); drifted check(s): {drifted}")
