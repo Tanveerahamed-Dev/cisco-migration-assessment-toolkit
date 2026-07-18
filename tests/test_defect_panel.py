@@ -11,11 +11,20 @@ Load-bearing properties:
 from cisco_toolkit import defect_panel as P
 
 
-def test_registry_is_twelve_doctrine_mapped_defects():
-    assert len(P.DEFECTS) == 12
+def test_registry_is_eighteen_doctrine_mapped_defects():
+    # 12 founding defects + the 2026-07-18 growth (D-13..D-18) to the registered 18-defect target.
+    assert len(P.DEFECTS) == 18
     for did, meta in P.DEFECTS.items():
         assert meta["class"] and meta["law"] and meta["desc"]
         assert meta["detect"] in ("deterministic", "both")
+
+
+def test_growth_defects_cite_their_independent_source():
+    """The registered growth path is INDEPENDENT sources only — each D-13..D-18 entry must cite the
+    real QA-scorecard row or audit PR it was harvested from (never authored to fit the judge)."""
+    for did in ("D-13", "D-14", "D-15", "D-16", "D-17", "D-18"):
+        desc = P.DEFECTS[did]["desc"]
+        assert ("QA row" in desc) or ("PR #" in desc), f"{did} lacks an independent-source citation"
 
 
 def test_good_deliverable_is_clean():
@@ -52,9 +61,11 @@ def test_render_text_strips_oracle_flags_but_keeps_claims():
 
 def test_text_visible_ids_are_the_fair_llm_panel():
     ids = P.text_visible_ids()
-    assert 4 <= len(ids) <= 12 and set(ids) <= set(P.DEFECT_IDS)
+    assert 4 <= len(ids) <= 18 and set(ids) <= set(P.DEFECT_IDS)
     for did in ids:
         assert P.DEFECTS[did]["detect"] == "both"
+    # the six growth defects are all text-visible by design (they grow the LLM-judge fair panel 5 -> 11)
+    assert {"D-13", "D-14", "D-15", "D-16", "D-17", "D-18"} <= set(ids)
 
 
 def _keys():
@@ -87,7 +98,7 @@ def test_scorer_wrong_reason_is_unlocalized_not_localized():
 def test_deterministic_arm_is_the_full_panel_floor():
     # the bias-free oracle catches (and localizes) every seeded defect: TNR 1.0 by construction.
     base = P.deterministic_baseline()
-    assert base["n"] == 12 and base["localized_tnr"] == 1.0
+    assert base["n"] == 18 and base["localized_tnr"] == 1.0
 
 
 def test_build_panel_shape():
