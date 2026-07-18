@@ -121,3 +121,23 @@ def test_cutover_diff_survives_null_list_rows():
            "health_scores": [None, {"switch": "A", "band": "Good", "score": 80}], "punchlist": [None]}
     new = {"devices": {"A": {}}, "interfaces": {"A": {}}, "health_scores": [], "punchlist": []}
     assert isinstance(html.compute_snapshot_delta(old, new), dict)   # must not raise
+
+
+def test_delta_title_rename_alias_prevents_false_churn():
+    """PR-#396 review: comparing an OLD-engine baseline against a NEW-engine snapshot of an IDENTICAL
+    network reported the native-VLAN-1 title rename as 1 opened + 1 resolved and flipped the cutover
+    verdict CLEAN -> REVIEW. html._finding_key now aliases the pre-rename wording onto the current one
+    (_TITLE_RENAMES); a GENUINE scope change (different count) must still churn honestly."""
+    from cisco_toolkit.html import compute_snapshot_delta
+
+    base = {"devices": {}, "interfaces": {}}
+    row = {"severity": "Low", "category": "False-health", "devices": ["acc1", "core1"]}
+    old = dict(base, punchlist=[dict(row, title="Native VLAN 1 on 4 inter-switch trunk(s)")])
+    new = dict(base, punchlist=[dict(row, title="Native VLAN 1 on 4 operationally-trunking port(s)")])
+    d = compute_snapshot_delta(old, new)
+    assert d["findings"]["n_opened"] == 0 and d["findings"]["n_resolved"] == 0
+    assert d["verdict"] == "CLEAN"
+    # a genuine scope change (count moved 4 -> 5) still shows honestly as resolved+opened
+    new2 = dict(base, punchlist=[dict(row, title="Native VLAN 1 on 5 operationally-trunking port(s)")])
+    d2 = compute_snapshot_delta(old, new2)
+    assert d2["findings"]["n_opened"] == 1 and d2["findings"]["n_resolved"] == 1

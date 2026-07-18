@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-07-06T01:36:46.529638",
+  "generated_at": "2026-07-18T13:14:06.043560",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -2985,7 +2985,7 @@
       }
     }
   },
-  "collected_at": "2026-07-06T01:36:39.996022",
+  "collected_at": "2026-07-18T13:13:58.978266",
   "physical_health": [
     {
       "switch": "access1",
@@ -6343,7 +6343,7 @@
           "ldos": ""
         }
       ],
-      "asof": "2026-07-06"
+      "asof": "2026-07-18"
     },
     "risks": [
       {
@@ -6369,7 +6369,7 @@
         "remediation": "Schedule replacement before LDoS; confirm the migration target covers these."
       }
     ],
-    "asof": "2026-07-06",
+    "asof": "2026-07-18",
     "note": "Reference dates from a curated offline KB (Cisco EoL bulletins); last-day-of-support is often derived = end-of-sale + 5yr. Verify exact dates on Cisco's End-of-Life portal."
   },
   "remediation_plan": {
@@ -20523,11 +20523,11 @@
       },
       {
         "key": "l2-native-vlan-1",
-        "title": "Native VLAN 1 on inter-switch trunks",
+        "title": "Native VLAN 1 on operationally-trunking ports",
         "family": "Hygiene",
-        "checks": "An inter-switch trunk carrying the default VLAN 1 as the native (untagged) VLAN \u2014 a hygiene and VLAN-hopping exposure.",
-        "healthy_value": "a dedicated, unused native VLAN on inter-switch trunks",
-        "threshold": "trunk native VLAN == 1",
+        "checks": "An operationally-trunking port (live trunk status) carrying the default VLAN 1 as the native (untagged) VLAN \u2014 a hygiene and VLAN-hopping exposure. Every live-trunking port counts, host-facing trunks included (no inter-switch scoping). (The design gap's trunk-mode port(s) count \u2014 switchport-mode basis, administrative or negotiated \u2014 is a deliberately different measure.)",
+        "healthy_value": "a dedicated, unused native VLAN on every 802.1Q trunk",
+        "threshold": "operationally trunking (trunk_status 'trunking'/'trnk-bndl') and trunk native VLAN == 1",
         "cited_fields": [
           "operational_drift[].category",
           "operational_drift[].title",
@@ -26260,9 +26260,9 @@
         "podacc2"
       ],
       "wave": "",
-      "title": "Native VLAN 1 on 27 inter-switch trunk(s)",
-      "detail": "27 trunk(s) across 18 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
-      "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
+      "title": "Native VLAN 1 on 27 operationally-trunking port(s)",
+      "detail": "27 operationally-trunking port(s) (live trunk status) across 18 live-trunking switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode basis, administrative or negotiated -- so the two figures can differ.)",
+      "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk.",
       "priority": 110
     },
     {
@@ -26407,9 +26407,9 @@
         "podacc1",
         "podacc2"
       ],
-      "title": "Native VLAN 1 on 27 inter-switch trunk(s)",
-      "detail": "27 trunk(s) across 18 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
-      "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."
+      "title": "Native VLAN 1 on 27 operationally-trunking port(s)",
+      "detail": "27 operationally-trunking port(s) (live trunk status) across 18 live-trunking switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode basis, administrative or negotiated -- so the two figures can differ.)",
+      "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk."
     }
   ],
   "calibration": {
@@ -27239,7 +27239,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-07-05T22:36:45.244081+00:00",
+    "generated_at": "2026-07-18T10:14:04.549201+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -27251,7 +27251,7 @@
         "id": "no_egress_import_graph",
         "method": "AST import-walk (any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion: rest_collect.py (the opt-in REST collector, covered by its own GET-only claim); documented dev-only exception: gen_port_registry.py (data-pack generator, not pipeline-reachable)",
         "result": "HOLDS",
-        "detail": "0 network-library imports across 48 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
+        "detail": "0 network-library imports across 67 analysis modules (excluded by charter: rest_collect.py; documented exception: gen_port_registry.py)"
       },
       {
         "id": "rest_collect_get_only",
@@ -27263,7 +27263,7 @@
         "id": "no_llm_runtime",
         "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
         "result": "HOLDS",
-        "detail": "0 LLM/GenAI SDK imports across 50 modules (analysis package + collector entry)"
+        "detail": "0 LLM/GenAI SDK imports across 69 modules (analysis package + collector entry)"
       }
     ]
   },
@@ -31697,6 +31697,7 @@
         "core2"
       ],
       "endpoint_count": 36,
+      "endpoint_mix": "17 Phone \u00b7 17 Wireless AP \u00b7 2 Server",
       "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
       "criticality": "Support",
       "dependencies": [
@@ -31745,6 +31746,7 @@
         "core2"
       ],
       "endpoint_count": 0,
+      "endpoint_mix": "[NOT OBSERVED]",
       "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
       "criticality": "Support",
       "dependencies": [],
@@ -31764,6 +31766,7 @@
         "core1"
       ],
       "endpoint_count": 11,
+      "endpoint_mix": "11 Server",
       "app_domain": "Compute / Virtualization + General / Back-office (unclassified)",
       "criticality": "Support",
       "dependencies": [],
@@ -31810,6 +31813,7 @@
         "dist2"
       ],
       "endpoint_count": 2,
+      "endpoint_mix": "2 Unknown",
       "app_domain": "General / Back-office (unclassified)",
       "criticality": "Support",
       "dependencies": [],
@@ -31856,6 +31860,7 @@
         "dist2"
       ],
       "endpoint_count": 2,
+      "endpoint_mix": "2 Phone",
       "app_domain": "General / Back-office (unclassified)",
       "criticality": "Support",
       "dependencies": [],
@@ -31897,7 +31902,7 @@
         "axis": "Hardware lifecycle (EoL)",
         "severity": "Critical",
         "headline": "5 past end-of-support, 1 within 1yr (26% of 23 assessable)",
-        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-06 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
+        "detail": "Reference dates from the offline KB; bands are time-relative, computed as-of 2026-07-18 (they shift as time passes), and an LDoS absent from the KB is derived as end-of-sale + 5yr \u2014 re-verify on Cisco's EoX portal before acting."
       },
       {
         "axis": "Asset risk register",
@@ -31920,7 +31925,7 @@
       {
         "axis": "Cutover sequence",
         "severity": "Medium",
-        "headline": "pilot Compute / Virtualization \u2192 last General / Back-office (unclassified) \u00b7 1 of 2 wave(s) NOT READY",
+        "headline": "pilot Compute / Virtualization \u2192 last General / Back-office (unclassified) \u00b7 1 of 2 move-group(s) NOT READY",
         "detail": "Recommended lowest-risk-first order."
       },
       {
@@ -31962,7 +31967,7 @@
       "37 detection(s) \u00b7 0 critical event(s) on 18 device(s)",
       "3 exposed advisory surface(s) \u00b7 trains 10\u00d7 Current-era, 5\u00d7 Replace/Upgrade, 1\u00d7 Unknown, 7\u00d7 Verify EoL"
     ],
-    "posture_statement": "Migration posture: hardware end-of-support is a primary driver (26% past/near); 1 migration wave(s) are NOT READY; 6 switch(es) are in Critical health. Address these in the target design and sequence before cutover.",
+    "posture_statement": "Migration posture: hardware end-of-support is a primary driver (26% past/near); 1 move-group(s) are NOT READY; 6 switch(es) are in Critical health. Address these in the target design and sequence before cutover.",
     "ssot": {
       "verified": true,
       "n_facts": 14,
@@ -34294,7 +34299,7 @@
         "domain": "Layer-2 design",
         "title": "VLAN 1 not used for user traffic",
         "verdict": "advisory",
-        "observed": "Trunks with native VLAN 1 on 18 switch(es): access1, access10, access11, access12, access2, access3, access4, access5, access6, access7, access8, access9 +6 more.",
+        "observed": "Trunks with native VLAN 1 (switchport-mode basis, administrative or negotiated -- as in the design gap) on 18 switch(es): access1, access10, access11, access12, access2, access3, access4, access5, access6, access7, access8, access9 +6 more.",
         "implication": "Native VLAN 1 on inter-switch trunks exposes untagged control-plane crosstalk and is flagged by the hardening baseline.",
         "recommendation": "Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
         "reference": "Cisco hardening guidance \u2014 keep user traffic and trunk native VLAN off VLAN 1",
@@ -34990,7 +34995,7 @@
         "confidence": "Observed",
         "driver": "L2 edge hygiene: a dedicated native VLAN on trunks closes the VLAN-hopping/double-tag vector.",
         "evidence": {
-          "summary": "27 inter-switch trunk(s) across 18 switch(es) carry VLAN 1 as the native (untagged) VLAN -- a double-tagging / VLAN-hopping exposure and a hygiene gap; the target L2 edge must use a dedicated, unused native VLAN (and prune VLAN 1).",
+          "summary": "27 trunk-mode port(s) (switchport-mode basis, administrative or negotiated) across 18 switch(es) carry VLAN 1 as the native (untagged) VLAN -- a double-tagging / VLAN-hopping exposure and a hygiene gap; the target L2 edge must use a dedicated, unused native VLAN (and prune VLAN 1). (The ops punch-list counts operationally-trunking port(s) -- live trunk status, an operational view of the same exposure -- so the two figures can differ.)",
           "count": 27,
           "devices": [
             "access1",

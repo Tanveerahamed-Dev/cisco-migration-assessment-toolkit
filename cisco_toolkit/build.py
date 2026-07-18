@@ -51,7 +51,7 @@ from cisco_toolkit.parse import (
     parse_bgp_table,                                                 # NEW-V3.23.97 (BGP received prefixes)
     parse_igmp_groups, parse_igmp_snooping_querier, parse_ptp_clock, parse_acl_hitcounts,  # NEW-V3.23.102
 )
-from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, normalize_ifname
+from cisco_toolkit.textutils import PHYSICAL_IFACE_RE, detect_link_type, is_live_trunk_status, normalize_ifname
 
 logger = logging.getLogger(__name__)
 
@@ -1074,7 +1074,7 @@ def build_interfaces(hostname: str, platform: str, cmd_to_file: Dict[str, str],
         interfaces.setdefault(p, InterfaceData(port=p))
         tstat = (v.get("status") or "")
         if tstat: interfaces[p].trunk_status = tstat
-        if tstat.lower() in ("trunking","trnk-bndl"): interfaces[p].switchport_mode = "Trunk"
+        if is_live_trunk_status(tstat): interfaces[p].switchport_mode = "Trunk"
         if v.get("native_vlan"):   interfaces[p].trunk_native_vlan  = v["native_vlan"]
         if v.get("allowed_vlans"): interfaces[p].trunk_allowed_vlans = v["allowed_vlans"]
         if v.get("port_channel") and not interfaces[p].port_channel:

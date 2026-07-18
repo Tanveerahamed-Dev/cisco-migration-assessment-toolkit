@@ -39,6 +39,24 @@ _BAND_RANK = {"Excellent": 0, "Good": 1, "Fair": 2, "Poor": 3, "Critical": 4}
 _FIND_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
 
 
+# Renamed-title aliases: a pure title REWORDING (same detector, same measure, same scope semantics)
+# must not churn the cutover-validation delta as resolved+opened when an OLD-engine baseline snapshot
+# is compared against a NEW-engine one (PR-#396 review: the native-VLAN-1 rename flipped an
+# identical-network compare from CLEAN to REVIEW). Each entry maps the pre-rename numbered-title form
+# onto the CURRENT wording BEFORE keying; the count and device-set still participate in the key, so a
+# genuine scope change (different N / different devices) keeps showing honestly as resolved+opened.
+_TITLE_RENAMES = (
+    (re.compile(r"^Native VLAN 1 on (\d+) inter-switch trunk\(s\)$"),
+     r"Native VLAN 1 on \1 operationally-trunking port(s)"),
+)
+
+
+def _canon_title(title: str) -> str:
+    for rx, repl in _TITLE_RENAMES:
+        title = rx.sub(repl, title)
+    return title
+
+
 def _finding_key(f: dict) -> tuple:
     """Stable identity for a punch-list finding across two runs: (category, FULL title, device-set).
     The title is intentionally NOT digit-normalized: stripping digits collapsed DISTINCT per-identifier
@@ -46,9 +64,12 @@ def _finding_key(f: dict) -> tuple:
     on the same gateways) into one key, which could hide a real fix-and-new-break swap as 'no change'
     in the cutover-validation verdict. Device order is normalized so the same finding on the same
     devices matches regardless of listing order; an aggregated finding whose count changes honestly
-    shows as resolved+opened (its scope genuinely changed)."""
+    shows as resolved+opened (its scope genuinely changed). The ONLY title rewriting applied is the
+    _TITLE_RENAMES alias table above (pre-rename wording -> current wording), which is not a
+    normalization: it never merges two distinct findings, it only keeps one finding's identity stable
+    across an engine-version rename."""
     devs = tuple(sorted(str(d) for d in (f.get("devices") or [])))
-    return (str(f.get("category", "")), str(f.get("title", "")), devs)
+    return (str(f.get("category", "")), _canon_title(str(f.get("title", ""))), devs)
 
 
 def _as_dict(x):
