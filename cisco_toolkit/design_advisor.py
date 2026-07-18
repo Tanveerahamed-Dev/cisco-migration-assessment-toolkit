@@ -18,7 +18,8 @@ absent evidence ("not observed" is not "healthy"); not-collected devices are an 
 import math
 import re
 
-from cisco_toolkit.textutils import _as_num   # shared fail-soft numeric coercion (rejects JSON Infinity/NaN)
+from cisco_toolkit.textutils import (   # shared fail-soft numeric coercion + native-VLAN-1 tokens/predicate
+    NATIVE1_CFG_BASIS, NATIVE1_CFG_UNIT, NATIVE1_OPS_BASIS, NATIVE1_OPS_UNIT, _as_num, is_trunk_mode)
 from . import design_kb
 
 PRANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
@@ -1102,16 +1103,19 @@ def _signals(snap):
     sig["dual_homed"] = len(_as_list(ed.get("dual_homed")))
     sig["shared_ip"] = len(_as_list(ed.get("shared_ip")))
 
-    # native-VLAN-1 on inter-switch trunks (double-tag / VLAN-hopping) -- counts CONFIGURED trunk-mode
-    # ports (switchport_mode, design intent; same basis as the archreview L2-3 check). Deliberately a
-    # DIFFERENT measure from analyze.compute_operational_drift's punch-list row, which counts LIVE
-    # trunk_status (operationally-trunking ports) -- both rendered texts name their basis so the two
-    # figures cannot read as one contradicting fact (QA: 3100 configured vs 1777 operational on M0).
+    # native-VLAN-1 trunk-mode ports (double-tag / VLAN-hopping) -- counts by SWITCHPORT MODE via the
+    # shared textutils.is_trunk_mode predicate (administrative OR negotiated: parse folds the
+    # operational mode in and build promotes from the live trunk table, so this is NOT pure config
+    # intent), the same predicate the archreview L2-3 check counts by. Deliberately a DIFFERENT
+    # measure from analyze.compute_operational_drift's punch-list row, which counts LIVE trunk_status
+    # (operationally-trunking ports) -- both rendered texts name their unit+basis (textutils.NATIVE1_*
+    # tokens) so the two figures cannot read as one contradicting fact
+    # (QA: 3100 switchport-mode vs 1777 operational on deliverables_M0_20260718).
     n1_trunks, n1_sw = 0, set()
     for host, ports in _as_dict(snap.get("interfaces")).items():
         hit = False
         for _pn, pd in _as_dict(ports).items():
-            if isinstance(pd, dict) and ("trunk" in str(pd.get("switchport_mode", "")).lower()
+            if isinstance(pd, dict) and (is_trunk_mode(pd.get("switchport_mode"))
                     and str(pd.get("trunk_native_vlan", "")).strip() == "1"):
                 n1_trunks += 1
                 hit = True
@@ -3073,11 +3077,11 @@ def _d_native_vlan(snap, sig):
         return None
     return _decision(
         "l2-dedicated-native-vlan-on-trunks",
-        f"{sig['native1_trunks']} configured trunk port(s) (counted by configured switchport mode) across "
+        f"{sig['native1_trunks']} {NATIVE1_CFG_UNIT} ({NATIVE1_CFG_BASIS}) across "
         f"{sig['native1_switches']} switch(es) carry VLAN 1 as the native (untagged) VLAN -- a double-tagging "
         f"/ VLAN-hopping exposure and a hygiene gap; the target L2 edge must use a dedicated, unused native "
-        f"VLAN (and prune VLAN 1). (The ops punch-list counts live operationally-trunking ports -- an "
-        f"operational view of the same exposure, so the two figures can differ.)",
+        f"VLAN (and prune VLAN 1). (The ops punch-list counts {NATIVE1_OPS_UNIT} -- {NATIVE1_OPS_BASIS}, "
+        f"an operational view of the same exposure -- so the two figures can differ.)",
         sig["native1_trunks"], ["security", "manageability"],
         ["interfaces[host][port].switchport_mode", "interfaces[host][port].trunk_native_vlan"],
         priority="High",

@@ -38,7 +38,8 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
-from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
+from cisco_toolkit.textutils import (   # entry deep-sanitize of device text (audit-5) + fail-soft numeric
+    NATIVE1_CFG_BASIS, _as_num, is_trunk_mode, xml_safe, xml_safe_deep)   # coercion + native-VLAN-1 basis
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +447,7 @@ def compute_architecture_review(snap: dict) -> dict:
                     has_access_vlan = True
                 if _av == "1":
                     v1_access.append(host)
-            if mode == "trunk":
+            if is_trunk_mode(mode):   # shared predicate: MUST match design_advisor._signals (PR-#396 review)
                 if _nv:
                     has_native = True
                 if _nv == "1":
@@ -466,7 +467,8 @@ def compute_architecture_review(snap: dict) -> dict:
     elif v1_access:
         add("L2-3", D3, "VLAN 1 not used for user traffic", "deviation",
             f"Access ports on VLAN 1 on {len(set(v1_access))} switch(es): {_ev(v1_access)}"
-            + (f"; native VLAN 1 trunks on {len(set(v1_native))} switch(es)" if v1_native else "") + ".",
+            + (f"; native VLAN 1 trunks ({NATIVE1_CFG_BASIS} -- as in the design gap) on "
+               f"{len(set(v1_native))} switch(es)" if v1_native else "") + ".",
             "VLAN 1 carries control-plane protocols on every trunk by default; user endpoints on it "
             "ride the widest possible broadcast domain and complicate segmentation.",
             "Move user ports to purpose VLANs and set trunk native VLAN to a dedicated unused VLAN "
@@ -475,7 +477,8 @@ def compute_architecture_review(snap: dict) -> dict:
             evidence=set(v1_access) | set(v1_native))
     elif v1_native:
         add("L2-3", D3, "VLAN 1 not used for user traffic", "advisory",
-            f"Trunks with native VLAN 1 on {len(set(v1_native))} switch(es): {_ev(set(v1_native))}.",
+            f"Trunks with native VLAN 1 ({NATIVE1_CFG_BASIS} -- as in the design gap) on "
+            f"{len(set(v1_native))} switch(es): {_ev(set(v1_native))}.",
             "Native VLAN 1 on inter-switch trunks exposes untagged control-plane crosstalk and is "
             "flagged by the hardening baseline.",
             "Set the native VLAN to a dedicated unused VLAN on the listed trunks.",
