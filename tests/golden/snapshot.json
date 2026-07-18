@@ -4407,9 +4407,9 @@
     "key": "l2-native-vlan-1",
     "title": "Native VLAN 1 on inter-switch trunks",
     "family": "Hygiene",
-    "checks": "An inter-switch trunk carrying the default VLAN 1 as the native (untagged) VLAN \u2014 a hygiene and VLAN-hopping exposure.",
+    "checks": "An operationally-trunking inter-switch port (live trunk status) carrying the default VLAN 1 as the native (untagged) VLAN \u2014 a hygiene and VLAN-hopping exposure. (The design gap's configured-switchport-mode count is a deliberately different measure.)",
     "healthy_value": "a dedicated, unused native VLAN on inter-switch trunks",
-    "threshold": "trunk native VLAN == 1",
+    "threshold": "operationally trunking (trunk_status) and trunk native VLAN == 1",
     "cited_fields": [
      "operational_drift[].category",
      "operational_drift[].title",
@@ -6026,8 +6026,8 @@
     "core2"
    ],
    "wave": "",
-   "title": "Native VLAN 1 on 4 inter-switch trunk(s)",
-   "detail": "4 trunk(s) across 3 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+   "title": "Native VLAN 1 on 4 operationally-trunking port(s)",
+   "detail": "4 operationally-trunking port(s) (live trunk status) across 3 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts configured trunk-mode ports -- design intent -- so the two figures can differ.)",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks.",
    "priority": 32
   },
@@ -6110,8 +6110,8 @@
     "core1",
     "core2"
    ],
-   "title": "Native VLAN 1 on 4 inter-switch trunk(s)",
-   "detail": "4 trunk(s) across 3 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure.",
+   "title": "Native VLAN 1 on 4 operationally-trunking port(s)",
+   "detail": "4 operationally-trunking port(s) (live trunk status) across 3 switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts configured trunk-mode ports -- design intent -- so the two figures can differ.)",
    "remediation": "Set a dedicated, unused native VLAN on inter-switch trunks."
   }
  ],

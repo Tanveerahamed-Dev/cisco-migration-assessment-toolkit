@@ -790,9 +790,11 @@ def test_operational_drift_detects_and_aggregates():
     # DET-poe-002: a PoE fault on a port WITHOUT a powered-endpoint description is no longer silently dropped
     _acc_poe = next((f for f in out if "PoE fault on acc1" in f["title"]), None)
     assert _acc_poe is not None and "powered endpoint affected" not in _acc_poe["title"] and _acc_poe["severity"] == "Medium"
-    # native VLAN 1 -> ONE aggregated finding across 2 trunks / 2 switches (not one row per trunk)
+    # native VLAN 1 -> ONE aggregated finding across 2 operationally-trunking ports / 2 switches
+    # (not one row per trunk; unit+basis named so it can't read as the design gap's configured count)
     nat = next(f for f in out if "Native VLAN 1" in f["title"])
-    assert "2 inter-switch trunk(s)" in nat["title"] and set(nat["devices"]) == {"core1", "acc1"}
+    assert "2 operationally-trunking port(s)" in nat["title"] and set(nat["devices"]) == {"core1", "acc1"}
+    assert "live trunk status" in nat["detail"]
     # multi-year uptime -> ONE aggregated finding; acc1 (<3y) excluded
     up = next(f for f in out if "Multi-year uptime" in f["title"])
     assert "1 device" in up["title"] and "10 years" in up["title"] and up["devices"] == ["core1"]

@@ -2060,7 +2060,7 @@ def _snap_v2(**over):
                            {"severity": "High", "category": "False-health", "devices": ["dy"],
                             "title": "PoE fault on powered endpoint(s) on dy"},
                            {"severity": "Low", "category": "False-health", "devices": ["dz"],
-                            "title": "Native VLAN 1 on 99 inter-switch trunk(s)"}],
+                            "title": "Native VLAN 1 on 99 operationally-trunking port(s)"}],
         interfaces={"acc1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10"}},
                     "trunkA": {"Eth1/1": {"switchport_mode": "trunk", "trunk_native_vlan": "1"}},
                     "trunkB": {"Eth1/2": {"switchport_mode": "trunk", "trunk_native_vlan": "99"}}},
@@ -2086,8 +2086,8 @@ def test_v2_detectors_fire_when_seeded_and_read_numbers_from_evidence():
         assert pid in fires, f"{pid} must fire on seeded evidence"
     assert "2 duplicate IP" in fires["addressing-resolve-overlaps-before-merge"]["evidence"]["summary"]
     assert "1 overlapping subnet" in fires["addressing-resolve-overlaps-before-merge"]["evidence"]["summary"]
-    assert "1 inter-switch trunk(s) across 1 switch" in \
-        fires["l2-dedicated-native-vlan-on-trunks"]["evidence"]["summary"]
+    _nv1 = fires["l2-dedicated-native-vlan-on-trunks"]["evidence"]["summary"]
+    assert "1 configured trunk port(s)" in _nv1 and "across 1 switch" in _nv1
     cap = fires["capacity-size-target-with-growth-headroom"]["evidence"]["summary"]
     assert "1 of 2 switch" in cap and ">= 85% port" in cap
     dh = fires["migration-preserve-dual-homed-endpoints"]
@@ -2108,8 +2108,10 @@ def test_v2_detectors_are_evidence_gated():
 
 
 def test_v2_native_vlan_count_matches_canonical_interface_evidence():
-    """SSOT cross-lock: the native-VLAN-1 detector counts the SAME trunk+native==1 ports the rest of the
-    engine keys off (model.trunk_native_vlan), so its emitted count can't drift from the canonical figure."""
+    """SSOT cross-lock: the native-VLAN-1 DESIGN decision recounts the configured-switchport-mode ports
+    the archreview L2-3 check keys off (switchport_mode + trunk_native_vlan), so its emitted count can't
+    drift from that configured-mode figure. (The ops punch-list intentionally counts a DIFFERENT measure
+    -- live trunk_status; see test_native_vlan1_design_and_punchlist_texts_are_self_disambiguating.)"""
     snap = _snap_v2()
     expect = sum(1 for ports in snap["interfaces"].values() for pd in ports.values()
                  if "trunk" in str(pd.get("switchport_mode", "")).lower()
@@ -2117,6 +2119,43 @@ def test_v2_native_vlan_count_matches_canonical_interface_evidence():
     d = next(x for x in compute_design_blueprint(snap)["decisions"]
              if x["id"] == "l2-dedicated-native-vlan-on-trunks")
     assert d["evidence"]["count"] == expect == 1
+
+
+def test_native_vlan1_design_and_punchlist_texts_are_self_disambiguating():
+    """QA (deliverables_M0_20260718): design/crd rendered '3100 inter-switch trunk(s) across 251
+    switch(es) carry VLAN 1 ...' while the runbook/workbook punch-list rendered 'Native VLAN 1 on 1777
+    inter-switch trunk(s)' -- IDENTICAL wording over two different measures (configured switchport_mode
+    vs live trunk_status), reading as a cross-artifact SSOT contradiction. Both measures are legitimate;
+    the fix is self-disambiguating phrasing. Guard: on evidence where the two counts DIVERGE, each text
+    names its own unit+basis, and no numbered '<N> <unit>(s)' phrase can render from BOTH owners."""
+    import re
+    from cisco_toolkit.model import InterfaceData
+    from cisco_toolkit.analyze import compute_operational_drift
+
+    # one port configured trunk-mode AND operationally trunking, one configured-only -> 2 vs 1
+    ifaces = {"sw1": {
+        "Eth1/1": dict(switchport_mode="trunk", trunk_native_vlan="1", trunk_status="trunking"),
+        "Eth1/2": dict(switchport_mode="trunk", trunk_native_vlan="1", trunk_status="notconnect")}}
+    design = next(d for d in compute_design_blueprint(_snap_v2(interfaces=ifaces))["decisions"]
+                  if d["id"] == "l2-dedicated-native-vlan-on-trunks")["evidence"]["summary"]
+    drift = next(f for f in compute_operational_drift(
+        {"sw1": {p: InterfaceData(port=p, **pd) for p, pd in ifaces["sw1"].items()}}, [])
+        if "Native VLAN 1" in f["title"])
+    punch = drift["title"] + " " + drift["detail"]
+
+    # each text names its own unit + counting basis (the self-disambiguation)
+    assert "2 configured trunk port(s)" in design and "switchport mode" in design
+    assert drift["title"] == "Native VLAN 1 on 1 operationally-trunking port(s)"
+    assert "live trunk status" in drift["detail"]
+
+    # collision guard: normalise every numbered '<N> <unit>(s)' phrase; the two owners' numbered
+    # unit-vocabularies must be DISJOINT, so the same phrase can never again render with two numbers.
+    unit = re.compile(r"\d[\d,]*\s+[a-z][a-z -]*\(s\)")
+    units = lambda s: {re.sub(r"\d[\d,]*", "N", m) for m in unit.findall(s.lower())}
+    assert units(design), "design text must carry a numbered unit"
+    assert units(punch), "punch-list text must carry a numbered unit"
+    shared = units(design) & units(punch)
+    assert not shared, f"design and punch-list can render the SAME numbered phrase again: {shared}"
 
 
 def test_v2_false_health_detector_is_high_severity_gated():

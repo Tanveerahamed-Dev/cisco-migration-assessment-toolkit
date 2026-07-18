@@ -459,10 +459,11 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "key": "l2-native-vlan-1",
         "title": "Native VLAN 1 on inter-switch trunks",
         "family": "Hygiene",
-        "checks": "An inter-switch trunk carrying the default VLAN 1 as the native (untagged) VLAN — a "
-                  "hygiene and VLAN-hopping exposure.",
+        "checks": "An operationally-trunking inter-switch port (live trunk status) carrying the default "
+                  "VLAN 1 as the native (untagged) VLAN — a hygiene and VLAN-hopping exposure. (The design "
+                  "gap's configured-switchport-mode count is a deliberately different measure.)",
         "healthy_value": "a dedicated, unused native VLAN on inter-switch trunks",
-        "threshold": "trunk native VLAN == 1",
+        "threshold": "operationally trunking (trunk_status) and trunk native VLAN == 1",
         "cited_fields": ["operational_drift[].category", "operational_drift[].title", "operational_drift[].devices"],
         "abstains_when": "device not collected, or trunk/switchport detail not captured for the port",
         "evidence_gated": True,
