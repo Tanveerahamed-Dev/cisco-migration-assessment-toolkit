@@ -46,12 +46,22 @@ export interface Deliverable {
   available: boolean;
 }
 
+// ADR-0004 D1: served from the brand SSOT (cisco_toolkit/brand_tokens.py) — the SPA renders these,
+// never hardcodes them, so a rename stays a one-line change in the owner module.
+export interface AppIdentity {
+  name: string;
+  byline: string;
+  title: string;
+  release: string;
+}
+
 export interface Meta {
   engine_schema: string;
   severity_order: string[];
   bands: string[];
   section_labels: Array<{ key: string; label: string }>;
   deliverables: Deliverable[];
+  app: AppIdentity;
 }
 
 export interface CutoverWave {
@@ -480,6 +490,10 @@ export const api = {
       j<SnapshotMeta & { ingest: IngestReport }>(r),
     );
   },
+  // Folder ingest (ADR-0004 P1): the path names a SERVER-local directory, so this is a plain JSON
+  // POST — no file leaves the machine (the portable-app case: collection and app share a disk).
+  ingestFolder: (campaignId: number, path: string, label: string) =>
+    post<SnapshotMeta & { ingest: IngestReport }>(`/api/campaigns/${campaignId}/ingest-folder`, { path, label }),
   getSnapshot: (id: number) => fetch(`/api/snapshots/${id}`).then((r) => j<SnapshotMeta>(r)),
   section: (id: number, name: string) =>
     fetch(`/api/snapshots/${id}/section/${name}`).then((r) => j<{ section: string; data: any }>(r)),

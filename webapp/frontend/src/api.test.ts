@@ -38,6 +38,27 @@ describe("colour token helpers", () => {
   });
 });
 
+// Folder ingest (ADR-0004 P1): a plain JSON POST — the path is a SERVER-local directory, so there
+// is no multipart body here, unlike the ZIP/snapshot uploads.
+describe("api.ingestFolder", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("POSTs JSON {path, label} to the campaign's ingest-folder route", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ id: 7, ingest: {} }), { status: 201 }));
+    await api.ingestFolder(3, "D:\\data\\siteA", "field");
+    expect(spy).toHaveBeenCalledWith(
+      "/api/campaigns/3/ingest-folder",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: "D:\\data\\siteA", label: "field" }),
+      }),
+    );
+  });
+});
+
 // The `api` client is the app's whole data layer; the shared `j` response handler is where every
 // call's success/error semantics live (FastAPI `detail` extraction, 204 -> null, status fallback).
 // Tested through the client with a mocked global fetch — no network, no backend.
