@@ -126,6 +126,32 @@
   toolchain the bundle is DETERMINISTIC, and the glass upload's `bundle`/`style` diff was 100% the real CSS, zero
   noise. Treat a `bundleSha12`/`styleSha` diff as a real-change signal (source CSS or esbuild-version), never a
   within-session "it's just noise" — identify WHAT moved (git-diff CSS, check README/aux) before dismissing.
+- ✅ **2026-07-19 RETARGETED → new project "Atlas Design System" (`fae0df7f-7a5d-4bce-8744-5c73a3e189fe`) —
+  first sync into it COMPLETE.** ADR-0004 rebrand (app name = Atlas): user-approved push of the existing
+  16-component bundle to a NEW project. The old pinned "Design System" (`81dfe070…`) was ALREADY GONE server-side
+  (list_projects empty + get_project 404 on a working authorization — evidently user-deleted ahead of the rebrand;
+  its cached `.cache/remote-sync.json` still served as the verification anchor for grade carry-forward). Driver
+  re-run before upload: chromium had to be REINSTALLED first (`node .ds-sync/node_modules/playwright/cli.js
+  install chromium` — the `chromium_headless_shell-1208` cache dir had been purged since 07-04); verdict then
+  green — 16/16 verified-by-upload, render 15/16 clean + the triaged deliberate ErrorBoundary throw.
+  `bundle`+`styling` SHAs moved vs the 07-04 anchor with ALL 16 renderHashes/sourceKeys unchanged — diagnosed
+  REAL-but-benign per this file's own rule (git-diffed, not dismissed): `api.ts` +17 (D6 `domainPacks` endpoint +
+  PR #376 `out_of_order` gate fields) and `DesignBlueprint.tsx` +35 (domain-lens chips row; P_COLOR/scoreColor/
+  phaseColor now exported for tests) ride the shared bundle; theme.css/styles.css untouched; runtime deps
+  identical (the +1505 lock churn = vitest devDeps). Incremental path into the empty project: pin recorded BEFORE
+  upload; sentinel → 22 base+previews → 64 component files → reconcile (87 remote, 0 orphans) → sentinel re-arm →
+  anchor LAST; `report_validate` {16,1,0,0,1}. URL: https://claude.ai/design/p/fae0df7f-7a5d-4bce-8744-5c73a3e189fe
+  ~~⚠️ Preview-ENRICHMENT candidate~~ ✅ **DONE 2026-07-19 (same day, follow-up task): domain-pack chips now
+  in the preview.** `sample-data.ts` gained a `DOMAIN_PACKS` payload + `/domain_packs` route, and the COVERAGE
+  class keys that trigger packs were aligned to REAL `_ARCH_COVERAGE_REGISTRY` axes (`fhrp`→`fhrp_detail`,
+  `trustsec`→`cts`, + new observed-clean `port_security` row, summary 5/9) — REQUIRED because the real
+  `select_packs` against the old fictional keys selected ZERO packs, and the backend's invariant is that pack
+  selection can never disagree with the coverage grid beside it. `port_security` is deliberately in BOTH ent+sec
+  packs → ENT red chip (fhrp_detail finding) + SEC green chip. Payload proven byte-identical to the real
+  `cisco_toolkit.domain_packs.select_packs()` output (scratch verify script, MATCH). Driver green; regraded
+  DesignBlueprintPanel from the fresh screenshot (chips + 5/9 grid + intact card). Scoped atomic upload:
+  sentinel → bundle+css+DesignBlueprintPanel×4 → re-arm → anchor last; live anchor fetched back ==
+  local (`bundleSha12 1415e787f3d1`).
 
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
@@ -137,13 +163,21 @@
   `npm i --prefix .ds-sync esbuild ts-morph @types/react typescript playwright@<version pinning the cached
   chromium>` (this machine: playwright **1.58.0** ↔ cache `chromium-1208`; verify with
   `playwright-core/browsers.json` — read it as a FILE). `webapp/frontend` needs `npm ci` first.
-- ~~No `projectId` pinned~~ **RESOLVED 2026-07-02**: pinned `81dfe070-906d-445b-a821-1d100a3e969d`
-  ("Design System", owner "taha"). Future runs are pinned-before-run → ATOMIC upload path, and fetch the remote
-  `_ds_sync.json` as the verification anchor.
+- ~~No `projectId` pinned~~ **RESOLVED 2026-07-02 · RETARGETED 2026-07-19**: pinned
+  `fae0df7f-7a5d-4bce-8744-5c73a3e189fe` ("Atlas Design System", subscribed account — supersedes
+  `81dfe070…` "Design System", which was user-deleted server-side before the 07-19 retarget). Future runs are
+  pinned-before-run → ATOMIC upload path, and fetch the remote `_ds_sync.json` as the verification anchor.
 - **Verification anchor**: LIVE since 2026-07-02 — the project holds `_ds_sync.json`. Re-syncs: fetch it to
   `.design-sync/.cache/remote-sync.json` and run the driver with `--remote` so unchanged components skip
   re-verification.
 - Never regenerate sample data from real AJ snapshots (no-egress; the file ships to claude.ai).
+- **`renderHashes` miss data-driven DOM additions — never rely on them to detect sample-data changes.** Proven
+  2026-07-19: adding the whole domain-lens chips panel to DesignBlueprintPanel's render left its renderHash
+  BYTE-IDENTICAL (`f1f8570876d15a37`); the component reached the upload set only because its regenerated
+  `.prompt.md` changed (doc edit), and the new data shipped via `bundleSha12`. A sample-data-only enrichment
+  with NO doc edit would flag `components: []` (bundle-only upload) — the live card would change with no
+  regrade prompt. After ANY `sample-data.ts` edit: re-render + eyeball the affected card's screenshot and
+  regrade it manually, regardless of what the diff says.
 - **DS-source CSS edits masquerade as "esbuild noise" — always git-diff the shipped CSS before dismissing a
   styleSha diff.** A `styleSha`+`bundleSha12`(+`auxSha`) diff with **all** `renderHashes`/`sourceKeys`/`sourceHashes`
   identical is the EXACT signature of both (a) harmless esbuild non-determinism AND (b) a real edit to

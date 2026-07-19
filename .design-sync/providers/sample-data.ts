@@ -560,17 +560,34 @@ const NRFU = {
 };
 
 const COVERAGE = {
+  // Class KEYS that trigger domain packs use the REAL _ARCH_COVERAGE_REGISTRY axes (fhrp_detail,
+  // port_security, cts) so DOMAIN_PACKS below can never disagree with this grid — the same
+  // "one coverage resolution" invariant the backend enforces for /domain_packs.
   classes: [
-    { key: "fhrp", label: "First-hop redundancy (HSRP/VRRP)", channel: "ssh", detectors: ["fhrp_absence"], observed: true, n_hosts: 2, hosts: ["MBG-CORE-01", "MBG-CORE-02"], status: "finding", findings: ["No FHRP on 18 user VLANs"] },
+    { key: "fhrp_detail", label: "First-hop redundancy (HSRP/VRRP)", channel: "ssh", detectors: ["fhrp_absence"], observed: true, n_hosts: 2, hosts: ["MBG-CORE-01", "MBG-CORE-02"], status: "finding", findings: ["No FHRP on 18 user VLANs"] },
     { key: "lifecycle", label: "Hardware lifecycle (EoS/LDoS)", channel: "ssh", detectors: ["eos_register"], observed: true, n_hosts: 2, hosts: ["STU-AS-03", "CAM-AS-01"], status: "finding", findings: ["2 platforms past end-of-support"] },
     { key: "etherchannel", label: "Link aggregation health", channel: "ssh", detectors: ["po_health"], observed: true, n_hosts: 4, hosts: ["MBG-CORE-01", "MBG-CORE-02", "MBG-DS-01", "MBG-DS-02"], status: "clean", findings: [] },
     { key: "igp", label: "Interior routing protocol", channel: "ssh", detectors: ["ospf_neighbors"], observed: true, n_hosts: 4, hosts: ["MBG-CORE-01", "MBG-CORE-02", "MBG-DS-01", "MBG-DS-02"], status: "clean", findings: [] },
+    { key: "port_security", label: "Access-edge port security", channel: "ssh", detectors: ["port_security_config"], observed: true, n_hosts: 3, hosts: ["STU-AS-01", "STU-AS-02", "NOC-AS-01"], status: "clean", findings: [] },
     { key: "dmvpn", label: "DMVPN overlay", channel: "ssh", detectors: ["dmvpn_tunnels"], observed: false, n_hosts: 0, hosts: [], status: "not-observed", findings: [] },
-    { key: "trustsec", label: "TrustSec / CTS", channel: "ssh", detectors: ["cts_config"], observed: false, n_hosts: 0, hosts: [], status: "not-observed", findings: [] },
+    { key: "cts", label: "TrustSec / CTS", channel: "ssh", detectors: ["cts_config"], observed: false, n_hosts: 0, hosts: [], status: "not-observed", findings: [] },
     { key: "aci", label: "ACI fabric (APIC REST)", channel: "json", detectors: ["apic_tenants"], observed: false, n_hosts: 0, hosts: [], status: "not-observed", findings: [] },
     { key: "sdwan", label: "Catalyst SD-WAN (vManage REST)", channel: "json", detectors: ["vmanage_sites"], observed: false, n_hosts: 0, hosts: [], status: "not-observed", findings: [] },
   ],
-  summary: { n_classes: 8, n_observed: 4, n_with_findings: 2, n_clean: 2, n_not_observed: 4, by_channel: { ssh: 6, json: 2 } },
+  summary: { n_classes: 9, n_observed: 5, n_with_findings: 2, n_clean: 3, n_not_observed: 4, by_channel: { ssh: 7, json: 2 } },
+};
+
+/* Domain skill-packs (Phase-3/D6) for the SAME coverage above — exactly what the engine SSOT
+ * cisco_toolkit.domain_packs.select_packs(COVERAGE) returns (selection is coverage-honest: a pack
+ * loads iff one of its architecture classes is OBSERVED; port_security is deliberately in BOTH the
+ * ent and sec packs, so this fleet shows one findings-bearing red chip and one clean green chip). */
+const DOMAIN_PACKS = {
+  selected: [
+    { pack: "ent", title: "Enterprise / SD-Access", doc: "docs/packs/enterprise.md", triggered_by: ["fhrp_detail", "port_security"], with_findings: ["fhrp_detail"] },
+    { pack: "sec", title: "Security / ISE-TrustSec-firewalls", doc: "docs/packs/security.md", triggered_by: ["port_security"], with_findings: [] },
+  ],
+  loaded: ["ent", "sec"],
+  note: "2 pack(s) loaded: ent, sec",
 };
 
 const META = {
@@ -605,6 +622,7 @@ export const DEMO_ROUTES: Array<[RegExp, unknown]> = [
   [/^\/api\/snapshots\/\d+\/design\/nrfu$/, NRFU],
   [/^\/api\/snapshots\/\d+\/design$/, DESIGN],
   [/^\/api\/snapshots\/\d+\/architecture_coverage$/, COVERAGE],
+  [/^\/api\/snapshots\/\d+\/domain_packs$/, DOMAIN_PACKS],
   [/^\/api\/snapshots\/\d+\/executions$/, EXECUTIONS],
   [/^\/api\/meta$/, META],
   [/^\/api\/health$/, HEALTH],
