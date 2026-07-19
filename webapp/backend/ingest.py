@@ -4,14 +4,19 @@ Until now AssessHub consumed finished ``*.snapshot.json`` files — someone stil
 engine offline first. This module closes that loop: upload a ZIP of the offline collection layout
 (``<host>/show_*.txt``, exactly what ``--no-collect`` reads and what the collector itself writes) and
 AssessHub runs ``COLLECT_PARSE_V3_23_0.py`` in a subprocess over it, harvests the snapshot it
-produces, and stores it like any uploaded one.
+produces, and stores it like any uploaded one. ``run_collection_folder`` is the same pipeline over
+a SERVER-LOCAL directory — the portable-app path (ADR-0004 P1), where the collection already sits
+on disk beside the app and a ZIP round-trip would be pure friction.
 
 Design points:
 
 * **The real pipeline, not a re-implementation** — the engine runs as a child process with the exact
   flags the test-suite uses (``--no-collect --collection-dir … --workers 1``), so an ingested snapshot
   is identical to what the CLI would have produced. A subprocess (not in-process ``main()``) keeps the
-  engine's logging/global state out of the server and makes a hard timeout enforceable.
+  engine's logging/global state out of the server and makes a hard timeout enforceable. Frozen
+  (PyInstaller) builds have no script on disk and ``sys.executable`` IS the app — ``_engine_argv``
+  re-invokes the exe with ``serve.ENGINE_SENTINEL``, which ``serve.main`` turns into the engine CLI
+  before any server code runs; child isolation and the timeout are unchanged.
 * **Deliverables are skipped** (every ``--no-*`` document flag): AssessHub renders the explorer and
   generates documents on demand from the stored snapshot, so only the workbook (which the engine
   always writes) and the snapshot are produced — the fast path. V3.23.170: the flag list had gone
@@ -39,6 +44,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import engine
+from .serve import ENGINE_SENTINEL
 
 _REPO_ROOT = Path(engine.__file__).resolve().parents[2]
 _ENGINE_SCRIPT = _REPO_ROOT / "COLLECT_PARSE_V3_23_0.py"
@@ -200,83 +206,135 @@ def _write_min_template(path: Path) -> None:
     wb.save(str(path))
 
 
+def _engine_argv() -> List[str]:
+    """Argv PREFIX that makes a child process run the engine CLI.
+
+    Checkout: the interpreter + the repo-root script. Frozen (PyInstaller): there is no script on
+    disk and ``sys.executable`` IS the app — re-invoke the exe with ``ENGINE_SENTINEL``, which
+    ``serve.main`` turns into the engine CLI before any server code runs. Both forms stay a real
+    child process: isolation and the hard timeout are identical."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, ENGINE_SENTINEL]
+    return [sys.executable, str(_ENGINE_SCRIPT)]
+
+
 def run_collection_zip(raw: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Extract the ZIP, run the engine over it, and return ``(snapshot_dict, ingest_report)``."""
-    if not _ENGINE_SCRIPT.is_file():  # pragma: no cover - deployment misconfiguration
-        raise EngineRunError(f"Engine entry point not found at {_ENGINE_SCRIPT}")
     workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
     try:
         extracted = workdir / "extracted"
         extracted.mkdir()
         n_files = _safe_extract(raw, extracted)
-        root, device_dirs = _find_collection_root(extracted)
-        devices, provenance, skipped_dirs = _load_or_synthesize_devices(root, extracted, device_dirs)
-
-        devices_file = workdir / "devices.json"
-        devices_file.write_text(json.dumps(devices), encoding="utf-8")
-        template = workdir / "template.xlsx"
-        _write_min_template(template)
-        out_xlsx = workdir / "ingest.xlsx"
-
-        cmd = [
-            sys.executable, str(_ENGINE_SCRIPT),
-            "--no-collect", "--collection-dir", str(root),
-            "--devices-file", str(devices_file),
-            "--template", str(template),
-            "--output", str(out_xlsx),
-            "--workers", "1",
-            "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
-            "--no-crd", "--no-engagement", "--no-archreview", "--no-opshandbook",  # V3.23.170 (stale-list fix)
-        ]
-        t0 = time.monotonic()
-        try:
-            # stdin=DEVNULL: capture_output pipes only stdout/stderr — an inherited TTY stdin would
-            # let the engine's interactive credential prompt block the run until the timeout.
-            # Explicit utf-8 (not text=True's locale codepage): a non-cp1252 byte in engine output
-            # otherwise kills the reader thread on Windows (log tail silently lost) or raises on POSIX.
-            proc = subprocess.run(cmd, cwd=str(workdir), capture_output=True,
-                                  encoding="utf-8", errors="replace",
-                                  stdin=subprocess.DEVNULL, timeout=ENGINE_TIMEOUT_S)
-        except subprocess.TimeoutExpired as e:
-            raise EngineRunError(f"Engine run timed out after {ENGINE_TIMEOUT_S}s "
-                                 f"({len(device_dirs)} devices).") from e
-        duration = round(time.monotonic() - t0, 1)
-        log_tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-                             .splitlines()[-12:])
-        # WEBAP-01: this tail is surfaced to the (possibly remote, unauthenticated) uploader via the API 500
-        # detail AND the success report. Strip the server-side working-directory absolute path so an engine
-        # breadcrumb cannot disclose the server's filesystem layout. The engine runs with cwd=workdir and writes
-        # its outputs under it, so paths in its output are workdir-rooted.
-        log_tail = log_tail.replace(str(workdir), "<workdir>")
-        if proc.returncode != 0:
-            raise EngineRunError(f"Engine exited with code {proc.returncode}. Log tail:\n{log_tail}")
-
-        snap_path = Path(str(out_xlsx)[: -len(".xlsx")] + ".snapshot.json")
-        if not snap_path.is_file():
-            raise EngineRunError(f"Engine completed but wrote no snapshot. Log tail:\n{log_tail}")
-        snap = json.loads(snap_path.read_text(encoding="utf-8"))
-        # The engine exits 0 even when it parsed nothing (a device with no matching files just
-        # yields an empty section) — don't store a plausible-looking but empty assessment.
-        if not snap.get("devices"):
-            raise EngineRunError(f"Engine produced a snapshot with no devices. Log tail:\n{log_tail}")
-        if not snap.get("interfaces"):
-            raise EngineRunError(
-                "Engine parsed no interface data from the archive — the show-command files did not "
-                f"match any device. Log tail:\n{log_tail}")
-
-        report = {
-            "n_archive_files": n_files,
-            # WEBAP-02: the headline count must not exceed the fleet actually assessed. Non-round-trippable
-            # folder names are dropped into skipped_dirs (the engine would resolve their hostname to a different
-            # folder), so counting them here over-reported the assessed device count -- the exact n-count drift
-            # the project guards against. Report the addressable directories (skipped excluded; still disclosed).
-            "n_device_dirs": len(device_dirs) - len(skipped_dirs),
-            "devices": device_dirs,
-            "skipped_dirs": skipped_dirs,
-            "devices_json": provenance,
-            "engine_seconds": duration,
-            "engine_log_tail": log_tail,
-        }
-        return snap, report
+        return _assess_tree(extracted, n_files, workdir)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def run_collection_folder(path: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Run the engine over a SERVER-LOCAL collection folder and return
+    ``(snapshot_dict, ingest_report)`` — the portable-app channel (ADR-0004 P1).
+
+    Read-only on the user's tree: devices.json, the template and every output live in a private
+    temp workdir; the engine only READS ``--collection-dir``. The ZIP caps apply here too — they
+    bound the engine's work, not just archive extraction."""
+    folder = Path(str(path)).expanduser()
+    if not folder.is_dir():
+        raise IngestError(f"Not a directory: {folder}")
+    folder = folder.resolve()
+    n_files = 0
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(folder):
+        for name in filenames:
+            n_files += 1
+            if n_files > MAX_FILES:
+                raise IngestError(f"Folder has more than the {MAX_FILES}-file limit.")
+            try:
+                total += os.stat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue  # vanished/unreadable entry — the engine's loader skips it too
+    if not n_files:
+        raise IngestError("The folder is empty.")
+    if total > MAX_UNCOMPRESSED_BYTES:
+        raise IngestError(f"Folder holds {total // (1024 * 1024)} MB — over the "
+                          f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.")
+    workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
+    try:
+        return _assess_tree(folder, n_files, workdir)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _assess_tree(tree: Path, n_files: int, workdir: Path) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Shared back half of both ingest channels: locate the collection root under ``tree``, run
+    the engine child over it, harvest + sanity-check the snapshot, assemble the report."""
+    if not getattr(sys, "frozen", False) and not _ENGINE_SCRIPT.is_file():
+        raise EngineRunError(f"Engine entry point not found at {_ENGINE_SCRIPT}")
+    root, device_dirs = _find_collection_root(tree)
+    devices, provenance, skipped_dirs = _load_or_synthesize_devices(root, tree, device_dirs)
+
+    devices_file = workdir / "devices.json"
+    devices_file.write_text(json.dumps(devices), encoding="utf-8")
+    template = workdir / "template.xlsx"
+    _write_min_template(template)
+    out_xlsx = workdir / "ingest.xlsx"
+
+    cmd = [
+        *_engine_argv(),
+        "--no-collect", "--collection-dir", str(root),
+        "--devices-file", str(devices_file),
+        "--template", str(template),
+        "--output", str(out_xlsx),
+        "--workers", "1",
+        "--no-html", "--no-docx", "--no-pptx", "--no-design", "--no-mop",
+        "--no-crd", "--no-engagement", "--no-archreview", "--no-opshandbook",  # V3.23.170 (stale-list fix)
+    ]
+    t0 = time.monotonic()
+    try:
+        # stdin=DEVNULL: capture_output pipes only stdout/stderr — an inherited TTY stdin would
+        # let the engine's interactive credential prompt block the run until the timeout.
+        # Explicit utf-8 (not text=True's locale codepage): a non-cp1252 byte in engine output
+        # otherwise kills the reader thread on Windows (log tail silently lost) or raises on POSIX.
+        proc = subprocess.run(cmd, cwd=str(workdir), capture_output=True,
+                              encoding="utf-8", errors="replace",
+                              stdin=subprocess.DEVNULL, timeout=ENGINE_TIMEOUT_S)
+    except subprocess.TimeoutExpired as e:
+        raise EngineRunError(f"Engine run timed out after {ENGINE_TIMEOUT_S}s "
+                             f"({len(device_dirs)} devices).") from e
+    duration = round(time.monotonic() - t0, 1)
+    log_tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+                         .splitlines()[-12:])
+    # WEBAP-01: this tail is surfaced to the (possibly remote, unauthenticated) uploader via the API 500
+    # detail AND the success report. Strip the server-side working-directory absolute path so an engine
+    # breadcrumb cannot disclose the server's filesystem layout. The engine runs with cwd=workdir and writes
+    # its outputs under it, so paths in its output are workdir-rooted.
+    log_tail = log_tail.replace(str(workdir), "<workdir>")
+    if proc.returncode != 0:
+        raise EngineRunError(f"Engine exited with code {proc.returncode}. Log tail:\n{log_tail}")
+
+    snap_path = Path(str(out_xlsx)[: -len(".xlsx")] + ".snapshot.json")
+    if not snap_path.is_file():
+        raise EngineRunError(f"Engine completed but wrote no snapshot. Log tail:\n{log_tail}")
+    snap = json.loads(snap_path.read_text(encoding="utf-8"))
+    # The engine exits 0 even when it parsed nothing (a device with no matching files just
+    # yields an empty section) — don't store a plausible-looking but empty assessment.
+    if not snap.get("devices"):
+        raise EngineRunError(f"Engine produced a snapshot with no devices. Log tail:\n{log_tail}")
+    if not snap.get("interfaces"):
+        raise EngineRunError(
+            "Engine parsed no interface data from the archive — the show-command files did not "
+            f"match any device. Log tail:\n{log_tail}")
+
+    report = {
+        "n_archive_files": n_files,
+        # WEBAP-02: the headline count must not exceed the fleet actually assessed. Non-round-trippable
+        # folder names are dropped into skipped_dirs (the engine would resolve their hostname to a different
+        # folder), so counting them here over-reported the assessed device count -- the exact n-count drift
+        # the project guards against. Report the addressable directories (skipped excluded; still disclosed).
+        "n_device_dirs": len(device_dirs) - len(skipped_dirs),
+        "devices": device_dirs,
+        "skipped_dirs": skipped_dirs,
+        "devices_json": provenance,
+        "engine_seconds": duration,
+        "engine_log_tail": log_tail,
+    }
+    return snap, report

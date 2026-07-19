@@ -58,6 +58,9 @@ dev = ["pytest>=8,<10", "ruff>=0.5", "mypy>=1.8"]
 # already-produced snapshot.json (offline, no egress). The base engine never imports `mcp`
 # unless this extra is installed; cisco_toolkit.mcp_server guards the import at call time.
 mcp = ["mcp>=1.28,<2"]
+# The AssessHub web layer (webapp/backend) + the `assesshub` entry point (ADR-0004 P1: the
+# portable app's one door). Mirrors webapp/requirements.txt — keep the two in lockstep.
+webapp = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
 # The D10 Phase-2 retrieval-eval stack (P2-0b; docs/d10-retrieval-eval-design-2026-07-08.md §8) —
 # all offline/air-gap-safe, none imported by the engine: rank-bm25 (the auditable pure-Python Okapi
 # BM25 — §4's frozen priors k1/b are constructor args), pytrec-eval-terrier (the maintained
@@ -73,6 +76,9 @@ eval = ["rank-bm25>=0.2,<1", "pytrec-eval-terrier>=0.5,<1", "scipy>=1.10,<2"]
 cisco-assess = "COLLECT_PARSE_V3_23_0:main"
 # Optional MCP server over a produced snapshot.json (needs the [mcp] extra). Read-only, offline.
 cisco-mcp-server = "cisco_toolkit.mcp_server:main"
+# Atlas / AssessHub production entry (ADR-0004 P1): uvicorn.run(app) with no reload/workers,
+# --selftest for the silent-degrade assets, and the frozen engine-child sentinel. Needs [webapp].
+assesshub = "webapp.backend.serve:main"
 
 [project.urls]
 Homepage = "https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit"
@@ -86,7 +92,9 @@ Changelog = "https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-too
 py-modules = ["COLLECT_PARSE_V3_23_0"]
 
 [tool.setuptools.packages.find]
-include = ["cisco_toolkit*"]
+# webapp.backend rides along for the `assesshub` entry point (webapp/ itself is an implicit
+# namespace package — the exact, non-wildcard entry keeps webapp/frontend + webapp/tests out).
+include = ["cisco_toolkit*", "webapp.backend"]
 
 [tool.setuptools.package-data]
 # Ship the runtime data inside any built distribution: the gzipped KB files portdb/ouidb load, and the

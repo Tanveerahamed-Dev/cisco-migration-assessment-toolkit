@@ -12,9 +12,11 @@ SSH collection (CLI engine)  →  snapshot.json  ─┐
 raw show-output ZIP  →  engine runs server-side ─┘
 ```
 
-Two ways in: upload a finished `*.snapshot.json`, **or upload a ZIP of raw show-command outputs**
-(one folder per device — the collector's own layout) and AssessHub runs the real engine pipeline
-server-side and stores the result as a first-class snapshot.
+Three ways in: upload a finished `*.snapshot.json`, **upload a ZIP of raw show-command outputs**
+(one folder per device — the collector's own layout), **or ingest a server-local collection
+folder** (`/api/campaigns/{id}/ingest-folder` — the portable-app path, where the collection already
+sits on disk beside the app). Either way AssessHub runs the real engine pipeline server-side and
+stores the result as a first-class snapshot.
 
 ## What it does
 
@@ -81,6 +83,8 @@ server-side and stores the result as a first-class snapshot.
 webapp/
   backend/            FastAPI + SQLite (stdlib sqlite3); imports cisco_toolkit
     app.py            REST surface + serves the built SPA (with history fallback)
+    serve.py          Atlas production entry (ADR-0004 P1): uvicorn.run(app) — no reload/workers,
+                      frozen engine-child sentinel (--run-engine), --selftest, browser auto-open
     storage.py        campaign / snapshot / execution-run persistence
     summary.py        read-only KPI projection of a snapshot (re-uses engine._trend_point)
     graph.py          switch-topology nodes/edges for the force graph
@@ -111,9 +115,17 @@ pip install -r webapp/requirements.txt
 # 2) build the frontend (the backend serves the built SPA from one origin)
 cd webapp/frontend && npm install && npm run build && cd ../..
 
-# 3) serve everything on http://127.0.0.1:8000
+# 3) serve everything on http://127.0.0.1:8000 — the one door (auto-opens the browser)
+python -m webapp.backend.serve
+#    …or the same thing by hand:
 python -m uvicorn backend.app:app --app-dir webapp --port 8000
 ```
+
+Once pip-installed with the web layer (`pip install -e .[webapp]`), the same entry is the
+`assesshub` console command. `python -m webapp.backend.serve --selftest` verifies the assets that
+otherwise degrade *silently* when missing (explorer template, OUI/port KBs, docx/pptx extras,
+frontend dist, engine entry, DB dir) and exits non-zero on any failure — run it before a field
+engagement.
 
 Open <http://127.0.0.1:8000>, click **“Open a sample fleet”**, and explore — the sample is the
 bundled demo snapshot, no live network needed.
@@ -183,6 +195,7 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `POST` | `/api/campaigns` | create a campaign |
 | `POST` | `/api/campaigns/{id}/snapshots` | upload a snapshot `.json` (multipart) |
 | `POST` | `/api/campaigns/{id}/ingest` | upload a raw-collection ZIP — the engine runs server-side and the snapshot is stored |
+| `POST` | `/api/campaigns/{id}/ingest-folder` | ingest a **server-local** collection folder (JSON `{path, label}`) — same pipeline, no ZIP round-trip |
 | `GET`  | `/api/campaigns/{id}/trend` | campaign trajectory verdict + per-metric trend |
 | `GET`  | `/api/campaigns/{id}/gates` | gate board: cadence + derivable waves + recorded sign-offs |
 | `POST` | `/api/campaigns/{id}/gates` | record a gate decision (`go`/`no-go`/`slipped`; `pending` clears) |
