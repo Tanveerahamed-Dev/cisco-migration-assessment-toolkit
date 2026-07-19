@@ -25,6 +25,11 @@ def hex_of(rgb):
     return "%02X%02X%02X" % rgb
 
 
+# --- Application identity (ADR-0004 D1: the ONE brand constant — a rename is an edit here) ---
+APP_NAME = "Atlas"
+APP_BYLINE = "by Tanveer Ahamed"
+APP_TITLE = f"{APP_NAME} — {APP_BYLINE}"
+
 # --- THE canonical brand navy (one lever; edit here to re-brand) ---
 BRAND_NAVY_RGB = (0x1F, 0x38, 0x64)       # #1F3864
 BRAND_NAVY_HEX = hex_of(BRAND_NAVY_RGB)   # "1F3864"
