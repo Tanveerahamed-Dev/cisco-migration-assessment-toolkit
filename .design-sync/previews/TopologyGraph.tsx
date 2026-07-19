@@ -1,6 +1,7 @@
 import { TopologyGraph } from "assesshub-frontend";
 
-/** The demo fleet — nodes coloured by health band, keystones ringed, SPOF links red.
+/** The demo fleet — switch-chassis rects in role-tiered lanes, band as LED + chassis tint,
+ *  keystone corner badges, SPOF links red.
  *  (The preview harness wraps everything in DemoDataProvider, so snapId renders sample data.) */
 export const MeridianFleet = () => <TopologyGraph snapId={1} />;
 
