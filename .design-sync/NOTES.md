@@ -141,10 +141,17 @@
   identical (the +1505 lock churn = vitest devDeps). Incremental path into the empty project: pin recorded BEFORE
   upload; sentinel → 22 base+previews → 64 component files → reconcile (87 remote, 0 orphans) → sentinel re-arm →
   anchor LAST; `report_validate` {16,1,0,0,1}. URL: https://claude.ai/design/p/fae0df7f-7a5d-4bce-8744-5c73a3e189fe
-  ⚠️ Preview-ENRICHMENT candidate (not a defect): DesignBlueprintPanel's new domain-lens chips row doesn't appear
-  in its preview — `sample-data.ts` lacks a `/domain_packs` payload, so the fetch fails and the row gracefully
-  doesn't render (the designed degrade; renderHash unchanged, the standing grade is valid). Add the payload +
-  regrade DesignBlueprintPanel on the next content re-sync.
+  ~~⚠️ Preview-ENRICHMENT candidate~~ ✅ **DONE 2026-07-19 (same day, follow-up task): domain-pack chips now
+  in the preview.** `sample-data.ts` gained a `DOMAIN_PACKS` payload + `/domain_packs` route, and the COVERAGE
+  class keys that trigger packs were aligned to REAL `_ARCH_COVERAGE_REGISTRY` axes (`fhrp`→`fhrp_detail`,
+  `trustsec`→`cts`, + new observed-clean `port_security` row, summary 5/9) — REQUIRED because the real
+  `select_packs` against the old fictional keys selected ZERO packs, and the backend's invariant is that pack
+  selection can never disagree with the coverage grid beside it. `port_security` is deliberately in BOTH ent+sec
+  packs → ENT red chip (fhrp_detail finding) + SEC green chip. Payload proven byte-identical to the real
+  `cisco_toolkit.domain_packs.select_packs()` output (scratch verify script, MATCH). Driver green; regraded
+  DesignBlueprintPanel from the fresh screenshot (chips + 5/9 grid + intact card). Scoped atomic upload:
+  sentinel → bundle+css+DesignBlueprintPanel×4 → re-arm → anchor last; live anchor fetched back ==
+  local (`bundleSha12 1415e787f3d1`).
 
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
@@ -164,6 +171,13 @@
   `.design-sync/.cache/remote-sync.json` and run the driver with `--remote` so unchanged components skip
   re-verification.
 - Never regenerate sample data from real [HISTORY-REDACTED] snapshots (no-egress; the file ships to claude.ai).
+- **`renderHashes` miss data-driven DOM additions — never rely on them to detect sample-data changes.** Proven
+  2026-07-19: adding the whole domain-lens chips panel to DesignBlueprintPanel's render left its renderHash
+  BYTE-IDENTICAL (`f1f8570876d15a37`); the component reached the upload set only because its regenerated
+  `.prompt.md` changed (doc edit), and the new data shipped via `bundleSha12`. A sample-data-only enrichment
+  with NO doc edit would flag `components: []` (bundle-only upload) — the live card would change with no
+  regrade prompt. After ANY `sample-data.ts` edit: re-render + eyeball the affected card's screenshot and
+  regrade it manually, regardless of what the diff says.
 - **DS-source CSS edits masquerade as "esbuild noise" — always git-diff the shipped CSS before dismissing a
   styleSha diff.** A `styleSha`+`bundleSha12`(+`auxSha`) diff with **all** `renderHashes`/`sourceKeys`/`sourceHashes`
   identical is the EXACT signature of both (a) harmless esbuild non-determinism AND (b) a real edit to
