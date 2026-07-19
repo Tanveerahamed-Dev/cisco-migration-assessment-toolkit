@@ -26,7 +26,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
-from . import cutover, deliverables, engine, execution, gates, graph, ingest, summary
+from cisco_toolkit import brand_tokens
+
+from . import cutover, deliverables, engine, execution, gates, graph, ingest, serve, summary
 from .storage import Store
 
 _HERE = Path(__file__).resolve().parent
@@ -417,6 +419,14 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             "bands": summary.BANDS,
             "section_labels": [{"key": k, "label": v} for k, v in summary.SECTION_LABELS],
             "deliverables": deliverables.catalogue(),
+            # ADR-0004 D1: the SPA renders the brand it is SERVED — the values live in ONE place
+            # (cisco_toolkit/brand_tokens.py), so a rename never touches the frontend.
+            "app": {
+                "name": brand_tokens.APP_NAME,
+                "byline": brand_tokens.APP_BYLINE,
+                "title": brand_tokens.APP_TITLE,
+                "release": serve._release_version(),
+            },
         }
 
     # -- campaigns ---------------------------------------------------------
