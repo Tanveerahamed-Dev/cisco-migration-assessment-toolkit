@@ -59,6 +59,11 @@ class CompareIn(BaseModel):
     new_id: int
 
 
+class FolderIngestIn(BaseModel):
+    path: str
+    label: str = ""
+
+
 class ExecutionIn(BaseModel):
     label: str = ""
     operator: str = ""
@@ -333,7 +338,10 @@ def _generation_slot(semaphore: threading.BoundedSemaphore):
         semaphore.release()
 
 
-def create_app(db_path: str | None = None) -> FastAPI:
+def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = None) -> FastAPI:
+    """``dist_dir`` overrides where the built SPA is served from (default: the checkout's
+    webapp/frontend/dist) — the hook the Atlas entry module uses to point at the bundled copy
+    inside a frozen build (webapp/backend/serve.py, ADR-0004 P1)."""
     store = Store(db_path or DEFAULT_DB)
     app = FastAPI(
         title="AssessHub",
@@ -532,6 +540,25 @@ def create_app(db_path: str | None = None) -> FastAPI:
         except ingest.EngineRunError as e:
             raise HTTPException(500, str(e)) from e
         lbl = label.strip() or (file.filename or "collection").rsplit(".", 1)[0]
+        meta = store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
+        meta["ingest"] = report
+        return meta
+
+    @app.post("/api/campaigns/{campaign_id}/ingest-folder", status_code=201)
+    async def ingest_collection_folder(campaign_id: int, body: FolderIngestIn) -> Dict[str, Any]:
+        """Ingest a SERVER-LOCAL collection folder — the portable-app 'one door' path (ADR-0004
+        P1): on the stick the collection already sits beside the app, so a ZIP round-trip is pure
+        friction. Same engine pipeline and the same middleware guards as every write (access guard
+        + cross-site refusal); the folder is only READ — outputs land in a private temp workdir."""
+        if not store.get_campaign(campaign_id):
+            raise HTTPException(404, "Campaign not found")
+        try:
+            snap, report = await run_in_threadpool(ingest.run_collection_folder, body.path)
+        except ingest.IngestError as e:
+            raise HTTPException(400, str(e)) from e
+        except ingest.EngineRunError as e:
+            raise HTTPException(500, str(e)) from e
+        lbl = body.label.strip() or Path(body.path).name or "folder"
         meta = store.add_snapshot(campaign_id, lbl, snap, summary.summarize(snap))
         meta["ingest"] = report
         return meta
@@ -994,8 +1021,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
     # Serve the built SPA with a history-fallback: hashed assets are served directly, every other
     # non-API path returns index.html so client-side deep links survive a hard refresh. The /api
     # routes above are registered first, so they always win over this catch-all.
-    if FRONTEND_DIST.exists():
-        assets_dir = FRONTEND_DIST / "assets"
+    dist_root = Path(dist_dir) if dist_dir is not None else FRONTEND_DIST
+    if dist_root.exists():
+        assets_dir = dist_root / "assets"
         if assets_dir.exists():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
@@ -1008,7 +1036,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
             # not) can send `/../../../etc/passwd`; without the resolve()+containment check that FileResponse
             # served ANY file the process can read — the client-snapshot DB, source, keys — unauthenticated.
             # An escaping / absolute / drive-qualified path falls through to index.html, never a file read.
-            dist = FRONTEND_DIST.resolve()
+            dist = dist_root.resolve()
             candidate = (dist / full_path).resolve()
             if full_path and candidate.is_relative_to(dist) and candidate.is_file():
                 return FileResponse(candidate)
