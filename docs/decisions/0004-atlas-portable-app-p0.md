@@ -1,4 +1,4 @@
-# 0004 — AssessKit portable field app: P0 decisions
+# 0004 — Atlas portable field app: P0 decisions
 
 - **Status:** accepted (2026-07-19)
 - **Deciders:** Tanveer Ahamed (scope explicitly; name, SSH mode and credential UX delegated to the
@@ -9,13 +9,17 @@
   frozen-build code gaps (production entry module; frozen-aware ingest dispatch). P0's exit gate is
   this ADR.
 
-## D1 · Name: **AssessKit**, bylined **"by Tanveer Ahamed"**
+## D1 · Name: **Atlas**, bylined **"by Tanveer Ahamed"** (owner's call, "for now")
 
-`AssessKit.exe` on the stick; cockpit/About title "AssessKit · Tanveer Ahamed". The owner asked for
-a name carrying his name or his creation; a byline puts his full name in the title bar while the
-crisp product word stays professional on a client desk (rejected: fused names like "TanveerAssess" —
-clunky; bare "AssessHub" — no owner mark). The name lives in ONE brand constant
-(`cisco_toolkit/brand_tokens.py` at build time) so a rename is a one-line change.
+`Atlas.exe` in an `Atlas\` folder on the stick; cockpit/About title "Atlas — by Tanveer Ahamed".
+Chosen by the owner after a deliberate exploration of historical/mythological candidates
+(Theseus, Argus, Ariadne, Janus, Argonaut, Pharos, Netra, Drishti were weighed). Atlas is itself
+mythological — the Titan who carries the world, as the stick carries the engagement — and it
+deliberately shares one brand with the Project Atlas reference document: the app maps networks,
+the document maps the project. "Project" is dropped from the binary (codename register, not a
+shipped product). Known adjacency: "Atlas" is common in tech (MongoDB Atlas etc.) — acceptable
+for a bylined field tool, revisit only if commercialized. The name lives in ONE brand constant
+(`cisco_toolkit/brand_tokens.py` at build time) so a rename stays a one-line change.
 
 ## D2 · Field scope: the **full 12-document family**
 
