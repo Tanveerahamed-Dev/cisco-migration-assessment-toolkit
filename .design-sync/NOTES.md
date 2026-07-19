@@ -126,6 +126,25 @@
   toolchain the bundle is DETERMINISTIC, and the glass upload's `bundle`/`style` diff was 100% the real CSS, zero
   noise. Treat a `bundleSha12`/`styleSha` diff as a real-change signal (source CSS or esbuild-version), never a
   within-session "it's just noise" — identify WHAT moved (git-diff CSS, check README/aux) before dismissing.
+- ✅ **2026-07-19 RETARGETED → new project "Atlas Design System" (`fae0df7f-7a5d-4bce-8744-5c73a3e189fe`) —
+  first sync into it COMPLETE.** ADR-0004 rebrand (app name = Atlas): user-approved push of the existing
+  16-component bundle to a NEW project. The old pinned "Design System" (`81dfe070…`) was ALREADY GONE server-side
+  (list_projects empty + get_project 404 on a working authorization — evidently user-deleted ahead of the rebrand;
+  its cached `.cache/remote-sync.json` still served as the verification anchor for grade carry-forward). Driver
+  re-run before upload: chromium had to be REINSTALLED first (`node .ds-sync/node_modules/playwright/cli.js
+  install chromium` — the `chromium_headless_shell-1208` cache dir had been purged since 07-04); verdict then
+  green — 16/16 verified-by-upload, render 15/16 clean + the triaged deliberate ErrorBoundary throw.
+  `bundle`+`styling` SHAs moved vs the 07-04 anchor with ALL 16 renderHashes/sourceKeys unchanged — diagnosed
+  REAL-but-benign per this file's own rule (git-diffed, not dismissed): `api.ts` +17 (D6 `domainPacks` endpoint +
+  PR #376 `out_of_order` gate fields) and `DesignBlueprint.tsx` +35 (domain-lens chips row; P_COLOR/scoreColor/
+  phaseColor now exported for tests) ride the shared bundle; theme.css/styles.css untouched; runtime deps
+  identical (the +1505 lock churn = vitest devDeps). Incremental path into the empty project: pin recorded BEFORE
+  upload; sentinel → 22 base+previews → 64 component files → reconcile (87 remote, 0 orphans) → sentinel re-arm →
+  anchor LAST; `report_validate` {16,1,0,0,1}. URL: https://claude.ai/design/p/fae0df7f-7a5d-4bce-8744-5c73a3e189fe
+  ⚠️ Preview-ENRICHMENT candidate (not a defect): DesignBlueprintPanel's new domain-lens chips row doesn't appear
+  in its preview — `sample-data.ts` lacks a `/domain_packs` payload, so the fetch fails and the row gracefully
+  doesn't render (the designed degrade; renderHash unchanged, the standing grade is valid). Add the payload +
+  regrade DesignBlueprintPanel on the next content re-sync.
 
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
@@ -137,9 +156,10 @@
   `npm i --prefix .ds-sync esbuild ts-morph @types/react typescript playwright@<version pinning the cached
   chromium>` (this machine: playwright **1.58.0** ↔ cache `chromium-1208`; verify with
   `playwright-core/browsers.json` — read it as a FILE). `webapp/frontend` needs `npm ci` first.
-- ~~No `projectId` pinned~~ **RESOLVED 2026-07-02**: pinned `81dfe070-906d-445b-a821-1d100a3e969d`
-  ("Design System", owner "taha"). Future runs are pinned-before-run → ATOMIC upload path, and fetch the remote
-  `_ds_sync.json` as the verification anchor.
+- ~~No `projectId` pinned~~ **RESOLVED 2026-07-02 · RETARGETED 2026-07-19**: pinned
+  `fae0df7f-7a5d-4bce-8744-5c73a3e189fe` ("Atlas Design System", subscribed account — supersedes
+  `81dfe070…` "Design System", which was user-deleted server-side before the 07-19 retarget). Future runs are
+  pinned-before-run → ATOMIC upload path, and fetch the remote `_ds_sync.json` as the verification anchor.
 - **Verification anchor**: LIVE since 2026-07-02 — the project holds `_ds_sync.json`. Re-syncs: fetch it to
   `.design-sync/.cache/remote-sync.json` and run the driver with `--remote` so unchanged components skip
   re-verification.
