@@ -167,6 +167,9 @@ export default function CampaignPage() {
   const [zipLabel, setZipLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [ingesting, setIngesting] = useState(false);
+  const [folderPath, setFolderPath] = useState("");
+  const [folderLabel, setFolderLabel] = useState("");
+  const [folderIngesting, setFolderIngesting] = useState(false);
   const [cmpA, setCmpA] = useState<number | "">("");
   const [cmpB, setCmpB] = useState<number | "">("");
   const [cmp, setCmp] = useState<any>(null);
@@ -187,6 +190,16 @@ export default function CampaignPage() {
       toast(`Engine run complete — ${meta.ingest.n_device_dirs} device(s) in ${meta.ingest.engine_seconds}s.`);
       nav(`/snapshots/${meta.id}`);
     } catch (e: any) { toast(e.message); } finally { setIngesting(false); }
+  }
+  async function ingestFolder() {
+    const p = folderPath.trim();
+    if (!p) { toast("Enter the server-local folder path first."); return; }
+    setFolderIngesting(true);
+    try {
+      const meta = await api.ingestFolder(cid, p, folderLabel);
+      toast(`Engine run complete — ${meta.ingest.n_device_dirs} device(s) in ${meta.ingest.engine_seconds}s.`);
+      nav(`/snapshots/${meta.id}`);
+    } catch (e: any) { toast(e.message); } finally { setFolderIngesting(false); }
   }
   async function runCompare() {
     if (cmpA === "" || cmpB === "" || cmpA === cmpB) { toast("Pick two different snapshots."); return; }
@@ -278,6 +291,26 @@ export default function CampaignPage() {
                 small fleet, a few minutes for a large one.
               </div>
             )}
+          </div>
+
+          <div className="panel">
+            <h3>…or ingest a local folder</h3>
+            <div className="dim" style={{ fontSize: 12.5, marginBottom: 12 }}>
+              Point at a collection folder on the <b>server&rsquo;s</b> disk (same per-device layout,
+              no ZIP round-trip) — the portable-app path, where the collection already sits beside
+              the app. The folder is only read; outputs stay in a private workdir.
+            </div>
+            <label className="field"><span>Folder path (on the server)</span>
+              <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)}
+                placeholder="e.g. D:\collections\siteA" disabled={folderIngesting} />
+            </label>
+            <label className="field"><span>Label (optional)</span>
+              <input value={folderLabel} onChange={(e) => setFolderLabel(e.target.value)}
+                placeholder="e.g. Field baseline" disabled={folderIngesting} />
+            </label>
+            <button className="btn primary" onClick={ingestFolder} disabled={folderIngesting}>
+              {folderIngesting ? <><span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Running engine…</> : "⚙ Run engine on folder"}
+            </button>
           </div>
 
           {snaps.length >= 2 && (

@@ -197,3 +197,45 @@ describe("CampaignPage", () => {
     expect(ooo.getAttribute("data-out-of-order")).toBe("true");
   });
 });
+
+// ── folder ingest (ADR-0004 P1 — the portable-app channel beside the ZIP card) ──
+describe("folder ingest", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function mountEmptyCampaign() {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    return renderCampaign();
+  }
+
+  it("renders the folder form beside the ZIP card and runs the engine over the typed path", async () => {
+    const ing = vi.spyOn(api, "ingestFolder").mockResolvedValue({
+      ...snap(9),
+      ingest: { n_device_dirs: 3, engine_seconds: 4.2 },
+    } as any);
+    mountEmptyCampaign();
+    await screen.findByText("DC East Migration");
+
+    // both server-side ingest channels are offered
+    expect(screen.getByText(/ingest a raw collection/i)).toBeInTheDocument();
+    expect(screen.getByText(/ingest a local folder/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/collections\\siteA/i), {
+      target: { value: "D:\\field\\siteA" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /run engine on folder/i }));
+
+    await waitFor(() => expect(ing).toHaveBeenCalledWith(3, "D:\\field\\siteA", ""));
+  });
+
+  it("refuses an empty path with a toast and never calls the API", async () => {
+    const ing = vi.spyOn(api, "ingestFolder");
+    mountEmptyCampaign();
+    await screen.findByText("DC East Migration");
+
+    fireEvent.click(screen.getByRole("button", { name: /run engine on folder/i }));
+
+    expect(await screen.findByText("Enter the server-local folder path first.")).toBeInTheDocument();
+    expect(ing).not.toHaveBeenCalled();
+  });
+});
