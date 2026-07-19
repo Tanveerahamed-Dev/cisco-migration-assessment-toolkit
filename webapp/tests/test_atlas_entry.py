@@ -328,6 +328,19 @@ def test_ingest_folder_route_maps_ingest_error_to_400(client, monkeypatch):
     assert "directory" in r.json()["detail"]
 
 
+def test_meta_carries_app_identity_from_brand_tokens(client):
+    """/api/meta serves the app identity FROM the brand SSOT (ADR-0004 D1) so the SPA never
+    hardcodes the name — a rename stays one edit in cisco_toolkit/brand_tokens.py."""
+    from cisco_toolkit import brand_tokens as bt
+
+    meta = client.get("/api/meta").json()
+    assert meta["app"]["name"] == bt.APP_NAME
+    assert meta["app"]["byline"] == bt.APP_BYLINE
+    assert meta["app"]["title"] == bt.APP_TITLE
+    assert meta["app"]["release"]  # non-empty; the exact value is owned by pyproject/dist metadata
+    assert meta["engine_schema"]
+
+
 def test_ingest_folder_route_blocks_cross_site_writes(client):
     """The new POST must sit behind the same blind-CSRF guard as every other write — a cross-site
     request dies at the middleware, before the path is even looked at."""

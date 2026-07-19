@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import App from "./App";
+import { api } from "./api";
+import type { Meta } from "./api";
 
 // App is the routing spine: the top bar (always present), the route table, and the theme toggle.
 // These exercise the parts jsdom can reach without mocking every page's API — the catch-all route
@@ -49,5 +51,41 @@ describe("App shell", () => {
     localStorage.setItem("assesshub-theme", "light");
     renderApp();
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+});
+
+// ADR-0004 D1: the cockpit brand comes from /api/meta (whose values come from the brand SSOT,
+// cisco_toolkit/brand_tokens.py). "AssessHub" survives only as the pre-load / API-down fallback.
+describe("TopBar app identity", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const META: Meta = {
+    engine_schema: "3.23.0",
+    severity_order: [],
+    bands: [],
+    section_labels: [],
+    deliverables: [],
+    app: { name: "Atlas", byline: "by Tanveer Ahamed", title: "Atlas — by Tanveer Ahamed", release: "3.31.0 (checkout)" },
+  };
+
+  it("upgrades the brand (and document title) to the served identity once meta loads", async () => {
+    vi.spyOn(api, "meta").mockResolvedValue(META);
+    renderApp();
+    expect(await screen.findByText("Atlas")).toBeInTheDocument();
+    expect(screen.getByText("by Tanveer Ahamed")).toBeInTheDocument();
+    expect(screen.queryByText("AssessHub")).not.toBeInTheDocument();
+    await waitFor(() => expect(document.title).toContain("Atlas"));
+  });
+
+  it("keeps the AssessHub fallback when meta is unreachable", async () => {
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("api down"));
+    renderApp();
+    expect(screen.getByText("AssessHub")).toBeInTheDocument();
+  });
+
+  it("exposes an About nav link routing to the About page", () => {
+    vi.spyOn(api, "meta").mockRejectedValue(new Error("api down"));
+    renderApp();
+    expect(screen.getByRole("link", { name: "About" })).toBeInTheDocument();
   });
 });

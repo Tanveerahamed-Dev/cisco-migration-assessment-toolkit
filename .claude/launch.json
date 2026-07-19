@@ -12,6 +12,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8000", "--app-dir", "webapp"],
       "port": 8000
+    },
+    {
+      "name": "atlas",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "webapp.backend.serve", "--no-browser", "--port", "8471"],
+      "port": 8471
     }
   ]
 }
