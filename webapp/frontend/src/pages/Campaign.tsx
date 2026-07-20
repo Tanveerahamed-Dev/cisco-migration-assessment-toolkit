@@ -95,7 +95,7 @@ function GateBoard({ id, latest, toast }: { id: number; latest: number; toast: (
                   <span key={`${w}|${g.key}`} role="button" tabIndex={0} className="chip gate"
                     onClick={() => cycle(w, g.key)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycle(w, g.key); } }}
-                    data-wave={w} data-gate={g.key} data-out-of-order={ooo || undefined} title={tip}
+                    data-wave={w} data-gate={g.key} data-out-of-order={ooo || undefined} title={tip} aria-label={tip}
                     style={{ ["--gc" as any]: gateColor(d === "pending" ? "PENDING" : d.toUpperCase()), cursor: "pointer", justifyContent: "center", gap: 4, fontSize: 11, opacity: busy ? 0.65 : 1 }}>
                     {d === "pending" ? "—" : d.toUpperCase()}
                     {ooo && (
@@ -235,7 +235,8 @@ export default function CampaignPage() {
             {snaps.length === 0 ? <div className="faint" style={{ fontSize: 13 }}>No snapshots yet — upload one on the right.</div> : (
               <div className="grid" style={{ gap: 10 }}>
                 {snaps.map((s, i) => (
-                  <Link key={s.id} to={`/snapshots/${s.id}`} className="panel" style={{ padding: 14, display: "block", color: "inherit", textDecoration: "none", background: "var(--surface-2)" }}>
+                  <Link key={s.id} to={`/snapshots/${s.id}`} className="panel"
+                    style={{ padding: 14, display: "block", color: "inherit", textDecoration: "none", background: "var(--surface-2)", ["--stagger-i" as any]: Math.min(i, 8) }}>
                     <div className="spread">
                       <div className="row-flex" style={{ gap: 10 }}>
                         <span className="chip mono">C{i + 1}</span>
