@@ -30,7 +30,7 @@ function Stat({ value, label, color }: { value: ReactNode; label: string; color?
   );
 }
 
-function WaveCard({ w }: { w: CutoverWave }) {
+function WaveCard({ w, i }: { w: CutoverWave; i: number }) {
   const [open, setOpen] = useState(false);
   const split: Record<string, number> = {};
   if (w.make_before_break.length) split["make-before-break"] = w.make_before_break.length;
@@ -39,7 +39,9 @@ function WaveCard({ w }: { w: CutoverWave }) {
   const br = w.blast_radius;
 
   return (
-    <div className="wave-card" style={{ ["--gc" as any]: gateColor(w.gate) }}>
+    // .ros-reveal: reveal-up on mount, capped+staggered per card (DesignBlueprint's DecisionCard idiom)
+    // so a long wave list never waits seconds. Inert under reduced motion.
+    <div className="wave-card ros-reveal" style={{ ["--gc" as any]: gateColor(w.gate), animationDelay: `${Math.min(i, 8) * 50}ms` }}>
       <div className="wh">
         <span className="ordno">{w.order}</span>
         <span className="wname">{w.group}</span>
@@ -102,7 +104,7 @@ function WaveCard({ w }: { w: CutoverWave }) {
       )}
 
       <div style={{ marginTop: 12 }}>
-        <button className="btn" onClick={() => setOpen((v) => !v)} style={{ padding: "6px 12px", fontSize: 12 }}>
+        <button className="btn" onClick={() => setOpen((v) => !v)} aria-expanded={open} style={{ padding: "6px 12px", fontSize: 12 }}>
           {open ? "▾" : "▸"} Run-of-show
           <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>{w.run_of_show.length} steps · {w.validation.length} checks · {w.remediation.length} fixes</span>
         </button>
@@ -270,7 +272,7 @@ export default function CutoverPlanner({ snapId }: { snapId: number }) {
       </details>
 
       <div className="wave-list">
-        {plan.waves.map((w) => <WaveCard key={w.group + w.order} w={w} />)}
+        {plan.waves.map((w, i) => <WaveCard key={w.group + w.order} w={w} i={i} />)}
       </div>
 
       <ExecutionRuns snapId={snapId} />
