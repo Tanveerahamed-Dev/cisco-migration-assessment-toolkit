@@ -54,6 +54,25 @@ describe("App shell", () => {
   });
 });
 
+// Unit 2: Routes now renders a LAGGED location (`shown`), synced from the router's real location
+// via a view-transition-wrapped effect (jsdom has no startViewTransition, so the sync fallback
+// applies it immediately — see components/ui.test.tsx). This only asserts the settled DOM after
+// navigation, never a mid-animation frame (house convention).
+describe("route transitions (Unit 2 — view-transition lag)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("navigating swaps the routed page while the chrome (top bar) stays mounted", async () => {
+    vi.spyOn(api, "listCampaigns").mockResolvedValue([]);
+    renderApp("/");
+    expect(screen.queryByRole("heading", { name: "Campaigns" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "Campaigns" }));
+
+    expect(await screen.findByRole("heading", { name: "Campaigns" })).toBeInTheDocument();
+    expect(screen.getByText("AssessHub")).toBeInTheDocument(); // chrome survives the swap
+  });
+});
+
 // ADR-0004 D1: the cockpit brand comes from /api/meta (whose values come from the brand SSOT,
 // cisco_toolkit/brand_tokens.py). "AssessHub" survives only as the pre-load / API-down fallback.
 describe("TopBar app identity", () => {
