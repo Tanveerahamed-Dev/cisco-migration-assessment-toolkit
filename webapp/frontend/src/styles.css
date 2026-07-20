@@ -411,3 +411,14 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
 @media (prefers-reduced-motion: no-preference) {
   .row-reveal { animation: reveal-up var(--motion) var(--ease) both; }
 }
+
+/* ---- Toast exit transition (components/ui.tsx useToast, animation Unit 25) — the reverse of
+   toast-in: fade + slide down, keeping the translateX(-50%) centering. The one exception to the
+   "resting state is visible" rule in the motion-layer banner above: this DOES end on opacity:0,
+   but useToast removes the node TOAST_EXIT_MS (260ms, mirroring --motion) later, so nothing is ever
+   stranded hidden. Reduced motion never applies the `out` class — the hook clears the message
+   immediately at the display timeout, exactly like before this animation existed. ---- */
+@keyframes toast-out { from { opacity: 1; transform: translate(-50%, 0); } to { opacity: 0; transform: translate(-50%, 12px); } }
+@media (prefers-reduced-motion: no-preference) {
+  .toast.out { animation: toast-out var(--motion) var(--ease) both; }
+}
