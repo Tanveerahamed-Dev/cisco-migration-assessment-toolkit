@@ -7,6 +7,7 @@ import SnapshotPage from "./pages/Snapshot";
 import ExecutionPage from "./pages/Execution";
 import AboutPage from "./pages/About";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { useViewTransition } from "./components/ui";
 import { api } from "./api";
 import type { AppIdentity } from "./api";
 
@@ -23,6 +24,10 @@ function useTheme() {
 // "AssessHub / migration cockpit" survives only as the pre-load / API-down fallback.
 function TopBar({ app }: { app: AppIdentity | null }) {
   const { theme, toggle } = useTheme();
+  // Same view-transition machinery as route changes (Unit 24): startViewTransition snapshots the
+  // pre-toggle palette, flushSync commits the flip (+ useTheme's data-theme effect), then the UA
+  // cross-fades old->new for free — no manual color tweening.
+  const run = useViewTransition();
   return (
     <header className="topbar">
       <Link to="/" className="brand" style={{ color: "var(--text)" }}>
@@ -35,7 +40,7 @@ function TopBar({ app }: { app: AppIdentity | null }) {
         <NavLink to="/campaigns">Campaigns</NavLink>
         <NavLink to="/about">About</NavLink>
       </nav>
-      <button className="btn ghost" onClick={toggle} title="Toggle theme" aria-label="Toggle theme">
+      <button className="btn ghost" onClick={() => run(toggle)} title="Toggle theme" aria-label="Toggle theme">
         {theme === "dark" ? "☀" : "☾"}
       </button>
     </header>
@@ -44,6 +49,18 @@ function TopBar({ app }: { app: AppIdentity | null }) {
 
 export default function App() {
   const location = useLocation();
+  const run = useViewTransition();
+  // Lags one render behind the router: Routes below renders `shown`, not `location`, so
+  // startViewTransition can snapshot the OUTGOING page before it's replaced. The effect only
+  // catches `shown` up once a real navigation lands (key changes) — flushSync (inside run) makes
+  // that catch-up synchronous, either inside the transition callback or, under reduced motion /
+  // unsupported browsers, immediately.
+  const [shown, setShown] = useState(location);
+  useEffect(() => {
+    if (shown.key === location.key) return;
+    run(() => setShown(location));
+  }, [location, shown, run]);
+
   const [app, setApp] = useState<AppIdentity | null>(null);
   useEffect(() => {
     // Fire-and-forget: an unreachable API leaves the fallback brand (the SPA still renders).
@@ -59,9 +76,11 @@ export default function App() {
       <TopBar app={app} />
       {/* WEBAP-01: a render crash in any one route/panel must degrade to a recoverable card, not white-screen
           the whole SPA. The boundary is keyed by pathname so navigating (the TopBar nav lives ABOVE it) remounts
-          it fresh and clears a prior error. */}
-      <ErrorBoundary key={location.pathname}>
-        <Routes location={location}>
+          it fresh and clears a prior error. Keyed to `shown` (the LAGGED pathname), never `location` directly —
+          keying to `location` would remount the boundary, and destroy the outgoing page, before the view
+          transition below gets to snapshot it, silently defeating the whole mechanism. */}
+      <ErrorBoundary key={shown.pathname}>
+        <Routes location={shown}>
           <Route path="/" element={<Landing />} />
           <Route path="/campaigns" element={<Dashboard />} />
           <Route path="/campaigns/:id" element={<CampaignPage />} />
