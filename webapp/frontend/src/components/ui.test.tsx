@@ -1,6 +1,6 @@
 import { render, renderHook, screen, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Bars, SegBar, SevChip, useAsync, useToast } from "./ui";
+import { Bars, CountUp, SegBar, SevChip, useAsync, usePositionTween, useToast, useViewTransition, type Pt } from "./ui";
 
 // The shared UI primitives carry real, reusable logic (zero-filtering, empty states, a data-load
 // state machine, an auto-dismissing toast) used across every page. These pin that logic on the
@@ -60,6 +60,56 @@ describe("useToast", () => {
     expect(result.current.node).not.toBeNull(); // shown
     act(() => vi.advanceTimersByTime(2600));
     expect(result.current.node).toBeNull(); // auto-cleared
+  });
+});
+
+// Animated primitives are asserted on their STABLE final state, never a mid-tween frame —
+// the same convention the page tests use around CountUp/Gauge.
+
+describe("CountUp", () => {
+  it("settles on the target value, and a retarget settles on the new target (no snap-back to 0)", async () => {
+    const { rerender } = render(<CountUp value={100} duration={40} />);
+    await waitFor(() => expect(screen.getByText("100")).toBeInTheDocument());
+    // retarget: the tween must continue from the shown value and settle on the new target
+    rerender(<CountUp value={50} duration={40} />);
+    await waitFor(() => expect(screen.getByText("50")).toBeInTheDocument());
+  });
+
+  it("renders the honest dash for a non-finite value", () => {
+    render(<CountUp value={NaN} />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+});
+
+describe("useViewTransition", () => {
+  it("applies the update synchronously where startViewTransition is unsupported (jsdom)", () => {
+    const { result } = renderHook(() => useViewTransition());
+    const update = vi.fn();
+    act(() => result.current(update));
+    expect(update).toHaveBeenCalledTimes(1); // fallback ran it inline, exactly once
+  });
+});
+
+describe("usePositionTween", () => {
+  const map = (o: Record<string, Pt>) => new Map(Object.entries(o));
+
+  it("starts AT the targets (no fly-in) and a membership-only change adopts new ids at target", async () => {
+    const a = map({ sw1: { x: 0, y: 0 } });
+    const { result, rerender } = renderHook(({ m }) => usePositionTween(m, 40), { initialProps: { m: a } });
+    expect(result.current.get("sw1")).toEqual({ x: 0, y: 0 }); // resting state = final state
+    // add a node without moving the survivor: no tween, the new id appears at its target
+    const b = map({ sw1: { x: 0, y: 0 }, sw2: { x: 9, y: 9 } });
+    rerender({ m: b });
+    await waitFor(() => expect(result.current.get("sw2")).toEqual({ x: 9, y: 9 }));
+  });
+
+  it("tweens a persisting id to its new target and drops vanished ids", async () => {
+    const a = map({ sw1: { x: 0, y: 0 }, sw2: { x: 5, y: 5 } });
+    const { result, rerender } = renderHook(({ m }) => usePositionTween(m, 40), { initialProps: { m: a } });
+    const b = map({ sw1: { x: 100, y: 60 } }); // sw1 relocates, sw2 is filtered away
+    rerender({ m: b });
+    await waitFor(() => expect(result.current.get("sw1")).toEqual({ x: 100, y: 60 })); // settled
+    expect(result.current.has("sw2")).toBe(false); // vanished id dropped, not tweened out
   });
 });
 
