@@ -257,9 +257,9 @@ export default function CausalFlowPanel({ snapId }: { snapId: number }) {
         <div className="dim" style={{ fontSize: 13, padding: "12px 0" }}>No findings match this filter. Clear the family or severity filter to see more.</div>
       ) : cur ? (
         <>
-          {/* selected flow */}
+          {/* selected flow — keyed on cur.key so switching cards remounts the SVG and replays .czreveal */}
           <div style={{ fontSize: 13, fontWeight: 700, margin: "8px 0 6px" }}>Causal flow — {cur.title}</div>
-          <FlowDiagram f={cur} />
+          <FlowDiagram key={cur.key} f={cur} />
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 9 }}>
             {STAGES.map((st) => (
               <span key={st.key} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-dim)" }}>
@@ -301,25 +301,29 @@ export default function CausalFlowPanel({ snapId }: { snapId: number }) {
             </div>
           )}
 
-          {/* card list */}
+          {/* card list — keyed on the active filter so a filter change remounts the cards and replays
+              each .panel's reveal-up, staggered per-card (capped so a long list doesn't crawl in) */}
           <div style={{ fontSize: 13, fontWeight: 700, margin: "14px 0 6px" }}>
             {fam === "all" ? "All findings" : view[0]?.family_label} <span className="faint" style={{ fontWeight: 400 }}>{Math.min(CAP, view.length)} of {view.length}</span>
           </div>
-          {view.slice(0, CAP).map((c, i) => (
-            <div key={c.key} role="button" tabIndex={0} aria-pressed={i === idx}
-              onClick={() => setSel(i)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSel(i); } }}
-              className="panel" style={{ padding: "8px 10px", marginBottom: 6, cursor: "pointer",
-                borderLeft: `3px solid ${sevColor(c.severity)}`, boxShadow: i === idx ? "0 0 0 2px var(--accent)" : undefined }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <SevBadge sev={c.severity} s={10} /><b style={{ fontSize: 12, flex: 1 }}>{c.title}</b>
-                <span className="chip" style={{ fontSize: 10, color: sevColor(c.severity), borderColor: sevColor(c.severity) }}>{czSev(c.severity)}</span>
+          <div key={fam + "|" + sev}>
+            {view.slice(0, CAP).map((c, i) => (
+              <div key={c.key} role="button" tabIndex={0} aria-pressed={i === idx}
+                onClick={() => setSel(i)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSel(i); } }}
+                className="panel" style={{ padding: "8px 10px", marginBottom: 6, cursor: "pointer",
+                  borderLeft: `3px solid ${sevColor(c.severity)}`, boxShadow: i === idx ? "0 0 0 2px var(--accent)" : undefined,
+                  animationDelay: `${Math.min(i, 8) * 50}ms` }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <SevBadge sev={c.severity} s={10} /><b style={{ fontSize: 12, flex: 1 }}>{c.title}</b>
+                  <span className="chip" style={{ fontSize: 10, color: sevColor(c.severity), borderColor: sevColor(c.severity) }}>{czSev(c.severity)}</span>
+                </div>
+                <div className="faint mono" style={{ fontSize: 11, marginTop: 2 }}>
+                  {c.icon} {c.family_label}{c.hosts.length ? " · " + c.hosts.slice(0, 3).join(", ") : ""}{c.blast > 0 ? ` · ${c.blast} ${c.blast_unit}` : ""}
+                </div>
+                <div className="dim" style={{ fontSize: 12, marginTop: 2 }}>{c.impact}</div>
               </div>
-              <div className="faint mono" style={{ fontSize: 11, marginTop: 2 }}>
-                {c.icon} {c.family_label}{c.hosts.length ? " · " + c.hosts.slice(0, 3).join(", ") : ""}{c.blast > 0 ? ` · ${c.blast} ${c.blast_unit}` : ""}
-              </div>
-              <div className="dim" style={{ fontSize: 12, marginTop: 2 }}>{c.impact}</div>
-            </div>
-          ))}
+            ))}
+          </div>
           {view.length > CAP && (
             <div className="faint" style={{ fontSize: 11, marginTop: 6 }}>…and {view.length - CAP} more in this filter — narrow by family or severity to see them.</div>
           )}
