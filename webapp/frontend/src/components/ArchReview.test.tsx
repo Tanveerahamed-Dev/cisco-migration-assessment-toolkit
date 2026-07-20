@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import ArchReviewPanel, { V_LABEL, V_COLOR, GRADE_COLOR } from "./ArchReview";
 import { api } from "../api";
 
@@ -47,6 +47,17 @@ const archreview = {
   },
 };
 
+// one real domain + its check, for the domain-row keyboard-selection test below.
+const archreviewWithDomain = {
+  ...archreview,
+  domains: [{ key: "Resiliency", verdict: "advisory", score_pct: 75, checks: ["R-1"] }],
+  checks: [{
+    id: "R-1", domain: "Resiliency", title: "Dual-homed uplinks", verdict: "advisory",
+    observed: "Single uplink observed on 3 switches.", implication: "No redundancy on failure.",
+    recommendation: "Add a second uplink.", reference: "CCDE 4.2", evidence: ["sw1"],
+  }],
+};
+
 describe("ArchReviewPanel (render)", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -65,6 +76,42 @@ describe("ArchReviewPanel (render)", () => {
   it("renders the question board on success", async () => {
     vi.spyOn(api, "archreview").mockResolvedValue(archreview as never);
     render(<ArchReviewPanel snapId={1} />);
-    expect(await screen.findByRole("button", { name: "Where do we start?" })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "Where do we start?" })).toBeInTheDocument();
+  });
+});
+
+describe("ArchReviewPanel accessible tabs + keyboard domain rows", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("flips aria-selected to the clicked question tab and back off the old one", async () => {
+    vi.spyOn(api, "archreview").mockResolvedValue(archreview as never);
+    render(<ArchReviewPanel snapId={1} />);
+    const start = await screen.findByRole("tab", { name: "Where do we start?" });
+    expect(start).toHaveAttribute("aria-selected", "true");
+    const blockers = screen.getByRole("tab", { name: "What blocks the migration?" });
+    expect(blockers).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(blockers);
+
+    expect(blockers).toHaveAttribute("aria-selected", "true");
+    expect(start).toHaveAttribute("aria-selected", "false");
+    // the tabpanel's aria-labelledby follows the newly active tab
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", blockers.id);
+  });
+
+  it("selects a domain row from the keyboard — Enter toggles aria-pressed and reveals its checks", async () => {
+    vi.spyOn(api, "archreview").mockResolvedValue(archreviewWithDomain as never);
+    render(<ArchReviewPanel snapId={1} />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Judge every design domain" }));
+
+    const row = screen.getByRole("button", { name: /Resiliency/ });
+    expect(row).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.keyDown(row, { key: "Enter" });
+
+    // the .tabfade wrapper remounts on domainSel change (key={q + domainSel}), so the old `row`
+    // node is now detached — re-query rather than assert on the stale reference.
+    expect(screen.getByRole("button", { name: /Resiliency/ })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByText("Dual-homed uplinks")).toBeInTheDocument();
   });
 });
