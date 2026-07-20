@@ -52,7 +52,7 @@ export default function Dashboard() {
         </div>
         <span style={{ flex: 1 }} />
         <button className="btn" onClick={seed} disabled={busy}>＋ Sample fleet</button>
-        <button className="btn primary" onClick={() => setCreating((v) => !v)}>＋ New campaign</button>
+        <button className="btn primary" aria-expanded={creating} onClick={() => setCreating((v) => !v)}>＋ New campaign</button>
       </div>
 
       {creating && (
@@ -80,8 +80,9 @@ export default function Dashboard() {
         </div></div>
       ) : (
         <div className="grid auto">
-          {data.map((c) => (
-            <Link to={`/campaigns/${c.id}`} key={c.id} className="panel" style={{ color: "inherit", textDecoration: "none", display: "block" }}>
+          {data.map((c, i) => (
+            <Link to={`/campaigns/${c.id}`} key={c.id} className="panel"
+              style={{ color: "inherit", textDecoration: "none", display: "block", ["--stagger-i" as any]: Math.min(i, 8) }}>
               <div className="spread">
                 <h3 style={{ textTransform: "none", letterSpacing: 0, fontSize: 16, color: "var(--text)", margin: 0 }}>{c.name}</h3>
                 <span className="chip">{c.n_snapshots || 0} wave{(c.n_snapshots || 0) === 1 ? "" : "s"}</span>

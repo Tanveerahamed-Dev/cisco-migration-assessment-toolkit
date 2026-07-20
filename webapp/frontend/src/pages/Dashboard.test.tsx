@@ -50,4 +50,16 @@ describe("Dashboard (campaigns)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(create).toHaveBeenCalledWith("New Fleet", "");
   });
+
+  it("flips aria-expanded on the New campaign toggle as the inline form opens/closes", async () => {
+    vi.spyOn(api, "listCampaigns").mockResolvedValue([] as never);
+    renderDash();
+    await screen.findByText(/No campaigns yet/);
+    const toggle = screen.getByRole("button", { name: /New campaign/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
 });

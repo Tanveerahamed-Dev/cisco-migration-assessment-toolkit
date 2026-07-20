@@ -147,6 +147,8 @@ describe("CampaignPage", () => {
     }));
     // a pending cell reads as an em-dash
     expect(cell.textContent).toBe("—");
+    // the mouse-only `title` is mirrored to `aria-label` for keyboard/AT users
+    expect(cell.getAttribute("aria-label")).toBe(cell.getAttribute("title"));
 
     fireEvent.click(cell);
 
@@ -154,6 +156,9 @@ describe("CampaignPage", () => {
     await waitFor(() => expect(setGate).toHaveBeenCalledWith(3, "Wave-A", "cab", "go", "", ""));
     // the POST response is applied optimistically — the cell now reads GO
     await waitFor(() => expect(cell.textContent).toBe("GO"));
+    // the label tracks the updated decision too, not just the initial pending state
+    expect(cell.getAttribute("aria-label")).toBe(cell.getAttribute("title"));
+    expect(cell.getAttribute("aria-label")).toContain("GO");
   });
 
   it("flags an out-of-order sign-off with a ⚠ badge and disclosing tooltip, and leaves clean cells unmarked", async () => {
