@@ -20,9 +20,12 @@ export const scoreColor = (v: number | null) =>
 export const phaseColor = (ph: string) =>
   ph === "pre-cutover" ? "var(--crit)" : ph === "post-cutover-functional" ? "var(--risk)" : "var(--watch)";
 
-function DecisionCard({ d, isResolved }: { d: DesignDecision; isResolved?: boolean }) {
+function DecisionCard({ d, i = 0, isResolved }: { d: DesignDecision; i?: number; isResolved?: boolean }) {
+  // Staged reveal (CausalFlow's .czreveal idiom): the card list rides .panel's existing mount
+  // keyframe, offset per card and CAPPED so a long list never waits seconds. Inert under
+  // reduced motion (the kill-switch strips the animation; a lone delay does nothing).
   return (
-    <div className="panel" style={{ padding: 12, borderLeft: `3px solid ${P_COLOR(d.priority)}`, marginBottom: 8 }}>
+    <div className="panel" style={{ padding: 12, borderLeft: `3px solid ${P_COLOR(d.priority)}`, marginBottom: 8, animationDelay: `${Math.min(i, 8) * 50}ms` }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <b style={{ fontSize: 13 }}>{d.title}</b>
         {isResolved && (
@@ -332,6 +335,9 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   const [over, setOver] = useState<DesignBlueprint | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>("blueprint");
+  // NRFU mounts on FIRST visit and then stays mounted (hidden, not unmounted, when the user
+  // tabs away) — its fetched checklist survives tab switches instead of refetching every time.
+  const [nrfuOpened, setNrfuOpened] = useState(false);
   // Requirements form — all 9 REQUIREMENTS_KEYS
   const [tier, setTier] = useState("");
   const [apps, setApps] = useState("");
@@ -350,7 +356,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
   // Reset the overlay + form when the snapshot changes — otherwise snapshot A's right-sized blueprint and
   // requirements leak onto snapshot B (the data re-fetches via useAsync, but `over`/`register`/fields do not).
   useEffect(() => {
-    setOver(null); setRegister(null); setTab("blueprint");
+    setOver(null); setRegister(null); setTab("blueprint"); setNrfuOpened(false);
     setTier(""); setApps(""); setConv(""); setGrowth("");
     setDataClass(""); setBudget(false); setAddrSpace(""); setVlanZones(""); setZonesErr(""); setFabricMode("");
     setLiveMsg("");   // drop any stale announcement when the snapshot changes
@@ -455,7 +461,11 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     setDataClass(""); setBudget(false); setAddrSpace(""); setVlanZones(""); setZonesErr(""); setFabricMode("");
     setLiveMsg("Requirements cleared; the baseline blueprint has been restored.");
   };
-  const selectTab = (t: Tab, label: string) => { setTab(t); setLiveMsg(`${label} tab selected.`); };
+  const selectTab = (t: Tab, label: string) => {
+    setTab(t);
+    if (t === "nrfu") setNrfuOpened(true);
+    setLiveMsg(`${label} tab selected.`);
+  };
 
   return (
     <div className="panel" aria-busy={busy}>
@@ -481,8 +491,13 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
         ))}
       </div>
 
-      {tab === "blueprint" && (
-        <div role="tabpanel" id="dbppanel-blueprint" aria-labelledby="dbptab-blueprint">
+      {/* Both tabpanels stay MOUNTED and toggle via the `hidden` attribute (the correct ARIA
+          tabpanel treatment): switching tabs no longer unmounts the other panel's subtree, so its
+          fetched data — the coverage grid + domain packs here, the NRFU checklist below — survives
+          the toggle instead of refetching with a spinner flash on every switch. hidden→shown also
+          restarts .tabfade, which is what gives the switch its fade (no key-remount involved). */}
+      <div role="tabpanel" id="dbppanel-blueprint" aria-labelledby="dbptab-blueprint"
+           className="tabfade" hidden={tab !== "blueprint"}>
           <table className="tbl" style={{ marginTop: 12 }}>
             <thead><tr><th>Trade-off axis</th><th className="num">Score</th><th>Posture</th></tr></thead>
             <tbody>
@@ -563,7 +578,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
               </button>
             </div>
             {rec.length
-              ? rec.map((d) => <DecisionCard key={d.id} d={d} isResolved={resolvedIds.has(d.id)} />)
+              ? rec.map((d, i) => <DecisionCard key={d.id} d={d} i={i} isResolved={resolvedIds.has(d.id)} />)
               : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
           </div>
 
@@ -589,10 +604,13 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
 
           <div className="faint" style={{ fontSize: 11, marginTop: 12 }}>{bp.coverage.caveat}</div>
         </div>
-      )}
 
-      {tab === "nrfu" && (
-        <div role="tabpanel" id="dbppanel-nrfu" aria-labelledby="dbptab-nrfu" style={{ marginTop: 12 }}>
+      {/* Lazy on FIRST visit (the latch), then kept mounted-but-hidden like the blueprint panel —
+          the checklist keeps loading/updating (register changes refire its useAsync) while hidden,
+          so returning to this tab is instant. */}
+      {nrfuOpened && (
+        <div role="tabpanel" id="dbppanel-nrfu" aria-labelledby="dbptab-nrfu"
+             className="tabfade" hidden={tab !== "nrfu"} style={{ marginTop: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Design-driven NRFU/ATP checklist</div>
           <div className="faint" style={{ fontSize: 11, marginBottom: 10 }}>
             One acceptance-test item per recommended design decision, phased across pre-cutover →
