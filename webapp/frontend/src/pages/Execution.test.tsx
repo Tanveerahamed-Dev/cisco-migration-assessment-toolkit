@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import ExecutionPage, { fmtClock, OUTCOME_COLOR } from "./Execution";
 import { api } from "../api";
@@ -155,5 +155,62 @@ describe("ExecutionPage", () => {
     await waitFor(() => expect(screen.queryByText("LIVE")).not.toBeInTheDocument());
     expect(screen.queryByPlaceholderText(/Operator/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Finish run/i)).not.toBeInTheDocument();
+  });
+
+  // Validation-checks accordion: showChecks starts true, so the toggle's aria-expanded must start
+  // true and flip with every click — a screen reader user relies on this, not just the glyph swap.
+  it("flips the validation-checks accordion's aria-expanded with its open state", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(
+      execState({
+        waves: [
+          {
+            group: "Core-fabric", order: 1, gate: "GO", strategy: "phased",
+            n_switches: 2, switches: [], endpoints: 0, hard_cutover_endpoints: 0,
+            est_window_minutes: 30, est_window_label: "30m", blockers: [],
+            steps: [],
+            checks: [
+              {
+                category: "l2", severity: "High", check: "VLAN present", command: "show vlan brief",
+                expect: "vlan 10 up", result: "pending", observed: "", at: null, by: "",
+              },
+            ],
+            closeout: { decision: null, at: null, by: "", note: "" },
+          },
+        ],
+      }),
+    );
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+
+    const toggle = await screen.findByRole("button", { name: /Validation checks/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+  });
+
+  // Live log empty state: with zero events the log used to render nothing at all — an honest
+  // placeholder replaces that silent blank (companion test below confirms it steps aside once
+  // entries exist).
+  it("shows an honest placeholder in the live log at zero events", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(execState({ events: [] }));
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+
+    expect(await screen.findByText(/No entries yet/i)).toBeInTheDocument();
+  });
+
+  it("renders logged entries instead of the empty placeholder once events exist", async () => {
+    vi.spyOn(api, "getExecution").mockResolvedValue(
+      execState({
+        events: [{ at: "2026-01-01T10:05:00Z", kind: "step", wave: "Core-fabric", text: "did a thing", by: "operator" }],
+      }),
+    );
+    vi.spyOn(api, "getSnapshot").mockResolvedValue(snapMeta);
+    renderExec();
+
+    expect(await screen.findByText("did a thing")).toBeInTheDocument();
+    expect(screen.queryByText(/No entries yet/i)).not.toBeInTheDocument();
   });
 });

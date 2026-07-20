@@ -383,3 +383,20 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
+
+/* ---- Execution war room (pages/Execution.tsx) — live-log entrance, tick pop, wave-state chip tween
+   (animation Units 13-15). Keyframe defined here; usage gated below like the rest of the motion layer. */
+@keyframes tick-pop { 0% { transform: scale(1); } 50% { transform: scale(1.15); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: no-preference) {
+  /* new log rows slide up on mount; existing rows keep their stable key (ex.events.length - i) so
+     they never remount and never replay this */
+  .evrow-in { animation: reveal-up var(--motion) var(--ease) both; }
+
+  /* one-shot pop on a step's pending/skipped -> done transition; StepRow toggles the class itself
+     and clears it on animationend (a key-remount would be simpler but drops focus off a live-clicked
+     button — see the comment in StepRow) */
+  .tick-pop { animation: tick-pop var(--motion-fast) var(--ease); }
+
+  /* wave-state chip (pending/active/complete/rolled_back/deferred) eases colour like .chip.gate does */
+  .chip.wavestate { transition: color var(--motion) var(--ease), border-color var(--motion) var(--ease); }
+}

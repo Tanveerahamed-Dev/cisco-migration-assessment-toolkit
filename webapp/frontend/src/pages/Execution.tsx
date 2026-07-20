@@ -56,13 +56,24 @@ function StepRow({ s, i, live, onSet }:
   { s: ExecStep; i: number; live: boolean; onSet: (index: number, status: string) => void }) {
   const done = s.status === "done";
   const skipped = s.status === "skipped";
+  // Pop the tick on a pending/skipped -> done transition. A key-remount is the house replay pattern
+  // elsewhere (CausalFlow/CableMap), but this button is live-clicked/keyboard-activated mid-checklist —
+  // remounting it would drop focus to <body> and break Tab flow through the steps. A one-shot class,
+  // cleared on animationend, replays the pop without touching the DOM node.
+  const prevStatus = useRef(s.status);
+  const [pop, setPop] = useState(false);
+  useEffect(() => {
+    if (prevStatus.current !== "done" && s.status === "done") setPop(true);
+    prevStatus.current = s.status;
+  }, [s.status]);
   return (
     <div className={`estep ${s.status}`}>
       <button
-        className={`tick ${s.status}`} disabled={!live}
+        className={`tick ${s.status}${pop ? " tick-pop" : ""}`} disabled={!live}
         title={done || skipped ? "Reset to pending" : "Mark step done"}
         aria-label={done || skipped ? `Reset step ${i + 1}` : `Mark step ${i + 1} done`}
         onClick={() => onSet(i, done || skipped ? "pending" : "done")}
+        onAnimationEnd={() => setPop(false)}
       >
         {done ? "✓" : skipped ? "⊘" : ""}
       </button>
@@ -160,7 +171,7 @@ function WaveRunCard({ w, waveState, live, act }: {
           <span className="dot" /> plan: {w.gate}
         </span>
         <span className="chip tag">{w.strategy}</span>
-        <span className="chip" style={{ color: WAVE_STATE_COLOR[waveState], borderColor: "var(--border)" }}>
+        <span className="chip wavestate" style={{ color: WAVE_STATE_COLOR[waveState], borderColor: "var(--border)" }}>
           {WAVE_STATE_LABEL[waveState] || waveState}
         </span>
         <span className="wmeta">
@@ -171,7 +182,7 @@ function WaveRunCard({ w, waveState, live, act }: {
       </div>
 
       {w.gate === "NO-GO" && !closed && (
-        <div className="nogowarn">
+        <div className="nogowarn ros-reveal">
           The plan gated this wave <b>NO-GO</b> ({w.blockers.filter((b) => b.status === "fail").length} failing
           check(s)). Executing it anyway is an override — confirm the blockers are cleared and scribe why.
         </div>
@@ -185,12 +196,13 @@ function WaveRunCard({ w, waveState, live, act }: {
 
       {w.checks.length > 0 && (
         <div style={{ marginTop: 12 }}>
-          <button className="btn" style={{ padding: "5px 11px", fontSize: 12 }} onClick={() => setShowChecks((v) => !v)}>
+          <button className="btn" style={{ padding: "5px 11px", fontSize: 12 }} onClick={() => setShowChecks((v) => !v)}
+            aria-expanded={showChecks}>
             {showChecks ? "▾" : "▸"} Validation checks
             <span className="chip mono" style={{ fontSize: 9, padding: "1px 6px" }}>{nPass + nFail}/{w.checks.length} recorded</span>
           </button>
           {showChecks && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+            <div className="ros-reveal" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
               {w.checks.map((c, i) => (
                 <CheckRow key={i} c={c} i={i} live={live && !closed} onSet={(idx, r, o) => act.check(w.group, idx, r, o)} />
               ))}
@@ -247,8 +259,13 @@ function EventLog({ ex, live, onLog }:
         </div>
       )}
       <div className="evlog">
+        {rows.length === 0 && (
+          <div className="faint" style={{ fontSize: 12.5, padding: "4px 0" }}>
+            No entries yet — steps, checks and notes land here as they happen.
+          </div>
+        )}
         {rows.map((e, i) => (
-          <div className="evrow" key={ex.events.length - i}>
+          <div className="evrow evrow-in" key={ex.events.length - i}>
             <span className="t mono">{fmtTime(e.at)}</span>
             <span className="k mono" style={{ color: EVENT_KIND_COLOR[e.kind] || "var(--text-dim)" }}>{e.kind}</span>
             <span style={{ flex: 1 }}>
