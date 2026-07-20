@@ -64,4 +64,18 @@ test("renders the WebGL 3D topology fabric in a real browser (jsdom cannot)", as
     (c: HTMLCanvasElement) => !!(c.getContext("webgl2") || c.getContext("webgl")),
   );
   expect(hasWebGL, "the 3D fabric's canvas should hold a live WebGL context").toBe(true);
+
+  // COHERENT-TOGGLE contract: leaving 3D must HIDE the engine, not destroy it. The canvas stays
+  // attached (display:none, paused) so camera pose / settled layout / selection survive.
+  const toggle2d = page.getByRole("button", { name: "2D", exact: true });
+  await toggle2d.click();
+  await expect(page.getByText("ACCESS · 2", { exact: true })).toBeVisible(); // the 2D lane fabric is back
+  await expect(canvas).toBeHidden();                        // hidden…
+  await expect(page.locator("canvas")).toHaveCount(1);      // …but never unmounted
+
+  // and re-entering 3D is instant reuse: the SAME canvas returns, with no lazy-chunk
+  // "Loading 3D engine…" fallback — a remount would have torn it down and shown that first.
+  await toggle3d.click();
+  await expect(canvas).toBeVisible();
+  await expect(page.getByText("Loading 3D engine…")).toHaveCount(0);
 });
