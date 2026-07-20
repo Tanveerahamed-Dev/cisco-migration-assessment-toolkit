@@ -370,3 +370,16 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
   .czflow-line { animation: none; stroke-dasharray: none; opacity: .55; }
   .czreveal { animation: none; opacity: 1; }
 }
+
+/* ---- Native View Transitions (App.tsx route swap + TopBar theme toggle, driven by
+   components/ui.tsx useViewTransition) ---- */
+.topbar { view-transition-name: topbar; } /* named group snapshots the chrome statically instead of cross-fading with page content */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root) { animation: fade-in var(--motion) var(--ease) reverse both; }
+  ::view-transition-new(root) { animation: reveal-up var(--motion-reveal) var(--ease) both; }
+}
+/* backstop: the hook already skips startViewTransition under reduced motion, but the blanket
+   `* { animation: none }` kill-switch above can't reach these UA-generated pseudo-elements. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+}
