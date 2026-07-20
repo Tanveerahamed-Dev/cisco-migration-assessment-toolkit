@@ -37,11 +37,25 @@ E:\Atlas\            ← portable/dist/Atlas/, copied wholesale
   are prompted per engagement and never stored (the engine's own chain, ADR-0004 D4).
 - DB override: `--db` / `ASSESSHUB_DB`; frozen default is `data\assesshub.db` beside the exe.
 
-## Known limits (deliberate, this slice)
+## Lay out a stick
 
-- **Unsigned.** AppLocker/WDAC-locked laptops will refuse the exe until it is code-signed —
-  the signing certificate is the owner's open calendar item. SmartScreen/MOTW is a non-issue on
-  FAT32/exFAT sticks.
+```powershell
+powershell -File portable/make_stick.ps1 -Dest E:\        # first copy AND updates
+```
+
+Copies the built bundle to `E:\Atlas\`. On an existing stick it is the **update flow**: everything
+is replaced **except `data\`** (the client-evidence store survives every update — robocopy
+`/MIR /XD data`). Then, on the target machine: `E:\Atlas\Atlas.exe --selftest` → expect 8/8.
+
+## Known limits (deliberate)
+
+- **Unsigned — by decision, not by omission** (ADR-0004 D5, 2026-07-20: the $0 build is the
+  operating version). The designed pattern never needs third-party code trust: Atlas runs from
+  the stick on the *engineer's own* laptop; client hardware never executes it. SmartScreen/MOTW
+  is a non-issue on FAT32/exFAT sticks. The one closed door: AppLocker/WDAC-locked third-party
+  laptops refuse unsigned exes and have no free workaround by design — use your own laptop or a
+  client-IT exception. If signing is ever actually needed: Azure Trusted Signing (~$10/mo,
+  cancellable) beats yearly certificates.
 - Windows-only, single-arch (build host = target arch). No auto-update.
 - The `(checkout)` suffix in `--version` is honest: the bundle reports the pyproject release it
   was built from.
