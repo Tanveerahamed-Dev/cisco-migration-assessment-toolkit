@@ -49,12 +49,33 @@ AssessKit P1 surfaces this as a one-prompt fleet flow with a per-device override
 session-memory only — **credentials are never written to the stick** (P3 field discipline).
 No engine change required; UI + docs only.
 
+## D5 · Distribution: unsigned freeware build — signing DEFERRED indefinitely (amendment, 2026-07-20)
+
+Owner's call ("I don't want to pay anything now"): the **$0 unsigned build is the operating
+version**. Every tool in the stack is free/open-source; there is no license cost anywhere. This is
+safe because the operating pattern never needs third-party code trust:
+
+- Atlas runs from the stick **on the engineer's own laptop** — collections go out over SSH from
+  there; client hardware never executes the exe.
+- FAT32/exFAT sticks carry no Mark-of-the-Web, so SmartScreen does not prompt (P2 audit fact);
+  an NTFS copy is at worst a one-time "More info → Run anyway".
+- The one scenario that stays closed — an AppLocker/WDAC-locked third-party laptop — has **no
+  free workaround by design** (that is the policy working). Legitimate paths: run on the
+  engineer's laptop, or a client-IT exception.
+
+**Revisit triggers:** distributing the exe to engineers outside the owner's control, or a hard
+client-hardware deployment requirement. Cheap path when triggered: Azure Trusted Signing
+(~$10/month, month-to-month, cancel after) rather than $300+/yr OV/EV certificates; self-signing
+helps only on self-controlled fleets.
+
 ## Deferred to the owner (calendar items, not session work)
 
-- **Order the code-signing certificate** (P2 needs it; AppLocker/WDAC blocks unsigned exes).
+- ~~Order the code-signing certificate~~ — **superseded by D5** (deferred indefinitely, no spend).
 - **Confirm the 2026-07-05 credential rotation** actually happened, then delete
   `..\Enhancements_attic_2026-07-05\` (verified still present 2026-07-19; `raw\` now holds 1 file /
   ~1 KB). Rotation is an AAA-side action only the owner can perform.
+- **Python-less-box smoke**: copy `portable\dist\Atlas\` to a stick (`portable/make_stick.ps1`
+  does the layout), run `Atlas.exe --selftest` on a machine without Python — expect 8/8.
 
 ## Consequences
 
