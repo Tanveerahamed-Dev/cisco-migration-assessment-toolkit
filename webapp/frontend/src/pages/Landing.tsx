@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { useToast } from "../components/ui";
+import { useReducedMotion, useToast } from "../components/ui";
 
 const FEATURES = [
   { icon: "◎", title: "Risk cockpit", body: "Fleet posture, health bands, and the punch-list triaged by severity — the few things to fix first, not thousands of findings." },
@@ -10,10 +10,38 @@ const FEATURES = [
   { icon: "◈", title: "Deep explorer", body: "Open the full interactive topology explorer for any snapshot — blast radius, path trace, flow, protocols, cross-layer, causality." },
 ];
 
+const PIPELINE = ["SSH collection (CLI engine)", "snapshot.json", "AssessHub store", "cockpit + explorer"];
+
+/* ---- reveal-on-view: indexed elements start visible/classless; the first one to enter the
+   viewport lands its index in `seen` (reveal class + stagger apply) and is unobserved — an element
+   already in view when observed fires immediately, so nothing depends on scrolling ever happening.
+   No-op under reduced motion or without IntersectionObserver (jsdom): elements just stay at their
+   default, fully-visible resting state. ---- */
+function useRevealOnView<T extends Element>(reduced: boolean) {
+  const els = useRef<(T | null)[]>([]);
+  const [seen, setSeen] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    if (reduced || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        io.unobserve(e.target);
+        const i = els.current.indexOf(e.target as T);
+        if (i >= 0) setSeen((s) => new Set(s).add(i));
+      }
+    });
+    els.current.forEach((el) => el && io.observe(el));
+    return () => io.disconnect();
+  }, [reduced]);
+  return { ref: (i: number) => (el: T | null) => { els.current[i] = el; }, seen };
+}
+
 export default function Landing() {
   const nav = useNavigate();
   const { toast, node } = useToast();
   const [seeding, setSeeding] = useState(false);
+  const reduced = useReducedMotion();
+  const step = useRevealOnView<HTMLSpanElement>(reduced);
 
   async function loadSample() {
     setSeeding(true);
@@ -29,7 +57,7 @@ export default function Landing() {
 
   return (
     <div className="container">
-      <section style={{ padding: "44px 0 30px", maxWidth: 760 }}>
+      <section className="hero-reveal" style={{ padding: "44px 0 30px", maxWidth: 760 }}>
         <div className="chip" style={{ marginBottom: 18 }}>
           <span className="dot" style={{ color: "var(--ok)" }} /> Offline engine · live cockpit
         </div>
@@ -69,9 +97,18 @@ export default function Landing() {
       <div className="panel pad-lg" style={{ marginTop: 18 }}>
         <h3>How it fits together</h3>
         <div className="row-flex" style={{ gap: 0, fontSize: 13, fontWeight: 600, flexWrap: "wrap" }}>
-          {["SSH collection (CLI engine)", "snapshot.json", "AssessHub store", "cockpit + explorer"].map((s, i, a) => (
+          {PIPELINE.map((s, i, a) => (
             <span key={s} className="row-flex" style={{ gap: 0 }}>
-              <span style={{ padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 9, background: "var(--surface-2)" }}>{s}</span>
+              <span
+                ref={step.ref(i)}
+                className={step.seen.has(i) ? "step-in" : undefined}
+                style={{
+                  padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 9, background: "var(--surface-2)",
+                  animationDelay: `${Math.min(i, 8) * 50}ms`,
+                }}
+              >
+                {s}
+              </span>
               {i < a.length - 1 && <span className="faint" style={{ padding: "0 12px" }}>→</span>}
             </span>
           ))}
