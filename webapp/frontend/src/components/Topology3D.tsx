@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { bandColor } from "../api";
 import { Loading } from "./ui";
 
@@ -33,32 +34,46 @@ function useThemeColors() {
   }, [tick]);
 }
 
+/* Fill a per-vertex colour attribute so parts of ONE merged geometry keep distinct tints. */
+function tinted(geo: THREE.BufferGeometry, c: THREE.Color): THREE.BufferGeometry {
+  const n = geo.getAttribute("position").count;
+  const arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+  geo.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+  return geo;
+}
+
 /* Build a 3-D rack-mount switch CHASSIS mesh (replaces the default sphere so the fabric reads as
-   switches, not globes — mirrors the explorer): a wide low box tinted by health band with an
-   emissive front LED strip so it glows. THREE.Color parses the rgb() strings from useThemeColors. */
+   switches, not globes — mirrors the explorer). FLEET-SCALE SHAPE: the same visual (body, dark
+   face-plate, 2 port banks, 2 SFP cages, status LED) is merged into exactly TWO meshes — one LIT
+   (body+plate, vertex-tinted, faint self-emissive) and one UNLIT full-bright (the glow parts) —
+   so a switch costs 2 draw calls, not 7 (measured 11 FPS → see PR — at the documented ~300-device
+   ceiling under the old per-part meshes). Child order is a CONTRACT: children[0] must stay the lit
+   mesh — applyDim boosts its emissiveIntensity for the selected node. Materials stay PER-NODE
+   (never shared/cached) because applyDim mutates opacity per node, and the library disposes
+   geometries/materials on node removal — a shared cache would hand out dead objects. */
 export function switchMesh(color: string, degree: number, big: boolean): THREE.Object3D {
   const c = new THREE.Color(color);
+  const dark = new THREE.Color(0x0d1119);
   const w = 7 + Math.min(11, degree), h = big ? 3.4 : 2.2, d = 5;
   const g = new THREE.Group();
-  // chassis body (lit by the scene; faint self-emissive so it never goes fully black)
-  g.add(new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
-    new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.2, metalness: 0.4, roughness: 0.5 })));
-  // dark front face-plate
-  const plate = new THREE.Mesh(new THREE.BoxGeometry(w * 0.9, h * 0.72, 0.4),
-    new THREE.MeshStandardMaterial({ color: 0x0d1119, metalness: 0.5, roughness: 0.7 }));
-  plate.position.set(0, 0, d / 2); g.add(plate);
-  // two emissive port banks (read as lit RJ45 rows)
-  for (let r = 0; r < 2; r++) {
-    const strip = new THREE.Mesh(new THREE.BoxGeometry(w * 0.58, h * 0.13, 0.2), new THREE.MeshBasicMaterial({ color: c }));
-    strip.position.set(-w * 0.06, (r ? -1 : 1) * h * 0.17, d / 2 + 0.22); g.add(strip);
-  }
-  // SFP+ uplink cages (right) + a status LED (left)
-  for (let s = 0; s < 2; s++) {
-    const sfp = new THREE.Mesh(new THREE.BoxGeometry(w * 0.07, h * 0.42, 0.3), new THREE.MeshBasicMaterial({ color: c }));
-    sfp.position.set(w * (0.33 + s * 0.1), 0, d / 2 + 0.22); g.add(sfp);
-  }
-  const led = new THREE.Mesh(new THREE.SphereGeometry(h * 0.13, 8, 8), new THREE.MeshBasicMaterial({ color: c }));
-  led.position.set(-w * 0.41, h * 0.18, d / 2 + 0.22); g.add(led);
+  // LIT half: chassis body (band tint) + front face-plate (dark tint), one merged buffer
+  const body = tinted(new THREE.BoxGeometry(w, h, d), c);
+  const plate = tinted(new THREE.BoxGeometry(w * 0.9, h * 0.72, 0.4).translate(0, 0, d / 2), dark);
+  g.add(new THREE.Mesh(
+    mergeGeometries([body, plate], false),
+    new THREE.MeshStandardMaterial({ vertexColors: true, emissive: c, emissiveIntensity: 0.2, metalness: 0.45, roughness: 0.6 }),
+  ));
+  // UNLIT half: 2 port banks + 2 SFP+ cages + status LED, all band colour, one merged buffer
+  const parts: THREE.BufferGeometry[] = [];
+  for (let r = 0; r < 2; r++)
+    parts.push(new THREE.BoxGeometry(w * 0.58, h * 0.13, 0.2).translate(-w * 0.06, (r ? -1 : 1) * h * 0.17, d / 2 + 0.22));
+  for (let s = 0; s < 2; s++)
+    parts.push(new THREE.BoxGeometry(w * 0.07, h * 0.42, 0.3).translate(w * (0.33 + s * 0.1), 0, d / 2 + 0.22));
+  parts.push(new THREE.SphereGeometry(h * 0.13, 8, 8).translate(-w * 0.41, h * 0.18, d / 2 + 0.22));
+  g.add(new THREE.Mesh(mergeGeometries(parts, false), new THREE.MeshBasicMaterial({ color: c })));
+  // merge COPIES vertex data — the intermediate part geometries are safe to free immediately
+  body.dispose(); plate.dispose(); parts.forEach((p) => p.dispose());
   return g;
 }
 
@@ -105,6 +120,11 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
     nodes: raw.nodes.map((n) => ({ ...n })),
     links: raw.edges.map((e) => ({ ...e })),
   }), [raw]);
+
+  // Fleet-scale flow-particle cap (measured: ~2/link × hundreds of links out-costs the chassis
+  // meshes themselves): above the threshold, ambient flow particles drop and only SPOF links keep
+  // their signature red pulse. DISCLOSED in the corner hint — capped, never silently degraded.
+  const manyLinks = graphData.links.length > 150;
 
   // Pause/resume the engine's own rAF loop with visibility (real 3d-force-graph API). The ref
   // mirror lets onEngineTick self-pause the edge case where the lazy chunk resolves while hidden
@@ -199,7 +219,7 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
           linkColor={(l: any) => (l.is_bridge ? colors.crit : colors.edge)}
           linkWidth={(l: any) => (l.is_bridge ? 1.4 : 0.4)}
           linkOpacity={0.5}
-          linkDirectionalParticles={(l: any) => (reduceMotion() ? 0 : l.is_bridge ? 4 : 2)}
+          linkDirectionalParticles={(l: any) => (reduceMotion() ? 0 : l.is_bridge ? 4 : manyLinks ? 0 : 2)}
           linkDirectionalParticleWidth={(l: any) => (l.is_bridge ? 2.4 : 1.2)}
           linkDirectionalParticleSpeed={(l: any) => (l.is_bridge ? 0.012 : 0.006)}
           linkDirectionalParticleColor={(l: any) => (l.is_bridge ? colors.crit : colors.accent)}
@@ -211,6 +231,7 @@ export default function Topology3D({ raw, sel, hover, active, onPick, onHover }:
       </Suspense>
       <div style={{ position: "absolute", left: 10, bottom: 10, fontSize: 11, color: "var(--text-faint)", pointerEvents: "none", background: "color-mix(in srgb, var(--surface) 70%, transparent)", backdropFilter: "blur(8px)", border: "1px solid var(--border)", borderRadius: 7, padding: "4px 8px" }}>
         drag to orbit · scroll to zoom · click a switch to focus
+        {manyLinks && !reduceMotion() ? " · flow particles on SPOF links only (fleet scale)" : ""}
       </div>
     </div>
   );

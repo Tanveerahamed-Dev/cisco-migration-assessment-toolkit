@@ -112,27 +112,36 @@ describe("layout — role-tiered lane positioning (device-fidelity 2D)", () => {
 });
 
 describe("switchMesh — three.js node geometry (headless, no WebGL)", () => {
-  it("builds a chassis Group with the full port/SFP/LED structure", () => {
+  it("builds the chassis as exactly TWO merged meshes (lit + unlit) — the fleet-scale draw-call contract", () => {
     const mesh = switchMesh("rgb(255,0,0)", 3, false);
     expect(mesh).toBeInstanceOf(THREE.Group);
-    // chassis body + face-plate + 2 port strips + 2 SFP cages + 1 status LED
-    expect(mesh.children).toHaveLength(7);
+    // 1 lit merged mesh (body+plate, vertex-tinted) + 1 unlit merged mesh (ports+SFPs+LED):
+    // 2 draw calls per switch, down from 7 — a ~300-device fleet renders ~600 meshes, not ~2,100.
+    expect(mesh.children).toHaveLength(2);
+    expect(mesh.children.every((m) => m instanceof THREE.Mesh)).toBe(true);
   });
 
-  it("tints the chassis body from the resolved band colour string", () => {
-    const body = switchMesh("rgb(255,0,0)", 1, false).children[0] as THREE.Mesh;
-    const color = (body.material as THREE.MeshStandardMaterial).color;
-    expect(color.r).toBeCloseTo(1);
-    expect(color.g).toBeCloseTo(0);
-    expect(color.b).toBeCloseTo(0);
+  it("keeps the band colour on both halves — vertex-tinted emissive body, flat-colour glow parts", () => {
+    const g = switchMesh("rgb(255,0,0)", 1, false);
+    const lit = (g.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    const unlit = (g.children[1] as THREE.Mesh).material as THREE.MeshBasicMaterial;
+    expect(lit.vertexColors).toBe(true);                    // body=band + plate=dark live in the vertex data
+    expect(lit.emissive.r).toBeCloseTo(1);
+    expect(lit.emissive.g).toBeCloseTo(0);
+    // applyDim's selection boost mutates emissiveIntensity on children[0] — pin the resting value + order
+    expect(lit.emissiveIntensity).toBeCloseTo(0.2);
+    expect(unlit.color.r).toBeCloseTo(1);
+    expect(unlit.color.b).toBeCloseTo(0);
   });
 
   it("scales the chassis width with node degree (bigger fan-out = wider switch)", () => {
-    // w = 7 + min(11, degree); the BoxGeometry's width param records it
-    const small = switchMesh("rgb(0,0,0)", 1, false).children[0] as THREE.Mesh;
-    const large = switchMesh("rgb(0,0,0)", 9, false).children[0] as THREE.Mesh;
-    const w = (m: THREE.Mesh) => (m.geometry as THREE.BoxGeometry).parameters.width;
-    expect(w(large)).toBeGreaterThan(w(small));
+    // merged buffers have no BoxGeometry.parameters — measure the real extent instead
+    const width = (m: THREE.Object3D) => {
+      const geo = (m.children[0] as THREE.Mesh).geometry;
+      geo.computeBoundingBox();
+      return geo.boundingBox!.max.x - geo.boundingBox!.min.x;
+    };
+    expect(width(switchMesh("rgb(0,0,0)", 9, false))).toBeGreaterThan(width(switchMesh("rgb(0,0,0)", 1, false)));
   });
 });
 
