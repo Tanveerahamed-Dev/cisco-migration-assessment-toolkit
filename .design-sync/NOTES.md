@@ -152,6 +152,25 @@
   DesignBlueprintPanel from the fresh screenshot (chips + 5/9 grid + intact card). Scoped atomic upload:
   sentinel → bundle+css+DesignBlueprintPanel×4 → re-arm → anchor last; live anchor fetched back ==
   local (`bundleSha12 1415e787f3d1`).
+- ✅ **2026-07-19 (later) TOPOLOGY RESTYLE SHIPPED — device-fidelity 2D.** Claude-Design-side feedback (verified
+  against code FIRST: no "earlier switch-shaped 2D" ever existed — the chassis language lives in the 3D mode /
+  CableMap / explorer; per-port stubs are impossible from `api.graph` (no port data) → link-anchored degree
+  stubs instead) → user approved "best possible version": `TopologyGraph.tsx` rewritten from d3-force circles
+  to role-tiered chassis lanes (CableMap family metrics NW176/NH50, barycenter ordering, MAXROW-10 wrap for
+  fleet scale, band = status LED + `color-mix` chassis tint, keystone corner diamond, SPOF links thicken with
+  `pairs_cut`, "Linked only" declutter with disclosed counts, dashed [NOT OBSERVED] chassis; **3D KEPT**).
+  109/109 vitest + tsc/vite green; verified in the running app (sample fleet, 23 switches) and the DS harness
+  (dark + light cards regraded good).
+  ⚠️ **INCIDENT during this sync — wrong-base branch (parallel-session hazard, NEW variant):** between
+  `git switch chore/design-sync-atlas-retarget` and `git switch -c feat/topology-device-fidelity` a concurrent
+  session moved the shared checkout to freshly-advanced main (#401 merge), so the feature branch — and the
+  bundle built from it — silently LACKED the #402 stack, and the upload REGRESSED the live DesignBlueprintPanel
+  chips (its prompt.md hash flipped back to `d972e2953e9a`). Caught ONLY by post-upload live-anchor
+  archaeology; the pre-upload diff looked clean because `.cache/remote-sync.json` was stale (not refreshed
+  after the prior upload). Fix: commit-first to protect the work, rebase onto the #402 branch
+  (34e6edc→1e7a84c→b713b18), rebuild (render-check then contains BOTH "Domain lenses engaged" AND "role-tiered
+  fabric"), superset re-upload of both components + bundle; live anchor re-fetched == local
+  (`bundleSha12 33258ba2137c`, DBP prompt back to `3b6fe903d538`).
 
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
@@ -171,6 +190,12 @@
   `.design-sync/.cache/remote-sync.json` and run the driver with `--remote` so unchanged components skip
   re-verification.
 - Never regenerate sample data from real AJ snapshots (no-egress; the file ships to claude.ai).
+- **Branch-stack + anchor-cache discipline around every upload** (from the 2026-07-19 wrong-base incident):
+  BEFORE building a bundle, confirm `git log --oneline -3` actually shows the stack you think you are on (a
+  concurrent session can move the shared checkout between two of your own git commands); IMMEDIATELY after
+  every upload, `Copy-Item ds-bundle/_ds_sync.json .design-sync/.cache/remote-sync.json` (a stale cache makes
+  the next diff blind to a live regression); AFTER every upload, fetch the live `_ds_sync.json` and eyeball the
+  `sourceHashes` you expected to move — bundleSha alone proves delivery, not content correctness.
 - **`renderHashes` miss data-driven DOM additions — never rely on them to detect sample-data changes.** Proven
   2026-07-19: adding the whole domain-lens chips panel to DesignBlueprintPanel's render left its renderHash
   BYTE-IDENTICAL (`f1f8570876d15a37`); the component reached the upload set only because its regenerated
