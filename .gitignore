@@ -80,3 +80,7 @@ docs/vault-digest/digest-*.jsonl
 # pushable repo. The writer (recall.log_query), schema doc, and tests ARE committed; the rows are not.
 # (Human decision 2026-07-10, resolving the #319/#321 duplicate-design split.)
 docs/quality/query_log.jsonl
+
+# Atlas portable build outputs (ADR-0004 P2) — the bundle is built, never committed
+portable/build/
+portable/dist/
