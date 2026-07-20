@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 
 /* ---- respects the OS "reduce motion" setting (live) ---- */
 export function useReducedMotion(): boolean {
@@ -24,14 +25,22 @@ export function CountUp({ value, duration = 700, decimals = 0, suffix = "", pref
   useEffect(() => {
     if (reduced || !Number.isFinite(value)) { setDisplay(value); fromRef.current = value; return; }
     const from = fromRef.current;
-    const start = performance.now();
+    // Anchor the tween to the FIRST rAF callback's own timestamp, never performance.now() at
+    // setup: rAF timestamps are a per-frame clock that need not share an origin with a
+    // performance.now() read (they measurably don't under jsdom), and mixing them skews t.
+    let start = -1;
     let raf = 0;
     const tick = (now: number) => {
+      if (start < 0) start = now;
       const t = Math.min(1, (now - start) / duration);
       const eased = 1 - Math.pow(1 - t, 3);
-      setDisplay(from + (value - from) * eased);
+      const v = from + (value - from) * eased;
+      // Mirror the shown value on EVERY frame, not only on completion: a retarget mid-tween
+      // reads fromRef as its start, and a completion-only write made it restart from the
+      // pre-tween value (0→100 interrupted at ~87 by a retarget to 50 visibly snapped to 0).
+      fromRef.current = v;
+      setDisplay(v);
       if (t < 1) raf = requestAnimationFrame(tick);
-      else fromRef.current = value;
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -40,6 +49,67 @@ export function CountUp({ value, duration = 700, decimals = 0, suffix = "", pref
     ? (decimals ? display.toFixed(decimals) : Math.round(display).toString())
     : "—";
   return <>{prefix}{shown}{suffix}</>;
+}
+
+/* ---- View Transitions wrapper: run(update) cross-fades the DOM change via
+   document.startViewTransition where supported, else applies it instantly. Reduced motion is
+   gated HERE, not by the styles.css kill-switch — ::view-transition-* pseudo-elements live in a
+   UA-generated tree a page-authored `*` selector can't reliably reach. flushSync commits the
+   React update inside the snapshot callback (the API's documented contract). Starting a new
+   transition while one is active auto-skips the old one — no queueing needed. ---- */
+export function useViewTransition(): (update: () => void) => void {
+  const reduced = useReducedMotion();
+  return useCallback((update: () => void) => {
+    const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
+    if (reduced || typeof doc.startViewTransition !== "function") { update(); return; }
+    doc.startViewTransition(() => { flushSync(update); });
+  }, [reduced]);
+}
+
+export interface Pt { x: number; y: number }
+
+/* ---- CountUp generalized to 2-D for diagram relayouts (topology lanes, cable map): every id
+   that persists across a targets change tweens from its last SHOWN point (live-mirrored each
+   frame, so a retarget mid-tween continues from what is on screen); a newly-appeared id renders
+   AT its target (no fly-in — resting state is the final state); a vanished id drops immediately.
+   Under reduced motion the targets pass through untouched, zero rAF. Callers must useMemo the
+   Map, and must re-derive dependent anchor points (cable stubs) as anchor + (shown - target) of
+   their OWN node — tweening anchors independently desyncs cables from chassis mid-flight. ---- */
+export function usePositionTween(targets: ReadonlyMap<string, Pt>, duration = 400): ReadonlyMap<string, Pt> {
+  const reduced = useReducedMotion();
+  const [shown, setShown] = useState<ReadonlyMap<string, Pt>>(targets);
+  const shownRef = useRef(shown);
+  useEffect(() => {
+    const from = shownRef.current;
+    let moved = false;
+    if (!reduced) {
+      for (const [id, to] of targets) {
+        const f = from.get(id);
+        if (f && (f.x !== to.x || f.y !== to.y)) { moved = true; break; }
+      }
+    }
+    // Nothing persisting actually moved (or reduced motion): adopt the targets in one hop —
+    // membership-only changes (add/remove) snap by design.
+    if (reduced || !moved) { shownRef.current = targets; setShown(targets); return; }
+    let start = -1; // anchored to the first rAF timestamp — same single-clock rule as CountUp
+    let raf = 0;
+    const tick = (now: number) => {
+      if (start < 0) start = now;
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const next = new Map<string, Pt>();
+      for (const [id, to] of targets) {
+        const f = from.get(id);
+        next.set(id, f ? { x: f.x + (to.x - f.x) * eased, y: f.y + (to.y - f.y) * eased } : to);
+      }
+      shownRef.current = next;
+      setShown(next);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [targets, reduced, duration]);
+  return shown;
 }
 
 /* ---- async data hook ---- */

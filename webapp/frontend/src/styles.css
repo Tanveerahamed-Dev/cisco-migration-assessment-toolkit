@@ -282,11 +282,17 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 12px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
 @media (prefers-reduced-motion: no-preference) {
-  /* panels reveal on mount, lightly staggered within a grid (supportive orientation, not decoration) */
+  /* panels reveal on mount, lightly staggered within a grid (supportive orientation, not decoration).
+     Stagger contract: a list renderer may set an explicit per-card `--stagger-i` inline (cap it,
+     e.g. Math.min(i, 8)) and it wins; otherwise the positional --auto-i fallback applies, capped
+     at the 4th slot so long grids never reveal OUT OF ORDER (children 5+ previously got no delay
+     and beat their elder siblings to the screen). 50ms steps preserve the original .05/.1/.15s look. */
   .panel { animation: reveal-up var(--motion-reveal) var(--ease) both; }
-  .grid > .panel:nth-child(2) { animation-delay: .05s; }
-  .grid > .panel:nth-child(3) { animation-delay: .1s; }
-  .grid > .panel:nth-child(4) { animation-delay: .15s; }
+  .grid > .panel { animation-delay: calc(var(--stagger-i, var(--auto-i, 0)) * 50ms); }
+  .grid > .panel:nth-child(2) { --auto-i: 1; }
+  .grid > .panel:nth-child(3) { --auto-i: 2; }
+  .grid > .panel:nth-child(4) { --auto-i: 3; }
+  .grid > .panel:nth-child(n+5) { --auto-i: 3; }
   .panel:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
   [data-theme="light"] .panel:hover { box-shadow: 0 10px 28px rgba(40, 55, 80, .18); }
 
@@ -301,6 +307,14 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
   .toast { animation: toast-in var(--motion) var(--ease) both; }
   .tabs button { transition: color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease); }
   .wave-card { transition: border-color var(--motion) var(--ease), box-shadow var(--motion) var(--ease); }
+
+  /* gate decision chips/badges: tween the --gc-derived colours when a decision cycles
+     (GateBoard cell click, war-room wave state) instead of the current hard cut; opacity at the
+     fast token covers GateBoard's in-flight busy dim. Shared by Campaign, Execution, CutoverPlanner. */
+  .gatebadge, .chip.gate {
+    transition: color var(--motion) var(--ease), border-color var(--motion) var(--ease),
+      background-color var(--motion) var(--ease), opacity var(--motion-fast) var(--ease);
+  }
 }
 
 /* V3.23.181 — depth & glass refresh. Additive layer (token-driven) that frosts the chrome and adds
