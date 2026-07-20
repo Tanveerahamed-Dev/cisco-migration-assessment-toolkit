@@ -155,7 +155,9 @@ export default function ArchReviewPanel({ snapId }: { snapId: number }) {
           <thead><tr><th>Design domain</th><th>Verdict</th><th className="num">Score</th><th className="num">Checks</th></tr></thead>
           <tbody>
             {ar.domains.map((d) => (
-              <tr key={d.key} onClick={() => setDomainSel(domainSel === d.key ? "" : d.key)}
+              <tr key={d.key} role="button" tabIndex={0} aria-pressed={domainSel === d.key}
+                onClick={() => setDomainSel(domainSel === d.key ? "" : d.key)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDomainSel(domainSel === d.key ? "" : d.key); } }}
                 style={{ cursor: "pointer", background: domainSel === d.key ? "var(--surface-3)" : undefined }}>
                 <td><b>{d.key}</b></td>
                 <td><VerdictPill v={d.verdict} /></td>
@@ -192,14 +194,15 @@ export default function ArchReviewPanel({ snapId }: { snapId: number }) {
           </div>
         </div>
       </div>
-      <div className="tabs" style={{ marginTop: 14, marginBottom: 12 }}>
+      <div className="tabs" role="tablist" aria-label="Ask the engineer questions" style={{ marginTop: 14, marginBottom: 12 }}>
         {QUESTIONS.map((x) => (
-          <button key={x.key} className={q === x.key ? "on" : ""} onClick={() => { setQ(x.key); setDomainSel(""); }}>
+          <button key={x.key} id={`archtab-${x.key}`} role="tab" aria-controls="archpanel" aria-selected={q === x.key}
+            className={q === x.key ? "on" : ""} onClick={() => { setQ(x.key); setDomainSel(""); }}>
             {x.label}
           </button>
         ))}
       </div>
-      <div className="tabfade" key={q + domainSel}>{answer}</div>
+      <div className="tabfade" key={q + domainSel} role="tabpanel" id="archpanel" aria-labelledby={`archtab-${q}`}>{answer}</div>
     </div>
   );
 }
