@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import * as THREE from "three";
 import { bandColor } from "../api";
 import { Loading } from "./ui";
@@ -74,8 +74,18 @@ export function topoNodeLabel(n: any): string {
 }
 
 /* True-3D fabric (mirrors the offline explorer's 3D mode): a WebGL force-directed graph,
-   switch-chassis nodes coloured by health band, links flagged for single-points-of-failure. */
-export default function Topology3D({ raw, sel, onPick }: { raw: { nodes: any[]; edges: any[] }; sel: string | null; onPick: (id: string | null) => void }) {
+   switch-chassis nodes coloured by health band, links flagged for single-points-of-failure.
+   The parent keeps this mounted once opened and flips `active`: while inactive (hidden behind
+   display:none) the engine's rAF loop is PAUSED, so a hidden fabric costs zero frames but keeps
+   its camera pose, settled layout and WebGL context for an instant, coherent return. */
+export default function Topology3D({ raw, sel, hover, active, onPick, onHover }: {
+  raw: { nodes: any[]; edges: any[] };
+  sel: string | null;
+  hover: string | null;
+  active: boolean;
+  onPick: (id: string | null) => void;
+  onHover: (id: string | null) => void;
+}) {
   const wrap = useRef<HTMLDivElement>(null);
   const fg = useRef<any>(null);
   const [dim, setDim] = useState({ w: 840, h: 480 });
@@ -83,7 +93,9 @@ export default function Topology3D({ raw, sel, onPick }: { raw: { nodes: any[]; 
 
   useEffect(() => {
     if (!wrap.current) return;
-    const ro = new ResizeObserver((es) => { for (const e of es) setDim({ w: Math.max(320, Math.round(e.contentRect.width)), h: 480 }); });
+    // Skip zero-width reports: the parent hides this layer with display:none, which would
+    // otherwise "resize" the canvas to the 320px floor and back on every toggle.
+    const ro = new ResizeObserver((es) => { for (const e of es) { if (!e.contentRect.width) continue; setDim({ w: Math.max(320, Math.round(e.contentRect.width)), h: 480 }); } });
     ro.observe(wrap.current);
     return () => ro.disconnect();
   }, []);
@@ -94,15 +106,75 @@ export default function Topology3D({ raw, sel, onPick }: { raw: { nodes: any[]; 
     links: raw.edges.map((e) => ({ ...e })),
   }), [raw]);
 
-  // fly the camera to a clicked node (coords exist once the simulation has ticked)
+  // Pause/resume the engine's own rAF loop with visibility (real 3d-force-graph API). The ref
+  // mirror lets onEngineTick self-pause the edge case where the lazy chunk resolves while hidden
+  // (the [active] effect ran before the ref existed, so it couldn't pause anything yet).
+  const activeRef = useRef(active);
+  useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => {
-    if (!sel || !fg.current) return;
+    const g = fg.current;
+    if (!g?.pauseAnimation) return;
+    if (active) g.resumeAnimation(); else g.pauseAnimation();
+  }, [active]);
+
+  // fly the camera to a clicked node (coords exist once the simulation has ticked). Re-runs on
+  // activation, so a selection made in 2D is flown to when the user re-enters 3D.
+  useEffect(() => {
+    if (!active || !sel || !fg.current) return;
     const n: any = graphData.nodes.find((x: any) => x.id === sel);
     if (!n || n.x == null) return;
     const dist = Math.hypot(n.x, n.y, n.z ?? 0) || 1;
     const r = 1 + 150 / dist;
     fg.current.cameraPosition({ x: n.x * r, y: n.y * r, z: (n.z ?? 0) * r }, n, 800);
-  }, [sel, graphData]);
+  }, [sel, graphData, active]);
+
+  // STABLE mesh factory (identity changes only on a theme flip): the library treats a changed
+  // nodeThreeObject reference as "rebuild every node's mesh", so an inline closure over sel/hover
+  // would dispose + reallocate the whole fleet's meshes on every click and hover. Selection and
+  // hover emphasis are applied by direct material mutation below instead — same band colour here.
+  const nodeObj = useCallback(
+    (n: any) => switchMesh(colors.bands[n.band] ?? colors.faint, n.degree ?? 0, (n.degree ?? 0) >= 4 || !!n.keystone),
+    [colors]);
+
+  /* Neighbor-aware dim, IDENTICAL semantics to the 2D view (focus = sel ?? hover; the focus node
+     and its direct neighbors stay full, everything else drops to opacity .25; the selected
+     chassis additionally glows brighter — the 3D analogue of 2D's accent stroke). Applied by
+     mutating the already-built materials via the library's node.__threeObj back-reference —
+     never by swapping the mesh factory, which would trigger the full-fleet rebuild above. */
+  const applyDim = useCallback(() => {
+    const focus = sel ?? hover;
+    const nbrs = new Set<string>();
+    if (focus) {
+      nbrs.add(focus);
+      for (const e of raw.edges) {
+        if (e.source === focus) nbrs.add(e.target);
+        else if (e.target === focus) nbrs.add(e.source);
+      }
+    }
+    let touched = false;
+    for (const n of graphData.nodes as any[]) {
+      const obj: THREE.Object3D | undefined = n.__threeObj;
+      if (!obj) continue;
+      touched = true;
+      const faded = focus ? !nbrs.has(n.id) : false;
+      obj.traverse((o: any) => {
+        const m = o.material;
+        if (!m) return;
+        if (m.transparent !== faded) { m.transparent = faded; m.needsUpdate = true; }
+        m.opacity = faded ? 0.25 : 1;
+      });
+      const chassis: any = obj.children?.[0];
+      if (chassis?.material?.emissiveIntensity !== undefined)
+        chassis.material.emissiveIntensity = n.id === sel ? 0.55 : 0.2;
+    }
+    return touched;
+  }, [sel, hover, raw, graphData]);
+
+  // Re-apply on state change; the engine-tick hook below covers the window before the library
+  // has attached __threeObj (fresh mount, or a graphData swap that rebuilt every node).
+  const dimInit = useRef(false);
+  useEffect(() => { dimInit.current = false; }, [graphData]);
+  useEffect(() => { applyDim(); }, [applyDim, colors, active]);
 
   return (
     <div ref={wrap} style={{ position: "relative", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--surface-2)", boxShadow: "var(--shadow)" }}>
@@ -117,11 +189,13 @@ export default function Topology3D({ raw, sel, onPick }: { raw: { nodes: any[]; 
           warmupTicks={reduceMotion() ? 80 : 0}
           cooldownTime={reduceMotion() ? 0 : 14000}
           nodeVal={(n: any) => 1.5 + Math.min(9, (n.degree ?? 0)) + (n.keystone ? 3 : 0)}
-          nodeThreeObject={(n: any) => switchMesh(
-            sel && n.id !== sel ? colors.faint : (colors.bands[n.band] ?? colors.faint),
-            n.degree ?? 0, (n.degree ?? 0) >= 4 || !!n.keystone)}
+          nodeThreeObject={nodeObj}
           nodeThreeObjectExtend={false}
           nodeLabel={topoNodeLabel}
+          onEngineTick={() => {
+            if (!activeRef.current) { fg.current?.pauseAnimation?.(); return; }
+            if (!dimInit.current) dimInit.current = applyDim();
+          }}
           linkColor={(l: any) => (l.is_bridge ? colors.crit : colors.edge)}
           linkWidth={(l: any) => (l.is_bridge ? 1.4 : 0.4)}
           linkOpacity={0.5}
@@ -131,6 +205,7 @@ export default function Topology3D({ raw, sel, onPick }: { raw: { nodes: any[]; 
           linkDirectionalParticleColor={(l: any) => (l.is_bridge ? colors.crit : colors.accent)}
           enableNodeDrag={false}
           onNodeClick={(n: any) => onPick(n.id)}
+          onNodeHover={(n: any) => onHover(n ? n.id : null)}
           onBackgroundClick={() => onPick(null)}
         />
       </Suspense>
