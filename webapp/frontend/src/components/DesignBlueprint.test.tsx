@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import DesignBlueprintPanel, { P_COLOR, scoreColor, phaseColor } from "./DesignBlueprint";
 import { api } from "../api";
 
@@ -77,5 +77,34 @@ describe("DesignBlueprintPanel (render)", () => {
     vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
     render(<DesignBlueprintPanel snapId={1} />);
     expect(await screen.findByText("Right-size to requirements (the WHY)")).toBeInTheDocument();
+  });
+
+  it("keeps both tab panels mounted across switches — hidden, never refetched", async () => {
+    const dSpy = vi.spyOn(api, "design").mockResolvedValue(design as never);
+    const cSpy = vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverage as never);
+    vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
+    const nSpy = vi.spyOn(api, "designNrfu").mockResolvedValue(
+      { items: [], note: "NRFU derives from the recommended decisions." } as never);
+    render(<DesignBlueprintPanel snapId={1} />);
+    await screen.findByText("Right-size to requirements (the WHY)");
+
+    // first NRFU visit mounts + fetches the checklist exactly once…
+    fireEvent.click(screen.getByRole("tab", { name: "NRFU checklist" }));
+    expect(await screen.findByText("NRFU derives from the recommended decisions.")).toBeVisible();
+    expect(nSpy).toHaveBeenCalledTimes(1);
+    // …and the blueprint panel is HIDDEN, not unmounted (still in the document)
+    expect(screen.getByText("Right-size to requirements (the WHY)")).not.toBeVisible();
+
+    // back to blueprint: instant reuse — the old conditional-render remounted + refetched here
+    fireEvent.click(screen.getByRole("tab", { name: "Design blueprint" }));
+    expect(screen.getByText("Right-size to requirements (the WHY)")).toBeVisible();
+    expect(screen.getByText("NRFU derives from the recommended decisions.")).not.toBeVisible();
+
+    // a second NRFU visit reuses the mounted panel — every fetch still counted exactly once
+    fireEvent.click(screen.getByRole("tab", { name: "NRFU checklist" }));
+    expect(screen.getByText("NRFU derives from the recommended decisions.")).toBeVisible();
+    expect(nSpy).toHaveBeenCalledTimes(1);
+    expect(cSpy).toHaveBeenCalledTimes(1);
+    expect(dSpy).toHaveBeenCalledTimes(1);
   });
 });
