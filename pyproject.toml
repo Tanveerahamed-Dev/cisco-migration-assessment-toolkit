@@ -61,6 +61,8 @@ mcp = ["mcp>=1.28,<2"]
 # The AssessHub web layer (webapp/backend) + the `assesshub` entry point (ADR-0004 P1: the
 # portable app's one door). Mirrors webapp/requirements.txt — keep the two in lockstep.
 webapp = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
+# Building the Atlas one-folder portable bundle (ADR-0004 P2; portable/build_atlas.py).
+build = ["pyinstaller>=6.10,<7"]
 # The D10 Phase-2 retrieval-eval stack (P2-0b; docs/d10-retrieval-eval-design-2026-07-08.md §8) —
 # all offline/air-gap-safe, none imported by the engine: rank-bm25 (the auditable pure-Python Okapi
 # BM25 — §4's frozen priors k1/b are constructor args), pytrec-eval-terrier (the maintained
