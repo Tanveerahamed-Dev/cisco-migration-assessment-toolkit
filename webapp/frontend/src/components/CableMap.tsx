@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { api, type CableMap as CableMapModel, type CableMapNode, type CableOp } from "../api";
-import { ErrorBox, Loading, useAsync } from "./ui";
+import { ErrorBox, Loading, useAsync, usePositionTween, useReducedMotion, type Pt } from "./ui";
 
 // Nokia-EDA-style physical cable map. Renders the engine's compute_cable_map SSOT (the SAME model the
 // explorer's Cable Map mode draws): role-tiered lanes, node rects with port stubs, cables anchored to
@@ -101,6 +101,16 @@ export default function CableMap({ snapId }: { snapId: number }) {
     [g.data, fabricOnly, tierSel],
   );
   const view = useMemo(() => (model ? layout(model, orient) : null), [model, orient]);
+  // Tween node centres across a relayout (orientation flip, tier/fabric filter change). useMemo keeps
+  // the Map reference stable across renders that don't touch the layout (selection, pan/zoom), so the
+  // hook's effect only refires when `view` itself changes — its own caller contract.
+  const centerTargets = useMemo(() => {
+    const m = new Map<string, Pt>();
+    if (view) Object.entries(view.pos).forEach(([host, p]) => m.set(host, p));
+    return m;
+  }, [view]);
+  const shownCenters = usePositionTween(centerTargets);
+  const reduced = useReducedMotion();
   const [sel, setSel] = useState<{ kind: "node" | "cable"; id: string | number } | null>(null);
   const [t, setT] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
@@ -114,6 +124,18 @@ export default function CableMap({ snapId }: { snapId: number }) {
 
   const { pos, anch, W, H, V } = view;
   const nodeByHost: Record<string, CableMapNode> = {}; cm.nodes.forEach((n) => (nodeByHost[n.host] = n));
+  // shownPos = the (possibly mid-tween) node centre; falls back to target before the hook has a shown
+  // value for it. Cable endpoints are absolute-positioned, so they need an explicit shift by the OWNER
+  // node's (shown - target) delta or they visibly desync from the chassis mid-flight. Port-stub rects
+  // (rendered inside the node's own <g>) do NOT need this: they're already local-offset from the
+  // TARGET centre, so translating that <g> to `shownPos` carries them along for free — same math,
+  // just inherited through nesting instead of recomputed.
+  const shownPos = (host: string): Pos => shownCenters.get(host) ?? pos[host];
+  const cableAnchor = (host: string, port: string): Pos | undefined => {
+    const a = anch[host]?.[port] ?? pos[host];
+    const p = pos[host], s = shownPos(host);
+    return a && p && s ? { x: a.x + (s.x - p.x), y: a.y + (s.y - p.y) } : a;
+  };
   const selHost = sel?.kind === "node" ? String(sel.id) : null;
   const selCab = sel?.kind === "cable" ? Number(sel.id) : null;
   const nbrs = new Set<string>();
@@ -179,7 +201,14 @@ export default function CableMap({ snapId }: { snapId: number }) {
         )}
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", maxHeight: "72vh", display: "block", cursor: drag.current ? "grabbing" : "grab" }}
           onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onClick={() => setSel(null)}>
-          <g transform={`translate(${t.x},${t.y}) scale(${t.k})`}>
+          {/* CSS (not XML) transform so pan/zoom eases via `transition` — SVG-on-CSS transform uses
+              px units, unlike the attribute form. Suppressed while a drag is in flight (the ref read
+              mirrors the cursor check above) so panning never fights a lagging transition; the
+              reduced-motion check is belt-and-suspenders alongside the styles.css kill-switch. */}
+          <g style={{
+            transform: `translate(${t.x}px, ${t.y}px) scale(${t.k})`,
+            transition: reduced || drag.current ? "none" : "transform var(--motion) var(--ease)",
+          }}>
             {/* tier lane bands + labels */}
             {cm.tiers.map((tr, k) => {
               if (!tr.length) return null;
@@ -198,8 +227,8 @@ export default function CableMap({ snapId }: { snapId: number }) {
             })}
             {/* cables (under nodes) */}
             {cm.cables.map((c, i) => {
-              const aA = anch[c.a]?.[c.a_port] ?? pos[c.a];
-              const aB = anch[c.b]?.[c.b_port] ?? pos[c.b];
+              const aA = cableAnchor(c.a, c.a_port);
+              const aB = cableAnchor(c.b, c.b_port);
               if (!aA || !aB) return null;
               const touch = !selHost || c.a === selHost || c.b === selHost;
               const isSel = selCab === i;
@@ -214,9 +243,10 @@ export default function CableMap({ snapId }: { snapId: number }) {
             {/* nodes */}
             {cm.nodes.map((n) => {
               const p = pos[n.host]; if (!p) return null;
+              const sp = shownPos(n.host);   // chassis rides the tween; anchors below stay p-relative (see shownPos)
               const on = !selHost || nbrs.has(n.host); const isSel = selHost === n.host;
               return (
-                <g key={n.host} transform={`translate(${p.x},${p.y})`} style={{ cursor: "pointer", opacity: on ? 1 : 0.28 }}
+                <g key={n.host} transform={`translate(${sp.x},${sp.y})`} style={{ cursor: "pointer", opacity: on ? 1 : 0.28 }}
                   onClick={(e) => { e.stopPropagation(); setSel((s) => (s?.kind === "node" && s.id === n.host ? null : { kind: "node", id: n.host })); }}>
                   <rect x={-NW / 2} y={-NH / 2} rx={9} width={NW} height={NH} fill="var(--surface)"
                     stroke={isSel ? "var(--accent)" : n.collected ? "var(--border-strong)" : "var(--text-faint)"}
@@ -240,7 +270,10 @@ export default function CableMap({ snapId }: { snapId: number }) {
         </svg>
 
         {(selNode || selCable) && (
-          <div style={{ position: "absolute", top: 10, right: 10, background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: 9, padding: "11px 13px", boxShadow: "var(--shadow)", maxWidth: 290, fontSize: 12, maxHeight: "66vh", overflow: "auto" }}>
+          // key = selection identity so each new pick REMOUNTS (replaying .tabfade) rather than
+          // patching the same node in place — the app's established tab/detail-panel entrance idiom.
+          <div key={selNode ? `n:${selHost}` : `c:${selCab}`} className="tabfade"
+            style={{ position: "absolute", top: 10, right: 10, background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: 9, padding: "11px 13px", boxShadow: "var(--shadow)", maxWidth: 290, fontSize: 12, maxHeight: "66vh", overflow: "auto" }}>
             {selNode && (
               <>
                 <div className="row-flex" style={{ gap: 8, marginBottom: 6 }}>
