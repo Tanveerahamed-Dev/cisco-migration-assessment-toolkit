@@ -51,6 +51,25 @@ const archCoverage = {
   summary: { n_classes: 27, n_observed: 12, n_with_findings: 3, n_clean: 9, n_not_observed: 15, by_channel: { ssh: 10, json: 2 } },
 };
 const domainPacks = { selected: [], loaded: [], note: "No domain lenses engaged." };
+const nrfuWithItem = {
+  items: [
+    { decision_id: "d1", title: "Verify HSRP failover", priority: "Critical", phase: "pre-cutover",
+      description: "Confirm sub-second failover on the core pair.",
+      pass_criteria: "Failover completes within 900ms with zero packet loss.",
+      setup: "", devices: [], principle_citation: "CCDE 1.2" },
+  ],
+  n_items: 1,
+  note: "NRFU derives from the recommended decisions.",
+};
+// one real coverage row so col()/the channel chip actually render (an empty `classes: []` array,
+// used by the other fixture above, never exercises the fallback branch being tested here)
+const archCoverageWithRow = {
+  classes: [
+    { key: "dmvpn", label: "DMVPN", channel: "ssh", detectors: [], observed: false,
+      n_hosts: 0, hosts: [], status: "not-observed", findings: [] },
+  ],
+  summary: { n_classes: 27, n_observed: 12, n_with_findings: 3, n_clean: 9, n_not_observed: 15, by_channel: { ssh: 10, json: 2 } },
+};
 
 describe("DesignBlueprintPanel (render)", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -106,5 +125,41 @@ describe("DesignBlueprintPanel (render)", () => {
     expect(nSpy).toHaveBeenCalledTimes(1);
     expect(cSpy).toHaveBeenCalledTimes(1);
     expect(dSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens an NrfuItem's disclosure from the keyboard (Enter) — WCAG 2.1.1 regression guard", async () => {
+    vi.spyOn(api, "design").mockResolvedValue(design as never);
+    vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverage as never);
+    vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
+    vi.spyOn(api, "designNrfu").mockResolvedValue(nrfuWithItem as never);
+    render(<DesignBlueprintPanel snapId={1} />);
+    await screen.findByText("Right-size to requirements (the WHY)");
+
+    fireEvent.click(screen.getByRole("tab", { name: "NRFU checklist" }));
+    const header = await screen.findByRole("button", { name: /Verify HSRP failover/ });
+    expect(header).toHaveAttribute("tabIndex", "0");
+    expect(screen.queryByText(/Pass criteria:/)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(header, { key: "Enter" });
+
+    expect(await screen.findByText(/Failover completes within 900ms with zero packet loss\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Pass criteria:$/)).toBeInTheDocument();
+  });
+
+  it("ArchitectureCoveragePanel resolves colors from real theme tokens, never the dead #888/#ccc fallbacks", async () => {
+    vi.spyOn(api, "design").mockResolvedValue(design as never);
+    vi.spyOn(api, "architectureCoverage").mockResolvedValue(archCoverageWithRow as never);
+    vi.spyOn(api, "domainPacks").mockResolvedValue(domainPacks as never);
+    const { container } = render(<DesignBlueprintPanel snapId={1} />);
+    await screen.findByText("Right-size to requirements (the WHY)");
+    // the not-observed status badge + the channel chip are what carried the dead fallbacks
+    await screen.findByText("not-observed");
+
+    const styled = Array.from(container.querySelectorAll("[style]"));
+    expect(styled.length).toBeGreaterThan(0);
+    for (const el of styled) expect(el.getAttribute("style")).not.toMatch(/#888|#ccc/);
+    // positive check the real tokens took their place, so the fix isn't just a silent drop
+    expect(styled.some((el) => (el.getAttribute("style") || "").includes("var(--text-faint)"))).toBe(true);
+    expect(styled.some((el) => (el.getAttribute("style") || "").includes("var(--border)"))).toBe(true);
   });
 });

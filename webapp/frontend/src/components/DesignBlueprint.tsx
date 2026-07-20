@@ -80,14 +80,16 @@ function NrfuItem({ item }: { item: DesignNrfuItem }) {
   return (
     <div className="panel" style={{ padding: 10, borderLeft: `3px solid ${col}`, marginBottom: 6 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", cursor: "pointer" }}
-           onClick={() => setOpen(!open)} role="button" aria-expanded={open}>
+           onClick={() => setOpen(!open)} role="button" aria-expanded={open} tabIndex={0}
+           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(!open); } }}>
         <span className="chip" style={{ fontSize: 9, color: col, borderColor: col, flexShrink: 0 }}>{item.phase}</span>
         <span className="chip" style={{ fontSize: 9, color: P_COLOR(item.priority), borderColor: P_COLOR(item.priority), flexShrink: 0 }}>{item.priority}</span>
         <b style={{ fontSize: 12, flex: 1 }}>{item.title}</b>
         <span className="faint" style={{ fontSize: 11 }}>{open ? "▲" : "▼"}</span>
       </div>
       {open && (
-        <div style={{ marginTop: 8 }}>
+        // .ros-reveal: entrance-only reveal-up: instant close is the house pattern (no exit animation).
+        <div className="ros-reveal" style={{ marginTop: 8 }}>
           {item.setup && <div style={{ fontSize: 12, marginBottom: 4 }}><b>Setup:</b> <span className="dim">{item.setup}</span></div>}
           <div style={{ fontSize: 12, marginBottom: 4 }}><b>Verify:</b> <span className="dim">{item.description}</span></div>
           <div style={{ fontSize: 12, marginBottom: 4 }}><b>Pass criteria:</b> <span className="dim">{item.pass_criteria}</span></div>
@@ -152,7 +154,7 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
   if (error) return <ErrorBox msg={error} />;
   const cov = data as ArchitectureCoverage;
   const s = cov.summary;
-  const col = (st: string) => (st === "finding" ? "var(--crit)" : st === "clean" ? "var(--ok, #2e7d32)" : "var(--muted, #888)");
+  const col = (st: string) => (st === "finding" ? "var(--crit)" : st === "clean" ? "var(--ok, #2e7d32)" : "var(--text-faint)");
   const ord: Record<string, number> = { finding: 0, clean: 1, "not-observed": 2 };
   const rows = [...cov.classes].sort((a, b) => (ord[a.status] - ord[b.status]) || a.label.localeCompare(b.label));
   return (
@@ -170,7 +172,7 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
         <span className="faint">· {s.by_channel.ssh} SSH · {s.by_channel.json} JSON</span>
       </div>
       {packs.data && (
-        <div style={{ margin: "0 0 12px", padding: "8px 10px", border: "1px solid var(--line, #ccc)", borderRadius: 6 }}>
+        <div style={{ margin: "0 0 12px", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6 }}>
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: packs.data.selected.length ? 6 : 0 }}>
             Domain lenses engaged{" "}
             <span className="faint" style={{ fontWeight: 400, fontSize: 11 }}>
@@ -198,7 +200,7 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
       {rows.map((c) => (
         <div key={c.key} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", opacity: c.status === "not-observed" ? 0.55 : 1 }}>
           <span style={{ minWidth: 86, textAlign: "center", fontSize: 10, fontWeight: 700, color: "#fff", background: col(c.status), borderRadius: 4, padding: "1px 6px" }}>{c.status}</span>
-          <span style={{ fontSize: 9, padding: "1px 5px", border: "1px solid var(--line, #ccc)", borderRadius: 4 }}>{c.channel}</span>
+          <span style={{ fontSize: 9, padding: "1px 5px", border: "1px solid var(--border)", borderRadius: 4 }}>{c.channel}</span>
           <span style={{ flex: 1, fontSize: 12 }}>{c.label}</span>
           <span className="faint" style={{ fontSize: 11 }}>
             {c.status === "finding" ? `${c.n_hosts} host(s) · ${c.findings.length} finding(s)`
@@ -562,7 +564,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
 
           <div style={{ marginTop: 14 }}>
             {resolvedIds.size > 0 && (
-              <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6,
+              <div className="ros-reveal" style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6,
                             background: "var(--surface-2)", border: "1px solid var(--accent)", fontSize: 12 }}>
                 <b>✓ {resolvedIds.size} open design question{resolvedIds.size === 1 ? "" : "s"} resolved by your requirements</b>
                 {" — "}
@@ -577,9 +579,15 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
                 {copied ? "✓ Copied" : "Copy design brief"}
               </button>
             </div>
-            {rec.length
-              ? rec.map((d, i) => <DecisionCard key={d.id} d={d} i={i} isResolved={resolvedIds.has(d.id)} />)
-              : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
+            {/* key = overlay identity so Right-size/Reset REMOUNTS the list (each card replays its .panel
+                entrance + capped stagger) instead of patching re-ranked cards in place — cards keep the
+                same key={d.id} but the server re-ranks them, so an in-place patch teleports cards with no
+                cue. Depends ONLY on `over`, never on `tab`, so a tab switch never remounts this. */}
+            <div key={over ? "right-sized" : "baseline"}>
+              {rec.length
+                ? rec.map((d, i) => <DecisionCard key={d.id} d={d} i={i} isResolved={resolvedIds.has(d.id)} />)
+                : <div className="dim" style={{ fontSize: 13 }}>No evidence-grounded design decisions for this snapshot.</div>}
+            </div>
           </div>
 
           {bp.target_state && <TargetState ts={bp.target_state} />}
