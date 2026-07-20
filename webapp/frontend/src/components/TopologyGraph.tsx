@@ -146,6 +146,10 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   const [hover, setHover] = useState<string | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const [mode, setMode] = useState<"2d" | "3d">("2d");
+  // Once 3D has been opened it stays MOUNTED for the life of this panel (hidden + paused in 2D
+  // mode), so camera pose, settled layout and selection survive toggling — the engine is never
+  // torn down and rebuilt. The flag never resets to false.
+  const [opened3d, setOpened3d] = useState(false);
   const [t, setT] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
 
@@ -200,7 +204,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
       style={{ padding: "4px 11px", borderRadius: 0, fontWeight: 650,
         background: mode === m ? "linear-gradient(135deg, var(--accent), var(--accent-dim))" : "transparent",
         color: mode === m ? "#fff" : "var(--text-dim)" }}
-      onClick={() => setMode(m)}
+      onClick={() => { setMode(m); setHover(null); if (m === "3d") setOpened3d(true); }}
     >{label}</button>
   );
 
@@ -234,10 +238,10 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
           <span className="item"><span style={{ width: 9, height: 9, background: "var(--accent)", transform: "rotate(45deg)", display: "inline-block" }} /> keystone</span>
         </div>
         <div className="row-flex" style={{ gap: 8 }}>
-          {mode === "2d" && linkedOnly && (
+          {linkedOnly && (
             <span className="faint" style={{ fontSize: 12 }}>showing <b>{view.nodes.length}</b>/{g.data.nodes.length} switches</span>
           )}
-          {mode === "2d" && nUnlinked > 0 && (
+          {nUnlinked > 0 && (
             <button className="btn ghost"
               style={{ padding: "4px 9px", ...(linkedOnly ? { borderColor: "var(--accent)", color: "var(--accent)" } : {}) }}
               title={`Hide the ${nUnlinked} switch(es) with no observed CDP link (uncollected or standalone). The count stays disclosed — hidden, never silently absent.`}
@@ -252,15 +256,21 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
         </div>
       </div>
 
-      {mode === "3d" ? (
-        <div style={{ position: "relative" }}>
+      {/* 3D layer: mounted once, then only HIDDEN (display:none replays .tabfade on return, and
+          CSS animations restart from none→shown — no React remount, so the WebGL context, camera
+          pose and settled simulation all survive). It renders the SAME linkedOnly-filtered `model`
+          as 2D — passing the raw graph here let the two views silently disagree on node/edge counts. */}
+      {opened3d && (
+        <div className="tabfade" style={{ position: "relative", display: mode === "3d" ? undefined : "none" }}>
           <Suspense fallback={<div style={{ height: 480, display: "grid", placeItems: "center", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)" }}><Loading label="Loading 3D engine…" /></div>}>
-            <Topology3D raw={g.data!} sel={sel} onPick={(id) => setSel((s) => (s === id ? null : id))} />
+            <Topology3D raw={model!} sel={sel} hover={hover} active={mode === "3d"}
+              onPick={(id) => setSel((s) => (s === id ? null : id))} onHover={setHover} />
           </Suspense>
           {selPanel(true)}
         </div>
-      ) : (
-      <div style={{ position: "relative", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)", overflow: "hidden" }}>
+      )}
+      {mode === "2d" && (
+      <div className="tabfade" style={{ position: "relative", border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface-2)", overflow: "hidden" }}>
         {view.nodes.length === 0 && (
           <div className="faint" style={{ position: "absolute", top: 12, left: 12, fontSize: 12 }}>
             Every switch is hidden by the current filter — clear “Linked only” above.
