@@ -82,6 +82,16 @@ family, and checks the result before reporting success - if anything is
 still unredacted it FAILS and says so rather than handing you a file
 that looks safe. Expect several minutes for a large fleet.
 
+WHAT REDACTION DOES NOT REMOVE - read this before sending anything:
+HOSTNAMES AND DESCRIPTIONS ARE KEPT ON PURPOSE (a deliverable full of
+anonymous boxes is unreadable). Device names and interface descriptions
+routinely carry the customer and site - DOH-DC-CORE1, SITE-A-CORE - so a
+redacted set still identifies the client. IPs, MACs and serials are
+pseudonymized; hostnames are not. Read the documents before they leave.
+Atlas verifies that the redaction actually ran and that no private
+address survives in the snapshot; it does not certify every field of
+every file.
+
 --out must be OUTSIDE the Atlas\ folder (an update replaces everything
 there except data\), and it will not write into the collection folder
 either. Atlas refuses both rather than lose your work.

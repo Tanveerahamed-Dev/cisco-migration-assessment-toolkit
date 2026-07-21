@@ -38,7 +38,7 @@ def test_every_quoted_app_message_is_really_printed():
     a quoted string that does not match is worse than none, because it reads as 'not my case'."""
     sources = "\n".join((ROOT / p).read_text(encoding="utf-8", errors="replace") for p in (
         "webapp/backend/serve.py", "webapp/backend/storage.py", "portable/make_stick.ps1",
-        "COLLECT_PARSE_V3_23_0.py"))
+        "COLLECT_PARSE_V3_23_0.py", "webapp/backend/ingest.py"))
 
     def emitted(phrase: str) -> bool:
         # Messages are f-string-composed across files ("refusing to start - " in serve.py,

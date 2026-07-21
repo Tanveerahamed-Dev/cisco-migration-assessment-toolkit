@@ -178,7 +178,7 @@ def test_refuses_to_write_inside_the_frozen_bundle(monkeypatch, tmp_path):
     bundle.mkdir()
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(bundle / "Atlas.exe"))
-    with pytest.raises(ing.IngestError, match="update replaces"):
+    with pytest.raises(ing.IngestError, match="app folder"):
         ing.run_redaction_folder(str(_collection(tmp_path)), str(bundle / "out"))
 
 
@@ -205,7 +205,9 @@ def test_cli_runs_redaction_and_reports_what_it_wrote(monkeypatch, tmp_path, cap
     out = capsys.readouterr().out
     assert rc == 0
     assert "Assessment_redacted.xlsx" in out and "Deck.pptx" in out
-    assert "pseudonymized" in out
+    # The banner must state its LIMITS, not certify more than the code checks.
+    assert "NOT checked" in out and "HOSTNAMES ARE KEPT BY DESIGN" in out
+    assert "Every IP/MAC/serial is pseudonymized" not in out
 
 
 def test_cli_requires_out_and_says_so(tmp_path, capsys):
@@ -229,3 +231,104 @@ def test_out_without_redact_folder_is_rejected(tmp_path, capsys):
     rc = serve.main(["--out", str(tmp_path / "o"), "--no-browser"])
     assert rc == 2
     assert "only apply to --redact-folder" in capsys.readouterr().err
+
+
+# ── the silent leak found by fault injection (independent review) ───────────────
+def _engine_with_failed_phase(record: dict, phase: str, via: str = "timings"):
+    """The engine's _run_phase LOGS AND CONTINUES on any exception 'so the workbook still saves'.
+    The snapshot is redacted by a DIRECT call and stays clean, so the workbook can ship real client
+    data while the verified file is spotless and the run exits 0."""
+    def run(cmd, cwd=None, **kw):
+        record["cmd"] = list(cmd)
+        out = Path(cmd[cmd.index("--output") + 1])
+        stem = str(out)[: -len(".xlsx")]
+        Path(stem + ".snapshot.json").write_text(json.dumps(REDACTED_SNAP), encoding="utf-8")
+        out.write_bytes(b"xlsx with UNREDACTED cells")
+        if via == "timings":
+            Path(stem + ".phase_timings.json").write_text(
+                json.dumps([{"phase": phase, "seconds": 0.1, "ok": False}]), encoding="utf-8")
+            return types.SimpleNamespace(returncode=0, stdout="engine ok", stderr="")
+        return types.SimpleNamespace(
+            returncode=0, stderr=f"  [SKIP] Phase '{phase}' failed: RuntimeError(); "
+                                 f"continuing so the workbook still saves.", stdout="")
+    return run
+
+
+@pytest.mark.parametrize("phase", ["redact collected dataclasses", "redact workbook cells"])
+@pytest.mark.parametrize("via", ["timings", "stderr"])
+def test_a_skipped_redaction_phase_is_refused(monkeypatch, tmp_path, phase, via):
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _engine_with_failed_phase(rec, phase, via))
+    with pytest.raises(ing.EngineRunError) as e:
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"))
+    msg = str(e.value)
+    assert "REDACTION PHASE FAILED" in msg and phase in msg
+    assert "Do NOT send" in msg
+
+
+def test_a_refused_run_leaves_a_do_not_send_marker(monkeypatch, tmp_path):
+    """Nothing is deleted (that would destroy evidence) but the files are named *_redacted* — they
+    assert the very property the run declined to certify, and stderr scrolls away."""
+    rec = {}
+    monkeypatch.setattr(ing.subprocess, "run", _fake_engine(rec, snapshot=LEAKY_SNAP))
+    out = tmp_path / "share"
+    with pytest.raises(ing.EngineRunError):
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    marker = out / "DO-NOT-SEND-NOT-REDACTED.txt"
+    assert marker.is_file()
+    assert "NOT safe to share" in marker.read_text(encoding="ascii")
+
+
+def test_only_files_this_run_produced_are_reported(monkeypatch, tmp_path):
+    """Enumerating the directory reported the engineer's own pre-existing files under the
+    share-safe banner — including, in the reviewer's run, an 'Assessment_FULL_UNREDACTED.xlsx'."""
+    rec = {}
+    out = tmp_path / "share"
+    out.mkdir()
+    (out / "Assessment_FULL_UNREDACTED.xlsx").write_bytes(b"pre-existing")
+    monkeypatch.setattr(ing.subprocess, "run", _fake_engine(rec))
+    report = ing.run_redaction_folder(str(_collection(tmp_path)), str(out))
+    assert "Assessment_FULL_UNREDACTED.xlsx" not in report["files"]
+    assert "Assessment_redacted.xlsx" in report["files"]
+
+
+def test_refuses_when_out_is_the_parent_of_the_collection(tmp_path):
+    """The raw captures would sit inside the folder the engineer zips and sends."""
+    src = _collection(tmp_path / "job" / "share")
+    with pytest.raises(ing.IngestError, match="raw captures would travel"):
+        ing.run_redaction_folder(str(src), str(tmp_path / "job" / "share"))
+
+
+def test_bad_out_path_is_a_sentence_not_a_traceback(monkeypatch, tmp_path, capsys):
+    """--out is the one value the engineer invents on the spot, so it is the likeliest typo; a
+    mistyped drive letter used to print a pathlib traceback after the reassuring banner."""
+    blocker = tmp_path / "afile"
+    blocker.write_text("not a directory", encoding="utf-8")
+    rc = serve.main(["--redact-folder", str(_collection(tmp_path)), "--out", str(blocker / "sub")])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "Cannot create the output folder" in err and "Traceback" not in err
+
+
+def test_truncated_snapshot_is_refused_not_a_json_traceback(monkeypatch, tmp_path):
+    rec = {}
+    def run(cmd, cwd=None, **kw):
+        out = Path(cmd[cmd.index("--output") + 1])
+        Path(str(out)[: -len(".xlsx")] + ".snapshot.json").write_text('{"devices": {', encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(ing.subprocess, "run", run)
+    with pytest.raises(ing.EngineRunError, match="could not be read back"):
+        ing.run_redaction_folder(str(_collection(tmp_path)), str(tmp_path / "out"))
+
+
+def test_field_messages_are_ascii(monkeypatch, tmp_path):
+    """cp437 field consoles render an em-dash as '?'. serve.py already complies; these messages
+    were outside both that rule and the README message ratchet."""
+    import inspect
+    src = inspect.getsource(ing)
+    for i, line in enumerate(src.splitlines(), 1):
+        s = line.strip()
+        if s.startswith(("raise IngestError", "raise EngineRunError")) or "f\"" in s:
+            if s.startswith(("#", "*", '"""', "#:")):
+                continue
+            assert "—" not in s, f"em-dash in a runtime message at ingest.py line ~{i}: {s[:80]}"
