@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import { api, bandColor } from "../api";
 import { shortName } from "./CableMap";
-import { ErrorBox, Loading, useAsync } from "./ui";
+import { ErrorBox, Loading, SkelLines, useAsync } from "./ui";
 
 // Device-fidelity topology: role-tiered lanes of switch-chassis rects — the same visual language as
 // the CableMap and the 3D fabric's rack-mount meshes, so the product reads as one system. Health band
@@ -166,7 +166,7 @@ export default function TopologyGraph({ snapId }: { snapId: number }) {
   }, [g.data, linkedOnly]);
   const view = useMemo(() => (model ? layout(model) : null), [model]);
 
-  if (g.loading) return <Loading label="Building topology…" />;
+  if (g.loading) return <SkelLines label="Building topology…" />;
   if (g.error) return <ErrorBox msg={g.error} />;
   if (!g.data || !g.data.nodes.length || !view)
     return <div className="faint" style={{ fontSize: 13 }}>No topology to draw.</div>;

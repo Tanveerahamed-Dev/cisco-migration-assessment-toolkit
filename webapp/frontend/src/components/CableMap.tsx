@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { api, type CableMap as CableMapModel, type CableMapNode, type CableOp } from "../api";
-import { ErrorBox, Loading, useAsync, usePositionTween, useReducedMotion, type Pt } from "./ui";
+import { ErrorBox, SkelLines, useAsync, usePositionTween, useReducedMotion, type Pt } from "./ui";
 
 // Nokia-EDA-style physical cable map. Renders the engine's compute_cable_map SSOT (the SAME model the
 // explorer's Cable Map mode draws): role-tiered lanes, node rects with port stubs, cables anchored to
@@ -115,7 +115,7 @@ export default function CableMap({ snapId }: { snapId: number }) {
   const [t, setT] = useState({ x: 0, y: 0, k: 1 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
 
-  if (g.loading) return <Loading label="Building cable map…" />;
+  if (g.loading) return <SkelLines label="Building cable map…" />;
   if (g.error) return <ErrorBox msg={g.error} />;
   const raw = g.data;
   if (!raw || !raw.nodes.length || !model || !view)

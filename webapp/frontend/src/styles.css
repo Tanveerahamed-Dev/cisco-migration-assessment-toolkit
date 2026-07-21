@@ -431,3 +431,34 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
   .hero-reveal { animation: reveal-up var(--motion-reveal) var(--ease) both; }
   .step-in { animation: reveal-up var(--motion-reveal) var(--ease) both; }
 }
+
+/* ============================================================================
+   Skeleton loading placeholders (components/ui.tsx Skeleton/SkelLines/SkelTable,
+   animation Unit 23). Structure-shaped stand-ins for panels whose content SHAPE
+   is already known, so a panel reveals in place instead of blanking-then-popping
+   behind the centered Loading spinner (which stays for full-page/unknown-shape
+   contexts). Bars are solid var(--surface-2)/var(--surface-3) blocks by default —
+   already a correct, visible placeholder — the shimmer sweep below is purely an
+   enhancement, so reduced motion never leaves anything hidden or empty.
+   ============================================================================ */
+.skel { background: var(--surface-2); border-radius: var(--radius-sm); position: relative; overflow: hidden; min-height: 10px; }
+.skel-lines { display: flex; flex-direction: column; gap: 8px; }
+.skel-h { height: 15px; width: 42%; background: var(--surface-3); margin-bottom: 2px; }
+.skel-line { height: 10px; }
+.skel-w1 { width: 96%; } .skel-w2 { width: 84%; } .skel-w3 { width: 70%; } .skel-w4 { width: 56%; }
+.skel-table { display: flex; flex-direction: column; gap: 6px; }
+.skel-row { display: flex; gap: 8px; }
+.skel-th { height: 11px; flex: 1; background: var(--surface-3); }
+.skel-td { height: 13px; flex: 1; }
+
+@keyframes skel-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: no-preference) {
+  /* gradient sweep per bar, clipped by .skel's own overflow:hidden; 1.6s is a hardcoded ambient-loop
+     duration like .czflow-line's 2.4s above — shimmer loops aren't on the --motion token scale, which
+     covers one-shot UI transitions/reveals, not ambient decoration. */
+  .skel::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 10%, transparent), transparent);
+    animation: skel-shimmer 1.6s linear infinite;
+  }
+}

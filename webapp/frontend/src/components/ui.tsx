@@ -261,3 +261,56 @@ export function useToast() {
   const node = msg ? <div className={`toast${closing ? " out" : ""}`}>{msg}</div> : null;
   return { toast, node };
 }
+
+/* ---- Skeleton loading placeholders (animation Unit 23): structure-shaped stand-ins for panels
+   whose content SHAPE is already known, so a panel reveals in place instead of blanking-then-popping
+   behind the centered Loading spinner (which stays for full-page/unknown-shape contexts). Skeleton
+   is the base bar — every instance gets className="skel loading" (the "loading" class is what keeps
+   Campaign.test.tsx's `.spinner, .loading` selector satisfied wherever a skeleton lands) plus a
+   visually-hidden "Loading…" child. LOAD-BEARING: ArchReview.test.tsx and DesignBlueprint.test.tsx
+   assert getByText(/Loading/i) during load and must keep passing untouched. `announce=false` drops
+   that child on the repeated bars within a preset, so a single-match getByText query never trips
+   over duplicate "Loading…" text nodes — exactly one bar per preset instance announces. ---- */
+export function Skeleton({ className = "", label, announce = true }: { className?: string; label?: string; announce?: boolean }) {
+  return (
+    <div className={`skel loading ${className}`}>
+      {announce && <span className="sr-only">{label || "Loading…"}</span>}
+    </div>
+  );
+}
+
+// cycled per body line/cell for a "content, not a bar chart" look. Structural, lives in the preset —
+// callers never pass widths in.
+const SKEL_W = ["skel-w1", "skel-w2", "skel-w3", "skel-w4"];
+
+/* ---- prose/panel-body preset: a heading-width bar + n body lines of varying width. ---- */
+export function SkelLines({ n = 4, label }: { n?: number; label?: string }) {
+  return (
+    <div className="skel-lines">
+      <Skeleton className="skel-h" label={label} />
+      {Array.from({ length: n }, (_, i) => (
+        <Skeleton key={i} className={`skel-line ${SKEL_W[i % SKEL_W.length]}`} announce={false} />
+      ))}
+    </div>
+  );
+}
+
+/* ---- table/grid preset: a header bar + rows×cols cell bars, uniform per column like a real table. ---- */
+export function SkelTable({ rows = 4, cols = 4, label }: { rows?: number; cols?: number; label?: string }) {
+  return (
+    <div className="skel-table">
+      <div className="skel-row">
+        {Array.from({ length: cols }, (_, c) => (
+          <Skeleton key={c} className="skel-th" label={label} announce={c === 0} />
+        ))}
+      </div>
+      {Array.from({ length: rows }, (_, r) => (
+        <div className="skel-row" key={r}>
+          {Array.from({ length: cols }, (_, c) => (
+            <Skeleton key={c} className="skel-td" announce={false} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
