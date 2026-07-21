@@ -44,5 +44,5 @@ if ($updating) {
 } else {
   Write-Host "[ok] created $target"
 }
-Write-Host "Next, on the target machine:  $target\Atlas.exe --selftest   (expect 8/8 PASS)"
+Write-Host "Next, on the target machine:  $target\Atlas.exe --selftest   (expect SELFTEST: PASS)"
 exit 0
