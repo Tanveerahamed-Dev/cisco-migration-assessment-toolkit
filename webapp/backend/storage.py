@@ -4,12 +4,20 @@ A *campaign* is a migration project (a fleet over time); a *snapshot* is one col
 wave / cutover checkpoint) stored as the raw engine snapshot JSON plus a cached headline summary.
 The full snapshot is the source of truth; the summary is a derived cache for fast dashboards.
 stdlib only (sqlite3) — no extra runtime dependency.
+
+``boot_hardening`` (ADR-0004 P3, opt-in — only the production entry ``serve.main`` turns it on):
+on a USB stick the store IS the client evidence and the stick gets yanked. A hardened boot proves
+the file is sound (``PRAGMA quick_check``) before anything touches it, keeps a rotating
+timestamped copy under ``<data>/backups/``, and pins rollback-journal durability. Corruption is
+fatal and NON-destructive: :class:`StoreCorruptError` refuses the boot and the corrupt file is
+left byte-identical for a human restore (README-FIELD).
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,20 +69,79 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_BACKUP_DIR = "backups"
+_BACKUP_PREFIX = "assesshub-"
+_BACKUP_KEEP = 3
+
+
+class StoreCorruptError(RuntimeError):
+    """The SQLite store failed its boot integrity check. The file was NOT modified."""
+
+
 class Store:
     """Thin, thread-safe SQLite wrapper. One connection guarded by a lock — fine for a single-process
     dev/demo server; swap for a pool or Postgres if this ever needs real concurrency."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, boot_hardening: bool = False):
         self.db_path = str(db_path)
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        dbfile = Path(self.db_path)
+        dbfile.parent.mkdir(parents=True, exist_ok=True)
+        # mtime BEFORE we connect: it decides backup freshness, and opening may recover a journal.
+        db_mtime = dbfile.stat().st_mtime if dbfile.is_file() else None
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        if boot_hardening:
+            self._boot_hardening(dbfile, db_mtime)  # BEFORE the schema touches a corrupt file
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+
+    def _boot_hardening(self, dbfile: Path, db_mtime: float | None) -> None:
+        """Unplug-safety (ADR-0004 P3): integrity-check, back up, pin durability.
+
+        Corruption refuses the boot and leaves the file byte-identical — it is client evidence;
+        restore is the human's call (README-FIELD, 'Corruption'). A failed BACKUP only warns:
+        a rotation hiccup must not strand the engineer mid-engagement, and because it reprints
+        every boot the degradation is never silent."""
+        backups = dbfile.parent / _BACKUP_DIR
+        try:
+            rows = self._conn.execute("PRAGMA quick_check").fetchall()
+            ok = len(rows) == 1 and rows[0][0] == "ok"
+            detail = "" if ok else "; ".join(str(r[0]) for r in rows[:3])
+        except sqlite3.DatabaseError as e:  # not even a database (torn/overwritten header)
+            ok, detail = False, str(e)
+        if not ok:
+            self._conn.close()
+            raise StoreCorruptError(
+                f"integrity check failed for {dbfile}: {detail}\n"
+                f"  The file was left untouched. To restore: close Atlas, copy the newest "
+                f"backup from {backups} over it, start again, run --selftest."
+            )
+        # DELETE + FULL are SQLite's defaults — pinned so nobody "optimizes" to WAL: an orphaned
+        # -wal file after a stick yank on exFAT silently loses committed transactions, while a
+        # rollback journal recovers on the next open.
+        self._conn.execute("PRAGMA journal_mode = DELETE")
+        self._conn.execute("PRAGMA synchronous = FULL")
+        if db_mtime is None:
+            return  # first boot: an empty store is not evidence worth copying
+        try:
+            backups.mkdir(parents=True, exist_ok=True)
+            have = sorted(backups.glob(f"{_BACKUP_PREFIX}*.db"))
+            if have and max(b.stat().st_mtime for b in have) >= db_mtime:
+                return  # unchanged since the last copy — don't churn the stick
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            dest = sqlite3.connect(str(backups / f"{_BACKUP_PREFIX}{stamp}.db"))
+            try:
+                self._conn.backup(dest)
+            finally:
+                dest.close()
+            for old in sorted(backups.glob(f"{_BACKUP_PREFIX}*.db"))[:-_BACKUP_KEEP]:
+                old.unlink()
+        except (OSError, sqlite3.Error) as e:
+            print(f"[warn] boot backup failed ({e}) — unplug protection degraded this session",
+                  file=sys.stderr)
 
     def close(self) -> None:
         with self._lock:

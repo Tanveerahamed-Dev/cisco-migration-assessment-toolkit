@@ -340,11 +340,14 @@ def _generation_slot(semaphore: threading.BoundedSemaphore):
         semaphore.release()
 
 
-def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = None) -> FastAPI:
+def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = None,
+               boot_hardening: bool = False) -> FastAPI:
     """``dist_dir`` overrides where the built SPA is served from (default: the checkout's
     webapp/frontend/dist) — the hook the Atlas entry module uses to point at the bundled copy
-    inside a frozen build (webapp/backend/serve.py, ADR-0004 P1)."""
-    store = Store(db_path or DEFAULT_DB)
+    inside a frozen build (webapp/backend/serve.py, ADR-0004 P1). ``boot_hardening`` threads the
+    P3 unplug-safety boot (integrity check + backup — see storage.Store) and may raise
+    StoreCorruptError; only the production entry turns it on."""
+    store = Store(db_path or DEFAULT_DB, boot_hardening=boot_hardening)
     app = FastAPI(
         title="AssessHub",
         version=engine.ENGINE_SCHEMA_VERSION,

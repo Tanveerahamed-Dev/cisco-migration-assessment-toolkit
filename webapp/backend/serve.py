@@ -15,7 +15,10 @@ The `assesshub` console script and the frozen `Atlas.exe` (P2, PyInstaller one-f
    SILENTLY when missing (explorer template, OUI/port KBs, docx/pptx extras, frontend dist).
 4. Production serve: ``uvicorn.run(<app object>)`` — the object, never an import string, so reload
    is structurally impossible; workers are never configured (one process owns the SQLite store).
-   Browser auto-open unless ``--no-browser``.
+   Browser auto-open unless ``--no-browser``. The boot is hardened (ADR-0004 P3 unplug-safety):
+   a write probe turns a write-locked stick into a friendly refusal, and the store
+   integrity-checks + backs itself up before serving (``storage.Store(boot_hardening=True)``) —
+   a corrupt DB refuses to serve and is left untouched for a human restore.
 
 Run from a checkout with ``python -m webapp.backend.serve`` (relative imports need the package
 context) or the installed ``assesshub`` script. Console build (D3): the live-SSH credential prompt
@@ -152,6 +155,20 @@ def _schedule_browser_open(url: str) -> None:
     t.start()
 
 
+# ── shared write probe (selftest + pre-serve) ──────────────────────────────────
+def _writable_failure(dirpath: Path):
+    """OSError text if `dirpath` cannot be created and written — the write-locked-stick /
+    read-only-folder class a field boot must turn into a friendly refusal, not a traceback."""
+    try:
+        dirpath.mkdir(parents=True, exist_ok=True)
+        probe = dirpath / ".atlas-write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return None
+    except OSError as e:
+        return str(e)
+
+
 # ── --selftest ──────────────────────────────────────────────────────────────────
 def _explorer_template_path() -> Path:
     """Resolve exactly like cisco_toolkit.html does: the package copy, legacy repo-root fallback."""
@@ -208,14 +225,14 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
               else f"engine script not found at {ingest_mod._ENGINE_SCRIPT}")
 
     dbp = Path(_effective_db_path(db_path))
-    try:
-        dbp.parent.mkdir(parents=True, exist_ok=True)
-        probe = dbp.parent / ".atlas-selftest-probe"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
-        check("db-writable", None)
-    except OSError as e:
-        check("db-writable", f"cannot write {dbp.parent}: {e}")
+    err = _writable_failure(dbp.parent)
+    check("db-writable", None if err is None else f"cannot write {dbp.parent}: {err}")
+
+    bak = dbp.parent / "backups"
+    err = _writable_failure(bak)
+    check("backup-dir", None if err is None
+          else f"cannot write {bak}: {err} — boot-time DB backups (unplug safety, "
+               "ADR-0004 P3) would fail")
 
     n_ok = sum(1 for _, failure in checks if failure is None)
     print(f"{APP_TITLE} — selftest · release {_release_version()}")
@@ -252,18 +269,34 @@ def main(argv=None) -> int:
                         help="do not auto-open the UI in a browser")
     parser.add_argument("--selftest", action="store_true",
                         help="verify the silent-degrade assets (explorer template, OUI/port KBs, "
-                             "docx/pptx, frontend dist, engine entry, DB dir) and exit non-zero "
-                             "on any failure")
+                             "docx/pptx, frontend dist, engine entry, DB + backup dirs) and exit "
+                             "non-zero on any failure")
     parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
 
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
 
+    # Field refusal #1 — write-locked stick / read-only folder: friendly line, not a traceback.
+    data_dir = Path(_effective_db_path(args.db)).parent
+    err = _writable_failure(data_dir)
+    if err:
+        print(f"{APP_TITLE}: the data folder is not writable: {data_dir}\n"
+              f"  ({err})\n"
+              f"  Is the stick write-locked, or the folder read-only? Fix that and start again "
+              f"(README-FIELD.txt, 'Read-only stick').", file=sys.stderr)
+        return 1
+
     from .app import create_app  # lazy: the engine-child path never pays the fastapi import
+    from .storage import StoreCorruptError
 
     dist = _resolve_dist(args.dist)
-    app = create_app(db_path=_resolve_db(args.db), dist_dir=str(dist))
+    # Field refusal #2 — corrupt store: refuse to serve, leave the file for a human restore.
+    try:
+        app = create_app(db_path=_resolve_db(args.db), dist_dir=str(dist), boot_hardening=True)
+    except StoreCorruptError as e:
+        print(f"{APP_TITLE}: refusing to start — {e}", file=sys.stderr)
+        return 1
     url = f"http://{args.host}:{args.port}/"
     note = "" if (dist / "index.html").is_file() else \
         "   [frontend dist missing — API only; run --selftest]"
