@@ -4,6 +4,44 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-21] — Atlas P3 shipped (#426/#427) + real stick updated — and the restick exposed a 5-hour silent hang (#428)
+
+- P3 planned from the artifact §15 row with a code-verified gap analysis (which found ADR-0004 D4's
+  "AssessKit one-prompt fleet flow" was never built — `app.py` has no collection route at all, so the
+  console chain IS the certified field path; deferred with the reasoning recorded rather than silently
+  skipped). Two slices: boot unplug-safety (`quick_check` refusing corrupt stores non-destructively,
+  rotating `data\backups\`, rollback-journal pinned, friendly write-locked-stick refusal) and the shipped
+  `README-FIELD.txt` with ratchet tests. Stacked-PR order held again: retarget #427 to main BEFORE merging
+  its base, delete branches last. Post-merge gate on merged main green. Bundle rebuilt, physical stick
+  updated, on-stick `--selftest` PASS 9/9, client DB byte-identical throughout.
+- `!lesson` **Robocopy's DEFAULTS are `/R:1000000 /W:30` — a million retries 30s apart (~347 days).**
+  Paired with quiet switches (`/NFL /NDL /NJH /NJS /NP | Out-Null`) that is a *silent* hang: the stick
+  update looked alive for ~5 hours having written 32.5 MB with 1.9s of CPU. Always pin small `/R` `/W` on
+  any unattended copy and print which file failed. Diagnosis kit that settled slow-vs-hung in one minute:
+  a `Win32_Process.WriteTransferCount` delta over 20s (0 B/s = hung, not slow); find the lock holder by
+  scanning every process's **`.Modules`**, not `.Path`, because the holder has the file open as a loaded
+  DLL; and note robocopy's error line prints the **source** path while the lock is on the **destination**
+  (`Copy-Item`'s message named the real culprit). bridge-candidate
+- `!lesson` **A portable app that auto-opens a browser hands that browser its own directory as the working
+  directory** — Windows then resolves DLLs (`VCRUNTIME140.dll`) out of the app folder, and the browser's
+  child processes keep them open *long after the app exits*. On removable media that blocks both update
+  ("file in use") and safe-eject, with no visible culprit. Fix is documentation + fail-fast, not code:
+  "close the browser too" now sits in the eject AND update sections of the field guide. bridge-candidate
+- `!lesson` **Verify a packaging change in the ARTIFACT, and pick a verification signal whose *value*
+  distinguishes the code under test from the installed copy.** Unit tests pinned the bundle manifest but
+  could not prove the packaged app behaves; building and driving the real exe caught that a post-build
+  step had never actually run (PyInstaller ≥6 buries spec `datas` under `_internal\`, where no field user
+  would look). The selftest's **check count** (9 vs main's 8) was the tell that the branch's code — not
+  the editable-installed one — was really bundled; a boolean pass/fail would have proven nothing.
+  bridge-candidate
+- `!lesson` **Three test traps, all of which made a test lie green or fail wrongly.** (a) A ratchet that
+  reads a value out of a file must read it from the *invocation*, not the prose — my retry-bound test
+  regexed the first `/R:\d+` and matched the number inside my own comment quoting robocopy's bad defaults,
+  passing while the script hung. (b) A plain Python `open()` does NOT reproduce a Windows file lock
+  (opens with full sharing) — reproducing an in-use file needs a real `msvcrt.locking` byte-range lock.
+  (c) Faking SQLite corruption by stomping bytes mid-page does not fail `quick_check`: cells pack from each
+  page's **tail** and the middle is free space, so damage the tails. bridge-candidate
+
 ## [2026-07-21] — Webapp motion engagement end-to-end: adversarially-verified 25-unit plan fully landed (21 PRs, #403 + #407–#423) + DS re-sync (PR #424)
 
 - Three-day arc: grounded audit → 23-unit plan → two ceiling probes (self re-verify caught one arithmetic
