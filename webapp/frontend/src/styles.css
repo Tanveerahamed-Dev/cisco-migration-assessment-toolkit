@@ -400,3 +400,14 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
   /* wave-state chip (pending/active/complete/rolled_back/deferred) eases colour like .chip.gate does */
   .chip.wavestate { transition: color var(--motion) var(--ease), border-color var(--motion) var(--ease); }
 }
+
+/* ---- Snapshot page: table-row entrance (animation Unit 9) ----
+   Row-level counterpart to .panel's reveal-up, for the plain <tr> lists that aren't themselves a
+   .panel (PunchTable / ParseYieldPane / Keystones / GenericTable / RegisterTable in pages/Snapshot.tsx).
+   Callers set a capped inline stagger (Math.min(i, 8) * 40ms) — same idiom as the .panel
+   --stagger-i contract above, just a tighter 40ms step for denser row lists. Belt-and-suspenders
+   reduced-motion strip above already covers this (animation: none reverts to the un-animated
+   opacity:1/transform:none resting state — nothing is ever left hidden). */
+@media (prefers-reduced-motion: no-preference) {
+  .row-reveal { animation: reveal-up var(--motion) var(--ease) both; }
+}

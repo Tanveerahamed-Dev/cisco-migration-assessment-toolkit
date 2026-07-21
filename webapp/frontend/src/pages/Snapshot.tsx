@@ -33,7 +33,9 @@ function GenericTable({ data }: { data: any }) {
             <thead><tr>{cols.map((c) => <th key={c}>{c}</th>)}</tr></thead>
             <tbody>
               {data.slice(0, 200).map((r: any, i: number) => (
-                <tr key={i}>{cols.map((c) => <td key={c} title={cell(r?.[c])}>{truncate(cell(r?.[c]))}</td>)}</tr>
+                <tr key={`${cell(r?.[cols[0]])}|${i}`} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+                  {cols.map((c) => <td key={c} title={cell(r?.[c])}>{truncate(cell(r?.[c]))}</td>)}
+                </tr>
               ))}
             </tbody>
           </table>
@@ -45,7 +47,9 @@ function GenericTable({ data }: { data: any }) {
       <div style={{ overflow: "auto" }}>
         <table className="tbl"><tbody>
           {data.slice(0, 200).map((r: any, i: number) => (
-            <tr key={i}>{(Array.isArray(r) ? r : [r]).map((v: any, k: number) => <td key={k} title={cell(v)}>{truncate(cell(v))}</td>)}</tr>
+            <tr key={i} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+              {(Array.isArray(r) ? r : [r]).map((v: any, k: number) => <td key={k} title={cell(v)}>{truncate(cell(v))}</td>)}
+            </tr>
           ))}
         </tbody></table>
       </div>
@@ -71,7 +75,8 @@ function PunchTable({ rows }: { rows: any[] }) {
         <thead><tr><th>Sev</th><th>Category</th><th>Devices</th><th>Title</th><th>Detail</th></tr></thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i}>
+            <tr key={`${r.category}|${r.title}|${(r.devices || []).join(",")}` || i}
+                className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
               <td><SevChip sev={r.severity} /></td>
               <td className="dim">{r.category}</td>
               <td className="mono" style={{ fontSize: 12 }}>{(r.devices || []).join(", ") || "—"}</td>
@@ -139,7 +144,8 @@ function ParseYieldPane({ data }: { data: any }) {
             {rows.map((ev: any, i: number) => {
               const klass = PY_CLASS(ev, mbe);
               return (
-                <tr key={i}>
+                <tr key={`${ev.device}|${ev.parser}|${ev.cmd}` || i}
+                    className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
                   <td><SevChip sev={PY_SEV[klass]} label={klass} /></td>
                   <td className="mono">{ev.parser || "—"}</td>
                   <td className="mono">{ev.device || "—"}</td>
@@ -202,7 +208,7 @@ function RegisterTable({ rows, note }: { rows: any[]; note?: string }) {
           <th>Impact × exposure</th><th>Compound</th><th>Engineer's verdict</th></tr></thead>
         <tbody>
           {rows.map((d, i) => (
-            <tr key={d.host || i}>
+            <tr key={d.host || i} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
               <td className="dim">{i + 1}</td>
               <td><SevChip sev={BAND_SEV[d.risk_band] || "Low"} label={d.risk_band} /></td>
               <td className="mono"><b>{d.host}</b></td>
@@ -233,10 +239,25 @@ function RegisterTable({ rows, note }: { rows: any[]; note?: string }) {
   );
 }
 
+/* ---------- local empty-state panel (Unit 10) — a real .panel so an empty section joins the mount
+   reveal instead of silently vanishing (bare `return null`). Not exported; lives only in this file. ---------- */
+function EmptyPanel({ title, note }: { title: string; note: string }) {
+  return (
+    <div className="panel">
+      <h3>{title}</h3>
+      <div className="faint" style={{ fontSize: 12 }}>{note}</div>
+    </div>
+  );
+}
+
 function RiskRegisterPanel({ snapId }: { snapId: number }) {
   const { data, error } = useAsync(() => api.section(snapId, "device_dossiers").catch(() => null), [snapId]);
   const dd = data?.data;
-  if (error || !dd?.per_device?.length) return null;   // older snapshots have no register — panel is data-gated
+  if (error) return null;   // optional enrichment — error noise is worse than silence
+  if (!dd?.per_device?.length) {
+    return <EmptyPanel title="Device Risk Register · the senior-engineer read"
+      note="No per-device risk register in this snapshot — older snapshots didn't compute it." />;
+  }
   const bands = dd.summary?.bands || {};
   // Unassessed (no evidence collected) is a coverage gap, not a risk — keep it out of the
   // risk-flagged rows; it is surfaced as its own count in the panel header instead.
@@ -261,7 +282,10 @@ function RiskRegisterPanel({ snapId }: { snapId: number }) {
 
 function Keystones({ meta }: { meta: SnapshotMeta }) {
   const ks = meta.summary.keystones || [];
-  if (!ks.length) return null;
+  if (!ks.length) {
+    return <EmptyPanel title="Keystone devices · fleet depends on these most"
+      note="No keystone devices flagged — no single switch dominates the fleet's dependency graph." />;
+  }
   return (
     <div className="panel">
       <h3>Keystone devices · fleet depends on these most</h3>
@@ -269,7 +293,7 @@ function Keystones({ meta }: { meta: SnapshotMeta }) {
         <thead><tr><th>Device</th><th>Severity</th><th className="num">Stranded</th><th className="num">VLANs</th><th>Impact</th></tr></thead>
         <tbody>
           {ks.map((k, i) => (
-            <tr key={i}>
+            <tr key={k.host || k.device || i} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
               <td className="mono"><b>{k.host || k.device || "—"}</b></td>
               <td>{k.severity ? <SevChip sev={k.severity} /> : "—"}</td>
               <td className="num">{k.stranded ?? "—"}</td>
@@ -286,7 +310,10 @@ function Keystones({ meta }: { meta: SnapshotMeta }) {
 function DeliverablesPanel({ snapId }: { snapId: number }) {
   const { data } = useAsync(() => api.meta(), []);
   const items = data?.deliverables || [];
-  if (!items.length) return null;
+  if (!items.length) {
+    return <EmptyPanel title="Deliverables · generated from this snapshot"
+      note="No deliverables are available from this server build." />;
+  }
   return (
     <div className="panel">
       <h3>Deliverables · generated from this snapshot</h3>
@@ -350,7 +377,7 @@ export default function SnapshotPage() {
         </div>
         <span style={{ flex: 1 }} />
         <a className="btn" href={api.explorerUrl(sid)} target="_blank" rel="noreferrer">↗ Explorer (new tab)</a>
-        <button className="btn primary" onClick={() => setShowExplorer((v) => !v)}>{showExplorer ? "Hide" : "◈ Open"} explorer</button>
+        <button className="btn primary" aria-expanded={showExplorer} onClick={() => setShowExplorer((v) => !v)}>{showExplorer ? "Hide" : "◈ Open"} explorer</button>
       </div>
 
       {/* KPI hero */}
@@ -399,12 +426,12 @@ export default function SnapshotPage() {
 
         <DeliverablesPanel snapId={sid} />
 
-        <div className="panel">
+        <div className="panel" style={{ ["--stagger-i" as any]: 4 }}>
           <h3>Fleet topology · coloured by health band</h3>
           <TopologyGraph snapId={sid} />
         </div>
 
-        <div className="panel">
+        <div className="panel" style={{ ["--stagger-i" as any]: 5 }}>
           <h3>Physical cable map · Nokia-EDA style</h3>
           <CableMap snapId={sid} />
         </div>
@@ -412,7 +439,7 @@ export default function SnapshotPage() {
         <Keystones meta={meta!} />
 
         {showExplorer && (
-          <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="panel" style={{ padding: 0, overflow: "hidden", ["--stagger-i" as any]: 6 }}>
             {/* sandbox WITHOUT allow-same-origin: the explorer is fully self-contained (embedded
                 snapshot; storage is feature-detected for opaque origins), so it needs no origin —
                 and must never inherit ours (script there would otherwise reach this app's API). */}
@@ -424,15 +451,18 @@ export default function SnapshotPage() {
 
         {/* detail sections */}
         {tabs.length > 0 && (
-          <div className="panel">
-            <div className="tabs" style={{ marginBottom: 16 }}>
+          <div className="panel" style={{ ["--stagger-i" as any]: 7 }}>
+            <div className="tabs" role="tablist" aria-label="Detail sections" style={{ marginBottom: 16 }}>
               {tabs.map((t) => (
-                <button key={t.key} className={activeTab === t.key ? "on" : ""} onClick={() => setTab(t.key)}>
+                <button key={t.key} role="tab" id={`sectiontab-${t.key}`} aria-controls={`sectionpanel-${t.key}`}
+                        aria-selected={activeTab === t.key} className={activeTab === t.key ? "on" : ""}
+                        onClick={() => setTab(t.key)}>
                   {t.label}<span className="ct">{t.count}</span>
                 </button>
               ))}
             </div>
-            <div className="tabfade" key={activeTab}>
+            <div role="tabpanel" id={`sectionpanel-${activeTab}`} aria-labelledby={`sectiontab-${activeTab}`}
+                 className="tabfade" key={activeTab}>
               <SectionPane snapId={sid} name={activeTab} />
             </div>
           </div>
