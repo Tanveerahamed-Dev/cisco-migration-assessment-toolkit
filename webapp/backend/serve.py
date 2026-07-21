@@ -244,6 +244,39 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
     return 0 if n_ok == len(checks) else 1
 
 
+# ── --redact-folder: the share-safe deliverable set, from the stick ─────────────
+def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
+    """Render a redacted deliverable set — the "before it leaves the site" step (ADR-0004 P3).
+
+    Field-facing, so every failure is a plain sentence, never a traceback: this runs at a client
+    site with no internet and no second document."""
+    if not out:
+        print(f"{APP_TITLE}: --redact-folder needs --out DIR (where the redacted set is written).",
+              file=sys.stderr)
+        return 2
+    from . import ingest as ingest_mod  # lazy: the engine-child path must not pay for this
+
+    print(f"{APP_TITLE}: redacting {src}\n  -> {out}\n"
+          f"  Rendering the full document family; this can take several minutes.")
+    if redact_collection:
+        print("  --redact-collection: the RAW captures will also be scrubbed IN PLACE.")
+    try:
+        report = ingest_mod.run_redaction_folder(src, out, redact_collection=redact_collection)
+    except ingest_mod.IngestError as e:
+        print(f"{APP_TITLE}: cannot redact that folder - {e}", file=sys.stderr)
+        return 1
+    except ingest_mod.EngineRunError as e:
+        print(f"{APP_TITLE}: redaction FAILED - {e}\n"
+              f"  Treat anything already written in {out} as UNREDACTED.", file=sys.stderr)
+        return 1
+    print(f"  {report['n_device_dirs']} device(s) in {report['engine_seconds']}s. "
+          f"Wrote {len(report['files'])} file(s):")
+    for name in report["files"]:
+        print(f"    {name}")
+    print("  Every IP/MAC/serial is pseudonymized and this was verified before reporting success.")
+    return 0
+
+
 # ── entry point ─────────────────────────────────────────────────────────────────
 def main(argv=None) -> int:
     # Frozen multiprocessing children re-enter here; this MUST precede everything else.
@@ -272,11 +305,30 @@ def main(argv=None) -> int:
                         help="verify the silent-degrade assets (explorer template, OUI/port KBs, "
                              "docx/pptx, frontend dist, engine entry, DB + backup dirs) and exit "
                              "non-zero on any failure")
+    parser.add_argument("--redact-folder", default=None, metavar="DIR",
+                        help="produce a REDACTED, share-safe deliverable set from a local "
+                             "collection folder and exit (needs --out). Synthesizes the template "
+                             "and devices.json the engine requires, so nothing extra is needed "
+                             "on the stick")
+    parser.add_argument("--out", default=None, metavar="DIR",
+                        help="destination for --redact-folder; must be OUTSIDE the Atlas folder "
+                             "(an update replaces everything there except data\\)")
+    parser.add_argument("--redact-collection", action="store_true",
+                        help="with --redact-folder: ALSO scrub cleartext secrets from the raw "
+                             "captures IN PLACE (rewrites the source folder; still "
+                             "--compare/--trend-able)")
     parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
 
     if args.selftest:
         return run_selftest(dist_dir=args.dist, db_path=args.db)
+
+    if args.redact_folder:
+        return run_redaction(args.redact_folder, args.out, args.redact_collection)
+    if args.out or args.redact_collection:
+        print(f"{APP_TITLE}: --out and --redact-collection only apply to --redact-folder.",
+              file=sys.stderr)
+        return 2
 
     # Field refusal #1 — write-locked stick / read-only folder: friendly line, not a traceback.
     data_dir = Path(_effective_db_path(args.db)).parent

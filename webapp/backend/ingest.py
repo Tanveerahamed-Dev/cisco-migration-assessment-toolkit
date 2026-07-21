@@ -34,6 +34,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,9 @@ MAX_FILES = 20_000
 MAX_ARCHIVE_BYTES = 256 * 1024 * 1024       # compressed upload cap, enforced while reading the body
 MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024  # generous: a 60-switch fleet's show outputs are ~tens of MB
 ENGINE_TIMEOUT_S = 600
+#: A redaction run renders the FULL document family (workbook, explorer, 7 DOCX, deck) rather than
+#: ingest's snapshot-only fast path, so it needs a materially longer ceiling on a field laptop.
+REDACT_TIMEOUT_S = 1800
 
 _DEVICE_KEYS = ("hostname", "ip", "username", "password", "platform")
 
@@ -230,13 +234,9 @@ def run_collection_zip(raw: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def run_collection_folder(path: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Run the engine over a SERVER-LOCAL collection folder and return
-    ``(snapshot_dict, ingest_report)`` — the portable-app channel (ADR-0004 P1).
-
-    Read-only on the user's tree: devices.json, the template and every output live in a private
-    temp workdir; the engine only READS ``--collection-dir``. The ZIP caps apply here too — they
-    bound the engine's work, not just archive extraction."""
+def _resolve_and_scan(path: Any) -> Tuple[Path, int]:
+    """Resolve a local collection folder and enforce the shared caps — they bound the ENGINE's
+    work, not just archive extraction, so every local channel (ingest, redaction) applies them."""
     folder = Path(str(path)).expanduser()
     if not folder.is_dir():
         raise IngestError(f"Not a directory: {folder}")
@@ -257,9 +257,176 @@ def run_collection_folder(path: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if total > MAX_UNCOMPRESSED_BYTES:
         raise IngestError(f"Folder holds {total // (1024 * 1024)} MB — over the "
                           f"{MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.")
+    return folder, n_files
+
+
+def run_collection_folder(path: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Run the engine over a SERVER-LOCAL collection folder and return
+    ``(snapshot_dict, ingest_report)`` — the portable-app channel (ADR-0004 P1).
+
+    Read-only on the user's tree: devices.json, the template and every output live in a private
+    temp workdir; the engine only READS ``--collection-dir``. The ZIP caps apply here too — they
+    bound the engine's work, not just archive extraction."""
+    folder, n_files = _resolve_and_scan(path)
     workdir = Path(tempfile.mkdtemp(prefix="assesshub_ingest_"))
     try:
         return _assess_tree(folder, n_files, workdir)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _refuse_unsafe_out_dir(out: Path, source: Path) -> None:
+    """The deliverable set must not land where it will be destroyed or where it re-contaminates
+    the captures: inside the frozen bundle (an update mirrors over everything but ``data\\``), or
+    inside the collection folder being redacted."""
+    if getattr(sys, "frozen", False):
+        bundle = Path(sys.executable).resolve().parent
+        if out == bundle or bundle in out.parents:
+            raise IngestError(
+                f"Refusing to write inside the Atlas folder ({bundle}) — an update replaces "
+                f"everything there except data\\, so the deliverables would be lost. Choose a "
+                f"folder outside it.")
+    if out == source or source in out.parents:
+        raise IngestError(f"Refusing to write inside the collection folder being redacted "
+                          f"({source}) — keep redacted output separate from the raw captures.")
+
+
+#: Private IPv4 space. Redaction remaps every /24 into the IANA-reserved Class E block
+#: (``cisco_toolkit.html.redact_snapshot``), so a surviving RFC 1918 address proves the scrub did
+#: not happen — the one failure that must never be silent.
+_RFC1918_RE = re.compile(
+    r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b")
+
+
+#: Keys whose values are AUTHORED COPY, not observed evidence — form labels, guidance notes and
+#: the like legitimately cite RFC 1918 ranges as examples ("supernet, e.g. 10.0.0.0/16"). Scanning
+#: the raw JSON text flagged those and failed EVERY real run; a check that always fires is worse
+#: than none, because it teaches the engineer to ignore it. (Found by running the real engine —
+#: the stubbed unit tests could not have shown it.)
+_DOC_KEYS = frozenset({
+    "label", "note", "notes", "help", "hint", "placeholder", "description", "guidance",
+    "rationale", "recommendation", "recommendations", "summary", "title", "text", "question",
+    "why", "tradeoffs", "caveat", "caveats", "doctrine", "reason",
+})
+_EXAMPLE_MARKERS = ("e.g.", "eg.", "such as", "for example", "example:")
+
+
+def _iter_evidence_strings(node: Any, path: str = ""):
+    """Every string in the snapshot that is OBSERVED EVIDENCE rather than authored copy."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if str(k).lower() in _DOC_KEYS:
+                continue
+            yield from _iter_evidence_strings(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _iter_evidence_strings(v, f"{path}[{i}]")
+    elif isinstance(node, str):
+        yield path, node
+
+
+def _assert_scrubbed(snap_path: Path) -> int:
+    """Fail LOUD if the 'redacted' snapshot still carries private addresses in EVIDENCE.
+
+    Shipping unredacted client evidence labelled redacted is the worst outcome of this feature,
+    and a flag that silently did nothing looks identical to success — so the result is verified
+    rather than trusted. Config text is scanned too (``ip address 10.x`` inside a running-config
+    line is a real leak); only authored copy and explicit examples are exempt."""
+    snap = json.loads(snap_path.read_text(encoding="utf-8", errors="replace"))
+    leaks: Dict[str, str] = {}
+    for where, value in _iter_evidence_strings(snap):
+        low = value.lower()
+        if any(m in low for m in _EXAMPLE_MARKERS):
+            continue  # an illustrative range inside prose, not an observed address
+        for hit in _RFC1918_RE.findall(value):
+            leaks.setdefault(hit, where.lstrip("."))
+    if leaks:
+        shown = ", ".join(f"{ip} (at {loc})" for ip, loc in list(leaks.items())[:3])
+        raise EngineRunError(
+            f"REDACTION DID NOT APPLY - {len(leaks)} private address(es) survive in "
+            f"{snap_path.name}: {shown}. The output is NOT safe to share; nothing was deleted, "
+            f"so inspect it before sending anything.")
+    return len(leaks)
+
+
+def run_redaction_folder(path: Any, out_dir: Any,
+                         redact_collection: bool = False) -> Dict[str, Any]:
+    """Produce a **redacted, share-safe deliverable set** from a local collection folder.
+
+    The field problem this closes (ADR-0004 P3): ``--redact`` is the control that makes client data
+    shareable, but the engine hard-requires a ``--template`` workbook and a ``--devices-file`` that
+    the stick does not carry, so the documented command could not run there at all. Both are
+    synthesized here exactly as the ingest channel already does — the capability existed, it just
+    was not reachable for a redaction run.
+
+    Unlike ingest (which suppresses documents and keeps only the snapshot), this run produces the
+    FULL family and preserves it in ``out_dir``; only the synthesized inputs and the engine's log
+    live in the private workdir. The engine reads ``--collection-dir`` read-only unless
+    ``redact_collection`` is set, which rewrites the raw captures in place — hence a separate,
+    explicit argument rather than a default.
+    """
+    source, n_files = _resolve_and_scan(path)
+    out = Path(str(out_dir)).expanduser().resolve()
+    _refuse_unsafe_out_dir(out, source)
+    if not getattr(sys, "frozen", False) and not _ENGINE_SCRIPT.is_file():
+        raise EngineRunError(f"Engine entry point not found at {_ENGINE_SCRIPT}")
+
+    workdir = Path(tempfile.mkdtemp(prefix="atlas_redact_"))
+    try:
+        root, device_dirs = _find_collection_root(source)
+        devices, provenance, skipped = _load_or_synthesize_devices(root, source, device_dirs)
+        devices_file = workdir / "devices.json"
+        devices_file.write_text(json.dumps(devices), encoding="utf-8")
+        template = workdir / "template.xlsx"
+        _write_min_template(template)
+        out.mkdir(parents=True, exist_ok=True)
+        out_xlsx = out / "Assessment_redacted.xlsx"
+
+        cmd = [
+            *_engine_argv(),
+            "--no-collect", "--collection-dir", str(root),
+            "--devices-file", str(devices_file),
+            "--template", str(template),
+            "--output", str(out_xlsx),
+            "--workers", "1",
+            "--redact",                       # the whole point: every deliverable is pseudonymized
+        ]
+        if redact_collection:
+            cmd.append("--redact-collection")  # rewrites the RAW captures in place — opt-in only
+        t0 = time.monotonic()
+        try:
+            # cwd=workdir keeps the engine's log file out of the user's output folder; stdin is
+            # closed so an offline run can never block on a credential prompt.
+            proc = subprocess.run(cmd, cwd=str(workdir), capture_output=True,
+                                  encoding="utf-8", errors="replace",
+                                  stdin=subprocess.DEVNULL, timeout=REDACT_TIMEOUT_S)
+        except subprocess.TimeoutExpired as e:
+            raise EngineRunError(
+                f"Redaction run timed out after {REDACT_TIMEOUT_S}s ({len(device_dirs)} devices). "
+                f"Partial output may exist in {out} — treat it as UNREDACTED.") from e
+        duration = round(time.monotonic() - t0, 1)
+        log_tail = "\n".join(((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+                             .splitlines()[-12:]).replace(str(workdir), "<workdir>")
+        if proc.returncode != 0:
+            raise EngineRunError(f"Engine exited with code {proc.returncode}. Log tail:\n{log_tail}")
+
+        snap_path = Path(str(out_xlsx)[: -len(".xlsx")] + ".snapshot.json")
+        if not snap_path.is_file():
+            raise EngineRunError(f"Engine completed but wrote no snapshot. Log tail:\n{log_tail}")
+        _assert_scrubbed(snap_path)
+        written = sorted(p.name for p in out.iterdir() if p.is_file())
+        return {
+            "out_dir": str(out),
+            "files": written,
+            "n_device_dirs": len(device_dirs) - len(skipped),
+            "devices": device_dirs,
+            "skipped_dirs": skipped,
+            "devices_json": provenance,
+            "n_source_files": n_files,
+            "redacted_collection": bool(redact_collection),
+            "engine_seconds": duration,
+            "engine_log_tail": log_tail,
+        }
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

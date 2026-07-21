@@ -76,6 +76,20 @@ def test_every_engine_command_uses_only_engine_flags():
         assert not unknown, f"engine command names non-engine flags {sorted(unknown)}: {s}"
 
 
+def test_every_app_command_uses_only_app_flags():
+    """The mirror of the engine check: an `Atlas.exe …` line WITHOUT the --run-engine sentinel is
+    the app's own surface, so an engine-only flag there dies at argparse. Without this, only one
+    direction of the two-surface confusion was guarded."""
+    app_flags = set(_ADD_ARG.findall(
+        (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")))
+    for line in GUIDE.read_text(encoding="ascii").splitlines():
+        s = line.strip()
+        if not s.startswith("Atlas.exe ") or "--run-engine" in s:
+            continue
+        unknown = set(_FLAG.findall(s)) - app_flags
+        assert not unknown, f"app command names non-app flags {sorted(unknown)}: {s}"
+
+
 def test_commands_are_copy_pasteable_on_one_line():
     """A command wrapped across indented continuation lines pastes into cmd.exe as several
     commands, the trailing ones garbage."""
