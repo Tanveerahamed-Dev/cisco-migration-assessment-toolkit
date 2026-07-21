@@ -75,7 +75,11 @@ helps only on self-controlled fleets.
   `..\Enhancements_attic_2026-07-05\` (verified still present 2026-07-19; `raw\` now holds 1 file /
   ~1 KB). Rotation is an AAA-side action only the owner can perform.
 - **Python-less-box smoke**: copy `portable\dist\Atlas\` to a stick (`portable/make_stick.ps1`
-  does the layout), run `Atlas.exe --selftest` on a machine without Python — expect 8/8.
+  does the layout), run `Atlas.exe --selftest` on a machine without Python — expect
+  `SELFTEST: PASS`.
+- **Enable BitLocker-To-Go on the field stick** (one-time, admin, physical stick —
+  `README-FIELD.txt` carries the steps). P3's loss-of-stick mitigation; until done, the stick
+  must not carry client evidence off-site.
 
 ## Consequences
 
@@ -86,3 +90,24 @@ script serving the built frontend from package data, frozen-aware engine dispatc
 demo seed, and a `--selftest` that fails loud on the silent-degrade assets (explorer template,
 OUI/port KBs, docx/pptx). Registered here per the SSOT convention: this ADR owns the P0 decisions;
 the atlas cites it.
+
+## P3 addendum (2026-07-21): field discipline shipped; D4's UI fleet-flow DEFERRED
+
+P3 delivered per `docs/atlas-p3-plan-2026-07-21.md`: boot unplug-safety
+(`storage.Store(boot_hardening=True)` — `quick_check` refusing corrupt stores non-destructively,
+rotating timestamped copies in `data\backups\`, pinned rollback-journal durability, friendly
+write-locked-stick refusal in `serve.main`) and the shipped `portable/README-FIELD.txt` covering
+the §15 exit-gate scenarios, ratchet-tested (`tests/test_readme_field.py`: ASCII-only, scenario
+headings, every named flag exists in a shipped argparse).
+
+Two decisions recorded:
+
+- **D4's "AssessKit one-prompt fleet flow + per-device override editor" UI is deferred** (P4
+  candidate with its own security review; nothing shipped in P1–P3 built it). The console chain
+  IS the certified field path — D3 chose `console=True` precisely so `getpass` works. A browser
+  flow would put SSH credentials on a new webapp secret-handling surface (logging/XSS/CSRF blast
+  radius in a just-hardened app) for no field capability the terminal lacks. Revisit trigger:
+  the owner asks for browser-driven live collection.
+- **Delta vs the §15 sketch**: there is no separate `cisco-assess.exe` on the stick — the
+  `--run-engine` sentinel makes `Atlas.exe` itself the CLI door (P1 design, proven in the P2
+  smoke and the field redaction commands in README-FIELD.txt).
