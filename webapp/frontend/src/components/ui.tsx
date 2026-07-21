@@ -237,14 +237,27 @@ export function SevChip({ sev, label }: { sev: string; label?: string }) {
   );
 }
 
-/* ---- tiny toast ---- */
+/* ---- tiny toast: fades/slides in (styles.css toast-in) and, symmetrically, out. `closing` flips
+   at the 2600ms display timeout and adds the exit class; the node itself clears TOAST_EXIT_MS later,
+   giving the animation time to finish. ---- */
+const TOAST_EXIT_MS = 260; // mirrors --motion (0.26s) — jsdom runs css:false, so the token can't be read at runtime
+
 export function useToast() {
   const [msg, setMsg] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
+  const reduced = useReducedMotion();
+  // Batched with setMsg so a replacement toast never paints with the outgoing one's exit class.
+  const toast = useCallback((m: string) => { setClosing(false); setMsg(m); }, []);
   useEffect(() => {
     if (!msg) return;
-    const t = setTimeout(() => setMsg(null), 2600);
-    return () => clearTimeout(t);
-  }, [msg]);
-  const node = msg ? <div className="toast">{msg}</div> : null;
-  return { toast: setMsg, node };
+    if (reduced) {
+      const t = setTimeout(() => setMsg(null), 2600); // no exit phase — today's exact behavior
+      return () => clearTimeout(t);
+    }
+    const out = setTimeout(() => setClosing(true), 2600);
+    const gone = setTimeout(() => { setMsg(null); setClosing(false); }, 2600 + TOAST_EXIT_MS);
+    return () => { clearTimeout(out); clearTimeout(gone); };
+  }, [msg, reduced]);
+  const node = msg ? <div className={`toast${closing ? " out" : ""}`}>{msg}</div> : null;
+  return { toast, node };
 }

@@ -25,6 +25,18 @@ describe("Landing page", () => {
     }
   });
 
+  it("renders the pipeline steps visible and classless when IntersectionObserver is unavailable — the honest-degradation path", () => {
+    // jsdom (this test env) doesn't implement IntersectionObserver; guard the premise so this test
+    // would fail loudly, not silently pass vacuously, if a future polyfill changed that.
+    expect(typeof (globalThis as any).IntersectionObserver).toBe("undefined");
+    renderLanding();
+    for (const step of ["SSH collection (CLI engine)", "snapshot.json", "AssessHub store", "cockpit + explorer"]) {
+      const el = screen.getByText(step);
+      expect(el).toBeVisible();
+      expect(el).not.toHaveClass("step-in");
+    }
+  });
+
   it("seeds the demo fleet on click and shows the loading state", async () => {
     const spy = vi
       .spyOn(api, "seedDemo")

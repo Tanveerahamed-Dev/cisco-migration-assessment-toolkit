@@ -53,13 +53,33 @@ describe("useToast", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("surfaces a toast node then auto-dismisses it after the timeout", () => {
+  it("surfaces a toast, plays its exit at the display timeout, then clears after the exit duration", () => {
     const { result } = renderHook(() => useToast());
     expect(result.current.node).toBeNull(); // nothing initially
     act(() => result.current.toast("saved"));
     expect(result.current.node).not.toBeNull(); // shown
+    expect(result.current.node?.props.className).toBe("toast"); // no exit class yet
     act(() => vi.advanceTimersByTime(2600));
-    expect(result.current.node).toBeNull(); // auto-cleared
+    expect(result.current.node).not.toBeNull(); // still mounted — playing its exit
+    expect(result.current.node?.props.className).toBe("toast out");
+    act(() => vi.advanceTimersByTime(260));
+    expect(result.current.node).toBeNull(); // cleared once the exit duration has elapsed
+  });
+
+  it("resets cleanly when a new toast interrupts one that is mid-exit", () => {
+    const { result } = renderHook(() => useToast());
+    act(() => result.current.toast("first"));
+    act(() => vi.advanceTimersByTime(2600)); // first toast begins its exit
+    expect(result.current.node?.props.className).toBe("toast out");
+    act(() => result.current.toast("second")); // interrupts mid-exit
+    expect(result.current.node?.props.className).toBe("toast"); // fully shown again, no stale exit class
+    expect(result.current.node?.props.children).toBe("second");
+    act(() => vi.advanceTimersByTime(260)); // the interrupted exit's own clear timer must not fire early
+    expect(result.current.node).not.toBeNull();
+    act(() => vi.advanceTimersByTime(2600 - 260));
+    expect(result.current.node?.props.className).toBe("toast out"); // "second" now plays its own exit
+    act(() => vi.advanceTimersByTime(260));
+    expect(result.current.node).toBeNull();
   });
 });
 
