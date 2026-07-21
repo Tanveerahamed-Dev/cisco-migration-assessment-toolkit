@@ -1,9 +1,9 @@
-# Technical Dossier — cisco-migration-assessment-toolkit
+# Cisco Migration Assessment Toolkit — Technical Dossier
 
 > **Audit date:** 2026-07-21  
-> **Auditor:** Perplexity AI (source-level, evidence-backed)  
-> **Scope:** All core source (`cisco_toolkit/`), tests (`tests/`, `conftest.py`), webapp (`webapp/`), CI (`.github/`), docs, root scripts, and git history  
-> **Methodology:** Directory enumeration → file-level inspection → cross-reference of module interdependencies → CI/quality tooling review → history review
+> **Auditor:** Perplexity AI (source-level inspection via GitHub MCP)  
+> **Commit inspected:** `500474a8458f33e96d2a11cc3d2ec22e6edf4ada`  
+> **Scope:** Full repository — core library, webapp, tests, CI/CD, docs, data artefacts, config files, commit history  
 
 ---
 
@@ -11,423 +11,320 @@
 
 | Field | Value |
 |---|---|
-| **Owner** | Tanveerahamed-Dev |
-| **Repo** | cisco-migration-assessment-toolkit |
-| **Default branch** | `main` |
-| **Head SHA** | `9e1b512c6cc08a3bab569ccce446a5af7ca32f3a` |
-| **License** | MIT (confirmed: `LICENSE` file present, 697 bytes) |
-| **Primary language** | Python 3 |
-| **Package manager** | pip (`requirements.txt`, `requirements-dev.txt`, `pyproject.toml`) |
-| **Static analysis** | ruff (`ruff.toml`), mypy (`mypy.ini`) |
-| **Test framework** | pytest (`pytest.ini`, `conftest.py`) |
-| **AI assistant config** | `.claude/`, `CLAUDE.md`, `.mcp.json` (Claude/MCP integration) |
+| Repo | `Tanveerahamed-Dev/cisco-migration-assessment-toolkit` |
+| Default branch | `main` |
+| License | Custom (LICENSE, 697 bytes) |
+| Primary language | Python 3 |
+| Package manager | `pyproject.toml` (PEP 517/518) + `requirements*.txt` |
+| Linter / formatter | `ruff` (ruff.toml) |
+| Type checker | `mypy` (mypy.ini) |
+| Test runner | `pytest` (pytest.ini + conftest.py) |
+| CI platform | GitHub Actions (`.github/`) |
+| AI tooling layer | Ollama-based local LLM eval + MCP server |
 
 ---
 
-## 2. Top-Level Structure
+## 2. Top-Level File Inventory
 
-```
-cisco-migration-assessment-toolkit/
-├── .claude/                      # Claude AI assistant session config
-├── .design-sync/                 # Design synchronisation artefacts
-├── .github/                      # CI/CD workflows
-├── cisco_toolkit/                # PRIMARY source package (~60 modules)
-│   ├── data/                     # Bundled reference data
-│   └── blast_radius_explorer.html  # Standalone interactive HTML report (989 KB)
-├── docs/                         # Documentation directory
-├── portable/                     # Portable/standalone distribution artefacts
-├── research_lane/                # Research and experimental code lane
-├── tests/                        # pytest test suite
-├── webapp/                       # Web application front-end
-├── COLLECT_PARSE_V3_23_0.py      # Standalone monolithic collector/parser (216 KB)
-├── COLLECT_PARSE_V3_23_0.md      # Companion spec/doc for the above (292 KB)
-├── questionnaire.json            # Assessment questionnaire bank (131 KB, ~structured Q&A)
-├── ollama_judge.py               # Local LLM judge harness (23 KB)
-├── ollama_recall.py              # LLM recall/retrieval wrapper (4.6 KB)
-├── ollama_retrieval_judge.py     # Retrieval quality judge for LLM (7 KB)
-├── embed_qbank.py                # Embeds question bank into vector store (1.9 KB)
-├── conftest.py                   # pytest root conftest (1.7 KB)
-├── pyproject.toml                # PEP 517/518 build & tool config (7.3 KB)
-├── pytest.ini                    # pytest configuration
-├── ruff.toml                     # ruff linter configuration
-├── mypy.ini                      # mypy type-check configuration
-├── requirements.txt              # Runtime dependencies
-├── requirements-dev.txt          # Dev/test dependencies
-├── requirements.aj.json          # Alternative/additional requirements manifest
-├── requirements.sample.json      # Sample requirements template
-├── devices.example.json          # Example device inventory input
-├── AI_SESSION_CONTEXT.md         # AI context persistence document (25 KB)
-├── CHANGELOG.md                  # Version history (32 KB)
-├── CHAT_SUMMARY.md               # AI session summaries log (89 KB)
-├── CLAUDE.md                     # Claude AI operating instructions (12 KB)
-├── IMPROVEMENT_AND_GREENFIELD_PLANS.md  # Roadmap (23 KB)
-├── RELEASING.md                  # Release process documentation
-├── README.md                     # Primary documentation (19 KB)
-├── compass_artifact_wf-*.md (×2) # Compass/AI planning artefacts
-└── TECHNICAL_DOSSIER.md          # THIS FILE
-```
+### 2.1 Source & Config Files
 
----
-
-## 3. Core Package: `cisco_toolkit/`
-
-The package contains **~60 Python modules** spanning a full network migration lifecycle. Total estimated source size exceeds **3.5 MB** of Python code, making this a large-scale professional toolkit.
-
-### 3.1 Module Inventory (Evidence: directory listing, cite:2)
-
-| Module | Size | Domain |
+| File | Size (bytes) | Purpose |
 |---|---|---|
-| `design_kb.py` | 753 KB | Design knowledge-base (largest module) |
-| `analyze.py` | 390 KB | Core analysis engine |
-| `design_advisor.py` | 304 KB | AI-assisted design recommendation |
-| `parse.py` | 249 KB | Config parsing engine |
-| `excel.py` | 235 KB | Excel report generation |
-| `blast_radius_explorer.html` | 989 KB | Standalone interactive blast-radius visualiser |
-| `html.py` | 75 KB | HTML report renderer |
-| `runbook.py` | 70 KB | Runbook generator |
-| `mop.py` | 63 KB | Method of Procedure generator |
-| `fib.py` | 44 KB | FIB (Forwarding Information Base) analysis |
-| `ops.py` | 42 KB | Operational checks |
-| `design.py` | 47 KB | Design layer |
-| `retrieval_eval.py` | 49 KB | Retrieval evaluation harness |
-| `scorecard.py` | 36 KB | Scoring engine |
-| `crd.py` | 37 KB | Change Request Document generator |
-| `engagement.py` | 38 KB | Customer engagement workflows |
-| `build.py` | 79 KB | Build/output orchestration |
-| `archreview.py` | 78 KB | Architecture review engine |
-| `deck.py` | 29 KB | Slide/deck generation |
-| `defect_panel.py` | 26 KB | Defect tracking panel |
-| `ssot.py` | 25 KB | Single Source of Truth management |
-| `mcp_server.py` | 24 KB | MCP (Model Context Protocol) server |
-| `precert.py` | 23 KB | Pre-certification checks |
-| `cmdio.py` | 23 KB | CLI I/O interface |
-| `selfcheck.py` | 23 KB | Self-diagnostic checks |
-| `eval_harness.py` | 22 KB | Evaluation harness |
-| `docmeta.py` | 22 KB | Document metadata management |
-| `failover.py` | 21 KB | Failover simulation |
-| `nrfu_export.py` | 20 KB | NRFU (Network Ready for Use) export |
-| `calibration.py` | 19 KB | Calibration/tuning engine |
-| `aclcheck.py` | 19 KB | ACL (Access Control List) checker |
-| `holdout.py` | 19 KB | Holdout/rollback management |
-| `cutover_sim.py` | 18 KB | Cutover simulation |
-| `recall.py` | 17 KB | Recall/retrieval engine |
-| `memory_guard.py` | 17 KB | Memory guard/usage monitor |
-| `causal.py` | 16 KB | Causal analysis |
-| `clock.py` | 13 KB | Timing/scheduling utilities |
-| `attestation.py` | 13 KB | Attestation/sign-off workflow |
-| `assertions.py` | 14 KB | Assertion framework |
-| `evpn_migration.py` | 12 KB | EVPN fabric migration helpers |
-| `protocol_kb.py` | 10 KB | Protocol knowledge-base |
-| `capture_integrity.py` | 9.8 KB | Data capture integrity checks |
-| `eoldb.py` | 9 KB | End-of-Life database |
-| `council.py` | 8.3 KB | Multi-agent council orchestration |
-| `bridge_queue.py` | 7.9 KB | Bridge/async task queue |
-| `external_import.py` | 8.2 KB | External data import |
-| `learnings.py` | 8.2 KB | Lessons learned capture |
-| `intel_feed.py` | 10 KB | Threat/intelligence feed integration |
-| `fault_corpus.py` | 7.1 KB | Fault pattern corpus |
-| `domain_packs.py` | 7 KB | Domain pack management |
-| `coverage_matrix.py` | 10 KB | Test/feature coverage matrix |
-| `d10_eval_set.py` | 24 KB | D10 evaluation dataset |
-| `gate_state.py` | 14 KB | Go/no-go gate state machine |
-| `whatif.py` | 5 KB | What-if scenario analysis |
-| `detector_schema.py` | 31 KB | Detector schema definitions |
-| `feature_compliance.py` | 4 KB | Feature compliance checker |
-| `path_assertions.py` | 5.4 KB | Network path assertion checks |
-| `portdb.py` | 4.7 KB | Port database |
-| `ouidb.py` | 3.2 KB | OUI (MAC vendor) database |
-| `gen_oui_registry.py` | 4.2 KB | OUI registry generator |
-| `manifest.py` | 5.2 KB | Manifest management |
-| `brand_tokens.py` | 2 KB | Brand/UI token definitions |
-| `model.py` | 7.7 KB | Core data model |
-| `context.py` | 4.6 KB | Session/run context |
-| `doctrine.py` | 3.9 KB | Design doctrine rules |
-| `rest_collect.py` | 29 KB | REST API data collector |
-| `textutils.py` | 12 KB | Text processing utilities |
-| `__init__.py` | 750 B | Package init / public API |
+| `pyproject.toml` | 7,265 | Build config, deps, tool settings |
+| `requirements.txt` | 631 | Runtime deps |
+| `requirements-dev.txt` | 661 | Dev/test deps |
+| `requirements.aj.json` | 2,294 | Structured dependency manifest |
+| `requirements.sample.json` | 1,275 | Example device requirements JSON |
+| `conftest.py` | 1,669 | Pytest fixtures / shared test setup |
+| `pytest.ini` | 303 | Test runner config |
+| `mypy.ini` | 490 | Static type checking config |
+| `ruff.toml` | 825 | Linting rules |
+| `.gitignore` | 2,423 | Standard Python gitignore |
+| `.gitattributes` | 277 | Line-ending and diff settings |
+| `.graphifyignore` | 1,699 | Graphify tool exclusion list |
+| `.mcp.json` | 116 | MCP server config entry-point |
+| `devices.example.json` | 390 | Sample device inventory JSON |
+| `questionnaire.json` | 131,735 | Full assessment questionnaire bank |
 
-### 3.2 Architecture — Lifecycle Coverage
+### 2.2 Root Python Scripts
 
-The toolkit implements an **end-to-end Cisco network migration lifecycle**:
-
-```
-[Collection]  →  [Parsing]  →  [Analysis]  →  [Design]  →  [Planning]
- rest_collect      parse         analyze       design         mop
- cmdio             aclcheck      scorecard     design_kb      runbook
- external_import   fib           archreview    design_advisor crd
- capture_integrity evpn_migration causal       protocol_kb    deck
-                                 eoldb
-
-[Validation]  →  [Reporting]  →  [Delivery]  →  [Ops]
- assertions       html             excel          failover
- selfcheck        build            nrfu_export    cutover_sim
- precert          defect_panel     engagement     gate_state
- attestation      scorecard        deck           self_healing
- gate_state       ssot                            memory_guard
-```
-
-### 3.3 AI/LLM Integration Layer
-
-The toolkit has a significant embedded AI layer:
-
-- **`mcp_server.py`** (24 KB): Implements a full **Model Context Protocol (MCP) server**, exposing toolkit capabilities as AI tool endpoints. This enables direct Claude/LLM integration.
-- **`recall.py`** + **`retrieval_eval.py`**: RAG (Retrieval-Augmented Generation) pipeline for querying the design knowledge base.
-- **`eval_harness.py`** + **`d10_eval_set.py`** + **`calibration.py`**: Internal LLM evaluation harnesses to score model outputs against network engineering ground truth.
-- **`council.py`**: Multi-agent orchestration — routes queries to specialised sub-agents.
-- **`ollama_judge.py`** / **`ollama_recall.py`** / **`ollama_retrieval_judge.py`** (root level): Local Ollama-based LLM judge framework for offline evaluation without external API calls.
-- **`embed_qbank.py`**: Ingests `questionnaire.json` (131 KB, structured assessment Q&A) into a vector store.
-- **`design_kb.py`** (753 KB): The primary knowledge base — a statically encoded corpus of Cisco network design rules, patterns, and migration guidance.
-
-### 3.4 Key Domains Covered
-
-- **Routing protocols**: BGP, OSPF, EIGRP (parse.py, fib.py, protocol_kb.py)
-- **L2/L3 fabric**: EVPN, VxLAN (evpn_migration.py)
-- **Security**: ACL analysis (aclcheck.py), attestation, gate states
-- **EoL/EoS tracking**: eoldb.py against device inventory
-- **Data collection**: SSH/CLI (cmdio.py), REST/RESTCONF/YANG (rest_collect.py)
-- **Reporting**: Excel (excel.py), HTML (html.py), PowerPoint deck (deck.py), MOP (mop.py), CRD (crd.py), Runbook (runbook.py)
-- **NRFU (Network Ready for Use)**: nrfu_export.py
-- **OUI/Port databases**: ouidb.py, portdb.py — local, no external lookups needed
-
----
-
-## 4. Standalone Collector/Parser: `COLLECT_PARSE_V3_23_0.py`
-
-| Attribute | Value |
-|---|---|
-| Size | **216 KB** (~6,000+ lines) |
-| Companion doc | `COLLECT_PARSE_V3_23_0.md` (292 KB) |
-| Purpose | Monolithic single-file collector + parser for deployment without the full package |
-| Version | v3.23.0 (encoded in filename) |
-
-This is the **field-deployable artefact** — a self-contained script that can be dropped onto a jump host and run without installing the full package. The companion `.md` file serves as both documentation and a detailed technical specification. The version numbering (`v3.23.0`) implies a mature, actively versioned codebase.
-
----
-
-## 5. Tests
-
-### 5.1 Structure
-
-- **`tests/`** directory — contains the pytest test suite
-- **`conftest.py`** (1,669 bytes, root level) — pytest fixtures and session-level configuration
-- **`pytest.ini`** — pytest configuration (test discovery, markers, etc.)
-
-### 5.2 Coverage Instrumentation
-
-The presence of `coverage_matrix.py` in the core package indicates the toolkit self-monitors its own test coverage across protocol/feature dimensions — an unusual and sophisticated pattern.
-
-### 5.3 Evaluation vs. Unit Tests
-
-The toolkit blurs the line between traditional unit tests and **LLM evaluation harnesses**:
-- `eval_harness.py`, `d10_eval_set.py`, `retrieval_eval.py` function as domain-specific evaluators
-- `ollama_judge.py` / `ollama_retrieval_judge.py` provide adversarial LLM-based scoring
-- `calibration.py` tunes model thresholds
-
-This reflects a **network-AI hybrid test strategy** — unit tests validate deterministic logic, while eval harnesses validate AI-generated outputs against expert-curated ground truth.
-
----
-
-## 6. Web Application: `webapp/`
-
-The `webapp/` directory exists as a dedicated front-end layer. Additionally:
-
-- **`cisco_toolkit/blast_radius_explorer.html`** (989 KB): A large, self-contained interactive HTML application (likely D3.js or similar) for visualising migration blast radius — devices/services impacted by a given change. The 989 KB size indicates bundled JavaScript.
-- **`portable/`**: Contains portable/pre-packaged distribution artefacts for environments where pip install is not possible.
-
----
-
-## 7. CI/CD: `.github/`
-
-The `.github/` directory contains GitHub Actions workflows. Based on the presence of:
-- `pyproject.toml` — PEP 517/518 build system configured
-- `ruff.toml` — ruff linter (likely run in CI)
-- `mypy.ini` — type checking (likely run in CI)
-- `pytest.ini` — test runner (likely run in CI)
-- `requirements-dev.txt` — dev dependencies including test tooling
-
-The CI pipeline likely follows the pattern: **lint (ruff) → type-check (mypy) → test (pytest) → build**.
-
----
-
-## 8. Documentation
-
-| File | Size | Content |
+| File | Size (bytes) | Role |
 |---|---|---|
-| `README.md` | 19 KB | Primary user-facing documentation |
-| `CHANGELOG.md` | 32 KB | Full version history — indicates active, multi-version development |
-| `RELEASING.md` | 4.3 KB | Release process SOP |
-| `CLAUDE.md` | 12 KB | Claude AI operating instructions for this repo |
-| `AI_SESSION_CONTEXT.md` | 25 KB | Persistent AI session context |
-| `CHAT_SUMMARY.md` | 89 KB | Log of AI-assisted development sessions |
-| `IMPROVEMENT_AND_GREENFIELD_PLANS.md` | 23 KB | Future roadmap |
-| `COLLECT_PARSE_V3_23_0.md` | 292 KB | Detailed spec for standalone collector |
-| `compass_artifact_wf-*.md` (×2) | 25 KB + 35 KB | Compass AI planning artefacts |
-| `docs/` | — | Documentation subdirectory |
+| `COLLECT_PARSE_V3_23_0.py` | 216,385 | Standalone collector/parser (v3.23.0) |
+| `embed_qbank.py` | 1,879 | Embeds questionnaire bank via Ollama |
+| `ollama_judge.py` | 23,605 | LLM judge harness (answer quality) |
+| `ollama_recall.py` | 4,645 | RAG recall evaluation via Ollama |
+| `ollama_retrieval_judge.py` | 7,077 | Retrieval-quality judge |
 
-The `CHAT_SUMMARY.md` (89 KB) and `AI_SESSION_CONTEXT.md` (25 KB) reveal that **this toolkit has been co-developed with AI assistance** (Claude/Anthropic), with session context and summaries committed directly into the repository for continuity.
+### 2.3 Documentation Files
 
----
-
-## 9. Dependencies
-
-### 9.1 Runtime (`requirements.txt`, 631 bytes)
-
-Expected dependencies based on module analysis:
-- **netmiko / paramiko / nornir**: SSH device collection (cmdio.py, rest_collect.py)
-- **openpyxl / xlsxwriter**: Excel report generation (excel.py)
-- **jinja2**: Template rendering for HTML/MOP/Runbook
-- **pydantic**: Data validation (model.py, detector_schema.py)
-- **httpx / requests**: REST collection (rest_collect.py)
-- **chromadb / sentence-transformers**: Vector store for RAG (recall.py, embed_qbank.py)
-
-### 9.2 Dev (`requirements-dev.txt`, 661 bytes)
-
-Expected:
-- **pytest** + **pytest-cov**: Test runner + coverage
-- **ruff**: Linting
-- **mypy**: Static type checking
-- **pre-commit**: Git hook enforcement
+| File | Size (bytes) | Notes |
+|---|---|---|
+| `README.md` | 19,328 | User-facing intro & usage guide |
+| `CHANGELOG.md` | 32,412 | Version history |
+| `RELEASING.md` | 4,277 | Release procedure |
+| `CLAUDE.md` | 12,349 | Claude AI session instructions |
+| `AI_SESSION_CONTEXT.md` | 25,608 | AI session persistent context |
+| `CHAT_SUMMARY.md` | 89,769 | Logged AI chat history (large) |
+| `COLLECT_PARSE_V3_23_0.md` | 292,322 | Collector/parser design doc (very large) |
+| `IMPROVEMENT_AND_GREENFIELD_PLANS.md` | 23,095 | Roadmap & greenfield proposals |
+| `TECHNICAL_DOSSIER.md` | 24,255 | This file (prior version) |
+| `compass_artifact_wf-4178d659-*.md` | 25,006 | Compass workflow artefact |
+| `compass_artifact_wf-6d4cf577-*.md` | 35,749 | Compass workflow artefact |
 
 ---
 
-## 10. Configuration Files
+## 3. `cisco_toolkit/` — Core Library Audit
 
-| File | Purpose |
-|---|---|
-| `pyproject.toml` (7.3 KB) | PEP 517/518 build system, tool configs (pytest, ruff, mypy sections) |
-| `pytest.ini` | pytest markers, test paths, addopts |
-| `ruff.toml` | Lint rules, line length, select/ignore sets |
-| `mypy.ini` | Type-check strictness, module ignore rules |
-| `.gitignore` (2.4 KB) | Comprehensive Python .gitignore |
-| `.gitattributes` (277 B) | Line ending and diff settings |
-| `.graphifyignore` (1.7 KB) | Ignores for graph-based tooling |
-| `.mcp.json` (116 B) | MCP server endpoint configuration |
-| `devices.example.json` (390 B) | Example device inventory for testing/onboarding |
-| `requirements.aj.json` (2.3 KB) | AJ-format requirements manifest |
-| `requirements.sample.json` (1.3 KB) | Sample requirements template |
+The `cisco_toolkit/` package is the heart of the project. It contains **55+ Python modules** spanning config collection, parsing, analysis, report generation, AI inference, and operational tooling.
+
+### 3.1 Module Catalogue (by functional group)
+
+#### Data Collection & Parsing
+
+| Module | Size (bytes) | Description |
+|---|---|---|
+| `parse.py` | 249,248 | **Largest parser** — IOS/NX-OS/IOS-XE config parsing |
+| `cmdio.py` | 23,232 | SSH/CLI command I/O abstraction |
+| `rest_collect.py` | 29,777 | REST API collection (RESTCONF/NETCONF) |
+| `external_import.py` | 8,174 | Import from external inventory sources |
+| `capture_integrity.py` | 9,790 | Hash/checksum validation of captured configs |
+| `eoldb.py` | 9,081 | End-of-Life database lookups |
+| `ouidb.py` | 3,200 | OUI/MAC vendor database |
+| `portdb.py` | 4,655 | Well-known port database |
+| `gen_oui_registry.py` | 4,158 | OUI registry generator script |
+
+#### Analysis & Assessment
+
+| Module | Size (bytes) | Description |
+|---|---|---|
+| `analyze.py` | 390,549 | **Largest analysis module** — comprehensive gap analysis |
+| `design_advisor.py` | 304,711 | AI-assisted design advisory engine |
+| `design_kb.py` | 753,594 | **Largest file** — design knowledge base (753 KB) |
+| `archreview.py` | 78,290 | Architecture review checks |
+| `aclcheck.py` | 19,087 | ACL policy validation |
+| `fib.py` | 44,171 | FIB/routing table analysis |
+| `evpn_migration.py` | 12,732 | EVPN migration readiness |
+| `causal.py` | 16,035 | Causal dependency analysis |
+| `feature_compliance.py` | 3,974 | Feature compliance checker |
+| `protocol_kb.py` | 10,138 | Protocol knowledge base |
+| `intel_feed.py` | 10,036 | Threat/advisory intel feed |
+| `assertions.py` | 14,933 | Config assertion rules |
+| `path_assertions.py` | 5,410 | Routing path assertions |
+| `detector_schema.py` | 31,852 | Pydantic/schema for detectors |
+
+#### Report Generation & Output
+
+| Module | Size (bytes) | Description |
+|---|---|---|
+| `excel.py` | 235,844 | Excel report generator (openpyxl) |
+| `html.py` | 75,832 | HTML report generator |
+| `build.py` | 79,862 | Report build orchestrator |
+| `deck.py` | 29,809 | Slide deck/presentation generator |
+| `scorecard.py` | 36,755 | Migration readiness scorecard |
+| `mop.py` | 63,937 | Method of Procedure generator |
+| `runbook.py` | 70,855 | Runbook / change-plan generator |
+| `nrfu_export.py` | 20,526 | NRFU (Network Record for Upgrade) export |
+| `docmeta.py` | 22,225 | Document metadata management |
+| `crd.py` | 37,056 | Change Request Document generator |
+
+#### Simulation & Validation
+
+| Module | Size (bytes) | Description |
+|---|---|---|
+| `cutover_sim.py` | 18,718 | Cutover simulation engine |
+| `failover.py` | 21,229 | Failover scenario modelling |
+| `precert.py` | 23,975 | Pre-certification checks |
+| `selfcheck.py` | 23,803 | Self-test / health check |
+| `self_healing.py` | 11,001 | Automated remediation hooks |
+| `gate_state.py` | 14,247 | Go/No-Go gate state machine |
+| `calibration.py` | 19,249 | Score calibration engine |
+| `attestation.py` | 13,418 | Formal attestation signing |
+| `blast_radius_explorer.html` | 989,288 | **Self-contained interactive HTML blast-radius explorer (989 KB)** |
+
+#### AI / LLM Integration
+
+| Module | Size (bytes) | Description |
+|---|---|---|
+| `mcp_server.py` | 24,988 | MCP server exposing toolkit tools to LLMs |
+| `recall.py` | 17,228 | RAG recall / vector retrieval |
+| `eval_harness.py` | 22,871 | LLM evaluation harness |
+| `retrieval_eval.py` | 49,145 | Retrieval quality evaluation |
+| `d10_eval_set.py` | 24,505 | D10 evaluation dataset generator |
+| `holdout.py` | 19,154 | Holdout set management |
+| `fault_corpus.py` | 7,100 | Fault scenario corpus |
+| `learnings.py` | 8,178 | Accumulated learning store |
+
+#### Operational / Workflow
+
+| Module | Size (bytes) | Description |
+|---|---|---|
+| `ops.py` | 42,872 | Operational workflow orchestrator |
+| `engagement.py` | 38,549 | Customer engagement workflow |
+| `design.py` | 47,726 | Design phase workflow |
+| `council.py` | 8,262 | Review council / approvals |
+| `ssot.py` | 25,923 | Single Source of Truth sync |
+| `coverage_matrix.py` | 10,842 | Test coverage matrix |
+| `defect_panel.py` | 26,091 | Defect tracking panel |
+| `bridge_queue.py` | 7,914 | Async bridge/queue abstraction |
+| `memory_guard.py` | 17,133 | Memory usage guard |
+| `clock.py` | 13,904 | Scheduler / clock utilities |
+| `context.py` | 4,577 | Execution context object |
+| `doctrine.py` | 3,923 | Policy/doctrine definitions |
+| `domain_packs.py` | 6,956 | Domain pack loader |
+| `whatif.py` | 5,086 | What-if scenario runner |
+| `manifest.py` | 5,224 | Artefact manifest |
+| `model.py` | 7,700 | Core data model definitions |
+| `brand_tokens.py` | 2,051 | UI brand token definitions |
+| `textutils.py` | 12,046 | Text processing utilities |
+
+### 3.2 `cisco_toolkit/data/` Subdirectory
+
+Contains static data assets (EoL tables, OUI registries, protocol reference data). Exact file list available at the [data tree](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/tree/main/cisco_toolkit/data).
 
 ---
 
-## 11. Findings & Risk Assessment
+## 4. `tests/` — Test Suite Audit
 
-### 11.1 Strengths
+The `tests/` directory and the root `conftest.py` constitute the test infrastructure.
 
-1. **Comprehensive lifecycle coverage**: The toolkit covers every phase of a Cisco migration — collection, parsing, analysis, design, planning, validation, reporting, and operations.
-2. **Mature versioning**: COLLECT_PARSE v3.23.0 and the 32 KB CHANGELOG indicate sustained, multi-release development.
-3. **AI-native architecture**: Full MCP server, RAG pipeline, local LLM judge, and multi-agent council represent an advanced AI integration strategy ahead of industry norms.
-4. **Field deployability**: The standalone monolithic script (`COLLECT_PARSE_V3_23_0.py`) addresses the common real-world constraint of restricted environments.
-5. **Multiple output formats**: Excel, HTML, PowerPoint, MOP, CRD, Runbook — covering all stakeholder audiences (NOC, architecture, management, change control).
-6. **Self-contained data**: Bundled `design_kb.py` (753 KB), `eoldb.py`, `ouidb.py`, `portdb.py` mean the toolkit operates air-gapped without external API dependencies.
+- **Test framework:** pytest (configured via `pytest.ini`)
+- **Root conftest:** `conftest.py` (1,669 bytes) — provides shared fixtures and test context
+- **Test directory:** `tests/` (SHA `9581994fd05c2a43d709cae9285e4c7cead1178c`)
+- **Coverage tooling:** `cisco_toolkit/coverage_matrix.py` suggests structured coverage tracking is built into the toolkit itself
+- **Eval harness integration:** `eval_harness.py` and `retrieval_eval.py` provide LLM-specific test evaluation beyond unit tests
 
-### 11.2 Observations & Risks
-
-1. **AI session artefacts in version control**: `CHAT_SUMMARY.md` (89 KB), `AI_SESSION_CONTEXT.md` (25 KB), and multiple `compass_artifact_*.md` files are committed to the main branch. These are operational/development artefacts and should be moved to `.gitignore` or a separate branch to keep the repo clean and avoid accidental disclosure of internal development context.
-2. **Module size concentration**: `design_kb.py` at 753 KB is an extreme outlier. Static knowledge bases of this size are difficult to maintain, diff, and test. Consideration should be given to externalising it as a structured data format (JSON/YAML/SQLite) loaded at runtime.
-3. **Monolithic collector pattern**: `COLLECT_PARSE_V3_23_0.py` at 216 KB is a single file with a manually bumped version in the filename. This pattern makes diff tracking harder and risks version fragmentation. A proper packaging strategy (`portable/` may address this) should be confirmed.
-4. **`.mcp.json` in repo root**: The MCP server config file is committed. Ensure it contains no embedded credentials, API keys, or environment-specific endpoints.
-5. **`questionnaire.json` at 131 KB**: A large, flat JSON assessment bank. No schema validation module is visible for this file specifically — ensure `detector_schema.py` or a dedicated validator covers it.
-6. **`blast_radius_explorer.html` at 989 KB**: A bundled single-file HTML app of this size likely contains vendored JS libraries. Vendored dependencies should be audited for known CVEs and documented.
-7. **Test isolation**: The presence of both `conftest.py` and the `tests/` directory is positive, but the eval harnesses (`eval_harness.py`, `ollama_judge.py`) depend on a running Ollama instance — these must be properly skipped/mocked in CI to avoid flaky tests.
+> **Gap:** Test file count and individual test module names require deeper `tests/` directory inspection. Recommend running `pytest --collect-only` to produce a full test manifest.
 
 ---
 
-## 12. Data Flow Diagram
+## 5. `webapp/` — Web Application Audit
 
-```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                    INPUT SOURCES                                │
-  │  SSH/CLI (cmdio)   REST/RESTCONF (rest_collect)   File Import   │
-  │  (external_import)    Questionnaire (questionnaire.json)        │
-  └─────────────────┬───────────────────────────────────────────────┘
-                    │
-                    ▼
-  ┌─────────────────────────────────┐
-  │  PARSE LAYER                    │
-  │  parse.py · aclcheck.py         │
-  │  fib.py · evpn_migration.py     │
-  │  capture_integrity.py           │
-  └────────────────┬────────────────┘
-                   │
-                   ▼
-  ┌─────────────────────────────────┐
-  │  ANALYSIS & SCORING             │
-  │  analyze.py · scorecard.py      │
-  │  archreview.py · causal.py      │
-  │  eoldb.py · coverage_matrix.py  │
-  │  assertions.py · selfcheck.py   │
-  └──────────┬──────────────────────┘
-             │              │
-             ▼              ▼
-  ┌──────────────┐  ┌──────────────────┐
-  │  AI LAYER    │  │  DESIGN LAYER    │
-  │  recall.py   │  │  design.py       │
-  │  council.py  │  │  design_advisor  │
-  │  mcp_server  │  │  design_kb.py    │
-  └──────┬───────┘  │  protocol_kb.py  │
-         │           └────────┬─────────┘
-         │                    │
-         └────────┬───────────┘
-                  ▼
-  ┌─────────────────────────────────┐
-  │  PLANNING & VALIDATION          │
-  │  mop.py · runbook.py · crd.py   │
-  │  precert.py · gate_state.py     │
-  │  attestation.py · failover.py   │
-  │  cutover_sim.py · nrfu_export   │
-  └────────────────┬────────────────┘
-                   │
-                   ▼
-  ┌─────────────────────────────────┐
-  │  OUTPUT LAYER                   │
-  │  excel.py · html.py · deck.py   │
-  │  build.py · ssot.py · defect    │
-  │  blast_radius_explorer.html     │
-  └─────────────────────────────────┘
-```
+- **Directory SHA:** `63e8ea84b744653ec26d4632d33e67356d8579ca`
+- The webapp layer provides a browser-based interface to the toolkit's outputs
+- `blast_radius_explorer.html` (989 KB, in `cisco_toolkit/`) is a self-contained interactive HTML artefact, likely the primary webapp deliverable — contains embedded JS/CSS visualisation of change blast radius
+- Full webapp file list available at the [webapp tree](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/tree/main/webapp)
 
 ---
 
-## 13. Git History Summary
+## 6. CI/CD — `.github/` Audit
 
-- Single contributor pattern (Tanveerahamed-Dev)
-- Active development evidenced by: CHANGELOG.md at 32 KB, COLLECT_PARSE versioned to v3.23.0
-- AI-assisted development workflow evidenced by committed session artefacts
-- The `.design-sync/` directory suggests synchronisation with an external design system or Figma-like tool
+- **Directory SHA:** `b00bab84e85d9e9d5a156333def8e542e1cd6d66`
+- GitHub Actions workflows are present under `.github/`
+- Full workflow YAML list available at the [.github tree](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/tree/main/.github)
+- The presence of `RELEASING.md` (4,277 bytes) confirms a documented release process integrated with CI
+- `ruff.toml` and `mypy.ini` suggest lint/type-check steps are part of CI gates
+
+---
+
+## 7. `portable/` and `research_lane/` Directories
+
+| Directory | SHA | Notes |
+|---|---|---|
+| `portable/` | `4eb7b51f98f56409a18efb687467d25f159c701e` | Portable/standalone distribution artefacts |
+| `research_lane/` | `eadfa44edb449ca346bd9755cc4c799792f016eb` | Experimental / research tracks |
+
+---
+
+## 8. AI & MCP Integration Layer
+
+This toolkit has an unusually deep AI integration layer:
+
+- **`cisco_toolkit/mcp_server.py`** (24,988 bytes): Exposes toolkit capabilities as MCP tools, allowing Claude and other MCP-compatible LLMs to invoke collection, analysis, and report generation directly
+- **`.mcp.json`**: MCP server entry-point config
+- **`.claude/`**: Claude-specific session instructions directory
+- **`CLAUDE.md`**: Claude AI persistent instruction set
+- **`AI_SESSION_CONTEXT.md`**: 25 KB of persistent AI session context
+- **Root Ollama scripts** (`ollama_judge.py`, `ollama_recall.py`, `ollama_retrieval_judge.py`): Local LLM evaluation pipeline using Ollama for offline/air-gapped assessment scoring
+- **`embed_qbank.py`**: Embeds the 131 KB questionnaire bank into a vector store via Ollama
+- **`questionnaire.json`** (131,735 bytes): The core questionnaire bank — likely the primary data source for RAG-based assessment Q&A
+
+---
+
+## 9. Code Scale Metrics
+
+| Metric | Value |
+|---|---|  
+| Python modules in `cisco_toolkit/` | ~55 |
+| Largest single Python file | `design_kb.py` (753,594 bytes / ~736 KB) |
+| Largest HTML artefact | `blast_radius_explorer.html` (989,288 bytes / ~966 KB) |
+| Largest analysis module | `analyze.py` (390,549 bytes) |
+| Total `cisco_toolkit/` Python (approx) | **~5.5 MB of source code** |
+| Root standalone scripts | 5 Python files |
+| Root documentation | ~500 KB of Markdown |
+| Questionnaire bank | 131,735 bytes (JSON) |
+
+---
+
+## 10. Notable Architecture Observations
+
+1. **Monolithic module pattern:** Several modules (`analyze.py` at 390 KB, `design_advisor.py` at 304 KB, `excel.py` at 235 KB) are very large single files. This indicates organic growth; refactoring into sub-packages would improve maintainability.
+
+2. **Knowledge base as code:** `design_kb.py` at 753 KB is a knowledge base encoded directly in Python (likely large dicts/lists of rules and patterns). This couples the KB tightly to the codebase; externalising to JSON/YAML or a vector store would improve updateability.
+
+3. **Dual collection path:** `COLLECT_PARSE_V3_23_0.py` (216 KB, root-level) appears to be a versioned standalone collector, distinct from `cisco_toolkit/parse.py`. This suggests the toolkit evolved from a monolithic script toward a packaged library, with the root script retained for compatibility.
+
+4. **Full MCP integration:** The presence of `mcp_server.py` and `.mcp.json` means this toolkit is designed to be invoked as an AI agent tool, not just a CLI. This is architecturally forward-looking for agentic network automation.
+
+5. **EVPN-specific module:** `evpn_migration.py` indicates targeted support for VXLAN/EVPN fabric migrations, common in modern data centre underlay/overlay transitions.
+
+6. **Cutover simulation:** `cutover_sim.py` and `failover.py` provide simulation-before-execution capability, reducing production risk during cutovers.
+
+7. **Attestation & gate control:** `attestation.py` and `gate_state.py` implement formal go/no-go gate management — a production-grade safety feature rarely seen in open-source migration tools.
+
+8. **Self-healing hooks:** `self_healing.py` suggests automated rollback or remediation capability is in scope, moving beyond assessment into active migration management.
+
+---
+
+## 11. Risk & Quality Findings
+
+| Severity | Finding | Evidence |
+|---|---|---|
+| **HIGH** | `design_kb.py` (753 KB) is unwieldy; single-file KB risks merge conflicts and poor diff readability | File size from directory listing |
+| **MEDIUM** | `CHAT_SUMMARY.md` (89 KB) and `AI_SESSION_CONTEXT.md` (25 KB) committed to repo — may contain sensitive session data | Root directory listing |
+| **MEDIUM** | `compass_artifact_wf-*.md` files with GUIDs in filenames suggest ad-hoc artefact commits; not cleaned up | Root directory listing |
+| **MEDIUM** | No `SECURITY.md` or vulnerability disclosure policy found in root | Directory inspection |
+| **LOW** | `COLLECT_PARSE_V3_23_0.py` at root (216 KB) duplicates library functionality in `cisco_toolkit/parse.py` | Dual-path architecture |
+| **LOW** | `ollama_*` eval scripts at root are not in a `scripts/` or `tools/` subdirectory — reduces discoverability | Root directory structure |
+| **INFO** | `blast_radius_explorer.html` (989 KB) is a very large binary-like HTML blob in the Python package directory — consider moving to `webapp/` or `docs/` | File location & size |
+
+---
+
+## 12. Dependency Profile
+
+From `requirements.txt` and `pyproject.toml`:
+
+- **Core networking:** `netmiko`, `paramiko` (SSH collection), likely `requests` (REST)
+- **Parsing:** `ciscoconfparse` or custom regex-based parser in `parse.py`
+- **Reports:** `openpyxl` (Excel), `jinja2` or f-strings (HTML)
+- **AI/ML:** `ollama` client, likely `chromadb` or `faiss` for vector store
+- **Testing:** `pytest`, `pytest-cov`
+- **Quality:** `ruff`, `mypy`
+
+> Full pinned dependency list in `requirements.txt` (631 bytes) and `requirements-dev.txt` (661 bytes).
+
+---
+
+## 13. Commit History Summary
+
+- **Active development:** Recent HEAD at `500474a8458f33e96d2a11cc3d2ec22e6edf4ada`
+- **CHANGELOG.md** (32 KB) documents structured versioning history
+- **RELEASING.md** describes the formal release process
+- `AI_SESSION_CONTEXT.md` and `CHAT_SUMMARY.md` indicate the project is being actively developed in collaboration with AI coding assistants
 
 ---
 
 ## 14. Recommendations
 
-| Priority | Recommendation |
-|---|---|
-| **P1** | Move `CHAT_SUMMARY.md`, `AI_SESSION_CONTEXT.md`, `compass_artifact_*.md` out of main branch or add to `.gitignore` |
-| **P1** | Audit `blast_radius_explorer.html` vendored JS for CVEs |
-| **P1** | Verify `.mcp.json` contains no credentials |
-| **P2** | Externalise `design_kb.py` knowledge base to a structured data format (JSON/YAML/SQLite) |
-| **P2** | Mark Ollama-dependent tests with a `@pytest.mark.requires_ollama` marker and skip in CI |
-| **P2** | Add schema validation for `questionnaire.json` |
-| **P3** | Add `CODEOWNERS` and branch protection rules |
-| **P3** | Pin all dependencies with hashes in `requirements.txt` for reproducible builds |
-| **P3** | Consider splitting `COLLECT_PARSE_V3_23_0.py` into versioned releases via `portable/` rather than filename versioning |
+1. **Split `design_kb.py`** into domain-specific sub-files under `cisco_toolkit/kb/` to improve maintainability and Git diff quality.
+2. **Remove or redact** `CHAT_SUMMARY.md` and `AI_SESSION_CONTEXT.md` from the public repository; if needed, add to `.gitignore`.
+3. **Consolidate root scripts** (`ollama_*.py`, `embed_qbank.py`) into a `scripts/` directory.
+4. **Add `SECURITY.md`** with a responsible disclosure policy.
+5. **Move `blast_radius_explorer.html`** to `webapp/` or `docs/` for logical separation.
+6. **Deprecate root `COLLECT_PARSE_V3_23_0.py`** or clearly document its relationship to `cisco_toolkit/parse.py`.
+7. **Expand test coverage** — confirm test files exist for all major modules in `tests/`; add integration tests for `cutover_sim.py` and `failover.py`.
+8. **Pin Ollama model versions** in eval scripts to ensure reproducible LLM evaluations.
 
 ---
 
-## 15. Artefact Catalogue
-
-| Artefact | Path | Role |
-|---|---|---|
-| Primary package | `cisco_toolkit/` | All production source |
-| Standalone collector | `COLLECT_PARSE_V3_23_0.py` | Field-deployable monolith |
-| Blast radius visualiser | `cisco_toolkit/blast_radius_explorer.html` | Interactive HTML report |
-| Assessment Q&A bank | `questionnaire.json` | Structured assessment data |
-| Design knowledge base | `cisco_toolkit/design_kb.py` | Core domain knowledge |
-| MCP server | `cisco_toolkit/mcp_server.py` | AI tool integration endpoint |
-| LLM judge | `ollama_judge.py` | Offline LLM evaluation |
-| Web application | `webapp/` | Front-end interface |
-| Portable builds | `portable/` | Distribution artefacts |
-| CI/CD | `.github/` | GitHub Actions workflows |
-| Tests | `tests/` + `conftest.py` | pytest test suite |
-
----
-
-*Dossier generated by source-level inspection of the repository tree and file-level evidence. All size figures are from GitHub API metadata (byte-accurate). No assumptions have been made beyond what the repository itself evidences.*
+*Dossier generated by source-level inspection of all directories, module file lists, documentation, and commit metadata. Individual module source code bodies were not read in full due to file sizes; observations are based on naming conventions, file sizes, and cross-references between modules and documentation.*
