@@ -5,8 +5,10 @@ top-level data\ (client evidence) — while nested dirs that happen to be named 
 (_internal\cisco_toolkit\data — the KB packs) still copy. A bare robocopy '/XD data' violates the
 second half silently; the script pins the exclusion to the absolute top-level path."""
 
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -71,3 +73,50 @@ def test_missing_bundle_fails_loud_with_build_hint(tmp_path):
     p = _run("-Dest", str(tmp_path), "-Source", str(tmp_path / "never-built"))
     assert p.returncode == 1
     assert "build" in (p.stdout + p.stderr).lower()
+
+
+def test_robocopy_retries_are_bounded():
+    """Robocopy's DEFAULTS are /R:1000000 /W:30 - a million retries 30s apart. Combined with this
+    script's quiet switches that is a SILENT ~347-day hang on a single in-use file, which really
+    happened (2026-07-21: the browser Atlas opened held DLLs on the stick; the copy sat retrying
+    for ~5 hours with no output). The script MUST pin small values."""
+    # Read the flags off the INVOCATION line only — the surrounding comment quotes robocopy's
+    # awful defaults, and matching those would make this test pass while the script hangs.
+    invocation = next(ln for ln in SCRIPT.read_text(encoding="ascii").splitlines()
+                      if ln.startswith("robocopy "))
+    assert "/R:" in invocation and "/W:" in invocation, "make_stick.ps1 must pin retry limits"
+    retries = int(re.search(r"/R:(\d+)", invocation).group(1))
+    wait = int(re.search(r"/W:(\d+)", invocation).group(1))
+    assert retries <= 5, f"/R:{retries} is a silent-hang risk in the field"
+    assert wait <= 10, f"/W:{wait} is a silent-hang risk in the field"
+
+
+def test_in_use_destination_fails_fast_and_names_the_cause(tmp_path):
+    """The field symptom: a file on the stick is held open (Atlas or the browser it opened). The
+    script must fail in seconds with an actionable message - never retry into oblivion."""
+    src = _fake_bundle(tmp_path)
+    dest = tmp_path / "stick"
+    dest.mkdir()
+    assert _run("-Dest", str(dest), "-Source", str(src)).returncode == 0
+    target = dest / "Atlas"
+    (src / "Atlas.exe").write_bytes(b"MZ fake exe v2")  # force a rewrite of the locked file
+
+    # A plain open() would NOT reproduce this: Python opens with full sharing on Windows, so
+    # robocopy copies straight over it. msvcrt.locking takes a real mandatory byte-range lock,
+    # which is what makes robocopy fail and retry the way an in-use stick file does.
+    import msvcrt
+
+    size = (target / "Atlas.exe").stat().st_size
+    held = open(target / "Atlas.exe", "rb+")
+    try:
+        msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, size)
+        start = time.monotonic()
+        p = _run("-Dest", str(dest), "-Source", str(src))
+        elapsed = time.monotonic() - start
+    finally:
+        held.close()  # closing releases the lock; an explicit unlock can race the size change
+
+    assert p.returncode == 1, p.stdout + p.stderr
+    out = (p.stdout + p.stderr).lower()
+    assert "in use" in out and "browser" in out, out
+    assert elapsed < 90, f"took {elapsed:.0f}s - retries are not bounded"
