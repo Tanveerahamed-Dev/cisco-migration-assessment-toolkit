@@ -74,19 +74,21 @@ REDACTION - BEFORE ANYTHING LEAVES THE SITE
 Deliverables carry client IPs/MACs/serials. --redact pseudonymizes them
 across the whole output set (snapshot, workbook, explorer).
 
-READ THIS BEFORE YOU TRAVEL: redaction runs the ENGINE, and the engine
-needs two inputs THE STICK DOES NOT CARRY - your assessment template
-(.xlsx) and a devices.json. Copy both onto the stick beforehand if you
-may need to redact on site. Without them the command stops with
-"Template not found" or "Devices file not found".
+Run this as ONE line (nothing else needs to be on the stick):
+  Atlas.exe --redact-folder <collection folder> --out <D:\share>
 
-Then run this as ONE line (do not split it):
-  Atlas.exe --run-engine --no-collect --collection-dir <folder> --devices-file <devices.json> --template <template.xlsx> --output <D:\out\Assessment.xlsx> --redact
+Atlas builds the inputs the engine needs, renders the whole document
+family, and checks the result before reporting success - if anything is
+still unredacted it FAILS and says so rather than handing you a file
+that looks safe. Expect several minutes for a large fleet.
 
-Send --output to a folder OUTSIDE Atlas\ : an update replaces everything
-except data\, so deliverables written beside Atlas.exe are lost.
-To also scrub cleartext secrets out of the RAW capture folder in place
-(kept comparable for --compare / --trend), add:  --redact-collection
+--out must be OUTSIDE the Atlas\ folder (an update replaces everything
+there except data\), and it will not write into the collection folder
+either. Atlas refuses both rather than lose your work.
+
+The raw captures are NOT touched by the command above. To also scrub
+cleartext secrets out of them IN PLACE (they stay usable for later
+comparisons), add:  --redact-collection
 Rule: raw captures and unredacted output never leave the site except on
 this (encrypted) stick.
 
