@@ -126,6 +126,18 @@ describe("CampaignPage", () => {
     expect(screen.getByText("Compare two waves")).toBeInTheDocument();
   });
 
+  it("surfaces a failed trend fetch as an error panel instead of silently vanishing", async () => {
+    vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1), snap(2)] }));
+    vi.spyOn(api, "getGates").mockResolvedValue(emptyGates);
+    vi.spyOn(api, "trend").mockRejectedValue(new Error("trend 3 failed"));
+    renderCampaign();
+
+    // the panel keeps its title AND shows the house ErrorBox — the old `!data → null` guard
+    // rendered nothing at all on error, forever (the audit's one tracked correctness bug)
+    expect(await screen.findByText("Campaign trajectory")).toBeInTheDocument();
+    expect(screen.getByText("trend 3 failed")).toBeInTheDocument();
+  });
+
   it("cycles a gate cell pending → GO and records it against the campaign", async () => {
     vi.spyOn(api, "getCampaign").mockResolvedValue(campaign({ snapshots: [snap(1)] }));
     vi.spyOn(api, "getGates").mockResolvedValue({

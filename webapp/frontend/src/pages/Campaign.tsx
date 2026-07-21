@@ -124,7 +124,17 @@ export const VERDICT_COLOR: Record<string, string> = {
 };
 
 function Trend({ id }: { id: number }) {
-  const { data, loading } = useAsync(() => api.trend(id), [id]);
+  const { data, error, loading } = useAsync(() => api.trend(id), [id]);
+  // A failed trend fetch must SURFACE, not vanish — every other panel on this page shows ErrorBox
+  // (GateBoard's pattern); the old `!data → null` guard swallowed errors forever, silently.
+  if (error) {
+    return (
+      <div className="panel">
+        <h3>Campaign trajectory</h3>
+        <ErrorBox msg={error} />
+      </div>
+    );
+  }
   if (loading || !data) return null;
   if (data.verdict === "INSUFFICIENT") {
     return <div className="panel"><h3>Campaign trajectory</h3><div className="dim" style={{ fontSize: 13 }}>{data.verdict_note}</div></div>;
