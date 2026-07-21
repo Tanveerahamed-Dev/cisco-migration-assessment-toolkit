@@ -5,7 +5,7 @@
    slices of that object — no verdict is ever re-derived or invented in the UI. */
 import { useState } from "react";
 import { api, ArchCheck, ArchReview, ArchVerdict } from "../api";
-import { ErrorBox, Loading, useAsync } from "./ui";
+import { ErrorBox, SkelLines, useAsync } from "./ui";
 
 export const V_LABEL: Record<ArchVerdict, string> = {
   critical: "CRITICAL DEVIATION",
@@ -77,7 +77,7 @@ export default function ArchReviewPanel({ snapId }: { snapId: number }) {
   const [q, setQ] = useState<QKey>("start");
   const [domainSel, setDomainSel] = useState<string>("");
 
-  if (loading) return <div className="panel"><h3>Ask the engineer · architecture review</h3><Loading /></div>;
+  if (loading) return <div className="panel"><h3>Ask the engineer · architecture review</h3><SkelLines n={5} /></div>;
   if (error) return <div className="panel"><h3>Ask the engineer · architecture review</h3><ErrorBox msg={error} /></div>;
   const ar = data as ArchReview;
   const s = ar.summary;

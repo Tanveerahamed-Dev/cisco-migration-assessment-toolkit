@@ -11,7 +11,7 @@
    - n_census_vlans disclosure when the IP plan is in needs-requirement state. */
 import { useEffect, useState } from "react";
 import { api, ArchitectureCoverage, DesignBlueprint, DesignDecision, DesignNrfu, DesignNrfuItem, DesignTargetState } from "../api";
-import { ErrorBox, Loading, useAsync } from "./ui";
+import { ErrorBox, SkelLines, SkelTable, useAsync } from "./ui";
 
 export const P_COLOR = (p: string) =>
   p === "Critical" ? "var(--crit)" : p === "High" ? "var(--risk)" : p === "Medium" ? "var(--watch)" : "var(--ok)";
@@ -113,7 +113,7 @@ function NrfuPanel({ snapId, register }: { snapId: number; register: Record<stri
     () => (register ? api.designNrfuOverlay(snapId, register) : api.designNrfu(snapId)),
     [snapId, register]
   );
-  if (loading) return <Loading />;
+  if (loading) return <SkelLines />;
   if (error) return <ErrorBox msg={error} />;
   const nrfu = data as DesignNrfu;
   const byPhase: Record<string, DesignNrfuItem[]> = {};
@@ -150,7 +150,7 @@ function ArchitectureCoveragePanel({ snapId }: { snapId: number }) {
   // Domain lenses (Phase-3 / D6) selected by the engine from the SAME coverage — a secondary, non-blocking
   // signal: the coverage grid renders even if this fetch is slow/fails (chips just don't show).
   const packs = useAsync(() => api.domainPacks(snapId), [snapId]);
-  if (loading) return <Loading />;
+  if (loading) return <SkelTable rows={6} cols={4} />;
   if (error) return <ErrorBox msg={error} />;
   const cov = data as ArchitectureCoverage;
   const s = cov.summary;
@@ -364,7 +364,7 @@ export default function DesignBlueprintPanel({ snapId }: { snapId: number }) {
     setLiveMsg("");   // drop any stale announcement when the snapshot changes
   }, [snapId]);
 
-  if (loading) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><Loading /></div>;
+  if (loading) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><SkelLines n={5} /></div>;
   if (error) return <div className="panel"><h3>Design engineer · target-state blueprint</h3><ErrorBox msg={error} /></div>;
   const bp = (over || data) as DesignBlueprint;
   const s = bp.summary;
