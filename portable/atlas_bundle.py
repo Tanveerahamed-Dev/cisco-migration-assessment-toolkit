@@ -29,6 +29,11 @@ from cisco_toolkit.brand_tokens import APP_NAME
 #: Destination of the built SPA inside the bundle — MUST match serve._resolve_dist's frozen probe.
 DIST_DEST = "webapp_dist"
 
+#: The one-page field guide (ADR-0004 P3). It must land in the bundle ROOT beside the exe —
+#: PyInstaller ≥6 puts spec `datas` under _internal\, where no field engineer would ever look —
+#: so build_atlas.py copies :func:`root_files` there as a post-build step.
+FIELD_README = "README-FIELD.txt"
+
 
 def exe_name() -> str:
     """ADR-0004 D1: the exe is named by the ONE brand constant — a rename never touches the spec."""
@@ -54,10 +59,17 @@ def bundle_datas(root: Path) -> List[Tuple[str, str]]:
     ]
 
 
+def root_files(root: Path) -> List[str]:
+    """Files copied to the bundle ROOT (beside the exe) by build_atlas.py after PyInstaller runs
+    — the visible-to-the-engineer tier the spec's `datas` (buried in _internal\\) cannot serve."""
+    return [str(Path(root) / "portable" / FIELD_README)]
+
+
 def missing_data_sources(root: Path) -> List[str]:
-    """Sources from :func:`bundle_datas` absent on disk — the build must refuse while any exist
-    (--selftest's fail-loud doctrine applied at build time)."""
-    return [src for src, _dest in bundle_datas(Path(root)) if not Path(src).exists()]
+    """Sources from :func:`bundle_datas` + :func:`root_files` absent on disk — the build must
+    refuse while any exist (--selftest's fail-loud doctrine applied at build time)."""
+    sources = [src for src, _dest in bundle_datas(Path(root))] + root_files(Path(root))
+    return [src for src in sources if not Path(src).exists()]
 
 
 def hidden_imports() -> List[str]:

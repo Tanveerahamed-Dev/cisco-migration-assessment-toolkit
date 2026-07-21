@@ -37,7 +37,16 @@ def test_tracked_sources_exist_on_a_checkout():
 
 def test_missing_sources_fail_loud_on_an_empty_root(tmp_path):
     missing = atlas_bundle.missing_data_sources(tmp_path)
-    assert len(missing) == len(atlas_bundle.bundle_datas(tmp_path))
+    assert len(missing) == (len(atlas_bundle.bundle_datas(tmp_path))
+                            + len(atlas_bundle.root_files(tmp_path)))
+
+
+def test_root_files_ship_the_field_guide_beside_the_exe():
+    """ADR-0004 P3: the field discipline rides the stick — at the bundle ROOT, not _internal\\
+    (PyInstaller ≥6 buries spec datas there). Its source is tracked, so it must exist here."""
+    names = {Path(p).name for p in atlas_bundle.root_files(ROOT)}
+    assert atlas_bundle.FIELD_README in names
+    assert all(Path(p).is_file() for p in atlas_bundle.root_files(ROOT))
 
 
 def test_hidden_imports_cover_the_dynamic_seams():
