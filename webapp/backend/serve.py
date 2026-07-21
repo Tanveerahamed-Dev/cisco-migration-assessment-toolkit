@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import multiprocessing
 import os
+import sqlite3
 import sys
 import threading
 from importlib.metadata import PackageNotFoundError, version as _dist_version
@@ -292,10 +293,19 @@ def main(argv=None) -> int:
 
     dist = _resolve_dist(args.dist)
     # Field refusal #2 — corrupt store: refuse to serve, leave the file for a human restore.
+    # ASCII separator on purpose: README-FIELD quotes this line and is ASCII-only (a cp437 field
+    # console renders an em-dash as '?', so the guide could never match what the engineer sees).
     try:
         app = create_app(db_path=_resolve_db(args.db), dist_dir=str(dist), boot_hardening=True)
     except StoreCorruptError as e:
-        print(f"{APP_TITLE}: refusing to start — {e}", file=sys.stderr)
+        print(f"{APP_TITLE}: refusing to start - {e}", file=sys.stderr)
+        return 1
+    except sqlite3.DatabaseError as e:
+        # Anything else the store raises (unreadable file, locked by an AV scanner, a DB written
+        # by a newer SQLite) must still be a refusal, not a traceback in the engineer's face.
+        print(f"{APP_TITLE}: cannot open the store - {e}\n"
+              f"  The file was not modified. Close any other Atlas window and try again "
+              f"(README-FIELD.txt, 'Corruption').", file=sys.stderr)
         return 1
     url = f"http://{args.host}:{args.port}/"
     note = "" if (dist / "index.html").is_file() else \
