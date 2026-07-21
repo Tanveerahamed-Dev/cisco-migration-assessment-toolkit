@@ -4,7 +4,47 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
-## [2026-07-17] — Post-merge-wave convergence: cross-PR red fixed, first all-APPROVE QA row, all six Low findings closed (PRs #389/#390/#391)
+## [2026-07-21] — Webapp motion engagement end-to-end: adversarially-verified 25-unit plan fully landed (21 PRs, #403 + #407–#423) + DS re-sync (PR #424)
+
+- Three-day arc: grounded audit → 23-unit plan → two ceiling probes (self re-verify caught one arithmetic
+  drift) → escalated adversarial round (three blind re-audits, a source-tracing mechanism refuter, a blind
+  independent designer, a decomposition stress-test) → v2 with 25 units → units 1/3/16/5 implemented inline
+  with real-browser verification, the other 21 via 12 background worktree agents in three waves, every diff
+  personally reviewed pre-merge; combined-main gate run after every merge wave, green each time. 3D fabric
+  measured 11→19-20 FPS (mesh merge 7→2 + disclosed particle cap); phase-2 InstancedMesh correctly gated
+  OFF by the numbers. Atlas Design System re-synced: 19 components (3 new Skel*), motion conventions
+  header, live anchor verified byte-identical post-upload.
+- `!lesson` **Self-review false-ceilings; blind refuters with source access do not.** Re-verifying my own
+  plan found one wrong count; fresh agents told to REFUTE (not confirm) found two real shipped bugs, a
+  strictly better mechanism (keep the WebGL engine mounted-but-paused instead of cross-fading a rebuild),
+  and two missing units — and a designer given only the problems, not the plan, re-derived the same core
+  mechanisms independently, which is corroboration you cannot get from re-reading yourself. bridge-candidate
+- `!lesson` **Two rAF-tween bug classes, both invisible to assert-stable-state tests.** (a) rAF callback
+  timestamps and `performance.now()` need not share a clock origin (measured ~90 min apart under
+  jsdom/vitest) — anchor a tween's start to the FIRST rAF callback's own timestamp, never a
+  `performance.now()` read at setup. (b) A tween that writes its from-ref only on COMPLETION restarts from
+  a stale value when retargeted mid-flight (0→100 interrupted by →50 visibly snaps to 0) — mirror the shown
+  value into the ref every frame. Both hid for months because the house test convention never asserts an
+  animated value. bridge-candidate
+- `!lesson` **react-force-graph-3d treats a changed `nodeThreeObject` function identity as "rebuild every
+  node"** — an inline closure over selection state disposes and reallocates the whole fleet's meshes on
+  every click/hover; keep the factory reference-stable and mutate materials directly via `node.__threeObj`.
+  Related, proven from the installed three.js source: `Raycaster` never consults `.visible` (render and
+  pick are separate traversals), so invisible hit-proxies raycast fine. And measure before instancing: the
+  cheap mesh-merge exposed the residual co-dominant cost as library-rendered link cylinders that node
+  instancing would never touch — the big rewrite would have missed. bridge-candidate
+- `!lesson` **An append-at-EOF convention on a shared file is not conflict-free** — two branches appending
+  at the same EOF collide on identical context. Cheap handling: predict it, then rebase B onto rebased-A as
+  a stack and merge the head PR — GitHub auto-marks the contained PR MERGED, collapsing two rebase+CI
+  cycles into one. Adjacent trap: `gh pr merge --delete-branch` run FROM a worktree checked out on that
+  branch silently switches that worktree to the default branch, and a later `git switch main` elsewhere
+  fails "already used by worktree". bridge-candidate
+- `!lesson` **Playwright `getByText` is case-insensitive SUBSTRING matching by default** — asserting
+  "ACCESS · 2" strict-mode-collided with a node whose text began "access · 20"; pass `{ exact: true }` for
+  any label that can prefix another. Companion pane traps now in project memory: the browser-preview tool
+  resolves launch.json against the MAIN checkout (worktree copies are ignored), and its tab runs
+  `visibilityState:"hidden"` so rAF/CSS animation freezes and WebGL screenshots time out — verify computed
+  styles and network traffic there, never live motion. bridge-candidate
 
 - The #385–#388 merge wave landed; #387's PR-level Frontend-E2E red was pure runner infra (the job
   passed untouched on main). Post-merge main went red on ONE cross-PR semantic conflict → one-line
