@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import CutoverPlanner from "./CutoverPlanner";
 import { api } from "../api";
@@ -58,5 +58,19 @@ describe("CutoverPlanner (render)", () => {
     expect(await screen.findByText("Cutover plan · run-of-show")).toBeInTheDocument();
     // the populated wave rendered its stat labels
     expect(screen.getByText("est. total window")).toBeInTheDocument();
+  });
+
+  it("flips aria-expanded on the wave's run-of-show toggle as it opens/closes", async () => {
+    vi.spyOn(api, "cutover").mockResolvedValue(cutover as never);
+    vi.spyOn(api, "meta").mockResolvedValue({ deliverables: [] } as never);
+    vi.spyOn(api, "listExecutions").mockResolvedValue([] as never);
+    renderPlanner();
+    await screen.findByText("Cutover plan · run-of-show");
+    const toggle = screen.getByRole("button", { name: /Run-of-show/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 });
