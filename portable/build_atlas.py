@@ -5,7 +5,7 @@
 Refuses to build with missing assets, runs PyInstaller over portable/atlas.spec, then treats the
 RESULT as untrusted and proves it the same way the field would:
 
-1. ``Atlas.exe --selftest``     must exit 0 with 8/8 checks (fail-loud assets all bundled)
+1. ``Atlas.exe --selftest``     must exit 0 with every check green (fail-loud assets all bundled)
 2. ``Atlas.exe --version``      must report the checkout release (never stale pip metadata)
 3. ``Atlas.exe --run-engine --help``  must reach the ENGINE's argparse (the frozen dispatch child)
 4. boot the server, then over HTTP: /api/health, /api/meta (app identity block), and / must serve
