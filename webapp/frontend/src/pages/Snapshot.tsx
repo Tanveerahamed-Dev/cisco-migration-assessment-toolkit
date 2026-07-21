@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, bandColor, readyColor, sevColor, SnapshotMeta } from "../api";
-import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, useAsync } from "../components/ui";
+import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelTable, useAsync } from "../components/ui";
 import TopologyGraph from "../components/TopologyGraph";
 import CableMap from "../components/CableMap";
 import CutoverPlanner from "../components/CutoverPlanner";
@@ -168,7 +168,7 @@ function ParseYieldPane({ data }: { data: any }) {
 
 function SectionPane({ snapId, name }: { snapId: number; name: string }) {
   const { data, error, loading } = useAsync(() => api.section(snapId, name), [snapId, name]);
-  if (loading) return <Loading />;
+  if (loading) return <SkelTable />;
   if (error) return <ErrorBox msg={error} />;
   const d = data!.data;
   if (name === "punchlist" && Array.isArray(d)) return <PunchTable rows={d} />;

@@ -9,7 +9,7 @@
    label (WCAG redundant). All motion is gated behind prefers-reduced-motion (see styles.css). */
 import { useEffect, useState, type ReactNode } from "react";
 import { api, CausalFlowItem, CausalFlows, sevColor } from "../api";
-import { ErrorBox, Loading, useAsync } from "./ui";
+import { ErrorBox, SkelLines, useAsync } from "./ui";
 
 const STAGES = [
   { key: "trigger", label: "Trigger", tok: "crit" },
@@ -211,7 +211,7 @@ export default function CausalFlowPanel({ snapId }: { snapId: number }) {
   const [sel, setSel] = useState(0);
   useEffect(() => { setFam("all"); setSev("all"); setSel(0); }, [snapId]);
 
-  if (loading) return <div className="panel"><h3>Causal Flow · every finding's root-cause story</h3><Loading /></div>;
+  if (loading) return <div className="panel"><h3>Causal Flow · every finding's root-cause story</h3><SkelLines /></div>;
   if (error) return <div className="panel"><h3>Causal Flow · every finding's root-cause story</h3><ErrorBox msg={error} /></div>;
   const cf = data as CausalFlows;
   if (!cf || !cf.flows?.length) return null;   // data-gated: older snapshots without findings show nothing
