@@ -32,6 +32,61 @@ def test_field_guide_covers_the_exit_gate_scenarios():
     assert "BitLocker" in text and "data\\backups\\" in text and "SELFTEST: PASS" in text
 
 
+def test_every_quoted_app_message_is_really_printed():
+    """The guide quotes what the engineer sees on screen at the moment things go wrong. Two of
+    these had drifted from the code (an em-dash vs a hyphen, and a message printed nowhere) —
+    a quoted string that does not match is worse than none, because it reads as 'not my case'."""
+    sources = "\n".join((ROOT / p).read_text(encoding="utf-8", errors="replace") for p in (
+        "webapp/backend/serve.py", "webapp/backend/storage.py", "portable/make_stick.ps1",
+        "COLLECT_PARSE_V3_23_0.py"))
+
+    def emitted(phrase: str) -> bool:
+        # Messages are f-string-composed across files ("refusing to start - " in serve.py,
+        # "integrity check failed" in storage.py), so a whole-phrase match is too strict —
+        # every segment either side of a dynamic join must appear.
+        if phrase in sources:
+            return True
+        parts = [p.strip() for p in re.split(r" - |: ", phrase) if p.strip()]
+        return len(parts) > 1 and all(p in sources for p in parts)
+
+    # Only phrases the guide CLAIMS the app emits — not Windows UI labels the engineer clicks.
+    claims = re.compile(r"\b(prints?|reports?|say\w*|stops with|fail\w* with)\b", re.I)
+    missing = []
+    for line in GUIDE.read_text(encoding="ascii").splitlines():
+        if not claims.search(line):   # same line only: a claim must not capture its neighbour's
+            continue                  # quotes (that swept in Windows UI labels like Eject)
+        for q in re.findall(r'"([^"\n]{4,})"', line):
+            if not emitted(q):
+                missing.append(q)
+    assert not missing, f"guide quotes messages the code never prints: {missing}"
+
+
+def test_every_engine_command_uses_only_engine_flags():
+    """Per-SURFACE check. The union test below proves a flag exists *somewhere*; it would pass a
+    line that hands a server-only flag to the engine (or drops the --run-engine sentinel), which
+    fails at runtime. Each `Atlas.exe --run-engine …` line must be all-engine flags."""
+    engine_flags = set(_ADD_ARG.findall(
+        (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="replace")))
+    for line in GUIDE.read_text(encoding="ascii").splitlines():
+        s = line.strip()
+        if not s.startswith("Atlas.exe --run-engine"):
+            continue
+        used = set(_FLAG.findall(s)) - {"--run-engine"}
+        unknown = used - engine_flags
+        assert not unknown, f"engine command names non-engine flags {sorted(unknown)}: {s}"
+
+
+def test_commands_are_copy_pasteable_on_one_line():
+    """A command wrapped across indented continuation lines pastes into cmd.exe as several
+    commands, the trailing ones garbage."""
+    lines = GUIDE.read_text(encoding="ascii").splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().startswith("Atlas.exe ") and i + 1 < len(lines):
+            nxt = lines[i + 1]
+            assert not (nxt.startswith("            ") and nxt.strip().startswith("--")), \
+                f"command continues onto line {i + 2} — join it: {line.strip()[:60]}"
+
+
 def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
     serve_src = (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")
     engine_src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8")

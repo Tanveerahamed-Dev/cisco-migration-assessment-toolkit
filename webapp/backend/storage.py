@@ -16,6 +16,8 @@ left byte-identical for a human restore (README-FIELD).
 from __future__ import annotations
 
 import json
+import os
+import re
 import sqlite3
 import sys
 import threading
@@ -72,10 +74,22 @@ def _now() -> str:
 _BACKUP_DIR = "backups"
 _BACKUP_PREFIX = "assesshub-"
 _BACKUP_KEEP = 3
+#: Only files WE wrote may be rotated. The glob `assesshub-*.db` also matches an engineer's own
+#: parked copies (`assesshub-pre-cutover.db`) — and because those sort AFTER the digit stamps,
+#: a loose glob deletes the fresh backup the instant it is written, silently disabling backups
+#: forever, and can delete the engineer's file too. Both were reproduced.
+_BACKUP_RE = re.compile(r"^assesshub-\d{8}T\d{6}Z\.db$")
+_PARTIAL_SUFFIX = ".partial"
 
 
 class StoreCorruptError(RuntimeError):
     """The SQLite store failed its boot integrity check. The file was NOT modified."""
+
+
+def _our_backups(backups: Path) -> List[Path]:
+    """Backups this code created, oldest first — never the engineer's own parked copies."""
+    return sorted((p for p in backups.glob(f"{_BACKUP_PREFIX}*.db") if _BACKUP_RE.match(p.name)),
+                  key=lambda p: p.name)
 
 
 class Store:
@@ -110,6 +124,14 @@ class Store:
             rows = self._conn.execute("PRAGMA quick_check").fetchall()
             ok = len(rows) == 1 and rows[0][0] == "ok"
             detail = "" if ok else "; ".join(str(r[0]) for r in rows[:3])
+        except sqlite3.OperationalError as e:
+            # NOT corruption: "database is locked" (a second Atlas instance) and transient I/O
+            # errors raise OperationalError, which subclasses DatabaseError. Calling that
+            # corruption told the engineer to overwrite a HEALTHY store holding the newest
+            # evidence with an older backup — the worst advice this program can give.
+            print(f"[warn] could not verify the store ({e}) — is Atlas already running? "
+                  f"Continuing WITHOUT unplug protection this session.", file=sys.stderr)
+            return
         except sqlite3.DatabaseError as e:  # not even a database (torn/overwritten header)
             ok, detail = False, str(e)
         if not ok:
@@ -126,22 +148,65 @@ class Store:
         self._conn.execute("PRAGMA synchronous = FULL")
         if db_mtime is None:
             return  # first boot: an empty store is not evidence worth copying
+
+        # INVARIANT: an EMPTY store never displaces backups that hold evidence. A 0-byte file is a
+        # *valid empty* SQLite database (quick_check says "ok"), and the schema is recreated on the
+        # next boot — so a truncated store looks perfectly healthy and, backed up three times,
+        # rotates the real evidence off the stick. That destroys exactly what this feature exists
+        # to protect, and it was reproduced end-to-end before this guard existed.
+        try:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM campaigns").fetchone()  # table may not exist yet
+            n_campaigns = row[0] if row else 0
+        except sqlite3.DatabaseError:
+            n_campaigns = 0
+        if n_campaigns == 0 and _our_backups(backups):
+            print(f"[warn] {dbfile} holds NO campaigns while backups in {backups} do — it looks "
+                  f"TRUNCATED or replaced. Not backing it up, so those backups survive. If this "
+                  f"is unexpected, stop now and restore before continuing "
+                  f"(README-FIELD.txt, 'Corruption').", file=sys.stderr)
+            return
+
         try:
             backups.mkdir(parents=True, exist_ok=True)
-            have = sorted(backups.glob(f"{_BACKUP_PREFIX}*.db"))
-            if have and max(b.stat().st_mtime for b in have) >= db_mtime:
-                return  # unchanged since the last copy — don't churn the stick
+            have = _our_backups(backups)
+            newest = max((b.stat().st_mtime for b in have), default=None)
+            if newest is not None and newest >= db_mtime:
+                # Unchanged since the last copy — don't churn the stick. Clock skew (FAT32 stores
+                # LOCAL time; a stick written on another offset reads "in the future") would
+                # otherwise suppress every future backup in silence, so say so once.
+                if newest > db_mtime + 60:
+                    print(f"[warn] newest backup is dated AFTER the store "
+                          f"({int(newest - db_mtime)}s) — clock skew or a stale file in {backups}. "
+                          f"Backups stay suppressed until the store is newer.", file=sys.stderr)
+                return
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            dest = sqlite3.connect(str(backups / f"{_BACKUP_PREFIX}{stamp}.db"))
+            final = backups / f"{_BACKUP_PREFIX}{stamp}.db"
+            # Write to a partial name and rename only on success: a backup killed by a yank or a
+            # full stick must never be mistaken for a good one (an empty stub also passes
+            # quick_check), nor occupy a keep-slot.
+            tmp = backups / f"{_BACKUP_PREFIX}{stamp}.db{_PARTIAL_SUFFIX}"
             try:
-                self._conn.backup(dest)
+                dest = sqlite3.connect(str(tmp))
+                try:
+                    self._conn.backup(dest)
+                finally:
+                    dest.close()
+                os.replace(tmp, final)
             finally:
-                dest.close()
-            for old in sorted(backups.glob(f"{_BACKUP_PREFIX}*.db"))[:-_BACKUP_KEEP]:
-                old.unlink()
+                tmp.unlink(missing_ok=True)  # no-op once renamed
         except (OSError, sqlite3.Error) as e:
             print(f"[warn] boot backup failed ({e}) — unplug protection degraded this session",
                   file=sys.stderr)
+        # Rotation runs even when the backup failed, so abandoned partials and surplus copies are
+        # always pruned; it only ever considers files matching our own timestamp pattern.
+        try:
+            for stale in backups.glob(f"{_BACKUP_PREFIX}*{_PARTIAL_SUFFIX}"):
+                stale.unlink(missing_ok=True)
+            for old in _our_backups(backups)[:-_BACKUP_KEEP]:
+                old.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"[warn] backup rotation failed ({e})", file=sys.stderr)
 
     def close(self) -> None:
         with self._lock:
