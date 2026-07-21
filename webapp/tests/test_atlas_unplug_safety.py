@@ -12,8 +12,10 @@ WARNS every boot rather than silently degrading).
 """
 
 import os
+import shutil
 import sqlite3
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -362,6 +364,44 @@ def test_refusal_line_is_ascii_so_the_field_guide_can_quote_it(tmp_path, capsys)
     quoted = line[line.index("refusing to start"):]
     assert quoted.isascii(), quoted
     assert quoted.startswith("refusing to start - integrity check failed")
+
+
+def test_the_documented_restore_procedure_actually_works(tmp_path):
+    """Execute README-FIELD's CORRUPTION steps verbatim — the procedure an engineer follows at 2am
+    with client evidence on the line, and the one that was never exercised end-to-end.
+
+    Also pins the guide's loss promise ("EXPECT TO LOSE work done since Atlas last started"):
+    backups are taken at BOOT, so a restore costs exactly the current session and nothing more.
+    Understating that would be worse than saying nothing."""
+    db = tmp_path / "data" / "assesshub.db"
+
+    def atlas_session(labels):           # one real Atlas run: hardened boot, work, close
+        s = Store(db, boot_hardening=True)
+        for label in labels:
+            s.create_campaign(label)
+        s.close()
+
+    atlas_session(["day1-a", "day1-b"])
+    time.sleep(1.1)                      # mtime must advance for the boot backup to be due
+    atlas_session(["day2-a"])
+    time.sleep(1.1)
+    atlas_session(["day3-a", "day3-b"])
+
+    db.write_bytes(b"\x00" * 4096 + b"torn")          # the yank
+    with pytest.raises(StoreCorruptError):            # step 1: Atlas refuses, file untouched
+        Store(db, boot_hardening=True)
+
+    corrupt = db.parent / "assesshub.db.corrupt"
+    db.rename(corrupt)                                # step 2: RENAME, never copy over
+    shutil.copy2(_backups(db)[-1], db)                # step 3: newest backup into place
+
+    s = Store(db, boot_hardening=True)                # step 4: start and check the campaign list
+    names = sorted(r["name"] for r in s.list_campaigns())
+    s.close()
+
+    assert names == ["day1-a", "day1-b", "day2-a"], names
+    assert corrupt.is_file() and corrupt.stat().st_size > 0   # salvage material preserved
+    assert _backups(db), "the restore must not consume the remaining backups"
 
 
 def test_selftest_gains_backup_dir_check(tmp_path, capsys):

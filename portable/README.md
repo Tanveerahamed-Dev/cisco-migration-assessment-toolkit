@@ -36,10 +36,28 @@ E:\Atlas\            ← portable/dist/Atlas/, copied wholesale
 
 - **Update** = replace everything **except `data\`** (client evidence lives there).
 - **Field discipline** (P3, shipped): `README-FIELD.txt` beside the exe is the discipline —
-  BitLocker-To-Go (client evidence lives on that stick), `--redact` before anything leaves the
+  BitLocker-To-Go (client evidence lives on that stick), redaction before anything leaves the
   site, credentials prompted never stored (the engine's own chain, ADR-0004 D4), eject
   etiquette, corruption recovery from `data\backups\`.
 - DB override: `--db` / `ASSESSHUB_DB`; frozen default is `data\assesshub.db` beside the exe.
+
+## Redact before it leaves the site
+
+```
+Atlas.exe --redact-folder <collection folder> --out <dir>   [--redact-collection]
+```
+
+Renders the **full deliverable family, pseudonymized**, from a local collection folder — with
+nothing extra on the stick. The engine hard-requires a `--template` workbook and a
+`--devices-file` that the bundle does not carry, so both are synthesized into a private workdir
+exactly as the AssessHub ingest channel already does (`webapp/backend/ingest.py`).
+
+- **Verified, not trusted.** A run that silently failed to redact would look identical to success,
+  so the produced snapshot is inspected and the run **fails loud** if private addresses survive in
+  evidence — nothing is deleted, and the message names the JSON path.
+- Refuses to write inside the bundle (an update would replace it) or inside the collection folder.
+- `--redact-collection` is opt-in and separate: it rewrites the **raw captures in place** (still
+  `--compare`/`--trend`-able).
 
 ## Lay out a stick
 
