@@ -26,8 +26,16 @@ from backend.app import create_app  # noqa: E402
 from backend.storage import Store, StoreCorruptError  # noqa: E402
 
 
+_orig_connect = sqlite3.connect  # kept before any monkeypatching, for tests that need a real one
+
+
 def _backups(db: Path) -> list:
-    return sorted((db.parent / "backups").glob("assesshub-*.db"))
+    """Only backups the product created — a test helper using the loose glob would count an
+    engineer's parked copies and hide the very rotation bug these tests pin."""
+    import re as _re
+
+    return sorted(p for p in (db.parent / "backups").glob("assesshub-*.db")
+                  if _re.match(r"^assesshub-\d{8}T\d{6}Z\.db$", p.name))
 
 
 def _boot(db: Path, hardened: bool = True) -> None:
@@ -207,6 +215,153 @@ def test_hardened_store_pins_rollback_journal_not_wal(tmp_path):
         assert s._conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
     finally:
         s.close()
+
+
+# ── hazards found by independent review (all reproduced before being fixed) ─────
+def test_locked_store_is_not_reported_as_corruption(tmp_path, monkeypatch, capsys):
+    """sqlite3.OperationalError ('database is locked' — a second Atlas instance) SUBCLASSES
+    DatabaseError. Treating it as corruption told the engineer to overwrite a HEALTHY store
+    holding the newest evidence with an older backup: the worst advice this program can give."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    _seed_row(db)
+
+    # A REAL lock, exactly like a second Atlas instance: sqlite3.Connection attributes cannot be
+    # monkeypatched, and a fake would not prove the except-clause ordering that caused the bug.
+    holder = sqlite3.connect(str(db), isolation_level=None, timeout=0.1)
+    holder.execute("BEGIN EXCLUSIVE")
+    monkeypatch.setattr(sqlite3, "connect",
+                        lambda *a, **kw: _orig_connect(*a, **{**kw, "timeout": 0.1}))
+    try:
+        # It may well fail to open (the lock is real) — what must NEVER happen is being told the
+        # store is CORRUPT and to restore a backup over healthy evidence. serve.main turns this
+        # into a friendly refusal (see test_unopenable_store_refuses_without_a_traceback).
+        with pytest.raises(sqlite3.OperationalError) as e:
+            Store(db, boot_hardening=True)
+        assert not isinstance(e.value, StoreCorruptError)
+    finally:
+        holder.rollback()
+        holder.close()
+    err = capsys.readouterr().err
+    assert "already running" in err and "WITHOUT unplug protection" in err
+    assert "corrupt" not in err.lower()
+    # and the evidence is still there, untouched
+    conn = _orig_connect(str(db))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_truncated_store_is_not_backed_up_over_real_evidence(tmp_path, capsys):
+    """A 0-byte file is a VALID EMPTY SQLite db — quick_check returns 'ok'. Backing it up pushed
+    the real backups out of the keep window, destroying the evidence this feature protects."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    _seed_row(db)
+    _boot(db)                                   # one real backup exists
+    good = _backups(db)
+    assert len(good) == 1
+    db.write_bytes(b"")                          # the yank: truncated to zero bytes
+    for _ in range(4):                           # four ordinary restarts
+        s = Store(db, boot_hardening=True)
+        s.close()
+    kept = _backups(db)
+    assert kept == good, "the truncated store rotated real evidence off the disk"
+    assert "TRUNCATED" in capsys.readouterr().err
+    conn = sqlite3.connect(str(kept[0]))
+    try:
+        assert conn.execute("SELECT name FROM campaigns").fetchone()[0] == "evidence"
+    finally:
+        conn.close()
+
+
+def test_rotation_never_touches_the_engineers_own_parked_copies(tmp_path):
+    """`assesshub-*.db` also matches a human's labelled copies, and those sort AFTER the digit
+    stamps — the loose glob deleted the fresh backup the instant it was written (silently
+    disabling backups forever) and could delete the engineer's file too."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    _seed_row(db)
+    parked = db.parent / "backups"
+    parked.mkdir(exist_ok=True)
+    names = ["assesshub-pre-cutover.db", "assesshub-post-wave1.db", "assesshub-signoff.db",
+             "assesshub-2026-07-01-DO-NOT-DELETE.db"]
+    for n in names:
+        (parked / n).write_bytes(b"the engineer's own copy")
+    _boot(db)
+    for n in names:
+        assert (parked / n).read_bytes() == b"the engineer's own copy", f"rotation ate {n}"
+    assert len(_backups(db)) == 1, "our own fresh backup was rotated away immediately"
+
+
+def test_failed_backup_leaves_no_stub_in_the_keep_set(tmp_path, monkeypatch, capsys):
+    """A backup killed mid-write must never be mistaken for a good one: the destination file is
+    created before any page is copied, and an empty stub passes quick_check."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    _seed_row(db)
+
+    # A REAL SQLITE_FULL, injected only into the backup destination by capping its page count —
+    # so the partial file is genuinely created-then-abandoned, exactly like a stick filling up.
+    def capped_connect(target, *a, **kw):
+        conn = _orig_connect(target, *a, **kw)
+        if str(target).endswith(".partial"):
+            conn.execute("PRAGMA max_page_count = 1")
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", capped_connect)
+    _boot(db)
+    monkeypatch.undo()
+    assert _backups(db) == [], "a partial backup was left where a restore could pick it"
+    assert not list((db.parent / "backups").glob("*.partial"))
+    assert "boot backup failed" in capsys.readouterr().err
+
+
+def test_clock_skew_suppression_is_announced_not_silent(tmp_path, capsys):
+    """FAT32 stores LOCAL time: a stick written at another offset reads 'in the future' and would
+    suppress every future backup in silence."""
+    db = tmp_path / "data" / "hub.db"
+    _boot(db)
+    _seed_row(db)
+    _boot(db)
+    capsys.readouterr()
+    bak = _backups(db)[0]
+    future = db.stat().st_mtime + 4 * 3600
+    os.utime(bak, (future, future))
+    _seed_row(db)
+    _boot(db)
+    assert "clock skew" in capsys.readouterr().err
+
+
+def test_unopenable_store_refuses_without_a_traceback(tmp_path, monkeypatch, capsys):
+    """sqlite3.connect happens BEFORE hardening, so its errors bypassed the StoreCorruptError
+    handler and reached the engineer as a raw traceback."""
+    import backend.app as app_module
+
+    def boom(**kw):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(app_module, "create_app", boom)
+    rc = serve.main(["--db", str(tmp_path / "data" / "hub.db"),
+                     "--dist", str(_dist(tmp_path)), "--no-browser"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cannot open the store" in err and "Traceback" not in err
+
+
+def test_refusal_line_is_ascii_so_the_field_guide_can_quote_it(tmp_path, capsys):
+    """README-FIELD is ASCII-only (enforced by tests/test_readme_field.py) and a cp437 field
+    console renders an em-dash as '?' — so this line must not contain one."""
+    db = tmp_path / "data" / "hub.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"garbage")
+    serve.main(["--db", str(db), "--dist", str(_dist(tmp_path)), "--no-browser"])
+    line = next(l for l in capsys.readouterr().err.splitlines() if "refusing to start" in l)
+    # The brand title legitimately carries an em-dash; what the guide QUOTES must be ASCII.
+    quoted = line[line.index("refusing to start"):]
+    assert quoted.isascii(), quoted
+    assert quoted.startswith("refusing to start - integrity check failed")
 
 
 def test_selftest_gains_backup_dir_check(tmp_path, capsys):
