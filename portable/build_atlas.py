@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-from portable.atlas_bundle import exe_name, missing_data_sources  # noqa: E402
+from portable.atlas_bundle import exe_name, missing_data_sources, root_files  # noqa: E402
 
 DIST = ROOT / "portable" / "dist" / exe_name()
 EXE = DIST / f"{exe_name()}.exe"
@@ -63,11 +64,19 @@ def build() -> None:
         cwd=str(ROOT), stdin=subprocess.DEVNULL, timeout=1800)
     if proc.returncode != 0:
         raise SystemExit(f"PyInstaller failed (exit {proc.returncode})")
+    # Bundle-ROOT tier (README-FIELD.txt): spec datas land under _internal\ on PyInstaller ≥6,
+    # where no field engineer would look — copy beside the exe instead.
+    for src in root_files(ROOT):
+        shutil.copy2(src, DIST / Path(src).name)
 
 
 def smoke(port: int) -> None:
     if not EXE.is_file():
         raise SystemExit(f"no exe at {EXE} — build first")
+    for src in root_files(ROOT):
+        if not (DIST / Path(src).name).is_file():
+            raise SystemExit(f"{Path(src).name} missing from the bundle root — the field guide "
+                             "must ride beside the exe (ADR-0004 P3)")
 
     with tempfile.TemporaryDirectory(prefix="atlas_smoke_") as td:
         db = str(Path(td) / "data" / "hub.db")

@@ -28,13 +28,17 @@ in the normal gate — no PyInstaller needed); [`atlas.spec`](atlas.spec) is a t
 ```
 E:\Atlas\            ← portable/dist/Atlas/, copied wholesale
   Atlas.exe            console app (D3: live-SSH credential prompts need a real terminal)
+  README-FIELD.txt     the one-page field guide (ratchet-tested: tests/test_readme_field.py)
   _internal\           bundle internals — replaced on every update, never edited
-  data\                created on first run — THE ONLY WRITABLE DIR (SQLite store)
+  data\                created on first run — THE ONLY WRITABLE DIR (SQLite store; boot keeps
+                       the newest 3 integrity-checked copies in data\backups\)
 ```
 
 - **Update** = replace everything **except `data\`** (client evidence lives there).
-- **Field discipline** (P3): BitLocker-To-Go the stick — snapshots are client data. Credentials
-  are prompted per engagement and never stored (the engine's own chain, ADR-0004 D4).
+- **Field discipline** (P3, shipped): `README-FIELD.txt` beside the exe is the discipline —
+  BitLocker-To-Go (client evidence lives on that stick), `--redact` before anything leaves the
+  site, credentials prompted never stored (the engine's own chain, ADR-0004 D4), eject
+  etiquette, corruption recovery from `data\backups\`.
 - DB override: `--db` / `ASSESSHUB_DB`; frozen default is `data\assesshub.db` beside the exe.
 
 ## Lay out a stick
