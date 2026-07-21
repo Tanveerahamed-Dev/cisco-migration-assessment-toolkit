@@ -172,6 +172,25 @@
   fabric"), superset re-upload of both components + bundle; live anchor re-fetched == local
   (`bundleSha12 33258ba2137c`, DBP prompt back to `3b6fe903d538`).
 
+- ✅ **2026-07-21 RE-SYNCED — the full ANIMATION/MOTION layer (25 plan units, PRs #407-#423) + 3 NEW
+  components.** Bundle rebuilt from final main `8bd7710`. Verdict was surgical and CORRECT per anchor
+  semantics: 16 carried forward (sourceKeys track authored previews, which didn't change), 3 added
+  (`Skeleton`/`SkelLines`/`SkelTable` — the NOTES' own "manual barrel" risk item caught live: added to
+  `ds.entry.ts` + `componentSrcMap` + docs + authored previews, graded good from fresh sheets), hooks
+  `useViewTransition`/`usePositionTween` now ride the barrel (camelCase, no cards). Applied this file's
+  own disciplines: contact sheets EYEBALLED for all 19 despite carry-forward (renderHashes are blind to
+  CSS — TopologyGraph's card correctly shows the new device-fidelity lanes), both validate warns matched
+  the Known list verbatim (JetBrains-Mono final + deliberate ErrorBoundary throw), live anchor re-fetched
+  == local (`bundleSha12 33258ba2137c → 91a3185a6334`, styleSha `308aa845→4418e35e`, 19 renderHashes,
+  57 sourceHashes), anchor-cache copied post-upload. Conventions header gained a **Motion** section
+  (stagger `--stagger-i` contract, `tabfade`/`ros-reveal`/`row-reveal`, Skel* loading guidance, motion
+  tokens; every name grep-verified in `_ds_bundle.css` pre-write) + Skel* in the no-provider list; skill
+  rebuild-rule followed (fresh driver run post-edit). Atomic: sentinel → 101 content files → re-arm →
+  anchor last; `list_files` = 103 mine + 2 server + a user-side `templates/` tree (Claude-Design app
+  artifacts — OUTSIDE plan globs, correctly untouched, NOT orphans). `report_validate` {19,1,0,0,1}.
+- **`templates/` in the project is app/user-side content** (topology-panel template + restyle notes from
+  Claude-Design usage) — never write or delete under it; it is not part of the synced bundle.
+
 ## Re-sync risks (what can silently go stale)
 - **`sample-data.ts` is hand-inlined** against `webapp/frontend/src/api.ts` interfaces — an engine/API field
   rename won't break the build; the widgets just render '—'/empty in cards. When api.ts changes, re-check the
