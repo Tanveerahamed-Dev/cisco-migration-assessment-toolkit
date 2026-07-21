@@ -3,7 +3,7 @@
 AssessHub is a **dark-first network-assessment cockpit**. Everything below names real, shipped vocabulary — read `styles.css` (it `@import`s `_ds_bundle.css`: design tokens first, then every component class) before inventing anything.
 
 ## Setup — the one wrapper that matters
-The six snapshot widgets — `TopologyGraph`, `CableMap`, `CausalFlowPanel`, `CutoverPlanner`, `DesignBlueprintPanel`, `ArchReviewPanel` — fetch their data at mount and show eternal spinners without a backend. Wrap them (once, at the top of the design) in `DemoDataProvider`: it serves a built-in, internally consistent sample fleet and provides the Router context `CutoverPlanner` needs. Any `snapId` value works; nesting is safe. The UI-kit pieces (`Kpi`, `Gauge`, `SegBar`, `Bars`, `SevChip`, `CountUp`, `Loading`, `ErrorBox`, `ErrorBoundary`) don't need it and aren't harmed by it.
+The six snapshot widgets — `TopologyGraph`, `CableMap`, `CausalFlowPanel`, `CutoverPlanner`, `DesignBlueprintPanel`, `ArchReviewPanel` — fetch their data at mount and show eternal spinners without a backend. Wrap them (once, at the top of the design) in `DemoDataProvider`: it serves a built-in, internally consistent sample fleet and provides the Router context `CutoverPlanner` needs. Any `snapId` value works; nesting is safe. The UI-kit pieces (`Kpi`, `Gauge`, `SegBar`, `Bars`, `SevChip`, `CountUp`, `Loading`, `ErrorBox`, `ErrorBoundary`, `Skeleton`, `SkelLines`, `SkelTable`) don't need it and aren't harmed by it.
 
 ```tsx
 <DemoDataProvider>
@@ -28,6 +28,12 @@ Tokens (dark default; put `data-theme="light"` on a root element to flip): surfa
 The depth layer is applied for you by `panel`, `topbar`, `btn primary` and `tabs` (active `.on`). To frost a **custom** surface, mirror them: `background: var(--glass); border: 1px solid var(--glass-border); backdrop-filter: blur(var(--blur)); box-shadow: var(--elev-1)` — swap `--elev-2` when raised/hovered. For a custom accent CTA: `background: var(--accent-grad)` with a `var(--glow)` halo in `box-shadow`.
 
 **Engine vocabulary → colour: never hand-pick.** Use the exported helpers `sevColor("High")` / `sevSoft`, `bandColor("Fair")`, `readyColor("CAUTION")`, `gateColor("NO-GO")` — or the underlying `--sev-*`, `--band-*`, `--ready-*`, `--gate-*` tokens. Severities are `Critical | High | Medium | Low | Info`; bands `Excellent | Good | Fair | Poor | Critical`.
+
+## Motion — shipped classes only, never hand-rolled keyframes
+Every animation below is pre-gated behind `prefers-reduced-motion`; compose with these and reduced-motion correctness comes free. Durations/easing always via the motion tokens (`--motion-fast` micro, `--motion` transitions, `--motion-reveal` mount reveals, `--ease`) — never literal ms values.
+- **Mount reveals**: `panel` animates in by itself. Direct `panel` children of a `grid` stagger — set `style={{ "--stagger-i": Math.min(i, 8) }}` per card for ordered reveal of a data-driven list. Table rows: add class `row-reveal` + `style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}`.
+- **Content swaps**: wrap swappable content in `<div className="tabfade" key={activeKey}>` — the key change replays a fade (the app's tab idiom). For a disclosure/accordion body that mounts on open, add `ros-reveal`.
+- **Loading states**: `SkelLines` (panel bodies), `SkelTable` (tables) — structure-shaped, self-announcing placeholders; keep `Loading` for full-page/unknown-shape waits. Never leave a blank div while data loads.
 
 ## Where the truth lives
 - `styles.css` → `_ds_bundle.css` — tokens + every class above, in that order.

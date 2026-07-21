@@ -11,7 +11,8 @@ import "./src/theme.css";
 
 export {
   CountUp, Loading, ErrorBox, Kpi, Gauge, SegBar, Bars, SevChip,
-  useReducedMotion, useAsync, useToast,
+  Skeleton, SkelLines, SkelTable,
+  useReducedMotion, useAsync, useToast, useViewTransition, usePositionTween,
 } from "./src/components/ui";
 export { ErrorBoundary } from "./src/components/ErrorBoundary";
 export { default as TopologyGraph } from "./src/components/TopologyGraph";
