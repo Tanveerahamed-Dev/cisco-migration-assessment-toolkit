@@ -43,8 +43,13 @@ Never delete data\ to "fix" a problem - it is the client's evidence.
 EJECT DISCIPLINE
 ----------------
 1. Close the Atlas console window (Ctrl+C or the X).
-2. Windows "Safely Remove Hardware" / Eject.
-3. Then pull the stick. Yank-pulls are what the backups exist for; do
+2. CLOSE THE BROWSER TAB Atlas opened - and if it started the browser
+   itself, close that browser window too. Atlas opens the browser with
+   the stick as its working directory, so the browser keeps files on
+   the stick open even after Atlas exits. Windows will refuse to eject
+   (and an update will fail with "file in use") until it is closed.
+3. Windows "Safely Remove Hardware" / Eject.
+4. Then pull the stick. Yank-pulls are what the backups exist for; do
    not make them the routine.
 
 REDACTION - BEFORE ANYTHING LEAVES THE SITE
@@ -71,3 +76,7 @@ On the build machine:
 (or copy the new  Atlas\  folder over this one, keeping  data\ ).
 Everything is replaced EXCEPT  data\  - campaigns, snapshots and backups
 survive every update. Afterwards run  Atlas.exe --selftest  once.
+
+If the update reports "file in use": Atlas or the browser it opened is
+still running and holding files on the stick. Close both (see EJECT
+DISCIPLINE above) and run it again.

@@ -33,9 +33,19 @@ $target = Join-Path $Dest "Atlas"
 $updating = Test-Path $target
 $dataDir = Join-Path $target "data"
 
-robocopy $Source $target /MIR /XD $dataDir /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) {
-  Write-Host "[fail] robocopy failed (exit $LASTEXITCODE)"
+# /R and /W are NOT optional here. Robocopy's DEFAULTS are /R:1000000 /W:30 - a million retries,
+# 30s apart (~347 days). Paired with the quiet switches below that is a SILENT multi-hour hang with
+# no output at all, which is what happened on 2026-07-21: Atlas.exe had auto-opened the browser
+# FROM the stick, so Chrome (and its child processes) held DLLs under _internal open, robocopy hit
+# ERROR 32 on one file and sat retrying for ~5 hours. Fail fast and say which file instead.
+robocopy $Source $target /MIR /XD $dataDir /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+$rc = $LASTEXITCODE
+if ($rc -ge 8) {
+  Write-Host "[fail] robocopy could not copy every file (exit $rc)."
+  Write-Host "       Most likely a file on the stick is IN USE. Close Atlas AND the browser tab"
+  Write-Host "       it opened (the browser inherits the stick as its working directory and pins"
+  Write-Host "       files under _internal), then re-run this script."
+  Write-Host "       To see exactly which file: robocopy `"$Source`" `"$target`" /MIR /XD `"$dataDir`" /R:1 /W:1 /NP"
   exit 1
 }
 
