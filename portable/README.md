@@ -16,7 +16,7 @@ python portable/build_atlas.py                              # build + 4-step smo
 The bundle lands at `portable/dist/Atlas/`. The build **refuses** to run with missing assets
 (KB packs, explorer template, dist, sample fleet, pyproject) — the same fail-loud doctrine as
 `--selftest`, applied before the field ever sees it. The smoke then proves the result like a
-hostile reviewer: `--selftest` 8/8, `--version` (checkout release, never stale pip metadata),
+hostile reviewer: `--selftest` all green, `--version` (checkout release, never stale pip metadata),
 `--run-engine --help` reaches the real engine argparse, and an HTTP pass over `/api/health`,
 `/api/meta` (app-identity block) and `/` (the bundled SPA via the `_MEIPASS/webapp_dist` probe).
 
@@ -45,7 +45,8 @@ powershell -File portable/make_stick.ps1 -Dest E:\        # first copy AND updat
 
 Copies the built bundle to `E:\Atlas\`. On an existing stick it is the **update flow**: everything
 is replaced **except `data\`** (the client-evidence store survives every update — robocopy
-`/MIR /XD data`). Then, on the target machine: `E:\Atlas\Atlas.exe --selftest` → expect 8/8.
+`/MIR /XD data`). Then, on the target machine: `E:\Atlas\Atlas.exe --selftest` → expect
+`SELFTEST: PASS`.
 
 ## Known limits (deliberate)
 
