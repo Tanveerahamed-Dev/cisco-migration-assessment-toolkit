@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, CutoverWave, gateColor } from "../api";
-import { CountUp, ErrorBox, Loading, SegBar, SevChip, useAsync } from "./ui";
+import { CountUp, ErrorBox, SegBar, SevChip, SkelLines, useAsync } from "./ui";
 
 /* The cutover-plan panel: a gated, pilot-first run-of-show synthesized server-side from the
    snapshot's migration model (waves, readiness checks, blast radius, validation, remediation). */
@@ -218,7 +218,7 @@ export default function CutoverPlanner({ snapId }: { snapId: number }) {
   const { data, error, loading } = useAsync(() => api.cutover(snapId), [snapId]);
   const { data: meta } = useAsync(() => api.meta(), []);
   const canDownload = (meta?.deliverables || []).some((d) => d.key === "cutover" && d.available);
-  if (loading) return <div className="panel"><Loading label="Building cutover plan…" /></div>;
+  if (loading) return <div className="panel"><SkelLines n={6} label="Building cutover plan…" /></div>;
   if (error) return <ErrorBox msg={error} />;
   const plan = data!;
   const s = plan.summary;

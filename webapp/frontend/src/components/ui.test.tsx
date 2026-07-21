@@ -1,6 +1,9 @@
 import { render, renderHook, screen, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Bars, CountUp, SegBar, SevChip, useAsync, usePositionTween, useToast, useViewTransition, type Pt } from "./ui";
+import {
+  Bars, CountUp, SegBar, SevChip, Skeleton, SkelLines, SkelTable, useAsync, usePositionTween,
+  useToast, useViewTransition, type Pt,
+} from "./ui";
 
 // The shared UI primitives carry real, reusable logic (zero-filtering, empty states, a data-load
 // state machine, an auto-dismissing toast) used across every page. These pin that logic on the
@@ -147,5 +150,59 @@ describe("useAsync", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBe("collection failed");
     expect(result.current.data).toBeNull();
+  });
+});
+
+// Structure-shaped loading placeholders (animation Unit 23). The sr-only "Loading…" announcement is
+// the load-bearing contract — ArchReview.test.tsx and DesignBlueprint.test.tsx assert getByText(/Loading/i)
+// against these presets with ZERO changes to those test files, so a single-match getByText must never
+// throw on a duplicate announcer here. Assertions are on stable state only (counts, text), never a
+// mid-shimmer frame.
+describe("Skeleton", () => {
+  it("announces the sr-only default text, and a custom label overrides it", () => {
+    const { rerender } = render(<Skeleton />);
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    rerender(<Skeleton label="Building cable map…" />);
+    expect(screen.getByText("Building cable map…")).toBeInTheDocument();
+  });
+
+  it("drops the sr-only child entirely when announce=false", () => {
+    render(<Skeleton announce={false} />);
+    expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
+  });
+
+  it("always carries the skel + loading marker classes (Campaign.test.tsx's .spinner, .loading selector)", () => {
+    const { container } = render(<Skeleton className="skel-h" />);
+    expect(container.querySelector(".skel.loading.skel-h")).toBeTruthy();
+  });
+});
+
+describe("SkelLines", () => {
+  it("renders a heading bar + the default 4 body lines, announcing exactly once", () => {
+    const { container } = render(<SkelLines />);
+    expect(screen.getByText("Loading…")).toBeInTheDocument(); // single match: the body lines don't re-announce
+    expect(container.querySelectorAll(".skel-line")).toHaveLength(4);
+    expect(container.querySelectorAll(".skel-h")).toHaveLength(1);
+  });
+
+  it("honours an explicit n and forwards a custom label to its one announcer", () => {
+    const { container } = render(<SkelLines n={7} label="Building topology…" />);
+    expect(screen.getByText("Building topology…")).toBeInTheDocument();
+    expect(container.querySelectorAll(".skel-line")).toHaveLength(7);
+  });
+});
+
+describe("SkelTable", () => {
+  it("renders a header row + rows x cols cell bars, announcing exactly once", () => {
+    const { container } = render(<SkelTable rows={3} cols={4} />);
+    expect(screen.getByText("Loading…")).toBeInTheDocument(); // single match: only the first header cell announces
+    expect(container.querySelectorAll(".skel-th")).toHaveLength(4);
+    expect(container.querySelectorAll(".skel-td")).toHaveLength(12);
+  });
+
+  it("defaults to a 4x4 grid", () => {
+    const { container } = render(<SkelTable />);
+    expect(container.querySelectorAll(".skel-th")).toHaveLength(4);
+    expect(container.querySelectorAll(".skel-td")).toHaveLength(16);
   });
 });
