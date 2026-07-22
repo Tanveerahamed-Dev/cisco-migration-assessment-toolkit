@@ -347,3 +347,55 @@ def test_ingest_folder_route_blocks_cross_site_writes(client):
     r = client.post("/api/campaigns/1/ingest-folder", json={"path": "C:/x"},
                     headers={"Sec-Fetch-Site": "cross-site"})
     assert r.status_code == 403
+
+
+# --- --verify-manifest: the auditor check, reachable without Python -------------------------------
+
+def _sealed(tmp_path, name="run.run_manifest.json", artifacts=None):
+    from cisco_toolkit import manifest as M
+    man = M.build_manifest({"schema_version": "3.23.0"}, artifacts or {},
+                           [{"stage": "collect"}, {"stage": "deliver"}])
+    (tmp_path / name).write_text(json.dumps(man, indent=2), encoding="utf-8")
+    return man, str(tmp_path / name)
+
+
+def test_verify_manifest_flag_checks_a_sealed_manifest(tmp_path, capsys):
+    """A field laptop has no Python, so `python -m cisco_toolkit.manifest verify` is unreachable
+    there — README-FIELD would be teaching a command that cannot run. This is the same check behind
+    the one door, and it must agree with the module (it delegates, rather than reimplementing)."""
+    _man, path = _sealed(tmp_path)
+    assert serve.main(["--verify-manifest", path]) == 0
+    out = capsys.readouterr().out
+    assert "manifest OK" in out
+    # never let a bare pass be read as proof of no tampering
+    assert "unkeyed" in out and "re-sealed it" in out
+
+
+def test_verify_manifest_flag_exits_nonzero_on_a_broken_chain(tmp_path, capsys):
+    man, path = _sealed(tmp_path)
+    man["chain"][0]["stage"] = "collect-nothing"
+    Path(path).write_text(json.dumps(man, indent=2), encoding="utf-8")
+    assert serve.main(["--verify-manifest", path]) == 4
+    assert "INTEGRITY FAILURE" in capsys.readouterr().err
+
+
+def test_verify_manifest_flag_supports_expect_root_and_artifacts(tmp_path, capsys):
+    from cisco_toolkit import manifest as M
+    (tmp_path / "wb.xlsx").write_bytes(b"bytes")
+    man, path = _sealed(tmp_path, artifacts={"wb.xlsx": M.artifact_sha256(b"bytes")})
+    assert serve.main(["--verify-manifest", path, "--verify-artifacts",
+                       "--expect-root", man["chain_root"]]) == 0
+    capsys.readouterr()
+    assert serve.main(["--verify-manifest", path, "--expect-root", "0" * 64]) == 4
+    assert "MISMATCH" in capsys.readouterr().err
+    (tmp_path / "wb.xlsx").write_bytes(b"other bytes")
+    assert serve.main(["--verify-manifest", path, "--verify-artifacts"]) == 4
+    assert "[MISMATCH] wb.xlsx" in capsys.readouterr().err
+
+
+def test_verify_only_flags_refuse_without_verify_manifest(capsys):
+    """Mirrors the --out/--redact-collection guard: a flag that silently does nothing is how an
+    engineer comes away believing a check ran."""
+    assert serve.main(["--expect-root", "abc"]) == 2
+    assert "only apply to --verify-manifest" in capsys.readouterr().err
+    assert serve.main(["--verify-artifacts"]) == 2

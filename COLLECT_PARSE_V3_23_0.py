@@ -1211,8 +1211,14 @@ def file_sha256(path: str) -> str:
 def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     """roadmap D2 + J4: a sealed, deterministic chain-of-custody manifest for one assessment run — a
     hash-chained ledger of the pipeline stages PLUS a per-artifact sha256 of every produced deliverable
-    PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (tamper-evident without any Git
-    dependency). Pure stdlib via cisco_toolkit.manifest; the GAIT-style audit trail, offline."""
+    PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (no Git dependency). Pure
+    stdlib via cisco_toolkit.manifest; the GAIT-style audit trail, offline.
+
+    The pipeline EMITS this seal and never re-checks it: verification is the receiver's deliberate act
+    (``python -m cisco_toolkit.manifest verify`` / ``Atlas.exe --verify-manifest``). Scope the claim —
+    the chain is unkeyed and ``manifest.build_manifest`` is public, so it detects a careless edit or a
+    truncation, NOT a forger who re-seals; only a ``chain_root`` recorded out of band pins a delivered
+    file to this run."""
     import glob as _glob
     from cisco_toolkit import manifest as _manifest, ssot as _ssot
     try:
