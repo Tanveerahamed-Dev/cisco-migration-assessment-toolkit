@@ -166,15 +166,19 @@ def test_engine_wires_the_gates_and_the_override_flag():
     src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
     assert '"--override-gate"' in src, "the CLI lost the --override-gate flag"
     assert '"--gate-root"' in src, "the CLI lost the --gate-root flag (gates re-pin to cwd only)"
+    assert '"--engagement"' in src, \
+        "the CLI lost --engagement (ADR-0006: ownership becomes un-verifiable again)"
     assert "from cisco_toolkit.gate_state import enforce as gate_enforce" in src
+    # engagement= must be threaded into BOTH calls: a run that declares who it is, on a path that
+    # forgets to pass the declaration on, silently reverts to proximity — the defect ADR-0006 closed.
     assert re.search(r'if not args\.no_design and\s+'
                      r'gate_enforce\("design", override_reason=args\.override_gate,\s*'
-                     r'root=args\.gate_root\)', src), \
-        "the design write block is no longer gate-guarded (or dropped root=args.gate_root)"
+                     r'root=args\.gate_root, engagement=args\.engagement\)', src), \
+        "the design write block is no longer gate-guarded (or dropped root=/engagement=)"
     assert re.search(r'if not args\.no_mop and\s+'
                      r'gate_enforce\("mop", override_reason=args\.override_gate,\s*'
-                     r'root=args\.gate_root\)', src), \
-        "the MOP write block is no longer gate-guarded (or dropped root=args.gate_root)"
+                     r'root=args\.gate_root, engagement=args\.engagement\)', src), \
+        "the MOP write block is no longer gate-guarded (or dropped root=/engagement=)"
 
 
 def test_ssot_registry_cites_the_gate_state_owner():
@@ -476,3 +480,201 @@ def test_cli_show_refuses_a_mis_set_root_instead_of_reporting_brownfield(tmp_pat
     out = capsys.readouterr().out
     assert rc == 1
     assert "REFUSING" in out and "UNGATED" not in out
+
+
+# ------------------------------------------------ ADR-0006: ledger ownership, declared not inferred
+
+def _store_at(root: Path) -> dict:
+    return json.loads((root / "docs" / "engagement-state.json").read_text(encoding="utf-8"))
+
+
+def _approved_ledger(tmp_path: Path, engagement=None, gates=("assessment_approved",)) -> Path:
+    """An engagement root whose `gates` are approved, optionally bound to `engagement`."""
+    root = tmp_path / (engagement or "unbound")
+    root.mkdir(parents=True, exist_ok=True)
+    for i, gate in enumerate(gates):
+        gate_state.record_decision(gate, "approved", root=str(root), by="lead",
+                                   engagement=engagement if i == 0 else None)
+    return root
+
+
+def test_unbound_ledger_and_undeclared_run_behave_exactly_as_before(tmp_path):
+    """Row 1 of the ownership table — the backward-compatibility contract.
+
+    Every ledger that exists today is unbound. If adding the field changed their behaviour at all,
+    shipping it would be a silent migration of live engagements, so this pins that it does not:
+    approvals still decide, and nothing starts demanding an identifier."""
+    root = _approved_ledger(tmp_path)
+    assert gate_state.enforce("design", root=str(root)) is True
+    assert gate_state.enforce("mop", root=str(root)) is False       # lld/baseline still unsigned
+    assert gate_state.engagement_of(_store_at(root)) is None
+    assert "engagement" not in _store_at(root), \
+        "an unbound ledger acquired an engagement key just by being read"
+
+
+def test_bound_ledger_with_no_declaration_applies_gates_but_calls_them_unverified(tmp_path, caplog):
+    """Row 2. The operator standing in the engagement root is the historical, legitimate case and
+    must keep working — but the log must not let "it passed" read as "ownership was checked"."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with caplog.at_level(logging.WARNING, logger="cisco_toolkit.gate_state"):
+        assert gate_state.enforce("design", root=str(root)) is True
+    assert "PROXIMITY" in caplog.text and "unverified" in caplog.text
+    assert "ACME-2026" in caplog.text
+
+
+def test_matching_declaration_verifies_ownership(tmp_path, caplog):
+    """Row 3 — the point of the mechanism: the answer is now known to be about this client."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with caplog.at_level(logging.INFO, logger="cisco_toolkit.gate_state"):
+        assert gate_state.enforce("design", root=str(root), engagement="ACME-2026") is True
+    assert "VERIFIED" in caplog.text
+
+
+def test_declaring_a_different_engagement_refuses_even_with_every_approval_present(tmp_path,
+                                                                                   caplog):
+    """Row 4, and THE regression this whole change exists for, end to end.
+
+    The refuted walk-up heuristic printed "all recorded approvals present" for a run of GLOBEX out
+    of engagement ACME's ledger. Here ACME's ledger is fully approved and GLOBEX asks: the answer
+    must be a refusal naming both engagements, and must never contain the approval sentence."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with caplog.at_level(logging.INFO, logger="cisco_toolkit.gate_state"):
+        assert gate_state.enforce("design", root=str(root), engagement="GLOBEX-2026") is False
+    assert "REFUSED" in caplog.text
+    assert "ACME-2026" in caplog.text and "GLOBEX-2026" in caplog.text
+    assert "approvals present" not in caplog.text, \
+        "a cross-engagement run was told another client's approvals were present"
+
+
+def test_declaring_an_engagement_against_an_unbound_ledger_refuses(tmp_path):
+    """Row 5. Adopting an unbound ledger because it happens to be here is exactly the proximity
+    inference this replaced — asking for verification and getting a guess is the worst outcome."""
+    root = _approved_ledger(tmp_path)
+    assert gate_state.enforce("design", root=str(root), engagement="ACME-2026") is False
+
+
+def test_ownership_refusals_are_not_overridable_and_write_nothing(tmp_path):
+    """--override-gate is consent to skip a KNOWN gate; when ownership does not check out, no gate
+    for this engagement has been located, so there is nothing to consent to. Equally important, the
+    refusal must not append its audit line into the other engagement's ledger."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    ledger = root / "docs" / "engagement-state.json"
+    before = ledger.read_text(encoding="utf-8")
+    assert gate_state.enforce("design", override_reason="CAB said so", root=str(root),
+                              engagement="GLOBEX-2026") is False
+    assert ledger.read_text(encoding="utf-8") == before, \
+        "a refused cross-engagement run mutated the ledger it was refused access to"
+
+
+def test_engagement_match_ignores_case_and_surrounding_whitespace(tmp_path):
+    """A refusal over `acme-2026` vs `ACME-2026` would teach operators to stop passing
+    --engagement, losing the control entirely. Stored verbatim; only the comparison normalizes."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    assert gate_state.enforce("design", root=str(root), engagement="  acme-2026 ") is True
+    assert _store_at(root)["engagement"] == "ACME-2026", "the stored identifier was rewritten"
+
+
+def test_signing_into_another_engagements_ledger_is_refused(tmp_path):
+    """The write side matters more than the read side: an approval landing in the wrong ledger both
+    fails to gate the engagement the lead meant AND silently unblocks a different one."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    with pytest.raises(gate_state.GateStateError, match="GLOBEX-2026"):
+        gate_state.record_decision("lld_approved", "approved", root=str(root), by="lead",
+                                   engagement="GLOBEX-2026")
+    assert "lld_approved" not in _store_at(root)["gates"]
+
+
+def test_bind_creates_is_idempotent_and_refuses_a_rebind(tmp_path):
+    """Binding is the one-time act that makes ownership verifiable. Re-binding to a different id
+    would retroactively re-attribute every approval already signed in the ledger — the exact
+    mis-attribution the mechanism exists to prevent — so it is refused, not warned about."""
+    root = tmp_path / "eng"
+    root.mkdir()
+    assert gate_state.bind_engagement("ACME-2026", root=str(root)) == "ACME-2026"
+    assert _store_at(root)["engagement"] == "ACME-2026"
+    assert gate_state.bind_engagement("acme-2026", root=str(root)) == "acme-2026"   # idempotent
+    with pytest.raises(gate_state.GateStateError, match="already bound"):
+        gate_state.bind_engagement("GLOBEX-2026", root=str(root))
+    assert _store_at(root)["engagement"] == "acme-2026", "a refused re-bind still moved the label"
+
+
+def test_is_revoked_distinguishes_withdrawal_from_silence(tmp_path):
+    """The MOP posture in ADR-0006 turns entirely on this distinction: a gate nobody ever signed is
+    unapproved by SILENCE (perhaps an engagement that never opted in), while a revoked gate is a
+    human's positive withdrawal of approval. Only the second justifies withholding a deliverable."""
+    root = tmp_path / "eng"
+    root.mkdir()
+    gate_state.record_decision("lld_approved", "approved", root=str(root), by="lead")
+    gate_state.record_decision("lld_approved", "revoked", root=str(root), by="lead")
+    store = _store_at(root)
+    assert gate_state.is_revoked(store, "lld_approved") is True
+    assert gate_state.is_approved(store, "lld_approved") is False
+    # baseline_captured was never signed at all: missing, but NOT revoked.
+    assert gate_state.is_revoked(store, "baseline_captured") is False
+    assert gate_state.missing_approvals(store, "mop") == ["lld_approved", "baseline_captured"]
+    assert gate_state.revoked_requirements(store, "mop") == ["lld_approved"]
+
+
+def test_pending_approvals_reads_without_deciding_or_writing(tmp_path):
+    """The disclosure primitive's contract, which is what makes it safe on a field path: it never
+    writes (a disclosure that mutates the ledger it reports on is not a disclosure) and it never
+    raises (its callers are paths where an exception aborts a deliverable someone is waiting on)."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    ledger = root / "docs" / "engagement-state.json"
+    before = ledger.read_text(encoding="utf-8")
+
+    clear = gate_state.pending_approvals("design", root=str(root), engagement="ACME-2026")
+    assert clear["status"] == "clear" and clear["verified"] is True and clear["missing"] == []
+
+    pending = gate_state.pending_approvals("mop", root=str(root), engagement="ACME-2026")
+    assert pending["status"] == "pending" and "lld_approved" in pending["missing"]
+
+    assert ledger.read_text(encoding="utf-8") == before, "disclosure wrote to the ledger"
+
+    # Every failure mode is a STATUS, never an exception — including ones enforce() refuses on.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    broken = tmp_path / "broken"
+    (broken / "docs").mkdir(parents=True)
+    (broken / "docs" / "engagement-state.json").write_text("{not json", encoding="utf-8")
+    assert gate_state.pending_approvals("design", root=str(tmp_path / "gone"))["status"] \
+        == "bad_root"
+    assert gate_state.pending_approvals("design", root=str(empty))["status"] == "ungated"
+    assert gate_state.pending_approvals("design", root=str(broken))["status"] == "unreadable"
+
+
+def test_pending_approvals_never_reports_another_engagements_approvals(tmp_path):
+    """The disclosure path must fail the same way enforcement does — it is the one destined for the
+    field tool, where a wrong "approved" is read by someone standing at a client site."""
+    root = _approved_ledger(tmp_path, engagement="ACME-2026")
+    verdict = gate_state.pending_approvals("design", root=str(root), engagement="GLOBEX-2026")
+    assert verdict["status"] == "ownership_mismatch"
+    assert verdict["verified"] is False and verdict["missing"] == []
+    assert "ACME-2026" in verdict["summary"] and "GLOBEX-2026" in verdict["summary"]
+    assert "all upstream approvals" not in verdict["summary"], \
+        "a cross-engagement disclosure claimed approvals it never verified"
+
+    unbound = _approved_ledger(tmp_path)
+    assert gate_state.pending_approvals("design", root=str(unbound),
+                                        engagement="ACME-2026")["status"] == "ownership_unbound"
+
+
+def test_cli_bind_and_show_disclose_ownership(tmp_path, capsys):
+    """`show` is the operator's diagnostic tool, so it must say whose board it is printing — and
+    say plainly when the honest answer is "attributed by directory alone"."""
+    root = tmp_path / "eng"
+    root.mkdir()
+    gate_state.record_decision("assessment_approved", "approved", root=str(root), by="lead")
+    assert gate_state.main(["--root", str(root), "show"]) == 0
+    assert "UNBOUND" in capsys.readouterr().out
+
+    assert gate_state.main(["--root", str(root), "bind", "ACME-2026"]) == 0
+    assert "ACME-2026" in capsys.readouterr().out
+    assert gate_state.main(["--root", str(root), "show"]) == 0
+    out = capsys.readouterr().out
+    assert "governs engagement: ACME-2026" in out and "UNBOUND" not in out
+
+    # A cross-engagement approval attempt is refused at the CLI with a non-zero exit, not a receipt.
+    assert gate_state.main(["--root", str(root), "approve", "lld_approved",
+                            "--engagement", "GLOBEX-2026"]) == 1
+    assert "REFUSING" in capsys.readouterr().out
