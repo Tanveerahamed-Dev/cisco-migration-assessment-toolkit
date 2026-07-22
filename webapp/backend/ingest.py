@@ -447,22 +447,30 @@ def run_redaction_folder(path: Any, out_dir: Any,
        ``Status: DRAFT — generated; not yet reviewed`` in its Document Control table
        (``cisco_toolkit/docmeta.py`` ``add_document_control``, used by all 8 DOCX writers). That
        travels INSIDE the file that gets emailed; a sidecar note in the folder does not.
-    3. *Nothing here can identify the engagement's ledger.* Gate state is per-engagement but
-       nothing binds a ledger to an engagement — it is found by proximity, and proximity is not
-       ownership. Anchoring on cwd adopts the shell's directory (on the stick: the folder every
-       update wipes); anchoring on the collection adopts the nearest ``docs/engagement-state.json``
-       above it, which for the documented layouts is a *shared* parent or the repo checkout itself.
-       Both were tried and both mis-attribute across engagements — and a wrong "approvals present"
-       drawn from another client's ledger is far worse than saying nothing.
+    3. *This run cannot say which engagement it is.* Ownership is now verifiable rather than
+       inferred (ADR-0006: a ledger declares the ``engagement`` it governs and a run declares the
+       one it is for), but verification needs a DECLARATION, and the stick carries no engagement
+       identifier — no field UI collects one, and a redaction run is handed a folder of captures,
+       nothing more. Declaring nothing is therefore the correct posture here, not a gap: it is what
+       the ownership table calls the legacy row. What is now impossible is the failure this replaced
+       — inferring ownership from proximity, which mis-attributed across engagements in both
+       directions (cwd resolves to the folder every stick update wipes; walking up from the
+       collection adopts a shared parent's or the repo checkout's ledger, and printed engagement
+       ACME's approvals for a run of GLOBEX).
 
-    Note the asymmetry that makes (3) decisive: the gate a design would fail on is
-    ``assessment_approved``, and this path ships the assessment (workbook + snapshot) regardless.
-    Withholding the design while shipping the unapproved assessment it derives from is backwards.
+    Note the asymmetry that makes (3) decisive even once an identifier exists: the gate a design
+    would fail on is ``assessment_approved``, and this path ships the assessment (workbook +
+    snapshot) regardless. Withholding the design while shipping the unapproved assessment it
+    derives from is backwards.
 
     The MOP is the one genuinely different case — its cutover procedure, rollback triggers and
-    sign-off blocks exist in no other artifact, so refusing it WOULD contain something. That is
-    tracked separately; it needs the ledger-ownership problem in (3) solved first, and it is a
-    change to what the field tool may withhold, which is not this function's call to make.
+    sign-off blocks exist in no other artifact, so refusing it WOULD contain something. ADR-0006
+    settles the posture it will take when this path can name its engagement: refuse the MOP on an
+    explicitly REVOKED ``lld_approved`` (``gate_state.revoked_requirements``) — a human's positive
+    withdrawal of approval, verified against a ledger proven to govern this engagement — and
+    disclose rather than withhold in every other state (``gate_state.pending_approvals``). It stays
+    unimplemented here only because the declaration it depends on does not exist yet; wiring it
+    needs an engagement identifier on the stick, which is a change to the field tool's inputs.
     """
     source, n_files = _resolve_and_scan(path)
     out = Path(str(out_dir)).expanduser().resolve()

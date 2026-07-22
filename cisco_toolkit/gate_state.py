@@ -42,6 +42,45 @@ site, not a contract. Callers are inventoried in ``tests/test_gate_state.py``
 as an ungated engagement: ``enforce()`` REFUSES when ``root`` is not an existing directory, so one
 typo cannot silently ungate a run (an *omitted* root still means cwd, unchanged).
 
+**Ownership — what a ledger governs, DECLARED rather than inferred (ADR-0006).** ``root`` says where
+a ledger is; it never said *whose* it is. A ledger may therefore carry an ``engagement`` identifier
+naming what it governs, and a run may declare which engagement it is for; enforcement then VERIFIES
+the two agree instead of trusting proximity:
+
+===============  ==============  =============================================================
+ledger declares  run declares    outcome
+===============  ==============  =============================================================
+nothing          nothing         legacy — proximity decides, gates apply UNVERIFIED (unchanged)
+an id            nothing         gates apply, logged UNVERIFIED (operator is at the root)
+an id            the same id     gates apply, VERIFIED
+an id            a different id  **REFUSE**, and not overridable
+nothing          an id           **REFUSE** — bind the ledger first (``gate_state bind``)
+===============  ==============  =============================================================
+
+The bottom two rows are the whole point: a run that declares who it is can never be answered out of
+another client's ledger. Neither is overridable — ``--override-gate`` is consent to skip a KNOWN
+gate, and when ownership does not check out no gate for *this* engagement has been located, so there
+is nothing to consent to (identical reasoning to a mis-set ``root``). Silence stays permissive, so
+every existing engagement keeps working exactly as it did.
+
+Why the identifier is human-minted and opaque rather than derived from the evidence — three
+independent reasons, each sufficient: (1) there is nothing to derive it from; the snapshot has 59
+top-level sections and not one names a client or engagement, and the engine has no ``--client``
+input (``ssot.canonical_facts`` yields *counts*, not identity). (2) ``--redact`` pseudonymizes IPs,
+MACs and serials, so any key derived from those differs between the redacted and unredacted run of
+the SAME engagement — and the redaction path is precisely where this was needed. (3) The gates span
+Assess→PIR, an interval across which a migration deliberately replaces the fleet a key would be
+derived from. ``collected_at`` identifies a COLLECTION (a baseline, a pre and a post are several per
+engagement), not an engagement. Two proximity heuristics were built and refuted end-to-end before
+this — cwd (on a USB stick, the folder every ``make_stick.ps1`` update wipes) and
+walk-up-from-the-collection (which adopted a shared parent's ledger and printed engagement ACME's
+approvals for a run of GLOBEX). The conclusion is not that a third heuristic would work; it is that
+ownership must be declared. **Auto-discovery is not a goal**, and a future "smarter" resolver would
+be re-introducing the defect. This identifier is also the token the SQLite per-wave gate board
+(``webapp/backend/gates.py``) would join on: the two records stay deliberately DISTINCT — a document
+approved once is a different fact from a wave signed at each T-minus, so each keeps one owner under
+Law 1 — and share only this vocabulary.
+
 **Enforcement is not always the right posture.** ``enforce()`` refuses per DELIVERABLE, which only
 withholds anything if the deliverable is the sole carrier of the content. It is not, for the
 design/MOP: ``COLLECT_PARSE_V3_23_0`` computes ``design_blueprint`` and writes the snapshot (:2817),
@@ -57,7 +96,8 @@ Gate requirements mirror the agent charters: design requires an APPROVED assessm
 (.claude/agents/design-author.md — "design follows an approved assessment"); the MOP requires an
 approved LLD + a captured current-state baseline (.claude/agents/mop-change-author.md — "Require an
 approved LLD + current-state baseline"). Stdlib-only; no cisco_toolkit imports; deterministic; no
-network. CLI: ``python -m cisco_toolkit.gate_state show | approve <gate> | revoke <gate>``.
+network. CLI: ``python -m cisco_toolkit.gate_state show | approve <gate> | revoke <gate> |
+bind <engagement>``.
 """
 from __future__ import annotations
 
@@ -66,11 +106,15 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 STORE_RELPATH = os.path.join("docs", "engagement-state.json")
+
+# Top-level store key naming the engagement a ledger governs. APPEND-ONLY, like the gate keys: an
+# absent one means "unbound (legacy)", which stays permissive, so adding it breaks no existing store.
+ENGAGEMENT_KEY = "engagement"
 
 # The PPDIOO document-gate chain — (key, label, arrow, criteria). APPEND-ONLY keys (storage schema,
 # same contract as engagement.GATE_SEQUENCE). Only the gates named in GENERATOR_REQUIRES are
@@ -159,11 +203,70 @@ def is_approved(store: dict, gate: str) -> bool:
     return isinstance(rec, dict) and rec.get("decision") == "approved"
 
 
+def is_revoked(store: dict, gate: str) -> bool:
+    """True ONLY on an explicit recorded ``revoked`` decision.
+
+    Deliberately not the complement of ``is_approved`` — the gap between them carries the meaning.
+    A gate nobody ever signed is unapproved *by silence* (it may simply be an engagement that never
+    opted in); a revoked gate is a human's positive decision to WITHDRAW approval they had given.
+    Only the second is strong enough to justify withholding a deliverable outright, which is what
+    the MOP posture in ADR-0006 turns on."""
+    rec = _gates(store).get(gate)
+    return isinstance(rec, dict) and rec.get("decision") == "revoked"
+
+
+def engagement_of(store: dict) -> Optional[str]:
+    """The engagement this ledger declares it governs, or None when it is UNBOUND (legacy).
+    A blank/whitespace/non-string value reads as unbound rather than as an engagement named ""."""
+    val = store.get(ENGAGEMENT_KEY)
+    return val.strip() if isinstance(val, str) and val.strip() else None
+
+
+def _same_engagement(a: str, b: str) -> bool:
+    """Whitespace- and case-insensitive comparison. An operator who types ``acme-2026`` where the
+    ledger says ``ACME-2026`` means the same engagement, and answering that with a hard refusal
+    would only teach people to stop passing ``--engagement`` at all. Values are STORED verbatim;
+    only the comparison normalizes."""
+    return a.strip().casefold() == b.strip().casefold()
+
+
+def ownership_error(store: dict, engagement: Optional[str], what: str) -> Optional[str]:
+    """None if this run may legitimately use this ledger; otherwise the text explaining why not.
+
+    The verification half of ADR-0006 (full rule table in the module docstring). Fails CLOSED on a
+    contradiction and stays silent when nothing was declared, so it can never turn an existing
+    engagement off. Both refusals are non-overridable by design."""
+    declared = (engagement or "").strip()
+    bound = engagement_of(store)
+    if not declared:
+        return None                      # legacy, or an operator standing in the engagement root
+    if bound is None:
+        return (f"this run declares engagement {declared!r}, but the ledger records no engagement "
+                f"at all -- so it cannot be confirmed to govern this one while {what}. If this "
+                f"ledger really is that engagement's, bind it once with 'python -m "
+                f"cisco_toolkit.gate_state bind {declared}'. Not overridable.")
+    if not _same_engagement(bound, declared):
+        return (f"ledger governs engagement {bound!r} but this run declares {declared!r} -- "
+                f"REFUSING to answer one engagement with another's approvals while {what}. "
+                f"Not overridable.")
+    return None
+
+
 def missing_approvals(store: dict, generator: str) -> List[str]:
     if generator not in GENERATOR_REQUIRES:
         raise ValueError(f"unknown gated generator {generator!r} "
                          f"(expected one of {sorted(GENERATOR_REQUIRES)})")
     return [k for k in GENERATOR_REQUIRES[generator] if not is_approved(store, k)]
+
+
+def revoked_requirements(store: dict, generator: str) -> List[str]:
+    """The generator's upstream gates a human has explicitly REVOKED — a subset of
+    ``missing_approvals``, separated out because it is the only part of "missing" that represents a
+    decision rather than an absence (see ``is_revoked``)."""
+    if generator not in GENERATOR_REQUIRES:
+        raise ValueError(f"unknown gated generator {generator!r} "
+                         f"(expected one of {sorted(GENERATOR_REQUIRES)})")
+    return [k for k in GENERATOR_REQUIRES[generator] if is_revoked(store, k)]
 
 
 def _append_audit(path: str, store: dict, entry: dict) -> dict:
@@ -177,9 +280,15 @@ def _append_audit(path: str, store: dict, entry: dict) -> dict:
 
 
 def record_decision(gate: str, decision: str, root: str = ".",
-                    by: Optional[str] = None, note: str = "") -> dict:
+                    by: Optional[str] = None, note: str = "",
+                    engagement: Optional[str] = None) -> dict:
     """Record a human gate disposition (approve/revoke). Creates the store on first use — that is
-    the explicit opt-in moment that activates enforcement for the engagement in ``root``."""
+    the explicit opt-in moment that activates enforcement for the engagement in ``root``.
+
+    ``engagement`` binds a NEW ledger to that engagement as it is created, and on an existing one is
+    verified exactly as ``enforce`` verifies it. Signing is where a mis-attribution does the most
+    damage — an approval landing in the wrong client's ledger both fails to gate the engagement the
+    lead meant AND silently unblocks a different one — so the check applies to the write path too."""
     if gate not in GATE_KEYS:
         raise ValueError(f"unknown gate {gate!r} (expected one of {list(GATE_KEYS)})")
     if decision not in ("approved", "revoked"):
@@ -195,6 +304,12 @@ def record_decision(gate: str, decision: str, root: str = ".",
     store, path = load_store(root)
     if store is None:
         store = _new_store()
+        if (engagement or "").strip():
+            store[ENGAGEMENT_KEY] = engagement.strip()
+    else:
+        owner_err = ownership_error(store, engagement, f"recording {gate}")
+        if owner_err:
+            raise GateStateError(owner_err)
     who = by or _whoami()
     store.setdefault("gates", {})
     store["gates"][gate] = {"decision": decision, "signed_by": who,
@@ -203,6 +318,39 @@ def record_decision(gate: str, decision: str, root: str = ".",
                                 "event": "approve" if decision == "approved" else "revoke",
                                 "gate": gate, "note": note})
     return store["gates"][gate]
+
+
+def bind_engagement(engagement: str, root: str = ".", by: Optional[str] = None) -> str:
+    """Declare which engagement a ledger governs — the one act that makes ownership VERIFIABLE
+    instead of inferred. Creates the ledger if absent; returns the bound identifier.
+
+    Re-binding to the same identifier is a no-op. Re-binding to a DIFFERENT one is refused: every
+    approval already signed in the ledger was signed for the engagement it was bound to, and
+    silently re-pointing the label would retroactively re-attribute all of them — the exact
+    cross-engagement mis-attribution this whole mechanism exists to make impossible. Copy the file
+    and bind the copy if handing a ledger over is genuinely what is meant."""
+    ident = (engagement or "").strip()
+    if not ident:
+        raise ValueError("engagement identifier must be a non-empty string")
+    root = _normalize_root(root)
+    bad_root = _require_root(root, f"binding engagement {ident}")
+    if bad_root:
+        raise GateStateError(bad_root)
+    store, path = load_store(root)
+    if store is None:
+        store = _new_store()
+    bound = engagement_of(store)
+    if bound is not None and not _same_engagement(bound, ident):
+        raise GateStateError(
+            f"ledger at {path} is already bound to engagement {bound!r}; refusing to re-bind it to "
+            f"{ident!r} -- that would retroactively re-attribute every approval already signed in "
+            f"it. Copy the ledger and bind the copy if you mean to hand it over.")
+    store[ENGAGEMENT_KEY] = ident
+    who = by or _whoami()
+    _append_audit(path, store, {"at": _now(), "who": who, "event": "bind",
+                                "engagement": ident,
+                                "note": "re-affirmed" if bound is not None else "initial binding"})
+    return ident
 
 
 def _normalize_root(root: str) -> str:
@@ -230,13 +378,18 @@ def _require_root(root: str, what: str) -> Optional[str]:
 
 
 def enforce(generator: str, override_reason: Optional[str] = None,
-            root: str = ".", who: Optional[str] = None) -> bool:
+            root: str = ".", who: Optional[str] = None,
+            engagement: Optional[str] = None) -> bool:
     """Gate check for a generator run. True = proceed, False = REFUSE (caller must skip the write).
 
     Absent store → warn + True (brownfield). Unreadable store → error + False (not overridable —
     the override's audit line has nowhere trustworthy to land). Missing approvals → False, unless
     ``override_reason`` is non-empty, in which case an audit line (who/when/why + what was missing)
     is appended to the store and the run proceeds.
+
+    ``engagement`` is this run's declaration of what it is FOR. Declaring nothing preserves the
+    historical behaviour exactly; declaring something that the ledger contradicts (or cannot
+    confirm) REFUSES, non-overridably — see the ownership table in the module docstring.
     """
     if generator not in GENERATOR_REQUIRES:
         raise ValueError(f"unknown gated generator {generator!r} "
@@ -261,6 +414,18 @@ def enforce(generator: str, override_reason: Optional[str] = None,
                        "(brownfield). Activate PPDIOO gate enforcement with: "
                        "python -m cisco_toolkit.gate_state approve <gate>", path, generator)
         return True
+    owner_err = ownership_error(store, engagement, f"generating {generator}")
+    if owner_err:
+        logger.error("[GATE REFUSED] %s: %s Store: %s", generator, owner_err, path)
+        return False
+    bound = engagement_of(store)
+    if bound and (engagement or "").strip():
+        logger.info("[gate] %s: ledger ownership VERIFIED -- engagement %s", generator, bound)
+    elif bound:
+        logger.warning("[gate] %s: ledger declares engagement %r but this run declares none -- "
+                       "gates applied on PROXIMITY, unverified. Pass --engagement %s to verify "
+                       "that this run and this ledger are the same engagement.",
+                       generator, bound, bound)
     missing = missing_approvals(store, generator)
     if not missing:
         logger.info("[gate] %s: upstream approvals present (%s) -- proceeding",
@@ -288,6 +453,83 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     return False
 
 
+def pending_approvals(generator: str, root: str = ".",
+                      engagement: Optional[str] = None) -> Dict[str, Any]:
+    """DISCLOSE the gate posture. Reads without deciding and without writing.
+
+    The read-only counterpart to ``enforce()``, for every surface that should SURFACE the gate
+    posture rather than withhold a deliverable over it — refusing a document only contains something
+    when that document is the sole carrier of its content, which for the design it is not.
+
+    Contract, and the reason this is a separate function rather than a flag on ``enforce``: it never
+    writes (no audit line, no store creation — a disclosure that mutates the ledger it reports on is
+    not a disclosure) and it never raises. A broken or missing ledger comes back as a *status*,
+    because the callers that most need this are field paths where an exception would abort a
+    deliverable the operator is standing there waiting for.
+
+    Returns ``{generator, status, verified, engagement, declared, missing, revoked, store,
+    summary}``. ``status`` is one of ``bad_root`` | ``ungated`` | ``unreadable`` |
+    ``ownership_mismatch`` | ``ownership_unbound`` | ``clear`` | ``pending``. ``summary`` is a
+    single line safe to print verbatim; it never claims approval it did not verify.
+    """
+    if generator not in GENERATOR_REQUIRES:
+        raise ValueError(f"unknown gated generator {generator!r} "
+                         f"(expected one of {sorted(GENERATOR_REQUIRES)})")
+
+    declared = (engagement or "").strip() or None
+    root = _normalize_root(root)
+    out: Dict[str, Any] = {"generator": generator, "status": "ungated", "verified": False,
+                           "engagement": None, "declared": declared, "missing": [], "revoked": [],
+                           "store": store_path(root), "summary": ""}
+
+    def _done(status: str, summary: str) -> Dict[str, Any]:
+        out["status"], out["summary"] = status, summary
+        return out
+
+    try:
+        if _require_root(root, f"disclosing {generator} gate state"):
+            return _done("bad_root", f"gate root {root} is not a directory -- gate state unknown "
+                                     f"(NOT the same as ungated).")
+        try:
+            store, path = load_store(root)
+        except GateStateError as e:
+            return _done("unreadable", f"gate ledger present but unreadable ({e}) -- gate state "
+                                       f"unknown; treat approvals as UNCONFIRMED.")
+        out["store"] = path
+        if store is None:
+            return _done("ungated", "no gate ledger for this engagement -- approvals are not "
+                                    "tracked here; this deliverable is unreviewed by default.")
+        bound = engagement_of(store)
+        out["engagement"] = bound
+        if declared and bound is None:
+            return _done("ownership_unbound",
+                         f"a ledger exists here but records no engagement, so it cannot be "
+                         f"confirmed to govern {declared} -- approvals UNCONFIRMED.")
+        if declared and bound and not _same_engagement(bound, declared):
+            return _done("ownership_mismatch",
+                         f"the ledger here governs {bound}, not {declared} -- reporting its "
+                         f"approvals would attribute another engagement's sign-off.")
+        out["verified"] = bool(declared and bound)
+        out["missing"] = missing_approvals(store, generator)
+        out["revoked"] = revoked_requirements(store, generator)
+        scope = f"engagement {bound}" if bound else "this ledger"
+        if not out["missing"]:
+            qualifier = "verified" if out["verified"] else "unverified ownership"
+            return _done("clear", f"all upstream approvals for the {generator} are recorded in "
+                                  f"{scope} ({qualifier}).")
+        if out["revoked"]:
+            return _done("pending", f"approval REVOKED for {', '.join(out['revoked'])} in {scope} "
+                                    f"-- the {generator} must not be treated as approved.")
+        return _done("pending", f"awaiting approval of {', '.join(out['missing'])} in {scope} -- "
+                                f"the {generator} is not yet approved.")
+    except Exception as e:                                    # pragma: no cover - belt and braces
+        # The no-raise contract is the point of this function; a bug in it must degrade to "unknown"
+        # rather than take down the deliverable run that only wanted a status line.
+        logger.warning("[gate] disclosure failed for %s: %s", generator, e)
+        return _done("unreadable", "gate state could not be determined -- treat approvals as "
+                                   "UNCONFIRMED.")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI: ``show`` the gate board + audit tail; ``approve``/``revoke`` a gate (creates the store
     on first approve — the enforcement opt-in). Exit 0 on success, 2 on usage errors (argparse)."""
@@ -301,17 +543,37 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="engagement root holding docs/engagement-state.json (default: cwd)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("show", help="print the gate board + the audit tail (overrides flagged)")
+    p_bind = sub.add_parser("bind", help="declare which engagement this ledger governs")
+    p_bind.add_argument("engagement", help="engagement identifier, e.g. ACME-2026-DC")
+    p_bind.add_argument("--by", default=None, help="who bound it (default: current OS user)")
     for verb, help_txt in (("approve", "record a human gate approval"),
                            ("revoke", "revoke a previously recorded approval")):
         p = sub.add_parser(verb, help=help_txt)
         p.add_argument("gate", choices=list(GATE_KEYS))
         p.add_argument("--by", default=None, help="who signed (default: current OS user)")
         p.add_argument("--note", default="", help="optional note stored with the decision")
+        p.add_argument("--engagement", default=None,
+                       help="the engagement this decision is for -- binds a NEW ledger, and is "
+                            "VERIFIED against an existing one (a mismatch refuses)")
     args = ap.parse_args(argv)
 
+    if args.cmd == "bind":
+        try:
+            ident = bind_engagement(args.engagement, root=args.root, by=args.by)
+        except (GateStateError, ValueError) as e:
+            print(f"REFUSING: {e}")
+            return 1
+        print(f"ledger at {store_path(args.root)} governs engagement: {ident}")
+        return 0
+
     if args.cmd in ("approve", "revoke"):
-        rec = record_decision(args.gate, "approved" if args.cmd == "approve" else "revoked",
-                              root=args.root, by=args.by, note=args.note)
+        try:
+            rec = record_decision(args.gate, "approved" if args.cmd == "approve" else "revoked",
+                                  root=args.root, by=args.by, note=args.note,
+                                  engagement=args.engagement)
+        except GateStateError as e:
+            print(f"REFUSING: {e}")
+            return 1
         print(f"{args.gate}: {rec['decision']} by {rec['signed_by']} at {rec['decided_at']}"
               f" -> {store_path(args.root)}")
         return 0
@@ -333,6 +595,14 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"First 'approve' creates it and activates enforcement.")
         return 0
     print(f"gate-state store: {path}")
+    bound = engagement_of(store)
+    if bound:
+        print(f"governs engagement: {bound}")
+    else:
+        # Not an error — legacy ledgers are permissive by design — but the operator should know the
+        # board they are reading is attributed by location alone, and how to fix that.
+        print("governs engagement: UNBOUND -- ownership is inferred from this directory alone. "
+              "Bind it with: python -m cisco_toolkit.gate_state bind <engagement>")
     for key, label, arrow, _criteria in DOC_GATES:
         row = _gates(store).get(key)
         if isinstance(row, dict) and row.get("decision"):
