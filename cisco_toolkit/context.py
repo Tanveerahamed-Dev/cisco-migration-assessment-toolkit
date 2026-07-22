@@ -74,3 +74,8 @@ class AnalysisContext:
     # --- stage 4: the assembled snapshot ---
     snap_dict: Dict[str, Any] = field(default_factory=dict)
     snap_path: str = ""
+    # --- stage 5: deliver-time PPDIOO document-gate decisions (P0-3/DEC-003) ---
+    # One entry per gated generator, appended by main() as each gate is evaluated, read back by
+    # _stage_finalize so the sealed run manifest records WHY a deliverable is absent. Carried here
+    # rather than re-derived at seal time: the gate decision is only observable where it is made.
+    gate_verdicts: List[Dict[str, Any]] = field(default_factory=list)
