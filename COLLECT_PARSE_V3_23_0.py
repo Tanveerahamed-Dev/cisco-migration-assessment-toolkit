@@ -1585,6 +1585,16 @@ def main():
                          "rather than inferred from where the process happens to be running. "
                          "Bind a ledger once with 'python -m cisco_toolkit.gate_state bind <ID>'. "
                          "Omit it and behaviour is exactly as before (proximity, unverified).")
+    ap.add_argument("--fail-on-gate-refusal", action="store_true",
+                    help="Exit 2 when a PPDIOO document gate REFUSED a deliverable (design/MOP). "
+                         "OPT-IN: by default a refusal is a successful run that correctly withheld "
+                         "a document, and the exit code stays 0 — the wrappers that drive this "
+                         "engine treat any non-zero as a hard failure (AssessHub's redaction path "
+                         "tells the field engineer to treat everything already written as "
+                         "UNREDACTED), so a refusal must not masquerade as one. Use this in CI or a "
+                         "pipeline that must STOP when governance withholds a document. The "
+                         "durable record of the refusal is written either way, to the gate ledger's "
+                         "audit array (python -m cisco_toolkit.gate_state show).")
     ap.add_argument("--no-crd",          action="store_true",
                     help="NEW-V3.23.156: skip the Customer Requirements Document (CRD, DOCX) — the "
                          "Plan-phase requirements-capture instrument primed with the assessment "
@@ -2868,14 +2878,23 @@ def main():
     # present (docs/engagement-state.json) and the marker unapproved, this REFUSES (skips the
     # write, loudly); --override-gate proceeds and appends a who/when/why audit line. No store at
     # all = warn-and-proceed (brownfield).
-    if not args.no_design and gate_enforce("design", override_reason=args.override_gate,
-                                           root=args.gate_root, engagement=args.engagement):
-        design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
-        label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_design_doc_docx(design_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  Design document (DOCX) write failed: {e}")
+    # The verdicts are COLLECTED (not just tested) so the run can answer "was anything withheld?"
+    # at the end without re-deriving the decision from the flags -- see cisco_toolkit.gate_state
+    # .GateVerdict. Each gate is still evaluated ONLY when its deliverable was actually requested:
+    # --no-design short-circuits before gate_enforce, so a suppressed document neither consults the
+    # ledger nor writes a refusal row about a document nobody asked for.
+    gate_verdicts = []
+    if not args.no_design:
+        design_gate = gate_enforce("design", override_reason=args.override_gate,
+                                   root=args.gate_root, engagement=args.engagement)
+        gate_verdicts.append(design_gate)
+        if design_gate:
+            design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
+            label = os.path.splitext(os.path.basename(out_xlsx))[0]
+            try:
+                write_design_doc_docx(design_out, snap_dict, label)
+            except Exception as e:
+                logger.warning(f"  Design document (DOCX) write failed: {e}")
 
     # Phase 34: per-wave Method of Procedure (MOP, DOCX) - NEW-V3.23.149. The Implement-phase cutover
     # template, one section per migration wave, reusing the validation plan as the post-cutover checks.
@@ -2883,14 +2902,17 @@ def main():
     # P0-3/DEC-003: the MOP follows an APPROVED LLD + a captured current-state baseline (PPDIOO
     # gate; mop-change-author charter). Same refusal/override/brownfield semantics as the design
     # gate above — the refusal skips ONLY this deliverable; the workbook/snapshot already saved.
-    if not args.no_mop and gate_enforce("mop", override_reason=args.override_gate,
-                                        root=args.gate_root, engagement=args.engagement):
-        mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
-        label = os.path.splitext(os.path.basename(out_xlsx))[0]
-        try:
-            write_mop_docx(mop_out, snap_dict, label)
-        except Exception as e:
-            logger.warning(f"  MOP (DOCX) write failed: {e}")
+    if not args.no_mop:
+        mop_gate = gate_enforce("mop", override_reason=args.override_gate,
+                                root=args.gate_root, engagement=args.engagement)
+        gate_verdicts.append(mop_gate)
+        if mop_gate:
+            mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
+            label = os.path.splitext(os.path.basename(out_xlsx))[0]
+            try:
+                write_mop_docx(mop_out, snap_dict, label)
+            except Exception as e:
+                logger.warning(f"  MOP (DOCX) write failed: {e}")
 
     # Phase 35: Customer Requirements Document (CRD, DOCX) - NEW-V3.23.156. The Plan-phase
     # requirements-capture instrument: evidence-primed current-environment summary + REQ-ID capture
@@ -2951,6 +2973,20 @@ def main():
     _actx.workers = workers
     _actx.snap_dict = snap_dict
     _stage_finalize(_actx)
+
+    # Exit disposition. A gate refusal is a CORRECT run that withheld a document, so the default
+    # stays 0 -- every wrapper here reads non-zero as "the run failed" (webapp/backend/ingest.py
+    # raises, and serve.py renders that to a field engineer as "redaction FAILED ... Treat anything
+    # already written as UNREDACTED"), and a false alarm on a correct run is its own safety defect.
+    # --fail-on-gate-refusal opts a pipeline into stopping instead. 2, not 1, matches this repo's
+    # refusal code (holdout.py, scorecard.py); 1 stays "the run itself broke".
+    refused = [v for v in gate_verdicts if v.refused]
+    if refused and args.fail_on_gate_refusal:
+        logger.error("[GATE] exiting 2 (--fail-on-gate-refusal): withheld %s. The refusal(s) are "
+                     "recorded in the gate ledger -- python -m cisco_toolkit.gate_state show",
+                     ", ".join(v.generator for v in refused))
+        return 2
+    return 0
 
 
 def _stage_finalize(ctx: "AnalysisContext") -> None:
@@ -3055,4 +3091,11 @@ def _executive_brief(ctx: "AnalysisContext") -> dict:
 
 
 if __name__ == "__main__":
-    main()
+    # sys.exit(), not a bare main(): this door SWALLOWED main()'s return code, so `python
+    # COLLECT_PARSE_V3_23_0.py ...` exited 0 no matter what it returned, while the `cisco-assess`
+    # console script (which wraps main() in sys.exit) and Atlas's --run-engine dispatch (int(rc or
+    # 0)) both honoured it. The repo's own e2e exit-code assertion runs through THIS door
+    # (tests/test_pipeline_golden.py), so it was blind to any code main() returned. No behaviour
+    # change today beyond that: main() returns 0 on every path unless --fail-on-gate-refusal is
+    # passed and a gate refused.
+    sys.exit(main())

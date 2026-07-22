@@ -407,3 +407,118 @@ def test_pipeline_inprocess_builds_all_three_deliverables(tmp_path, monkeypatch)
     else:
         deck = os.path.splitext(str(out_xlsx))[0] + "_executive_deck.pptx"
         assert os.path.isfile(deck), "executive deck (PPTX) was not written despite python-pptx installed"
+
+
+# ------------------------------------------------------- PPDIOO gate refusal: record + exit code
+
+def _gated_run(tmp_path, monkeypatch, eng_root, *extra):
+    """One real engine run against `eng_root`'s gate ledger. Returns main()'s exit code.
+
+    Deliberately drives the WHOLE engine rather than calling gate_state directly: the record this
+    asserts on has to come from the real producer, or the test only proves that a fixture agrees
+    with the parser that made it. The optional heavyweight deliverables are off (the gated ones,
+    design + MOP, stay on) purely for runtime.
+
+    `--gate-root` is passed EXPLICITLY rather than relying on the chdir below, so the test does not
+    manufacture its own precondition: it exercises the flag a wrapper with a synthetic cwd must use.
+    """
+    collection = fx.write_collection(str(tmp_path / "collection"))
+    devices = tmp_path / "devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "template.xlsx"
+    _make_template(str(template))
+    out_xlsx = tmp_path / "out.xlsx"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "cisco-assess",
+        "--no-collect", "--collection-dir", collection,
+        "--devices-file", str(devices), "--template", str(template),
+        "--output", str(out_xlsx), "--workers", "1",
+        "--gate-root", str(eng_root),
+        "--no-html", "--no-docx", "--no-pptx", "--no-crd", "--no-engagement",
+        "--no-opshandbook", "--no-archreview",
+        *extra,
+    ])
+    return cp.main(), out_xlsx
+
+
+def test_gate_refusal_is_recorded_durably_and_exits_0_unless_asked(tmp_path, monkeypatch):
+    """End-to-end, through the engine: a refused deliverable leaves a durable ledger row, is really
+    absent from disk, and does NOT fail the run — the exit code is opt-in.
+
+    The default matters as much as the flag. webapp/backend/ingest.py raises on any non-zero and
+    serve.py renders that to a field engineer as "redaction FAILED ... Treat anything already
+    written as UNREDACTED", so a refusal reported as a failure is a false safety alarm on a run that
+    behaved correctly.
+    """
+    from cisco_toolkit import gate_state
+
+    eng = tmp_path / "engagement"
+    eng.mkdir()
+    # A ledger that exists (so gates are ACTIVE) with design's upstream explicitly revoked and the
+    # MOP's never signed: both gated deliverables must be withheld.
+    gate_state.record_decision("assessment_approved", "revoked", root=str(eng), by="lead")
+
+    rc, out_xlsx = _gated_run(tmp_path, monkeypatch, eng)
+    assert rc == 0, "a correct run that withheld a gated document must not report failure"
+
+    design = os.path.splitext(str(out_xlsx))[0] + "_design.docx"
+    mop = os.path.splitext(str(out_xlsx))[0] + "_mop.docx"
+    assert not os.path.exists(design), "the design was written despite a revoked assessment gate"
+    assert not os.path.exists(mop), "the MOP was written despite unsigned upstream gates"
+    assert out_xlsx.is_file(), "the refusal must withhold only the gated documents"
+
+    ledger = json.loads((eng / "docs" / "engagement-state.json").read_text(encoding="utf-8"))
+    refusals = [a for a in ledger["audit"] if a["event"] == "refuse"]
+    assert {a["generator"] for a in refusals} == {"design", "mop"}, \
+        f"the engine's refusals did not reach the ledger: {refusals}"
+    assert all(a["who"] and a["at"] and a["reason"] for a in refusals)
+    assert refusals[0]["missing"] == ["assessment_approved"]
+
+    # Re-running is the natural response to a refusal — the reason this record lives in the ledger
+    # and not in the per-run manifest a re-run overwrites. The first run's rows must still be there.
+    rc2, _ = _gated_run(tmp_path, monkeypatch, eng, "--fail-on-gate-refusal")
+    assert rc2 == 2, "--fail-on-gate-refusal did not surface the withheld deliverables"
+
+    ledger2 = json.loads((eng / "docs" / "engagement-state.json").read_text(encoding="utf-8"))
+    assert len([a for a in ledger2["audit"] if a["event"] == "refuse"]) == 4, \
+        "the re-run replaced the earlier refusals instead of appending to them"
+
+
+def test_gate_refusal_exit_code_reaches_the_bare_script_door(tmp_path):
+    """`python COLLECT_PARSE_V3_23_0.py` swallowed main()'s RETURN VALUE entirely (a bare `main()`
+    under __main__), while the cisco-assess console script and Atlas's --run-engine dispatch both
+    honoured it. tests/test_pipeline_golden.py drives THAT door, so the repo's only e2e exit-code
+    assertion was blind to any code main() returned.
+
+    This must run the real pipeline to a REFUSAL, because that is the only way main() *returns* a
+    non-zero code. An argparse usage error would be no proof at all: `ap.error()` raises SystemExit,
+    which propagates out of the module whether or not the door wraps main() in sys.exit — that
+    version of this test passed against the unfixed door.
+    """
+    import subprocess
+
+    from cisco_toolkit import gate_state
+
+    eng = tmp_path / "engagement"
+    eng.mkdir()
+    gate_state.record_decision("assessment_approved", "revoked", root=str(eng), by="lead")
+    collection = fx.write_collection(str(tmp_path / "collection"))
+    devices = tmp_path / "devices.json"
+    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    template = tmp_path / "template.xlsx"
+    _make_template(str(template))
+
+    script = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
+    proc = subprocess.run(
+        [sys.executable, script,
+         "--no-collect", "--collection-dir", collection,
+         "--devices-file", str(devices), "--template", str(template),
+         "--output", str(tmp_path / "out.xlsx"), "--workers", "1",
+         "--gate-root", str(eng), "--fail-on-gate-refusal",
+         "--no-html", "--no-docx", "--no-pptx", "--no-crd", "--no-engagement",
+         "--no-opshandbook", "--no-archreview"],
+        cwd=str(tmp_path), capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 2, (
+        f"the bare-script door swallowed main()'s returned exit code (got {proc.returncode})\n"
+        f"STDOUT\n{proc.stdout[-2000:]}\nSTDERR\n{proc.stderr[-2000:]}")
