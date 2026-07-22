@@ -1187,41 +1187,93 @@ def load_devices(devices_file: str, allow_prompt: bool = True) -> List[dict]:
     return data
 
 
-def write_json_file(path: str, data: dict, compact: bool = False) -> None:
-    """ATOMIC JSON write: same-directory tmp -> fsync -> os.replace, the discipline
-    cisco_toolkit.gate_state.save_store already applies to the gate ledger. A reader therefore sees
-    either the complete old file or the complete new one, never a truncated mix, no matter when the
-    process dies. This matters most for the two files it writes that are EVIDENCE, not scratch: the
-    snapshot, and the sealed run manifest whose whole purpose is tamper-evidence — a torn write
-    would destroy exactly the guarantee the chain_root seal exists to provide. The plain
-    ``open(path, "w")`` this replaced truncated the good file BEFORE writing the new bytes, so a
-    crash in that window (ADR-0004 P3: a USB unplug mid-write) left neither.
-    """
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    # Same directory -> os.replace stays atomic (it is not across filesystems); pid-stamped so two
-    # concurrent runs writing one output dir cannot collide on the temp name.
+# os.replace on Windows must DELETE the destination, so it fails while ANY process holds a handle
+# to it -- an on-access AV scan, the search indexer, a viewer the engineer left open on the stick.
+# A short retry absorbs the transient scanners without making the caller wait meaningfully.
+_ATOMIC_REPLACE_ATTEMPTS = 4
+_ATOMIC_REPLACE_BACKOFF_S = 0.1
+
+
+def _write_json_atomic(path: str, dump) -> None:
+    """Publish `path` atomically: same-directory tmp -> fsync -> os.replace. Raises on any failure,
+    and never leaves the temp file behind (including on KeyboardInterrupt/SIGTERM)."""
+    # Same directory keeps os.replace atomic (it is not, across filesystems); pid-stamped so two
+    # concurrent runs sharing an output dir cannot collide on the temp name.
     tmp = "%s.%d.tmp" % (path, os.getpid())
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            # NEW-Tier3#14: the SNAPSHOT is written compact (a pure size win — every consumer json.loads it
-            # and compares PARSED objects, so byte formatting is invisible to the golden/--compare contract);
-            # the run manifest / phase timings stay indented (human-readable) by default.
-            if compact:
-                json.dump(data, f, separators=(",", ":"), ensure_ascii=False)
-            else:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            dump(f)
             f.flush()
             os.fsync(f.fileno())          # bytes reach the medium BEFORE the rename publishes them
-        os.replace(tmp, path)
+        for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, path)
+                return
+            except OSError:
+                if attempt == _ATOMIC_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_ATOMIC_REPLACE_BACKOFF_S)
     except BaseException:
         # BaseException, not Exception: KeyboardInterrupt / SIGTERM is precisely the unplug-and-Ctrl-C
-        # case this exists for, and a leaked .tmp beside a sealed artifact is itself a confusing
-        # audit artifact. Clean up, then re-raise unchanged.
+        # case this exists for, and a leaked .tmp is itself a confusing audit artifact (it would
+        # otherwise be hashed into the next run's sealed artifact set).
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def write_json_file(path: str, data: dict, compact: bool = False) -> None:
+    """Crash-safe JSON write: ATOMIC where the filesystem allows it, with a LOUD degrade where it
+    does not -- never a hard failure, because a plain truncate-write is what this used to do and it
+    succeeds in cases os.replace cannot.
+
+    Why atomic at all: the plain ``open(path, "w")`` this replaced truncates the good file BEFORE
+    writing the new bytes, so a crash in that window (ADR-0004 P3: a USB unplug mid-write) left
+    neither the old file nor a complete new one. That matters most for the two files here that are
+    EVIDENCE, not scratch: the snapshot, and the sealed run manifest whose whole purpose is
+    tamper-evidence -- a torn write destroys exactly the guarantee ``chain_root`` provides.
+
+    Why the fallback is NOT optional: on Windows ``os.replace`` must delete the destination, so it
+    raises PermissionError while any process holds a handle -- where the old truncate-write simply
+    succeeded (a reader opened via the CRT shares read+write). Failing there would be a REGRESSION,
+    and worse than the bug being fixed: the caller logs a warning and ships the run, leaving the
+    PREVIOUS manifest in place beside freshly rewritten artifacts -- a stale seal that still passes
+    verify_manifest while every hash in it is wrong. A torn write at least announces itself; a stale
+    one certifies a lie. So we retry briefly, then fall back to the in-place write and say so.
+
+    The fallback is deliberately noisy: silent degradation of a durability guarantee is the failure
+    mode --selftest exists to prevent elsewhere in this codebase.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+    def _dump(fh):
+        # NEW-Tier3#14: the SNAPSHOT is written compact (a pure size win — every consumer json.loads it
+        # and compares PARSED objects, so byte formatting is invisible to the golden/--compare contract);
+        # the run manifest / phase timings stay indented (human-readable) by default.
+        if compact:
+            json.dump(data, fh, separators=(",", ":"), ensure_ascii=False)
+        else:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+
+    try:
+        _write_json_atomic(path, _dump)
+        return
+    except (KeyboardInterrupt, SystemExit):
+        # Nothing was published and the temp is gone, so the existing file is intact -- exactly the
+        # outcome this function exists to guarantee. Never downgrade an interrupt into a retry.
+        raise
+    except Exception as e:
+        logger.warning(
+            "  Atomic write unavailable for %s (%s: %s) -- falling back to an in-place write. "
+            "The file is NOT crash-safe for this write: a failure now can leave it truncated. "
+            "Usual cause on Windows is another process holding the file open (AV scan, indexer, an "
+            "open viewer); close it and re-run to restore the atomic path.",
+            os.path.basename(path), type(e).__name__, e)
+
+    with open(path, "w", encoding="utf-8") as f:
+        _dump(f)
 
 
 def file_sha256(path: str) -> str:
@@ -1233,45 +1285,10 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def _gate_verdict(generator: str, proceeded: bool, override_reason, root: str = ".") -> dict:
-    """One PPDIOO document-gate decision, recorded as OBSERVABLE FACT rather than re-derived policy.
-
-    ``proceeded`` is the boolean that actually governed this run, so the record cannot disagree with
-    what the run did. The disposition separates the four outcomes an auditor must never see
-    conflated — above all ``ungated`` (no ledger at all: brownfield warn-and-proceed) from
-    ``approved`` (an explicit recorded approval); collapsing those is the coverage-honesty failure
-    where "not gated" silently reads as "gated and passed".
-
-    Deliberately taxonomy-agnostic: it asks gate_state only for facts (is there a store, which
-    approvals are missing) and never re-implements ``enforce``'s branching, so any refusal class the
-    gate layer grows still lands truthfully as ``refused`` instead of being mislabelled.
-    """
-    disposition = "refused"
-    missing: list = []
-    if proceeded:
-        disposition = "overridden" if (override_reason or "").strip() else "approved"
-    try:
-        from cisco_toolkit import gate_state as _gs
-        store, _path = _gs.load_store(root)
-        if store is None:
-            # No store => enforce() took the brownfield branch. Never call that an approval.
-            if proceeded:
-                disposition = "ungated"
-        else:
-            missing = _gs.missing_approvals(store, generator)
-    except Exception:
-        # An unreadable or absent ledger must not break the seal. `proceeded` is still the truth,
-        # and a refusal caused by that unreadability is already correctly recorded as `refused`.
-        pass
-    return {"gate": generator, "proceeded": bool(proceeded),
-            "disposition": disposition, "missing_approvals": missing}
-
-
-def build_run_manifest(out_xlsx: str, snap_dict: dict, gate_verdicts=None) -> dict:
+def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
     """roadmap D2 + J4: a sealed, deterministic chain-of-custody manifest for one assessment run — a
     hash-chained ledger of the pipeline stages PLUS a per-artifact sha256 of every produced deliverable
-    PLUS the coverage-honest abstention ledger PLUS the PPDIOO gate verdicts that decided which
-    deliverables were allowed to exist, sealed by ``chain_root`` (tamper-evident without any Git
+    PLUS the coverage-honest abstention ledger, sealed by ``chain_root`` (tamper-evident without any Git
     dependency). Pure stdlib via cisco_toolkit.manifest; the GAIT-style audit trail, offline.
 
     SCOPE — this is a PER-RUN seal, not a cross-run archive. It describes the artifact set currently
@@ -1292,7 +1309,11 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict, gate_verdicts=None) -> di
     base_name = os.path.basename(base)
     artifacts = {}
     for path in sorted(_glob.glob(os.path.join(out_dir, base_name + "*"))):
-        if os.path.isfile(path) and not path.endswith(".run_manifest.json"):
+        # Skip .tmp: a write killed uncatchably (TerminateProcess / power loss) leaves the atomic
+        # writer's temp behind, and a CONCURRENT run's temp is visible for the duration of its write.
+        # Either would otherwise be sealed as a delivered artifact -- publishing, under the seal,
+        # bytes the pipeline deliberately never published.
+        if os.path.isfile(path) and not path.endswith((".run_manifest.json", ".tmp")):
             try:
                 with open(path, "rb") as _fh:
                     artifacts[os.path.basename(path)] = _manifest.artifact_sha256(_fh.read())
@@ -1302,10 +1323,6 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict, gate_verdicts=None) -> di
     steps = [
         {"stage": "collect", "inventory": cc.get("inventory"), "collected": cc.get("complete")},
         {"stage": "analyze", "punchlist_findings": len(snap_dict.get("punchlist") or [])},
-        # Chronologically before `deliver`: the gates decide which documents may be written. Sealing
-        # the verdicts is what makes an ABSENT deliverable auditable — without it a refused design
-        # and a --no-design run are indistinguishable in the record.
-        {"stage": "gate", "verdicts": list(gate_verdicts or [])},
         {"stage": "deliver", "artifacts": sorted(artifacts)},
     ]
     ledger = {subj: _ssot.abstention_reason(snap_dict, subj) for subj in
@@ -2926,19 +2943,13 @@ def main():
     # present (docs/engagement-state.json) and the marker unapproved, this REFUSES (skips the
     # write, loudly); --override-gate proceeds and appends a who/when/why audit line. No store at
     # all = warn-and-proceed (brownfield).
-    # The verdict is captured for the sealed run manifest BEFORE the write is attempted, so a
-    # refusal is auditable rather than merely logged (a skipped deliverable otherwise looks
-    # identical to --no-design in the record).
-    if not args.no_design:
-        _design_gate_ok = gate_enforce("design", override_reason=args.override_gate)
-        _actx.gate_verdicts.append(_gate_verdict("design", _design_gate_ok, args.override_gate))
-        if _design_gate_ok:
-            design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
-            label = os.path.splitext(os.path.basename(out_xlsx))[0]
-            try:
-                write_design_doc_docx(design_out, snap_dict, label)
-            except Exception as e:
-                logger.warning(f"  Design document (DOCX) write failed: {e}")
+    if not args.no_design and gate_enforce("design", override_reason=args.override_gate):
+        design_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_design.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_design_doc_docx(design_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  Design document (DOCX) write failed: {e}")
 
     # Phase 34: per-wave Method of Procedure (MOP, DOCX) - NEW-V3.23.149. The Implement-phase cutover
     # template, one section per migration wave, reusing the validation plan as the post-cutover checks.
@@ -2946,16 +2957,13 @@ def main():
     # P0-3/DEC-003: the MOP follows an APPROVED LLD + a captured current-state baseline (PPDIOO
     # gate; mop-change-author charter). Same refusal/override/brownfield semantics as the design
     # gate above — the refusal skips ONLY this deliverable; the workbook/snapshot already saved.
-    if not args.no_mop:
-        _mop_gate_ok = gate_enforce("mop", override_reason=args.override_gate)
-        _actx.gate_verdicts.append(_gate_verdict("mop", _mop_gate_ok, args.override_gate))
-        if _mop_gate_ok:
-            mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
-            label = os.path.splitext(os.path.basename(out_xlsx))[0]
-            try:
-                write_mop_docx(mop_out, snap_dict, label)
-            except Exception as e:
-                logger.warning(f"  MOP (DOCX) write failed: {e}")
+    if not args.no_mop and gate_enforce("mop", override_reason=args.override_gate):
+        mop_out = os.path.splitext(os.path.abspath(out_xlsx))[0] + "_mop.docx"
+        label = os.path.splitext(os.path.basename(out_xlsx))[0]
+        try:
+            write_mop_docx(mop_out, snap_dict, label)
+        except Exception as e:
+            logger.warning(f"  MOP (DOCX) write failed: {e}")
 
     # Phase 35: Customer Requirements Document (CRD, DOCX) - NEW-V3.23.156. The Plan-phase
     # requirements-capture instrument: evidence-primed current-environment summary + REQ-ID capture
@@ -3031,7 +3039,7 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
     # GAIT-style audit trail: a hash-chained ledger of the pipeline stages + per-artifact sha256 + the
     # coverage-honest abstention ledger, sealed by chain_root. LAST emit so it hashes every produced artifact.
     try:
-        _run_manifest = build_run_manifest(out_xlsx, snap_dict, ctx.gate_verdicts)
+        _run_manifest = build_run_manifest(out_xlsx, snap_dict)
         _manifest_path = os.path.splitext(os.path.abspath(out_xlsx))[0] + ".run_manifest.json"
         write_json_file(_manifest_path, _run_manifest)
         logger.info(f"[OK] Run manifest (chain-of-custody): {_manifest_path}  "
