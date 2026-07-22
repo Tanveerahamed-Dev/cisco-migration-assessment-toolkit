@@ -273,6 +273,11 @@ def run_redaction(src: str, out: str, redact_collection: bool = False) -> int:
           f"Wrote {len(report['files'])} file(s):")
     for name in report["files"]:
         print(f"    {name}")
+    # No PPDIOO gate line is printed here ON PURPOSE — this run cannot identify the engagement's
+    # ledger (see ingest.run_redaction_folder), and every document already carries its own
+    # "DRAFT - generated; not yet reviewed" status. A gate verdict inferred from whichever ledger
+    # happened to sit nearby would be worse than silence: it could report another client's
+    # approvals as this engagement's.
     # Say exactly what was checked. The engine pseudonymizes IPs, MACs and serials, but the
     # verification here covers surviving PRIVATE IPv4 in the snapshot plus proof that the engine's
     # redaction phases actually ran. Claiming more than that ("every IP/MAC/serial ... verified")
