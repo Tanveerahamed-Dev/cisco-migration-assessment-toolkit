@@ -1193,7 +1193,18 @@ def redact_collection_dir(collection_dir: str) -> tuple:
     source; nothing is ever deleted. Idempotent (the placeholder never re-matches).
     Returns (txt_files_scanned, files_changed). Fail-soft per file — one unreadable
     capture never aborts the scrub of the rest. Note: rewritten captures will no longer
-    match archive hashes recorded at collection time (deliberate, opt-in)."""
+    match archive hashes recorded at collection time (deliberate, opt-in).
+
+    BYTE FIDELITY (the promise above is "values only; nothing is ever deleted", and it was
+    being broken twice on the engineer's ONLY copy of the raw captures):
+    * ``errors="surrogateescape"`` on BOTH read and write round-trips bytes that are not valid
+      UTF-8 exactly. ``errors="ignore"`` silently DELETED them — e.g. 0x96, the cp1252 en-dash
+      that shows up in real banners and interface descriptions.
+    * ``newline=""`` on both sides stops text mode rewriting every ``\\n`` to ``\\r\\n`` on
+      Windows, which changed every line of every scrubbed capture.
+    * temp file + ``os.replace`` makes the rewrite atomic: a yank or a full disk mid-write left
+      a truncated capture that is indistinguishable from a legitimate scrub, because the run
+      manifest was sealed a phase earlier."""
     scanned = changed = 0
     for root, _dirs, files in os.walk(collection_dir or ""):
         for fn in files:
@@ -1201,7 +1212,7 @@ def redact_collection_dir(collection_dir: str) -> tuple:
                 continue
             p = os.path.join(root, fn)
             try:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                with open(p, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
                     text = f.read()
             except Exception as e:
                 logger.debug(f"redact_collection_dir: unreadable {p}: {e}")
@@ -1209,12 +1220,19 @@ def redact_collection_dir(collection_dir: str) -> tuple:
             scanned += 1
             scrubbed = _scrub_secrets(text)
             if scrubbed != text:
+                tmp = p + ".redacting"
                 try:
-                    with open(p, "w", encoding="utf-8") as f:
+                    with open(tmp, "w", encoding="utf-8", errors="surrogateescape",
+                              newline="") as f:
                         f.write(scrubbed)
+                    os.replace(tmp, p)      # atomic: the capture is either old or new, never half
                     changed += 1
                 except Exception as e:
                     logger.warning(f"redact_collection_dir: could not rewrite {p}: {e}")
+                    try:
+                        os.unlink(tmp)      # never leave a partial beside the real capture
+                    except OSError:
+                        pass
     return scanned, changed
 
 
