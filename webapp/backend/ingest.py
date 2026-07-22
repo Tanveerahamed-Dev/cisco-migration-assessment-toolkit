@@ -358,6 +358,20 @@ def _iter_evidence_strings(node: Any, path: str = ""):
 _REDACTION_PHASES = ("redact collected dataclasses", "redact workbook cells")
 
 
+def _phase_rows(data: Any) -> List[dict]:
+    """The timed-phase rows out of a ``.phase_timings.json`` sidecar.
+
+    The engine writes a DICT — ``{"n_devices": …, "workers": …, "total_seconds": …,
+    "phases": [{phase, seconds, ok}]}`` (``COLLECT_PARSE_V3_23_0._stage_finalize``). This was read as
+    if the file were the bare LIST of rows, so iterating it yielded the dict's KEYS, ``str.get``
+    raised ``AttributeError``, and the defensive ``except`` below swallowed it — the sidecar arm
+    never fired on a real run, leaving the stderr scrape as the only live signal for a failed
+    redaction phase. A bare list is still accepted so the parser is not the fragile half again."""
+    if isinstance(data, dict):
+        data = data.get("phases")
+    return [row for row in (data or []) if isinstance(row, dict)]
+
+
 def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
     """Refuse if a redaction phase was skipped or failed inside the engine.
 
@@ -367,7 +381,8 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
     timings = Path(str(out_xlsx)[: -len(".xlsx")] + ".phase_timings.json")
     if timings.is_file():
         try:
-            for row in json.loads(timings.read_text(encoding="utf-8", errors="replace")) or []:
+            for row in _phase_rows(json.loads(timings.read_text(encoding="utf-8",
+                                                                errors="replace"))):
                 if str(row.get("phase", "")).lower() in _REDACTION_PHASES and row.get("ok") is False:
                     failed.append(row["phase"])
         except (OSError, ValueError, TypeError, AttributeError):
