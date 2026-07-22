@@ -740,13 +740,16 @@ def _attach_package_logging(fh, ch, level):
        ("PHASE 2.7 step 21") moved the sheet writers to ``cisco_toolkit.excel`` — the same commit
        that removed them from the log. Attaching here RESTORES that output rather than inventing it.
 
-    Volume, MEASURED rather than assumed: 132 call sites (93 info / 22 warning / 12 error / 5 debug),
-    but the per-run count is O(devices), NOT constant — ``cisco_toolkit.build`` logs once per device in
-    ``collect_global_arp`` (build.py:993) and again in ``build_interfaces`` (build.py:1091), so a run
-    grows ~1-2 lines per device on top of a ~70-line constant floor (excel's one-line-per-sheet
-    confirmations). Measured 82 records at 3 devices, 199 at 120; project ~380 at the canonical
-    303-device fleet. That is still the right granularity for a chain-of-custody log — a few hundred
-    lines a run, none of them per-interface — so both handlers are attached rather than the file alone.
+    Volume, MEASURED rather than assumed: 132 call sites (93 info / 22 warning / 12 error / 5 debug).
+    The floor is ~80 records a run and CONSTANT — mostly excel's one line per sheet written. Two sites
+    in ``cisco_toolkit.build`` are per-device but CONDITIONAL: build.py:993 fires only when the device
+    returned ARP entries (``if device_total > 0``) and build.py:1091 only when the config carries
+    ``spanning-tree portfast bpduguard default``. So on the synthetic fixtures neither fires and the
+    count is flat 81 at 3, 30 and 60 devices; on a real ARP-bearing fleet it grows ~1/device, i.e.
+    ~380 at the canonical 303. Either way this is a few hundred lines a run, none per-interface, and
+    it is dwarfed by the engine's OWN pre-existing per-device console output (~13 lines/device) — at
+    303 devices the package tree is ~2% of the console. That is the right granularity for a
+    chain-of-custody log, so both handlers are attached rather than the file alone.
     (File-only would also have SILENCED today's stderr warnings: attaching any handler stops
     ``lastResort`` firing.) ``propagate = False`` stops a later ``basicConfig()``, or a root handler
     that is not stderr, from duplicating or reformatting these records; note that attaching handlers
@@ -782,8 +785,14 @@ def setup_logging(level=logging.INFO):
     # its own globals. The logging registry is process-global, so the open handler is the reliable
     # witness.) Console-script runs (`cisco-assess`, Atlas's --run-engine) import by real name and were
     # never affected -- which is why this cost the log file its tail without failing anything.
+    # `stream is not None` matters: FileHandler.close() sets stream=None/_closed=True, and a closed
+    # mode="w" handler REFUSES to reopen on emit -- reusing one would silently discard every
+    # subsequent record, the exact failure class this guard exists to prevent. Bound worth knowing:
+    # LOG_FILE is relative, so this matches per-CWD. Nothing in the engine chdirs, but a host that
+    # does gets a separate log per directory (and, on returning, a fresh mode="w" file).
     fh = next((h for h in logger.handlers
                if isinstance(h, logging.FileHandler)
+               and getattr(h, "stream", None) is not None
                and os.path.abspath(getattr(h, "baseFilename", "")) == os.path.abspath(LOG_FILE)), None)
     if logger.handlers:
         logger.handlers.clear()
@@ -1306,7 +1315,14 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict) -> dict:
         # Do NOT read the two steps as a cross-check: the artifact glob hashes whatever is on disk,
         # so a stale *_design.docx from an earlier run to the same --output appears beside a "refused"
         # verdict. An empty list means NO gate ran (e.g. --no-design --no-mop); coverage-honest, it is
-        # not "gates passed". Log text is the convenience copy; THIS is the record.
+        # not "gates passed".
+        #
+        # Log and seal are COMPLEMENTARY, not ranked -- each covers the other's blind spot. The log
+        # line is written at the INSTANT of the verdict but is plain text anyone can edit; this row is
+        # tamper-evident but is only written here, in the last stage. Everything between the gates and
+        # this point (four DOCX renders, ~4s on a 3-device fixture) is a window where a crash, a
+        # SIGTERM or AssessHub's engine timeout loses the seal and leaves ONLY the log. That is why
+        # the change attaches the package logger as well as sealing the ledger; neither alone suffices.
         {"stage": "gate", "verdicts": _gate_state.verdicts()},
         {"stage": "deliver", "artifacts": sorted(artifacts)},
     ]
@@ -1722,6 +1738,11 @@ def main():
     if args.debug_arp:
         logger.setLevel(logging.DEBUG)
         for h in logger.handlers: h.setLevel(logging.DEBUG)
+        # The per-device ARP debug lines this flag advertises moved to cisco_toolkit.build (dcf53a8,
+        # PHASE 2.7 step 27), so lowering only the engine logger left the flag a documented no-op --
+        # the package tree filters at ITS logger before the (shared, already-lowered) handlers see
+        # anything. Lower it too, or --debug-arp still cannot reach the lines it is named after.
+        logging.getLogger("cisco_toolkit").setLevel(logging.DEBUG)
 
     # NEW-V15: diff mode - compare two snapshots, no SSH/template needed.
     if args.compare:
@@ -3023,7 +3044,8 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
     chain-of-custody (39), opt-in raw-capture scrub (40), perf-timings sidecar (41). A true LEAF:
     nothing downstream reads its outputs, which is why it is the safest first extraction. Reads the
     context's out_xlsx / snap_dict / root_dir / args / all_devices_meta / workers + the module-global
-    _PHASE_TIMINGS; the body below is byte-identical to the inline block it replaced."""
+    _PHASE_TIMINGS. The body was byte-identical to the inline block it replaced until the gate-audit
+    change, which reworked the manifest write's error arm and appended the closing gate summary."""
     out_xlsx, snap_dict, root_dir, args = ctx.out_xlsx, ctx.snap_dict, ctx.root_dir, ctx.args
     all_devices_meta, workers = ctx.all_devices_meta, ctx.workers
 
@@ -3076,6 +3098,27 @@ def _stage_finalize(ctx: "AnalysisContext") -> None:
                     f"slowest: {_slowest['phase']} {_slowest['seconds']}s)")
     except Exception as e:
         logger.warning(f"  phase-timings write failed (non-fatal): {e}")
+
+    # Phase 42: closing gate summary. Every phase above ends in "[OK] ..." whether or not a gate
+    # refused, so a run that produced NEITHER the design nor the MOP still signed off with five
+    # consecutive [OK] lines -- "not observed" reading as healthy, on the last thing the operator
+    # sees. The per-verdict ERROR is emitted thousands of lines earlier (a 303-device run prints
+    # ~4,000). Restate the refusals LAST, at ERROR, naming the deliverables that were withheld.
+    # Silent when nothing was refused: a summary that always prints is one nobody reads.
+    try:
+        from cisco_toolkit import gate_state as _gs
+        _refused = [v for v in _gs.verdicts() if str(v.get("verdict", "")).startswith("refused")]
+        if _refused:
+            logger.error("[GATE] %d deliverable(s) WITHHELD by the PPDIOO document gates: %s -- "
+                         "record the approval ('python -m cisco_toolkit.gate_state approve <gate>') "
+                         "or re-run with --override-gate \"<reason>\" (audited). Sealed in the run "
+                         "manifest's 'gate' step.",
+                         len(_refused),
+                         "; ".join(f"{v['generator']} (missing: "
+                                   f"{', '.join(v.get('missing') or []) or 'not evaluated'})"
+                                   for v in _refused))
+    except Exception as e:
+        logger.warning(f"  gate summary failed (non-fatal): {e}")
 
 
 # =============================================================================

@@ -18,10 +18,14 @@ structurally so `build_run_manifest` can seal it into the manifest's hash chain.
 the audit record; the log is the convenience copy. Tests below therefore assert the seal BREAKS when a
 verdict is edited out — a record that can be quietly deleted is not an audit trail.
 """
+import ast
+import inspect
 import json
 import logging
 import os
 import sys
+import textwrap
+import types
 
 import pytest
 
@@ -131,8 +135,13 @@ def test_package_info_records_are_no_longer_discarded(engine_log):
 # ------------------------------------------------------------------- defect 2: it was fragile
 
 def test_root_handlers_cannot_swallow_or_duplicate_gate_records(engine_log, tmp_path):
-    """`propagate = False` is the fragility fix. A root handler installed later (the `basicConfig()`
-    case) must neither steal these records nor double them in the log."""
+    """`propagate = False` is the fragility fix. A root handler installed later must neither steal
+    these records nor double them in the log.
+
+    Installing the handler directly IS the general case: `logging.basicConfig()`'s entire effect is to
+    add one to root. Calling `basicConfig()` here would prove nothing — it no-ops whenever root
+    already has a handler, which it does under pytest — and `force=True` would close pytest's own
+    capture handlers for the rest of the session."""
     captured = []
 
     class _Capture(logging.Handler):
@@ -141,7 +150,6 @@ def test_root_handlers_cannot_swallow_or_duplicate_gate_records(engine_log, tmp_
 
     root = logging.getLogger()
     root.addHandler(_Capture())
-    logging.basicConfig()                                    # the exact call named in the report
     _write_store(tmp_path)
     gate_state.enforce("design", root=str(tmp_path))
 
@@ -277,6 +285,71 @@ def test_reset_verdicts_prevents_cross_run_bleed(tmp_path):
     assert len(gate_state.verdicts()) == 1
     gate_state.reset_verdicts()
     assert gate_state.verdicts() == []
+
+
+def test_every_return_path_in_enforce_records_a_verdict():
+    """STRUCTURAL guard, not an enumeration: every `return` in `enforce()` must be preceded by a
+    `_record(...)` in its own block.
+
+    `test_every_enforce_outcome_records_a_verdict` only covers the outcomes that exist TODAY. Gate
+    work is in flight on several branches (a `--gate-root` / engagement-root resolution change adds at
+    least one new `return False` for a mis-set root), and a new refusal that forgets to record is
+    invisible in exactly the way this whole change exists to fix — it would refuse a deliverable and
+    seal nothing. This fails the moment such a path is added."""
+    fn = ast.parse(textwrap.dedent(inspect.getsource(gate_state.enforce))).body[0]
+    unrecorded = []
+
+    def _walk(stmts, recorded):
+        seen = recorded
+        for st in stmts:
+            if (isinstance(st, ast.Expr) and isinstance(st.value, ast.Call)
+                    and getattr(st.value.func, "id", "") == "_record"):
+                seen = True
+            for block in ("body", "orelse", "finalbody"):
+                if isinstance(getattr(st, block, None), list):
+                    _walk(getattr(st, block), seen)
+            for handler in getattr(st, "handlers", []) or []:
+                _walk(handler.body, seen)
+            if isinstance(st, ast.Return) and not seen:
+                unrecorded.append(st.lineno)
+
+    _walk(fn.body, False)
+    assert not unrecorded, (
+        f"enforce() returns without recording a verdict at body line(s) {unrecorded} -- that "
+        f"outcome would be refused/allowed with no durable trace. Add a _record(...) call.")
+
+
+def test_withheld_deliverables_are_restated_at_the_end_of_the_run(engine_log, tmp_path,
+                                                                 monkeypatch):
+    """Every finalize phase signs off with `[OK] ...`, so a run that produced neither the design nor
+    the MOP used to END on a success line, thousands of lines after the refusal. The closing summary
+    must name what was withheld -- and must stay silent when nothing was."""
+    monkeypatch.chdir(tmp_path)
+    _write_store(tmp_path)
+    gate_state.enforce("design", root=str(tmp_path))
+    ctx = types.SimpleNamespace(
+        out_xlsx=str(tmp_path / "wb.xlsx"), snap_dict={}, root_dir=str(tmp_path),
+        args=types.SimpleNamespace(redact_collection=False), all_devices_meta=[], workers=1)
+    (tmp_path / "wb.xlsx").write_text("workbook", encoding="utf-8")
+    cp._stage_finalize(ctx)
+    tail = engine_log.read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert "WITHHELD" in tail and "design" in tail, f"run ended on a non-gate line: {tail!r}"
+
+    gate_state.reset_verdicts()                       # nothing refused -> no summary
+    cp._stage_finalize(ctx)
+    assert "WITHHELD" not in engine_log.read_text(encoding="utf-8").strip().splitlines()[-1]
+
+
+def test_a_closed_log_handler_is_never_reused(engine_log, tmp_path):
+    """The re-entry guard reuses an open FileHandler. It must NOT reuse a CLOSED one: `close()` sets
+    stream=None, and a closed mode="w" handler refuses to reopen on emit, so every later record would
+    be silently dropped -- the same silent-loss class the guard was added to remove."""
+    eng = logging.getLogger("CiscoMigrationAutofillV3_14_6")
+    for h in [h for h in eng.handlers if isinstance(h, logging.FileHandler)]:
+        h.close()
+    cp.setup_logging()
+    logging.getLogger("cisco_toolkit.gate_state").error("[GATE REFUSED] design: after a close()")
+    assert "after a close()" in engine_log.read_text(encoding="utf-8")
 
 
 def test_main_resets_the_ledger_before_it_gates(tmp_path):
