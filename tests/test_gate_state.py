@@ -189,8 +189,12 @@ def test_ssot_registry_cites_the_gate_state_owner():
 
 #: Directories that are not production source: the repo's own tests (a synthetic cwd is CORRECT
 #: there — it is the isolation), plus vendored/generated/worktree copies of the tree.
+#: Kept in step with .graphifyignore's exclusions: an untracked side-engagement or scratch copy of
+#: the tree would otherwise contribute a second `.../ingest.py::run_redaction_folder` under a key
+#: absent from _UNGATED_BY_DECISION, turning the suite red for an environmental reason.
 _NON_SOURCE_DIRS = frozenset({".claude", ".git", "tests", "graphify-out", "node_modules",
-                              "dist", "build", ".venv", "venv", "_ref", "__pycache__"})
+                              "dist", "build", ".venv", "venv", "_ref", "__pycache__",
+                              "ds-bundle", ".ds-sync", "Syntys_DC_Design", "figgen"})
 
 
 def _flag_literals(node) -> set:
@@ -208,19 +212,30 @@ def _flag_literals(node) -> set:
         return {c.value for c in ast.walk(n)
                 if isinstance(c, ast.Constant) and isinstance(c.value, str)}
 
+    # Pass 1: the argv list/tuple literal, and the NAME it is bound to. Mutations only count if
+    # they target that name — an earlier cut harvested every `.append`/`+=` in the function, so two
+    # unrelated `skipped_flags.append("--no-design")` lines certified an ungated caller as inert.
     found: set = set()
+    argv_names: set = set()
     for n in ast.walk(node):
-        # the argv list/tuple itself
-        if isinstance(n, (ast.List, ast.Tuple)):
-            lits = literals(n)
-            if "--collection-dir" in lits:
-                found |= lits
-        # cmd.append("--x") / cmd.extend([...])
-        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
-                and n.func.attr in ("append", "extend"):
+        if not isinstance(n, (ast.List, ast.Tuple)):
+            continue
+        lits = literals(n)
+        if "--collection-dir" not in lits:
+            continue
+        found |= lits
+        parent = getattr(n, "_gate_parent", None)
+        if isinstance(parent, ast.Assign):
+            argv_names |= {t.id for t in parent.targets if isinstance(t, ast.Name)}
+
+    # Pass 2: mutations of those names only.
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                and n.func.attr in ("append", "extend", "insert") \
+                and isinstance(n.func.value, ast.Name) and n.func.value.id in argv_names:
             found |= literals(n)
-        # cmd += [...]
-        elif isinstance(n, ast.AugAssign) and isinstance(n.op, ast.Add):
+        elif isinstance(n, ast.AugAssign) and isinstance(n.op, ast.Add) \
+                and isinstance(n.target, ast.Name) and n.target.id in argv_names:
             found |= literals(n.value)
     return found
 
@@ -286,6 +301,11 @@ def _engine_launching_functions():
             tree = ast.parse(src)
         except SyntaxError:  # pragma: no cover - a broken source file is another test's problem
             continue
+        # _flag_literals needs to know which Assign an argv list belongs to, and ast nodes carry no
+        # parent link. Stamp one rather than re-walking per node.
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                child._gate_parent = parent
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -312,18 +332,25 @@ def test_no_engine_caller_declares_a_gate_posture():
     engagement. The check is per FUNCTION, not per file, because webapp/backend/ingest.py holds
     call sites of two different postures — file granularity would let one vouch for the other.
 
-    KNOWN COVERAGE LIMITS — measured by replaying the helpers over synthetic callers, not guessed.
-    An honest partial guard beats a confident one, and everything below is a real hole:
-      * argv built in a module-level constant or a helper, or flags composed with f-strings, or an
-        engine launched from module scope rather than a function — all invisible.
-      * a CONDITIONAL flag reads as declared: ``if fast: cmd += ["--no-mop"]``, and so does a flag
-        that is added and then removed, or one whose VALUE is empty/nonexistent (which makes
-        ``enforce`` refuse every gate while this reads "enforces").
+    KNOWN COVERAGE LIMITS. State the RULE, not a list of examples — a list reads as exhaustive and
+    this one never was. What is seen: string literals in the list/tuple holding ``--collection-dir``,
+    plus ``append``/``extend``/``insert``/``+=`` **on the name that list is assigned to**. Every
+    other way of building argv is INVISIBLE, including concatenation (``base + [...]``), star-unpack
+    (``[*base, ...]``), a dict or loop that emits flags, ``list(...)``, a module-level constant, a
+    helper function, f-string-composed flags, and an engine launched from module scope rather than
+    a function. ``assert len(inspected) >= 3`` does not protect against those: three callers are
+    found today, so an invisible fourth keeps the count satisfied.
+      * A CONDITIONAL flag reads as declared (``if fast: cmd += ["--no-mop"]``), as does one added
+        and then removed, and as does a flag whose VALUE is empty or nonexistent. NB the direction:
+        an EMPTY ``--gate-root`` value UNGATES (``_normalize_root("")`` is ``"."`` — see
+        ``test_empty_root_still_means_cwd_and_is_not_a_mis_set_root``); only a NONEXISTENT value
+        refuses. So the dangerous reading here is "enforces" on a caller that silently ungates.
       * ``subprocess.Popen(cmd, …, cwd_positional)`` — cwd passed positionally is not seen.
-      * it OVER-triggers too: any unrelated ``cwd=`` (a ``git`` call) or any ``f(**kwargs)`` marks
-        a function as re-homing, so a legitimately-compliant future caller can be flagged. That
-        direction is deliberate — the cheap wrong fix is to silence it with ``--no-design
-        --no-mop``, i.e. deleting deliverables, so read the failure before "fixing" it.
+      * It OVER-triggers too: any unrelated ``cwd=`` (a ``git`` call) or any ``f(**kwargs)`` marks a
+        function as re-homing, so a legitimately-compliant future caller can be flagged, and so can
+        one that builds argv by concat/star-unpack. That direction is deliberate — but the cheap
+        wrong fix is to silence it with ``--no-design --no-mop``, i.e. deleting deliverables. Read
+        the failure before "fixing" it.
     This is a tripwire for the shape of mistake that actually happened, not a proof."""
     import ast
 
@@ -361,9 +388,11 @@ def test_no_engine_caller_declares_a_gate_posture():
         "the caller this guard exists for dropped off the inventory"
 
 
-def _run_engine_for_gates(tmp_path, gate_root):
+def _run_engine_for_gates(tmp_path, gate_root, cwd=None, tag=None):
     """Run the REAL engine offline over the synthetic fixture, asking for the two gated documents.
-    ``gate_root`` None = omit --gate-root (the pre-fix invocation). Returns (stdout+stderr, outdir)."""
+    ``gate_root`` None = omit --gate-root. ``cwd`` None = an empty scratch dir (the re-homed-child
+    shape); pass a directory to model an operator running from the engagement itself.
+    Returns (stdout+stderr, outdir)."""
     import subprocess
     import sys
 
@@ -371,7 +400,7 @@ def _run_engine_for_gates(tmp_path, gate_root):
 
     import synthetic_fixtures as fx
 
-    base = tmp_path / ("gated" if gate_root else "ungated")
+    base = tmp_path / (tag or ("gated" if gate_root else "ungated"))
     base.mkdir(parents=True)
     collection = fx.write_collection(str(base / "collection"))
     devices = base / "devices.json"
@@ -381,10 +410,11 @@ def _run_engine_for_gates(tmp_path, gate_root):
     ws.append(["Hostname", "Port", "Status"]); wb.save(str(template))
     out_xlsx = base / "out.xlsx"
 
-    # The point of the test: the child's cwd is an EMPTY scratch dir, exactly as
-    # run_redaction_folder re-homes it. Only --gate-root can reach the ledger from here.
-    scratch = tmp_path / f"scratch_{base.name}"
-    scratch.mkdir()
+    if cwd is None:
+        # The re-homed-child shape: an EMPTY scratch dir, exactly as run_redaction_folder does.
+        # Only --gate-root can reach the ledger from here.
+        cwd = tmp_path / f"scratch_{base.name}"
+        cwd.mkdir()
 
     cmd = [sys.executable, str(ROOT / "COLLECT_PARSE_V3_23_0.py"),
            "--no-collect", "--collection-dir", collection,
@@ -394,7 +424,7 @@ def _run_engine_for_gates(tmp_path, gate_root):
            "--no-opshandbook", "--no-archreview", "--no-docx"]
     if gate_root is not None:
         cmd += ["--gate-root", str(gate_root)]
-    proc = subprocess.run(cmd, cwd=str(scratch), capture_output=True,
+    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True,
                           encoding="utf-8", errors="replace", timeout=600)
     assert proc.returncode == 0, f"engine failed:\n{proc.stdout}\n{proc.stderr}"
     return (proc.stdout or "") + (proc.stderr or ""), base
@@ -448,8 +478,11 @@ def test_nonexistent_gate_root_refuses_instead_of_going_brownfield(bad, tmp_path
 
 
 def test_nonexistent_gate_root_is_not_overridable(tmp_path):
-    """Same reasoning as an unreadable store: the override's audit line has nowhere to land, so
-    --override-gate must not talk its way past a root that does not exist."""
+    """An override is consent to bypass a SPECIFIC gate, and with a mis-set root no gate has been
+    identified — you cannot consent to bypassing an approval you never located. (Deliberately NOT
+    the unreadable-store reasoning: "the audit line has nowhere to land" is false here, since
+    save_store would happily makedirs the path — that is the phantom-ledger bug _require_root
+    closes. See the note above _require_root in gate_state.py.)"""
     assert gate_state.enforce("mop", override_reason="ship it",
                               root=str(tmp_path / "absent")) is False
 
@@ -498,3 +531,77 @@ def test_cli_show_refuses_a_mis_set_root_instead_of_reporting_brownfield(tmp_pat
     out = capsys.readouterr().out
     assert rc == 1
     assert "REFUSING" in out and "UNGATED" not in out
+
+
+def test_the_default_gate_root_is_the_operators_cwd(tmp_path):
+    """THE ARM THE FIRST VERSION OF THIS SUITE MISSED, and the one that matters most.
+
+    `--gate-root` defaults to "." so that an ORDINARY `cisco-assess` run -- operator standing in
+    the engagement, flag not passed -- keeps enforcing exactly as it did before the flag existed.
+    Nothing tested that. Mutating the default to anything else (`os.path.expanduser("~")` was the
+    demonstration) left the ENTIRE suite green while silently ungating every real operator run.
+
+    It hid behind the sibling test's shape: both of its arms use an EMPTY cwd, and its control arm
+    EXPECTS ungated when the flag is omitted -- which is precisely what a broken default produces.
+    So the mutant satisfied the control's expectation. Only (flag omitted, cwd = engagement)
+    distinguishes a correct default from a broken one."""
+    engagement = tmp_path / "engagement"
+    engagement.mkdir()
+    gate_state.record_decision("lld_approved", "revoked", root=str(engagement), by="reviewer")
+
+    out, base = _run_engine_for_gates(tmp_path, None, cwd=engagement, tag="default_root")
+
+    assert "[GATE REFUSED]" in out, (
+        "the engine did not consult the engagement in its own working directory -- the "
+        f"--gate-root DEFAULT is broken, which ungates every ordinary CLI run:\n{out[-3000:]}")
+    written = {p.name for p in base.iterdir()}
+    assert not [n for n in written if n.endswith(("_design.docx", "_mop.docx"))], \
+        f"a gated document was written from the operator's own engagement dir: {sorted(written)}"
+
+
+def test_gate_root_default_is_pinned_in_the_parser():
+    """Source guard backing the behavioural test above: the default is a one-token change with
+    repo-wide blast radius, so it is asserted literally as well as exercised."""
+    src = (ROOT / "COLLECT_PARSE_V3_23_0.py").read_text(encoding="utf-8", errors="ignore")
+    assert re.search(r'"--gate-root",\s*default="\."', src), (
+        'the --gate-root default is no longer exactly "." -- anything else silently changes which '
+        'ledger every un-flagged CLI run consults (see test_the_default_gate_root_is_the_operators_cwd)')
+
+
+def test_a_root_that_exists_but_is_a_file_refuses(tmp_path):
+    """`isdir`, not `exists`. Swapping them left the suite green while `--gate-root <...>/
+    engagement-state.json` -- pointing AT the ledger rather than at its engagement, the likeliest
+    way to get this wrong -- read as brownfield and ungated every gate."""
+    gate_state.record_decision("lld_approved", "revoked", root=str(tmp_path), by="qa")
+    ledger = tmp_path / "docs" / "engagement-state.json"
+    assert ledger.is_file()
+    assert gate_state.enforce("mop", root=str(ledger)) is False
+
+    # And the KNOWN GAP, pinned deliberately rather than left to be rediscovered: a wrong root that
+    # happens to be a real directory (here docs/, whose own docs/engagement-state.json does not
+    # exist) still reads as brownfield and UNGATES. _require_root catches a path that is not a
+    # directory, nothing more. Closing this needs the ledger to declare what it governs.
+    assert gate_state.enforce("mop", root=str(tmp_path / "docs")) is True, \
+        "documented gap changed -- update gate_state.py's 'Root resolution' note and docs/ssot.md"
+
+
+def test_a_non_string_root_is_rejected_not_coerced_to_cwd(tmp_path, monkeypatch):
+    """`root or "."` coerced None/0/b"" to the working directory, so record_decision(root=None)
+    created a real ledger in the process cwd and returned a success receipt -- the phantom-ledger
+    outcome _require_root exists to stop, reached by a bad TYPE instead of a bad path. It fired for
+    real during review and wrote docs/engagement-state.json into the repo root."""
+    monkeypatch.chdir(tmp_path)
+    for bad in (None, 0, b""):
+        with pytest.raises(TypeError):
+            gate_state.record_decision("assessment_approved", "approved", root=bad)
+        with pytest.raises(TypeError):
+            gate_state.enforce("design", root=bad)
+    assert not (tmp_path / "docs").exists(), "a bad root must never create a ledger anywhere"
+
+
+def test_cli_approve_refuses_a_mis_set_root_without_a_traceback(tmp_path, capsys):
+    """The write side must not answer a typo with a raw traceback while `show` answers the same
+    mistake with a sentence -- and the write side is the one that used to create phantom state."""
+    rc = gate_state.main(["--root", str(tmp_path / "absent"), "approve", "lld_approved"])
+    out = capsys.readouterr().out
+    assert rc == 1 and "REFUSING" in out

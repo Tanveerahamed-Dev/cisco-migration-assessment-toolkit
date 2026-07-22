@@ -131,10 +131,29 @@ def test_field_guide_draft_stamp_claim_matches_the_writers():
     That paragraph replaced an earlier one claiming EVERY document was stamped, which was false in
     exactly the direction that matters. Source-level, so it fails when a writer is added or when
     one of the three unstamped renderers quietly gains (or the seven quietly lose) the table."""
+    # Match the CALL, not the name: every stamped writer also NAMES add_document_control on its
+    # `from cisco_toolkit.docmeta import ...` line, so a substring scan passed even with the call
+    # deleted. Verified by gutting ops.py's call while keeping the import — this file stayed green.
+    _CALL = re.compile(r"(?<!import )\badd_document_control\s*\(")
     src = {m: (ROOT / "cisco_toolkit" / f"{m}.py").read_text(encoding="utf-8", errors="ignore")
            for m in _STAMPED + _UNSTAMPED}
-    missing = [m for m in _STAMPED if "add_document_control" not in src[m]]
-    unexpected = [m for m in _UNSTAMPED if "add_document_control" in src[m]]
+    missing = [m for m in _STAMPED if not _CALL.search(src[m])]
+    unexpected = [m for m in _UNSTAMPED if _CALL.search(src[m])]
+
+    # ...and the claim side. The first version of this test never opened the guide at all: the
+    # whole paragraph could be deleted, or rewritten to "every document is stamped", and it passed
+    # while its own docstring claimed "drift in EITHER direction makes the field guide lie".
+    # Whitespace-NORMALISED: the guide is hard-wrapped to ~70 columns, so any phrase long enough to
+    # be worth pinning will straddle a line break sooner or later. Asserting the raw text made this
+    # check depend on where the wrap happened to fall — re-flowing the paragraph (not changing a
+    # word of its meaning) turned it red.
+    guide = " ".join(GUIDE.read_text(encoding="ascii").split())
+    assert "seven Word documents" in guide, \
+        "the guide no longer states the count this test pins (or changed its wording)"
+    assert "carry NO such marking" in guide, (
+        "the guide must keep naming the artifacts that are NOT stamped — the deck is the one most "
+        "likely shown to a client, and an earlier version of this paragraph claimed EVERY document "
+        "was stamped, which was false in exactly that direction")
     assert not missing, (
         f"README-FIELD promises a Document Control status row these writers no longer emit: "
         f"{missing}. Fix the writer or the guide — an engineer is told to take it literally.")

@@ -441,12 +441,19 @@ def run_redaction_folder(path: Any, out_dir: Any,
        snapshot (:2817), the explorer (:2831) and the executive deck (:2853) — all rendering
        ``design_blueprint``'s ``target_state``/``wave_plan`` — BEFORE the gates run (:2864/:2879).
        Refusing drops two renderers into the same folder as three ungated artifacts showing the
-       same unapproved design, while telling the engineer it was withheld. A false containment
-       claim is worse than an honest ungated one (Guardrail 3).
-    2. *The disclosure already exists, in a better place.* Every document carries
-       ``Status: DRAFT — generated; not yet reviewed`` in its Document Control table
-       (``cisco_toolkit/docmeta.py`` ``add_document_control``, used by all 8 DOCX writers). That
-       travels INSIDE the file that gets emailed; a sidecar note in the folder does not.
+       same unapproved design. And it would be a SILENT drop: ``run_redaction_folder`` captures the
+       child's output and ``serve.run_redaction`` prints only the file list, so a ``[GATE REFUSED]``
+       line never reaches the engineer here — unlike the ``cisco-assess`` CLI, which does surface
+       it. Two quietly-absent files, with the same design shipping beside them, is worse than an
+       honest ungated set (Guardrail 3).
+    2. *A disclosure already exists, in a better place — though it is a partial one.* The SEVEN
+       Word documents carry ``Status: DRAFT — generated; not yet reviewed`` in their Document
+       Control table (``cisco_toolkit/docmeta.py`` ``add_document_control``). That travels INSIDE
+       the file that gets emailed; a sidecar note in the folder does not. Two honest caveats: the
+       workbook, explorer and deck carry NO such marking — and those are exactly the three carriers
+       reason (1) leans on — and the row is a CONSTANT, so for a REVOKED approval it says "not yet
+       reviewed" when the review happened and rejected it. Treat this as mitigation, not as
+       equivalent to gate disclosure.
     3. *Nothing here can identify the engagement's ledger.* Gate state is per-engagement but
        nothing binds a ledger to an engagement — it is found by proximity, and proximity is not
        ownership. Anchoring on cwd adopts the shell's directory (on the stick: the folder every
