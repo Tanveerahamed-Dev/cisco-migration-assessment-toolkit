@@ -372,21 +372,51 @@ def _phase_rows(data: Any) -> List[dict]:
     return [row for row in (data or []) if isinstance(row, dict)]
 
 
-def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
-    """Refuse if a redaction phase was skipped or failed inside the engine.
+def _phase_ok(value: Any) -> bool:
+    """True only when the ledger POSITIVELY records success.
 
-    Two independent signals, because either alone can go missing: the phase ledger sidecar
-    (``ok: false``) and the engine's own ``[SKIP] Phase …`` line on stderr."""
-    failed = []
+    Not `value is not False`: the ledger is JSON written by another program, and `0`, `"false"`,
+    `null` and a missing key all have to read as "not a success". Anything this function cannot
+    positively confirm is treated as unverified by the caller and refuses — the whole point of the
+    rewrite below is that silence must never mean "fine"."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "ok")
+    return value is not None and bool(value)
+
+
+def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
+    """Refuse unless BOTH redaction phases are positively confirmed to have run and succeeded.
+
+    Two independent signals, because either alone can go missing: the phase-ledger sidecar and the
+    engine's own ``[SKIP] Phase …`` line on stderr.
+
+    **This fails CLOSED, and that is the point.** It previously refused only on an explicit
+    ``ok is False`` and let every other reading through, so a ledger that could not be understood —
+    a renamed ``phases`` key, rows keyed by name, a truncated file, a phase that never ran at all —
+    was indistinguishable from a clean run. That is the same silent-degrade the dict/list parse bug
+    produced, one level up: the guard stops firing and nothing says so. Both phases are
+    unconditional under ``--redact`` (``COLLECT_PARSE_V3_23_0.py:2008`` and ``:2575``) and this
+    caller always passes ``--redact``, so a missing row is genuinely anomalous, never routine.
+
+    The sidecar being ABSENT is the one tolerated case: its write is fail-soft in the engine, so
+    absence proves nothing either way and the stderr arm carries the run alone."""
+    failed, unverified = [], []
     timings = Path(str(out_xlsx)[: -len(".xlsx")] + ".phase_timings.json")
     if timings.is_file():
+        rows: Optional[List[dict]] = None
         try:
-            for row in _phase_rows(json.loads(timings.read_text(encoding="utf-8",
-                                                                errors="replace"))):
-                if str(row.get("phase", "")).lower() in _REDACTION_PHASES and row.get("ok") is False:
-                    failed.append(row["phase"])
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass  # a missing/odd ledger must not mask the stderr signal below
+            rows = _phase_rows(json.loads(timings.read_text(encoding="utf-8", errors="replace")))
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            unverified.append(f"the phase ledger could not be read ({type(e).__name__})")
+        if rows is not None:
+            seen = {str(r.get("phase", "")).lower(): r for r in rows
+                    if str(r.get("phase", "")).lower() in _REDACTION_PHASES}
+            for phase in _REDACTION_PHASES:
+                if phase not in seen:
+                    unverified.append(f"the phase ledger has no '{phase}' row, so there is no "
+                                      f"evidence that phase ran")
+                elif not _phase_ok(seen[phase].get("ok")):
+                    failed.append(phase)
     low = (engine_output or "").lower()
     for phase in _REDACTION_PHASES:
         if f"[skip] phase '{phase}'" in low and phase not in failed:
@@ -396,6 +426,11 @@ def _assert_redaction_phases_ran(out_xlsx: Path, engine_output: str) -> None:
             f"REDACTION PHASE FAILED inside the engine ({', '.join(sorted(failed))}). The workbook "
             f"is very likely UNREDACTED even though the snapshot looks clean - this is the silent "
             f"failure the check exists for. Do NOT send anything from this run.")
+    if unverified:
+        raise EngineRunError(
+            f"REDACTION COULD NOT BE VERIFIED - {'; '.join(unverified)}. The scrub may well have "
+            f"run, but this check cannot confirm it, and an unverifiable redaction is treated as a "
+            f"failed one. Do NOT send anything from this run until it is re-run or checked by hand.")
 
 
 def _assert_scrubbed(snap_path: Path) -> int:
