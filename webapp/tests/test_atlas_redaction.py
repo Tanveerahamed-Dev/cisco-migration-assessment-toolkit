@@ -311,7 +311,6 @@ def test_bad_out_path_is_a_sentence_not_a_traceback(monkeypatch, tmp_path, capsy
 
 
 def test_truncated_snapshot_is_refused_not_a_json_traceback(monkeypatch, tmp_path):
-    rec = {}
     def run(cmd, cwd=None, **kw):
         out = Path(cmd[cmd.index("--output") + 1])
         Path(str(out)[: -len(".xlsx")] + ".snapshot.json").write_text('{"devices": {', encoding="utf-8")
