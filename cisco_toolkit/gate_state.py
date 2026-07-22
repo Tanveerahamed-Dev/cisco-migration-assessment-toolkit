@@ -26,6 +26,20 @@ when its upstream approval was missing. This module is the enforcement half of t
   * **Store present but unreadable** → REFUSE, even with an override (an unreadable ledger cannot
     take the audit line that makes an override legitimate; fix or remove the store).
 
+**Both dispositions are audited, not just the unsafe one.** ``enforce()`` returns a ``GateVerdict``
+rather than a bool, and a REFUSAL over MISSING APPROVALS -- the refusal this control exists to make,
+and the only one that means a located gate said no -- appends a durable ``refuse`` row to the same
+``audit`` array the override writes to. Before this, only the override left a trace: the
+control's *safe* path was its least accountable one, an absent ``design.docx`` was indistinguishable
+from a ``--no-design`` run, and the engine exited 0 either way. The audit array is the right home
+rather than the per-run ``.run_manifest.json`` — a refusal provokes a re-run, and a per-run seal is
+overwritten by exactly that. The manifest may cache a copy, but must cite this array as its owner
+(Law 1). The other five statuses are NOT recorded -- three cannot be (nowhere to write, or writing
+would destroy evidence / enrol an unenrolled engagement) and two must not be (the ledger governs
+another engagement) -- and they report ``GateVerdict.recorded=False`` rather than pretending
+(``_record_refusal`` enumerates all five). The ledger therefore grows by one row per refused deliverable per
+run; ``show`` counts them beside the overrides and tails the last ten.
+
 **Root resolution — the one way this module fails silently.** ``root`` defaults to ``"."``, so the
 store is found only if the *process's working directory* is the engagement. That is right for a
 human ``cisco-assess`` run (it inherits the operator's cwd) and wrong for any wrapper that re-homes
@@ -105,12 +119,30 @@ import getpass
 import json
 import logging
 import os
+import tempfile
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 STORE_RELPATH = os.path.join("docs", "engagement-state.json")
+
+#: Every gate posture this module can report — the ONE vocabulary, shared verbatim by the deciding
+#: path (``enforce``) and the disclosing path (``pending_approvals``). Law 1 applied to a taxonomy:
+#: a second enum for "the same seven situations, as seen by the enforcer" is a copy that drifts, and
+#: the two surfaces would then disagree about the same ledger. ``tests/test_gate_state.py`` pins that
+#: neither function can emit a status outside this tuple. APPEND-ONLY (statuses reach the audit
+#: ledger on disk, and a renamed one orphans the rows already written).
+STATUSES = ("bad_root", "ungated", "unreadable", "ownership_mismatch",
+            "ownership_unbound", "clear", "pending")
+
+#: The statuses that mean the approvals were NEVER EVALUATED — no ledger was located, or the one
+#: located could not be read or could not be confirmed to govern this run. Kept explicit because the
+#: distinction is the coverage-honesty rule (D3) applied to governance: ``missing == ()`` on one of
+#: these means "unknown", never "nothing missing". ``status`` is the discriminator that carries it,
+#: which is why ``GateVerdict.missing`` does not need to be nullable.
+UNEVALUATED = ("bad_root", "ungated", "unreadable", "ownership_mismatch", "ownership_unbound")
 
 # Top-level store key naming the engagement a ledger governs. APPEND-ONLY, like the gate keys: an
 # absent one means "unbound (legacy)", which stays permissive, so adding it breaks no existing store.
@@ -143,6 +175,53 @@ GENERATOR_REQUIRES: Dict[str, Tuple[str, ...]] = {
 
 class GateStateError(RuntimeError):
     """The gate-state store exists but cannot be read/parsed — fail CLOSED, never silently ungate."""
+
+
+@dataclass(frozen=True)
+class GateVerdict:
+    """What ``enforce()`` DECIDED — returned so that no caller ever re-derives the decision.
+
+    ``enforce`` used to return a bare ``bool``, which left every downstream consumer to reconstruct
+    *why* from the inputs. That reconstruction is where the previous attempt at this feature failed:
+    it inferred "overridden" from the presence of ``--override-gate``, but an override is INERT on an
+    already-approved ledger (``enforce`` returns at its "approvals present" branch without appending
+    an audit line), so it manufactured a governance breach that never happened. Every field here is
+    therefore an observation of what the run actually did, not a re-computation:
+
+    * ``proceed`` — the boolean that really governed the deliverable. ``bool(verdict)`` is exactly
+      this, so the historical ``if not args.no_design and gate_enforce(...)`` call shape keeps
+      working unchanged.
+    * ``status`` — the ledger posture, from ``STATUSES``, the SAME vocabulary ``pending_approvals``
+      reports (deciding and disclosing cannot disagree about one ledger).
+    * ``overridden`` — True only where the override audit line was actually appended. It is set at
+      that one site, so it cannot claim a breach the ledger has no line for.
+    * ``recorded`` — whether this verdict's audit row reached the DURABLE ledger. Coverage-honest:
+      several statuses legitimately cannot be recorded (see ``_record_refusal``), and a caller must
+      be able to tell "refused and written down" from "refused, nothing persisted" rather than
+      assume the write happened.
+    """
+
+    generator: str
+    status: str
+    proceed: bool
+    overridden: bool = False
+    missing: Tuple[str, ...] = ()
+    recorded: bool = False
+    store: str = ""
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        """The decision itself — never a re-derivation, just the field that governed the run."""
+        return self.proceed
+
+    @property
+    def refused(self) -> bool:
+        return not self.proceed
+
+    @property
+    def evaluated(self) -> bool:
+        """False when no ledger could be read, so ``missing == ()`` means UNKNOWN, not "none"."""
+        return self.status not in UNEVALUATED
 
 
 def _now() -> str:
@@ -178,13 +257,49 @@ def load_store(root: str = ".") -> Tuple[Optional[dict], str]:
 
 
 def save_store(path: str, store: dict) -> None:
-    """Atomic write (tmp + os.replace) so a crash mid-write can never corrupt the audit ledger."""
+    """Atomic write (unique same-dir temp + os.replace) so a crash mid-write, OR a second writer,
+    can never corrupt the audit ledger.
+
+    The temp name must be UNIQUE, not ``path + ".tmp"``. With a fixed name two writers to one ledger
+    share a single scratch file: on Windows the CRT opens it share-deny-none, so their bytes
+    interleave and one ``os.replace`` then promotes the interleaved garbage to *be* the ledger —
+    reproduced as ``Extra data: line 1 column 45``, after which ``load_store`` raises forever, every
+    gate refuses, and (correctly) nothing can append to it again. There are no backups for this
+    store, so that is the whole engagement's approval history gone. The fixed name predates the
+    refusal record, but recording refusals is what moved writing from "a human occasionally runs
+    approve/revoke" to "twice per assessment run", which is what makes concurrent writers realistic
+    (two runs of one engagement, a CI fleet, an operator approving while a long run is in flight).
+
+    On failure the temp is removed rather than left beside the ledger: an orphan is a full COPY of an
+    audit trail, holding a row the real ledger does not, in the engagement's own docs/ folder.
+
+    NB deliberately NO in-place fallback when ``os.replace`` cannot take the destination (Windows,
+    any open handle — a reviewer with the ledger in an editor). Failing and reporting it is right
+    here: truncate-and-rewrite is exactly how an audit ledger gets destroyed, and the caller already
+    degrades safely (``_record_refusal`` → ``recorded=False``, loudly; the deliverable stays
+    withheld). That is the opposite trade-off from ``manifest.py``, whose seal is regenerable.
+    """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(store, f, indent=2, sort_keys=False)
-        f.write("\n")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                               prefix=os.path.basename(path) + ".", suffix=".tmp")
+    promoted = False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(store, f, indent=2, sort_keys=False)
+            f.write("\n")
+            f.flush()
+            # The rename can otherwise be durable while the CONTENT is not: a power loss then leaves
+            # a short or zero-length ledger, which json.load rejects -> permanently "unreadable" and
+            # never re-appendable. Same class as the 0-byte-DB-passes-quick_check defect.
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        promoted = True
+    finally:
+        if not promoted:
+            try:
+                os.remove(tmp)
+            except OSError:                          # pragma: no cover - best-effort cleanup
+                pass
 
 
 def _new_store() -> dict:
@@ -270,6 +385,23 @@ def revoked_requirements(store: dict, generator: str) -> List[str]:
 
 
 def _append_audit(path: str, store: dict, entry: dict) -> dict:
+    """Append one row to the ledger's audit array and persist it.
+
+    A PRESENT but non-list ``audit`` is a corrupt ledger and REFUSES, rather than being replaced with
+    a fresh list. Discarding it silently destroyed an audit trail and then reported success: a ledger
+    whose ``audit`` is a JSON object still loads (``load_store`` validates only the top level), so it
+    reaches this path, and the ``show`` CLI's ``isinstance(a, dict)`` filter iterates such a value's
+    KEYS and drops them all — printing "audit: 0 entries" both before and after, so the destruction
+    is invisible from the operator's only diagnostic tool. This is the same principle the unreadable
+    branch already applies (a corrupt ledger is EVIDENCE, never something to overwrite); a PARTIALLY
+    corrupt one had the opposite treatment. An ABSENT key is not corruption — older stores predate
+    it, so it is still created.
+    """
+    if "audit" in store and not isinstance(store["audit"], list):
+        raise GateStateError(
+            f"gate-state store {path} has a corrupt 'audit' value of type "
+            f"{type(store['audit']).__name__} (expected a list) -- refusing to overwrite it, since "
+            f"that would destroy whatever audit trail it holds. Repair or archive the file by hand.")
     audit = store.get("audit")
     if not isinstance(audit, list):
         audit = []
@@ -277,6 +409,74 @@ def _append_audit(path: str, store: dict, entry: dict) -> dict:
     audit.append(entry)
     save_store(path, store)
     return entry
+
+
+def _record_refusal(path: str, store: dict, generator: str, status: str,
+                    missing: List[str], detail: str, who: Optional[str] = None,
+                    declared: Optional[str] = None) -> bool:
+    """Append the durable ``refuse`` line for a withheld deliverable. True if the write completed
+    (``os.replace`` returned after an fsync of the contents).
+
+    This closes the asymmetry that made the gate's SAFE path its least auditable one: proceeding
+    despite a missing approval has always appended a who/when/why line, while REFUSING wrote nothing
+    anywhere, so an absent ``design.docx`` was indistinguishable from a ``--no-design`` run. The
+    ledger's ``audit`` array is the right home rather than the per-run manifest, because a refusal
+    provokes exactly one natural response — re-run — and a per-run seal is overwritten by it. Here
+    the row outlives every re-run, and ``save_store``'s tmp+replace keeps the append atomic.
+
+    **Takes the already-loaded ``(path, store)``, never a root.** Its sibling ``enforce()`` resolves
+    and validates the root, so a second resolution here could disagree with the one that made the
+    decision — and a ``root="."`` default would resolve to whatever cwd the caller happened to have,
+    which on the ``--redact-folder`` path is a ``mkdtemp`` scratch directory. That defect shipped
+    once (a record written against the wrong root claimed a posture the real ledger contradicted);
+    the fix is structural — there is no root argument to get wrong.
+
+    Only ``pending`` refusals reach here. The other statuses deliberately do not, and
+    ``GateVerdict.recorded`` stays False so the gap is visible rather than assumed:
+
+    * ``bad_root`` — the directory does not exist; there is nowhere to write, and creating one is the
+      phantom-ledger bug ``_require_root`` exists to close.
+    * ``unreadable`` — the ledger is corrupt. Rewriting it would destroy the evidence of the
+      corruption, and ``save_store`` serialises the parsed dict we never got.
+    * ``ungated`` — no ledger at all, and this is not a refusal anyway (brownfield proceeds).
+      Writing here would CREATE a store, and the first write is the opt-in that activates
+      enforcement for the engagement — a run must never silently gate an engagement nobody enrolled.
+    * ``ownership_mismatch`` / ``ownership_unbound`` — the ledger is readable, so a row *could* be
+      written, and must not be: it governs another engagement and this run has no standing to append
+      to it (test_ownership_refusals_are_not_overridable_and_write_nothing).
+
+    A failed write is reported, never fatal: the deliverable is already withheld (the safe outcome),
+    so aborting the run over the bookkeeping would turn a working refusal into a crash. ``OSError``
+    only — a locked or read-only ledger is the realistic failure (``os.replace`` raises it on Windows
+    while any process holds the file); anything else is a bug that should surface.
+    """
+    # The row names WHICH ENGAGEMENT it is about, not just which generator. Ownership is verified
+    # only when the run DECLARES itself (`ownership_error` returns None when `engagement` is empty),
+    # so on the default path gates are applied by PROXIMITY -- and a mis-rooted run now WRITES to
+    # the ledger it landed next to, where before it only read. An un-attributable row in the wrong
+    # client's ledger is indistinguishable from a real one during the DEC-003 weekly review, so both
+    # sides are recorded: what the ledger says it governs, and what (if anything) the run claimed.
+    # `declared: None` is itself the signal that this row was matched by location alone.
+    entry = {"at": _now(), "who": who or _whoami(), "event": "refuse",
+             "generator": generator, "status": status,
+             "engagement": engagement_of(store), "declared": (declared or "").strip() or None,
+             "missing": list(missing), "reason": detail}
+    try:
+        _append_audit(path, store, entry)
+    except (OSError, GateStateError, RecursionError) as e:
+        # Narrow and enumerated, never a bare `except Exception` (that class of catch is what let an
+        # earlier attempt seal "approved" over a swallowed ValueError). OSError: a locked/read-only
+        # ledger, the realistic Windows case. GateStateError: _append_audit refusing to overwrite a
+        # corrupt audit array. RecursionError: json.dump(indent=...) uses the pure-Python encoder,
+        # whose depth limit is LOWER than the C scanner json.load accepted -- so a deeply nested
+        # ledger loads and then fails to re-serialise. All three are properties of the FILE, not
+        # bugs here, and none of them should turn a correct refusal into a crashed run.
+        logger.error("[gate] the %s refusal could NOT be recorded in %s (%s: %s) -- the deliverable "
+                     "is still withheld, but this refusal leaves no durable trace; fix the ledger's "
+                     "permissions/contents or close whatever holds it open",
+                     generator, path, type(e).__name__, e)
+        return False
+    return True
 
 
 def record_decision(gate: str, decision: str, root: str = ".",
@@ -379,13 +579,22 @@ def _require_root(root: str, what: str) -> Optional[str]:
 
 def enforce(generator: str, override_reason: Optional[str] = None,
             root: str = ".", who: Optional[str] = None,
-            engagement: Optional[str] = None) -> bool:
-    """Gate check for a generator run. True = proceed, False = REFUSE (caller must skip the write).
+            engagement: Optional[str] = None) -> GateVerdict:
+    """Gate check for a generator run. Returns a :class:`GateVerdict`; truthy = proceed, falsy =
+    REFUSE (the caller must skip the write). ``if gate_enforce(...)`` therefore reads exactly as it
+    did when this returned a bare ``bool`` — the object carries WHY alongside the same decision, so
+    no caller has to reconstruct it (see ``GateVerdict`` for the defect that reconstruction caused).
 
-    Absent store → warn + True (brownfield). Unreadable store → error + False (not overridable —
-    the override's audit line has nowhere trustworthy to land). Missing approvals → False, unless
+    Absent store → warn + proceed (brownfield). Unreadable store → error + refuse (not overridable —
+    the override's audit line has nowhere trustworthy to land). Missing approvals → refuse, unless
     ``override_reason`` is non-empty, in which case an audit line (who/when/why + what was missing)
     is appended to the store and the run proceeds.
+
+    A refusal over MISSING APPROVALS also appends a durable ``refuse`` line, so the withheld
+    deliverable is as auditable as the overridden one — the whole point of ``_record_refusal``,
+    whose docstring enumerates the five statuses that are NOT recorded (two of which have a
+    perfectly readable ledger in reach and deliberately decline to write to it). Check
+    ``GateVerdict.recorded`` before telling anyone a refusal was written down.
 
     ``engagement`` is this run's declaration of what it is FOR. Declaring nothing preserves the
     historical behaviour exactly; declaring something that the ledger contradicts (or cannot
@@ -402,22 +611,31 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     bad_root = _require_root(root, f"generating {generator}")
     if bad_root:
         logger.error("[GATE REFUSED] %s: %s", generator, bad_root)
-        return False
+        return GateVerdict(generator, "bad_root", False, store=store_path(root), detail=bad_root)
     try:
         store, path = load_store(root)
     except GateStateError as e:
         logger.error("[GATE REFUSED] %s: %s -- fix or remove the store; "
                      "--override-gate cannot bypass an unreadable ledger", generator, e)
-        return False
+        return GateVerdict(generator, "unreadable", False, store=store_path(root), detail=str(e))
     if store is None:
         logger.warning("[gate] no gate-state store at %s -- %s generation proceeds UNGATED "
                        "(brownfield). Activate PPDIOO gate enforcement with: "
                        "python -m cisco_toolkit.gate_state approve <gate>", path, generator)
-        return True
+        return GateVerdict(generator, "ungated", True, store=path,
+                           detail="no gate ledger -- brownfield, proceeding ungated")
     owner_err = ownership_error(store, engagement, f"generating {generator}")
     if owner_err:
         logger.error("[GATE REFUSED] %s: %s Store: %s", generator, owner_err, path)
-        return False
+        # Deliberately NOT recorded, and this is the one place where that costs something real (the
+        # ledger is readable, so a row COULD be written). It must not be: this ledger belongs to
+        # another engagement, and a run declaring a different one has no standing to append to it —
+        # pinned by test_ownership_refusals_are_not_overridable_and_write_nothing. Letting any run
+        # write here by declaring a mismatching --engagement would also make every ledger in reach
+        # append-able by an unrelated run. The evidence lives in the refusing run's log and in the
+        # returned verdict; the innocent engagement's audit trail stays clean.
+        status = "ownership_unbound" if engagement_of(store) is None else "ownership_mismatch"
+        return GateVerdict(generator, status, False, store=path, detail=owner_err)
     bound = engagement_of(store)
     if bound and (engagement or "").strip():
         logger.info("[gate] %s: ledger ownership VERIFIED -- engagement %s", generator, bound)
@@ -430,27 +648,48 @@ def enforce(generator: str, override_reason: Optional[str] = None,
     if not missing:
         logger.info("[gate] %s: upstream approvals present (%s) -- proceeding",
                     generator, ", ".join(GENERATOR_REQUIRES[generator]))
-        return True
+        # Reached WITHOUT consulting override_reason, and the verdict says so: overridden=False on
+        # an approved ledger even when --override-gate was passed. A redundant override is inert
+        # (test_approved_upstream_proceeds_and_override_is_inert), and a record that inferred
+        # "overridden" from the flag here would assert a breach with no audit line behind it.
+        return GateVerdict(generator, "clear", True, store=path,
+                           detail="upstream approvals present")
     if override_reason is not None and override_reason.strip():
         actor = who or _whoami()
+        # NOT wrapped in _record_refusal's tolerant OSError handling, and deliberately so: do not
+        # "make this consistent" later. A refusal has already withheld the deliverable, so a failed
+        # write costs only bookkeeping and degrades to recorded=False. An override is the opposite —
+        # the audit line is the ONLY thing that makes proceeding past a missing approval legitimate,
+        # so if it cannot be written the run must not quietly generate the document anyway. Letting
+        # the OSError propagate is the fail-closed choice.
         _append_audit(path, store, {"at": _now(), "who": actor, "event": "override",
                                     "generator": generator, "missing": missing,
                                     "reason": override_reason.strip()})
         logger.warning("[GATE OVERRIDDEN] %s generated despite missing approval(s) %s -- "
                        "who=%s reason=%r (audit line appended to %s)",
                        generator, ", ".join(missing), actor, override_reason.strip(), path)
-        return True
+        # overridden=True is set HERE, at the one site that appended the line, so the verdict and
+        # the ledger can never disagree about whether an override happened.
+        return GateVerdict(generator, "pending", True, overridden=True, missing=tuple(missing),
+                           recorded=True, store=path, detail=override_reason.strip())
     if override_reason is not None:
-        logger.error("[GATE REFUSED] %s: --override-gate requires a non-empty reason "
-                     "(the who/when/why audit line is the point of the override)", generator)
-        return False
-    logger.error("[GATE REFUSED] %s: missing upstream approval(s): %s. Record the human gate with "
+        detail = ("--override-gate requires a non-empty reason "
+                  "(the who/when/why audit line is the point of the override)")
+        logger.error("[GATE REFUSED] %s: %s", generator, detail)
+        ok = _record_refusal(path, store, generator, "pending", missing, detail, who,
+                             declared=engagement)
+        return GateVerdict(generator, "pending", False, missing=tuple(missing),
+                           recorded=ok, store=path, detail=detail)
+    detail = ("missing upstream approval(s): "
+              + ", ".join(f"{k} ({GATE_LABELS[k]})" for k in missing))
+    logger.error("[GATE REFUSED] %s: %s. Record the human gate with "
                  "'python -m cisco_toolkit.gate_state approve <gate> --by <name>', or override "
                  "explicitly with --override-gate \"<reason>\" (audited). Store: %s",
-                 generator,
-                 ", ".join(f"{k} ({GATE_LABELS[k]})" for k in missing),
-                 path)
-    return False
+                 generator, detail, path)
+    ok = _record_refusal(path, store, generator, "pending", missing, detail, who,
+                             declared=engagement)
+    return GateVerdict(generator, "pending", False, missing=tuple(missing),
+                       recorded=ok, store=path, detail=detail)
 
 
 def pending_approvals(generator: str, root: str = ".",
@@ -612,9 +851,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  {key:20s} [   --   ] {arrow:18s} {label}")
     audit = [a for a in store.get("audit", []) if isinstance(a, dict)]
     overrides = [a for a in audit if a.get("event") == "override"]
-    print(f"audit: {len(audit)} entries ({len(overrides)} override(s) -- review weekly, DEC-003)")
+    # Refusals are counted beside overrides because they are the same control seen from its other
+    # side: an override says a gate was bypassed, a refusal says a deliverable was withheld. Showing
+    # only the first made the board mute about every run the gates actually stopped.
+    refusals = [a for a in audit if a.get("event") == "refuse"]
+    print(f"audit: {len(audit)} entries ({len(overrides)} override(s) -- review weekly, DEC-003; "
+          f"{len(refusals)} refusal(s) -- deliverables withheld)")
     for a in audit[-10:]:
-        flag = " **OVERRIDE**" if a.get("event") == "override" else ""
+        flag = ""
+        if a.get("event") == "override":
+            flag = " **OVERRIDE**"
+        elif a.get("event") == "refuse":
+            flag = " **REFUSED**"
         what = a.get("gate") or a.get("generator") or "?"
         why = a.get("reason") or a.get("note") or ""
         print(f"  {a.get('at', '?')}  {a.get('event', '?'):8s} {what:12s} "
