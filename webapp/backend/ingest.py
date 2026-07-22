@@ -468,8 +468,9 @@ def run_redaction_folder(path: Any, out_dir: Any,
 
     The MOP is the one genuinely different case — its cutover procedure, rollback triggers and
     sign-off blocks exist in no other artifact, so refusing it WOULD contain something. That is
-    tracked separately; it needs the ledger-ownership problem in (3) solved first, and it is a
-    change to what the field tool may withhold, which is not this function's call to make.
+    recorded as OPEN in ``docs/log.md`` (2026-07-22); it needs the ledger-ownership problem in (3)
+    solved first, and it is a change to what the field tool may withhold — not this function's
+    call to make.
     """
     source, n_files = _resolve_and_scan(path)
     out = Path(str(out_dir)).expanduser().resolve()
