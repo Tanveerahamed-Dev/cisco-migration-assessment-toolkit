@@ -14,9 +14,12 @@ INFO was discarded. Two defects followed, both pinned here:
 
 The fix has two halves and this file pins both: `_attach_package_logging` puts the `cisco_toolkit.*`
 tree on the engine's handlers with `propagate = False`, and `enforce()` records every verdict
-structurally so `build_run_manifest` can seal it into the manifest's hash chain. The sealed copy is
-the audit record; the log is the convenience copy. Tests below therefore assert the seal BREAKS when a
-verdict is edited out — a record that can be quietly deleted is not an audit trail.
+structurally so `build_run_manifest` can seal it into the manifest's hash chain. The two are
+COMPLEMENTARY, not ranked: the sealed row is tamper-evident but is written only in the last stage,
+while the log line is editable plain text but is written at the instant of the verdict and so is what
+survives a crash in between. Tests below therefore assert BOTH that the verdict reaches the log and
+that the seal BREAKS when a verdict is edited out — a record that can be quietly deleted is not an
+audit trail.
 """
 import ast
 import inspect
@@ -57,10 +60,13 @@ def engine_log(tmp_path, monkeypatch):
     saved = [(lg, list(lg.handlers), lg.level, lg.propagate) for lg in loggers]
     before = {id(h) for lg in loggers for h in lg.handlers}
     cp.setup_logging()
-    opened = [h for lg in loggers for h in lg.handlers if id(h) not in before]
     try:
         yield tmp_path / cp.LOG_FILE
     finally:
+        # Recompute at TEARDOWN, not before the yield: a test may itself call setup_logging() (the
+        # re-entry cases below do), and a handler opened during the test would otherwise never be
+        # closed -- which on Windows keeps tmp_path undeletable, the very thing this guards.
+        opened = [h for lg in loggers for h in lg.handlers if id(h) not in before]
         for h in dict.fromkeys(opened):
             h.close()
         for lg, handlers, level, propagate in saved:
@@ -278,8 +284,10 @@ def test_sealed_gate_step_is_deterministic(tmp_path, monkeypatch):
 
 
 def test_reset_verdicts_prevents_cross_run_bleed(tmp_path):
-    """`main()` resets the ledger, so a second in-process run (serve.py::_run_engine) cannot seal the
-    previous run's verdicts -- a false audit record being worse than the missing one this fixes."""
+    """`main()` resets the ledger, so a second in-process run cannot seal the previous run's verdicts
+    -- a false audit record being worse than the missing one this fixes. The hosts that actually call
+    main() twice per process are tests/test_pipeline_inprocess.py and tests/test_pipeline_failopen.py;
+    the webapp uses a subprocess and serve.py's --run-engine sentinel dispatches exactly once."""
     _write_store(tmp_path)
     gate_state.enforce("design", root=str(tmp_path))
     assert len(gate_state.verdicts()) == 1
@@ -292,10 +300,15 @@ def test_every_return_path_in_enforce_records_a_verdict():
     `_record(...)` in its own block.
 
     `test_every_enforce_outcome_records_a_verdict` only covers the outcomes that exist TODAY. Gate
-    work is in flight on several branches (a `--gate-root` / engagement-root resolution change adds at
-    least one new `return False` for a mis-set root), and a new refusal that forgets to record is
-    invisible in exactly the way this whole change exists to fix — it would refuse a deliverable and
-    seal nothing. This fails the moment such a path is added."""
+    work is in flight (PR #439 adds TWO new `return False` arms — a mis-set `--gate-root` and a ledger
+    ownership refusal), and a new refusal that forgets to record is invisible in exactly the way this
+    whole change exists to fix — it would refuse a deliverable and seal nothing. This fails the moment
+    such a path is added.
+
+    Bounds, so nobody over-trusts it: it matches `_record(...)` only as a bare statement, so
+    `row = _record(...)` or `gate_state._record(...)` would fail LOUDLY (safe), while a call hidden
+    behind a helper would be missed. It proves a verdict is recorded, never that it is the RIGHT one —
+    `test_every_enforce_outcome_records_a_verdict` covers that."""
     fn = ast.parse(textwrap.dedent(inspect.getsource(gate_state.enforce))).body[0]
     unrecorded = []
 
@@ -317,6 +330,23 @@ def test_every_return_path_in_enforce_records_a_verdict():
     assert not unrecorded, (
         f"enforce() returns without recording a verdict at body line(s) {unrecorded} -- that "
         f"outcome would be refused/allowed with no durable trace. Add a _record(...) call.")
+
+
+def test_VERDICTS_lists_every_value_record_can_emit():
+    """`VERDICTS` is the published enumeration of gate outcomes, and it is documentation that can
+    silently go stale: the structural guard above forces a NEW return path to call `_record`, but
+    nothing forces the new verdict string to be added here. PR #439's two new refusal arms are exactly
+    that case. Derive the truth from the source instead of trusting the tuple."""
+    emitted = set()
+    for node in ast.walk(ast.parse(inspect.getsource(gate_state))):
+        if (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_record"
+                and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)):
+            emitted.add(node.args[1].value)
+    assert emitted == set(gate_state.VERDICTS), (
+        f"VERDICTS is out of sync with what _record() actually emits: "
+        f"only-in-code={sorted(emitted - set(gate_state.VERDICTS))}, "
+        f"only-in-VERDICTS={sorted(set(gate_state.VERDICTS) - emitted)}")
 
 
 def test_withheld_deliverables_are_restated_at_the_end_of_the_run(engine_log, tmp_path,

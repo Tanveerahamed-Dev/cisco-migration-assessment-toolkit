@@ -55,11 +55,13 @@ logger = logging.getLogger(__name__)
 STORE_RELPATH = os.path.join("docs", "engagement-state.json")
 
 #: In-process ledger of the gate verdicts reached during THIS run — the STRUCTURAL half of the audit
-#: trail. Log text is not an audit record: this module's verdicts go to ``logging``, and a refusal
-#: leaves NOTHING durable behind (unlike an override, which appends an audit line to the store itself
-#: — the asymmetry that made refusals invisible after the fact). So ``enforce()`` also appends one row
-#: per decision here, and the engine seals the ledger into ``.run_manifest.json``'s hash chain
-#: (``COLLECT_PARSE_V3_23_0.build_run_manifest``).
+#: trail. Before this existed, a refusal left nothing durable at all: verdicts went only to
+#: ``logging``, on a logger the engine had not configured, while an OVERRIDE did persist (it appends
+#: an audit line to the store) — the asymmetry that made refusals invisible after the fact. Now
+#: ``enforce()`` appends one row per decision here, the engine seals the ledger into
+#: ``.run_manifest.json``'s hash chain (``COLLECT_PARSE_V3_23_0.build_run_manifest``), AND the log
+#: itself reaches that log file. Sealed row and log line are complementary — the row is
+#: tamper-evident but end-of-run, the line is editable but immediate.
 #:
 #: Rows carry generator/verdict/missing/reason and NOT who/when. The reason is SSOT, not determinism:
 #: the store's audit line is the one owner of who/when for an override, and this ledger cites it
