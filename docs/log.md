@@ -4,6 +4,49 @@ Append-only, one entry per working session. Newest first. This is `CHAT_SUMMARY.
 (that file froze at 2026-06-12): a line here costs nothing and keeps the narrative queryable by graphify.
 Format: `## [YYYY-MM-DD] — <headline>` + 3–6 bullets. Failures worth remembering get a `!lesson` tag.
 
+## [2026-07-22] — Refuting my own merged code twice in one day (#429–#433): both times the verification, not the feature, was the defect
+
+- After P3 shipped, independent refuters were pointed at code I had written AND self-verified.
+  Wave 1 (boot backups, #429) found four ways the feature DESTROYED the client evidence it exists
+  to protect. Wave 2 (`--redact-folder`, #432) found the verification licensing "share-safe"
+  certified ~3× what it checked. Both features' happy paths were sound; the checking was not.
+  Also shipped: `--redact-folder` itself (#430 — the field guide had documented a redaction
+  command that could not run, because the engine needs a template + devices.json the bundle never
+  carried), CLAUDE.md's first mention of Atlas + the restore procedure drilled into a test (#431),
+  and a both-edges calibration test for the checker (#433).
+- `!lesson` **Verify the artifact that fails FIRST, not the most convenient one.** A pipeline
+  emitting many artifacts does not redact them by one mechanism: the snapshot came from a DIRECT
+  call, the workbook from phases wrapped in a "log and continue" guard. I checked the snapshot —
+  structurally the one artifact that CANNOT fail — and called the set verified. Fault injection
+  (not reading) proved a failed phase ships real serials and private IPs in the workbook while the
+  checked file stays spotless and the run exits 0. Ask which output fails first, and check that
+  the transform RAN (phase ledger / logs), not only that its output looks clean. bridge-candidate
+- `!lesson` **A fix to a checker needs its own adversarial pass — the failure modes are two-sided.**
+  Correcting a false positive (advisory copy citing `e.g. 10.0.0.0/16`) blinded the checker to 28%
+  of the data, including real evidence. Correcting THAT exposed a bug in the sentence splitter:
+  splitting on any period severs `e.g.` from the address it introduces, so the example loses its
+  exemption. A check that always fires is as useless as one that never does — pin BOTH edges
+  against realistic data (here: real fixtures through the real transform, asserting no false
+  positive AND a coverage floor). bridge-candidate
+- `!lesson` **A success message is a safety claim; make it name its own limits.** The banner said
+  "Every IP/MAC/serial is pseudonymized and this was verified" while the code matched RFC1918 IPv4
+  in one file — and hostnames are kept BY DESIGN (a client FQDN survived in 9 of 15 artifacts).
+  The engineer's post-run mental model, "this is anonymous", was the likeliest route to a real
+  data incident — not any code path. State what was checked, what was not, and what is kept on
+  purpose. bridge-candidate
+- `!lesson` **Refuter output is a proposal, not a verdict — verify before fixing.** Of the reported
+  findings I could not reproduce one (a journal-mixing restore) across three trials and both backup
+  methods, and recorded it unverified rather than fix a phantom; two more were REFUTED by their own
+  measurements (timeout headroom, orphaned children) and written down so nobody re-litigates. Their
+  most severe finding, meanwhile, understated the problem — fixing it exposed a second layer
+  neither reviewer saw. Adversarial review earns its keep only when its output is itself checked.
+  bridge-candidate
+- `!lesson` **Narrow local verification hides what the gate catches.** Ruff failed CI on an unused
+  variable because my local lint targeted only the files I had touched while the job lints the
+  tree; and a single-device end-to-end fixture was too thin to expose either edge of the checker
+  (the repo's own golden + 23-device snapshots were). Match the gate's scope locally, and prefer
+  the project's realistic fixtures over a synthetic one you sized yourself. bridge-candidate
+
 ## [2026-07-21] — Atlas P3 shipped (#426/#427) + real stick updated — and the restick exposed a 5-hour silent hang (#428)
 
 - P3 planned from the artifact §15 row with a code-verified gap analysis (which found ADR-0004 D4's
