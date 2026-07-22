@@ -199,7 +199,7 @@ def verify_file(path: str, expect_root: Optional[str] = None,
     if artifacts_dir is not None:
         bad = 0
         for a in man.get("artifacts") or []:
-            name, want = str(a.get("name") or ""), str(a.get("sha256") or "")
+            name, want_sha = str(a.get("name") or ""), str(a.get("sha256") or "")
             if not _is_confined(name):
                 # The manifest is UNTRUSTED input — it arrives from wherever the deliverable set has
                 # been. os.path.join DISCARDS artifacts_dir for an absolute/UNC name, and "../" walks
@@ -212,7 +212,7 @@ def verify_file(path: str, expect_root: Optional[str] = None,
                 try:
                     with open(os.path.join(artifacts_dir, name), "rb") as fh:
                         got = artifact_sha256(fh.read())
-                    state = "ok" if got == want else "MISMATCH"
+                    state = "ok" if got == want_sha else "MISMATCH"
                 except OSError:
                     state = "MISSING"
             if state != "ok":
