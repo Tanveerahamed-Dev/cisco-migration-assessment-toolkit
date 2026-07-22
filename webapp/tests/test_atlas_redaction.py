@@ -378,3 +378,4 @@ def test_checker_is_calibrated_against_real_redacted_snapshots(tmp_path, fixture
     assert coverage >= 0.90, (
         f"the checker now inspects only {coverage:.0%} of {fixture} ({inspected}/{total}); an "
         f"exemption has blinded it (this was 72% when real evidence was being skipped)")
+

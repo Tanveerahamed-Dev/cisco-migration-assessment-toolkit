@@ -8,6 +8,8 @@ Windows boxes), and never name a CLI flag the shipped argparse surfaces don't ac
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "portable" / "README-FIELD.txt"
 
@@ -111,3 +113,50 @@ def test_every_flag_the_guide_names_exists_in_a_shipped_argparse():
     named = set(_FLAG.findall(GUIDE.read_text(encoding="ascii")))
     unknown = named - valid
     assert not unknown, f"field guide names flags no shipped surface has: {sorted(unknown)}"
+
+
+# ── the field guide's claim about the DRAFT stamp must stay TRUE ────────────────
+
+#: Writers whose output opens with a Document Control table (docmeta.add_document_control), and
+#: writers that produce a deliverable with NO such marking. README-FIELD tells the engineer which
+#: is which, so drift in EITHER direction makes the field guide lie.
+_STAMPED = ("design", "mop", "crd", "engagement", "archreview", "ops", "runbook")
+_UNSTAMPED = ("excel", "html", "deck")
+
+
+def test_field_guide_draft_stamp_claim_matches_the_writers():
+    """README-FIELD says the seven Word documents carry a draft Status row and that the workbook,
+    explorer and deck do NOT — the deck being the one most likely shown to a client.
+
+    That paragraph replaced an earlier one claiming EVERY document was stamped, which was false in
+    exactly the direction that matters. Source-level, so it fails when a writer is added or when
+    one of the three unstamped renderers quietly gains (or the seven quietly lose) the table."""
+    src = {m: (ROOT / "cisco_toolkit" / f"{m}.py").read_text(encoding="utf-8", errors="ignore")
+           for m in _STAMPED + _UNSTAMPED}
+    missing = [m for m in _STAMPED if "add_document_control" not in src[m]]
+    unexpected = [m for m in _UNSTAMPED if "add_document_control" in src[m]]
+    assert not missing, (
+        f"README-FIELD promises a Document Control status row these writers no longer emit: "
+        f"{missing}. Fix the writer or the guide — an engineer is told to take it literally.")
+    assert not unexpected, (
+        f"README-FIELD tells the engineer {unexpected} carry NO draft marking, but they now do. "
+        f"Update the guide: under-claiming teaches them to distrust it.")
+    assert len(_STAMPED) == 7, "the guide says 'seven Word documents' — keep the count in step"
+
+
+def test_the_draft_status_row_really_reaches_a_rendered_document(tmp_path):
+    """Non-vacuity for the test above: prove the row is in the FILE, not just the source. The
+    guide's whole point is that the engineer can open the document and see it."""
+    pytest.importorskip("docx")
+    import docx
+
+    from cisco_toolkit import design
+
+    out = tmp_path / "d.docx"
+    design.write_design_doc_docx(str(out), {"devices": {"SW1": {"model": "C9300"}}}, "AJ")
+    text = "\n".join(c.text for t in docx.Document(str(out)).tables
+                     for r in t.rows for c in r.cells)
+    assert "Status" in text, "the Document Control table lost its Status row"
+    assert "DRAFT" in text and "not yet reviewed" in text, (
+        f"the rendered document no longer says it is an unreviewed draft, which is what "
+        f"README-FIELD tells the engineer to rely on. Table text:\n{text[:600]}")
