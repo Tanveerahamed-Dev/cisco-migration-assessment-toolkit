@@ -112,7 +112,8 @@ back to you from the client:
 
 "manifest OK" means the ledger still matches its own seal and every file
 listed hashes to what was sealed. It exits non-zero if not, and names the
-files: MISMATCH = changed since the run, MISSING = not in that folder.
+files: MISMATCH = changed since the run, MISSING = not in that folder,
+INVALID = the manifest pointed somewhere outside it and was not opened.
 
 WHAT THIS PROVES, AND WHAT IT DOES NOT: the seal is UNKEYED, and the code
 that writes it ships in this app. It catches a careless edit, a dropped
@@ -122,7 +123,10 @@ not present it to a client as proof nobody tampered with anything.
 The one check a re-seal cannot beat is comparing against a chain_root you
 recorded somewhere else at the time of the run:
   Atlas.exe --verify-manifest <path to run_manifest.json> --expect-root <chain_root>
-So write the chain_root into the report when you hand a set over.
+So when you hand a set over, copy the chain_root into the report. Open the
+run_manifest.json in Notepad and take the full "chain_root" value - the
+console line at the end of a run shortens it, and a shortened one will not
+match.
 
 CREDENTIALS
 -----------

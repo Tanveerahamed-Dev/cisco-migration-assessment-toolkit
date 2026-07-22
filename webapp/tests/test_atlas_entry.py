@@ -399,3 +399,6 @@ def test_verify_only_flags_refuse_without_verify_manifest(capsys):
     assert serve.main(["--expect-root", "abc"]) == 2
     assert "only apply to --verify-manifest" in capsys.readouterr().err
     assert serve.main(["--verify-artifacts"]) == 2
+    # empty string is falsy: `if args.expect_root` would fall through here and START THE SERVER,
+    # the engineer believing they had asked for a check
+    assert serve.main(["--expect-root", ""]) == 2
